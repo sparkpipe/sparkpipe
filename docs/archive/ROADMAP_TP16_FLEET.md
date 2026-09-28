@@ -1,5 +1,14 @@
 # Roadmap: TP16-everything fleet → weightd-managed serving → per-model sessions
 
+> Archived 2026-09-28. Superseded by [`ROADMAP.md`](../ROADMAP.md). The
+> "current state" below is false today: weightd serves residency and the TP
+> mesh from every node's fleet-agent unit, and GLM 5.3 Flash is coherent
+> (COMPSEC-17 14/17,
+> `qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`).
+> The retirement and build lists reflect placement on 2026-08-30. Do not run
+> any retirement or build step from this doc without re-auditing placement on
+> the nodes.
+
 Operator directive 2026-08-30. Six phases, each with a verification
 gate; no phase stacks on an unverified one (bottom-up law).
 

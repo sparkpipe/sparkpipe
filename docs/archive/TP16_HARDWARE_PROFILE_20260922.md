@@ -1,5 +1,13 @@
 # TP16 hardware-wait and serving measurements
 
+> Archived 2026-09-28. Dated receipt from 2026-09-22 (9.8-12.8 tok/s B1).
+> `Glm5NextHcMixKernel` and `Glm5NextHcSplitSinkhornKernel` no longer exist:
+> 22def4c fused them into `Glm5NextHcSiteKernel`. The roofline authority is
+> [`GLM5_NEXT_ROOFLINE.md`](../GLM5_NEXT_ROOFLINE.md); its accounting replaces
+> the useful-byte section below. The `/private/tmp` receipt directories named
+> below are gone; the files that survived on spark0 are copied into
+> `../receipts/glm5-next-tp16-perf-*.json`.
+
 The isolated GLM5.3 Flash run from source
 `606cc825ca77d6ca9c3f20828b8396871e0c0f54` produced 17 token events, then remained
 in admission BUSY without a completed event. It is a partial reliability result,
@@ -66,16 +74,17 @@ Raw `rank0.cupti.log` SHA256:
 `a13f25a9ad5f76af7a04fe5086cd6abb58def929ab1f2189a53d3be74b89de23`.
 `batch.events.jsonl` SHA256:
 `1591546c3c3ba4a639102b4a7398a16cd78c493d2fec2d7d08a7ab8726bd43aa`.
-The local receipt directory is
-`/private/tmp/sparkpipe-pr1082-receipts/606cc825-r2-cupti/`; it contains the raw
-files, `token0-to16.json` and `per-token.json`. Separate all-rank device counters
-are in `/private/tmp/sparkpipe-pr1082-receipts/fleet-performance/sparkpipe-perf-606cc825ca77-graph-r2/collective-partial.json`.
+The [compact receipt](../receipts/glm5-next-tp16-perf-606cc825-r2.json) keeps
+`run.json`, `receipt.json`, `benchmark.json` and a `token0-to16.json` report
+regenerated on 2026-09-28 from the retained trace with the command below. The
+original local `per-token.json` and all-rank `collective-partial.json` were lost
+with `/private/tmp/sparkpipe-pr1082-receipts/`.
 
 ```sh
 python3 tools/tp_cupti_trace_report.py rank0.cupti.log --clock monotonic --start-ns 576116547247054 --end-ns 576118028049892 --output token0-to16.json
 ```
 
-The profiler and timing tool are described in [TP_CUPTI_TRACE.md](TP_CUPTI_TRACE.md).
+The profiler and timing tool are described in [TP_CUPTI_TRACE.md](../TP_CUPTI_TRACE.md).
 
 ## Completed requests after the admission repair
 
@@ -120,9 +129,10 @@ CUPTI trace has separate zero-loss accounting and remains the compute attributio
 source. All 32 owned fleet processes subsequently exited cleanly with no forced
 kills; process absence was verified on every rank.
 
-Retained local evidence is under
-`/private/tmp/sparkpipe-pr1082-receipts/fleet-performance/sparkpipe-perf-bb94f3eba599-graph-r3/`,
-with the first request in `pass1/` and the second at the root. Event-file SHA256s
+Remote root: `spark0:/tmp/sparkpipe-perf-bb94f3eba599-graph-r3/`, with the first
+request in `pass1/` and the second at the root; the
+[compact receipt](../receipts/glm5-next-tp16-perf-bb94f3eb-r3.json) keeps both
+requests' `benchmark.json`. Event-file SHA256s
 are `6be8fc7af72383fd10a09d1a1a3ce0e8f0e9c498c37865762d21a11e8b6f25c7`
 and `ed94ef6a887e246e871e988b557f034d6462dd75469f9dc2ffb0014d950d528d`.
 The corresponding measurement JSON SHA256s are
@@ -162,8 +172,8 @@ and their allocations were unchanged. No service was restarted by the test.
 Binary SHA256:
 `2e0ad3c13b6d6972c19ed155d6a3b50f1c3f6379ac312d84822bd8f35eb1e325`.
 Remote logs are in `spark0:/tmp/sparkpipe-hc-regression-012f16a4/`; the small
-[receipt](receipts/glm5-next-hc-mix-012f16a4.json) retains source, binary, timings
-and process cleanup. The [GPU inventory](SERVING_FUZZ_COVERAGE.md) lists the
+[receipt](../receipts/glm5-next-hc-mix-012f16a4.json) retains source, binary, timings
+and process cleanup. The [GPU inventory](../SERVING_FUZZ_COVERAGE.md) lists the
 explicit build/run target. Fleet output parity and throughput are measured separately below.
 
 
@@ -196,8 +206,9 @@ stage-profile summary again reported 16 dropped records, so it is not used as a
 complete phase decomposition. All 32 owned fleet processes and the API exited 0
 with their absence verified; no forced kill was needed.
 
-Remote root: `spark0:/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/`. Retained local
-receipts are in `/private/tmp/sparkpipe-pr1082-receipts/fleet-performance/sparkpipe-perf-1a08cb81583c-graph-r4/`.
+Remote root: `spark0:/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/`. The
+[compact receipt](../receipts/glm5-next-tp16-perf-1a08cb81-r4.json) keeps the CLI
+`benchmark.json` and the API summary.
 Event-file SHA256: `4f520d80d1fac007112ae503a9001ca12725b7ccb6208782c0f05056e14d04f5`.
 CLI measurement SHA256: `39019456b3f74f698131ea5a4440597d7fc121639752843c76b9af92902e2d65`.
 API JSONL SHA256: `077949adbaab537aaebed12d0c522b854c6d37c65fdfaeaab64f7c4930c95980`.

@@ -1,5 +1,12 @@
 # The universal mesh: one all-to-all substrate
 
+> Archived 2026-09-28. The accurate parts are merged into
+> [`WEIGHTD_DESIGN.md`](../WEIGHTD_DESIGN.md) ("Mesh substrate and
+> rendezvous"). Wrong here: weightd has no HTTP client (records are files the
+> fleet agent ships through the hub), I36 fixes the collective strategy (B1
+> broadcast, B2+ tree) instead of a per-model crossover, the mesh already uses
+> two QPs per peer, and the doc omits lanes and bands.
+
 ## The simplification
 
 A complete graph (all-to-all) contains every topology as a subset:

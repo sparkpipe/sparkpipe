@@ -1,5 +1,13 @@
 # Spark Host-RDMA Transport
 
+> Archived 2026-09-28. Never implemented as written. The production TP
+> transport is the weightd mesh on one port (`rocep1s0f1`): one RC send QP and
+> one RC receive QP per peer, plain `IBV_WR_RDMA_WRITE` into fixed slots with a
+> tail tag, and no rails, stripes, chunks, immediate data or pre-posted
+> receives (`node/weightd_mesh.c`). See the mesh sections of
+> [`WEIGHTD_DESIGN.md`](../WEIGHTD_DESIGN.md) and
+> [`TP_STREAM_MEMOP_QUALIFICATION.md`](../TP_STREAM_MEMOP_QUALIFICATION.md).
+
 SparkPipe moves pipeline activations and tensor-parallel collective payloads
 through ConnectX RC queue pairs backed by fixed CUDA-mapped host arenas. The
 path does not require `nvidia_peermem` and does not claim that separate Sparks
@@ -63,6 +71,6 @@ Qualification covers:
 - exact payload comparison for every supported datatype and tail shape; and
 - latency, throughput, CPU progress cost, and eligible-work idle gaps.
 
-Measurements live only in [`../PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
+Measurements live only in [`PERFORMANCE_STATUS.md`](../../PERFORMANCE_STATUS.md).
 The collective algorithms built on this transport are specified in
 [`PAIRED_DUAL_LINK_ALLREDUCE.md`](PAIRED_DUAL_LINK_ALLREDUCE.md).

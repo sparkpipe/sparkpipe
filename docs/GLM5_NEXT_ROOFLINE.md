@@ -24,7 +24,7 @@ INDEX_K, INDEX_COMPRESS_GATE, INDEX_HEAD, ROUTER, KDA_DECAY_GATE_DOWN and HC_FN.
 
 ## Where the time went
 
-The CUPTI trace in [TP16_HARDWARE_PROFILE_20260922.md](TP16_HARDWARE_PROFILE_20260922.md)
+The CUPTI trace in [TP16_HARDWARE_PROFILE_20260922.md](archive/TP16_HARDWARE_PROFILE_20260922.md)
 records 54.6 ms of compute kernels per token. The largest items were:
 
 - 14.0 ms of FP8 expert GEMM. 545 MB ran at 39 GB/s.

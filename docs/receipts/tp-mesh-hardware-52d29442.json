@@ -1,0 +1,458 @@
+{
+ "provenance": "read-only copy from spark0:/tmp on 2026-09-28",
+ "remote_roots": [
+  "spark0:/tmp/sparkpipe-hardware-52d29442/build/",
+  "spark0:/tmp/sparkpipe-hardware-277a33f6/build/"
+ ],
+ "qualification": {
+  "receipt.json": {
+   "sha256": "4880ae9a8e28d05ecfecb86d7e56f706443562c508ae2b079470fbfffaff462f",
+   "content": {
+    "source_commit": "52d2944262eb643d901df08f7662e5272fa7351b",
+    "binary_sha256": "7793d1b87f296cc896b2974cb1f7a99870400a5a74b063bfdfbd89e201404c8b",
+    "sources": {
+     "tools/tp_mesh_hardware_probe.cu": "598cd30cac1e982066bc1223efd34ecf23a0eaedfd45dfd89f95af01970523c0",
+     "tests/fixtures/tp_mesh_hardware_daemon.c": "722ef284d54eb717863a1d9ca909a837031d9f7c6c79fcb31f4a748f7209e7e5",
+     "tests/fixtures/tp_mesh_hardware_fixture.h": "74e7b75052599401f9d5d03538307208e58133db30a255f04ac1f448149d97fa",
+     "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh": "091a9243cb5ab3fdd8b4a9a84d00c527a080c6f2904a292741108076bf91561a",
+     "model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h": "c5ba8c9a1d827aded8f17ccbba34e4e25da0403a06ab765b910162a1d30a9d25",
+     "node/weightd_mesh.c": "be2494be6b73558fce41ccda6d5b8423fd8cd49046614fcc070ced8520f24a87",
+     "include/sparkpipe/spark_weightd.h": "fa07a6639bc068345791645f7dbe3b734ef4783bdd9b013620493c66e0738dd8"
+    },
+    "environment": {
+     "CUDA_DEVICE_MAX_CONNECTIONS": "32",
+     "CUDA_MODULE_LOADING": "LAZY",
+     "CUDA_MODULE_DATA_LOADING": "LAZY"
+    },
+    "timeout_seconds": 90,
+    "command": [
+     "/tmp/sparkpipe-hardware-52d29442/build/tp_mesh_hardware_probe",
+     "--run"
+    ],
+    "pid": 2838108,
+    "timed_out": false,
+    "elapsed_seconds": 3.7756034409394488,
+    "exit_code": 0,
+    "proc_pid_exists": false,
+    "cuda_pid_present": false
+   }
+  },
+  "gpu.log": {
+   "sha256": "d8a0a9680805639233e4e8c5f0c183ec755cc2fa7583045d08590742093493cd",
+   "lines": [
+    "ENV CUDA_MODULE_LOADING=LAZY CUDA_MODULE_DATA_LOADING=LAZY CUDA_DEVICE_MAX_CONNECTIONS=32",
+    "CONFIG mapped_bytes=134283264 ranks_max=16 slot_bytes=262144 daemon=actual gate_bytes=128",
+    "PASS numerical tp=2 rows=1 operation=0 elements=514 graph=0 construct_ms=0.000 last_ms=0.205 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=0 elements=514 graph=1 construct_ms=0.266 last_ms=0.108 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=0 elements=514 graph=0 construct_ms=0.000 last_ms=0.294 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=0 elements=514 graph=1 construct_ms=0.219 last_ms=0.180 transfers=18",
+    "PASS numerical tp=2 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.186 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=1 elements=513 graph=1 construct_ms=0.089 last_ms=0.107 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.277 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=1 elements=513 graph=1 construct_ms=0.145 last_ms=0.181 transfers=18",
+    "PASS numerical tp=2 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.175 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=2 elements=513 graph=1 construct_ms=0.080 last_ms=0.108 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.271 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=2 elements=513 graph=1 construct_ms=0.133 last_ms=0.180 transfers=18",
+    "PASS numerical tp=3 rows=1 operation=0 elements=771 graph=0 construct_ms=0.000 last_ms=0.225 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=0 elements=771 graph=1 construct_ms=0.147 last_ms=0.125 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=0 elements=771 graph=0 construct_ms=0.000 last_ms=0.452 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=0 elements=771 graph=1 construct_ms=0.357 last_ms=0.286 transfers=36",
+    "PASS numerical tp=3 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.217 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=1 elements=513 graph=1 construct_ms=0.142 last_ms=0.127 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.449 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=1 elements=513 graph=1 construct_ms=0.240 last_ms=0.284 transfers=36",
+    "PASS numerical tp=3 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.214 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=2 elements=513 graph=1 construct_ms=0.154 last_ms=0.126 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.451 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=2 elements=513 graph=1 construct_ms=0.179 last_ms=0.300 transfers=36",
+    "PASS numerical tp=4 rows=1 operation=0 elements=1028 graph=0 construct_ms=0.000 last_ms=0.289 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=0 elements=1028 graph=1 construct_ms=0.234 last_ms=0.149 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=0 elements=1028 graph=0 construct_ms=0.000 last_ms=0.693 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=0 elements=1028 graph=1 construct_ms=0.465 last_ms=0.395 transfers=54",
+    "PASS numerical tp=4 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.273 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=1 elements=513 graph=1 construct_ms=0.160 last_ms=0.143 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.624 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=1 elements=513 graph=1 construct_ms=0.329 last_ms=0.390 transfers=54",
+    "PASS numerical tp=4 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.258 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=2 elements=513 graph=1 construct_ms=0.123 last_ms=0.141 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.700 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=2 elements=513 graph=1 construct_ms=0.337 last_ms=0.392 transfers=54",
+    "PASS numerical tp=8 rows=1 operation=0 elements=2056 graph=0 construct_ms=0.000 last_ms=0.514 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=0 elements=2056 graph=1 construct_ms=0.434 last_ms=0.291 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=0 elements=2056 graph=0 construct_ms=0.000 last_ms=1.354 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=0 elements=2056 graph=1 construct_ms=0.925 last_ms=0.699 transfers=126",
+    "PASS numerical tp=8 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.517 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=1 elements=513 graph=1 construct_ms=0.230 last_ms=0.290 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=1.299 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=1 elements=513 graph=1 construct_ms=0.472 last_ms=0.593 transfers=126",
+    "PASS numerical tp=8 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.523 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=2 elements=513 graph=1 construct_ms=0.289 last_ms=0.322 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=1.322 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=2 elements=513 graph=1 construct_ms=0.702 last_ms=0.608 transfers=126",
+    "PASS numerical tp=16 rows=1 operation=0 elements=4112 graph=0 construct_ms=0.000 last_ms=1.095 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=0 elements=4112 graph=1 construct_ms=0.974 last_ms=0.570 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=0 elements=4112 graph=0 construct_ms=0.000 last_ms=2.736 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=0 elements=4112 graph=1 construct_ms=2.427 last_ms=1.291 transfers=270",
+    "PASS numerical tp=16 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=1.115 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=1 elements=513 graph=1 construct_ms=0.402 last_ms=0.608 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=2.580 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=1 elements=513 graph=1 construct_ms=1.337 last_ms=1.094 transfers=270",
+    "PASS numerical tp=16 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=1.174 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=2 elements=513 graph=1 construct_ms=0.928 last_ms=0.618 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=2.676 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=2 elements=513 graph=1 construct_ms=1.320 last_ms=1.139 transfers=270",
+    "PASS numerical tp=16 rows=2 operation=0 elements=131088 graph=0 construct_ms=0.000 last_ms=10.429 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=0 elements=131088 graph=1 construct_ms=4.685 last_ms=7.577 transfers=540",
+    "PASS numerical tp=16 rows=2 operation=1 elements=65549 graph=0 construct_ms=0.000 last_ms=8.369 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=1 elements=65549 graph=1 construct_ms=2.670 last_ms=5.449 transfers=540",
+    "PASS numerical tp=16 rows=2 operation=2 elements=32783 graph=0 construct_ms=0.000 last_ms=7.306 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=2 elements=32783 graph=1 construct_ms=2.370 last_ms=4.391 transfers=540",
+    "PASS delayed/stale tails and stale ready block graph replay until exact completion",
+    "PASS cancel all pending graph work, drain, reset chain and replay same executable",
+    "PASS missing peer times out with output untouched, drains and recovers same executable",
+    "TIMING tp=16 rows=1 rounds=91 graph_construct_ms=45.117 warmups=2 samples=6 min_ms=15.497 median_ms=15.579 max_ms=15.746 transport=cpu-copy actual_daemon_gate=1",
+    "PHASE_TIMING median_max_rank_wait_ms=14.379 source_wait_ms=2.177 peer_wait_ms=12.306 copy_ms=0.367 combine_ms=0.214 samples=6",
+    "PASS tp_mesh_hardware_probe cases=70 GPU_math=actual GPU_wait=actual daemon_gate=actual transport=cpu-copy"
+   ]
+  },
+  "before-gpu.log": {
+   "sha256": "71ab4aee726d8d614f6ec7dda67a35c60febdb87f1337844f1aa202589c8c8fd",
+   "lines": [
+    "2026/09/22 19:30:18.333, 0 %, 0 %, [N/A]"
+   ]
+  },
+  "after-gpu.log": {
+   "sha256": "39c402862038375d86f497f36fe31601fdcdeaf61bc8676c2fe568ea2bcd7eb6",
+   "lines": [
+    "2026/09/22 19:30:22.154, 0 %, 0 %, [N/A]"
+   ]
+  },
+  "before-processes.log": {
+   "sha256": "febf67c4f0802970e18af826f56c0a2af44a789b887ac7668181e4bae4f0c49f",
+   "lines": [
+    "614456, /home/spark0/sparkdata/weightd/sparkpipe_weightd, 20874 MiB",
+    "1539682, ./bin/sparkpipe_model_residentd, 11195 MiB"
+   ]
+  },
+  "after-processes.log": {
+   "sha256": "febf67c4f0802970e18af826f56c0a2af44a789b887ac7668181e4bae4f0c49f",
+   "lines": [
+    "614456, /home/spark0/sparkdata/weightd/sparkpipe_weightd, 20874 MiB",
+    "1539682, ./bin/sparkpipe_model_residentd, 11195 MiB"
+   ]
+  }
+ },
+ "negative_control": {
+  "receipt.json": {
+   "sha256": "3446647c85f15698a4360110e9df47ad0659b086e192177c5e815e9eac8ef8ce",
+   "content": {
+    "source_commit": "52d2944262eb643d901df08f7662e5272fa7351b",
+    "binary_sha256": "c0dc79041bc13ef40149f4532abfb6767728c8b5670276b533028616bee40bfa",
+    "sources": {
+     "tools/tp_mesh_hardware_probe.cu": "598cd30cac1e982066bc1223efd34ecf23a0eaedfd45dfd89f95af01970523c0",
+     "tests/fixtures/tp_mesh_hardware_daemon.c": "722ef284d54eb717863a1d9ca909a837031d9f7c6c79fcb31f4a748f7209e7e5",
+     "tests/fixtures/tp_mesh_hardware_fixture.h": "74e7b75052599401f9d5d03538307208e58133db30a255f04ac1f448149d97fa",
+     "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh": "091a9243cb5ab3fdd8b4a9a84d00c527a080c6f2904a292741108076bf91561a",
+     "model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h": "c5ba8c9a1d827aded8f17ccbba34e4e25da0403a06ab765b910162a1d30a9d25",
+     "node/weightd_mesh.c": "be2494be6b73558fce41ccda6d5b8423fd8cd49046614fcc070ced8520f24a87",
+     "include/sparkpipe/spark_weightd.h": "fa07a6639bc068345791645f7dbe3b734ef4783bdd9b013620493c66e0738dd8"
+    },
+    "environment": {
+     "CUDA_DEVICE_MAX_CONNECTIONS": "32",
+     "CUDA_MODULE_LOADING": "LAZY",
+     "CUDA_MODULE_DATA_LOADING": "LAZY"
+    },
+    "timeout_seconds": 90,
+    "command": [
+     "/tmp/sparkpipe-hardware-52d29442/build/qualification-negative/tp_mesh_hardware_mutant",
+     "--run"
+    ],
+    "negative_control": {
+     "source_commit": "52d2944262eb643d901df08f7662e5272fa7351b",
+     "mutation": "PEERS exact tag equality changed to accepting any greater tag",
+     "mutant_source_sha256": "3bc6b31abff9621e575e70fdf9fbf406a4b165ee07616b53ba7a6fcc6ee54dc9",
+     "commands": [
+      [
+       "cc",
+       "-std=c11",
+       "-D_GNU_SOURCE",
+       "-O2",
+       "-ffunction-sections",
+       "-fdata-sections",
+       "-I.",
+       "-Iinclude",
+       "-Isrc",
+       "-I/usr/local/cuda/include",
+       "-Imodel-families/common/include",
+       "-c",
+       "/tmp/sparkpipe-hardware-52d29442/build/qualification-negative/daemon_mutant.c",
+       "-o",
+       "/tmp/sparkpipe-hardware-52d29442/build/qualification-negative/daemon.o"
+      ],
+      [
+       "/usr/local/cuda/bin/nvcc",
+       "-std=c++17",
+       "-O3",
+       "-gencode",
+       "arch=compute_121a,code=sm_121a",
+       "-I.",
+       "-Iinclude",
+       "-Isrc",
+       "-I/usr/local/cuda/include",
+       "-Imodel-families/common/include",
+       "-Xcompiler=-pthread",
+       "tools/tp_mesh_hardware_probe.cu",
+       "/tmp/sparkpipe-hardware-52d29442/build/qualification-negative/daemon.o",
+       "-Xlinker",
+       "--gc-sections",
+       "-L/usr/local/cuda/lib64",
+       "-lcuda",
+       "-libverbs",
+       "-o",
+       "/tmp/sparkpipe-hardware-52d29442/build/qualification-negative/tp_mesh_hardware_mutant"
+      ]
+     ]
+    },
+    "pid": 2857505,
+    "timed_out": false,
+    "elapsed_seconds": 1.5693986170226708,
+    "exit_code": 1,
+    "proc_pid_exists": false,
+    "cuda_pid_present": false
+   }
+  },
+  "gpu.log": {
+   "sha256": "b636e748a5161bb0a2794b6e5c113ee9d2d83a80643347fc2ff5ea3660fc9f5d",
+   "lines": [
+    "ENV CUDA_MODULE_LOADING=LAZY CUDA_MODULE_DATA_LOADING=LAZY CUDA_DEVICE_MAX_CONNECTIONS=32",
+    "CONFIG mapped_bytes=134283264 ranks_max=16 slot_bytes=262144 daemon=actual gate_bytes=128",
+    "PASS numerical tp=2 rows=1 operation=0 elements=514 graph=0 construct_ms=0.000 last_ms=0.208 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=0 elements=514 graph=1 construct_ms=0.233 last_ms=0.108 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=0 elements=514 graph=0 construct_ms=0.000 last_ms=0.267 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=0 elements=514 graph=1 construct_ms=0.128 last_ms=0.179 transfers=18",
+    "PASS numerical tp=2 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.239 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=1 elements=513 graph=1 construct_ms=0.063 last_ms=0.108 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.262 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=1 elements=513 graph=1 construct_ms=0.071 last_ms=0.180 transfers=18",
+    "PASS numerical tp=2 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.168 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=2 elements=513 graph=1 construct_ms=0.057 last_ms=0.108 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.332 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=2 elements=513 graph=1 construct_ms=0.067 last_ms=0.181 transfers=18",
+    "PASS numerical tp=3 rows=1 operation=0 elements=771 graph=0 construct_ms=0.000 last_ms=0.210 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=0 elements=771 graph=1 construct_ms=0.120 last_ms=0.126 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=0 elements=771 graph=0 construct_ms=0.000 last_ms=0.434 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=0 elements=771 graph=1 construct_ms=0.254 last_ms=0.286 transfers=36",
+    "PASS numerical tp=3 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.211 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=1 elements=513 graph=1 construct_ms=0.090 last_ms=0.125 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.435 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=1 elements=513 graph=1 construct_ms=0.125 last_ms=0.287 transfers=36",
+    "PASS numerical tp=3 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.211 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=2 elements=513 graph=1 construct_ms=0.075 last_ms=0.127 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.434 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=2 elements=513 graph=1 construct_ms=0.122 last_ms=0.285 transfers=36",
+    "PASS numerical tp=4 rows=1 operation=0 elements=1028 graph=0 construct_ms=0.000 last_ms=0.252 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=0 elements=1028 graph=1 construct_ms=0.104 last_ms=0.145 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=0 elements=1028 graph=0 construct_ms=0.000 last_ms=0.680 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=0 elements=1028 graph=1 construct_ms=0.325 last_ms=0.392 transfers=54",
+    "PASS numerical tp=4 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.254 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=1 elements=513 graph=1 construct_ms=0.100 last_ms=0.144 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.676 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=1 elements=513 graph=1 construct_ms=0.180 last_ms=0.392 transfers=54",
+    "PASS numerical tp=4 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.253 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=2 elements=513 graph=1 construct_ms=0.100 last_ms=0.143 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.672 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=2 elements=513 graph=1 construct_ms=0.183 last_ms=0.390 transfers=54",
+    "PASS numerical tp=8 rows=1 operation=0 elements=2056 graph=0 construct_ms=0.000 last_ms=0.505 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=0 elements=2056 graph=1 construct_ms=0.244 last_ms=0.294 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=0 elements=2056 graph=0 construct_ms=0.000 last_ms=1.290 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=0 elements=2056 graph=1 construct_ms=0.847 last_ms=0.680 transfers=126",
+    "PASS numerical tp=8 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.510 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=1 elements=513 graph=1 construct_ms=0.203 last_ms=0.294 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=1.295 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=1 elements=513 graph=1 construct_ms=0.399 last_ms=0.608 transfers=126",
+    "PASS numerical tp=8 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.506 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=2 elements=513 graph=1 construct_ms=0.193 last_ms=0.299 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=1.291 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=2 elements=513 graph=1 construct_ms=0.404 last_ms=0.611 transfers=126",
+    "PASS numerical tp=16 rows=1 operation=0 elements=4112 graph=0 construct_ms=0.000 last_ms=1.024 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=0 elements=4112 graph=1 construct_ms=0.693 last_ms=0.534 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=0 elements=4112 graph=0 construct_ms=0.000 last_ms=2.586 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=0 elements=4112 graph=1 construct_ms=1.971 last_ms=1.277 transfers=270",
+    "PASS numerical tp=16 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=1.033 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=1 elements=513 graph=1 construct_ms=0.437 last_ms=0.609 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=2.467 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=1 elements=513 graph=1 construct_ms=0.904 last_ms=1.068 transfers=270",
+    "PASS numerical tp=16 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=1.194 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=2 elements=513 graph=1 construct_ms=0.447 last_ms=0.613 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=2.498 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=2 elements=513 graph=1 construct_ms=0.931 last_ms=1.054 transfers=270",
+    "PASS numerical tp=16 rows=2 operation=0 elements=131088 graph=0 construct_ms=0.000 last_ms=10.178 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=0 elements=131088 graph=1 construct_ms=4.048 last_ms=7.680 transfers=540",
+    "PASS numerical tp=16 rows=2 operation=1 elements=65549 graph=0 construct_ms=0.000 last_ms=7.925 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=1 elements=65549 graph=1 construct_ms=2.550 last_ms=5.303 transfers=540",
+    "PASS numerical tp=16 rows=2 operation=2 elements=32783 graph=0 construct_ms=0.000 last_ms=6.937 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=2 elements=32783 graph=1 construct_ms=2.567 last_ms=4.438 transfers=540",
+    "FAIL line=317 condition=Load(&Gate(0u)->request_id)==1u && Load(&Gate(0u)->ready)==0u && Load(Entry(0u))==0u"
+   ]
+  }
+ },
+ "historical_277a33f6": {
+  "lazy/receipt.json": {
+   "sha256": "d3cad5bd5488ae0897e7f913cbbe3e6a299e86ef62908e859c4c143480d2945a",
+   "content": {
+    "source_commit": "277a33f6463e0768b16b483f2155ebc4c41228c6",
+    "binary_sha256": "0cc63db3e042ae9d900cb024e20ff2741bfabb60c327376612a803a48da95b1e",
+    "sources": {
+     "tools/tp_mesh_hardware_probe.cu": "0bc115dd46def0829eec2f96f567d08f21ecf702baa66d4e4d29e29730738599",
+     "tests/fixtures/tp_mesh_hardware_daemon.c": "722ef284d54eb717863a1d9ca909a837031d9f7c6c79fcb31f4a748f7209e7e5",
+     "tests/fixtures/tp_mesh_hardware_fixture.h": "74e7b75052599401f9d5d03538307208e58133db30a255f04ac1f448149d97fa",
+     "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh": "be6b1eb03746efb5f02b29393a10ec9f670a528e1675f679340ec301b5ddef2b",
+     "model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h": "c5ba8c9a1d827aded8f17ccbba34e4e25da0403a06ab765b910162a1d30a9d25",
+     "node/weightd_mesh.c": "be2494be6b73558fce41ccda6d5b8423fd8cd49046614fcc070ced8520f24a87",
+     "include/sparkpipe/spark_weightd.h": "fa07a6639bc068345791645f7dbe3b734ef4783bdd9b013620493c66e0738dd8"
+    },
+    "environment": {
+     "CUDA_DEVICE_MAX_CONNECTIONS": "32"
+    },
+    "timeout_seconds": 90,
+    "command": [
+     "/tmp/sparkpipe-hardware-277a33f6/build/tp_mesh_hardware_probe",
+     "--run"
+    ],
+    "pid": 2790933,
+    "timed_out": false,
+    "elapsed_seconds": 5.196879650000483,
+    "exit_code": 1,
+    "proc_pid_exists": false,
+    "cuda_pid_present": false
+   }
+  },
+  "lazy/gpu.log": {
+   "sha256": "23dfef0fcbd1b5074521597260108a115764a0e84690d2a6a3a79e00ff2eef6a",
+   "lines": [
+    "CONFIG mapped_bytes=134283264 ranks_max=16 slot_bytes=262144 daemon=actual gate_bytes=128",
+    "PEER rank=0 seq=1 error=6500000001 diag=0 rounds=0 entry=6500000001 bytes=514 slot=0 mask=2 enqueue_ms=7.156",
+    "TAIL rank=0 slot=0 value=6500000001",
+    "TAIL rank=0 slot=1 value=0",
+    "TAIL rank=0 slot=2 value=6500000001",
+    "TAIL rank=0 slot=3 value=6500000002",
+    "PEER rank=1 seq=2 error=6500000002 diag=0 rounds=1 entry=6500000002 bytes=514 slot=3 mask=1 enqueue_ms=0.049",
+    "TAIL rank=1 slot=0 value=6500000001",
+    "TAIL rank=1 slot=1 value=0",
+    "TAIL rank=1 slot=2 value=6500000001",
+    "TAIL rank=1 slot=3 value=6500000002",
+    "CONTROL rank=0 op=0 rows=1 seq=1 round_seq=6500000001 error=6500000001 diag=0 done=0 expected_error=0 gate_id=6 kind=2 tag=6500000001 mask=2 ready=1 gate_error=6500000001 shipped=6500000001 transfers=3",
+    "FAIL line=271 condition=(control.error_word!=0u)==failed"
+   ]
+  },
+  "eager/receipt.json": {
+   "sha256": "1f6b0c26095a7d62dce5e14d75c8972ca0b51368d37309f95ccf4706192d2644",
+   "content": {
+    "source_commit": "277a33f6463e0768b16b483f2155ebc4c41228c6",
+    "binary_sha256": "0cc63db3e042ae9d900cb024e20ff2741bfabb60c327376612a803a48da95b1e",
+    "sources": {
+     "tools/tp_mesh_hardware_probe.cu": "0bc115dd46def0829eec2f96f567d08f21ecf702baa66d4e4d29e29730738599",
+     "tests/fixtures/tp_mesh_hardware_daemon.c": "722ef284d54eb717863a1d9ca909a837031d9f7c6c79fcb31f4a748f7209e7e5",
+     "tests/fixtures/tp_mesh_hardware_fixture.h": "74e7b75052599401f9d5d03538307208e58133db30a255f04ac1f448149d97fa",
+     "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh": "be6b1eb03746efb5f02b29393a10ec9f670a528e1675f679340ec301b5ddef2b",
+     "model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h": "c5ba8c9a1d827aded8f17ccbba34e4e25da0403a06ab765b910162a1d30a9d25",
+     "node/weightd_mesh.c": "be2494be6b73558fce41ccda6d5b8423fd8cd49046614fcc070ced8520f24a87",
+     "include/sparkpipe/spark_weightd.h": "fa07a6639bc068345791645f7dbe3b734ef4783bdd9b013620493c66e0738dd8"
+    },
+    "environment": {
+     "CUDA_DEVICE_MAX_CONNECTIONS": "32",
+     "CUDA_MODULE_LOADING": "EAGER",
+     "CUDA_MODULE_DATA_LOADING": "EAGER"
+    },
+    "timeout_seconds": 90,
+    "command": [
+     "/tmp/sparkpipe-hardware-277a33f6/build/tp_mesh_hardware_probe",
+     "--run"
+    ],
+    "pid": 2799394,
+    "timed_out": false,
+    "elapsed_seconds": 1.7196413080673665,
+    "exit_code": 0,
+    "proc_pid_exists": false,
+    "cuda_pid_present": false
+   }
+  },
+  "eager/gpu.log": {
+   "sha256": "b0d28d850cd730f8b6eeab41909375dab8ce3aa4a3bec870c6173f30b78d407e",
+   "lines": [
+    "CONFIG mapped_bytes=134283264 ranks_max=16 slot_bytes=262144 daemon=actual gate_bytes=128",
+    "PASS numerical tp=2 rows=1 operation=0 elements=514 graph=0 construct_ms=0.000 last_ms=0.206 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=0 elements=514 graph=1 construct_ms=0.228 last_ms=0.108 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=0 elements=514 graph=0 construct_ms=0.000 last_ms=0.266 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=0 elements=514 graph=1 construct_ms=0.109 last_ms=0.179 transfers=18",
+    "PASS numerical tp=2 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.197 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=1 elements=513 graph=1 construct_ms=0.122 last_ms=0.106 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.265 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=1 elements=513 graph=1 construct_ms=0.078 last_ms=0.180 transfers=18",
+    "PASS numerical tp=2 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.242 transfers=6",
+    "PASS numerical tp=2 rows=1 operation=2 elements=513 graph=1 construct_ms=0.052 last_ms=0.108 transfers=18",
+    "PASS numerical tp=2 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.261 transfers=6",
+    "PASS numerical tp=2 rows=2 operation=2 elements=513 graph=1 construct_ms=0.061 last_ms=0.183 transfers=18",
+    "PASS numerical tp=3 rows=1 operation=0 elements=771 graph=0 construct_ms=0.000 last_ms=0.207 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=0 elements=771 graph=1 construct_ms=0.105 last_ms=0.127 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=0 elements=771 graph=0 construct_ms=0.000 last_ms=0.431 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=0 elements=771 graph=1 construct_ms=0.315 last_ms=0.284 transfers=36",
+    "PASS numerical tp=3 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.229 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=1 elements=513 graph=1 construct_ms=0.164 last_ms=0.129 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.436 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=1 elements=513 graph=1 construct_ms=0.155 last_ms=0.285 transfers=36",
+    "PASS numerical tp=3 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.221 transfers=9",
+    "PASS numerical tp=3 rows=1 operation=2 elements=513 graph=1 construct_ms=0.136 last_ms=0.124 transfers=27",
+    "PASS numerical tp=3 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.441 transfers=12",
+    "PASS numerical tp=3 rows=2 operation=2 elements=513 graph=1 construct_ms=0.142 last_ms=0.286 transfers=36",
+    "PASS numerical tp=4 rows=1 operation=0 elements=1028 graph=0 construct_ms=0.000 last_ms=0.249 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=0 elements=1028 graph=1 construct_ms=0.099 last_ms=0.143 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=0 elements=1028 graph=0 construct_ms=0.000 last_ms=0.679 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=0 elements=1028 graph=1 construct_ms=0.314 last_ms=0.391 transfers=54",
+    "PASS numerical tp=4 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.251 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=1 elements=513 graph=1 construct_ms=0.191 last_ms=0.142 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.650 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=1 elements=513 graph=1 construct_ms=0.321 last_ms=0.390 transfers=54",
+    "PASS numerical tp=4 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.266 transfers=12",
+    "PASS numerical tp=4 rows=1 operation=2 elements=513 graph=1 construct_ms=0.172 last_ms=0.142 transfers=36",
+    "PASS numerical tp=4 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.686 transfers=18",
+    "PASS numerical tp=4 rows=2 operation=2 elements=513 graph=1 construct_ms=0.285 last_ms=0.391 transfers=54",
+    "PASS numerical tp=8 rows=1 operation=0 elements=2056 graph=0 construct_ms=0.000 last_ms=0.508 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=0 elements=2056 graph=1 construct_ms=0.248 last_ms=0.294 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=0 elements=2056 graph=0 construct_ms=0.000 last_ms=1.296 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=0 elements=2056 graph=1 construct_ms=1.071 last_ms=0.708 transfers=126",
+    "PASS numerical tp=8 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=0.522 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=1 elements=513 graph=1 construct_ms=0.364 last_ms=0.297 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=1.387 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=1 elements=513 graph=1 construct_ms=0.673 last_ms=0.614 transfers=126",
+    "PASS numerical tp=8 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=0.524 transfers=24",
+    "PASS numerical tp=8 rows=1 operation=2 elements=513 graph=1 construct_ms=0.290 last_ms=0.293 transfers=72",
+    "PASS numerical tp=8 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=1.303 transfers=42",
+    "PASS numerical tp=8 rows=2 operation=2 elements=513 graph=1 construct_ms=0.508 last_ms=0.607 transfers=126",
+    "PASS numerical tp=16 rows=1 operation=0 elements=4112 graph=0 construct_ms=0.000 last_ms=0.995 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=0 elements=4112 graph=1 construct_ms=0.919 last_ms=0.589 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=0 elements=4112 graph=0 construct_ms=0.000 last_ms=2.661 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=0 elements=4112 graph=1 construct_ms=2.571 last_ms=1.227 transfers=270",
+    "PASS numerical tp=16 rows=1 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=1.058 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=1 elements=513 graph=1 construct_ms=0.470 last_ms=0.614 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=1 elements=513 graph=0 construct_ms=0.000 last_ms=2.570 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=1 elements=513 graph=1 construct_ms=0.976 last_ms=1.064 transfers=270",
+    "PASS numerical tp=16 rows=1 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=1.156 transfers=48",
+    "PASS numerical tp=16 rows=1 operation=2 elements=513 graph=1 construct_ms=0.487 last_ms=0.608 transfers=144",
+    "PASS numerical tp=16 rows=2 operation=2 elements=513 graph=0 construct_ms=0.000 last_ms=2.467 transfers=90",
+    "PASS numerical tp=16 rows=2 operation=2 elements=513 graph=1 construct_ms=0.987 last_ms=1.144 transfers=270",
+    "PASS numerical tp=16 rows=2 operation=0 elements=131088 graph=0 construct_ms=0.000 last_ms=10.047 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=0 elements=131088 graph=1 construct_ms=4.095 last_ms=7.591 transfers=540",
+    "PASS numerical tp=16 rows=2 operation=1 elements=65549 graph=0 construct_ms=0.000 last_ms=7.812 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=1 elements=65549 graph=1 construct_ms=2.541 last_ms=5.297 transfers=540",
+    "PASS numerical tp=16 rows=2 operation=2 elements=32783 graph=0 construct_ms=0.000 last_ms=6.939 transfers=180",
+    "PASS numerical tp=16 rows=2 operation=2 elements=32783 graph=1 construct_ms=2.386 last_ms=4.344 transfers=540",
+    "PASS delayed/stale tails and stale ready block graph replay until exact completion",
+    "PASS cancel all pending graph work, drain, reset chain and replay same executable",
+    "TIMING tp=16 rows=1 rounds=91 graph_construct_ms=32.935 warmups=2 samples=6 min_ms=14.953 median_ms=15.054 max_ms=15.227 transport=cpu-copy actual_daemon_gate=1",
+    "PASS tp_mesh_hardware_probe cases=69 GPU_math=actual GPU_wait=actual daemon_gate=actual transport=cpu-copy"
+   ]
+  }
+ }
+}

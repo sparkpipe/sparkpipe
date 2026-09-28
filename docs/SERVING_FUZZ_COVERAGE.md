@@ -224,7 +224,7 @@ kernel and the tensor-core GEMM on each shape.
 Both are GPU targets outside the host campaign. The pre-fusion HC receipt at
 `012f16a4f25a89cf8ff1745b4bcdfed56b6bebcf` is retained in
 [the HC receipt](receipts/glm5-next-hc-mix-012f16a4.json) and
-[the performance report](TP16_HARDWARE_PROFILE_20260922.md).
+[the archived performance report](archive/TP16_HARDWARE_PROFILE_20260922.md).
 
 ## Shared serving release host campaign
 

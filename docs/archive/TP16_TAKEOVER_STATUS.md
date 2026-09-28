@@ -1,5 +1,16 @@
 # GLM 5.3 Flash TP16 Takeover — Status Handoff (2026-09-15)
 
+> Archived 2026-09-28. Superseded session handoff; `lane/glm53-takeover` is
+> merged. The numerics problem below is solved: COMPSEC-17 scores 14/17 with
+> the chat template
+> (`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`),
+> and B1 decode measured 36 tok/s on 2026-09-28 (lead-dev measurement). Also
+> stale: `SPARK_GLM5_NEXT_GRAPH_PATH` has no default (unset fails module init;
+> the fleet sets 1 through `G5_GRAPH_PATH`), and the mesh now has 2 slots per
+> rank in a 268,500,992-byte slot area (`include/sparkpipe/spark_weightd.h`).
+> Fleet operations: [`FLEET_RELEASE_RUNBOOK.md`](../FLEET_RELEASE_RUNBOOK.md).
+> GLM status: [`GLM5_NEXT_ROOFLINE.md`](../GLM5_NEXT_ROOFLINE.md).
+
 Branch: `lane/glm53-takeover` (all pushed). Fleet: serving mechanically end-to-end on TP16.
 
 ## What works now (verified on fleet)
@@ -76,6 +87,22 @@ Bisect plan (next session, first thing):
   per round, stream-queued) + spin + combine next.
 
 ## Ops notes (hard-won)
+
+> Do not follow these notes. The fleet-agent unit supervises weightd:
+> `ensure_weightd` in `tools/fleet_node_agent.sh` starts it with
+> `--mesh-rank $RANK` when absent, and refuses automatic startup while any
+> weightd runs from a path other than `~/sparkdata/weightd`. A weightd started
+> by hand therefore blocks the agent and runs outside its cgroup. Never start
+> weightd by hand on a fleet node. weightd updates go through the hub's
+> `core/WEIGHTSD_BIN` announce (`FLEET_RELEASE_RUNBOOK.md` §2.2-2.4); `core/`
+> is sha-verified from its MANIFEST, so copying into `core/bin` by hand is
+> wrong. The agent has no `UPDATE` sentinel. The hub serving `~/release/<root>/`
+> is rtx5090; sparkf's `~/release` is a staging copy. The API runs on rtx5090
+> (`g53-api`), and `G5_API_DISABLED=1` stops the agent from starting one on the
+> Sparks. `spark0:/tmp/probe_*.sh` no longer exist. The forensics formula
+> below reads the wrong bytes: a slot's tail tag is the last 8 bytes of slot
+> `band*32 + peer*2 + ring`, with 262,208-byte slots
+> (`include/sparkpipe/spark_weightd.h`, `node/weightd_mesh.c`).
 
 - Build/deploy loop on sparkf `~/g5n-rd-build`: `git fetch/reset` then
   `make build/sparkpipe_model_residentd build/sparkpipe_model_api
