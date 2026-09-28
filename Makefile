@@ -1454,7 +1454,7 @@ build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY)
 
 
 build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 HY4_SMOKE_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/hy4/include -Imodules/hy4_resident_decode_stage/include -Imodules/hy4_resident_decode_stage/source
 HY4_SMOKE_SOURCES := tests/test_hy4_lifecycle_smoke.c \
@@ -1473,7 +1473,7 @@ build/test_hy4_lifecycle_smoke: $(HY4_SMOKE_SOURCES) | build
 	$(CC) $(HY4_SMOKE_INCLUDE_FLAGS) $(CFLAGS) $(HY4_SMOKE_SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dsv4_w1_loader: tests/test_dsv4_w1_loader.c src/spark_sha256.c src/spark_status.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Itests $(CFLAGS) $^ $(LDFLAGS) -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Itests $(CFLAGS) $^ $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(LDFLAGS) -o $@
 
 # W2 weightd (docs/WEIGHTD_DESIGN.md): the residency daemon and its
 # serving-side attach consumer live in $(RUNTIME_LIBRARY) (the client is the
