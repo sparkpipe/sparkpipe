@@ -424,14 +424,14 @@ static SparkStatus SparkLagunaServingValidateConfiguration(
 {
 	SparkStatus status;
 	if ( configuration == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_CONFIGURATION_BYTES )
-		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
+		return(SPARK_STATUS_ABI_MISMATCH);
 	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkLagunaServingDescriptor,&configuration->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( configuration->stage_index >= SPARK_LAGUNA_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_LAGUNA_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -706,14 +706,14 @@ static SparkStatus SparkLagunaServingQuiesce(
 	SparkStatus status;
 	state = (SparkLagunaServingState *)adapter_state;
 	if ( state == 0 || deadline_time_ns == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	state->quiescing = 1u;
 	if ( SparkLagunaServingAvailableSubmissionCount(state) != state->pipeline_slot_count )
-		SPARK_FAIL(SPARK_STATUS_BUSY);
+		return(SPARK_STATUS_BUSY);
 	memset(&snapshot,0,sizeof(snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
 }
 
@@ -727,11 +727,11 @@ static SparkStatus SparkLagunaServingSnapshot(
 	SparkStatus status;
 	state = (SparkLagunaServingState *)adapter_state;
 	if ( state == 0 || snapshot == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&driver_snapshot,0,sizeof(driver_snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&driver_snapshot);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	memset(snapshot,0,sizeof(*snapshot));
 	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
@@ -742,7 +742,7 @@ static SparkStatus SparkLagunaServingSnapshot(
 	snapshot->active_submission_count = state->pipeline_slot_count - SparkLagunaServingAvailableSubmissionCount(state);
 	snapshot->submitted_count = driver_snapshot.submitted_count;
 	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + atomic_load_explicit(&state->orphan_completion_count,memory_order_relaxed);
+	snapshot->rejected_count = driver_snapshot.rejected_count + SparkLagunaServingOrphanCompletionCount(state);
 	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
 	snapshot->resident_token_count = driver_snapshot.resident_token_count;
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;

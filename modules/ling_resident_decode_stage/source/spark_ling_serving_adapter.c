@@ -415,7 +415,7 @@ static SparkStatus SparkLingServingValidateConfiguration(
 		return(SPARK_STATUS_ABI_MISMATCH);
 	status = SparkModelServingAdapterValidateRuntimeLimits(&SparkLingServingDescriptor,&configuration->runtime_limits);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	if ( configuration->stage_index >= SPARK_LING_SERVING_STAGE_COUNT || configuration->runtime_root == 0 || configuration->node_id == 0 || configuration->node_target == 0 || configuration->adapter_configuration_path == 0 || configuration->driver_shared_object_path == 0 || configuration->driver_program_name == 0 || strcmp(configuration->driver_program_name,SPARK_LING_SERVING_PROGRAM_NAME) != 0 || configuration->execution_stream == 0 || configuration->completion_function == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
@@ -645,7 +645,7 @@ static SparkStatus SparkLingServingQuiesce(
 	memset(&snapshot,0,sizeof(snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&snapshot);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	return(snapshot.active_submission_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
 }
 
@@ -667,7 +667,7 @@ static SparkStatus SparkLingServingSnapshot(
 	memset(&driver_snapshot,0,sizeof(driver_snapshot));
 	status = state->driver.interface->snapshot(state->driver_instance,state->program->program_id,&driver_snapshot);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	memset(snapshot,0,sizeof(*snapshot));
 	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
@@ -678,7 +678,7 @@ static SparkStatus SparkLingServingSnapshot(
 	snapshot->active_submission_count = state->pipeline_slot_count - SparkLingServingAvailableSubmissionCount(state);
 	snapshot->submitted_count = driver_snapshot.submitted_count;
 	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + state->orphan_completion_count;
+	snapshot->rejected_count = driver_snapshot.rejected_count + SparkLingServingOrphanCompletionCount(state);
 	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
 	snapshot->resident_token_count = driver_snapshot.resident_token_count;
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;

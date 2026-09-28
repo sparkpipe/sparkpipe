@@ -10,3 +10,8 @@ static void SPARK_FAMILY(ServingOrphanDriverCompletion)(
 	if ( state != 0 )
 		state->orphan_completion_count++;
 }
+
+static inline uint64_t SPARK_FAMILY(ServingOrphanCompletionCount)(SPARK_FAMILY(ServingState) *state)
+{
+	return(state->orphan_completion_count);
+}

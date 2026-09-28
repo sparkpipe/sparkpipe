@@ -25,7 +25,7 @@ static SparkStatus SPARK_FAMILY(ServingSnapshot)(
 	snapshot->active_submission_count = state->pipeline_slot_count - SPARK_FAMILY(ServingAvailableSubmissionCount)(state);
 	snapshot->submitted_count = driver_snapshot.submitted_count;
 	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + state->orphan_completion_count;
+	snapshot->rejected_count = driver_snapshot.rejected_count + SPARK_FAMILY(ServingOrphanCompletionCount)(state);
 	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
 	snapshot->resident_token_count = driver_snapshot.resident_token_count;
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;

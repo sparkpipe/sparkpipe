@@ -10,3 +10,8 @@ static void SPARK_FAMILY(ServingOrphanDriverCompletion)(
 	if ( state != 0 )
 		atomic_fetch_add_explicit(&state->orphan_completion_count,1u,memory_order_relaxed);
 }
+
+static inline uint64_t SPARK_FAMILY(ServingOrphanCompletionCount)(SPARK_FAMILY(ServingState) *state)
+{
+	return(atomic_load_explicit(&state->orphan_completion_count,memory_order_relaxed));
+}

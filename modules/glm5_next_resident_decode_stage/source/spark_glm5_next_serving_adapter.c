@@ -907,7 +907,7 @@ static SparkStatus SparkGlm5NextServingSnapshot(
 	snapshot->active_submission_count = state->pipeline_slot_count - SparkGlm5NextServingAvailableSubmissionCount(state);
 	snapshot->submitted_count = driver_snapshot.submitted_count;
 	snapshot->completed_count = driver_snapshot.completed_count;
-	snapshot->rejected_count = driver_snapshot.rejected_count + atomic_load_explicit(&state->orphan_completion_count,memory_order_relaxed);
+	snapshot->rejected_count = driver_snapshot.rejected_count + SparkGlm5NextServingOrphanCompletionCount(state);
 	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
 	snapshot->resident_token_count = driver_snapshot.resident_token_count;
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
@@ -945,18 +945,20 @@ static SparkStatus SparkGlm5NextServingResetControl(void *adapter_state,uint64_t
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm5NextServingReset(void *adapter_state,uint64_t control_generation)
+static SparkStatus SparkGlm5NextServingReset(
+	void *adapter_state,
+	uint64_t control_generation)
 {
 	SparkGlm5NextServingState *state = (SparkGlm5NextServingState *)adapter_state;
 	uint32_t expected = 0u;
 	SparkStatus status;
 	if ( state == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( atomic_compare_exchange_strong_explicit(&state->reset_active,&expected,1u,memory_order_acquire,memory_order_relaxed) == 0 )
 		return(SPARK_STATUS_BUSY);
 	status = SparkGlm5NextServingResetControl(state,control_generation);
 	atomic_store_explicit(&state->reset_active,0u,memory_order_release);
-	SPARK_RETURN(status);
+	return(status);
 }
 
 static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
