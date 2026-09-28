@@ -202,6 +202,26 @@ attention fix removed, it reports `layer=3 site=attn_out` at 2 rows, and at
 17 rows the divergence reaches every KDA and MLP site. So the stack harness
 catches the breaks the kernel harness found.
 
+## Whole stack cost
+
+`bench-glm5-next-batch --iterations 5 --copies 1` on sparkf with the GPU
+otherwise idle, main against this stack, two passes each. The numbers are
+compute step ms in TP16 rank geometry. The bench has no certified head
+payload, so its head column does not change.
+
+| Rows | 1,024 tokens main | 1,024 tokens stack | 2,048 tokens main | 2,048 tokens stack |
+|---|---|---|---|---|
+| 1 | 18.4 / 18.5 | 18.0 / 17.7 | 19.4 / 20.9 | 18.6 / 20.6 |
+| 8 | 35.5 / 35.9 | 35.6 / 34.8 | 37.7 / 36.2 | 35.7 / 35.7 |
+| 16 | 59.3 / 59.3 | 51.6 / 53.2 | 58.1 / 57.5 | 53.3 / 56.3 |
+| 32 | 79.6 / 80.5 | 76.0 / 75.8 | 81.9 / 82.1 | 80.3 / 76.9 |
+| 64 | 114.2 / 113.6 | 110.9 / 110.9 | 119.1 / 118.8 | 118.3 / 125.7 |
+| 128 | 157.5 / 158.5 | 169.3 / 168.3 | 166.0 / 167.8 | 220.5 / 184.7 |
+
+Decode waves up to 64 rows are as fast or faster. 128-row waves (prefill
+chunks) pay 7% at 1,024 tokens and more at 2,048 tokens, from the skinny order
+on the wide projections and the attention tiles.
+
 ## Not yet covered
 
 MTP drafting and verify through the stage, rows at different positions in one
