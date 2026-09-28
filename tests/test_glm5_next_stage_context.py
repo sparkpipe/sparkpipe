@@ -398,6 +398,7 @@ static void observe_completion(void *context,const SparkModelDriverCompletion *c
 }
 
 static uint64_t EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES / sizeof(uint64_t)];
+static uint64_t VERIFY_MISS_RING[SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES / sizeof(uint64_t)];
 const void *SparkWeightdMapEpochDevice(const SparkWeightdMap *map)
 { (void)map;return(EPOCH_WORDS); }
 static uint32_t GRAPH_LAUNCHES;
@@ -955,7 +956,7 @@ static void check_verify_rounds(uint32_t drafter)
 	state.slots[0].host_run_state_index = host_run_state;
 	state.tp_degree = 1u;
 	state.execution_row_capacity = 8u;
-	state.decode_cover_device = (uint32_t *)(uintptr_t)1u;
+	state.slots[0].miss_ring = (uint32_t *)VERIFY_MISS_RING;
 	state.tp_device_collective.operation_timeout_milli = 50u;
 	for (regime=0u; regime<SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT; regime++)
 	{
@@ -1074,7 +1075,7 @@ static void check_verify_rounds(uint32_t drafter)
 			} while ( status == SPARK_STATUS_OK && more != 0u );
 			if ( fault_frame != 0u )
 			{
-				assert(status == SPARK_STATUS_BUSY && atomic_load(&state.terminal_status) == SPARK_STATUS_BUSY && chain->verify_produced == 7u && chain->verify_plain == 0u);
+				assert(status == SPARK_STATUS_INTERNAL_ERROR && atomic_load(&state.terminal_status) == SPARK_STATUS_INTERNAL_ERROR && chain->verify_produced == 7u && chain->verify_plain == 0u);
 				state.slots[0].graph_disabled = 0u;
 				atomic_store(&state.terminal_status,SPARK_STATUS_OK);
 				frames++;

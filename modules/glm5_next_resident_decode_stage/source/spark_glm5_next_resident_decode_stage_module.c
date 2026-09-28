@@ -3962,7 +3962,7 @@ static SparkStatus SparkGlm5NextVerifyCaptureSet(SparkGlm5NextTpChain *chain,uin
 	chain->first_row = 0u;
 	chain->spec_verify = 1u;
 	chain->slot->sampled = 0u;
-	status = SparkGlm5NextGraphCoverEnsure(state);
+	status = SparkGlm5NextMissRingEnsure(chain->slot);
 	for (rows=SPARK_GLM5_NEXT_VERIFY_ROWS_MIN; status == SPARK_STATUS_OK && rows<=state->verify_rows_max; rows++)
 	{
 		bound = SparkGlm5NextVerifyCaptureBound(regime,rows,context,state->decode_split_context_threshold,state->max_sequence_positions);
