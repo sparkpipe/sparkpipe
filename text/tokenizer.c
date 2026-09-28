@@ -16,6 +16,8 @@
 #define SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_FACTOR 4u
 #define SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_SLACK 16u
 #define SPARK_TOKENIZER_SYMBOL_NONE UINT32_MAX
+#define SPARK_TOKENIZER_METASPACE_TEXT "\xe2\x96\x81"
+#define SPARK_TOKENIZER_METASPACE_BYTES 3u
 
 static uint32_t SparkTokenizerNextPowerOfTwo(
     uint32_t value)
@@ -609,6 +611,16 @@ static SparkStatus SparkTokenizerBuildByteTokenTable(
         uint32_t token_id;
 
         tokenizer->byte_token_ids[byte_value] = SPARK_TOKENIZER_NO_TOKEN_ID;
+        if (tokenizer->model_kind == SPARK_TOKENIZER_BPE_MODEL_KIND_METASPACE)
+        {
+            char fallback_text[8];
+            encoded_text_bytes = (uint32_t)snprintf(fallback_text, sizeof(fallback_text), "<0x%02X>", byte_value);
+            if (SparkTokenizerFindTokenId(tokenizer, fallback_text, encoded_text_bytes, &token_id) == SPARK_STATUS_OK)
+            {
+                tokenizer->byte_token_ids[byte_value] = token_id;
+            }
+            continue;
+        }
         encoded_text_bytes = SparkTokenizerAppendUtf8CodePoint(
             encoded_text,
             SparkTokenizerByteToUnicodeCodePoint(byte_value));
@@ -1432,6 +1444,38 @@ static uint32_t SparkTokenizerJsonHasExtendedSplitPattern(
     return 0u;
 }
 
+static uint32_t SparkTokenizerJsonIsMetaspaceNormalizer(
+    const SparkJsonDocument *document,
+    int32_t root_token_index)
+{
+    int32_t normalizer_token_index;
+    int32_t type_token_index;
+    int32_t pattern_token_index;
+    int32_t pattern_string_token_index;
+    int32_t content_token_index;
+
+    normalizer_token_index = SparkJsonFindObjectMember(document, root_token_index, "normalizer");
+    if (normalizer_token_index < 0)
+    {
+        return 0u;
+    }
+    type_token_index = SparkJsonFindObjectMember(document, normalizer_token_index, "type");
+    pattern_token_index = SparkJsonFindObjectMember(document, normalizer_token_index, "pattern");
+    content_token_index = SparkJsonFindObjectMember(document, normalizer_token_index, "content");
+    if (type_token_index < 0 || pattern_token_index < 0 || content_token_index < 0)
+    {
+        return 0u;
+    }
+    pattern_string_token_index = SparkJsonFindObjectMember(document, pattern_token_index, "String");
+    if (pattern_string_token_index < 0)
+    {
+        return 0u;
+    }
+    return SparkJsonStringEquals(document, type_token_index, "Replace") &&
+        SparkJsonStringEquals(document, pattern_string_token_index, " ") &&
+        SparkJsonStringEquals(document, content_token_index, SPARK_TOKENIZER_METASPACE_TEXT) ? 1u : 0u;
+}
+
 SparkStatus SparkTokenizerLoadHuggingFaceJson(
     SparkTokenizer *tokenizer,
     const SparkTokenizerHuggingFaceJsonConfiguration *configuration)
@@ -1509,6 +1553,10 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
         }
     }
 
+    if (SparkTokenizerJsonIsMetaspaceNormalizer(&document, root_token_index) != 0u)
+    {
+        tokenizer->model_kind = SPARK_TOKENIZER_BPE_MODEL_KIND_METASPACE;
+    }
     if (status == SPARK_STATUS_OK)
     {
         status = SparkTokenizerBuildByteTokenTable(tokenizer);
@@ -1588,6 +1636,11 @@ SparkStatus SparkTokenizerLoadHuggingFaceJson(
             tokenizer->byte_level_use_regex =
                 split_variant == SPARK_TOKENIZER_SPLIT_VARIANT_EXTENDED_DIGIT_RUNS ? 3u : 2u;
         }
+    }
+    if (tokenizer->model_kind == SPARK_TOKENIZER_BPE_MODEL_KIND_METASPACE)
+    {
+        tokenizer->add_prefix_space = 0u;
+        tokenizer->byte_level_use_regex = 0u;
     }
     SparkTokenizerSortSpecialTokens(tokenizer);
     SparkJsonDocumentDestroy(&document);
@@ -2484,15 +2537,13 @@ static SparkTokenizerPieceCacheEntry *SparkTokenizerPieceCacheLookup(SparkTokeni
     return 0;
 }
 
-static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
+static SparkStatus SparkTokenizerMergeSymbols(
     const SparkTokenizer *tokenizer,
-    const char *text,
-    uint32_t text_bytes,
     SparkTokenizerWorkspace *workspace,
+    uint32_t symbol_count,
     uint32_t *token_ids_out,
     uint32_t token_ids_capacity,
-    uint32_t *token_count_out,
-    uint32_t *invalid_out)
+    uint32_t *token_count_out)
 {
     uint32_t symbol_index;
     uint32_t head_symbol_index;
@@ -2500,60 +2551,7 @@ static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
     uint32_t emitted_count;
     SparkStatus status;
 
-    *token_count_out = 0u;
-    *invalid_out = 0u;
-    if (text_bytes == 0u)
-    {
-        return SPARK_STATUS_OK;
-    }
-    if (tokenizer->ignore_merges != 0u && text_bytes <= SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES)
-    {
-        char glyph_text[SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES * 4u];
-        uint32_t glyph_bytes = 0u;
-        uint32_t whole_token_id = 0u;
-        uint32_t byte_index;
-        for (byte_index = 0u; byte_index < text_bytes; ++byte_index)
-        {
-            glyph_bytes += SparkTokenizerAppendUtf8CodePoint(
-                glyph_text + glyph_bytes,
-                SparkTokenizerByteToUnicodeCodePoint((uint8_t)text[byte_index]));
-        }
-        if (SparkTokenizerFindTokenId(tokenizer,glyph_text,glyph_bytes,&whole_token_id) == SPARK_STATUS_OK)
-        {
-            if (token_ids_capacity == 0u)
-            {
-                return SPARK_STATUS_CAPACITY_EXCEEDED;
-            }
-            token_ids_out[0u] = whole_token_id;
-            *token_count_out = 1u;
-            return SPARK_STATUS_OK;
-        }
-    }
-    if (text_bytes > workspace->maximum_symbol_count)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-
-    workspace->merge_heap_count = 0u;
-    for (symbol_index = 0u; symbol_index < text_bytes; ++symbol_index)
-    {
-        uint32_t token_id;
-
-        token_id = tokenizer->byte_token_ids[(uint8_t)text[symbol_index]];
-        if (token_id == SPARK_TOKENIZER_NO_TOKEN_ID)
-        {
-            *invalid_out = 1u;
-            return SPARK_STATUS_NOT_FOUND;
-        }
-        workspace->symbol_token_ids[symbol_index] = token_id;
-        workspace->previous_symbol_indices[symbol_index] =
-            symbol_index == 0u ? SPARK_TOKENIZER_SYMBOL_NONE : symbol_index - 1u;
-        workspace->next_symbol_indices[symbol_index] =
-            symbol_index + 1u < text_bytes ? symbol_index + 1u : SPARK_TOKENIZER_SYMBOL_NONE;
-        workspace->symbol_generations[symbol_index] = 1u;
-    }
-
-    for (symbol_index = 0u; symbol_index + 1u < text_bytes; ++symbol_index)
+    for (symbol_index = 0u; symbol_index + 1u < symbol_count; ++symbol_index)
     {
         status = SparkTokenizerPushPairCandidate(tokenizer, workspace, symbol_index);
         if (status != SPARK_STATUS_OK)
@@ -2563,7 +2561,7 @@ static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
     }
 
     head_symbol_index = 0u;
-    live_symbol_count = text_bytes;
+    live_symbol_count = symbol_count;
     while (live_symbol_count > 1u)
     {
         SparkTokenizerMergeCandidate candidate;
@@ -2579,7 +2577,7 @@ static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
             break;
         }
         left_symbol_index = candidate.left_symbol_index;
-        if (left_symbol_index >= text_bytes ||
+        if (left_symbol_index >= symbol_count ||
             workspace->symbol_generations[left_symbol_index] != candidate.left_generation)
         {
             continue;
@@ -2654,6 +2652,74 @@ static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
     }
     *token_count_out = emitted_count;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
+    const SparkTokenizer *tokenizer,
+    const char *text,
+    uint32_t text_bytes,
+    SparkTokenizerWorkspace *workspace,
+    uint32_t *token_ids_out,
+    uint32_t token_ids_capacity,
+    uint32_t *token_count_out,
+    uint32_t *invalid_out)
+{
+    uint32_t symbol_index;
+
+    *token_count_out = 0u;
+    *invalid_out = 0u;
+    if (text_bytes == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (tokenizer->ignore_merges != 0u && text_bytes <= SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES)
+    {
+        char glyph_text[SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES * 4u];
+        uint32_t glyph_bytes = 0u;
+        uint32_t whole_token_id = 0u;
+        uint32_t byte_index;
+        for (byte_index = 0u; byte_index < text_bytes; ++byte_index)
+        {
+            glyph_bytes += SparkTokenizerAppendUtf8CodePoint(
+                glyph_text + glyph_bytes,
+                SparkTokenizerByteToUnicodeCodePoint((uint8_t)text[byte_index]));
+        }
+        if (SparkTokenizerFindTokenId(tokenizer,glyph_text,glyph_bytes,&whole_token_id) == SPARK_STATUS_OK)
+        {
+            if (token_ids_capacity == 0u)
+            {
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            token_ids_out[0u] = whole_token_id;
+            *token_count_out = 1u;
+            return SPARK_STATUS_OK;
+        }
+    }
+    if (text_bytes > workspace->maximum_symbol_count)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+
+    workspace->merge_heap_count = 0u;
+    for (symbol_index = 0u; symbol_index < text_bytes; ++symbol_index)
+    {
+        uint32_t token_id;
+
+        token_id = tokenizer->byte_token_ids[(uint8_t)text[symbol_index]];
+        if (token_id == SPARK_TOKENIZER_NO_TOKEN_ID)
+        {
+            *invalid_out = 1u;
+            return SPARK_STATUS_NOT_FOUND;
+        }
+        workspace->symbol_token_ids[symbol_index] = token_id;
+        workspace->previous_symbol_indices[symbol_index] =
+            symbol_index == 0u ? SPARK_TOKENIZER_SYMBOL_NONE : symbol_index - 1u;
+        workspace->next_symbol_indices[symbol_index] =
+            symbol_index + 1u < text_bytes ? symbol_index + 1u : SPARK_TOKENIZER_SYMBOL_NONE;
+        workspace->symbol_generations[symbol_index] = 1u;
+    }
+
+    return SparkTokenizerMergeSymbols(tokenizer, workspace, text_bytes, token_ids_out, token_ids_capacity, token_count_out);
 }
 
 static SparkStatus SparkTokenizerEncodeByteLevelPiece(
@@ -2996,6 +3062,86 @@ static uint32_t SparkTokenizerFindNextExtendedPiece(
     return 0u;
 }
 
+static SparkStatus SparkTokenizerEncodeMetaspaceSegment(
+    const SparkTokenizer *tokenizer,
+    const char *text,
+    uint32_t text_bytes,
+    SparkTokenizerWorkspace *workspace,
+    SparkTokenizerEncoding *encoding)
+{
+    uint32_t position;
+    uint32_t symbol_count;
+    uint32_t produced;
+    uint32_t emit_index;
+    SparkStatus status;
+
+    position = 0u;
+    symbol_count = 0u;
+    workspace->merge_heap_count = 0u;
+    while (position < text_bytes)
+    {
+        uint32_t start;
+        uint32_t code_point;
+        uint32_t token_id;
+        uint32_t byte_index;
+
+        start = position;
+        if (SparkTokenizerReadUtf8CodePoint(text, text_bytes, &position, &code_point) == 0u)
+        {
+            encoding->invalid_segment_count += 1u;
+            return SPARK_STATUS_PARSE_ERROR;
+        }
+        if ((code_point == (uint32_t)' ' &&
+                SparkTokenizerFindTokenId(tokenizer, SPARK_TOKENIZER_METASPACE_TEXT, SPARK_TOKENIZER_METASPACE_BYTES, &token_id) == SPARK_STATUS_OK) ||
+            (code_point != (uint32_t)' ' &&
+                SparkTokenizerFindTokenId(tokenizer, text + start, position - start, &token_id) == SPARK_STATUS_OK))
+        {
+            if (symbol_count >= workspace->maximum_symbol_count)
+            {
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            workspace->symbol_token_ids[symbol_count++] = token_id;
+            continue;
+        }
+        for (byte_index = start; byte_index < position; ++byte_index)
+        {
+            token_id = tokenizer->byte_fallback != 0u ? tokenizer->byte_token_ids[(uint8_t)text[byte_index]] : SPARK_TOKENIZER_NO_TOKEN_ID;
+            if (token_id == SPARK_TOKENIZER_NO_TOKEN_ID && tokenizer->has_unk_token != 0u)
+            {
+                token_id = tokenizer->unk_token_id;
+                byte_index = position - 1u;
+            }
+            if (token_id == SPARK_TOKENIZER_NO_TOKEN_ID)
+            {
+                encoding->invalid_segment_count += 1u;
+                return SPARK_STATUS_NOT_FOUND;
+            }
+            if (symbol_count >= workspace->maximum_symbol_count)
+            {
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            workspace->symbol_token_ids[symbol_count++] = token_id;
+        }
+    }
+    for (emit_index = 0u; emit_index < symbol_count; ++emit_index)
+    {
+        workspace->previous_symbol_indices[emit_index] = emit_index == 0u ? SPARK_TOKENIZER_SYMBOL_NONE : emit_index - 1u;
+        workspace->next_symbol_indices[emit_index] = emit_index + 1u < symbol_count ? emit_index + 1u : SPARK_TOKENIZER_SYMBOL_NONE;
+        workspace->symbol_generations[emit_index] = 1u;
+    }
+    if (symbol_count == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    produced = 0u;
+    status = SparkTokenizerMergeSymbols(tokenizer, workspace, symbol_count, workspace->symbol_token_ids, workspace->maximum_symbol_count, &produced);
+    for (emit_index = 0u; status == SPARK_STATUS_OK && emit_index < produced; ++emit_index)
+    {
+        status = SparkTokenizerAppendTokenToEncoding(encoding, workspace->symbol_token_ids[emit_index]);
+    }
+    return status;
+}
+
 static SparkStatus SparkTokenizerEncodeRegularSegmentWithWorkspace(
     const SparkTokenizer *tokenizer,
     const char *text,
@@ -3010,6 +3156,10 @@ static SparkStatus SparkTokenizerEncodeRegularSegmentWithWorkspace(
     if (text_bytes == 0u)
     {
         return SPARK_STATUS_OK;
+    }
+    if (tokenizer->model_kind == SPARK_TOKENIZER_BPE_MODEL_KIND_METASPACE)
+    {
+        return SparkTokenizerEncodeMetaspaceSegment(tokenizer, text, text_bytes, workspace, encoding);
     }
     if (tokenizer->byte_level_use_regex == 0u ||
         (encode_flags & SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_REGEX_PRETOKENIZATION) != 0u)
@@ -3530,6 +3680,64 @@ static SparkStatus SparkTokenizerDecodeOneTokenText(
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkTokenizerHexNibble(
+    uint8_t character,
+    uint8_t *value)
+{
+    if (character >= '0' && character <= '9')
+    {
+        *value = (uint8_t)(character - '0');
+        return 1u;
+    }
+    if (character >= 'A' && character <= 'F')
+    {
+        *value = (uint8_t)(character - 'A' + 10);
+        return 1u;
+    }
+    return 0u;
+}
+
+static SparkStatus SparkTokenizerDecodeMetaspaceTokenText(
+    const char *token_text,
+    uint32_t token_text_bytes,
+    char *text,
+    uint32_t text_capacity,
+    uint32_t *text_bytes_inout)
+{
+    uint32_t position;
+    uint8_t high;
+    uint8_t low;
+
+    if (token_text_bytes == 6u && memcmp(token_text, "<0x", 3u) == 0 && token_text[5] == '>' &&
+        SparkTokenizerHexNibble((uint8_t)token_text[3], &high) != 0u &&
+        SparkTokenizerHexNibble((uint8_t)token_text[4], &low) != 0u)
+    {
+        if (*text_bytes_inout + 1u >= text_capacity)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        text[(*text_bytes_inout)++] = (char)((high << 4) | low);
+        return SPARK_STATUS_OK;
+    }
+    position = 0u;
+    while (position < token_text_bytes)
+    {
+        if (*text_bytes_inout + 1u >= text_capacity)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        if (position + SPARK_TOKENIZER_METASPACE_BYTES <= token_text_bytes &&
+            memcmp(token_text + position, SPARK_TOKENIZER_METASPACE_TEXT, SPARK_TOKENIZER_METASPACE_BYTES) == 0)
+        {
+            text[(*text_bytes_inout)++] = ' ';
+            position += SPARK_TOKENIZER_METASPACE_BYTES;
+            continue;
+        }
+        text[(*text_bytes_inout)++] = token_text[position++];
+    }
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkTokenizerDecodeTokenIds(
     const SparkTokenizer *tokenizer,
     const uint32_t *token_ids,
@@ -3597,12 +3805,9 @@ SparkStatus SparkTokenizerDecodeTokenIds(
         }
         token_text = tokenizer->token_text_by_id[token_id];
         token_text_bytes = tokenizer->token_text_bytes_by_id[token_id];
-        status = SparkTokenizerDecodeOneTokenText(
-            token_text,
-            token_text_bytes,
-            text,
-            text_capacity,
-            &text_bytes);
+        status = tokenizer->model_kind == SPARK_TOKENIZER_BPE_MODEL_KIND_METASPACE
+            ? SparkTokenizerDecodeMetaspaceTokenText(token_text, token_text_bytes, text, text_capacity, &text_bytes)
+            : SparkTokenizerDecodeOneTokenText(token_text, token_text_bytes, text, text_capacity, &text_bytes);
         if (status != SPARK_STATUS_OK)
         {
             return status;
