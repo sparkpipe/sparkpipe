@@ -142,8 +142,18 @@ Measured on sparkf, with production GLM resident, non-speculative, B1, greedy:
 | code | 16 / 16 | 71 | 79.7 s |
 | science | 16 / 16 | 52 | 55.2 s |
 
-Layer-anchor stream error against the reference is 2e-3 at layers 0/1. It grows to
-1.5e-2 to 5e-2 at layer 47, and to 0.39 at capital position 0, layer 47. The growth
-tracks near-tie route flips: about 0.5 percent of the top-8 decisions differ, and those
-are the demand loads. Tighten this before relying on the 2 percent band of
-`docs/T1_REFERENCE_COMPARE.md` for layer 47.
+Numerics (capital prompt, `--teacher-forced` feeds every layer the reference's input
+stream, and route decisions are compared with the fixture):
+
+- Teacher-forced, every layer matches the reference to 1e-3 to 5e-3 relative L2 at
+  positions 1-5. Only 3 of 235 top-8 sets differ, each by one near-tie expert (8th vs
+  9th choice margin 5e-6 to 2e-4). The GPU layers are faithful.
+- Free-running, 122 of 940 sets differ by one expert (margins 1e-5 to 2e-2) and the
+  layer-47 error grows to 1.5e-2 to 5e-2. The tokens still agree 16/16.
+- Position 0 is the massive-activation token. Its relative error is 3e-5 on layers
+  17-40 and 7e-2 on the full-attention layer 41 even when teacher-forced. That is
+  cancellation of the huge dims, not a layout error. The free-running 0.39 at
+  position 0 layer 47 comes from this.
+
+The 2 percent layer-47 band of `docs/T1_REFERENCE_COMPARE.md` therefore needs either
+teacher-forced comparison or a route-aware band for this family.

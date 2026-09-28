@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <vector>
 
 #include "inference/kernels/skinny.cuh"
@@ -343,6 +344,9 @@ static void M26Dense(uint32_t index, M26Layer *layer, M26Buffers *b)
 	M26AddKernel<<<(M26_HIDDEN + 255u) / 256u,256u>>>(b->down,b->stream,M26_HIDDEN);
 }
 
+static float m26_margin;
+static uint32_t m26_route_checked, m26_route_flips;
+
 static void M26Route(uint32_t index, M26Layer *layer, const float *logits, uint32_t *ids, uint32_t *slots, float *weights)
 {
 	float scores[M26_EXPERTS], total = 0.0f;
@@ -376,6 +380,38 @@ static void M26Route(uint32_t index, M26Layer *layer, const float *logits, uint3
 	}
 	for (k = 0u; k < M26_TOP_K; k++)
 		weights[k] /= total + SPARK_MIMO26_MODEL_ROUTER_NORM_EPSILON;
+	best = M26_EXPERTS;
+	for (e = 0u; e < M26_EXPERTS; e++)
+		if ( !used[e] && (best == M26_EXPERTS || scores[e] + layer->bias[e] > scores[best] + layer->bias[best]) )
+			best = e;
+	m26_margin = scores[ids[M26_TOP_K - 1u]] + layer->bias[ids[M26_TOP_K - 1u]] - scores[best] - layer->bias[best];
+}
+
+static void M26CompareRoute(uint32_t position, uint32_t layer, const uint32_t *ids)
+{
+	char path[1024];
+	int32_t want[M26_TOP_K];
+	uint32_t k, j, shared = 0u;
+	FILE *file;
+	snprintf(path,sizeof(path),"%s/pos%04u_layer%04u_route_ids.i32",m26_directory,position,layer);
+	file = fopen(path,"rb");
+	if ( file == 0 )
+		return;
+	if ( fread(want,4u,M26_TOP_K,file) != M26_TOP_K )
+	{
+		fprintf(stderr,"FAIL %s is short\n",path);
+		exit(1);
+	}
+	fclose(file);
+	for (k = 0u; k < M26_TOP_K; k++)
+		for (j = 0u; j < M26_TOP_K; j++)
+			shared += ids[k] == (uint32_t)want[j] ? 1u : 0u;
+	m26_route_checked++;
+	if ( shared != M26_TOP_K )
+	{
+		m26_route_flips++;
+		printf("route-flip position %u layer %u shared %u/8 gpu_margin_8th_vs_9th %.3e\n",position,layer,shared,m26_margin);
+	}
 }
 
 static void M26Moe(uint32_t index, M26Layer *layer, M26Buffers *b, uint32_t *ids)
@@ -443,6 +479,13 @@ static uint32_t M26Head(M26Buffers *b, float *score)
 	return(best);
 }
 
+static uint32_t M26HasStream(uint32_t position, uint32_t layer)
+{
+	char path[1024];
+	snprintf(path,sizeof(path),"%s/pos%04u_layer%04u_streams.bf16",m26_directory,position,layer);
+	return(access(path,R_OK) == 0 ? 1u : 0u);
+}
+
 static double M26StreamError(M26Buffers *b, uint32_t position, uint32_t layer)
 {
 	char name[128];
@@ -459,6 +502,14 @@ static double M26StreamError(M26Buffers *b, uint32_t position, uint32_t layer)
 		norm += want * want;
 	}
 	return(sqrt(error / norm));
+}
+
+static void M26LoadStream(M26Buffers *b, uint32_t position, uint32_t layer)
+{
+	char name[128];
+	snprintf(name,sizeof(name),"pos%04u_layer%04u_streams.bf16",position,layer);
+	std::vector<uint8_t> raw = M26Read(name,M26_HIDDEN * 2u);
+	M26Check(cudaMemcpy(b->stream,raw.data(),M26_HIDDEN * 2u,cudaMemcpyHostToDevice),"teacher stream");
 }
 
 static void M26Embed(M26Buffers *b, uint32_t token)
@@ -480,15 +531,15 @@ static void M26Embed(M26Buffers *b, uint32_t token)
 int main(int argc, char **argv)
 {
 	static M26Layer layers[M26_LAYERS];
-	static const uint32_t anchors[4] = {0u,1u,5u,47u};
 	M26Buffers b;
-	uint32_t prompt_count, budget, total, position, layer, a, token, ids[M26_TOP_K], mismatches = 0u, demand = 0u;
+	uint32_t prompt_count, budget, total, position, layer, token, ids[M26_TOP_K], mismatches = 0u, demand = 0u;
 	float score;
 	double error, worst = 0.0;
 	LmKvAccessError access;
-	if ( argc != 2 )
+	uint32_t teacher = argc == 3 && strcmp(argv[2],"--teacher-forced") == 0 ? 1u : 0u;
+	if ( argc != 2 && teacher == 0u )
 	{
-		fprintf(stderr,"usage: %s <model-input-dir>\n",argv[0]);
+		fprintf(stderr,"usage: %s <model-input-dir> [--teacher-forced]\n",argv[0]);
 		return(2);
 	}
 	m26_directory = argv[1];
@@ -514,19 +565,30 @@ int main(int argc, char **argv)
 		M26Check(cudaMemcpy(b.context,&context,4u,cudaMemcpyHostToDevice),"context");
 		for (layer = 0u; layer < M26_LAYERS; layer++)
 		{
+			if ( teacher != 0u && layer != 0u )
+			{
+				if ( !M26HasStream(position,layer - 1u) )
+				{
+					fprintf(stderr,"FAIL --teacher-forced needs the reference stream of every layer (position %u layer %u missing)\n",position,layer - 1u);
+					return(2);
+				}
+				M26LoadStream(&b,position,layer - 1u);
+			}
 			M26Attention(layer,&layers[layer],&b,position);
 			if ( layers[layer].moe )
+			{
 				M26Moe(layer,&layers[layer],&b,ids);
+				M26CompareRoute(position,layer,ids);
+			}
 			else
 				M26Dense(layer,&layers[layer],&b);
 			M26Check(cudaDeviceSynchronize(),"layer");
-			for (a = 0u; a < 4u; a++)
-				if ( anchors[a] == layer )
-				{
-					error = M26StreamError(&b,position,layer);
-					worst = error > worst ? error : worst;
-					printf("position %u layer %u stream_rel_l2 %.3e\n",position,layer,error);
-				}
+			if ( M26HasStream(position,layer) )
+			{
+				error = M26StreamError(&b,position,layer);
+				worst = error > worst ? error : worst;
+				printf("position %u layer %u stream_rel_l2 %.3e\n",position,layer,error);
+			}
 		}
 		token = M26Head(&b,&score);
 		if ( position + 1u >= prompt_count )
@@ -539,7 +601,7 @@ int main(int argc, char **argv)
 	M26Check(cudaMemcpy(&access,b.error,sizeof(access),cudaMemcpyDeviceToHost),"kv error");
 	for (layer = 0u; layer < M26_LAYERS; layer++)
 		demand += layers[layer].demand;
-	printf("model summary tokens=%zu mismatches=%u worst_anchor_stream_rel_l2=%.3e kv_error=%u demand_loaded_experts=%u\n",generated.size(),mismatches,worst,access.error_code,demand);
+	printf("model summary tokens=%zu mismatches=%u worst_anchor_stream_rel_l2=%.3e kv_error=%u demand_loaded_experts=%u route_sets_differing=%u/%u\n",generated.size(),mismatches,worst,access.error_code,demand,m26_route_flips,m26_route_checked);
 	if ( mismatches != 0u || access.error_code != 0u )
 	{
 		fprintf(stderr,"FAIL greedy tokens differ from the CPU reference\n");

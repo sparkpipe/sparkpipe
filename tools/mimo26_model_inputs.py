@@ -66,6 +66,8 @@ def main():
     for key in sorted(arrays):
         if key.endswith("_streams"):
             put(key + ".bf16", arrays[key])
+        if key.endswith("_route_ids"):
+            put(key + ".i32", np.asarray(arrays[key], dtype=np.int32))
     summary = {"layers": layers, "experts": [len(u) for u in used]}
     if args.weights_from is not None:
         source = os.path.abspath(args.weights_from)
