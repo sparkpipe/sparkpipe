@@ -337,7 +337,8 @@ static void SparkGlm5NextBindLayer(
 		buffers->shard_query_stride = SparkGlm5NextKvShardQueryStride(wave->row_count,wave->tp_degree);
 		buffers->shard_partials_f32 = slot->kv_shard_partials_f32;
 		buffers->shard_partials_received_f32 = slot->kv_shard_partials_received_f32;
-		buffers->shard_partial_stride = SparkGlm5NextKvShardPartialStride(wave->row_count,wave->tp_degree);
+		buffers->shard_row_capacity = wave->execution_row_capacity != 0u ? wave->execution_row_capacity : wave->resident_sequence_capacity;
+		buffers->shard_partial_stride = SparkGlm5NextKvShardPartialStride(wave->row_count,wave->tp_degree,buffers->shard_row_capacity);
 	}
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;

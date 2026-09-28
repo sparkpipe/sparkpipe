@@ -1116,14 +1116,15 @@ The harness takes `--index-cp 16` and adds the index read to `step_gb`.
 It simulates the gather with device copies, so its timing covers the
 compute side only.
 
-## Phase 3B: sharding the latent KV itself (kernels implemented, not serving)
+## Phase 3B: sharding the latent KV itself (wired in glm5_next, not yet fleet-checked)
 
 Owner requirement (2026-09-28): at TP16 each node holds 1/16 of the KV
 cache. Replicating the latent KV or the indexer keys violates it. The
-shared kernels that store and attend over 1/16 per rank are done and
-tested (#1334). The transport is a draft that does not yet pass its probe
-(#1335). glm5_next and k3 do not use either yet, so production still
-replicates.
+shared kernels that store and attend over 1/16 per rank are in #1334. The
+all-to-all transport is #1335. glm5_next uses both behind the `kv_shard`
+stage-config member (the wiring PR, stacked on #1335). k3 does not use
+them yet. Production still replicates until the fleet check passes and the
+deployed stage configs set `kv_shard`.
 
 ### Layout
 
@@ -1183,19 +1184,71 @@ shape is:
   (GPU-initiated RDMA, Phase 4). Until those exist, the sharded path is
   still exact, but it pays the round counts above.
 
+### glm5_next wiring
+
+| Piece | Where |
+| --- | --- |
+| Config | stage-config member `kv_shard` (0/1) sets `SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD` |
+| Init | refuses `tp >= 16` without `kv_shard` (`GLM-KV-SHARD-REQUIRED`); refuses `kv_shard` without `dsa_index_context_parallel` or when the exchange does not fit (`GLM-KV-SHARD-REFUSED`, `SparkGlm5NextKvShardFits`: TP8 and TP16) |
+| Pools | latent and index layer strides are `physical_pages × page_bytes / tp`; the arena block uses `head_dim / tp` and `index_block / tp`, so the page store, JIT-KV snapshot and `SparkGlm5NextPageCopy` move each rank's own slice |
+| Page identity | unchanged: same page table, page ids and 64-token pages on every rank. The cache layout fingerprint gains `-shard<tp>r<rank>`, so a replicated or foreign-rank page is never restored into a sharded rank |
+| Indexer | keys stored at grain 4 (`LmKvShardStoreKernel` on `Glm5NextIndexKv`); index CP ownership is now per pool (`pool % tp`, `SparkGlm5NextIndexCpShard`), so each rank scores exactly the pools whose keys it holds |
+| Latent | stored at grain 1; queries all-gathered on the main collective; partials (`LmLatentShardPartialKernel` over the rank's slice) sent to head owners with the SCATTER all-to-all; merged in rank order (`LmLatentShardMergeKernel`) before the value and output projections |
+| Chain | eager stages `SHARD_QUERY` and `SHARD_EXCHANGE` after the attention (or index select) launch; the linear and graph walk runs query gather, partial, all-to-all, merge in the same order |
+| Exchange layout | query: `ceil(rows × heads × 512 / 4096)` sequences of the main collective. Partials: 4096-element sequences of the main collective unless that needs more than `execution_row_capacity` sequences (only at full row capacity), then 16384-element sequences of the HC-wide collective. Both layouts move the same bits |
+| MTP | the MTP draft layer keeps its replicated one-page KV (`draft.kv_shard = 0`) |
+
+### Tests
+
+- `tests/test_glm5_next_kv_shard.cu` (`make test-glm5-next-kv-shard`, sm_121,
+  one GPU, all ranks simulated, collectives emulated with the exact
+  collective layouts). It binds each rank through the module's own
+  `SparkGlm5NextBindLayer` and runs the module's store, index pool scoring,
+  shard partial and merge functions. On sparkf, 6/6 cases pass: TP16 B1 at
+  1000 (narrow exchange) and 5000 (wide, selected list), TP16 B8 mixed
+  contexts up to 8191 (wide and narrow), TP8 B2 at 3333, and TP16 B64 at
+  1024. Checks per case:
+  - per-rank latent and index pool bytes are total / tp;
+  - every owned slot holds the replicated bytes;
+  - index pool scores gathered from 16 ranks equal the replicated scores
+    bit for bit;
+  - the merged attention latent equals the replicated-storage oracle
+    (`LmKvShardReplicaView`) bit for bit;
+  - a second run gives identical bits;
+  - no KV access error.
+- `tests/test_glm5_next_stage_context.py` (host harness of the real module
+  chain code): the linear/graph walk emits
+  `A k V a W` (attention, query gather, partial, all-to-all, merge) for a
+  sharded DSA layer and `S g T k V a W` with index CP; a failed partial fails
+  the chain; the eager chain steps through `SHARD_QUERY` and
+  `SHARD_EXCHANGE`; the narrow and wide exchanges use the main and HC
+  collectives with the right sequence counts and buffers; TP8 and TP16
+  pools are 1/tp; TP16 init is refused without `kv_shard` and without
+  index CP. `--sanitize` passes.
+- `tests/test_glm5_next_index_cp_math.c`, `tests/test_glm5_next_index_cp.cu`
+  and `tests/test_glm5_next_index_kv.py` pass with the per-pool ownership.
+  The CUDA index-CP case at 20,000 context with 3 rows at degree 2 was
+  already failing its own `gather fits` requirement at the stack base; it
+  now uses 16,000.
+
 ### B1 budget
 
 B1 may cost at most 3% more per token: 0.75 ms on the 25.2 ms engine B1.
 
-The estimate:
+The estimate for the wired path at B1 (not a measurement; the fleet check
+in the lead window replaces it):
 
-- **Extra rounds.** 2 per DSA layer (1 above 2,048 tokens) × 11 layers ×
-  about 40 µs (the per-round floor in "Per-token budget" below). That is
-  +0.9 ms, or +0.45 ms above 2,048 tokens.
-- **Attention compute.** It drops from 72-83 µs to 42-45 µs per layer:
-  -0.35 ms.
-- **Net.** About +0.1 to +0.55 ms, inside the budget. This is an estimate
-  until the fleet run below.
+- **Extra rounds.** Per DSA layer, 1 query all-gather round (8 KiB per
+  rank) and 1 SCATTER all-to-all round (16 KiB per peer in the narrow
+  layout; the wide layout would need 2). 11 layers × 2 rounds × about
+  40 µs (the per-round floor in "Per-token budget" below) = +0.88 ms. The
+  query does not yet ride in the index-CP all-gather above 2,048 tokens.
+- **Attention compute.** #1334 measured 44.5 µs (1k) and 41.5 µs (8k) for
+  sharded partial + merge against 82.6 and 71.9 µs for main's replicated
+  kernel, per layer under `perf_window.py`: about -0.35 ms.
+- **Net.** About +0.5 ms per token (+2%), inside the budget. Folding the
+  query into the index-CP gather above 2,048 tokens would save another
+  11 rounds (about 0.45 ms).
 
 ### Measured (sparkf GB10, `tests/cuda/kv_shard_cuda.cu` under `perf_window.py`, shared GPU)
 
@@ -1240,15 +1293,14 @@ k3 shape) and at degrees 4 and 8 pass too. The CPU-shim variant is
     With `CUDA_DEVICE_MAX_CONNECTIONS=32`, the setting the qualification
     receipt used, main passes all 87 cases on sparkf. The probe now refuses
     to run with fewer than 16 connections.
-- **glm5_next wiring.**
-  - Per-rank pools of `page_bytes / tp` for the latent and index caches
-    and for the KV arena block.
-  - `SparkGlm5NextPageCopy` per rank.
-  - The sharded store.
-  - Query gather, partial exchange and merge as chain stages in the
-    eager, linear and graph paths.
-  - The indexer on grain 4.
-  - Module init refuses TP16 without sharding.
+- **Deployment.** The TP16 stage configs must set `kv_shard: 1` and
+  `dsa_index_context_parallel: 1`, or this firmware refuses to start.
+- **Numerics requalification.** The sharded attention reassociates the
+  softmax sum (at most 4.9e-4 against main's kernel, #1334), so COMPSEC-17
+  and MTP parity must be requalified on the fleet.
+- **Query folding.** Carry the latent query in the index-CP all-gather
+  above 2,048 tokens.
+- **MTP layer.** Still replicated (one page per slot).
 - **k3 wiring.** The same pieces at rope 64 (`K3_MLA_*`), on k3's own
   collective.
 - **Fleet check.** B1 and B64 tok/s and KV bytes per rank against

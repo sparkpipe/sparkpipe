@@ -1037,8 +1037,8 @@ static SparkStatus SparkGlm5NextAllocateSlotMlp(
 	if ( status == SPARK_STATUS_OK && state->index_cp != 0u ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS,sizeof(float),(void **)&slot->index_local_scores_f32);
 	if ( status == SPARK_STATUS_OK && state->index_cp != 0u ) status = SparkGlm5NextAllocateBytes(state,rows * state->tp_degree,SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS,sizeof(float),(void **)&slot->index_gathered_scores_f32);
 	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,state->tp_degree,SparkGlm5NextKvShardQueryStride((uint32_t)rows,state->tp_degree),sizeof(uint16_t),(void **)&slot->kv_shard_query_gathered_bf16);
-	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,state->tp_degree,SparkGlm5NextKvShardPartialStride((uint32_t)rows,state->tp_degree),sizeof(float),(void **)&slot->kv_shard_partials_f32);
-	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,state->tp_degree,SparkGlm5NextKvShardPartialStride((uint32_t)rows,state->tp_degree),sizeof(float),(void **)&slot->kv_shard_partials_received_f32);
+	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,state->tp_degree,SparkGlm5NextKvShardPartialStrideCapacity(state->tp_degree,(uint32_t)rows),sizeof(float),(void **)&slot->kv_shard_partials_f32);
+	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,state->tp_degree,SparkGlm5NextKvShardPartialStrideCapacity(state->tp_degree,(uint32_t)rows),sizeof(float),(void **)&slot->kv_shard_partials_received_f32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT / state->tp_degree),SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS,sizeof(float),(void **)&slot->attention_split_partials_f32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH,sizeof(uint32_t),(void **)&slot->selected_positions);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_expert);
@@ -2294,24 +2294,25 @@ static SparkStatus SparkGlm5NextModuleKvShardExchange(SparkGlm5NextTpChain *chai
 	SparkGlm5NextModuleState *state;
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkTpDeviceCollective *collective;
-	uint32_t *op_index;
+	uint32_t *op_index,wide;
 	uint64_t ordinal;
 	SparkStatus status;
 	state = chain->state;
 	if ( state->tp_collective_disabled != 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	if ( state->kv_shard == 0u || state->tp_device_collective_initialized == 0u || (exchange != 0u && state->tp_device_collective_hc_initialized == 0u) )
+	wide = exchange != 0u ? SparkGlm5NextKvShardPartialWide(chain->wave_rows,state->tp_degree,state->execution_row_capacity) : 0u;
+	if ( state->kv_shard == 0u || state->tp_device_collective_initialized == 0u || (wide != 0u && state->tp_device_collective_hc_initialized == 0u) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	collective = exchange != 0u ? &state->tp_device_collective_hc : &state->tp_device_collective;
-	op_index = exchange != 0u ? &chain->tp_hc_op_index : &chain->tp_op_index;
-	status = SparkGlm5NextChainOrdinal(chain,exchange,*op_index,&ordinal);
+	collective = wide != 0u ? &state->tp_device_collective_hc : &state->tp_device_collective;
+	op_index = wide != 0u ? &chain->tp_hc_op_index : &chain->tp_op_index;
+	status = SparkGlm5NextChainOrdinal(chain,wide,*op_index,&ordinal);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = chain->slot_index;
-	submission.active_sequence_count = exchange != 0u ? SparkGlm5NextKvShardPartialSequences(chain->wave_rows,state->tp_degree) : SparkGlm5NextKvShardQuerySequences(chain->wave_rows,state->tp_degree);
+	submission.active_sequence_count = exchange != 0u ? SparkGlm5NextKvShardPartialSequences(chain->wave_rows,state->tp_degree,state->execution_row_capacity) : SparkGlm5NextKvShardQuerySequences(chain->wave_rows,state->tp_degree);
 	submission.logical_sequence_count = chain->batch->active_sequence_count;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;

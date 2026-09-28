@@ -171,7 +171,7 @@ uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *col
 }
 
 static char WALK_TRACE[256];
-static uint32_t WALK_LENGTH,WALK_GATHER_LAYER,WALK_FAIL_CODE,WALK_DELAY_NS,WALK_SHARD_MASK,SHARD_QUERY_SEQUENCES,SHARD_PARTIAL_SEQUENCES;
+static uint32_t WALK_LENGTH,WALK_GATHER_LAYER,WALK_FAIL_CODE,WALK_DELAY_NS,WALK_SHARD_MASK,SHARD_QUERY_SEQUENCES,SHARD_PARTIAL_SEQUENCES,SHARD_WIDE;
 
 static int32_t walk_note(char code)
 {
@@ -257,7 +257,7 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 	assert(submission->cuda_stream == state.execution_stream && submission->logical_sequence_count == ENQUEUE_SEQUENCES);
 	assert(submission->active_sequence_count == (operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? SHARD_PARTIAL_SEQUENCES : shard_query != 0u ? SHARD_QUERY_SEQUENCES : ENQUEUE_ROWS));
 	if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
-		assert(collective == &state.tp_device_collective_hc && submission->local_device == state.slots[submission->slot_index].kv_shard_partials_f32 && submission->full_device == state.slots[submission->slot_index].kv_shard_partials_received_f32);
+		assert(collective == (SHARD_WIDE != 0u ? &state.tp_device_collective_hc : &state.tp_device_collective) && submission->local_device == state.slots[submission->slot_index].kv_shard_partials_f32 && submission->full_device == state.slots[submission->slot_index].kv_shard_partials_received_f32);
 	if ( shard_query != 0u )
 		assert(collective == &state.tp_device_collective && submission->full_device == state.slots[submission->slot_index].kv_shard_query_gathered_bf16);
 	(void)walk_note(submission->completion_function != 0 ? (operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? 'e' : shard_query != 0u ? 'q' : 'c') : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? 'a' : shard_query != 0u ? 'k' : collective == &state.tp_device_collective_hc ? 'h' : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER ? 'g' : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ? 'x' : 'r');
@@ -2492,8 +2492,9 @@ static void kv_shard_slot_fixture(SparkGlm5NextExecutionSlot *slot)
 	slot->kv_shard_partials_f32 = SHARD_PARTIALS;
 	slot->kv_shard_partials_received_f32 = SHARD_RECEIVED;
 	SHARD_QUERY_SEQUENCES = SparkGlm5NextKvShardQuerySequences(2u,16u);
-	SHARD_PARTIAL_SEQUENCES = SparkGlm5NextKvShardPartialSequences(2u,16u);
-	assert(SHARD_QUERY_SEQUENCES == 1u && SHARD_PARTIAL_SEQUENCES == 1u);
+	SHARD_WIDE = SparkGlm5NextKvShardPartialWide(2u,16u,state.execution_row_capacity);
+	SHARD_PARTIAL_SEQUENCES = SparkGlm5NextKvShardPartialSequences(2u,16u,state.execution_row_capacity);
+	assert(SHARD_QUERY_SEQUENCES == 1u && SHARD_PARTIAL_SEQUENCES == (SHARD_WIDE != 0u ? 1u : 3u));
 }
 
 static void check_kv_shard_walk(void)
@@ -2507,7 +2508,16 @@ static void check_kv_shard_walk(void)
 	kv_shard_slot_fixture(&state.slots[0]);
 	WALK_SHARD_MASK = 3u;
 	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
-	assert(strcmp(WALK_TRACE,SHARD_WALK) == 0 && async->linear == 1u && async->completion.status == SPARK_STATUS_OK);
+	assert(SHARD_WIDE == 0u && strcmp(WALK_TRACE,SHARD_WALK) == 0 && async->linear == 1u && async->completion.status == SPARK_STATUS_OK);
+	linear_chain_teardown();
+	chain = linear_chain_fixture();
+	async = &state.completions[0];
+	state.kv_shard = 1u;
+	state.execution_row_capacity = 2u;
+	kv_shard_slot_fixture(&state.slots[0]);
+	WALK_SHARD_MASK = 3u;
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(SHARD_WIDE == 1u && strcmp(WALK_TRACE,SHARD_WALK) == 0 && async->linear == 1u && async->completion.status == SPARK_STATUS_OK);
 	linear_chain_teardown();
 	chain = linear_chain_fixture();
 	async = &state.completions[0];

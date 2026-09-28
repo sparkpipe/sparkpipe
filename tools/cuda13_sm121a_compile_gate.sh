@@ -176,6 +176,7 @@ glm5_next_gpu_tests=(
 	build/test_glm5_next_head_offset
 	build/test_glm5_next_hc_mix
 	build/test_glm5_next_index_cp
+	build/test_glm5_next_kv_shard
 	build/test_glm5_next_rows_kernels
 )
 if ! make -C "${repository_root}" -j2 "${glm5_next_gpu_tests[@]}" \
