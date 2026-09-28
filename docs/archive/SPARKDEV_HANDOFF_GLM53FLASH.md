@@ -1,5 +1,21 @@
 # SPARKDEV HANDOFF — glm5.3 flash TP16 fleet: serving WORKS, now optimize
 
+> **Historical, archived 2026-09-28. Do not follow its procedures.**
+>
+> - §5 and §6.5 publish a lane or the `763ae03` build by hand. That build
+>   predates the graph path merge (`93f1892`), expert pinning for graphs
+>   (`78c2c21`), the multi-row prefill fix (#1212, `32c0ba7`) and every later
+>   fix, and the hand-written MANIFEST bypasses the release channel. Publish
+>   from merged main with [FLEET_RELEASE_RUNBOOK.md](../FLEET_RELEASE_RUNBOOK.md).
+> - §2 and §7.1 describe the graph path as opt-in with a default. There is no
+>   default: the module fails with `INVALID_ARGUMENT` unless
+>   `SPARK_GLM5_NEXT_GRAPH_PATH` is `0` or `1` (`5c4873b`), and graphs need
+>   every expert pinned (`78c2c21`).
+> - §6's kill-on-sight and fleet-wide pack deletion authorizations are
+>   withdrawn; they conflict with invariant I32.
+> - Performance, prefill settings and the API build location are stale. See
+>   [GLM5_NEXT_ROOFLINE.md](../GLM5_NEXT_ROOFLINE.md).
+
 **Date:** 2026-09-16 · **Author:** kimi (sparkdev takeover) · **Branch:** `lane/glm53-takeover` · **PR:** #1027
 
 ## 1. Where things stand

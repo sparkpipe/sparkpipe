@@ -138,8 +138,8 @@ includes arbitrary continuous batching, complete JIT/prefix state, lifecycle
 and numerical correctness. Performance compares matched precision/traffic,
 context, batch occupancy, speculative mode and hardware count. Target TP16
 at 3.5x qualified TP4 throughput and filled TP4xPP4 at approximately 4x TP4
-capacity. See [driver acceptance](DRIVER_ACCEPTANCE.md) for common-code
-boundaries and [measurement gates](GLM_PERFORMANCE_GATES.md) for receipts.
+capacity. See [driver acceptance](../DRIVER_ACCEPTANCE.md) for common-code
+boundaries and [measurement gates](../GLM_PERFORMANCE_GATES.md) for receipts.
 
 For every optimization record: trigger/profile, underlying error or cost,
 shared-code placement, before/after source and build identities, correctness
