@@ -585,6 +585,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_pro_tp4pp4_shared_lane.py \
 	tests/test_dsv4_pro_weightd_warm_identity.py \
 	tests/test_gemma4_adapter_selfcontained.py \
+	tests/test_gemma4_admission.py \
 	tests/test_gemma4_layer_scalar_coverage.py \
 	tests/test_gemma4_verify_existing.py \
 	tests/test_gemma4_workspace.py \

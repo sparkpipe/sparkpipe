@@ -45,7 +45,7 @@
  },
  "prefix_cache_ab_probe": {
   "file": "prefix_cache_ab_probe_11b1d2a.jsonl",
-  "tool": "cacheprobe.py",
+  "tool": "tools/gemma4/lane4_serve/cacheprobe.py",
   "api": "23e4982",
   "result": "3 COMPSEC prompts x (cold nonce, warm, warm): cold arms (0 cached) coherent and on topic; warm arms (320-448 cached) degenerate and differ from each other between identical requests",
   "root_cause_per_e0ff52d": "the Gemma 4 adapter allocates blocks per slot and returns a released slot's blocks to its free list without publishing them; the batch engine still applied prefix hits, so a hit attended over another request's KV. e0ff52d applies an empty lookup unless the adapter declares SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH"
@@ -55,7 +55,7 @@
    "baseline": "perf_baseline_97a3a23.jsonl",
    "current": "perf_11b1d2a.jsonl"
   },
-  "tool": "g4bench.py",
+  "tool": "tools/gemma4/lane4_serve/g4bench.py",
   "api": "23e4982 (bench prompts carry a nonce, cached 0, so e0ff52d does not change these numbers)",
   "B1_decode_128_tok_s": {
    "97a3a23": 7.313,
