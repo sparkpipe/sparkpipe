@@ -30,6 +30,8 @@ static uint32_t test_checks;
 
 
 extern uint32_t cuda_stub_mesh_publish_calls;
+extern uint32_t cuda_stub_mesh_tree_calls;
+extern uint64_t cuda_stub_mesh_tree_elements;
 extern uint32_t cuda_stub_mesh_publish_null_seq_cell;
 extern uint32_t cuda_stub_mesh_publish_null_epoch_cell;
 
@@ -505,6 +507,49 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     SparkTpDeviceCollectiveDestroy(&collective);
 }
 
+static void TestSpinSingleSequenceWave(SparkTpDeviceCollectiveConfig config,void *mesh)
+{
+    static const uint32_t rows[4] = {1u,8u,9u,128u};
+    void *local = 0,*output = 0;
+    uint32_t index;
+    config.local_hidden_dimension = 16384u;
+    config.operation_timeout_milli = 20u;
+    unsetenv("SPARK_TP_WAIT_MODE");
+    CHECK(cudaMalloc(&local,128u * 16384u * 2u) == cudaSuccess &&
+        cudaMalloc(&output,128u * 16384u * 2u) == cudaSuccess,"spin wave buffers");
+    for ( index = 0u; index < 4u; index++ )
+    {
+        SparkTpDeviceCollective collective = {0};
+        SparkTpDeviceCollectiveSubmission submission = {0};
+        uint32_t tree_calls = cuda_stub_mesh_tree_calls;
+        SparkStatus status;
+        CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,128u,16384u,0u,0) == SPARK_STATUS_OK,
+            "spin collective at the GLM hyper-connection width");
+        submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+        submission.descriptor_bytes = sizeof(submission);
+        submission.active_sequence_count = rows[index];
+        submission.logical_sequence_count = 1u;
+        submission.ordinal = 1u;
+        submission.local_device = local;
+        submission.full_device = output;
+        submission.cuda_stream = (void *)1;
+        submission.completion_function = TestComplete;
+        status = SparkTpDeviceCollectiveEnqueue(&collective,&submission,
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+        if ( rows[index] <= 8u )
+            CHECK(status == SPARK_STATUS_BUSY && cuda_stub_mesh_tree_calls == tree_calls,
+                "a single-sequence spin wave that fits one slot keeps the host round and waits for its absent peer");
+        else
+            CHECK(status == SPARK_STATUS_IO_ERROR && cuda_stub_mesh_tree_calls == tree_calls + 1u &&
+                cuda_stub_mesh_tree_elements == (uint64_t)rows[index] * 16384u,
+                "a single-sequence spin prefill wave larger than one slot runs as chunked device rounds");
+        SparkTpDeviceCollectiveDestroy(&collective);
+    }
+    cudaFree(local);
+    cudaFree(output);
+}
+
 static void TestDeferredSubmission(SparkTpDeviceCollectiveSubmission *submission,uint16_t *local,uint16_t *output)
 {
     memset(submission,0,sizeof(*submission));
@@ -802,6 +847,7 @@ int main(void)
 
 	SparkTpDeviceCollectiveDestroy(&collective);
 	TestHardwareDispatch(config,mesh_buffer);
+	TestSpinSingleSequenceWave(config,mesh_buffer);
 	TestDeferredRounds(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);
 	TestOwnedMesh(config);

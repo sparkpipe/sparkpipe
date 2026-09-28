@@ -2,19 +2,25 @@
 """glm5_next COMPSEC-17 quality gate (ds4_eval protocol, local endpoint).
 
 Fires the 17 COMPSEC cases (ids compsec-076..092 of
-qualification/ds4_eval/quality-fixtures-glm5.3-flash.json, pre-tokenized)
-at a live /v1/completions endpoint sequentially, temperature 0, and archives
-the run in the canonical ds4_eval format (REPORT.md + INTEGRITY.json +
-summary.json + cases.json + responses/*.json).
+qualification/ds4_eval/quality-fixtures-glm5.3-flash.json) at a live
+/v1/completions endpoint sequentially, temperature 0, and archives the run in
+the canonical ds4_eval format (INTEGRITY.json + summary.json + cases.json +
+responses/*.json).
 
-Grading rule (stated in the run's REPORT.md): the model's completion is
-trimmed; PASS iff the fixture `answer` string (e.g. "17-20", "3,13-15")
-occurs as a substring of the completion's first non-empty line. Raw text is
-preserved in every response file for independent regrading.
+Each case's pre-tokenized question is decoded to text and wrapped in the GLM
+chat template: [gMASK]<sop><|user|>\n{question}<|assistant|>\n followed by
+<think></think>\n (--thinking off) or <think> (--thinking on). The endpoint
+tokenizes the prompt, so the role markers become their special tokens.
+
+Grading is the canonical ds4_eval rule from
+qualification/ds4_eval/compare_runs.py: the answer is taken from the last
+"Answer:" line after any </think>, and a case passes iff its line set is a
+non-empty subset of the fixture's expected lines.
 
 usage:
-  glm5_next_compsec17.py --endpoint http://spark0:8433 \
+  glm5_next_compsec17.py --endpoint http://127.0.0.1:8433 --thinking off \
       --fixture qualification/ds4_eval/quality-fixtures-glm5.3-flash.json \
+      --tokenizer <runtime>/tokenizer/tokenizer.json \
       --out qualification/ds4_eval/runs/glm5-next-tp16-<date>
 """
 from __future__ import annotations
@@ -25,9 +31,16 @@ import json
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "qualification" / "ds4_eval"))
+from compare_runs import answer_matches, extract_answer
+
 COMPSEC_IDS = [f"compsec-{i:03d}" for i in range(76, 93)]
+GLM_USER_PREFIX = "[gMASK]<sop><|user|>\n"
+GLM_ASSISTANT_HEADER = "<|assistant|>\n"
+GLM_THINKING_OPEN = {"off": "<think></think>\n", "on": "<think>"}
 
 # GPT-2 style byte-level BPE reverse alphabet (the GLM tokenizer.json vocab
 # uses the same byte-unicode mapping).
@@ -67,10 +80,14 @@ def load_decoder(tokenizer_path: Path):
     return decode
 
 
-def call(endpoint: str, prompt_ids: list, max_tokens: int, temperature: float,
+def build_prompt(question: str, thinking: str) -> str:
+    return GLM_USER_PREFIX + question + GLM_ASSISTANT_HEADER + GLM_THINKING_OPEN[thinking]
+
+
+def call(endpoint: str, prompt: str, max_tokens: int, temperature: float,
          timeout: int = 600) -> dict:
     body = json.dumps({
-        "prompt_token_ids": prompt_ids,
+        "prompt": prompt,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }).encode()
@@ -84,9 +101,9 @@ def call(endpoint: str, prompt_ids: list, max_tokens: int, temperature: float,
 
 
 def grade(text: str, answer: str) -> tuple:
-    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-    passed = answer in first_line
-    return passed, first_line
+    case = {"source": "COMPSEC", "choices": [], "answer": answer}
+    extracted, _ = extract_answer(case, text, "")
+    return answer_matches(case, extracted), extracted
 
 
 def main() -> int:
@@ -96,7 +113,10 @@ def main() -> int:
     ap.add_argument("--tokenizer", required=True,
                     help="tokenizer.json (vocab used to decode token ids)")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--max-tokens", type=int, default=256)
+    ap.add_argument("--thinking", required=True, choices=sorted(GLM_THINKING_OPEN))
+    ap.add_argument("--max-tokens", type=int, default=512)
+    ap.add_argument("--pass-threshold", type=int, default=14)
+    ap.add_argument("--concurrency", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--timeout", type=int, default=600)
     args = ap.parse_args()
@@ -113,13 +133,19 @@ def main() -> int:
     out = Path(args.out)
     (out / "responses").mkdir(parents=True, exist_ok=True)
 
+    prompts = [build_prompt(decode(c["prompt_token_ids"]), args.thinking) for c in cases]
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
+        replies = list(pool.map(lambda p: call(args.endpoint, p, args.max_tokens,
+                                               args.temperature, args.timeout), prompts))
+    wall_s = time.monotonic() - started
+
     results = []
-    for i, c in enumerate(cases, 1):
-        r = call(args.endpoint, c["prompt_token_ids"], args.max_tokens,
-                 args.temperature, args.timeout)
+    for i, (c, prompt, r) in enumerate(zip(cases, prompts, replies), 1):
         payload = r["payload"]
         tokens = payload.get("tokens") or []
-        text = decode(tokens) if tokens else (payload.get("text") or "")
+        choices = payload.get("choices") or [{}]
+        text = choices[0].get("text") if choices[0].get("text") is not None else decode(tokens)
         passed, extracted = grade(text, c["answer"])
         rec = {
             "index": i,
@@ -130,6 +156,7 @@ def main() -> int:
             "extracted": extracted,
             "passed": passed,
             "elapsed_ms": round(r["elapsed_s"] * 1000, 1),
+            "output_sha256": hashlib.sha256(text.encode()).hexdigest(),
             "generated_token_count": len(tokens),
             "status": payload.get("status"),
         }
@@ -138,9 +165,9 @@ def main() -> int:
             "id": c["id"],
             "request": {
                 "endpoint": args.endpoint + "/v1/completions",
-                "prompt_token_count": len(c["prompt_token_ids"]),
-                "prompt_sha256": hashlib.sha256(
-                    json.dumps(c["prompt_token_ids"]).encode()).hexdigest(),
+                "fixture_prompt_token_count": len(c["prompt_token_ids"]),
+                "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                "thinking": args.thinking,
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
             },
@@ -162,10 +189,14 @@ def main() -> int:
         "endpoint": args.endpoint,
         "fixture": Path(args.fixture).name,
         "fixture_sha256": hashlib.sha256(Path(args.fixture).read_bytes()).hexdigest(),
+        "wall_s": round(wall_s, 2),
         "parameters": {"max_tokens": args.max_tokens,
-                       "temperature": args.temperature, "concurrency": 1},
-        "grading_rule": ("PASS iff the fixture answer string occurs in the "
-                         "completion's first non-empty line"),
+                       "temperature": args.temperature,
+                       "chat_template": "glm", "thinking": args.thinking,
+                       "concurrency": args.concurrency,
+                       "pass_threshold": args.pass_threshold},
+        "grading_rule": ("qualification/ds4_eval/compare_runs.py: last Answer: line after "
+                         "</think>; PASS iff its line set is a non-empty subset of the expected lines"),
         "completed": len(results),
         "passed": passed_n,
         "results": results,
@@ -200,7 +231,7 @@ def main() -> int:
 
     print(f"\nCOMPSEC-17 RESULT: {passed_n}/17 "
           f"({', '.join(r['id'] + ('+ok' if r['passed'] else '+X') for r in results if not r['passed']) or 'all pass'})")
-    return 0 if passed_n >= 15 else 1
+    return 0 if passed_n >= args.pass_threshold else 1
 
 
 if __name__ == "__main__":

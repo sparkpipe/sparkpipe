@@ -18,6 +18,16 @@ comparable all-time record because the recovered project runs below used
 different fixture revisions, inference protocols, quantizations, and execution
 topologies.
 
+## SparkPipe-served COMPSEC-17 runs
+
+These runs cover only the 17 COMPSEC cases, served by SparkPipe on the
+16-Spark fleet. They are quality gates for a driver build, not full 92-case
+results.
+
+| Model | Execution | COMPSEC | Archive |
+|---|---|---:|---|
+| GLM 5.3 Flash FP8 | SparkPipe TP16, engines from `dd3526b`, GLM chat template, thinking off, temperature 0, 512-token limit | **14/17** | [`runs/glm5-next-tp16-20260928-dd3526b-thinkoff`](runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md) |
+
 ## Locally audited DeepSeek API run
 
 | Model | Execution | GPQA | SuperGPQA | AIME2025 | COMPSEC | Overall | Receipt |
