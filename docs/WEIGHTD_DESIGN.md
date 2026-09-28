@@ -315,6 +315,21 @@ written only if the pack's mtime and ctime are at least
 just-written pack is verified on every load until it has settled; the loader
 logs `receipt not written status=busy`.
 
+Trust boundary. The seal is an unkeyed checksum: it catches a torn or
+hand-edited receipt, not a forged one. Anyone who can create files as the
+loading user or root can mint a receipt, and could equally rewrite the pack,
+so receipts add no trust beyond that uid. A receipt vouches for the file's
+metadata, not its bytes. Changes that bypass the filesystem's ctime are not
+seen: media corruption after verification, raw block-device or debugfs
+writes, or root moving the clock and restamping. Run
+`weightd_receipt verify <pack>` to re-hash a pack when its bytes are in
+doubt. A writer that already holds a shared writable mapping is covered by
+the `O_DIRECT` verification pass: it writes dirty pages back and
+write-protects them, so the writer's next store updates ctime. The receipt
+also binds `st_dev`. On a node where device numbers can change across a
+reboot (several NVMe drives probed in varying order, or device-mapper), the
+first load after the reboot re-verifies once.
+
 Every cold path reads the receipt:
 
 - The eager attach (`SparkWeightdServerAttachCold`) streams the pack into the
