@@ -1,5 +1,23 @@
 # Speculation Kernel Contract Cards
 
+> **Archived 2026-09-28. History, not authority.** Stale on four counts:
+>
+> - The DSV4 Pro DSpark draft geometry that §0 and §4 wait on is pinned:
+>   `SPARK_DSV4_PRO_DSPARK_*` in
+>   `model-families/dsv4/include/sparkpipe/spark_dsv4_pro_model.h` sets 128
+>   attention heads, 1 KV head, head dimension 512 and intermediate 3072.
+> - A speculation path has been measured: qwen38_27b DFlash2 decodes at
+>   24.5 tok/s with speculation and 7.7 tok/s without, at O512
+>   (`docs/QWEN38_DFLASH2_RUNBOOK.md`).
+> - The K3 TILE_K=32 integration in §6 has landed (`LmGemmLaunchTileK` in
+>   `inference/llms/kimi_k3/layer.cuh`).
+> - The `.agents/cuda-kernels/` clone no longer exists, and commit 4187f90
+>   removed the code comments these cards quote, so the `file:line`
+>   citations no longer resolve.
+>
+> For new speculation work, start from `include/sparkpipe/spark_speculation_*.h`
+> and `src/spark_speculation_*.c`, and cite symbols rather than line numbers.
+
 Registry of every speculation kernel in the tree, each as a filled **Part-1
 contract card** from `docs/KERNEL_PLAYBOOK.md`. Model agents edit these cards
 when they request kernel work; the CUDA-KERNELS agent implements against them

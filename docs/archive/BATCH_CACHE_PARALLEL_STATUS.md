@@ -1,10 +1,30 @@
 # Batch, cache and parallel inference implementation status
 
+> **Archived 2026-09-28. History, not authority.** This file records the
+> shared-qualification setup of 2026-09-22.
+>
+> **Do not stop fleet-agent.** The last paragraph below says the fleet-agent
+> inference services were stopped. That was temporary. Today `fleet-agent`
+> (`tools/fleet_node_agent.sh`, a systemd user unit on every Spark) is the
+> production serving unit, with weightd and residentd running in its cgroup
+> (`docs/FLEET_RELEASE_RUNBOOK.md` §1). Stopping it, or treating it as an
+> unknown consumer, takes GLM serving down on all 16 nodes.
+>
+> Other statements that have changed:
+>
+> - PR #1082 is merged (54841ab).
+> - The B2+ binomial-tree rule applies only in spin mode. In hardware-wait
+>   mode, which the fleet runs, `tp_device_collective.c` sends every
+>   collective through `SparkTpLaunchMeshHardware` as direct rounds, and
+>   splits oversized payloads into chunks (`docs/GLM5_NEXT_ROOFLINE.md`, #1210).
+> - Results live in `docs/PARALLEL_RESIDENT_QUALIFICATION.md`. Open work
+>   lives in `TECHDEBT.md`.
+
 PR1082 targets `main`; PR1077 and PR1081 are already merged. The shared runtime
 has passed four- and eight-instance GLM inference across all sixteen Sparks,
 including exact output, overlapping decode and terminal cleanup. The latest
-broad host campaign passed 166 checks. See [parallel qualification](PARALLEL_RESIDENT_QUALIFICATION.md)
-and [multideveloper setup](MULTIDEV_QUICKSTART.md) for precise results and limits.
+broad host campaign passed 166 checks. See [parallel qualification](../PARALLEL_RESIDENT_QUALIFICATION.md)
+and [multideveloper setup](../MULTIDEV_QUICKSTART.md) for precise results and limits.
 Different-model numerical parity, partial-pool GPU eviction and sustained
 continuous-batch performance remain open.
 
@@ -44,13 +64,13 @@ Implemented and host-tested:
 - The API and CLI wake on sockets, queued work and explicit retry deadlines.
   They no longer depend on a fixed 5/10 ms progress cadence. Token events flush
   before waiting. HTTP cancellation is serialized through the engine worker.
-  See [event-driven progress](EVENT_DRIVEN_PROGRESS.md).
+  See [event-driven progress](../EVENT_DRIVEN_PROGRESS.md).
 
 Selected evidence:
 
 - The hardware wait prototype passed 24 two-Spark NIC-to-GPU trials using shared
   memfd registration, plus three local GPU cases. Bypassing the wait fails the
-  assertion. The [receipt](receipts/tp-hardware-wait-cd344a64.json) pins source,
+  assertion. The [receipt](../receipts/tp-hardware-wait-cd344a64.json) pins source,
   binaries, commands and results; it does not qualify model throughput.
 
 - Queue: 48 tests; legacy receipt rejection: 3; real smoke runner: 27.

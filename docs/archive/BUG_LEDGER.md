@@ -1,5 +1,33 @@
 # The bug ledger — one coherent plan, not monkey patches (2026-08-30)
 
+> **Archived 2026-09-28. History, not authority.** `TECHDEBT.md` is the one
+> list of unfinished work (`docs/README.md`). The statuses below are frozen
+> at 2026-08-30 to 2026-09-08, and several no-longer-true items would cause
+> harm if acted on:
+>
+> - **Do not clamp prefill to one row.** Setting `G5_MAX_PREFILL_ROWS=1`
+>   (`SPARK_MODEL_API_MAX_PREFILL_ROWS`) would drop prefill back to decode
+>   rate. The multi-row nondeterminism was fixed in 0a454a3, and
+>   `SparkGlmStageRoundMajorWaveRows` has no clamp.
+> - **Decode speed.** GLM 5.3 decode is 23-24.5 ms/token (36 tok/s B1)
+>   with graph chains and all experts pinned (lead-dev measurement,
+>   2026-09-28), not 78 ms/token.
+> - **Fleet agent.** The fleet agent now syncs by MANIFEST diff
+>   (`docs/FLEET_RELEASE_RUNBOOK.md` §1), not by an UPDATE sentinel.
+> - **Deleted references.** The lane owners and the `reports/` files cited
+>   here were removed in 27a2620.
+>
+> Three items were re-checked on 2026-09-28 and are still open in the code:
+>
+> - `SparkQwen38_27bServingUploadBlockTable` copies the full block-index
+>   table on every submission.
+> - `SparkContinuousBatchStep` (`scheduler/continuous_batch.c`) has no
+>   caller outside `tests/test_continuous_batch.c`.
+> - `node/model_api.c` calls `SparkModelBatchEngineReopenAdmission` before
+>   every submit, unconditionally.
+>
+> They belong in `TECHDEBT.md`.
+
 THE OPERATOR'S DIRECTIVE: dozens of bugs; fix them coherently; redesign
 where a redesign is cheaper than the sum of patches. This ledger is
 the single list (every kimi finding + every lane receipt), each with a
@@ -193,9 +221,10 @@ to two distinct defects, neither in the collective engine:
    serialized 1024-row submissions on one execution stream ~= the
    measured 95.6s p50. THE fix is chunked multi-row prefill (waves
    carrying many positions of one sequence) - which is exactly what the
-   multi-row machinery on main does for DSA layers MINUS the unresolved
-   multi-row DSA store nondeterminism (CONSULT_multirow_kv_nondeterminism.md);
-   the 1-row clamp in RoundMajorWaveRows stays until that bug dies.
+   multi-row machinery on main does for DSA layers. [Resolved: the
+   nondeterminism was fixed in 0a454a3 (archive/CONSULT_multirow_kv_nondeterminism.md),
+   the 1-row clamp is gone, and multi-row prefill serves. Do not clamp
+   prefill to one row.]
 2. B8 WEDGE = TP ORDINAL DIVERGENCE: ordinals come from a per-rank
    post-order atomic counter, so concurrent frame chains interleave
    differently per rank; a rank whose ordinal N is another chain's op
