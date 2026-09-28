@@ -257,12 +257,76 @@ static void TestStrayCompletionLeavesRoute(void)
 	assert(pthread_mutex_destroy(&fixture.runtime.mutex) == 0);
 }
 
+static void TestStuckRouteSetUp(SparkModelResidentdRoute *route, uint32_t slot_index, uint64_t submission_id, uint32_t fifo_next)
+{
+	route->active = 1u;
+	route->active_since_ns = 1u;
+	route->slot_index = slot_index;
+	route->submission_id = submission_id;
+	route->state = SPARK_MODEL_RESIDENTD_ROUTE_WAIT_OUTPUT;
+	route->committed_fifo_queued = fifo_next != UINT32_MAX ? 1u : 0u;
+	route->committed_fifo_next = fifo_next != UINT32_MAX ? fifo_next : 0u;
+}
+
+static void TestStuckRoutesRepeatWithFifoPosition(void)
+{
+	SparkModelResidentdRuntime runtime;
+	SparkModelResidentdRoute routes[3];
+	SparkModelServingLane lanes[2];
+	char text[2048],expected[256];
+	FILE *capture;
+	size_t length;
+	int saved;
+	memset(&runtime,0,sizeof(runtime));
+	memset(routes,0,sizeof(routes));
+	memset(lanes,0,sizeof(lanes));
+	assert(pthread_mutex_init(&runtime.mutex,0) == 0);
+	runtime.routes = routes;
+	runtime.route_capacity = 3u;
+	TestStuckRouteSetUp(&routes[0],0u,101u,UINT32_MAX);
+	TestStuckRouteSetUp(&routes[1],1u,102u,0u);
+	TestStuckRouteSetUp(&routes[2],2u,103u,2u);
+	runtime.committed_fifo_head = 3u;
+	routes[1].resident_slots_claimed = 1u;
+	routes[1].submission.active_sequence_count = 2u;
+	lanes[0].resident_sequence_slot = 7u;
+	routes[1].submission.lanes = lanes;
+	fflush(stderr);
+	capture = tmpfile();
+	assert(capture != 0);
+	saved = dup(2);
+	assert(saved >= 0 && dup2(fileno(capture),2) >= 0);
+	assert(SparkModelResidentdReportStuckRoutesAt(&runtime,UINT64_C(20000000000)) == 0u);
+	assert(SparkModelResidentdReportStuckRoutesAt(&runtime,UINT64_C(31000000000)) == 3u);
+	assert(SparkModelResidentdReportStuckRoutesAt(&runtime,UINT64_C(41000000000)) == 0u);
+	routes[0].state = SPARK_MODEL_RESIDENTD_ROUTE_FAILED;
+	assert(SparkModelResidentdReportStuckRoutesAt(&runtime,UINT64_C(51000000000)) == 1u);
+	assert(SparkModelResidentdReportStuckRoutesAt(&runtime,UINT64_C(92000000000)) == 2u);
+	fflush(stderr);
+	assert(dup2(saved,2) >= 0);
+	close(saved);
+	rewind(capture);
+	length = fread(text,1u,sizeof(text) - 1u,capture);
+	text[length] = '\0';
+	fclose(capture);
+	snprintf(expected,sizeof(expected),"ROUTE-STUCK id=103 state=%u age_ms=30999 claimed=0 abandoned=0 gen=0 fifo=0 lanes=0 first_slot=-1\n",(unsigned)SPARK_MODEL_RESIDENTD_ROUTE_WAIT_OUTPUT);
+	assert(strstr(text,expected) != 0);
+	snprintf(expected,sizeof(expected),"ROUTE-STUCK id=102 state=%u age_ms=30999 claimed=1 abandoned=0 gen=0 fifo=1 lanes=2 first_slot=7\n",(unsigned)SPARK_MODEL_RESIDENTD_ROUTE_WAIT_OUTPUT);
+	assert(strstr(text,expected) != 0);
+	snprintf(expected,sizeof(expected),"ROUTE-STUCK id=101 state=%u age_ms=50999 claimed=0 abandoned=0 gen=0 fifo=-1 lanes=0 first_slot=-1\n",(unsigned)SPARK_MODEL_RESIDENTD_ROUTE_FAILED);
+	assert(strstr(text,expected) != 0);
+	snprintf(expected,sizeof(expected),"ROUTE-STUCK id=102 state=%u age_ms=91999 claimed=1 abandoned=0 gen=0 fifo=1 lanes=2 first_slot=7\n",(unsigned)SPARK_MODEL_RESIDENTD_ROUTE_WAIT_OUTPUT);
+	assert(strstr(text,expected) != 0);
+	pthread_mutex_destroy(&runtime.mutex);
+}
+
 int main(void)
 {
 	TestRejectedCompletionFailsRouteWithItsStatus(SPARK_STATUS_NO_LANE,0u,SPARK_STATUS_INVALID_ARGUMENT);
 	TestRejectedCompletionFailsRouteWithItsStatus(SPARK_STATUS_OK,1u,SPARK_STATUS_SCHEMA_ERROR);
 	TestStrayCompletionLeavesRoute();
 	TestPersistentSlotRequiresRelease();
+	TestStuckRoutesRepeatWithFifoPosition();
 	TestTransportDeadlineQuarantinesUntilTerminal(
 		SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT);
 	TestTransportDeadlineQuarantinesUntilTerminal(

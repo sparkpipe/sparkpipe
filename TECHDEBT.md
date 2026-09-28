@@ -444,8 +444,6 @@ progress diary.
   invalid_argument. Map those statuses in the adapter, to BUSY where the step
   can be retried without having advanced any recurrent state, otherwise to
   CAPACITY_EXCEEDED.
-- ROUTE-STUCK reports a route once per state. Repeat it on an interval with
-  the route's committed-FIFO position and slot claims.
 - Pipeline-parallel stages still wedge after a failure on another rank. When
   one rank fails a submission's COMMIT or frame, the next stage's route has
   already posted its hidden-transport receive and waits in WAIT_INPUT for data

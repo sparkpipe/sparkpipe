@@ -165,6 +165,7 @@ typedef struct SparkModelResidentdRoute
 {
 	uint32_t active;
 	uint64_t active_since_ns;
+	uint64_t last_reported_ns;
 	uint32_t last_reported_state;
 	uint32_t result_queued;
 	uint32_t abandoned;
@@ -2919,38 +2920,60 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 	SPARK_RETURN(status);
 }
 
-static void SparkModelResidentdReportStuckRoutes(
-	SparkModelResidentdRuntime *runtime)
+static uint32_t SparkModelResidentdStuckRouteDue(SparkModelResidentdRoute *route, uint64_t now_ns)
+{
+	if ( route->active == 0u || route->active_since_ns == 0u || now_ns - route->active_since_ns < UINT64_C(30000000000) )
+		return(0u);
+	if ( route->state == route->last_reported_state && route->last_reported_ns != 0u && now_ns - route->last_reported_ns < UINT64_C(60000000000) )
+		return(0u);
+	route->last_reported_state = route->state;
+	route->last_reported_ns = now_ns;
+	return(1u);
+}
+
+static void SparkModelResidentdPrintStuckRoute(const SparkModelResidentdRoute *route, uint64_t now_ns, uint32_t fifo_position)
+{
+	int32_t first_slot = route->submission.active_sequence_count != 0u ? (int32_t)route->submission.lanes[0].resident_sequence_slot : -1;
+	fprintf(stderr,"ROUTE-STUCK id=%llu state=%u age_ms=%llu claimed=%u abandoned=%u gen=%llu fifo=%d lanes=%u first_slot=%d\n",(unsigned long long)route->submission_id,(unsigned)route->state,(unsigned long long)((now_ns - route->active_since_ns) / 1000000ull),(unsigned)route->resident_slots_claimed,(unsigned)route->abandoned,(unsigned long long)route->client_generation,fifo_position == UINT32_MAX ? -1 : (int)fifo_position,(unsigned)route->submission.active_sequence_count,(int)first_slot);
+}
+
+static uint32_t SparkModelResidentdReportStuckRoutesAt(SparkModelResidentdRuntime *runtime, uint64_t now_ns)
+{
+	SparkModelResidentdRoute *route;
+	uint32_t index,position = 0u,reported = 0u;
+	pthread_mutex_lock(&runtime->mutex);
+	index = runtime->committed_fifo_head;
+	while ( index != 0u && position < runtime->route_capacity )
+	{
+		route = &runtime->routes[index - 1u];
+		if ( SparkModelResidentdStuckRouteDue(route,now_ns) != 0u )
+		{
+			SparkModelResidentdPrintStuckRoute(route,now_ns,position);
+			reported++;
+		}
+		index = route->committed_fifo_next;
+		position++;
+	}
+	for (index = 0u; index < runtime->route_capacity; index++)
+	{
+		route = &runtime->routes[index];
+		if ( route->committed_fifo_queued == 0u && SparkModelResidentdStuckRouteDue(route,now_ns) != 0u )
+		{
+			SparkModelResidentdPrintStuckRoute(route,now_ns,UINT32_MAX);
+			reported++;
+		}
+	}
+	pthread_mutex_unlock(&runtime->mutex);
+	return(reported);
+}
+
+static void SparkModelResidentdReportStuckRoutes(SparkModelResidentdRuntime *runtime)
 {
 	uint64_t now_ns = SparkModelResidentdMonotonicTimeNs();
-	uint32_t index;
-	uint32_t stuck = 0u;
-	if ( runtime->routes == 0 || (runtime->last_stuck_scan_ns != 0u &&
-	     now_ns - runtime->last_stuck_scan_ns < UINT64_C(10000000000)) )
+	if ( runtime->routes == 0 || (runtime->last_stuck_scan_ns != 0u && now_ns - runtime->last_stuck_scan_ns < UINT64_C(10000000000)) )
 		return;
 	runtime->last_stuck_scan_ns = now_ns;
-	for (index=0u; index<runtime->route_capacity; index++)
-	{
-		SparkModelResidentdRoute *route = &runtime->routes[index];
-		if ( route->active == 0u || route->active_since_ns == 0u ||
-		     now_ns - route->active_since_ns < UINT64_C(30000000000) )
-			continue;
-		if ( route->state != route->last_reported_state )
-		{
-			route->last_reported_state = route->state;
-			fprintf(stderr,
-				"ROUTE-STUCK id=%llu state=%u age_ms=%llu claimed=%u abandoned=%u gen=%llu\n",
-				(unsigned long long)route->submission_id,
-				(unsigned)route->state,
-				(unsigned long long)((now_ns - route->active_since_ns) / 1000000ull),
-				(unsigned)route->resident_slots_claimed,
-				(unsigned)route->abandoned,
-				(unsigned long long)route->client_generation);
-			stuck++;
-		}
-
-	}
-	(void)stuck;
+	(void)SparkModelResidentdReportStuckRoutesAt(runtime,now_ns);
 }
 
 static SparkStatus SparkModelResidentdProgressReset(SparkModelResidentdRuntime *runtime)
