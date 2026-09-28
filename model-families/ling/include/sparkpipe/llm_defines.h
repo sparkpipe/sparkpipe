@@ -44,10 +44,6 @@
 #define SPARK_LLM_MOE_ROUTED_SCALING_FACTOR     2.5f
 #define SPARK_LLM_MOE_NORM_TOPK_PROB            1u
 #define SPARK_LLM_FIRST_ROUTED_LAYER            2u
-#define SPARK_LLM_MOE_ROUTED_SWIGLU_LIMIT(layer_index) \
-	((layer_index) >= 35u ? 4.0f : 0.0f)
-#define SPARK_LLM_MOE_SHARED_SWIGLU_LIMIT(layer_index) \
-	((layer_index) >= 40u ? 7.0f : ((layer_index) >= 34u ? 5.0f : 0.0f))
 #define SPARK_LLM_DENSE_INTERMEDIATE_DIMENSION  6144u
 
 #define SPARK_LLM_MTP_ENABLED                   0u

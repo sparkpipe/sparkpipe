@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_ling_model.h"
+#include "sparkpipe/spark_ling_swiglu_limits.h"
 #include "sparkpipe/spark_ling_resident_decode_stage_firmware.h"
 #include "spark_ling_resident_decode_stage_internal.h"
 #define SPARK_FAMILY_CAMEL Ling
@@ -2169,8 +2170,8 @@ static void SparkLingValRunMlpOracle(SparkLingValFixture *fixture,
 		moe.shared_gate_up = fixture->shared_gate_up.host;
 		moe.shared_down = fixture->shared_down.host;
 		moe.codec = SPARK_LING_VAL_CODEC;
-		moe.routed_limit = SPARK_LLM_MOE_ROUTED_SWIGLU_LIMIT(layer);
-		moe.shared_limit = SPARK_LLM_MOE_SHARED_SWIGLU_LIMIT(layer);
+		moe.routed_limit = SPARK_LING_MODEL_MOE_ROUTED_SWIGLU_LIMIT(layer);
+		moe.shared_limit = SPARK_LING_MODEL_MOE_SHARED_SWIGLU_LIMIT(layer);
 		SparkLingValMoe(&moe,hidden,residual,sublayer_out,
 			walk->selected,walk->route_weights);
 	}

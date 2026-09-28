@@ -275,7 +275,7 @@
     "parameters (HF safetensors metadata): 127486240128 BF16 + 165472 F32, MTP layer included",
     "text stack only; no vision tower exists in this checkpoint",
     "Ling-3.0-flash-Fin has its own contract: model_contracts/lingfin_authoritative.json",
-    "config keys the publisher modeling never reads: expert_swiglu_limit_list (4 on layers 35..41) and share_expert_swiglu_limit_list (5 on layers 34..39, 7 on 40..41), use_mla_nope false, use_qk_norm true, group_norm_size 1, scale_router_input false, value_norm false, up_proj_norm false, linear_silu true; they are inert data here, and a serving stack that applies the swiglu limits computes a different model than this contract"
+    "config keys the publisher modeling never reads: expert_swiglu_limit_list (4 on layers 35..41) and share_expert_swiglu_limit_list (5 on layers 34..39, 7 on 40..41), use_mla_nope false, use_qk_norm true, group_norm_size 1, scale_router_input false, value_norm false, up_proj_norm false, linear_silu true; the swiglu limits are applied by the publisher serving code and by this driver (moe.swiglu_limit_note); the others are inert data"
   ],
   "model": {
     "hidden_dimension": 2560,
@@ -340,7 +340,9 @@
     "router_correction_bias": 1,
     "router_bias_checkpoint_name": "mlp.gate.expert_bias",
     "router_dtype_config": "float32",
-    "swiglu_limit_note": "config expert_swiglu_limit_list/share_expert_swiglu_limit_list exist but the publisher modeling applies no clamp; lists are carried as inert config data and no clamp is implemented"
+    "swiglu_limit_note": "the publisher serving code (sglang and vLLM bailing_moe_v3) applies min(silu(gate), L) * clamp(up, -L, L) with L from expert_swiglu_limit_list (routed) and share_expert_swiglu_limit_list (shared); 0 means no limit. The HF modeling applies none. The driver follows the serving code.",
+    "expert_swiglu_limit_list": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 4, 4, 4, 4, 4],
+    "share_expert_swiglu_limit_list": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 5, 5, 5, 5, 7, 7]
   },
   "tokenizer": {
     "tokenizer_json_sha256": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60",

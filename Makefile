@@ -403,6 +403,7 @@ PYTHON_TESTS := \
 	tests/test_gemma4_smoke_manifest.py \
 	tests/test_ling_model_header.py \
 	tests/test_ling_contract_freeze.py \
+	tests/test_ling_swiglu_limits.py \
 	tests/test_laguna_model_header.py \
 	tests/test_laguna_multidev_lane.py \
 	tests/test_laguna_smoke_experts.py \
