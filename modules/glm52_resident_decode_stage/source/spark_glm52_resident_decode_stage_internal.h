@@ -144,6 +144,7 @@ typedef struct SparkGlm52CudaWave
 	const uint8_t *expert_lease_base;
 	uint32_t expert_lease_local_layer;
 	uint32_t expert_lease_pinned;
+	uint32_t route_host_copy;
 } SparkGlm52CudaWave;
 
 #ifdef __cplusplus

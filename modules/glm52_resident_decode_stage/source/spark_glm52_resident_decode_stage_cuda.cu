@@ -275,7 +275,7 @@ static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	wave->slot->route_recorded = 0u;
-	if ( wave->slot->group_row_offset_host != 0 && wave->slot->route_ready_event != 0 )
+	if ( wave->route_host_copy != 0u && wave->slot->group_row_offset_host != 0 && wave->slot->route_ready_event != 0 )
 	{
 		error = cudaMemcpyAsync(wave->slot->group_row_offset_host,wave->slot->group_row_offset,(GLM_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
 		if ( error == cudaSuccess )
