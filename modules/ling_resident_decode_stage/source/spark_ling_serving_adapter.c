@@ -565,9 +565,16 @@ static SparkStatus SparkLingServingAdmit(
 {
 	SparkModelDriverAdmissionRequest request;
 	SparkModelDriverAdmissionDecision decision;
+	SparkServingCacheAdmission cache;
 	SparkStatus status;
-	status = SparkAdmissionRequestFromSubmission(
-		state->program->program_id,submission,0,0u,&request);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	{
+		cache = SparkLingServingCacheContext(state,SparkLingServingCacheScratch);
+		status = SparkServingCacheBuildRequest(&cache,submission,0u,&request);
+	}
+	else
+		status = SparkAdmissionRequestFromSubmission(
+			state->program->program_id,submission,0,0u,&request);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	return(SparkAdmissionEvaluateAndApply(
