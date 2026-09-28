@@ -190,6 +190,8 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *mtp_replay_steps;
 	uint16_t *mtp_conv_scratch;
 	uint8_t *kda_replay_pool;
+	uint32_t *replay_committed_host;
+	void *replay_fold_exec[SPARK_GLM5_NEXT_REPLAY_ROWS_MAX];
 } SparkGlm5NextExecutionSlot;
 
 typedef struct SparkGlm5NextCudaWave
@@ -318,6 +320,7 @@ cudaError_t SparkTpLaunchAddF32(cudaStream_t stream,float *destination_f32,const
 cudaError_t SparkTpLaunchRoundF32(cudaStream_t stream,void *destination_bf16,const float *source_f32,uint32_t element_count);
 cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const SparkGlm5NextMtpDraftOps *ops,uint16_t *committed_hidden_bf16,uint32_t first_token,uint32_t *host_draft_tokens);
+int32_t SparkGlm5NextPrepareCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t rows);
 int32_t SparkGlm5NextLaunchCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps);
 int32_t SparkGlm5NextConfigureCudaModule(uint32_t *multiprocessor_count);
 

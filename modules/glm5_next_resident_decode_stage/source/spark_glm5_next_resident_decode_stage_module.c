@@ -885,6 +885,12 @@ static void SparkGlm5NextGraphDestroyAll(SparkGlm5NextExecutionSlot *slot)
 			slot->verify_bound[regime][index] = 0u;
 		}
 	slot->verify_captured = 0u;
+	for ( index = 0u; index < SPARK_GLM5_NEXT_REPLAY_ROWS_MAX; index++ )
+	{
+		if ( slot->replay_fold_exec[index] != 0 )
+			(void)cudaGraphExecDestroy((cudaGraphExec_t)slot->replay_fold_exec[index]);
+		slot->replay_fold_exec[index] = 0;
+	}
 }
 
 static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
@@ -907,6 +913,9 @@ static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
 		state->slots[index].host_run_begin = 0;
 		state->slots[index].host_run_state_index = 0;
 		state->slots[index].host_run_row_indices = 0;
+		if ( state->slots[index].replay_committed_host != 0 )
+			(void)cudaFreeHost(state->slots[index].replay_committed_host);
+		state->slots[index].replay_committed_host = 0;
 	}
 }
 
@@ -1096,7 +1105,7 @@ static SparkStatus SparkGlm5NextAllocateReplay(SparkGlm5NextModuleState *state)
 	layout = SparkGlm5NextKdaReplayLayoutFor(rank_heads,rows);
 	state->kda_replay_layer_bytes = layout.layer_bytes;
 	replay_bytes = layout.layer_bytes * state->kda_layer_count;
-	steps_bytes = (uint64_t)state->kda_layer_count * rows * SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES;
+	steps_bytes = (uint64_t)state->kda_layer_count * SPARK_GLM5_NEXT_REPLAY_ROWS_MAX * SPARK_GLM5_NEXT_REPLAY_ROWS_MAX * SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES;
 	conv_bytes = (uint64_t)rows * rank_heads * SPARK_GLM5_NEXT_MODEL_KDA_HEAD_KEY_DIMENSION * SPARK_GLM5_NEXT_MODEL_BF16_ELEMENT_BYTES;
 	for (index=0u; status==SPARK_STATUS_OK && index<state->pipeline_slot_count; index++)
 	{
@@ -2614,6 +2623,8 @@ static void SparkGlm5NextMtpResolveOnWorker(void *context)
 			(uint64_t)SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),
 			cudaMemcpyDeviceToDevice,(cudaStream_t)slot->stream);
 		if ( error == cudaSuccess )
+			launch = SparkGlm5NextPrepareCudaReplayFold(&chain->wave,chain->wave.row_count);
+		if ( error == cudaSuccess && launch == 0 )
 			launch = SparkGlm5NextLaunchCudaReplayFold(&chain->wave,result.committed_token_count);
 	}
 	if ( status != SPARK_STATUS_OK || error != cudaSuccess || launch != 0 )
@@ -3489,6 +3500,8 @@ static SparkStatus SparkGlm5NextVerifyCaptureRows(SparkGlm5NextTpChain *chain,ui
 	SparkGlm5NextGraphDisarm(state);
 	if ( status == SPARK_STATUS_OK && exec == 0 )
 		status = SPARK_STATUS_UNSUPPORTED;
+	if ( status == SPARK_STATUS_OK && SparkGlm5NextPrepareCudaReplayFold(&chain->wave,rows) != 0 )
+		status = SPARK_STATUS_INTERNAL_ERROR;
 	fprintf(stderr,"GRAPH-VERIFY-CAPTURE rows=%u regime=%u bound=%u status=%d\n",rows,regime,bound,(int)status);
 	if ( status != SPARK_STATUS_OK )
 		return(status);

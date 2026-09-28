@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_weight_codec.h"
@@ -635,7 +636,7 @@ static int SparkGlm5NextMtpParityBuildScratch(SparkGlm5NextMtpParityFixture *fix
 		(uint64_t)SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u *
 			SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT,"mtp_index_pool");
 	slot->mtp_replay_steps = SparkGlm5NextMtpParityAlloc(
-		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_KDA_ORDINALS * SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS *
+		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_KDA_ORDINALS * SPARK_GLM5_NEXT_REPLAY_ROWS_MAX * SPARK_GLM5_NEXT_REPLAY_ROWS_MAX *
 			SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES,"mtp_replay_steps");
 	slot->mtp_conv_scratch = (uint16_t *)SparkGlm5NextMtpParityAlloc(
 		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS * kda_dim * sizeof(uint16_t),"mtp_conv_scratch");
@@ -1252,7 +1253,9 @@ static int SparkGlm5NextMtpParityRunSpeculative(SparkGlm5NextMtpParityFixture *f
 			return(1);
 		{
 			int32_t commit_status;
-			commit_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
+			commit_status = SparkGlm5NextPrepareCudaReplayFold(&fixture->wave,fixture->wave.row_count);
+			if ( commit_status == 0 )
+				commit_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
 			if ( commit_status != 0 )
 				return(SparkGlm5NextMtpParityLaunchFail("spec_commit","fold",commit_status));
 		}
@@ -1336,7 +1339,8 @@ static int SparkGlm5NextMtpParityRunReference(SparkGlm5NextMtpParityFixture *fix
 	uint32_t verify_tokens[SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS];
 	uint32_t counts[SPARK_GLM5_NEXT_MTP_PARITY_REFERENCE_MODES][SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS + 1u];
 	uint32_t accepted_total[SPARK_GLM5_NEXT_MTP_PARITY_REFERENCE_MODES];
-	uint32_t emitted,current,round,mode,rows,depth,fault,expected,committed,index,anchor,first,regimes = 0u,trimmed = 0u;
+	uint32_t emitted,current,round,mode,rows,depth,fault,expected,committed,index,anchor,first,regimes = 0u,trimmed = 0u,fold_count = 0u;
+	uint64_t fold_ns = 0u;
 	scratch = (uint8_t *)malloc(SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES);
 	if ( scratch == 0 )
 		return(SparkGlm5NextMtpParityFail("alloc_host","compare_scratch"));
@@ -1431,12 +1435,24 @@ static int SparkGlm5NextMtpParityRunReference(SparkGlm5NextMtpParityFixture *fix
 				return(1);
 			}
 		{
-			int32_t fold_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
+			struct timespec fold_start,fold_end;
+			int32_t fold_status;
+			fold_status = SparkGlm5NextPrepareCudaReplayFold(&fixture->wave,rows);
+			if ( fold_status != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail(phase->name,"fold_prepare",fold_status));
+			clock_gettime(CLOCK_MONOTONIC,&fold_start);
+			fold_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
 			if ( fold_status != 0 )
 				return(SparkGlm5NextMtpParityLaunchFail(phase->name,"fold",fold_status));
+			if ( SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),phase->name,"sync") != 0 )
+				return(1);
+			clock_gettime(CLOCK_MONOTONIC,&fold_end);
+			if ( round >= SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT )
+			{
+				fold_ns += (uint64_t)(fold_end.tv_sec - fold_start.tv_sec) * UINT64_C(1000000000) + (uint64_t)(fold_end.tv_nsec - fold_start.tv_nsec);
+				fold_count++;
+			}
 		}
-		if ( SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),phase->name,"sync") != 0 )
-			return(1);
 		index = phase->prompt_rows + emitted + committed - 1u;
 		if ( SparkGlm5NextMtpParityCompareStateAt(fixture,phase->snapshots + (uint64_t)(emitted + committed - 1u) * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES,
 			index,scratch,phase->name) != 0 )
@@ -1463,8 +1479,9 @@ static int SparkGlm5NextMtpParityRunReference(SparkGlm5NextMtpParityFixture *fix
 			printf(" %u:%u",rows,counts[mode][rows]);
 		printf("\n");
 	}
-	printf("%s: %u tokens emitted in %u verify rounds of 2..%u rows (%u trimmed and %u plain steps at a regime edge, capture bound %s)\n",phase->name,
-		emitted,round,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX,trimmed,regimes,phase->capture_bound != 0u ? "on" : "off");
+	printf("%s: %u tokens emitted in %u verify rounds of 2..%u rows (%u trimmed and %u plain steps at a regime edge, capture bound %s); fold+sync %.1f us per round over %u warm rounds, %u KDA layers\n",phase->name,
+		emitted,round,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX,trimmed,regimes,phase->capture_bound != 0u ? "on" : "off",
+		fold_count != 0u ? (double)fold_ns / 1000.0 / fold_count : 0.0,fold_count,SPARK_GLM5_NEXT_MTP_PARITY_KDA_ORDINALS);
 	return(0);
 }
 

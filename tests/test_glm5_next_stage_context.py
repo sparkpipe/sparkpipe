@@ -550,6 +550,12 @@ static void check_graph_expert_ownership(uint32_t first,uint32_t layers,uint32_t
 
 static uint32_t FOLD_ANY,FOLD_LAST;
 
+int32_t SparkGlm5NextPrepareCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t rows)
+{
+	assert(IN_CUDA_CALLBACK == 0u && wave != 0 && rows <= SPARK_GLM5_NEXT_REPLAY_ROWS_MAX);
+	return(0);
+}
+
 int32_t SparkGlm5NextLaunchCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps)
 {
 	assert(IN_CUDA_CALLBACK == 0u && wave != 0 && (FOLD_ANY != 0u || committed_steps == 1u));
