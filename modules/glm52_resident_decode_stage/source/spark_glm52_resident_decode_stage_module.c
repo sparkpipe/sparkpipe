@@ -1472,7 +1472,11 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		return;
 	state = chain->state;
 	if ( SparkGlm52T1Enabled() != 0 )
-		fprintf(stderr,"G52-CHAIN rank=%u stage=%u layer=%u rows=%u status=%d\n",(unsigned)chain->wave.tp_rank,(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status);
+	{
+		struct timespec now;
+		(void)clock_gettime(CLOCK_MONOTONIC,&now);
+		fprintf(stderr,"G52-CHAIN rank=%u stage=%u layer=%u rows=%u status=%d t_us=%lld\n",(unsigned)chain->wave.tp_rank,(unsigned)chain->stage,(unsigned)chain->next_layer,(unsigned)chain->wave_rows,(int)status,(long long)now.tv_sec * 1000000ll + (long long)now.tv_nsec / 1000ll);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkGlm52TpChainFail(chain,status);
