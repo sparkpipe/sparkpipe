@@ -250,6 +250,7 @@ typedef struct SparkModelResidentdRuntime
 } SparkModelResidentdRuntime;
 
 static volatile sig_atomic_t SparkModelResidentdStop;
+static uint64_t SparkModelResidentdPendingRejectionCount;
 
 static uint64_t SparkModelResidentdMonotonicTimeNs(void);
 
@@ -1992,6 +1993,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkModelResidentdRoute *route;
 	SparkStatus cleanup_status,queue_status,resolution_status,status;
 	uint32_t cache_committed,cache_prepared,decoded;
+	uint64_t pending_count;
 	wire = (const SparkModelResidentIpcSubmit *)message;
 	fprintf(stderr,"SUBMIT-ARRIVED id=%llu bytes=%u decision=%u\n",
 		(unsigned long long)(message_bytes >= 24u ? wire->submission_id : 0ull),
@@ -2059,12 +2061,20 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		else
 			status = resolution_status;
 	}
-	if ( status != SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_PENDING )
+	{
+		pending_count = __atomic_add_fetch(&SparkModelResidentdPendingRejectionCount,1u,__ATOMIC_RELAXED);
+		if ( pending_count == 1u || pending_count % 256u == 0u )
+			fprintf(stderr,"model_residentd submission_pending count=%llu id=%llu kind=%u lanes=%u\n",
+				(unsigned long long)pending_count,(unsigned long long)submission.submission_id,submission.work_kind,
+				submission.active_sequence_count);
+	}
+	else if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"model_residentd submission_rejected status=%u id=%llu kind=%u rows=%u lanes=%u last_id=%llu\n",
 			(uint32_t)status,(unsigned long long)submission.submission_id,submission.work_kind,
 			submission.row_count,submission.active_sequence_count,
 			(unsigned long long)runtime->client.last_submission_id);
-	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_DUPLICATE )
+	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_DUPLICATE && status != SPARK_STATUS_PENDING )
 		SparkModelResidentdLogSubmission("SUBMISSION-REJECTED",&submission,status);
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route != 0 && status == SPARK_STATUS_OK && cache_committed != 0u &&
