@@ -16,40 +16,6 @@ removed rather than retained as a progress diary.
 - Remove obsolete topology examples and release switches after all consumers
   use the combined-fabric contract.
 
-## Adaptive all-reduce
-
-- Land topology-aware recursive halving/doubling as the medium-payload mode.
-- Generate independent two-crossover profiles for TP8 and TP16, for every
-  production datatype and relevant concurrent-collective pressure level.
-- Prove route and byte balance with interface counters for every rail and
-  direction, including failure diagnostics down to rank, rail, phase, stripe,
-  and chunk.
-- Remove remaining per-chunk CPU dispatch, whole-tensor barriers, and any
-  progress path that can serialize one rail behind the other.
-- Replay collective correctness and performance from clean merged `main` and
-  retain the profile as a release artifact.
-
-## TP collective control plane
-
-- Replace the per-collective host callback/submission chain with one
-  model-neutral, predeclared collective program per resident slot. A token must
-  have exactly one control plane: never layer mapped graph semaphores over the
-  callback chain.
-- Pre-register complete send and receive slabs, build packet and work-request
-  templates at initialization, and pre-arm a rolling credit window before the
-  producing kernel runs. No memory registration, packet rebuilding, or
-  fixed-capacity table scan belongs in the steady-state token path.
-- Advance the immutable program from transport completions and publish one
-  terminal completion per token rather than one callback per collective.
-- Separate receive readiness from send-buffer reuse so local reduction can
-  begin when all receive completions arrive without waiting for unrelated send
-  completions.
-- Use one program catalog for B1-B1024. Select the collective algorithm from TP
-  degree, datatype, effective row count, payload bytes, and the measured
-  hardware profile without changing the model driver or resident weights.
-- Remove the graph-island controller only after the replacement produces exact
-  tokens and beats its retained merged-main B1 and saturated-batch receipts.
-
 ## Mesh collectives
 
 - Every hardware-wait round crosses weightd's CPU relay twice: the local
@@ -59,10 +25,24 @@ removed rather than retained as a progress diary.
   then cost tens of microseconds rather than the measured 167 us p50.
 - Two collective substrates coexist: the residentd-owned hidden transport
   (`ring/transport/tp_collective.c`, recursive doubling and split rings),
-  which k3's runner still creates, and the weightd mesh through
+  which only k3's runner still creates (`SparkTpCollectiveCreate` in
+  `spark_k3_resident_decode_stage_runner.cu`), and the weightd mesh through
   `ring/transport/tp_device_collective.c`, which every other TP module
-  opens. Converge on one substrate with one algorithm selector and one
-  measured crossover profile.
+  opens. Move k3 onto the mesh and delete the hidden transport; its own
+  control-plane debt (per-collective host callbacks, credit-return sends,
+  per-direction sessions) goes with it.
+- The wait mode picks the algorithm, against I36. With
+  `SPARK_TP_WAIT_MODE=hardware` every payload runs chunked direct rounds
+  (`SparkTpLaunchMeshHardware` is always called with one logical row), with
+  reduce-scatter plus all-gather over slice routes for sums of at least
+  `SPARK_TP_MESH_RSAG_MIN_ELEMENTS` (49,152) elements at degree 4 or more.
+  With spin wait, a single-sequence payload that fits one slot takes the host
+  round and everything else takes the tree (`SparkTpDeviceCollectiveHostRound`,
+  `SparkTpDeviceCollectiveRunDeviceRounds`). Select from the logical batch
+  and payload in both modes.
+- The reduce-scatter crossover is a constant, not a measured profile per
+  degree, operation and datatype. Measure it on the mesh, retain the profile
+  as a release artifact, and select from it.
 - The mesh reads only degree, rank, width, rows, the operation timeout, the
   band, the lane and the host combines from `SparkTpDeviceCollectiveConfig`.
   The rest of that struct (hosts, ports, identifiers, credits and bindings,
@@ -80,45 +60,13 @@ removed rather than retained as a progress diary.
   engine, one computing while the other's collectives complete. Measure the
   extra weight reads that splitting costs against the exposed wait it hides.
 
-## Steady-state decode hot-path audit
+## Steady-state decode hot path
 
-- Replace completion-queue polling followed by fixed 64-entry send, striped
-  completion, and receive scans with work-completion-indexed ready queues. The
-  current TP4 B1 path spans six transport sessions per rank and repeats those
-  scans throughout every collective.
-- Collapse the current TP4 B1 accounting of 389 payload sends, 389 credit-return
-  sends, and 778 receive reposts per rank per token. Across TP4 that is 6,224
-  verbs posts plus matching completions for only about 3 MiB of payload per
-  rank. Piggyback credits and reuse prebuilt work requests rather than paying a
-  second message stream for buffer ownership.
-- Replace six directional session/QP control objects per rank with one
-  bidirectional peer connection per route and one completion context per rail.
-  RC queue pairs are bidirectional; direction-specific state must not duplicate
-  connection setup, polling, packet construction, or credit bookkeeping.
-- Build immutable packet fields and receive templates once. The current path
-  rebuilds packet metadata on both sides, including receive packets that are not
-  consumed by the data plane, and performs repeated string comparisons in
-  steady-state progress.
-- Remove per-poll timeout clocks, disabled-profile array clears, and exact-length
-  memory-region lookup from the steady-state path. These belong in admission,
-  setup, a completion-driven timer wheel, or a slab registry.
-- Predicate DSV4 compressor emission before RMSNorm, RoPE, Hadamard, quantize,
-  and scatter work. A non-boundary token currently launches work for zero
-  emission; static schedule accounting identifies about 221 useless compressor
-  post launches per average token.
-- Replace the approximately 780 CUDA event record/wait operations per token with
-  dependency edges at true data hazards. In particular, KV post-processing and
-  query projection must not inherit unrelated attention/projection barriers.
-- Construct deterministic attention indices once per token or position range,
-  not once per each of 43 layers. Remove repeated Hc residual copies and the
-  other tiny host/device transfers only after bitwise output comparison.
-- Remove batch- and topology-identity fallbacks. Unsupported topology values
-  must fail compilation, and B1-B1024 must share one runtime descriptor plus a
-  specialization cache rather than silently selecting PP13 or loading a
-  different resident driver.
-- Accept each removal independently: exact token parity first, then at least
-  three unprofiled end-to-end cached-prefill B1 runs. Do not stack candidates
-  until the preceding candidate beats the retained 33.6647 tok/s floor.
+- Accept each hot-path change independently: exact token parity first, then
+  at least three unprofiled end-to-end cached-prefill B1 runs. Do not stack
+  candidates until the preceding candidate beats the current GLM 5.3 Flash
+  TP16 B1 receipt in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md)
+  (36 tok/s on 2026-09-28).
 - glm5_next: the graph path waits for the whole graph on residentd's thread
   (`SparkGlm5NextGraphStep` through `SparkStageModuleCudaWaitFor`) before it
   finishes the chain, and the completion worker then waits on the same stream
@@ -132,8 +80,9 @@ removed rather than retained as a progress diary.
   every collective round and twice more per routed layer (expert lease, then
   release). It runs only where a linear chain cannot: experts not pinned,
   MTP, speculative verify, the T1 trace, `SPARK_GLM5_NEXT_GRAPH_RECORD_OPS`,
-  or a collective without hardware-wait rounds. Pin experts wherever the
-  arena fits them, and move MTP and speculative verify onto the linear walk.
+  or a collective without hardware-wait rounds. Working-set graphs (Model
+  residency and storage) remove the unpinned case without pinning every
+  expert; move MTP and speculative verify onto the linear walk.
 - glm5_next: between two waves every rank ends and restarts mesh activity
   (two weightd round trips each way), rank 0 broadcasts a new chain epoch that
   the other ranks spin on, and two host callbacks run. Resident decode chains
@@ -163,7 +112,12 @@ removed rather than retained as a progress diary.
   `run_us` at long context, compact with warp ballots instead of the
   Hillis-Steele scan.
 
-## Resident TP4 x PP4 execution
+## Placement beyond TP16
+
+- GLM 5.3 Flash serves only at TP16. Measure B1 latency and aggregate
+  throughput from B8 to B1024 for TP16, TP4 x PP4 and PP16 once each runs,
+  and choose placement from those numbers (README, Placement). The
+  items below are what TP4 x PP4 and PP16 need first.
 
 - GLM 5.3 Flash source audit at main `371ae9e`: the TP4xPP4 JSON generator
   exists, but the shipped serving adapter hard-codes TP16, rejects other TP
@@ -188,6 +142,22 @@ removed rather than retained as a progress diary.
 
 ## Model residency and storage
 
+- Relocatable (saved) graphs are designed but not built. `8adebc6`
+  proposed capturing a graph once, recording which kernel arguments are
+  expert pointers and patching them on load, as a dynamic linker does, and
+  `360c0ee` and `1a674be` deleted the union-lease workaround on that
+  assumption. No code patches or updates an instantiated graph's kernel
+  arguments, and nothing stores a captured graph for reuse, so every engine
+  captures its graphs again and the captured pointers must never move.
+- Working-set graphs. Because the pointers cannot move, a whole-chain GLM
+  graph refuses to run unless all 12096 routed experts are leased
+  (`SparkGlm5NextGraphClaimExperts`, since `78c2c21`), and production pins
+  every expert (`G5_PIN_EXPERTS=1`). Without the pin only eager chains run;
+  the fleet's eager, spin-wait configuration measured 5.9 tok/s B1 earlier
+  on 2026-09-28 (lead-dev measurement). Full pinning breaks I29's bounded
+  residency, and the memory it holds is unavailable to co-resident drivers.
+  On top of relocation, capture over a leased working set and send a miss
+  to an explicit, reported refill.
 - Implement one catalog that keeps every configured frontier model addressable
   while tracking resident, warm, promotable, and unavailable states.
 - Partition and mount each 4 TB internal NVMe as 2.5 TB hot KV, 1 TB active
@@ -262,6 +232,24 @@ removed rather than retained as a progress diary.
   with one-row output at load and turns drafting off when they differ. Adopt
   the same rules, and make that load-time comparison the gate for verified
   serving.
+- No gate checks batch invariance. The COMPSEC-17 run of 2026-09-28
+  (`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`)
+  sent the same 17 prompts concurrently four times: each run differed from
+  the sequential completions in one or two cases, and the runs differed from
+  each other. Add a gate that replays a fixed prompt set sequentially and
+  concurrently and requires byte-identical completions, and run it with
+  every serving release until the batch kernels pass it.
+- JIT KV admission does not prefetch. The serving `prefetch` hook runs
+  cache-prepare admission only when residentd receives a submission
+  (`SparkModelServingAdapterPrepareSubmission` in `node/model_residentd.c`),
+  so a restore starts at dispatch, not when the engine queues the request.
+  A submission that cannot be prepared answers `BUSY`, and the batch engine
+  retries it with a 10 to 200 ms backoff, up to 10,000 times
+  (`runtime/model_batch_engine.c`). The deadline-ordered restore in
+  `cache/kv_pager.c` (`SparkNvmeTierRequestDemandDeadline`) has one
+  consumer, dsv4 (`spark_dsv4_jit_kv.h`), whose packs are deleted; glm5_next
+  does not use the pager. Issue restore demand from enqueue, admit against
+  restore bandwidth, and dispatch a lane only after its restore completes.
 - A prefix-cache hit reuses KV and KDA state computed however the source
   request ran: one-row prefill for prompt tokens, batched decode rows for
   generated ones. Until batched rows equal B1, a warm and a cold run of the
@@ -283,8 +271,8 @@ removed rather than retained as a progress diary.
 
 ## Model contracts
 
-- Add exact checkpoint-derived contracts and native execution packages for
-  MiniMax H3, Qwen 3.8 Pro, and Qwen 3.8 27B.
+- Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`
+  has none.
 - Remove legacy model names from generated release inventories and operator
   surfaces when their replacement contracts land.
 - Retain independent numerical, transport, memory, and performance gates for
@@ -621,6 +609,28 @@ door and the static pages and playground in `site/`.
     directory in a sandbox.
 
   Give the fleet tests a runner, stream the packs, and register all nine.
+- `make test` fails on a host with a CUDA toolkit. There the model-common
+  library carries no CUDA stub, but `ring/transport/tp_device_collective.c`
+  calls the mesh launchers (`SparkTpLaunchMesh*`), which only a module's
+  CUDA object (`spark_tp_mesh_kernels.cuh`) or the stub defines. An adapter
+  that pulls the transport from the library is left with them undefined: on
+  the x86 hub at main `bbf5432`, `build/libdsv4_tp4_pp4_serving_adapter.so`
+  fails `dlopen` with `undefined symbol: SparkTpLaunchMeshHardware`, and
+  `make test` stops at `test_dsv4_tp4_pp4_serving_adapter`. Move the
+  launcher calls behind the module boundary, or give host links one object
+  that defines them, rather than linking the stub case by case (#1258 did
+  that for two tests).
+- The production serving configuration is not in the repository. GLM 5.3
+  Flash at 36 tok/s B1 needs `G5_GRAPH_PATH=1`, `G5_PIN_EXPERTS=1`,
+  `SPARK_TP_WAIT_MODE=hardware`, `G5_API_DISABLED=1` and `G5_WARMUP=0`, set
+  only in each node's untracked drop-in
+  `~/.config/systemd/user/fleet-agent.service.d/20-serving.conf`;
+  `tools/fleet-agent.service` sets none of them. Without the drop-in,
+  residentd refuses to start (`SPARK_GLM5_NEXT_GRAPH_PATH` unset), the rank-0
+  agent starts its own API, and warmup runs; with only
+  `G5_GRAPH_PATH=0`, the node falls to eager chains, spin wait and unpinned
+  experts. Move these settings into the deployment contract as validated
+  fields (I04) and record their hash in every receipt (I33).
 
 ## Hardware independence
 
@@ -717,9 +727,6 @@ for seamless production multi-model.
 - Fleet tooling is single-model: the agent accepts multiple runtime roots
   but release sync, health, and measurement lanes are per-root; no
   multi-model deploy or update has been tested.
-- Deployed lane count is two; the eight-lane geometry is blocked on the
-  engine-side cudaHostRegister invalid-argument at the 4 GB mapping (lane
-  handoff Addendum 54).
 
 ## Topology-aware lane sub-allocation
 
@@ -732,12 +739,6 @@ for seamless production multi-model.
   rank-indexed within a band, so sub-range packing is an allocator change
   plus collective band/rank wiring; four TP4 drivers in one band must not
   share sequence spaces (derive chain keys per sub-range owner).
-- Lane count verification: two lanes (1 GB page) proven; four lanes is one
-  define change and untested; the eight-lane attempt fails engine-side
-  cudaHostRegister with invalid argument on the 4 GB mapping while the
-  same registration shape succeeds standalone — isolate the in-engine
-  condition before assuming a size ceiling.
-
 ## MPS evaluation on GB10
 
 - The CUDA MPS control and server binaries are present on the sparks.

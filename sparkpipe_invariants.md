@@ -157,8 +157,9 @@ changes to common code. Track implementation evidence in
   12096 experts (`G5_PIN_EXPERTS=1`). That is the explicit resident mode I28
   allows: selected by configuration, reported with its memory cost, and held
   only until working-set graphs patch expert pointers on lease
-  ([`TECHDEBT.md`](TECHDEBT.md), Model residency). Eager chains keep strict
-  lazy loading, and pinning is not a substitute for I29 in any other driver.
+  ([`TECHDEBT.md`](TECHDEBT.md), Model residency and storage). Eager chains
+  keep strict lazy loading, and pinning is not a substitute for I29 in any
+  other driver.
 - **I31 — One authoritative resource ledger.** Queue jobs and persistent
   engines both count toward memory/device reservations. An empty queue does
   not prove idle hardware. Notes, stale locks or observation timeouts cannot
