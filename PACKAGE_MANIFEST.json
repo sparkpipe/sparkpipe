@@ -1,5 +1,5 @@
 {
-  "file_count": 3063,
+  "file_count": 3064,
   "files": [
     {
       "path": ".gitattributes",
@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "fed479fd8539b2e41ee169be6ad4ecffefa9672a960f1aba988f7d491ddff8fc",
-      "size_bytes": 140014
+      "sha256": "c15e45db41276b3e6ce0d8a18da4d938d45b7593c82deabcbb89d53af1855c40",
+      "size_bytes": 140051
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -9357,6 +9357,11 @@
       "size_bytes": 4642
     },
     {
+      "path": "tests/test_glm5_next_compsec17.py",
+      "sha256": "3c48ae50e7ec5297134a15f5b30e82fa89698999a742d71001d2226e1833bcce",
+      "size_bytes": 2478
+    },
+    {
       "path": "tests/test_glm5_next_cuda_validator_tier2_oracle.py",
       "sha256": "27abeb09dd17ce2734868fb7c399515df6c454c4bf2b3847afb33deecda0404b",
       "size_bytes": 2623
@@ -11958,8 +11963,8 @@
     },
     {
       "path": "tools/glm5_next_compsec17.py",
-      "sha256": "de235e8e549f71835d63c1b33a033f016ad4faf6e7f0ff159a005bcd6bba10aa",
-      "size_bytes": 7859
+      "sha256": "9227731566ccddedeb7726c36282392556664b19e02a61608209383c21a8a460",
+      "size_bytes": 9629
     },
     {
       "path": "tools/glm5_next_driver_compare.py",
@@ -15320,5 +15325,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74106004
+  "total_bytes": 74110289
 }
