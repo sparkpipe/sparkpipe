@@ -66,6 +66,7 @@ SPARKPIPE_CACHE_SOURCES := \
     cache/kv_cache.c \
     cache/kv_page_cache.c \
     cache/kv_page_store.c \
+    cache/kv_snapshot.c \
     cache/kv_model_table.c \
     cache/prefix_cache.c \
     cache/store/kv_store.c \
