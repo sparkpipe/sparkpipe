@@ -94,5 +94,6 @@ GPU_VALIDATOR := validation/validate_ling_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
 
+MODEL_DESCRIPTION_SHA256 = $(if $(MODEL_DESCRIPTION),$(shell python3 -c 'import hashlib; print(hashlib.sha256(open("$(MODEL_DESCRIPTION)","rb").read()).hexdigest())'),$(error MODEL_DESCRIPTION is required to build the adapter: the firmware model description the driver is compiled from))
 ADAPTER_SOURCE := source/spark_ling_serving_adapter.c
-ADAPTER_FLAGS = $(ADAPTER_VARIANT_FLAGS)
+ADAPTER_FLAGS = $(ADAPTER_VARIANT_FLAGS) -DLING_MODEL_DESCRIPTION_SHA256=\"$(MODEL_DESCRIPTION_SHA256)\"

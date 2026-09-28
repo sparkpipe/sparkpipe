@@ -440,11 +440,17 @@ progress diary.
     serving adapter. None of their module Makefiles names an
     `ADAPTER_SOURCE`, nor does the gemma4 26B's `Makefile.moe`, so
     `make adapter` refuses and the script cannot release them.
-- glm5_next, laguna and ling compare four driver descriptor fields in their
+- glm5_next and laguna compare four driver descriptor fields in their
   own load functions and skip `model_description_sha256`, which
   `serving_adapter_template.c` checks for the other adapters. Moving them
-  onto the template needs each build to pass its description hash; the
-  tree holds a glm5_next description for fp8 only.
+  onto the template needs each build to pass its description hash, as the
+  ling module does through `MODEL_DESCRIPTION`; the tree holds a glm5_next
+  description for fp8 only.
+- `tools/module_build_release.sh` defaults the ling firmware description to
+  `examples/model_descriptions/ling_resident_decode_stage_<codec>_firmware.json`,
+  which does not exist; a ling release must pass `FIRMWARE_JSON` (the
+  script refuses without it). Commit the per-codec ling descriptions or
+  point the default at `ling_resident_decode_stage_firmware.json`.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in

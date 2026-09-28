@@ -32,6 +32,11 @@
 #ifndef LING_CONTRACT_SHA256
 #error "LING_CONTRACT_SHA256 must identify the exact package contract"
 #endif
+#ifndef LING_MODEL_DESCRIPTION_SHA256
+#error "LING_MODEL_DESCRIPTION_SHA256 must identify the firmware model description the driver compiles"
+#endif
+_Static_assert(sizeof(LING_CONTRACT_SHA256) == 65u, "LING_CONTRACT_SHA256 must be 64 hex digits");
+_Static_assert(sizeof(LING_MODEL_DESCRIPTION_SHA256) == 65u, "LING_MODEL_DESCRIPTION_SHA256 must be 64 hex digits");
 
 #define SPARK_LING_SERVING_ADAPTER_ID \
 	"spark.ling.serving-adapter.tp16.expert_" LING_EXPERT_CODEC_NAME ".v1"
@@ -360,49 +365,30 @@ static uint32_t SparkLingServingAvailableSubmissionCount(
 #include "sparkpipe/family/serving/spark_serving_orphan_driver_completion.h"
 #include "sparkpipe/family/serving/spark_serving_driver_wake.h"
 
+#include "sparkpipe/family/serving/spark_serving_accepts_program.h"
+
 static SparkStatus SparkLingServingLoadDriver(
 	SparkLingServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
-	const SparkModelDriverDescriptor *descriptor;
-	SparkModelDriverCreateRequest request;
-	char error_buffer[512];
+	SparkServingAdapterDriverRequest request;
+	const SparkModelDriverProgramDescriptor *program;
 	SparkStatus status;
-	SparkLoadedModelDriverReset(&state->driver);
-	status = SparkLoadModelDriver(configuration->driver_shared_object_path,configuration->node_target,&state->driver,error_buffer,sizeof(error_buffer));
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	descriptor = state->driver.interface->descriptor;
-	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_LING_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,LING_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_LING_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_LING_SERVING_TARGET) != 0 )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
-	if ( state->program == 0 )
-		return(SPARK_STATUS_NOT_FOUND);
-	if ( state->driver.interface->admit == 0 || state->program->submit == 0 || SparkModelDriverProgramSupportsRuntimeLimits(state->program,SPARK_LING_SERVING_REQUIRED_PROGRAM_FLAGS,state->pipeline_slot_count,state->max_active_sequence_count,state->max_input_row_count,state->resident_sequence_capacity) == 0u )
-		return(SPARK_STATUS_TARGET_MISMATCH);
-	SparkModelDriverInitializeCreateRequest(&request);
-	request.node_id = configuration->node_id;
-	request.node_target = configuration->node_target;
+	request.contract.driver_model_id = SPARK_LING_SERVING_DRIVER_MODEL_ID;
+	request.contract.driver_model_revision = LING_MODEL_REVISION;
+	request.contract.driver_stage_name = SPARK_LING_SERVING_STAGE_NAME;
+	request.contract.driver_target = SPARK_LING_SERVING_TARGET;
+	request.contract.model_description_sha256 = LING_MODEL_DESCRIPTION_SHA256;
 	request.node_context = &state->node_context;
-	request.kv_logical_page_capacity =
-		configuration->runtime_limits.kv_logical_page_capacity;
-	request.kv_physical_page_capacity =
-		configuration->runtime_limits.kv_physical_page_capacity;
-	request.kv_backing_directory = configuration->kv_backing_directory;
-	request.kv_backing_maximum_bytes =
-		configuration->kv_backing_maximum_bytes;
-	request.execution_stream = configuration->execution_stream;
-	request.completion_function = SparkLingServingOrphanDriverCompletion;
 	request.completion_context = state;
+	request.completion_function = SparkLingServingOrphanDriverCompletion;
 	request.wake_function = SparkLingServingDriverWake;
-	request.wake_context = state;
-	status = state->driver.interface->create(&request,&state->driver_instance);
-	if ( status != SPARK_STATUS_OK )
-		(void)fprintf(stderr,"LNG-T1ADAPTER-DIAG create=%d stage=%u layers=%u slots=%u cap=%u pos=%u rows=%u thr=%u tp=%u/%u codec=%u rev=%s pack=%s\n",
-		    (int)status,state->node_context.stage_count,state->node_context.layer_count,state->node_context.pipeline_slot_count,state->node_context.resident_sequence_capacity,state->node_context.max_sequence_positions,state->node_context.execution_row_capacity,state->node_context.decode_split_context_threshold,state->node_context.tp_degree,state->node_context.tp_rank,state->node_context.expert_weight_codec,state->node_context.model_revision == 0 ? "(null)" : state->node_context.model_revision,state->node_context.stage_pack_path == 0 ? "(null)" : state->node_context.stage_pack_path);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_FAIL(status);
-	return(state->driver_instance == 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
+	program = 0;
+	status = SparkServingAdapterTemplateLoadDriver(&request,configuration,
+		&state->driver,&program,SparkLingServingAcceptsProgram,state,
+		&state->driver_instance);
+	state->program = program;
+	SPARK_RETURN(status);
 }
 
 #include "sparkpipe/family/serving/spark_serving_validate_configuration.h"
