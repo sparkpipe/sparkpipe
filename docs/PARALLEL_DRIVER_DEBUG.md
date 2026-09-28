@@ -104,8 +104,10 @@ rank starts its own residentd/validator using SPARK_QUEUE_RANK. A single-node
 forward-cell pass cannot establish TP16 collective correctness. For a measured
 fleet run, list all sixteen hosts and use --resources exclusive. An exclusive
 job does not stop the fleet agent's production serving, which runs outside the
-queue; stop it for the window and meet every condition of the quickstart's
-performance-evidence rule.
+queue. Stopping `fleet-agent` takes GLM serving down on every node it touches
+([fleet release runbook](FLEET_RELEASE_RUNBOOK.md#21-unit-drop-in-and-cgroup)),
+so a measured window needs the operator's approval as a planned outage; then
+meet every condition of the quickstart's performance-evidence rule.
 
 The controller runs:
 

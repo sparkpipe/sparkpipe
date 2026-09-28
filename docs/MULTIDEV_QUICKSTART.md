@@ -290,7 +290,8 @@ full log.
 A smoke run counts as performance evidence only when all of these hold:
 
 1. An exclusive fleet: an `exclusive` queue job on every participating node and
-   no other GPU work, production serving included.
+   no other GPU work, production serving included. Stopping production is a
+   planned GLM outage and needs the operator's approval.
 2. Pinned identities: source commit, SHA-256 of every binary, driver, adapter,
    transport library and pack, plus the deployment and environment.
 3. A working set that matches the run: diverse prompts, with expert misses

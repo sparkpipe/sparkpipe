@@ -298,7 +298,9 @@ whose engine is running. Before staging, check that each node's running
 weightd matches `core/WEIGHTSD_BIN` (section 5.2, step 4).
 
 To drain a root by hand, send a cwd-scoped TERM; the agent then restarts the
-root. Drain for a deployment-only change, a stuck engine or a weightd update:
+root. Drain for a deployment-only change, a stuck engine or a weightd update.
+Draining all sixteen is a planned GLM outage: every engine restarts cold and
+pins every expert again (section 2.1), so schedule it with the operator:
 
 ```sh
 for h in spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 \
@@ -632,10 +634,14 @@ Each of these was paid for in an incident.
 11. `strings | grep -q` under `pipefail` exits 141 (SIGPIPE). Redirect to
     `/dev/null` instead.
 12. Warm storage (Ceph, `/mnt/model-warm`) is a pack source only, never a
-    serve path. Use one reader at a time fleet-wide by claiming `CEPH_LEASE` in
-    the coordination directory; concurrent readers collapsed to kB/s (09-13 to
-    09-15: spark4 read at 64 KB/s). Whether Ceph stays supported is an open
-    question; see [INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md).
+    serve path. Use one reader at a time fleet-wide by claiming
+    `/Users/mac/sparkpipe-coord/CEPH_LEASE` on the controller Mac (holder,
+    claim time, purpose; release right after the batch). Concurrent readers
+    collapsed to kB/s (09-13 to 09-15: spark4 read at 64 KB/s); when one
+    client crawls, dd-probe the candidates and move the read to an idle one
+    (spark5 read the same data in 69 s against spark4's 84 min). Whether Ceph
+    stays supported is an open question; see
+    [INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md).
 13. Required configuration fails loudly: no silent fallbacks and no `#ifndef`
     defaults. Grade every claim MEASURED, DERIVED or ASSUMED, with its artifact
     (file, node, date, build sha).
