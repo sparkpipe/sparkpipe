@@ -1929,13 +1929,13 @@ Related common-code debt:
   tokens compare; streams need the dump brought back to the fixture's
   definition.
 - `text/tokenizer.c` knows split regexes only by exact string. It knows
-  the GLM digit-run pattern, the Qwen letter-and-mark pattern, and two
+  the GLM digit-run pattern, the Qwen letter-and-mark pattern, the
+  DeepSeek digit/ideograph sequence (V4, V4.1 Flash, Hy4), and two
   letter-class patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with
   possessive quantifiers). Every other `Split` is skipped without an
   error, and the text is BPE-encoded whole. A 2026-09-28 survey of
   `/mnt/model-warm/*/tokenizer.json` found these unhandled:
   - laguna, whose newline split precedes the letter pattern;
-  - dsv4 and dsv4.1, with three splits;
   - muse-glimmer's case-aware letters;
   - gemma4's `Replace` plus `Split " "`.
 

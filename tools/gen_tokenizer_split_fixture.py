@@ -12,6 +12,11 @@ PATTERNS = {
     "letters_and_marks": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
     "digit_runs": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
     "letters": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+    "digit_ideograph_sequence": [
+        "\\p{N}{1,3}",
+        "[\u4e00-\u9fa5\u3040-\u309f\u30a0-\u30ff]+",
+        "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",
+    ],
     "letters_possessive": "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]*|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+",
 }
 
@@ -36,6 +41,10 @@ HANDPICKED = [
     "trailing spaces   ",
     "   leading",
     "a b  c",
+    "Count from 1 to 30: 1, 2, 3, 12345, 3.14159, -42, 1e10 and ９９９９",
+    "東京タワーは333メートルです。ひらがなカタカナ漢字abc",
+    "def f(x):\n    return x**2  # 平方\n\n\tprint(f(12))",
+    "<b>bold</b> #tag @user .NET 'quote' \"dq\" ~/path_to/file.py",
 ]
 
 POOLS = [
@@ -49,7 +58,7 @@ POOLS = [
 ]
 
 
-CLASS_REGEXES = (("space", "\\s", 1), ("letter", "\\p{L}", 2), ("number", "\\p{N}", 3), ("mark", "\\p{M}", 5))
+CLASS_REGEXES = (("space", "\\s", 1), ("letter", "\\p{L}", 2), ("number", "\\p{N}", 3), ("mark", "\\p{M}", 5), ("punctuation", "[\\p{P}\\p{S}]", 6))
 
 
 def oniguruma_class_ranges():
@@ -96,10 +105,10 @@ def byte_ends(text, pieces):
 def tokenizer_for(pattern):
     vocabulary = {character: index for index, character in enumerate(sorted(ByteLevel.alphabet()))}
     tokenizer = Tokenizer(models.BPE(vocabulary, []))
-    tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
-        pre_tokenizers.Split(Regex(pattern), "isolated"),
-        pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
-    ])
+    patterns = pattern if isinstance(pattern, list) else [pattern]
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
+        [pre_tokenizers.Split(Regex(item), "isolated") for item in patterns]
+        + [pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False)])
     return tokenizer
 
 
