@@ -38,8 +38,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "358a3fc8d08a4c9db74b0a5af78c825e4c678fc41bc79f43297f142cf01f5428",
-      "size_bytes": 138534
+      "sha256": "05d19540296c2817d0316b22a46ef8aa88ca4efdf5686ce53431036909a5a0df",
+      "size_bytes": 138638
     },
     {
       "path": "PERFORMANCE_STATUS.md",
@@ -3188,8 +3188,8 @@
     },
     {
       "path": "include/sparkpipe/family/module/spark_module_kv_prepare_frame.h",
-      "sha256": "265c0977a5762a5c65923e36f7a42d9a2d65ab56ef0703c28e120572fbcd1f36",
-      "size_bytes": 2074
+      "sha256": "0abe8d10c542145bc751b89e2cc9f46d1ae2a45aacb9f83a402b11476d26f790",
+      "size_bytes": 2137
     },
     {
       "path": "include/sparkpipe/family/module/spark_module_lifecycle_entry.h",
@@ -9868,8 +9868,8 @@
     },
     {
       "path": "tests/test_llm_module_contract.c",
-      "sha256": "79df4bb8de472f8560f9985c70fbeec1f5ed9dabbd5838667f2c267db617fbe8",
-      "size_bytes": 15182
+      "sha256": "e23eb8080573f0d7ab9f1011fc1427baafa673bdd796aca6be7d03823e25459b",
+      "size_bytes": 17392
     },
     {
       "path": "tests/test_llm_module_contract_negative.c",
@@ -15265,5 +15265,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 73939935
+  "total_bytes": 73942312
 }

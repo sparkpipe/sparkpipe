@@ -5,6 +5,8 @@ static SparkStatus SPARK_FAMILY(ModuleKvPrepareFrame)(SPARK_FAMILY(ModuleState) 
 	LmKvFrameSlot frame_slot;
 	LmKvFrameTable frame_table;
 	SparkStatus status;
+	if ( state->kv.tier_active == 0u )
+		return(SPARK_STATUS_OK);
 	if ( context == 0 || context->decode_batch == 0 || table == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	frame_slot.cuda_stream = slot->cuda_stream;
