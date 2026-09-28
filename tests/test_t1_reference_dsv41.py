@@ -402,6 +402,18 @@ def main():
         diverged = compare(fixture_a, fixture_c)
         expect(diverged.returncode == 1,
                "perturbed expert weight must change the output fixtures")
+        compressed = os.path.join(workspace, "checkpoint_compressed")
+        write_checkpoint(compressed, mutate=(
+            "layers.1.attn.compressor.norm.weight", 0, 0x4100))
+        out_h = os.path.join(workspace, "run_h")
+        result_h = run_generator(compressed, header, prompts, out_h)
+        expect(result_h.returncode == 0,
+               f"compressor-perturbed generator failed: {result_h.stderr}")
+        attended = compare(fixture_a, os.path.join(out_h, "dsv41",
+                                                   "synth_a.t1r"))
+        expect(attended.returncode == 1,
+               "compressed KV rows must be attended: perturbing the "
+               "ratio-2 compressor norm must change the output fixtures")
         bad_header = os.path.join(workspace, "llm_defines_bad.h")
         write_defines(bad_header, hidden=17)
         mismatch = run_generator(checkpoint, bad_header, prompts,

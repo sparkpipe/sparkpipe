@@ -770,7 +770,7 @@ class Dsv41FlashEngine:
             shared.setdefault("index_k", {}).setdefault(layer, []).append(k)
             shared["index_owner"] = layer
         rows = shared.setdefault("index_k", {}).get(
-            shared.get("index_owner"), [])
+            shared.get("index_owner"), [])[:compress_len]
         keys = np.stack(rows) if rows else np.zeros(
             (0, self.index_dim), dtype=np.float32)
         q = self._linear(qr, p + "wq_b.weight").reshape(
@@ -801,7 +801,8 @@ class Dsv41FlashEngine:
         else:
             selected = np.argpartition(-index_score, topk - 1)[:topk]
         selected = np.sort(selected)
-        return (selected + offset).astype(np.int32)
+        return np.where(selected < compress_len, selected + offset,
+                        -1).astype(np.int32)
 
     def _layer_freqs(self, layer):
         if self.ratios[layer] > 0:
@@ -876,7 +877,7 @@ class Dsv41FlashEngine:
                     f"{len(rows)} rows, expected {compress_len}")
             if compress_len:
                 parts_rows.append(np.stack(rows))
-                parts_idx.append(np.asarray(idxs, dtype=np.int64) - offset)
+                parts_idx.append(np.asarray(idxs, dtype=np.int64))
         keys = np.concatenate(parts_rows, axis=0)
         index = np.concatenate(parts_idx)
         if _DEBUG:
@@ -893,7 +894,7 @@ class Dsv41FlashEngine:
         rows_max = np.maximum(full.max(axis=1), -1e30)
         weights = np.exp(full - rows_max[:, None])
         denom = weights.sum(axis=1) + np.exp(sink - rows_max)
-        o = (weights @ keys[index[valid]]) / denom[:, None]
+        o = (weights[:, valid] @ keys[index[valid]]) / denom[:, None]
         o = bf16_round_f32(o)
         o[:, -self.rope_dim:] = bf16_round_f32(self._rotate(
             o[:, -self.rope_dim:].copy(), table, position, inverse=True))
