@@ -92,6 +92,7 @@ def deployment(lane, codec, socket_path, kv_backing_bytes, max_sequence_position
     return {
         "schema_version": 2,
         "eos_token_ids": [EOS_TOKEN_ID],
+        "prefix_reuse": False,
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {"shared_object_path": "lib/model_driver.so", "program_name": "resident_decode"},
