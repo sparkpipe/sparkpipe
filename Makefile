@@ -575,6 +575,7 @@ PYTHON_TESTS := \
 	tests/test_hy4_fp8_scale_contract.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
+	tests/test_ling_reference_agreement.py \
 	tests/test_mesh_lane_ladder_receipt.py \
 	tests/test_mimo26_census.py \
 	tests/test_mimo26_stagepack.py \
