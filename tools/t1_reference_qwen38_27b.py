@@ -195,6 +195,9 @@ class Qwen38_27bEngine:
     def tensor(self, name):
         return bf16_to_f32(self.weight_u16(name))
 
+    def unit_gain(self, name):
+        return bf16_to_f32(self.st.pread(name).reshape(-1)) + np.float32(1.0)
+
     def linear(self, x, name):
         w16 = self.weight_u16(name + ".weight")
         out = np.empty(w16.shape[0], dtype=np.float32)
@@ -282,8 +285,8 @@ class Qwen38_27bEngine:
         qf = qf.reshape(self.heads, 2 * self.head_dim)
         value = qf[:, 0:self.head_dim].copy()
         gate = sigmoid(qf[:, self.head_dim:])
-        qn = bf16_to_f32(self.st.pread(prefix + "self_attn.q_norm.weight").reshape(-1))
-        kn = bf16_to_f32(self.st.pread(prefix + "self_attn.k_norm.weight").reshape(-1))
+        qn = self.unit_gain(prefix + "self_attn.q_norm.weight")
+        kn = self.unit_gain(prefix + "self_attn.k_norm.weight")
         value = value / np.sqrt((value * value).sum(axis=1, keepdims=True)
                                 / self.head_dim + self.eps) * qn[None, :]
         value = self.partial_rope(value, position)
@@ -319,7 +322,7 @@ class Qwen38_27bEngine:
     def forward_layer(self, index, streams, states, caches):
         prefix = PREFIX + str(index) + "."
         x = bf16_round_f32(rmsnorm(
-            streams, self.tensor(prefix + "input_layernorm.weight"), self.eps))
+            streams, self.unit_gain(prefix + "input_layernorm.weight"), self.eps))
         if self.layer_types[index] == "linear_attention":
             attention, states[index] = self.gdn_attention(prefix, x,
                                                           states.get(index))
@@ -330,7 +333,7 @@ class Qwen38_27bEngine:
             raise ValueError(f"unsupported layer type {self.layer_types[index]}")
         streams = bf16_round_f32(streams + attention)
         x = bf16_round_f32(rmsnorm(
-            streams, self.tensor(prefix + "post_attention_layernorm.weight"),
+            streams, self.unit_gain(prefix + "post_attention_layernorm.weight"),
             self.eps))
         return bf16_round_f32(streams + self.mlp(prefix, x))
 
@@ -355,7 +358,7 @@ class Qwen38_27bEngine:
 
     def logits(self, streams, chunk=4096):
         norm = bf16_round_f32(rmsnorm(
-            streams, self.tensor("model.language_model.norm.weight"), self.eps))
+            streams, self.unit_gain("model.language_model.norm.weight"), self.eps))
         entry = self.st.entry("lm_head.weight")
         if entry["dtype"] != "BF16":
             raise ValueError("reference lm_head must be BF16")
