@@ -286,6 +286,7 @@ TEST_NAMES := \
     test_dsv4_tp16_serving_adapter \
 	test_dsv4_tp4_pp4_serving_adapter \
     test_qwen38_27b_serving_adapter \
+    test_qwen38_27b_remote_spec \
     test_muse_glimmer_serving_adapter \
     test_gemma4_serving_adapter \
     test_gemma4_defines \
@@ -316,6 +317,9 @@ TEST_NAMES := \
 	test_k3_llm_defines \
 	test_k3_run_equivalence \
 	test_k3_attach_contract \
+	test_k3_pool_sizing \
+	test_k3_pack_bind \
+	test_k3_serving_adapter \
 	test_kv_model_table \
     test_nvme_tier \
     test_jit_kv_slice \
@@ -334,6 +338,9 @@ TEST_NAMES := \
     test_serial_tp_replay \
     test_speculation_policy_pin \
     test_speculation_tree_pin \
+    test_speculation_tree_resolve \
+    test_speculation_headers_coexist_provider_first \
+    test_speculation_headers_coexist_policy_first \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_tp_collective \
@@ -358,7 +365,6 @@ TEST_NAMES := \
     test_weightd_expert \
     test_stage_module_weightd \
     test_weightd_map \
-    test_weightd_mesh_doorbell \
     test_weightd_mesh_mock \
     test_module_library \
     test_speculation_provider_slot \
@@ -369,7 +375,11 @@ TEST_NAMES := \
 	test_dsv4_pool_layout \
 	test_dsv4_paged_cache \
     test_dsv4_stage_runner \
+    test_dsv4_committed_configs \
     test_tensor_map_geometry \
+    test_tensor_map_encode \
+    test_kv_geometry \
+    test_mma_fragment_mapping \
     test_weight_codec \
     test_topology_switch \
     test_qwen38_math_kernels \
@@ -379,7 +389,8 @@ TEST_NAMES := \
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 SHELL_TESTS := \
-	tests/fuzz_system_loopback.sh
+	tests/fuzz_system_loopback.sh \
+	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
 	tests/test_glm5_next_compsec17.py \
 	tests/test_weightd_supervised.py \
@@ -434,6 +445,8 @@ PYTHON_TESTS := \
 	tests/test_glm52_quantized_cuda_contract.py \
 	tests/test_glm52_stage_pack.py \
 	tests/test_glm52_unity_precision_contract.py \
+	tests/test_glm52_validate_pack_mirror.py \
+	tests/test_glm52_validate_pack_stage.py \
 	tests/test_gqa_host.py \
 	tests/test_grouped_moe_source_contracts.py \
 	tests/test_hardware_topology.py \
@@ -514,7 +527,9 @@ PYTHON_TESTS := \
 	tests/test_router_precision_contract.py \
 	tests/test_situ_activation.py \
 	tests/test_sources_exist.py \
+	tests/test_unlinked_components.py \
 	tests/test_staging_manifest.py \
+	tests/test_stagepack_mtp_strip_qwen36sp.py \
 	tests/test_template_adoption.py \
 	tests/test_driver_defines.py \
 	tests/test_hy4_llm_defines.py \
@@ -551,9 +566,12 @@ PYTHON_TESTS := \
 	tests/test_stage_module_teardown.py \
 	tests/test_acc_parity_oracle.py \
 	tests/test_ds4_spark_brickproof.py \
+	tests/test_dsv41_flash_layer0_anchor.py \
+	tests/test_dsv41_flash_pack_contract.py \
 	tests/test_dsv41_flash_shared_lane.py \
 	tests/test_dsv41_flash_smoke_experts.py \
 	tests/test_dsv41_flash_stagepack.py \
+	tests/test_dsv41_verify_pack.py \
 	tests/test_dsv4_hc_residual_fusion_source.py \
 	tests/test_dsv4_indexer_post_fusion_source.py \
 	tests/test_dsv4_pro_exact32k_stage.py \
@@ -610,9 +628,12 @@ PYTHON_TESTS := \
 	tests/test_tp_standalone_configuration.py \
 	tests/test_weightd_map_fd_ownership.py \
 	tests/test_weightd_mesh_source.py \
-	tests/test_weightd_warm_family_dsv41_flash.py \
-	tests/test_weightd_warm_family_ling.py
-PYTHON_TEST_BINARIES := build/test_tiktoken_compiled
+	tests/test_weightd_warm_family.py
+PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
+	build/weightd_lazy_consumer \
+	build/dsv41_flash_pack_synthesize \
+	build/dsv41_flash_experts_manifest \
+	build/test_dsv41_flash_pack_contract
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
     build/test_modules/module_add_one.o \
@@ -636,6 +657,8 @@ TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE := \
     build/test_modules/libdsv4_tp4_pp4_serving_driver_module.$(SHARED_LIBRARY_EXT)
 TEST_QWEN38_27B_SERVING_DRIVER_MODULE := \
     build/test_modules/libqwen38_27b_serving_driver_module.$(SHARED_LIBRARY_EXT)
+TEST_QWEN38_27B_REMOTE_SPEC_DRIVER_MODULE := \
+    build/test_modules/libqwen38_27b_remote_spec_driver.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
     build/test_modules/libmodel_resident_transport_module.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
@@ -729,9 +752,11 @@ GLM5_NEXT_ROOFLINE_DEPS = tools/glm5_next_batch_roofline.cu modules/glm5_next_re
 build:
 	mkdir -p build
 
+build/test_glm5_next_head_offset: tests/test_glm5_next_head_offset.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
 .PHONY: test-glm-head-offset
-test-glm-head-offset: | build
-	$(GLM5_NEXT_NVCC) tests/test_glm5_next_head_offset.cu $(GLM5_NEXT_CUDA_LINK) -o build/test_glm5_next_head_offset
+test-glm-head-offset: build/test_glm5_next_head_offset
 	./build/test_glm5_next_head_offset
 
 build/test_glm5_next_hc_mix: tests/test_glm5_next_hc_mix.cu tests/fixtures/glm5_next_hc_mix_baseline.cuh inference/kernels/skinny.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
@@ -939,8 +964,19 @@ ifeq ($(strip $(HOST_CUDA_CXX)),)
 HOST_CUDA_CXX := g++
 endif
 
-build/test_k3_attach_contract: tests/test_k3_attach_contract.c modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h include/sparkpipe/spark_status.h | build
-	$(CC) $(CPPFLAGS) -I. -Iinclude -Imodules/k3_resident_decode_stage/include $(CFLAGS) $< $(LDFLAGS) -ldl -o $@
+build/test_k3_attach_contract: tests/test_k3_attach_contract.c modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h include/sparkpipe/spark_status.h $(K3_SERVING_ADAPTER) | build
+	@if [ -f "$(K3_SERVING_ADAPTER)" ]; then $(CC) $(CPPFLAGS) -I. -Iinclude -Imodules/k3_resident_decode_stage/include -DTEST_K3_SERVING_ADAPTER_PATH=\"$(K3_SERVING_ADAPTER)\" $(CFLAGS) $< $(LDFLAGS) -ldl -o $@; else echo "SKIP $@ ($(K3_SERVING_ADAPTER) not built on this host; spark-gated test)"; fi
+
+build/test_k3_pool_sizing: tests/test_k3_pool_sizing.c modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_pool_sizing.h model-families/k3/include/sparkpipe/spark_k3_llm_defines.h | build
+	$(CC) -I. -Iinclude -Imodel-families/k3/include -Imodules/k3_resident_decode_stage/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+K3_PACK_BIND_SOURCES := modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c
+
+build/test_k3_pack_bind: tests/test_k3_pack_bind.c $(K3_PACK_BIND_SOURCES) $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/k3/include -Imodules/k3_resident_decode_stage/include $(CFLAGS) $< $(K3_PACK_BIND_SOURCES) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_k3_serving_adapter: tests/test_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/configs/model_resident.json $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_k3_run_equivalence: tests/host_cuda/k3_run_equivalence.cu tests/host_cuda/lm_host_cuda.cuh inference/kernels/linear_attn.cuh inference/kernels/norm.cuh inference/kernels/dtype.cuh
 	$(HOST_CUDA_CXX) -std=c++17 -O0 -Itests/host_cuda/shim -I. -Itests/host_cuda -Imodel-families/common/include -Iinclude -x c++ $< -o $@
@@ -1083,6 +1119,9 @@ $(TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE): tests/fixtures/dsv4_serving_adapter_
 $(TEST_QWEN38_27B_SERVING_DRIVER_MODULE): tests/fixtures/qwen38_27b_serving_adapter_driver.c modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(QWEN38_27B_MODEL_DESCRIPTION) | build/test_modules
 	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include $(CFLAGS) $(QWEN38_27B_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
+$(TEST_QWEN38_27B_REMOTE_SPEC_DRIVER_MODULE): tests/fixtures/qwen38_27b_remote_spec_driver.c modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_resident_decode_stage_firmware.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(QWEN38_27B_MODEL_DESCRIPTION) | build/test_modules
+	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include $(CFLAGS) $(QWEN38_27B_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
 $(TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE): tests/fixtures/muse_glimmer_serving_adapter_driver.c modules/muse_glimmer_resident_decode_stage/include/sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h model-families/muse_glimmer/include/sparkpipe/spark_muse_glimmer_model.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(MUSE_GLIMMER_CONTRACT_SOURCE) $(MUSE_GLIMMER_DESCRIPTION_SOURCE) | build/test_modules
 	$(CC) $(CPPFLAGS) $(MUSE_GLIMMER_INCLUDE_FLAGS) $(CFLAGS) $(MUSE_GLIMMER_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
@@ -1204,6 +1243,9 @@ build/test_dsv4_tp4_pp4_serving_adapter: tests/test_dsv4_tp4_pp4_serving_adapter
 build/test_qwen38_27b_serving_adapter: tests/test_qwen38_27b_serving_adapter.c tests/fixtures/qwen38_27b_serving_adapter_config.json tests/fixtures/qwen38_27b_serving_adapter_config_stale.json tests/fixtures/qwen38_27b_serving_adapter_config_absolute.json tests/fixtures/qwen38_27b_serving_adapter_config_overrun.json $(QWEN38_27B_SERVING_ADAPTER) $(TEST_QWEN38_27B_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include -DTEST_QWEN38_27B_SERVING_ADAPTER_PATH=\"$(QWEN38_27B_SERVING_ADAPTER)\" -DTEST_QWEN38_27B_SERVING_DRIVER_PATH=\"$(TEST_QWEN38_27B_SERVING_DRIVER_MODULE)\" -DTEST_QWEN38_27B_SERVING_CONFIG_PATH=\"tests/fixtures/qwen38_27b_serving_adapter_config.json\" -DTEST_QWEN38_27B_SERVING_STALE_CONFIG_PATH=\"tests/fixtures/qwen38_27b_serving_adapter_config_stale.json\" -DTEST_QWEN38_27B_SERVING_ABSOLUTE_CONFIG_PATH=\"tests/fixtures/qwen38_27b_serving_adapter_config_absolute.json\" -DTEST_QWEN38_27B_SERVING_OVERRUN_CONFIG_PATH=\"tests/fixtures/qwen38_27b_serving_adapter_config_overrun.json\" $(CFLAGS) tests/test_qwen38_27b_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
+build/test_qwen38_27b_remote_spec: tests/test_qwen38_27b_remote_spec.c $(QWEN38_27B_SERVING_ADAPTER) $(TEST_QWEN38_27B_REMOTE_SPEC_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(QWEN38_27B_INCLUDE_FLAGS) -Imodules/qwen38_27b_resident_decode_stage/include -DQWEN38_27B_MODEL_REVISION=\"$(QWEN38_27B_MODEL_REVISION)\" $(QWEN38_27B_SERVING_TOPOLOGY_FLAGS) -DTEST_QWEN38_27B_REMOTE_SPEC_ADAPTER_PATH=\"$(QWEN38_27B_SERVING_ADAPTER)\" -DTEST_QWEN38_27B_REMOTE_SPEC_DRIVER_PATH=\"$(TEST_QWEN38_27B_REMOTE_SPEC_DRIVER_MODULE)\" $(CFLAGS) tests/test_qwen38_27b_remote_spec.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
 build/test_muse_glimmer_serving_adapter: tests/test_muse_glimmer_serving_adapter.c tests/fixtures/muse_glimmer_serving_adapter_config.json $(MUSE_GLIMMER_SERVING_ADAPTER) $(TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(MUSE_GLIMMER_INCLUDE_FLAGS) -DMUSE_MODEL_REVISION=\"$(MUSE_GLIMMER_MODEL_REVISION)\" -DTEST_MUSE_GLIMMER_SERVING_ADAPTER_PATH=\"$(MUSE_GLIMMER_SERVING_ADAPTER)\" -DTEST_MUSE_GLIMMER_SERVING_DRIVER_PATH=\"$(TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE)\" -DTEST_MUSE_GLIMMER_SERVING_CONFIG_PATH=\"tests/fixtures/muse_glimmer_serving_adapter_config.json\" -DTEST_MUSE_GLIMMER_MODEL_REVISION=\"$(MUSE_GLIMMER_MODEL_REVISION)\" $(CFLAGS) tests/test_muse_glimmer_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
@@ -1248,6 +1290,16 @@ runtime_completion_tests: build/test_runtime_completion build/test_model_runtime
 build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cuda_driver_stub/stub.c runtime/gemm_descriptor_cache.h | build
 	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_gemm_descriptor_cache_stub.o
 	$(CXX) $(CPPFLAGS) -I. -Itests/cuda_driver_stub $(CXXFLAGS) tests/test_gemm_descriptor_cache.cpp build/test_gemm_descriptor_cache_stub.o $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_tensor_map_encode: tests/test_tensor_map_encode.c tests/cuda_driver_stub/stub.c runtime/tensor_map.h inference/kernels/tensor_map.cuh | build
+	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_tensor_map_encode_stub.o
+	$(CXX) -x c++ -D__host__= -D__device__= -D__forceinline__=inline $(CORE_INCLUDE_FLAGS) -Itests/cuda_driver_stub $(CXXFLAGS) -Wno-unused-function tests/test_tensor_map_encode.c -x none build/test_tensor_map_encode_stub.o $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kv_geometry: tests/test_kv_geometry.cc inference/kernels/kv.cuh common/common_glm_cuda_tree/spark_glm_cuda_config.h model-families/glm52/include/sparkpipe/llm_defines.h | build
+	$(CXX) $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm52/include $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_mma_fragment_mapping: tests/test_mma_fragment_mapping.c tests/host_cuda/lm_host_cuda.cuh inference/kernels/mma.cuh inference/kernels/layout.cuh inference/kernels/dtype.cuh | build
+	$(HOST_CUDA_CXX) -std=c++17 -O2 -Wall -Wextra -Werror -Wno-unused-function -Itests/host_cuda/shim -I. -Itests/host_cuda -Imodel-families/common/include -Iinclude -x c++ $< -o $@
 
 build/test_launch: tests/test_launch.c runtime/launch.h inference/kernels/layout.cuh | build
 	$(CXX) -x c++ -D__host__= -D__device__= $(CPPFLAGS) $(CXXFLAGS) -Wno-unused-function $< $(LDFLAGS) $(LDLIBS) -o $@
@@ -1374,7 +1426,7 @@ build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_
 build/test_rope_plan: tests/test_rope_plan.c model-families/common/include/sparkpipe/spark_rope_plan.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/llm_defines.h model-families/common/include/sparkpipe/spark_driver_defines.h
 	$(CC) -Imodel-families/laguna/include $(CPPFLAGS) $(CFLAGS) -I. -Imodel-families/common/include -Imodel-families/laguna/include $< -lm -o $@
 
-build/test_serving_tp_config: tests/test_serving_tp_config.c include/sparkpipe/spark_serving_adapter_template.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+build/test_serving_tp_config: tests/test_serving_tp_config.c include/sparkpipe/spark_serving_adapter_template.h $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
 build/mb_doorbell: tools/mb_doorbell.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
@@ -1417,6 +1469,15 @@ build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_repla
 build/test_speculation_tree_pin: tests/test_speculation_tree_pin.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_speculation_tree_resolve: tests/test_speculation_tree_resolve.c $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_headers_coexist_provider_first: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_policy.h include/sparkpipe/spark_speculation_provider.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_headers_coexist_policy_first: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_policy.h include/sparkpipe/spark_speculation_provider.h | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_COEXIST_POLICY_FIRST $< $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_glm52_dspark: tests/test_glm52_dspark.c modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1445,12 +1506,11 @@ build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY)
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 
-build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 HY4_SMOKE_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/hy4/include -Imodules/hy4_resident_decode_stage/include -Imodules/hy4_resident_decode_stage/source
-HY4_SMOKE_SOURCES := tests/test_hy4_lifecycle_smoke.c \
-	modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c \
+HY4_MODULE_TEST_SOURCES := modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c \
 	runtime/stage_module_lifecycle.c \
 	runtime/stage_module_common.c \
 	$(SPARKPIPE_WEIGHTD_SOURCES) \
@@ -1461,8 +1521,8 @@ HY4_SMOKE_SOURCES := tests/test_hy4_lifecycle_smoke.c \
 	runtime/filesystem.c \
 	tests/cuda_stub/cuda_runtime_stub.c
 
-build/test_hy4_lifecycle_smoke: $(HY4_SMOKE_SOURCES) | build
-	$(CC) $(HY4_SMOKE_INCLUDE_FLAGS) $(CFLAGS) $(HY4_SMOKE_SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_hy4_lifecycle_smoke build/test_hy4_driver_acceptance: build/%: tests/%.c $(HY4_MODULE_TEST_SOURCES) | build
+	$(CC) $(HY4_SMOKE_INCLUDE_FLAGS) $(CFLAGS) $< $(HY4_MODULE_TEST_SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dsv4_w1_loader: tests/test_dsv4_w1_loader.c src/spark_sha256.c src/spark_status.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Itests $(CFLAGS) $^ $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(LDFLAGS) -o $@
@@ -1480,6 +1540,18 @@ build/sparkpipe_weightsd: node/weightd.c node/weightd_mesh.c $(RUNTIME_LIBRARY) 
 
 build/glm5_next_experts_manifest: tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/glm5_next/include $(CFLAGS) tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+DSV41_FLASH_PACK_TOOL_FLAGS := $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/dsv41_flash/include -Imodules/dsv41_flash_resident_decode_stage/include -Imodules/dsv41_flash_resident_decode_stage/source -D_FILE_OFFSET_BITS=64
+DSV41_FLASH_PACK_FORMAT_HEADER := modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h
+
+build/dsv41_flash_pack_synthesize: modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_pack_synthesize.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/dsv41_flash_experts_manifest: modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_experts_manifest.c src/spark_ck128.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< src/spark_ck128.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv41_flash_pack_contract: tests/test_dsv41_flash_pack_contract.c src/spark_ck128.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< src/spark_ck128.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/dsv4_pro_experts_manifest: tools/dsv4_pro_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tools/dsv4_pro_experts_manifest.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1536,9 +1608,6 @@ build/test_stage_module_weightd: tests/test_stage_module_weightd.c runtime/stage
 build/test_weightd_map: tests/test_weightd_map.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-build/test_weightd_mesh_doorbell: tests/test_weightd_mesh_doorbell.c include/sparkpipe/spark_weightd.h | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
-
 build/test_weightd_mesh_mock: tests/test_weightd_mesh_mock.c node/weightd_mesh.c tests/ibv_stub/verbs.c tests/cuda_stub/cuda_runtime_stub.c tests/ibv_stub/infiniband/verbs.h tests/ibv_stub/sys/mman.h $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Itests/ibv_stub -DSPARK_WEIGHTD_MESH_DIR=\"/tmp/spark-weightd-mesh-mock\" $(CFLAGS) tests/test_weightd_mesh_mock.c tests/ibv_stub/verbs.c tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1563,6 +1632,9 @@ build/test_dsv4_lane_continuity: tests/test_dsv4_lane_continuity.c modules/dsv4_
 
 build/test_dsv4_tp_graph_contract: tests/test_dsv4_tp_graph_contract.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h
 	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_committed_configs: tests/test_dsv4_committed_configs.c modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h $(DSV4_HOST_LIBRARY) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/include $(CFLAGS) $< $(DSV4_HOST_LIBRARY) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dsv4_pool_layout: tests/test_dsv4_pool_layout.c modules/dsv4_resident_decode_stage/source/spark_dsv4_pool_layout.h
 	$(CC) $(DSV4_INCLUDE_FLAGS) -Imodules/dsv4_resident_decode_stage/include -Imodules/dsv4_resident_decode_stage/source $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@

@@ -610,17 +610,29 @@ door and the static pages and playground in `site/`.
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
-- Nine Python tests stay outside `make test`:
-  - five drive the fleet over ssh: `test_expert_io_perf`,
-    `test_jit_kv_page_fault`, `test_lossless_doorbell`,
-    `test_memory_bandwidth_budget` and `test_transport_stability`;
-  - three read whole synthetic packs into memory and fail with
-    `MemoryError` on a 7 GB host: `test_dsv41_flash_layer0_anchor`,
-    `test_dsv41_verify_pack` and `test_glm52_validate_pack_stage`;
-  - `test_stagepack_mtp_strip_qwen36sp` fails removing its temporary
-    directory in a sandbox.
-
-  Give the fleet tests a runner, stream the packs, and register all nine.
+- Four Python tests stay outside `make test` because they drive the fleet
+  over ssh: `test_expert_io_perf`, `test_jit_kv_page_fault`,
+  `test_lossless_doorbell` and `test_transport_stability`. Give them a
+  runner and register them.
+- `test_hy4_driver_acceptance` has a build rule but stays out of
+  `TEST_NAMES`: it holds the behaviour a complete hy4 driver must show and
+  fails on the current stub module. Register it with the hy4 driver.
+- Four K3 test sources have no build rule and no runner:
+  `test_k3_serving_adapter_smoke.c` needs an adapter configuration argument,
+  and `test_k3_interleave_gemm.cu`, `test_k3_layer_probe.cu` and
+  `test_k3_swizzle_probe.cu` are sm_121a probes. Each needs an nvcc-gated
+  rule and a Spark runner, or deletion.
+- Eleven C tests are neither registered nor run anywhere. Ten should be
+  deleted: `test_cache`, `test_sideband`, `test_group_gemm_workspace` and
+  `test_state_pool` test headers no product includes (`cache/cache.h`,
+  `ring/sideband.h` and `runtime/workspace.h` go with them;
+  `spark_state_pool.h` is still used by `test_k3_kv_cache`);
+  `test_continuous_batch_decode`, `test_multi_row_prefill`, `test_pack`,
+  `test_dequant` and `test_reference` (with `tests/reference.h`) test local
+  reimplementations; `test_graph_replay_kernel_abi` checks a mesh-kernel
+  marker the module build already verifies. `test_graph_replay_correctness`
+  is a GPU rig with private kernel prototypes and no build rule; it needs an
+  nvcc-gated rule on the shared kernel headers and a Spark runner.
 
 ## Hardware independence
 

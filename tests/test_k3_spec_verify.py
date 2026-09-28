@@ -19,6 +19,8 @@ Scenarios (driven through tests/host_cuda/k3_spec_verify_host.c):
        (remainder to the leading ranks, empty tails past the context) and the
        two-range online-softmax merge reproduces the direct value
 """
+import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -31,7 +33,8 @@ def main():
     with tempfile.TemporaryDirectory() as scratch:
         binary = Path(scratch) / "k3_spec_verify_host"
         build = subprocess.run(
-            ["cc", "-std=c11", "-O1", "-I", str(ROOT),
+            shlex.split(os.environ.get("CC", "cc")) +
+            ["-std=c11", "-O1", "-I", str(ROOT),
              str(ROOT / "tests" / "host_cuda" / "k3_spec_verify_host.c"),
              "-o", str(binary), "-lm"],
             capture_output=True, text=True)

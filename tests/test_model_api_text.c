@@ -126,7 +126,9 @@ static void TestApiWriteTokenizerFixture(const char *path)
 		"    {\"id\": 4402, \"content\": \"[gMASK]\", \"special\": true},\n"
 		"    {\"id\": 4403, \"content\": \"<sop>\", \"special\": true},\n"
 		"    {\"id\": 4404, \"content\": \"<|observation|>\", \"special\": true},\n"
-		"    {\"id\": 4405, \"content\": \"<|system|>\", \"special\": true}\n"
+		"    {\"id\": 4405, \"content\": \"<|system|>\", \"special\": true},\n"
+		"    {\"id\": 4406, \"content\": \"<think>\", \"special\": false},\n"
+		"    {\"id\": 4407, \"content\": \"</think>\", \"special\": false}\n"
 		"  ]\n"
 		"}\n",
 		"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}{1,3}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+");
@@ -730,121 +732,137 @@ static const char *TestApiLastMeasurements(const char *log_data)
 	return last;
 }
 
-/* The chat endpoint must render messages through the GLM chat layout, not a
- * bare concatenation: the served prompt ids (recorded as prompt_sha256 over
- * the token ids in the API's measurements log) must equal a locally encoded
- * [gMASK]<sop>…<|assistant|>\n template for single- and multi-turn input. */
-static void TestApiChatTemplateServing(TestApiStack *stack,
-	const SparkTokenizerSidecar *sidecar)
+static unsigned TestApiMeasurementCount(const char *log_data)
 {
-	static const char single_turn[] = "[gMASK]<sop><|user|>\nhi<|assistant|>\n";
-	static const char multi_turn[] =
-		"[gMASK]<sop><|system|>\nYou are terse.<|user|>\nhi"
-		"<|assistant|>\nok<|user|>\nbye<|assistant|>\n";
+	const char *field;
+	unsigned count = 0u;
+	for ( field = strstr(log_data,"request_measurements");
+		field != 0;
+		field = strstr(field + 1,"request_measurements") )
+		count++;
+	return count;
+}
+
+static void TestApiChatPromptServed(TestApiStack *stack,
+	const SparkTokenizerSidecar *sidecar, const char *body,
+	const char *expected_text, unsigned *measurements_seen)
+{
 	char expected_hex[SPARK_SHA256_HEX_BYTES];
 	char response[65536];
-	char *log_data;
+	char *log_data = 0;
 	const char *measurements;
 	const char *field;
 	uint32_t expected_ids[256];
 	uint32_t expected_count;
-	uint32_t logged_tokens;
-	unsigned measurements_before;
-	unsigned measurements_after;
 	struct timespec delay = {0,2000000};
 	unsigned attempt;
 
-	log_data = TestApiReadFile(stack->api_stderr_path);
-	assert(log_data != 0);
-	measurements_before = 0u;
-	for ( field = strstr(log_data,"request_measurements");
-		field != 0;
-		field = strstr(field + 1,"request_measurements") )
-		measurements_before++;
-	free(log_data);
-
-	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",
-		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":2}",
+	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",body,
 		response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
 	assert(TestApiBodyContains(TestApiResponseJsonBody(response),
 		"\"object\":\"chat.completion\""));
-
-	expected_count = TestApiEncodeExpected(sidecar,single_turn,
+	expected_count = TestApiEncodeExpected(sidecar,expected_text,
 		expected_ids,sizeof(expected_ids) / sizeof(expected_ids[0]));
 	assert(SparkSha256Bytes(expected_ids,
 		(size_t)expected_count * sizeof(uint32_t),expected_hex) == SPARK_STATUS_OK);
-
-	log_data = 0;
-	measurements_after = 0u;
 	for ( attempt = 0u; attempt < 500u; attempt++ )
 	{
 		log_data = TestApiReadFile(stack->api_stderr_path);
 		assert(log_data != 0);
-		measurements_after = 0u;
-		for ( field = strstr(log_data,"request_measurements");
-			field != 0;
-			field = strstr(field + 1,"request_measurements") )
-			measurements_after++;
-		if ( measurements_after > measurements_before )
+		if ( TestApiMeasurementCount(log_data) > *measurements_seen )
 			break;
 		free(log_data);
 		log_data = 0;
 		nanosleep(&delay,0);
 	}
-	assert(log_data != 0 && measurements_after == measurements_before + 1u);
+	assert(log_data != 0 && TestApiMeasurementCount(log_data) == *measurements_seen + 1u);
+	*measurements_seen += 1u;
 	measurements = TestApiLastMeasurements(log_data);
 	field = strstr(measurements,"\"prompt_tokens\":");
 	assert(field != 0);
-	logged_tokens = (uint32_t)strtoul(field + 16,0,10);
-	assert(logged_tokens == expected_count);
+	assert((uint32_t)strtoul(field + 16,0,10) == expected_count);
 	field = strstr(measurements,"\"prompt_sha256\":\"");
 	assert(field != 0);
 	assert(strncmp(field + 17,expected_hex,SPARK_SHA256_HEX_BYTES - 1u) == 0);
 	free(log_data);
+}
 
-	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",
+static void TestApiChatOptionRejected(TestApiStack *stack, const char *path,
+	const char *body)
+{
+	char response[65536];
+	TestApiHttpCall(stack->api_port,"POST",path,body,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),
+		"\"code\":\"invalid_option\""));
+}
+
+static void TestApiChatTemplateServing(TestApiStack *stack,
+	const SparkTokenizerSidecar *sidecar)
+{
+	static const char thinking_off[] =
+		"[gMASK]<sop><|user|>\nhi<|assistant|>\n<think></think>\n";
+	static const char thinking_on[] =
+		"[gMASK]<sop><|user|>\nhi<|assistant|>\n<think>";
+	char expected[512];
+	char *log_data;
+	unsigned measurements_seen;
+
+	log_data = TestApiReadFile(stack->api_stderr_path);
+	assert(log_data != 0);
+	measurements_seen = TestApiMeasurementCount(log_data);
+	free(log_data);
+
+	TestApiChatPromptServed(stack,sidecar,
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":2}",
+		thinking_off,&measurements_seen);
+	TestApiChatPromptServed(stack,sidecar,
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":2,"
+		"\"chat_template_kwargs\":{\"enable_thinking\":false}}",
+		thinking_off,&measurements_seen);
+	TestApiChatPromptServed(stack,sidecar,
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":2,"
+		"\"chat_template_kwargs\":{\"enable_thinking\":true}}",
+		thinking_on,&measurements_seen);
+
+	(void)snprintf(expected,sizeof(expected),"%sok<|user|>\nbye%s",
+		thinking_off,strstr(thinking_off,"<|assistant|>"));
+	TestApiChatPromptServed(stack,sidecar,
 		"{\"messages\":["
-		"{\"role\":\"system\",\"content\":\"You are terse.\"},"
 		"{\"role\":\"user\",\"content\":\"hi\"},"
 		"{\"role\":\"assistant\",\"content\":\"ok\"},"
 		"{\"role\":\"user\",\"content\":\"bye\"}],\"max_tokens\":2}",
-		response,sizeof(response));
-	assert(TestApiResponseStatus(response) == 200);
+		expected,&measurements_seen);
+	(void)snprintf(expected,sizeof(expected),
+		"[gMASK]<sop><|system|>\nYou are terse.%sr</think>ok<|user|>\nbye%s",
+		strstr(thinking_on,"<|user|>"),strstr(thinking_on,"<|assistant|>"));
+	TestApiChatPromptServed(stack,sidecar,
+		"{\"messages\":["
+		"{\"role\":\"system\",\"content\":\"You are terse.\"},"
+		"{\"role\":\"user\",\"content\":\"hi\"},"
+		"{\"role\":\"assistant\",\"content\":\"r</think>ok\"},"
+		"{\"role\":\"user\",\"content\":\"bye\"}],\"max_tokens\":2,"
+		"\"chat_template_kwargs\":{\"enable_thinking\":true}}",
+		expected,&measurements_seen);
 
-	expected_count = TestApiEncodeExpected(sidecar,multi_turn,
-		expected_ids,sizeof(expected_ids) / sizeof(expected_ids[0]));
-	assert(SparkSha256Bytes(expected_ids,
-		(size_t)expected_count * sizeof(uint32_t),expected_hex) == SPARK_STATUS_OK);
-
-	log_data = 0;
-	for ( attempt = 0u; attempt < 500u; attempt++ )
-	{
-		log_data = TestApiReadFile(stack->api_stderr_path);
-		assert(log_data != 0);
-		measurements_after = 0u;
-		for ( field = strstr(log_data,"request_measurements");
-			field != 0;
-			field = strstr(field + 1,"request_measurements") )
-			measurements_after++;
-		if ( measurements_after > measurements_before + 1u )
-			break;
-		free(log_data);
-		log_data = 0;
-		nanosleep(&delay,0);
-	}
-	assert(log_data != 0 && measurements_after == measurements_before + 2u);
-	measurements = TestApiLastMeasurements(log_data);
-	field = strstr(measurements,"\"prompt_tokens\":");
-	assert(field != 0);
-	logged_tokens = (uint32_t)strtoul(field + 16,0,10);
-	assert(logged_tokens == expected_count);
-	field = strstr(measurements,"\"prompt_sha256\":\"");
-	assert(field != 0);
-	assert(strncmp(field + 17,expected_hex,SPARK_SHA256_HEX_BYTES - 1u) == 0);
+	TestApiChatOptionRejected(stack,"/v1/chat/completions",
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+		"\"chat_template_kwargs\":{\"enable_thinking\":\"yes\"}}");
+	TestApiChatOptionRejected(stack,"/v1/chat/completions",
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+		"\"chat_template_kwargs\":{\"enable_thinking\":false,\"reasoning_effort\":\"low\"}}");
+	TestApiChatOptionRejected(stack,"/v1/chat/completions",
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+		"\"chat_template_kwargs\":true}");
+	TestApiChatOptionRejected(stack,"/v1/completions",
+		"{\"prompt\":\"hi\",\"chat_template_kwargs\":{\"enable_thinking\":true}}");
+	log_data = TestApiReadFile(stack->api_stderr_path);
+	assert(log_data != 0 && TestApiMeasurementCount(log_data) == measurements_seen);
 	free(log_data);
-	printf("test_model_api_text: chat template OK (single- and multi-turn "
-		"prompts carry [gMASK]<sop> markers, roles and the assistant header)\n");
+	printf("test_model_api_text: chat template OK (thinking off by default as "
+		"COMPSEC-17 validates, enable_thinking opens <think>, past assistant "
+		"turns extend the prior prompt, malformed chat_template_kwargs is 400)\n");
 }
 
 static void TestApiMissingAssetIsFatal(void)

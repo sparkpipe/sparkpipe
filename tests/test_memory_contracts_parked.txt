@@ -15,6 +15,9 @@
 # allowlist spreads into glm5_next tools).
 # Re-pinned 2026-09-24 to the tree as merged at 68e80c07 plus the cleanup
 # branch: the gate had not run in CI and 185 new sites had accumulated.
+# Re-scoped 2026-09-28: GLM literal and scalar checks skip trees owned by
+# non-GLM families (model-families/<family>, modules/<family>_*,
+# qualification/<family>, tools naming the family); 26 entries pruned.
 1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES is not derived from its wire type
 1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_DESCRIPTOR_BYTES is not derived from its wire type
 1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES is not derived from its wire type
@@ -29,12 +32,6 @@
 1 model-families/glm5_next/include/sparkpipe/llm_defines.h: GLM model literal 154880 is outside the model contract
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 12288 is outside the model contract
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 154880 is outside the model contract
-1 model-families/hy4/include/sparkpipe/llm_defines.h: GLM model literal 6144 is outside the model contract
-1 model-families/laguna/include/sparkpipe/llm_defines.h: GLM model literal 12288 is outside the model contract
-1 model-families/ling/include/sparkpipe/llm_defines.h: GLM model literal 6144 is outside the model contract
-1 model-families/mimo26/include/sparkpipe/spark_mimo26_model.h: GLM model literal 12288 is outside the model contract
-1 model-families/mimo26/include/sparkpipe/spark_mimo26_pro_model.h: GLM model literal 6144 is outside the model contract
-2 model-families/qwen4_flash/include/sparkpipe/llm_defines.h: GLM model literal 6144 is outside the model contract
 19 modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_engram_access.c: memcpy uses a direct size/count literal
 1 modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_resident_decode_stage_module.c: memcpy uses a direct size/count literal
 1 modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_attach_probe.c: memset uses a raw byte-width multiplier
@@ -100,7 +97,6 @@
 1 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
 4 node/weightd_mesh.c: memcpy uses a direct size/count literal
 1 node/weightd_spawn.c: fread uses a direct size/count literal
-1 qualification/dsv4/performance/tp4_b1_20260814/indexer_post_fusion_probe_da7f/probe.cu: GLM model literal 12288 is outside the model contract
 2 ring/transport/fixed_ring.c: memcpy uses a direct size/count literal
 1 runtime/spark_weightd.c: fread uses a direct size/count literal
 1 runtime/spark_weightd.c: memcpy uses a direct size/count literal
@@ -108,17 +104,12 @@
 1 runtime/spark_weightd_manifest.c: memcpy uses a direct size/count literal
 4 runtime/spark_weightd_spine.c: memcpy uses a direct size/count literal
 4 src/spark_ck128.c: memcpy uses a direct size/count literal
-1 tools/dev/ling_gemm_repro.cu: GLM model literal 12288 is outside the model contract
-2 tools/dev/ling_gemm_repro.cu: GLM model literal 6144 is outside the model contract
 3 tools/dev/ling_gemm_repro.cu: cudaMalloc uses a raw byte-width multiplier
 3 tools/dev/ling_gemm_repro.cu: cudaMemset uses a raw byte-width multiplier
 1 tools/devcycle/bw_probe.cu: cudaMalloc uses a direct size/count literal
-1 tools/dsv41_flash_engram_shard.py: GLM model literal 6144 is outside the model contract
 5 tools/dsv4_pro_experts_manifest.c: memcpy uses a direct size/count literal
-1 tools/dsv4_tp16_stagepack.py: GLM model literal 6144 is outside the model contract
 1 tools/gen_geometry_header.py: GLM model literal 12288 is outside the model contract
 1 tools/gen_geometry_header.py: GLM model literal 576 is outside the model contract
-1 tools/generate_hy4_contracts.py: GLM model literal 6144 is outside the model contract
 5 tools/glm52_experts_manifest.c: memcpy uses a direct size/count literal
 1 tools/glm52_resident_stagepack.py: GLM model literal 576 is outside the model contract
 1 tools/glm52_resident_stagepack.py: GLM model literal 6144 is outside the model contract
@@ -152,7 +143,6 @@
 3 tools/hy4_experts_manifest.c: memcpy uses a direct size/count literal
 1 tools/hy4_experts_manifest_v2.c: fread uses a direct size/count literal
 9 tools/hy4_experts_manifest_v2.c: memcpy uses a direct size/count literal
-1 tools/hy4_fp8_scale_contract.py: GLM model literal 6144 is outside the model contract
 2 tools/hy4_gpu/experts_ck128_check.c: fread uses a direct size/count literal
 2 tools/hy4_gpu/experts_ck128_check.c: memcmp uses a direct size/count literal
 6 tools/hy4_gpu/experts_ck128_check.c: memcpy uses a direct size/count literal
@@ -196,22 +186,13 @@
 11 tools/hy4_gpu/hy4_qchain_test.cu: cudaMemcpy uses a raw byte-width multiplier
 2 tools/hy4_gpu/hy4_qchain_test.cu: memcpy uses a raw byte-width multiplier
 1 tools/hy4_wo_fleet_apply.c: memcpy uses a direct size/count literal
-1 tools/k3_tp4pp4_perf_estimate.py: GLM model literal 576 is outside the model contract
-1 tools/laguna_gen_name_map.py: GLM model literal 12288 is outside the model contract
-1 tools/laguna_gen_name_map.py: GLM model literal 576 is outside the model contract
-1 tools/laguna_layer7_reference.py: GLM model literal 12288 is outside the model contract
-1 tools/laguna_stagepack.py: GLM model literal 12288 is outside the model contract
 1 tools/lazy_attach_harness.c: memcpy uses a direct size/count literal
-4 tools/ling_gen_deployment.py: GLM model literal 12288 is outside the model contract
-1 tools/ling_stagepack.py: GLM model literal 6144 is outside the model contract
-2 tools/ling_verify_pack.py: GLM model literal 6144 is outside the model contract
 1 tools/mb_doorbell.cu: cudaHostAlloc uses a raw byte-width multiplier
 1 tools/mb_doorbell.cu: cudaMemcpy uses a raw byte-width multiplier
 1 tools/mb_doorbell.cu: malloc uses a raw byte-width multiplier
 2 tools/mesh_lane_ladder.cu: memcpy uses a direct size/count literal
 1 tools/mesh_register_attach_repro.c: memcpy uses a direct size/count literal
 1 tools/mesh_register_repro.c: memset uses a direct size/count literal
-1 tools/mimo26_stagepack.py: GLM model literal 6144 is outside the model contract
 9 tools/multi_dev_smoke.c: memcpy uses a direct size/count literal
 4 tools/qwen36_dflash2_conv_parity.cu: cudaMalloc uses a raw byte-width multiplier
 4 tools/qwen36_dflash2_conv_parity.cu: cudaMemcpy uses a raw byte-width multiplier
@@ -249,9 +230,6 @@
 3 tools/qwen4_flash_nvfp4_smoke.cu: malloc uses a raw byte-width multiplier
 16 tools/qwen4_flash_nvfp4_smoke.cu: memcpy uses a direct size/count literal
 1 tools/qwen4_flash_nvfp4_smoke.cu: wire header uses a numeric field offset
-1 tools/qwen4_flash_pack_stamp_check.py: GLM model literal 6144 is outside the model contract
-1 tools/qwen4_flash_stagepack.py: GLM model literal 12288 is outside the model contract
-5 tools/qwen4_flash_stagepack.py: GLM model literal 6144 is outside the model contract
 4 tools/slot_bench.cu: cudaMalloc uses a raw byte-width multiplier
 1 tools/slot_bench.cu: cudaMemset uses a raw byte-width multiplier
 1 tools/spark_kv_backing_test.c: fwrite uses a direct size/count literal
@@ -259,7 +237,6 @@
 1 tools/t1_reference_glm53full.py: GLM model literal 6144 is outside the model contract
 1 tools/t1_reference_glm53full.py: GLM model scalar is assigned from a raw literal
 1 tools/t1_reference_k3.py: copyto uses a raw byte-width multiplier
-1 tools/t1_reference_qwen4_flash.py: GLM model literal 6144 is outside the model contract
 7 tools/tp_mesh_hardware_probe.cu: memcpy uses a direct size/count literal
 7 tools/tp_mesh_hardware_probe.cu: memcpy uses a raw byte-width multiplier
 2 tools/tp_stream_memop_probe.cu: memcpy uses a direct size/count literal

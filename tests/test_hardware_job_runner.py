@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
+import socket
 import subprocess
 import sys
 import tempfile
@@ -122,24 +124,45 @@ open(a.output,'w').write(json.dumps(d))
 
         receipt_path.unlink()
         lock_path = receipt_path.with_suffix(".lock")
-        lock_path.write_text("held\n", encoding="utf-8")
-        run([sys.executable, str(runner), "--plan", str(plan_path), "--config", str(config_path)], 2)
-        lock_path.unlink()
+        host = socket.gethostname()
+        exited = subprocess.Popen([sys.executable, "-c", "pass"])
+        exited.wait()
+        blocking_owners = (
+            ("held\n", "cannot verify"),
+            (f"pid={os.getpid()} host=another-{host} cell_id={cell_id}\n", "cannot verify"),
+            (f"pid={exited.pid} host={host} cell_id={'f' * 64}\n", "cannot verify"),
+            (f"pid={os.getpid()} host={host} cell_id={cell_id}\n", f"live pid {os.getpid()}"),
+        )
+        for owner, diagnostic in blocking_owners:
+            lock_path.write_text(owner, encoding="utf-8")
+            blocked = run([sys.executable, str(runner), "--plan", str(plan_path), "--config", str(config_path)], 2)
+            assert diagnostic in blocked.stderr, blocked.stderr
+            assert lock_path.read_text(encoding="utf-8") == owner
+            assert not receipt_path.exists()
+        dead_owner = f"pid={exited.pid} host={host} cell_id={cell_id}\n"
+        lock_path.write_text(dead_owner, encoding="utf-8")
+        reclaimed = run([sys.executable, str(runner), "--plan", str(plan_path), "--config", str(config_path)])
+        events = [json.loads(line) for line in reclaimed.stderr.splitlines() if line.startswith("{")]
+        assert events == [{"event": "cell_lock_reclaimed", "lock": str(lock_path), "dead_owner": dead_owner.strip()}], reclaimed.stderr
+        assert hashlib.sha256(receipt_path.read_bytes()).hexdigest() != first_digest
+        assert json.loads(receipt_path.read_text(encoding="utf-8"))["probe_receipt"]["answers"][0]["status"] == "measured"
+        assert not lock_path.exists()
+        receipt_path.unlink()
 
         slow = directory / "slow_probe.py"
-        slow.write_text(executable.read_text(encoding="utf-8").replace("p.add_argument('--sleep', type=float, default=0)", "p.add_argument('--sleep', type=float, default=3)"), encoding="utf-8")
+        slow.write_text(executable.read_text(encoding="utf-8").replace("p.add_argument('--sleep', type=float, default=0)", "p.add_argument('--sleep', type=float, default=60)"), encoding="utf-8")
         slow.chmod(0o755)
         config["executables"]["cuda_characterize"] = str(slow)
         config["probe_timeout_seconds"] = 1
         write_json(config_path, config)
         started = time.monotonic()
         run([sys.executable, str(runner), "--plan", str(plan_path), "--config", str(config_path)], 2)
-        assert time.monotonic() - started < 3.0
+        assert time.monotonic() - started < 30.0
         failed = json.loads(receipt_path.read_text(encoding="utf-8"))
         assert failed["probe_receipt"]["answers"][0]["status"] == "failed"
         assert "timed out" in failed["probe_receipt"]["answers"][0]["error"]
 
-    print("PASS exact hardware job runner identity, resume, lock, and timeout behavior")
+    print("PASS exact hardware job runner identity, resume, lock reclamation, and timeout behavior")
     return 0
 
 

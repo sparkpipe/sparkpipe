@@ -24,13 +24,13 @@ import math
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from host_cuda_compiler import host_cuda_cxx
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "k3_slice_host.cu"
-BINARY = Path("/tmp") / "lm_k3_slice_host"
 ROWS, HIDDEN, BLOCK, LAYERS = 2, 7168, 12, 14
 EPS = 1e-5
 
@@ -64,16 +64,19 @@ def compare(name, want, got, failures, tolerance):
 
 
 def main():
-    build = subprocess.run(
-        [host_cuda_cxx(), "-std=c++17", "-O1", f"-I{ROOT}/tests/host_cuda/shim", f"-I{ROOT}",
-         f"-I{ROOT}/tests/host_cuda", f"-I{ROOT}/model-families/common/include",
-         f"-I{ROOT}/include", "-x", "c++", str(SOURCE), "-o", str(BINARY)],
-        capture_output=True, text=True)
-    if build.returncode != 0:
-        errors = [l for l in build.stderr.split("\n") if "error" in l]
-        print("FAIL host build:", (errors or [build.stderr])[0][:240])
-        return 1
-    run = subprocess.run([str(BINARY)], capture_output=True, text=True)
+    with tempfile.TemporaryDirectory() as scratch:
+        binary = Path(scratch) / "lm_k3_slice_host"
+        build = subprocess.run(
+            [host_cuda_cxx(), "-std=c++17", "-O1", f"-I{ROOT}/tests/host_cuda/shim",
+             f"-I{ROOT}", f"-I{ROOT}/tests/host_cuda",
+             f"-I{ROOT}/model-families/common/include", f"-I{ROOT}/include",
+             "-x", "c++", str(SOURCE), "-o", str(binary)],
+            capture_output=True, text=True)
+        if build.returncode != 0:
+            errors = [l for l in build.stderr.split("\n") if "error" in l]
+            print("FAIL host build:", (errors or [build.stderr])[0][:240])
+            return 1
+        run = subprocess.run([str(binary)], capture_output=True, text=True)
     if run.returncode != 0 or "done" not in run.stdout:
         print(f"FAIL the slice faulted (returncode {run.returncode})")
         print(run.stdout[-400:])

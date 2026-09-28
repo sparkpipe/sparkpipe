@@ -35,13 +35,21 @@ Fairness scenario (K3-010): three requests on a three-slot engine with a
 two-row budget, so j and k's decode rows fill every pass - l's prefill must
 still advance within K3_ENGINE_PREFILL_PERIOD passes of admission.
 """
+import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+ENGINE = ROOT / "inference" / "llms" / "kimi_k3" / "engine.h"
+
+
+def engine_constants():
+    return {name: int(value) for name, value in re.findall(
+        r"#define (K3_ENGINE_\w+)\s+(-?\d+)u?\b", ENGINE.read_text())}
 
 
 def parse_steps(text):
@@ -122,7 +130,8 @@ def main():
     with tempfile.TemporaryDirectory() as scratch:
         binary = Path(scratch) / "k3_engine_host"
         build = subprocess.run(
-            ["cc", "-std=c11", "-O1", "-I", str(ROOT),
+            shlex.split(os.environ.get("CC", "cc")) +
+            ["-std=c11", "-O1", "-I", str(ROOT),
              str(ROOT / "tests" / "host_cuda" / "k3_engine_host.c"),
              "-o", str(binary)],
             capture_output=True, text=True)
@@ -136,6 +145,15 @@ def main():
         return 1
     text = run.stdout
     failures = 0
+    constants = engine_constants()
+    for name in ("K3_ENGINE_ERR_CAPACITY", "K3_ENGINE_ERR_STATE",
+                 "K3_ENGINE_PREFILL_PERIOD"):
+        if name not in constants:
+            print(f"  FAIL engine.h no longer defines {name}")
+            return 1
+    capacity = constants["K3_ENGINE_ERR_CAPACITY"]
+    state_error = constants["K3_ENGINE_ERR_STATE"]
+    period = constants["K3_ENGINE_PREFILL_PERIOD"]
     # the harness prints one transcript per scenario, split by its markers
     parts = re.split(r"^scenario (\S+)\s*$", text, flags=re.M)
     main_text = parts[0]
@@ -213,12 +231,13 @@ def main():
         failures += 1
     # K3-007: eight submits on a four-record engine - the finished records
     # came back to FREE - and the ninth hit the capacity wall
-    if re.search(r"reuse e 5 f 6 g 7 h 8 full -71\b", text) is None:
+    if re.search(rf"reuse e 5 f 6 g 7 h 8 full {capacity}\b", text) is None:
         print("  FAIL K3-007: finished request records did not return to FREE")
         failures += 1
     # K3-008: duplicated, out-of-bounds and stale commits all fail closed
-    for marker in ("commit_dup -73", "commit_oob -73", "commit_stale -73"):
-        if marker not in text:
+    for marker in (f"commit_dup {state_error}", f"commit_oob {state_error}",
+                   f"commit_stale {state_error}"):
+        if re.search(rf"^{marker}$", text, re.M) is None:
             print(f"  FAIL K3-008: {marker.split()[0]} did not fail closed")
             failures += 1
     if re.search(r"out_f \d+ \d+", text) is None:
@@ -227,7 +246,11 @@ def main():
         failures += 1
     # K3-009: EOS inside the accepted drafts truncated the block - out_e
     # stops at 301, 7 and the bonus (999) never lands anywhere
-    if re.search(r"out_e 301 7 0 0\b", text) is None or "999" in text:
+    bonus_in_output = re.search(r"^out_\w+(?: \d+)* 999\b", text, re.M)
+    bonus_in_rows = any(row[1] == 999 for step in bug_steps
+                        for seq in step["seqs"] for row in seq["rows"])
+    if re.search(r"out_e 301 7 0 0\b", text) is None or bonus_in_output \
+            or bonus_in_rows:
         print("  FAIL K3-009: EOS inside the accepted drafts did not "
               "truncate the block and skip the bonus")
         failures += 1
@@ -242,7 +265,7 @@ def main():
     if not crowded:
         print("  FAIL K3-010: no step had full decode lanes crowding the budget")
         failures += 1
-    if not l_runs or l_runs[0][0] > 4 or l_runs[0][1]["logits"] >= 0:
+    if not l_runs or l_runs[0][0] > period or l_runs[0][1]["logits"] >= 0:
         print("  FAIL K3-010: the crowded prefiller did not advance within "
               "one fairness period")
         failures += 1

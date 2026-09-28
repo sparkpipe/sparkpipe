@@ -2,36 +2,44 @@
 """Corrected DeepSeek V4 Flash TP4 single-sequence decode roofline.
 
 All numbers in this module are ANALYTICAL ESTIMATES, not measurements.  The
-recovered headline retained rounded bandwidth and collective terms but omitted
-the graph-launch term from its displayed addition.  This reconstruction makes
-that term explicit so the arithmetic closes:
+step time is the sum of three explicit terms:
 
-    24.300 ms bandwidth + 8.600 ms collectives + 0.261 ms launches
-        = 33.161 ms (rounded)
+    bandwidth    model traffic / (node bandwidth * usable fraction)
+    collectives  four TP phases per layer * phase latency
+    launches     graph islands * graph launch latency
 
-At one output token per step, the corresponding raw rate is 30.16 tokens/s.
-The estimate is intentionally separate from the older recovered TP4 x PP4
-throughput table in ``dsv4_tp4_pp4_perf_estimate.py``.
+The layer count comes from model_contracts/dsv4_flash.json and the graph
+island count from the TP4 stage configuration
+(examples/deployments/dsv4_flash_tp4_stage.json), which the serving adapter
+validates against the firmware island law.  At one output token per step the
+raw rate is the reciprocal of the step time.  The estimate is intentionally
+separate from the older recovered TP4 x PP4 throughput table in
+``dsv4_tp4_pp4_perf_estimate.py``.
 """
 from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Any
 
+
+ROOT = Path(__file__).resolve().parents[1]
+CONTRACT = ROOT / "model_contracts" / "dsv4_flash.json"
+TP4_STAGE = ROOT / "examples" / "deployments" / "dsv4_flash_tp4_stage.json"
 
 CLASSIFICATION = "analytical estimate"
 MEASURED = False
 
-# Recovered/corrected inputs.  GB is decimal, matching the project's existing
-# performance-estimate convention.  There are four TP phases per each of the
-# 43 layers (172 total), and the executor prewarms 87 compute-island graphs.
+LAYER_COUNT = json.loads(CONTRACT.read_text(encoding="utf-8"))["model"]["layer_count"]
+GRAPH_ISLAND_COUNT = json.loads(TP4_STAGE.read_text(encoding="utf-8"))[
+    "cuda_graph_count_by_pp_stage"][0]
 MODEL_TRAFFIC_GB = 4.312
 NODE_BANDWIDTH_GB_PER_SECOND = 273.0
 USABLE_BANDWIDTH_FRACTION = 0.65
-TP_PHASE_COUNT = 43 * 4
+TP_PHASES_PER_LAYER = 4
+TP_PHASE_COUNT = LAYER_COUNT * TP_PHASES_PER_LAYER
 TP_PHASE_LATENCY_US = 50.0
-GRAPH_ISLAND_COUNT = 87
 GRAPH_LAUNCH_LATENCY_US = 3.0
 
 # Derived values.  Keeping the total as a formula prevents rounded headline
@@ -60,11 +68,13 @@ def estimate() -> dict[str, Any]:
         "batch_size": 1,
         "critical_rank_has_singleton_head": True,
         "kv_replication_factor_within_tp": 4,
+        "layer_count": LAYER_COUNT,
         "model_traffic_gb": MODEL_TRAFFIC_GB,
         "node_bandwidth_gb_per_second": NODE_BANDWIDTH_GB_PER_SECOND,
         "usable_bandwidth_fraction": USABLE_BANDWIDTH_FRACTION,
         "effective_bandwidth_gb_per_second": EFFECTIVE_BANDWIDTH_GB_PER_SECOND,
         "bandwidth_time_ms": BANDWIDTH_TIME_MS,
+        "tp_phases_per_layer": TP_PHASES_PER_LAYER,
         "tp_phase_count": TP_PHASE_COUNT,
         "tp_phase_latency_us": TP_PHASE_LATENCY_US,
         "collective_time_ms": COLLECTIVE_TIME_MS,
