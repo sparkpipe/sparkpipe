@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOSTS=(spark4 spark5 spark6 spark7)
-MESH_RANKS=4,5,6,7
+HOSTS=(spark0 spark1 spark2 spark5)
+MESH_RANKS=0,1,2,5
 LANE=3
 PACK_NAME=qwen27b.mx2.tp4
 ROOT_TEMPLATE='/home/{host}/sparkdata/qwen27b.mx2.tp4'
@@ -33,8 +33,9 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 usage() {
 	cat >&2 <<USAGE
 usage: $0 ACTION [ARG]
-  adapter SRC             build the TP4 adapter in ${STAGE_HOST}:${BUILD_BASE}/SRC-tp4 (copy of the published TP1 tree SRC)
-  install SRC             ${HOSTS[*]}: rank pack from ${STAGE_HOST}, TP1 root binaries/driver/drafter, TP4 adapter from SRC-tp4
+  build SHA               archive SHA to ${STAGE_HOST}:${BUILD_BASE}/src-SHA; host binaries, TP4 adapter, module archive, weightd tests
+  publish SHA             module GPU validation on ${STAGE_HOST} (TP1 pack, lane ${LANE}, arena reclaimed after) and driver compile
+  install SHA             ${HOSTS[*]}: rank pack from ${STAGE_HOST}, binaries/driver/TP4 adapter from src-SHA, drafter from the TP1 root
   configs                 write the TP4 deployment and per-rank adapter configs to every node and build/api.tp4.model_resident.json
   launch nospec|dflash2   residentd rank R on HOSTS[R] in unit ${UNIT} (lane ${LANE}, mesh ${MESH_RANKS}); refuses unless ${GATE_FILE} says DEPLOYED
   status | stop | fresh MODE | reclaim
@@ -61,24 +62,48 @@ gate() {
 	done
 }
 
-adapter() {
-	local src=${1:?SRC}
-	on "$STAGE_HOST" "cd ${BUILD_BASE} && rm -rf src-${src}-tp4 && cp -a src-${src} src-${src}-tp4 && cd src-${src}-tp4 && rm -f build/libqwen38_27b_serving_adapter.so && export PATH=/usr/local/cuda/bin:\$PATH && make QWEN38_27B_SERVING_TOPOLOGY_FLAGS=-DSPARK_QWEN38_27B_SERVING_TP_DEGREE=4u build/libqwen38_27b_serving_adapter.so > build-tp4-adapter.log 2>&1; echo adapter_rc=\$?; ! ldd -r build/libqwen38_27b_serving_adapter.so | grep -E 'not found|undefined'; strings build/libqwen38_27b_serving_adapter.so | grep -a 'serving-adapter.tp4'"
+build() {
+	local sha=${1:?SHA}
+	git -C "$HERE" archive --format=tar --prefix="src-${sha}/" "$sha" | on "$STAGE_HOST" "mkdir -p ${BUILD_BASE} && rm -rf ${BUILD_BASE}/src-${sha} && tar -xf - -C ${BUILD_BASE}"
+	on "$STAGE_HOST" "cd ${BUILD_BASE}/src-${sha} && systemd-run --user --wait --collect --unit=sp-qwen4-build-${sha} --same-dir -p Nice=10 -p StandardOutput=file:${BUILD_BASE}/src-${sha}/build-qwen27b.log -p StandardError=file:${BUILD_BASE}/src-${sha}/build-qwen27b.log bash -c '
+export PATH=/usr/local/cuda/bin:\$PATH
+set -e
+make -j8 CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a build/sparkpipe_weightd build/weightd_warm build/sparkpipe_model_residentd build/sparkpipe_model_batch build/sparkpipe_model_compile build/sparkpipe_module_publish build/sparkpipe_driver_inspect hidden_transport_spark_host_rdma_verbs
+make -j8 build/test_stage_module_weightd build/test_weightd_attach build/test_weightd_map
+./build/test_stage_module_weightd && ./build/test_weightd_attach && ./build/test_weightd_map
+make -j8 QWEN38_27B_SERVING_TOPOLOGY_FLAGS=-DSPARK_QWEN38_27B_SERVING_TP_DEGREE=4u build/libqwen38_27b_serving_adapter.so
+make -j8 -C modules/qwen38_27b_resident_decode_stage CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a archive
+'; echo build_rc=\$?; tail -3 build-qwen27b.log | cut -c1-200; strings build/libqwen38_27b_serving_adapter.so | grep -a 'serving-adapter.tp4'"
+}
+
+publish() {
+	local sha=${1:?SHA} src=${BUILD_BASE}/src-${1}
+	on "$STAGE_HOST" "test -S ${WEIGHTD_SOCKET} || { echo 'weightd socket missing'; exit 2; }
+cd ${src} && digest=\$(cut -d' ' -f1 ${STAGE_TP1_ROOT}/packs/qwen38-mx2.tp1.qwen36sp.sha256) && systemd-run --user --wait --collect --unit=sp-qwen4-publish --same-dir -p StandardOutput=file:${src}/publish-unit.log -p StandardError=file:${src}/publish-unit.log -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=${WEIGHTD_SOCKET} -E SPARK_WEIGHTD_PACK_SHA256=\$digest -E SPARK_WEIGHTD_LANE=${LANE} bash -c '
+export PATH=/usr/local/cuda/bin:\$PATH
+set -e
+make -C modules/qwen38_27b_resident_decode_stage CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a ALLOW_UNQUALIFIED_EXECUTION=1 TP_DEGREE=1 TP_RANK=0 TP_STANDALONE=1 STAGE_COUNT=1 STAGE_INDEX=0 STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=64 MTP_LAYER_COUNT=1 GDN_SNAPSHOT_SLOT_COUNT=16 MAX_ACTIVE_SEQUENCES=8 KV_BLOCK_COUNT=8 STAGE_PACK_PATH=${STAGE_TP1_ROOT}/packs/qwen38-mx2.tp1.qwen36sp publish > publish.log 2>&1
+grep -q -E \"qwen38_27b_validation PASS|validation=reused\" publish.log
+rm -rf build/tp-driver
+build/sparkpipe_model_compile --model examples/model_descriptions/qwen38_27b_resident_decode_stage_firmware.json --library build/module_library --output build/tp-driver --cc /usr/bin/cc --include include --cc-arg -L/usr/local/cuda/targets/sbsa-linux/lib --cc-arg -lcuda --cc-arg -lcudart --cc-arg -lstdc++ --cc-arg -lm --cc-arg -ldl --cc-arg -pthread > driver-link.log 2>&1
+build/sparkpipe_driver_inspect build/tp-driver/stages/stage_000/model_driver.so cuda.sm121.qwen38_27b.resident_decode_stage.bf16 > driver-inspect.log 2>&1
+! ldd -r build/tp-driver/stages/stage_000/model_driver.so | grep -E \"not found|undefined symbol\"
+'; echo publish_rc=\$?; grep -a -E 'validation (PASS|FAIL)|validation=' publish.log | tail -3; ~/weightd_warm_09fdad6 ${WEIGHTD_SOCKET} --reclaim 2>&1 | tail -1; free -g | head -2"
 }
 
 install() {
-	local src=${1:?SRC} rank host root
+	local src=${1:?SHA} rank host root
 	for rank in "${!HOSTS[@]}"; do
 		host=${HOSTS[$rank]}
 		root=$(root_of "$host")
 		on "$host" "mkdir -p ${root}/packs ${root}/bin ${root}/lib ${root}/stages ${root}/drafter ${root}/config ${root}/logs && find ${root}/packs -name '*.sha256' ! -name '${PACK_NAME}.rank${rank}.qwen36sp.sha256' -delete"
-		on "$STAGE_HOST" "rsync -a ${STAGE_PACKS}/${PACK_NAME}.rank${rank}.qwen36sp ${STAGE_PACKS}/${PACK_NAME}.rank${rank}.qwen36sp.sha256 ${host}:${root}/packs/ && rsync -a --delete ${STAGE_TP1_ROOT}/bin/ ${host}:${root}/bin/ && rsync -a --delete ${STAGE_TP1_ROOT}/stages/ ${host}:${root}/stages/ && rsync -a ${STAGE_TP1_ROOT}/drafter/ ${host}:${root}/drafter/ && rsync -a ${STAGE_TP1_ROOT}/lib/hidden_transport.so ${host}:${root}/lib/hidden_transport.so && rsync -a ${BUILD_BASE}/src-${src}-tp4/build/libqwen38_27b_serving_adapter.so ${host}:${root}/lib/model_serving_adapter.so" &
+		on "$STAGE_HOST" "rsync -a ${STAGE_PACKS}/${PACK_NAME}.rank${rank}.qwen36sp ${STAGE_PACKS}/${PACK_NAME}.rank${rank}.qwen36sp.sha256 ${host}:${root}/packs/ && rsync -a ${BUILD_BASE}/src-${src}/build/sparkpipe_model_residentd ${BUILD_BASE}/src-${src}/build/sparkpipe_model_batch ${host}:${root}/bin/ && rsync -a --delete ${BUILD_BASE}/src-${src}/build/tp-driver/stages/ ${host}:${root}/stages/ && rsync -a ${STAGE_TP1_ROOT}/drafter/ ${host}:${root}/drafter/ && rsync -a ${BUILD_BASE}/src-${src}/build/libhidden_transport_spark_host_rdma_verbs.so ${host}:${root}/lib/hidden_transport.so && rsync -a ${BUILD_BASE}/src-${src}/build/libqwen38_27b_serving_adapter.so ${host}:${root}/lib/model_serving_adapter.so" &
 	done
 	wait
 	for rank in "${!HOSTS[@]}"; do
 		host=${HOSTS[$rank]}
 		root=$(root_of "$host")
-		on "$host" "cd ${root} && echo ${src}-tp4 > SOURCE_COMMIT && (cd packs && sha256sum -c ${PACK_NAME}.rank${rank}.qwen36sp.sha256) && (cd drafter && sha256sum -c *.sha256) && find bin lib stages -type f | sort | xargs sha256sum > SHA256SUMS && echo ${host} rank${rank} \$(sha256sum lib/model_serving_adapter.so stages/stage_000/model_driver.so | cut -c1-16 | tr '\n' ' ')"
+		on "$host" "cd ${root} && echo ${src} > SOURCE_COMMIT && (cd packs && sha256sum -c ${PACK_NAME}.rank${rank}.qwen36sp.sha256) && (cd drafter && sha256sum -c *.sha256) && find bin lib stages -type f | sort | xargs sha256sum > SHA256SUMS && echo ${host} rank${rank} \$(sha256sum lib/model_serving_adapter.so stages/stage_000/model_driver.so | cut -c1-16 | tr '\n' ' ')"
 	done
 }
 
@@ -269,7 +294,8 @@ UNIT
 }
 
 case "$ACTION" in
-	adapter) adapter "${2:-}" ;;
+	build) build "${2:-}" ;;
+	publish) publish "${2:-}" ;;
 	install) install "${2:-}" ;;
 	configs) configs ;;
 	launch) launch "${2:-}" ;;
