@@ -51,3 +51,29 @@ prefill waves above 8 rows (fixed by PR #1255, not yet deployed).
 The same 17 prompts produced byte-identical completions earlier the same day
 with the fleet in eager/spin mode (no expert pinning), so the graph path did
 not change any token.
+
+## Batched runs are not batch-invariant
+
+The same 17 prompts sent concurrently (`--concurrency 17`) against the same
+build did not reproduce the sequential completions, and did not reproduce
+each other:
+
+| Run | Wall | Score | Completions identical to this archive |
+| --- | ---: | ---: | ---: |
+| sequential repeat | 14.4 s | 14/17 | 17/17 |
+| concurrent 1 | 13.5 s | 13/17 | 15/17 (079, 092 differ) |
+| concurrent 2 | 13.4 s | 14/17 | 15/17 (079, 092 differ) |
+| concurrent 3 | 10.4 s | 14/17 | 16/17 (092 differs) |
+| concurrent 4 | 13.5 s | 14/17 | 15/17 (079, 092 differ) |
+
+The divergent completions change length from run to run, so the tokens depend
+on batch composition and arrival timing. This matches the TECHDEBT entries on
+batched numerics (dense projections above eight rows use tensor-core GEMM with
+a different accumulation order; batched latent attention sums in a different
+order) and violates the README promise that the batch a request lands in does
+not change its tokens.
+
+Concurrency barely shortens this run because the thinking-off protocol is
+prefill-bound (about 300 prompt tokens and 5 output tokens per case), most
+prompt blocks were already prefix-cache hits, the API clamped prefill waves to
+8 rows, and rank 0 logged 2279 BUSY retries during the batch.

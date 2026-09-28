@@ -31,6 +31,7 @@ import json
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "qualification" / "ds4_eval"))
@@ -115,6 +116,7 @@ def main() -> int:
     ap.add_argument("--thinking", required=True, choices=sorted(GLM_THINKING_OPEN))
     ap.add_argument("--max-tokens", type=int, default=512)
     ap.add_argument("--pass-threshold", type=int, default=14)
+    ap.add_argument("--concurrency", type=int, default=1)
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--timeout", type=int, default=600)
     args = ap.parse_args()
@@ -131,11 +133,15 @@ def main() -> int:
     out = Path(args.out)
     (out / "responses").mkdir(parents=True, exist_ok=True)
 
+    prompts = [build_prompt(decode(c["prompt_token_ids"]), args.thinking) for c in cases]
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
+        replies = list(pool.map(lambda p: call(args.endpoint, p, args.max_tokens,
+                                               args.temperature, args.timeout), prompts))
+    wall_s = time.monotonic() - started
+
     results = []
-    for i, c in enumerate(cases, 1):
-        prompt = build_prompt(decode(c["prompt_token_ids"]), args.thinking)
-        r = call(args.endpoint, prompt, args.max_tokens,
-                 args.temperature, args.timeout)
+    for i, (c, prompt, r) in enumerate(zip(cases, prompts, replies), 1):
         payload = r["payload"]
         tokens = payload.get("tokens") or []
         choices = payload.get("choices") or [{}]
@@ -150,6 +156,7 @@ def main() -> int:
             "extracted": extracted,
             "passed": passed,
             "elapsed_ms": round(r["elapsed_s"] * 1000, 1),
+            "output_sha256": hashlib.sha256(text.encode()).hexdigest(),
             "generated_token_count": len(tokens),
             "status": payload.get("status"),
         }
@@ -182,9 +189,11 @@ def main() -> int:
         "endpoint": args.endpoint,
         "fixture": Path(args.fixture).name,
         "fixture_sha256": hashlib.sha256(Path(args.fixture).read_bytes()).hexdigest(),
+        "wall_s": round(wall_s, 2),
         "parameters": {"max_tokens": args.max_tokens,
-                       "temperature": args.temperature, "concurrency": 1,
+                       "temperature": args.temperature,
                        "chat_template": "glm", "thinking": args.thinking,
+                       "concurrency": args.concurrency,
                        "pass_threshold": args.pass_threshold},
         "grading_rule": ("qualification/ds4_eval/compare_runs.py: last Answer: line after "
                          "</think>; PASS iff its line set is a non-empty subset of the expected lines"),

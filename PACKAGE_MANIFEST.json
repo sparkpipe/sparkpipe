@@ -11963,8 +11963,8 @@
     },
     {
       "path": "tools/glm5_next_compsec17.py",
-      "sha256": "b699427ca31d45a0d724040c96080b92285f9020544fe565f4d73f91f4b599f6",
-      "size_bytes": 9112
+      "sha256": "9227731566ccddedeb7726c36282392556664b19e02a61608209383c21a8a460",
+      "size_bytes": 9629
     },
     {
       "path": "tools/glm5_next_driver_compare.py",
@@ -15325,5 +15325,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 74106988
+  "total_bytes": 74107505
 }
