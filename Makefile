@@ -521,6 +521,7 @@ PYTHON_TESTS := \
 	tests/test_router_precision_contract.py \
 	tests/test_situ_activation.py \
 	tests/test_sources_exist.py \
+	tests/test_unlinked_components.py \
 	tests/test_staging_manifest.py \
 	tests/test_stagepack_mtp_strip_qwen36sp.py \
 	tests/test_template_adoption.py \
