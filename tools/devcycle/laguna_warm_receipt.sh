@@ -13,9 +13,6 @@ case "$SOCKET" in
 esac
 [ -S "$SOCKET" ] || fail "weightd socket $SOCKET is not a live socket; this receipt never starts a weightd"
 
-LANE="${LAGUNA_LANE:-}"
-decimal "$LANE" && [ "$LANE" -le 15 ] || fail "LAGUNA_LANE must be a weightd mesh lane 0..15 (got '$LANE')"
-
 RUNS="${LAGUNA_WARM_RUNS:-5}"
 decimal "$RUNS" && [ "$RUNS" -gt 0 ] || fail "LAGUNA_WARM_RUNS must be a positive decimal"
 POOL="${LAGUNA_EXPERT_POOL_BYTES:-}"
@@ -50,7 +47,7 @@ if [ -z "$POOL" ]; then
 fi
 make -s build/weightd_warm
 
-echo "== laguna warm receipt (rank $RANK, lane $LANE, socket $SOCKET, $PACK)"
+echo "== laguna warm receipt (rank $RANK, socket $SOCKET, $PACK)"
 echo "== pool=$POOL runs=$RUNS"
 python3 tools/laguna_multidev_lane.py \
   --smoke-budgets model-families/laguna/smoke_experts.json "$RANK" \
@@ -61,7 +58,7 @@ while [ "$index" -le "$RUNS" ]; do
   echo "-- warm run $index/$RUNS"
   began_ns=$(date +%s%N)
   for chunk in $CHUNKS; do
-    SPARK_WEIGHTD_LANE="$LANE" SPARK_WEIGHTD_EXPERT_POOL_BYTES="$POOL" \
+    SPARK_WEIGHTD_EXPERT_POOL_BYTES="$POOL" \
       build/weightd_warm "$SOCKET" "$PACK" "$SHA" "$REVISION" 16 \
       --wset "$chunk" 300
   done
@@ -70,4 +67,4 @@ while [ "$index" -le "$RUNS" ]; do
     "$(( (ended_ns - began_ns) / 1000000 ))"
   index=$((index + 1))
 done
-echo "WARM-RECEIPT-DONE rank=$RANK lane=$LANE pool=$POOL runs=$RUNS"
+echo "WARM-RECEIPT-DONE rank=$RANK pool=$POOL runs=$RUNS"

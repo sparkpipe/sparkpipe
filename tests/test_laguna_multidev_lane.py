@@ -262,6 +262,10 @@ def warm_receipt_gates(failures):
     text = script.read_text()
     check("/run/sparkpipe-weightd-shared" not in text, failures,
           "warm receipt must not name the retired shared weightd socket")
+    warm_source = (ROOT / "tools/weightd_warm.c").read_text()
+    for variable in ("SPARK_WEIGHTD_LANE", "LAGUNA_LANE"):
+        check(variable in warm_source or variable not in text, failures,
+              f"warm receipt must not pass {variable}: build/weightd_warm never reads it")
 
     def run(env):
         complete = {key: value for key, value in os.environ.items()

@@ -99,7 +99,7 @@ goes through `--setenv`.
 `tools/devcycle/laguna_warm_receipt.sh` times weightd warms of the node's own
 pack against a running weightd. It needs `LAGUNA_WEIGHTD_SOCKET` (absolute
 path of a live socket; there is no default and `SPARK_WEIGHTD_SOCKET` is not
-read) and `LAGUNA_LANE`. Optional: `LAGUNA_WARM_RUNS` (default 5) and
+read). `build/weightd_warm` takes no lane, so the receipt takes none. Optional: `LAGUNA_WARM_RUNS` (default 5) and
 `LAGUNA_EXPERT_POOL_BYTES` (default: the whole-pack 2 MiB chunk basis from
 `--budgets`, which is what the daemon charges on acquire).
 
