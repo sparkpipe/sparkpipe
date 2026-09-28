@@ -27,7 +27,7 @@ K3, Qwen 3.8 Max, and Qwen 3.8 27B — sharing the 16-Spark fleet
 ## The isolation model: tiers, scopes, and one current big model
 
 Every model is registered in
-[`tools/devcycle/fleet_registry.json`](tools/devcycle/fleet_registry.json) with a
+[`tools/devcycle/fleet_registry.json`](../../tools/devcycle/fleet_registry.json) with a
 **tier** and a **scope**:
 
 | Model | Tier | Scope | Hosts |

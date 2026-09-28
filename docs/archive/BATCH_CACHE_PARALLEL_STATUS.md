@@ -23,7 +23,7 @@
 PR1082 targets `main`; PR1077 and PR1081 are already merged. The shared runtime
 has passed four- and eight-instance GLM inference across all sixteen Sparks,
 including exact output, overlapping decode and terminal cleanup. The latest
-broad host campaign passed 166 checks. See [parallel qualification](../PARALLEL_RESIDENT_QUALIFICATION.md)
+broad host campaign passed 166 checks. See [parallel qualification](PARALLEL_RESIDENT_QUALIFICATION.md)
 and [multideveloper setup](../MULTIDEV_QUICKSTART.md) for precise results and limits.
 Different-model numerical parity, partial-pool GPU eviction and sustained
 continuous-batch performance remain open.

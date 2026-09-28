@@ -7,7 +7,7 @@
 > [`../FLEET_RELEASE_RUNBOOK.md`](../FLEET_RELEASE_RUNBOOK.md).
 
 This document describes the historical global fleet publisher. For concurrent
-development use [the current development cycle](DEVCYCLE.md).
+development use [the current development cycle](../DEVCYCLE.md).
 `module_build_release.sh` now builds an isolated artifact and rejects the legacy
 branch argument; it does not restart or publish to this global fleet.
 

@@ -111,7 +111,7 @@ registration, connection setup, CPU payload copy, device-wide synchronization,
 or CPU-dispatched chunk transition.
 
 The complete collective contract is in
-[`docs/PAIRED_DUAL_LINK_ALLREDUCE.md`](docs/archive/PAIRED_DUAL_LINK_ALLREDUCE.md).
+[`docs/PAIRED_DUAL_LINK_ALLREDUCE.md`](PAIRED_DUAL_LINK_ALLREDUCE.md).
 
 ## Resident model topology
 
@@ -223,7 +223,7 @@ cannot qualify another domain by implication.
 
 The architecture changes only when the intended system changes. Open gaps are
 maintained in [`TECHDEBT.md`](TECHDEBT.md). Measurements and projections are
-maintained in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
+maintained in [`PERFORMANCE_STATUS.md`](../../PERFORMANCE_STATUS.md).
 
 ## Mac Studio deployment class
 
