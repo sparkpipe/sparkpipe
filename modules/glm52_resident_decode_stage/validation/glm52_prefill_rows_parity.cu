@@ -329,7 +329,23 @@ static int RowsVerify(RowsRig *rig,uint32_t anchor,uint32_t depth,uint32_t adver
 	uint32_t tokens[ROWS_MAX],row,first,differing,position;
 	float difference;
 	SparkGlm52ExecutionSlot *slot = &rig->fixture.slot;
+	SparkRowLayoutDenseLaneContext lanes;
+	RowsRegimeContext regime;
+	uint32_t lane_ids[ROWS_MAX],positions[ROWS_MAX];
 	int status;
+	for (row=0u; row<depth; row++)
+	{
+		lane_ids[row] = 0u;
+		positions[row] = anchor + row;
+	}
+	lanes.lane_count = 1u;
+	regime.positions = positions;
+	depth = SparkRowLayoutRoundSpanWaveRowCount(0u,depth,lane_ids,SparkRowLayoutDenseLaneOrdinal,&lanes,RowsRegime,&regime,depth);
+	if ( depth < 2u )
+	{
+		printf("glm52_prefill_rows_parity verify anchor=%u depth=%u skipped: the next position starts another attention regime\n",anchor,depth);
+		return(0);
+	}
 	if ( cudaMemcpy(rig->kv_cache,rig->reference_kv,rig->kv_bytes,cudaMemcpyHostToDevice) != cudaSuccess ||
 		cudaMemcpy(rig->index_cache,rig->reference_index,rig->index_bytes,cudaMemcpyHostToDevice) != cudaSuccess ||
 		cudaMemcpy(rig->boundary,rig->reference_boundary,(uint64_t)rig->positions_total * ROWS_BOUNDARY * sizeof(uint16_t),cudaMemcpyHostToDevice) != cudaSuccess ||
@@ -371,7 +387,7 @@ static int RowsVerify(RowsRig *rig,uint32_t anchor,uint32_t depth,uint32_t adver
 int main(int argc,char **argv)
 {
 	static const uint32_t widths[] = {2u,4u,8u,16u};
-	static const uint32_t anchors[] = {5u,100u,2044u,2060u};
+	static const uint32_t anchors[] = {5u,60u,100u,1500u,2044u,2047u,2060u,2090u};
 	RowsRig *rig;
 	uint32_t index,split,waves,differing,first,positions_total,missing,position;
 	float difference;
