@@ -37,6 +37,31 @@ __global__ void GemvBf16Kernel(const uint4 *w, const float *x, float *out, int r
     if (lane == 0) out[warp] = (float)acc;
 }
 
+template <typename Acc>
+__global__ void GemmRowsBf16Kernel(const uint4 *w, const float *x, float *out, int rows, int vec_cols, int count)
+{
+    long long warp = ((long long)blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    int lane = threadIdx.x & 31;
+    if (warp >= (long long)rows * count) return;
+    int item = (int)(warp / rows), r = (int)(warp % rows);
+    const uint4 *row = w + (size_t)r * vec_cols;
+    const float *xi = x + (size_t)item * vec_cols * 8;
+    Acc acc = 0;
+    for (int v = lane; v < vec_cols; v += 32)
+    {
+        uint4 q = __ldg(row + v);
+        const float *xv = xi + v * 8;
+        uint32_t words[4] = {q.x, q.y, q.z, q.w};
+        for (int k = 0; k < 4; ++k)
+        {
+            acc += (Acc)Bf16Bits(words[k], 0) * (Acc)xv[2 * k];
+            acc += (Acc)Bf16Bits(words[k], 1) * (Acc)xv[2 * k + 1];
+        }
+    }
+    acc = WarpSum(acc);
+    if (lane == 0) out[(size_t)item * rows + r] = (float)acc;
+}
+
 __device__ __forceinline__ float E4m3(uint32_t b)
 {
     uint32_t s = b & 0x80u, e = (b >> 3) & 0xfu, m = b & 0x7u;
@@ -82,6 +107,20 @@ extern "C" int spark_draftd_gemv_bf16(const void *w, const float *x, float *out,
         GemvBf16Kernel<double><<<(rows + warps - 1) / warps, threads, 0, stream>>>((const uint4 *)w, x, out, rows, cols / 8);
     else
         GemvBf16Kernel<float><<<(rows + warps - 1) / warps, threads, 0, stream>>>((const uint4 *)w, x, out, rows, cols / 8);
+    return (int)cudaGetLastError();
+}
+
+extern "C" int spark_draftd_gemm_rows_bf16(const void *w, const float *x, float *out, int rows, int cols, int count,
+                                           int wide, cudaStream_t stream)
+{
+    if (cols % 8 != 0 || rows <= 0 || count <= 0) return -1;
+    int threads = 256, warps = threads / 32;
+    long long blocks = ((long long)rows * count + warps - 1) / warps;
+    if (blocks > 2147483647LL) return -1;
+    if (wide)
+        GemmRowsBf16Kernel<double><<<(unsigned)blocks, threads, 0, stream>>>((const uint4 *)w, x, out, rows, cols / 8, count);
+    else
+        GemmRowsBf16Kernel<float><<<(unsigned)blocks, threads, 0, stream>>>((const uint4 *)w, x, out, rows, cols / 8, count);
     return (int)cudaGetLastError();
 }
 

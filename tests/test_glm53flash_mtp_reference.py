@@ -52,6 +52,44 @@ def expect(condition, message):
         raise AssertionError(message)
 
 
+def brute_pool_score(query, head_weight, keys, gates, ape, pool, kpool):
+    heads, dim = query.shape
+    key = np.zeros(dim, dtype=np.float64)
+    for d in range(dim):
+        logits = [float(gates[pool * kpool + j, d]) + float(ape[j, d]) for j in range(kpool)]
+        peak = max(logits)
+        weights = [np.exp(v - peak) for v in logits]
+        total = sum(weights)
+        key[d] = sum(weights[j] / total * float(keys[pool * kpool + j, d]) for j in range(kpool))
+    score = 0.0
+    for h in range(heads):
+        score += max(float(query[h] @ key) * dim ** -0.5, 0.0) * float(head_weight[h]) * heads ** -0.5
+    return score
+
+
+def check_index_positions():
+    rng = np.random.default_rng(11)
+    heads, dim, kpool, topk = 2, 8, 4, 8
+    for context in (5, 8, 9, 23, 24, 26):
+        query = rng.standard_normal((heads, dim)).astype(np.float32)
+        head_weight = rng.standard_normal(heads).astype(np.float32)
+        keys = rng.standard_normal((context, dim)).astype(np.float32)
+        gates = rng.standard_normal((context, dim)).astype(np.float32)
+        ape = rng.standard_normal((kpool, dim)).astype(np.float32)
+        got = reference.index_positions(query, head_weight, keys, gates, ape, context, topk, kpool)
+        if context <= topk:
+            expect(list(got) == list(range(context)), f"context {context} <= topk attends densely: {got}")
+            continue
+        pools = context // kpool
+        brute = [brute_pool_score(query, head_weight, keys, gates, ape, p, kpool) for p in range(pools)]
+        scores = reference.index_pool_scores(query, head_weight, keys, gates, ape, context, kpool)
+        expect(np.allclose(scores, brute, rtol=1e-4, atol=1e-5), f"context {context}: pool scores {scores} vs brute {brute}")
+        best = sorted(range(pools), key=lambda p: -brute[p])[:topk // kpool]
+        want = sorted([p * kpool + j for p in best for j in range(kpool)] + list(range(pools * kpool, context)))
+        expect(list(got) == want, f"context {context}: selected {list(got)} vs {want}")
+        expect(len(got) == topk + context % kpool, f"context {context}: topk pools plus the tail")
+
+
 def main():
     hidden = np.array([1.0, -2.0, 3.0, -4.0, 0.5, -0.25, 2.0, -1.0], dtype=np.float32)
     for half, weight_name, source in ((0, "enorm", "embed"), (1, "hnorm", "hidden")):
@@ -74,7 +112,8 @@ def main():
     mtp.step(hidden, 1, "embed_hidden", cache)
     mtp.step(hidden, 2, "embed_hidden", cache)
     expect(engine.attention_inputs == [1, 2], f"sequence context keeps the MTP cache: {engine.attention_inputs}")
-    print("PASS glm53flash_mtp_reference: eh_proj input is [enorm(embed) | hnorm(hidden)], taps, MTP cache")
+    check_index_positions()
+    print("PASS glm53flash_mtp_reference: eh_proj input is [enorm(embed) | hnorm(hidden)], taps, MTP cache, MTP indexer selection")
     return 0
 
 
