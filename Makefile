@@ -287,6 +287,7 @@ TEST_NAMES := \
     test_model_batch_engine_mock \
     test_model_pipeline_client_mock \
     test_tp_device_collective_mock \
+    test_tp_chain_graph \
     test_tp_allreduce_fuzz \
     test_steploop_admission \
     test_model_api_text \
@@ -603,6 +604,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_graph_failure.py \
 	tests/test_clamped_up_gate.py \
 	tests/test_glm5_next_stage_context.py \
+	tests/test_glm52_chain_modes.py \
 	tests/test_glm5_next_expert_cover_host.py \
 	tests/test_glm5_next_wset_from_trace.py \
 	tests/test_ling_cache_admission.py \
@@ -1365,6 +1367,9 @@ build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtu
 
 build/test_model_batch_engine_mock: tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_tp_chain_graph: tests/test_tp_chain_graph.c include/sparkpipe/spark_tp_chain_graph.h | build
+	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_chain_graph.c $(LDFLAGS) -o $@
 
 build/test_tp_device_collective_mock: tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

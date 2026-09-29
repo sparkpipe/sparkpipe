@@ -63,6 +63,10 @@ static_assert(
 static_assert(
     GLM_EXPERT_INTERMEDIATE % LmBf16Format::kTileK == 0u,
     "GLM expert down projection must cover every BF16 K tile");
+static_assert(
+    GLM_QUERY_A_DIM % GLM_PROJECTION_GRANULE == 0u &&
+        GLM_LATENT_ROW % GLM_PROJECTION_GRANULE == 0u,
+    "split q_a/kv_a slices start on 16-byte output columns");
 struct GlmLayerBuffers
 {
     const uint32_t *dense_row_offset;
@@ -153,7 +157,28 @@ struct GlmLayerBuffers
     float *attention_split_partials;
     uint64_t attention_split_partial_blocks;
     uint32_t decode_split_context_threshold;
+    uint16_t *projection_gather_bf16;
+    uint32_t projection_gather_stride;
 };
+
+static inline void GlmProjectionSlice(
+    uint32_t total,
+    uint32_t tp_degree,
+    uint32_t tp_rank,
+    uint32_t *first,
+    uint32_t *count)
+{
+    uint32_t granules;
+    uint32_t base;
+    uint32_t extra;
+
+    granules = total / GLM_PROJECTION_GRANULE;
+    base = granules / tp_degree;
+    extra = granules % tp_degree;
+    *count = GLM_PROJECTION_GRANULE * (base + (tp_rank < extra ? 1u : 0u));
+    *first = GLM_PROJECTION_GRANULE *
+        (tp_rank * base + (tp_rank < extra ? tp_rank : extra));
+}
 
 static_assert(
     LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ==
@@ -385,7 +410,95 @@ static int32_t GlmLayerIndexer(
         : LM_LAUNCH_ERR_LAUNCH;
 }
 
-static int32_t GlmLayerAttention(
+static int32_t GlmLayerAttentionProject(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    uint32_t q_first;
+    uint32_t q_count;
+    uint32_t kv_first;
+    uint32_t kv_count;
+    int32_t status;
+
+    if (buffers == 0 || rows == 0u || buffers->hidden_bf16 == 0 ||
+        buffers->residual_bf16 == 0 || buffers->normed_bf16 == 0 ||
+        buffers->attn_norm_weight == 0 ||
+        (buffers->projection_gather_bf16 != 0 &&
+         (buffers->tp_degree == 0u || buffers->tp_rank >= buffers->tp_degree ||
+          buffers->projection_gather_stride < GLM_PROJECTION_GATHER_WIDTH ||
+          buffers->q_a_weight == 0 || buffers->kv_a_weight == 0)))
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<GLM_LAYER_THREADS, uint16_t>),
+        rows,
+        GLM_LAYER_THREADS,
+        (GLM_HIDDEN + 8u) * sizeof(float),
+        stream,
+        buffers->hidden_bf16,
+        buffers->residual_bf16,
+        (const uint16_t *)buffers->attn_norm_weight,
+        buffers->residual_bf16,
+        buffers->normed_bf16,
+        GLM_HIDDEN,
+        GLM_HIDDEN,
+        GLM_RMS_EPSILON);
+    if (buffers->projection_gather_bf16 == 0)
+    {
+        return cudaPeekAtLastError() == cudaSuccess
+            ? LM_LAUNCH_OK
+            : LM_LAUNCH_ERR_LAUNCH;
+    }
+    GlmProjectionSlice(GLM_QUERY_A_DIM, buffers->tp_degree, buffers->tp_rank,
+        &q_first, &q_count);
+    GlmProjectionSlice(GLM_LATENT_ROW, buffers->tp_degree, buffers->tp_rank,
+        &kv_first, &kv_count);
+    if (cudaMemsetAsync(buffers->projection_gather_bf16, 0,
+            (uint64_t)rows * buffers->projection_gather_stride *
+                sizeof(uint16_t), stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
+    status = LM_LAUNCH_OK;
+    if (q_count != 0u)
+    {
+        status = GlmLaunchBf16Linear(
+            buffers->normed_bf16,
+            (const uint16_t *)buffers->q_a_weight + (uint64_t)q_first * GLM_HIDDEN,
+            buffers->projection_gather_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM_HIDDEN,
+            q_count,
+            buffers->projection_gather_stride,
+            q_first,
+            multiprocessors,
+            stream);
+    }
+    if (status == LM_LAUNCH_OK && kv_count != 0u)
+    {
+        status = GlmLaunchBf16Linear(
+            buffers->normed_bf16,
+            (const uint16_t *)buffers->kv_a_weight + (uint64_t)kv_first * GLM_HIDDEN,
+            buffers->projection_gather_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM_HIDDEN,
+            kv_count,
+            buffers->projection_gather_stride,
+            GLM_QUERY_A_DIM + kv_first,
+            multiprocessors,
+            stream);
+    }
+    return status;
+}
+
+static int32_t GlmLayerAttentionCore(
     const GlmLayerBuffers *buffers,
     uint32_t rows,
     uint32_t context,
@@ -395,6 +508,7 @@ static int32_t GlmLayerAttention(
 {
     const uint32_t *selected_positions;
     uint32_t selected_position_count;
+    uint32_t gathered;
     int32_t status;
 
     if (buffers == 0 || rows == 0u || context == 0u ||
@@ -424,38 +538,45 @@ static int32_t GlmLayerAttention(
         ? buffers->selected_positions : 0;
     selected_position_count = context > GLM_DSA_SELECTED
         ? buffers->selected_position_count : 0u;
+    gathered = buffers->projection_gather_bf16 != 0 ? 1u : 0u;
 
-    LM_LAUNCH(
-        (LmFusedResidualRmsNormKernel<GLM_LAYER_THREADS, uint16_t>),
-        rows,
-        GLM_LAYER_THREADS,
-        (GLM_HIDDEN + 8u) * sizeof(float),
-        stream,
-        buffers->hidden_bf16,
-        buffers->residual_bf16,
-        (const uint16_t *)buffers->attn_norm_weight,
-        buffers->residual_bf16,
-        buffers->normed_bf16,
-        GLM_HIDDEN,
-        GLM_HIDDEN,
-        GLM_RMS_EPSILON);
-
-    status = GlmLaunchBf16Linear(
-        buffers->normed_bf16,
-        buffers->q_a_weight,
-        buffers->q_compressed_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM_HIDDEN,
-        GLM_QUERY_A_DIM,
-        GLM_QUERY_A_DIM,
-        0u,
-        multiprocessors,
-        stream);
-    if (status != LM_LAUNCH_OK)
+    if (gathered != 0u)
     {
-        return status;
+        if (cudaMemcpy2DAsync(buffers->q_compressed_bf16,
+                GLM_QUERY_A_DIM * sizeof(uint16_t),
+                buffers->projection_gather_bf16,
+                (uint64_t)buffers->projection_gather_stride * sizeof(uint16_t),
+                GLM_QUERY_A_DIM * sizeof(uint16_t), rows,
+                cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
+            cudaMemcpy2DAsync(buffers->kv_slot_bf16,
+                GLM_LATENT_ROW * sizeof(uint16_t),
+                buffers->projection_gather_bf16 + GLM_QUERY_A_DIM,
+                (uint64_t)buffers->projection_gather_stride * sizeof(uint16_t),
+                GLM_LATENT_ROW * sizeof(uint16_t), rows,
+                cudaMemcpyDeviceToDevice, stream) != cudaSuccess)
+        {
+            return LM_LAUNCH_ERR_LAUNCH;
+        }
+    }
+    else
+    {
+        status = GlmLaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->q_a_weight,
+            buffers->q_compressed_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM_HIDDEN,
+            GLM_QUERY_A_DIM,
+            GLM_QUERY_A_DIM,
+            0u,
+            multiprocessors,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
     }
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM_LAYER_THREADS,uint16_t>),
@@ -499,22 +620,25 @@ static int32_t GlmLayerAttention(
     {
         return status;
     }
-    status = GlmLaunchBf16Linear(
-        buffers->normed_bf16,
-        buffers->kv_a_weight,
-        buffers->kv_slot_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM_HIDDEN,
-        GLM_LATENT_ROW,
-        GLM_LATENT_ROW,
-        0u,
-        multiprocessors,
-        stream);
-    if (status != LM_LAUNCH_OK)
+    if (gathered == 0u)
     {
-        return status;
+        status = GlmLaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->kv_a_weight,
+            buffers->kv_slot_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM_HIDDEN,
+            GLM_LATENT_ROW,
+            GLM_LATENT_ROW,
+            0u,
+            multiprocessors,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
     }
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM_LAYER_THREADS,uint16_t>),
@@ -636,6 +760,29 @@ static int32_t GlmLayerAttention(
         0u,
         multiprocessors,
         stream);
+}
+
+static int32_t GlmLayerAttention(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    if (buffers == 0 || buffers->projection_gather_bf16 != 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    status = GlmLayerAttentionProject(buffers, rows, multiprocessors, stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    return GlmLayerAttentionCore(buffers, rows, context, layer_index,
+        multiprocessors, stream);
 }
 
 static int32_t GlmLayerDenseMlp(

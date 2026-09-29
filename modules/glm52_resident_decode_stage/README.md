@@ -210,3 +210,62 @@ Expert residency has two modes:
   about 50.4 GiB of arena per rank for fp8. Attach prints
   `EXPERT-RESIDENCY mode=pinned keys=19200 leases=38`, or
   `EXPERT-PIN-FAILED` and fails startup.
+
+## Chain modes (`SPARK_GLM52_CHAIN_MODE`)
+
+The module runs one token step as a chain: the embedding reduce, then per
+layer attention, a hidden all-reduce, the MLP and a second all-reduce, then the
+head and its max-loc reduce (158 collectives per token at 78 layers).
+
+- `eager` (default): every collective ends in a host completion callback that
+  launches the next stage. Required for `SPARK_GLM52_T1` traces and for lazy
+  expert leases (the route has to reach the host before the experts launch).
+- `linear`: `SparkGlm52RunChain` enqueues the whole chain, every wave of the
+  batch, from the submitting thread. Collectives are stream ordered with no
+  host completion (the device waits on the mesh); the lazy-pack worker then
+  waits for the stream, checks the deferred rounds
+  (`SparkTpDeviceCollectiveVerifyDeferred`) and completes the slot.
+- `graph`: as linear, but a single-wave step is captured once per slot, row
+  count and attention regime, then replayed. The captured context bound is
+  the largest context of its regime (`spark_glm52_graph_regime.h`: unsplit
+  below `decode_split_context_threshold`, split up to the 2048 selected
+  tokens), so a replay launches the same kernels eager launches for any
+  context of that regime. Steps the graph does not cover run linear and log
+  `GLM52-GRAPH-GATE` with the reason (`multi-wave` prefill waves,
+  `selected-context` above 2048 tokens, `rows` above 64); the counts appear in
+  every `GLM52-CHAIN-TIME` line.
+
+`linear` and `graph` refuse to start (`GLM52-CHAIN-MODE-REFUSED`) without the
+lazy attach worker, pinned experts (`SPARK_GLM52_PIN_EXPERTS=1`), stream-ordered
+collectives (`SPARK_TP_WAIT_MODE=hardware`) or with `SPARK_GLM52_T1`. One chain
+is in flight at a time; a second submission returns BUSY until the first has
+settled. If the lazy worker refuses the settle, the submitting thread settles
+the chain itself and logs `GLM52-CHAIN-SETTLE-INLINE`. The shared pieces (mode parse, arm/disarm, capture, pre-launch seed,
+settle) are model-neutral in `include/sparkpipe/spark_tp_chain_graph.h`.
+
+## Split q_a/kv_a projections (`SPARK_GLM52_PROJECTION_SPLIT=1`)
+
+q_a (2048 x 6144) and kv_a (576 x 6144) are replicated on every rank and were
+read in full every token, 2.34 GiB per token per rank. With the split each
+rank reads an 8-element-aligned slice (q_a 128 rows at TP16; kv_a 40 rows on
+ranks 0-7 and 32 on ranks 8-15), writes it into a zeroed gather row, and one
+bf16 sum all-reduce per layer assembles q_compressed and the KV latent before
+their norms (`GlmLayerAttentionProject`, reduce, `GlmLayerAttentionCore`).
+Each gathered element has exactly one nonzero contributor, so the sum is the
+replicated projection. It adds 78 collectives per token and removes about
+2.2 GiB of reads per token per rank.
+
+## Single-GPU parity
+
+`validation/run_glm52_chain_graph_parity.sh fp8 16` builds the b16 archive and
+`glm52_chain_graph_parity`, which walks a dense and a routed layer for 96
+decode steps (split threshold 64) with the validator's synthetic weights, at
+TP1 and at TP16 rank-local shapes, as staged launches (a host sync after every
+stage), a linear walk, replayed graphs, and the projection split with the
+16-rank gather emulated on one GPU. Hidden and residual outputs must be
+bit-identical to the staged walk. Two controls must differ: every step replayed
+with the other regime's bound, and the split gather missing one rank.
+`tests/test_glm52_chain_modes.py` drives the real chain runner on the host:
+walk order, capture and replay per regime, the selected-context and multi-wave
+gates, settle, walk and stream failures, a refused worker, and the busy gate
+(including its release when a submission fails before the chain starts).
