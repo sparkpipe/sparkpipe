@@ -996,6 +996,123 @@ def test_dry_run_of_a_running_rotation_shows_the_plan():
         check("dry-run running: plans the next slot from the recorded fleet without an alert", rc == 0 and "DRY n0: fake start big 0" in out and "DRY n2: fake stop tc" in out and "ALERT" not in out and f.call_lines() == [], out[-600:])
 
 
+def strand(f, name):
+    w = f.world()
+    for h in f.cfg["models"][name]["nodes"]:
+        w["nodes"][h]["up"][name] = False
+        w["nodes"][h]["ready"][name] = False
+    w["apis"][name] = False
+    f.save(w)
+
+
+def test_resident_arenas_of_a_stopped_model_are_reclaimed():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T15:00:30Z")
+        f.tool("pause", "verify", "window")
+        strand(f, "big")
+        f.tool("resume", at="2026-09-29T15:09:00Z")
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T15:09:39Z")
+        lines = f.call_lines()
+        st = f.state()
+        check("stranded arenas: a primary stopped outside the rotation with its arenas resident does not block production", rc == 0 and st.get("active") == ["prod"] and f.up_on("prod") == HOSTS and f.world()["apis"].get("prod"), out[-800:])
+        check("stranded arenas: its packs are reclaimed by pack before production starts", 0 <= first_index(lines, r"n\d reclaim big --reclaim-pack") < first_index(lines, r"n\d start prod") and all(f.world()["nodes"][h]["arena"].get("big") == 0 for h in HOSTS), "\n".join(lines[-12:]))
+        check("stranded arenas: no auto-pause, no node-global reclaim", not (f.state_dir / "ROTATION_PAUSE").exists() and "CRITICAL" not in f.alerts() and not any(re.search(r"--reclaim(?![-\w])", l) for l in lines), f.alerts())
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.tool("tick", at="2026-09-29T18:00:30Z")
+        f.tool("pause", "verify", "window")
+        strand(f, "big")
+        f.tool("resume", at="2026-09-29T18:09:00Z")
+        rc, out = f.tool("tick", at="2026-09-29T18:09:39Z")
+        st = f.state()
+        check("stranded arenas: with a companion still serving, the slot is re-established from reclaimed memory", rc == 0 and st.get("active") == ["big", "ta"] and f.up_on("big") == HOSTS and min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20 and "CRITICAL" not in f.alerts(), out[-800:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T15:00:30Z")
+        f.state_dir.joinpath("state.json").write_text(json.dumps(dict(f.state(), phase="recovering", transition={"from": ["big"], "to": ["prod"], "reason": "x", "started": "x"})))
+        strand(f, "big")
+        rc, out = f.tool("tick", at="2026-09-29T15:20:30Z")
+        check("stranded arenas: a fallback reclaims idle packs before it starts production", f.state().get("active") == ["prod"] and f.up_on("prod") == HOSTS and "CRITICAL" not in f.alerts(), out[-800:])
+
+
+def test_api_down_with_engines_up_restarts_the_api():
+    for paused in (True, False):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Fleet(tmp)
+            f.tool("tick", at="2026-09-29T15:00:30Z")
+            if paused:
+                f.tool("pause", "verify", "window")
+            w = f.world()
+            w["apis"]["big"] = False
+            f.save(w)
+            if paused:
+                f.tool("resume", at="2026-09-29T15:09:00Z")
+            f.clear_calls()
+            rc, out = f.tool("tick", at="2026-09-29T15:09:39Z")
+            lines = f.call_lines()
+            label = "after a pause" if paused else "in a steady hour"
+            check(f"api down ({label}): the api is restarted and smoked, the engines are kept", rc == 0 and f.state().get("active") == ["big"] and f.world()["apis"].get("big") and f.up_on("big") == HOSTS and starts(lines) == [] and not any(" stop big" in l or "reclaim big" in l for l in lines) and any("smoke big" in l for l in lines), out[-800:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T15:00:30Z")
+        w = f.world()
+        w["apis"]["big"] = False
+        f.save(w)
+        f.behave(smoke_bad=["big"])
+        rc, out = f.tool("tick", at="2026-09-29T15:09:39Z")
+        check("api down: a failed api restart falls back with the engines stopped and reclaimed", f.state().get("active") == ["prod"] and f.up_on("big") == [] and f.up_on("prod") == HOSTS and "api restart failed" in f.alerts(), out[-800:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        w = f.world()
+        for h in HOSTS:
+            w["nodes"][h]["up"]["big"] = True
+            w["nodes"][h]["arena"]["big"] = 0
+        f.save(w)
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:05:30Z")
+        check("api down: an engine the rotation did not start is never given an api", not f.world()["apis"].get("big") and not any("api-start big" in l for l in f.call_lines()) and (f.state_dir / "ROTATION_PAUSE").exists(), out[-600:])
+
+
+def test_fallback_tries_production_past_a_stuck_model():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.tool("tick", at="2026-09-29T18:00:30Z")
+        w = f.world()
+        for h in HOSTS:
+            w["nodes"][h]["up"]["big"] = False
+        f.save(w)
+        f.behave(stop_stuck=["ta"])
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T18:10:30Z")
+        st = f.state()
+        check("stuck in fallback: production is still restored before the rotation pauses", f.up_on("prod") == HOSTS and f.world()["apis"].get("prod") and st.get("phase") == "degraded" and "prod" in st.get("active") and (f.state_dir / "ROTATION_PAUSE").exists(), out[-800:])
+        check("stuck in fallback: the stuck companion is not reclaimed", not any("reclaim ta" in l for l in f.call_lines()) and "CRITICAL" in f.alerts() and "ta:" in f.alerts(), f.alerts())
+
+
+def test_steady_floor_guard_sheds_a_companion():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        w = f.world()
+        w["nodes"]["n1"]["mem"] = 15
+        f.save(w)
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:10:30Z")
+        lines = f.call_lines()
+        check("steady floor: a node under the floor sheds only the companion on it", f.state().get("active") == ["prod", "ta", "tc"] and f.up_on("tb") == [] and not any(re.search(r" (stop|reclaim) (prod|ta|tc)", l) for l in lines) and "below 20 GiB on n1=15" in f.alerts(), "\n".join(lines[-8:]))
+        w = f.world()
+        w["nodes"]["n3"]["mem"] = 15
+        f.save(w)
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:15:30Z")
+        check("steady floor: with no companion on the low node the primary is left serving and alerted", rc == 0 and f.state().get("active") == ["prod", "ta", "tc"] and not any(" stop " in l for l in f.call_lines()) and "no companion there to shed" in f.alerts(), f.alerts())
+
+
 def test_production_config():
     cfg = json.loads(PRODUCTION.read_text())
     p = subprocess.run([sys.executable, str(TOOL), "--config", str(PRODUCTION), "check-config"], capture_output=True, text=True)
@@ -1019,6 +1136,8 @@ def main():
                  test_rotation_fairness_across_cycles, test_full_slot_with_companion, test_packing_schedule_document_and_force, test_plan_is_read_only,
                  test_smoke_reply_rules, test_packing_config_validation, test_upgrade_keeps_the_running_companion_for_its_hour,
                  test_dry_run_of_a_running_rotation_shows_the_plan,
+                 test_resident_arenas_of_a_stopped_model_are_reclaimed, test_api_down_with_engines_up_restarts_the_api,
+                 test_fallback_tries_production_past_a_stuck_model, test_steady_floor_guard_sheds_a_companion,
                  test_production_config):
         test()
     if failures:

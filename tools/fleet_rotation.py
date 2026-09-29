@@ -449,6 +449,7 @@ class Rotation:
             commands["hub"] = "; ".join(hub_parts)
         results = self.run.each(commands)
         seen = {}
+        hub = {}
         for host, (rc, text) in results.items():
             if self.dry:
                 continue
@@ -457,19 +458,57 @@ class Rotation:
             for line in text.splitlines():
                 parts = line.split()
                 if len(parts) == 3 and parts[0] == "@@":
-                    seen.setdefault(parts[1], []).append(parts[2] == "1")
+                    (hub if host == "hub" else seen).setdefault(parts[1], []).append(parts[2] == "1")
         state = {}
         for name in runnable:
-            flags = seen.get(name, [])
+            engines = seen.get(name, [])
+            flags = engines + hub.get(name, [])
             if self.dry:
                 state[name] = "unknown"
             elif flags and all(flags):
                 state[name] = "up"
+            elif engines and all(engines):
+                state[name] = "api"
             elif not any(flags):
                 state[name] = "down"
             else:
                 state[name] = "mixed"
         return state
+
+    def split(self, state):
+        return [m for m, s in state.items() if s == "up"], [m for m, s in state.items() if s in ("mixed", "api")]
+
+    def restart_api(self, st, model):
+        self.log("API-RESTART", model=model, why=json.dumps("engines up on every node, api down"))
+        try:
+            rc, text = self.run.run("hub", self.hub_cmd(model, "start"))
+            if rc != 0:
+                raise Failure(f"{model}: api start rc {rc}: {text.strip()[:160]}")
+            self.wait_hub(model, "health", self.models[model]["api"]["timeout_s"])
+            self.smoke(model)
+        except Preempted:
+            raise
+        except Exception as e:
+            self.alert(st, "WARN", f"{model}: engines up but api down; api restart failed, handled as a half-up model: {self.why(e)}")
+            return False
+        self.log("API-RESTORED", model=model)
+        return True
+
+    def repair_apis(self, st, state, wanted):
+        for name, s in state.items():
+            if s == "api":
+                state[name] = "up" if name != self.fb and name in wanted and self.restart_api(st, name) else "mixed"
+        return state
+
+    def reclaim_idle(self, st, state, skip):
+        idle = [m for m, s in state.items() if s in ("down", "unknown") and m not in skip]
+        self.log("RECLAIM-IDLE", models=",".join(idle) or "-")
+        for name in idle:
+            self.checkpoint()
+            try:
+                self.reclaim(name)
+            except Failure as e:
+                self.alert(st, "WARN", f"idle {name} arenas not reclaimed: {e}")
 
     def mem(self, hosts):
         results = self.run.each({h: self.cfg["commands"]["mem_probe"] for h in hosts})
@@ -739,18 +778,25 @@ class Rotation:
         st["transition"] = {"from": st.get("active") or [], "to": [self.fb], "reason": why, "started": iso(time.time())}
         self.save_state(st)
         self.log("FALLBACK-BEGIN", why=json.dumps(why))
+        stuck = []
         try:
             state = self.observe()
             order = list(st["transition"]["from"])
-            running = [m for m, s in state.items() if s in ("up", "mixed") and m != self.fb]
+            running = [m for m, s in state.items() if s in ("up", "mixed", "api") and m != self.fb]
             for model in sorted(running, key=lambda m: (not self.is_companion(m), -order.index(m) if m in order else 0)):
-                self.stop_model(model)
+                try:
+                    self.stop_model(model)
+                except Failure as e:
+                    stuck.append(self.why(e))
+            self.reclaim_idle(st, self.observe(), [])
             self.start_model(self.fb)
             self.floor_check("after-fallback")
         except Preempted:
             raise
         except Exception as e:
-            return self.degrade(st, f"fallback to {self.fb} failed: {self.why(e)}")
+            return self.degrade(st, f"fallback to {self.fb} failed: {self.why(e)}" + "".join(f"; {w}" for w in stuck))
+        if stuck:
+            return self.degrade(st, f"{self.fb} restored but " + "; ".join(stuck))
         st["active"] = [self.fb]
         st["phase"] = "fallback"
         st["transition"] = None
@@ -854,6 +900,22 @@ class Rotation:
         st["active"] = [m for m in current if m not in companions]
         self.save_state(st)
 
+    def floor_guard(self, st, current):
+        try:
+            avail = self.mem(self.cfg["fleet"])
+        except Failure as e:
+            self.alert(st, "WARN", f"steady floor check skipped: {e}")
+            return False
+        low = sorted(h for h, v in avail.items() if v is not None and v < self.cfg["floor_gib"])
+        if not low:
+            return False
+        victims = [m for m in reversed(current) if self.is_companion(m) and set(self.models[m]["nodes"]) & set(low)]
+        if not victims:
+            self.alert(st, "WARN", f"MemAvailable below {self.cfg['floor_gib']} GiB on {' '.join(low)} with no companion there to shed; primary left serving")
+            return False
+        self.shed(st, current, victims[:1], f"MemAvailable below {self.cfg['floor_gib']} GiB on " + " ".join(f"{h}={avail[h]}" for h in low))
+        return True
+
     def step(self, st):
         if st.get("phase") in ("transition", "recovering"):
             self.alert(st, "ERROR", f"previous {st['phase']} {json.dumps(st.get('transition'))} did not finish; falling back to {self.fb}")
@@ -864,13 +926,12 @@ class Rotation:
         slot_name, primary, _ = self.slot_for(st, instance)
         unpicked = primary is not None and self.pick_of(st, instance, slot_name, primary) is None
         try:
-            state = self.observe()
+            state = self.repair_apis(st, self.observe(), st.get("active") or [])
         except Failure as e:
             self.alert(st, "ERROR", f"{e}; no transition this tick")
             self.finish(st)
             return 1
-        up = [m for m, s in state.items() if s == "up"]
-        dirty = [m for m, s in state.items() if s == "mixed"]
+        up, dirty = self.split(state)
         if self.dry:
             up = list(st.get("active") or [self.fb])
             state = {m: "up" if m in up else "down" for m in state}
@@ -914,10 +975,14 @@ class Rotation:
                 return 1
             if sick:
                 self.alert(st, "WARN", f"{self.fb} api health failed; leaving production to its owners")
+            if self.floor_guard(st, current):
+                self.finish(st)
+                return 1
             st["phase"] = st.get("phase") if st.get("phase") in ("steady", "fallback") else "steady"
             self.finish(st)
             return 0
         try:
+            self.reclaim_idle(st, state, current + dirty)
             if current:
                 slot, target = self.plan(st, instance, current, dirty)
             else:
@@ -1024,9 +1089,7 @@ def cmd_plan(rot):
     kind, reason = rot.pause_reason()
     print(f"lock: {reason or 'none'}")
     try:
-        state = rot.observe()
-        up = [m for m, s in state.items() if s == "up"]
-        dirty = [m for m, s in state.items() if s == "mixed"]
+        up, dirty = rot.split(rot.observe())
         current = up if "active" not in st or st.get("resync") else list(st["active"])
         st["active"] = current
         slot, target = rot.plan(st, rot.instance, current, dirty)
@@ -1190,8 +1253,8 @@ def main(argv=None):
                     return 2
                 rot.honor_locks = False
                 state = rot.observe()
-                up = [m for m, s in state.items() if s == "up"]
-                dirty = [m for m, s in state.items() if s == "mixed"]
+                up, dirty = rot.split(state)
+                rot.reclaim_idle(st, state, up + dirty)
                 ok = rot.converge(st, up, list(target), dirty, "manual converge")
                 rot.finish(st)
                 return 0 if ok else 1
