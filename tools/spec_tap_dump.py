@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read SPTD speculation tap dumps written by spark_speculation_tap.c.
 
-Layout (little-endian): a 128-byte header, then records of a 32-byte record
+Layout (little-endian): a 128-byte header, then records of a 40-byte record
 header followed by tap_count rows of row_bytes each, in the order the taps
 were configured. docs/SPECULATION_TAPS.md is the contract.
 """

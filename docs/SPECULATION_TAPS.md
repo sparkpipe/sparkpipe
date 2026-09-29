@@ -47,6 +47,12 @@ the tap buffers, and a disabled tap set adds no graph node or launch.
 - Host (`tests/test_glm5_next_stage_context.py`): oracle and adversary verify
   frames with a tap dump open serve the same tokens and dump each committed
   position exactly once, in order, each verify row from its wave slot.
+  Prefill chunks and multi-step decode frames through the module's execute
+  path dump and relay every committed position once, in order, with its
+  input token, output token, flags and each tap's row; B1 rounds send the
+  REQUEST after the round's taps, anchored at the committed token, and a late
+  draft is scored in shadow. The graph walk adds one capture after each
+  tapped layer's MLP post and nothing with taps off.
 - The relay runs in shadow mode only: a received draft is scored, never
   verified. Serving drafts through the relay needs the root-rank broadcast of
   each round's draft to all ranks (not built), so configuration refuses

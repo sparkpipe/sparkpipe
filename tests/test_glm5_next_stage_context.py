@@ -258,7 +258,16 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpRouteResident(const SparkGlm5NextCudaWave
 int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(wave->expert_lease_all == 1u);(void)layer;return(walk_note('E')); }
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('P')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('Q')); }
-int32_t SparkGlm5NextLaunchCudaTapCapture(const SparkGlm5NextCudaWave *wave,uint32_t all_streams,uint16_t *destination) { (void)wave;(void)all_streams;(void)destination;return(walk_note('T')); }
+static uint32_t TAP_CAPTURES;
+int32_t SparkGlm5NextLaunchCudaTapCapture(const SparkGlm5NextCudaWave *wave,uint32_t all_streams,uint16_t *destination)
+{
+	uint64_t row_bytes = (uint64_t)(all_streams != 0u ? SPARK_GLM5_NEXT_MODEL_HC_MULT : 1u) * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
+	uint32_t row;
+	TAP_CAPTURES++;
+	for (row=0u; row<wave->row_count; row++)
+		memset((uint8_t *)destination + row * row_bytes,(int)((TAP_CAPTURES * 8u + row) & 0xffu),row_bytes);
+	return(walk_note('Y'));
+}
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave) { (void)wave;return(walk_note('H')); }
 static uint32_t L2_CALLS,L2_SITES,L2_BYTES,L2_BLOCKS;
 int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *placed) { (void)wave;(void)local_layer;L2_CALLS++;L2_SITES |= 1u << site;L2_BYTES = shape != 0 ? shape->bytes : 0u;L2_BLOCKS = shape != 0 ? shape->blocks : 0u;*placed = 1u;return(0); }
@@ -3055,6 +3064,41 @@ static void check_pack_identity(void)
 	assert(SparkGlm5NextPackValidateHeader(&state,&header,header.file_bytes) == SPARK_STATUS_SCHEMA_ERROR);
 }
 
+static void *TAP_DEVICE_OWNED;
+
+static void taps_enable(const char *taps)
+{
+	uint64_t rows = state.execution_row_capacity;
+	assert(SparkSpeculationTapSetParse(taps,SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,SPARK_GLM5_NEXT_MODEL_HC_MULT,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,&state.tap_set) == SPARK_STATUS_OK);
+	TAP_DEVICE_OWNED = calloc((uint64_t)state.tap_set.tap_count * rows,state.tap_set.row_bytes);
+	state.slots[0].tap_device = TAP_DEVICE_OWNED;
+	state.slots[0].tap_host = calloc(rows,state.tap_set.record_bytes);
+	state.tap_scratch = malloc(state.tap_set.record_bytes);
+	assert(TAP_DEVICE_OWNED != 0 && state.slots[0].tap_host != 0 && state.tap_scratch != 0 && pthread_mutex_init(&state.tap_lock,0) == 0);
+	state.tap_lock_ready = 1u;
+	state.tap_generation = 9u;
+	state.tap_fingerprint = SparkSpeculationTapSetFingerprint(&state.tap_set);
+	state.tap_enabled = 1u;
+	TAP_CAPTURES = 0u;
+}
+
+static void taps_release(void)
+{
+	SparkGlm5NextReleaseTaps(&state);
+	assert(state.tap_enabled == 0u && state.slots[0].tap_host == 0 && state.slots[0].tap_device == 0 && state.tap_scratch == 0 && state.tap_remote == 0 && state.tap_lock_ready == 0u);
+	free(TAP_DEVICE_OWNED);
+	TAP_DEVICE_OWNED = 0;
+}
+
+static uint32_t tap_row_is(const uint8_t *row,uint32_t bytes,uint32_t value)
+{
+	uint32_t index;
+	for (index=0u; index<bytes; index++)
+		if ( row[index] != (uint8_t)value )
+			return(0u);
+	return(1u);
+}
+
 static void check_linear_walk(void)
 {
 	SparkGlm5NextTpChain chain = {0};
@@ -3116,6 +3160,23 @@ static void check_linear_walk(void)
 	state.l2_prefetch = 0u;
 	state.l2_prefetch_rounds = 0u;
 	chain.wave.tp_degree = 0u;
+	taps_enable("mean:1,3");
+	chain.tp_op_index = chain.tp_hc_op_index = 0u;
+	WALK_LENGTH = 0u;
+	assert(SparkGlm5NextWalkChain(&chain,&layer) == 0u && layer == 5u && strcmp(WALK_TRACE,"Bh" "ArPMrQ" "SgTrPMrQY" "ArPMrQ" "ArPRErQY" "ArPRErQ" "HxU") == 0 && TAP_CAPTURES == 2u);
+	for (limit=0u; limit<2u; limit++)
+		assert(tap_row_is((const uint8_t *)state.slots[0].tap_host + (uint64_t)limit * state.execution_row_capacity * state.tap_set.row_bytes,state.tap_set.row_bytes,(limit + 1u) * 8u) != 0u &&
+			tap_row_is((const uint8_t *)state.slots[0].tap_host + ((uint64_t)limit * state.execution_row_capacity + 1u) * state.tap_set.row_bytes,state.tap_set.row_bytes,(limit + 1u) * 8u + 1u) != 0u);
+	chain.tp_op_index = chain.tp_hc_op_index = 0u;
+	WALK_LENGTH = 0u;
+	WALK_FAIL_CODE = 'Y';
+	assert(SparkGlm5NextWalkChain(&chain,&layer) == 40u && layer == 1u && strcmp(WALK_TRACE,"Bh" "ArPMrQ" "SgTrPMrQY") == 0);
+	WALK_FAIL_CODE = 0u;
+	taps_release();
+	chain.tp_op_index = chain.tp_hc_op_index = 0u;
+	WALK_LENGTH = 0u;
+	assert(SparkGlm5NextWalkChain(&chain,&layer) == 0u && layer == 5u && strcmp(WALK_TRACE,"Bh" "ArPMrQ" "SgTrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HxU") == 0 && TAP_CAPTURES == 3u);
+	printf("PASS graph walk taps: tapped layers add one capture after their MLP post, the flush lands each tap row by row, a capture failure stops the walk, taps off add nothing\n");
 }
 
 static void pin_fixture_experts(void)
@@ -3980,6 +4041,160 @@ static void check_execute_sequence(void)
 	sequence_teardown();
 }
 
+typedef struct TapRelaySink
+{
+	int fd;
+	SparkSpeculationTapAssembler assembler;
+	uint8_t *payload;
+	char order[32];
+	uint32_t events;
+	uint64_t positions[16];
+	uint32_t records;
+	SparkSpeculationRelayFrame requests[8];
+	uint32_t request_count;
+} TapRelaySink;
+
+static void tap_sink_drain(TapRelaySink *sink)
+{
+	uint8_t buffer[SPARK_SPECULATION_TAP_FRAGMENT_BYTES_MAX];
+	ssize_t length;
+	uint32_t complete;
+	while ( (length = recv(sink->fd,buffer,sizeof(buffer),MSG_DONTWAIT)) > 0 )
+	{
+		assert(sink->events + 1u < sizeof(sink->order));
+		if ( (uint32_t)length == SPARK_SPECULATION_RELAY_FRAME_BYTES )
+		{
+			assert(sink->request_count < 8u && SparkSpeculationRelayDecode(buffer,(uint32_t)length,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,&sink->requests[sink->request_count]) == SPARK_STATUS_OK);
+			assert(sink->requests[sink->request_count].kind == SPARK_SPECULATION_RELAY_KIND_REQUEST);
+			sink->request_count++;
+			sink->order[sink->events++] = 'R';
+			continue;
+		}
+		assert(SparkSpeculationTapAssemblerAccept(&sink->assembler,buffer,(uint32_t)length,&complete) == SPARK_STATUS_OK);
+		if ( complete == 0u )
+			continue;
+		assert(sink->records < 16u && sink->assembler.record.engine_generation == 9u);
+		sink->positions[sink->records++] = sink->assembler.record.position;
+		sink->order[sink->events++] = 'T';
+	}
+	sink->order[sink->events] = 0;
+}
+
+static void tap_sink_expect(TapRelaySink *sink,const char *order)
+{
+	tap_sink_drain(sink);
+	assert(strcmp(sink->order,order) == 0);
+	sink->events = 0u;
+	sink->order[0] = 0;
+}
+
+static void check_execute_sequence_taps(void)
+{
+	static const uint64_t sequence_of[10] = {1u,1u,1u,1u,1u,1u,1u,1u,2u,2u};
+	static const uint32_t position_of[10] = {0u,1u,2u,3u,4u,5u,6u,7u,0u,1u};
+	static const uint32_t token_of[10] = {500u,501u,500u,501u,500u,211u,500u,411u,500u,501u};
+	static const uint32_t next_of[10] = {11u,12u,111u,112u,211u,311u,411u,511u,611u,612u};
+	static const uint32_t step_of[10] = {0u,0u,1u,1u,2u,3u,4u,5u,6u,6u};
+	static const uint32_t row_of[10] = {0u,1u,0u,1u,0u,0u,0u,0u,0u,1u};
+	static const uint32_t history_0[6] = {500u,501u,500u,501u,500u,211u};
+	static TapRelaySink sink;
+	SparkSpeculationRelayFrame reply;
+	struct sockaddr_in address;
+	socklen_t address_length;
+	uint8_t header[128],record[40],*payload,reply_bytes[SPARK_SPECULATION_RELAY_FRAME_BYTES];
+	uint64_t records,position,serial,sequence;
+	uint32_t index,tap,flags,token,next;
+	char path[96],peer[64];
+	FILE *file;
+	sequence_fixture();
+	taps_enable("mean:1,3");
+	snprintf(path,sizeof(path),"/tmp/sparkpipe_glm5_next_chain_taps_%ld.sptd",(long)getpid());
+	(void)unlink(path);
+	assert(SparkSpeculationTapDumpOpen(&state.tap_dump,path,&state.tap_set,"glm5_next",9u,15u,UINT64_C(1) << 30) == SPARK_STATUS_OK);
+	state.tap_dump_open = 1u;
+	memset(&sink,0,sizeof(sink));
+	sink.payload = malloc(state.tap_set.record_bytes);
+	sink.fd = socket(AF_INET,SOCK_DGRAM,0);
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	address_length = sizeof(address);
+	assert(sink.payload != 0 && sink.fd >= 0 && bind(sink.fd,(const struct sockaddr *)&address,sizeof(address)) == 0 && getsockname(sink.fd,(struct sockaddr *)&address,&address_length) == 0);
+	assert(SparkSpeculationTapAssemblerInitialize(&sink.assembler,state.tap_fingerprint,state.tap_set.record_bytes,sink.payload) == SPARK_STATUS_OK);
+	snprintf(peer,sizeof(peer),"127.0.0.1:%u",(unsigned)ntohs(address.sin_port));
+	state.tap_remote = calloc(1u,sizeof(*state.tap_remote));
+	assert(state.tap_remote != 0 && SparkSpeculationRelayLinkOpen(&state.tap_link,"127.0.0.1:0",peer) == SPARK_STATUS_OK);
+	assert(SparkSpeculationRelayRemoteInitialize(state.tap_remote,&state.tap_link,9u,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,0u,1u) == SPARK_STATUS_OK);
+	state.tap_relay_depth = 3u;
+	assert(sequence_frame(1u,0u,2u,1u,0u) == SPARK_STATUS_OK && SEQ_BUFFER[1] == 12u);
+	tap_sink_expect(&sink,"TT");
+	sequence_idle(2u);
+	assert(sequence_frame(1u,2u,2u,1u,1u) == SPARK_STATUS_OK);
+	tap_sink_expect(&sink,"TT");
+	sequence_idle(4u);
+	assert(sequence_frame(1u,4u,1u,2u,0u) == SPARK_STATUS_OK && SEQ_BUFFER[0] == 211u && SEQ_BUFFER[1] == 311u);
+	tap_sink_expect(&sink,"TRTR");
+	assert(sink.request_count == 2u && sink.requests[0].sequence_id == 1u && sink.requests[0].anchor_position == 5u && sink.requests[0].anchor_token == 211u && sink.requests[0].requested_token_count == 3u);
+	assert(sink.requests[0].token_count == 6u && memcmp(sink.requests[0].token_ids,history_0,sizeof(history_0)) == 0);
+	assert(sink.requests[1].anchor_position == 6u && sink.requests[1].anchor_token == 311u && sink.requests[1].token_count == 1u && sink.requests[1].token_ids[0] == 311u);
+	reply = sink.requests[1];
+	reply.kind = SPARK_SPECULATION_RELAY_KIND_DRAFT;
+	reply.token_count = 3u;
+	memset(reply.token_ids,0,sizeof(reply.token_ids));
+	reply.token_ids[0] = 411u;
+	reply.token_ids[1] = 999u;
+	reply.token_ids[2] = 7u;
+	address_length = sizeof(address);
+	assert(getsockname(state.tap_link.socket_fd,(struct sockaddr *)&address,&address_length) == 0 && SparkSpeculationRelayEncode(&reply,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,reply_bytes) == SPARK_STATUS_OK);
+	assert(sendto(sink.fd,reply_bytes,sizeof(reply_bytes),0,(const struct sockaddr *)&address,address_length) == (ssize_t)sizeof(reply_bytes));
+	sequence_idle(6u);
+	assert(sequence_frame(1u,6u,1u,2u,0u) == SPARK_STATUS_OK && SEQ_BUFFER[0] == 411u && SEQ_BUFFER[1] == 511u);
+	tap_sink_expect(&sink,"TRTR");
+	assert(sink.request_count == 4u && sink.requests[2].anchor_position == 7u && sink.requests[2].anchor_token == 411u && sink.requests[2].token_count == 2u && sink.requests[2].token_ids[0] == 500u && sink.requests[2].token_ids[1] == 411u);
+	assert(sink.requests[3].anchor_position == 8u && sink.requests[3].anchor_token == 511u && sink.requests[3].token_count == 1u && sink.requests[3].round_id > sink.requests[2].round_id);
+	sequence_idle(8u);
+	assert(sequence_publish(1u,8u) == SPARK_STATUS_OK);
+	sequence_idle(8u);
+	sequence_release(1u,8u);
+	assert(sequence_frame(2u,0u,2u,1u,0u) == SPARK_STATUS_OK);
+	tap_sink_expect(&sink,"TT");
+	sequence_idle(2u);
+	for (index=0u; index<10u; index++)
+		assert(sink.positions[index] == position_of[index]);
+	assert(sink.records == 10u && sink.assembler.abandoned == 0u && sink.assembler.rejected == 0u && TAP_CAPTURES == 14u);
+	assert(state.tap_records == 10u && state.tap_link.tap_records_sent == 10u && state.tap_link.tap_records_unsent == 0u && state.tap_link.send_errors == 0u && state.tap_link.datagrams_foreign == 0u);
+	assert(state.tap_remote->requests == 4u && state.tap_remote->unsynced == 0u && state.tap_remote->unsent == 0u && state.tap_remote->answered_late == 1u && state.tap_remote->answered_in_time == 0u && state.tap_remote->deadline_misses == 2u);
+	assert(state.tap_remote->shadow_rounds == 1u && state.tap_remote->shadow_proposed == 3u && state.tap_remote->shadow_accepted == 1u && state.tap_remote->shadow_accepted_at[1] == 1u && state.tap_remote->shadow_evicted == 0u);
+	taps_release();
+	close(sink.fd);
+	free(sink.payload);
+	file = fopen(path,"rb");
+	payload = malloc(2u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
+	assert(file != 0 && payload != 0 && fread(header,1u,sizeof(header),file) == sizeof(header));
+	memcpy(&records,header + 104,sizeof(records));
+	assert(memcmp(header,"SPTD",4u) == 0 && header[100] == SPARK_SPECULATION_TAP_DUMP_FLAG_CLOSED && records == 10u);
+	for (index=0u; index<10u; index++)
+	{
+		assert(fread(record,1u,sizeof(record),file) == sizeof(record) && fread(payload,1u,2u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),file) == 2u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
+		memcpy(&sequence,record,sizeof(sequence));
+		memcpy(&position,record + 8,sizeof(position));
+		memcpy(&token,record + 16,sizeof(token));
+		memcpy(&next,record + 20,sizeof(next));
+		memcpy(&flags,record + 24,sizeof(flags));
+		memcpy(&serial,record + 32,sizeof(serial));
+		assert(sequence == sequence_of[index] && position == position_of[index] && token == token_of[index] && next == next_of[index] && serial == index + 1u);
+		assert(flags == (step_of[index] == 0u || step_of[index] == 1u || step_of[index] == 6u ? SPARK_SPECULATION_TAP_FLAG_PREFILL : SPARK_SPECULATION_TAP_FLAG_DECODE));
+		for (tap=0u; tap<2u; tap++)
+			assert(tap_row_is(payload + (uint64_t)tap * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),(2u * step_of[index] + tap + 1u) * 8u + row_of[index]) != 0u);
+	}
+	assert(fread(record,1u,1u,file) == 0u);
+	fclose(file);
+	free(payload);
+	(void)unlink(path);
+	sequence_teardown();
+	printf("PASS chain taps: prefill chunks and multi-step decode frames dump and relay every committed position once, in order, with its input and output token and each tap's row; B1 rounds request drafts anchored at the committed token and score a late draft in shadow\n");
+}
+
 static void check_chain_validation(void)
 {
 	SparkModelDriverFrame frame = {0};
@@ -4313,6 +4528,7 @@ int32_t main(void)
 	check_chain_steps();
 	check_finish_chain_mtp_tap();
 	check_execute_sequence();
+	check_execute_sequence_taps();
 	check_chain_validation();
 	check_frame_chain_validation();
 	check_mtp_skips_chains();
