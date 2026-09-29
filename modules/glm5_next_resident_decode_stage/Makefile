@@ -69,6 +69,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../src/spark_speculation_lookup_draft.c \
 	../../src/spark_speculation_drafter_mix.c \
 	../../src/spark_speculation_reference_draft.c \
+	../../src/spark_speculation_recorded_draft.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
