@@ -947,6 +947,24 @@ static SparkStatus K3RunnerEnvUnsigned64(const char *name, uint64_t minimum,
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus K3RunnerSeedIndices(SparkK3RunnerState *state,
+	const SparkK3StageRunnerConfiguration *configuration)
+{
+	const uint32_t zero = 0u, one = 1u;
+	if ( configuration->resident_sequence_capacity > configuration->max_active_sequence_count )
+	{
+		fprintf(stderr, "sparkpipe_k3: resident_sequence_capacity %u exceeds the %u KDA state slots\n",
+			configuration->resident_sequence_capacity, configuration->max_active_sequence_count);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	if ( K3RunnerCopy(state->positions, &zero, 4u, state->stream) != cudaSuccess ||
+		K3RunnerCopy(state->context_length, &one, 4u, state->stream) != cudaSuccess ||
+		K3RunnerCopy(state->sequence_of_row, &zero, 4u, state->stream) != cudaSuccess ||
+		K3RunnerCopy(state->kda_state_index, &zero, 4u, state->stream) != cudaSuccess )
+		return SPARK_STATUS_IO_ERROR;
+	return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkK3StageRunnerInitialize(
 	SparkK3StageRunner *runner,
 	const SparkK3StageRunnerConfiguration *configuration)
@@ -1015,8 +1033,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 	}
 	if ( status != SPARK_STATUS_OK )
 		{ runner->private_state = 0; delete state; return status; }
-	if ( configuration->resident_sequence_capacity > configuration->max_active_sequence_count )
-		{ fprintf(stderr, "sparkpipe_k3: resident_sequence_capacity %u exceeds the %u KDA state slots\n", configuration->resident_sequence_capacity, configuration->max_active_sequence_count); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
 	if ( SparkK3DispatchCreate(&state->dispatch,&state->module.sizing,
 		configuration->max_active_sequence_count,
 		configuration->max_input_row_count,
@@ -1400,19 +1416,9 @@ SparkStatus SparkK3StageRunnerInitialize(
 	cudaMalloc(&state->context_length, 4u);
 	cudaMalloc(&state->sequence_of_row, 4u);
 	cudaMalloc(&state->kda_state_index, 4u);
-	{
-		uint32_t pos = 0u, ctx = 1u, seq = 0u, st = 0u;
-		if ( K3RunnerCopy(state->positions, &pos, 4u, state->stream) != cudaSuccess )
-			state->copy_failed = 1u;
-		if ( K3RunnerCopy(state->context_length, &ctx, 4u, state->stream) != cudaSuccess )
-			state->copy_failed = 1u;
-		if ( K3RunnerCopy(state->sequence_of_row, &seq, 4u, state->stream) != cudaSuccess )
-			state->copy_failed = 1u;
-		if ( K3RunnerCopy(state->kda_state_index, &st, 4u, state->stream) != cudaSuccess )
-			state->copy_failed = 1u;
-	}
-	if ( state->copy_failed != 0u )
-		{ SparkK3StageRunnerDestroy(runner); SPARK_FAIL(SPARK_STATUS_IO_ERROR); }
+	status = K3RunnerSeedIndices(state, configuration);
+	if ( status != SPARK_STATUS_OK )
+		{ SparkK3StageRunnerDestroy(runner); SPARK_FAIL(status); }
 	state->output_token_host = new uint32_t[configuration->max_input_row_count];
 	state->output_score_host = new float[configuration->max_input_row_count];
 	return SPARK_STATUS_OK;
