@@ -175,6 +175,7 @@ python3 "${repository_root}/tests/test_glm5_next_driver_probe.py"
 glm5_next_gpu_tests=(
 	build/test_glm5_next_head_offset
 	build/test_glm5_next_hc_mix
+	build/test_glm5_next_l2_prefetch
 	build/test_glm5_next_index_cp
 	build/test_glm5_next_rows_kernels
 )

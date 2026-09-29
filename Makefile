@@ -855,6 +855,13 @@ build/test_glm5_next_hc_mix: tests/test_glm5_next_hc_mix.cu tests/fixtures/glm5_
 test-glm-hc-mix: build/test_glm5_next_hc_mix
 	./build/test_glm5_next_hc_mix --run
 
+build/test_glm5_next_l2_prefetch: tests/test_glm5_next_l2_prefetch.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-glm-l2-prefetch
+test-glm-l2-prefetch: build/test_glm5_next_l2_prefetch
+	./build/test_glm5_next_l2_prefetch --run
+
 build/test_skinny_gemv: tests/test_skinny_gemv.cu inference/kernels/skinny.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 
