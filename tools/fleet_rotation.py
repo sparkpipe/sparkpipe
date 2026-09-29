@@ -90,6 +90,10 @@ def validate_model(cfg, name, model):
         smoke = model.get("smoke")
         require(isinstance(smoke, dict) and smoke.get("path") and isinstance(smoke.get("body"), dict) and smoke.get("expect"), f"model {name}: smoke path/body/expect missing")
         require(isinstance(smoke.get("timeout_s"), (int, float)), f"model {name}: smoke.timeout_s missing")
+    if "floor_gib" in model or "abort_gib" in model:
+        floor, abort = model.get("floor_gib"), model.get("abort_gib")
+        require(isinstance(floor, (int, float)) and isinstance(abort, (int, float)), f"model {name}: floor_gib and abort_gib come together")
+        require(0 < abort < floor <= cfg["floor_gib"], f"model {name}: needs 0 < abort_gib < floor_gib <= floor_gib of the config")
 
 
 def validate(cfg):
@@ -112,6 +116,12 @@ def validate(cfg):
         require(fallback_slot is None or fallback_slot in slots, f"slot {name}: fallback_slot unknown")
     fb = cfg["fallback"]
     require(fb in models and models[fb].get("runnable"), "fallback model must exist and be runnable")
+    shared = set(cfg["companions"] + cfg["rollback_models"] + [fb, cfg.get("default_companion")])
+    exclusive = {slot["base"] for slot in slots.values() if not slot.get("companion")}
+    for name, model in models.items():
+        if "floor_gib" in model:
+            require(name in exclusive and name not in shared, f"model {name}: floor_gib is only for the base of a slot without a companion that is never the fallback, a companion or a rollback model")
+            require(set(model["nodes"]) == set(cfg["fleet"]), f"model {name}: a model with its own floor_gib owns the whole fleet")
     require(set(models[fb]["nodes"]) == set(cfg["fleet"]), "fallback model must span the whole fleet")
     require(models[fb].get("api") is not None, "fallback model needs an api")
     for name in cfg["companions"] + cfg["rollback_models"] + [cfg.get("default_companion")] * bool(cfg.get("default_companion")):
@@ -382,23 +392,31 @@ class Rotation:
             out[host] = int(match.group(0))
         return out
 
-    def floor_check(self, when):
+    def floor_of(self, models):
+        return min([self.cfg["floor_gib"]] + [self.models[m]["floor_gib"] for m in models if "floor_gib" in self.models[m]])
+
+    def floor_check(self, when, models):
+        floor = self.floor_of(models)
         avail = self.mem(self.cfg["fleet"])
-        low = {h: v for h, v in avail.items() if v is not None and v < self.cfg["floor_gib"]}
+        low = {h: v for h, v in avail.items() if v is not None and v < floor}
         known = [v for v in avail.values() if v is not None]
-        self.log("FLOOR", when=when, min_gib=min(known) if known else "dry", floor=self.cfg["floor_gib"])
+        self.log("FLOOR", when=when, min_gib=min(known) if known else "dry", floor=floor)
         if low:
-            raise Failure(f"MemAvailable below {self.cfg['floor_gib']} GiB {when}: " + " ".join(f"{h}={v}" for h, v in sorted(low.items())))
+            raise Failure(f"MemAvailable below {floor} GiB {when}: " + " ".join(f"{h}={v}" for h, v in sorted(low.items())))
         return avail
 
-    def fits(self, avail, outgoing, incoming):
+    def below_abort(self, models):
+        limits = [(self.models[m]["abort_gib"], self.models[m]["nodes"]) for m in models if "abort_gib" in self.models[m]]
+        return " ".join(f"{h}={v}<{a}" for a, nodes in limits for h, v in sorted(self.mem(nodes).items()) if v is not None and v < a)
+
+    def fits(self, avail, outgoing, incoming, floor):
         short = []
         for host, value in avail.items():
             if value is None:
                 continue
             gain = sum(self.models[m]["mem_gib"] for m in outgoing if host in self.models[m]["nodes"])
             need = sum(self.models[m]["mem_gib"] for m in incoming if host in self.models[m]["nodes"])
-            if value + gain - need < self.cfg["floor_gib"]:
+            if value + gain - need < floor:
                 short.append(f"{host}={value}+{gain}-{need}")
         return short
 
@@ -421,6 +439,9 @@ class Rotation:
         pending = self.node_cmds(model, key, {"stamp": self.stamp})
         while True:
             self.checkpoint()
+            low = self.below_abort([model])
+            if low:
+                raise Failure(f"{model}: MemAvailable below the abort level while waiting for {key}: {low}")
             results = self.run.each(pending)
             pending = {h: pending[h] for h, (rc, _) in results.items() if rc != 0}
             if not pending:
@@ -495,9 +516,10 @@ class Rotation:
         up = self.run.each(self.node_cmds(model, "up"))
         cold = [h for h, (rc, _) in up.items() if rc != 0 or self.dry]
         avail = self.mem(cold)
-        short = {h: v for h, v in avail.items() if v is not None and v < m["mem_gib"] + self.cfg["floor_gib"]}
+        floor = self.floor_of([model])
+        short = {h: v for h, v in avail.items() if v is not None and v < m["mem_gib"] + floor}
         if short:
-            raise Failure(f"{model}: needs {m['mem_gib']}+{self.cfg['floor_gib']} GiB, short on " + " ".join(f"{h}={v}" for h, v in sorted(short.items())))
+            raise Failure(f"{model}: needs {m['mem_gib']}+{floor} GiB, short on " + " ".join(f"{h}={v}" for h, v in sorted(short.items())))
         results = self.run.each({h: c for h, c in self.node_cmds(model, "start", {"stamp": self.stamp}).items()}, timeout=self.cfg["ssh_timeout_s"])
         bad = sorted(f"{h}:rc{rc}" for h, (rc, _) in results.items() if rc != 0)
         if bad:
@@ -544,12 +566,12 @@ class Rotation:
         self.save_state(st)
         self.log("TRANSITION-BEGIN", frm=",".join(current) or "-", to=",".join(target), reason=json.dumps(reason))
         try:
-            self.floor_check("before")
+            self.floor_check("before", current)
             for model in outgoing:
                 self.stop_model(model)
             for model in incoming:
                 self.start_model(model)
-            self.floor_check("after")
+            self.floor_check("after", target)
         except Preempted:
             raise
         except Exception as e:
@@ -575,7 +597,7 @@ class Rotation:
             for model in [m for m, s in state.items() if s in ("up", "mixed") and m != self.fb]:
                 self.stop_model(model)
             self.start_model(self.fb)
-            self.floor_check("after-fallback")
+            self.floor_check("after-fallback", [self.fb])
         except Preempted:
             raise
         except Exception as e:
@@ -611,7 +633,7 @@ class Rotation:
                     culprit = model
                     break
             if not problem:
-                short = self.fits(avail, outgoing, [m for m in incoming if m not in dirty or m in outgoing])
+                short = self.fits(avail, outgoing, [m for m in incoming if m not in dirty or m in outgoing], self.floor_of(target))
                 if short:
                     culprit = incoming[-1] if incoming else None
                     problem = "predicted MemAvailable below floor: " + " ".join(short)
@@ -700,6 +722,12 @@ class Rotation:
                 return 1
             if sick:
                 self.alert(st, "WARN", f"{self.fb} api health failed; leaving production to its owners")
+            low = self.below_abort(current)
+            if low:
+                self.alert(st, "ERROR", f"MemAvailable below the abort level: {low}; falling back to {self.fb}")
+                self.fallback(st, "memory abort " + low)
+                self.finish(st)
+                return 1
             st["phase"] = st.get("phase") if st.get("phase") in ("steady", "fallback") else "steady"
             self.finish(st)
             return 0

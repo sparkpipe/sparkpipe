@@ -11,7 +11,7 @@ The cycle is three UTC hours, anchored at `cycle.anchor_hour` (0). Hour `h` runs
 | hour mod 3 | slot | models | if its base model cannot run |
 |---|---|---|---|
 | 0 | `full` | GLM-5.3 Full owns the fleet (lane 6, pinned fp8, ~68 GiB/node, API rtx5090:8446) | `flash_plus` |
-| 1 | `k3` | Kimi K3 owns the fleet | `flash_plus` (K3 is not runnable until the k3-serve lane delivers; lead experiment windows take this hour through the lead lock) |
+| 1 | `k3` | Kimi K3 owns the fleet (TP16 lane 8, full residency ~96 GiB/node, own floor 8 GiB, abort 6 GiB, API rtx5090:8448) | `flash_plus` (when K3's precheck or memory prediction fails; lead experiment windows take this hour through the lead lock) |
 | 2 | `flash_plus` | GLM Flash production (g53-api :8433) plus one companion | none; production is the floor |
 
 The companion is picked once per hour: it is the next runnable entry of `companions` after the last one used. When no companion is runnable or fits, `default_companion` (Qwen TP4, validated) runs instead. `fleet_rotation.py schedule` prints the next hours. With today's config and the GLM Full release root not yet installed, `full` demotes itself to `flash_plus` at each FULL hour (see "Demotion" below).
@@ -28,17 +28,17 @@ The timer runs `tick` every 5 minutes at :20 s. A slot changes at the top of the
    - a model that is up but not recorded means somebody changed the fleet outside the rotation: alert and auto-pause;
    - a recorded companion that died means fall back to production;
    - recorded production that is not up means alert and no transition until it is back. Production belongs to fleet-agent and the lead.
-5. **Steady.** If the fleet already matches the target, only the APIs' `/health` is checked. A failing companion falls back to production.
+5. **Steady.** If the fleet already matches the target, only the APIs' `/health` is checked, plus MemAvailable for a model with `abort_gib`. A failing companion, or an exclusive model with a node below its `abort_gib`, falls back to production.
 6. **Plan** (read-only, before anything is stopped):
    - run each incoming model's `engine.precheck` on its nodes and `api.precheck` on the hub;
-   - predict each node's MemAvailable after the swap: now + outgoing `mem_gib` − incoming `mem_gib`. It must stay at or above `floor_gib` (20).
+   - predict each node's MemAvailable after the swap: now + outgoing `mem_gib` − incoming `mem_gib`. It must stay at or above the target's floor: `floor_gib` (20), or the lower `floor_gib` of an exclusive model (see "Exclusive floor" below).
    - **Demotion:** a slot base that fails either check demotes the slot for this hour (FULL → FLASH+1). A companion that fails either check is skipped for this hour in favour of the next one. Production is never held for a model that cannot start.
 7. **Transition:**
-   1. Floor check on every node (>= 20 GiB MemAvailable).
+   1. Floor check on every node (>= the floor of the outgoing set: 20 GiB, or an exclusive model's own floor).
    2. Stop the outgoing models, companions first and production last. For each: stop its API, stop its engine units (for production, `agent.hold` on 16/16), and wait until `engine.up` is false everywhere (`stop_timeout_s`).
    3. Free memory by pack only: `weightd_warm <socket> --reclaim-pack <sha>` for each of the model's own packs (`packs`, sha files). It is refused on a node where the engine is still up. The config validator rejects any node-global `--reclaim` anywhere in the file.
-   4. Start the incoming models, production first. For each: a memory gate on the nodes where it is not already up (`mem_gib` + floor), `engine.start`, then wait for `engine.ready` on every node (`ready_timeout_s`). After `grace_s`, an engine whose unit has exited fails the step early. Then start the API, wait for `api.health` (`api.timeout_s`), and run the smoke request (`smoke.body` to `smoke.path`; the reply must contain `smoke.expect`).
-   5. Floor check on every node again.
+   4. Start the incoming models, production first. For each: a memory gate on the nodes where it is not already up (`mem_gib` + the model's floor), `engine.start`, then wait for `engine.ready` on every node (`ready_timeout_s`). After `grace_s`, an engine whose unit has exited fails the step early. A model with `abort_gib` fails the step when any of its nodes drops below it while it warms. Then start the API, wait for `api.health` (`api.timeout_s`), and run the smoke request (`smoke.body` to `smoke.path`; the reply must contain `smoke.expect`).
+   5. Floor check on every node again, at the floor of the incoming set.
 8. **Failure** at any step (timeout, non-zero rc, ssh timeout, smoke mismatch, floor, or any unexpected error in the tool) triggers:
    - an `ERROR` line in `ALERT`;
    - **fallback:** record `phase=recovering` first (so a fallback that is itself interrupted is redone by the next tick), then stop every non-production model (API, units, reclaim-pack), then start production (idempotent when it is already up: unhold, ready, g53-api, Paris smoke). The failed hour stays on production alone; the same slot is not retried within the hour. The failed hour is the hour the tick started in, even when the failure comes after the next hour began; the whole tick plans against the hour it started in.
@@ -50,6 +50,12 @@ The timer runs `tick` every 5 minutes at :20 s. A slot changes at the top of the
 - When a tick finds nothing serving (after a lead window, a degraded state, or a first run with the fleet held), it restores production before any slot model. The fleet is never left without a model for more than one transition.
 
 Every command runs with a timeout (`ssh_timeout_s` per ssh call, plus the per-step timeouts). The tool never touches weightd binaries, the Flash release root or `~/release`. For production it only touches `agent.hold`, the `--reclaim-pack` of its own rank pack, and `systemctl --user start|stop g53-api`.
+
+## Exclusive floor
+
+A model that owns the whole fleet in its own slot may carry `floor_gib` and `abort_gib` (both, `0 < abort_gib < floor_gib <= floor_gib` of the config). Nothing shares the nodes with it, so there is no co-tenant for the global 20 GiB floor to protect. The validator accepts the pair only on the base of a slot without a companion that spans the whole fleet and is never the fallback, a companion or a rollback model. The lower floor applies to the plan's prediction, the start gate and the floor check after the transition; the floor before the next transition out of that slot is the same lower floor, and the fallback's own floor check is the global one. While the model warms and at every steady tick the rotation reads MemAvailable on its nodes; a node below `abort_gib` fails the transition or triggers the fallback to production.
+
+Lead decision 2026-09-29: Kimi K3 full residency (~95.3 GiB/node on a 104-109 GiB all-stopped baseline) runs with floor 8 GiB and abort 6 GiB in its hour.
 
 ## Files on the hub (`~/fleet-rotation`)
 
@@ -144,7 +150,7 @@ Memory per node while serving. "Beside Flash" means MemAvailable stays >= 20 GiB
 |---|---|---|---|---|---|
 | GLM Flash (`flash`) | 16, lane 0, fleet-agent | `agent.hold` rm/touch; g53-api :8433; chat Paris | ~38 | - | production, fallback |
 | GLM Full (`glmfull`) | 16, lane 6 | `sp-glmfull-rd6` (release env, pinned, graph + split); `glmfull-api6` :8446 from `~/glmfull-lane6-api`; chat Paris | ~68 pinned | no (own slot) | runnable once the release root is installed (prerequisite above) |
-| Kimi K3 (`k3`) | 16 | - | ~93 (TP16 pack 99.6 GB) | no (own slot) | **not runnable**: k3-serve lane building (lanes/k3-serve.md) |
+| Kimi K3 (`k3`) | 16, lane 8 | `sp-k3-rd8` from `~/k3-lane8/root` (TP16, 1 sequence, host collective, pool 90,596,966,400 B = every expert chunk, state budget 1.5 GiB; the start drops the page cache of every pack under `~/sparkdata`) + `sp-k3-cache8` (`tools/pack_cache_trim.py` every 20 s on the rank pack); `k3-api8` :8448 from `~/k3-lane8-api`; chat Paris | 96, floor 8, abort 6 | no (own slot) | runnable once both roots are staged (lanes/k3-window.md); `validated: false` |
 | Qwen3.8-27B TP4 (`qwen`) | spark0/1/2/5, lane 3 | `sp-qwen4-rd` no-spec from `~/sparkdata/qwen27b.mx2.tp4`; `qwen27b-api.service` :8435; completion Paris | ~15 | yes (53-55 left) | validated, default companion |
 | Ling-3.0-flash TP16 (`ling`) | 16, lane 10 | `sp-ling-rd10` from `~/ling-lane10/root`; `ling3-api` :8437 from `~/ling-lane10-api`; completion Paris | ~22 | yes (46-61 left), but TP16 shares every GPU with Flash | companion |
 | MiMo-V2.6-Flash TP4 (`mimo`) | spark4/6/7/8, lane 9 | `sp-mimo-rd9` from `~/mimo-lane9/root`; `mimo26-api` :8439 from `~/mimo-lane9-api`; completion Paris | ~46 | yes (28-35 left) | companion |
@@ -154,5 +160,7 @@ Memory per node while serving. "Beside Flash" means MemAvailable stays >= 20 GiB
 | DeepSeek V4-Pro (`dsv4pro`) | TP4xPP4 packs 16/16 | - | 94-100 | no | **not runnable**: no serving path |
 | Hunyuan 4 (`hy4`) | TP16 packs | - | ~56 | at the floor | **not runnable**: module is a stub |
 | MiniMax text, Qwen3.8 Max, Muse | packs only | - | - | - | **not runnable**: no serving lane recorded |
+
+Page cache: an engine whose weightd reads its pack through the page cache leaves up to tens of GiB of that pack cached. With little MemFree, CUDA context creation then fails (`NVRM ... kgrctxAllocMainCtxBuffer NV_ERR_NO_MEMORY`) although MemAvailable is high. `tools/pack_cache_trim.py` drops the page cache of named pack files only (never `drop_caches`); K3's start, stop and its `sp-k3-cache8` unit use it.
 
 A driver joins the rotation when its entry gains `runnable: true` and the full set of fields: `nodes`, `mem_gib`, `engine.{precheck,start,stop,up,ready,grace_s,ready_timeout_s,stop_timeout_s}`, `packs` (the pack sha files for `--reclaim-pack`), `api.{precheck,start,stop,up,health,port,timeout_s}` and `smoke`. `check-config` enforces the list. Placeholders: `@rank@` (index in `nodes`), `@host@`, `@stamp@` (one per start, for log markers), `@model@`.

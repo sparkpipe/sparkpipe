@@ -580,6 +580,129 @@ def test_config_validation():
         check("config: a runnable model needs every engine command", rc == 2 and "engine.ready" in out, out)
 
 
+def exclusive_fleet(tmp, floor=True, arena=95):
+    cfg = config(Path(tmp))
+    cfg["models"]["k"] = model(HOSTS, 95)
+    if floor:
+        cfg["models"]["k"].update({"floor_gib": 8, "abort_gib": 6})
+    f = Fleet(tmp, cfg)
+    w = f.world()
+    w["arena"]["k"] = arena
+    f.save(w)
+    return f
+
+
+def test_exclusive_floor_and_abort():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp)
+        rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
+        st = f.state()
+        check("exclusive floor: a model that fits only under its own floor takes its slot", rc == 0 and st.get("active") == ["k"] and f.up_on("k") == HOSTS and f.up_on("prod") == [], out[-600:])
+        log = (f.state_dir / "rotation.log").read_text()
+        check("exclusive floor: before is checked at the global floor, after at the model's floor", re.search(r"FLOOR when=before .*floor=20", log) and re.search(r"FLOOR when=after .*floor=8", log), log[-600:])
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T16:05:30Z")
+        check("exclusive floor: a steady tick probes memory for the abort level and changes nothing", rc == 0 and f.state().get("active") == ["k"] and any(" mem" in l for l in f.call_lines()) and not any(" stop " in l for l in f.call_lines()), out[-400:])
+        w = f.world()
+        w["nodes"]["n2"]["mem"] = 5
+        f.save(w)
+        rc, out = f.tool("tick", at="2026-09-29T16:10:30Z")
+        st = f.state()
+        check("abort: MemAvailable under abort_gib in steady state falls back to production", rc == 1 and st.get("active") == ["prod"] and f.up_on("k") == [] and f.up_on("prod") == HOSTS, out[-600:])
+        check("abort: alerted with the node and level", "abort level" in f.alerts() and "n2=5<6" in f.alerts(), f.alerts())
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        check("abort: the next hour follows the schedule again", f.state().get("active") == ["prod", "c1"], out[-300:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp, floor=False)
+        rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
+        check("exclusive floor: without floor_gib the same model is demoted at the global floor", f.state().get("active") == ["prod", "c1"] and "demoted" in f.alerts() and not any("start k" in l for l in f.call_lines()), out[-500:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp, arena=106)
+        rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
+        st = f.state()
+        check("abort: memory under abort_gib while waiting for ready fails the start and restores production", rc == 1 and st.get("active") == ["prod"] and f.up_on("k") == [] and "abort level while waiting" in f.alerts(), out[-600:] + f.alerts())
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp)
+        w = f.world()
+        w["nodes"]["n1"]["mem"] = 64
+        f.save(w)
+        rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
+        check("exclusive floor: a node short even for the model's own floor demotes the slot", f.state().get("active") == ["prod", "c1"] and "demoted" in f.alerts() and f.up_on("prod") == HOSTS, out[-500:])
+
+
+def test_exclusive_floor_validation():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        cases = (
+            ("companion", lambda c: c["models"]["c1"].update({"floor_gib": 8, "abort_gib": 6}), "floor_gib is only"),
+            ("fallback", lambda c: c["models"]["prod"].update({"floor_gib": 8, "abort_gib": 6}), "floor_gib is only"),
+            ("partial fleet", lambda c: c["models"].update({"k": dict(model(["n0", "n1"], 95), floor_gib=8, abort_gib=6)}), "whole fleet"),
+            ("abort above floor", lambda c: c["models"].update({"k": dict(model(HOSTS, 95), floor_gib=8, abort_gib=9)}), "abort_gib"),
+            ("floor above the global floor", lambda c: c["models"].update({"k": dict(model(HOSTS, 95), floor_gib=30, abort_gib=6)}), "abort_gib"),
+            ("floor without abort", lambda c: c["models"].update({"k": dict(model(HOSTS, 95), floor_gib=8)}), "come together"),
+        )
+        for label, mutate, want in cases:
+            bad = config(Path(tmp))
+            mutate(bad)
+            f.cfg_path.write_text(json.dumps(bad))
+            rc, out = f.tool("check-config", at=None)
+            check(f"config: exclusive floor refused ({label})", rc == 2 and want in out, out)
+        good = config(Path(tmp))
+        good["models"]["k"] = dict(model(HOSTS, 95), floor_gib=8, abort_gib=6)
+        f.cfg_path.write_text(json.dumps(good))
+        rc, out = f.tool("check-config", at=None)
+        check("config: exclusive floor accepted on a whole-fleet slot base", rc == 0, out)
+
+
+def test_pack_cache_trim():
+    trim = REPOSITORY / "tools" / "pack_cache_trim.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        p = subprocess.run([sys.executable, str(trim), str(Path(tmp) / "absent.pack")], capture_output=True, text=True)
+        check("cache trim: a missing pack is refused", p.returncode == 2 and "not a file: " in p.stderr and "absent.pack" in p.stderr, p.stdout + p.stderr)
+        p = subprocess.run([sys.executable, str(trim), "--every", "-1", str(trim)], capture_output=True, text=True)
+        check("cache trim: a negative period is refused", p.returncode == 2, p.stdout + p.stderr)
+        source = trim.read_text()
+        check("cache trim: pack-scoped only, never a node-global drop", "drop_caches" not in source and "POSIX_FADV_DONTNEED" in source)
+        if not hasattr(os, "posix_fadvise"):
+            print("SKIP cache trim: posix_fadvise is Linux-only; the page-cache check runs on the Linux host-tests")
+            return
+        pack = Path(tmp) / "a.pack"
+        pack.write_bytes(os.urandom(8 << 20))
+        with open(pack, "rb") as f:
+            os.fsync(f.fileno())
+            f.read()
+        before = cached_bytes(pack)
+        locked = Path(tmp) / "locked.pack"
+        locked.write_bytes(b"x")
+        locked.chmod(0)
+        p = subprocess.run([sys.executable, str(trim), str(locked), str(pack)], capture_output=True, text=True)
+        after = cached_bytes(pack)
+        unreadable = os.getuid() != 0
+        check("cache trim: the pack's page cache is dropped and an unreadable pack is skipped", p.returncode == 0 and (f"{2 - unreadable} of 2 files" in p.stdout) and before > 0 and after < before, f"{before} -> {after} {p.stdout}{p.stderr}")
+
+
+def cached_bytes(path):
+    import ctypes
+    import mmap
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    size = os.path.getsize(path)
+    page = os.sysconf("SC_PAGE_SIZE")
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        address = libc.mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
+        pages = (size + page - 1) // page
+        vector = (ctypes.c_ubyte * pages)()
+        rc = libc.mincore(address, size, vector)
+        libc.munmap(address, size)
+    finally:
+        os.close(fd)
+    return sum(v & 1 for v in vector) * page if rc == 0 else -1
+
+
 def test_dry_run_while_paused_shows_the_plan():
     with tempfile.TemporaryDirectory() as tmp:
         f = Fleet(tmp)
@@ -654,6 +777,7 @@ def main():
                  test_pause_resume_and_foreign_change, test_floor_and_prediction, test_steady_health_and_manual,
                  test_stuck_stop_and_reclaim_guard, test_interrupted_transition_recovers, test_pause_during_running_tick,
                  test_unexpected_error_falls_back, test_failed_health_fallback_reports_degraded, test_mixed_production_is_not_held, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation,
+                 test_exclusive_floor_and_abort, test_exclusive_floor_validation, test_pack_cache_trim,
                  test_dry_run_while_paused_shows_the_plan, test_failure_after_the_hour_boundary_marks_the_starting_hour, test_install_rollback_waits_for_a_running_tick,
                  test_production_config):
         test()
