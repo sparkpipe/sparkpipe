@@ -296,6 +296,7 @@ def main() -> int:
         fail(f"plan entry count {len(want)} != pack {len(entries)}")
     mismatches = 0
     out_of_scope = 0
+    waivers = []
     for i, (w, e) in enumerate(zip(want, entries)):
         e_sub = {k: e[k] for k in cmp_keys}
         if w != e_sub:
@@ -325,8 +326,12 @@ def main() -> int:
                  f"codec {plan_codec}")
         print(f"HEADER-CODEC-MISMATCH header expert_weight_codec {h['expert_codec']} != "
               f"plan {plan_codec}; accepted by --accept-header-expert-codec")
+        waivers.append(f"header-expert-codec-accepted={h['expert_codec']}!={plan_codec}")
     else:
         print(f"PASS header expert codec: {plan_codec}")
+    if out_of_scope:
+        waivers.append(f"non-expert-plan-mismatches-out-of-scope={out_of_scope}")
+    waived = f" WAIVED[{','.join(waivers)}]" if waivers else ""
 
     # -- spot round-trip ---------------------------------------------------
     spot = [(K_KDA_QKV_BETA, 17), (K_KDA_DECAY_GATE_DOWN, 17),
@@ -346,7 +351,7 @@ def main() -> int:
         mm.close()
         f.close()
         print(f"VERIFY-PASS (skip-spot) rank {args.tp_rank}: {path.name} "
-              f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}")
+              f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}{waived}")
         return 0
     for kind, layer in spot:
         item = by_key.get((kind, layer))
@@ -368,7 +373,7 @@ def main() -> int:
     scope = ("all-tensors" if args.all_tensors
              else f"expert-layers-{args.expert_layers}" if args.expert_layers else "spot")
     print(f"VERIFY-PASS scope={scope} rank {args.tp_rank}: {path.name} "
-          f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}")
+          f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}{waived}")
     return 0
 
 

@@ -16,7 +16,9 @@ routed experts, total layers), TP degree or rank different from
 linear or KV codec not bf16, an expert entry present in one pack and not
 the other, differing group/rows/columns, an expert codec other than
 --expert-codec, and payload or scale byte counts that do not match that
-codec. The output path must not exist; a failed run leaves no output.
+codec. The output path must not exist, and its directory must not be the
+directory of either source pack (symlinks resolved); a failed run leaves no
+output.
 
 Copies stream through one reusable buffer (--chunk-bytes), so memory stays
 bounded whatever the pack size. After the output is published it is re-read:
@@ -32,7 +34,7 @@ each; sha256 of the empty string when a plane is empty); records sorted by
 
 Usage (rank-local, CPU only):
   nice -n 19 ionice -c3 python3 tools/glm5_next_expert_graft.py \\
-      --spine-pack ~/sparkdata/glm53flash.bf16.tp16/packs/glm53flash.bf16-official.tp16.rank0.sp \\
+      --spine-pack ~/sparkdata/glm53flash.s1-bf16.tp16/packs/glm53flash.s1-bf16.tp16.rank0.sp \\
       --expert-pack ~/sparkdata/glm53flash.fp8.tp16/packs/glm53flash.fp8.tp16.rank0.sp \\
       --expert-codec fp8 --tp-degree 16 --tp-rank 0 --model-revision <spine revision> \\
       --output ~/sparkdata/glm53flash.s1-fp8.tp16/packs/glm53flash.s1-fp8.tp16.rank0.sp
@@ -380,6 +382,13 @@ def graft(spine_path: Path, expert_path: Path, output: Path, tp_degree: int, tp_
     for companion in (".sha256", ".receipt.json"):
         if Path(str(output) + companion).exists():
             raise PackFailure(f"{output}{companion} already exists")
+    output_directory = os.path.realpath(output.parent)
+    for role, source_path in (("spine", spine_path), ("expert", expert_path)):
+        source_directories = {os.path.realpath(source_path.parent),
+                              os.path.dirname(os.path.realpath(source_path))}
+        if output_directory in source_directories:
+            raise PackFailure(f"--output directory {output.parent} is the {role} pack's directory; "
+                              "a graft writes into a new arm directory, never beside a source pack")
     spine, expert = RankPack(spine_path), RankPack(expert_path)
     check_pair(spine, expert, tp_degree, tp_rank, codec)
     plan = plan_output(spine, expert)

@@ -93,6 +93,7 @@ def run_graft(spine, expert, output, codec, rank=3, degree=16, chunk=4096):
 
 
 def expect_refused(directory, spine, expert, codec, needle, rank=3, degree=16):
+    directory = directory / "out"
     output = directory / "refused.sp"
     try:
         run_graft(spine, expert, output, codec, rank, degree)
@@ -105,7 +106,7 @@ def expect_refused(directory, spine, expert, codec, needle, rank=3, degree=16):
 
 
 def check_graft(directory, spine, expert, codec_name, codec):
-    output = directory / f"out-{codec_name}-{expert.name}.sp"
+    output = directory / "out" / f"out-{codec_name}-{expert.name}.sp"
     receipt = run_graft(spine, expert, output, codec_name)
     spine_pack, spine_regions = regions(spine)
     _, expert_regions = regions(expert)
@@ -142,6 +143,8 @@ def check_graft(directory, spine, expert, codec_name, codec):
 def main():
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
+        outputs = directory / "out"
+        outputs.mkdir()
         spine = directory / "spine-bf16.sp"
         fp8 = directory / "experts-fp8.sp"
         nvfp4 = directory / "experts-nvfp4.sp"
@@ -218,7 +221,7 @@ def main():
             raise AssertionError("existing output overwritten")
         assert f2.read_bytes() == before
 
-        corrupt_output = directory / "corrupt.sp"
+        corrupt_output = outputs / "corrupt.sp"
         real_copy = graft.Streamer.copy
 
         def corrupting_copy(self, source, role, offset, count, out):
@@ -237,7 +240,7 @@ def main():
                 assert "differs from its source region" in str(error), str(error)
             else:
                 raise AssertionError("corrupted output published")
-        assert [p.name for p in directory.iterdir() if p.name.startswith("corrupt.sp")] == []
+        assert [p.name for p in outputs.iterdir() if p.name.startswith("corrupt.sp")] == []
 
         peaks = {}
         for rows in (16, 256):
@@ -248,7 +251,7 @@ def main():
             write_pack(big_fp8, entries_for(pack.CODEC_FP8, (3,), groups=4, rows=rows,
                                             columns=1024), 11)
             tracemalloc.start()
-            run_graft(big_spine, big_fp8, directory / f"big-out-{rows}.sp", "fp8", chunk=8192)
+            run_graft(big_spine, big_fp8, outputs / f"big-out-{rows}.sp", "fp8", chunk=8192)
             peaks[rows] = (big_spine.stat().st_size, tracemalloc.get_traced_memory()[1])
             tracemalloc.stop()
         assert peaks[256][0] > 4 << 20 and peaks[256][0] > 15 * peaks[16][0]
@@ -256,7 +259,7 @@ def main():
         assert abs(peaks[256][1] - peaks[16][1]) < 32 * 1024, peaks
         stdout, stderr = io.StringIO(), io.StringIO()
         argv = ["graft", "--spine-pack", str(spine), "--expert-pack", str(nvfp4), "--output",
-                str(directory / "cli.sp"), "--tp-degree", "16", "--tp-rank", "3",
+                str(outputs / "cli.sp"), "--tp-degree", "16", "--tp-rank", "3",
                 "--expert-codec", "fp8", "--model-revision", REVISION]
         with patch.object(sys, "argv", argv), redirect_stdout(stdout), redirect_stderr(stderr):
             assert graft.main() == 1
@@ -265,17 +268,17 @@ def main():
         with patch.object(sys, "argv", argv), redirect_stdout(stdout), redirect_stderr(stderr):
             assert graft.main() == 0
         assert "GRAFT-PASS" in stdout.getvalue()
-        with patch.object(sys, "argv", ["graft", "--spine-digest", str(directory / "cli.sp")]), \
+        with patch.object(sys, "argv", ["graft", "--spine-digest", str(outputs / "cli.sp")]), \
                 redirect_stdout(stdout):
             assert graft.main() == 0
         assert f3_receipt["spine_digest"] in stdout.getvalue()
         if hasattr(os, "posix_fadvise"):
-            receipt = graft.graft(spine, fp8, directory / "dropped.sp", 16, 3, "fp8", REVISION, 4096,
+            receipt = graft.graft(spine, fp8, outputs / "dropped.sp", 16, 3, "fp8", REVISION, 4096,
                                   {"spine": True, "expert": True, "output": True})
             assert receipt["output"]["sha256"] == f2_receipt["output"]["sha256"]
         else:
             try:
-                graft.graft(spine, fp8, directory / "dropped.sp", 16, 3, "fp8", REVISION, 4096,
+                graft.graft(spine, fp8, outputs / "dropped.sp", 16, 3, "fp8", REVISION, 4096,
                             {"output": True})
             except pack.PackFailure as error:
                 assert "posix_fadvise" in str(error)
