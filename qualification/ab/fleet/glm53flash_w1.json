@@ -28,7 +28,7 @@
   "F0": {"root": "qab-f0", "pack_root": "glm53flash.fp8.tp16", "lane": 14, "pool_bytes": 34359738368, "arena": "production", "arena_owner": false, "residentd_gib": 12, "memory_max": "20G", "port_group": 1}
  },
  "slots": [
-  {"name": "A", "start": ["F1", "F1AA"]},
+  {"name": "A", "start": ["F1"], "optional": ["F1AA"]},
   {"name": "B", "start": ["F2", "F3"]},
   {"name": "C", "start": ["F0"], "optional": ["F2"]}
  ]

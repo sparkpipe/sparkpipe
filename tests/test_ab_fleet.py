@@ -102,7 +102,10 @@ class Spec(unittest.TestCase):
 
     def test_slot_rules(self):
         s = spec()
-        s["slots"][0]["start"] = ["F1AA", "F1"]
+        s["slots"][0] = {"name": "A", "start": ["F1AA", "F1"]}
+        self.refused(s, "before its owner is up")
+        s = spec()
+        s["slots"][0] = {"name": "A", "start": ["F1AA"], "optional": ["F1"]}
         self.refused(s, "before its owner is up")
         s = spec()
         s["arms"]["F1AA"]["port_group"] = 0
@@ -141,7 +144,8 @@ class Placement(unittest.TestCase):
     def test_shared_arenas_are_counted_once(self):
         s = ab_fleet.load_spec(SPEC_PATH)
         report = ab_fleet.place(s, memory(90.0), "live", 20)
-        self.assertEqual(self.slot(report, "A")["sum_gib"], 62)
+        self.assertEqual(self.slot(report, "A")["sum_gib"], 50)
+        self.assertEqual(self.slot(report, "A")["sum_with_optional_gib"], 62)
         self.assertEqual(self.slot(report, "B")["sum_gib"], 57)
         self.assertEqual(self.slot(report, "C")["sum_gib"], 12)
         self.assertEqual(self.slot(report, "C")["sum_with_optional_gib"], 45)
@@ -153,14 +157,29 @@ class Placement(unittest.TestCase):
 
     def test_boundary_is_the_agent_rule(self):
         s = ab_fleet.load_spec(SPEC_PATH)
-        self.assertTrue(self.slot(ab_fleet.place(s, memory(82.0), "live", 20), "A")["fits"])
-        self.assertFalse(self.slot(ab_fleet.place(s, memory(81.9), "live", 20), "A")["fits"])
+        self.assertTrue(self.slot(ab_fleet.place(s, memory(82.0), "live", 20), "A")["optional_fits"])
+        self.assertFalse(self.slot(ab_fleet.place(s, memory(81.9), "live", 20), "A")["optional_fits"])
+        self.assertTrue(self.slot(ab_fleet.place(s, memory(70.0), "live", 20), "A")["fits"])
+        self.assertFalse(self.slot(ab_fleet.place(s, memory(69.9), "live", 20), "A")["fits"])
         low = memory(90.0)
         low["nodes"]["sparkd"]["mem_available_gib"] = 78.0
         report = ab_fleet.place(s, low, "live", 20)
-        self.assertFalse(self.slot(report, "A")["fits"])
+        self.assertTrue(self.slot(report, "A")["fits"])
+        self.assertFalse(self.slot(report, "A")["optional_fits"])
         self.assertEqual(self.slot(report, "A")["worst_node"], "sparkd")
         self.assertTrue(self.slot(report, "B")["fits"])
+
+    def test_a_without_the_aa_engine_places_f1_alone(self):
+        s = ab_fleet.load_spec(SPEC_PATH)
+        a = self.slot(ab_fleet.place(s, memory(75.0), "live", 20), "A")
+        self.assertTrue(a["fits"])
+        self.assertFalse(a["optional_fits"])
+        self.assertEqual(a["nodes"]["spark0"]["margin_gib"], 5)
+        a = self.slot(ab_fleet.place(s, memory(100.0, lanes=(0, 2)), "live", 20), "A")
+        self.assertTrue(a["fits"])
+        self.assertFalse(a["optional_fits"])
+        a = self.slot(ab_fleet.place(s, memory(100.0, lanes=(0, 1)), "live", 20), "A")
+        self.assertFalse(a["fits"])
 
     def test_optional_arms_are_fleet_wide(self):
         s = ab_fleet.load_spec(SPEC_PATH)
@@ -288,6 +307,27 @@ class ArmRoot(unittest.TestCase):
         overlaps = ab_fleet.roots_disjoint({"F2": d2, "F3": d3})
         self.assertTrue(any("overlaps arm F2" in e for e in overlaps + e3), overlaps + e3)
 
+    def test_prefix_sibling_roots_are_not_confused(self):
+        f1 = self.make_root("F1")
+        f1aa = self.make_root("F1AA")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = ab_fleet.main(["root-check", str(SPEC_PATH), f"F1={f1}", f"F1AA={f1aa}", "--home", str(self.home)])
+        self.assertEqual(rc, 0, out.getvalue())
+        (f1aa / "elsewhere").mkdir()
+        (f1 / "runs" / "r1").mkdir(parents=True)
+        (f1 / "runs" / "r1" / "kv_snapshot").symlink_to(f1aa / "elsewhere")
+        errors, _ = self.check("F1", f1)
+        self.assertTrue(any("outside the arm root" in e for e in errors), errors)
+
+    def test_remote_rank_kv_backing_outside_the_root_is_refused(self):
+        root = self.make_root("F2")
+        doc = json.loads((root / "model_resident.json").read_text())
+        doc["nodes"][5]["kv_backing_directory"] = "/home/spark5/kvcache/glm53flash.fp8.tp16"
+        (root / "model_resident.json").write_text(json.dumps(doc))
+        errors, _ = self.check("F2", root)
+        self.assertTrue(any("rank 5" in e and "kv_backing_directory" in e for e in errors), errors)
+
     def test_config_variants_are_checked(self):
         root = self.make_root("F2")
         (root / "config.probe").mkdir()
@@ -353,7 +393,7 @@ class AgentParser(unittest.TestCase):
             out = self.run_agent(body, avail)
             self.assertEqual(out.returncode == 0, expected, (avail, out.returncode, out.stderr))
             report = ab_fleet.place(self.spec, memory(float(avail)), "live")
-            self.assertEqual(report["slots"][0]["fits"], expected)
+            self.assertEqual(report["slots"][0]["optional_fits"], expected)
 
 
 if __name__ == "__main__":

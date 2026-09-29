@@ -238,14 +238,15 @@ def place(spec, memory, basis="live", headroom=None, evicted=()):
                 entry["sum_gib"] = round(total, 2)
             if with_optional:
                 entry["sum_with_optional_gib"] = round(total, 2)
+        required = set(slot_arms(slot, False))
         for host in spec["nodes"]:
             for arm in slot_arms(slot):
                 lane = spec["arms"][arm]["lane"]
                 if lane in lanes_live[host]:
-                    entry["lane_conflicts"].append(f"{host}: lane {lane} ({arm}) is in use")
-        if entry["lane_conflicts"]:
-            entry["fits"] = False
-            entry["optional_fits"] = False
+                    entry["lane_conflicts"].append(f"{host}: lane {lane} ({arm}{'' if arm in required else ', optional'}) is in use")
+                    if arm in required:
+                        entry["fits"] = False
+                    entry["optional_fits"] = False
         entry["worst_node"] = min(entry["nodes"], key=lambda h: entry["nodes"][h]["margin_gib"])
         entry["worst_margin_gib"] = entry["nodes"][entry["worst_node"]]["margin_gib"]
         report["slots"].append(entry)
