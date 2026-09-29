@@ -309,6 +309,57 @@ static void Attention(Case *item,uint32_t oracle,Case *replica,std::vector<uint1
     }
 }
 
+static float Bf16Value(uint16_t bits)
+{
+    uint32_t word=(uint32_t)bits<<16u;
+    float value;
+    memcpy(&value,&word,sizeof(value));
+    return value;
+}
+
+static void CheckProductionKernel(Case *item,Case *replica,const std::vector<uint16_t> &merged,double *worst_scaled,size_t *differing)
+{
+    uint32_t rows=item->rows,heads=item->heads,listed=item->max_context>GLM5_NEXT_DSA_SELECTED;
+    uint64_t per_rank=(uint64_t)rows*heads*GLM5_NEXT_LATENT;
+    const Glm5NextLayerBuffers &reference=replica->ranks[0].buffers;
+    uint16_t *output;
+    CUDA(cudaMalloc(&output,per_rank*2u));
+    *worst_scaled=0.0;*differing=0u;
+    for (uint32_t rank=0u; rank<item->degree; rank++)
+    {
+        const uint16_t *query=item->ranks[rank].slot.query_latent_bf16;
+        cudaStream_t stream=(cudaStream_t)replica->ranks[0].slot.stream;
+        if (LmLatentAttentionHeadsSupported(heads)!=0u)
+            CUDA((LmLatentAttentionHeadsLaunch<Glm5NextKv,GLM5_NEXT_LATENT>(query,reference.cache,item->sequence_of_row,item->context_length,
+                listed ? item->selected : nullptr,listed ? SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH : 0u,heads,reference.qk_scale,output,item->positions,rows,
+                SparkGlm5NextAttentionPositionBound(item->max_context),0u,nullptr,0u,48u,stream)));
+        else
+            CUDA((LmLatentAttentionDecodeSplitLaunch<Glm5NextKv,GLM5_NEXT_ATTN_THREADS,GLM5_NEXT_LATENT,GLM5_NEXT_ROPE_DIM>(query,nullptr,reference.cache,item->sequence_of_row,item->context_length,
+                listed ? item->selected : nullptr,listed ? SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH : 0u,heads,reference.qk_scale,output,item->positions,rows,
+                SparkGlm5NextAttentionPositionBound(item->max_context),0u,nullptr,0u,48u,stream)));
+        CUDA(cudaStreamSynchronize(stream));
+        std::vector<uint16_t> want=Download(output,per_rank);
+        for (uint64_t vector=0u; vector<per_rank; vector+=GLM5_NEXT_LATENT)
+        {
+            double scale=0.0;
+            for (uint32_t e=0u; e<GLM5_NEXT_LATENT; e++) scale=std::max(scale,(double)fabsf(Bf16Value(want[vector+e])));
+            for (uint32_t e=0u; e<GLM5_NEXT_LATENT; e++)
+            {
+                uint16_t got=merged[rank*per_rank+vector+e];
+                double gap=fabs((double)Bf16Value(want[vector+e])-(double)Bf16Value(got));
+                *worst_scaled=std::max(*worst_scaled,scale>0.0 ? gap/scale : gap);
+                *differing+=got!=want[vector+e] ? 1u : 0u;
+            }
+        }
+    }
+    CUDA(cudaFree(output));
+    if (*worst_scaled>1.0/128.0 || *differing*100u>merged.size())
+    {
+        fprintf(stderr,"FAIL degree=%u rows=%u max_context=%u sharded output vs the replicated production kernel: worst gap %.3e of the head's largest value (bound one bf16 ulp, 7.8e-3), differing=%zu of %zu (bound 1%%)\n",item->degree,rows,item->max_context,*worst_scaled,*differing,merged.size());
+        exit(1);
+    }
+}
+
 static void ShardCase(uint32_t degree,uint32_t capacity,const std::vector<uint32_t> &contexts)
 {
     Case shard,replica;
@@ -330,6 +381,9 @@ static void ShardCase(uint32_t degree,uint32_t capacity,const std::vector<uint32
     std::vector<uint16_t> again;
     Attention(&shard,0u,&replica,again);
     REQUIRE(again==sharded);
+    double worst_scaled;
+    size_t differing;
+    CheckProductionKernel(&shard,&replica,sharded,&worst_scaled,&differing);
     CheckNoAccessError(&shard);CheckNoAccessError(&replica);
     REQUIRE(sharded.size()==oracle.size());
     size_t mismatch=0u;
@@ -337,12 +391,12 @@ static void ShardCase(uint32_t degree,uint32_t capacity,const std::vector<uint32
     if (mismatch!=0u) { fprintf(stderr,"FAIL degree=%u rows=%u max_context=%u mismatched_bf16=%zu of %zu\n",degree,shard.rows,shard.max_context,mismatch,sharded.size());exit(1); }
     uint64_t kv_rank=(uint64_t)shard.pages*SparkKvShardPageBytes(SparkGlm5NextKvShardLatent(0u,degree),GLM5_NEXT_KV_PAGE_SLOTS,Glm5NextKv::kSlotBytes);
     uint64_t index_rank=(uint64_t)shard.pages*SparkKvShardPageBytes(SparkGlm5NextKvShardIndex(0u,degree),GLM5_NEXT_KV_PAGE_SLOTS,Glm5NextIndexKv::kSlotBytes);
-    printf("PASS kv shard degree=%u rows=%u max_context=%u latent_bytes_per_rank=%llu of %llu index_bytes_per_rank=%llu of %llu capacity=%u exchange=%s query_sequences=%u partial_sequences=%u merged_bf16=%zu bitwise_equal_oracle=yes repeat_identical=yes index_scores_bitwise=%s\n",
+    printf("PASS kv shard degree=%u rows=%u max_context=%u latent_bytes_per_rank=%llu of %llu index_bytes_per_rank=%llu of %llu capacity=%u exchange=%s query_sequences=%u partial_sequences=%u merged_bf16=%zu bitwise_equal_oracle=yes repeat_identical=yes index_scores_bitwise=%s production_kernel_worst_scaled=%.2e production_kernel_differing=%zu\n",
         degree,shard.rows,shard.max_context,(unsigned long long)kv_rank,(unsigned long long)((uint64_t)shard.pages*Glm5NextKv::kPageBytes),
         (unsigned long long)index_rank,(unsigned long long)((uint64_t)shard.pages*Glm5NextIndexKv::kPageBytes),
         capacity,SparkGlm5NextKvShardPartialWide(shard.rows,degree,capacity) ? "wide" : "narrow",
         SparkGlm5NextKvShardQuerySequences(shard.rows,degree),SparkGlm5NextKvShardPartialSequences(shard.rows,degree,capacity),sharded.size(),
-        shard.max_context>GLM5_NEXT_DSA_SELECTED ? "yes" : "n/a");
+        shard.max_context>GLM5_NEXT_DSA_SELECTED ? "yes" : "n/a",worst_scaled,differing);
     for (Rank &r : shard.ranks) RankFree(r);
     RankFree(replica.ranks[0]);
 }
@@ -366,6 +420,6 @@ int main(int argc,char **argv)
     std::vector<uint32_t> wide(64u);
     for (uint32_t i=0u; i<64u; i++) wide[i]=1024u-(i*13u)%700u;
     ShardCase(16u,64u,wide);
-    puts("PASS glm5_next kv shard: the module's sharded store, index scoring, partials and merge equal the replicated-storage oracle bit for bit with 1/tp of the KV per rank");
+    puts("PASS glm5_next kv shard: the module's sharded store, index scoring, partials and merge equal the replicated-storage oracle bit for bit with 1/tp of the KV per rank, and stay within one bf16 ulp of the replicated production attention kernel");
     return 0;
 }
