@@ -123,20 +123,40 @@ def replay(args: argparse.Namespace) -> int:
     return 0 if exact else 1
 
 
+def corpus_requests(directory: Path, content_class: str) -> list[dict]:
+    path = directory / f"{content_class}.json"
+    if not path.exists():
+        raise SystemExit(f"{path} missing; build it with tools/spec_bakeoff_corpus.py")
+    data = json.loads(path.read_text())
+    requests = []
+    for prompt in data["prompts"]:
+        if not prompt.get("prompt_token_ids"):
+            raise SystemExit(f"{path}: prompt {prompt.get('index')} has no token ids; text-only prompts are refused")
+        requests.append({"index": prompt["index"], "path": "/v1/chat/completions",
+                         "body": {"prompt_token_ids": prompt["prompt_token_ids"], "max_tokens": prompt["output_tokens"], "temperature": 0.0},
+                         "prompt_sha256": prompt["sha256"]})
+    return requests
+
+
 def run(args: argparse.Namespace) -> int:
     results = []
     for content_class in args.classes.split(","):
-        if content_class not in PROMPTS:
-            raise SystemExit(f"unknown content class {content_class}; choose from {sorted(PROMPTS)}")
-        for index, prompt in enumerate(PROMPTS[content_class]):
-            result = stream(args.endpoint, "/v1/completions",
-                            {"prompt": GLM_PREFIX + prompt + GLM_ASSISTANT, "max_tokens": args.max_tokens, "temperature": 0.0},
-                            args.timeout)
-            results.append(dict(result, **{"class": content_class, "index": index, "output_tokens": len(result["token_ids"])}))
+        if args.corpus:
+            requests = corpus_requests(Path(args.corpus), content_class)
+        elif content_class in PROMPTS:
+            requests = [{"index": index, "path": "/v1/completions", "prompt_sha256": None,
+                         "body": {"prompt": GLM_PREFIX + prompt + GLM_ASSISTANT, "max_tokens": args.max_tokens, "temperature": 0.0}}
+                        for index, prompt in enumerate(PROMPTS[content_class])]
+        else:
+            raise SystemExit(f"unknown content class {content_class}; choose from {sorted(PROMPTS)} or give --corpus")
+        for request in requests:
+            index = request["index"]
+            result = stream(args.endpoint, request["path"], request["body"], args.timeout)
+            results.append(dict(result, **{"class": content_class, "index": index, "output_tokens": len(result["token_ids"]), "prompt_sha256": request["prompt_sha256"]}))
             rate = result["decode_tok_s"]
             print(f"{content_class}[{index}] {len(result['token_ids'])} tokens, ttft {result['ttft_s']:.3f}s, decode "
                   f"{'n/a' if rate is None else f'{rate:.1f} tok/s'}", flush=True)
-    Path(args.out).write_text(json.dumps({"label": args.label, "max_tokens": args.max_tokens, "results": results}, indent=1))
+    Path(args.out).write_text(json.dumps({"label": args.label, "max_tokens": args.max_tokens, "corpus": args.corpus, "results": results}, indent=1))
     return 0
 
 
@@ -244,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("run")
     p.add_argument("--endpoint", required=True)
     p.add_argument("--classes", default="prose,code,repetitive")
+    p.add_argument("--corpus", help="qualification/spec_bakeoff/corpus/<model> directory: prompts by token id with per-prompt output budgets")
     p.add_argument("--max-tokens", type=int, default=512)
     p.add_argument("--timeout", type=int, default=900)
     p.add_argument("--label", required=True)
