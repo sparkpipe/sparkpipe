@@ -772,6 +772,97 @@ static void check_pooled_attach(void)
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
 }
 
+#define LARGE_RANGE_BYTES ((4u * CHUNK) + 4096u + 123u)
+#define LARGE_RANGE_STRIDE (5u * CHUNK)
+#define LARGE_RANGE_EXPERTS 3u
+#define LARGE_RANGE_FLIP (LARGE_RANGE_BYTES - 17u)
+
+static uint8_t large_range_byte(uint32_t expert,uint64_t index)
+{
+	return((uint8_t)((expert * 131u) + (index * 7u) + (index >> 20)));
+}
+
+static void write_large_range_fixture(const char *path,const char *manifest_path)
+{
+	FILE *pack = fopen(path,"wb"),*manifest = fopen(manifest_path,"wb");
+	uint32_t header[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,2u,LARGE_RANGE_EXPERTS,0u},expert;
+	uint8_t *data = malloc(LARGE_RANGE_BYTES);
+	uint64_t index;
+	assert(pack != 0 && manifest != 0 && data != 0);
+	assert(ftruncate(fileno(pack),(off_t)((uint64_t)LARGE_RANGE_EXPERTS * LARGE_RANGE_STRIDE)) == 0);
+	assert(fwrite(header,1u,sizeof(header),manifest) == sizeof(header));
+	for (expert=0u; expert<LARGE_RANGE_EXPERTS; expert++)
+	{
+		uint8_t record[48] = {0},digest[16];
+		uint64_t offset = (uint64_t)expert * LARGE_RANGE_STRIDE,bytes = LARGE_RANGE_BYTES;
+		SparkCk128Context ck;
+		for (index=0u; index<LARGE_RANGE_BYTES; index++)
+			data[index] = large_range_byte(expert,index);
+		SparkCk128Initialize(&ck);
+		SparkCk128Update(&ck,data,LARGE_RANGE_BYTES);
+		SparkCk128Finalize(&ck,digest);
+		if ( expert == 1u )
+			data[LARGE_RANGE_FLIP] ^= 0x40u;
+		memcpy(record + 4u,&expert,4u);
+		memcpy(record + 16u,&offset,8u);
+		memcpy(record + 24u,&bytes,8u);
+		memcpy(record + 32u,digest,16u);
+		assert(fwrite(record,1u,sizeof(record),manifest) == sizeof(record));
+		assert(fseek(pack,(long)offset,SEEK_SET) == 0);
+		assert(fwrite(data,1u,LARGE_RANGE_BYTES,pack) == LARGE_RANGE_BYTES);
+	}
+	free(data);
+	assert(fclose(pack) == 0 && fclose(manifest) == 0);
+}
+
+static void check_large_range_expert(uint64_t base,uint32_t expert)
+{
+	const uint8_t *data = (const uint8_t *)(uintptr_t)(base + (uint64_t)expert * LARGE_RANGE_STRIDE);
+	uint64_t index;
+	for (index=0u; index<LARGE_RANGE_BYTES; index++)
+		assert(data[index] == large_range_byte(expert,index));
+}
+
+static void check_large_range_verification(void)
+{
+	char root[] = "/tmp/weightd-large-XXXXXX",path[256],manifest[272],socket_path[256],wset[272],verified[300];
+	TestServer state = {0};
+	SparkWeightdServerConfig config = {0};
+	SparkWeightdClient *client;
+	SparkWeightdWorkingSetResult result;
+	SparkWeightdExpertKey both[2] = {{0u,0u},{0u,2u}};
+	pthread_t thread;
+	uint64_t generation,base;
+	assert(mkdtemp(root) != 0);
+	snprintf(path,sizeof(path),"%s/pack",root);
+	snprintf(manifest,sizeof(manifest),"%s.experts",path);
+	snprintf(wset,sizeof(wset),"%s.wset",path);
+	snprintf(verified,sizeof(verified),"%s.verified",path);
+	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
+	write_large_range_fixture(path,manifest);
+	config.socket_path = socket_path;
+	config.device_bytes_max = (uint64_t)(LARGE_RANGE_EXPERTS * 5u + 1u) * CHUNK;
+	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
+	assert(pthread_create(&thread,0,run_server,&state) == 0);
+	assert(SparkWeightdClientConnect(socket_path,&client,0) == SPARK_STATUS_OK);
+	generation = attach_config(client,path,(uint64_t)LARGE_RANGE_EXPERTS * LARGE_RANGE_STRIDE,LARGE_RANGE_EXPERTS * 5u,LARGE_RANGE_EXPERTS,&base);
+	(void)acquire(client,generation,1u,SPARK_STATUS_HASH_MISMATCH);
+	assert(SparkWeightdClientAcquire(client,generation,both,2u,&result,TIMEOUT) == SPARK_STATUS_OK);
+	assert(result.status == SPARK_STATUS_OK && result.lease_identifier != 0u);
+	check_large_range_expert(base,0u);
+	check_large_range_expert(base,2u);
+	release(client,generation,result.lease_identifier);
+	SparkWeightdClientClose(client);
+	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
+	assert(pthread_join(thread,0) == 0);
+	SparkWeightdServerDestroy(state.server);
+	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	(void)unlink(verified);
+	(void)unlink(wset);
+	assert(unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
+	puts("PASS large range: a range wider than one read block streams across blocks, two in one lease load byte-exact, and a flipped byte in its last block fails the lease");
+}
+
 static SparkStatus reject_manifest(const SparkWeightdManifest *manifest,void *context)
 {
 	uint32_t *calls = (uint32_t *)context;
@@ -1016,6 +1107,7 @@ int main(int argc,char **argv)
 	check_map_eviction();
 	check_many_exports();
 	check_pooled_attach();
+	check_large_range_verification();
 	puts("PASS working-set IPC: all ranges, leases, rollback, scoped imports, 65-chunk exports and pooled single-alloc attach");
 	return(0);
 }
