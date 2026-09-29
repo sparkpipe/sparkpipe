@@ -175,11 +175,15 @@ def main() -> int:
             failures.append(f"glm5_next: the generator refused score-dump members for a dev root: {accepted.stderr[-300:]}")
         else:
             dev_stage = json.loads((dev / "config/stage_00.json").read_text())
+            check_glm5_next_kv_shard(failures, dev)
+            optional = adapter_optional_members("modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
+                                                "SparkGlm5NextServingConfigurationList")
             want = adapter_members("modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-                                   "SparkGlm5NextServingConfigurationMembers") + adapter_score
+                                   "SparkGlm5NextServingConfigurationMembers") + \
+                [name for name in optional if name in dev_stage] + adapter_score
             if list(dev_stage.keys()) != want or len(adapter_score) != 3:
                 failures.append(f"glm5_next: dev score-dump stage members {list(dev_stage.keys())} != adapter "
-                                f"base + optional score members {want}")
+                                f"base + present optional members + score members {want}")
         refusals = {
             "production empty directory": ({}, ["--score-dump-directory", ""]),
             "dev empty directory": (dev_env, ["--score-dump-directory", ""]),
