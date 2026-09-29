@@ -230,6 +230,7 @@ typedef struct SparkStubIbvPostedWork
     uint32_t length;
     uint32_t qp_number;
     uint32_t flags;
+    uint32_t lkey;
 } SparkStubIbvPostedWork;
 
 uint32_t spark_stub_ibv_posted_count(void);

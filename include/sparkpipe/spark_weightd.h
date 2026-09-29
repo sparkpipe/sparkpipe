@@ -15,7 +15,8 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 8u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 9u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN 8u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
 #define SPARK_WEIGHTD_ID_BYTES 64u
@@ -73,12 +74,15 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK_RESULT 36u
 #define SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED 37u
 #define SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED_RESULT 38u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP 39u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP_RESULT 40u
+#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
 #define SPARK_WEIGHTD_MESH_MAX_LANES 16u
 #define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
-#define SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS 128u
+#define SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS 1024u
 #define SPARK_WEIGHTD_MESH_ROW_BYTES_MAX (16u * 1024u * 2u)
 #define SPARK_WEIGHTD_MESH_SLOT_ROWS 8u
 #define SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES 64u
@@ -150,10 +154,23 @@ typedef struct SparkWeightdMeshWaitRequest
 } SparkWeightdMeshWaitRequest;
 
 #define SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES 1u
-#define SPARK_WEIGHTD_MESH_CAPABILITIES SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES
+#define SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES 2u
+#define SPARK_WEIGHTD_MESH_CAPABILITIES \
+    (SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES)
 #define SPARK_WEIGHTD_MESH_ROUTE_FULL 0u
 #define SPARK_WEIGHTD_MESH_ROUTE_SCATTER 1u
 #define SPARK_WEIGHTD_MESH_ROUTE_GATHER 2u
+#define SPARK_WEIGHTD_MESH_ROUTE_PEER 3u
+
+#define SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES \
+    ((uint64_t)SPARK_WEIGHTD_MESH_SLOT_ROWS * SPARK_WEIGHTD_MESH_ROW_BYTES_MAX)
+#define SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES \
+    (SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES * SPARK_WEIGHTD_MESH_RANKS_PER_BAND)
+#define SPARK_WEIGHTD_MESH_STAGING_BYTES \
+    (SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES * SPARK_WEIGHTD_MESH_BANDS)
+#define SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,peer) \
+    ((uint64_t)(band) * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + \
+     (uint64_t)(peer) * SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)
 
 typedef struct SparkWeightdMeshRouteFields
 {
@@ -171,12 +188,22 @@ typedef union SparkWeightdMeshRoute
 
 static inline uint32_t SparkWeightdMeshRouteValid(SparkWeightdMeshRoute route)
 {
-    return route.fields.reserved == 0u && route.fields.mode <= SPARK_WEIGHTD_MESH_ROUTE_GATHER && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? route.fields.slice_bytes == 0u : route.fields.slice_bytes != 0u && (route.fields.slice_bytes & 7u) == 0u);
+    return route.fields.reserved == 0u && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? route.fields.slice_bytes == 0u : route.fields.slice_bytes != 0u && (route.fields.slice_bytes & 7u) == 0u && (route.fields.mode != SPARK_WEIGHTD_MESH_ROUTE_PEER || route.fields.slice_bytes <= SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES));
+}
+
+static inline uint32_t SparkWeightdMeshRouteFits(SparkWeightdMeshRoute route,uint64_t bytes)
+{
+    return SparkWeightdMeshRouteValid(route) != 0u && bytes != 0u && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER ? bytes == route.fields.slice_bytes : bytes <= SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u);
 }
 
 static inline uint64_t SparkWeightdMeshRouteSpan(SparkWeightdMeshRoute route,uint32_t peer,uint32_t local,uint64_t bytes,uint64_t *length)
 {
     uint64_t begin;
+    if ( route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER )
+    {
+        *length = bytes < route.fields.slice_bytes ? bytes : route.fields.slice_bytes;
+        return(0u);
+    }
     begin = route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? 0u : (uint64_t)(route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_SCATTER ? peer : local) * route.fields.slice_bytes;
     begin = begin < bytes ? begin : bytes;
     *length = route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL || bytes - begin < route.fields.slice_bytes ? bytes - begin : route.fields.slice_bytes;
@@ -187,6 +214,9 @@ _Static_assert(sizeof(SparkWeightdMeshWaitRequest) == SPARK_WEIGHTD_MESH_WAIT_EN
     offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
     "mesh wait request and ready occupy distinct cache lines");
 _Static_assert(sizeof(SparkWeightdMeshRoute) == sizeof(uint64_t),"mesh route is one doorbell word");
+_Static_assert(SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES <= SPARK_WEIGHTD_MESH_SLOT_BYTES - SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES &&
+    SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES < (UINT64_C(1) << 24u),"a peer route fills at most one receive slot payload");
+_Static_assert(SPARK_WEIGHTD_MESH_STAGING_BYTES <= UINT64_C(128) * 1024u * 1024u,"per-peer staging stays inside its node memory budget");
 _Static_assert(SPARK_WEIGHTD_MESH_WAIT_OFFSET % SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES == 0u &&
     SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
     (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES <=
@@ -261,6 +291,16 @@ typedef struct SparkWeightdIpcMeshMapResult
     uint32_t reserved;
     uint64_t bytes;
 } SparkWeightdIpcMeshMapResult;
+
+typedef struct SparkWeightdIpcMeshStagingMapResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t capabilities;
+    uint64_t bytes;
+    uint64_t slot_bytes;
+    uint64_t band_bytes;
+} SparkWeightdIpcMeshStagingMapResult;
 
 typedef struct SparkWeightdIpcHello
 {
@@ -593,6 +633,13 @@ SparkStatus SparkWeightdIpcValidateHeader(const SparkWeightdIpcHeader *header,
     uint32_t message_bytes,
     uint32_t expected_kind);
 
+SparkStatus SparkWeightdIpcValidateHeaderVersion(const SparkWeightdIpcHeader *header,
+    uint32_t message_bytes,
+    uint32_t expected_kind,
+    uint32_t abi_version);
+
+uint32_t SparkWeightdIpcAbiServed(uint32_t abi_version,uint32_t kind);
+
 
 typedef struct SparkWeightdServerConfig
 {
@@ -798,6 +845,9 @@ SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
 SparkStatus SparkWeightdMeshSetActivity(uint32_t lane,uint32_t active);
 
 SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,
+    void **mapping,uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientMeshStagingMap(SparkWeightdClient *client,
     void **mapping,uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,

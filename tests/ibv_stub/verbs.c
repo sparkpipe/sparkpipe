@@ -418,6 +418,7 @@ int ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *request,
     work->length = request->sg_list[0].length;
     work->qp_number = qp->qp_num;
     work->flags = request->send_flags;
+    work->lkey = request->sg_list[0].lkey;
     return 0;
 }
 
