@@ -12,6 +12,7 @@
  "ssh_timeout_s": 120,
  "poll_s": 10,
  "floor_gib": 20,
+ "node_free_gib": 106,
  "weightd_warm": "$HOME/weightd-bundle-stage/bin/weightd_warm",
  "weightd_socket": "/tmp/spark_weightd.sock",
  "schedule_port": 8430,
@@ -44,32 +45,37 @@
  "slots": {
   "full": {
    "base": "glmfull",
+   "companions": [
+    "qwen",
+    "gemma",
+    "mimo"
+   ],
    "fallback_slot": "flash_plus"
   },
   "k3": {
    "base": "k3",
+   "companions": [],
    "fallback_slot": "flash_plus"
   },
   "flash_plus": {
    "base": "flash",
-   "companion": true,
+   "companions": [
+    "qwen",
+    "gemma",
+    "mimo",
+    "ling",
+    "laguna",
+    "hy4",
+    "dsv41",
+    "dsv4pro",
+    "minimax",
+    "qwenmax",
+    "muse"
+   ],
    "fallback_slot": null
   }
  },
  "fallback": "flash",
- "companions": [
-  "ling",
-  "mimo",
-  "gemma",
-  "laguna",
-  "hy4",
-  "dsv41",
-  "dsv4pro",
-  "minimax",
-  "qwenmax",
-  "muse"
- ],
- "default_companion": "qwen",
  "rollback_models": [
   "flash",
   "qwen"
@@ -150,7 +156,7 @@
    }
   },
   "glmfull": {
-   "title": "GLM-5.3 Full fp8 TP16 release 8058e4b (weightd lane 6, pinned experts)",
+   "title": "GLM-5.3 Full fp8 TP16 release dfa12a5 (weightd lane 6, pinned experts)",
    "runnable": true,
    "validated": true,
    "nodes": [
@@ -173,7 +179,7 @@
    ],
    "mem_gib": 68,
    "engine": {
-    "precheck": "cd $HOME/glmfull-lane6/root && grep -qx source_commit=8058e4b3357442f2c1b2095ab5289d41a1054e9a RELEASE && sha256sum -c --quiet MANIFEST && test -S /tmp/spark_weightd.sock && ! systemctl --user is-active -q sp-glmfull-rd6",
+    "precheck": "cd $HOME/glmfull-lane6/root && grep -qx source_commit=dfa12a5da848474782aa349cd7e08a59e924b406 RELEASE && sha256sum -c --quiet MANIFEST && test -S /tmp/spark_weightd.sock && ! systemctl --user is-active -q sp-glmfull-rd6",
     "start": "cd $HOME/glmfull-lane6/root && mv -f residentd.log residentd.prev.log 2>/dev/null; systemctl --user reset-failed sp-glmfull-rd6 2>/dev/null; systemd-run --user --unit=sp-glmfull-rd6 -p MemoryMax=20G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/glmfull-lane6/root -E LD_LIBRARY_PATH=$HOME/glmfull-lane6/root/lib -E SPARK_GLM52_SERVING_FLAT_RANKS=16 -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_ATTACH_LAZY=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=6 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=55834574848 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=8589934592 -E SPARK_GLM52_PIN_EXPERTS=1 -E SPARK_TP_WAIT_MODE=hardware -E SPARK_GLM52_CHAIN_MODE=graph -E SPARK_GLM52_PROJECTION_SPLIT=1 bash -c 'SPARK_WEIGHTD_PACK_SHA256=$(cat packs/pack.sha256) exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index @rank@ > residentd.log 2>&1'",
     "stop": "systemctl --user stop sp-glmfull-rd6 2>/dev/null; systemctl --user reset-failed sp-glmfull-rd6 2>/dev/null; true",
     "up": "systemctl --user is-active -q sp-glmfull-rd6",
@@ -186,7 +192,7 @@
     "$HOME/glmfull-lane6/root/packs/pack.sha256"
    ],
    "api": {
-    "precheck": "cd $HOME/glmfull-lane6-api && grep -qx 8058e4b3357442f2c1b2095ab5289d41a1054e9a SOURCE_COMMIT && sha256sum -c --quiet SHA256SUMS && ! systemctl --user is-active -q glmfull-api6 && ! ss -ltn | grep -q ':8446 '",
+    "precheck": "cd $HOME/glmfull-lane6-api && grep -qx dfa12a5da848474782aa349cd7e08a59e924b406 SOURCE_COMMIT && sha256sum -c --quiet SHA256SUMS && ! systemctl --user is-active -q glmfull-api6 && ! ss -ltn | grep -q ':8446 '",
     "start": "cd $HOME/glmfull-lane6-api && systemctl --user reset-failed glmfull-api6 2>/dev/null; systemd-run --user --unit=glmfull-api6 -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glmfull-lane6-api -E SPARK_GLM52_SERVING_FLAT_RANKS=16 bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glmfull-lane6-api/runtime --port 8446 >> api.log 2>&1'",
     "stop": "systemctl --user stop glmfull-api6 2>/dev/null; systemctl --user reset-failed glmfull-api6 2>/dev/null; true",
     "up": "systemctl --user is-active -q glmfull-api6",
@@ -261,7 +267,7 @@
    }
   },
   "gemma": {
-   "title": "Gemma 4 31B bf16 TP4 (sparka..sparkd, weightd lane 4, release-11b1d2a, gemma4-api)",
+   "title": "Gemma 4 31B bf16 TP4 (sparka..sparkd, weightd lane 4, release-11b1d2a, gemma4-api with the gemma4 chat_template)",
    "runnable": true,
    "validated": false,
    "nodes": [
@@ -285,7 +291,7 @@
     "$HOME/sparkdata/gemma4_31b.bf16.tp4/packs/gemma4_31b_tp4_rank@rank@_stage0.gemma4sp.sha256"
    ],
    "api": {
-    "precheck": "systemctl --user cat gemma4-api >/dev/null && ! systemctl --user is-active -q gemma4-api && ! ss -ltn | grep -q ':8436 '",
+    "precheck": "systemctl --user cat gemma4-api >/dev/null && grep -q '\"chat_template\"' $HOME/gemma4-api-channel/model_resident.json && ! systemctl --user is-active -q gemma4-api && ! ss -ltn | grep -q ':8436 '",
     "start": "systemctl --user reset-failed gemma4-api 2>/dev/null; systemctl --user start gemma4-api",
     "stop": "systemctl --user stop gemma4-api; true",
     "up": "systemctl --user is-active -q gemma4-api",
@@ -294,14 +300,25 @@
     "timeout_s": 180
    },
    "smoke": {
-    "path": "/v1/completions",
+    "path": "/v1/chat/completions",
     "body": {
-     "prompt": "<bos><|turn>user\nWhat is the capital of France? Answer in one word.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+     "messages": [
+      {
+       "role": "user",
+       "content": "What is the capital of France? Answer in one word."
+      }
+     ],
      "max_tokens": 16,
      "temperature": 0
     },
     "expect": "Paris",
-    "timeout_s": 600
+    "timeout_s": 600,
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ]
+    }
    }
   },
   "ling": {
@@ -356,7 +373,15 @@
      "max_tokens": 8,
      "temperature": 0
     },
-    "expect": "Paris",
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ],
+     "min_words": 3,
+     "min_distinct_words": 3,
+     "look_for": "Paris"
+    },
     "timeout_s": 600
    }
   },
@@ -400,7 +425,15 @@
      "max_tokens": 8,
      "temperature": 0
     },
-    "expect": "Paris",
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ],
+     "min_words": 3,
+     "min_distinct_words": 3,
+     "look_for": "Paris"
+    },
     "timeout_s": 600
    }
   },
