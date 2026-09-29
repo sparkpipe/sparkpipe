@@ -70,6 +70,13 @@ def check_log():
     assert sources["mtp_drafts"] == 4 and sources["mtp_truncated"] == 1 and sources["mtp_draft_us"] == 1400 and sources["lookup_declined"] == 1
     assert sources["mtp"]["rounds"] == 4 and abs(sources["mtp"]["acceptance"] - 9 / 19) < 1e-9 and abs(sources["mtp"]["accept_length"] - 9 / 4) < 1e-9
     assert abs(sources["lookup"]["tokens_per_round"] - 7 / 2) < 1e-9
+    assert "acceptance_per_position" not in bench.parse_log(lines)
+    lines.append("VERIFY-POSITIONS p1=5/8 p2=2/5 p3=0/2 p4=0/0 p5=0/0 p6=0/0 p7=0/0")
+    lines.append("VERIFY-POSITIONS p1=9/12 p2=4/9 p3=1/4 p4=0/1 p5=0/0 p6=0/0 p7=0/0")
+    positions = bench.parse_log(lines)["acceptance_per_position"]
+    assert [item["position"] for item in positions] == list(range(1, 8))
+    assert [(item["accepted"], item["reached"]) for item in positions[:4]] == [(9, 12), (4, 9), (1, 4), (0, 1)]
+    assert abs(positions[0]["acceptance"] - 0.75) < 1e-9 and positions[3]["acceptance"] == 0.0 and positions[4]["acceptance"] is None
 
 
 def entry(klass, tokens, text, decode_s, ids):

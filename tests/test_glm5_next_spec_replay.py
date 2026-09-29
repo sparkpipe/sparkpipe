@@ -66,7 +66,25 @@ def main() -> int:
         rows_ms = sum(count * (25.0 + (rows - 1) * 2.0) for rows, count in enumerate(oracle[0]["rows"]))
         assert abs(priced["ms"] - (rows_ms + oracle[0]["rounds"] * 1.0 + (oracle[0]["plain_steps"] + oracle[0]["plain_frame_tokens"]) * 25.0
                                    + oracle[0]["synthetic_calls"] * 0.5 + oracle[0]["synthetic"][1] * 1.0)) < 1e-6
-    print("PASS glm5_next speculative replay: token accounting, lookup on repeating and noisy streams, oracle and adversary drafts, mixed attribution, cost pricing")
+        assert estimate.accepted_distribution([0.5, 0.5], 2) == [0.5, 0.25, 0.25]
+        full_round = 25.0 + 7 * 2.0 + 1.0 + 0.5 + 7 * 1.0
+        assert abs(estimate.frame_ms([1.0] * 7, 7, 8, model) - full_round) < 1e-9
+        assert abs(estimate.frame_ms([0.0] * 7, 7, 8, model) - sum(25.0 + k * 3.0 + 1.5 for k in range(7, 0, -1)) - 25.0) < 1e-9
+        assert abs(estimate.frame_ms([0.5], 1, 2, model) - (25.0 + 2.0 + 1.0 + 0.5 + 1.0 + 0.5 * 25.0)) < 1e-9
+        log = directory / "residentd.log"
+        log.write_text("VERIFY-POSITIONS p1=6/8 p2=3/6 p3=0/3 p4=0/0 p5=0/0 p6=0/0 p7=0/0\n")
+        out = directory / "positions.json"
+        assert estimate.main(["positions", "--log", str(log), "--out", str(out)]) == 0
+        report = json.loads(out.read_text())
+        assert report["acceptance_per_position"] == [0.75, 0.5, 0.0] and [d["depth"] for d in report["depths"]] == [1, 2, 3]
+        assert report["depths"][0]["tokens_per_full_round"] == 1.75 and report["best_depth"] in (1, 2, 3)
+        try:
+            estimate.main(["positions", "--acceptance", "0.5,1.5", "--out", str(out)])
+        except SystemExit as failure:
+            assert "per-position acceptance" in str(failure)
+        else:
+            raise AssertionError("acceptance above 1 accepted")
+    print("PASS glm5_next speculative replay: token accounting, lookup on repeating and noisy streams, oracle and adversary drafts, mixed attribution, cost pricing, per-position acceptance pricing")
     return 0
 
 

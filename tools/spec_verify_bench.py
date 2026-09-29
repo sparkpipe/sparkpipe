@@ -34,6 +34,8 @@ PROMPTS = {
 FRAME = re.compile(r"VERIFY-FRAME slot=(\d+) position=(\d+) budget=(\d+) produced=(\d+) rounds=(\d+) accepted=(\d+)(?: steps=(\d+))?")
 SOURCES = re.compile(r"VERIFY-MTP drafts=(\d+) tokens=(\d+) cold=(\d+) truncated=(\d+) taps=(\d+) draft_us=(\d+) \| "
                      r"lookup rounds=(\d+) proposed=(\d+) accepted=(\d+) declined=(\d+) \| mtp rounds=(\d+) proposed=(\d+) accepted=(\d+)")
+POSITIONS = re.compile(r"VERIFY-POSITIONS((?: p\d+=\d+/\d+)+)")
+POSITION = re.compile(r"p(\d+)=(\d+)/(\d+)")
 
 
 def post(endpoint: str, path: str, body: dict, timeout: int) -> tuple[dict, float]:
@@ -182,7 +184,14 @@ def source_report(rounds: int, proposed: int, accepted: int) -> dict:
 def parse_log(lines) -> dict:
     frames = rounds = accepted = produced = budget = steps = 0
     sources = None
+    positions = None
     for line in lines:
+        found = POSITIONS.search(line)
+        if found is not None:
+            positions = [{"position": int(index), "accepted": int(taken), "reached": int(reached),
+                          "acceptance": int(taken) / int(reached) if int(reached) else None}
+                         for index, taken, reached in POSITION.findall(found.group(1))]
+            continue
         found = SOURCES.search(line)
         if found is not None:
             values = [int(value) for value in found.groups()]
@@ -205,6 +214,8 @@ def parse_log(lines) -> dict:
               "frame_fill": produced / budget if budget else 0.0}
     if sources is not None:
         report["sources"] = sources
+    if positions is not None:
+        report["acceptance_per_position"] = positions
     return report
 
 

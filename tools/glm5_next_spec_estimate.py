@@ -106,6 +106,70 @@ def estimate(args: argparse.Namespace) -> int:
     return 0
 
 
+def accepted_distribution(acceptance: list[float], depth: int) -> list[float]:
+    distribution, reach = [], 1.0
+    for index in range(depth):
+        distribution.append(reach * (1.0 - acceptance[index]))
+        reach *= acceptance[index]
+    distribution.append(reach)
+    return distribution
+
+
+def frame_ms(acceptance: list[float], depth: int, frame: int, model: dict) -> float:
+    cost = [0.0] * (frame + 1)
+    for remaining in range(1, frame + 1):
+        rows = min(depth, remaining - 1)
+        if rows == 0:
+            cost[remaining] = model["b1_ms"]
+            continue
+        round_ms = (model["b1_ms"] + rows * model["row_ms"] + model["round_ms"]
+                    + model["mtp_call_ms"] + rows * model["mtp_token_ms"])
+        cost[remaining] = round_ms + sum(chance * cost[remaining - 1 - accepted]
+                                         for accepted, chance in enumerate(accepted_distribution(acceptance, rows)))
+    return cost[frame]
+
+
+def positions(args: argparse.Namespace) -> int:
+    if (args.log is None) == (args.acceptance is None):
+        raise SystemExit("give exactly one of --log (a residentd log with VERIFY-POSITIONS) or --acceptance")
+    if args.log is not None:
+        import spec_verify_bench
+        with open(args.log, errors="replace") as handle:
+            measured = spec_verify_bench.parse_log(handle).get("acceptance_per_position")
+        if not measured:
+            raise SystemExit(f"{args.log} has no VERIFY-POSITIONS line")
+        acceptance = [item["acceptance"] for item in measured]
+        if acceptance[0] is None:
+            raise SystemExit(f"{args.log}: no verify round reached draft position 1")
+        missing = [index for index, value in enumerate(acceptance) if value is None]
+        if missing:
+            acceptance = acceptance[:missing[0]]
+    else:
+        acceptance = [float(value) for value in args.acceptance.split(",")]
+    if not acceptance or any(not 0.0 <= value <= 1.0 for value in acceptance):
+        raise SystemExit("per-position acceptance must be 1..7 values in [0, 1]")
+    model = {"b1_ms": args.b1_ms, "row_ms": args.row_ms, "round_ms": args.round_ms,
+             "mtp_token_ms": args.mtp_token_ms, "mtp_call_ms": args.mtp_call_ms}
+    report = {"model": model, "frame": args.frame, "acceptance_per_position": acceptance,
+              "spec_off_tok_s": round(1000.0 / args.b1_ms, 2), "depths": []}
+    for depth in range(1, len(acceptance) + 1):
+        tokens_per_round = sum(index * chance for index, chance in enumerate(accepted_distribution(acceptance, depth))) + 1.0
+        ms = frame_ms(acceptance, depth, args.frame, model)
+        report["depths"].append({"depth": depth, "rows": depth + 1, "tokens_per_full_round": round(tokens_per_round, 3),
+                                 "spec_tok_s": round(args.frame / ms * 1000.0, 2),
+                                 "speedup": round(args.frame * args.b1_ms / ms, 3)})
+    best = max(report["depths"], key=lambda item: item["speedup"])
+    report["best_depth"] = best["depth"]
+    Path(args.out).write_text(json.dumps(report, indent=1))
+    print(f"spec off {report['spec_off_tok_s']} tok/s (B1 {args.b1_ms} ms); frame {args.frame}; "
+          f"acceptance per position {', '.join(f'{value:.3f}' for value in acceptance)}")
+    for item in report["depths"]:
+        print(f"depth {item['depth']} ({item['rows']} rows): {item['spec_tok_s']} tok/s, {item['speedup']}x, "
+              f"{item['tokens_per_full_round']} tokens per full round")
+    print(f"best fixed depth {best['depth']}: {best['speedup']}x")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="glm5_next_spec_estimate", description=(
         "Replay real greedy GLM-5.3 Flash streams through the module's drafters and verify-depth rules "
@@ -129,6 +193,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mtp-call-ms", type=float, default=0.3)
     p.add_argument("--out", required=True)
     p.set_defaults(function=estimate)
+    p = sub.add_parser("positions", help="price fixed-depth rounds from per-position acceptance (measured or assumed)")
+    p.add_argument("--log", help="residentd log carrying VERIFY-POSITIONS")
+    p.add_argument("--acceptance", help="comma-separated acceptance of draft positions 1..k")
+    p.add_argument("--frame", type=int, default=8)
+    p.add_argument("--b1-ms", type=float, default=25.2)
+    p.add_argument("--row-ms", type=float, default=2.7)
+    p.add_argument("--round-ms", type=float, default=1.0)
+    p.add_argument("--mtp-token-ms", type=float, default=1.3)
+    p.add_argument("--mtp-call-ms", type=float, default=0.3)
+    p.add_argument("--out", required=True)
+    p.set_defaults(function=positions)
     args = parser.parse_args(argv)
     return args.function(args)
 
