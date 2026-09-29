@@ -11,6 +11,7 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_quant_arm.h"
 #include "sparkpipe/spark_continuous_batch.h"
 
 #define SPARK_MODEL_BATCH_FILE_SCHEMA_VERSION 1u
@@ -495,14 +496,33 @@ static int32_t SparkModelBatchWriteJsonString(const char *text)
 	return(fputc('"',stdout) == EOF ? -5 : 0);
 }
 
+static int32_t SparkModelBatchWriteQuantArm(
+	const SparkQuantArm *arm)
+{
+	uint32_t rank;
+	if ( fprintf(stdout,",\"arm_id\":\"%s\",\"arm_digest\":\"%s\",\"arm_kv\":\"%s\",\"pack_set_sha256\":\"%s\",\"pack_sha256\":[",arm->arm_id,arm->arm_digest,arm->kv_text,arm->pack_set_sha256) < 0 )
+		return(-1);
+	for (rank=0u; rank<arm->rank_count; rank++)
+	{
+		if ( fprintf(stdout,"%s\"%s\"",rank == 0u ? "" : ",",arm->pack_sha256[rank]) < 0 )
+			return(-2);
+	}
+	return(fputc(']',stdout) == EOF ? -3 : 0);
+}
+
 static int32_t SparkModelBatchWriteReady(
-	const SparkModelServingAdapterDescriptor *descriptor)
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkQuantArm *arm)
 {
 	if ( fputs("{\"schema_version\":1,\"event\":\"ready\",\"adapter_id\":",stdout) == EOF || SparkModelBatchWriteJsonString(descriptor->adapter_id) < 0 || fputs(",\"model_id\":",stdout) == EOF || SparkModelBatchWriteJsonString(descriptor->model_id) < 0 || fputs(",\"model_revision\":",stdout) == EOF || SparkModelBatchWriteJsonString(descriptor->model_revision) < 0 )
 		return(-1);
-	if ( fprintf(stdout,",\"stage_count\":%u,\"linear_weight_codec\":%u,\"expert_weight_codec\":%u,\"kv_cache_codec\":%u}\n",descriptor->stage_count,descriptor->linear_weight_codec,descriptor->expert_weight_codec,descriptor->kv_cache_codec) < 0 )
+	if ( fprintf(stdout,",\"stage_count\":%u,\"linear_weight_codec\":%u,\"expert_weight_codec\":%u,\"kv_cache_codec\":%u",descriptor->stage_count,descriptor->linear_weight_codec,descriptor->expert_weight_codec,descriptor->kv_cache_codec) < 0 )
 		return(-2);
-	return(fflush(stdout) == 0 ? 0 : -3);
+	if ( arm != 0 && SparkModelBatchWriteQuantArm(arm) < 0 )
+		return(-3);
+	if ( fputs("}\n",stdout) == EOF )
+		return(-4);
+	return(fflush(stdout) == 0 ? 0 : -5);
 }
 
 static SparkStatus SparkModelBatchSubmitAll(
@@ -731,12 +751,14 @@ static int32_t SparkModelBatchParseArguments(
 	const char **deployment_path,
 	const char **runtime_root,
 	const char **batch_path,
+	const char **quant_arm_path,
 	uint32_t *profile_stages)
 {
 	int32_t index;
 	*deployment_path = 0;
 	*runtime_root = 0;
 	*batch_path = 0;
+	*quant_arm_path = 0;
 	*profile_stages = 0u;
 	for (index=1; index<argc; index++)
 	{
@@ -746,6 +768,8 @@ static int32_t SparkModelBatchParseArguments(
 			*runtime_root = argv[++index];
 		else if ( strcmp(argv[index],"--batch") == 0 && index + 1 < argc )
 			*batch_path = argv[++index];
+		else if ( strcmp(argv[index],"--quant-arm") == 0 && index + 1 < argc )
+			*quant_arm_path = argv[++index];
 		else if ( strcmp(argv[index],"--profile-stages") == 0 )
 			*profile_stages = 1u;
 		else
@@ -762,13 +786,20 @@ int main(int argc,char **argv)
 	SparkModelBatchEngineView engine_view;
 	SparkModelBatchFile file;
 	SparkModelBatchOutput output;
-	const char *deployment_path,*runtime_root,*batch_path;
+	static SparkQuantArm quant_arm;
+	const char *deployment_path,*runtime_root,*batch_path,*quant_arm_path;
+	char quant_arm_error[512];
 	uint32_t failed_stage_index,profile_stages,view_valid;
 	uint32_t continuous,admission_closed,submitted_count;
 	SparkStatus status,destroy_status;
-	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&runtime_root,&batch_path,&profile_stages) < 0 )
+	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&runtime_root,&batch_path,&quant_arm_path,&profile_stages) < 0 )
 	{
-		fprintf(stderr,"usage: sparkpipe_model_batch --deployment PATH --runtime-root PATH --batch PATH [--profile-stages]\n");
+		fprintf(stderr,"usage: sparkpipe_model_batch --deployment PATH --runtime-root PATH --batch PATH [--quant-arm ARM_JSON] [--profile-stages]\n");
+		return(2);
+	}
+	if ( quant_arm_path != 0 && SparkQuantArmLoadFile(quant_arm_path,&quant_arm,quant_arm_error,(uint32_t)sizeof(quant_arm_error)) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"sparkpipe_model_batch: --quant-arm %s REFUSED: %s\n",quant_arm_path,quant_arm_error);
 		return(2);
 	}
 	memset(&output,0,sizeof(output));
@@ -809,7 +840,7 @@ int main(int argc,char **argv)
 		status = SparkModelBatchEngineConnect(&file.engine,&engine);
 	}
 	descriptor = status == SPARK_STATUS_OK ? SparkModelBatchEngineGetAdapterDescriptor(engine) : 0;
-	if ( status == SPARK_STATUS_OK && (descriptor == 0 || SparkModelBatchWriteReady(descriptor) < 0) )
+	if ( status == SPARK_STATUS_OK && (descriptor == 0 || SparkModelBatchWriteReady(descriptor,quant_arm_path != 0 ? &quant_arm : 0) < 0) )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK && continuous != 0u )
 	{
