@@ -1,3 +1,4 @@
+import os
 import struct
 import sys
 import tempfile
@@ -58,6 +59,19 @@ def main():
                 assert data[96:96 + len(REVISION)] == REVISION.encode()
                 assert struct.unpack_from("<2I", data, 18 * 4) == (degree, rank)
             assert len({path.read_bytes()[4096:] for path in paths}) == degree
+            dropped = [directory / f"dropped-{dtype}-{rank}.sp" for rank in range(degree)]
+            if hasattr(os, "posix_fadvise"):
+                pack.emit_ranks(packers(CountingSource({3: dtype}), degree), dropped, HEADER,
+                                REVISION, drop_output_cache=True, sync_bytes=4096)
+                assert [path.read_bytes() for path in dropped] == single
+            else:
+                try:
+                    pack.emit_ranks(packers(CountingSource({3: dtype}), degree), dropped, HEADER,
+                                    REVISION, drop_output_cache=True)
+                except pack.PackFailure as error:
+                    assert "posix_fadvise" in str(error)
+                else:
+                    raise AssertionError("cache drop silently skipped")
             try:
                 pack.emit_ranks(packers(CountingSource({3: dtype}), degree), paths, HEADER, REVISION)
             except pack.PackFailure as error:
