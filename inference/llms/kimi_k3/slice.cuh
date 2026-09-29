@@ -36,6 +36,7 @@ struct K3LayerWeights
 	const void *mla_out_scale;
 
 	const void *router_weight;
+	const float *router_bias;
 	const void *routed_down_weight;
 	const void *routed_down_scale;
 	const void *routed_up_weight;
@@ -121,6 +122,7 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->mla_out_weight = weights->mla_out_weight;
 	buffers->mla_out_scale = weights->mla_out_scale;
 	buffers->router_weight = weights->router_weight;
+	buffers->router_bias = weights->router_bias;
 	buffers->routed_down_weight = weights->routed_down_weight;
 	buffers->routed_down_scale = weights->routed_down_scale;
 	buffers->routed_up_weight = weights->routed_up_weight;
