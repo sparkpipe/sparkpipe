@@ -432,6 +432,33 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpMeshRsagSlice(131068u,16u) == 8192u && SparkTpMeshRsagSlice(513u,16u) == 36u &&
         SparkTpMeshRsagSlice(49152u,3u) == 16384u && SparkTpMeshRsagSlice(49153u,4u) % 4u == 0u,
         "slices are whole 8-byte words and cover the chunk");
+    {
+        uint32_t calls_before = cuda_stub_mesh_hardware_calls;
+        submission.active_sequence_count = 2u;
+        submission.logical_sequence_count = 2u;
+        request->capabilities = 0u;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_UNSUPPORTED &&
+            cuda_stub_mesh_hardware_calls == calls_before,
+            "an all-to-all without slice routes fails loudly instead of degrading to an all-gather");
+        request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+        submission.full_device = local;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_INVALID_ARGUMENT,
+            "an all-to-all needs separate send and receive buffers");
+        submission.full_device = output;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_OK &&
+            cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL &&
+            cuda_stub_mesh_hardware_elements == 128u && cuda_stub_mesh_hardware_slice_routes == 1u,
+            "an all-to-all runs on the hardware path with the per-peer payload");
+        request->capabilities = 0u;
+        cuda_stub_mesh_hardware_calls = calls_before;
+    }
+    CHECK(SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u) == 8192u &&
+        SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,2u) == 65544u &&
+        SparkTpMeshAllToAllChunks(4112u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshAllToAllChunks(32896u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 5u &&
+        SparkTpMeshAllToAllChunks(263168u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 33u &&
+        SparkTpMeshAllToAllChunks(0u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u,
+        "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/5/33 rounds");
     submission.active_sequence_count = 2u;
     CHECK(cuda_stub_mesh_hardware_calls == 9u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");

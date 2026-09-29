@@ -1450,18 +1450,42 @@ static uint32_t TestModelBatchCountText(const char *text,const char *needle)
 	return(count);
 }
 
+#define TEST_MODEL_BATCH_ARM_HEX_A "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define TEST_MODEL_BATCH_ARM_HEX_B "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+static void TestModelBatchWriteArm(const char *path,uint32_t valid)
+{
+	FILE *file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fprintf(file,"{\"format\":\"sparkpipe-quant-arm-v1\",\"arm_id\":\"%s\",\"model\":\"demo\",\"revision\":\"org/Demo@1\","
+		"\"topology\":{\"tp\":1,\"pp\":1,\"kv_shard\":0},\"spine\":{\"frame\":\"S1\",\"source\":\"org/Demo@1\",\"spine_digest\":[\"%s\"]},"
+		"\"expert\":{\"codec\":\"fp8\",\"label\":\"fp8\",\"producer\":\"publisher\",\"source\":\"org/Demo-FP8@2\",\"recipe_sha256\":null},"
+		"\"kv\":{\"latent\":\"bf16\",\"index\":\"bf16\",\"state\":\"fp32\",\"group\":0,\"mode\":\"store\"},"
+		"\"drafter\":{\"kind\":\"none\",\"label\":\"none\",\"codec\":\"none\",\"head\":\"none\",\"sidecar_sha256\":[]},"
+		"\"pack_sha256\":[\"%s\"],\"artifacts\":{\"module_archive_sha256\":\"%s\",\"driver_sha256\":\"%s\",\"adapter_sha256\":\"%s\"}}\n",
+		valid != 0u ? "demo.S1.e-fp8.k-bf16/bf16/fp32.d-none" : "demo.S0.e-fp8.k-bf16/bf16/fp32.d-none",
+		TEST_MODEL_BATCH_ARM_HEX_A,TEST_MODEL_BATCH_ARM_HEX_B,TEST_MODEL_BATCH_ARM_HEX_A,TEST_MODEL_BATCH_ARM_HEX_A,TEST_MODEL_BATCH_ARM_HEX_A) > 0);
+	assert(fclose(file) == 0);
+}
+
 static void TestModelBatchProcess(
 	const char *deployment_path,
-	uint32_t profile_stages)
+	uint32_t mode)
 {
-	char batch_path[108],output_path[108],stderr_path[108],output[16384],runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	char batch_path[108],output_path[108],stderr_path[108],arm_path[108],output[16384],runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	FILE *file;
 	pid_t child;
 	size_t bytes;
 	int32_t child_status;
-	assert(snprintf(batch_path,sizeof(batch_path),"/tmp/sparkpipe-model-batch-%ld-%u.json",(long)getpid(),profile_stages) > 0);
-	assert(snprintf(output_path,sizeof(output_path),"/tmp/sparkpipe-model-batch-%ld-%u.ndjson",(long)getpid(),profile_stages) > 0);
-	assert(snprintf(stderr_path,sizeof(stderr_path),"/tmp/sparkpipe-model-batch-%ld-%u.stderr",(long)getpid(),profile_stages) > 0);
+	uint32_t profile_stages = mode == 1u ? 1u : 0u;
+	uint32_t quant_arm = mode >= 2u ? 1u : 0u;
+	uint32_t refused = mode == 3u ? 1u : 0u;
+	assert(snprintf(arm_path,sizeof(arm_path),"/tmp/sparkpipe-model-batch-%ld-%u.arm.json",(long)getpid(),mode) > 0);
+	if ( quant_arm != 0u )
+		TestModelBatchWriteArm(arm_path,refused == 0u ? 1u : 0u);
+	assert(snprintf(batch_path,sizeof(batch_path),"/tmp/sparkpipe-model-batch-%ld-%u.json",(long)getpid(),mode) > 0);
+	assert(snprintf(output_path,sizeof(output_path),"/tmp/sparkpipe-model-batch-%ld-%u.ndjson",(long)getpid(),mode) > 0);
+	assert(snprintf(stderr_path,sizeof(stderr_path),"/tmp/sparkpipe-model-batch-%ld-%u.stderr",(long)getpid(),mode) > 0);
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	file = fopen(batch_path,"wb");
 	assert(file != 0);
@@ -1475,7 +1499,9 @@ static void TestModelBatchProcess(
 			_exit(120);
 		if ( freopen(stderr_path,"wb",stderr) == 0 )
 			_exit(121);
-		if ( profile_stages != 0u )
+		if ( quant_arm != 0u )
+			execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--runtime-root",runtime_root,"--batch",batch_path,"--quant-arm",arm_path,(char *)0);
+		else if ( profile_stages != 0u )
 			execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--runtime-root",runtime_root,"--batch",batch_path,"--profile-stages",(char *)0);
 		else
 			execl(TEST_MODEL_BATCH_PATH,TEST_MODEL_BATCH_PATH,"--deployment",deployment_path,"--runtime-root",runtime_root,"--batch",batch_path,(char *)0);
@@ -1487,6 +1513,27 @@ static void TestModelBatchProcess(
 	else if ( !WIFEXITED(child_status) )
 		fprintf(stderr,"sparkpipe_model_batch returned unknown wait status %d\n",child_status);
 	assert(WIFEXITED(child_status));
+	if ( refused != 0u )
+	{
+		assert(WEXITSTATUS(child_status) == 2);
+		file = fopen(stderr_path,"rb");
+		assert(file != 0);
+		bytes = fread(output,1u,sizeof(output) - 1u,file);
+		assert(fclose(file) == 0);
+		output[bytes] = '\0';
+		assert(TestModelBatchCountText(output,"--quant-arm") == 1u);
+		assert(TestModelBatchCountText(output,"REFUSED: arm: arm_id") == 1u);
+		file = fopen(output_path,"rb");
+		assert(file != 0);
+		bytes = fread(output,1u,sizeof(output) - 1u,file);
+		assert(fclose(file) == 0);
+		assert(bytes == 0u);
+		unlink(stderr_path);
+		unlink(output_path);
+		unlink(batch_path);
+		unlink(arm_path);
+		return;
+	}
 	assert(WEXITSTATUS(child_status) == 0);
 	file = fopen(output_path,"rb");
 	assert(file != 0);
@@ -1495,6 +1542,19 @@ static void TestModelBatchProcess(
 	assert(fclose(file) == 0);
 	output[bytes] = '\0';
 	assert(TestModelBatchCountText(output,"\"event\":\"ready\"") == 1u);
+	if ( quant_arm != 0u )
+	{
+		assert(TestModelBatchCountText(output,"\"arm_id\":\"demo.S1.e-fp8.k-bf16/bf16/fp32.d-none\",\"arm_digest\":\"") == 1u);
+		assert(TestModelBatchCountText(output,"\"arm_kv\":\"bf16/bf16/fp32/0/store\",\"pack_set_sha256\":\"") == 1u);
+		assert(TestModelBatchCountText(output,"\"pack_sha256\":[\"" TEST_MODEL_BATCH_ARM_HEX_B "\"]}\n") == 1u);
+		unlink(arm_path);
+	}
+	else
+	{
+		assert(TestModelBatchCountText(output,"arm_digest") == 0u);
+		assert(TestModelBatchCountText(output,",\"kv_cache_codec\":") == 1u);
+		assert(strstr(strstr(output,",\"kv_cache_codec\":"),"}\n") - strstr(output,",\"kv_cache_codec\":") <= 21);
+	}
 	assert(TestModelBatchCountText(output,"\"event\":\"accepted\"") == 2u);
 	assert(TestModelBatchCountText(output,"\"event\":\"token\"") == 3u);
 	assert(TestModelBatchCountText(output,"\"event\":\"completed\"") == 2u);
@@ -1958,6 +2018,8 @@ int main(void)
 	TestModelBatchEngineShutdown(&deployment);
 	TestModelBatchProcess(deployment_path,0u);
 	TestModelBatchProcess(deployment_path,1u);
+	TestModelBatchProcess(deployment_path,2u);
+	TestModelBatchProcess(deployment_path,3u);
 	TestModelBatchProcessOverCapacity(deployment_path);
 	TestModelPipelineStopResidents(children,paths,0u);
 	SparkModelResidentDeploymentDestroy(&deployment);

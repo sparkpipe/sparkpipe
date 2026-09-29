@@ -1262,9 +1262,21 @@ k3 shape) and at degrees 4 and 8 pass too. The CPU-shim variant is
 
 ### Not done yet
 
-- **Transport.** #1335 is a draft: the single-GPU mesh probe times out a
-  peer gate at degree 2. Main's own probe also fails on sparkf today, at
-  its first degree-16 case.
+- **Transport.** #1335 passes the single-GPU mesh probe (117 cases,
+  including all-to-all at degrees 2/3/4/8/16, eager and graph, under lazy
+  module loading). Two faults had hidden it:
+  - The two all-to-all kernels were not in the preload list of
+    `SparkTpMeshHardwarePrepare`. Under lazy loading, rank 0's host enqueue
+    loaded the unpack kernel while its own stream was already blocked on the
+    peer gate. The load waited on that stream, rank 1 was never enqueued,
+    and the gate timed out after 2 s. They are preloaded now.
+  - The probe runs 16 logical ranks as 16 streams on one GPU. With the
+    default 8 hardware queues (`CUDA_DEVICE_MAX_CONNECTIONS` unset), two rank
+    streams share a queue, and a rank blocked on its peer wait also blocks
+    the other. That is why main's probe failed at its first degree-16 case.
+    With `CUDA_DEVICE_MAX_CONNECTIONS=32`, the setting the qualification
+    receipt used, main passes all 87 cases on sparkf. The probe now refuses
+    to run with fewer than 16 connections.
 - **glm5_next wiring.**
   - Per-rank pools of `page_bytes / tp` for the latent and index caches
     and for the KV arena block.
@@ -1532,6 +1544,105 @@ B1 15.75 to 15.39 ms (-2.3%), B8 32.17 to 31.87 ms (-0.9%).
 Kernel time at B1 on the idle bench (nsys node trace; shares of GPU busy
 time): BF16 skinny GEMV 36%, FP8 expert GEMV 13%, HC site 10%, head 5%,
 latent attention 5%, RMSNorm 3%. At B8 the FP8 expert GEMV is 55%.
+
+## Weight prefetch during collective waits
+
+At TP16 B1 each of the 92 all-reduce rounds leaves the rank's GPU waiting for
+its peers for about 50 us, and DRAM is idle for that time. The kernels that
+follow a round read weights that do not depend on the round:
+- after the attention round: the ffn HC site's `fn` (1.5 MiB f32) and norm,
+  then the router and shared gate/up (or the dense gate/up);
+- after the MLP round: the next layer's attn HC `fn` and norm, then KDA
+  `qkv_beta` and decay/gate down, or DSA `q_a`, index K, index gate and index
+  head.
+
+When the walk captures a decode graph, `SparkGlm5NextL2PrefetchAfterRound`
+adds one kernel node per round, `Glm5NextL2PrefetchKernel`: 48 CTAs of 256
+threads that `ld.global.cg` up to 12 MiB of those weights and discard them.
+Placement:
+- It walks back from the round's last captured node to the round's last
+  wait-value node (`CU_GRAPH_NODE_TYPE_BATCH_MEM_OP`, the peer wait), and hangs
+  the load kernel off the node before that wait. The kernel therefore starts
+  after the round's request and publish kernels, while the GPU front end waits
+  for the peers.
+- The next captured node depends on both the round and the load kernel.
+
+How it behaves:
+- `GRAPH-CAPTURE-OK` reports `l2_prefetch_rounds`.
+- Linear chains and rounds without a wait-value node get no load kernel.
+- `SPARK_GLM5_NEXT_L2_PREFETCH=0` turns it off; `1` or unset turns it on.
+  Any other value fails configuration.
+- `SPARK_GLM5_NEXT_L2_PREFETCH_BYTES` caps the bytes one round loads: a
+  multiple of 65536 from 65536 to 12582912 (12 MiB, the default).
+  `SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS` sets the load kernel's CTAs, 1 to 192
+  (default 48, one per GB10 SM). Fewer bytes or CTAs leave DRAM bandwidth to
+  the round's own transport while the load runs. Any other value, or either
+  variable with `SPARK_GLM5_NEXT_L2_PREFETCH=0`, fails configuration.
+- The module prints `GLM l2 prefetch=on bytes=<cap> blocks=<ctas>` or
+  `GLM l2 prefetch=off`.
+- The bench takes the same shape as `--l2-prefetch-bytes N` and
+  `--l2-prefetch-blocks N`, and prints `l2_bytes=` and `l2_blocks=` on
+  `ROOFLINE-GRAPH`.
+- It only runs when `tp_degree > 1`.
+- The arithmetic is unchanged, so outputs are bit identical: `ROOFLINE-HASH`
+  matches at B1 and B8.
+
+What did not work on GB10:
+- `cp.async.bulk.prefetch.L2` hints. After a hint and 60 us of idle, an
+  8 MiB read still took 27.5-30.6 us against 35.6 us cold. Data brought in
+  by real loads reads in 8.2 us.
+- Forking the load kernel on a side stream before the round. The wide load
+  kernel delayed the round's own small kernels. A second pre-wait kernel
+  started a median 23.6 us late, and in production that would delay this
+  rank's publish for every peer.
+
+The bench emulates a round with `--round-spin-us N --round-wait 2`: two
+one-thread kernels, then a wait-value node that a host thread releases N us
+after the first kernel ran. That is the shape of the hardware-wait round.
+
+| B | wait per round | off | on |
+|---|---:|---:|---:|
+| 1 | 40 us | 16.904 ms | 14.992 ms |
+| 1 | 50 us | 17.843 ms | 15.383 ms |
+| 8 | 50 us | 36.631 ms | 35.211 ms |
+
+On the fleet this predicts about 1.9-2.5 ms less per B1 token, if production
+rounds keep DRAM idle for 40-50 us. That prediction is for a fleet window to
+test.
+
+Results are in `qualification/glm5next/performance/glmflash_b1_20260929/`.
+
+Release a597ff0 (2026-09-29) measured it on the fleet: over the rows=1 graph
+chains, compute per step fell by 2.4-3.2 ms against a477cfa, but the
+device-measured peer wait rose by 1.66 ms (about 18 us per round), so the
+step gained only 0.3-1.2 ms. The load kernel only overlaps the round's peer
+wait. The source wait that it does not overlap stayed at 0.45 ms per step.
+That points at the load slowing the transport it overlaps. Each attention
+round loads 12 MiB, which takes about 53 us at 235 GB/s and so fills the
+whole wait, while weightd's CPU relay and the NIC work through the same
+LPDDR5X. The byte and CTA knobs let a fleet window find the shape that keeps
+the compute gain without the extra peer wait.
+
+Single-GPU bench, sparkf, B1, context 1024, 45 us host-released waits
+(`--round-spin-us 45 --round-wait 2`), median of 3 interleaved runs of 100
+replays. Production GLM and a K3 lane shared the GPU, so the spread is
+0.2-0.8 ms. `ROOFLINE-HASH` was identical for every shape.
+
+| shape (bytes x CTAs) | step ms |
+|---|---:|
+| off | 17.61 |
+| 12 MiB x 48 (default) | 14.97 |
+| 8 MiB x 48 | 15.12 |
+| 6 MiB x 48 | 15.51 |
+| 4 MiB x 48 | 16.05 |
+| 12 MiB x 24 | 15.63 |
+| 6 MiB x 16 | 15.62 |
+
+Roofline for this bench step: memory 70% at 14.97 ms and 60% at 17.61 ms
+(2.56 GB per step, 243 GB/s peak) | compute about 1-2% | transport not
+measured, because the waits are emulated. The bench has no NIC or relay on
+the wait path, so it only shows the compute side of each shape: 8 MiB keeps
+94% of the default's gain, 6 MiB 80%, 4 MiB 59%.
 
 ## Next steps
 

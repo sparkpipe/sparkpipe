@@ -106,6 +106,11 @@ typedef struct SparkWeightdExpertEntry
     uint32_t present;
 } SparkWeightdExpertEntry;
 
+_Static_assert(sizeof(SparkWeightdExpertEntry) + sizeof(((SparkWeightdLeaseTable *)0)->pins[0]) <= SPARK_WEIGHTD_MANIFEST_GROUP_STATE_BYTES_MAX,
+    "per-group daemon state (expert entry and lease pin) must fit the manifest table budget");
+_Static_assert((uint64_t)SPARK_WEIGHTD_ARENA_COUNT_MAX * SPARK_WEIGHTD_MANIFEST_TABLE_BYTES_MAX <= SPARK_WEIGHTD_MANIFEST_DAEMON_BYTES_MAX,
+    "every arena slot holding a maximal manifest must fit the daemon manifest budget");
+
 typedef struct SparkWeightdArena
 {
     SparkWeightdIdentity identity; /* canonical (prepared) */
@@ -412,13 +417,19 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return SPARK_WEIGHTD_IPC_RECLAIM_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM_RESULT:
             return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK:
+            return SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK_RESULT:
+            return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT:
             return SPARK_WEIGHTD_IPC_EXPORT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT:
             return SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY:
+        case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED:
             return SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_RESULT:
+        case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED_RESULT:
             return SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES -
                 SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_ENSURE:
@@ -454,6 +465,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_DETACH_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM:
             return SPARK_WEIGHTD_IPC_KIND_RECLAIM_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK:
+            return SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT:
             return SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_MAP:
@@ -466,6 +479,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY:
             return SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED:
+            return SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ENSURE:
             return SPARK_WEIGHTD_IPC_KIND_ENSURE_RESULT;
         default:
@@ -1444,7 +1459,8 @@ static SparkStatus SparkWeightdArenaChunkEnsure(SparkWeightdServer *server,
 static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     SparkWeightdConnection *connection,
     const SparkWeightdIpcAttachLazy *request,
-    SparkWeightdIpcAttachLazyResult *result)
+    SparkWeightdIpcAttachLazyResult *result,
+    uint32_t share_only)
 {
     SparkWeightdIdentity identity = request->identity;
     SparkWeightdArena *arena;
@@ -1493,6 +1509,15 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     }
 
     arena = SparkWeightdServerFindArena(server, &identity);
+    if (arena == 0 && share_only != 0u)
+    {
+        fprintf(stderr,"weightd shared attach refused: no resident arena for model=%s revision=%s pack_sha256=%s; a share-only lane never loads its own copy\n",
+            identity.model,identity.revision,identity.pack_sha256);
+        free(entries);
+        SparkWeightdManifestDestroy(&manifest);
+        result->status = (uint32_t)SPARK_STATUS_NOT_FOUND;
+        return;
+    }
     if (arena != 0)
     {
         free(entries);
@@ -1510,12 +1535,19 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
         }
         if (request->expert_pool_bytes != arena->expert_pool_bytes)
         {
+            fprintf(stderr,"weightd lazy attach rejected: model=%s pack_sha256=%s matches arena generation %llu but expert_pool_bytes %llu != the arena's %llu\n",
+                identity.model,identity.pack_sha256,(unsigned long long)arena->generation,
+                (unsigned long long)request->expert_pool_bytes,(unsigned long long)arena->expert_pool_bytes);
             result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
             return;
         }
         slot = (uint32_t)(arena - server->arenas);
         status = SparkWeightdServerAttachRegister(server, connection, slot);
         result->status = (uint32_t)status;
+        if (status == SPARK_STATUS_OK && share_only != 0u)
+            fprintf(stderr,"weightd shared attach model=%s pack_sha256=%s generation=%llu refcount=%u pool=%llu\n",
+                identity.model,identity.pack_sha256,(unsigned long long)arena->generation,
+                arena->refcount,(unsigned long long)arena->expert_pool_bytes);
         if (status == SPARK_STATUS_OK)
         {
             result->arena_generation = server->arenas[slot].generation;
@@ -2507,7 +2539,8 @@ static uint32_t SparkWeightdServerOnAttachLazy(SparkWeightdServer *server, Spark
     memset(result, 0, sizeof(*result));
     SparkWeightdBuildHeader(response, result_kind, request_id);
     SparkWeightdServerAttachLazy(server, connection,
-        (const SparkWeightdIpcAttachLazy *)request, result);
+        (const SparkWeightdIpcAttachLazy *)request, result,
+        ((const SparkWeightdIpcHeader *)request)->kind == SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED ? 1u : 0u);
     return SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES;
 }
 
@@ -2845,7 +2878,7 @@ static uint32_t SparkWeightdServerOnEpochExport(SparkWeightdServer *server, Spar
     return SPARK_WEIGHTD_IPC_EPOCH_EXPORT_RESULT_BYTES;
 }
 
-static uint32_t SparkWeightdServerOnReclaim(SparkWeightdServer *server, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+static uint32_t SparkWeightdServerReclaimMatching(SparkWeightdServer *server, uint8_t *response, uint32_t result_kind, uint64_t request_id, const char *pack_sha256)
 {
     SparkWeightdIpcReclaimResult *result =
         (SparkWeightdIpcReclaimResult *)response;
@@ -2856,17 +2889,51 @@ static uint32_t SparkWeightdServerOnReclaim(SparkWeightdServer *server, uint8_t 
     SparkWeightdBuildHeader(response, result_kind, request_id);
     for (index = server->arena_count; index > 0u; index--)
     {
-        if (server->arenas[index - 1u].refcount == 0u && SparkWeightdArenaHasLeases(&server->arenas[index - 1u]) == 0u)
-        {
+        SparkWeightdArena *arena = &server->arenas[index - 1u];
+        if (pack_sha256 != 0 && strcmp(arena->identity.pack_sha256, pack_sha256) != 0)
+            continue;
+        if (arena->refcount == 0u && SparkWeightdArenaHasLeases(arena) == 0u)
             SparkWeightdServerFreeArenaSlot(server, index - 1u);
-        }
+        else
+            result->busy_arena_count++;
     }
     result->status = (uint32_t)SPARK_STATUS_OK;
     result->reclaimed_bytes = resident_before - server->resident_bytes;
     result->resident_bytes = server->resident_bytes;
     result->reclaimed_arena_count = arenas_before - server->arena_count;
     result->arena_count = server->arena_count;
+    fprintf(stderr,"weightd reclaim scope=%s freed_arenas=%u freed_bytes=%llu busy=%u resident=%llu arenas=%u\n",
+        pack_sha256 != 0 ? pack_sha256 : "all-cold",result->reclaimed_arena_count,
+        (unsigned long long)result->reclaimed_bytes,result->busy_arena_count,
+        (unsigned long long)result->resident_bytes,result->arena_count);
     return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES;
+}
+
+static uint32_t SparkWeightdServerOnReclaim(SparkWeightdServer *server, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+{
+    return(SparkWeightdServerReclaimMatching(server,response,result_kind,request_id,0));
+}
+
+static uint32_t SparkWeightdServerOnReclaimPack(SparkWeightdServer *server, const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+{
+    const SparkWeightdIpcReclaimPack *reclaim = (const SparkWeightdIpcReclaimPack *)request;
+    SparkWeightdIpcReclaimResult *result = (SparkWeightdIpcReclaimResult *)response;
+    char pack_sha256[SPARK_WEIGHTD_SHA256_HEX_BYTES];
+    uint32_t index;
+    memcpy(pack_sha256,reclaim->pack_sha256,sizeof(pack_sha256));
+    for (index = 0u; index < sizeof(reclaim->reserved); index++)
+        if (reclaim->reserved[index] != 0)
+            break;
+    if (index != sizeof(reclaim->reserved) || pack_sha256[SPARK_WEIGHTD_SHA256_HEX_BYTES - 1u] != '\0' || !SparkSha256HexIsValid(pack_sha256))
+    {
+        memset(result, 0, sizeof(*result));
+        SparkWeightdBuildHeader(response, result_kind, request_id);
+        result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+        result->resident_bytes = server->resident_bytes;
+        result->arena_count = server->arena_count;
+        return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES;
+    }
+    return(SparkWeightdServerReclaimMatching(server,response,result_kind,request_id,pack_sha256));
 }
 
 static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeightdConnection *connection, const uint8_t *request, uint8_t *response)
@@ -2887,6 +2954,7 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeig
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_LEASE:
             return(SparkWeightdServerOnExportLease(server,connection,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY:
+        case SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED:
             return(SparkWeightdServerOnAttachLazy(server,connection,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_ENSURE:
             return(SparkWeightdServerOnEnsure(response,result_kind,request_id));
@@ -2911,6 +2979,8 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeig
             return(SparkWeightdServerOnEpochExport(server,connection,response,request_header,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM:
             return(SparkWeightdServerOnReclaim(server,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK:
+            return(SparkWeightdServerOnReclaimPack(server,request,response,result_kind,request_id));
         default:
             return(0u);
     }
@@ -2941,7 +3011,8 @@ static void SparkWeightdServerCompleteWork(SparkWeightdServer *server)
         SparkWeightdConnection *connection = &server->connections[server->dispatch_connection];
         const SparkWeightdIpcHeader *request = (const SparkWeightdIpcHeader *)connection->request;
         if (connection->state == SPARK_WEIGHTD_CONNECTION_OPEN &&
-            request->kind == SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY &&
+            (request->kind == SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY ||
+             request->kind == SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED) &&
             connection->response_bytes == SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES)
             SparkWeightdServerStageMeshFd(connection);
         connection->request_ready = 0u;
@@ -3817,10 +3888,11 @@ static SparkStatus SparkWeightdMapMeshFd(int fd,uint64_t bytes,void **out)
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
+static SparkStatus SparkWeightdClientAttachLazyKind(SparkWeightdClient *client,
     const SparkWeightdLazyAttachRequest *request,
     SparkWeightdLazyAttachResult *result,
-    uint64_t timeout_nanoseconds)
+    uint64_t timeout_nanoseconds,
+    uint32_t kind)
 {
     SparkWeightdIpcAttachLazy wire;
     SparkWeightdIpcAttachLazyResult wire_result;
@@ -3846,7 +3918,7 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
     memset(&wire, 0, sizeof(wire));
     wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
     wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-    wire.header.kind = SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY;
+    wire.header.kind = kind;
     wire.header.body_bytes =
         SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
     wire.header.request_id = ++client->next_request_id;
@@ -3962,6 +4034,43 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
     result->mesh_send_buffer_bytes = wire_result.mesh_send_buffer_bytes;
     result->pool_fd = wire_result.pool_fd;
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *client,
+    const SparkWeightdLazyAttachRequest *request,
+    SparkWeightdLazyAttachResult *result,
+    uint64_t timeout_nanoseconds)
+{
+    return(SparkWeightdClientAttachLazyKind(client,request,result,
+        timeout_nanoseconds,SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY));
+}
+
+SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
+    const SparkWeightdLazyAttachRequest *request,
+    SparkWeightdLazyAttachResult *result,
+    uint64_t timeout_nanoseconds)
+{
+    return(SparkWeightdClientAttachLazyKind(client,request,result,
+        timeout_nanoseconds,SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED));
+}
+
+SparkStatus SparkWeightdShareModeFromEnvironment(uint32_t *read_only)
+{
+    const char *mode;
+    if (read_only == 0)
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    *read_only = 0u;
+    mode = getenv(SPARK_WEIGHTD_SHARE_ENV);
+    if (mode == 0 || mode[0] == '\0')
+        return SPARK_STATUS_OK;
+    if (strcmp(mode, SPARK_WEIGHTD_SHARE_READONLY) == 0)
+    {
+        *read_only = 1u;
+        return SPARK_STATUS_OK;
+    }
+    fprintf(stderr,"weightd share mode refused: %s=%s; the only accepted value is %s (unset keeps the default private attach)\n",
+        SPARK_WEIGHTD_SHARE_ENV,mode,SPARK_WEIGHTD_SHARE_READONLY);
+    SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 SparkStatus SparkWeightdClientMeshActivity(SparkWeightdClient *client,
@@ -4615,6 +4724,44 @@ SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *client,
     result->resident_bytes = wire_result.resident_bytes;
     result->reclaimed_arena_count = wire_result.reclaimed_arena_count;
     result->arena_count = wire_result.arena_count;
+    result->busy_arena_count = wire_result.busy_arena_count;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *client,
+    const char *pack_sha256,
+    SparkWeightdReclaimResult *result,
+    uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcReclaimPack wire;
+    SparkWeightdIpcReclaimResult wire_result;
+    SparkStatus status;
+
+    if (client == 0 || result == 0)
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    memset(result, 0, sizeof(*result));
+    if (pack_sha256 == 0 || !SparkSha256HexIsValid(pack_sha256))
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    memset(&wire, 0, sizeof(wire));
+    wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    wire.header.kind = SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK;
+    wire.header.body_bytes =
+        SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+    wire.header.request_id = ++client->next_request_id;
+    memcpy(wire.pack_sha256, pack_sha256, SPARK_WEIGHTD_SHA256_HEX_BYTES);
+    memset(&wire_result, 0, sizeof(wire_result));
+    status = SparkWeightdClientExchange(client, &wire,
+        SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES, &wire_result,
+        SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES, timeout_nanoseconds);
+    if (status != SPARK_STATUS_OK)
+        SPARK_RETURN(status);
+    result->status = SparkWeightdStatusFromWire(wire_result.status);
+    result->reclaimed_bytes = wire_result.reclaimed_bytes;
+    result->resident_bytes = wire_result.resident_bytes;
+    result->reclaimed_arena_count = wire_result.reclaimed_arena_count;
+    result->arena_count = wire_result.arena_count;
+    result->busy_arena_count = wire_result.busy_arena_count;
     return SPARK_STATUS_OK;
 }
 

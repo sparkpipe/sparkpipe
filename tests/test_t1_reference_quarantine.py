@@ -14,6 +14,8 @@ from t1_reference_common import (read_fixture, sha256_file,  # noqa: E402
                                  write_fixture, write_manifest)
 
 COMPARE = os.path.join(ROOT, "tools", "t1_reference_compare.py")
+T1_ROOT = os.path.join(ROOT, "qualification", "t1_reference")
+DECODER_FEED_FIX_UTC = "2026-09-19T11:22:17Z"
 STALE_E2M1_DIRECTORIES = (
     os.path.join(ROOT, "qualification", "t1_reference", "qwen38_max"),
     os.path.join(ROOT, "qualification", "t1_reference", "qwen38_27b", "nvfp4a16"),
@@ -41,6 +43,28 @@ def refuses_read(path):
     except ValueError as error:
         return "quarantined" in str(error)
     return False
+
+
+def committed_manifests():
+    for directory, _, files in sorted(os.walk(T1_ROOT)):
+        if "MANIFEST.json" in files:
+            yield directory, json.load(open(os.path.join(directory, "MANIFEST.json")))
+
+
+def check_decoder_feed(directory, manifest):
+    generated = manifest.get("generated_utc", "")
+    expect(generated, f"{directory}: the manifest records no generated_utc")
+    if generated >= DECODER_FEED_FIX_UTC:
+        return False
+    quarantine = manifest.get("quarantine") or {}
+    expect(sorted(quarantine.get("fixtures", [])) == sorted(manifest["fixtures"]),
+           f"{directory}: generated {generated}, before the decoder double-feed fix; every fixture must be quarantined")
+    expect("double-feed" in quarantine.get("reason", ""),
+           f"{directory}: the quarantine must name the decoder double-feed")
+    result = verify(directory)
+    expect(result.returncode == 1 and "quarantined" in result.stdout,
+           f"{directory}: verify-manifest must fail on the pre-fix fixtures: {result.stdout}")
+    return True
 
 
 def synthetic(workspace):
@@ -72,6 +96,12 @@ def main():
             refused = compare(path, path)
             expect(refused.returncode != 0 and "quarantined" in refused.stderr,
                    f"{path}: compare must refuse a quarantined reference")
+    stale_feed = [os.path.relpath(directory, T1_ROOT) for directory, manifest in committed_manifests()
+                  if check_decoder_feed(directory, manifest)]
+    expect("glm5_next" in stale_feed, f"glm5_next predates the double-feed fix and must be quarantined: {stale_feed}")
+    glm53flash = os.path.join(T1_ROOT, "glm53flash")
+    current = verify(glm53flash)
+    expect(current.returncode == 0, f"{glm53flash}: the GLM-5.3 Flash fixtures must verify: {current.stdout}")
     workspace = tempfile.mkdtemp(prefix="t1ref-quarantine-")
     try:
         directory, path, manifest = synthetic(workspace)
@@ -101,7 +131,8 @@ def main():
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
     print("PASS t1_reference quarantine: stale e2m1 fixtures refused by verify-manifest, "
-          "read_fixture and compare; clean, quarantined and malformed synthetic manifests")
+          "read_fixture and compare; fixtures older than the decoder double-feed fix quarantined "
+          f"({', '.join(stale_feed)}); glm53flash verifies; clean, quarantined and malformed synthetic manifests")
     return 0
 
 

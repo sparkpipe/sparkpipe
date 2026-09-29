@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_manifest.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_dsv4_parallel_shape.h"
 
 #include <errno.h>
@@ -190,6 +191,72 @@ static int dsv4_pro_identity(const char *pack_path, uint32_t world_rank,
     return 1;
 }
 
+static int reclaim_pack_digest(const char *spec,char hex[SPARK_WEIGHTD_SHA256_HEX_BYTES])
+{
+    size_t index;
+    SparkStatus status;
+    if ( strlen(spec) == 64u && strspn(spec,"0123456789abcdefABCDEF") == 64u )
+    {
+        for (index=0u; index<64u; index++)
+            hex[index] = (spec[index] >= 'A' && spec[index] <= 'F') ? (char)(spec[index] - 'A' + 'a') : spec[index];
+        hex[64] = '\0';
+        return 1;
+    }
+    status = SparkWeightdPackDigestRead(spec,hex);
+    if ( status != SPARK_STATUS_OK )
+    {
+        fprintf(stderr,"weightd_warm: RECLAIM-PACK %s is neither a 64-hex pack SHA-256 nor a pack with a readable %s.sha256 sidecar (status=%d); nothing reclaimed for it\n",
+            spec,spec,(int)status);
+        return 0;
+    }
+    return 1;
+}
+
+static int reclaim_packs(const char *socket_path,char **specs,int spec_count)
+{
+    char digests[23][SPARK_WEIGHTD_SHA256_HEX_BYTES];
+    SparkWeightdReclaimResult reclaim;
+    SparkWeightdClient *client = 0;
+    SparkStatus status;
+    int index,busy = 0;
+    if ( spec_count <= 0 || spec_count > (int)(sizeof(digests) / sizeof(digests[0])) )
+        return 2;
+    for (index=0; index<spec_count; index++)
+        if ( !reclaim_pack_digest(specs[index],digests[index]) )
+            return 2;
+    status = SparkWeightdClientConnect(socket_path,&client,0);
+    if ( status != SPARK_STATUS_OK )
+    {
+        fprintf(stderr,"weightd_warm: RECLAIM-PACK connect %s failed status=%d\n",socket_path,(int)status);
+        return 1;
+    }
+    for (index=0; index<spec_count; index++)
+    {
+        memset(&reclaim,0,sizeof(reclaim));
+        status = SparkWeightdClientReclaimPack(client,digests[index],&reclaim,30u * UINT64_C(1000000000));
+        if ( status != SPARK_STATUS_OK || reclaim.status != SPARK_STATUS_OK )
+        {
+            fprintf(stderr,"weightd_warm: RECLAIM-PACK sha=%s failed status=%d daemon=%u%s\n",
+                digests[index],(int)status,reclaim.status,
+                status == SPARK_STATUS_IO_ERROR ? " (the daemon closed the connection: a weightd without RECLAIM_PACK support; use a weightd built with it, never fall back to the node-global --reclaim)" : "");
+            SparkWeightdClientClose(client);
+            return 1;
+        }
+        fprintf(stderr,"weightd_warm: RECLAIM-PACK sha=%s spec=%s freed=%llu arenas=%u busy=%u resident=%llu remaining_arenas=%u\n",
+            digests[index],specs[index],(unsigned long long)reclaim.reclaimed_bytes,
+            reclaim.reclaimed_arena_count,reclaim.busy_arena_count,
+            (unsigned long long)reclaim.resident_bytes,reclaim.arena_count);
+        if ( reclaim.busy_arena_count != 0u )
+        {
+            fprintf(stderr,"weightd_warm: RECLAIM-PACK sha=%s has %u arena(s) still attached or leased; they were not freed\n",
+                digests[index],reclaim.busy_arena_count);
+            busy = 1;
+        }
+    }
+    SparkWeightdClientClose(client);
+    return busy ? 3 : 0;
+}
+
 int main(int argument_count,char **arguments)
 {
     SparkWeightdLazyAttachRequest request = {0};
@@ -252,6 +319,10 @@ int main(int argument_count,char **arguments)
         fprintf(stderr,"weightd_warm: --family dsv4_pro requires --world-rank\n");
         goto usage;
     }
+    if ( argument_count >= 4 && strcmp(arguments[2],"--reclaim-pack") == 0 )
+        return reclaim_packs(arguments[1],&arguments[3],argument_count - 3);
+    if ( argument_count == 3 && strcmp(arguments[2],"--reclaim-pack") == 0 )
+        goto usage;
     if ( argument_count == 3 && strcmp(arguments[2],"--reclaim") == 0 )
     {
         /* Lane utility (additive): free every COLD arena (refcount 0, no
@@ -272,10 +343,11 @@ int main(int argument_count,char **arguments)
             SparkWeightdClientClose(reclaim_client);
             return 1;
         }
-        fprintf(stderr,"weightd_warm: RECLAIM freed=%llu arenas=%u resident=%llu\n",
+        fprintf(stderr,"weightd_warm: RECLAIM freed=%llu arenas=%u resident=%llu busy=%u\n",
             (unsigned long long)reclaim.reclaimed_bytes,
             reclaim.reclaimed_arena_count,
-            (unsigned long long)reclaim.resident_bytes);
+            (unsigned long long)reclaim.resident_bytes,
+            reclaim.busy_arena_count);
         SparkWeightdClientClose(reclaim_client);
         return 0;
     }
@@ -462,7 +534,9 @@ done:
 usage:
     fprintf(stderr,"usage: weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY [LAYERS=45 [EXPERTS=288 [TIMEOUT_S=1800]]]\n"
         "       weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY --wset FILE [TIMEOUT_S=300]\n"
-        "       weightd_warm SOCKET --reclaim\n"
+        "       weightd_warm SOCKET --reclaim   (node-global: every cold arena of every lane)\n"
+        "       weightd_warm SOCKET --reclaim-pack PACK|SHA256 [...]   (only cold arenas of these packs;\n"
+        "              PACK reads PACK.sha256; exit 3 if a matching arena is still attached)\n"
         "       options (any position): --family dsv4_pro --world-rank R (derive the exact\n"
         "       DSV4 Pro module attach identity; REVISION/TOPOLOGY args are then ignored)\n"
         "                           --family dsv41_flash (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"

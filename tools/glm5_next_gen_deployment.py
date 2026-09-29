@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -41,6 +42,11 @@ PACK_TEMPLATE = os.environ.get(
     "GLM5_NEXT_PACK_TEMPLATE",
     "packs/" + ROOT_NAME + ".rank%x.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
+PRODUCTION_ROOT_NAME = "glm53flash.fp8.tp16"
+SCORE_MEMBERS = ("score_dump_directory", "score_probe_path", "score_tier2_rows_path")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TOKENIZER_ASSET = REPO_ROOT / "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json"
+TOKENIZER_RUNTIME_PATH = "tokenizer/tokenizer.json"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
 TP_COLLECTIVE = {
@@ -123,8 +129,45 @@ def stage_config(rank: int) -> dict:
     }
 
 
+def score_members(values: dict, root_name: str, runtime_root: str, output: Path) -> dict:
+    members = {name: values[name] for name in SCORE_MEMBERS if values.get(name) is not None}
+    if not members:
+        return {}
+    empty = [name for name, value in members.items() if value == ""]
+    if empty:
+        raise SystemExit(f"score-dump members must not be empty: {', '.join(empty)}")
+    if "score_dump_directory" not in members:
+        raise SystemExit("score_probe_path and score_tier2_rows_path require score_dump_directory")
+    committed = (Path(__file__).resolve().parents[1] / "deployment/glm5_next_tp16").resolve()
+    if (root_name == PRODUCTION_ROOT_NAME or PRODUCTION_ROOT_NAME in runtime_root
+            or output.resolve() == committed):
+        raise SystemExit(f"score-dump members are experiment-only and refused for the production root "
+                         f"{PRODUCTION_ROOT_NAME} and the committed deployment tree")
+    for name, value in members.items():
+        if value.startswith("/") or value.endswith("/") or any(part in ("", ".", "..") for part in value.split("/")):
+            raise SystemExit(f"{name} must be a normalized path relative to the arm's runtime root: {value}")
+    return members
+
+
+def tokenizer_block(eos_token_ids: list) -> dict:
+    data = TOKENIZER_ASSET.read_bytes()
+    document = json.loads(data)
+    ids = list(document["model"]["vocab"].values())
+    ids += [token["id"] for token in document.get("added_tokens", [])]
+    vocabulary_size = max(ids) + 1
+    outside = [token for token in eos_token_ids if token >= vocabulary_size]
+    if outside:
+        raise SystemExit(f"{TOKENIZER_ASSET}: eos_token_ids {outside} are outside "
+                         f"the tokenizer vocabulary of {vocabulary_size}")
+    return {
+        "path": TOKENIZER_RUNTIME_PATH,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "vocabulary_size": vocabulary_size,
+    }
+
+
 def resident_deployment() -> dict:
-    contract = json.loads((Path(__file__).resolve().parents[1] / "model_contracts/glm53_flash_authoritative.json").read_text())
+    contract = json.loads((REPO_ROOT / "model_contracts/glm53_flash_authoritative.json").read_text())
     # Single source of truth: every dependent constant derives from the
     # seed via tools/spark_serving_profile.py (#1210 drift law). The old
     # hand-pinned literals are gone; GLM5_NEXT_SEQUENCES is the seed.
@@ -176,6 +219,7 @@ def resident_deployment() -> dict:
         },
         "runtime_limits": derived_runtime_limits,
         "nodes": nodes,
+        "tokenizer": tokenizer_block(contract["tokens"]["eos_token_ids"]),
     }
 
 
@@ -189,12 +233,15 @@ def render_stage(configuration: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
+    for name in SCORE_MEMBERS:
+        parser.add_argument("--" + name.replace("_", "-"), dest=name)
     args = parser.parse_args()
     root = Path(args.output)
+    score = score_members(vars(args), ROOT_NAME, RUNTIME_ROOT, root)
     (root / "config").mkdir(parents=True, exist_ok=True)
     for rank in range(TP):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
-            render_stage(stage_config(rank)))
+            render_stage(dict(stage_config(rank), **score)))
     (root / "model_resident.json").write_text(
         json.dumps(resident_deployment(), indent=1) + "\n")
     print(f"{root}: {TP} stage configs + model_resident.json "

@@ -28,5 +28,13 @@
   "llm_defines_sha256": "1a7f4b06f303eda6dabc0a0c66245334261f26be2095c1d5c08301db96710895",
   "numpy_version": "1.26.4",
   "prompts_sha256": "3d362f5ae3ac4d1d4e1cfed48f443981294d4931dc40f91a0ed092c2fea75e4a",
-  "python_version": "3.12.3"
+  "python_version": "3.12.3",
+  "quarantine": {
+    "fixtures": [
+      "capital_of_france.t1r",
+      "count_up.t1r"
+    ],
+    "reason": "generated 2026-09-14T01:19Z, before the decoder prompt double-feed fix (7865648d3, #1051, 2026-09-19T11:22Z): generated positions 5+ were fed the prompt-prefix argmaxes ([gMASK], of, district, is) instead of the generated chain. Its first generated token is not reproducible either: the same committed glm5_next engine, the current glm53flash engine, production a477cfa/a597ff0 and the glm-mtp/kvshard dev firmwares all give capital_of_france 12089 13 758 8584 ('Paris. In French') from checkpoint 84c6a6aa (config and index sha as pinned here), the fixture says 3837 271 271 12. Use qualification/t1_reference/glm53flash",
+    "since": "2026-09-29"
+  }
 }
