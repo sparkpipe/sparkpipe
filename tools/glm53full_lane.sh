@@ -11,6 +11,7 @@ set -euo pipefail
 : "${GLMFULL_ROWS:?GLMFULL_ROWS is the execution row capacity, equal to the firmware bucket}"
 : "${GLMFULL_POSITIONS:?GLMFULL_POSITIONS is max_sequence_positions}"
 : "${GLMFULL_INFLIGHT:?GLMFULL_INFLIGHT is max_inflight_submissions (1..4)}"
+GLMFULL_ARM="${GLMFULL_ARM:-$GLMFULL_CODEC}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
@@ -19,7 +20,7 @@ API_HOST=rtx5090
 MESH_RANKS="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/home/$1/glmfull-lane$GLMFULL_LANE/root"; }
-pack_of() { echo "/home/$1/sparkdata/glm53full.$GLMFULL_CODEC.tp16/packs/glm53full.$GLMFULL_CODEC.tp16-rank$2.glm52sp"; }
+pack_of() { echo "/home/$1/sparkdata/glm53full.$GLMFULL_ARM.tp16/packs/glm53full.$GLMFULL_ARM.tp16-rank$2.glm52sp"; }
 PIDS=()
 
 api_host_only() {
@@ -44,7 +45,7 @@ join_ranks() {
 }
 
 render() {
-  python3 "$HERE/glm53full_lane.py" --lane "$GLMFULL_LANE" --codec "$GLMFULL_CODEC" --socket "$GLMFULL_WEIGHTD_SOCKET" \
+  python3 "$HERE/glm53full_lane.py" --lane "$GLMFULL_LANE" --codec "$GLMFULL_CODEC" --arm "$GLMFULL_ARM" --socket "$GLMFULL_WEIGHTD_SOCKET" \
     --kv-backing-bytes 4294967296 --max-sequence-positions "$GLMFULL_POSITIONS" --execution-row-capacity "$GLMFULL_ROWS" \
     --sequences "$GLMFULL_SEQUENCES" --inflight "$GLMFULL_INFLIGHT" --output "$1"
 }
