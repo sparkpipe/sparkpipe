@@ -59,47 +59,8 @@ typedef struct SparkK3RunnerTpContext
 static SparkK3RunnerTpContext *K3RunnerTpContextAcquire(
 	SparkK3RunnerState *state);
 static void K3RunnerTpContextRelease(SparkK3RunnerTpContext *context);
-
 static void K3RunnerTpCompletion(void *context,
-	const SparkTpDeviceCollectiveCompletion *completion)
-{
-	SparkK3RunnerTpContext *tp = (SparkK3RunnerTpContext *)context;
-	(void)completion;
-	K3LayerBuffers *b = tp->buffers;
-	uint32_t rows = tp->rows;
-	uint32_t elements = rows * K3_HIDDEN;
-	uint16_t *fused = tp->fused;
-	if ( tp->phase == 2u )
-	{
-		cudaMemcpyAsync(b->gate_up_bf16, fused,
-			(uint64_t)tp->gate_up_elements * 2u,
-			cudaMemcpyDeviceToDevice, tp->stream);
-		K3RunnerTpContextRelease(tp);
-		return;
-	}
-	if ( tp->phase == 3u )
-	{
-		cudaMemcpyAsync(b->shared_out_bf16, fused,
-			(uint64_t)tp->gate_up_elements * sizeof(*b->shared_out_bf16),
-			cudaMemcpyDeviceToDevice, tp->stream);
-		K3RunnerTpContextRelease(tp);
-		return;
-	}
-	if ( tp->phase == 0u )
-	{
-		if ( tp->boundary != 0u )
-			K3PartialSet(b, fused, rows, tp->stream);
-		else
-			K3PartialAdd(b, fused, rows, tp->stream);
-	}
-	else
-	{
-		K3PartialAdd(b, fused, rows, tp->stream);
-		if ( tp->segments == 2u )
-			K3PartialAdd(b, fused + elements, rows, tp->stream);
-	}
-	K3RunnerTpContextRelease(tp);
-}
+	const SparkTpDeviceCollectiveCompletion *completion);
 
 __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	const uint16_t *hidden,const uint16_t *shared,const uint16_t *gate_up,
@@ -470,6 +431,50 @@ static void K3RunnerTpContextRelease(SparkK3RunnerTpContext *context)
 	SparkK3RunnerState *state = context->owner;
 	context->pool_next = state->tp_context_free_head;
 	state->tp_context_free_head = context;
+}
+
+static void K3RunnerTpCompletion(void *context,
+	const SparkTpDeviceCollectiveCompletion *completion)
+{
+	SparkK3RunnerTpContext *tp = (SparkK3RunnerTpContext *)context;
+	K3LayerBuffers *b = tp->buffers;
+	uint32_t rows = tp->rows;
+	uint32_t elements = rows * K3_HIDDEN;
+	uint16_t *fused = tp->fused;
+	if ( completion != 0 && completion->status != SPARK_STATUS_OK )
+		tp->owner->tp_collective_failed = 1u;
+	if ( tp->phase == 2u )
+	{
+		if ( cudaMemcpyAsync(b->gate_up_bf16, fused,
+			(uint64_t)tp->gate_up_elements * sizeof(*b->gate_up_bf16),
+			cudaMemcpyDeviceToDevice, tp->stream) != cudaSuccess )
+			tp->owner->copy_failed = 1u;
+		K3RunnerTpContextRelease(tp);
+		return;
+	}
+	if ( tp->phase == 3u )
+	{
+		if ( cudaMemcpyAsync(b->shared_out_bf16, fused,
+			(uint64_t)tp->gate_up_elements * sizeof(*b->shared_out_bf16),
+			cudaMemcpyDeviceToDevice, tp->stream) != cudaSuccess )
+			tp->owner->copy_failed = 1u;
+		K3RunnerTpContextRelease(tp);
+		return;
+	}
+	if ( tp->phase == 0u )
+	{
+		if ( tp->boundary != 0u )
+			K3PartialSet(b, fused, rows, tp->stream);
+		else
+			K3PartialAdd(b, fused, rows, tp->stream);
+	}
+	else
+	{
+		K3PartialAdd(b, fused, rows, tp->stream);
+		if ( tp->segments == 2u )
+			K3PartialAdd(b, fused + elements, rows, tp->stream);
+	}
+	K3RunnerTpContextRelease(tp);
 }
 
 static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,

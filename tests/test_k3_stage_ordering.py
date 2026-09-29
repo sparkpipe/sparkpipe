@@ -52,6 +52,14 @@ def check_runner(failures):
                         "must fail the step instead of decoding partial sums")
     if statements_calling(text, "SparkTpDeviceCollectiveEnqueue"):
         failures.append("a device-collective enqueue result is discarded")
+    completion = body(text, "K3RunnerTpCompletion")
+    if not completion or statements_calling(completion, "cudaMemcpyAsync"):
+        failures.append("the device-collective completion discards a copy result; "
+                        "a failed gate_up or shared copy must fail the step")
+    if completion.count("copy_failed = 1u") < 2:
+        failures.append("the device-collective completion does not record a failed copy")
+    if not re.search(r"completion->status != SPARK_STATUS_OK\s*\)\s*tp->owner->tp_collective_failed = 1u", completion):
+        failures.append("the device-collective completion ignores a failed collective status")
     reduce_helper = body(text, "K3RunnerHostAllReduce")
     if "tp_collective_failed = 1u" not in reduce_helper:
         failures.append("K3RunnerHostAllReduce does not record a failed reduce")
