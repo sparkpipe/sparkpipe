@@ -186,6 +186,7 @@ SparkStatus SparkKvPageCacheReleaseLane(
 	SparkKvPageCache *cache,
 	uint32_t resident_sequence_slot,
 	uint64_t sequence_id);
+SparkStatus SparkKvPageCacheReleaseAll(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCacheBuildLaneTable(
 	SparkKvPageCache *cache,
 	uint32_t resident_sequence_slot,

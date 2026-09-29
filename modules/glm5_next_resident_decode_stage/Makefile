@@ -54,6 +54,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/spark_expert_working_set.c \
 	../../src/spark_speculation_policy.c \
 	../../src/spark_speculation_lookup_draft.c \
+	../../src/spark_speculation_drafter_mix.c \
 	../../src/spark_speculation_reference_draft.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \

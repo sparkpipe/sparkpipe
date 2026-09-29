@@ -895,6 +895,13 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
         chunks = SparkTpMeshDirectChunks(elements,implementation->tp_degree,operation,implementation->slot_bytes);
         phases = SparkTpMeshDirectPhasesPerChunk(elements,implementation->tp_degree,operation,slice_routes);
     }
+    if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+    {
+        chunks = SparkTpMeshAllToAllChunks(elements,implementation->tp_degree,implementation->slot_bytes);
+        phases = 1u;
+        if ( chunks == 0u )
+            return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if ( chunks > UINT32_MAX / (phases != 0u ? phases : 1u) / rounds )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     *phases_out = phases * chunks * rounds;
@@ -1560,11 +1567,21 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     status = SparkTpDeviceCollectiveValidateSubmission(collective,submission);
     if ( status != SPARK_STATUS_OK )
         return status;
-    if ( operation_kind > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
+    if ( operation_kind > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = collective->implementation;
     if ( implementation->mesh_buffer == 0 )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL &&
+         submission->local_device == submission->full_device )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL &&
+         SparkTpDeviceCollectiveSliceRoutes(implementation) == 0u )
+    {
+        fprintf(stderr,"TP-ALL-TO-ALL-UNSUPPORTED rank=%u wait=%s: the exchange needs hardware waits and a weightd that advertises slice routes\n",
+            implementation->tp_rank,implementation->hardware_wait != 0u ? "hardware" : "spin");
+        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    }
     if ( implementation->capture_armed == 0u &&
          submission->completion_function == 0 &&
          SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u )
