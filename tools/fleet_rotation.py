@@ -543,7 +543,10 @@ class Rotation:
             self.start_model(self.fb)
             self.floor_check("after-fallback")
         except Failure as e:
-            st["active"] = []
+            try:
+                st["active"] = [m for m, s in self.observe().items() if s == "up"]
+            except Failure:
+                st["active"] = []
             st["phase"] = "degraded"
             self.alert(st, "CRITICAL", f"fallback to {self.fb} failed: {e}; rotation auto-paused, fleet needs the lead")
             self.auto_pause(st, f"fallback failed: {e}")

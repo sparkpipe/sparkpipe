@@ -382,6 +382,34 @@ def test_steady_health_and_manual():
         check("rollback: converge to the rollback models", rc == 0 and f.state().get("active") == ["prod", "dflt"] and f.up_on("dflt") == ["n0", "n1"], out[-400:])
 
 
+def test_stuck_stop_and_reclaim_guard():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.behave(stop_stuck=["c1"])
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T18:00:30Z")
+        lines = f.call_lines()
+        check("stuck: an engine that will not stop is never reclaimed", not any("reclaim c1" in l for l in lines), "\n".join(lines[-6:]))
+        check("stuck: production is not held behind a stuck companion", not any("stop prod" in l for l in lines) and f.up_on("prod") == HOSTS)
+        check("stuck: the rotation pauses for the lead", f.state().get("phase") == "degraded" and "CRITICAL" in f.alerts(), out[-500:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.clear_calls()
+        sys.path.insert(0, str(TOOL.parent))
+        import fleet_rotation
+        os.environ["FAKE_WORLD"] = str(f.world_path)
+        os.environ["PATH"] = f"{f.tmp / 'bin'}:{os.environ['PATH']}"
+        rot = fleet_rotation.Rotation(f.cfg, fleet_rotation.Runner(f.cfg, False, lambda *_: None), out=lambda *_: None)
+        try:
+            rot.reclaim("c1")
+            refused = False
+        except fleet_rotation.Failure:
+            refused = True
+        check("reclaim guard: reclaim-pack refused while the engine is up", refused and not any("reclaim c1" in l for l in f.call_lines()))
+
+
 def test_dry_run_executes_nothing():
     with tempfile.TemporaryDirectory() as tmp:
         f = Fleet(tmp)
@@ -446,7 +474,7 @@ def main():
     for test in (test_schedule_and_rotation, test_adopt_and_full_transition, test_ready_timeout_falls_back, test_engine_death_and_start_failure,
                  test_ssh_timeout, test_smoke_failure, test_fallback_failure_pauses, test_preemption_and_resync,
                  test_pause_resume_and_foreign_change, test_floor_and_prediction, test_steady_health_and_manual,
-                 test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation, test_production_config):
+                 test_stuck_stop_and_reclaim_guard, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation, test_production_config):
         test()
     if failures:
         print(f"\n{len(failures)} FAILED: {', '.join(failures)}")
