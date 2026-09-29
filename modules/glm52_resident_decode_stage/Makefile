@@ -76,7 +76,3 @@ RUNTIME_CONFIGURATION := \
 GPU_VALIDATOR := validation/validate_glm52_resident_decode_stage_cuda.sh
 
 include ../resident_decode_stage_rules.mk
-
-ifeq ($(SCORE_DUMP),1)
-NVCCFLAGS += -include source/spark_glm52_score_launch.cuh
-endif
