@@ -444,6 +444,16 @@ round-control block once. A set `error_word` or a short `rounds_done` prints
 bands and fails the frame, which rolls back its cache lanes like any other
 failed frame.
 
+After a graph replay, `SparkTpDeviceCollectiveGraphSettle` reads each band's
+round-control block once (one 144-byte copy on the idle replay stream). That
+read ends the capture state as `SparkTpDeviceCollectiveDisarmCapture` did and
+returns the device error word as `SparkTpDeviceCollectiveGraphError` did. Before,
+each graph step made ten synchronous 8-byte copies: the disarm read two words
+per band, the graph error read one word per band, and `SparkGlm5NextGraphEnsure`
+disarmed a second time. Each such copy costs about 5 us on GB10
+(`qualification/glm5next/performance/glmflash_b1_20260929/ab/syncprobe_sparkf.txt`),
+so the step's host time drops by about 40 us.
+
 A chain runs the state machine instead when experts are not pinned, with MTP,
 speculative verify or the T1 trace, with `SPARK_GLM5_NEXT_GRAPH_RECORD_OPS`
 set, or when either collective lacks hardware-wait rounds

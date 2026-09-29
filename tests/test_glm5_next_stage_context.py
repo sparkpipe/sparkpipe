@@ -454,6 +454,8 @@ cudaError_t cudaGraphLaunch(cudaGraphExec_t exec,cudaStream_t stream)
 }
 SparkStatus SparkTpDeviceCollectiveGraphPreLaunch(SparkTpDeviceCollective *collective,void *stream)
 { (void)collective;(void)stream;return(SPARK_STATUS_OK); }
+SparkStatus SparkTpDeviceCollectiveGraphSettle(SparkTpDeviceCollective *collective,void *stream,uint64_t *error_out)
+{ (void)collective;(void)stream;if ( error_out == 0 ) return(SPARK_STATUS_INVALID_ARGUMENT);*error_out = GRAPH_ERROR;return(SPARK_STATUS_OK); }
 SparkStatus SparkTpDeviceCollectiveGraphCancelSeed(SparkTpDeviceCollective *collective,void *stream)
 { (void)collective;(void)stream;return(SPARK_STATUS_OK); }
 SparkStatus SparkTpDeviceCollectiveDisarmCapture(SparkTpDeviceCollective *collective)
@@ -508,10 +510,10 @@ static void check_graph_epoch_ownership(void)
 	assert(SparkGlm5NextGraphResult(&chain,SPARK_STATUS_UNSUPPORTED) == 0u && atomic_load(&state.terminal_status) == SPARK_STATUS_OK);
 	assert(SparkGlm5NextGraphResult(&chain,SPARK_STATUS_INTERNAL_ERROR) == 1u && atomic_load(&state.terminal_status) == SPARK_STATUS_INTERNAL_ERROR);
 	atomic_store(&state.terminal_status,SPARK_STATUS_OK);
-	GRAPH_ERROR = 7u;
+	GRAPH_ERROR = 7u;state.tp_device_collective_initialized = 1u;
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_INTERNAL_ERROR && position == 7u);
-	GRAPH_ERROR = 0u;
+	GRAPH_ERROR = 0u;state.tp_device_collective_initialized = 0u;
 	state.lane_client = (SparkWeightdClient *)(uintptr_t)1u;HEALTH_DEAD_MASK = 1u;
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_IO_ERROR && position == 7u && GRAPH_LAUNCHES == 6u);
