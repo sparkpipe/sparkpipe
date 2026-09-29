@@ -77,7 +77,7 @@ nodes:
 | `SPARK_WEIGHTD_ATTACH`, `SPARK_WEIGHTD_SOCKET`, `SPARK_TP_MESH_RANKS`, `SPARK_TP_WAIT_MODE`, pin and graph switches | from the spec's `common_env`, equal to production's execution mode |
 
 The window scripts start the arm residentds as lane-owned transient units
-(`sp-qab-<arm>`) with the same env, `MemoryMax` and gate as the fleet agent
+(`sp-qabw1-<arm>`) with the same env, `MemoryMax` and gate as the fleet agent
 would use. The arm roots are **not** listed in `~/.fleet_agent_roots`, so the
 agent never restarts or yields them in the middle of a run. A lead who prefers
 agent supervision can list them; the agent then enforces the same gate.
