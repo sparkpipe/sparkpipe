@@ -116,6 +116,43 @@ static void SparkGlm5NextBindLayer(
 
 #include "sparkpipe/family/glm/spark_glm_wave_metadata_serial.cuh"
 
+__global__ static void SparkGlm5NextKvShardGatherLayoutKernel(
+	const uint32_t *resident_slots,
+	const uint32_t *positions,
+	uint32_t row_count,
+	uint32_t sequence_count,
+	SparkKvShard shard,
+	uint32_t *list,
+	uint32_t *key_offset,
+	uint32_t *key_context)
+{
+	uint64_t total;
+	uint32_t index,most;
+	for ( index = threadIdx.x; index < sequence_count; index += blockDim.x )
+	{
+		key_offset[index] = 0u;
+		key_context[index] = 0u;
+	}
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+		(void)SparkKvShardGatherPlan(shard,resident_slots,positions,row_count,list,key_offset,key_context,&total,&most);
+}
+
+static uint32_t *SparkGlm5NextKvShardGatherList(const SparkGlm5NextCudaWave *wave)
+{
+	return(wave->slot->kv_shard_gather_u32);
+}
+
+static uint32_t *SparkGlm5NextKvShardGatherOffset(const SparkGlm5NextCudaWave *wave)
+{
+	return(wave->slot->kv_shard_gather_u32 + wave->execution_row_capacity);
+}
+
+static uint32_t *SparkGlm5NextKvShardGatherContext(const SparkGlm5NextCudaWave *wave)
+{
+	return(wave->slot->kv_shard_gather_u32 + wave->execution_row_capacity + wave->resident_sequence_capacity);
+}
+
 static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 {
 	SparkGlm5NextExecutionSlot *slot;
@@ -141,6 +178,14 @@ static int32_t SparkGlm5NextStageWaveMetadata(const SparkGlm5NextCudaWave *wave)
 	if ( error == cudaSuccess )
 	{
 		SparkGlm5NextWaveMetadataKernel<<<(wave->row_count + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
+		error = cudaPeekAtLastError();
+	}
+	if ( error == cudaSuccess && wave->kv_shard_gather != 0u )
+	{
+		if ( slot->kv_shard_gather_u32 == 0 || wave->execution_row_capacity < wave->row_count )
+			return(LM_LAUNCH_ERR_SHAPE);
+		SparkGlm5NextKvShardGatherLayoutKernel<<<1,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,wave->row_count,wave->resident_sequence_capacity,
+			SparkGlm5NextKvShardLatent(wave->tp_rank,wave->tp_degree),SparkGlm5NextKvShardGatherList(wave),SparkGlm5NextKvShardGatherOffset(wave),SparkGlm5NextKvShardGatherContext(wave));
 		error = cudaPeekAtLastError();
 	}
 	if ( error == cudaSuccess && wave->kda_state_pools != 0 &&
@@ -339,6 +384,18 @@ static void SparkGlm5NextBindLayer(
 		buffers->shard_partials_received_f32 = slot->kv_shard_partials_received_f32;
 		buffers->shard_row_capacity = wave->execution_row_capacity != 0u ? wave->execution_row_capacity : wave->resident_sequence_capacity;
 		buffers->shard_partial_stride = SparkGlm5NextKvShardPartialStride(wave->row_count,wave->tp_degree,buffers->shard_row_capacity);
+		if ( wave->kv_shard_gather != 0u )
+		{
+			buffers->shard_gather = 1u;
+			buffers->shard_gather_send = (uint8_t *)slot->kv_shard_query_gathered_bf16;
+			buffers->shard_gather_keys = (const uint8_t *)slot->kv_shard_partials_f32;
+			buffers->shard_gather_stride = SparkGlm5NextKvShardGatherStride(wave->kv_shard_gather_sequences);
+			buffers->shard_gather_list = SparkGlm5NextKvShardGatherList(wave);
+			buffers->shard_gather_offset = SparkGlm5NextKvShardGatherOffset(wave);
+			buffers->shard_gather_context = SparkGlm5NextKvShardGatherContext(wave);
+			buffers->shard_gather_count = wave->kv_shard_gather_count;
+			buffers->shard_gather_most_keys = wave->kv_shard_gather_most_keys;
+		}
 	}
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
@@ -483,6 +540,24 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionShardPartial(const Spark
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionShardMerge(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
 	return(SparkGlm5NextRunLayerAttentionShard(wave,local_layer,1u));
+}
+static int32_t SparkGlm5NextRunLayerAttentionShardGather(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t partial)
+{
+	Glm5NextLayerBuffers buffers;
+	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK || SparkGlm5NextLayerKvShardActive(wave,local_layer) == 0u || wave->kv_shard_gather == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
+	if ( partial != 0u )
+		return(Glm5NextLayerAttentionShardGatherPartial(&buffers,wave->row_count,wave->maximum_context,(cudaStream_t)wave->slot->stream));
+	return(Glm5NextLayerAttentionShardGatherPack(&buffers,(cudaStream_t)wave->slot->stream));
+}
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionShardGatherPack(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	return(SparkGlm5NextRunLayerAttentionShardGather(wave,local_layer,0u));
+}
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionShardGatherPartial(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	return(SparkGlm5NextRunLayerAttentionShardGather(wave,local_layer,1u));
 }
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionScore(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {

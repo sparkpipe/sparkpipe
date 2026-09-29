@@ -309,6 +309,55 @@ static void Attention(Case *item,uint32_t oracle,Case *replica,std::vector<uint1
     }
 }
 
+static uint32_t GatherAttention(Case *item,std::vector<uint16_t> &merged)
+{
+    uint32_t rows=item->rows,degree=item->degree,heads=item->heads,count,most,sequences,sequence_count=item->ranks[0].buffers.cache.sequence_count;
+    uint64_t keys,stride;
+    std::vector<uint32_t> sequence=Download(item->sequence_of_row,rows),position=Download(item->positions,rows);
+    std::vector<uint32_t> list(rows,0u),offset(sequence_count,0u),context(sequence_count,0u);
+    count=SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(0u,degree),sequence.data(),position.data(),rows,list.data(),offset.data(),context.data(),&keys,&most);
+    REQUIRE(count!=0u && keys!=0u && most!=0u);
+    sequences=SparkGlm5NextKvShardGatherSequences(keys);
+    stride=SparkGlm5NextKvShardGatherStride(sequences);
+    REQUIRE(stride>=keys*Glm5NextKv::kSlotBytes);
+    uint32_t *list_device=Upload(list),*offset_device=Upload(offset),*context_device=Upload(context);
+    uint8_t *gathered;
+    CUDA(cudaMalloc(&gathered,stride*degree));
+    CUDA(cudaMemset(gathered,0xa5,stride*degree));
+    std::vector<Glm5NextLayerBuffers> buffers(degree);
+    for (uint32_t rank=0u; rank<degree; rank++)
+    {
+        Rank &r=item->ranks[rank];
+        Glm5NextLayerBuffers &b=buffers[rank];
+        b=r.buffers;
+        b.shard_gather=1u;
+        b.shard_gather_send=gathered+(uint64_t)rank*stride;
+        b.shard_gather_keys=gathered;
+        b.shard_gather_stride=stride;
+        b.shard_gather_list=list_device;
+        b.shard_gather_offset=offset_device;
+        b.shard_gather_context=context_device;
+        b.shard_gather_count=count;
+        b.shard_gather_most_keys=most;
+        REQUIRE(Glm5NextLayerAttentionShardGatherPack(&b,(cudaStream_t)r.slot.stream)==LM_LAUNCH_OK);
+        CUDA(cudaStreamSynchronize((cudaStream_t)r.slot.stream));
+    }
+    merged.clear();
+    for (uint32_t rank=0u; rank<degree; rank++)
+    {
+        Rank &r=item->ranks[rank];
+        CUDA(cudaMemset(r.slot.kv_shard_partials_received_f32,0xff,(uint64_t)degree*r.buffers.shard_partial_stride*sizeof(float)));
+        REQUIRE(Glm5NextLayerAttentionShardGatherPartial(&buffers[rank],rows,item->max_context,(cudaStream_t)r.slot.stream)==LM_LAUNCH_OK);
+        REQUIRE(Glm5NextLayerAttentionShardMergeLatent(&buffers[rank],rows,(cudaStream_t)r.slot.stream)==LM_LAUNCH_OK);
+        CUDA(cudaStreamSynchronize((cudaStream_t)r.slot.stream));
+        std::vector<uint16_t> out=Download(r.slot.attention_latent_bf16,(uint64_t)rows*heads*GLM5_NEXT_LATENT);
+        merged.insert(merged.end(),out.begin(),out.end());
+    }
+    CUDA(cudaFree(gathered));
+    CUDA(cudaFree(list_device));CUDA(cudaFree(offset_device));CUDA(cudaFree(context_device));
+    return sequences;
+}
+
 static float Bf16Value(uint16_t bits)
 {
     uint32_t word=(uint32_t)bits<<16u;
@@ -381,6 +430,9 @@ static void ShardCase(uint32_t degree,uint32_t capacity,const std::vector<uint32
     std::vector<uint16_t> again;
     Attention(&shard,0u,&replica,again);
     REQUIRE(again==sharded);
+    std::vector<uint16_t> gathered;
+    uint32_t gather_sequences=GatherAttention(&shard,gathered);
+    if (gathered!=sharded) { fprintf(stderr,"FAIL degree=%u rows=%u max_context=%u partials over gathered keys differ from the all-to-all exchange\n",degree,shard.rows,shard.max_context);exit(1); }
     double worst_scaled;
     size_t differing;
     CheckProductionKernel(&shard,&replica,sharded,&worst_scaled,&differing);
@@ -391,11 +443,11 @@ static void ShardCase(uint32_t degree,uint32_t capacity,const std::vector<uint32
     if (mismatch!=0u) { fprintf(stderr,"FAIL degree=%u rows=%u max_context=%u mismatched_bf16=%zu of %zu\n",degree,shard.rows,shard.max_context,mismatch,sharded.size());exit(1); }
     uint64_t kv_rank=(uint64_t)shard.pages*SparkKvShardPageBytes(SparkGlm5NextKvShardLatent(0u,degree),GLM5_NEXT_KV_PAGE_SLOTS,Glm5NextKv::kSlotBytes);
     uint64_t index_rank=(uint64_t)shard.pages*SparkKvShardPageBytes(SparkGlm5NextKvShardIndex(0u,degree),GLM5_NEXT_KV_PAGE_SLOTS,Glm5NextIndexKv::kSlotBytes);
-    printf("PASS kv shard degree=%u rows=%u max_context=%u latent_bytes_per_rank=%llu of %llu index_bytes_per_rank=%llu of %llu capacity=%u exchange=%s query_sequences=%u partial_sequences=%u merged_bf16=%zu bitwise_equal_oracle=yes repeat_identical=yes index_scores_bitwise=%s production_kernel_worst_scaled=%.2e production_kernel_differing=%zu\n",
+    printf("PASS kv shard degree=%u rows=%u max_context=%u latent_bytes_per_rank=%llu of %llu index_bytes_per_rank=%llu of %llu capacity=%u exchange=%s query_sequences=%u partial_sequences=%u gather_sequences=%u merged_bf16=%zu bitwise_equal_oracle=yes repeat_identical=yes gathered_keys_bitwise=yes index_scores_bitwise=%s production_kernel_worst_scaled=%.2e production_kernel_differing=%zu\n",
         degree,shard.rows,shard.max_context,(unsigned long long)kv_rank,(unsigned long long)((uint64_t)shard.pages*Glm5NextKv::kPageBytes),
         (unsigned long long)index_rank,(unsigned long long)((uint64_t)shard.pages*Glm5NextIndexKv::kPageBytes),
         capacity,SparkGlm5NextKvShardPartialWide(shard.rows,degree,capacity) ? "wide" : "narrow",
-        SparkGlm5NextKvShardQuerySequences(shard.rows,degree),SparkGlm5NextKvShardPartialSequences(shard.rows,degree,capacity),sharded.size(),
+        SparkGlm5NextKvShardQuerySequences(shard.rows,degree),SparkGlm5NextKvShardPartialSequences(shard.rows,degree,capacity),gather_sequences,sharded.size(),
         shard.max_context>GLM5_NEXT_DSA_SELECTED ? "yes" : "n/a",worst_scaled,differing);
     for (Rank &r : shard.ranks) RankFree(r);
     RankFree(replica.ranks[0]);
@@ -420,6 +472,6 @@ int main(int argc,char **argv)
     std::vector<uint32_t> wide(64u);
     for (uint32_t i=0u; i<64u; i++) wide[i]=1024u-(i*13u)%700u;
     ShardCase(16u,64u,wide);
-    puts("PASS glm5_next kv shard: the module's sharded store, index scoring, partials and merge equal the replicated-storage oracle bit for bit with 1/tp of the KV per rank, and stay within one bf16 ulp of the replicated production attention kernel");
+    puts("PASS glm5_next kv shard: the module's sharded store, index scoring, partials and merge equal the replicated-storage oracle bit for bit with 1/tp of the KV per rank, the gathered-key exchange merges to the same bits as the all-to-all exchange, and both stay within one bf16 ulp of the replicated production attention kernel");
     return 0;
 }

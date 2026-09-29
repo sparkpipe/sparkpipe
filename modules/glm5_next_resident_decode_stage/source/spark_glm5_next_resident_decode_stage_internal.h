@@ -179,6 +179,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint16_t *kv_shard_query_gathered_bf16;
 	float *kv_shard_partials_f32;
 	float *kv_shard_partials_received_f32;
+	uint32_t *kv_shard_gather_u32;
 	uint32_t *selected_positions;
 	uint32_t *route_expert;
 	float *route_weight;
@@ -222,6 +223,10 @@ typedef struct SparkGlm5NextCudaWave
 	uint32_t tp_rank;
 	uint32_t index_cp_degree;
 	uint32_t kv_shard;
+	uint32_t kv_shard_gather;
+	uint32_t kv_shard_gather_sequences;
+	uint32_t kv_shard_gather_count;
+	uint32_t kv_shard_gather_most_keys;
 	uint32_t row_count;
 	uint32_t maximum_context;
 	uint32_t resident_sequence_capacity;
@@ -341,6 +346,8 @@ uint32_t SparkGlm5NextLayerIndexGatherSequences(const SparkGlm5NextCudaWave *wav
 uint32_t SparkGlm5NextLayerKvShardActive(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionShardPartial(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionShardMerge(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm5NextLaunchCudaLayerAttentionShardGatherPack(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm5NextLaunchCudaLayerAttentionShardGatherPartial(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 // Split path: Route completes dense layers; routed layers require Experts after
 // route readiness and working-set acquisition on the same slot/stream. Route
