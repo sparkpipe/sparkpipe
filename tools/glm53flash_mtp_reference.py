@@ -12,14 +12,33 @@ import t1_reference_glm53flash as flash
 
 MTP_PREFIX = "model.language_model.layers.{layer}."
 ORDERS = ("embed_hidden", "hidden_embed")
-HIDDEN_TAPS = ("final_norm", "hc_mean")
+HIDDEN_TAPS = ("final_norm", "hc_mean", "streams")
 CONTEXTS = ("sequence", "chain")
 
 
-def load_engine(checkpoint, header):
+class Bf16Cache(list):
+    def append(self, row):
+        super().append(row if row.dtype == np.uint16 else f32_to_bf16_u16(row))
+
+
+def bf16_latent_cache(engine):
+    attention = engine.dsa_attention
+
+    def dsa_attention(prefix, x, cache):
+        shadow = Bf16Cache(cache)
+        output = attention(prefix, x, shadow)
+        cache[:] = shadow
+        return output
+
+    engine.dsa_attention = dsa_attention
+    return engine
+
+
+def load_engine(checkpoint, header, latent_cache_bf16=True):
     config = json.load(open(os.path.join(checkpoint, "config.json")))
     config = config.get("text_config", config)
-    return flash.Glm53FlashEngine(checkpoint, parse_llm_defines(header), config), config
+    engine = flash.Glm53FlashEngine(checkpoint, parse_llm_defines(header), config)
+    return (bf16_latent_cache(engine) if latent_cache_bf16 else engine), config
 
 
 def fixture_rows(path, final_layer):
@@ -53,6 +72,13 @@ class MtpReference:
             return mean
         return bf16_round_f32(rmsnorm(mean, self.final_norm, engine.eps))
 
+    def streams_step(self, streams, token, order):
+        engine = self.engine
+        rows = streams.reshape(engine.hc, engine.hidden)
+        outputs = [self.step(rows[index], token, order, [])[0] for index in range(engine.hc)]
+        x = bf16_round_f32(np.mean(outputs, axis=0))
+        return x, bf16_round_f32(rmsnorm(x, self.head_norm, engine.eps))
+
     def step(self, hidden, token, order, cache):
         engine = self.engine
         embed = engine.embed(token)
@@ -67,20 +93,31 @@ class MtpReference:
         return x, bf16_round_f32(rmsnorm(x, self.head_norm, engine.eps))
 
 
-def head_argmax(engine, columns, chunk=4096):
+def head_argmax(engine, columns, targets, chunk=4096):
     lm = engine.st.entry("lm_head.weight")
     matrix = np.stack(columns, axis=1).astype(np.float32)
-    best = np.full(matrix.shape[1], -np.inf, dtype=np.float32)
-    best_token = np.full(matrix.shape[1], -1, dtype=np.int64)
+    count = matrix.shape[1]
+    best = np.full(count, -np.inf, dtype=np.float32)
+    best_token = np.full(count, -1, dtype=np.int64)
+    target = np.asarray(targets, dtype=np.int64)
+    target_score = np.zeros(count, dtype=np.float64)
+    peak = np.full(count, -np.inf, dtype=np.float64)
+    total = np.zeros(count, dtype=np.float64)
     for start in range(0, lm["shape"][0], chunk):
         rows = engine.st.raw_rows("lm_head.weight", start, min(chunk, lm["shape"][0] - start))
         scores = bf16_to_f32(rows) @ matrix
         local = np.argmax(scores, axis=0)
-        value = scores[local, np.arange(matrix.shape[1])]
+        value = scores[local, np.arange(count)]
         better = value > best
         best[better] = value[better]
         best_token[better] = start + local[better]
-    return best_token.tolist()
+        high = np.maximum(peak, value.astype(np.float64))
+        total = total * np.exp(peak - high) + np.exp(scores.astype(np.float64) - high).sum(axis=0)
+        peak = high
+        inside = (target >= start) & (target < start + scores.shape[0])
+        target_score[inside] = scores[target[inside] - start, np.nonzero(inside)[0]]
+    logprob = target_score - peak - np.log(total)
+    return best_token.tolist(), logprob.tolist()
 
 
 def decoded_rows(engine, path, count, final_layer):
@@ -104,13 +141,13 @@ def decoded_rows(engine, path, count, final_layer):
 
 
 def run(arguments):
-    engine, config = load_engine(arguments.checkpoint, arguments.header)
+    engine, config = load_engine(arguments.checkpoint, arguments.header, arguments.latent_cache == "bf16")
     layer = int(config["num_hidden_layers"])
     if int(config.get("num_nextn_predict_layers", 0)) < 1:
         raise ValueError("the checkpoint declares no MTP layer")
     mtp = MtpReference(engine, layer)
-    variants = [(o, t, c) for o in ORDERS for t in HIDDEN_TAPS for c in CONTEXTS]
-    report = {"layer": layer, "fixtures": {}, "variants": {}}
+    variants = [(o, t, c) for o in arguments.orders.split(",") for t in HIDDEN_TAPS for c in CONTEXTS if not (t == "streams" and c == "sequence")]
+    report = {"layer": layer, "latent_cache": arguments.latent_cache, "fixtures": {}, "variants": {}}
     columns = []
     slots = []
     sources = []
@@ -133,20 +170,24 @@ def run(arguments):
             for position in range(len(tokens) - 2):
                 if context == "chain":
                     cache = []
-                _, head_in = mtp.step(mtp.hidden_tap(streams[position], tap), tokens[position + 1], order, cache)
+                if tap == "streams":
+                    _, head_in = mtp.streams_step(streams[position], tokens[position + 1], order)
+                else:
+                    _, head_in = mtp.step(mtp.hidden_tap(streams[position], tap), tokens[position + 1], order, cache)
                 columns.append(head_in)
                 slots.append((variant, name, position, tokens[position + 2]))
                 print(json.dumps({"fixture": name, "variant": "/".join(variant), "position": position}), flush=True)
-    predicted = head_argmax(engine, columns)
-    for (variant, name, position, want), got in zip(slots, predicted):
+    predicted, logprobs = head_argmax(engine, columns, [slot[3] for slot in slots])
+    for (variant, name, position, want), got, logprob in zip(slots, predicted, logprobs):
         key = "/".join(variant)
         row = report["variants"].setdefault(key, {"hits": 0, "checks": 0, "rows": []})
         row["checks"] += 1
         row["hits"] += int(got == want)
-        row["rows"].append({"fixture": name, "position": position, "want": want, "got": int(got)})
+        row["rows"].append({"fixture": name, "position": position, "want": want, "got": int(got), "target_logprob": logprob})
     for key, row in report["variants"].items():
         row["acceptance"] = row["hits"] / row["checks"] if row["checks"] else None
-        print(f"MTP-REFERENCE {key} {row['hits']}/{row['checks']}", flush=True)
+        row["mean_target_logprob"] = float(np.mean([r["target_logprob"] for r in row["rows"]])) if row["rows"] else None
+        print(f"MTP-REFERENCE {key} {row['hits']}/{row['checks']} mean_target_logprob {row['mean_target_logprob']:.3f}", flush=True)
     with open(arguments.output, "w") as fh:
         json.dump(report, fh, indent=1)
     return 0
@@ -157,6 +198,9 @@ def main():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--header", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--orders", default=",".join(ORDERS))
+    parser.add_argument("--latent-cache", choices=("bf16", "t1"), default="bf16",
+                        help="bf16 stores the DSA latent rows as bf16 codes so dsa_attention decodes them; t1 keeps t1_reference_glm53flash's float cache")
     parser.add_argument("--sequence", action="append", default=[], help="tokens.u32:count:prompt_tokens, decoded teacher-forced")
     parser.add_argument("fixtures", nargs="*")
     return run(parser.parse_args())

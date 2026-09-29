@@ -7,7 +7,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import glm53flash_mtp_reference as reference
-from t1_reference_common import bf16_round_f32, rmsnorm
+from t1_reference_common import bf16_round_f32, bf16_to_f32, rmsnorm
 
 HIDDEN = 8
 EPS = 1e-5
@@ -74,7 +74,24 @@ def main():
     mtp.step(hidden, 1, "embed_hidden", cache)
     mtp.step(hidden, 2, "embed_hidden", cache)
     expect(engine.attention_inputs == [1, 2], f"sequence context keeps the MTP cache: {engine.attention_inputs}")
-    print("PASS glm53flash_mtp_reference: eh_proj input is [enorm(embed) | hnorm(hidden)], taps and MTP cache")
+    class DecodingEngine:
+        def dsa_attention(self, prefix, x, cache):
+            cache.append(x)
+            return np.stack([bf16_to_f32(row) for row in cache]).sum(axis=0)
+
+    first = bf16_round_f32(np.array([0.5, 2.3], dtype=np.float32))
+    second = bf16_round_f32(np.array([-1.0, 7.0], dtype=np.float32))
+    raw = DecodingEngine()
+    kept = []
+    raw.dsa_attention("p", first, kept)
+    expect(not np.array_equal(raw.dsa_attention("p", second, kept), first + second),
+           "a float latent cache decoded as bf16 codes must lose the rows")
+    fixed = reference.bf16_latent_cache(DecodingEngine())
+    kept = []
+    fixed.dsa_attention("p", first, kept)
+    expect(np.array_equal(fixed.dsa_attention("p", second, kept), first + second), "the bf16 latent cache must decode every row")
+    expect(all(row.dtype == np.uint16 for row in kept), "the latent cache keeps bf16 codes")
+    print("PASS glm53flash_mtp_reference: eh_proj input is [enorm(embed) | hnorm(hidden)], taps, MTP cache, bf16 latent cache")
     return 0
 
 
