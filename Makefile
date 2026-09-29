@@ -585,6 +585,8 @@ PYTHON_TESTS := \
 	tests/test_skinny_mxfp4_cuda.py \
 	tests/test_kv_shard_host.py \
 	tests/test_kv_shard_cuda.py \
+	tests/test_kv_quant_sim_host.py \
+	tests/test_kv_quant_sim_cuda.py \
 	tests/test_kernel_codegen_diff.py \
 	tests/test_host_codegen_diff.py \
 	tests/test_module_host_contracts.py \
