@@ -367,6 +367,8 @@ struct SparkGlm5NextModuleState
 	uint64_t verify_tokens;
 	uint64_t verify_plain_steps;
 	uint64_t verify_accept_depth[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX];
+	uint64_t verify_position_reached[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - 1u];
+	uint64_t verify_position_accepted[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - 1u];
 	uint32_t *verify_depth_cap;
 	uint64_t *verify_depth_sequence;
 	uint32_t verify_mtp;
@@ -4270,6 +4272,12 @@ static SparkStatus SparkGlm5NextVerifyCommit(SparkGlm5NextTpChain *chain,uint32_
 	state->verify_proposed += chain->verify_draft_count;
 	state->verify_accepted += result.accepted_draft_token_count;
 	state->verify_accept_depth[result.accepted_draft_token_count]++;
+	for (index=0u; index<chain->verify_draft_count && index<=result.accepted_draft_token_count; index++)
+	{
+		state->verify_position_reached[index]++;
+		if ( index < result.accepted_draft_token_count )
+			state->verify_position_accepted[index]++;
+	}
 	state->verify_depth_cap[chain->verify_lane] = SparkSpeculationDepthCapNext(state->verify_depth_cap[chain->verify_lane],chain->verify_draft_count,result.accepted_draft_token_count,state->verify_rows_max - 1u);
 	chain->verify_rounds++;
 	chain->verify_accepted += result.accepted_draft_token_count;
@@ -4341,6 +4349,9 @@ static SparkStatus SparkGlm5NextVerifyFinish(SparkGlm5NextTpChain *chain)
 	SparkGlm5NextExecutionSlot *slot = chain->slot;
 	SparkGlm5NextAsyncCompletion *async = &state->completions[chain->slot_index];
 	uint32_t produced = chain->verify_produced;
+	uint32_t index;
+	int length;
+	char positions[512];
 	if ( produced == 0u || produced > chain->verify_budget || async->lane_count != 1u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( SparkGlm5NextBoundedStreamSync(state,slot->stream,UINT64_C(35000000000)) != 0 )
@@ -4355,6 +4366,11 @@ static SparkStatus SparkGlm5NextVerifyFinish(SparkGlm5NextTpChain *chain)
 		chain->slot_index,(unsigned long long)(chain->verify_position - produced),chain->verify_budget,produced,chain->verify_rounds,chain->verify_accepted,chain->verify_plain,
 		(unsigned long long)state->verify_frames,(unsigned long long)state->verify_plain_frames,(unsigned long long)state->verify_rounds,
 		(unsigned long long)state->verify_proposed,(unsigned long long)state->verify_accepted,(unsigned long long)state->verify_plain_steps,(unsigned long long)state->verify_tokens);
+	length = snprintf(positions,sizeof(positions),"VERIFY-POSITIONS");
+	for (index=0u; index<SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - 1u && length > 0 && (size_t)length < sizeof(positions); index++)
+		length += snprintf(positions + length,sizeof(positions) - (size_t)length," p%u=%llu/%llu",index + 1u,
+			(unsigned long long)state->verify_position_accepted[index],(unsigned long long)state->verify_position_reached[index]);
+	fprintf(stderr,"%s\n",positions);
 	if ( state->verify_mtp != 0u )
 		fprintf(stderr,"VERIFY-MTP drafts=%llu tokens=%llu cold=%llu truncated=%llu taps=%llu draft_us=%llu | lookup rounds=%llu proposed=%llu accepted=%llu declined=%llu | mtp rounds=%llu proposed=%llu accepted=%llu\n",
 			(unsigned long long)state->mtp_drafts,(unsigned long long)state->mtp_draft_tokens,(unsigned long long)state->mtp_cold,(unsigned long long)state->mtp_truncated,(unsigned long long)state->mtp_taps,
