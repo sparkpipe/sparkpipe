@@ -128,6 +128,20 @@ def score(candidate, ref):
             "elements": int(d.size), "ref_rms": float(np.sqrt(np.mean(ref * ref)))}
 
 
+CEILING_INPUTS = ("x.bf16", "route_expert.u32", "route_weight.f32")
+
+
+def load_ceiling(ceiling_root, directory, rows):
+    base = ceiling_root / directory.name
+    for name in CEILING_INPUTS:
+        if not (base / name).is_file() or (base / name).read_bytes() != (directory / name).read_bytes():
+            raise SystemExit(f"ceiling {base} does not match {directory}: {name} is missing or differs")
+    reference_path = base / "ref.f64"
+    if not reference_path.is_file() or reference_path.stat().st_size != rows * HIDDEN * 8:
+        raise SystemExit(f"ceiling {base} has no complete ref.f64; score the ceiling dump with this oracle first")
+    return np.fromfile(reference_path, dtype=np.float64).reshape(rows, HIDDEN)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dump", type=Path)
@@ -149,12 +163,7 @@ def main():
         ref = reference(pack, run["layer"], x, experts, weights)
         ref.tofile(directory / "ref.f64")
         emulated = {False: reference(pack, run["layer"], x, experts, weights, emulate=True)}
-        ceiling = None
-        if args.ceiling is not None:
-            ceiling_path = args.ceiling / directory.name / "ref.f64"
-            ceiling_x = args.ceiling / directory.name / "x.bf16"
-            if ceiling_path.exists() and np.array_equal(np.fromfile(ceiling_x, dtype=np.uint16), np.fromfile(directory / "x.bf16", dtype=np.uint16)):
-                ceiling = np.fromfile(ceiling_path, dtype=np.float64).reshape(rows, HIDDEN)
+        ceiling = load_ceiling(args.ceiling, directory, rows) if args.ceiling is not None else None
         entry = {"layer": run["layer"], "rows": rows, "natural_path": run["natural_path"],
                  "natural_equals_path": run["natural_equals_path"], "status": run["status"], "paths": {}}
         for path, status in run["status"].items():

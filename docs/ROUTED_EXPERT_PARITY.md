@@ -56,6 +56,8 @@ A path passes when all three hold:
 
 The outlier allowance exists because a one-ulp BF16 flip at gate_up moves a few cancelling output elements.
 
+With a ceiling dump (the BF16-expert arm, already scored), every path is also scored against the ceiling's exact reference. The oracle refuses the whole run unless every run's inputs (`x.bf16`, `route_expert.u32`, `route_weight.f32`) are byte-identical to the ceiling's and the ceiling has a complete `ref.f64`. A ceiling that does not match is never skipped silently.
+
 ### Which path each wave shape takes (glm5_next at TP16, main 266b6adbc)
 
 | Codec | 1 row | 9 / 16 / 64 / 256 rows |
