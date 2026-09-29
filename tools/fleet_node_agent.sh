@@ -204,6 +204,10 @@ mem_available_gib() {
     awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo
 }
 
+node_uptime_s() {
+    awk '{printf "%d", $1}' /proc/uptime
+}
+
 root_gate() {
     check_root_gate "$1" || return 1
     note_root "$1" "" ""
@@ -767,7 +771,7 @@ ensure_root() {
         [ -n "$start_s" ] && [ $(( up_s - start_s / 100 )) -gt 120 ] && restart_healthy "engine-$name"
         return 0
     }
-    up=$(awk '{printf "%d", $1}' /proc/uptime)
+    up=$(node_uptime_s)
     [ "$up" -ge 900 ] || {
         [ -n "$AGENT_BLOCKED" ] || { echo "$(date +%T) $name: node up ${up}s (<15min); autospawn blocked"; AGENT_BLOCKED=1; }
         return 0
