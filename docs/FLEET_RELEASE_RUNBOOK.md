@@ -252,6 +252,7 @@ cd build/glm53_release
 sha256sum -c --quiet SHA256SUMS
 cat SOURCE_COMMIT                                                  # the merged main SHA
 grep -o 'validation=[a-z]*' qualification/serving-receipts/publish.log   # executed
+grep 'component validator' qualification/serving-receipts/publish.log  # glm5_next component validator: PASS
 ```
 
 Two traps from 09-28, from the handoff's evidence:

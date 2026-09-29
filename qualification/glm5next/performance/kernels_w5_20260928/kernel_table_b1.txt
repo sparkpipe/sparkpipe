@@ -1,0 +1,32 @@
+B1, context 1024, graph replay under nsys (cuda-graph-trace=node), median replay of 30. GB10 streaming read peak 243 GB/s (stream_read_probe).
+step span ms: base 16.00  final 13.31 ; kernels per step: base 1457  final 1389
+kernel class                                                    n   base_us  final_us base/lnch fin/lnch base_GBs fin_GBs
+bf16 kda_qkv_beta 4096x1540                                    34    1915.7    1811.0    56.35    53.26     224     237
+fp8 experts up 8x(4096x256)                                    42    1586.9    1529.4    37.78    36.42     229     238
+Glm5NextHcSiteKernel                                           90    1285.3    1231.6    14.28    13.68     115     120
+LmHeadCandidateKernel                                           1    1072.4     383.4  1072.42   383.39      74     207
+bf16 index_q 1536x4096 / attn_out 1024x4096                    22    1043.2     983.4    47.42    44.70     221     235
+LmLatentAttentionDecodeSplitKernel                             11     847.9     297.2    77.09    27.02      14      39
+fp8 experts down 8x(128x4096)                                  42     843.5     795.7    20.08    18.94     209     222
+bf16 K=4096 N=256 (decay_gate_down, shared_gate_up)            76     843.0     822.6    11.09    10.82     189     194
+bf16 q_a / dense_gate_up 4096x1536                             14     775.5     735.6    55.39    52.55     227     239
+bf16 kda_out 512x4096 / dense_down                             37     746.9     717.9    20.19    19.40     217     226
+bf16 router 4096x288 (f32 out)                                 42     511.0     498.0    12.17    11.86     194     199
+LmBf16RmsNormKernel                                           113     485.6     241.6     4.30     2.14       -       -
+LmDeltaRuleKernel                                              34     482.6     237.7    14.19     6.99      37      74
+LmRouteBuildKernel                                             42     437.5      83.6    10.42     1.99       -       -
+bf16 kv_a 4096x576 / q_b 1536x1024                             22     385.2     366.6    17.51    16.66     225     236
+LmTopkWarpKernel                                               42     255.4     254.4     6.08     6.06       -       -
+bf16 shared_down 128x4096                                      42     242.0     241.0     5.76     5.74     182     183
+bf16 small (decay_up, gate_up, index_head)                     79     240.2     240.7     3.04     3.05       -       -
+LmPerHeadProjectRowsKernel                                     22     226.0     206.4    10.27     9.38       -       -
+LmCausalConv (3 per KDA layer -> 1)                           102     197.6      65.7     1.94     1.93       -       -
+bf16 index_k / index_gate 4096x128                             22     160.1     158.1     7.28     7.19     144     146
+LmHcPostBf16Kernel                                             90     156.1     157.8     1.73     1.75       -       -
+LmClampedUpGateKernel                                          87      88.5      89.2     1.02     1.03       -       -
+Glm5NextSplitFusedProjectionsKernel                            34      77.5      76.5     2.28     2.25       -       -
+LmMoeFinalizeKernel                                            42      54.1      54.9     1.29     1.31       -       -
+LmRmsNormSigmoidGateKernel                                     34      51.0      50.9     1.50     1.50       -       -
+LmAddRowsKernel                                                42      38.6      39.4     0.92     0.94       -       -
+LmBoundedDecayKernel                                           34      36.4      36.4     1.07     1.07       -       -
+sum of kernel time ms: base 15.29 final 12.61

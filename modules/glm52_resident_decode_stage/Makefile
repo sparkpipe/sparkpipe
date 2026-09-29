@@ -24,6 +24,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_cache.c \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c \
+	../../cache/kv_snapshot.c \
 	../../cache/kv_model_table.c
 MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
 

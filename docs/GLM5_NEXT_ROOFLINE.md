@@ -347,6 +347,32 @@ from its arrival ring; the elapsed figure includes the computation between
 the two waits. These interpretations come from the PR #1077 write-up
 ([archive/PR1077_SERVING_RELIABILITY.md](archive/PR1077_SERVING_RELIABILITY.md)).
 
+### KDA state restore and capture
+
+A prefix hit restores the sequence's KDA recurrent state and convolution
+windows from the state store, and every publishing frame captures them.
+The completion worker prints one line per 10 s window in which either
+happened:
+
+```
+G5N-KDA-TIMING rank=R restores=N restore_bytes=B restore_us=T captures=N capture_bytes=B capture_us=T
+```
+
+`restore_us` spans the store read and the host-to-device copy of each
+restore. `capture_us` spans the device-to-host copy and the store write of
+each capture. Both are window totals on the host clock, and captures from
+zero-row publish frames are included. Compare `restore_us` per restore with
+the `key` and `setup` intervals of `G5N-WAVE-TIMING` to see what a hit adds
+to its first frame.
+
+The API prints one `engine_measurements` JSON line whenever a request ends
+or a wave is rejected. It carries the engine's cumulative first-token count,
+queue, prefill and TTFT totals, prefix hits and misses, stale-prefix
+recomputes and rejected waves by status. Each `request_measurements` line
+carries `first_dispatch_ns` and `stale_prefix_recomputes`, so a request's
+queue time is `first_dispatch_ns - accepted_ns` and its prefill time runs
+from `first_dispatch_ns` to its first token's timestamp.
+
 ### Iteration 15's `pre` held the GPU time
 
 Iteration 15 printed `pre` (first sight to "the last launch") and `gpu` (the
@@ -750,6 +776,11 @@ Output lines:
   `hidden_finite`.
 - `ROOFLINE-FLEET`: adds the modelled collective cost (`--round-us`,
   `--nic-gbps`) for direct, RS/AG and RS/AG overlapped with compute.
+- `ROOFLINE-GRAPH` (with `--graph 1`): the step is captured once as a CUDA
+  graph and replayed `--iterations` times, as the production graph path
+  runs it; prints the node count and the median, minimum, maximum and mean
+  replay time. `--route-readback 0` builds the step the way resident chains
+  do, without the host copy of the expert group offsets.
 
 `achieved_gbps` well below 273 at large B means the grouped expert kernels,
 not the memory, are the limit.
@@ -1313,9 +1344,64 @@ git checkout <branch> && make kernel-codegen-diff BASE_CUBIN=/tmp/base.cubin ALL
 On the first revision it reports the nine `LmGemmKernel` instances as
 unexpected. On the second it reports only skinny kernels.
 
+## Per-token budget of the released TP16 build (09fdad6, 2026-09-28)
+
+Source: the residentd logs of all 16 production ranks, aligned by chain
+epoch with `tools/tp_chain_budget.py`, and the single-GPU bench in CUDA
+graph mode (`bench-glm5-next-batch ROOFLINE_ARGS="--graph 1"`). Receipts:
+`qualification/glm5next/performance/glm_perf_20260928_09fdad6/`. The
+per-rank table comes from `tools/tp_chain_rank_compute.py <log dir> <lo ms>
+<hi ms>` and the per-replay kernel gaps from
+`tools/nsys_graph_replay_gaps.py <nsys cuda_gpu_trace csv>`.
+
+B1 graph chains (472 chains that all 16 ranks ran, rank-mean replay wall
+below 32 ms per step), per decode step:
+
+| Part | ms | Note |
+| --- | ---: | --- |
+| GPU compute in the replay | 19.2-19.8 | replay wall minus device peer wait, copy and combine; spread across ranks 0.6 ms |
+| Collective latency floor | 3.7 | peer wait of the last-arriving rank: about 40 us for each of 92 rounds |
+| Rank skew | 1.0 | mean peer wait minus the floor |
+| Copy and combine | 0.85 | |
+| Host between replays | 1.4 | chain wall minus replay walls, per step |
+| Total | about 26-27 | engine B1 is 25.2 ms per token |
+
+Skew is not the main loss at B1: kernel time is. The same step on an idle
+GB10 in graph mode (sparke, context 1024) takes 15.4-15.7 ms, and nsys
+shows under 1 ms of launch gaps in the 1,462-node graph. The production
+replay spends about 4 ms more on compute than the bench; the bench has no
+collective kernels and uses `cudaMalloc` weights instead of the leased
+expert pool, so that difference needs a profile of a real rank.
+
+The last-arriving rank at B1 is rank 1 in 223 of 472 chains, then ranks 15,
+8 and 12. Those nodes ran other lanes' work at the time: a three-process
+CPU reference decoder on spark1, qwen27b on spark8, gemma4 on sparka to
+sparkd and dev tests on sparkf. The same bench binary took 17.8-85 ms per
+step on sparkf (median 23.9) against 15.3-18.0 ms on sparke. GPU or memory
+bandwidth work on any production node slows every token.
+
+At larger waves (replay wall 32-50 ms per step) the floor is 8.5 ms and skew
+5 ms per step, so skew matters more there.
+
+**Route readback removed from resident chains.** Every routed layer queued
+a device-to-host copy of the expert group offsets and an event record, which
+only the lazy expert path reads. Linear chains and graph captures require
+every expert to be leased and never read them, but the copy sat between the
+router and the expert GEMV in each of 42 layers. The walk now calls
+`SparkGlm5NextLaunchCudaLayerMlpRouteResident`, which launches the same
+kernels without the copy. The graph drops from 1,504 to 1,462 nodes. Six
+alternating rounds of 100 replays on sparke, medians of the round medians:
+B1 15.75 to 15.39 ms (-2.3%), B8 32.17 to 31.87 ms (-0.9%).
+
+Kernel time at B1 on the idle bench (nsys node trace; shares of GPU busy
+time): BF16 skinny GEMV 36%, FP8 expert GEMV 13%, HC site 10%, head 5%,
+latent attention 5%, RMSNorm 3%. At B8 the FP8 expert GEMV is 55%.
+
 ## Next steps
 
-Collective latency sets most of the B1 gap (see "Where it stands").
+Collective latency sets most of the B1 gap (see "Where it stands"). The
+09fdad6 per-token budget above attributes most of the B1 step to kernel time
+instead; both measurements stand until a profile of a real rank settles it.
 
 1. Measure main on the fleet. Deploy a merged-main build, record its
    identity, and rerun B1, the 8-stream load and COMPSEC-17. Later changes

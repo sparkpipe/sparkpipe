@@ -90,6 +90,8 @@ current authority.
   direction.
 - [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): rtx5090 host
   (fleet hub, GLM API, draft farm, drafter store).
+- [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
+  drafters per model, and the PR sequence.
 
 ## Operations and development
 

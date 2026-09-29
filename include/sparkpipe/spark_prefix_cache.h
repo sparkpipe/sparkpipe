@@ -31,6 +31,7 @@ extern "C" {
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_REUSABLE 0x00000002u
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_PENDING 0x00000004u
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY 0x00000008u
+#define SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE 0x00000010u
 
 #define SPARK_PREFIX_CACHE_BINDING_FLAG_VALID 0x00000001u
 #define SPARK_PREFIX_CACHE_BINDING_FLAG_PENDING 0x00000002u
@@ -333,6 +334,11 @@ SparkStatus SparkPrefixCacheBindCommittedPrefixFromSequence(
 SparkStatus SparkPrefixCacheReleaseSequence(
     SparkPrefixCache *cache,
     uint64_t sequence_id);
+
+SparkStatus SparkPrefixCacheTombstonePrompt(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_count);
 
 SparkStatus SparkPrefixCacheReset(
     SparkPrefixCache *cache);

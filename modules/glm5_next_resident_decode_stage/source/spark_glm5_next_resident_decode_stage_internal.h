@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_graph_regime.h"
+#include "sparkpipe/spark_glm5_next_verify_regime.h"
 #include "sparkpipe/spark_status.h"
 
 typedef struct SparkGlm5NextLayerWeights
@@ -60,6 +61,10 @@ typedef struct SparkGlm5NextLayerWeights
 } SparkGlm5NextLayerWeights;
 
 #define SPARK_GLM5_NEXT_GRAPH_ROWS_MAX 64u
+#define SPARK_GLM5_NEXT_COVER_STRIDE ((SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT + 31u) / 32u)
+#define SPARK_GLM5_NEXT_WS_ROWS_MAX 8u
+#define SPARK_GLM5_NEXT_WS_REPLAYS 2u
+#define SPARK_GLM5_NEXT_ROUTE_LOG_LAYER_ENTRIES (SPARK_GLM5_NEXT_GRAPH_ROWS_MAX * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K)
 #define SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS UINT64_C(10000000000)
 #define SPARK_GLM5_NEXT_WAVE_IDLE 0u
 #define SPARK_GLM5_NEXT_WAVE_WAIT 1u
@@ -74,6 +79,10 @@ typedef struct SparkGlm5NextLayerWeights
 #define SPARK_GLM5_NEXT_BUSY_LANES 3u
 #define SPARK_GLM5_NEXT_BUSY_OTHER 4u
 #define SPARK_GLM5_NEXT_BUSY_REASONS 5u
+#define SPARK_GLM5_NEXT_KDA_COUNT 0u
+#define SPARK_GLM5_NEXT_KDA_BYTES 1u
+#define SPARK_GLM5_NEXT_KDA_NS 2u
+#define SPARK_GLM5_NEXT_KDA_FIELDS 3u
 #define SPARK_GLM5_NEXT_GRAPH_PATH_OFF 0u
 #define SPARK_GLM5_NEXT_GRAPH_PATH_ON 1u
 #define SPARK_GLM5_NEXT_GRAPH_PATH_DEGRADED 2u
@@ -88,6 +97,16 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t graph_bound_rows[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_GRAPH_ROWS_MAX];
 	uint64_t graph_failed_rows;
 	uint32_t graph_disabled;
+	void *verify_exec[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT];
+	uint32_t verify_bound[SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT][SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT];
+	uint32_t verify_captured;
+	uint32_t *miss_ring;
+	uint32_t *cover_device;
+	uint64_t cover_generation;
+	uint8_t *snapshot;
+	void *snapshot_spans;
+	uint32_t snapshot_span_count;
+	uint32_t snapshot_row_words;
 	void *host_staging;
 	SparkRowSampling *host_row_sampling;
 	uint32_t sampled;
@@ -186,6 +205,8 @@ typedef struct SparkGlm5NextExecutionSlot
 	void *mtp_replay_steps;
 	uint16_t *mtp_conv_scratch;
 	uint8_t *kda_replay_pool;
+	uint32_t *replay_committed_host;
+	void *replay_fold_exec[SPARK_GLM5_NEXT_REPLAY_ROWS_MAX];
 } SparkGlm5NextExecutionSlot;
 
 typedef struct SparkGlm5NextCudaWave
@@ -233,6 +254,7 @@ typedef struct SparkGlm5NextCudaWave
 	const uint32_t *expert_cover;
 	uint32_t expert_cover_stride;
 	void *expert_miss;
+	uint32_t *expert_route_log;
 	SparkGlm5NextExecutionSlot *slot;
 	uint8_t *kv_cache;
 	uint64_t kv_layer_stride_bytes;
@@ -295,6 +317,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32
 // queues group offsets into slot host_group_row_offset; record/wait an event
 // on that stream before inspecting them or calling SparkWeightdRouteKeys.
 int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm5NextLaunchCudaLayerMlpRouteResident(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 // cudaSuccess means the current routing readback is complete; cudaErrorNotReady
 // means pending. Calling before a successful Route returns cudaErrorInvalidValue.
 cudaError_t SparkGlm5NextPollCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave);
@@ -304,6 +327,8 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,ui
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
+cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,const uint32_t *miss,uint64_t *maxloc,uint32_t row_count);
+cudaError_t SparkGlm5NextLaunchStateSnapshot(cudaStream_t stream,const void *spans,uint32_t span_count,uint32_t row_words,uint8_t *snapshot,const uint32_t *state_index,uint32_t rows,uint32_t restore);
 cudaError_t SparkGlm5NextLaunchEpochSample(cudaStream_t stream,const void *epoch_device,void *seen);
 cudaError_t SparkGlm5NextLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkTpLaunchAccumAdd(cudaStream_t stream,void *destination_bf16,const void *source_bf16,uint32_t row_count,uint32_t width);
@@ -313,7 +338,8 @@ cudaError_t SparkTpLaunchAddF32(cudaStream_t stream,float *destination_f32,const
 cudaError_t SparkTpLaunchRoundF32(cudaStream_t stream,void *destination_bf16,const float *source_f32,uint32_t element_count);
 cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
 int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const SparkGlm5NextMtpDraftOps *ops,uint16_t *committed_hidden_bf16,uint32_t first_token,uint32_t *host_draft_tokens);
-int32_t SparkGlm5NextLaunchCudaMtpCommit(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps);
+int32_t SparkGlm5NextPrepareCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t rows);
+int32_t SparkGlm5NextLaunchCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps);
 int32_t SparkGlm5NextConfigureCudaModule(uint32_t *multiprocessor_count);
 
 #ifdef __cplusplus
