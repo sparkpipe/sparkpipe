@@ -136,5 +136,11 @@ Drafters run on this host; the fleet only verifies. Measured on the RTX 5090
   reference on recorded greedy streams and prices it next to the lookup
   drafter.
 
-Only drafters with an admission record in
-`SPECULATOR-LICENSE-ADMISSION-20260828.json` are loaded.
+`tools/draftd_mtp_g8.py` decides G8 on the real-tap positions only: PASS
+needs at least 1000 of them and top-1 agreement of at least 99%, with
+identical output run to run. With fewer real positions the verdict is PENDING;
+implementation positions are reported but never counted toward the gate.
+
+draftd v0 does not check admission records itself. Load only drafters with an
+admission record in `SPECULATOR-LICENSE-ADMISSION-20260828.json`; the G7 load
+check (checkpoint sha256 plus admission id) belongs to the draftd daemon.

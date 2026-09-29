@@ -13,6 +13,8 @@ from t1_reference_common import (_E4M3_LUT, bf16_round_f32, bf16_to_f32,
                                  read_fixture)
 
 FINAL_LAYER_KEY = "pos{p:04d}_layer{layer:04d}_streams"
+G8_FLOOR = 0.99
+G8_MIN_REAL_POSITIONS = 1000
 
 
 def hc_mean(streams, hc, hidden):
@@ -193,6 +195,19 @@ def compare(cases, reference, device, near_tie):
             "non_tie_disagreements": sum(1 for d in disagreements if not d["near_tie"])}
 
 
+def g8_verdict(report, deterministic):
+    real = report["classes"]["real-tap"]
+    enough = real["positions"] >= G8_MIN_REAL_POSITIONS
+    agreement = real["agree"] / real["positions"] if real["positions"] else 0.0
+    if not deterministic:
+        return "FAIL", "run_to_run_differs"
+    if not enough:
+        return "PENDING", f"real_positions={real['positions']}<{G8_MIN_REAL_POSITIONS}"
+    if agreement < G8_FLOOR:
+        return "FAIL", f"real_agreement={agreement:.4f}<{G8_FLOOR}"
+    return "PASS", f"real_agreement={agreement:.4f} real_positions={real['positions']}"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="G8: draftd MTP top-1 against the numpy MTP reference")
     parser.add_argument("--checkpoint", required=True)
@@ -203,7 +218,6 @@ def main(argv=None):
     parser.add_argument("--depth", type=int, default=7)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--near-tie", type=float, default=0.0625)
-    parser.add_argument("--floor", type=float, default=0.99)
     parser.add_argument("--seed", type=int, default=20260929)
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
@@ -239,12 +253,13 @@ def main(argv=None):
                    "device_bytes": drafter.device_bytes(), "run_to_run_identical": deterministic,
                    "free_chain": {k: free_report[k] for k in ("positions", "agree", "agreement", "per_depth",
                                                              "non_tie_disagreements")}})
-    verdict = "PASS" if report["agreement"] >= args.floor and deterministic else "FAIL"
+    verdict, reason = g8_verdict(report, deterministic)
     report["verdict"] = verdict
+    report["verdict_reason"] = reason
     json.dump(report, open(args.output, "w"), indent=1)
     real_stats = report["classes"]["real-tap"]
     d1 = report["per_depth"].get("real-tap/d1", {})
-    print(f"G8-MTP {verdict} identical-input positions={report['positions']} agree={report['agree']} "
+    print(f"G8-MTP {verdict} {reason} identical-input positions={report['positions']} agree={report['agree']} "
           f"agreement={report['agreement']:.4f} non_tie_disagreements={report['non_tie_disagreements']} "
           f"real_tap={real_stats['agree']}/{real_stats['positions']} real_tap_d1_hits ref={d1.get('hit_ref')} "
           f"dev={d1.get('hit_dev')}/{d1.get('positions')} free_chain_agreement={free_report['agreement']:.4f} "

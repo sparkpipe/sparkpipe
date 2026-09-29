@@ -126,6 +126,38 @@ static void TestChainExtendsWithDrafts(void)
 	SparkSpeculationNgramDraftDestroy(&draft);
 }
 
+static void TestSequenceAndAnchorGuards(void)
+{
+	SparkSpeculationNgramDraft draft;
+	SparkSpeculationPolicyDraftResult result;
+	uint32_t tokens[] = {1u,2u,3u,4u, 1u,2u};
+	uint32_t count = (uint32_t)(sizeof(tokens) / sizeof(tokens[0]));
+	Require(SparkSpeculationNgramDraftInitialize(&draft,2u,64u,2u,4u,8u) == SPARK_STATUS_OK,"initialize");
+	Require(SparkSpeculationNgramDraftObserve(&draft,1u,7u,0u,tokens,count) == SPARK_STATUS_OK,"observe");
+	Require(Draft(&draft,1u,7u,count - 1u,2u,&result) == SPARK_STATUS_OK && result.token_count == 2u && result.token_ids[0] == 3u && result.token_ids[1] == 4u,"the observed sequence drafts its continuation");
+	Require(Draft(&draft,1u,8u,count - 1u,2u,&result) == SPARK_STATUS_NOT_FOUND && result.token_count == 0u,"another sequence on the lane drafts nothing");
+	Require(Draft(&draft,1u,7u,count - 2u,2u,&result) == SPARK_STATUS_NOT_FOUND && result.token_count == 0u,"a stale anchor drafts nothing");
+	Require(Draft(&draft,1u,7u,count,2u,&result) == SPARK_STATUS_NOT_FOUND && result.token_count == 0u,"an anchor past the history drafts nothing");
+	Require(Draft(&draft,0u,7u,count - 1u,2u,&result) == SPARK_STATUS_NOT_FOUND && result.token_count == 0u,"another lane drafts nothing");
+	SparkSpeculationNgramDraftDestroy(&draft);
+}
+
+static void TestScanLimitKeepsRecentOccurrences(void)
+{
+	SparkSpeculationNgramDraft draft;
+	SparkSpeculationPolicyDraftResult result;
+	uint32_t tokens[] = {5u,6u,1u, 5u,6u,1u, 5u,6u,1u, 5u,6u,2u, 5u,6u,2u, 5u,6u};
+	uint32_t count = (uint32_t)(sizeof(tokens) / sizeof(tokens[0]));
+	Require(SparkSpeculationNgramDraftInitialize(&draft,1u,64u,2u,2u,2u) == SPARK_STATUS_OK,"initialize");
+	Require(SparkSpeculationNgramDraftObserve(&draft,0u,5u,0u,tokens,count) == SPARK_STATUS_OK,"observe");
+	Require(Draft(&draft,0u,5u,count - 1u,1u,&result) == SPARK_STATUS_OK && result.token_ids[0] == 2u && result.confidence_milli[0] == 1000u,"scan limit 2 counts only the two most recent occurrences");
+	SparkSpeculationNgramDraftDestroy(&draft);
+	Require(SparkSpeculationNgramDraftInitialize(&draft,1u,64u,2u,2u,8u) == SPARK_STATUS_OK,"initialize");
+	Require(SparkSpeculationNgramDraftObserve(&draft,0u,5u,0u,tokens,count) == SPARK_STATUS_OK,"observe");
+	Require(Draft(&draft,0u,5u,count - 1u,1u,&result) == SPARK_STATUS_OK && result.token_ids[0] == 1u && result.confidence_milli[0] == 600u,"scan limit 8 counts all five occurrences");
+	SparkSpeculationNgramDraftDestroy(&draft);
+}
+
 static void TestMatchesReferenceOnRandomStream(void)
 {
 	SparkSpeculationNgramDraft draft;
@@ -163,6 +195,8 @@ int main(void)
 	TestFrequencyBeatsRecency();
 	TestTieTakesMostRecent();
 	TestChainExtendsWithDrafts();
+	TestSequenceAndAnchorGuards();
+	TestScanLimitKeepsRecentOccurrences();
 	TestMatchesReferenceOnRandomStream();
 	printf("PASS test_speculation_ngram_draft\n");
 	return(0);

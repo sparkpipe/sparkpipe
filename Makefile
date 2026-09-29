@@ -666,6 +666,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_pack_bf16_passthrough.py \
 	tests/test_glm52_pack_nvfp4_passthrough.py \
 	tests/test_glm53_contract.py \
+	tests/test_draftd_mtp_g8.py \
 	tests/test_glm53flash_mtp_reference.py \
 	tests/test_glm5_next_adapter_config_load.py \
 	tests/test_glm5_next_cuda_validator_tier2_oracle.py \
@@ -690,6 +691,7 @@ PYTHON_TESTS := \
 	tests/test_qwen38max_tp16_rank_verify.py \
 	tests/test_qwen4_flash_pack_verify_receipts.py \
 	tests/test_rtx5090_spec_node.py \
+	tests/test_safetensors_subset.py \
 	tests/test_serving_profile_derivation.py \
 	tests/test_spark_ssh_failover.py \
 	tests/test_spark_station.py \
