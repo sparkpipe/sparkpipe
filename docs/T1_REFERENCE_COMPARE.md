@@ -105,6 +105,28 @@ nvfp4a16 vs fp8: 0.994), so the factor is removed.
 Regenerate a quarantined set with `tools/t1_reference_decoder.py` on its
 pinned checkpoint and drop the quarantine in the same commit.
 
+### Decoder double-feed (2026-09-29)
+
+Until 7865648d3 (#1051, 2026-09-19T11:22Z) the decoder fed every
+position after the first generated one a token outside the generated
+chain: first the prompt-prefix argmaxes (the self-append loop before
+e2a0518a4), then the duplicated prompt tail. #1051 and the regeneration
+commits ad18209e1 / 29f6ebcee rebuilt every family's fixtures except two,
+which kept the artifact: glm5_next (2026-09-14) and qwen4_flash
+(2026-09-17). Both are quarantined. `tests/test_t1_reference_quarantine.py`
+requires every committed manifest older than the fix to be quarantined
+with a reason that names the double-feed.
+
+glm5_next is also not reproducible at its first generated token. The same
+committed engine rerun from the frozen checkpoint 84c6a6aa (spark6
+`~/sparkdata/t1ref-warm/glm-5.3-flash`, config and index sha equal to the
+manifest's) gives `capital_of_france` 12089 at the last prompt position,
+as do the glm53flash engine, production a477cfa and a597ff0 and both dev
+TP16 firmwares (12089 13 758 8584, "Paris. In French"). The fixture says
+3837 271 271 12. GLM-5.3 Flash T1 compares against
+`qualification/t1_reference/glm53flash` (glm53flash engine, current
+decoder, header `model-families/glm5_next/include/sparkpipe/llm_defines.h`).
+
 ## Position-0 anchor
 
 For families with a committed checkpoint layer oracle, the generator's
@@ -120,9 +142,9 @@ position-0 anchor disagrees with the committed oracle is not fixture-grade.
 Engines exist for 14 families: dsv41, gemma4, glm53flash, glm53full,
 glm5_next, hy4, k3, laguna, ling, minimax, muse, qwen38_27b, qwen38_max and
 qwen4_flash. `qualification/t1_reference/` has 15 directories (gemma4_26b
-runs the gemma4 engine with its own `llm_defines_26b.h`); 13 hold committed
-fixtures and a `MANIFEST.json`, while glm53flash and hy4 hold only
-`prompts.json`.
+runs the gemma4 engine with its own `llm_defines_26b.h`); 14 hold committed
+fixtures and a `MANIFEST.json` (glm5_next and qwen4_flash quarantined), and
+hy4 holds only `prompts.json`.
 
 ## Wave-refs2 families (ling, gemma4 31b, laguna)
 

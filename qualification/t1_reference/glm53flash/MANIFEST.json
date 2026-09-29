@@ -1,0 +1,38 @@
+{
+  "checkpoint": {
+    "config_sha256": "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f",
+    "index_sha256": "3c3f40366a53c3fd7974b4eab7881a365a98c2a4329150befebab99fe7c18b05",
+    "path": "/home/spark6/sparkdata/t1ref-warm/glm-5.3-flash"
+  },
+  "defines_config_mismatches": [
+    {
+      "config_key": "v_head_dim",
+      "config_value": 256.0,
+      "define": "SPARK_LLM_MLA_V_HEAD_DIMENSION",
+      "value": 512
+    }
+  ],
+  "family": "glm53flash",
+  "fixtures": {
+    "capital_of_france.t1r": {
+      "bytes": 1120493,
+      "sha256": "1de62351783b5e1f1ec4c2743d06d2df2d362df6c7801b76f0f37464cbbac8ac"
+    },
+    "count_up.t1r": {
+      "bytes": 1493452,
+      "sha256": "f353838ec5d0f61468432178f5abbec70dd6d6ddad7a8936fc7b9a145f81c098"
+    }
+  },
+  "generated_utc": "2026-09-29T07:59:29Z",
+  "generator": "t1_reference_decoder.py",
+  "host": "spark6",
+  "llm_defines_sha256": "6121fa6c8ef3f817654f0be02ff4b9ad83550897316302148452984538dcdc18",
+  "numpy_version": "2.5.3",
+  "prompts_sha256": "3d362f5ae3ac4d1d4e1cfed48f443981294d4931dc40f91a0ed092c2fea75e4a",
+  "python_version": "3.12.3",
+  "threading_env": {
+    "MKL_NUM_THREADS": null,
+    "OMP_NUM_THREADS": "4",
+    "OPENBLAS_NUM_THREADS": "4"
+  }
+}
