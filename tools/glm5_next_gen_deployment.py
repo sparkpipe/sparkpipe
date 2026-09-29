@@ -126,9 +126,12 @@ def stage_config(rank: int) -> dict:
 
 
 def score_members(values: dict, root_name: str, runtime_root: str, output: Path) -> dict:
-    members = {name: values[name] for name in SCORE_MEMBERS if values.get(name)}
+    members = {name: values[name] for name in SCORE_MEMBERS if values.get(name) is not None}
     if not members:
         return {}
+    empty = [name for name, value in members.items() if value == ""]
+    if empty:
+        raise SystemExit(f"score-dump members must not be empty: {', '.join(empty)}")
     if "score_dump_directory" not in members:
         raise SystemExit("score_probe_path and score_tier2_rows_path require score_dump_directory")
     committed = (Path(__file__).resolve().parents[1] / "deployment/glm5_next_tp16").resolve()
@@ -137,7 +140,7 @@ def score_members(values: dict, root_name: str, runtime_root: str, output: Path)
         raise SystemExit(f"score-dump members are experiment-only and refused for the production root "
                          f"{PRODUCTION_ROOT_NAME} and the committed deployment tree")
     for name, value in members.items():
-        if value.startswith("/") or ".." in Path(value).parts:
+        if value.startswith("/") or value.endswith("/") or any(part in ("", ".", "..") for part in value.split("/")):
             raise SystemExit(f"{name} must be a normalized path relative to the arm's runtime root: {value}")
     return members
 

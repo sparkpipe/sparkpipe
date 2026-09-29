@@ -27,6 +27,29 @@ ranks, and the served token is still the certified head's argmax.
   sequence history the module has not seen from position 0 is written without a key and counted
   as keyless.
 
+## Safety and production
+
+- The dump files hold per-row logits of the prompts that were scored, so they are experiment data:
+  - only corpus prompts are ever scored; production traffic never reaches a score-dump root;
+  - rank files are created mode 0640 in a directory that must already exist under the arm's
+    runtime root; nothing is created or overwritten anywhere else;
+  - an arm's Tier-2 files are deleted once its exact-KL partials are computed (design §6.3).
+- Three independent layers keep the dump out of production:
+  - the production build does not compile the hook, the writer or the launcher, and its module
+    identifier stays `...k8.v2`;
+  - the production adapter's exact member list rejects the score members, so a production
+    root that carried them would fail to load instead of dumping;
+  - the node-context size differs between the two builds, so a production adapter cannot load a
+    score-dump module and a score-dump adapter cannot load a production module.
+- `tools/glm5_next_gen_deployment.py` refuses score members for the production root name, a
+  runtime root containing it and the committed tree, and refuses empty, absolute or
+  non-normalized paths (`.`, `..`, empty segments, a trailing slash), matching the adapter.
+- A score-dump root that points at the production pack (the F0 arm) shares production's weightd
+  arena and crash domain. It runs only inside a lead-held window. Its stop path stops only its own
+  unit and never runs a node-global weightd reclaim, which would evict other lanes' arenas.
+- Every wave the hook cannot score (speculative verify, graph replay) is counted in the end
+  record; a failed score wave fails the request instead of leaving a silent gap.
+
 ## What a rank writes
 
 `<score_dump_directory>/score.rNN.bin` is opened with O_EXCL, so a run never overwrites
