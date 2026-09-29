@@ -14,6 +14,11 @@
 
 #define SPARK_GLM_CUDA_THREADS 256u
 
+extern "C" uint32_t SparkGlm52ExactWaveRows(void)
+{
+	return(LM_SKINNY_ROWS);
+}
+
 extern "C" int32_t SparkGlm52T1Enabled(void)
 {
 	static int32_t t1_enabled = -1;
@@ -84,7 +89,7 @@ __global__ static void SparkGlm52EmbeddingKernel(
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_unpack.cuh"
 
-#include "sparkpipe/family/glm/spark_glm_wave_metadata_parallel.cuh"
+#include "sparkpipe/family/glm/spark_glm_wave_metadata_rows.cuh"
 
 static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 {
@@ -100,7 +105,7 @@ static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 	{
-		SparkGlm52WaveMetadataKernel<<<(wave->row_count + SPARK_GLM_CUDA_THREADS - 1u) / SPARK_GLM_CUDA_THREADS,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
+		SparkGlm52WaveMetadataKernel<<<1u,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	return(SparkGlm52CudaStatus(error));
@@ -333,13 +338,25 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 	error = cudaSuccess;
 	if ( wave->owns_final_head != 0u )
 	{
-		GlmLayerBuffers buffers;
-		uint32_t rank_offset;
+		GlmLayerBuffers buffers,row_buffers;
+		uint32_t rank_offset,row;
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 &&
+		if ( (wave->row_count == 1u || wave->row_head_certified != 0u) && wave->head_certified_fp8_payload != 0 &&
 			SparkGlm52T1Enabled() == 0 )
-			status = GlmHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
+		{
+			status = LM_LAUNCH_OK;
+			for (row=0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
+			{
+				row_buffers = buffers;
+				row_buffers.hidden_bf16 = buffers.hidden_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.residual_bf16 = buffers.residual_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.normed_bf16 = buffers.normed_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.output_token = buffers.output_token + row;
+				row_buffers.output_score = buffers.output_score + row;
+				status = GlmHeadCertifiedB1(&row_buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
+			}
+		}
 		else
 			status = GlmHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )

@@ -152,6 +152,7 @@ struct SparkGlm52ModuleState
 	atomic_ullong tp_next_ordinal;
 	uint32_t chain_mode;
 	uint32_t projection_split;
+	uint32_t prefill_wave_rows;
 	uint32_t chain_wait_initialized;
 	SparkStageModuleCudaWait chain_wait;
 	atomic_uint chain_busy;
@@ -186,6 +187,7 @@ typedef struct SparkGlm52TpChain
 	uint32_t first_row;
 	uint32_t wave_rows;
 	uint32_t next_wave_row;
+	uint32_t prefill;
 	uint32_t stage;
 	uint32_t next_layer;
 	struct timespec lazy_synced;
@@ -997,6 +999,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->expert_lease_pinned = state->experts_pinned;
 	wave->route_host_copy = state->lazy_pack != 0 && state->experts_pinned == 0u ? 1u : 0u;
 	wave->projection_split = state->projection_split;
+	wave->row_head_certified = chain->prefill != 0u && state->prefill_wave_rows != 0u ? 1u : 0u;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
 	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
 	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
@@ -1013,6 +1016,37 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->attention_split_partials_f32 = slot->attention_split_partials_f32;
 	wave->attention_split_partial_blocks = SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(
 		state->execution_row_capacity,SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree);
+}
+
+typedef struct SparkGlm52WaveRegimeContext
+{
+	const uint32_t *positions;
+	uint32_t split_threshold;
+	uint32_t max_positions;
+} SparkGlm52WaveRegimeContext;
+
+static uint32_t SparkGlm52RowRegime(void *context,uint32_t row)
+{
+	const SparkGlm52WaveRegimeContext *regime = (const SparkGlm52WaveRegimeContext *)context;
+	uint32_t bound,tokens;
+	tokens = regime->positions[row] + 1u;
+	return(SparkGlm52GraphRegime(tokens,regime->split_threshold,regime->max_positions,&bound) +
+		(tokens > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u));
+}
+
+static uint32_t SparkGlm52WaveRows(const SparkGlm52TpChain *chain,uint32_t first_row)
+{
+	SparkGlm52ModuleState *state = chain->state;
+	SparkStageModuleClaimedLaneContext lanes;
+	SparkGlm52WaveRegimeContext regime;
+	if ( chain->prefill == 0u || state->prefill_wave_rows == 0u )
+		return(SparkGlmStageRoundMajorWaveRows(state,chain->batch,first_row));
+	lanes.index_states = state->lane_states;
+	lanes.index_capacity = state->resident_sequence_capacity;
+	regime.positions = chain->slot->host_positions;
+	regime.split_threshold = state->decode_split_context_threshold;
+	regime.max_positions = state->max_sequence_positions;
+	return(SparkRowLayoutRoundSpanWaveRowCount(first_row,chain->batch->row_count,chain->batch->row_resident_slots,SparkStageModuleClaimedLaneOrdinal,&lanes,SparkGlm52RowRegime,&regime,state->prefill_wave_rows));
 }
 
 #define SPARK_GLM52_MODULE_TP_DISABLED(state) ((state)->tp_collective_disabled != 0u)
@@ -1566,7 +1600,7 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		if ( chain->next_wave_row < chain->batch->row_count )
 		{
 			uint32_t next_wave;
-			next_wave = SparkGlmStageRoundMajorWaveRows(chain->state,chain->batch,chain->next_wave_row);
+			next_wave = SparkGlm52WaveRows(chain,chain->next_wave_row);
 			if ( next_wave == 0u )
 			{
 				SparkGlm52TpChainFail(chain,SPARK_STATUS_INVALID_ARGUMENT);
@@ -1740,7 +1774,8 @@ static SparkStatus SparkGlm52GraphWalk(SparkGlm52TpChain *chain,const SparkTpCha
 	uint32_t regime,bound,context;
 	SparkStatus status = SPARK_STATUS_OK;
 	context = chain->wave.maximum_context;
-	regime = SparkGlm52GraphRegime(context,state->decode_split_context_threshold,state->max_sequence_positions,&bound);
+	regime = SparkGlm52GraphRegime(context,state->decode_split_context_threshold,state->max_sequence_positions,&bound) +
+		(chain->wave.row_head_certified != 0u ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u);
 	entry = SparkTpChainGraphEntry(&state->graphs[chain->slot_index],regime,chain->wave_rows);
 	if ( entry == 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1776,7 +1811,7 @@ static SparkStatus SparkGlm52LinearWalk(SparkGlm52TpChain *chain,uint32_t *site)
 		if ( chain->next_wave_row >= chain->batch->row_count )
 			return(SPARK_STATUS_OK);
 		chain->first_row = chain->next_wave_row;
-		chain->wave_rows = SparkGlmStageRoundMajorWaveRows(chain->state,chain->batch,chain->next_wave_row);
+		chain->wave_rows = SparkGlm52WaveRows(chain,chain->next_wave_row);
 		if ( chain->wave_rows == 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		chain->next_wave_row += chain->wave_rows;
@@ -1907,6 +1942,26 @@ static SparkStatus SparkGlm52ProjectionSplitConfigure(SparkGlm52ModuleState *sta
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm52PrefillWaveRowsConfigure(SparkGlm52ModuleState *state)
+{
+	const char *text = getenv("SPARK_GLM52_PREFILL_WAVE_ROWS");
+	char *end = 0;
+	unsigned long value;
+	state->prefill_wave_rows = 0u;
+	if ( text == 0 || text[0] == '\0' )
+		return(SPARK_STATUS_OK);
+	value = strtoul(text,&end,10);
+	if ( end == text || *end != '\0' || value > state->execution_row_capacity )
+	{
+		fprintf(stderr,"SPARK_GLM52_PREFILL_WAVE_ROWS must be 0 (one round per wave) or 1..%u (the execution row capacity), got '%s'\n",state->execution_row_capacity,text);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	state->prefill_wave_rows = (uint32_t)value;
+	fprintf(stderr,"GLM52-PREFILL-WAVE-ROWS rows=%u exact_rows=%u exact=%s rank=%u\n",state->prefill_wave_rows,SparkGlm52ExactWaveRows(),
+		state->prefill_wave_rows <= SparkGlm52ExactWaveRows() ? "yes" : "no: waves above exact_rows use the GEMM path and are not bit-equal to one-row prefill",state->tp_rank);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm52ChainModeConfigure(SparkGlm52ModuleState *state)
 {
 	SparkTpChainCollectives collectives;
@@ -2028,8 +2083,9 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	chain->context = &chain->context_copy;
 	chain->batch = &chain->batch_copy;
 	chain->first_row = 0u;
-	chain->wave_rows = wave_rows;
-	chain->next_wave_row = wave_rows;
+	chain->prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
+	chain->wave_rows = SparkGlm52WaveRows(chain,0u);
+	chain->next_wave_row = chain->wave_rows;
 	chain->stage = SPARK_GLM52_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
 	if ( state->chain_mode != SPARK_TP_CHAIN_MODE_EAGER )
@@ -2229,6 +2285,8 @@ static SparkStatus SparkGlm52ModulePrepare(
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ProjectionSplitConfigure(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52PrefillWaveRowsConfigure(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52AllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
