@@ -1,11 +1,67 @@
 {
   "schema_version": 1,
-  "model_id": "moonshotai/Kimi-K3-MXFP4",
-  "architecture": "KimiK3ForCausalLM",
+  "model_id": "moonshotai/Kimi-K3",
+  "architecture": "KimiK3ForConditionalGeneration",
+  "text_architecture": "KimiLinearForCausalLM",
+  "source_revision": "f831ab66814297da540d832a5235f8e904f29d06",
+  "scope": {
+    "serving_target": "text stack only",
+    "vision_tower": "vision_tower.* and mm_projector.* are present in the checkpoint and out of scope"
+  },
+  "license": {
+    "hf_license": "other",
+    "name": "kimi-k3",
+    "class": "modified-mit",
+    "commercial_conditions": "a model-as-a-service business above 20 million US dollars of revenue in any consecutive 12 months needs a separate agreement with Moonshot AI; products above 100 million monthly active users or 20 million US dollars of monthly revenue must display Kimi K3 in their user interface",
+    "sparkpipe_ruling": "permitted on the external API and the provider network below the thresholds; the attribution condition is tracked, not waived"
+  },
   "sources": {
     "technical_report": "Kimi K3: Open Frontier Intelligence, sections 2 and 5, Table 1",
-    "checkpoint_config": "moonshotai/Kimi-K3-MXFP4 config.json and modeling_kimi_linear.py",
-    "precision_policy": "routed expert weights MXFP4 E2M1 with E8M0 scale, group 32; all other weights and activations BF16; GEMM accumulation and KDA recurrent state FP32"
+    "checkpoint_config": "moonshotai/Kimi-K3@f831ab66814297da540d832a5235f8e904f29d06 config.json text_config and modeling_kimi_linear.py",
+    "precision_policy": "routed expert weights MXFP4 E2M1 with E8M0 scale, group 32; all other weights and activations BF16; GEMM accumulation and KDA recurrent state FP32",
+    "hf_repo": "https://huggingface.co/moonshotai/Kimi-K3",
+    "hf_revision": "f831ab66814297da540d832a5235f8e904f29d06",
+    "hf_last_modified": "2026-09-02T02:22:41Z",
+    "warm_path": "/mnt/model-warm/kimi-k3",
+    "checkpoint_layer_lists_base": 1,
+    "pinned_files": {
+      "config.json": {
+        "bytes": 7006,
+        "git_blob_sha1": "d7f26ead420b1d967f2759679dbebc65edfcff93"
+      },
+      "generation_config.json": {
+        "bytes": 53,
+        "git_blob_sha1": "3908a4a5477122aa4b09386acab760fb7887c0fc"
+      },
+      "tokenizer_config.json": {
+        "bytes": 3478,
+        "git_blob_sha1": "418aaacbd996a6674efa89d26be06dae11433e1c"
+      },
+      "LICENSE": {
+        "bytes": 3065,
+        "git_blob_sha1": "97c0111bba229b0981b1d74e34bacef723ca8f7b"
+      },
+      "modeling_kimi_linear.py": {
+        "bytes": 51506,
+        "git_blob_sha1": "b8c41e8bfce768d74d8da3a37e693f5ee43876a0"
+      },
+      "configuration_kimi_k3.py": {
+        "bytes": 11343,
+        "git_blob_sha1": "b38c4f8fcab1ce295aea236772ea1cba57f978c9"
+      },
+      "model.safetensors.index.json": {
+        "bytes": 59764096,
+        "sha256": "a1c5210650ce71d2d3ae9ec5a101ac4afd3cf4b10091be589853437eb967febd"
+      },
+      "tiktoken.model": {
+        "bytes": 2795286,
+        "sha256": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103"
+      }
+    },
+    "shard_count": 96,
+    "index_total_tensor_bytes": 1560860324864,
+    "warm_shard_file_bytes": 1560936091448,
+    "verification": "warm metadata files equal the pinned revision by git blob sha1 and LFS sha256 (2026-09-28); per-shard LFS sha256 receipt pending"
   },
   "model": {
     "total_parameters": 2780000000000,
@@ -16,7 +72,8 @@
     "maximum_context_tokens": 1048576,
     "rms_norm_epsilon": 0.00001,
     "lora_rms_norm_epsilon": 0.000001,
-    "first_routed_layer": 1
+    "first_routed_layer": 1,
+    "tie_word_embeddings": false
   },
   "hybrid_attention": {
     "period": 4,
@@ -85,15 +142,57 @@
   },
   "speculation": {
     "base_checkpoint_mtp_layer_count": 0,
-    "optional_external_draft_architecture": "eagle3",
-    "optional_external_draft_layer_count": 1,
-    "training_unroll_steps": 7
+    "drafter": {
+      "method": "dspark",
+      "hf_repo": "RedHatAI/Kimi-K3-speculator.dspark",
+      "hf_revision": "38a88101e0d46bb22134b9da340f381b954d40d4",
+      "hf_last_modified": "2026-09-14T19:16:46Z",
+      "license": "apache-2.0",
+      "architecture": "DSparkDraftModel",
+      "verifier": "moonshotai/Kimi-K3",
+      "warm_path": "/mnt/model-warm/kimi-k3-dspark-redhatai-rev2",
+      "config_git_blob_sha1": "8b76fd3b01e3305a8574254f42605c7b78a616dc",
+      "weights_file": "model.safetensors",
+      "weights_bytes": 9489807826,
+      "weights_sha256": "0262abfd7418d2ecbc3a077790851c1af2f8879016b00e7decb9d43d7c1277b4",
+      "weight_format": "bf16",
+      "layer_count": 5,
+      "hidden_dimension": 7168,
+      "attention_head_count": 96,
+      "kv_head_count": 16,
+      "head_dimension": 64,
+      "intermediate_dimension": 14336,
+      "vocabulary_size": 163840,
+      "block_size": 8,
+      "speculative_tokens": 8,
+      "verifier_accept_k": 1,
+      "aux_hidden_state_layer_ids": [
+        24,
+        48,
+        72,
+        88,
+        92
+      ],
+      "markov_rank": 256,
+      "mask_token_id": 163837,
+      "sliding_window": 2048,
+      "rope_theta": 10000.0,
+      "confidence_head": true,
+      "confidence_head_with_markov": true
+    }
   },
   "cache": {
     "kv_element_bits": 16,
     "kv_page_slots": 64
   },
   "tokens": {
-    "end_of_text": 163585
+    "begin_of_text": 163584,
+    "end_of_text": 163585,
+    "end_of_message": 163586,
+    "pad": 163839
+  },
+  "eos_token_ids": {
+    "end_of_text": 163585,
+    "end_of_message": 163586
   }
 }

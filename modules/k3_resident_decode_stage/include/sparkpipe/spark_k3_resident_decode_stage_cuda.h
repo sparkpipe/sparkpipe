@@ -70,6 +70,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
 	uint64_t kv_page_bytes, int device);
 void SparkK3DispatchDestroy(SparkK3Dispatch *d);
+int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
+	uint32_t tp_degree, cudaStream_t stream);
 
 int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	SparkK3BoundLayer *bounds, uint32_t layer_count,
