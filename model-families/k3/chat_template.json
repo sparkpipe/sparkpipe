@@ -14,5 +14,10 @@
  "stop_markers": [
   "<|close|>",
   "<|end_of_msg|>"
+ ],
+ "control_markers": [
+  "<|open|>",
+  "<|close|>",
+  "<|sep|>"
  ]
 }

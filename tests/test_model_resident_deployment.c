@@ -347,6 +347,17 @@ static void TestChatTemplates(void)
 			"<|open|>message role=\"user\"<|sep|>bye<|close|>message<|sep|><|end_of_msg|>"
 			"<|open|>message role=\"assistant\"<|sep|><|open|>response<|sep|>");
 		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_THINKING_UNSUPPORTED,0);
+		memset(special,0,sizeof(special));
+		special[0].text = (char *)"<|end_of_msg|>"; special[0].text_bytes = 14u; special[0].token_id = 163586u; special[0].is_special = 1u;
+		special[1].text = (char *)"<|close|>"; special[1].text_bytes = 9u; special[1].token_id = 163588u; special[1].is_special = 0u;
+		assert(SparkChatTemplateResolveStops(&deployment.chat_template,special,2u,stop_ids,&stop_count,&unresolved) == SPARK_STATUS_OK);
+		assert(stop_count == 2u && stop_ids[0] == 163588u && stop_ids[1] == 163586u && unresolved == 0);
+		assert(SparkChatTemplateResolveStops(&deployment.chat_template,special,1u,stop_ids,&stop_count,&unresolved) == SPARK_STATUS_SCHEMA_ERROR);
+		assert(unresolved != 0 && strcmp(unresolved,"<|close|>") == 0);
+		deployment.chat_template.control_marker_count = 0u;
+		assert(SparkChatTemplateResolveStops(&deployment.chat_template,special,2u,stop_ids,&stop_count,&unresolved) == SPARK_STATUS_SCHEMA_ERROR);
+		assert(unresolved != 0 && strcmp(unresolved,"<|close|>") == 0);
+		deployment.chat_template.control_marker_count = 3u;
 		TestRender(&deployment,"{\"messages\":[{\"role\":\"observation\",\"content\":\"42\"}]}",false,
 			SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED,0);
 		SparkModelResidentDeploymentDestroy(&deployment);
@@ -391,7 +402,7 @@ static void TestChatTemplates(void)
 	TestChatTemplateSchema("\"[gMASK]\"",SPARK_STATUS_SCHEMA_ERROR);
 	free(glm);
 	free(gemma);
-	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token)\n");
+	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token or one declared control marker)\n");
 }
 
 int main(int argc,char **argv)
