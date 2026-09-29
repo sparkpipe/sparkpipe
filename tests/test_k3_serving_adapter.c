@@ -17,12 +17,31 @@ SparkStatus SparkK3StageRunnerInitialize(SparkK3StageRunner *runner,
 	return(SPARK_STATUS_UNSUPPORTED);
 }
 
+static uint32_t test_dispatch_rows;
+static uint32_t test_dispatch_sequences;
+static uint32_t test_dispatch_row_begin[9];
+static uint32_t test_dispatch_state_index[8];
+static uint32_t test_dispatch_sequence_of_row[8];
+
 SparkStatus SparkK3StageRunnerSubmit(SparkK3StageRunner *runner,
 	const SparkK3StageRunnerDispatch *dispatch)
 {
 	(void)runner;
-	(void)dispatch;
-	return(SPARK_STATUS_UNSUPPORTED);
+	test_dispatch_rows = dispatch->row_count;
+	test_dispatch_sequences = dispatch->active_sequence_count;
+	memset(test_dispatch_row_begin, 0xff, sizeof(test_dispatch_row_begin));
+	memset(test_dispatch_state_index, 0xff, sizeof(test_dispatch_state_index));
+	if ( dispatch->row_count > 8u || dispatch->active_sequence_count > 8u ||
+		dispatch->sequence_row_begin == 0 || dispatch->kda_state_index == 0 ||
+		dispatch->sequence_of_row == 0 )
+		return(SPARK_STATUS_OK);
+	memcpy(test_dispatch_row_begin, dispatch->sequence_row_begin,
+		((size_t)dispatch->active_sequence_count + 1u) * sizeof(uint32_t));
+	memcpy(test_dispatch_state_index, dispatch->kda_state_index,
+		(size_t)dispatch->active_sequence_count * sizeof(uint32_t));
+	memcpy(test_dispatch_sequence_of_row, dispatch->sequence_of_row,
+		(size_t)dispatch->row_count * sizeof(uint32_t));
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkK3StageRunnerGetStats(const SparkK3StageRunner *runner,
@@ -204,10 +223,66 @@ static int32_t TestK3Release(void)
 	return(failures);
 }
 
+static int32_t TestK3PrefillRuns(void)
+{
+	static const uint64_t positions[5] = { 0u, 1u, 2u, 7u, 8u };
+	static const uint32_t lane_of_row[5] = { 0u, 0u, 0u, 1u, 1u };
+	static const uint32_t tokens[5] = { 1008u, 10484u, 318u, 17374u, 13u };
+	SparkK3ServingState state;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	SparkStatus status = SPARK_STATUS_OK;
+	SparkMemoryBuffer *host[] = { &state.positions_host, &state.context_host,
+		&state.state_host, &state.runs_host, &state.seqslot_host };
+	SparkMemoryBuffer *device[] = { &state.positions_device, &state.context_device,
+		&state.state_device, &state.runs_device, &state.seqslot_device,
+		&state.output_tokens, &state.output_scores };
+	int32_t failures = 0;
+	uint32_t index;
+	memset(&state, 0, sizeof(state));
+	state.max_rows = 8u;
+	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(host) / sizeof(host[0]); index++ )
+		status = SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t));
+	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(device) / sizeof(device[0]); index++ )
+		status = SparkMemoryBufferAllocate(device[index], SPARK_MEMORY_SPACE_DEVICE_PRIVATE, 9u * sizeof(uint32_t));
+	if ( TestK3Check(status == SPARK_STATUS_OK, "the submit buffers allocate") != 0 )
+		return(1);
+	memset(&submission, 0, sizeof(submission));
+	memset(lanes, 0, sizeof(lanes));
+	lanes[0].resident_sequence_slot = 2u;
+	lanes[1].resident_sequence_slot = 0u;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.lanes = lanes;
+	submission.lane_count = 2u;
+	submission.active_sequence_count = 2u;
+	submission.row_count = 5u;
+	submission.row_positions = positions;
+	submission.row_lane_indices = lane_of_row;
+	submission.token_ids = tokens;
+	status = K3ServingSubmit(&state, &submission);
+	failures += TestK3Check(status == SPARK_STATUS_OK && test_dispatch_rows == 5u &&
+		test_dispatch_sequences == 2u,
+		"a two-sequence prefill of five rows dispatches two sequences");
+	failures += TestK3Check(test_dispatch_row_begin[0] == 0u && test_dispatch_row_begin[1] == 3u &&
+		test_dispatch_row_begin[2] == 5u,
+		"the recurrent state walks each sequence's rows in order: row runs 0, 3, 5");
+	failures += TestK3Check(test_dispatch_state_index[0] == 2u && test_dispatch_state_index[1] == 0u,
+		"the recurrent state is indexed per sequence: slots 2 then 0");
+	failures += TestK3Check(test_dispatch_sequence_of_row[0] == 2u && test_dispatch_sequence_of_row[2] == 2u &&
+		test_dispatch_sequence_of_row[3] == 0u && test_dispatch_sequence_of_row[4] == 0u,
+		"attention KV stays indexed per row");
+	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
+		SparkMemoryBufferFree(host[index]);
+	for ( index = 0u; index < sizeof(device) / sizeof(device[0]); index++ )
+		SparkMemoryBufferFree(device[index]);
+	return(failures);
+}
+
 int main(int argc, char **argv)
 {
 	int32_t failures = TestK3Descriptor();
 	failures += TestK3Release();
+	failures += TestK3PrefillRuns();
 	int index;
 	if ( argc == 1 )
 		failures += TestK3Deployment(TEST_K3_DEPLOYMENT);

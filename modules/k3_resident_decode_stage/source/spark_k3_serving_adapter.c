@@ -696,7 +696,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
 	SparkK3StageRunnerDispatch dispatch;
 	uint64_t *positions_host64;
-	uint32_t rows;
+	uint32_t rows, active = 1u;
 	SparkStatus status;
 	if ( state == 0 || submission == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -747,7 +747,6 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		uint32_t *runs = (uint32_t *)state->runs_host.pointer;
 		uint32_t *slots = (uint32_t *)state->state_host.pointer;
 		uint32_t *seqslots = (uint32_t *)state->seqslot_host.pointer;
-		uint32_t active = 1u;
 		runs[0] = 0u;
 		for ( uint32_t i = 1u; i < rows; ++i )
 			if ( slots[i] != slots[i - 1u] )
@@ -774,13 +773,13 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	dispatch.sequence_position = submission->sequence_position;
 	dispatch.deadline_time_ns = submission->deadline_time_ns;
 	dispatch.row_count = rows;
-	dispatch.active_sequence_count = submission->active_sequence_count != 0u
-		? submission->active_sequence_count : rows;
+	dispatch.active_sequence_count = active;
 	dispatch.token_ids = submission->token_ids;
 	dispatch.positions = state->positions_device.pointer;
 	dispatch.context_length = state->context_device.pointer;
 	dispatch.sequence_of_row = state->state_device.pointer;
-	dispatch.kda_state_index = state->state_device.pointer;
+	dispatch.sequence_row_begin = state->runs_device.pointer;
+	dispatch.kda_state_index = state->seqslot_device.pointer;
 	dispatch.hidden_input_bf16 = submission->hidden_input_address;
 	dispatch.hidden_input_bytes = submission->hidden_input_bytes;
 	dispatch.hidden_output_bf16 = submission->hidden_output_address;
