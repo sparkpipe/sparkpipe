@@ -129,7 +129,8 @@ A dry-run has no view of the fleet: it plans from the recorded `active` list, or
 ## First supervised run (lead)
 
 1. `bash tools/fleet_rotation_install.sh check`, then `install`. The rotation is now paused. The first tick of each hour records `phase=paused`, and `:8430/schedule.json` is up.
-2. GLM Full prerequisite: the FULL slot demotes itself until `~/glmfull-lane6/root` carries release 8058e4b (`RELEASE`, `MANIFEST`) and `~/glmfull-lane6-api` carries the 8058e4b channel. Both are installed once by the lanes/glmfull-serve.md §3 window: `release_window.sh up` then `api`, verify, and `down reclaim`. The rotation starts and stops the lane itself after that; it never copies roots.
+2. GLM Full prerequisite: the FULL slot demotes itself until `~/glmfull-lane6/root` carries the release named in the `glmfull` precheck (`RELEASE` source_commit, `MANIFEST`) and `~/glmfull-lane6-api` carries the channel of the same commit (`SOURCE_COMMIT`). The config pins release dfa12a5 (main dfa12a5da, with the glm52 DSA indexer fix). The rotation starts and stops the lane itself; it never copies roots.
+   - Changing the release is a swap outside a FULL hour: pause the rotation, wait for any running tick, check that `sp-glmfull-rd6` and `glmfull-api6` are inactive, move the root and API dir aside, copy the staged ones in, install the config whose precheck names the new commit, run that precheck, resume. A root or API dir that does not match the pinned commit demotes the FULL hour to FLASH+1; it never starts the wrong release.
 3. Low-risk first transition (production stays up), at any time in the hour:
    - `$T force flash_plus ling`, then `$T --dry-run tick` to read the plan, then `$T resume` and `$T tick`.
    - Watch `rotation.log`: Qwen stops and its lane-3 packs are reclaimed; Ling starts on 16 nodes, ready, `ling3-api` :8437, Paris smoke; floor >= 20 GiB.
