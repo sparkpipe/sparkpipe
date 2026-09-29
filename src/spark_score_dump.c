@@ -167,7 +167,7 @@ SparkStatus SparkScoreDumpTableLoad(const char *path, const char *magic, uint32_
 	if ( status == SPARK_STATUS_OK )
 	{
 		memcpy(&header, table->bytes, sizeof(header));
-		if ( memcmp(header.magic, magic, 8u) != 0 || header.version != SPARK_SCORE_DUMP_VERSION || (require_ids != 0u) != (header.id_width != 0u) || header.id_width > 4096u )
+		if ( memcmp(header.magic, magic, sizeof(header.magic)) != 0 || header.version != SPARK_SCORE_DUMP_VERSION || (require_ids != 0u) != (header.id_width != 0u) || header.id_width > 4096u )
 			status = SPARK_STATUS_SCHEMA_ERROR;
 	}
 	if ( status == SPARK_STATUS_OK )
@@ -279,7 +279,7 @@ SparkStatus SparkScoreDumpOpen(const SparkScoreDumpConfig *config, SparkScoreDum
 	memset(writer, 0, sizeof(*writer));
 	if ( stat(config->directory, &info) != 0 || !S_ISDIR(info.st_mode) )
 		return(SPARK_STATUS_NOT_FOUND);
-	memcpy(writer->header.magic, SPARK_SCORE_DUMP_ROWS_MAGIC, 8u);
+	memcpy(writer->header.magic, SPARK_SCORE_DUMP_ROWS_MAGIC, sizeof(writer->header.magic));
 	writer->header.version = SPARK_SCORE_DUMP_VERSION;
 	writer->header.header_bytes = (uint32_t)sizeof(writer->header);
 	writer->header.tp_rank = config->tp_rank;
@@ -297,13 +297,13 @@ SparkStatus SparkScoreDumpOpen(const SparkScoreDumpConfig *config, SparkScoreDum
 	if ( status == SPARK_STATUS_OK && config->probe_path != 0 )
 		status = SparkScoreDumpTableLoad(config->probe_path, SPARK_SCORE_DUMP_PROBE_MAGIC, 1u, &writer->probes);
 	if ( status == SPARK_STATUS_OK && config->probe_path != 0 )
-		memcpy(writer->header.probe_sha256, writer->probes.sha256, 32u);
+		memcpy(writer->header.probe_sha256, writer->probes.sha256, sizeof(writer->header.probe_sha256));
 	if ( status == SPARK_STATUS_OK && config->tier2_path != 0 )
 	{
 		status = SparkScoreDumpTableLoad(config->tier2_path, SPARK_SCORE_DUMP_TIER2_MAGIC, 0u, &writer->tier2_rows);
 		if ( status == SPARK_STATUS_OK )
 		{
-			memcpy(writer->header.tier2_sha256, writer->tier2_rows.sha256, 32u);
+			memcpy(writer->header.tier2_sha256, writer->tier2_rows.sha256, sizeof(writer->header.tier2_sha256));
 			writer->header.tier2 = 1u;
 		}
 	}
@@ -315,7 +315,7 @@ SparkStatus SparkScoreDumpOpen(const SparkScoreDumpConfig *config, SparkScoreDum
 	{
 		status = SparkScoreDumpCreate(config->directory, "tier2", config->tp_rank, writer->tier2_path, &writer->tier2);
 		tier2_header = writer->header;
-		memcpy(tier2_header.magic, SPARK_SCORE_DUMP_TIER2_OUT_MAGIC, 8u);
+		memcpy(tier2_header.magic, SPARK_SCORE_DUMP_TIER2_OUT_MAGIC, sizeof(tier2_header.magic));
 		if ( status == SPARK_STATUS_OK )
 			status = SparkScoreDumpWriteAll(writer->tier2, &tier2_header, sizeof(tier2_header));
 	}
