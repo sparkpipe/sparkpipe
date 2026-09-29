@@ -1461,7 +1461,7 @@ What did not work on GB10:
   started a median 23.6 us late, and in production that would delay this
   rank's publish for every peer.
 
-The bench emulates a round with `--round-spin-us N --round-wait 3`: two
+The bench emulates a round with `--round-spin-us N --round-wait 2`: two
 one-thread kernels, then a wait-value node that a host thread releases N us
 after the first kernel ran. That is the shape of the hardware-wait round.
 
