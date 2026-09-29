@@ -327,6 +327,33 @@ static void TestChatTemplates(void)
 		SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED,0);
 	SparkModelResidentDeploymentDestroy(&deployment);
 
+	{
+		char *k3 = TestReadText("model-families/k3/chat_template.json");
+		static const char suffixed_null[] =
+			"{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+			"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+			"\"assistant_suffix\":null,\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}";
+		assert(TestLoadWithChatTemplate(k3,&deployment) == SPARK_STATUS_OK);
+		assert(deployment.chat_template.declared == 1u && deployment.chat_template.stop_marker_count == 2u);
+		TestRender(&deployment,
+			"{\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of France?\"}]}",
+			false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|open|>message role=\"user\"<|sep|>What is the capital of France?<|close|>message<|sep|><|end_of_msg|>"
+			"<|open|>message role=\"assistant\"<|sep|><|open|>response<|sep|>");
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|open|>message role=\"system\"<|sep|>Be terse.<|close|>message<|sep|><|end_of_msg|>"
+			"<|open|>message role=\"user\"<|sep|>hi<|close|>message<|sep|><|end_of_msg|>"
+			"<|open|>message role=\"assistant\"<|sep|><|open|>response<|sep|>ok<|close|>response<|sep|><|close|>message<|sep|><|end_of_msg|>"
+			"<|open|>message role=\"user\"<|sep|>bye<|close|>message<|sep|><|end_of_msg|>"
+			"<|open|>message role=\"assistant\"<|sep|><|open|>response<|sep|>");
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_THINKING_UNSUPPORTED,0);
+		TestRender(&deployment,"{\"messages\":[{\"role\":\"observation\",\"content\":\"42\"}]}",false,
+			SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED,0);
+		SparkModelResidentDeploymentDestroy(&deployment);
+		TestChatTemplateSchema(suffixed_null,SPARK_STATUS_SCHEMA_ERROR);
+		free(k3);
+	}
+
 	assert(TestLoadWithChatTemplate(minimal,&deployment) == SPARK_STATUS_OK);
 	TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,"UhiG");
 	TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_THINKING_UNSUPPORTED,0);
@@ -364,7 +391,7 @@ static void TestChatTemplates(void)
 	TestChatTemplateSchema("\"[gMASK]\"",SPARK_STATUS_SCHEMA_ERROR);
 	free(glm);
 	free(gemma);
-	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM and Gemma families render their publisher shapes, undeclared roles and thinking are refused, stop markers resolve to exactly one special token)\n");
+	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token)\n");
 }
 
 int main(int argc,char **argv)

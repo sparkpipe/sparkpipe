@@ -96,7 +96,7 @@ start() {
     stage=$((rank / 4))
     wrapper=""
     case " ${K3_WRAP_RANKS:-} " in *" $rank "*) wrapper="${K3_RANK_WRAPPER:-} " ;; esac
-    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$K3_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$K3_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$K3_LANE -E SPARK_TP_MESH_RANKS=$(mesh_ranks_of "$rank") -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$K3_EXPERT_POOL_BYTES -E SPARK_K3_STATE_BUDGET_BYTES=$K3_STATE_BUDGET_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ${wrapper}./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > residentd.log 2>&1'" &
+    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$K3_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$K3_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$K3_LANE -E SPARK_TP_MESH_RANKS=$(mesh_ranks_of "$rank") -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$K3_EXPERT_POOL_BYTES -E SPARK_K3_STATE_BUDGET_BYTES=$K3_STATE_BUDGET_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=${K3_DEVICE_MAX_CONNECTIONS:-32} bash -c 'exec ${wrapper}./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > residentd.log 2>&1'" &
     PIDS[$rank]=$!
   done
   join_ranks start

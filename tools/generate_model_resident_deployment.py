@@ -362,7 +362,10 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
 
 
 def chat_template_value(value: Any) -> dict[str, Any]:
-    template = exact_object(value, CHAT_TEMPLATE_KEYS, "chat_template")
+    keys = CHAT_TEMPLATE_KEYS | ({"assistant_suffix"} if isinstance(value, dict) and "assistant_suffix" in value else set())
+    template = exact_object(value, keys, "chat_template")
+    if "assistant_suffix" in template and not isinstance(template["assistant_suffix"], str):
+        raise DeploymentError("chat_template.assistant_suffix must be a string")
     for key in CHAT_TEMPLATE_TEXT_KEYS:
         if not isinstance(template[key], str):
             raise DeploymentError(f"chat_template.{key} must be a string")

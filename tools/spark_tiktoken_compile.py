@@ -6,7 +6,12 @@ from pathlib import Path
 import struct
 
 
-def compile_tokenizer(ranks_path, config_path, destination):
+SPLIT_MODES = {"byte-level": 1, "letters-and-marks": 2, "digit-runs": 3, "letters": 4}
+
+
+def compile_tokenizer(ranks_path, config_path, destination, split_mode):
+    if split_mode not in SPLIT_MODES:
+        raise ValueError(f"split mode must be one of {sorted(SPLIT_MODES)}")
     ranks = {}
     for line in ranks_path.read_bytes().splitlines():
         encoded, rank = line.split()
@@ -31,7 +36,7 @@ def compile_tokenizer(ranks_path, config_path, destination):
                 merges.append((left, right, rank, rank))
     maximum = max([len(ranks) - 1] + [token for token, _, _ in specials])
     with destination.open("xb") as output:
-        output.write(struct.pack("<Q11I", 0x314b4f54535053, 2, 1, 0, 0, 0, 0, maximum, 1, len(ranks), len(merges), len(specials)))
+        output.write(struct.pack("<Q11I", 0x314b4f54535053, 2, 1, 0, 0, 0, 0, maximum, SPLIT_MODES[split_mode], len(ranks), len(merges), len(specials)))
         for piece, rank in sorted(ranks.items(), key=lambda item: item[1]):
             text = "".join(alphabet[b] for b in piece).encode()
             output.write(struct.pack("<II", rank, len(text)) + text)
@@ -39,7 +44,7 @@ def compile_tokenizer(ranks_path, config_path, destination):
             output.write(struct.pack("<4I", *merge))
         for token, text, special in sorted(specials):
             output.write(struct.pack("<3I", token, special, len(text)) + text)
-    return dict(vocabulary_size=maximum + 1, merge_pairs=len(merges), added_tokens=len(specials))
+    return dict(vocabulary_size=maximum + 1, merge_pairs=len(merges), added_tokens=len(specials), split_mode=split_mode)
 
 
 def main():
@@ -47,8 +52,9 @@ def main():
     parser.add_argument("--ranks", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--split-mode", choices=sorted(SPLIT_MODES), required=True)
     args = parser.parse_args()
-    print(json.dumps(compile_tokenizer(args.ranks, args.config, args.output)))
+    print(json.dumps(compile_tokenizer(args.ranks, args.config, args.output, args.split_mode)))
 
 
 if __name__ == "__main__":

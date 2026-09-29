@@ -54,6 +54,17 @@ static SparkChatTemplateOutcome SparkChatTemplateRoleHeader(
 	return(*header != 0 ? SPARK_CHAT_TEMPLATE_RENDERED : SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED);
 }
 
+static const char *SparkChatTemplateRoleSuffix(
+	const SparkModelResidentChatTemplate *chat_template,
+	const SparkJsonDocument *document,
+	int32_t role)
+{
+	if ( chat_template->assistant_suffix != 0 && role >= 0 &&
+		SparkJsonStringEquals(document,role,"assistant") )
+		return(chat_template->assistant_suffix);
+	return("");
+}
+
 SparkChatTemplateOutcome SparkChatTemplateRender(
 	const SparkModelResidentChatTemplate *chat_template,
 	const SparkJsonDocument *document,
@@ -124,6 +135,8 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 			break;
 		}
 		if ( !SparkChatTemplateAppend(&rendered,header) || !SparkChatTemplateAppend(&rendered,piece) ||
+			!SparkChatTemplateAppend(&rendered,SparkChatTemplateRoleSuffix(chat_template,document,
+				SparkJsonFindObjectMember(document,entry,"role"))) ||
 			!SparkChatTemplateAppend(&rendered,chat_template->turn_suffix) )
 			outcome = SPARK_CHAT_TEMPLATE_OUT_OF_MEMORY;
 		free(piece);

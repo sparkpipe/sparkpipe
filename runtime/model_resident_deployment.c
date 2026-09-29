@@ -27,7 +27,7 @@ static const char *const SparkModelResidentDeploymentChatTemplateMembers[] =
 {
 	"prefix","thinking_prefix","system","system_thinking","user","observation",
 	"assistant","assistant_thinking","turn_suffix","generation",
-	"generation_thinking","stop_markers"
+	"generation_thinking","stop_markers","assistant_suffix"
 };
 static const char *const SparkModelResidentDeploymentAdapterMembers[] =
 {
@@ -459,15 +459,18 @@ static SparkStatus SparkModelResidentDeploymentParseChatTemplate(
 {
 	SparkModelResidentChatTemplate *chat = &deployment->chat_template;
 	int32_t object,array,element;
-	uint32_t index;
+	uint32_t index,suffixed;
 	SparkStatus status;
 	object = SparkModelResidentDeploymentMember(document,root,"chat_template");
 	if ( object < 0 )
 		return(SPARK_STATUS_OK);
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	suffixed = SparkModelResidentDeploymentMember(document,object,"assistant_suffix") >= 0 ? 1u : 0u;
 	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentChatTemplateMembers,
-		sizeof(SparkModelResidentDeploymentChatTemplateMembers) / sizeof(SparkModelResidentDeploymentChatTemplateMembers[0]));
+		(uint32_t)(sizeof(SparkModelResidentDeploymentChatTemplateMembers) / sizeof(SparkModelResidentDeploymentChatTemplateMembers[0])) - 1u + suffixed);
+	if ( status == SPARK_STATUS_OK && suffixed != 0u )
+		status = SparkModelResidentDeploymentTextString(document,object,"assistant_suffix",&chat->assistant_suffix);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentTextString(document,object,"prefix",&chat->prefix);
 	if ( status == SPARK_STATUS_OK )
@@ -666,6 +669,7 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->chat_template.observation);
 	free(deployment->chat_template.assistant);
 	free(deployment->chat_template.assistant_thinking);
+	free(deployment->chat_template.assistant_suffix);
 	free(deployment->chat_template.turn_suffix);
 	free(deployment->chat_template.generation);
 	free(deployment->chat_template.generation_thinking);

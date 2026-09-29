@@ -29,6 +29,7 @@ typedef struct SparkModelResidentChatTemplate
 	char *observation;
 	char *assistant;
 	char *assistant_thinking;
+	char *assistant_suffix;
 	char *turn_suffix;
 	char *generation;
 	char *generation_thinking;

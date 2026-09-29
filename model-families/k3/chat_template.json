@@ -1,0 +1,18 @@
+{
+ "prefix": "",
+ "thinking_prefix": "",
+ "system": "<|open|>message role=\"system\"<|sep|>",
+ "system_thinking": "<|open|>message role=\"system\"<|sep|>",
+ "user": "<|open|>message role=\"user\"<|sep|>",
+ "observation": null,
+ "assistant": "<|open|>message role=\"assistant\"<|sep|><|open|>response<|sep|>",
+ "assistant_thinking": null,
+ "assistant_suffix": "<|close|>response<|sep|>",
+ "turn_suffix": "<|close|>message<|sep|><|end_of_msg|>",
+ "generation": "<|open|>message role=\"assistant\"<|sep|><|open|>response<|sep|>",
+ "generation_thinking": null,
+ "stop_markers": [
+  "<|close|>",
+  "<|end_of_msg|>"
+ ]
+}

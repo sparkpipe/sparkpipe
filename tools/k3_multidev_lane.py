@@ -227,11 +227,23 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
     return config
 
 
+CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "model-families/k3/chat_template.json"
+TOKENIZER_ASSET = "tokenizer/tokenizer.compiled"
+TOKENIZER_VOCABULARY = 163840
+
+
+def chat_template() -> dict:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from generate_model_resident_deployment import chat_template_value
+    return chat_template_value(json.loads(CHAT_TEMPLATE_PATH.read_text()))
+
+
 def resident_deployment(runtime_root: str, weightd_socket: str,
                         kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES,
                         sequences: int = 16,
                         kv_pages: int = KV_PAGES_PER_SEQUENCE,
-                        pipeline_transport: str = "host-rdma") -> dict:
+                        pipeline_transport: str = "host-rdma",
+                        tokenizer_sha256: str | None = None) -> dict:
     nodes = []
     for rank, host in enumerate(HOSTS):
         root = runtime_root.format(host=host)
@@ -287,6 +299,10 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "kv_logical_page_capacity": sequences * kv_pages,
             "kv_physical_page_capacity": sequences * kv_pages,
         },
+        "chat_template": chat_template(),
+        **({"tokenizer": {"path": TOKENIZER_ASSET, "sha256": tokenizer_sha256,
+                          "vocabulary_size": TOKENIZER_VOCABULARY}}
+           if tokenizer_sha256 else {}),
         "nodes": nodes,
     }
 
@@ -351,6 +367,10 @@ def main() -> int:
                         help="rank layout: 4 PP stages of TP4, or one TP16 "
                              "group over the TP16 rank packs "
                              "(default %(default)s)")
+    parser.add_argument("--tokenizer-sha256", default=None,
+                        help="sha256 of the compiled publisher tokenizer the "
+                             "API channel serves (runtime/" + TOKENIZER_ASSET +
+                             "); omitted for residentd-only roots")
     parser.add_argument("--check", action="store_true",
                         help="verify the outputs are current instead of "
                              "writing them")
@@ -372,7 +392,7 @@ def main() -> int:
     deployment = render(resident_deployment(
         arguments.runtime_root, arguments.weightd_socket,
         arguments.kv_backing_bytes, arguments.sequences, arguments.kv_pages,
-        arguments.pipeline_transport))
+        arguments.pipeline_transport, arguments.tokenizer_sha256))
     wrote = write_or_check(output / "deployment.json", deployment,
                            arguments.check)
 
