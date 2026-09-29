@@ -1,0 +1,156 @@
+{
+ "format": "sparkpipe-ab-fleet-v1",
+ "campaign": "glm53flash-w5dq",
+ "nodes": [
+  "spark0",
+  "spark1",
+  "spark2",
+  "spark3",
+  "spark4",
+  "spark5",
+  "spark6",
+  "spark7",
+  "spark8",
+  "spark9",
+  "sparka",
+  "sparkb",
+  "sparkc",
+  "sparkd",
+  "sparke",
+  "sparkf"
+ ],
+ "production": {
+  "root": "glm53flash.fp8.tp16",
+  "lane": 0,
+  "pool_bytes": 34359738368,
+  "arena": "production"
+ },
+ "free_lanes": [
+  1,
+  2,
+  11,
+  13,
+  14,
+  15
+ ],
+ "protected_paths": [
+  "sparkdata/glm53flash.fp8.tp16",
+  "kvcache/glm53flash.fp8.tp16",
+  "release",
+  "sparkdata/core",
+  "sparkdata/weightd",
+  "sparkdata/glm53flash.s1-bf16.tp16",
+  "sparkdata/glm53flash.s1-fp8.tp16",
+  "sparkdata/glm53flash.s1-nvfp4nv.tp16",
+  "sparkdata/glm53flash.s1-exl3dq-f11.tp16",
+  "sparkdata/glm53flash.s1-exl3dq-f9.tp16",
+  "sparkdata/glm53flash.s1-exl3dq-f10.tp16"
+ ],
+ "private_directory_members": [
+  "kv_snapshot_directory",
+  "score_dump_directory"
+ ],
+ "arenas": {
+  "production": {
+   "gib": 20.4,
+   "resident_in_baseline": true,
+   "pack_root": "glm53flash.fp8.tp16"
+  },
+  "f1": {
+   "gib": 37.4,
+   "pack_root": "glm53flash.s1-bf16.tp16"
+  },
+  "f11": {
+   "gib": 37.4,
+   "pack_root": "glm53flash.s1-exl3dq-f11.tp16"
+  },
+  "f9": {
+   "gib": 37.4,
+   "pack_root": "glm53flash.s1-exl3dq-f9.tp16"
+  },
+  "f10": {
+   "gib": 37.4,
+   "pack_root": "glm53flash.s1-exl3dq-f10.tp16"
+  }
+ },
+ "common_env": {
+  "SPARK_WEIGHTD_ATTACH": "1",
+  "SPARK_WEIGHTD_SOCKET": "/tmp/spark_weightd.sock",
+  "SPARK_TP_MESH_RANKS": "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
+  "SPARK_TP_WAIT_MODE": "hardware",
+  "SPARK_GLM5_NEXT_PIN_EXPERTS": "1",
+  "SPARK_GLM5_NEXT_GRAPH_PATH": "1"
+ },
+ "arms": {
+  "F1": {
+   "root": "qab-f1",
+   "pack_root": "glm53flash.s1-bf16.tp16",
+   "lane": 1,
+   "pool_bytes": 42949672960,
+   "arena": "f1",
+   "arena_owner": true,
+   "residentd_gib": 12,
+   "memory_max": "20G",
+   "port_group": 0
+  },
+  "F11": {
+   "root": "qab-f11",
+   "pack_root": "glm53flash.s1-exl3dq-f11.tp16",
+   "lane": 2,
+   "pool_bytes": 42949672960,
+   "arena": "f11",
+   "arena_owner": true,
+   "residentd_gib": 12,
+   "memory_max": "20G",
+   "port_group": 0
+  },
+  "F9": {
+   "root": "qab-f9",
+   "pack_root": "glm53flash.s1-exl3dq-f9.tp16",
+   "lane": 13,
+   "pool_bytes": 42949672960,
+   "arena": "f9",
+   "arena_owner": true,
+   "residentd_gib": 12,
+   "memory_max": "20G",
+   "port_group": 1
+  },
+  "F10": {
+   "root": "qab-f10",
+   "pack_root": "glm53flash.s1-exl3dq-f10.tp16",
+   "lane": 15,
+   "pool_bytes": 42949672960,
+   "arena": "f10",
+   "arena_owner": true,
+   "residentd_gib": 12,
+   "memory_max": "20G",
+   "port_group": 0
+  }
+ },
+ "slots": [
+  {
+   "name": "D11",
+   "start": [
+    "F11"
+   ]
+  },
+  {
+   "name": "D9",
+   "start": [
+    "F9"
+   ]
+  },
+  {
+   "name": "D10",
+   "start": [
+    "F10"
+   ]
+  },
+  {
+   "name": "REF",
+   "start": [
+    "F1"
+   ]
+  }
+ ]
+}
