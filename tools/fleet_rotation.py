@@ -28,6 +28,10 @@ class ConfigError(Exception):
     pass
 
 
+class Preempted(Exception):
+    pass
+
+
 def iso(t):
     return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -169,6 +173,7 @@ class Rotation:
         self.dir = os.path.expanduser(cfg["state_dir"])
         self.models = cfg["models"]
         self.fb = cfg["fallback"]
+        self.honor_locks = True
 
     def now(self):
         return self.clock if self.clock is not None else time.time()
@@ -225,6 +230,20 @@ class Rotation:
             if any(text.startswith(prefix) for prefix in self.cfg["lock"]["holder_prefixes"]):
                 return "preempted", f"lead window: {text[:160]}"
         return None, None
+
+    def checkpoint(self):
+        if not self.honor_locks:
+            return
+        kind, reason = self.pause_reason()
+        if kind:
+            raise Preempted(kind, reason)
+
+    def hold_off(self, st, kind, reason):
+        if st.get("phase") != kind or st.get("lock") != reason:
+            self.log("HOLD-OFF", kind=kind, reason=json.dumps(reason))
+        st["phase"] = kind
+        st["lock"] = reason
+        st["resync"] = True
 
     def auto_pause(self, st, why):
         if not self.dry:
@@ -400,6 +419,7 @@ class Rotation:
         started = time.monotonic()
         pending = self.node_cmds(model, key, {"stamp": self.stamp})
         while True:
+            self.checkpoint()
             results = self.run.each(pending)
             pending = {h: pending[h] for h, (rc, _) in results.items() if rc != 0}
             if not pending:
@@ -416,6 +436,7 @@ class Rotation:
     def wait_hub(self, model, key, timeout):
         deadline = time.monotonic() + timeout
         while True:
+            self.checkpoint()
             rc, _ = self.run.run("hub", self.hub_cmd(model, key))
             if rc == 0:
                 return
@@ -441,6 +462,7 @@ class Rotation:
 
     def stop_model(self, model):
         m = self.models[model]
+        self.checkpoint()
         self.log("STOP", model=model)
         if m.get("api"):
             self.run.run("hub", self.hub_cmd(model, "stop"))
@@ -454,6 +476,7 @@ class Rotation:
         deadline = time.monotonic() + m["engine"]["stop_timeout_s"]
         pending = self.node_cmds(model, "up")
         while pending:
+            self.checkpoint()
             results = self.run.each(pending)
             pending = {h: pending[h] for h, (rc, _) in results.items() if rc == 0 and not self.dry}
             if pending and time.monotonic() >= deadline:
@@ -465,6 +488,7 @@ class Rotation:
 
     def start_model(self, model):
         m = self.models[model]
+        self.checkpoint()
         self.stamp = f"{int(time.time())}-{model}"
         self.log("START", model=model, stamp=self.stamp)
         up = self.run.each(self.node_cmds(model, "up"))
@@ -522,9 +546,12 @@ class Rotation:
             for model in incoming:
                 self.start_model(model)
             self.floor_check("after")
-        except Failure as e:
-            self.alert(st, "ERROR", f"transition {','.join(current) or '-'} -> {','.join(target)} failed: {e}")
-            return self.fallback(st, str(e))
+        except Preempted:
+            raise
+        except Exception as e:
+            why = str(e) if isinstance(e, Failure) else f"{type(e).__name__}: {e}"
+            self.alert(st, "ERROR", f"transition {','.join(current) or '-'} -> {','.join(target)} failed: {why}")
+            return self.fallback(st, why)
         st["active"] = list(target)
         st["phase"] = "steady"
         st["transition"] = None
@@ -535,6 +562,9 @@ class Rotation:
 
     def fallback(self, st, why):
         st["failed_instance"] = self.slot_at(self.now())[0]
+        st["phase"] = "recovering"
+        st["transition"] = {"from": st.get("active") or [], "to": [self.fb], "reason": why, "started": iso(time.time())}
+        self.save_state(st)
         self.log("FALLBACK-BEGIN", why=json.dumps(why))
         try:
             state = self.observe()
@@ -542,10 +572,14 @@ class Rotation:
                 self.stop_model(model)
             self.start_model(self.fb)
             self.floor_check("after-fallback")
-        except Failure as e:
+        except Preempted:
+            raise
+        except Exception as e:
+            if not isinstance(e, Failure):
+                e = f"{type(e).__name__}: {e}"
             try:
                 st["active"] = [m for m, s in self.observe().items() if s == "up"]
-            except Failure:
+            except Exception:
                 st["active"] = []
             st["phase"] = "degraded"
             self.alert(st, "CRITICAL", f"fallback to {self.fb} failed: {e}; rotation auto-paused, fleet needs the lead")
@@ -597,14 +631,25 @@ class Rotation:
         st = self.load_state()
         kind, reason = self.pause_reason()
         if kind:
-            if st.get("phase") != kind or st.get("lock") != reason:
-                self.log("HOLD-OFF", kind=kind, reason=json.dumps(reason))
-            st["phase"] = kind
-            st["lock"] = reason
-            st["resync"] = True
+            self.hold_off(st, kind, reason)
             self.finish(st)
             return 0
         st["lock"] = None
+        try:
+            return self.step(st)
+        except Preempted as e:
+            kind, reason = e.args
+            self.alert(st, "WARN", f"{st.get('phase')} {json.dumps(st.get('transition'))} stopped at a lock ({reason}); the fleet is left as it is and adopted when the lock clears")
+            self.hold_off(st, kind, reason)
+            self.finish(st)
+            return 1
+
+    def step(self, st):
+        if st.get("phase") in ("transition", "recovering"):
+            self.alert(st, "ERROR", f"previous {st['phase']} {json.dumps(st.get('transition'))} did not finish; falling back to {self.fb}")
+            self.fallback(st, f"interrupted {st['phase']}")
+            self.finish(st)
+            return 1
         instance, slot, target = self.target(st, self.now())
         try:
             state = self.observe()
@@ -644,7 +689,9 @@ class Rotation:
             if sick and sick != [self.fb]:
                 self.alert(st, "ERROR", f"api health failed for {','.join(sick)}; falling back to {self.fb}")
                 self.fallback(st, "unhealthy " + ",".join(sick))
-            elif sick:
+                self.finish(st)
+                return 1
+            if sick:
                 self.alert(st, "WARN", f"{self.fb} api health failed; leaving production to its owners")
             st["phase"] = st.get("phase") if st.get("phase") in ("steady", "fallback") else "steady"
             self.finish(st)
@@ -749,7 +796,7 @@ def cmd_sync(cfg, runner, lanes):
     pause_path = os.path.join(lanes, "ROTATION_PAUSE")
     holder = open(holder_path).read() if os.path.exists(holder_path) else ""
     pause = open(pause_path).read() if os.path.exists(pause_path) else None
-    parts = [f"mkdir -p {remote}/lock", f"printf %s {shlex.quote(holder)} > {remote}/{lock['holder_file']}"]
+    parts = [f"mkdir -p {remote}/lock", f"printf %s {shlex.quote(holder)} > {remote}/{lock['holder_file']}.tmp && mv -f {remote}/{lock['holder_file']}.tmp {remote}/{lock['holder_file']}"]
     parts.append(f"printf %s {shlex.quote(pause or 'coord pause')} > {remote}/{lock['mirror_pause_file']}" if pause is not None else f"rm -f {remote}/{lock['mirror_pause_file']}")
     parts.append(f"cat {remote}/STATUS 2>/dev/null || echo 'ROTATION not installed'; tail -n 3 {remote}/ALERT 2>/dev/null | sed 's/^/ALERT-LOG /'")
     rc, text = runner.run("hub", " && ".join(parts[:3]) + "; " + parts[3])
@@ -836,6 +883,14 @@ def main(argv=None):
     if args.command == "serve-schedule":
         serve_schedule(rot)
         return 0
+    if args.command == "pause":
+        if not rot.dry:
+            os.makedirs(rot.dir, exist_ok=True)
+            with open(rot.path(cfg["lock"]["pause_file"] + ".tmp"), "w") as f:
+                f.write(f"manual {iso(time.time())}: {' '.join(args.reason) or 'no reason given'}\n")
+            os.replace(rot.path(cfg["lock"]["pause_file"] + ".tmp"), rot.path(cfg["lock"]["pause_file"]))
+        rot.log("PAUSE", reason=json.dumps(" ".join(args.reason)))
+        return 0
     if args.command in ("status", "now", "schedule"):
         st = rot.load_state()
         if args.command == "status":
@@ -851,13 +906,7 @@ def main(argv=None):
             if args.command == "tick":
                 return rot.tick()
             instance, _ = rot.slot_at(rot.now())
-            if args.command == "pause":
-                if not rot.dry:
-                    os.makedirs(rot.dir, exist_ok=True)
-                    with open(rot.path(cfg["lock"]["pause_file"]), "w") as f:
-                        f.write(f"manual {iso(time.time())}: {' '.join(args.reason) or 'no reason given'}\n")
-                rot.log("PAUSE", reason=json.dumps(" ".join(args.reason)))
-            elif args.command == "resume":
+            if args.command == "resume":
                 if not rot.dry and os.path.exists(rot.path(cfg["lock"]["pause_file"])):
                     os.remove(rot.path(cfg["lock"]["pause_file"]))
                 st["resync"] = True
@@ -880,6 +929,7 @@ def main(argv=None):
                 if not target or unknown:
                     print(f"converge needs runnable models; not runnable: {' '.join(unknown) or '(none given)'}", file=sys.stderr)
                     return 2
+                rot.honor_locks = False
                 state = rot.observe()
                 up = [m for m, s in state.items() if s == "up"]
                 dirty = [m for m, s in state.items() if s == "mixed"]

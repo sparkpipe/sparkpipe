@@ -21,25 +21,27 @@ The companion is picked once per hour: it is the next runnable entry of `compani
 The timer runs `tick` every 5 minutes at :20 s. A slot changes at the top of the hour, so the first tick of an hour performs the transition.
 
 1. **Lock.** If `~/fleet-rotation/ROTATION_PAUSE` exists (manual or automatic pause), or the mirrored `lock/ROTATION_PAUSE` exists, or the mirrored `lock/PERF_HOLDER` starts with `lead-`, the tick touches nothing. It records `phase=paused|paused-coord|preempted` and marks the state for resync.
-2. **Observe.** One ssh per node runs every runnable model's `engine.up` check, and the hub runs every `api.up`. A model is `up` (all nodes and its API), `down` (nothing), or `mixed`.
-3. **Adopt or compare.** On the first tick, and after any lock or pause, the observed fleet is adopted as the current state; `mixed` models get a full stop before anything starts. Otherwise the observed fleet must match the recorded one:
+   The same lock is checked again at every step of a transition or fallback: before each stop and start, and on every poll while waiting for stop, ready or API health. A pause or `lead-*` lock that appears mid-transition stops the rotation at that step. It leaves the fleet as it is, writes a `WARN` alert naming the unfinished transition, and records the lock phase; when the lock clears, the next tick adopts the fleet as found (and restores production first if nothing serves). A manual `converge` (and so `rollback`) ignores the lock.
+2. **Recover.** A `state.json` still in `phase=transition` or `phase=recovering` means the previous tick died mid-step (unit timeout, hub reboot, a kill, an unexpected error). The tick writes an `ERROR` alert and runs the fallback below, so a hold of production placed by the rotation is never left behind.
+3. **Observe.** One ssh per node runs every runnable model's `engine.up` check, and the hub runs every `api.up`. A model is `up` (all nodes and its API), `down` (nothing), or `mixed`.
+4. **Adopt or compare.** On the first tick, and after any lock or pause, the observed fleet is adopted as the current state; `mixed` models get a full stop before anything starts. Otherwise the observed fleet must match the recorded one:
    - a model that is up but not recorded means somebody changed the fleet outside the rotation: alert and auto-pause;
    - a recorded companion that died means fall back to production;
    - recorded production that is not up means alert and no transition until it is back. Production belongs to fleet-agent and the lead.
-4. **Steady.** If the fleet already matches the target, only the APIs' `/health` is checked. A failing companion falls back to production.
-5. **Plan** (read-only, before anything is stopped):
+5. **Steady.** If the fleet already matches the target, only the APIs' `/health` is checked. A failing companion falls back to production.
+6. **Plan** (read-only, before anything is stopped):
    - run each incoming model's `engine.precheck` on its nodes and `api.precheck` on the hub;
    - predict each node's MemAvailable after the swap: now + outgoing `mem_gib` − incoming `mem_gib`. It must stay at or above `floor_gib` (20).
    - **Demotion:** a slot base that fails either check demotes the slot for this hour (FULL → FLASH+1). A companion that fails either check is skipped for this hour in favour of the next one. Production is never held for a model that cannot start.
-6. **Transition:**
+7. **Transition:**
    1. Floor check on every node (>= 20 GiB MemAvailable).
    2. Stop the outgoing models, companions first and production last. For each: stop its API, stop its engine units (for production, `agent.hold` on 16/16), and wait until `engine.up` is false everywhere (`stop_timeout_s`).
    3. Free memory by pack only: `weightd_warm <socket> --reclaim-pack <sha>` for each of the model's own packs (`packs`, sha files). It is refused on a node where the engine is still up. The config validator rejects any node-global `--reclaim` anywhere in the file.
    4. Start the incoming models, production first. For each: a memory gate on the nodes where it is not already up (`mem_gib` + floor), `engine.start`, then wait for `engine.ready` on every node (`ready_timeout_s`). After `grace_s`, an engine whose unit has exited fails the step early. Then start the API, wait for `api.health` (`api.timeout_s`), and run the smoke request (`smoke.body` to `smoke.path`; the reply must contain `smoke.expect`).
    5. Floor check on every node again.
-7. **Failure** at any step (timeout, non-zero rc, ssh timeout, smoke mismatch, floor) triggers:
+8. **Failure** at any step (timeout, non-zero rc, ssh timeout, smoke mismatch, floor, or any unexpected error in the tool) triggers:
    - an `ERROR` line in `ALERT`;
-   - **fallback:** stop every non-production model (API, units, reclaim-pack), then start production (idempotent when it is already up: unhold, ready, g53-api, Paris smoke). The failed hour stays on production alone; the same slot is not retried within the hour.
+   - **fallback:** record `phase=recovering` first (so a fallback that is itself interrupted is redone by the next tick), then stop every non-production model (API, units, reclaim-pack), then start production (idempotent when it is already up: unhold, ready, g53-api, Paris smoke). The failed hour stays on production alone; the same slot is not retried within the hour.
    - If the fallback fails: `phase=degraded`, a `CRITICAL` alert, and an automatic `ROTATION_PAUSE`. The lead takes over.
 
 **Serving gaps.**
@@ -95,7 +97,7 @@ $T converge --rollback      # converge to rollback_models (production + Qwen)
 $T tick                     # what the timer runs
 ```
 
-`force`, `skip`, `pause` and `resume` only change the state; the next tick (within 5 min) acts. Run `tick` to act now; it takes the same state lock as the timer.
+`force`, `skip`, `pause` and `resume` only change the state; the next tick (within 5 min) acts. Run `tick` to act now; it takes the same state lock as the timer. `pause` does not take the state lock: it succeeds while a tick is running, and that tick stops at its next step (see Lock above). `force`, `skip`, `resume` and `converge` are refused while a tick holds the lock.
 
 ## Install and rollback (lead actions)
 
@@ -110,10 +112,10 @@ $T tick                     # what the timer runs
   The rotation is installed **paused**.
 - `status`, `dry-run [UTC-TIME]`.
 - `rollback`:
-  1. disables the timer;
-  2. waits for a running tick to finish (up to 60 min);
-  3. disables the responder;
-  4. writes `ROTATION_PAUSE`;
+  1. writes `ROTATION_PAUSE`, so a running tick stops at its next step;
+  2. disables the timer;
+  3. waits for a running tick to exit (up to 60 min);
+  4. disables the responder;
   5. runs `converge --rollback`, which puts back production + Qwen TP4 (the fleet before the rotation). Qwen's API is `qwen27b-api`.
 
 ## First supervised run (lead)

@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -410,6 +411,92 @@ def test_stuck_stop_and_reclaim_guard():
         check("reclaim guard: reclaim-pack refused while the engine is up", refused and not any("reclaim c1" in l for l in f.call_lines()))
 
 
+def interrupt_world(f, big_hosts):
+    w = f.world()
+    for h in HOSTS:
+        w["nodes"][h]["up"]["prod"] = False
+        w["nodes"][h]["ready"]["prod"] = False
+        w["nodes"][h]["up"]["c1"] = False
+        w["nodes"][h]["arena"]["prod"] = 0
+        w["nodes"][h]["mem"] = 110
+    w["apis"]["prod"] = False
+    w["apis"]["c1"] = False
+    for h in big_hosts:
+        w["nodes"][h]["up"]["big"] = True
+    f.save(w)
+    st = f.state()
+    st["phase"] = "transition"
+    st["transition"] = {"from": ["prod", "c1"], "to": ["big"], "reason": "slot full", "started": "x"}
+    (f.state_dir / "state.json").write_text(json.dumps(st))
+
+
+def test_interrupted_transition_recovers():
+    for big_hosts, label in (([], "production held, nothing started"), (["n0", "n1"], "incoming engine half started")):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Fleet(tmp)
+            f.tool("tick", at="2026-09-29T17:00:30Z")
+            interrupt_world(f, big_hosts)
+            rc, out = f.tool("tick", at="2026-09-29T18:05:30Z")
+            st = f.state()
+            check(f"interrupted ({label}): the next tick restores production", f.up_on("prod") == HOSTS and f.world()["apis"].get("prod") and st.get("active") == ["prod"] and st.get("phase") == "fallback", out[-700:])
+            check(f"interrupted ({label}): the half-started engine is stopped and reclaimed by pack", f.up_on("big") == [] and not (f.state_dir / "ROTATION_PAUSE").exists(), out[-400:])
+            check(f"interrupted ({label}): alerted", "did not finish" in f.alerts(), f.alerts())
+
+
+def test_pause_during_running_tick():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = config(Path(tmp))
+        cfg["models"]["big"]["engine"]["ready_timeout_s"] = 60
+        f = Fleet(tmp, cfg)
+        f.behave(never_ready=["big"])
+        env = dict(os.environ, FAKE_WORLD=str(f.world_path), PATH=f"{f.tmp / 'bin'}:{os.environ['PATH']}")
+        p = subprocess.Popen([sys.executable, str(TOOL), "--config", str(f.cfg_path), "--at", "2026-09-29T15:00:30Z", "tick"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not any("start big" in l for l in f.call_lines()):
+            time.sleep(0.1)
+        rc, out = f.tool("pause", "lead", "window")
+        check("pause: accepted while a tick holds the state lock", rc == 0 and (f.state_dir / "ROTATION_PAUSE").exists(), out)
+        mark = len(f.call_lines())
+        try:
+            tick_out = p.communicate(timeout=30)[0]
+        except subprocess.TimeoutExpired:
+            p.kill()
+            tick_out = p.communicate()[0]
+        check("pause: the running transition stops at the next checkpoint", p.returncode == 1 and f.state().get("phase") == "paused" and f.state().get("resync") is True, tick_out[-600:])
+        check("pause: nothing is started or stopped after the pause", not any(" start " in l or " stop " in l or "reclaim" in l for l in f.call_lines()[mark:]), "\n".join(f.call_lines()[mark:]))
+        check("pause: the stop at a lock is alerted", "stopped at a lock" in f.alerts(), f.alerts())
+        f.behave(never_ready=[])
+        f.tool("resume")
+        rc, out = f.tool("tick", at="2026-09-29T15:10:30Z")
+        check("pause: after resume the half-started slot is adopted and production restored", f.up_on("prod") == HOSTS and f.up_on("big") == [] and f.state().get("active") == ["prod"], out[-600:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        (f.state_dir).mkdir()
+        (f.state_dir / "lock").mkdir()
+        (f.state_dir / "lock" / "PERF_HOLDER").write_text("lead-w1 pid=1\n")
+        rc, out = f.tool("converge", "--rollback", at="2026-09-29T15:30:00Z")
+        check("rollback: a manual converge runs under a pause or lead lock", rc == 0 and f.up_on("dflt") == ["n0", "n1"], out[-400:])
+
+
+def test_unexpected_error_falls_back():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = config(Path(tmp))
+        cfg["models"]["big"]["engine"]["ready"] = "fake ready @model@ @unknown@"
+        f = Fleet(tmp, cfg)
+        rc, out = f.tool("tick", at="2026-09-29T15:00:30Z")
+        check("unexpected error: a non-Failure exception mid-transition still falls back", f.up_on("prod") == HOSTS and f.up_on("big") == [] and f.state().get("phase") == "fallback" and "ConfigError" in f.alerts(), out[-600:])
+
+
+def test_failed_health_fallback_reports_degraded():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.behave(unhealthy=["c1"], stop_stuck=["c1"])
+        rc, out = f.tool("tick", at="2026-09-29T17:05:30Z")
+        st = f.state()
+        check("health: a failed fallback is reported degraded, not steady", st.get("phase") == "degraded" and "phase=degraded" in (f.state_dir / "STATUS").read_text() and f.up_on("prod") == HOSTS, out[-500:])
+
+
 def test_dry_run_executes_nothing():
     with tempfile.TemporaryDirectory() as tmp:
         f = Fleet(tmp)
@@ -474,7 +561,8 @@ def main():
     for test in (test_schedule_and_rotation, test_adopt_and_full_transition, test_ready_timeout_falls_back, test_engine_death_and_start_failure,
                  test_ssh_timeout, test_smoke_failure, test_fallback_failure_pauses, test_preemption_and_resync,
                  test_pause_resume_and_foreign_change, test_floor_and_prediction, test_steady_health_and_manual,
-                 test_stuck_stop_and_reclaim_guard, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation, test_production_config):
+                 test_stuck_stop_and_reclaim_guard, test_interrupted_transition_recovers, test_pause_during_running_tick,
+                 test_unexpected_error_falls_back, test_failed_health_fallback_reports_degraded, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation, test_production_config):
         test()
     if failures:
         print(f"\n{len(failures)} FAILED: {', '.join(failures)}")

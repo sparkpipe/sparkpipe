@@ -16,7 +16,7 @@ usage: $0 check | install | status | dry-run [UTC-TIME] | rollback
   install   copy tool + config to $HUB:~/$DIR, write the units, pause the rotation, enable --now the timer and the schedule responder
   status    timer state and the rotation's 'now' view
   dry-run   the installed tool's tick in --dry-run (prints every command, runs none) at UTC-TIME (default now)
-  rollback  disable the timer, wait for a running tick, stop the schedule responder, converge to the config's rollback_models
+  rollback  pause, disable the timer, wait for a running tick, stop the schedule responder, converge to the config's rollback_models
 USAGE
   exit 2
 }
@@ -90,14 +90,14 @@ dry_run() {
 }
 
 rollback() {
-  on_hub "systemctl --user disable --now fleet-rotation.timer"
+  on_hub "echo \"rollback \$(date -u +%FT%TZ)\" > ~/$DIR/ROTATION_PAUSE.tmp && mv -f ~/$DIR/ROTATION_PAUSE.tmp ~/$DIR/ROTATION_PAUSE; systemctl --user disable --now fleet-rotation.timer"
   local i=0
   while on_hub "systemctl --user is-active -q fleet-rotation.service"; do
     [ "$i" -ge 120 ] && { echo "a tick is still running after 60 min; stop it by hand (systemctl --user stop fleet-rotation.service) and rerun rollback" >&2; exit 1; }
     sleep 30; i=$((i + 1))
   done
   on_hub "systemctl --user disable --now fleet-rotation-schedule.service"
-  on_hub "echo \"rollback \$(date -u +%FT%TZ)\" > ~/$DIR/ROTATION_PAUSE; $TOOL converge --rollback"
+  on_hub "$TOOL converge --rollback"
   status
 }
 
