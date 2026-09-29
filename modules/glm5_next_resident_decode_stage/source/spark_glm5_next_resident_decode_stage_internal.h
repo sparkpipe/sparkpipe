@@ -325,6 +325,22 @@ static inline uint32_t SparkGlm5NextL2PrefetchShapeValid(const SparkGlm5NextL2Pr
 		shape->blocks <= SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_MAX ? 1u : 0u);
 }
 
+#define SPARK_GLM5_NEXT_ROW_GATE_ROWS 64u
+
+typedef struct SparkGlm5NextRowGateReport
+{
+	uint32_t q_a_layer;
+	uint32_t moe_layer;
+	uint32_t waves_checked;
+	uint32_t rows_checked;
+	uint32_t q_a_checked;
+	uint32_t router_checked;
+	uint32_t moe_checked;
+	uint32_t q_a_mismatches;
+	uint32_t router_mismatches;
+	uint32_t moe_mismatches;
+} SparkGlm5NextRowGateReport;
+
 typedef struct SparkGlm5NextMtpDraftOps
 {
 	void *context;
@@ -337,6 +353,7 @@ extern "C" {
 #endif
 
 int32_t SparkGlm5NextLaunchCudaWave(const SparkGlm5NextCudaWave *wave);
+int32_t SparkGlm5NextLaunchCudaRowGate(const SparkGlm5NextLayerWeights *layers,uint32_t first_layer_index,uint32_t layer_count,uint32_t tp_degree,const uint8_t *expert_base,uint32_t multiprocessors,SparkGlm5NextRowGateReport *report);
 int32_t SparkGlm5NextLaunchCudaWaveBegin(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionScore(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);

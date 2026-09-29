@@ -502,6 +502,32 @@ static void Measure(const Family &family,std::map<std::string,Tally> &tallies,st
     }
 }
 
+static uint32_t LoadGate(uint32_t multiprocessors)
+{
+    SparkGlm5NextLayerWeights layers[2];
+    SparkGlm5NextRowGateReport report;
+    const uint32_t w1_rows=2u*GLM5_NEXT_EXPERT_INTERMEDIATE/ROWEQ_TP,intermediate=GLM5_NEXT_EXPERT_INTERMEDIATE/ROWEQ_TP;
+    memset(layers,0,sizeof(layers));
+    layers[0].q_a_bf16=RandomBf16((uint64_t)GLM5_NEXT_QUERY_A_DIM*GLM5_NEXT_HIDDEN,0.0625f);
+    layers[1].q_a_bf16=layers[0].q_a_bf16;
+    layers[1].post_attn_norm_bf16=RandomBf16(GLM5_NEXT_HIDDEN,1.0f);
+    layers[1].router_bf16=RandomBf16((uint64_t)GLM5_NEXT_EXPERTS*GLM5_NEXT_HIDDEN,0.0625f);
+    layers[1].router_correction_f32=RandomScale(GLM5_NEXT_EXPERTS);
+    layers[1].expert_up_gate_payload=RandomFp8((uint64_t)GLM5_NEXT_EXPERTS*w1_rows*GLM5_NEXT_HIDDEN);
+    layers[1].expert_up_gate_scale=RandomScale((uint64_t)GLM5_NEXT_EXPERTS*w1_rows*(GLM5_NEXT_HIDDEN/GLM5_NEXT_FP8_SCALE_BLOCK));
+    layers[1].expert_down_payload=RandomFp8((uint64_t)GLM5_NEXT_EXPERTS*GLM5_NEXT_HIDDEN*intermediate);
+    layers[1].expert_down_scale=RandomScale((uint64_t)GLM5_NEXT_EXPERTS*GLM5_NEXT_HIDDEN*(intermediate/GLM5_NEXT_FP8_SCALE_BLOCK));
+    layers[1].shared_gate_up_bf16=RandomBf16((uint64_t)w1_rows*GLM5_NEXT_HIDDEN,0.0625f);
+    layers[1].shared_down_bf16=RandomBf16((uint64_t)GLM5_NEXT_HIDDEN*intermediate,0.0625f);
+    CUDA(cudaDeviceSynchronize());
+    REQUIRE(SparkGlm5NextLaunchCudaRowGate(layers,GLM5_NEXT_FIRST_ROUTED_LAYER-1u,2u,ROWEQ_TP,0,multiprocessors,&report) == LM_LAUNCH_OK);
+    printf("ROWEQ load_gate q_a_layer=%u moe_layer=%u waves=%u rows=%u checked=%u/%u/%u mismatches=%u/%u/%u\n",report.q_a_layer,report.moe_layer,report.waves_checked,report.rows_checked,
+        report.q_a_checked,report.router_checked,report.moe_checked,report.q_a_mismatches,report.router_mismatches,report.moe_mismatches);
+    REQUIRE(report.q_a_layer == GLM5_NEXT_FIRST_ROUTED_LAYER-1u && report.moe_layer == GLM5_NEXT_FIRST_ROUTED_LAYER);
+    REQUIRE(report.q_a_checked == 1u && report.router_checked == 1u && report.moe_checked == 1u && report.waves_checked == 5u && report.rows_checked == 2u+8u+17u+17u+SPARK_GLM5_NEXT_ROW_GATE_ROWS);
+    return report.q_a_mismatches+report.router_mismatches+report.moe_mismatches;
+}
+
 int main(int argc,char **argv)
 {
     cudaDeviceProp properties;
@@ -556,6 +582,11 @@ int main(int argc,char **argv)
         puts("FAIL row invariance: every break must be listed in roweq_known_breaks and every listed cell must still break; the list may only shrink");
         return 1;
     }
-    puts(enforce ? "PASS glm5_next row invariance matrix matches roweq_known_breaks" : "REPORT glm5_next row invariance matrix");
+    if (LoadGate(multiprocessors) != 0u)
+    {
+        puts("FAIL row invariance: the load gate found a row whose batched output differs from the row alone");
+        return 1;
+    }
+    puts(enforce ? "PASS glm5_next row invariance matrix matches roweq_known_breaks and the load gate is EQUAL" : "REPORT glm5_next row invariance matrix");
     return 0;
 }

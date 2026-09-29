@@ -4,10 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 #include "modules/glm5_next_resident_decode_stage/source/cuda/unity.cu"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
 #include "inference/kernels/tp_reduce.cuh"
 #include "inference/kernels/state_snapshot.cuh"
+#include "inference/kernels/splitmix.cuh"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weightd.h"
 #define SPARK_FAMILY_CAMEL Glm5Next
@@ -1228,4 +1230,216 @@ extern "C" int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave
 		return(LM_LAUNCH_ERR_LAUNCH);
 	*placed = 1u;
 	return(LM_LAUNCH_OK);
+}
+
+#define SPARK_GLM5_NEXT_ROW_GATE_BUFFERS 24u
+
+typedef struct SparkGlm5NextRowGate
+{
+	Glm5NextLayerBuffers moe;
+	const void *q_a_weight;
+	uint16_t *pool_bf16;
+	uint16_t *q_a_bf16;
+	void *owned[SPARK_GLM5_NEXT_ROW_GATE_BUFFERS];
+	uint32_t owned_count;
+	uint32_t multiprocessors;
+	cudaStream_t stream;
+} SparkGlm5NextRowGate;
+
+typedef struct SparkGlm5NextRowGateRows
+{
+	std::vector<uint8_t> q_a;
+	std::vector<uint8_t> router;
+	std::vector<uint8_t> moe;
+} SparkGlm5NextRowGateRows;
+
+static __global__ void SparkGlm5NextRowGateFillKernel(uint16_t *values,uint64_t count,uint64_t seed)
+{
+	uint64_t index,bits;
+	for ( index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)blockDim.x * gridDim.x )
+	{
+		bits = LmSplitMix64(seed ^ LmSplitMix64(index));
+		values[index] = LmFloatToBf16(((float)(bits >> 40u) / 8388608.0f - 1.0f) * 2.0f);
+	}
+}
+
+template<class T> static T *SparkGlm5NextRowGateAllocate(SparkGlm5NextRowGate *gate,uint64_t count)
+{
+	void *device = 0;
+	if ( gate->owned_count >= SPARK_GLM5_NEXT_ROW_GATE_BUFFERS || cudaMalloc(&device,(size_t)count * sizeof(T)) != cudaSuccess )
+		return(0);
+	if ( cudaMemset(device,0,(size_t)count * sizeof(T)) != cudaSuccess )
+	{
+		(void)cudaFree(device);
+		return(0);
+	}
+	gate->owned[gate->owned_count++] = device;
+	return((T *)device);
+}
+
+static void SparkGlm5NextRowGateRelease(SparkGlm5NextRowGate *gate)
+{
+	uint32_t index;
+	for ( index = 0u; index < gate->owned_count; index++ )
+		(void)cudaFree(gate->owned[index]);
+	gate->owned_count = 0u;
+}
+
+static int32_t SparkGlm5NextRowGateBind(SparkGlm5NextRowGate *gate,const SparkGlm5NextLayerWeights *moe_layer,const uint8_t *expert_base,uint32_t tp_degree)
+{
+	Glm5NextLayerBuffers *buffers = &gate->moe;
+	const uint64_t rows = SPARK_GLM5_NEXT_ROW_GATE_ROWS,pairs = rows * GLM5_NEXT_TOP_K;
+	memset(buffers,0,sizeof(*buffers));
+	buffers->tp_degree = tp_degree;
+	buffers->expert_w1_rows = 2u * SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / tp_degree;
+	buffers->expert_intermediate = SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / tp_degree;
+	buffers->shared_gate_up_rows = 2u * SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / tp_degree;
+	buffers->shared_intermediate = SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / tp_degree;
+	buffers->mlp_norm_weight = moe_layer->post_attn_norm_bf16;
+	buffers->router_weight = moe_layer->router_bf16;
+	buffers->router_correction_bias = moe_layer->router_correction_f32;
+	buffers->expert_w1_weight = expert_base != 0 ? expert_base + moe_layer->expert_up_gate_payload_offset : moe_layer->expert_up_gate_payload;
+	buffers->expert_w1_scale = expert_base != 0 ? (LmWeightCodec<GLM5_NEXT_EXPERT_WEIGHT_CODEC>::kScaleEncoding != LM_SCALE_ENCODING_NONE ? expert_base + moe_layer->expert_up_gate_scale_offset : 0) : moe_layer->expert_up_gate_scale;
+	buffers->expert_w2_weight = expert_base != 0 ? expert_base + moe_layer->expert_down_payload_offset : moe_layer->expert_down_payload;
+	buffers->expert_w2_scale = expert_base != 0 ? (LmWeightCodec<GLM5_NEXT_EXPERT_WEIGHT_CODEC>::kScaleEncoding != LM_SCALE_ENCODING_NONE ? expert_base + moe_layer->expert_down_scale_offset : 0) : moe_layer->expert_down_scale;
+	buffers->shared_gate_up_weight = moe_layer->shared_gate_up_bf16;
+	buffers->shared_down_weight = moe_layer->shared_down_bf16;
+	buffers->hc_collapsed_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,rows * GLM5_NEXT_HIDDEN);
+	buffers->hidden_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,rows * GLM5_NEXT_HIDDEN);
+	buffers->residual_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,rows * GLM5_NEXT_HIDDEN);
+	buffers->normed_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,rows * GLM5_NEXT_HIDDEN);
+	buffers->attention_out_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,rows * GLM5_NEXT_HIDDEN);
+	buffers->router_logits = SparkGlm5NextRowGateAllocate<float>(gate,rows * GLM5_NEXT_EXPERTS);
+	buffers->route_expert = SparkGlm5NextRowGateAllocate<uint32_t>(gate,pairs);
+	buffers->route_weight = SparkGlm5NextRowGateAllocate<float>(gate,pairs);
+	buffers->route_source_token = SparkGlm5NextRowGateAllocate<uint32_t>(gate,pairs);
+	buffers->route_packed_row = SparkGlm5NextRowGateAllocate<uint32_t>(gate,pairs);
+	buffers->group_row_offset = SparkGlm5NextRowGateAllocate<uint32_t>(gate,GLM5_NEXT_EXPERTS + 1u);
+	buffers->group_tile_prefix_w1 = SparkGlm5NextRowGateAllocate<uint32_t>(gate,GLM5_NEXT_EXPERTS + 1u);
+	buffers->group_tile_prefix_w2 = SparkGlm5NextRowGateAllocate<uint32_t>(gate,GLM5_NEXT_EXPERTS + 1u);
+	buffers->gate_up_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,pairs * buffers->expert_w1_rows);
+	buffers->intermediate_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,pairs * buffers->expert_w1_rows);
+	buffers->expert_out_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,pairs * GLM5_NEXT_HIDDEN);
+	buffers->shared_out_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,rows * GLM5_NEXT_HIDDEN);
+	gate->pool_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,rows * GLM5_NEXT_HIDDEN);
+	gate->q_a_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(gate,rows * GLM5_NEXT_QUERY_A_DIM);
+	if ( gate->q_a_bf16 == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	SparkGlm5NextRowGateFillKernel<<<256u,256u,0u,gate->stream>>>(gate->pool_bf16,rows * GLM5_NEXT_HIDDEN,0x726f776761746531ull);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static int32_t SparkGlm5NextRowGateRowsOf(std::vector<uint8_t> *out,const void *device,uint64_t bytes,cudaStream_t stream)
+{
+	out->resize(bytes);
+	if ( cudaMemcpyAsync(out->data(),device,bytes,cudaMemcpyDeviceToHost,stream) != cudaSuccess || cudaStreamSynchronize(stream) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
+}
+
+static int32_t SparkGlm5NextRowGateRun(SparkGlm5NextRowGate *gate,uint32_t first,uint32_t rows,SparkGlm5NextRowGateRows *out)
+{
+	Glm5NextLayerBuffers *buffers = &gate->moe;
+	const uint16_t *input = gate->pool_bf16 + (uint64_t)first * GLM5_NEXT_HIDDEN;
+	int32_t status = LM_LAUNCH_OK;
+	if ( gate->q_a_weight != 0 )
+	{
+		const LmSkinnyDenseTarget target = {gate->q_a_weight,gate->q_a_bf16,0,GLM5_NEXT_QUERY_A_DIM,GLM5_NEXT_QUERY_A_DIM,0u};
+		status = LmSkinnyDenseMulti<LmBf16Format>(&target,1u,input,rows,GLM5_NEXT_HIDDEN,gate->stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			status = Glm5NextLaunchBf16LinearRows(input,gate->q_a_weight,gate->q_a_bf16,rows,GLM5_NEXT_HIDDEN,GLM5_NEXT_QUERY_A_DIM,GLM5_NEXT_QUERY_A_DIM,0u,gate->stream);
+		if ( status == LM_LAUNCH_OK )
+			status = SparkGlm5NextRowGateRowsOf(&out->q_a,gate->q_a_bf16,(uint64_t)rows * GLM5_NEXT_QUERY_A_DIM * sizeof(uint16_t),gate->stream);
+	}
+	if ( status != LM_LAUNCH_OK || buffers->router_weight == 0 )
+		return(status);
+	if ( cudaMemcpyAsync(buffers->hc_collapsed_bf16,input,(uint64_t)rows * GLM5_NEXT_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToDevice,gate->stream) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	status = Glm5NextLayerMoeRoute<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(buffers,rows,rows * GLM5_NEXT_TOP_K,gate->multiprocessors,gate->stream);
+	if ( status == LM_LAUNCH_OK )
+		status = SparkGlm5NextRowGateRowsOf(&out->router,buffers->router_logits,(uint64_t)rows * GLM5_NEXT_EXPERTS * sizeof(float),gate->stream);
+	if ( status == LM_LAUNCH_OK && buffers->expert_w1_weight != 0 && buffers->expert_w2_weight != 0 )
+	{
+		status = Glm5NextLayerMoeExperts<GLM5_NEXT_EXPERT_WEIGHT_CODEC>(buffers,rows,rows * GLM5_NEXT_TOP_K,gate->multiprocessors,gate->stream);
+		if ( status == LM_LAUNCH_OK )
+			status = SparkGlm5NextRowGateRowsOf(&out->moe,buffers->attention_out_bf16,(uint64_t)rows * GLM5_NEXT_HIDDEN * sizeof(uint16_t),gate->stream);
+	}
+	return(status);
+}
+
+static uint32_t SparkGlm5NextRowGateDiffer(const std::vector<uint8_t> &wave,const std::vector<uint8_t> &alone,uint32_t row)
+{
+	const uint64_t row_bytes = alone.size();
+	if ( row_bytes == 0u )
+		return(0u);
+	return(wave.size() < (uint64_t)(row + 1u) * row_bytes || memcmp(wave.data() + (uint64_t)row * row_bytes,alone.data(),row_bytes) != 0 ? 1u : 0u);
+}
+
+extern "C" int32_t SparkGlm5NextLaunchCudaRowGate(const SparkGlm5NextLayerWeights *layers,uint32_t first_layer_index,uint32_t layer_count,uint32_t tp_degree,const uint8_t *expert_base,uint32_t multiprocessors,SparkGlm5NextRowGateReport *report)
+{
+	static const uint32_t waves[][2] = {{0u,2u},{0u,8u},{0u,17u},{40u,17u},{0u,SPARK_GLM5_NEXT_ROW_GATE_ROWS}};
+	SparkGlm5NextRowGate gate;
+	std::vector<SparkGlm5NextRowGateRows> alone(SPARK_GLM5_NEXT_ROW_GATE_ROWS);
+	SparkGlm5NextRowGateRows batched;
+	const SparkGlm5NextLayerWeights *moe_layer = 0;
+	uint32_t local,row,wave;
+	int32_t status;
+	if ( layers == 0 || layer_count == 0u || tp_degree == 0u || report == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	memset(report,0,sizeof(*report));
+	memset(&gate.moe,0,sizeof(gate.moe));
+	gate.q_a_weight = 0;
+	gate.owned_count = 0u;
+	gate.multiprocessors = multiprocessors;
+	report->q_a_layer = UINT32_MAX;
+	report->moe_layer = UINT32_MAX;
+	for ( local = 0u; local < layer_count; local++ )
+	{
+		if ( gate.q_a_weight == 0 && layers[local].q_a_bf16 != 0 )
+		{
+			gate.q_a_weight = layers[local].q_a_bf16;
+			report->q_a_layer = first_layer_index + local;
+		}
+		if ( moe_layer == 0 && first_layer_index + local >= GLM5_NEXT_FIRST_ROUTED_LAYER && layers[local].router_bf16 != 0 &&
+			layers[local].shared_gate_up_bf16 != 0 && layers[local].post_attn_norm_bf16 != 0 && layers[local].router_correction_f32 != 0 )
+		{
+			moe_layer = &layers[local];
+			report->moe_layer = first_layer_index + local;
+		}
+	}
+	if ( cudaStreamCreateWithFlags(&gate.stream,cudaStreamNonBlocking) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	status = moe_layer != 0 ? SparkGlm5NextRowGateBind(&gate,moe_layer,expert_base,tp_degree) : LM_LAUNCH_OK;
+	if ( status == LM_LAUNCH_OK && moe_layer == 0 )
+	{
+		gate.pool_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(&gate,(uint64_t)SPARK_GLM5_NEXT_ROW_GATE_ROWS * GLM5_NEXT_HIDDEN);
+		gate.q_a_bf16 = SparkGlm5NextRowGateAllocate<uint16_t>(&gate,(uint64_t)SPARK_GLM5_NEXT_ROW_GATE_ROWS * GLM5_NEXT_QUERY_A_DIM);
+		status = gate.q_a_bf16 == 0 ? LM_LAUNCH_ERR_SHAPE : LM_LAUNCH_OK;
+		if ( status == LM_LAUNCH_OK )
+		{
+			SparkGlm5NextRowGateFillKernel<<<256u,256u,0u,gate.stream>>>(gate.pool_bf16,(uint64_t)SPARK_GLM5_NEXT_ROW_GATE_ROWS * GLM5_NEXT_HIDDEN,0x726f776761746531ull);
+			status = cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		}
+	}
+	for ( row = 0u; status == LM_LAUNCH_OK && row < SPARK_GLM5_NEXT_ROW_GATE_ROWS; row++ )
+		status = SparkGlm5NextRowGateRun(&gate,row,1u,&alone[row]);
+	for ( wave = 0u; status == LM_LAUNCH_OK && wave < sizeof(waves) / sizeof(waves[0]); wave++ )
+	{
+		status = SparkGlm5NextRowGateRun(&gate,waves[wave][0],waves[wave][1],&batched);
+		for ( row = 0u; status == LM_LAUNCH_OK && row < waves[wave][1]; row++ )
+		{
+			const SparkGlm5NextRowGateRows *reference = &alone[waves[wave][0] + row];
+			report->q_a_mismatches += SparkGlm5NextRowGateDiffer(batched.q_a,reference->q_a,row);
+			report->router_mismatches += SparkGlm5NextRowGateDiffer(batched.router,reference->router,row);
+			report->moe_mismatches += SparkGlm5NextRowGateDiffer(batched.moe,reference->moe,row);
+			report->rows_checked++;
+		}
+		report->waves_checked += status == LM_LAUNCH_OK ? 1u : 0u;
+	}
+	report->q_a_checked = gate.q_a_weight != 0 ? 1u : 0u;
+	report->router_checked = alone[0].router.empty() ? 0u : 1u;
+	report->moe_checked = alone[0].moe.empty() ? 0u : 1u;
+	SparkGlm5NextRowGateRelease(&gate);
+	(void)cudaStreamDestroy(gate.stream);
+	return(status);
 }

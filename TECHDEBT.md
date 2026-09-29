@@ -332,8 +332,17 @@ capability). Each is an open I23 gap:
   fp32 online softmax merged in key order, router ties break by token id, and
   cross-GPU partial sums are added in rank order. It also compares multi-row
   with one-row output at load and turns drafting off when they differ. Adopt
-  the same rules, and make that load-time comparison the gate for verified
-  serving.
+  the same rules. Held now: weight-shaped reduction splits (skinny rows),
+  absolute attention tiles, lowest-id top-k ties, route order by token id
+  (`LmRouteBuild`), rank-order partial sums on the direct and RS+AG
+  all-reduce paths (`make test-tp-mesh-reduction-order`), and a load-time
+  gate in the glm5_next stage that refuses to initialize when multi-row
+  output differs from one-row output (docs/ROW_INVARIANCE.md, "Rules outside
+  the kernels"). Open: the gate covers dense, router and MoE on real weights,
+  not attention, KDA or the head; spin-mode collectives are not rank-order
+  (host round for one row, tree above), so verified serving needs
+  `SPARK_TP_WAIT_MODE=hardware`; drafting is not turned off when the gate
+  fails, the stage refuses to start instead.
 - No gate checks batch invariance. The COMPSEC-17 run of 2026-09-28
   (`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`)
   sent the same 17 prompts concurrently four times: each run differed from

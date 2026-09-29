@@ -7087,6 +7087,26 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 	return(SparkGlm5NextConfigureVerify(state));
 }
 
+static SparkStatus SparkGlm5NextRowGateCheck(SparkGlm5NextModuleState *state)
+{
+	SparkGlm5NextRowGateReport report;
+	uint32_t mismatches;
+	int32_t launch;
+	launch = SparkGlm5NextLaunchCudaRowGate(state->layers,state->first_layer_index,state->layer_count,state->tp_degree,
+		state->lazy_pack != 0 ? state->decode_lease_base_saved : 0,state->multiprocessor_count,&report);
+	mismatches = report.q_a_mismatches + report.router_mismatches + report.moe_mismatches;
+	fprintf(stderr,"ROW-GATE rank=%u q_a_layer=%d moe_layer=%d waves=%u rows=%u checked=q_a:%u,router:%u,moe:%u mismatches=q_a:%u,router:%u,moe:%u launch=%d verdict=%s\n",
+		state->tp_rank,report.q_a_layer == UINT32_MAX ? -1 : (int32_t)report.q_a_layer,report.moe_layer == UINT32_MAX ? -1 : (int32_t)report.moe_layer,
+		report.waves_checked,report.rows_checked,report.q_a_checked,report.router_checked,report.moe_checked,
+		report.q_a_mismatches,report.router_mismatches,report.moe_mismatches,(int)launch,
+		launch != 0 ? "ERROR" : mismatches != 0u ? "DIFFERENT" : "EQUAL");
+	if ( launch != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( mismatches != 0u )
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextInitializeState(
 	const SparkFirmwareModuleConfiguration *configuration,
 	const SparkFirmwareModuleHostServices *host_services,
@@ -7141,6 +7161,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 		status = SparkGlm5NextModuleInitializeTpCollective(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextBuildHeadShadow(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextRowGateCheck(state);
 #ifdef SPARK_SCORE_DUMP
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextScoreOpen(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);

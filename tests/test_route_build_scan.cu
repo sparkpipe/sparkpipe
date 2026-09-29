@@ -68,10 +68,12 @@ static void Case(uint32_t rows,uint32_t top_k,uint32_t skew,uint32_t up_dimensio
 	REQUIRE(got_offset == offset);
 	REQUIRE(got_up == up);
 	REQUIRE(got_down == down);
+	std::vector<uint32_t> next(offset.begin(),offset.end()-1);
 	for (uint32_t index=0u; index<packed; index++)
 	{
 		uint32_t slot=got_packed[index], expert=route[index];
 		REQUIRE(slot >= offset[expert] && slot < offset[expert+1u]);
+		REQUIRE(slot == next[expert]++);
 		REQUIRE(seen[slot] == 0u);
 		seen[slot]=1u;
 		REQUIRE(got_source[slot] == index/top_k);

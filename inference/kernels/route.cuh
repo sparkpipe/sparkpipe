@@ -94,8 +94,9 @@ template<uint32_t THREADS, uint32_t EXPERTS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
 {
+	static_assert(THREADS >= 32u, "the first warp places every route in token order");
 	__shared__ uint32_t count[EXPERTS];
-	uint32_t index,expert,packed;
+	uint32_t index,expert,packed,peers;
 	for (index = threadIdx.x; index < EXPERTS; index += THREADS)
 		count[index] = 0u;
 	__syncthreads();
@@ -104,12 +105,22 @@ void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t rout
 	__syncthreads();
 	LmRouteBuildPrefix<THREADS,EXPERTS>(count,group_row_offset,tile_m,neuron_tiles_up,tile_prefix_up,neuron_tiles_down,tile_prefix_down);
 	__syncthreads();
-	for (index = threadIdx.x; index < routes; index += THREADS)
+	if ( threadIdx.x >= 32u )
+		return;
+	for (index = threadIdx.x; index - threadIdx.x < routes; index += 32u)
 	{
-		expert = route_expert[index];
-		packed = atomicAdd(&count[expert],1u);
-		route_packed_row[index] = packed;
-		route_source_token[packed] = index / top_k;
+		expert = index < routes ? route_expert[index] : 0xffffffffu;
+		peers = __match_any_sync(0xffffffffu,expert);
+		if ( index < routes )
+		{
+			packed = count[expert] + __popc(peers & ((1u << threadIdx.x) - 1u));
+			route_packed_row[index] = packed;
+			route_source_token[packed] = index / top_k;
+		}
+		__syncwarp();
+		if ( index < routes && (peers & ((1u << threadIdx.x) - 1u)) == 0u )
+			count[expert] += __popc(peers);
+		__syncwarp();
 	}
 }
 

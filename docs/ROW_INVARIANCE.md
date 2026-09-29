@@ -231,9 +231,62 @@ and its role. That would remove the 128-row prefill cost. It needs one of two
 things: waves split by role, or two launches over row subsets. Generated-token
 checkpoints would also have to stay out of prefix reuse for verified requests.
 
+## Rules outside the kernels
+
+TensorFold's rules (TECHDEBT.md, "Dynamic batching") beyond the kernel order,
+and where each one is held:
+
+- **Cross-GPU partial sums in rank order.** With `SPARK_TP_WAIT_MODE=hardware`
+  (the fleet's serving mode) every BF16 sum takes the direct path, or
+  reduce-scatter plus all-gather at 49,152 elements or more at degree 4 or
+  more (`SparkTpMeshHardwareDirectRound`). Both combine through
+  `SparkTpMeshHardwareDirectElement`: an FP32 sum from 0 over peers 0, 1, ...,
+  degree - 1, truncated to BF16. RS+AG only changes which rank does the sum
+  for a slice, and the gather copies the BF16 bits. So an element's sum is the
+  same on both paths, and does not depend on how many rows share the payload.
+  `make test-tp-mesh-reduction-order` checks this on one GPU with the real
+  combine kernels: direct and RS+AG against a host rank-order sum at degrees
+  4, 8 and 16 and 1-49 rows of 1,000-4,096 elements, each row reduced alone
+  against the same row in the payload, and a negative control (the reversed
+  peer order gives different bits for at least one element per case).
+  The kv_shard attention merge (`LmLatentShardMergeKernel`) also folds the
+  sources in rank order. Spin mode is not canonical: one-row payloads take the
+  host round and larger ones the tree, whose fold order differs. Verified
+  serving needs the hardware wait.
+- **Router ties by token id.** Top-k already breaks score ties by the lowest
+  expert id, one row per warp (`LmTopkWarpCandidate`). `LmRouteBuild` used to
+  place each routed pair in its expert's group with `atomicAdd`, so the order
+  of the rows inside a group depended on thread timing. It now places them in
+  route order, which is (token id, k): the first warp walks the routes 32 at
+  a time and ranks equal experts with `__match_any_sync`.
+  `tests/test_route_build_scan.cu` requires that order; the old kernel fails
+  it on the skewed case. The skinny expert kernels accumulate each row
+  separately, so this did not change bits today; it makes the grouped layout
+  a function of the batch alone, which a tensor-core grouped GEMM will need.
+- **Load-time gate.** The glm5_next stage refuses to initialize when a
+  multi-row wave differs from its rows run alone. After the weights load
+  (and experts are pinned), `SparkGlm5NextRowGateCheck` runs
+  `SparkGlm5NextLaunchCudaRowGate` on this rank's real weights: the MLA q_a
+  projection of the first local MLA layer through the layer's own skinny
+  multi / skinny rows path, and the first local routed layer's
+  `Glm5NextLayerMoeRoute` and `Glm5NextLayerMoeExperts` (norm, router logits,
+  top-k, route build, grouped or per-pair experts, shared expert, finalize).
+  It runs 64 synthetic rows alone, then waves of 2, 8, 17 (twice, at rows 0
+  and 40) and 64, and compares every row bitwise. It prints one line per rank,
+  `ROW-GATE rank=.. q_a_layer=.. moe_layer=.. waves=5 rows=108
+  checked=q_a:1,router:1,moe:1 mismatches=q_a:0,router:0,moe:0 launch=0
+  verdict=EQUAL`, and fails initialization with `VALIDATION_FAILED` on any
+  mismatch (`INTERNAL_ERROR` if a launch fails). It has no switch. It costs
+  about 70 small launches at load and about 10 MB of scratch, freed before
+  serving. Attention, KDA and the head need cache state and are covered by the
+  harness and the stack test, not by the gate. The harness also calls the gate
+  on synthetic weights (`ROWEQ load_gate`); with a mutation that picks 16
+  lanes above 16 rows in `LmSkinnyRowsLanes`, the gate reports
+  `mismatches=19/98/4` and the harness fails.
+
 ## Not yet covered
 
 MTP drafting and verify through the stage, rows at different positions in one
-stack wave, sampled rows in the stack, graph against eager replay, and the TP16
-collectives (the spin mode is not row-invariant; the hardware wait is). The
-TP16 check is COMPSEC-17 sequential against 17 concurrent on the fleet.
+stack wave, sampled rows in the stack, graph against eager replay, and the
+spin-mode collectives. The TP16 check is COMPSEC-17 sequential against 17
+concurrent on the fleet.
