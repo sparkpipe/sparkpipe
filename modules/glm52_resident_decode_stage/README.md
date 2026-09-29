@@ -183,3 +183,30 @@ DRIVER MODEL ID: the expected DRIVER model id must equal the model.id of the
 firmware the driver was compiled from (ServingAdapterTemplateLoadDriver compares
 them). The bf16 arm's firmware pins the 5.3-full identity; every other codec's
 firmware keeps the 5.2 identity. GLM52_EXPERT_WEIGHT_CODEC is a numeric define.
+
+## GLM-5.3 Full at TP16 (lane tools and expert residency)
+
+GLM-5.3 Full (`GlmMoeDsaForCausalLM`) is served by this module at TP16 from
+the `glm53full.fp8.tp16` packs. `tools/glm53full_lane_build.sh` builds a
+bucketed firmware on a Spark, `tools/glm53full_lane.py` renders the
+deployment and sixteen adapter configurations for one weightd lane
+(`tests/test_glm53full_lane.py` pins them to the adapter's member set and the
+build identity), and `tools/glm53full_lane.sh` stages, starts, stops and
+serves the lane. The packs must carry the current contract digest;
+`tools/glm52_pack_restamp_contract.py` rewrites a stale digest when the
+contracts differ only in identity, after checking the pack against its
+sidecar.
+
+Expert residency has two modes:
+
+- Lazy (default with `SPARK_WEIGHTD_ATTACH_LAZY=1`): each routed layer leases
+  its experts through weightd. With a per-chunk pool (pool smaller than the
+  pack) every lease maps and unmaps its chunks, about 20-40 ms per layer, so
+  B1 is well under 1 token per second. It fits beside other lanes.
+- Pinned (`SPARK_GLM52_PIN_EXPERTS=1`): with an expert pool larger than the
+  pack, weightd premaps the whole arena once; the module then leases every
+  routed expert at attach (`spark_module_pin_experts.h`, 512 keys per lease)
+  and binds all layers to that base, so decode never calls weightd. It needs
+  about 50.4 GiB of arena per rank for fp8. Attach prints
+  `EXPERT-RESIDENCY mode=pinned keys=19200 leases=38`, or
+  `EXPERT-PIN-FAILED` and fails startup.

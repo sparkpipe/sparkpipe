@@ -444,7 +444,7 @@ static void SparkGlm52ServingDriverCompletion(
 	else
 		state->orphan_completion_count++;
 
-	if ( state->stage_index + 1u == SparkGlm52ServingDescriptor.stage_count && completion.status == SPARK_STATUS_OK )
+	if ( state->stage_index + 1u == SparkGlm52ServingDescriptor.stage_count && completion.status == SPARK_STATUS_OK && SparkModelServingWorkKindUsesRows(pending->common.work_kind) != 0u )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->common.active_sequence_count;
@@ -714,6 +714,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 	SparkGlm52ResidentDecodeStageFrameContext context;
 	SparkModelDriverBuffer buffer;
 	SparkModelDriverFrame frame;
+	SparkModelDriverCompletion released;
 	SparkStatus status;
 	state = (SparkGlm52ServingState *)adapter_state;
 	status = SparkGlm52ServingValidateSubmission(state,submission);
@@ -739,8 +740,16 @@ static SparkStatus SparkGlm52ServingSubmit(
 		frame.cache_lanes = pending->cache_lanes;
 		status = SparkGlm52ServingAdmit(state,submission,&frame,pending->cache_lanes,0u);
 		if ( status == SPARK_STATUS_OK )
-			status = state->program->submit(state->driver_instance,&frame);
-		if ( status != SPARK_STATUS_OK )
+		{
+			memset(&released,0,sizeof(released));
+			released.request_id = pending->common.request_id;
+			released.sequence_id = pending->common.sequence_id;
+			released.sequence_position = pending->common.sequence_position;
+			released.program_id = state->program->program_id;
+			released.residency = submission->residency;
+			SparkGlm52ServingDriverCompletion(pending,&released);
+		}
+		else
 			pending->common.active = 0u;
 		SPARK_RETURN(status);
 	}
