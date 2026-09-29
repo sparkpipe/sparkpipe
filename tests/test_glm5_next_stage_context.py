@@ -3263,6 +3263,7 @@ static void check_kv_shard_gather_walk(void)
 	state.kv_shard = 1u;
 	kv_shard_slot_fixture(&state.slots[0]);
 	state.kv_shard_scatter_only = 0u;
+	SHARD_GATHER_SEQUENCES = plan.gather_sequences;
 	WALK_SHARD_MASK = 3u;
 	WALK_FAIL_CODE = 'Z';
 	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
@@ -3273,8 +3274,8 @@ static void check_kv_shard_gather_walk(void)
 	state.kv_shard = 1u;
 	kv_shard_slot_fixture(&state.slots[0]);
 	state.kv_shard_scatter_only = 0u;
-	LINEAR_POSITIONS[0] = 3000u;
-	LINEAR_POSITIONS[1] = 5000u;
+	LINEAR_POSITIONS[0] = 1500u;
+	LINEAR_POSITIONS[1] = 2000u;
 	count = SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(0u,16u),LINEAR_SLOTS,LINEAR_POSITIONS,2u,0,0,0,&keys,&most);
 	assert(SparkGlm5NextKvShardPlanRounds(2u,16u,state.execution_row_capacity,keys,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 0u && plan.gather_sequences > SparkGlm5NextKvShardGatherCapacity(16u,state.execution_row_capacity));
 	WALK_SHARD_MASK = 3u;

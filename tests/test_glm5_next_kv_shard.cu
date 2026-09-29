@@ -324,6 +324,7 @@ static uint32_t GatherAttention(Case *item,std::vector<uint16_t> &merged)
     uint8_t *gathered;
     CUDA(cudaMalloc(&gathered,stride*degree));
     CUDA(cudaMemset(gathered,0xa5,stride*degree));
+    CUDA(cudaDeviceSynchronize());
     std::vector<Glm5NextLayerBuffers> buffers(degree);
     for (uint32_t rank=0u; rank<degree; rank++)
     {
@@ -346,7 +347,7 @@ static uint32_t GatherAttention(Case *item,std::vector<uint16_t> &merged)
     for (uint32_t rank=0u; rank<degree; rank++)
     {
         Rank &r=item->ranks[rank];
-        CUDA(cudaMemset(r.slot.kv_shard_partials_received_f32,0xff,(uint64_t)degree*r.buffers.shard_partial_stride*sizeof(float)));
+        CUDA(cudaMemsetAsync(r.slot.kv_shard_partials_received_f32,0xff,(uint64_t)degree*r.buffers.shard_partial_stride*sizeof(float),(cudaStream_t)r.slot.stream));
         REQUIRE(Glm5NextLayerAttentionShardGatherPartial(&buffers[rank],rows,item->max_context,(cudaStream_t)r.slot.stream)==LM_LAUNCH_OK);
         REQUIRE(Glm5NextLayerAttentionShardMergeLatent(&buffers[rank],rows,(cudaStream_t)r.slot.stream)==LM_LAUNCH_OK);
         CUDA(cudaStreamSynchronize((cudaStream_t)r.slot.stream));
