@@ -883,3 +883,92 @@ transport, and its hidden tap, tags and draft interface are what draftd's MTP
 reuses. Section 1 rules that drafters run on the rtx5090; running MTP on the
 fleet first was the lead's direction on 2026-09-28 and is recorded here for
 the owner.
+
+### 11.4 S8 design: B>1 verify, batched rtx5090 drafting, KDA state per verify position
+
+Status 2026-09-29: design only. B1 verify runs through
+`SparkGlm5NextVerifyWaveCheck`, which admits one active sequence, and
+`SparkModelDriverCompletion` carries one `tokens_per_sequence` for every lane.
+Sizes below are GLM-5.3 Flash at TP16: 34 KDA layers of 64 heads x 128 x 128
+(4 heads per rank), 11 DSA layers, MTP layer 45.
+
+**Frame ABI (bump 2).**
+- Submit: the row arrays (`token_ids`, `row_lane_indices`, `row_positions`,
+  `row_sequence_ids`) already describe several rows per lane. Add a per-lane
+  draft row count k_l >= 0. A wave holds the sum of (k_l + 1) rows; a lane
+  with k_l = 0 is a plain decode row in the same wave, so speculating and
+  non-speculating lanes share one pass.
+- Completion: a per-lane committed count c_l in 1..k_l+1 and per-lane token
+  offsets replace the scalar `tokens_per_sequence`. The batch engine, the
+  adapter and the resident IPC advance each lane by its own c_l, and
+  `cache_extra_tokens` becomes per lane. During the transition the scalar
+  stays and equals c_0 when there is one lane; `descriptor_bytes` versions the
+  layout.
+- Recorded draft tables (`recorded:PATH`) are keyed by sequence id and
+  position, so B>1 exactness can be proven with real draftd chains before the
+  live relay exists.
+
+**Verify wave.**
+- Rows are grouped per lane, contiguous positions within a lane. Each row
+  attends with its own position and its lane's KV (G-ROWEQ with absolute key
+  tiling, S3); DSA selection and the split regime are chosen per row, not per
+  wave.
+- Graphs are keyed by (batch bucket, total rows). The mesh row cap (128 today,
+  512 after roadmap 1.1) bounds the sum of (k_l + 1). The controller gives
+  each lane k_l = min(its depth cap from acceptance, floor(cap / B) - 1), so at
+  B64 and cap 128 speculation drafts one token per lane, at cap 512 seven.
+
+**KDA state per verify position.** Three options, per rank per sequence
+(state 4 x 128 x 128 f32 x 34 layers = 8.5 MiB):
+- Checkpoints: the wave writes the state after every row and the fold picks
+  the accepted one. Write traffic (k+1) x 8.5 MiB per lane per round: 68 MiB
+  at k = 7, 4.4 GB per rank per round at B64 (18 ms at 243 GB/s). Rejected.
+- Replay fold (B1 today): the wave leaves the state untouched and keeps each
+  row's key, value, retention and write gate (`LmReplayStep`, about 140 KB per
+  row per rank over 34 layers); the fold replays the accepted rows one step
+  at a time. Traffic c x 17 MiB (read and write) per lane for c committed
+  tokens.
+  `LmReplayFoldKernel` already takes per-row `accepted_length` and
+  `state_index`; B>1 needs the step table indexed by (lane, step) instead of
+  step only.
+- Chunked fold (recommended): fold the accepted prefix in one pass with the
+  chunked KDA state update the prefill path uses (decay product plus the
+  low-rank write sum of the accepted rows). One read and one write of the
+  state per lane per round, 17 MiB whatever the accepted length, the same
+  traffic as one plain decode step. At B64 that is 1.1 GB per rank per round
+  (4.7 ms), against 2.9 GB for replay at 2.5 committed tokens. The replay path
+  stays as the reference for the fold's exactness test.
+- The short-conv windows (kernel 4) keep the last three inputs of each row;
+  the fold copies the window ending at the accepted row.
+- DSA KV and index-pool rows of rejected positions are overwritten by the
+  next round; a kpool pool whose last member was rejected is recomputed (as
+  at B1).
+
+**Batched rtx5090 drafting.**
+- draftd keeps one `MtpSequenceKv` per lane and runs one batched MTP step per
+  depth over all lanes: the bf16 head (1.27 GB) and the spine (0.39 GB) are
+  read once per step, routed experts once per distinct expert (at B >= 32
+  nearly all 288, 7.25 GB fp8). About 8.9 GB per depth step, 5.3 ms at
+  1.69 TB/s for any B up to the expert saturation; depth 3 is about 16 ms per
+  round. That exceeds the fleet's B64 verify only if the fleet round drops
+  below it, so drafting round r+1 overlaps the fleet's verify of round r
+  (pre-drafting from the most likely acceptance, section 11.3 item 4).
+- Commits are batched row GEMMs (`spark_draftd_gemm_rows_bf16`), bitwise equal
+  to the B1 path.
+- MTP KV in bf16 is 1.5 KB per position: B64 x 8K context is 0.8 GB, B256 x
+  8K is 3 GB. With the lean MTP (about 8.6 GB) that fits the 12 GB draftd
+  budget only up to about B256 x 8K; beyond it the KV pages to host memory.
+- Relay: one REQUEST per round carries every lane's anchor; one DRAFT frame
+  per lane (112-byte `SPR1`, 7 KB at B64). The root-rank broadcast sends
+  (lane, k_l, tokens) for all lanes before the wave.
+
+**Gates (from section 5).** At least 0.98x of k = 0 at every B in
+{2, 4, 8, 16, 32, 64}; byte-identical output at every B (B>1 greedy must first
+be run-to-run stable, the row-invariance lanes' item); per-lane counts
+round-trip through the batch engine and the API.
+
+**PR order.** (1) Per-lane committed counts through completion, IPC, batch
+engine and adapter, with a host test at B8 using recorded tables. (2)
+Multi-lane verify waves and graph keys. (3) Chunked KDA fold for several
+lanes, tested against the replay fold. (4) Root broadcast and the multi-lane
+relay. (5) Batched draftd with pre-drafting.

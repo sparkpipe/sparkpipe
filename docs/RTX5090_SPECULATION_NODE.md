@@ -140,6 +140,63 @@ Drafters run on this host; the fleet only verifies. Measured on the RTX 5090
   reference on recorded greedy streams and prices it next to the lookup
   drafter.
 
+### Per-sequence MTP KV (S6b)
+
+The context-free MTP chain starts every draft from an empty MTP cache, so the
+MTP attention sees only the chain's own tokens (position-1 acceptance about
+0.51 in the numpy reference). `MtpSequenceKv` in
+`tools/draftd_glm53flash_mtp.py` keeps the layer-45 KV of one sequence:
+
+- One latent row (the `kv_a` latent after `kv_a_layernorm`), one indexer key
+  (`indexer.wk` then `k_norm`) and one kpool gate row
+  (`index_kpool_compress_gate`) per committed position.
+- `commit(kv, taps, next_tokens, start)` appends rows in order. Row p is the
+  MTP input of tap row p and token p+1: prefill commits every prompt row at
+  once, decode commits each verified round. The row GEMM
+  (`spark_draftd_gemm_rows_bf16`) accumulates in the GEMV kernel's order, so
+  a batched commit equals a row-by-row commit bit for bit.
+- `draft(kv, depth)` chains from the last committed row. Speculative rows are
+  written only past the committed length and never overwrite a committed
+  row, so a draft is a function of the committed rows; the next commit
+  replaces the speculative rows. `truncate` rolls back.
+- Attention is dense while the context is at most `index_topk`; beyond it
+  the MTP layer's own indexer scores kpool-compressed pools (softmax of gate
+  plus ape over each pool of 4, ReLU head scores weighted by `weights_proj`)
+  and attends to the top `index_topk / kpool` pools plus the tail, as the
+  engine's DSA layers do. `glm53flash_mtp_reference.index_positions` is the
+  numpy reference.
+- The MTP input hidden is the post-final-norm row by default
+  (`rmsnorm(hc_mean, model.norm)`), computed from the layer-44 hc-mean tap;
+  `tap="hc_mean"` keeps the old input. The numpy reference puts the
+  post-final-norm tap with sequence KV at 36/41 = 0.88 next-next hits at
+  depth 1, against 21/41 context-free.
+
+`tools/draftd_mtp_seqkv_check.py` compares the sequence-KV drafter with
+`glm53flash_mtp_reference.py` in sequence context (depth 1, identical inputs,
+two device passes for run-to-run identity). `tests/test_draftd_mtp_kv.py`
+(CUDA) covers the row GEMM, the tap, commits, the draft against a
+teacher-forced cache, speculative isolation, rollback and the indexer.
+
+### Recorded draft tables
+
+Until rank 15 broadcasts relay drafts to all ranks (section 11.3 of
+SPECULATION_PLAN.md), a live rtx5090 draft cannot reach the verify. To
+measure B1 speculation with real draftd drafts, draftd writes a draft table
+offline from a tap dump of the same greedy batch, and every rank loads it
+with `SPARK_GLM5_NEXT_VERIFY_DRAFTER=recorded:PATH`
+(`src/spark_speculation_recorded_draft.c`). Every rank reads the same file, so
+the verify rows agree without a broadcast. Because greedy B1 output repeats
+run to run, the committed prefix at each request equals the dump's, and each
+entry is the chain draftd would have sent. The arm pays no draft time; a
+report adds the relay and draftd cost per round to give the live-equivalent
+rate.
+
+Table layout (little endian): a 32-byte header (magic `SPRD`, version 1,
+depth, vocabulary size, entry count, a zero word), then fixed entries sorted
+by (sequence id, position): sequence id u64, position of the last committed
+token u64, chain length u32, a zero word, `depth` u32 tokens with zeros past
+the chain. `tools/spec_recorded_drafts.py` writes and reads it.
+
 `tools/draftd_mtp_g8.py` decides G8 on the real-tap positions only: PASS
 needs at least 1000 of them and top-1 agreement of at least 99%, with
 identical output run to run. With fewer real positions the verdict is PENDING;
