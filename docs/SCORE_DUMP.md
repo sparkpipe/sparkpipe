@@ -33,8 +33,8 @@ ranks, and the served token is still the certified head's argmax.
 an earlier dump. It holds:
 
 - A 144-byte header: rank, tp, shard range, vocabulary, hidden size, top-k (64), and
-  whether Tier-2 is on. It also carries the arm digest and the SHA-256 of the probe and
-  Tier-2 files.
+  whether Tier-2 is on. It also carries the SHA-256 of the probe and Tier-2 files, and an
+  arm-digest field that stays zero until the stage config carries L2's `arm_digest`.
 - One 568-byte row record per scored row, followed by that row's probe entries:
   - key, position, input token and served token;
   - flags: key valid, probed, Tier-2, non-finite;
