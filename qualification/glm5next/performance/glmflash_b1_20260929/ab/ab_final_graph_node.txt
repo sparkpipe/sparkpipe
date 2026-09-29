@@ -1,0 +1,120 @@
+round=1 variant=s0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=12.699 min_ms=12.650 max_ms=13.475 mean_ms=12.761
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=31.370 min_ms=31.284 max_ms=35.301 mean_ms=31.518
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=1 variant=s1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=12.812 min_ms=12.772 max_ms=13.657 mean_ms=12.876
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=31.400 min_ms=31.147 max_ms=34.207 mean_ms=31.494
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=1 variant=h0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=40 round_wait=3 nodes=1600 replays=100 median_ms=16.688 min_ms=16.628 max_ms=17.408 mean_ms=16.732
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=40 round_wait=3 nodes=1600 replays=100 median_ms=35.351 min_ms=35.277 max_ms=39.929 mean_ms=35.469
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=1 variant=h1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=40 round_wait=3 nodes=1690 replays=100 median_ms=14.933 min_ms=14.888 max_ms=15.637 mean_ms=14.958
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=40 round_wait=3 nodes=1690 replays=100 median_ms=34.707 min_ms=34.637 max_ms=35.651 mean_ms=34.772
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=1 variant=k0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=50 round_wait=3 nodes=1600 replays=100 median_ms=17.714 min_ms=17.676 max_ms=20.305 mean_ms=17.790
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=50 round_wait=3 nodes=1600 replays=100 median_ms=36.266 min_ms=36.204 max_ms=37.289 mean_ms=36.342
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=1 variant=k1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=50 round_wait=3 nodes=1690 replays=100 median_ms=15.286 min_ms=15.235 max_ms=16.007 mean_ms=15.318
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=50 round_wait=3 nodes=1690 replays=100 median_ms=35.121 min_ms=34.756 max_ms=39.894 mean_ms=35.212
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=2 variant=s0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=12.764 min_ms=12.718 max_ms=13.462 mean_ms=12.802
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=31.536 min_ms=31.430 max_ms=35.954 mean_ms=31.681
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=2 variant=s1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=12.861 min_ms=12.742 max_ms=13.537 mean_ms=12.866
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=31.592 min_ms=31.320 max_ms=34.820 mean_ms=31.698
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=2 variant=h0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=40 round_wait=3 nodes=1600 replays=100 median_ms=16.897 min_ms=16.804 max_ms=17.213 mean_ms=16.907
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=40 round_wait=3 nodes=1600 replays=100 median_ms=35.650 min_ms=35.427 max_ms=38.816 mean_ms=35.706
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=2 variant=h1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=40 round_wait=3 nodes=1690 replays=100 median_ms=14.987 min_ms=14.906 max_ms=15.698 mean_ms=15.022
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=40 round_wait=3 nodes=1690 replays=100 median_ms=34.724 min_ms=34.573 max_ms=38.436 mean_ms=34.810
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=2 variant=k0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=50 round_wait=3 nodes=1600 replays=100 median_ms=17.770 min_ms=17.722 max_ms=18.637 mean_ms=17.801
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=50 round_wait=3 nodes=1600 replays=100 median_ms=36.462 min_ms=36.304 max_ms=40.661 mean_ms=36.513
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=2 variant=k1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=50 round_wait=3 nodes=1690 replays=100 median_ms=15.288 min_ms=15.237 max_ms=15.978 mean_ms=15.318
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=50 round_wait=3 nodes=1690 replays=100 median_ms=35.024 min_ms=34.930 max_ms=39.573 mean_ms=35.134
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=3 variant=s0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=12.851 min_ms=12.784 max_ms=15.887 mean_ms=12.961
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=32.278 min_ms=31.399 max_ms=33.464 mean_ms=32.242
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=3 variant=s1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=13.190 min_ms=12.904 max_ms=16.220 mean_ms=13.253
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=31.678 min_ms=31.354 max_ms=32.175 mean_ms=31.704
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=3 variant=h0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=40 round_wait=3 nodes=1600 replays=100 median_ms=17.027 min_ms=16.833 max_ms=19.652 mean_ms=17.093
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=40 round_wait=3 nodes=1600 replays=100 median_ms=35.900 min_ms=35.511 max_ms=37.092 mean_ms=35.943
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=3 variant=h1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=40 round_wait=3 nodes=1690 replays=100 median_ms=15.117 min_ms=15.025 max_ms=15.884 mean_ms=15.144
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=40 round_wait=3 nodes=1690 replays=100 median_ms=35.114 min_ms=34.791 max_ms=40.249 mean_ms=35.168
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=3 variant=k0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=50 round_wait=3 nodes=1600 replays=100 median_ms=17.917 min_ms=17.793 max_ms=18.221 mean_ms=17.935
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=50 round_wait=3 nodes=1600 replays=100 median_ms=36.800 min_ms=36.610 max_ms=39.845 mean_ms=36.877
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=3 variant=k1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=50 round_wait=3 nodes=1690 replays=100 median_ms=15.478 min_ms=15.367 max_ms=16.061 mean_ms=15.487
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=50 round_wait=3 nodes=1690 replays=100 median_ms=35.301 min_ms=35.053 max_ms=39.920 mean_ms=35.376
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=4 variant=s0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=13.056 min_ms=12.923 max_ms=13.740 mean_ms=13.087
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=31.710 min_ms=31.476 max_ms=36.610 mean_ms=31.796
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=4 variant=s1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=13.069 min_ms=12.912 max_ms=13.728 mean_ms=13.072
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=0 round_wait=0 nodes=1327 replays=100 median_ms=31.717 min_ms=31.468 max_ms=36.378 mean_ms=31.804
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=4 variant=h0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=40 round_wait=3 nodes=1600 replays=100 median_ms=16.911 min_ms=16.852 max_ms=17.068 mean_ms=16.930
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=40 round_wait=3 nodes=1600 replays=100 median_ms=35.641 min_ms=35.438 max_ms=39.657 mean_ms=35.722
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=4 variant=h1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=40 round_wait=3 nodes=1690 replays=100 median_ms=14.998 min_ms=14.923 max_ms=17.744 mean_ms=15.077
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=40 round_wait=3 nodes=1690 replays=100 median_ms=35.183 min_ms=34.480 max_ms=36.675 mean_ms=35.357
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=4 variant=k0
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=0 round_spin_us=50 round_wait=3 nodes=1600 replays=100 median_ms=18.632 min_ms=18.272 max_ms=21.256 mean_ms=18.665
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=0 round_spin_us=50 round_wait=3 nodes=1600 replays=100 median_ms=37.815 min_ms=37.095 max_ms=42.987 mean_ms=37.890
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308
+round=4 variant=k1
+ROOFLINE-GRAPH rows=1 route_readback=0 l2_prefetch=1 round_spin_us=50 round_wait=3 nodes=1690 replays=100 median_ms=15.956 min_ms=15.775 max_ms=16.867 mean_ms=16.028
+ROOFLINE-HASH rows=1 hidden_fnv=55c964a4b15c2ee0 token0=8308
+ROOFLINE-GRAPH rows=8 route_readback=0 l2_prefetch=1 round_spin_us=50 round_wait=3 nodes=1690 replays=100 median_ms=36.485 min_ms=36.013 max_ms=41.841 mean_ms=36.554
+ROOFLINE-HASH rows=8 hidden_fnv=db7ef94a18950ec4 token0=8308

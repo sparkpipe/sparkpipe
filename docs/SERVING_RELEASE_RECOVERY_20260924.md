@@ -51,6 +51,17 @@ window: drain model jobs, stop the tracked shared daemons, then untrack them.
 The tool does not stop another developer's processes or create a second queue.
 Restore and track the shared services when the window ends.
 
+The production GLM service does not run under the queue. Its weightd and
+engines live in each node's `fleet-agent` cgroup
+([fleet release runbook](FLEET_RELEASE_RUNBOOK.md#21-unit-drop-in-and-cgroup)),
+so stopping the tracked shared daemons does not free those nodes. A private
+weightd on a node whose agent runs also freezes that agent
+([weightd ownership](FLEET_RELEASE_RUNBOOK.md#3-weightd-ownership)). The window
+therefore starts with `systemctl --user stop fleet-agent` on all sixteen nodes,
+which takes GLM serving down. When the window ends, run
+`systemctl --user start fleet-agent` on each node and wait for the cold start;
+every engine pins its experts again.
+
 Download these two assets from the
 [release](https://github.com/sparkpipe/sparkpipe/releases/tag/shared-serving-20260922)
 into one directory using `tools/sparkpipe_github_pat.sh gh release download`:
@@ -96,9 +107,11 @@ and 32K context. Those settings were outside the released smoke profile.
 Its first reduction submitted eight rows for one logical sequence. The wide HC
 payload was `8 * 16384 * 2 = 262144` bytes, plus a 16-byte slot header, exceeding
 the 256 KiB B1 mesh slot. That produces `CAPACITY_EXCEEDED` before combining.
-Removing that capacity guard would corrupt the protocol. Use the explicitly
-qualified profile to reproduce the release; larger B1 prefill requires a tested
-chunked collective implementation, not a silently clamped configuration.
+In those binaries, removing that capacity guard would have corrupted the
+protocol. Use the explicitly qualified profile to reproduce the release. Since
+PR #1255 (merge `cf64e90`, commit `2d5a43a`), a single-sequence wave larger than
+one mesh slot takes the chunked device rounds, and the host round is chosen
+only when the payload fits one slot. The released binaries predate that change.
 
 The shared daemon also had a 90 GiB device cap while the controller reserved
 28.5 GiB for it. Keep the actual cap plus overhead, finite host bound and queue

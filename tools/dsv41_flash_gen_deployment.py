@@ -42,14 +42,17 @@ BACKEND = os.environ.get("DSV41_FLASH_BACKEND", "hidden_transport")
 PACK_TEMPLATE = os.environ.get(
     "DSV41_FLASH_PACK_TEMPLATE", "packs/rank%x.spstage")
 MODEL_REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
+CONTRACT = json.loads((Path(__file__).resolve().parents[1] / "model_contracts"
+                       / "dsv41_flash_authoritative.json").read_text())
+TOKENIZER = {
+    "path": "tokenizer/tokenizer.json",
+    "sha256": CONTRACT["sources"]["pinned_files"]["tokenizer.json"]["sha256"],
+    "vocabulary_size": CONTRACT["model"]["vocabulary_size"],
+}
 NODE_TARGET = "cuda.sm121.dsv41_flash.resident_decode_stage.bf16.expert_mxfp4"
 EXPERT_CODEC = os.environ.get("DSV41_FLASH_EXPERT_CODEC", "mxfp4")
-# The fleet-wide shared weightd (sparkpipe-weightd-shared.service): the
-# wrapper overrides this from SPARK_WEIGHTD_SOCKET at prepare time; the
-# default pins the shared path so a bare deployment never names a
-# stood-down or private socket.
 WEIGHTD_SOCKET = os.environ.get("DSV41_FLASH_WEIGHTD_SOCKET",
-                                "/run/sparkpipe-weightd-shared/weightd.sock")
+                                "/tmp/spark_weightd.sock")
 MAX_SEQUENCE_POSITIONS = int(os.environ.get(
     "DSV41_FLASH_MAX_SEQUENCE_POSITIONS", "32768"))
 # The module's own shipped defaults (modules/dsv41_flash_resident_decode_stage/
@@ -131,7 +134,7 @@ def resident_deployment() -> dict:
     for rank, host in enumerate(HOSTS):
         nodes.append({
             "rank_index": rank,
-            "stage_index": 0,
+            "stage_index": rank,
             "runtime_root": RUNTIME_ROOT.format(host=host),
             "node_target": NODE_TARGET,
             "transport_host": host,
@@ -147,7 +150,7 @@ def resident_deployment() -> dict:
         })
     return {
         "schema_version": 2,
-        "eos_token_ids": [1],
+        "eos_token_ids": [CONTRACT["tokenizer"]["eos"]["id"]],
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {
@@ -175,6 +178,7 @@ def resident_deployment() -> dict:
             "kv_physical_page_capacity": page_capacity,
         },
         "nodes": nodes,
+        "tokenizer": dict(TOKENIZER),
     }
 
 

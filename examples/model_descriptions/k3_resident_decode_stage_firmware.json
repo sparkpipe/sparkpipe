@@ -10,7 +10,7 @@
     "generated_from": "model_contracts/k3_authoritative.json",
     "provenance": {
       "technical_report": "Kimi K3: Open Frontier Intelligence, sections 2 and 5, Table 1",
-      "checkpoint_config": "moonshotai/Kimi-K3-MXFP4 config.json and modeling_kimi_linear.py",
+      "checkpoint_config": "moonshotai/Kimi-K3@f831ab66814297da540d832a5235f8e904f29d06 config.json text_config and modeling_kimi_linear.py",
       "status": "source-integrated, CUDA and target-hardware qualification not measured"
     },
     "module_geometry": {

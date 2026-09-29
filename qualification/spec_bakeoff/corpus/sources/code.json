@@ -1,0 +1,19 @@
+{
+ "class": "code",
+ "output_tokens": 512,
+ "prompts": [
+  {
+   "text": "Write a Python module implementing a thread-safe LRU cache class with get, put, delete and a size limit, with docstrings and a unittest suite."
+  },
+  {
+   "text": "Write a C function that parses an IPv4 dotted-quad string into a uint32_t, returning an error code for malformed input, plus a test main that checks 20 cases."
+  },
+  {
+   "text": "Refactor this JavaScript into modern ES modules with async/await: function load(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(null,JSON.parse(x.responseText))};x.onerror=function(){cb(new Error('fail'))};x.open('GET',u);x.send()} and repeat the refactor for save(u,data,cb) and remove(u,cb)."
+  },
+  {
+   "text": "Implement a complete single-file Python HTTP key-value store: a threaded server with GET/PUT/DELETE routes, an append-only log for durability with replay on startup, TTL expiry, a small client class, and a test suite covering restarts. Aim for about 400 lines.",
+   "output_tokens": 2048
+  }
+ ]
+}

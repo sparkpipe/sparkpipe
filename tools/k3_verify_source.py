@@ -45,7 +45,14 @@ def check_geometry(cfg, contract, failures):
     quant = contract["quantization"]
     spec = contract["speculation"]
     checks = [
-        ("architectures", cfg["architectures"][0], None),
+        ("architectures", cfg["architectures"][0], contract["architecture"]),
+        ("text_config.architectures", t["architectures"][0],
+         contract["text_architecture"]),
+        ("eos_token_id", cfg["eos_token_id"],
+         contract["eos_token_ids"]["end_of_message"]),
+        ("bos_token_id", cfg["bos_token_id"],
+         contract["tokens"]["begin_of_text"]),
+        ("pad_token_id", cfg["pad_token_id"], contract["tokens"]["pad"]),
         ("text_config.model_type", t["model_type"], None),
         ("hidden_size", t["hidden_size"], model["hidden_dimension"]),
         ("num_hidden_layers", t["num_hidden_layers"], model["layer_count"]),

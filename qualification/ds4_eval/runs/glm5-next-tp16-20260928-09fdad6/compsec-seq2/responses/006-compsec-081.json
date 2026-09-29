@@ -1,0 +1,50 @@
+{
+ "id": "compsec-081",
+ "request": {
+  "endpoint": "http://127.0.0.1:8433/v1/completions",
+  "fixture_prompt_token_count": 305,
+  "prompt_sha256": "2d45c6e79aec3e13daa5b5bc6de8a1e4c3a0eb6860b3e465be9b3a3b882960ab",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "Answer: 10,15",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 314,
+   "completion_tokens": 7,
+   "total_tokens": 321
+  },
+  "tokens": [
+   16127,
+   25,
+   220,
+   98668,
+   11,
+   99082,
+   154827
+  ],
+  "status": 0
+ },
+ "decoded_text": "Answer: 10,15",
+ "grade": {
+  "index": 6,
+  "id": "compsec-081",
+  "source": "COMPSEC",
+  "domain": "uds-c",
+  "expected": "10-15",
+  "extracted": "10,15",
+  "passed": true,
+  "elapsed_ms": 1742.7,
+  "output_sha256": "6627dd669df1ce9c45c11da52b1542ee815c4cdbcef57d3c077ab67b78d77336",
+  "generated_token_count": 7,
+  "status": 0
+ }
+}

@@ -1,0 +1,18 @@
+{
+ "prefix": "[gMASK]<sop>",
+ "thinking_prefix": "",
+ "system": "<|system|>\n",
+ "system_thinking": "<|system|>\n",
+ "user": "<|user|>\n",
+ "observation": "<|observation|>\n",
+ "assistant": "<|assistant|>\n<think></think>\n",
+ "assistant_thinking": "<|assistant|>\n<think>",
+ "turn_suffix": "",
+ "generation": "<|assistant|>\n<think></think>\n",
+ "generation_thinking": "<|assistant|>\n<think>",
+ "stop_markers": [
+  "<|user|>",
+  "<|observation|>",
+  "<|assistant|>"
+ ]
+}

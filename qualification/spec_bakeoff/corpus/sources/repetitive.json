@@ -1,0 +1,15 @@
+{
+ "class": "repetitive",
+ "output_tokens": 512,
+ "prompts": [
+  {
+   "text": "Print the multiplication table from 1 x 1 to 12 x 12, one equation per line, in the form 'a x b = c'."
+  },
+  {
+   "text": "List the numbers from 1 to 200, each followed by a comma and its square, one per line."
+  },
+  {
+   "text": "Write a CSV with a header row 'id,name,status' and 60 rows where id runs from 1 to 60, name is 'user_<id>' and status alternates between active and inactive."
+  }
+ ]
+}

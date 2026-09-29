@@ -1,0 +1,55 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:8437/v1/completions",
+  "fixture_prompt_token_count": 428,
+  "prompt_sha256": "5d5a3e0f6438f17c0624f795a0280f033f64c90336a0466a8e9acd5fde47038e",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "19,20,21,22",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 508,
+   "completion_tokens": 12,
+   "total_tokens": 520
+  },
+  "tokens": [
+   16,
+   24,
+   11,
+   17,
+   15,
+   11,
+   17,
+   16,
+   11,
+   17,
+   17,
+   156895
+  ],
+  "status": 0
+ },
+ "decoded_text": "19,20,21,22",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "22",
+  "passed": true,
+  "elapsed_ms": 8930.1,
+  "output_sha256": "d27a937f8c8efebc950de71613977e7a6a1cf679d797486277098709c18dcf2f",
+  "generated_token_count": 12,
+  "status": 0
+ }
+}

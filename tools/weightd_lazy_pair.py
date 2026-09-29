@@ -55,7 +55,7 @@ def main():
                     time.sleep(0.02)
                 clients = []
                 for first in (0, 1):
-                    client = subprocess.Popen([probe, str(socket), str(pack), "consumer", str(first)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+                    client = subprocess.Popen([probe, str(socket), str(pack), "consumer", str(first)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, bufsize=0)
                     processes.append(client)
                     clients.append(client)
                 wait_ready(clients)
@@ -69,7 +69,7 @@ def main():
                     output, _ = client.communicate(timeout=10)
                     if client.returncode != 0 or b"PASS consumer-local lazy reads" not in output:
                         raise RuntimeError(f"consumer failure: {output!r}")
-                replacement = subprocess.Popen([probe, str(socket), str(pack), "consumer", "2"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+                replacement = subprocess.Popen([probe, str(socket), str(pack), "consumer", "2"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, bufsize=0)
                 processes.append(replacement)
                 wait_ready([replacement])
                 output, _ = replacement.communicate(input=b"G", timeout=10)

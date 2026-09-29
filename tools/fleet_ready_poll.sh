@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+ROOT="${1:-glm53flash.fp8.tp16}"
+VIEW_HOST="${FLEET_VIEW_HOST:-rtx5090}"
 start=$(date +%s)
 while true; do
     now=$(date +%s)
@@ -6,12 +8,22 @@ while true; do
         echo "TIMEOUT 90s"
         exit 1
     fi
-    view=$(ssh -o BatchMode=yes -o ConnectTimeout=4 sparkf \
-        "grep -o '\"state\":\"[a-z:]*\"' current/*.json 2>/dev/null | sort | uniq -c" 2>/dev/null)
-    ready=$(printf '%s\n' "$view" | grep '"state":"ready"' | awk '{print $1}')
-    pending=$(ssh -o BatchMode=yes -o ConnectTimeout=4 rtx5090 \
-        "test -f release/glm53flash.fp8.tp16/UPDATE && echo UPDATE-PENDING || echo no-update" 2>/dev/null)
-    echo "t=$((now - start))s $pending ready=${ready:-0}/16"
+    ready=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$VIEW_HOST" "python3 - '$ROOT'" 2>/dev/null <<'PY'
+import glob, json, sys
+count = 0
+for path in glob.glob("current/*.json"):
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        continue
+    count += data.get("roots", {}).get(sys.argv[1], {}).get("state") == "ready"
+print(count)
+PY
+)
+    pending=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$VIEW_HOST" \
+        "test -f release/$ROOT/UPDATE && echo UPDATE-PENDING || echo no-update" 2>/dev/null)
+    echo "t=$((now - start))s $pending $ROOT ready=${ready:-0}/16"
     if [ "$pending" = no-update ] && [ "${ready:-0}" -ge 16 ]; then
         echo "FLEET-READY t=$((now - start))s"
         exit 0

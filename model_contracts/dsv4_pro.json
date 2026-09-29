@@ -103,6 +103,7 @@
   },
   "model": {
     "attention_head_count": 128,
+    "eos_token_id": 1,
     "head_dimension": 512,
     "hidden_dimension": 7168,
     "kv_head_count": 1,

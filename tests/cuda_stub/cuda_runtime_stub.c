@@ -838,6 +838,15 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
 }
 
 static uint32_t cuda_stub_import_count,cuda_stub_import_fail_at,cuda_stub_unmap_fail;
+static void cuda_stub_sleep_microseconds(uint32_t microseconds)
+{
+    struct timespec delay;
+    delay.tv_sec = (time_t)(microseconds / 1000000u);
+    delay.tv_nsec = (long)(microseconds % 1000000u) * 1000L;
+    while (nanosleep(&delay, &delay) != 0 && errno == EINTR)
+        ;
+}
+
 static uint32_t cuda_stub_import_delay_us;
 static uint32_t cuda_stub_create_delay_us;
 
@@ -875,7 +884,7 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     int fd;
     int received;
     if (cuda_stub_import_delay_us != 0u)
-        usleep(cuda_stub_import_delay_us);
+        cuda_stub_sleep_microseconds(cuda_stub_import_delay_us);
     cuda_stub_import_count++;
     if (cuda_stub_import_count == cuda_stub_import_fail_at)
         return CUDA_ERROR_OUT_OF_MEMORY;
@@ -964,7 +973,7 @@ CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
 {
     cuda_stub_vmm_phys *phys;
     if (cuda_stub_create_delay_us != 0u)
-        usleep(cuda_stub_create_delay_us);
+        cuda_stub_sleep_microseconds(cuda_stub_create_delay_us);
     if (handle == 0 || prop == 0 ||
         prop->type != CU_MEM_ALLOCATION_TYPE_PINNED ||
         prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE ||

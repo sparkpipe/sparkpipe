@@ -206,4 +206,6 @@ static const SparkModelServingAdapterDescriptor SparkMinimaxServingDescriptor =
 	.cache_block_token_count = SPARK_MINIMAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS
 };
 
+#define SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
+	((state)->max_active_sequence_count)
 #include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"

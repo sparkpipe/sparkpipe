@@ -165,3 +165,40 @@ make -C modules/glm5_next_resident_decode_stage publish \
 ```
 
 The source is correctness-first until hardware profiling says which fused pieces should be replaced by tensor-core or persistent-kernel implementations. It must not be published unless the hardware validator passes the numerical checks and the maximum full-stage submission-to-completion latency ceiling.
+
+## Expert working-set detection (working-set graphs, stages A0 and A1)
+
+Graph decode on a bounded expert working set is staged. These pieces are in
+the tree; production FULL graphs (`SPARK_GLM5_NEXT_PIN_EXPERTS=1`) do not
+bind a cover, so they capture none of them and keep their node count.
+
+- **Route trace.** `SPARK_GLM5_NEXT_ROUTE_TRACE=<prefix>` makes every lazy
+  eager routed layer append one `G5N-ROUTE rank= rows= pos= layer= n= e=`
+  record to `<prefix>.stageNN.rankNN.trace`. It needs lazy eager decode
+  (`SPARK_GLM5_NEXT_GRAPH_PATH=0`, experts not pinned) and fails at start
+  otherwise; a write failure fails the chain.
+  `tools/glm5_next_wset_from_trace.py` turns the traces into a sorted `.wset`
+  and a coverage report. The ranks of a stage must agree on every route, and
+  `--expect-route-sha256` compares two runs. `--cap-keys` makes an LFU
+  selection that keeps one key per routed layer and reports the fraction of
+  recorded steps it serves with every key held.
+- **Cover kernel** (`inference/kernels/expert_cover.cuh`). A covered route
+  stays untouched. A route that is not covered, or is at least the expert
+  count, takes the first covered expert of its layer and is appended to the
+  slot's miss ring as `layer * 512 + expert` (the expert count marks an
+  out-of-range route). The ring holds 1024 entries and never wraps: later
+  misses are only counted. A layer with no covered expert traps; the kernel
+  never reads expert 0 as a fallback.
+- **Poison kernel.** `LmHeadMissPoisonKernel` sets every row's head maxloc to
+  `UINT64_MAX` when the slot missed, so the existing MAX all-reduce delivers
+  the poison to every rank and the unpack yields token `UINT32_MAX`. No float
+  orders to that value. It is not captured yet.
+- **Step verdict** (`include/sparkpipe/spark_step_verdict.h`). After every
+  graph step and every settled chain step the reduced tokens and the local
+  miss flag decide: commit; rollback (all rows poisoned, local or remote
+  miss); mixed rows or a local miss without poison are internal errors. A
+  non-commit verdict fails the chain and never makes the engine terminal,
+  except in working-set mode (`SPARK_GLM5_NEXT_EXPERT_WSET`), where a rollback
+  restores the recurrent-state snapshot, grows the set and replays the step
+  (`docs/WORKING_SET_GRAPHS.md`). A graph step no longer
+  reports a miss as BUSY, and a failed capture arm is an internal error.

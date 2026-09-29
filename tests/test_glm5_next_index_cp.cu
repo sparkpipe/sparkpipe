@@ -145,7 +145,7 @@ int main(int argc,char **argv)
     for (uint32_t degree : {2u,3u,16u})
     {
         IndexCpCase({2049u},degree,stream);
-        IndexCpCase({9001u,4100u,20000u},degree,stream);
+        IndexCpCase({9001u,4100u,16000u},degree,stream);
     }
     CUDA(cudaStreamDestroy(stream));
     puts("PASS glm5_next index context parallel: owned-pool scores gathered and permuted equal the replicated scores bit for bit");

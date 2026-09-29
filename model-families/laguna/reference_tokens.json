@@ -1,0 +1,693 @@
+{
+ "generator": "tools/laguna_reference_torch.py",
+ "torch": "2.11.0+cu128",
+ "device": "NVIDIA GeForce RTX 5090",
+ "checkpoint": "poolside/Laguna-S-2.1 0f573140834b11cfac0c2af97a101a7a69a13e22 (bf16)",
+ "config_sha256": "8309d2ab0da8ac0981b8803b1a4637d843c10fdf7851ddd202ca918fb682392c",
+ "index_sha256": "91f9cb0e426b0720b3f801ccaf0413879300f07a072b83de957b4177bcab8b6d",
+ "prompts_sha256": "2f90704c8fd71a39d99815f7cffdd1bb90b6cdea2d7f4a3ecc9b75a74dbb60eb",
+ "generated_utc": "2026-09-28T10:30:01Z",
+ "tie_margin": 0.1,
+ "results": [
+  {
+   "name": "capital_of_france",
+   "prompt_token_ids": [
+    2,
+    785,
+    9626,
+    377,
+    15360,
+    395
+   ],
+   "generated_token_ids": [
+    22345,
+    83,
+    404,
+    2444,
+    13894,
+    95,
+    1265,
+    395,
+    340,
+    9626,
+    377,
+    15360,
+    15737,
+    340,
+    1675,
+    395
+   ],
+   "generated_text": " Paris. (placeholders: what is the capital of France?, the answer is",
+   "strict_steps": 13,
+   "steps": [
+    {
+     "position": 5,
+     "token": 22345,
+     "fp32_top2_tokens": [
+      22345,
+      268
+     ],
+     "fp32_top2_logits": [
+      27.7217,
+      21.1941
+     ]
+    },
+    {
+     "position": 6,
+     "token": 83,
+     "fp32_top2_tokens": [
+      83,
+      81
+     ],
+     "fp32_top2_logits": [
+      23.3492,
+      15.2478
+     ]
+    },
+    {
+     "position": 7,
+     "token": 404,
+     "fp32_top2_tokens": [
+      404,
+      290
+     ],
+     "fp32_top2_logits": [
+      26.0367,
+      24.2737
+     ]
+    },
+    {
+     "position": 8,
+     "token": 2444,
+     "fp32_top2_tokens": [
+      2444,
+      1306
+     ],
+     "fp32_top2_logits": [
+      16.5806,
+      16.3021
+     ]
+    },
+    {
+     "position": 9,
+     "token": 13894,
+     "fp32_top2_tokens": [
+      13894,
+      9286
+     ],
+     "fp32_top2_logits": [
+      17.229,
+      17.0166
+     ]
+    },
+    {
+     "position": 10,
+     "token": 95,
+     "fp32_top2_tokens": [
+      95,
+      78
+     ],
+     "fp32_top2_logits": [
+      16.4874,
+      15.2578
+     ]
+    },
+    {
+     "position": 11,
+     "token": 1265,
+     "fp32_top2_tokens": [
+      1265,
+      290
+     ],
+     "fp32_top2_logits": [
+      18.942,
+      17.8013
+     ]
+    },
+    {
+     "position": 12,
+     "token": 395,
+     "fp32_top2_tokens": [
+      395,
+      81
+     ],
+     "fp32_top2_logits": [
+      17.2173,
+      13.7231
+     ]
+    },
+    {
+     "position": 13,
+     "token": 340,
+     "fp32_top2_tokens": [
+      340,
+      1076
+     ],
+     "fp32_top2_logits": [
+      24.6085,
+      16.9997
+     ]
+    },
+    {
+     "position": 14,
+     "token": 9626,
+     "fp32_top2_tokens": [
+      9626,
+      1675
+     ],
+     "fp32_top2_logits": [
+      27.0775,
+      22.1596
+     ]
+    },
+    {
+     "position": 15,
+     "token": 377,
+     "fp32_top2_tokens": [
+      377,
+      1076
+     ],
+     "fp32_top2_logits": [
+      28.6955,
+      19.0072
+     ]
+    },
+    {
+     "position": 16,
+     "token": 15360,
+     "fp32_top2_tokens": [
+      15360,
+      76807
+     ],
+     "fp32_top2_logits": [
+      32.4313,
+      23.6842
+     ]
+    },
+    {
+     "position": 17,
+     "token": 15737,
+     "fp32_top2_tokens": [
+      15737,
+      81
+     ],
+     "fp32_top2_logits": [
+      25.9155,
+      23.8963
+     ]
+    },
+    {
+     "position": 18,
+     "token": 340,
+     "fp32_top2_tokens": [
+      22345,
+      340
+     ],
+     "fp32_top2_logits": [
+      19.577,
+      19.5713
+     ]
+    },
+    {
+     "position": 19,
+     "token": 1675,
+     "fp32_top2_tokens": [
+      1675,
+      9626
+     ],
+     "fp32_top2_logits": [
+      24.0053,
+      22.5713
+     ]
+    },
+    {
+     "position": 20,
+     "token": 395,
+     "fp32_top2_tokens": [
+      395,
+      78
+     ],
+     "fp32_top2_logits": [
+      22.7199,
+      17.14
+     ]
+    }
+   ]
+  },
+  {
+   "name": "python_is_prime",
+   "prompt_token_ids": [
+    2,
+    1172,
+    395,
+    21494,
+    1915,
+    1117,
+    268
+   ],
+   "generated_token_ids": [
+    341,
+    3627,
+    3708,
+    558,
+    330,
+    956,
+    395,
+    5088,
+    19809,
+    268,
+    341,
+    558,
+    376,
+    458,
+    290,
+    87
+   ],
+   "generated_text": "    \"\"\"Check if a number is prime.\"\"\"\n    if n < 2",
+   "strict_steps": 16,
+   "steps": [
+    {
+     "position": 6,
+     "token": 341,
+     "fp32_top2_tokens": [
+      341,
+      1716
+     ],
+     "fp32_top2_logits": [
+      28.0496,
+      22.3336
+     ]
+    },
+    {
+     "position": 7,
+     "token": 3627,
+     "fp32_top2_tokens": [
+      3627,
+      558
+     ],
+     "fp32_top2_logits": [
+      32.4942,
+      31.7649
+     ]
+    },
+    {
+     "position": 8,
+     "token": 3708,
+     "fp32_top2_tokens": [
+      3708,
+      5649
+     ],
+     "fp32_top2_logits": [
+      26.6758,
+      24.1622
+     ]
+    },
+    {
+     "position": 9,
+     "token": 558,
+     "fp32_top2_tokens": [
+      558,
+      3002
+     ],
+     "fp32_top2_logits": [
+      31.3324,
+      23.7263
+     ]
+    },
+    {
+     "position": 10,
+     "token": 330,
+     "fp32_top2_tokens": [
+      330,
+      376
+     ],
+     "fp32_top2_logits": [
+      34.944,
+      28.6925
+     ]
+    },
+    {
+     "position": 11,
+     "token": 956,
+     "fp32_top2_tokens": [
+      956,
+      1815
+     ],
+     "fp32_top2_logits": [
+      37.1139,
+      28.7153
+     ]
+    },
+    {
+     "position": 12,
+     "token": 395,
+     "fp32_top2_tokens": [
+      395,
+      376
+     ],
+     "fp32_top2_logits": [
+      37.2937,
+      31.3656
+     ]
+    },
+    {
+     "position": 13,
+     "token": 5088,
+     "fp32_top2_tokens": [
+      5088,
+      330
+     ],
+     "fp32_top2_logits": [
+      35.6825,
+      33.87
+     ]
+    },
+    {
+     "position": 14,
+     "token": 19809,
+     "fp32_top2_tokens": [
+      19809,
+      707
+     ],
+     "fp32_top2_logits": [
+      28.8864,
+      24.3439
+     ]
+    },
+    {
+     "position": 15,
+     "token": 268,
+     "fp32_top2_tokens": [
+      268,
+      290
+     ],
+     "fp32_top2_logits": [
+      33.1349,
+      17.8539
+     ]
+    },
+    {
+     "position": 16,
+     "token": 341,
+     "fp32_top2_tokens": [
+      341,
+      370
+     ],
+     "fp32_top2_logits": [
+      29.8536,
+      18.3762
+     ]
+    },
+    {
+     "position": 17,
+     "token": 558,
+     "fp32_top2_tokens": [
+      558,
+      376
+     ],
+     "fp32_top2_logits": [
+      34.8772,
+      21.4639
+     ]
+    },
+    {
+     "position": 18,
+     "token": 376,
+     "fp32_top2_tokens": [
+      376,
+      572
+     ],
+     "fp32_top2_logits": [
+      34.2383,
+      24.4385
+     ]
+    },
+    {
+     "position": 19,
+     "token": 458,
+     "fp32_top2_tokens": [
+      458,
+      2944
+     ],
+     "fp32_top2_logits": [
+      32.3984,
+      29.2119
+     ]
+    },
+    {
+     "position": 20,
+     "token": 290,
+     "fp32_top2_tokens": [
+      290,
+      87
+     ],
+     "fp32_top2_logits": [
+      30.0374,
+      15.0446
+     ]
+    },
+    {
+     "position": 21,
+     "token": 87,
+     "fp32_top2_tokens": [
+      87,
+      85
+     ],
+     "fp32_top2_logits": [
+      30.8387,
+      21.4175
+     ]
+    }
+   ]
+  },
+  {
+   "name": "count_up",
+   "prompt_token_ids": [
+    2,
+    58004,
+    36258,
+    95,
+    896,
+    81,
+    1161,
+    81,
+    2617,
+    81
+   ],
+   "generated_token_ids": [
+    3931,
+    81,
+    6830,
+    81,
+    7753,
+    81,
+    14718,
+    81,
+    13290,
+    81,
+    20085,
+    81,
+    8521,
+    81,
+    54335,
+    81
+   ],
+   "generated_text": " four, five, six, seven, eight, nine, ten, eleven,",
+   "strict_steps": 13,
+   "steps": [
+    {
+     "position": 9,
+     "token": 3931,
+     "fp32_top2_tokens": [
+      3931,
+      2771
+     ],
+     "fp32_top2_logits": [
+      25.7352,
+      23.0342
+     ]
+    },
+    {
+     "position": 10,
+     "token": 81,
+     "fp32_top2_tokens": [
+      81,
+      1076
+     ],
+     "fp32_top2_logits": [
+      25.5248,
+      24.6834
+     ]
+    },
+    {
+     "position": 11,
+     "token": 6830,
+     "fp32_top2_tokens": [
+      6830,
+      372
+     ],
+     "fp32_top2_logits": [
+      27.2043,
+      22.2203
+     ]
+    },
+    {
+     "position": 12,
+     "token": 81,
+     "fp32_top2_tokens": [
+      81,
+      1076
+     ],
+     "fp32_top2_logits": [
+      25.9375,
+      24.8389
+     ]
+    },
+    {
+     "position": 13,
+     "token": 7753,
+     "fp32_top2_tokens": [
+      7753,
+      372
+     ],
+     "fp32_top2_logits": [
+      26.9728,
+      22.2718
+     ]
+    },
+    {
+     "position": 14,
+     "token": 81,
+     "fp32_top2_tokens": [
+      81,
+      1076
+     ],
+     "fp32_top2_logits": [
+      27.3285,
+      24.3418
+     ]
+    },
+    {
+     "position": 15,
+     "token": 14718,
+     "fp32_top2_tokens": [
+      14718,
+      2771
+     ],
+     "fp32_top2_logits": [
+      24.2841,
+      19.8598
+     ]
+    },
+    {
+     "position": 16,
+     "token": 81,
+     "fp32_top2_tokens": [
+      81,
+      1076
+     ],
+     "fp32_top2_logits": [
+      27.4225,
+      23.5792
+     ]
+    },
+    {
+     "position": 17,
+     "token": 13290,
+     "fp32_top2_tokens": [
+      13290,
+      590
+     ],
+     "fp32_top2_logits": [
+      26.0651,
+      20.2092
+     ]
+    },
+    {
+     "position": 18,
+     "token": 81,
+     "fp32_top2_tokens": [
+      81,
+      1076
+     ],
+     "fp32_top2_logits": [
+      26.5283,
+      23.1676
+     ]
+    },
+    {
+     "position": 19,
+     "token": 20085,
+     "fp32_top2_tokens": [
+      20085,
+      590
+     ],
+     "fp32_top2_logits": [
+      27.476,
+      21.96
+     ]
+    },
+    {
+     "position": 20,
+     "token": 81,
+     "fp32_top2_tokens": [
+      81,
+      83
+     ],
+     "fp32_top2_logits": [
+      28.2534,
+      23.8984
+     ]
+    },
+    {
+     "position": 21,
+     "token": 8521,
+     "fp32_top2_tokens": [
+      8521,
+      590
+     ],
+     "fp32_top2_logits": [
+      30.2597,
+      23.3419
+     ]
+    },
+    {
+     "position": 22,
+     "token": 81,
+     "fp32_top2_tokens": [
+      81,
+      83
+     ],
+     "fp32_top2_logits": [
+      25.0489,
+      24.9911
+     ]
+    },
+    {
+     "position": 23,
+     "token": 54335,
+     "fp32_top2_tokens": [
+      54335,
+      26920
+     ],
+     "fp32_top2_logits": [
+      25.8888,
+      22.0261
+     ]
+    },
+    {
+     "position": 24,
+     "token": 81,
+     "fp32_top2_tokens": [
+      81,
+      1076
+     ],
+     "fp32_top2_logits": [
+      26.3862,
+      22.8452
+     ]
+    }
+   ]
+  }
+ ]
+}

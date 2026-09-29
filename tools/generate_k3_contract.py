@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,40 @@ def validate_source(source: dict[str, Any]) -> None:
     require_equal(latent % 16, 0, "expert latent whole 16-neuron cells")
     require_equal((2 * inter) % 16, 0, "expert gate|up whole 16-neuron cells")
     require_equal(16 * (k_tile // group), (k_tile * 4) // 8, "interleave scale row closure")
+    validate_identity(source)
+    validate_drafter(source)
+
+
+def validate_identity(source: dict[str, Any]) -> None:
+    require_equal(source["model_id"], "moonshotai/Kimi-K3", "K3 checkpoint repository")
+    revision = source["source_revision"]
+    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise ValueError(f"K3 source revision must be a 40-hex commit, got {revision!r}")
+    require_equal(source["sources"]["hf_revision"], revision, "pinned file revision")
+    tokens = source["tokens"]
+    eos = source["eos_token_ids"]
+    require_equal(set(eos), {"end_of_text", "end_of_message"}, "K3 EOS token names")
+    for name, value in eos.items():
+        require_equal(value, tokens[name], f"EOS {name} token id")
+        if not 0 <= value < source["model"]["vocabulary_size"]:
+            raise ValueError(f"EOS {name} {value} outside the vocabulary")
+    require_equal(len(set(eos.values())), len(eos), "distinct EOS token ids")
+
+
+def validate_drafter(source: dict[str, Any]) -> None:
+    drafter = source["speculation"]["drafter"]
+    model = source["model"]
+    require_equal(drafter["method"], "dspark", "K3 drafter method")
+    require_equal(drafter["verifier"], source["model_id"], "drafter verifier checkpoint")
+    require_equal(drafter["hidden_dimension"], model["hidden_dimension"], "drafter hidden dimension")
+    require_equal(drafter["vocabulary_size"], model["vocabulary_size"], "drafter vocabulary")
+    require_equal(drafter["attention_head_count"] % drafter["kv_head_count"], 0, "drafter GQA grouping")
+    if not 0 < drafter["mask_token_id"] < model["vocabulary_size"]:
+        raise ValueError("drafter mask token outside the vocabulary")
+    taps = drafter["aux_hidden_state_layer_ids"]
+    require_equal(taps, sorted(set(taps)), "drafter taps strictly increasing")
+    if taps[-1] >= model["layer_count"]:
+        raise ValueError(f"drafter tap {taps[-1]} outside the {model['layer_count']}-layer stack")
 
 
 def c_float(value: float) -> str:
@@ -96,6 +131,7 @@ def render_header(source: dict[str, Any]) -> str:
     speculation = source["speculation"]
     cache = source["cache"]
     tokens = source["tokens"]
+    drafter = speculation["drafter"]
     qk_scale = 1.0 / math.sqrt(mla["qk_nope_dimension"] + mla["qk_unrotated_dimension"])
 
     values = [
@@ -138,11 +174,23 @@ def render_header(source: dict[str, Any]) -> str:
         ("K3_SITU_LINEAR_BETA", c_float(moe["situ_up_beta"])),
         ("K3_MXFP4_GROUP", f"{quantization['routed_expert_group_size']}u"),
         ("K3_MTP_LAYERS", f"{speculation['base_checkpoint_mtp_layer_count']}u"),
-        ("K3_EXTERNAL_DRAFT_LAYERS", f"{speculation['optional_external_draft_layer_count']}u"),
-        ("K3_EXTERNAL_DRAFT_UNROLL_STEPS", f"{speculation['training_unroll_steps']}u"),
+        ("K3_DRAFT_LAYERS", f"{drafter['layer_count']}u"),
+        ("K3_DRAFT_ATTENTION_HEADS", f"{drafter['attention_head_count']}u"),
+        ("K3_DRAFT_KV_HEADS", f"{drafter['kv_head_count']}u"),
+        ("K3_DRAFT_HEAD_DIM", f"{drafter['head_dimension']}u"),
+        ("K3_DRAFT_INTERMEDIATE", f"{drafter['intermediate_dimension']}u"),
+        ("K3_DRAFT_BLOCK_SIZE", f"{drafter['block_size']}u"),
+        ("K3_DRAFT_TAP_COUNT", f"{len(drafter['aux_hidden_state_layer_ids'])}u"),
+        *((f"K3_DRAFT_TAP_LAYER_{index}", f"{layer}u") for index, layer in enumerate(drafter["aux_hidden_state_layer_ids"])),
+        ("K3_DRAFT_MARKOV_RANK", f"{drafter['markov_rank']}u"),
+        ("K3_DRAFT_MASK_TOKEN", f"{drafter['mask_token_id']}u"),
+        ("K3_DRAFT_SLIDING_WINDOW", f"{drafter['sliding_window']}u"),
+        ("K3_DRAFT_ROPE_THETA", c_float(drafter["rope_theta"])),
         ("K3_KV_BITS", f"{cache['kv_element_bits']}u"),
         ("K3_KV_PAGE_SLOTS", f"{cache['kv_page_slots']}u"),
+        ("K3_BOS_TOKEN", f"{tokens['begin_of_text']}u"),
         ("K3_EOS_TOKEN", f"{tokens['end_of_text']}u"),
+        ("K3_END_OF_MESSAGE_TOKEN", f"{tokens['end_of_message']}u"),
         ("K3_KDA_LAYER_COUNT", f"{attention['kda_layer_count']}u"),
         ("K3_MLA_LAYER_COUNT", f"{attention['mla_layer_count']}u"),
         ("K3_ATTENTION_PERIOD", f"{attention['period']}u"),
@@ -192,6 +240,8 @@ def render_contract(source: dict[str, Any]) -> str:
     tokens = source["tokens"]
     contract = {
         "generated_from": "model_contracts/k3_authoritative.json",
+        "model_id": source["model_id"],
+        "source_revision": source["source_revision"],
         "active_parameters": model["active_parameters"],
         "attention_period": attention["period"],
         "attnres_block_count": attnres["layer_block_count"],
@@ -199,7 +249,7 @@ def render_contract(source: dict[str, Any]) -> str:
         "attnres_max_representations": attnres["maximum_candidate_representations"],
         "attnres_sites_per_layer": attnres["retrieval_sites_per_layer"],
         "dense_intermediate_dimension": moe["dense_intermediate_dimension"],
-        "eos_token_ids": {"end_of_text": tokens["end_of_text"]},
+        "eos_token_ids": dict(source["eos_token_ids"]),
         "first_routed_layer": model["first_routed_layer"],
         "global_attention_phase": attention["global_phase"],
         "head_count": mla["query_head_count"],

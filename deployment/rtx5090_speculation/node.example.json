@@ -1,8 +1,8 @@
 {
-  "format": "ds4-auxiliary-node-v1",
-  "node_id": "spec0",
+  "format": "ds4-auxiliary-node-v2",
+  "node_id": "hub0",
   "hostname": "rtx5090",
-  "role": "speculation",
+  "role": "hub",
   "spark_rank": null,
   "operator": {
     "user": "gpu-user",
@@ -45,8 +45,9 @@
       "sparkc", "sparkd", "sparke", "sparkf"
     ]
   },
-  "private_link": {
+  "fleet_link": {
     "mtu": 9000,
+    "speed_mbps": 10000,
     "rtx5090": {
       "interface": "direct0",
       "address": "198.51.100.2/30"
@@ -54,9 +55,26 @@
     "sparkf": {
       "interface": "direct1",
       "address": "198.51.100.1/30",
+      "connection": "ds4-speculation-link",
       "ssh_target": "fleet-user@203.0.113.25",
       "ssh_bastion": "fleet-bastion"
+    },
+    "fabric": {
+      "network": "203.0.113.0/24",
+      "sparkf_address": "203.0.113.25",
+      "interface": "fabric0",
+      "fabric_unit": "ds4-switched-fabric.service",
+      "route_unit": "sparkpipe-hub-route.service",
+      "probe_ssh_target": "fleet-user@203.0.113.10"
     }
+  },
+  "hub": {
+    "release_directory": "release",
+    "release_http_port": 8802,
+    "release_probe_path": "core/WEIGHTSD_BIN",
+    "heartbeat_directory": "current",
+    "api_unit": "g53-api",
+    "api_port": 8433
   },
   "runtime": {
     "state": "infrastructure_only",

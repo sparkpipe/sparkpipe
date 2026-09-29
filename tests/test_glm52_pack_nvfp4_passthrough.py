@@ -228,10 +228,10 @@ def build_entries(tp_degree: int, tp_rank: int):
     return instance
 
 
-def check_plan_against_validator(tp_degree: int):
+def check_rank_plan(tp_degree: int, tp_rank: int):
     seen_global = 0
     seen_layer: dict = {}
-    instance = build_entries(tp_degree, 0)
+    instance = build_entries(tp_degree, tp_rank)
     expert_entries = 0
     for item in instance.plan:
         entry = item.entry
@@ -269,8 +269,13 @@ def check_plan_against_validator(tp_degree: int):
             f"layer {layer} inventory drift at tp{tp_degree}"
     total_bytes = sum(item.entry.payload_bytes + item.entry.scale_bytes
                       for item in instance.plan)
-    print(f"PASS plan mirrors validator policy (nvfp4) at tp{tp_degree} "
+    print(f"PASS plan mirrors validator policy (nvfp4) at tp{tp_degree} rank {tp_rank} "
           f"({len(instance.plan)} tensors, {total_bytes} payload+scale bytes)")
+
+
+def check_plan_against_validator(tp_degree: int):
+    for tp_rank in range(tp_degree):
+        check_rank_plan(tp_degree, tp_rank)
 
 
 def check_tp16_slices_partition():

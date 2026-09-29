@@ -352,7 +352,7 @@ static inline int32_t SparkGlm5NextStagePackExpectedShape(uint32_t tensor_kind,u
         return(-6);
     if ( spec->codec_from_arg != 0u )
     {
-        if ( expert_codec < SPARK_WEIGHT_CODEC_INT6 || expert_codec > SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
+        if ( expert_codec < SPARK_WEIGHT_CODEC_BF16 || expert_codec > SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
             return(-5);
         shape->payload_type = spec->payload_type;
         shape->weight_codec = expert_codec;

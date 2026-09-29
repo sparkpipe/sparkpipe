@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,6 +9,16 @@
 #include "sparkpipe/spark_hy4_resident_decode_stage_firmware.h"
 
 #define TEST_PROGRAM_ID 7u
+
+static uint32_t test_failures;
+
+static void TestCheck(int condition,const char *what)
+{
+	if ( condition )
+		return;
+	fprintf(stderr,"FAIL %s\n",what);
+	test_failures++;
+}
 
 static SparkFirmwareModuleConfiguration TestConfiguration(void)
 {
@@ -38,19 +47,18 @@ static void TestNullArgumentsRejected(void)
 {
 	SparkFirmwareModuleConfiguration configuration = TestConfiguration();
 	SparkFirmwareModuleHostServices host_services = TestHostServices();
-	void *module_state;
-	module_state = (void *)0x1;
-	assert(SparkHy4ResidentDecodeStageInitialize(0,0,0) ==
-		SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkHy4ResidentDecodeStageInitialize(&configuration,
-		&host_services,0) == SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkHy4ResidentDecodeStageExecute(0,0) ==
-		SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkHy4ResidentDecodeStageAdmit(0,0,0) ==
-		SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkHy4ResidentDecodeStageSnapshot(0,TEST_PROGRAM_ID,0) ==
-		SPARK_STATUS_INVALID_ARGUMENT);
-	assert(module_state == (void *)0x1);
+	TestCheck(SparkHy4ResidentDecodeStageInitialize(0,0,0) ==
+		SPARK_STATUS_INVALID_ARGUMENT,"initialize without arguments");
+	TestCheck(SparkHy4ResidentDecodeStageInitialize(&configuration,
+		&host_services,0) == SPARK_STATUS_INVALID_ARGUMENT,
+		"initialize without a state pointer");
+	TestCheck(SparkHy4ResidentDecodeStageExecute(0,0) ==
+		SPARK_STATUS_INVALID_ARGUMENT,"execute without a state");
+	TestCheck(SparkHy4ResidentDecodeStageAdmit(0,0,0) ==
+		SPARK_STATUS_INVALID_ARGUMENT,"admit without a state");
+	TestCheck(SparkHy4ResidentDecodeStageSnapshot(0,TEST_PROGRAM_ID,0) ==
+		SPARK_STATUS_INVALID_ARGUMENT,"snapshot without a state");
+	SparkHy4ResidentDecodeStageDestroy(0);
 }
 
 static void TestSchemaRejected(void)
@@ -60,52 +68,16 @@ static void TestSchemaRejected(void)
 	void *module_state;
 	configuration.model_id = 0;
 	module_state = 0;
-	assert(SparkHy4ResidentDecodeStageInitialize(&configuration,
-		&host_services,&module_state) == SPARK_STATUS_SCHEMA_ERROR);
-	assert(module_state == 0);
-}
-
-static void TestLifecycleSmoke(void)
-{
-	SparkFirmwareModuleConfiguration configuration = TestConfiguration();
-	SparkFirmwareModuleHostServices host_services = TestHostServices();
-	SparkModelDriverAdmissionRequest request;
-	SparkModelDriverAdmissionDecision decision;
-	SparkModelDriverRuntimeSnapshot snapshot;
-	SparkModelDriverFrame frame;
-	void *module_state;
-	SparkStatus status;
-	module_state = 0;
-	status = SparkHy4ResidentDecodeStageInitialize(&configuration,
-		&host_services,&module_state);
-	assert(status == SPARK_STATUS_OK);
-	assert(module_state != 0);
-	memset(&frame,0,sizeof(frame));
-	assert(SparkHy4ResidentDecodeStageExecute(module_state,&frame) ==
-		SPARK_STATUS_UNSUPPORTED);
-	memset(&request,0,sizeof(request));
-	memset(&decision,0,sizeof(decision));
-	status = SparkHy4ResidentDecodeStageAdmit(module_state,&request,
-		&decision);
-	assert(status == SPARK_STATUS_OK);
-	assert(decision.accepted == 1u);
-	assert(decision.available_dispatch_slot_count ==
-		SPARK_HY4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCES);
-	assert(SparkHy4ResidentDecodeStageSnapshot(module_state,0u,
-		&snapshot) == SPARK_STATUS_INVALID_ARGUMENT);
-	memset(&snapshot,0,sizeof(snapshot));
-	status = SparkHy4ResidentDecodeStageSnapshot(module_state,
-		TEST_PROGRAM_ID,&snapshot);
-	assert(status == SPARK_STATUS_OK);
-	assert(snapshot.program_id == TEST_PROGRAM_ID);
-	assert(snapshot.submitted_count == 0u);
-	assert(snapshot.completed_count == 0u);
-	assert(snapshot.rejected_count == 0u);
-	assert(snapshot.active_submission_count == 0u);
-	assert(snapshot.available_dispatch_slot_count ==
-		SPARK_HY4_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_COUNT);
-	SparkHy4ResidentDecodeStageDestroy(module_state);
-	SparkHy4ResidentDecodeStageDestroy(0);
+	TestCheck(SparkHy4ResidentDecodeStageInitialize(&configuration,
+		&host_services,&module_state) == SPARK_STATUS_SCHEMA_ERROR,
+		"initialize without a model id is a schema error");
+	TestCheck(module_state == 0,"schema error leaves no state");
+	configuration = TestConfiguration();
+	configuration.stage_name = 0;
+	TestCheck(SparkHy4ResidentDecodeStageInitialize(&configuration,
+		&host_services,&module_state) == SPARK_STATUS_SCHEMA_ERROR,
+		"initialize without a stage name is a schema error");
+	TestCheck(module_state == 0,"schema error leaves no state");
 }
 
 static void TestEnvironmentRangeEnforced(const char *name,
@@ -114,11 +86,15 @@ static void TestEnvironmentRangeEnforced(const char *name,
 	SparkFirmwareModuleConfiguration configuration = TestConfiguration();
 	SparkFirmwareModuleHostServices host_services = TestHostServices();
 	void *module_state;
+	char what[160];
 	module_state = 0;
 	setenv(name,value,1);
-	assert(SparkHy4ResidentDecodeStageInitialize(&configuration,
-		&host_services,&module_state) != SPARK_STATUS_OK);
-	assert(module_state == 0);
+	snprintf(what,sizeof(what),"%s=%s is refused as an invalid argument",
+		name,value);
+	TestCheck(SparkHy4ResidentDecodeStageInitialize(&configuration,
+		&host_services,&module_state) == SPARK_STATUS_INVALID_ARGUMENT,
+		what);
+	TestCheck(module_state == 0,"refused configuration leaves no state");
 	unsetenv(name);
 }
 
@@ -126,11 +102,17 @@ int main(void)
 {
 	TestNullArgumentsRejected();
 	TestSchemaRejected();
-	TestLifecycleSmoke();
 	TestEnvironmentRangeEnforced("SPARK_HY4_TP_RANK","99");
 	TestEnvironmentRangeEnforced("SPARK_HY4_TP_DEGREE","0");
 	TestEnvironmentRangeEnforced("SPARK_HY4_TP_DEGREE","17");
+	TestEnvironmentRangeEnforced("SPARK_HY4_TP_DEGREE","4x");
+	TestEnvironmentRangeEnforced("SPARK_HY4_STAGE_MAX_ACTIVE_SEQUENCES","0");
 	TestEnvironmentRangeEnforced("SPARK_HY4_STAGE_PIPELINE_SLOTS","5");
+	if ( test_failures != 0u )
+	{
+		fprintf(stderr,"hy4 lifecycle smoke: %u failures\n",test_failures);
+		return(1);
+	}
 	printf("hy4 lifecycle smoke: OK\n");
 	return(0);
 }

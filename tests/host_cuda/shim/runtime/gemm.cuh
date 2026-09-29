@@ -17,8 +17,12 @@ struct LmRecordedGemm
     uint32_t input_dimension;
     uint32_t output_dimension;
     uint32_t packed_rows;
+    uint32_t activation_stored_bits;
+    uint32_t weight_stored_bits;
+    uint32_t tile_k;
     bool grouped;
     bool indirect;
+    bool interleaved;
 };
 
 extern std::vector<LmRecordedGemm> lm_recorded_gemms;
@@ -29,7 +33,8 @@ template<
     uint32_t TILE_N,
     uint32_t TILE_K,
     uint32_t STAGES,
-    uint32_t WARPS>
+    uint32_t WARPS,
+    bool INTERLEAVED_B = false>
 static int32_t LmGemmLaunchAsymmetric(
     LmGemmArguments *args,
     const void *activation_bytes,
@@ -58,8 +63,12 @@ static int32_t LmGemmLaunchAsymmetric(
     record.input_dimension = input_dimension;
     record.output_dimension = output_dimension;
     record.packed_rows = packed_rows;
+    record.activation_stored_bits = FormatA::kStoredBits;
+    record.weight_stored_bits = FormatB::kStoredBits;
+    record.tile_k = TILE_K;
     record.grouped = grouped;
     record.indirect = args->source_row_map != 0;
+    record.interleaved = INTERLEAVED_B;
     lm_recorded_gemms.push_back(record);
 
     for (row = 0u; row < packed_rows; ++row)
@@ -99,10 +108,7 @@ static int32_t LmGemmLaunchAsymmetric(
     (void)group_count;
     (void)multiprocessors;
     (void)stream;
-    (void)sizeof(FormatA);
-    (void)sizeof(FormatB);
     (void)TILE_N;
-    (void)TILE_K;
     (void)STAGES;
     (void)WARPS;
     return LM_LAUNCH_OK;
@@ -198,7 +204,7 @@ static int32_t LmGemmWeightOnlyInterleavedLaunch(
     cudaStream_t stream)
 {
     return LmGemmLaunchAsymmetric<
-        LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS>(
+        LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS,true>(
             args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,
             group_count,input_dimension,output_dimension,multiprocessors,
             grouped,stream);

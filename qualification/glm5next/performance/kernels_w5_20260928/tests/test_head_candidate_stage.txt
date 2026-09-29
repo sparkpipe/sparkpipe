@@ -1,0 +1,7 @@
+PASS sampled hidden=4096 vocabulary=9680 rows=1 ties=0
+PASS sampled hidden=4096 vocabulary=9680 rows=3 ties=1
+PASS sampled hidden=4096 vocabulary=1000 rows=2 ties=1
+PASS sampled hidden=192 vocabulary=77 rows=2 ties=0
+PASS sampled hidden=200 vocabulary=300 rows=1 ties=1
+PASS sampled hidden=64 vocabulary=128 rows=1 ties=0
+test_head_candidate_stage PASS
