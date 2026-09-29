@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/gemm.cuh"
+#include "inference/kernels/skinny.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/topk.cuh"
@@ -201,6 +202,7 @@ static int32_t GlmLaunchBf16Linear(
     cudaStream_t stream)
 {
     LmGemmArguments gemm;
+    int32_t status;
 
     if (activation_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 ||
         row_offset == 0 || tile_prefix == 0 || rows == 0u ||
@@ -210,6 +212,9 @@ static int32_t GlmLaunchBf16Linear(
         return LM_LAUNCH_ERR_SHAPE;
     }
 
+    status = LmSkinnyDense<LmBf16Format>(weight_bf16, activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, stream);
+    if (status != LM_LAUNCH_ERR_SHAPE)
+        return status;
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmScaleTensorNone();
@@ -682,22 +687,21 @@ static int32_t GlmLayerAttentionCore(
         GLM_LATENT,
         GLM_ROPE_DIM,
         GLM_ROPE_THETA);
-    LM_LAUNCH(
-        (LmPerHeadProjectKernel<
+    if (LmPerHeadProjectRowsLaunch<
             GLM_LAYER_THREADS,
             GLM_QK_NOPE_DIM,
             GLM_LATENT,
             GLM_QK_NOPE_DIM + GLM_ROPE_DIM,
-            0u>),
-        dim3(rows, buffers->attn_heads),
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->q_bf16,
-        (const uint16_t *)buffers->kv_b_key_transposed_weight,
-        buffers->query_latent_bf16,
-        buffers->attn_heads,
-        rows);
+            0u>(
+            buffers->q_bf16,
+            (const uint16_t *)buffers->kv_b_key_transposed_weight,
+            buffers->query_latent_bf16,
+            buffers->attn_heads,
+            rows,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
     LM_LAUNCH(
         (LmKvStoreKernel<GlmKv, GLM_LAYER_THREADS>),
         rows,
@@ -734,18 +738,17 @@ static int32_t GlmLayerAttentionCore(
         return LM_LAUNCH_ERR_LAUNCH;
     }
 
-    LM_LAUNCH(
-        (LmPerHeadProjectKernel<
-            GLM_LAYER_THREADS,GLM_LATENT,GLM_VALUE_DIM>),
-        dim3(rows, buffers->attn_heads),
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->attention_latent_bf16,
-        (const uint16_t *)buffers->kv_b_value_weight,
-        buffers->attention_value_bf16,
-        buffers->attn_heads,
-        rows);
+    if (LmPerHeadProjectRowsLaunch<
+            GLM_LAYER_THREADS,GLM_LATENT,GLM_VALUE_DIM>(
+            buffers->attention_latent_bf16,
+            (const uint16_t *)buffers->kv_b_value_weight,
+            buffers->attention_value_bf16,
+            buffers->attn_heads,
+            rows,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
 
     return GlmLaunchBf16Linear(
         buffers->attention_value_bf16,
@@ -957,6 +960,9 @@ static int32_t GlmLayerMoeRouterLogits(
     LmGemmArguments gemm;
     int32_t status;
 
+    status = LmSkinnyDense<LmBf16Format>(buffers->router_weight, buffers->normed_bf16, 0, buffers->router_logits, rows, GLM_HIDDEN, GLM_EXPERTS, 0u, 0u, stream);
+    if (status != LM_LAUNCH_ERR_SHAPE)
+        return status == LM_LAUNCH_OK && cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : status == LM_LAUNCH_OK ? LM_LAUNCH_ERR_LAUNCH : status;
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmScaleTensorNone();
@@ -1101,6 +1107,11 @@ static int32_t GlmLayerMoeExpertsGateUp(
         GLM_EXPERTS,
         buffers->expert_w1_rows,
         GLM_HIDDEN);
+    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM_TOP_K, 0u, GLM_HIDDEN, buffers->expert_w1_rows, stream);
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM_EXPERTS, packed_rows, 0u, GLM_HIDDEN, buffers->expert_w1_rows, stream);
+    if (status != LM_LAUNCH_ERR_SHAPE)
+        return status == LM_LAUNCH_OK && cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : status == LM_LAUNCH_OK ? LM_LAUNCH_ERR_LAUNCH : status;
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w1;
@@ -1149,6 +1160,11 @@ static int32_t GlmLayerMoeExpertsDown(
         GLM_EXPERTS,
         GLM_HIDDEN,
         buffers->expert_intermediate);
+    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM_TOP_K, 1u, buffers->expert_intermediate, GLM_HIDDEN, stream);
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, buffers->route_source_token, GLM_EXPERTS, packed_rows, 1u, buffers->expert_intermediate, GLM_HIDDEN, stream);
+    if (status != LM_LAUNCH_ERR_SHAPE)
+        return status == LM_LAUNCH_OK && cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : status == LM_LAUNCH_OK ? LM_LAUNCH_ERR_LAUNCH : status;
     gemm.prefix_built = 1u;
     gemm.group_row_offset = buffers->group_row_offset;
     gemm.group_tile_prefix = buffers->group_tile_prefix_w2;
