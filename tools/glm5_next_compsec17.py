@@ -18,10 +18,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import compsec17
 from compsec17 import (COMPSEC_IDS, RunError, arguments, call, compare_runs, first_difference, grade,
-                       load_decoder, load_run_tokens, run)
+                       load_decoder, load_run_tokens, require_text_endpoint, run)
 
 __all__ = ["COMPSEC_IDS", "RunError", "arguments", "build_prompt", "call",
-           "compare_runs", "first_difference", "grade", "load_decoder", "load_run_tokens", "main", "run"]
+           "compare_runs", "first_difference", "grade", "load_decoder", "load_run_tokens", "main",
+           "require_text_endpoint", "run"]
 
 
 def build_prompt(question: str, thinking: str) -> str:

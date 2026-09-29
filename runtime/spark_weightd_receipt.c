@@ -1,7 +1,9 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE
+#endif
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"

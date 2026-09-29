@@ -4,7 +4,10 @@ Status: plan of record for the speculation lane, 2026-09-28. S1
 (`spec/verify-hooks-1`) and the first half of S2 (host accept and eager fold
 after the verify graph, `spec/verify-fold-2`, `spec/lookup-draft-3`,
 `spec/verify-commit-4`) are implemented; section 9 says what runs today and
-how to measure it. Everything else is planned work. Numbers marked *model* are estimates from the fleet-calibrated
+how to measure it. S6a, the checkpoint's MTP layer as an in-engine drafter
+at TP16 (`spec/glm-mtp-drafter`), is implemented and exact at TP1 on the
+GPU; section 10 is its production A/B plan and section 11 the path from
+MTP-only to about 200 tok/s. Everything else is planned work. Numbers marked *model* are estimates from the fleet-calibrated
 cost model in the 2026-09-28 speculation research note, not measurements.
 Speculative and non-speculative results are always reported separately
 (invariant I42), and speculative results are also reported per content
@@ -190,7 +193,7 @@ must be checked before any serving use.
 
 | Model (module) | Drafters available | Notes and first measurement |
 | --- | --- | --- |
-| GLM-5.3 Flash (`glm5_next`) | MTP layer 45 (in checkpoint); suffix/n-gram; DFlash2 on the rtx5090 | DFlash2 is CC BY-NC-ND and rejected for serving (evaluation only if the owner allows). First: suffix, then MTP on draftd. Published MTP tau 3.7-5.1 at 7 drafts |
+| GLM-5.3 Flash (`glm5_next`) | MTP layer 45 (in the checkpoint, not in the production pack: served from a per-rank sidecar pack, section 9.5); suffix/n-gram; DFlash2 on the rtx5090 | DFlash2 is CC BY-NC-ND and rejected for serving (evaluation only if the owner allows). GB10 measurements chose MTP over DFlash2. First: MTP in-engine (S6a) and lookup; then MTP on draftd. Published MTP tau 3.7-5.1 at 7 drafts |
 | DeepSeek V4.1-Flash (`dsv41_flash`) | DSpark block in the pack (3 blocks x 5, Markov rank 256); suffix | DFlash on the rtx5090 targets V4 Flash, not V4.1: check before use |
 | MiMo-V2.6 Flash / Pro (`mimo26`) | MTP head (3 layers, F32 storage); `dflash/` 5.5 GB draft model in the checkpoint; suffix | measure MTP depth 1-3 against the bundled DFlash |
 | Kimi K3 (`k3`) | DSpark drafter (format in module); DFlash (modal) and DFlash2 (lightseek) on the rtx5090; suffix | K3 at 100+ tok/s B1 needs speculation: the no-spec ceiling is about 65 tok/s *model* |
@@ -488,3 +491,374 @@ section 2.2, reduced to what can be tested on a host:
   first, then GLM layer-45 MTP at TP1). Until the broadcast exists this
   drafter must not be selected at TP>1: a rank-local deadline would let
   ranks disagree on k.
+
+### 9.5 MTP drafter in the engine (S6a)
+
+Status: implemented on `spec/glm-mtp-drafter`, exact at TP1 on the GPU,
+not run at TP16. Off by default.
+
+**Selection.** `SPARK_GLM5_NEXT_VERIFY_ROWS=2..8` with
+`SPARK_GLM5_NEXT_VERIFY_DRAFTER=mtp` or `mtp+lookup`, and
+`SPARK_GLM5_NEXT_VERIFY_MTP_DIR=<directory>` (absolute, or relative to the
+root, which is the engine's working directory). Startup fails with a named
+message when the directory is unset, the rank's pack is missing or invalid,
+or the main pack itself carries layer-45 tensors.
+
+**Weights.** The production pack has no MTP layer: rank 15's
+`glm53flash.fp8.tp16.rankf.sp` has header flags 0, 1160 tensors for layers
+0-44 and receipt `"mtp": "none"` (read on sparkf, 2026-09-28). Rebuilding the
+21.7 GB rank packs and re-registering weightd lane 0 is not needed. The
+drafter loads a per-rank sidecar pack instead:
+
+- name `glm5_next_mtp.tp16.rank<R>.g5nsp`, header flags `MTP`, layer span
+  45..45, TP degree and rank in the header;
+- 27 tensors: DSA attention and indexer, router and correction bias, 288
+  FP8 experts, shared expert, `eh_proj`, `enorm`, `hnorm` and
+  `shared_head.norm`; embedding and `lm_head` are the main pack's;
+- 616,611,456 payload bytes per rank at TP16 (7.8 GB at TP1);
+- built by `tools/glm5_next_resident_stagepack.py --mtp-only --tp-all 16`
+  (the dry plan against `/mnt/model-warm/glm-5.3-flash` plans all 16 ranks);
+- loaded at init into one device allocation of 616,611,584 bytes, not through
+  weightd, so the lane 0 arena and its pack sha stay as they are.
+
+**Hidden tap.** The MTP layer reads the target's final hidden row (the HC
+mean before the final norm) of the position whose argmax is the anchor. The
+engine copies it into a per-lane buffer after every verify round (row
+`committed - 1`), after every plain step inside a verify frame (row 0) and at
+the end of every other frame (the last row of a B1 decode frame, or of a
+single-wave, single-sequence prefill). Each copy is tagged with the sequence
+id and the next position. The drafter drafts only when the tag equals the
+round's anchor; otherwise it returns no draft and counts it as `cold`, which
+happens once per sequence when the prefill spans several waves.
+
+**Draft.** A chain of up to 7 tokens (`MTP_CHAIN_MAX`) through layer 45:
+vocab-sharded embedding, `enorm`/`hnorm`, the replicated `eh_proj`, DSA
+attention on this rank's heads, the MoE on this rank's slice of every expert,
+and the shared head on this rank's vocabulary shard. Per drafted token that
+is three bf16 all-reduces and one max all-reduce, issued as stream-ordered
+collectives (the `hardware` wait mode production runs; anything else fails
+the draft with `VERIFY-MTP-UNSUPPORTED`). Tokens feed the next step on the
+device; the host syncs once per draft and checks the deferred collective
+rounds. Every rank computes the same chain from the same all-reduced rows, so
+the verify shape agrees across ranks without a broadcast. A token outside
+the vocabulary truncates the draft (`truncated`).
+
+**Mix (`mtp+lookup`).** The model-neutral
+`SparkSpeculationDrafterMix` asks the lookup drafter first and uses it when it
+proposes at least 2 tokens (or the whole requested depth when that is
+smaller); otherwise it asks MTP. Each source keeps its own per-lane depth cap
+(`SparkSpeculationDepthCapNext`), the lookup cap never below 2, so a lookup
+miss does not shrink MTP rounds.
+
+**Counters.** After every `VERIFY-FRAME` line the engine prints
+`VERIFY-MTP drafts= tokens= cold= truncated= taps= draft_us= | lookup rounds= proposed= accepted= declined= | mtp rounds= proposed= accepted=`
+(cumulative). `tools/spec_verify_bench.py log` turns the last one into
+acceptance, accepted length and tokens per round per drafter.
+
+**Limits of this step.**
+
+1. The MTP attention is context-free. Its KV is one page per slot holding
+   only the chain's own positions, not the MTP-layer KV of the whole
+   sequence, so acceptance will be below published MTP numbers. Per-sequence
+   MTP KV, filled from the prompt's hidden rows at prefill and from every
+   committed row, is S6b.
+2. The draft head is the bf16 `lm_head` shard, not the FP8 certified screen.
+3. Drafting is on the critical path. The cost is not measured; the estimate
+   in section 11 uses 1.3 ms per drafted token plus 0.3 ms per draft at TP16.
+4. Nothing is measured at TP16 yet; G-ROWEQ at TP16 is still the gate.
+
+**Exactness evidence.**
+
+- `validate_mtp_parity` on sparkf (sm_121a, TP1, synthetic full-geometry
+  stack), PASS 2026-09-28 on `5d1308b`: verify rounds of 2..8 rows drafted by
+  the MTP chain at depth `rows - 1`, organically, with a reference prefix
+  spliced in (at least the splice must be accepted), and drafted twice with
+  counting TP reductions (identical chain, 3 row reductions and 1 max
+  reduction per token). Short walk with and without the capture bound, and
+  the 2040-position walk across context 2048. Every round: tokens, KDA state,
+  conv windows, KV and index byte-equal to the serial greedy decode. The
+  earlier phases (MTP chain frames, reference rounds, tied head) pass with
+  the device-fed chain. Organic MTP agreement is 0 of 44 positions on
+  synthetic weights, as expected.
+- `tests/test_glm5_next_stage_context.py` (also under ASan/UBSan) drives the
+  real module loop with `mtp` at TP1 and through the TP op path at TP2, and
+  `mtp+lookup` at TP1 and TP16: output equals the greedy stream; the tapped
+  row is `committed - 1` after a round and 0 after a plain step; the tag
+  equals the next anchor; `cold` happens only on the first frame; an invalid
+  token truncates the draft; four reductions per drafted token and one
+  deferred check per draft. It also checks the sidecar validation (27 kinds
+  at TP16; flags, rank, layer, codec, duplicate, geometry and overlap
+  rejections) and a full load from a sparse 617 MB file.
+- `build/test_speculation_drafter_mix`: routing, per-source caps and a
+  900-token greedy loop where the mix equals the greedy stream and every
+  round is attributed to one source.
+
+## 10. Production A/B plan at TP16 (after the lead releases main)
+
+This runs on the production root, so every step below is the lead's. Each
+arm is one environment change, one engine restart on all 16 nodes (weightd
+stays warm) and one perf window (`perf_window.py <lane> 15 -- ...`). Spec-off
+and spec-on results are reported separately, per content class.
+
+### 10.1 Once, before the first arm
+
+1. Release the merged main through the normal path (FLEET_RELEASE_RUNBOOK
+   section 4) and rebuild the hub API channel from the same SHA (section 6).
+   With no `SPARK_GLM5_NEXT_VERIFY_*` variable the MTP and mix code is inert.
+2. The 16 MTP sidecar packs are built and placed (glm-mtp lane, 2026-09-29):
+   - one Ceph window copied the checkpoint's `config.json`, index and shards
+     1-2 (layer 45) to sparkf, checked against the archive's `SHA256SUMS`;
+     `--mtp-only --tp-all 16` built from that local copy;
+   - `tools/glm5_next_pack_verify.py --mtp-only --all-tensors` passes on all
+     16 ranks (27 tensors, 616,613,888 bytes, one directory sha256
+     `231f6528b92a65c3...` across ranks, every payload and scale region equal
+     to the checkpoint through the packer);
+   - the module's own loader (`SparkGlm5NextMtpPackOpen`, TP16, rank 0..15)
+     accepts every rank's header and directory;
+   - rank R's file is at `~/sparkdata/glm53flash.fp8.tp16.mtp/` on node R
+     (sparkf holds all 16), with its `SHA256SUMS` line checked on the node and
+     a `~/KEEP` line.
+3. The directory is the production root's sibling on every node, so one
+   `agent.env` line serves all 16 without touching the root:
+   `SPARK_GLM5_NEXT_VERIFY_MTP_DIR=../glm53flash.fp8.tp16.mtp` (relative to
+   the root, the engine's working directory). A dev root on weightd lane 7
+   runs the same arms first; its staged script is in the glm-mtp lane notes.
+
+4. Move the production root's engine environment into `agent.env`. The GLM
+   root is a legacy root today: its engine gets `SPARK_GLM5_NEXT_*` only from
+   the agent's `G5_*` knobs, and changing the unit drop-in restarts
+   fleet-agent, weightd and the engine. A root with `agent.env` gets exactly
+   the file's keys (plus the agent's inherited environment), and a release
+   that changes `agent.env` restarts only the engine. The spec-off file
+   reproduces today's engine environment:
+
+   ```sh
+   R=~/release/glm53flash.fp8.tp16
+   cat > $R/agent.env.new <<'ENV'
+   AGENT_ROLE=production
+   SPARK_WEIGHTD_EXPERT_POOL_BYTES=34359738368
+   SPARK_GLM5_NEXT_PIN_EXPERTS=1
+   SPARK_GLM5_NEXT_GRAPH_PATH=1
+   SPARK_TP_WAIT_MODE=hardware
+   ENV
+   mv -f $R/agent.env.new $R/agent.env
+   cd $R && find lib bin stages config model_resident.json agent.env -type f ! -name stage.json ! -name MANIFEST |
+       sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST
+   ```
+
+   `agent.env` must be in the MANIFEST file list from now on; the runbook's
+   `find` omits it. Check that all 16 engines restart and report ready, that
+   the heartbeat `env` sha matches on all 16, and that the engine environment
+   matches the table in runbook section 2.1:
+
+   ```sh
+   for h in "${hosts[@]}"; do ssh $h 'rr=$HOME/sparkdata/glm53flash.fp8.tp16; p=$(pgrep -f "bin/sparkpipe_model_[r]esidentd" | while read p; do [ "$(readlink /proc/$p/cwd)" = "$rr" ] && echo $p; done)
+     echo $(hostname) ready=$(grep -c "model_residentd ready" $rr/residentd.log) $(tr "\0" "\n" < /proc/$p/environ | grep -E "^SPARK_(GLM5_NEXT|TP_WAIT|WEIGHTD_EXPERT)" | sort | tr "\n" " ")'; done
+   ```
+
+5. Tokenize one code prompt for the oracle arm and record the oracle on the
+   hub, in the build checkout of the released SHA:
+
+   ```sh
+   python3 - <<'PY'
+   import json, importlib.util
+   from tokenizers import Tokenizer
+   spec = importlib.util.spec_from_file_location("b", "tools/spec_verify_bench.py"); b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+   t = Tokenizer.from_file("/home/spec/g53-api-channel/runtime/tokenizer/tokenizer.json")
+   json.dump(t.encode(b.GLM_PREFIX + b.PROMPTS["code"][0] + b.GLM_ASSISTANT, add_special_tokens=False).ids, open("spec_p.json", "w"))
+   PY
+   ```
+
+### 10.2 Arms
+
+Every arm: write `$R/agent.env` (spec-off lines of 10.1 step 4 plus the arm's
+lines), rewrite the MANIFEST as in 10.1 step 4, wait for 16 × `model_residentd
+ready`, then run the arm inside one perf window from the hub build checkout.
+`OUT=~/spec-ab-<sha7>`.
+
+| Arm | Extra `agent.env` lines | Run in the window | Pass condition |
+| --- | --- | --- | --- |
+| off | none | `tools/glm5_next_spec_ab.sh off $OUT`; `tools/spec_verify_bench.py record --endpoint http://127.0.0.1:8433 --prompt-ids spec_p.json --max-tokens 512 --out spec_oracle.u32`; COMPSEC-17 to `$OUT/compsec-off` | 36 tok/s class, COMPSEC 14/17 |
+| oracle | `SPARK_GLM5_NEXT_VERIFY_ROWS=8`, `SPARK_GLM5_NEXT_VERIFY_DRAFTER=oracle:config/spec_oracle.u32` | `tools/spec_verify_bench.py replay --endpoint http://127.0.0.1:8433 --prompt-ids spec_p.json --expect spec_oracle.u32` | `"exact": true`; rank log `produced=8 rounds=1 accepted=7` on nearly every frame (G-ROWEQ at TP16 and the round-machinery ceiling) |
+| adversary | as oracle with `adversary:config/spec_oracle.u32` | the same replay | `"exact": true`, `accepted=0` |
+| mtp8 | `SPARK_GLM5_NEXT_VERIFY_ROWS=8`, `SPARK_GLM5_NEXT_VERIFY_DRAFTER=mtp`, `SPARK_GLM5_NEXT_VERIFY_MTP_DIR=../glm53flash.fp8.tp16.mtp` | `tools/glm5_next_spec_ab.sh mtp8 $OUT $OUT/off.json`; COMPSEC-17 to `$OUT/compsec-mtp8`, then `tools/glm5_next_compsec17.py --compare $OUT/compsec-off $OUT/compsec-mtp8` | script exit 0 (token ids equal to off per class); COMPSEC compare exit 0 |
+| mtp4 | as mtp8 with `SPARK_GLM5_NEXT_VERIFY_ROWS=4` | `tools/glm5_next_spec_ab.sh mtp4 $OUT $OUT/off.json` | exit 0 |
+| mix8 | as mtp8 with `SPARK_GLM5_NEXT_VERIFY_DRAFTER=mtp+lookup` | `tools/glm5_next_spec_ab.sh mix8 $OUT $OUT/off.json` | exit 0 |
+
+The oracle file reaches every node through the release: copy
+`spec_oracle.u32` to `$R/config/spec_oracle.u32` before the oracle arm's
+MANIFEST rewrite (a `config/` file that is not a stage, env or rank file does
+not restart anything by itself).
+
+Expected ready lines per node, in `residentd.log`:
+
+```
+GLM execution mode=graph
+GLM verify regime rows=8 drafter=4                       (drafter 1 lookup, 2 oracle, 3 adversary, 4 mtp, 5 mtp+lookup)
+GLM verify MTP pack ../glm53flash.fp8.tp16.mtp/glm5_next_mtp.tp16.rank<R>.g5nsp tensors=27 device_bytes=616611584 tp=16 rank=<R>
+model_residentd ready
+GRAPH-VERIFY-TABLE slot=<s> rows_max=8 status=0 capture_ms=<t>     (after the first warm chain)
+VERIFY-FRAME ... and VERIFY-MTP ...                                  (per frame, once requests run)
+```
+
+Stop the arm and restore the spec-off `agent.env` on any of: a replay or
+compare that is not exact, `VERIFY-RANK-LOCAL-INELIGIBLE`,
+`VERIFY-MTP-DRAFT-FAILED`, `VERIFY-MTP-UNSUPPORTED`, `GRAPH-VERIFY-TABLE ...
+status!=0`, `GRAPH-VERIFY-REJECTED`, `VERIFY-PLAIN-STEP-FAILED`,
+`VERIFY-OBSERVE-FAILED`, or an engine that does not reach ready.
+
+`tools/glm5_next_spec_ab.sh` exits nonzero on each of these that it can see:
+tokens that differ from `off.json`, any of the markers above in rank 15's
+`residentd.log`, an `off` arm whose engine runs a verify regime
+(`GLM verify regime rows=` not 0, or any `VERIFY-FRAME`), and a spec arm
+that ran no verify frame (spec silently off, so its rate would be a spec-off
+number under a spec label). `$OUT/<arm>.summary.json` records
+`stop_markers`, `verify_rows` and `spec_state_ok`. The script reads rank
+15's log only; before recording an arm, grep the other 15 nodes for the same
+markers:
+
+```sh
+for h in "${hosts[@]}"; do ssh $h 'grep -cE "VERIFY-RANK-LOCAL-INELIGIBLE|VERIFY-MTP-(DRAFT-FAILED|UNSUPPORTED)|GRAPH-VERIFY-REJECTED|VERIFY-(PLAIN-STEP|OBSERVE)-FAILED|GRAPH-VERIFY-TABLE .*status=-?[1-9]" ~/sparkdata/glm53flash.fp8.tp16/residentd.log' | sed "s/^/$h /"; done
+```
+
+The arms run on the production root, so g53-api traffic during a spec arm
+is served by the spec path. Greedy output is exact only once the oracle arm
+has shown G-ROWEQ at TP16; until then, run the arms in a window with no
+outside traffic on g53-api, and restore the spec-off `agent.env` as soon as
+the last arm ends.
+
+Record per arm: decode tok/s per class (`$OUT/<arm>.summary.json`), tokens
+per round and acceptance per drafter (`$OUT/<arm>.acceptance.json`), mean
+draft time (`draft_us`), plain frames by class (`VERIFY-PLAIN-FRAME`), and the
+COMPSEC score. The table goes to the GLM hill-climb log with the method
+(`mtp`, `mtp+lookup`, rows) next to the spec-off number.
+
+### 10.3 Rollback
+
+Publish the spec-off `agent.env` (engine restart, weightd stays warm). To
+return the root to the legacy environment as well, remove `agent.env` from
+`$R` and from the MANIFEST, delete `~/sparkdata/glm53flash.fp8.tp16/agent.env`
+on all 16 nodes, and drain the root with the cwd-scoped TERM of runbook
+section 4.3; the agent restarts it with the unit's `G5_*` knobs. The MTP packs
+are inert without the drafter env; delete them and flip their `~/KEEP` lines
+to `DELETE-OK` when the lane ends.
+
+## 11. From MTP-only to about 200 tok/s
+
+### 11.1 What the real streams say
+
+`tools/glm5_next_spec_replay.c` replays recorded greedy streams through the
+module's own lookup drafter, depth cap, drafter mix, verify-depth rules and
+runtime frame sizing (at most 8 tokens, never across a 64-token block), with
+a seeded synthetic drafter of per-token acceptance p standing in for MTP.
+`tools/glm5_next_spec_estimate.py` prices the rounds: a verify of r rows
+costs `B1 + (r - 1) x row`, plus a per-round host cost and the MTP draft
+cost. The streams are the 9 prompts of `spec_verify_bench.py` (prose, code,
+repetitive; 512 tokens, temperature 0) recorded from production g53-api
+(`09fdad6`) on 2026-09-28 at 17:20Z, with the prompts tokenized by the
+channel's tokenizer (11 tokens for the smoke prompt, as the API reports).
+The decode rates of that run (9-32 tok/s) are not a baseline: mimo, ling and
+hy4 lanes were using fleet GPUs at the time. Only the token ids are used.
+
+Lookup is measured; MTP is a parameter (p = 0.5, 0.65, 0.8) until the fleet
+logs `VERIFY-MTP`. Today's costs: B1 25.2 ms, 2.7 ms per extra verify row
+(2.35 ms kernel from the single-GPU bench, B1 15.39 ms to B8 31.87 ms, plus
+the 0.38 ms certified head per row), 1.0 ms per round, MTP 1.3 ms per drafted
+token plus 0.3 ms per draft, frames of 8. Spec-off prices at 39.7 tok/s.
+That is the B1 step alone; production measures 36.3 tok/s end to end, so
+read the tok/s cells below as upper bounds and apply the speedups to 36.3
+(MTP p = 0.5 / 0.65 / 0.8 at 4 rows: about 44 / 51 / 64 tok/s).
+
+| Drafter, rows | code | prose | repetitive |
+| --- | --- | --- | --- |
+| lookup, 8 | 39.9 (1.01x, 1.45 tokens/round) | 39.7 (1.00x) | 39.6 (1.00x) |
+| MTP p=0.5, 4 | 48.3 (1.22x) | 48.3 (1.22x) | 48.9 (1.23x) |
+| MTP p=0.65, 4 | 56.0 (1.41x) | 56.3 (1.42x) | 56.3 (1.42x) |
+| MTP p=0.8, 4 | 69.6 (1.75x) | 69.7 (1.76x) | 69.7 (1.76x) |
+| MTP p=0.8, 8 | 69.3 (1.75x, 2.75 tokens/round) | 69.1 (1.74x) | 70.0 (1.76x) |
+| MTP+lookup p=0.8, 8 | 67.5 (1.70x) | 68.5 (1.73x) | 67.7 (1.71x) |
+
+Findings:
+
+- Lookup gives nothing on these streams. The "repetitive" prompts produce
+  number sequences (squares, `user_<n>`) whose next token never repeats a
+  3-token context, and a frame whose first round has no draft runs all its
+  steps plain (62 of 63 frames for prose[0]). Lookup stays in the mix for
+  copy-heavy agentic and editing traffic, where it is free.
+- With MTP at p = 0.8 the estimate is about 70 tok/s at today's costs, and
+  rows 4 and 8 are equal: the extra rows cost as much as they commit.
+- On today's row costs no drafter in this model passes about 75 tok/s at
+  TP16; about 100 tok/s (what the owner saw at TP4 with speculation) needs
+  the cheaper rows and faster B1 step of 11.2.
+
+### 11.2 What moves the number
+
+Same streams and drafters with frames of 32 (S4), 8 rows, and either the
+acceptance depth cap of today or a fixed full depth (what a cost-aware
+controller picks when rows are cheap). Tokens per round in brackets; the
+three classes agree to within 2 tok/s, so one number is shown.
+
+| Cost model | MTP p=0.65, capped / fixed | MTP p=0.8, capped / fixed | p=0.85, fixed | p=0.9, fixed |
+| --- | --- | --- | --- | --- |
+| today: B1 25.2 ms, row 2.7 ms, round 1.0 ms, MTP 1.3 ms/token + 0.3 ms/draft | 59 / 51 | 71 / 75 (3.95) | | |
+| B1 22 ms (merged kernel stack), row 1.0 ms, round 0.3 ms, MTP 0.5 ms/token | 82 / 82 | 102 / 121 | 135 | 153 |
+| B1 20 ms, row 0.3 ms, round 0.2 ms, drafts pre-drafted off the critical path | 101 / 118 | 131 / 173 | 195 (4.42) | 220 (4.97) |
+
+About 200 tok/s therefore needs all of:
+
+1. **Verify rows nearly free.** A verify of 8 rows must cost close to one B1
+   step. Today a row costs about 2.7 ms. The grouped-expert and dense skinny
+   kernels have to stay memory-bound across 8 rows (the expert union of 8
+   consecutive rows is about 58 of 288), and the certified head must run as
+   one rows launch (#1293) instead of once per row.
+2. **A faster B1 step.** 25.2 ms today; the merged kernel stack took the
+   single-GPU step from 15.7 to 12.85 ms. 20 ms at TP16 needs that plus
+   collective work (lane L2).
+3. **Higher MTP acceptance.** p near 0.85-0.9 per token; what the
+   context-free chain reaches is unmeasured until the mtp8 arm. S6b gives layer 45 its per-sequence
+   KV; S7 trees add independent drafters where MTP is unsure.
+4. **Drafting off the critical path.** In-engine MTP costs k x (about 1.3
+   ms) per round on the same GPUs. Pre-drafting on the rtx5090 (section 2.1)
+   or an in-graph MTP chain removes most of it.
+5. **Bigger frames and a cost-aware depth.** Frames of 8 cut rounds short;
+   S4 raises `MAX_TOKENS_PER_SEQUENCE` to 32 and replaces the doubling depth
+   cap with the goodput controller (p = 0.8: 2.8 tokens per round capped, 3.95
+   fixed).
+6. **Device accept and fold in the verify graph (S2b).** About 1 ms of host
+   work per round today.
+
+### 11.3 rtx5090 drafter over the sparkf relay: design and stub status
+
+What exists (#1284, host-tested only, not selectable): fixed 112-byte `SPR1`
+frames (REQUEST with the committed tokens since the last round, DRAFT with up
+to 16 tokens), the mailbox drafter that keeps only a draft for the current
+engine generation, round, sequence and anchor, and a 400-token greedy loop
+against an in-process draftd with late drafts counted as misses.
+
+What the rtx5090 drafter still needs, in order:
+
+1. **Root-15 broadcast.** The relay thread on rank 15 receives the draft and
+   broadcasts `(round, k, tokens)` over the mesh before every verify, so all
+   16 ranks run the same shape; ranks 0-14 read the broadcast, never the
+   socket. S6a does not need this because its drafts come out of
+   all-reduces. This is the piece that makes any remote drafter
+   rank-consistent, and it is the first S5 PR.
+2. **Relay thread and deadline.** Busy-polled socket on the sparkf-rtx5090
+   link (22-45 us RTT), deadline set by the controller, k=0 rounds counted.
+3. **draftd process.** Lookup first (no tap), then MTP: layer 45 at TP1 on the
+   rtx5090 (7.8 GB, fits next to `g53-api`), per-sequence MTP KV filled from
+   `TAP` frames. A `TAP` frame carries 8 KB of hidden row per committed token,
+   drained from a pinned ring written by a graph memcpy node on rank 15.
+4. **Pre-drafting.** Draft round r+1 for the likely outcomes of round r while
+   the fleet verifies; this is what takes drafting off the critical path.
+5. **Trees (S7).** The rtx5090 builds a token trie from MTP, lookup/suffix and
+   any licensed drafter; the fleet verifies it in one pass. The fleet side
+   needs tree verify graphs (ancestor mask, per-node DSA selection, KDA tree
+   scan and tree fold), the largest single item on this list.
+
+The in-engine MTP drafter of S6a and the rtx5090 path are not exclusive: S6a
+gives the first measured MTP acceptance and speed on the fleet with no new
+transport, and its hidden tap, tags and draft interface are what draftd's MTP
+reuses. Section 1 rules that drafters run on the rtx5090; running MTP on the
+fleet first was the lead's direction on 2026-09-28 and is recorded here for
+the owner.

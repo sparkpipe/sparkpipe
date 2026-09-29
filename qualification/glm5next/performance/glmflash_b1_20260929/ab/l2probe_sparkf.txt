@@ -1,0 +1,7 @@
+scripts/l2probe.cu on sparkf (GB10), perf window glmflash-b1 2026-09-29. 8 MiB buffer, L2 flushed by a 256 MiB streaming read before each sample, 20 samples, then one __ldcs streaming read of the 8 MiB timed.
+mode=0 cold mean_us=36.3 best_us=35.6 GBps_best=236
+mode=1 bulkpf32k+spin mean_us=28.5 best_us=27.5 GBps_best=305
+mode=2 spin-only mean_us=35.9 best_us=34.8 GBps_best=241
+mode=3 warm-by-ld mean_us=8.2 best_us=8.2 GBps_best=1028
+mode=4 prefetch.L2-per-line+spin mean_us=31.9 best_us=30.6 GBps_best=274
+mode=5 bulkpf8k-48cta+spin mean_us=31.5 best_us=30.6 GBps_best=274

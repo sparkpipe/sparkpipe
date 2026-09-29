@@ -201,6 +201,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t *mtp_sequence;
 	uint32_t *mtp_positions;
 	uint32_t *mtp_context;
+	uint32_t *mtp_draft_device;
 	uint32_t *mtp_committed;
 	void *mtp_replay_steps;
 	uint16_t *mtp_conv_scratch;
@@ -294,6 +295,10 @@ typedef struct SparkGlm5NextCudaWave
 	uint64_t kda_replay_layer_bytes;
 } SparkGlm5NextCudaWave;
 
+#define SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE 0u
+#define SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE 1u
+#define SPARK_GLM5_NEXT_L2_SITE_BEGIN 2u
+
 typedef struct SparkGlm5NextMtpDraftOps
 {
 	void *context;
@@ -325,6 +330,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
+int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,uint32_t *placed);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,const uint32_t *miss,uint64_t *maxloc,uint32_t row_count);
@@ -341,6 +347,10 @@ int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const 
 int32_t SparkGlm5NextPrepareCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t rows);
 int32_t SparkGlm5NextLaunchCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps);
 int32_t SparkGlm5NextConfigureCudaModule(uint32_t *multiprocessor_count);
+#ifdef SPARK_SCORE_DUMP
+struct SparkScoreDumpStats;
+cudaError_t SparkGlm5NextLaunchHeadScore(cudaStream_t stream,const uint16_t *normed_bf16,const void *head_bf16,float *logits,uint32_t rows,uint32_t width,uint32_t id_base,const uint32_t *probe_offsets,const uint32_t *probe_local,float *probe_logits,struct SparkScoreDumpStats *stats);
+#endif
 
 #ifdef __cplusplus
 }

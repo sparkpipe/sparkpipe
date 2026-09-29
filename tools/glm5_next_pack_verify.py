@@ -44,15 +44,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from glm5_next_resident_stagepack import (  # noqa: E402
     ALIGNMENT, ENTRY_BYTES, FORMAT_VERSION, GLOBAL_LAYER, HEADER_BYTES, MAGIC,
-    LAYERS, Packer, SCALE_F32, SCALE_NONE, SCALE_UE4M3_F32_GLOBAL, CODEC_NVFP4,
-    SourceReader, validate_stage,
+    LAYERS, MTP_LAYER, Packer, SCALE_F32, SCALE_NONE, SCALE_UE4M3_F32_GLOBAL, CODEC_NVFP4,
+    SourceReader, validate_stage, header_expert_codec,
     K_DENSE_GATE_UP, K_EMBEDDING, K_EXPERT_UP_GATE, K_KDA_DECAY_GATE_DOWN,
     K_KDA_QKV_BETA, K_LM_HEAD, K_Q_B, K_SHARED_GATE_UP,
+    K_MTP_EH_PROJ, K_MTP_SHARED_NORM, K_KV_B_KEY_T, K_EXPERT_DOWN,
     PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT,
 )
 
 EXPECTED_TENSOR_COUNT = 1160
 EXPECTED_FILE_BYTES = 21706046976  # rank 0's completed receipt (fixed packer)
+EXPECTED_MTP_TENSOR_COUNT = 27
+EXPECTED_MTP_FILE_BYTES = 616613888
 
 DT_SIZE = {PAYLOAD_BF16: 2, PAYLOAD_F32: 4, PAYLOAD_PACKED_WEIGHT: 1}
 
@@ -111,6 +114,13 @@ def verify_region(mm, offset, expected, chunks, label):
 
 
 def check_stage_header(header, args):
+    if args.mtp_only:
+        expected = dict(stage_count=1, stage_index=0, first_layer=MTP_LAYER,
+                        layer_count=1, total_layers=LAYERS, flags=1)
+        for key, value in expected.items():
+            if header[key] != value:
+                fail(f"header {key} {header[key]} != MTP-only {value}")
+        return
     validate_stage(args.stage_count, args.stage_index, args.first_layer,
                    args.layer_count, args.stage_index == 0,
                    args.stage_index + 1 == args.stage_count, args.mtp)
@@ -139,16 +149,29 @@ def main() -> int:
                          "has its own uniform rank size)")
     ap.add_argument("--mtp", action="store_true",
                     help="pack carries the MTP block (flags=1, +24 entries)")
+    ap.add_argument("--mtp-only", action="store_true",
+                    help="pack is the layer-45 MTP sidecar alone "
+                         "(glm5_next_mtp.tpN.rankR.g5nsp from --mtp-only)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--deep", action="store_true")
     mode.add_argument("--all-tensors", action="store_true",
                       help="compare every payload and scale region against the checkpoint")
     mode.add_argument("--skip-spot", action="store_true",
                       help="header/layout/plan-diff only (no checkpoint payload reads)")
+    mode.add_argument("--expert-layers", default=None,
+                      help="comma-separated layers: compare only those layers' routed-expert "
+                           "payload and scale regions against the checkpoint")
     mode.add_argument("--structure-only", action="store_true",
                       help="header + directory + layout contract only; no checkpoint "
                            "and no plan diff (placed-node local verification)")
+    ap.add_argument("--accept-header-expert-codec", type=int, default=None,
+                    help="accept this header expert_weight_codec when it differs from the "
+                         "plan's routed-expert codec (packs emitted before the header fix); "
+                         "the mismatch is still printed")
     args = ap.parse_args()
+    if args.mtp_only and (args.mtp or args.stage_count != 1 or args.stage_index != 0
+                          or args.first_layer != 0 or args.layer_count != LAYERS):
+        ap.error("--mtp-only takes no stage, layer span or --mtp options")
     if args.structure_only and not args.source:
         args.source = "STRUCTURE-ONLY"
     if not args.structure_only and not args.source:
@@ -176,17 +199,20 @@ def main() -> int:
              f"tp{args.tp_degree} rank {args.tp_rank}")
     if h["file_bytes"] != size:
         fail(f"header file_bytes {h['file_bytes']} != actual {size}")
+    receipt = EXPECTED_MTP_FILE_BYTES if args.mtp_only else EXPECTED_FILE_BYTES
     expected = args.expected_bytes if args.expected_bytes is not None \
-        else EXPECTED_FILE_BYTES
+        else receipt
     if args.expected_bytes is None and args.tp_degree != 16:
         fail(f"--tp-degree {args.tp_degree} requires --expected-bytes "
-             f"(the {EXPECTED_FILE_BYTES} receipt is tp16-only)")
+             f"(the {receipt} receipt is tp16-only)")
     if size != expected:
         fail(f"byte count {size} != expected {expected}")
     print(f"PASS header: tp{h['tp_degree']} rank {h['tp_rank']}, "
           f"stage {h['stage_index']}/{h['stage_count']}, file_bytes {size} == expected")
 
-    if (not args.mtp and args.expected_bytes is None
+    if args.mtp_only and h["entry_count"] != EXPECTED_MTP_TENSOR_COUNT:
+        fail(f"entry count {h['entry_count']} != {EXPECTED_MTP_TENSOR_COUNT}")
+    if (not args.mtp and not args.mtp_only and args.expected_bytes is None
             and h["entry_count"] != EXPECTED_TENSOR_COUNT):
         fail(f"entry count {h['entry_count']} != {EXPECTED_TENSOR_COUNT}")
     print(f"PASS count: {h['entry_count']} tensors")
@@ -269,9 +295,12 @@ def main() -> int:
     # -- plan diff against the fixed packer (headers-only; no payload reads
     #    except three small f32 vectors the packer reads at plan time) -----
     source = SourceReader(Path(args.source))
-    packer = Packer(source, args.tp_degree, args.tp_rank,
-                    args.first_layer, args.layer_count, args.mtp,
-                    args.stage_index == 0, args.stage_index + 1 == args.stage_count)
+    if args.mtp_only:
+        packer = Packer(source, args.tp_degree, args.tp_rank, MTP_LAYER, 0, True, False, False)
+    else:
+        packer = Packer(source, args.tp_degree, args.tp_rank,
+                        args.first_layer, args.layer_count, args.mtp,
+                        args.stage_index == 0, args.stage_index + 1 == args.stage_count)
     packer.build()
     want = [{
         "kind": it.entry.kind, "layer": it.entry.layer,
@@ -288,33 +317,66 @@ def main() -> int:
     if len(want) != len(entries):
         fail(f"plan entry count {len(want)} != pack {len(entries)}")
     mismatches = 0
+    out_of_scope = 0
+    waivers = []
     for i, (w, e) in enumerate(zip(want, entries)):
         e_sub = {k: e[k] for k in cmp_keys}
         if w != e_sub:
+            if args.expert_layers and w["kind"] not in (K_EXPERT_UP_GATE, K_EXPERT_DOWN) \
+                    and (w["kind"], w["layer"]) == (e["kind"], e["layer"]):
+                out_of_scope += 1
+                print(f"NOTE entry {i} kind={w['kind']} layer={w['layer']:#x} differs from the "
+                      f"plan; outside the --expert-layers scope: pack {e_sub} != plan {w}")
+                continue
             mismatches += 1
             if mismatches <= 5:
                 print(f"FAIL entry {i}: pack {e_sub} != plan {w}")
     if mismatches:
         fail(f"plan diff: {mismatches}/{len(entries)} entries differ")
-    print(f"PASS plan diff: all {len(entries)} entries match the fixed "
-          f"packer's plan for rank {args.tp_rank}")
+    if out_of_scope:
+        print(f"PASS plan diff (routed experts): every routed-expert entry matches; "
+              f"{out_of_scope} non-expert entries differ and are outside this scope")
+    else:
+        print(f"PASS plan diff: all {len(entries)} entries match the fixed "
+              f"packer's plan for rank {args.tp_rank}")
+    plan_codec = header_expert_codec(packer.plan, None if any(
+        it.entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN) for it in packer.plan)
+        else h["expert_codec"])
+    if h["expert_codec"] != plan_codec:
+        if args.accept_header_expert_codec != h["expert_codec"]:
+            fail(f"header expert_weight_codec {h['expert_codec']} != plan routed-expert "
+                 f"codec {plan_codec}")
+        print(f"HEADER-CODEC-MISMATCH header expert_weight_codec {h['expert_codec']} != "
+              f"plan {plan_codec}; accepted by --accept-header-expert-codec")
+        waivers.append(f"header-expert-codec-accepted={h['expert_codec']}!={plan_codec}")
+    else:
+        print(f"PASS header expert codec: {plan_codec}")
+    if out_of_scope:
+        waivers.append(f"non-expert-plan-mismatches-out-of-scope={out_of_scope}")
+    waived = f" WAIVED[{','.join(waivers)}]" if waivers else ""
 
     # -- spot round-trip ---------------------------------------------------
     spot = [(K_KDA_QKV_BETA, 17), (K_KDA_DECAY_GATE_DOWN, 17),
             (K_DENSE_GATE_UP, 0), (K_EMBEDDING, GLOBAL_LAYER)]
-    if args.deep:
+    if args.mtp_only:
+        spot = [(K_MTP_EH_PROJ, MTP_LAYER), (K_MTP_SHARED_NORM, MTP_LAYER),
+                (K_KV_B_KEY_T, MTP_LAYER), (K_EXPERT_DOWN, MTP_LAYER)]
+    elif args.deep:
         spot += [(K_LM_HEAD, GLOBAL_LAYER), (K_SHARED_GATE_UP, 3),
                  (K_Q_B, 3), (K_EXPERT_UP_GATE, 3)]
     by_key = {(it.entry.kind, it.entry.layer): it for it in packer.plan}
     entry_by_key = {(e["kind"], e["layer"]): e for e in entries}
     if args.all_tensors:
         spot = list(by_key)
+    if args.expert_layers:
+        spot = [(kind, int(layer)) for layer in args.expert_layers.split(",")
+                for kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN)]
     if args.skip_spot:
         source.close()
         mm.close()
         f.close()
         print(f"VERIFY-PASS (skip-spot) rank {args.tp_rank}: {path.name} "
-              f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}")
+              f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}{waived}")
         return 0
     for kind, layer in spot:
         item = by_key.get((kind, layer))
@@ -333,8 +395,10 @@ def main() -> int:
     source.close()
     mm.close()
     f.close()
-    print(f"VERIFY-PASS scope={'all-tensors' if args.all_tensors else 'spot'} rank {args.tp_rank}: {path.name} "
-          f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}")
+    scope = ("all-tensors" if args.all_tensors
+             else f"expert-layers-{args.expert_layers}" if args.expert_layers else "spot")
+    print(f"VERIFY-PASS scope={scope} rank {args.tp_rank}: {path.name} "
+          f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}{waived}")
     return 0
 
 

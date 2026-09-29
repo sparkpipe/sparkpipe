@@ -17,12 +17,14 @@ include $(dir $(lastword $(MAKEFILE_LIST)))runtime/weightd_sources.mk
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
+    src/spark_quant_arm.c \
     src/spark_ck128.c \
     src/spark_admission.c \
     src/spark_speculation_policy.c \
     src/spark_speculation_seam.c \
     src/spark_speculation_reference_draft.c \
     src/spark_speculation_lookup_draft.c \
+    src/spark_speculation_drafter_mix.c \
     src/spark_speculation_relay_draft.c \
     ring/transport/draft_bridge.c \
     runtime/filesystem.c \

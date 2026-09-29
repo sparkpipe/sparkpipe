@@ -1,0 +1,11 @@
+0 %, 2398 MHz, 13.61 W
+pid, process_name, used_gpu_memory [MiB]
+476676, /home/sparkf/sparkdata/weightd/sparkpipe_weightd, 21892 MiB
+575174, ./bin/sparkpipe_model_residentd, 11992 MiB
+1540361, build/sparkpipe_model_residentd, 172 MiB
+1540360, build/sparkpipe_model_residentd, 172 MiB
+1540359, build/sparkpipe_model_residentd, 172 MiB
+1558127, build/sparkpipe_model_residentd, 172 MiB
+1558129, build/sparkpipe_model_residentd, 172 MiB
+1558128, build/sparkpipe_model_residentd, 172 MiB
+1683713, ./bin/sparkpipe_model_residentd, 9374 MiB

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "sparkpipe/spark_glm5_next_graph_regime.h"
@@ -15,6 +16,11 @@
 #define SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP 1u
 #define SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE 2u
 #define SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY 3u
+#define SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP 4u
+#define SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP 5u
+#define SPARK_GLM5_NEXT_VERIFY_MTP_DIR_ENV "SPARK_GLM5_NEXT_VERIFY_MTP_DIR"
+#define SPARK_GLM5_NEXT_VERIFY_MIX_LOOKUP_MIN_TOKENS 2u
+#define SPARK_GLM5_NEXT_VERIFY_MTP_PACK_PREFIX "glm5_next_mtp.tp"
 #define SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX "oracle:"
 #define SPARK_GLM5_NEXT_VERIFY_ADVERSARY_PREFIX "adversary:"
 #define SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH 3u
@@ -55,6 +61,16 @@ static inline SparkStatus SparkGlm5NextVerifyDrafterParse(const char *text,uint3
 		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP;
 		return(SPARK_STATUS_OK);
 	}
+	if ( strcmp(text,"mtp") == 0 )
+	{
+		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP;
+		return(SPARK_STATUS_OK);
+	}
+	if ( strcmp(text,"mtp+lookup") == 0 )
+	{
+		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP;
+		return(SPARK_STATUS_OK);
+	}
 	if ( strncmp(text,SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX,sizeof(SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX) - 1u) == 0 && text[sizeof(SPARK_GLM5_NEXT_VERIFY_ORACLE_PREFIX) - 1u] != '\0' )
 	{
 		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE;
@@ -68,6 +84,27 @@ static inline SparkStatus SparkGlm5NextVerifyDrafterParse(const char *text,uint3
 		return(SPARK_STATUS_OK);
 	}
 	return(SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static inline uint32_t SparkGlm5NextVerifyDrafterUsesMtp(uint32_t kind)
+{
+	return(kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP || kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP ? 1u : 0u);
+}
+
+static inline uint32_t SparkGlm5NextVerifyDrafterUsesLookup(uint32_t kind)
+{
+	return(kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP || kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP ? 1u : 0u);
+}
+
+static inline SparkStatus SparkGlm5NextMtpPackPath(const char *directory,uint32_t tp_degree,uint32_t tp_rank,char *path,uint32_t path_bytes)
+{
+	int written;
+	if ( directory == 0 || directory[0] == '\0' || path == 0 || path_bytes == 0u || tp_degree == 0u || tp_rank >= tp_degree )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	written = snprintf(path,path_bytes,"%s/" SPARK_GLM5_NEXT_VERIFY_MTP_PACK_PREFIX "%u.rank%u.g5nsp",directory,tp_degree,tp_rank);
+	if ( written < 0 || (uint32_t)written >= path_bytes )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(SPARK_STATUS_OK);
 }
 
 static inline uint32_t SparkGlm5NextVerifyFrameClass(uint32_t decode_single_greedy_shape,uint32_t sampled,uint32_t experts_warm,uint32_t graph_path_enabled,uint32_t graph_disabled,uint32_t b1_capture_failed,uint32_t verify_captured)

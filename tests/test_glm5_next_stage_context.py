@@ -16,6 +16,7 @@ HARNESS = r'''
 #include "cache/kv_page_store.c"
 #include "src/spark_speculation_policy.c"
 #include "src/spark_speculation_lookup_draft.c"
+#include "src/spark_speculation_drafter_mix.c"
 #include "src/spark_speculation_reference_draft.c"
 #include "runtime/spark_expert_working_set.c"
 #include "src/spark_sha256.c"
@@ -196,6 +197,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('P')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('Q')); }
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave) { (void)wave;return(walk_note('H')); }
+int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,uint32_t *placed) { (void)wave;(void)local_layer;(void)site;*placed = 0u;return(0); }
 static uint32_t UNPACK_COUNT,UNPACK_ROWS = 2u,ENQUEUE_ROWS = 2u,ENQUEUE_SEQUENCES = 2u;
 
 static uint32_t SNAPSHOT_SAVES,SNAPSHOT_RESTORES,POISON_LAUNCHES,POISON_PENDING,WS_PLAN[16],WS_PLAN_KEY;
@@ -236,14 +238,41 @@ cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64
 	return(walk_note('U') != 0 ? cudaErrorInvalidValue : cudaSuccess);
 }
 
-static uint32_t MTP_DRAFTS;
+static uint32_t MTP_DRAFTS,MTP_LANE,MTP_OPS_CALLS,MTP_DEPTH_TOTAL,MTP_EXPECT_ROW = UINT32_MAX;
+static const uint32_t *MTP_TRUTH;
 
 int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const SparkGlm5NextMtpDraftOps *ops,uint16_t *committed_hidden_bf16,uint32_t first_token,uint32_t *host_draft_tokens)
 {
-	(void)wave;(void)ops;(void)committed_hidden_bf16;(void)first_token;
-	host_draft_tokens[0] = 21u;
-	host_draft_tokens[1] = 22u;
+	uint32_t index,position,wrong,reduce;
 	MTP_DRAFTS++;
+	if ( MTP_TRUTH == 0 )
+	{
+		(void)wave;(void)ops;(void)committed_hidden_bf16;(void)first_token;
+		host_draft_tokens[0] = 21u;
+		host_draft_tokens[1] = 22u;
+		return(0);
+	}
+	assert(wave != 0 && wave->slot == &state.slots[0] && wave->mtp_draft_depth >= 1u && wave->mtp_draft_depth <= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX);
+	assert(wave->tp_degree == state.tp_degree && wave->owns_final_head == 1u && wave->mtp_layer_weights == &state.mtp_layer);
+	assert(committed_hidden_bf16 == state.mtp_lane_hidden_bf16 + (uint64_t)MTP_LANE * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION);
+	assert(MTP_EXPECT_ROW == UINT32_MAX || committed_hidden_bf16[0] == 1000u + MTP_EXPECT_ROW);
+	position = (uint32_t)state.mtp_lane_next[MTP_LANE];
+	assert(first_token == MTP_TRUTH[position]);
+	assert((state.tp_degree > 1u) == (ops != 0));
+	for (index=0u; ops != 0 && index<wave->mtp_draft_depth; index++)
+	{
+		for (reduce=0u; reduce<3u; reduce++)
+			assert(ops->reduce_rows_bf16(ops->context,state.slots[0].hidden_bf16,1u,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION) == SPARK_STATUS_OK);
+		assert(ops->reduce_rows_bf16(ops->context,state.slots[0].hidden_bf16,2u,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION) == SPARK_STATUS_INVALID_ARGUMENT);
+		assert(ops->reduce_max_u64(ops->context,state.slots[0].head_maxloc_u64,1u) == SPARK_STATUS_OK);
+		MTP_OPS_CALLS += 4u;
+	}
+	MTP_DEPTH_TOTAL += wave->mtp_draft_depth;
+	wrong = (position * 7u) % 9u;
+	for (index=0u; index<wave->mtp_draft_depth; index++)
+		host_draft_tokens[index] = index == wrong ? (MTP_TRUTH[position + 1u + index] + 1u) % 1000u : MTP_TRUTH[position + 1u + index];
+	if ( position % 11u == 5u && wave->mtp_draft_depth >= 3u )
+		host_draft_tokens[2] = UINT32_MAX;
 	return(0);
 }
 
@@ -938,7 +967,7 @@ static void check_verify_rounds(uint32_t drafter)
 	SparkGlm5NextAsyncCompletion *async;
 	SparkStatus status;
 	uint32_t match,fault_frame;
-	uint64_t accepted_before;
+	uint64_t accepted_before,accepted_sum;
 	memset(&state,0,sizeof(state));
 	memset(&sampling,0,sizeof(sampling));
 	memset(&context,0,sizeof(context));
@@ -1116,11 +1145,527 @@ static void check_verify_rounds(uint32_t drafter)
 		assert(state.verify_accepted == 0u && state.verify_accept_depth[0] == rounds && state.verify_proposed == 7u + rounds - 1u && state.verify_depth_cap[row_slot] == 1u);
 	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
 		assert(state.verify_proposed == 7u * rounds && state.verify_depth_cap[row_slot] == 7u);
+	accepted_sum = 0u;
+	for (index=0u; index<SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - 1u; index++)
+	{
+		accepted_sum += state.verify_position_accepted[index];
+		assert(state.verify_position_accepted[index] <= state.verify_position_reached[index]);
+		if ( index != 0u )
+			assert(state.verify_position_reached[index] <= state.verify_position_accepted[index - 1u]);
+		if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
+			assert(state.verify_position_reached[index] == rounds && state.verify_position_accepted[index] == rounds);
+		if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY )
+			assert(state.verify_position_accepted[index] == 0u && state.verify_position_reached[index] == (index == 0u ? rounds : 0u));
+	}
+	assert(accepted_sum == state.verify_accepted && state.verify_position_reached[0] == rounds);
 	FOLD_ANY = 0u;
 	GRAPH_LAUNCH_HOOK = 0;
 	VERIFY_EXPECTED = 0;
 	SparkGlm5NextReleaseDrafter(&state);
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
+}
+
+static void check_verify_mtp_rounds(uint32_t drafter,uint32_t tp)
+{
+	static uint32_t history[VERIFY_CAPACITY],expected[VERIFY_CAPACITY];
+	static uint16_t hc_mean[8u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION],lane_hidden[2u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION],hidden_rows[SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION];
+	static uint64_t lane_sequence[2],lane_next[2],maxloc[8];
+	uint32_t host_tokens[8],host_positions[8],host_slots[8],host_output[8],host_run_begin[9],host_run_rows[8],host_run_state[8],row_slot = 1u,token,index,length,produced,more,frames = 0u,rounds = 0u,regime,plain_frames = 0u,match;
+	uint64_t row_position,row_sequence = 44u,positions[VERIFY_PROMPT],sequences[VERIFY_PROMPT],verify_calls_before;
+	uint32_t slots[VERIFY_PROMPT];
+	SparkRowSampling sampling,host_sampling[8];
+	SparkModelDriverFrame frame;
+	SparkGlm5NextResidentDecodeStageBatchView batch;
+	SparkGlm5NextResidentDecodeStageFrameContext context;
+	SparkGlm5NextTpChain *chain;
+	SparkGlm5NextAsyncCompletion *async;
+	SparkStatus status;
+	memset(&state,0,sizeof(state));
+	memset(&sampling,0,sizeof(sampling));
+	memset(&context,0,sizeof(context));
+	memset(lane_sequence,0,sizeof(lane_sequence));
+	memset(lane_next,0,sizeof(lane_next));
+	memset(hc_mean,0,sizeof(hc_mean));
+	for (index=0u; index<8u; index++)
+		hc_mean[(uint64_t)index * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] = (uint16_t)(1000u + index);
+	state.pipeline_slot_count = 1u;
+	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
+	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
+	state.verify_rows_max = 8u;
+	state.max_sequence_positions = VERIFY_CAPACITY;
+	state.resident_sequence_capacity = 2u;
+	state.decode_split_context_threshold = 0u;
+	state.graph_path_enabled = 1u;
+	state.experts_warm = 1u;
+	state.owns_final_head = 1u;
+	state.owns_embedding = 1u;
+	state.slots[0].verify_captured = 1u;
+	state.slots[0].host_token_ids = host_tokens;
+	state.slots[0].host_positions = host_positions;
+	state.slots[0].host_resident_slots = host_slots;
+	state.slots[0].host_output_token_ids = host_output;
+	memset(host_sampling,0,sizeof(host_sampling));
+	state.slots[0].host_row_sampling = host_sampling;
+	state.slots[0].host_run_begin = host_run_begin;
+	state.slots[0].host_run_row_indices = host_run_rows;
+	state.slots[0].host_run_state_index = host_run_state;
+	state.slots[0].hc_mean_bf16 = hc_mean;
+	state.slots[0].hidden_bf16 = hidden_rows;
+	state.slots[0].head_maxloc_u64 = maxloc;
+	state.tp_degree = tp;
+	state.execution_row_capacity = 8u;
+	memset(VERIFY_MISS_RING,0,sizeof(VERIFY_MISS_RING));
+	state.slots[0].miss_ring = VERIFY_MISS_RING;
+	state.tp_device_collective.operation_timeout_milli = 50u;
+	if ( tp > 1u )
+	{
+		state.tp_device_collective_initialized = 1u;
+		STREAM_ORDERED = 1u;
+		ENQUEUE_ROWS = ENQUEUE_SEQUENCES = 1u;
+	}
+	for (regime=0u; regime<SPARK_GLM5_NEXT_GRAPH_REGIME_COUNT; regime++)
+	{
+		state.slots[0].graph_exec_rows[regime][0] = (void *)(uintptr_t)9u;
+		state.slots[0].graph_bound_rows[regime][0] = VERIFY_CAPACITY;
+	}
+	state.completions[0].state = &state;
+	for (index=0u; index<VERIFY_PROMPT; index++)
+	{
+		history[index] = (index * 37u + 5u) % 41u;
+		positions[index] = index;
+		sequences[index] = row_sequence;
+		slots[index] = row_slot;
+	}
+	for (length=VERIFY_PROMPT; length<VERIFY_CAPACITY; length++)
+		history[length] = VerifyTarget(history,length);
+	memcpy(expected,history,sizeof(history));
+	VERIFY_EXPECTED = expected;
+	GRAPH_LAUNCH_HOOK = verify_plain_graph;
+	GRAPH_ERROR = 0u;
+	state.verify_drafter = drafter;
+	state.verify_mtp = 1u;
+	state.mtp_lane_hidden_bf16 = lane_hidden;
+	state.mtp_lane_sequence = lane_sequence;
+	state.mtp_lane_next = lane_next;
+	state.verify_depth_cap = calloc(2u,sizeof(uint32_t));
+	state.verify_depth_sequence = calloc(2u,sizeof(uint64_t));
+	assert(state.verify_depth_cap != 0 && state.verify_depth_sequence != 0);
+	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP )
+	{
+		state.verify_draft_function = SparkGlm5NextMtpDraftTokens;
+		state.verify_draft_context = &state;
+	}
+	else
+	{
+		assert(SparkSpeculationLookupDraftInitialize(&state.verify_lookup,2u,VERIFY_CAPACITY,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MIN_MATCH,SPARK_GLM5_NEXT_VERIFY_LOOKUP_MAX_MATCH) == SPARK_STATUS_OK);
+		assert(SparkSpeculationDrafterMixInitialize(&state.verify_mix,SparkSpeculationLookupDraftTokens,&state.verify_lookup,SparkGlm5NextMtpDraftTokens,&state,SPARK_GLM5_NEXT_VERIFY_MIX_LOOKUP_MIN_TOKENS,2u,7u) == SPARK_STATUS_OK);
+		state.verify_draft_function = SparkSpeculationDrafterMixTokens;
+		state.verify_draft_context = &state.verify_mix;
+	}
+	MTP_TRUTH = expected;
+	MTP_LANE = row_slot;
+	MTP_EXPECT_ROW = UINT32_MAX;
+	MTP_DRAFTS = MTP_OPS_CALLS = MTP_DEPTH_TOTAL = 0u;
+	verify_calls_before = VERIFY_COUNT;
+	memset(&batch,0,sizeof(batch));
+	batch.row_count = VERIFY_PROMPT;
+	batch.active_sequence_count = 1u;
+	batch.token_ids = history;
+	batch.row_resident_slots = slots;
+	batch.row_positions = positions;
+	batch.row_sequence_ids = sequences;
+	assert(SparkGlm5NextVerifyObserveRows(&state,&batch) == SPARK_STATUS_OK);
+	length = VERIFY_PROMPT + 1u;
+	DRAIN_STATUS = cudaSuccess;
+	FOLD_ANY = 1u;
+	while ( length < VERIFY_PROMPT + VERIFY_GENERATE )
+	{
+		chain = calloc(1u,sizeof(*chain));
+		assert(chain != 0);
+		async = &state.completions[0];
+		memset(async,0,sizeof(*async));
+		async->state = &state;
+		async->lane_count = 1u;
+		async->row_count = 1u;
+		async->steps = 8u;
+		async->lane_indices[0] = row_slot;
+		async->lane_sequence_ids[0] = row_sequence;
+		async->lane_next_positions[0] = length;
+		token = history[length - 1u];
+		row_position = length - 1u;
+		memset(&frame,0,sizeof(frame));
+		frame.tokens_per_sequence = 8u;
+		frame.request_id = 900u + frames;
+		batch.row_count = 1u;
+		batch.token_ids = &token;
+		batch.row_resident_slots = &row_slot;
+		batch.row_positions = &row_position;
+		batch.row_sequence_ids = &row_sequence;
+		batch.row_sampling = &sampling;
+		chain->state = &state;
+		chain->slot = &state.slots[0];
+		chain->frame = &frame;
+		chain->context = &context;
+		chain->batch = &batch;
+		chain->wave_rows = 1u;
+		chain->steps = 8u;
+		MTP_EXPECT_ROW = UINT32_MAX;
+		assert(SparkGlm5NextVerifyDriveDraft(&state,&frame,&batch,&state.slots[0],chain) == SPARK_STATUS_OK);
+		if ( chain->verify_budget == 0u )
+		{
+			assert(frames == 0u && chain->steps == 8u && chain->spec_verify == 0u);
+			for (index=0u; index<8u; index++)
+				host_output[index] = expected[length + index];
+			async->burst_token_count = 8u;
+			async->lane_next_positions[0] += 7u;
+			produced = 8u;
+			assert(SparkGlm5NextMtpTapFrame(chain) == SPARK_STATUS_OK);
+			assert(lane_next[row_slot] == length + 7u && lane_sequence[row_slot] == row_sequence && lane_hidden[(uint64_t)row_slot * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] == 1000u);
+			plain_frames++;
+		}
+		else
+		{
+			assert(chain->steps == 1u && async->steps == 1u && chain->spec_verify == 1u);
+			do
+			{
+				assert(chain->wave_rows >= 2u && chain->wave_rows <= 8u && host_positions[0] == chain->verify_position && host_slots[0] == row_slot);
+				for (index=0u; index<chain->wave_rows; index++)
+				{
+					uint32_t fed = (uint32_t)chain->verify_position + index;
+					assert(host_positions[index] == fed && (index == 0u || host_tokens[index] == chain->verify_draft[index - 1u]));
+					memcpy(history,expected,(uint64_t)(fed) * sizeof(uint32_t));
+					history[fed] = host_tokens[index];
+					host_output[index] = VerifyTarget(history,fed + 1u);
+				}
+				memcpy(history,expected,sizeof(history));
+				match = 0u;
+				while ( match + 1u < chain->wave_rows && chain->verify_draft[match] == host_output[match] )
+					match++;
+				FOLD_LAST = 0u;
+				MTP_EXPECT_ROW = match;
+				status = SparkGlm5NextVerifyCommit(chain,&more);
+				assert(status == SPARK_STATUS_OK && FOLD_LAST == match + 1u);
+				assert(lane_next[row_slot] == chain->verify_position && lane_sequence[row_slot] == row_sequence);
+				rounds++;
+				MTP_EXPECT_ROW = 0u;
+				status = SparkGlm5NextVerifyContinue(chain,&more);
+				assert(status == SPARK_STATUS_OK && lane_next[row_slot] == chain->verify_position);
+			} while ( more != 0u );
+			assert(SparkGlm5NextVerifyFinish(chain) == SPARK_STATUS_OK);
+			produced = chain->verify_produced;
+			assert(produced == 8u && async->burst_token_count == produced && async->lane_next_positions[0] == length + produced - 1u);
+			assert(SparkGlm5NextMtpTapFrame(chain) == SPARK_STATUS_OK && lane_next[row_slot] == length + produced - 1u);
+		}
+		for (index=0u; index<produced; index++)
+			assert(host_output[index] == expected[length + index]);
+		SparkGlm5NextVerifyObserveOutputs(&state,async,&state.slots[0]);
+		assert(async->completion.status == SPARK_STATUS_OK);
+		length += produced;
+		frames++;
+		free(chain);
+	}
+	assert(state.verify_frames + state.verify_plain_frames == frames && state.verify_rounds == rounds && state.verify_frames != 0u);
+	assert(state.mtp_drafts == MTP_DRAFTS && state.mtp_draft_tokens <= MTP_DEPTH_TOTAL && state.mtp_taps != 0u);
+	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP )
+	{
+		assert(plain_frames == 1u && state.mtp_cold == 1u && state.mtp_truncated != 0u);
+		assert(state.verify_accepted != 0u && state.verify_accepted < state.verify_proposed && state.mtp_draft_tokens >= state.verify_proposed);
+	}
+	else
+	{
+		SparkSpeculationDrafterMixCounters *lookup = &state.verify_mix.counters[SPARK_SPECULATION_DRAFTER_MIX_PRIMARY],*mtp = &state.verify_mix.counters[SPARK_SPECULATION_DRAFTER_MIX_FALLBACK];
+		assert(plain_frames <= 1u && state.mtp_cold <= 1u);
+		assert(lookup->rounds != 0u && mtp->rounds != 0u && lookup->rounds + mtp->rounds == rounds);
+		assert(lookup->accepted + mtp->accepted == state.verify_accepted && lookup->proposed + mtp->proposed == state.verify_proposed);
+		assert(mtp->rounds <= state.mtp_drafts && lookup->accepted * 2u > lookup->proposed);
+	}
+	if ( tp > 1u )
+		assert(MTP_OPS_CALLS == 4u * MTP_DEPTH_TOTAL && VERIFY_COUNT - verify_calls_before >= state.mtp_drafts);
+	else
+		assert(MTP_OPS_CALLS == 0u);
+	printf("verify mtp drafter=%u tp=%u: %u frames, %u rounds, proposed %llu accepted %llu, mtp drafts %llu cold %llu truncated %llu taps %llu\n",drafter,tp,frames,rounds,
+		(unsigned long long)state.verify_proposed,(unsigned long long)state.verify_accepted,(unsigned long long)state.mtp_drafts,(unsigned long long)state.mtp_cold,(unsigned long long)state.mtp_truncated,(unsigned long long)state.mtp_taps);
+	FOLD_ANY = 0u;
+	GRAPH_LAUNCH_HOOK = 0;
+	VERIFY_EXPECTED = 0;
+	MTP_TRUTH = 0;
+	MTP_EXPECT_ROW = UINT32_MAX;
+	STREAM_ORDERED = 0u;
+	ENQUEUE_ROWS = ENQUEUE_SEQUENCES = 2u;
+	state.mtp_lane_sequence = 0;
+	state.mtp_lane_next = 0;
+	SparkGlm5NextReleaseDrafter(&state);
+	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
+}
+
+static void check_verify_mtp_tap_frames(void)
+{
+	static uint16_t hc_mean[8u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION],lane_hidden[2u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION];
+	static uint64_t lane_sequence[2],lane_next[2];
+	uint64_t positions[4] = {20u,21u,22u,23u},sequences[4] = {5u,5u,5u,5u};
+	uint32_t slots[4] = {1u,1u,1u,1u},tokens[4] = {1u,2u,3u,4u},index;
+	SparkModelDriverFrame frame;
+	SparkGlm5NextResidentDecodeStageBatchView batch;
+	SparkGlm5NextTpChain chain;
+	memset(&state,0,sizeof(state));
+	memset(&frame,0,sizeof(frame));
+	memset(&batch,0,sizeof(batch));
+	memset(&chain,0,sizeof(chain));
+	memset(lane_sequence,0,sizeof(lane_sequence));
+	memset(lane_next,0,sizeof(lane_next));
+	for (index=0u; index<8u; index++)
+		hc_mean[(uint64_t)index * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] = (uint16_t)(1000u + index);
+	state.resident_sequence_capacity = 2u;
+	state.execution_row_capacity = 8u;
+	state.owns_final_head = 1u;
+	state.slots[0].hc_mean_bf16 = hc_mean;
+	state.mtp_lane_hidden_bf16 = lane_hidden;
+	state.mtp_lane_sequence = lane_sequence;
+	state.mtp_lane_next = lane_next;
+	chain.state = &state;
+	chain.slot = &state.slots[0];
+	chain.frame = &frame;
+	chain.batch = &batch;
+	batch.active_sequence_count = 1u;
+	batch.row_count = 4u;
+	batch.token_ids = tokens;
+	batch.row_positions = positions;
+	batch.row_sequence_ids = sequences;
+	batch.row_resident_slots = slots;
+	frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	chain.wave_rows = 4u;
+	chain.steps = 1u;
+	assert(SparkGlm5NextMtpTapFrame(&chain) == SPARK_STATUS_OK && state.mtp_taps == 0u);
+	state.verify_mtp = 1u;
+	assert(SparkGlm5NextMtpTapFrame(&chain) == SPARK_STATUS_OK && state.mtp_taps == 1u);
+	assert(lane_next[1] == 24u && lane_sequence[1] == 5u && lane_hidden[SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] == 1003u);
+	chain.wave_rows = 2u;
+	assert(SparkGlm5NextMtpTapFrame(&chain) == SPARK_STATUS_OK && state.mtp_taps == 1u);
+	frame.flags = 0u;
+	batch.row_count = 1u;
+	chain.wave_rows = 1u;
+	chain.steps = 8u;
+	assert(SparkGlm5NextMtpTapFrame(&chain) == SPARK_STATUS_OK && state.mtp_taps == 2u && lane_next[1] == 28u && lane_hidden[SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] == 1000u);
+	batch.active_sequence_count = 2u;
+	assert(SparkGlm5NextMtpTapFrame(&chain) == SPARK_STATUS_OK && state.mtp_taps == 2u);
+	batch.active_sequence_count = 1u;
+	chain.verify_budget = 8u;
+	assert(SparkGlm5NextMtpTapFrame(&chain) == SPARK_STATUS_OK && state.mtp_taps == 2u);
+	chain.verify_budget = 0u;
+	state.owns_final_head = 0u;
+	assert(SparkGlm5NextMtpTapFrame(&chain) == SPARK_STATUS_OK && state.mtp_taps == 2u);
+	state.owns_final_head = 1u;
+	assert(SparkGlm5NextMtpTap(&state,&state.slots[0],8u,1u,5u,30u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGlm5NextMtpTap(&state,&state.slots[0],0u,2u,5u,30u) == SPARK_STATUS_INVALID_ARGUMENT);
+	memset(&state,0,sizeof(state));
+}
+
+static void check_verify_mtp_draft_guards(void)
+{
+	static uint64_t lane_sequence[2],lane_next[2];
+	SparkSpeculationPolicyDraftRequest request;
+	SparkSpeculationPolicyDraftResult result;
+	SparkGlm5NextTpChain chain;
+	memset(&state,0,sizeof(state));
+	memset(&chain,0,sizeof(chain));
+	memset(&request,0,sizeof(request));
+	memset(&result,0,sizeof(result));
+	state.resident_sequence_capacity = 2u;
+	state.mtp_lane_sequence = lane_sequence;
+	state.mtp_lane_next = lane_next;
+	state.tp_degree = 16u;
+	lane_sequence[0] = 9u;
+	lane_next[0] = 40u;
+	request.requested_token_count = 7u;
+	request.sequence_id = 9u;
+	request.sequence_position = 40u;
+	assert(SparkGlm5NextMtpDraftTokens(&state,&request,&result) == SPARK_STATUS_INVALID_ARGUMENT);
+	state.mtp_chain = &chain;
+	chain.state = &state;
+	chain.slot = &state.slots[0];
+	request.sequence_position = 41u;
+	assert(SparkGlm5NextMtpDraftTokens(&state,&request,&result) == SPARK_STATUS_NOT_FOUND && state.mtp_cold == 1u && result.token_count == 0u);
+	request.sequence_position = 40u;
+	request.sequence_id = 10u;
+	assert(SparkGlm5NextMtpDraftTokens(&state,&request,&result) == SPARK_STATUS_NOT_FOUND && state.mtp_cold == 2u);
+	request.sequence_id = 9u;
+	STREAM_ORDERED = 0u;
+	state.tp_device_collective_initialized = 1u;
+	assert(SparkGlm5NextMtpDraftTokens(&state,&request,&result) == SPARK_STATUS_UNSUPPORTED);
+	request.active_sequence_index = 2u;
+	assert(SparkGlm5NextMtpDraftTokens(&state,&request,&result) == SPARK_STATUS_INVALID_ARGUMENT);
+	memset(&state,0,sizeof(state));
+}
+
+static void check_mtp_pack(void)
+{
+	static SparkGlm5NextStagePackEntry entries[64],saved[64];
+	SparkGlm5NextStagePackHeader header,good;
+	SparkGlm5NextStagePackTensorShape shape;
+	char directory[] = "/tmp/g5n_mtp_pack_XXXXXX",path[512];
+	uint64_t offset,device_bytes,expected_bytes = 0u;
+	uint32_t kind,count = 0u,index;
+	FILE *file;
+	memset(&state,0,sizeof(state));
+	memset(&header,0,sizeof(header));
+	memset(entries,0,sizeof(entries));
+	state.tp_degree = 16u;
+	state.tp_rank = 3u;
+	state.expert_weight_codec = GLM5_NEXT_EXPERT_WEIGHT_CODEC;
+	header.magic = SPARK_GLM5_NEXT_STAGEPACK_MAGIC;
+	header.format_version = SPARK_GLM5_NEXT_STAGEPACK_FORMAT_VERSION;
+	header.header_bytes = SPARK_GLM5_NEXT_STAGEPACK_HEADER_BYTES;
+	header.directory_entry_bytes = SPARK_GLM5_NEXT_STAGEPACK_ENTRY_BYTES;
+	header.codec_abi_version = SPARK_WEIGHT_CODEC_ABI_VERSION;
+	header.flags = SPARK_GLM5_NEXT_STAGEPACK_FLAG_MTP;
+	header.stage_count = 1u;
+	header.first_layer_index = SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX;
+	header.layer_count = 1u;
+	header.total_layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT;
+	header.hidden_dimension = SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
+	header.vocab_count = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
+	header.routed_expert_count = SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT;
+	header.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	header.expert_weight_codec = GLM5_NEXT_EXPERT_WEIGHT_CODEC;
+	header.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16;
+	header.reserved0 = 16u;
+	header.reserved1 = 3u;
+	header.directory_offset = 512u;
+	for (kind=0u; kind<SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KIND_COUNT; kind++)
+		if ( SparkGlm5NextStagePackExpectedShape(kind,SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX,GLM5_NEXT_EXPERT_WEIGHT_CODEC,16u,&shape) == 0 )
+			count++;
+	assert(count == 27u);
+	offset = (header.directory_offset + (uint64_t)count * SPARK_GLM5_NEXT_STAGEPACK_ENTRY_BYTES + 255u) / 256u * 256u;
+	for (kind=0u,index=0u; kind<SPARK_GLM5_NEXT_STAGEPACK_TENSOR_KIND_COUNT; kind++)
+	{
+		if ( SparkGlm5NextStagePackExpectedShape(kind,SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX,GLM5_NEXT_EXPERT_WEIGHT_CODEC,16u,&shape) != 0 )
+			continue;
+		entries[index].tensor_kind = kind;
+		entries[index].layer_index = SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX;
+		entries[index].payload_type = shape.payload_type;
+		entries[index].weight_codec = shape.weight_codec;
+		entries[index].scale_encoding = shape.scale_encoding;
+		entries[index].group_count = shape.group_count;
+		entries[index].rows = shape.rows;
+		entries[index].columns = shape.columns;
+		entries[index].payload_offset = offset;
+		entries[index].payload_bytes = SparkGlm5NextStagePackExpectedPayloadBytes(&shape);
+		offset = (offset + entries[index].payload_bytes + 255u) / 256u * 256u;
+		expected_bytes += (entries[index].payload_bytes + 255u) / 256u * 256u;
+		entries[index].scale_bytes = SparkGlm5NextStagePackExpectedScaleBytes(&shape);
+		if ( entries[index].scale_bytes != 0u )
+		{
+			entries[index].scale_offset = offset;
+			offset = (offset + entries[index].scale_bytes + 255u) / 256u * 256u;
+			expected_bytes += (entries[index].scale_bytes + 255u) / 256u * 256u;
+		}
+		index++;
+	}
+	header.tensor_count = count;
+	header.file_bytes = offset;
+	good = header;
+	memcpy(saved,entries,sizeof(entries));
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_OK && device_bytes == expected_bytes);
+	assert(expected_bytes > UINT64_C(600000000) && expected_bytes < UINT64_C(640000000));
+	header.flags = 0u;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_SCHEMA_ERROR && device_bytes == 0u);
+	header = good;
+	header.reserved1 = 4u;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+	header = good;
+	header.first_layer_index = 44u;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+	header = good;
+	header.expert_weight_codec = SPARK_WEIGHT_CODEC_BF16;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_TARGET_MISMATCH);
+	header = good;
+	header.magic++;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_ABI_MISMATCH);
+	header = good;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset + 1u,&device_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+	entries[3].layer_index = 44u;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+	memcpy(entries,saved,sizeof(entries));
+	entries[5] = entries[4];
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_DUPLICATE);
+	memcpy(entries,saved,sizeof(entries));
+	header.tensor_count = count - 1u;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+	header = good;
+	entries[2].rows++;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+	memcpy(entries,saved,sizeof(entries));
+	entries[1].payload_offset = entries[0].payload_offset;
+	assert(SparkGlm5NextMtpPackCheck(&state,&header,entries,offset,&device_bytes) != SPARK_STATUS_OK);
+	memcpy(entries,saved,sizeof(entries));
+	state.verify_mtp = 1u;
+	state.ledger.module_tag = SPARK_GLM5_NEXT_MODULE_TAG;
+	assert(unsetenv(SPARK_GLM5_NEXT_VERIFY_MTP_DIR_ENV) == 0);
+	assert(SparkGlm5NextMtpPackOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(mkdtemp(directory) != 0 && setenv(SPARK_GLM5_NEXT_VERIFY_MTP_DIR_ENV,directory,1) == 0);
+	assert(SparkGlm5NextMtpPackOpen(&state) == SPARK_STATUS_NOT_FOUND && state.mtp_sidecar == 0u);
+	assert(SparkGlm5NextMtpPackPath(directory,16u,3u,path,(uint32_t)sizeof(path)) == SPARK_STATUS_OK);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fwrite(&good,sizeof(good),1u,file) == 1u && fseek(file,(long)good.directory_offset,SEEK_SET) == 0);
+	assert(fwrite(entries,sizeof(entries[0]),count,file) == count && fclose(file) == 0);
+	assert(truncate(path,(off_t)offset) == 0);
+	assert(SparkGlm5NextMtpPackOpen(&state) == SPARK_STATUS_OK && state.mtp_sidecar == 1u && state.mtp_sidecar_bytes == expected_bytes);
+	assert(state.mtp_layer.expert_up_gate_payload != 0 && state.mtp_layer.expert_up_gate_scale != 0 && state.mtp_layer.expert_down_payload != 0 && state.mtp_layer.q_b_bf16 != 0 && state.mtp_layer.router_bf16 != 0);
+	assert(state.mtp_eh_proj_bf16 != 0 && state.mtp_enorm_bf16 != 0 && state.mtp_hnorm_bf16 != 0 && state.mtp_shared_norm_bf16 != 0);
+	assert((const uint8_t *)state.mtp_eh_proj_bf16 >= (const uint8_t *)state.mtp_layer.attn_norm_bf16);
+	SparkStageModuleLedgerRelease(&state.ledger);
+	state.tp_rank = 4u;
+	state.mtp_sidecar = 0u;
+	assert(SparkGlm5NextMtpPackOpen(&state) == SPARK_STATUS_NOT_FOUND);
+	assert(unlink(path) == 0 && rmdir(directory) == 0 && unsetenv(SPARK_GLM5_NEXT_VERIFY_MTP_DIR_ENV) == 0);
+	memset(&state,0,sizeof(state));
+}
+
+static SparkWeightdLazyPack ADMISSION_PACK;
+
+static void check_verify_mtp_admission(void)
+{
+	uint32_t kind;
+	const char *path;
+	char buffer[64];
+	assert(SparkGlm5NextVerifyDrafterParse("mtp",8u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP && path == 0);
+	assert(SparkGlm5NextVerifyDrafterParse("mtp+lookup",8u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP);
+	assert(SparkGlm5NextVerifyDrafterParse("mtp",0u,&kind,&path) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGlm5NextVerifyDrafterParse("lookup+mtp",8u,&kind,&path) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGlm5NextVerifyDrafterUsesMtp(SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP) == 1u && SparkGlm5NextVerifyDrafterUsesMtp(SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP) == 0u);
+	assert(SparkGlm5NextVerifyDrafterUsesLookup(SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP) == 1u && SparkGlm5NextVerifyDrafterUsesLookup(SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP) == 0u);
+	assert(SparkGlm5NextMtpPackPath("/d",16u,15u,buffer,(uint32_t)sizeof(buffer)) == SPARK_STATUS_OK && strcmp(buffer,"/d/glm5_next_mtp.tp16.rank15.g5nsp") == 0);
+	assert(SparkGlm5NextMtpPackPath("/d",16u,16u,buffer,(uint32_t)sizeof(buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGlm5NextMtpPackPath("",16u,1u,buffer,(uint32_t)sizeof(buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGlm5NextMtpPackPath("/a/very/long/directory/name",16u,1u,buffer,16u) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(&state,0,sizeof(state));
+	state.verify_rows_max = SPARK_GLM5_NEXT_VERIFY_ROWS_MAX;
+	state.verify_mtp = 1u;
+	state.verify_drafter = SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP;
+	state.tp_degree = 16u;
+	state.owns_embedding = 1u;
+	state.owns_final_head = 1u;
+	state.lazy_pack = &ADMISSION_PACK;
+	state.execution_row_capacity = SPARK_GLM5_NEXT_VERIFY_ROWS_MAX;
+	state.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT;
+	state.expert_pin_key_count = SparkGlm5NextPinnedExpected(&state);
+	state.mtp_sidecar = 1u;
+	assert(state.expert_pin_key_count != 0u && SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_OK);
+	state.mtp_sidecar = 0u;
+	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_UNSUPPORTED);
+	state.mtp_sidecar = 1u;
+	state.pack_has_mtp = 1u;
+	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_UNSUPPORTED);
+	state.pack_has_mtp = 0u;
+	state.verify_drafter = SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP;
+	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_OK);
+	state.mtp_sidecar = 0u;
+	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_UNSUPPORTED);
+	state.verify_mtp = 0u;
+	state.verify_drafter = SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP;
+	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_OK);
+	memset(&state,0,sizeof(state));
 }
 
 static SparkGlm5NextModuleState *DESTROY_STATE;
@@ -2519,6 +3064,41 @@ static void check_chain_steps(void)
 	linear_chain_teardown();
 }
 
+static void check_finish_chain_mtp_tap(void)
+{
+	static uint16_t hc_mean[SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION],lane_hidden[4u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION];
+	uint64_t lane_sequence[4],lane_next[4],position = 40u,sequence = 9u;
+	uint32_t mtp,lane;
+	for (mtp=0u; mtp<2u; mtp++)
+	{
+		SparkGlm5NextTpChain *chain = linear_chain_fixture();
+		SparkGlm5NextAsyncCompletion *async = &state.completions[0];
+		memset(lane_sequence,0,sizeof(lane_sequence));
+		memset(lane_next,0,sizeof(lane_next));
+		memset(lane_hidden,0,sizeof(lane_hidden));
+		hc_mean[0] = 777u;
+		lane = LINEAR_SLOTS[0];
+		state.slots[0].hc_mean_bf16 = hc_mean;
+		state.mtp_lane_hidden_bf16 = lane_hidden;
+		state.mtp_lane_sequence = lane_sequence;
+		state.mtp_lane_next = lane_next;
+		state.verify_mtp = mtp;
+		LINEAR_BATCH.active_sequence_count = LINEAR_BATCH.row_count = 1u;
+		LINEAR_BATCH.row_positions = &position;
+		LINEAR_BATCH.row_sequence_ids = &sequence;
+		chain->wave_rows = 1u;
+		chain->steps = async->steps = 3u;
+		chain->step = 2u;
+		SparkGlm5NextFinishChain(chain);
+		assert(COMPLETION_WORK == SparkGlm5NextCompleteOnWorker && async->completion.status == SPARK_STATUS_OK);
+		assert(state.mtp_taps == mtp && lane_next[lane] == (mtp != 0u ? position + 3u : 0u) && lane_sequence[lane] == (mtp != 0u ? sequence : 0u));
+		assert(lane_hidden[(uint64_t)lane * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] == (mtp != 0u ? 777u : 0u));
+		LINEAR_BATCH.row_positions = 0;
+		LINEAR_BATCH.row_sequence_ids = 0;
+		linear_chain_teardown();
+	}
+}
+
 #define WS_WALK "zBsh" "ArPMrQ" "SgTrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HpxU"
 #define WS_KEY(layer,expert) ((layer) * SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE + (expert))
 
@@ -3314,6 +3894,7 @@ int32_t main(void)
 	check_linear_eligibility();
 	check_linear_chain();
 	check_chain_steps();
+	check_finish_chain_mtp_tap();
 	check_execute_sequence();
 	check_chain_validation();
 	check_frame_chain_validation();
@@ -3347,6 +3928,14 @@ int32_t main(void)
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP);
+	check_verify_mtp_admission();
+	check_verify_mtp_tap_frames();
+	check_verify_mtp_draft_guards();
+	check_verify_mtp_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP,1u);
+	check_verify_mtp_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP,2u);
+	check_verify_mtp_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP,1u);
+	check_verify_mtp_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP,16u);
+	check_mtp_pack();
 	check_verify_rank_local();
 	check_callback_retirement();
 	check_stream_receipt();

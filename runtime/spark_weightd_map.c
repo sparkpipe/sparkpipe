@@ -36,6 +36,7 @@ struct SparkWeightdMap
 	void *epoch_handle;
 	uint32_t chunk_count;
 	uint32_t pool_mapped;
+	uint32_t read_only;
 	int32_t device;
 	SparkStatus failure;
 	CUmemGenericAllocationHandle *handles;
@@ -180,6 +181,16 @@ static SparkStatus map_initialize_cuda(SparkWeightdMap *map)
 
 SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,int epoch_fd,int pool_fd,SparkWeightdMap **out)
 {
+	return(SparkWeightdMapCreateAccess(client,attached,epoch_fd,pool_fd,0u,out));
+}
+
+uint32_t SparkWeightdMapReadOnly(const SparkWeightdMap *map)
+{
+	return(map != 0 ? map->read_only : 0u);
+}
+
+SparkStatus SparkWeightdMapCreateAccess(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,int epoch_fd,int pool_fd,uint32_t read_only,SparkWeightdMap **out)
+{
 	SparkWeightdMap *map;
 	SparkStatus status;
 	if ( out == 0 )
@@ -198,6 +209,7 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	map->client_lock_initialized = 1u;
+	map->read_only = read_only != 0u ? 1u : 0u;
 	map->client = client;
 	map->generation = attached->arena_generation;
 	map->chunk_bytes = attached->chunk_bytes;
@@ -260,15 +272,15 @@ SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdL
 			memset(&access,0,sizeof(access));
 			access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
 			access.location.id = map->device;
-			access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+			access.flags = map->read_only != 0u ? CU_MEM_ACCESS_FLAGS_PROT_READ : CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
 			if ( cuMemSetAccess(map->base,(size_t)map->span_bytes,
 			        &access,1u) != CUDA_SUCCESS )
 				status = SPARK_STATUS_IO_ERROR;
 			else
 			{
 				fprintf(stderr,
-				    "WD-MAP-POOL-BULK chunks=%u span=%llu — all chunks mapped in ONE import\n",
-				    map->chunk_count,(unsigned long long)map->span_bytes);
+				    "WD-MAP-POOL-BULK chunks=%u span=%llu access=%s — all chunks mapped in ONE import\n",
+				    map->chunk_count,(unsigned long long)map->span_bytes,map->read_only != 0u ? "read-only" : "read-write");
 			}
 		}
 	}

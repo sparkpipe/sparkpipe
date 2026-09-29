@@ -251,6 +251,7 @@ TOOL_NAMES := \
     spark_kv_backing_test \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
+    sparkpipe_quant_arm \
     sparkpipe_nfc \
     sparkpipe_split \
     sparkpipe_tokenizer_benchmark \
@@ -288,6 +289,7 @@ TEST_NAMES := \
     test_model_batch_engine_mock \
     test_model_pipeline_client_mock \
     test_tp_device_collective_mock \
+    test_tp_chain_graph \
     test_tp_allreduce_fuzz \
     test_steploop_admission \
     test_model_api_text \
@@ -315,6 +317,7 @@ TEST_NAMES := \
     test_model_resident_reconnect \
     test_distributed_work \
 	    test_json \
+	    test_quant_arm \
 	    test_hidden_transport \
 	    test_hidden_transport_rdma_control \
 	    test_draft_bridge \
@@ -375,6 +378,7 @@ TEST_NAMES := \
     test_weightd_churn \
     test_weightd_expert_stress \
     test_glm5_next_lazy_dispatch \
+    test_glm5_next_codec_lazy_attach \
     test_glm5_next_index_cp_math \
     test_weightd_worker \
     test_weightd_direct \
@@ -392,6 +396,7 @@ TEST_NAMES := \
     test_speculation_provider_slot \
     test_speculation_reference_draft \
     test_speculation_lookup_draft \
+    test_speculation_drafter_mix \
     test_speculation_relay_draft \
     test_speculation_depth \
     test_driver_compiler \
@@ -418,12 +423,21 @@ SHELL_TESTS := \
 	tests/fuzz_system_loopback.sh \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
+	tests/test_ab_stats.py \
+	tests/test_ab_verdict.py \
+	tests/test_ab_arm.py \
+	tests/test_ab_receipt.py \
+	tests/test_ab_suite_compare.py \
+	tests/test_ab_corpus.py \
+	tests/test_ab_dry_run.py \
+	tests/test_pack_spine_sha.py \
 	tests/test_glm5_next_compsec17.py \
 	tests/test_compsec17.py \
 	tests/test_ling_compsec17.py \
 	tests/test_weightd_supervised.py \
 	tests/test_weightd_supervision.py \
 	tests/test_fleet_agent_multi_root.py \
+	tests/test_ab_fleet.py \
 	tests/test_spark_queue.py \
 	tests/test_multi_dev_orchestrate.py \
 	tests/test_inference_smoke.py \
@@ -553,6 +567,7 @@ PYTHON_TESTS := \
 	tests/test_ling_multidev_lane.py \
 	tests/test_ling_lane.py \
 	tests/test_glm53full_lane.py \
+	tests/test_glm53full_compsec17.py \
 	tests/test_ling_stagepack_resume.py \
 	tests/test_mimo26_emit_order.py \
 	tests/test_ling_smoke_experts.py \
@@ -575,6 +590,8 @@ PYTHON_TESTS := \
 	tests/test_weightd_manifest.py \
 	tests/test_weightd_spine_budget.py \
 	tests/test_glm5_next_range_manifest.py \
+	tests/test_glm5_next_routed_oracle.py \
+	tests/test_glm52_experts_manifest.py \
 	tests/test_weightd_lazy_pair.py \
 	tests/test_glm5_next_driver_probe.py \
 	tests/test_generated_control_admission.py \
@@ -583,6 +600,8 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_graph_regime.py \
 	tests/test_glm5_next_verify_regime.py \
 	tests/test_spec_verify_bench.py \
+	tests/test_glm5_next_spec_replay.py \
+	tests/test_glm5_next_spec_ab.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \
 	tests/test_skinny_grouped_host.py \
@@ -590,6 +609,8 @@ PYTHON_TESTS := \
 	tests/test_skinny_mxfp4_cuda.py \
 	tests/test_kv_shard_host.py \
 	tests/test_kv_shard_cuda.py \
+	tests/test_score_merge.py \
+	tests/test_score_dump_cuda.py \
 	tests/test_kernel_codegen_diff.py \
 	tests/test_host_codegen_diff.py \
 	tests/test_module_host_contracts.py \
@@ -597,6 +618,10 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \
+	tests/test_glm5_next_pack_header_codec.py \
+	tests/test_glm5_next_expert_graft.py \
+	tests/test_glm5_next_pack_tp_all.py \
+	tests/test_glm5_next_pack_tool_refusals.py \
 	tests/test_glm5_next_nvfp4_spine_scale.py \
 	tests/test_checkpoint_row_read.py \
 	tests/test_glm5_next_pack_regions.py \
@@ -607,6 +632,8 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_graph_failure.py \
 	tests/test_clamped_up_gate.py \
 	tests/test_glm5_next_stage_context.py \
+	tests/test_glm52_chain_modes.py \
+	tests/test_module_page_cache_reset.py \
 	tests/test_glm5_next_expert_cover_host.py \
 	tests/test_glm5_next_wset_from_trace.py \
 	tests/test_ling_cache_admission.py \
@@ -834,6 +861,13 @@ build/test_glm5_next_hc_mix: tests/test_glm5_next_hc_mix.cu tests/fixtures/glm5_
 .PHONY: test-glm-hc-mix
 test-glm-hc-mix: build/test_glm5_next_hc_mix
 	./build/test_glm5_next_hc_mix --run
+
+build/test_glm5_next_l2_prefetch: tests/test_glm5_next_l2_prefetch.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-glm-l2-prefetch
+test-glm-l2-prefetch: build/test_glm5_next_l2_prefetch
+	./build/test_glm5_next_l2_prefetch --run
 
 build/test_skinny_gemv: tests/test_skinny_gemv.cu inference/kernels/skinny.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
@@ -1131,6 +1165,9 @@ build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(GLM52_HOST_LI
 build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_quant_arm: tools/sparkpipe_quant_arm.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/sparkpipe_nfc: tools/sparkpipe_nfc.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1376,6 +1413,9 @@ build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtu
 build/test_model_batch_engine_mock: tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_tp_chain_graph: tests/test_tp_chain_graph.c include/sparkpipe/spark_tp_chain_graph.h | build
+	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_chain_graph.c $(LDFLAGS) -o $@
+
 build/test_tp_device_collective_mock: tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1483,6 +1523,9 @@ build/test_distributed_work: tests/test_distributed_work.c $(MODEL_COMMON_LIBRAR
 
 build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_quant_arm: tests/test_quant_arm.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_fabric_topology: tests/test_fabric_topology.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1718,7 +1761,7 @@ build/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(RUNTIME_LIBRARY) $
 build/sparkpipe_weightsd: node/weightd.c node/weightd_mesh.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -libverbs -o $@
 
-build/glm5_next_experts_manifest: tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h $(CORE_LIBRARY) | build
+build/glm5_next_experts_manifest: tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_expert_planes.h $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/glm5_next/include $(CFLAGS) tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 DSV41_FLASH_PACK_TOOL_FLAGS := $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/dsv41_flash/include -Imodules/dsv41_flash_resident_decode_stage/include -Imodules/dsv41_flash_resident_decode_stage/source -D_FILE_OFFSET_BITS=64
@@ -1768,11 +1811,14 @@ build/test_weightd_churn: tests/test_weightd_churn.c $(RUNTIME_LIBRARY) $(CORE_L
 build/test_weightd_expert_stress: tests/test_weightd_expert_stress.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-build/test_glm5_next_lazy_dispatch: tests/test_glm5_next_lazy_dispatch.c runtime/spark_weightd_lease.c tests/cuda_stub/cuda_runtime_stub.c runtime/spark_weightd_manifest.c runtime/stage_module_common.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h | build
+build/test_glm5_next_lazy_dispatch: tests/test_glm5_next_lazy_dispatch.c runtime/spark_weightd_lease.c tests/cuda_stub/cuda_runtime_stub.c runtime/spark_weightd_manifest.c runtime/stage_module_common.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h include/sparkpipe/spark_expert_planes.h include/sparkpipe/family/module/spark_module_manifest_check.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -ffunction-sections -fdata-sections $(wordlist 1,5,$^) $(LDFLAGS) -Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $@
 
-build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd_direct.c runtime/spark_weightd_receipt.c runtime/spark_weightd.c runtime/spark_weightd_worker.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c runtime/spark_weightd_direct.c,$^)) $(LDFLAGS) -o $@
+build/test_glm5_next_codec_lazy_attach: tests/test_glm5_next_codec_lazy_attach.c build/glm5_next_experts_manifest $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c runtime/stage_module_common.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c include/sparkpipe/spark_expert_planes.h include/sparkpipe/family/module/spark_module_manifest_check.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_glm5_next_codec_lazy_attach.c runtime/stage_module_common.c tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $@
+
+build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd_receipt.c runtime/spark_weightd.c runtime/spark_weightd_worker.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c,$^)) $(LDFLAGS) -o $@
 
 build/test_weightd: tests/test_weightd.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build build/sparkpipe_weightd
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -DSPARK_TEST_WEIGHTD_BINARY=\"build/sparkpipe_weightd\" $(CFLAGS) $^ $(LDFLAGS) -o $@
@@ -1817,6 +1863,9 @@ build/test_speculation_reference_draft: tests/test_speculation_reference_draft.c
 
 build/test_speculation_lookup_draft: tests/test_speculation_lookup_draft.c include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_lookup_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_drafter_mix: tests/test_speculation_drafter_mix.c include/sparkpipe/spark_speculation_drafter_mix.h include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_drafter_mix.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_speculation_depth: tests/test_speculation_depth.c include/sparkpipe/spark_speculation_depth.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_depth.c $(LDFLAGS) $(LDLIBS) -o $@

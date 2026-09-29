@@ -1,0 +1,1062 @@
+{
+ "block_tokens": 64,
+ "builder_commit": "e4cf62f330ae9a4fce013254613a71c44c6fa6a1",
+ "corpus_sha256": "5afe80e776f21ed6cd194aed4bc5bd5d28444a4cdc75478a508b289a27c4f624",
+ "document_tokens": 32768,
+ "documents": [
+  {
+   "id": "arxiv:2606.23535",
+   "length": 32768,
+   "offset": 0,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-06",
+    "paper_id": "2606.23535",
+    "primary_category": "quant-ph",
+    "text_sha256": "5218a1e8f629875e8d833e32b84f04895cf3bb8bec818ba923c4ae4ca8de679e"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "6f1ad052989c028d18202745fe6c2f906e0c198ab24501d74a5a5c6261b9b948"
+  },
+  {
+   "id": "arxiv:2607.12687",
+   "length": 32768,
+   "offset": 32768,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.12687",
+    "primary_category": "cs.CL",
+    "text_sha256": "d01d7ef8399cb93c5c098c3ef3aca1d195e0a77ed6171e091c83820daaa1d823"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "95f6755c4449ac4e67ac2b740b430f25408496e5d9813803c01252e3665b90a7"
+  },
+  {
+   "id": "arxiv:2607.08826",
+   "length": 32768,
+   "offset": 65536,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.08826",
+    "primary_category": "cond-mat.str-el",
+    "text_sha256": "5ec3122d457c83336a9cdadefaf903103a37b363100735a68d228d310a1cae36"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "8d15451218bbc62131a82685a480214fbacfc0929c53c48bda3e38a625d97087"
+  },
+  {
+   "id": "arxiv:2606.21128",
+   "length": 32768,
+   "offset": 98304,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-06",
+    "paper_id": "2606.21128",
+    "primary_category": "math.AT",
+    "text_sha256": "7656890fc9fceb54d2e88a7b0a05c2b6d0c2934d7dd004e85dda7567ab0a33ff"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "c2bfbd8e138048240291b973261448c053838314bb3e2e7d2b592591eb4a0eae"
+  },
+  {
+   "id": "arxiv:2607.01184",
+   "length": 32768,
+   "offset": 131072,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.01184",
+    "primary_category": "math.NT",
+    "text_sha256": "8ac40ce80b6d28372e97c62dfd0669094ca63069f6ffcebebb9fc71d66b48c3e"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "4ba5d2cee6b4297f5510809db68bd69eccbbc238bc5647225eedb7701d66fe56"
+  },
+  {
+   "id": "arxiv:2606.17765",
+   "length": 32768,
+   "offset": 163840,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-06",
+    "paper_id": "2606.17765",
+    "primary_category": "astro-ph.HE",
+    "text_sha256": "0710e93c38a2f35c2fe17c9a8fa97152eb4635635b5f0af9ae4fefc0d1147d2c"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "a421a53d03010f3fff4f6dcc8dacb07a15c1b3ca86409e577e40b34b8c78ecdb"
+  },
+  {
+   "id": "arxiv:2607.08709",
+   "length": 32768,
+   "offset": 196608,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.08709",
+    "primary_category": "quant-ph",
+    "text_sha256": "29c6cdf15319d4f97460a28eebc27cf5c3ae46ef7c05f5026ebe41e673847448"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "0049aa5cd9bfcbf70ddb904ea4376efd618847a8a4132db6c0fbbcc0da3d3618"
+  },
+  {
+   "id": "arxiv:2607.14490",
+   "length": 32768,
+   "offset": 229376,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14490",
+    "primary_category": "nlin.CD",
+    "text_sha256": "04987ba9deadb0663331eb92d1863093a21bc00e84f1732d36e8fc57595d9edf"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "1e503d26901f0267f1a1602ab8daaf072d04b7920044d5fd4107201f9bf0acdd"
+  },
+  {
+   "id": "arxiv:2606.15889",
+   "length": 32768,
+   "offset": 262144,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-06",
+    "paper_id": "2606.15889",
+    "primary_category": "cs.CV",
+    "text_sha256": "cc0d14eb1f13a8c3a51a9a2d5be94c76c264f7c8b9a9a2d5f359d5d2996d0199"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "9e637ba91d6afc55cae1938aed5c680992282c0c31a347e5243e04647780ec64"
+  },
+  {
+   "id": "arxiv:2607.28523",
+   "length": 32768,
+   "offset": 294912,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28523",
+    "primary_category": "cs.AI",
+    "text_sha256": "0aaaebb293a7cafa591d3e2cc075e9e23a74ac378f7c4278b7f793bba8f0ae96"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "0ec6fe6111bf3edbbd621ba30a40fbdf78187101b43a99e956a18a7e7a5027e4"
+  },
+  {
+   "id": "arxiv:2606.26627",
+   "length": 32768,
+   "offset": 327680,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-06",
+    "paper_id": "2606.26627",
+    "primary_category": "cs.CR",
+    "text_sha256": "bca6f4b0e7966750eb4fab5c3194ee3309b0e4533af890c8f151e235aa38aabb"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "37cea89df0ebc2d3dc71dd9378a018bd630a454173657fe1bab9ccb005f6615f"
+  },
+  {
+   "id": "arxiv:2607.02446",
+   "length": 32768,
+   "offset": 360448,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.02446",
+    "primary_category": "math-ph",
+    "text_sha256": "d8d329b1b2c1ad903844d9a66629a60dfbfdaab240153ebe174008d36c27622e"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "8c63fed100f38a9099f9c75a32ca183cd3afd6a220e657bf7d830071e64c187d"
+  },
+  {
+   "id": "arxiv:2607.15816",
+   "length": 32768,
+   "offset": 393216,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.15816",
+    "primary_category": "cs.NI",
+    "text_sha256": "31cd052354cf688645d5235d91ed104221f7512a4b266d975011132c2edab233"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "c73246c54bea4b721732113cba7c2abfc8c2671c14334695a70d169e35c37239"
+  },
+  {
+   "id": "arxiv:2606.10933",
+   "length": 32768,
+   "offset": 425984,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-06",
+    "paper_id": "2606.10933",
+    "primary_category": "cs.AI",
+    "text_sha256": "62eebc711bb82a4935a95866af33333f7aa547215344d34aeedab67d02b4b936"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "6c7c6fd786edcf12311acc359b6ccf2a7966d415809a9bc64b18e3015feab8aa"
+  },
+  {
+   "id": "arxiv:2607.15370",
+   "length": 32768,
+   "offset": 458752,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.15370",
+    "primary_category": "math.CO",
+    "text_sha256": "36d0a8de1b029f67d438f1326df6ea927f3501a93cd525cef0d7231c037054c0"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "6ef8875d146ea8dba9ac7c4d1d783a44d4a687e450ecc3b80ef683dfd76ea001"
+  },
+  {
+   "id": "arxiv:2607.14703",
+   "length": 32768,
+   "offset": 491520,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14703",
+    "primary_category": "cs.CV",
+    "text_sha256": "bb2e4118e18b64d45515fccfa488b78a92ee2d859c05a95a164948b9c4c27edf"
+   },
+   "stratum": "prose-long",
+   "tokens_sha256": "e0b927b6f5ff7273579ff1c4615c7a2d77958069633884702b227a8cbca70bda"
+  },
+  {
+   "id": "code:tools/hy4_dequant",
+   "length": 32768,
+   "offset": 524288,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/hy4_dequant/hy4_generate.c",
+     "tools/hy4_dequant/hy4_indexer_forward.c",
+     "tools/hy4_dequant/hy4_iq_dequant_ref.c",
+     "tools/hy4_dequant/hy4_iq_dequant_vendor.h",
+     "tools/hy4_dequant/hy4_layer_forward.c",
+     "tools/hy4_dequant/hy4_moe_forward.c",
+     "tools/hy4_dequant/hy4_rank_loader.c",
+     "tools/hy4_dequant/hy4_rank_loader.h",
+     "tools/hy4_dequant/hy4_rank_loader_test.c",
+     "tools/hy4_dequant/hy4_reassemble.c",
+     "tools/hy4_dequant/hy4_stack_forward.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code-long",
+   "tokens_sha256": "3af87c62525dfb0da79dd3b034318821c4668f17eec988a843b265e82a50303d"
+  },
+  {
+   "id": "code:inference/kernels",
+   "length": 32768,
+   "offset": 557056,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "inference/kernels/activation.cuh",
+     "inference/kernels/attn.cuh",
+     "inference/kernels/attn_shard.cuh",
+     "inference/kernels/attn_split.h",
+     "inference/kernels/dependent_launch.cuh",
+     "inference/kernels/dtype.cuh",
+     "inference/kernels/expert_cover.cuh",
+     "inference/kernels/frame_error.cuh",
+     "inference/kernels/gemm.cuh",
+     "inference/kernels/gqa.cuh",
+     "inference/kernels/graph.cuh",
+     "inference/kernels/hc.cuh",
+     "inference/kernels/head.cuh",
+     "inference/kernels/kv.cuh",
+     "inference/kernels/kv_shard.cuh",
+     "inference/kernels/layer_kind.cuh",
+     "inference/kernels/layout.cuh",
+     "inference/kernels/linear_attn.cuh",
+     "inference/kernels/mma.cuh",
+     "inference/kernels/norm.cuh",
+     "inference/kernels/project.cuh",
+     "inference/kernels/route.cuh",
+     "inference/kernels/rows_tile.cuh",
+     "inference/kernels/scale.cuh",
+     "inference/kernels/skinny.cuh",
+     "inference/kernels/spec_verify.cuh",
+     "inference/kernels/speculate.cuh",
+     "inference/kernels/state_snapshot.cuh",
+     "inference/kernels/tensor_map.cuh",
+     "inference/kernels/tile.cuh",
+     "inference/kernels/tma.cuh",
+     "inference/kernels/topk.cuh",
+     "inference/kernels/topk_exact.cuh",
+     "inference/kernels/topk_warp.cuh",
+     "inference/kernels/tp_reduce.cuh",
+     "inference/kernels/weight_codec.cuh"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code-long",
+   "tokens_sha256": "096b9aab6287b3cffea8807ecbfd67d27bf85f3c35e3d09972c7ab39f6747172"
+  },
+  {
+   "id": "code:src",
+   "length": 32768,
+   "offset": 589824,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "src/spark_admission.c",
+     "src/spark_ck128.c",
+     "src/spark_driver_loader.c",
+     "src/spark_filesystem.h",
+     "src/spark_orchestrator.c",
+     "src/spark_sha256.c",
+     "src/spark_speculation_lookup_draft.c",
+     "src/spark_speculation_policy.c",
+     "src/spark_speculation_reference_draft.c",
+     "src/spark_speculation_relay_draft.c",
+     "src/spark_speculation_seam.c",
+     "src/spark_status.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code-long",
+   "tokens_sha256": "68f5751d7721c3e9960ca62212842452e66116ca525ec20696520382b86729e2"
+  },
+  {
+   "id": "code:tools/hardware",
+   "length": 32768,
+   "offset": 622592,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/hardware/rtx5090_qualify.cu",
+     "tools/hardware/spark_cuda_characterize.cu",
+     "tools/hardware/spark_dsv4_compressor_emission_bitwise.cu",
+     "tools/hardware/spark_model_kernel_characterize.c",
+     "tools/hardware/spark_nvme_characterize.cu",
+     "tools/hardware/spark_pmtu_characterize.c",
+     "tools/hardware/spark_probe_common.h",
+     "tools/hardware/spark_topology_characterize.c",
+     "tools/hardware/spark_tp_device_collective_characterize.cu",
+     "tools/hardware/spark_transport_characterize.c",
+     "tools/hardware/stream_read_probe.cu",
+     "tools/hardware/tp_f32_arithmetic.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code-long",
+   "tokens_sha256": "cf60ca2636337ce5b74a35ce2dc4b738d9208113f9bff50f93e640193733ff10"
+  },
+  {
+   "id": "code:tools/hy4_gpu",
+   "length": 32768,
+   "offset": 655360,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/hy4_gpu/experts_ck128_check.c",
+     "tools/hy4_gpu/hy4_attn_test.cu",
+     "tools/hy4_gpu/hy4_dequant_test.cu",
+     "tools/hy4_gpu/hy4_forward_test.cu",
+     "tools/hy4_gpu/hy4_fp8_rung.cu",
+     "tools/hy4_gpu/hy4_hc_test.cu",
+     "tools/hy4_gpu/hy4_layer_test.cu",
+     "tools/hy4_gpu/hy4_moe_test.cu",
+     "tools/hy4_gpu/hy4_qchain_test.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code-long",
+   "tokens_sha256": "36183232c9d85c2e671e3395e53282e102db3b8f092b4724cda0c1c4f5eb0ec3"
+  },
+  {
+   "id": "code:modules/qwen38_27b_resident_decode_stage/source",
+   "length": 32768,
+   "offset": 688128,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_dspark_cuda.cuh",
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_dspark_format.h",
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_native_ws.cuh",
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_cuda.cu",
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c",
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c",
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stagepack_format.h",
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c",
+     "modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code-long",
+   "tokens_sha256": "01283394c4a5443304b950e7f99332c5326dc0076577012171ca6c380a26162a"
+  },
+  {
+   "id": "code:tools",
+   "length": 32768,
+   "offset": 720896,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/adapter_interface_probe.c",
+     "tools/ck128_stamp.c",
+     "tools/dsv41_spine_instrument.c",
+     "tools/dsv4_loader_bench.c",
+     "tools/dsv4_pro_experts_manifest.c",
+     "tools/glm52_experts_manifest.c",
+     "tools/glm5_next_batch_roofline.cu",
+     "tools/glm5_next_driver_probe.c",
+     "tools/glm5_next_experts_manifest.c",
+     "tools/hy4_attach_harness.c",
+     "tools/hy4_experts_manifest.c",
+     "tools/hy4_experts_manifest_v2.c",
+     "tools/hy4_stub_harness.c",
+     "tools/hy4_wo_fleet_apply.c",
+     "tools/lazy_attach_harness.c",
+     "tools/mb_doorbell.cu",
+     "tools/mesh_lane_ladder.cu",
+     "tools/mesh_register_attach_repro.c",
+     "tools/mesh_register_repro.c",
+     "tools/multi_dev_smoke.c",
+     "tools/perf_r1_head_bench.cu",
+     "tools/perf_r5_validate_timing.c",
+     "tools/qwen36_dflash2_conv_parity.cu",
+     "tools/qwen36_multirow_dot_bench.cu",
+     "tools/qwen36_native_linear_bench.cu",
+     "tools/qwen36_native_staged_bench.cu",
+     "tools/qwen36_native_warp_specialized_bench.cu",
+     "tools/qwen36_stagepack_rans.c",
+     "tools/qwen38_27b_experts_manifest.c",
+     "tools/qwen38_27b_nvfp4_smoke.cu",
+     "tools/qwen38_stagepack_layout_probe.c",
+     "tools/qwen38_timing_probe.c",
+     "tools/qwen38_tp4_bench.c",
+     "tools/qwen38_tp4_collective_bench.c",
+     "tools/qwen38_tp4_e2e.c",
+     "tools/qwen38_tp4_nccl_bench.c",
+     "tools/qwen38max_experts_manifest.c",
+     "tools/qwen38max_parity_probe.c",
+     "tools/qwen4_flash_nvfp4_smoke.cu",
+     "tools/slot_bench.cu",
+     "tools/spark_kv_backing_test.c",
+     "tools/sparkcap_stream_probe.c",
+     "tools/sparkpipe_driver_inspect.c",
+     "tools/sparkpipe_dsv4_driver_cuda_smoke.c",
+     "tools/sparkpipe_glm52_tokenize.c",
+     "tools/sparkpipe_model_compile.c",
+     "tools/sparkpipe_module_publish.c",
+     "tools/sparkpipe_nfc.c",
+     "tools/sparkpipe_registrar.c",
+     "tools/sparkpipe_split.c",
+     "tools/sparkpipe_tokenize_prompt.c",
+     "tools/sparkpipe_tokenizer_benchmark.c",
+     "tools/sparkpipe_tool_file.h",
+     "tools/t1_q3f_harness.c",
+     "tools/t1_qmax_harness.c",
+     "tools/tp_mesh_hardware_probe.cu",
+     "tools/tp_stream_memop_probe.cu",
+     "tools/weightd_execute_probe.c",
+     "tools/weightd_expert_segments.c",
+     "tools/weightd_lazy_consumer.c",
+     "tools/weightd_loadall.c",
+     "tools/weightd_receipt.c",
+     "tools/weightd_route_probe.c",
+     "tools/weightd_smoke.c",
+     "tools/weightd_warm.c",
+     "tools/weightdctl.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code-long",
+   "tokens_sha256": "e5f61ba227a2146bc0ec6c1cf4fcc9d068ff6404c74e17b713e54d9b9e62b910"
+  },
+  {
+   "id": "code:include/sparkpipe",
+   "length": 32768,
+   "offset": 753664,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_admission.h",
+     "include/sparkpipe/spark_batch_variant_tuning_common.h",
+     "include/sparkpipe/spark_ck128.h",
+     "include/sparkpipe/spark_continuous_batch.h",
+     "include/sparkpipe/spark_distributed_work.h",
+     "include/sparkpipe/spark_draft_bridge.h",
+     "include/sparkpipe/spark_driver_compiler.h",
+     "include/sparkpipe/spark_driver_loader.h",
+     "include/sparkpipe/spark_error_site.h",
+     "include/sparkpipe/spark_expert_working_set.h",
+     "include/sparkpipe/spark_fabric_topology.h",
+     "include/sparkpipe/spark_fixed_ring.h",
+     "include/sparkpipe/spark_graph_reloc.h",
+     "include/sparkpipe/spark_hardware_kernel_probe.h",
+     "include/sparkpipe/spark_hardware_topology_probe.h",
+     "include/sparkpipe/spark_hardware_transport_probe.h",
+     "include/sparkpipe/spark_head_screen.h",
+     "include/sparkpipe/spark_hidden_transport.h",
+     "include/sparkpipe/spark_hidden_transport_rdma_control.h",
+     "include/sparkpipe/spark_json.h",
+     "include/sparkpipe/spark_kda_reference.h",
+     "include/sparkpipe/spark_kv_backing.h",
+     "include/sparkpipe/spark_kv_cache.h",
+     "include/sparkpipe/spark_kv_model_table.h",
+     "include/sparkpipe/spark_kv_page_cache.h",
+     "include/sparkpipe/spark_kv_page_store.h",
+     "include/sparkpipe/spark_kv_pager.h",
+     "include/sparkpipe/spark_kv_shard.h",
+     "include/sparkpipe/spark_kv_snapshot.h",
+     "include/sparkpipe/spark_kv_store.h",
+     "include/sparkpipe/spark_latency_histogram.h",
+     "include/sparkpipe/spark_memlink.h",
+     "include/sparkpipe/spark_memory_buffer.h",
+     "include/sparkpipe/spark_model_batch_engine.h",
+     "include/sparkpipe/spark_model_description.h",
+     "include/sparkpipe/spark_model_driver.h",
+     "include/sparkpipe/spark_model_driver_support.h",
+     "include/sparkpipe/spark_model_pipeline_client.h",
+     "include/sparkpipe/spark_model_resident_client.h",
+     "include/sparkpipe/spark_model_resident_deployment.h",
+     "include/sparkpipe/spark_model_resident_endpoint.h",
+     "include/sparkpipe/spark_model_resident_ipc.h",
+     "include/sparkpipe/spark_model_runtime.h",
+     "include/sparkpipe/spark_model_serving_adapter.h",
+     "include/sparkpipe/spark_module_abi.h",
+     "include/sparkpipe/spark_module_library.h",
+     "include/sparkpipe/spark_numerical_metrics.h",
+     "include/sparkpipe/spark_nvme_tier.h",
+     "include/sparkpipe/spark_orchestrator.h",
+     "include/sparkpipe/spark_pipeline_runtime.h",
+     "include/sparkpipe/spark_prefix_cache.h",
+     "include/sparkpipe/spark_row_layout.h",
+     "include/sparkpipe/spark_runtime_completion.h",
+     "include/sparkpipe/spark_sampling.h",
+     "include/sparkpipe/spark_serving_adapter_template.h",
+     "include/sparkpipe/spark_serving_cache_admission.h",
+     "include/sparkpipe/spark_sha256.h",
+     "include/sparkpipe/spark_speculation_depth.h",
+     "include/sparkpipe/spark_speculation_lookup_draft.h",
+     "include/sparkpipe/spark_speculation_policy.h",
+     "include/sparkpipe/spark_speculation_provider.h",
+     "include/sparkpipe/spark_speculation_reference_draft.h",
+     "include/sparkpipe/spark_speculation_relay_draft.h",
+     "include/sparkpipe/spark_speculation_seam.h",
+     "include/sparkpipe/spark_speculation_tree.h",
+     "include/sparkpipe/spark_stage_kv_client.h",
+     "include/sparkpipe/spark_stage_module_common.h",
+     "include/sparkpipe/spark_stage_module_lifecycle.h",
+     "include/sparkpipe/spark_stagepack_format.h",
+     "include/sparkpipe/spark_state_pool.h",
+     "include/sparkpipe/spark_state_span.h",
+     "include/sparkpipe/spark_status.h",
+     "include/sparkpipe/spark_step_verdict.h",
+     "include/sparkpipe/spark_tokenizer.h",
+     "include/sparkpipe/spark_tokenizer_sidecar.h",
+     "include/sparkpipe/spark_topology_switch.h",
+     "include/sparkpipe/spark_tp_chain_ordinal.h",
+     "include/sparkpipe/spark_tp_collective.h",
+     "include/sparkpipe/spark_tp_device_collective.h",
+     "include/sparkpipe/spark_weight_codec.h",
+     "include/sparkpipe/spark_weightd.h",
+     "include/sparkpipe/spark_weightd_attach.h",
+     "include/sparkpipe/spark_weightd_lazy_pack.h",
+     "include/sparkpipe/spark_weightd_lease.h",
+     "include/sparkpipe/spark_weightd_manifest.h",
+     "include/sparkpipe/spark_weightd_map.h",
+     "include/sparkpipe/spark_weightd_receipt.h",
+     "include/sparkpipe/spark_weightd_spine.h",
+     "include/sparkpipe/spark_weightd_worker.h",
+     "include/sparkpipe/spark_work_transaction.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code-long",
+   "tokens_sha256": "374eaa6698fb77ac4458d6b57b6c691cfca5f977abbfdb903e65dffc3684e515"
+  },
+  {
+   "id": "retrieval:arxiv:2607.13719",
+   "length": 32768,
+   "offset": 786432,
+   "probe_spans": [
+    [
+     32641,
+     32646
+    ],
+    [
+     32657,
+     32662
+    ],
+    [
+     32674,
+     32679
+    ],
+    [
+     32691,
+     32696
+    ],
+    [
+     32708,
+     32713
+    ],
+    [
+     32726,
+     32731
+    ],
+    [
+     32744,
+     32749
+    ],
+    [
+     32762,
+     32767
+    ]
+   ],
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "keys": 32,
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.13719",
+    "primary_category": "cs.IT",
+    "queries": 8,
+    "retrieval_seed": 20260929,
+    "text_sha256": "53b04b22af0bc1ca49cd887705fbd813c0e0b24fddfaa478da97270aad7310b9"
+   },
+   "stratum": "retrieval",
+   "tail_from": 32626,
+   "tokens_sha256": "dc6c75b5b89efc4a60340827e49a1384f48d77cb22e963a8827acaea6256d8d5"
+  },
+  {
+   "id": "retrieval:arxiv:2607.23333",
+   "length": 32768,
+   "offset": 819200,
+   "probe_spans": [
+    [
+     32642,
+     32647
+    ],
+    [
+     32658,
+     32663
+    ],
+    [
+     32676,
+     32681
+    ],
+    [
+     32694,
+     32699
+    ],
+    [
+     32712,
+     32717
+    ],
+    [
+     32729,
+     32733
+    ],
+    [
+     32745,
+     32749
+    ],
+    [
+     32762,
+     32767
+    ]
+   ],
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "keys": 32,
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23333",
+    "primary_category": "cs.LG",
+    "queries": 8,
+    "retrieval_seed": 20260929,
+    "text_sha256": "2ee3f291d455cb293b9f1941793f60a98049df27242b52caf1f30bc27e2ba2a0"
+   },
+   "stratum": "retrieval",
+   "tail_from": 32625,
+   "tokens_sha256": "db167ba445351dd5508f2608ec95fa041590bd5ef7500fe1c52da1c40cb02309"
+  },
+  {
+   "id": "retrieval:arxiv:2607.21084",
+   "length": 32768,
+   "offset": 851968,
+   "probe_spans": [
+    [
+     32644,
+     32649
+    ],
+    [
+     32660,
+     32665
+    ],
+    [
+     32676,
+     32680
+    ],
+    [
+     32692,
+     32697
+    ],
+    [
+     32711,
+     32716
+    ],
+    [
+     32729,
+     32733
+    ],
+    [
+     32745,
+     32750
+    ],
+    [
+     32762,
+     32767
+    ]
+   ],
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "keys": 32,
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.21084",
+    "primary_category": "cs.SE",
+    "queries": 8,
+    "retrieval_seed": 20260929,
+    "text_sha256": "b2a1a9881c50b5191c554efef7883b71d2bdde3d0cdf4d39a832ec6c857dfeb3"
+   },
+   "stratum": "retrieval",
+   "tail_from": 32629,
+   "tokens_sha256": "fc7ae94ce36d26d6fba803e4d477ec959777ca9a432630db8d5e2ed69074e57b"
+  },
+  {
+   "id": "retrieval:arxiv:2607.17423",
+   "length": 32768,
+   "offset": 884736,
+   "probe_spans": [
+    [
+     32644,
+     32649
+    ],
+    [
+     32662,
+     32667
+    ],
+    [
+     32679,
+     32684
+    ],
+    [
+     32698,
+     32702
+    ],
+    [
+     32713,
+     32717
+    ],
+    [
+     32728,
+     32733
+    ],
+    [
+     32746,
+     32751
+    ],
+    [
+     32762,
+     32767
+    ]
+   ],
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "keys": 32,
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.17423",
+    "primary_category": "cs.CV",
+    "queries": 8,
+    "retrieval_seed": 20260929,
+    "text_sha256": "54b561ca2beb8ff9e07aa6a2b5eef59dc3dbbc22d8b64e7d70ae87fa299b5796"
+   },
+   "stratum": "retrieval",
+   "tail_from": 32629,
+   "tokens_sha256": "fa227a711904103c02946d9a6e98a944f50f706a27d2f0eb3d7f25a2f03d8391"
+  },
+  {
+   "id": "retrieval:arxiv:2607.25335",
+   "length": 32768,
+   "offset": 917504,
+   "probe_spans": [
+    [
+     32646,
+     32650
+    ],
+    [
+     32663,
+     32668
+    ],
+    [
+     32680,
+     32685
+    ],
+    [
+     32697,
+     32702
+    ],
+    [
+     32715,
+     32720
+    ],
+    [
+     32732,
+     32736
+    ],
+    [
+     32747,
+     32752
+    ],
+    [
+     32763,
+     32767
+    ]
+   ],
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "keys": 32,
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.25335",
+    "primary_category": "cs.CL",
+    "queries": 8,
+    "retrieval_seed": 20260929,
+    "text_sha256": "c70566c16ea1cfc7d470b06b2e3a439fc0400324bfdfec0aba78c9fbf0eba54a"
+   },
+   "stratum": "retrieval",
+   "tail_from": 32630,
+   "tokens_sha256": "ed97523fade8dd79120995f32ad1f288e8a934fb2d30d9c94738df45d531b7c8"
+  },
+  {
+   "id": "retrieval:arxiv:2607.11920",
+   "length": 32768,
+   "offset": 950272,
+   "probe_spans": [
+    [
+     32647,
+     32652
+    ],
+    [
+     32665,
+     32670
+    ],
+    [
+     32680,
+     32685
+    ],
+    [
+     32697,
+     32701
+    ],
+    [
+     32713,
+     32718
+    ],
+    [
+     32730,
+     32735
+    ],
+    [
+     32747,
+     32752
+    ],
+    [
+     32764,
+     32767
+    ]
+   ],
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "keys": 32,
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11920",
+    "primary_category": "econ.EM",
+    "queries": 8,
+    "retrieval_seed": 20260929,
+    "text_sha256": "96894b512762e547c7259310a0553215505971fdfed498547d57e54ca9f1cda2"
+   },
+   "stratum": "retrieval",
+   "tail_from": 32630,
+   "tokens_sha256": "a1ecad0a256607049397316d31cdc20ee76792ce746bc86aa3c77d4f1a9c0591"
+  },
+  {
+   "id": "retrieval:arxiv:2606.29812",
+   "length": 32768,
+   "offset": 983040,
+   "probe_spans": [
+    [
+     32646,
+     32651
+    ],
+    [
+     32663,
+     32668
+    ],
+    [
+     32680,
+     32685
+    ],
+    [
+     32696,
+     32701
+    ],
+    [
+     32713,
+     32718
+    ],
+    [
+     32728,
+     32731
+    ],
+    [
+     32744,
+     32749
+    ],
+    [
+     32762,
+     32767
+    ]
+   ],
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "keys": 32,
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-06",
+    "paper_id": "2606.29812",
+    "primary_category": "cs.CV",
+    "queries": 8,
+    "retrieval_seed": 20260929,
+    "text_sha256": "9ff70e62e1884f3595e46352cab92efabf16db7751a0f94c6547e2bb7be896e9"
+   },
+   "stratum": "retrieval",
+   "tail_from": 32630,
+   "tokens_sha256": "3377c9864aa34809049e9e65680ca47eebb7898126c4aa9966991a6e84e77273"
+  },
+  {
+   "id": "retrieval:arxiv:2606.18066",
+   "length": 32768,
+   "offset": 1015808,
+   "probe_spans": [
+    [
+     32646,
+     32651
+    ],
+    [
+     32664,
+     32669
+    ],
+    [
+     32682,
+     32687
+    ],
+    [
+     32699,
+     32704
+    ],
+    [
+     32715,
+     32720
+    ],
+    [
+     32731,
+     32735
+    ],
+    [
+     32746,
+     32750
+    ],
+    [
+     32763,
+     32767
+    ]
+   ],
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "keys": 32,
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-06",
+    "paper_id": "2606.18066",
+    "primary_category": "cs.LG",
+    "queries": 8,
+    "retrieval_seed": 20260929,
+    "text_sha256": "a047635487c31e02d0906ee0104f821a0bedf272e83d341ef13a57c26da04317"
+   },
+   "stratum": "retrieval",
+   "tail_from": 32631,
+   "tokens_sha256": "5b04aa4e075879f5a677eb336b31984703b8871049480fe5d12bf468c9db42e2"
+  }
+ ],
+ "format": "sparkpipe-ab-corpus-v1",
+ "name": "CT-long",
+ "notes": [
+  "32 single documents of exactly 32768 tokens (critic \u00a710.15: >= 32 documents, doc-level CI is the verdict basis). No concatenated unrelated papers (\u00a73.4: weak long-range dependency).",
+  "prose-long: single long arXiv 2606/2607 papers (CC-BY/BY-SA/CC0), LaTeX after \\begin{document}. code-long: one SparkPipe source directory at 266b6adbc per document, files concatenated in path order with a path line each.",
+  "retrieval: a long 2606/2607 paper with a 32-entry access-code registry in front and 8 recall lines at the end; probe_spans are the answer tokens (positions > 30k), scored teacher-forced as a long-context KV probe.",
+  "kv-I8 is inert at context <= 2048 (design \u00a74.3): measure it on positions > 2048 only."
+ ],
+ "skipped": [],
+ "strata": {
+  "code-long": 8,
+  "prose-long": 16,
+  "retrieval": 8
+ },
+ "tokenizer": "zai-org/GLM-5.3-Flash@04c4e9e95c5da8862dced7e5056455116f83a7e0 tokenizer.json",
+ "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+ "total_tokens": 1048576
+}
