@@ -2122,6 +2122,11 @@ static SparkStatus SparkWeightdAcquireLoad(SparkWeightdServer *server,SparkWeigh
 	status = SparkWeightdLoadLease(arena,fd,is_direct,lease);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=load_lease status=%u\n",(unsigned)status);
+	else if ( cudaDeviceSynchronize() != cudaSuccess )
+	{
+		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=load_complete cuda=%d\n",(int)cudaGetLastError());
+		status = SPARK_STATUS_IO_ERROR;
+	}
 	(void)close(fd);
 	if ( status == SPARK_STATUS_OK )
 		SparkWeightdCommitLease(arena,lease);
