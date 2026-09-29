@@ -144,7 +144,9 @@ build/weightd_warm /tmp/spark_weightd.sock PACK SHA256 REVISION TOPOLOGY --wset 
 
 Add `--family dsv4_pro --world-rank R`, `--family dsv41_flash`, `--family k3`
 or `--family ling` so the warm identity matches that module; without it the
-tool uses the GLM identity (`tools/weightd_warm.c`). It prints
+tool uses the GLM identity (`tools/weightd_warm.c`). With `--family k3`,
+TOPOLOGY is the runner's tp_degree: 4 for TP4xPP4, 16 for TP16; any other
+value is refused, since the runner never attaches it. It prints
 `WSET-WARM keys=N elapsed_ms=T`. Warm right before the run: an arena with no
 attached consumer is cold, and the next attach that needs room frees the oldest
 cold arena (`SparkWeightdServerReclaimCold`). `weightd_warm SOCKET --reclaim`

@@ -406,14 +406,15 @@ int main(int argument_count,char **arguments)
     }
     else if ( family != 0 && strcmp(family,"k3") == 0 )
     {
-        /* Lane 3 (k3): the runner pins model "kimi-k3" / revision
-         * "mxfp4" / topology = tp_degree (4). arena_bytes keeps the
-         * default pack-size fill - the daemon's size-mismatch contract
-         * (WDATTACH) rejects any other value with INVALID_ARGUMENT,
-         * measured against the release-shared weightd. */
+        if ( topology != 4u && topology != 16u )
+        {
+            fprintf(stderr,"weightd_warm: --family k3 TOPOLOGY is the runner tp_degree: 4 (TP4xPP4) or 16 (TP16), not %llu\n",
+                (unsigned long long)topology);
+            return 2;
+        }
         strcpy(request.identity.model,"kimi-k3");
         strcpy(request.identity.revision,"mxfp4");
-        request.identity.topology = 4u;
+        request.identity.topology = (uint32_t)topology;
         request.identity.geometry_fingerprint = 0u;
     }
     else if ( family != 0 )
@@ -542,8 +543,9 @@ usage:
         "                           --family dsv41_flash (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family ling (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family k3 (pin the k3 runner identity: kimi-k3/mxfp4,\n"
-        "                              topology 4; arena bytes stay the pack size per the\n"
-        "                              daemon's size-mismatch contract)\n"
+        "                              topology = TOPOLOGY, the runner tp_degree: 4 or 16;\n"
+        "                              arena bytes stay the pack size per the daemon's\n"
+        "                              size-mismatch contract)\n"
         "                           --identity-print (print the derived identity and exit)\n"
         "       finite SPARK_WEIGHTD_EXPERT_POOL_BYTES is required\n");
     return 2;
