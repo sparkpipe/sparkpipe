@@ -76,7 +76,7 @@ static T *ProbeDevice(const std::vector<T> &host)
 }
 
 template<uint32_t ROPE>
-static void ProbeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t heads_per_rank,uint32_t compare)
+static void ProbeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t heads_per_rank,uint32_t grain,uint32_t compare)
 {
 	typedef ProbeKv<PROBE_LATENT + ROPE> Geometry;
 	const uint32_t width = PROBE_LATENT + ROPE,record = PROBE_LATENT + 2u,heads = heads_per_rank * degree;
@@ -103,7 +103,7 @@ static void ProbeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t he
 	cudaEvent_t begin,end;
 	char label[160];
 
-	snprintf(label,sizeof(label),"B%u ctx%u degree%u heads%u rope%u",rows,context,degree,heads,ROPE);
+	snprintf(label,sizeof(label),"B%u ctx%u degree%u heads%u grain%u rope%u",rows,context,degree,heads,grain,ROPE);
 	for (page=0u; page<pages; page++)
 		order[page] = page;
 	for (page=pages; page>1u; page--)
@@ -169,7 +169,7 @@ static void ProbeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t he
 	PROBE_CUDA(cudaGetLastError());
 	for (rank=0u; rank<degree; rank++)
 	{
-		SparkKvShard shard = {degree,rank,1u};
+		SparkKvShard shard = {degree,rank,grain};
 		LmKvShardView local;
 		LmKvShardReplicaView replica;
 		uint64_t bytes = SparkKvShardPoolBytes(shard,PROBE_PAGE,Geometry::kSlotBytes,pages);
@@ -203,6 +203,35 @@ static void ProbeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t he
 		ProbeCheck(LmLatentShardMergeLaunch<PROBE_LATENT>(receive_device + (uint64_t)rank * rank_stride,(uint64_t)degree * rank_stride,degree,heads_per_rank,out_device + (uint64_t)rank * out_stride,rows,0) == cudaSuccess,"oracle merge",label);
 	PROBE_CUDA(cudaMemcpy(oracle_out.data(),out_device,oracle_out.size() * 2u,cudaMemcpyDeviceToHost));
 	ProbeCheck(memcmp(oracle_out.data(),shard_out.data(),shard_out.size() * 2u) == 0,"merged output equals the oracle bit for bit",label);
+	if ( rows > 1u )
+	{
+		const uint64_t alone_stride = (uint64_t)heads_per_rank * record;
+		const uint32_t picks[3] = {0u,rows / 2u,rows - 1u};
+		std::vector<uint16_t> alone_out((uint64_t)degree * heads_per_rank * PROBE_LATENT);
+		float *alone_send;
+		uint16_t *alone_out_device;
+		uint32_t pick;
+		PROBE_CUDA(cudaMalloc((void **)&alone_send,(uint64_t)degree * degree * alone_stride * sizeof(float)));
+		PROBE_CUDA(cudaMalloc((void **)&alone_out_device,alone_out.size() * 2u));
+		for (pick=0u; pick<3u; pick++)
+		{
+			row = picks[pick];
+			for (rank=0u; rank<degree; rank++)
+			{
+				SparkKvShard shard = {degree,rank,grain};
+				LmKvShardView local;
+				ProbeCheck(LmKvShardViewInitialize<Geometry>(&local,shard_pool[rank],table_device,pages_per_sequence,rows,pages,error_device,shard) == 0,"row-alone shard view",label);
+				ProbeCheck(LmLatentShardPartialLaunch<Geometry,LmKvShardView,PROBE_LATENT,ROPE>(local,query_device + (uint64_t)row * heads_per_rank * width,query_stride,heads_per_rank,sequences_device + row,contexts_device,positions_device + row,selected_device + (uint64_t)row * PROBE_SELECTED,PROBE_SELECTED,PROBE_DENSE_LIMIT,scale,alone_send + (uint64_t)rank * degree * alone_stride,alone_stride,1u,0) == cudaSuccess,"row-alone partial launch",label);
+			}
+			for (rank=0u; rank<degree; rank++)
+				ProbeCheck(LmLatentShardMergeLaunch<PROBE_LATENT>(alone_send + (uint64_t)rank * alone_stride,(uint64_t)degree * alone_stride,degree,heads_per_rank,alone_out_device + (uint64_t)rank * heads_per_rank * PROBE_LATENT,1u,0) == cudaSuccess,"row-alone merge",label);
+			PROBE_CUDA(cudaMemcpy(alone_out.data(),alone_out_device,alone_out.size() * 2u,cudaMemcpyDeviceToHost));
+			for (rank=0u; rank<degree; rank++)
+				ProbeCheck(memcmp(alone_out.data() + (uint64_t)rank * heads_per_rank * PROBE_LATENT,shard_out.data() + (uint64_t)rank * out_stride + (uint64_t)row * heads_per_rank * PROBE_LATENT,(uint64_t)heads_per_rank * PROBE_LATENT * 2u) == 0,"a row decoded alone has the bits it has inside the batch",label);
+		}
+		cudaFree(alone_send);
+		cudaFree(alone_out_device);
+	}
 	PROBE_CUDA(cudaMemcpy(&error_host,error_device,sizeof(error_host),cudaMemcpyDeviceToHost));
 	ProbeCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access error",label);
 	for (row=0u; row<rows; row+=(rows > 8u ? rows / 8u : 1u))
@@ -249,7 +278,7 @@ static void ProbeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t he
 			}
 		}
 	}
-	ProbeCheck(worst < 1.0e-2,"merged output matches the f64 attention reference",label);
+	ProbeCheck(worst < 2.0e-3,"merged output matches the f64 attention reference",label);
 	PROBE_CUDA(cudaEventCreate(&begin));
 	PROBE_CUDA(cudaEventCreate(&end));
 	if ( compare != 0u && ROPE == 0u && LmLatentAttentionHeadsSupported(heads_per_rank) != 0u )
@@ -274,7 +303,7 @@ static void ProbeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t he
 			}
 	}
 	{
-		SparkKvShard shard = {degree,0u,1u};
+		SparkKvShard shard = {degree,0u,grain};
 		LmKvShardView local;
 		(void)LmKvShardViewInitialize<Geometry>(&local,shard_pool[0],table_device,pages_per_sequence,rows,pages,error_device,shard);
 		PROBE_CUDA(cudaEventRecord(begin));
@@ -305,16 +334,18 @@ int main(void)
 	uint32_t contexts[2] = {1024u,8192u},rows[3] = {1u,8u,64u},c,r;
 	for (c=0u; c<2u; c++)
 		for (r=0u; r<3u; r++)
-			ProbeCase<0u>(rows[r],contexts[c],16u,4u,1u);
-	ProbeCase<64u>(8u,1024u,16u,4u,0u);
-	ProbeCase<64u>(8u,8192u,16u,4u,0u);
-	ProbeCase<0u>(8u,8192u,4u,16u,0u);
-	ProbeCase<0u>(8u,8192u,8u,8u,0u);
+			ProbeCase<0u>(rows[r],contexts[c],16u,4u,1u,1u);
+	ProbeCase<64u>(8u,1024u,16u,4u,1u,0u);
+	ProbeCase<64u>(8u,8192u,16u,4u,1u,0u);
+	ProbeCase<0u>(8u,8192u,4u,16u,1u,0u);
+	ProbeCase<0u>(8u,8192u,8u,8u,1u,0u);
+	ProbeCase<0u>(8u,1024u,16u,4u,4u,0u);
+	ProbeCase<0u>(8u,8192u,16u,4u,4u,0u);
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS latent KV shard on the device: B1/B8/B64 at 1k and 8k, sharded store and attention equal the replicated oracle bit for bit\n");
+	printf("PASS latent KV shard on the device: B1/B8/B64 at 1k and 8k, grains 1 and 4, sharded store and attention equal the replicated oracle bit for bit, a row alone equals its bits inside the batch\n");
 	return 0;
 }
