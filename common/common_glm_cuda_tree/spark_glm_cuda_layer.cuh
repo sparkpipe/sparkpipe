@@ -2,6 +2,7 @@
 
 #include "runtime/gemm.cuh"
 #include "inference/kernels/skinny.cuh"
+#include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/topk.cuh"
@@ -1000,26 +1001,20 @@ static int32_t GlmLayerMoeRouteSelect(
     uint32_t rows,
     cudaStream_t stream)
 {
-    LM_LAUNCH(
-        (LmTopkSmallKernel<
-            GLM_LAYER_THREADS,
-            GLM_TOP_K,
-            true,
-            1u,
-            1u,
-            LM_TOPK_SCORE_SIGMOID>),
-        rows,
-        GLM_LAYER_THREADS,
-        2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),
-        stream,
-        buffers->router_logits,
-        GLM_EXPERTS,
-        buffers->route_expert,
-        buffers->route_weight,
-        buffers->router_correction_bias,
-        0,
-        GLM_ROUTED_SCALE);
-    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+    if (LmTopkRouteLaunch<GLM_LAYER_THREADS, GLM_TOP_K, true, LM_TOPK_SCORE_SIGMOID>(
+            rows,
+            buffers->router_logits,
+            GLM_EXPERTS,
+            buffers->route_expert,
+            buffers->route_weight,
+            buffers->router_correction_bias,
+            0,
+            GLM_ROUTED_SCALE,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
+    return LM_LAUNCH_OK;
 }
 
 static int32_t GlmLayerMoeRoutePack(
