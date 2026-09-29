@@ -64,14 +64,25 @@ def price(result: dict, model: dict) -> dict:
     return {"decode_tokens": decode_tokens, "ms": total_ms}
 
 
+def cost_model(args: argparse.Namespace) -> dict:
+    model = {"b1_ms": args.b1_ms, "row_ms": args.row_ms, "round_ms": args.round_ms,
+             "mtp_token_ms": args.mtp_token_ms, "mtp_call_ms": args.mtp_call_ms}
+    if args.cost_model:
+        fitted = json.loads(Path(args.cost_model).read_text())
+        one = fitted["samples"].get("1")
+        model["b1_ms"] = one["engine_median_ms"] if one and one.get("measured") else fitted["fit"]["intercept_ms"]
+        model["row_ms"] = fitted["fit"]["per_row_ms"]
+        model["source"] = args.cost_model
+    return model
+
+
 def estimate(args: argparse.Namespace) -> int:
     files = sorted(str(p) for p in Path(args.streams).glob("*.u32"))
     if not files:
         raise SystemExit(f"no .u32 streams in {args.streams}")
-    model = {"b1_ms": args.b1_ms, "row_ms": args.row_ms, "round_ms": args.round_ms,
-             "mtp_token_ms": args.mtp_token_ms, "mtp_call_ms": args.mtp_call_ms}
+    model = cost_model(args)
     classes = sorted({Path(f).name.rsplit("_", 1)[0] for f in files})
-    report = {"model": model, "frame": args.frame, "fixed_depth": args.fixed_depth, "spec_off_tok_s": 1000.0 / args.b1_ms, "configs": []}
+    report = {"model": model, "frame": args.frame, "fixed_depth": args.fixed_depth, "spec_off_tok_s": 1000.0 / model["b1_ms"], "configs": []}
     for label, drafter, rows in DEFAULT_CONFIGS:
         results = replay(args.replay, drafter, rows, args.frame, args.fixed_depth, files)
         per_class = {}
@@ -85,16 +96,16 @@ def estimate(args: argparse.Namespace) -> int:
             plain = sum(r["plain_steps"] + r["plain_frame_tokens"] for r in chosen)
             per_class[name] = {
                 "spec_tok_s": round(tokens / ms * 1000.0, 1) if ms else None,
-                "speedup": round(tokens / ms * args.b1_ms, 2) if ms else None,
+                "speedup": round(tokens / ms * model["b1_ms"], 2) if ms else None,
                 "tokens_per_round": round((tokens - plain) / rounds, 2) if rounds else 0.0,
                 "acceptance": round(accepted / proposed, 3) if proposed else 0.0,
                 "rounds": rounds, "plain_tokens": plain, "decode_tokens": tokens,
             }
         report["configs"].append({"label": label, "drafter": drafter, "rows": rows, "classes": per_class})
     Path(args.out).write_text(json.dumps(report, indent=1))
-    print(f"spec off: {report['spec_off_tok_s']:.1f} tok/s (B1 step {args.b1_ms} ms); frame {args.frame}; "
+    print(f"spec off: {report['spec_off_tok_s']:.1f} tok/s (B1 step {model['b1_ms']} ms); frame {args.frame}; "
           f"depth {'fixed' if args.fixed_depth else 'acceptance cap'}; "
-          f"row {args.row_ms} ms, round {args.round_ms} ms, MTP {args.mtp_token_ms} ms/token + {args.mtp_call_ms} ms/call")
+          f"row {model['row_ms']} ms, round {args.round_ms} ms, MTP {args.mtp_token_ms} ms/token + {args.mtp_call_ms} ms/call")
     header = "config".ljust(22) + "rows " + "".join(name.rjust(26) for name in classes)
     print(header)
     for config in report["configs"]:
@@ -148,20 +159,19 @@ def positions(args: argparse.Namespace) -> int:
         acceptance = [float(value) for value in args.acceptance.split(",")]
     if not acceptance or any(not 0.0 <= value <= 1.0 for value in acceptance):
         raise SystemExit("per-position acceptance must be 1..7 values in [0, 1]")
-    model = {"b1_ms": args.b1_ms, "row_ms": args.row_ms, "round_ms": args.round_ms,
-             "mtp_token_ms": args.mtp_token_ms, "mtp_call_ms": args.mtp_call_ms}
+    model = cost_model(args)
     report = {"model": model, "frame": args.frame, "acceptance_per_position": acceptance,
-              "spec_off_tok_s": round(1000.0 / args.b1_ms, 2), "depths": []}
+              "spec_off_tok_s": round(1000.0 / model["b1_ms"], 2), "depths": []}
     for depth in range(1, len(acceptance) + 1):
         tokens_per_round = sum(index * chance for index, chance in enumerate(accepted_distribution(acceptance, depth))) + 1.0
         ms = frame_ms(acceptance, depth, args.frame, model)
         report["depths"].append({"depth": depth, "rows": depth + 1, "tokens_per_full_round": round(tokens_per_round, 3),
                                  "spec_tok_s": round(args.frame / ms * 1000.0, 2),
-                                 "speedup": round(args.frame * args.b1_ms / ms, 3)})
+                                 "speedup": round(args.frame * model["b1_ms"] / ms, 3)})
     best = max(report["depths"], key=lambda item: item["speedup"])
     report["best_depth"] = best["depth"]
     Path(args.out).write_text(json.dumps(report, indent=1))
-    print(f"spec off {report['spec_off_tok_s']} tok/s (B1 {args.b1_ms} ms); frame {args.frame}; "
+    print(f"spec off {report['spec_off_tok_s']} tok/s (B1 {model['b1_ms']} ms); frame {args.frame}; "
           f"acceptance per position {', '.join(f'{value:.3f}' for value in acceptance)}")
     for item in report["depths"]:
         print(f"depth {item['depth']} ({item['rows']} rows): {item['spec_tok_s']} tok/s, {item['speedup']}x, "
@@ -188,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fixed-depth", action="store_true", help="draft rows - 1 every round instead of the acceptance depth cap")
     p.add_argument("--b1-ms", type=float, default=25.2)
     p.add_argument("--row-ms", type=float, default=2.7)
+    p.add_argument("--cost-model", help="verify-cost fit from spec_offline.t0 cost-fit; overrides --b1-ms and --row-ms with the measured T(rows)")
     p.add_argument("--round-ms", type=float, default=1.0)
     p.add_argument("--mtp-token-ms", type=float, default=1.3)
     p.add_argument("--mtp-call-ms", type=float, default=0.3)
@@ -199,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--frame", type=int, default=8)
     p.add_argument("--b1-ms", type=float, default=25.2)
     p.add_argument("--row-ms", type=float, default=2.7)
+    p.add_argument("--cost-model", help="verify-cost fit from spec_offline.t0 cost-fit; overrides --b1-ms and --row-ms with the measured T(rows)")
     p.add_argument("--round-ms", type=float, default=1.0)
     p.add_argument("--mtp-token-ms", type=float, default=1.3)
     p.add_argument("--mtp-call-ms", type=float, default=0.3)
