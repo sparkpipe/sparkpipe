@@ -687,7 +687,7 @@
    "layer_class": "mtp_layer",
    "shard_class": "replicated",
    "codec": "bf16",
-   "transform": "[4096, 8192] on concat(hidden, embed)",
+   "transform": "[4096, 8192] on concat(enorm(embed), hnorm(hidden)), embed first",
    "delta": ""
   },
   {
