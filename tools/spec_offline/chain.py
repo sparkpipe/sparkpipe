@@ -149,8 +149,8 @@ def frame_steps(frame: int, block: int, committed: int, length: int) -> int:
     return min(steps, block_remaining)
 
 
-def simulate_chain(stream: Stream, drafter: str, rows: int = 8, frame: int = 8, block: int = 64, split: int = 64,
-                   fixed_depth: bool = False, seed: int = 1, vocab: int = 154880, tap_drafter: Drafter | None = None) -> ChainCounts:
+def simulate_chain(stream: Stream, drafter: str, vocab: int, rows: int = 8, frame: int = 8, block: int = 64, split: int = 64,
+                   fixed_depth: bool = False, seed: int = 1, tap_drafter: Drafter | None = None) -> ChainCounts:
     if rows < ROWS_MIN or rows > ROWS_MAX or frame < 1 or frame > 32 or block < 1:
         raise ValueError("rows must be 2..8, frame 1..32, block >= 1")
     truth = stream.tokens

@@ -35,8 +35,9 @@ def chain_from(drafter: Drafter, anchor: int, depth: int) -> list[int]:
 class OracleDrafter:
     name = "oracle"
 
-    def __init__(self):
+    def __init__(self, vocab: int):
         self.tokens: tuple[int, ...] = ()
+        self.vocab = vocab
 
     def reset(self, stream_tokens, prompt, taps):
         self.tokens = stream_tokens
@@ -49,7 +50,7 @@ class OracleDrafter:
         if position >= len(self.tokens):
             return []
         expected = self.tokens[position]
-        return [expected] + [(expected + shift) % 154880 for shift in range(1, width)]
+        return [expected] + [(expected + shift) % self.vocab for shift in range(1, width)]
 
 
 class AdversaryDrafter(OracleDrafter):
@@ -60,15 +61,14 @@ class AdversaryDrafter(OracleDrafter):
         if position >= len(self.tokens):
             return []
         expected = self.tokens[position]
-        return [(expected + shift) % 154880 for shift in range(1, width + 1)]
+        return [(expected + shift) % self.vocab for shift in range(1, width + 1)]
 
 
 class SyntheticDrafter(OracleDrafter):
-    def __init__(self, accept_milli: int, seed: int = 1, vocab: int = 154880):
-        super().__init__()
+    def __init__(self, accept_milli: int, vocab: int, seed: int = 1):
+        super().__init__(vocab)
         self.accept_milli = accept_milli
         self.seed = seed
-        self.vocab = vocab
         self.name = f"synthetic:{accept_milli}"
 
     def expand(self, anchor, prefix, width):
@@ -212,11 +212,11 @@ def probe_tap_for_token(token: int, vocab: int, salt: int, dimension: int) -> np
             return candidate
 
 
-def make_drafter(spec: str, vocab: int = 154880, tap_functions: dict[str, TapFunction] | None = None) -> Drafter:
+def make_drafter(spec: str, vocab: int, tap_functions: dict[str, TapFunction] | None = None) -> Drafter:
     if spec == "oracle":
-        return OracleDrafter()
+        return OracleDrafter(vocab)
     if spec == "adversary":
-        return AdversaryDrafter()
+        return AdversaryDrafter(vocab)
     if spec == "lookup":
         return LookupDrafter()
     if spec == "suffix":

@@ -18,16 +18,24 @@ from spec_offline.tree import parse_shape  # noqa: E402
 import spec_roofline  # noqa: E402
 
 
+def model_vocab(args: argparse.Namespace) -> int:
+    if args.vocab:
+        return args.vocab
+    vocab = spec_roofline.load_registry()["models"].get(args.model, {}).get("vocab")
+    if not vocab:
+        raise SystemExit(f"model {args.model} has no vocab in the registry; give --vocab")
+    return vocab
+
+
 def load_streams(args: argparse.Namespace):
     if args.dump:
         manifest, dump_streams = read_dump(Path(args.dump), want_taps=True)
-        vocab = args.vocab or spec_roofline.load_registry()["models"].get(args.model, {}).get("vocab", 154880)
-        return manifest, [(entry.stream, entry.content_class, entry.taps) for entry in dump_streams], vocab
+        return manifest, [(entry.stream, entry.content_class, entry.taps) for entry in dump_streams], model_vocab(args)
     if args.streams:
         files = sorted(Path(args.streams).glob("*.u32"))
         if not files:
             raise SystemExit(f"no .u32 streams in {args.streams}")
-        return {"model": args.model, "format": "u32-directory"}, [(read_u32(path), class_of(path.stem), None) for path in files], args.vocab or 154880
+        return {"model": args.model, "format": "u32-directory"}, [(read_u32(path), class_of(path.stem), None) for path in files], model_vocab(args)
     raise SystemExit("give --dump <tapdump dir> or --streams <dir of .u32>")
 
 

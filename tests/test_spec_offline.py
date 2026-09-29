@@ -14,6 +14,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 from spec_offline import acceptance, chain, cost, drafters, tapdump, tree  # noqa: E402
 from spec_offline.streams import Stream, read_u32, write_u32  # noqa: E402
 import spec_offline.t0 as t0  # noqa: E402
+import spec_roofline  # noqa: E402
+
+VOCAB = spec_roofline.load_registry()["models"]["glmflash"]["vocab"]
 
 
 def build_replay(directory: Path) -> Path:
@@ -54,16 +57,16 @@ def check_chain_parity(binary: Path, files: list[Path]) -> None:
         block = int(options[options.index("--block") + 1]) if "--block" in options else 64
         for path, reference in zip(files, expected):
             stream = read_u32(path)
-            counts = chain.simulate_chain(stream, drafter, rows=rows, frame=frame, block=block, fixed_depth="--fixed-depth" in options).as_dict()
+            counts = chain.simulate_chain(stream, drafter, VOCAB, rows=rows, frame=frame, block=block, fixed_depth="--fixed-depth" in options).as_dict()
             for key in ("frames", "verify_frames", "plain_frames", "plain_frame_tokens", "rounds", "proposed", "accepted", "plain_steps", "rows"):
                 assert counts[key] == reference[key], f"{path.name} {options}: {key} python {counts[key]} vs C {reference[key]}"
             assert counts["tokens"] == reference["generated"]
-    twice = [chain.simulate_chain(read_u32(files[2]), "synthetic:700").as_dict() for _ in range(2)]
+    twice = [chain.simulate_chain(read_u32(files[2]), "synthetic:700", VOCAB).as_dict() for _ in range(2)]
     assert twice[0] == twice[1]
     for path in files:
         stream = read_u32(path)
         for drafter in ("lookup", "synthetic:500"):
-            assert tuple(chain.simulate_chain(stream, drafter).committed) == stream.tokens
+            assert tuple(chain.simulate_chain(stream, drafter, VOCAB).committed) == stream.tokens
 
 
 def check_regime_rules() -> None:
@@ -113,35 +116,35 @@ def check_round_replay(files: list[Path]) -> None:
         stream = read_u32(path)
         for spec in ("oracle", "adversary", "lookup", "suffix", "ngram3", "synthetic:600"):
             for shape_text in ("chain-k1", "chain-k7", "tree-top2d2-r8"):
-                result = acceptance.round_replay(stream, drafters.make_drafter(spec), None, tree.parse_shape(shape_text))
+                result = acceptance.round_replay(stream, drafters.make_drafter(spec, VOCAB), None, tree.parse_shape(shape_text))
                 assert result.stream_exact, f"{spec} {shape_text} on {path.name} changed the committed stream"
                 assert result.committed == stream.length - stream.prompt - 1
                 if spec == "oracle" and shape_text == "chain-k7":
                     assert result.tokens_per_round() > 7.5
                 if spec == "adversary":
                     assert result.accepted == 0 and result.tokens_per_round() == 1.0
-        oracle_tree = acceptance.round_replay(stream, drafters.make_drafter("oracle"), None, tree.parse_shape("tree-top2d2-r8"))
-        oracle_chain = acceptance.round_replay(stream, drafters.make_drafter("oracle"), None, tree.parse_shape("chain-k5"))
+        oracle_tree = acceptance.round_replay(stream, drafters.make_drafter("oracle", VOCAB), None, tree.parse_shape("tree-top2d2-r8"))
+        oracle_chain = acceptance.round_replay(stream, drafters.make_drafter("oracle", VOCAB), None, tree.parse_shape("chain-k5"))
         assert oracle_tree.tokens_per_round() <= oracle_chain.tokens_per_round() + 1e-9
-        members = [drafters.make_drafter("synthetic:0"), drafters.make_drafter("oracle")]
+        members = [drafters.make_drafter("synthetic:0", VOCAB), drafters.make_drafter("oracle", VOCAB)]
         trie = acceptance.round_replay(stream, members[0], None, tree.parse_shape("trie-synthetic0+oracle-r8"), members)
         assert trie.stream_exact and trie.tokens_per_round() > 3.0
         honest = acceptance.resolve_tree
         acceptance.resolve_tree = lambda nodes, truth: (1, 2, 1, 0)
         try:
-            lying = acceptance.round_replay(stream, drafters.make_drafter("adversary"), None, tree.parse_shape("chain-k1"))
+            lying = acceptance.round_replay(stream, drafters.make_drafter("adversary", VOCAB), None, tree.parse_shape("chain-k1"))
         finally:
             acceptance.resolve_tree = honest
         assert not lying.stream_exact, "a resolver that accepts a wrong draft token must break the committed-stream identity"
     repetitive = read_u32(files[0])
-    table = acceptance.position_table(repetitive, drafters.make_drafter("lookup"), None)
+    table = acceptance.position_table(repetitive, drafters.make_drafter("lookup", VOCAB), None)
     rates = table.acceptance()
     assert rates[0] is not None and rates[0] > 0.9 and table.tau(7) > 6.0
-    noisy = acceptance.position_table(read_u32(files[1]), drafters.make_drafter("lookup"), None)
+    noisy = acceptance.position_table(read_u32(files[1]), drafters.make_drafter("lookup", VOCAB), None)
     assert noisy.accepted[0] == 0
-    synthetic = acceptance.position_table(read_u32(files[1]), drafters.make_drafter("synthetic:800"), None)
+    synthetic = acceptance.position_table(read_u32(files[1]), drafters.make_drafter("synthetic:800", VOCAB), None)
     assert 0.7 < synthetic.acceptance()[0] < 0.9 and synthetic.acceptance()[3] < synthetic.acceptance()[0]
-    twice = [acceptance.position_table(read_u32(files[2]), drafters.make_drafter("suffix"), None).as_dict() for _ in range(2)]
+    twice = [acceptance.position_table(read_u32(files[2]), drafters.make_drafter("suffix", VOCAB), None).as_dict() for _ in range(2)]
     assert twice[0] == twice[1]
 
 
