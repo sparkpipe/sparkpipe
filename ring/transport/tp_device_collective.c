@@ -2556,6 +2556,13 @@ uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *col
     return implementation->hardware_wait != 0u && implementation->mesh_buffer != 0 ? 1u : 0u;
 }
 
+uint32_t SparkTpDeviceCollectiveAllToAllSupported(const SparkTpDeviceCollective *collective)
+{
+    if ( collective == 0 || collective->implementation == 0 )
+        return 0u;
+    return SparkTpDeviceCollectiveSliceRoutes(collective->implementation);
+}
+
 SparkStatus SparkTpDeviceCollectiveVerifyDeferred(SparkTpDeviceCollective *collective,void *stream)
 {
     SparkTpDeviceCollectiveImplementation *implementation;

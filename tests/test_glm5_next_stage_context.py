@@ -170,6 +170,12 @@ uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *col
     return(STREAM_ORDERED);
 }
 
+uint32_t SparkTpDeviceCollectiveAllToAllSupported(const SparkTpDeviceCollective *collective)
+{
+    (void)collective;
+    return(1u);
+}
+
 static char WALK_TRACE[256];
 static uint32_t WALK_LENGTH,WALK_GATHER_LAYER,WALK_FAIL_CODE,WALK_DELAY_NS,WALK_SHARD_MASK,SHARD_QUERY_SEQUENCES,SHARD_PARTIAL_SEQUENCES,SHARD_WIDE;
 
@@ -3555,6 +3561,8 @@ int32_t main(void)
 	context.flags = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD;
 	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
 	context.flags = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD | SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_INDEX_CP;
+	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
+	context.tp_collective_identifier = 1u;
 	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_OK && state.kv_shard == 1u && state.index_cp == 1u);
 	assert(state.owns_embedding == 1u && state.owns_final_head == 1u);
 	check_pack_identity();

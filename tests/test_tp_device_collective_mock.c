@@ -437,10 +437,14 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         submission.active_sequence_count = 2u;
         submission.logical_sequence_count = 2u;
         request->capabilities = 0u;
+        CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 0u,
+            "a collective reports all-to-all unsupported before the first submission when weightd lacks slice routes");
         CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_UNSUPPORTED &&
             cuda_stub_mesh_hardware_calls == calls_before,
             "an all-to-all without slice routes fails loudly instead of degrading to an all-gather");
         request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+        CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 1u && SparkTpDeviceCollectiveAllToAllSupported(0) == 0u,
+            "a collective reports all-to-all supported when weightd advertises slice routes");
         submission.full_device = local;
         CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_INVALID_ARGUMENT,
             "an all-to-all needs separate send and receive buffers");

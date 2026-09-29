@@ -435,6 +435,11 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 		fprintf(stderr,"GLM-KV-SHARD-REQUIRED tp=%u: at this degree each rank must hold 1/tp of the latent KV and indexer keys; set kv_shard (and dsa_index_context_parallel)\n",context->tp_degree);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	if ( state->kv_shard != 0u && state->tp_collective_disabled != 0u )
+	{
+		fprintf(stderr,"GLM-KV-SHARD-REFUSED tp=%u: the sharded KV exchange needs the TP collective, and tp_collective_identifier is 0\n",context->tp_degree);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	if ( state->kv_shard != 0u && (state->index_cp == 0u || SparkGlm5NextKvShardFits(context->tp_degree,context->execution_row_capacity) == 0u) )
 	{
 		fprintf(stderr,"GLM-KV-SHARD-REFUSED tp=%u rows=%u index_cp=%u: sharding needs index context parallel, a degree that divides the 64 heads and the 64-slot page at grain %u, and exchange payloads that fit the collectives\n",context->tp_degree,context->execution_row_capacity,state->index_cp,SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL);
@@ -2143,6 +2148,11 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_device_collective_hc_initialized = 1u;
+	if ( state->kv_shard != 0u && (SparkTpDeviceCollectiveAllToAllSupported(&state->tp_device_collective) == 0u || SparkTpDeviceCollectiveAllToAllSupported(&state->tp_device_collective_hc) == 0u) )
+	{
+		fprintf(stderr,"GLM-KV-SHARD-REFUSED tp=%u rank=%u: the sharded KV exchange needs all-to-all on both collectives (hardware waits and a weightd that advertises slice routes)\n",state->tp_degree,state->tp_rank);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
 	if ( state->lazy_pack != 0 &&
 	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 		status = SparkTpDeviceCollectivePrepareReceiveBf16(
