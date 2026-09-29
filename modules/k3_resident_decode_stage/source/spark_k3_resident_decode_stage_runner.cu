@@ -1463,6 +1463,27 @@ static SparkStatus K3RunnerHeadExchange(SparkK3RunnerState *state,
 static_assert(SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW == K3_ATTNRES_BANK_BYTES,
 	"the pipeline residual bank sideband carries every attention-residual slot");
 
+static SparkStatus K3RunnerChainBegin(SparkK3RunnerState *state, uint64_t request_id)
+{
+	const uint64_t key = request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( state->device_collective_created != 0 )
+		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, key);
+	if ( status == SPARK_STATUS_OK && state->device_collective_wide_created != 0 )
+		status = SparkTpDeviceCollectiveChainKey(&state->device_collective_wide, key);
+	return status;
+}
+
+static SparkStatus K3RunnerChainEnd(SparkK3RunnerState *state, cudaStream_t stream)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( state->device_collective_created != 0 )
+		status = SparkTpDeviceCollectiveEndChain(&state->device_collective, stream);
+	if ( status == SPARK_STATUS_OK && state->device_collective_wide_created != 0 )
+		status = SparkTpDeviceCollectiveEndChain(&state->device_collective_wide, stream);
+	return status;
+}
+
 SparkStatus SparkK3StageRunnerSubmit(
 	SparkK3StageRunner *runner,
 	const SparkK3StageRunnerDispatch *dispatch)
@@ -1487,6 +1508,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	stream = state->stream;
+	exchange_status = K3RunnerChainBegin(state, dispatch->request_id);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
 	state->rows = rows;
 	state->logical_sequence_count = dispatch->active_sequence_count;
 	b = state->dispatch.buffers;
@@ -1655,6 +1679,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 	}
 	if ( state->tp_context_overflow != 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	exchange_status = K3RunnerChainEnd(state, stream);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
 	runner->stats.submitted_count++;
 	runner->stats.completed_count++;
 	if ( dispatch->completion_function != 0 )
