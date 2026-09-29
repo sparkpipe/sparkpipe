@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,9 +98,9 @@ int main(int argc, char **argv)
     pool_bytes = pool_mib << 20;
     if (join_bounded(manifest_path, sizeof(manifest_path), argv[1],
             ".experts") != 0 ||
-        SparkSha256File(manifest_path, sha_hex) != SPARK_STATUS_OK)
+        SparkWeightdPackDigestRead(argv[1], sha_hex) != SPARK_STATUS_OK)
     {
-        fprintf(stderr, "weightd_smoke: manifest missing\n");
+        fprintf(stderr, "weightd_smoke: manifest or pack .sha256 missing\n");
         return 2;
     }
     if (SparkWeightdClientConnect(socket, &client, &hello) != SPARK_STATUS_OK)
