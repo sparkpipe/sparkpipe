@@ -115,3 +115,65 @@ byte-compares every plane against the checkpoint.
 - Must-work targets: `mimo26_pro_mxfp4_experts_fp8_spine`,
   `mimo26_flash_mxfp4_experts_fp8_spine` (tests updated in the same PR).
 - Binding test: `tests/test_mimo26_census.py`.
+
+## First correct tokens (2026-09-28, single GPU, partial residency)
+
+`modules/mimo26_resident_decode_stage/validation/mimo26_model_cuda.cu` decodes the whole
+Flash text stack on one GB10 using the shared kernels. It uses skinny fp8 for qkv and the
+layer-0 dense MLP, skinny bf16 for o_proj, the router and lm_head, skinny MXFP4 for the
+experts, `LmGqaKvStoreKernel`, `LmGqaAttentionDecodeKernel` on the full layers and
+`LmGqaSinkAttentionDecodeKernel` on the SWA layers. Its own small kernels handle the
+per-rank qkv de-interleave with partial rope and v scale, SwiGLU, and the weighted
+combine. Routing runs on the host.
+
+The resident expert set is the one the CPU reference routed through for the prompt
+(35-45 GiB). Any other expert the GPU routes to is demand-loaded from local NVMe and
+counted.
+
+`validate_mimo26_model_cuda.sh <checkpoint> <nvme work dir> capital code science` builds
+the binary, stages the inputs (`tools/mimo26_model_inputs.py`, about 160 GB on the first
+prompt, then symlinks for the others) and runs each prompt.
+
+Routing uses the shared `LmTopkSmallKernel<..., 8, renormalise, 1, 1, LM_TOPK_SCORE_SIGMOID>`
+with the correction bias, which is the noaux_tc rule. A second pass replays the same
+positions with no host synchronisation inside the layer loop; any non-resident expert
+fails it through a device counter.
+
+Measured on sparkf, with production GLM resident, non-speculative, B1, greedy:
+
+| prompt | tokens equal to the CPU reference | demand-loaded experts | wall (load + 20 positions) |
+| --- | --- | --- | --- |
+| capital | 16 / 16 | 40 | about 60 s |
+| code | 16 / 16 | 70 | about 80 s |
+| science | 16 / 16 | 50 | about 55 s |
+
+Device-routed replay: 71.6 / 72.9 / 73.1 ms per position (about 13.8 tok/s at B1 on one
+GB10 with every routed expert resident). The logits come back to the host for the argmax
+once per token. The replay tokens equal the first pass in all three prompts.
+
+`--tp4-slices` runs the TP4 decomposition the resident module needs, on the same GPU:
+- per-rank fused QKV segment (the v2 pack's QKV entry) with 16 q heads and a rank-local
+  KV cache (1 full / 2 SWA heads);
+- per-rank o_proj column slice;
+- per-rank partial sums of the routed experts each rank owns (64 per rank);
+- bf16 partials summed in f32, the all-reduce.
+
+It gives 16/16 tokens equal to the reference for all three prompts, with the
+device-routed replay at 77.1 / 78.2 / 77.3 ms per position. The layer-0 dense MLP is
+still computed unsliced.
+
+Numerics (capital prompt, `--teacher-forced` feeds every layer the reference's input
+stream, and route decisions are compared with the fixture):
+
+- Teacher-forced, every layer matches the reference to 1e-3 to 5e-3 relative L2 at
+  positions 1-5. Only 3 of 235 top-8 sets differ, each by one near-tie expert (8th vs
+  9th choice margin 5e-6 to 2e-4). The GPU layers are faithful.
+- Free-running, 122 of 940 sets differ by one expert (margins 1e-5 to 2e-2) and the
+  layer-47 error grows to 1.5e-2 to 5e-2. The tokens still agree 16/16.
+- Position 0 is the massive-activation token. Its relative error is 3e-5 on layers
+  17-40 and 7e-2 on the full-attention layer 41 even when teacher-forced. That is
+  cancellation of the huge dims, not a layout error. The free-running 0.39 at
+  position 0 layer 47 comes from this.
+
+The 2 percent layer-47 band of `docs/T1_REFERENCE_COMPARE.md` therefore needs either
+teacher-forced comparison or a route-aware band for this family.

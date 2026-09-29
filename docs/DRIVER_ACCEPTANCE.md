@@ -6,7 +6,9 @@ Required behavior is mandatory. No descriptor bit, configuration option,
 environment variable, stub or documentation exception can disable it. Report
 functional qualification and hardware-normalized performance qualification
 separately. An incomplete driver fails functional qualification; a correct but
-slow driver remains an explicit performance optimization target.
+slow driver remains an explicit performance optimization target. The one
+recorded deviation, pinned GLM graph serving, is listed under "Known
+exception" with what it does not qualify.
 
 ## One implementation of common policy
 
@@ -44,7 +46,8 @@ specialization of hot math while sharing its dispatch and scheduling policy.
 | Page movement | `cache/kv_page_store.c` | Copy callback and opaque device context |
 | Collective orchestration and progress | `ring/transport/tp_device_collective.c` | Device combine/transfer/completion operations |
 | Slot ownership, completion lifetime | `runtime/stage_module_common.c`, `runtime/work_transaction.c` | Model stage work and final state publication |
-| Deployment and hardware reservations | `tools/spark_queue.py` and its existing runners | Assigned-node configuration, immutable source/build receipts |
+| Development hardware reservations | `tools/spark_queue.py` and its existing runners | Assigned-node configuration, immutable source/build receipts |
+| Production deployment | fleet-agent (`tools/fleet_node_agent.sh`) pulling release roots from the hub over HTTP :8802 ([`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md)) | A coherent release root per rank |
 
 Keep model geometry, state layout and math in model hooks. Keep device
 allocation, execution, copies and events in backend hooks. Shared policy
@@ -55,13 +58,18 @@ document does not claim that implementation is already complete.
 
 ## Mandatory interface and behavior
 
-Serving ABI 21 retires the PREFILL, DECODE, RELEASE, PREFETCH, RESET,
-DRIVER_OWNS_KV and JIT_KV capability bits. Their old numeric bits are rejected.
-Every interface must provide initialize, destroy, validate_submission,
-submit, prefetch, resolve_prefetch, progress, quiesce, snapshot and reset.
-ABI 22 additionally removes the slot-reuse policy field. Common code always
-requires release before another sequence can own a bound slot, including at
-position zero. Cache geometry and positive runtime page capacities are required.
+The serving ABI is 23 (`SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION` in
+`include/sparkpipe/spark_model_serving_adapter.h`). ABI 21 retired the
+PREFILL, DECODE, RELEASE, PREFETCH, RESET, DRIVER_OWNS_KV and JIT_KV
+capability bits; their old numeric bits are rejected. Every interface must
+provide initialize, destroy, validate_submission, submit, prefetch,
+resolve_prefetch, progress, quiesce, snapshot and reset;
+`SparkModelServingAdapterValidateInterface` (`runtime/model_serving_adapter.c`)
+rejects a missing one. ABI 22 removed the slot-reuse policy field. Common code
+always requires release before another sequence can own a bound slot,
+including at position zero. ABI 23 (a2fbb5f) added per-lane sampling rules and
+the SAMPLING capability; a sampled lane on an adapter without the capability
+is rejected. Cache geometry and positive runtime page capacities are required.
 Clearing every remaining capability bit does not skip any of these checks.
 The remaining descriptors describe transport/topology and specialized
 execution modes; they cannot waive required externally observable behavior.
@@ -96,6 +104,75 @@ No-op callbacks that return success are not implementations. Diagnostic
 behavior clamps require #ifdef DEBUG and a visible diagnostic; DEBUG does not
 waive mandatory operations.
 
+## Page and position budgets
+
+The runtime owns the KV page and position budgets. A driver maps each page
+into its model's byte layout; it does not set or enforce the budgets.
+
+- `runtime_limits.kv_logical_page_capacity` and `kv_physical_page_capacity`
+  are required deployment members (`runtime/model_resident_deployment.c`).
+  Adapter validation rejects physical capacity below the active-sequence
+  count, logical capacity below the resident-sequence capacity, and physical
+  above logical (`runtime/model_serving_adapter.c`). The batch engine admits
+  and dispatches within the physical page budget, net of in-flight demand
+  (`SparkModelBatchMaximumLaneCount` in `runtime/model_batch_engine.c`).
+- `runtime_limits.max_sequence_positions` is optional and must equal the
+  stage configs' `max_sequence_positions`. The engine caps its context at it
+  (`SparkModelBatchContextLimit`). The API answers a prompt that fills it with
+  400 `context_length_exceeded` and clamps `max_tokens` to the positions left
+  (`api_fit_context` in `node/model_api.c`). Without the member, a request
+  that outgrows the stage configs' positions fails mid-decode in the adapter's
+  row-order check (`ROW-ORDER-POSITION`). Nothing compares the two values at
+  runtime yet ([`TECHDEBT.md`](../TECHDEBT.md), Serving API).
+- Prefix reuse goes through `cache/prefix_cache.c`: the batch engine calls
+  `SparkPrefixCacheLookupPrompt` and `SparkPrefixCacheCommitPrompt`.
+- `cache/nvme_tier.c` owns the NVMe tier's eviction, pins and lookahead.
+  `scheduler/topology_switch.c` uses it only through the tier's public calls
+  (`SparkNvmeTierPin`, `ReserveWrite`, `CommitWrite`, `AbortWrite`,
+  `OffsetOf`, `PlanLookahead`).
+
+## Prefix reuse capability
+
+An adapter declares `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE`
+only when it restores every identity it was asked to publish (I24-I27): the
+whole state at that position, bound to the new slot, and a failed submission
+rather than a silent recompute over unrestored state when it no longer holds
+the identity. The batch engine looks up cached prefixes, and so sends
+`SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX` lanes, only to adapters that
+declare it; adapter validation rejects a prefix lane for any other adapter
+with `UNSUPPORTED`. At connect the engine logs one line per adapter:
+
+```
+batch engine adapter=<id> prefix_reuse=on|off|deployment-off decode_checkpoints=inline|deferred|inline-until-speculative
+```
+
+`prefix_reuse=off` is an I23 gap owned by that adapter, not an engine choice.
+`prefix_reuse=deployment-off` means the adapter declares the capability but
+the deployment sets `prefix_reuse` false, so the engine looks up no cached
+prefixes either.
+The adapters that declare the capability are glm5_next (paged KV plus KDA
+state from the recurrent store) and dsv4 (paged KV, index and compressor state
+resolved through per-lane page tables). qwen38_27b, gemma4, glm52, ling,
+laguna, k3, minimax, muse_glimmer, qwen38_max and qwen4_flash do not declare
+it yet.
+
+Decode checkpoints depend on how the adapter speculates:
+
+- `inline`: no speculation. A decode lane that reaches a cache block
+  boundary, or the request's last token, names the checkpoint and the engine
+  indexes it when the completion returns.
+- `deferred`: speculation with `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH`.
+  The decode lane carries no checkpoint; the engine sends a
+  `SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH` frame after the tokens are
+  accepted, so the state is captured at the boundary exactly.
+- `inline-until-speculative`: speculation without the cache-publish work
+  kind. Checkpoints are named inline. A completion that returns one token per
+  sequence is indexed as usual, so a run with speculation off keeps publishing
+  its generated blocks. A completion that returns more than one token per
+  sequence may have captured state past the boundary, so the engine does not
+  index that checkpoint and names no further decode checkpoints for that
+  request. Its prompt checkpoints stay indexed.
+
 ## Driver identity
 
 A serving adapter loads a driver only when five descriptor fields equal the
@@ -119,9 +196,11 @@ glm5_next, laguna, ling, minimax, muse_glimmer, qwen38_27b, qwen38_max and
 qwen4_flash. It checks what each sends against its description, and the
 description's target and module against the module Makefile. Where the
 build invocation supplies the revision (glm52, glm5_next, qwen38_max), the
-test cannot check it. glm5_next, laguna and ling do not compare the
-description hash, and dsv4 leaves the target to the loader, which compares
-it with the node target.
+test cannot check it. glm5_next and ling do not compare the description
+hash, and dsv4 leaves the target to the loader, which compares it with the
+node target. laguna is checked twice: the root Makefile build, whose
+revision the test can check, and the module Makefile build that
+`tools/module_build_release.sh` runs.
 
 Module Makefiles build their adapter with the one `adapter` rule in
 `modules/resident_decode_stage_rules.mk`. A module names `ADAPTER_SOURCE`,
@@ -151,11 +230,56 @@ pipeline. Queued request count is not serving capacity. Report how much
 allreduce time remains exposed after compute overlap, the bytes/weight reuse
 lost to microbatch splitting, GPU launch gaps and rank imbalance. Use these
 measurements to select the next optimization while preserving correctness.
+The "Changes and lessons so far" table in
+[archive/GLM_FLASH_HILLCLIMB.md](archive/GLM_FLASH_HILLCLIMB.md#changes-and-lessons-so-far)
+records one lesson per fix from PRs #842-#864. The log is archived; the
+table is still a reusable lesson list.
 
-## Current enforcement change is not driver completion
+## Quality gate
 
-The ABI enforcement change intentionally exposes missing integrations. GLM
-Flash lacks complete cache preparation/restoration; production adapters lack
-reset callbacks, and Qwen had no-op prefetch/resolve callbacks. Do not fill
-these holes with dummy functions or invented geometry. Complete the common
-machinery and real model state integration, then rerun the behavioral gates.
+COMPSEC-17 (`qualification/ds4_eval` fixtures) passes only when the request
+applies the model's chat template, disables thinking, allows at least 512
+output tokens and grades the last `Answer:` line
+(`qualification/ds4_eval/compare_runs.py`). `tools/glm5_next_compsec17.py`
+does this for GLM (default 512 tokens, pass threshold 14 of 17); GLM 5.3
+Flash scored 14/17 on TP16 engines from dd3526b
+(`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff`). The K3
+fixtures are raw text with no chat template, so a K3 gate needs the same
+treatment before it can pass or fail a model. Batched serving is not
+batch-invariant, so compare concurrent runs by grade, not by token stream.
+
+## Known exception: pinned GLM graph serving
+
+Production GLM 5.3 Flash does not use strict lazy, bounded expert residency.
+fleet-agent's `20-serving.conf` drop-in sets `G5_PIN_EXPERTS=1` and
+`G5_GRAPH_PATH=1`; `tools/fleet_node_agent.sh` passes them to residentd as
+`SPARK_GLM5_NEXT_PIN_EXPERTS` and `SPARK_GLM5_NEXT_GRAPH_PATH`, and
+`SparkGlm5NextPinAllExperts` leases every routed expert (12096 = 288 experts
+x 42 routed layers, arithmetic from `model_contracts/glm53_flash_authoritative.json`).
+The graph path requires this since 78c2c21. It is an explicitly selected,
+reported resident mode (I28): it does not qualify the lazy path under I29 or
+I30, and it remains an exception until graphs can relocate expert pointers
+([TECHDEBT.md](../TECHDEBT.md#model-residency-and-storage), Model residency
+and storage).
+
+## Current per-driver gaps
+
+Code state on 2026-09-28. Do not fill these holes with dummy functions or
+invented geometry; complete the real integration and rerun the gates.
+
+- k3: `K3ServingPrefetch`, `K3ServingResolvePrefetch`, `K3ServingProgress`,
+  `K3ServingQuiesce` and `K3ServingReset` return success without doing
+  anything (`spark_k3_serving_adapter.c`).
+- qwen4_flash: its interface table (`ServingSeamInterface` in
+  `spark_qwen4_flash_serving_adapter.c`) sets no prefetch,
+  resolve_prefetch or reset, so `SparkModelServingAdapterValidateInterface`
+  rejects it.
+- dsv41_flash, hy4 and mimo26: no serving adapter source exists under
+  `modules/<family>_resident_decode_stage/source/` (mimo26 holds only its
+  stagepack format header). MiMo 2.5 has no module directory; its engine is
+  `inference/llms/mimo_2_5`.
+- The families built on `include/sparkpipe/family/serving/` (dsv4, gemma4,
+  glm52, glm5_next, laguna, ling, minimax, muse_glimmer, qwen38_27b) and
+  qwen38_max route reset through a driver RESET admission. A present
+  callback is structural evidence only; the functional evidence above still
+  qualifies each driver.

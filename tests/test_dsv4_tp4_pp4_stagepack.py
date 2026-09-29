@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -13,6 +14,8 @@ SPEC = importlib.util.spec_from_file_location("dsv4_parallel_pack", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 PACK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PACK)
+DEPLOYMENT = ROOT / "examples" / "deployments" / "dsv4_flash_tp4_pp4_host_rdma.spec.json"
+PP_STAGE_COUNT = 4
 
 
 def expect_filtered(entry: tuple[int, ...], pp_stage: int) -> None:
@@ -149,9 +152,16 @@ def main() -> int:
     verify_output_projection_sum(16)
     verify_down_projection_sum()
     PACK.TP_DEGREE = 4
-    assert 4 * 1024 == 4096
+    limits = json.loads(DEPLOYMENT.read_text(encoding="utf-8"))["runtime_limits"]
+    assert limits["max_inflight_submissions"] == PP_STAGE_COUNT
+    assert limits["max_active_sequences"] == 1024
+    assert limits["max_input_rows"] >= limits["max_active_sequences"]
+    in_flight = limits["max_inflight_submissions"] * limits["max_active_sequences"]
+    assert limits["resident_sequence_capacity"] >= in_flight
     print("PASS DSV4 TP packs: exact WO/W2 partitions sum to dense output")
-    print("PASS DSV4 TP4 x PP4 packs: 11/11/11/10 and 4096 B1024 requests")
+    print(f"PASS DSV4 TP4 x PP4 packs: 11/11/11/10, deployment holds "
+          f"{in_flight} in-flight requests in {limits['resident_sequence_capacity']} "
+          f"resident sequences")
     return 0
 
 

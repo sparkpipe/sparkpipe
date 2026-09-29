@@ -152,6 +152,83 @@ static void ExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uint32_t a
     CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_scale)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out)); CUDA(cudaFree(device_route)); CUDA(cudaFree(device_packed));
 }
 
+static float E2m1Value(uint8_t code)
+{
+    static const float magnitude[8]={0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
+    return (code & 8u) ? -magnitude[code&7u] : magnitude[code&7u];
+}
+
+typedef struct Nvfp4Experts
+{
+    std::vector<uint8_t> weight,block;
+    std::vector<float> global;
+    uint8_t *device_weight,*device_scale;
+}
+Nvfp4Experts;
+
+static void Nvfp4ExpertsBuild(Nvfp4Experts *set,uint32_t experts,uint32_t input,uint32_t output)
+{
+    set->weight.resize((uint64_t)experts*output*input/2u);
+    set->block.resize((uint64_t)experts*output*(input/16u));
+    set->global.resize(experts);
+    for (auto &value : set->weight) value=(uint8_t)(Random()&0xffu);
+    for (auto &value : set->block) value=(uint8_t)(0x28u+Random()%0x30u);
+    for (auto &value : set->global) value=std::ldexp(1.0f+(Random()%256u)/256.0f,-9);
+    CUDA(cudaMalloc(&set->device_weight,set->weight.size()));
+    CUDA(cudaMalloc(&set->device_scale,set->global.size()*4u+set->block.size()));
+    CUDA(cudaMemcpy(set->device_weight,set->weight.data(),set->weight.size(),cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(set->device_scale,set->global.data(),set->global.size()*4u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(set->device_scale+set->global.size()*4u,set->block.data(),set->block.size(),cudaMemcpyHostToDevice));
+}
+
+static LmScaleTensor Nvfp4ExpertsScale(const Nvfp4Experts *set,uint32_t experts,uint32_t input,uint32_t output)
+{
+    return LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(set->device_scale,experts,output,input);
+}
+
+static void Nvfp4ExpertReference(const Nvfp4Experts *set,const std::vector<uint16_t> &activation,uint32_t expert,uint32_t neuron,uint32_t input,uint32_t output,uint32_t row,double *total,double *magnitude)
+{
+    double term;
+    uint64_t element;
+    uint8_t code;
+    *total=0.0; *magnitude=0.0;
+    for (uint32_t k=0u; k<input; k++)
+    {
+        element=((uint64_t)expert*output+neuron)*input+k;
+        code=(uint8_t)((set->weight[element/2u]>>((element&1u)*4u))&15u);
+        term=(double)E2m1Value(code)*E4m3Value(set->block[element/16u])*set->global[expert]*Bf16Value(activation[(uint64_t)row*input+k]);
+        *total+=term; *magnitude+=std::fabs(term);
+    }
+}
+
+static void Nvfp4ExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,cudaStream_t stream)
+{
+    const uint32_t experts=288u, top_k=8u, pairs=tokens*top_k, activation_rows=activation_packed ? pairs : tokens;
+    Nvfp4Experts set;
+    std::vector<uint16_t> activation((uint64_t)activation_rows*input),out((uint64_t)pairs*output);
+    std::vector<uint32_t> route(pairs),packed(pairs);
+    uint16_t *device_activation,*device_out; uint32_t *device_route,*device_packed;
+    double total,magnitude;
+    Nvfp4ExpertsBuild(&set,experts,input,output);
+    for (auto &value : activation) value=Bf16(Signed()*4.0f);
+    for (uint32_t pair=0u; pair<pairs; pair++) { route[pair]=pair == 1u ? route[0] : Random()%experts; packed[pair]=(pair*5u+3u)%pairs; }
+    CUDA(cudaMalloc(&device_activation,activation.size()*2u)); CUDA(cudaMalloc(&device_out,out.size()*2u));
+    CUDA(cudaMalloc(&device_route,pairs*4u)); CUDA(cudaMalloc(&device_packed,pairs*4u));
+    CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(device_route,route.data(),pairs*4u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemcpy(device_packed,packed.data(),pairs*4u,cudaMemcpyHostToDevice));
+    REQUIRE(LmSkinnyExperts<LmNvfp4>(set.device_weight,Nvfp4ExpertsScale(&set,experts,input,output),device_activation,device_out,device_route,device_packed,pairs,top_k,activation_packed,input,output,stream) == LM_LAUNCH_OK);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(out.data(),device_out,out.size()*2u,cudaMemcpyDeviceToHost));
+    for (uint32_t pair=0u; pair<pairs; pair++)
+        for (uint32_t neuron=0u; neuron<output; neuron++)
+        {
+            Nvfp4ExpertReference(&set,activation,route[pair],neuron,input,output,activation_packed ? packed[pair] : pair/top_k,&total,&magnitude);
+            Check(Bf16Value(out[(uint64_t)packed[pair]*output+neuron]),total,magnitude,activation_packed ? "nvfp4_expert_w2" : "nvfp4_expert_w1",pair,neuron);
+        }
+    CUDA(cudaFree(set.device_weight)); CUDA(cudaFree(set.device_scale)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out)); CUDA(cudaFree(device_route)); CUDA(cudaFree(device_packed));
+}
+
 typedef struct GroupedRoute
 {
     uint32_t *route,*offset,*packed,*source,*prefix_up,*prefix_down;
@@ -180,6 +257,8 @@ static void GroupedRouteFree(GroupedRoute *route)
     CUDA(cudaFree(route->route)); CUDA(cudaFree(route->offset)); CUDA(cudaFree(route->packed));
     CUDA(cudaFree(route->source)); CUDA(cudaFree(route->prefix_up)); CUDA(cudaFree(route->prefix_down));
 }
+
+static void Nvfp4GroupedExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,uint32_t skew,cudaStream_t stream);
 
 static void GroupedExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,uint32_t skew,cudaStream_t stream)
 {
@@ -387,6 +466,39 @@ static void TopkCase(cudaStream_t stream)
     CUDA(cudaFree(device_logits)); CUDA(cudaFree(device_bias)); CUDA(cudaFree(device_values)); CUDA(cudaFree(device_indices));
 }
 
+static void Nvfp4GroupedExpertCase(uint32_t input,uint32_t output,uint32_t tokens,uint32_t activation_packed,uint32_t skew,cudaStream_t stream)
+{
+    const uint32_t experts=288u, top_k=8u, pairs=tokens*top_k, activation_rows=activation_packed ? pairs : tokens;
+    Nvfp4Experts set;
+    std::vector<uint16_t> activation((uint64_t)activation_rows*input),out((uint64_t)pairs*output),single((uint64_t)pairs*output);
+    uint16_t *device_activation,*device_out;
+    GroupedRoute route;
+    double total,magnitude;
+    Nvfp4ExpertsBuild(&set,experts,input,output);
+    for (auto &value : activation) value=Bf16(Signed()*4.0f);
+    GroupedRouteBuild(&route,tokens,input,output,skew,stream);
+    CUDA(cudaMalloc(&device_activation,activation.size()*2u)); CUDA(cudaMalloc(&device_out,out.size()*2u));
+    CUDA(cudaMemcpy(device_activation,activation.data(),activation.size()*2u,cudaMemcpyHostToDevice));
+    CUDA(cudaMemset(device_out,0xff,out.size()*2u));
+    REQUIRE((LmSkinnyGroupedExpertsWith<LmNvfp4,1u>(set.device_weight,Nvfp4ExpertsScale(&set,experts,input,output),device_activation,device_out,route.offset,route.source,experts,pairs,activation_packed,input,output,stream)) == LM_LAUNCH_OK);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(single.data(),device_out,single.size()*2u,cudaMemcpyDeviceToHost));
+    CUDA(cudaMemset(device_out,0xff,out.size()*2u));
+    REQUIRE(LmSkinnyGroupedExperts<LmNvfp4>(set.device_weight,Nvfp4ExpertsScale(&set,experts,input,output),device_activation,device_out,route.offset,route.source,experts,pairs,activation_packed,input,output,stream) == LM_LAUNCH_OK);
+    CUDA(cudaStreamSynchronize(stream));
+    CUDA(cudaMemcpy(out.data(),device_out,out.size()*2u,cudaMemcpyDeviceToHost));
+    REQUIRE(memcmp(single.data(),out.data(),out.size()*2u) == 0);
+    for (uint32_t expert=0u; expert<experts; expert++)
+        for (uint32_t row=route.host_offset[expert]; row<route.host_offset[expert+1u]; row++)
+            for (uint32_t neuron=0u; neuron<output; neuron+=7u)
+            {
+                Nvfp4ExpertReference(&set,activation,expert,neuron,input,output,activation_packed ? row : route.host_source[row],&total,&magnitude);
+                Check(Bf16Value(out[(uint64_t)row*output+neuron]),total,magnitude,activation_packed ? "nvfp4_grouped_w2" : "nvfp4_grouped_w1",row,neuron);
+            }
+    GroupedRouteFree(&route);
+    CUDA(cudaFree(set.device_weight)); CUDA(cudaFree(set.device_scale)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out));
+}
+
 int main(int argc,char **argv)
 {
     cudaStream_t stream;
@@ -422,6 +534,18 @@ int main(int argc,char **argv)
         GroupedExpertCase(128u,4096u,tokens,1u,tokens >= 32u ? 20u : 0u,stream);
     }
     puts("PASS skinny per-expert fp8 w1/w2 tokens=9,32,96 rows_per_expert_up_to=20 real_route_build=yes reference=f64 neuron_blocked_equals_one_neuron=bitwise");
+    for (uint32_t tokens : {1u,2u,8u})
+    {
+        Nvfp4ExpertCase(4096u,256u,tokens,0u,stream);
+        Nvfp4ExpertCase(128u,4096u,tokens,1u,stream);
+    }
+    puts("PASS skinny nvfp4 w1/w2 tokens=1,2,8 two block scales per 32-element chunk, per-expert f32 global, reference=f64");
+    for (uint32_t tokens : {9u,32u})
+    {
+        Nvfp4GroupedExpertCase(4096u,256u,tokens,0u,tokens >= 32u ? 20u : 0u,stream);
+        Nvfp4GroupedExpertCase(128u,4096u,tokens,1u,tokens >= 32u ? 20u : 0u,stream);
+    }
+    puts("PASS skinny per-expert nvfp4 w1/w2 tokens=9,32 reference=f64 neuron_blocked_equals_one_neuron=bitwise");
     REQUIRE(LmSkinnyGroupedExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,288u,288u*16u+1u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyGroupedExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,0,288u,64u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
     puts("PASS per-expert skinny declines more than 16 rows per expert on average and a missing token map");

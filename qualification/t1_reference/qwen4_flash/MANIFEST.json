@@ -23,6 +23,14 @@
   "numpy_version": "2.5.3",
   "prompts_sha256": "1b94ae528c9568383f7b272d661a78314f49bb0629d3040de852429012b1dc1e",
   "python_version": "3.12.3",
+  "quarantine": {
+    "fixtures": [
+      "capital_of_france.t1r",
+      "count_up.t1r"
+    ],
+    "reason": "generated 2026-09-17T17:40Z, before the decoder prompt double-feed fix (7865648d3, #1051, 2026-09-19T11:22Z): every position after the first generated one was fed a token outside the generated chain (a prompt-prefix argmax or the duplicated prompt tail), so generated_token_ids past the first and every array at those positions are wrong. Regenerate with tools/t1_reference_decoder.py at or after #1051, then drop this quarantine",
+    "since": "2026-09-29"
+  },
   "threading_env": {
     "MKL_NUM_THREADS": null,
     "OMP_NUM_THREADS": null,

@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""Fleet stability test: kill engines/weightd during serving, verify recovery.
-
-Runs the qualification fixture in a loop while randomly killing processes
-on random nodes. Asserts time-to-serve and never-wedge.
-
-Usage: python3 test_transport_stability.py <duration_minutes> [seed]
-Requires: the fleet serving (16/16 ready, API on rtx5090:8433).
-"""
-
 import http.client
 import json
 import os
@@ -23,6 +14,8 @@ FLEET_NODES = [
 ]
 API_HOST = "rtx5090"
 API_PORT = 8433
+HUB = "rtx5090"
+ROOT_NAME = "glm53flash.fp8.tp16"
 FIXTURE_TOKENS = [1, 2, 3, 4, 5, 6, 7, 8]
 EXPECTED_FIRST_TOKENS = [3764, 10]
 MAX_RECOVERY_SECONDS = 120
@@ -34,7 +27,7 @@ FAILURES = []
 def ssh(node, command, timeout=10):
     try:
         result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=5", node, command],
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", node, command],
             capture_output=True, text=True, timeout=timeout)
         return result.returncode, result.stdout.strip()
     except (subprocess.TimeoutExpired, Exception):
@@ -46,14 +39,14 @@ def kill_random_process(node, rng):
     if victim in ("engine", "both"):
         ssh(node, 'for Q in $(pgrep -f "residentd --deployment"); do '
                   '[ "$(readlink /proc/$Q/cwd 2>/dev/null)" = '
-                  '"$HOME/sparkdata/glm53flash.fp8.tp16" ] && kill -9 $Q; done')
+                  '"$HOME/sparkdata/' + ROOT_NAME + '" ] && kill -9 $Q; done')
     if victim in ("weightd", "both"):
         ssh(node, 'P=$(pgrep -f "sparkdata/weightd" | head -1); '
                   '[ -n "$P" ] && kill -9 $P')
     return victim
 
 
-def probe(api_served):
+def probe():
     conn = http.client.HTTPConnection(API_HOST, API_PORT,
                                       timeout=PROBE_TIMEOUT_SECONDS)
     body = json.dumps({
@@ -86,13 +79,22 @@ def probe(api_served):
             pass
 
 
-def check_fleet_ready():
-    rc, out = ssh("sparkf",
-                  'grep -l \'"state":"ready\' current/*.json 2>/dev/null | wc -l')
-    try:
-        return int(out.strip()) >= 15
-    except ValueError:
-        return False
+def fleet_heartbeats():
+    rc, out = ssh(HUB, "cat current/*.json")
+    beats = {}
+    if rc != 0:
+        return beats
+    for line in out.splitlines():
+        try:
+            beat = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        beats[beat.get("host")] = beat.get("roots", {}).get(ROOT_NAME, {})
+    return beats
+
+
+def fleet_ready(beats):
+    return all(beats.get(node, {}).get("state") == "ready" for node in FLEET_NODES)
 
 
 def restart_api():
@@ -109,8 +111,8 @@ def main():
 
     print(f"=== stability fuzz: {duration_min}min seed={seed} ===")
 
-    if not check_fleet_ready():
-        print("FATAL: fleet not ready at start")
+    if not fleet_ready(fleet_heartbeats()):
+        print("FATAL: fleet not 16/16 ready at start")
         sys.exit(2)
 
     restart_api()
@@ -120,7 +122,7 @@ def main():
     recovery_times = []
 
     while time.monotonic() - start < duration_sec:
-        elapsed, ok, detail = probe(probe_count)
+        elapsed, ok, detail = probe()
         probe_count += 1
         status = "PASS" if ok else "FAIL"
         print(f"[{time.monotonic()-start:7.1f}s] probe {probe_count}: "
@@ -133,6 +135,7 @@ def main():
             FAILURES.append(f"probe {probe_count}: slow ({elapsed:.1f}s)")
 
         victim_node = rng.choice(FLEET_NODES)
+        engine_pid = fleet_heartbeats().get(victim_node, {}).get("pid")
         victim = kill_random_process(victim_node, rng)
         kill_count += 1
         print(f"[{time.monotonic()-start:7.1f}s] killed {victim} on {victim_node}")
@@ -141,7 +144,9 @@ def main():
         deadline = t_kill + MAX_RECOVERY_SECONDS
         recovered = False
         while time.monotonic() < deadline:
-            if check_fleet_ready():
+            beats = fleet_heartbeats()
+            restarted = victim == "weightd" or beats.get(victim_node, {}).get("pid") != engine_pid
+            if restarted and fleet_ready(beats):
                 recovered = True
                 break
             time.sleep(5)

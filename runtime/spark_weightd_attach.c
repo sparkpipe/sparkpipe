@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_error_site.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -87,7 +88,18 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         SparkWeightdAttachSetReason(reason, "no_socket");
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-    digest = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+    {
+        uint32_t read_only = 0u;
+        if (SparkWeightdShareModeFromEnvironment(&read_only) != SPARK_STATUS_OK || read_only != 0u)
+        {
+            fprintf(stderr,"weightd attach refused: %s is supported only by the lazy pack path (SparkWeightdLazyPackCreate); this module attaches through SparkWeightdAttachPack\n",
+                SPARK_WEIGHTD_SHARE_ENV);
+            SparkWeightdAttachSetReason(reason, "share_unsupported");
+            SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+        }
+    }
+    digest = slice->pack_sha256 != 0 ? slice->pack_sha256 :
+        SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
     if (digest == 0)
     {
         SparkWeightdAttachSetReason(reason, "no_identity");

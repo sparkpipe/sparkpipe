@@ -14,6 +14,12 @@ FAMILIES = {
 		"module": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
 		"pairs": [],
 	},
+	"glm5_next": {
+		"config": "model_contracts/glm53_flash_authoritative.json",
+		"host": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h",
+		"module": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
+		"pairs": [],
+	},
 	"k3": {
 		"config": "inference/llms/kimi_k3/config.h",
 		"host": "model-families/k3/include/sparkpipe/spark_k3_llm_defines.h",
@@ -114,11 +120,14 @@ def main() -> int:
 			problems += 1
 		config = ROOT / spec["config"]
 		host = ROOT / spec["host"]
+		if spec["pairs"] and config.suffix != ".h":
+			print(f"FAIL {family}: pairs need a header config ({spec['config']})")
+			problems += 1
 		if config.suffix == ".h" and config.is_file() and host.is_file():
 			firmware = defines(config)
 			host_defines = defines(host)
 			for firmware_key,host_key in spec["pairs"]:
-				if firmware.get(firmware_key) != host_defines.get(host_key):
+				if firmware.get(firmware_key) is None or host_defines.get(host_key) is None or firmware[firmware_key] != host_defines[host_key]:
 					print(f"FAIL {family}: {firmware_key}={firmware.get(firmware_key)} vs {host_key}={host_defines.get(host_key)}")
 					problems += 1
 	print(f"{len(FAMILIES)} families checked, {problems} problems")

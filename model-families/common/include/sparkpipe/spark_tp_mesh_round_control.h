@@ -86,7 +86,8 @@ static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree
 }
 
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS 49152u
-#define SPARK_TP_MESH_OPERATION_SLICE_GATHER 3u
+#define SPARK_TP_MESH_OPERATION_SLICE_GATHER 7u
+#define SPARK_TP_MESH_OPERATION_ALL_TO_ALL 3u
 #define SPARK_TP_MESH_RSAG_MIN_DEGREE 4u
 
 #if defined(__CUDACC__)
@@ -95,6 +96,23 @@ __host__ __device__
 static inline uint32_t SparkTpMeshDirectPhasesPerChunk(uint64_t elements,uint32_t degree,uint32_t operation,uint32_t slice_routes)
 {
     return slice_routes != 0u && operation == 1u && degree >= SPARK_TP_MESH_RSAG_MIN_DEGREE && elements >= SPARK_TP_MESH_RSAG_MIN_ELEMENTS ? 2u : 1u;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshAllToAllSliceElements(uint64_t slot_bytes,uint32_t degree)
+{
+    return degree == 0u || slot_bytes <= 16u ? 0u : (((slot_bytes - 16u) / degree) & ~UINT64_C(15)) / 2u;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshAllToAllChunks(uint64_t per_peer_elements,uint32_t degree,uint64_t slot_bytes)
+{
+    uint64_t slice = SparkTpMeshAllToAllSliceElements(slot_bytes,degree);
+    return slice == 0u || per_peer_elements == 0u ? 0u : (per_peer_elements - 1u) / slice + 1u;
 }
 
 #if defined(__CUDACC__)

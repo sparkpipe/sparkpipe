@@ -1,0 +1,40 @@
+#pragma once
+
+#define SPARK_LLM_FAMILY_TAG                    mimo26
+#define SPARK_LLM_HIDDEN_DIMENSION              4096u
+#define SPARK_LLM_LAYER_COUNT                   48u
+#define SPARK_LLM_OUTPUT_VOCAB_COUNT            152576u
+#define SPARK_LLM_MAXIMUM_CONTEXT_TOKENS        1048576u
+#define SPARK_LLM_RMS_NORM_EPSILON              1e-06f
+#define SPARK_LLM_END_OF_TEXT_TOKEN_ID          151645u
+
+#define SPARK_LLM_ATTENTION_HEAD_COUNT          64u
+#define SPARK_LLM_SWA_ATTENTION_HEAD_COUNT      64u
+#define SPARK_LLM_HEAD_DIMENSION                192u
+#define SPARK_LLM_SWA_HEAD_DIMENSION            192u
+#define SPARK_LLM_VALUE_HEAD_DIMENSION          128u
+#define SPARK_LLM_SWA_VALUE_HEAD_DIMENSION      128u
+#define SPARK_LLM_FULL_KV_HEAD_COUNT            4u
+#define SPARK_LLM_SWA_KV_HEAD_COUNT             8u
+#define SPARK_LLM_ROPE_DIMENSION                64u
+#define SPARK_LLM_FULL_ROPE_THETA               10000000.0f
+#define SPARK_LLM_SWA_ROPE_THETA                10000.0f
+#define SPARK_LLM_SLIDING_WINDOW_TOKENS         128u
+#define SPARK_LLM_ATTENTION_VALUE_SCALE         0.707f
+#define SPARK_LLM_FULL_SINK_BIAS                0u
+#define SPARK_LLM_SWA_SINK_BIAS                 1u
+#define SPARK_LLM_FULL_ATTENTION_LAYER_MASK     0x820820820821
+#define SPARK_LLM_QKV_SOURCE_INTERLEAVE_RANKS   4u
+
+#define SPARK_LLM_FIRST_ROUTED_LAYER            1u
+#define SPARK_LLM_DENSE_INTERMEDIATE_DIMENSION  16384u
+#define SPARK_LLM_EXPERT_INTERMEDIATE_DIMENSION 2048u
+#define SPARK_LLM_ROUTED_EXPERT_COUNT           256u
+#define SPARK_LLM_EXPERTS_PER_TOKEN             8u
+#define SPARK_LLM_ROUTER_GROUP_COUNT            1u
+#define SPARK_LLM_ROUTER_TOP_GROUP_COUNT        1u
+#define SPARK_LLM_ROUTER_NORM_TOPK              1u
+#define SPARK_LLM_ROUTER_NORM_EPSILON           1e-20f
+#define SPARK_LLM_ROUTED_SCALING_FACTOR         1.0f
+
+#define SPARK_LLM_MODEL_SOURCE_URI              "XiaomiMiMo/MiMo-V2.6-Flash-RL"

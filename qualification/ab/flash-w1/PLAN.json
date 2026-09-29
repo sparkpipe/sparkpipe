@@ -1,0 +1,124 @@
+{
+ "arms": [
+  {
+   "arm_id": "flash.S1.e-bf16.k-bf16/bf16/fp32.d-none",
+   "label": "F1",
+   "role": "reference"
+  },
+  {
+   "arm_id": "flash.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "axis": "E",
+   "compare_to": "flash.S1.e-bf16.k-bf16/bf16/fp32.d-none",
+   "corpus": "CT-short",
+   "label": "F2",
+   "role": "anchor"
+  },
+  {
+   "anchor": "flash.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "arm_id": "flash.S1.e-nvfp4nv.k-bf16/bf16/fp32.d-none",
+   "axis": "E",
+   "compare_to": "flash.S1.e-bf16.k-bf16/bf16/fp32.d-none",
+   "corpus": "CT-short",
+   "label": "F3",
+   "role": "arm"
+  },
+  {
+   "arm_id": "flash.S0.e-fp8.k-bf16/bf16/fp32.d-none",
+   "axis": "spine",
+   "compare_to": "flash.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "corpus": "CT-short",
+   "label": "F0",
+   "role": "bridge"
+  }
+ ],
+ "backstops": {
+  "calibration_comparison_sha256": null,
+  "calibration_pair": [
+   "flash.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "flash.S1.e-bf16.k-bf16/bf16/fp32.d-none"
+  ],
+  "dnll_rel_pct_abs": 0.5,
+  "kl_mean_upper": 0.005,
+  "status": "calibration",
+  "top1_agree_pct_lower": 99.0
+ },
+ "campaign": "flash-w1",
+ "corpora": {
+  "CT-long": {
+   "docs": 32,
+   "index_sha256": "0b6f76b166be2204784c0ccafadf93994ec0642f22e3a2bfa4ffe10394636e18",
+   "role": "position-bins",
+   "tokens_sha256": "5afe80e776f21ed6cd194aed4bc5bd5d28444a4cdc75478a508b289a27c4f624"
+  },
+  "CT-short": {
+   "docs": 200,
+   "index_sha256": "d5bbbb30a391beee2160c1a7ef3b185fba3a7c859dd6a3d27187e0a524896788",
+   "role": "primary",
+   "tokens_sha256": "bde6ca4c7f8378ffe7b055a0534250b8c007f295dcdc6e280a31e8cb736c2103"
+  }
+ },
+ "exclusions": {
+  "near_tie_rule": "reference top-2 gap < near_tie_nats",
+  "on_policy_dnll_in_verdict": false,
+  "strata_reported": [
+   "prose-recent",
+   "prose-old",
+   "code",
+   "on-policy",
+   "prose-long",
+   "code-long",
+   "retrieval"
+  ]
+ },
+ "firmware_commit": "8058e4b3357442f2c1b2095ab5289d41a1054e9a",
+ "format": "sparkpipe-ab-plan-v1",
+ "frozen": true,
+ "margins": {
+  "D": {
+   "token_differences": 0
+  },
+  "E": {
+   "kl_ratio_vs_anchor_upper": 1.1,
+   "top1_diff_vs_anchor_pt_lower": -0.3
+  },
+  "K": {
+   "dnll_rel_pct_abs": 0.5,
+   "every_bin": true,
+   "kl_mean_upper": 0.005,
+   "top1_agree_pct_lower": 99.0
+  }
+ },
+ "notes": "GLM-5.3 Flash quant A/B W1 (design \u00a76.2). Spine frame S1 (publisher BF16 f12e0fe1) with F0 (production S0) as the spine bridge (lead O4). One pinned firmware commit (main 8058e4b33) for every arm: SCORE_DUMP experiment builds per codec, contract model_contracts/glm53_flash_authoritative.json for F0-F3 (lead W1_CONTRACT_BF16). Margins: design \u00a73.5 with the critic's \u00a710.14 top-1 widening to 0.3 pt; absolute backstops stay in calibration until the F2-vs-F1 comparison fixes them (\u00a710.16); CT-long carries 32 documents (\u00a710.15) and is not scored in W1. On-policy dNLL never enters a verdict (\u00a73.4). Suites: COMPSEC-17 moves to W2 under the lead-accepted fallback (W1 runs L1's two T1 prompts for the concurrent-partner and dump on/off gates only, ungraded), so W1 E verdicts carry no suite signal. F4-F8 are absent: O1 is not decided. The EXL3 dq arms F9-F11 are pre-registered in the separate campaign flash-w5dq on the same firmware commit and F1 reference.",
+ "plan_sha256": "495032b0fb9a534146bbd5d2865cfb1031c6a949731b6ed2c8af55c3336d29c5",
+ "statistics": {
+  "alpha": 0.05,
+  "bootstrap": {
+   "interval": "conservative-percentile-bca",
+   "replicates": 10000,
+   "seed": 20260929,
+   "unit": "document"
+  },
+  "correction": "holm-one-sided",
+  "ct_short_doubled": false,
+  "decisive_nats": 1.0,
+  "near_tie_nats": 0.001,
+  "position_bins": [
+   0,
+   1024,
+   4096,
+   16384,
+   32768
+  ]
+ },
+ "suites": {
+  "b1_sequential": true,
+  "max_tokens": 4096,
+  "mcnemar_alpha": 0.05,
+  "names": [
+   "COMPSEC-17",
+   "ds4-92"
+  ],
+  "thinking": "off"
+ },
+ "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
+}

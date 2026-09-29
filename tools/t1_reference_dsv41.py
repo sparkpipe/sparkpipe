@@ -68,7 +68,7 @@ def _grid_round_magnitude(a, grid, codes):
     dlo = v - grid[lo]
     dhi = grid[hi] - v
     pick_hi = dhi < dlo
-    pick_hi = pick_hi | ((dhi == dlo) & ((codes[hi] & 1) == 1))
+    pick_hi = pick_hi | ((dhi == dlo) & ((codes[hi] & 1) == 0))
     out[nz] = np.where(pick_hi, grid[hi], grid[lo])
     return out
 
@@ -174,6 +174,17 @@ def _config_value(config, path):
     return node
 
 
+def engram_gate(streams, key, value, weight, eps):
+    h = streams.astype(np.float32)
+    hidden = h.shape[-1]
+    rstd = (1.0 / np.sqrt((h * h).mean(-1) + eps)) \
+        * (1.0 / np.sqrt((key * key).mean(-1) + eps))
+    dot = (h * weight * key).sum(-1) * rstd * np.float32(hidden ** -0.5)
+    gate = sigmoid(np.copysign(
+        np.sqrt(np.maximum(np.abs(dot), 1e-6)), dot))
+    return bf16_round_f32(h + gate[:, None] * value[None, :])
+
+
 class Dsv41ConfigError(ValueError):
     pass
 
@@ -240,11 +251,6 @@ ENGRAM_DEFINES_VS_CONFIG = [
 ]
 
 DEFINES_RECORDED_ONLY = [
-    ("VALUE_HEAD_DIMENSION",
-     "family header counts a 64-wide value head; the official inference "
-     "attends with the full 512-wide latent per head and wo_a measures "
-     "[8192, 4096], so the reference follows the official inference "
-     "semantics"),
     ("KV_GLOBAL_SCALE_CHANNELS",
      "compressed-KV fp4 activation scale group width 16 per the official "
      "kernel"),
@@ -630,6 +636,8 @@ class Dsv41FlashEngine:
         if entry["dtype"] not in ("BF16", "U8", "F8_E4M3"):
             raise Dsv41ConfigError(
                 f"unsupported weight dtype for {name}: {entry['dtype']}")
+        if entry["dtype"] != "BF16":
+            x = _fp8_qdq_rows(x.reshape(1, -1))[0]
         return bf16_round_f32(self._matvec_chunked(x, name, rows, in_dim,
                                                    entry["dtype"]))
 
@@ -688,7 +696,8 @@ class Dsv41FlashEngine:
             raise Dsv41ConfigError(
                 f"unsupported expert weight dtype for {name}: "
                 f"{entry['dtype']}")
-        return bf16_round_f32(self._mxfp4_matvec(x, name))
+        return bf16_round_f32(self._mxfp4_matvec(
+            _fp8_qdq_rows(x.reshape(1, -1))[0], name))
 
     def _hc_mixes(self, layer, streams, kind):
         p = f"{PREFIX}{layer}.hc_{kind}_"
@@ -716,7 +725,7 @@ class Dsv41FlashEngine:
         return bf16_round_f32((pre_mix[:, None] * streams).sum(axis=0))
 
     def _hc_post(self, x, residual, post, comb):
-        return bf16_round_f32(post[:, None] * x[None, :] + comb @ residual)
+        return bf16_round_f32(post[:, None] * x[None, :] + comb.T @ residual)
 
     def _compressor(self, layer, x_norm, position, cache):
         ratio = self.ratios[layer]
@@ -775,7 +784,7 @@ class Dsv41FlashEngine:
             shared.setdefault("index_k", {}).setdefault(layer, []).append(k)
             shared["index_owner"] = layer
         rows = shared.setdefault("index_k", {}).get(
-            shared.get("index_owner"), [])
+            shared.get("index_owner"), [])[:compress_len]
         keys = np.stack(rows) if rows else np.zeros(
             (0, self.index_dim), dtype=np.float32)
         q = self._linear(qr, p + "wq_b.weight").reshape(
@@ -806,7 +815,8 @@ class Dsv41FlashEngine:
         else:
             selected = np.argpartition(-index_score, topk - 1)[:topk]
         selected = np.sort(selected)
-        return (selected + offset).astype(np.int32)
+        return np.where(selected < compress_len, selected + offset,
+                        -1).astype(np.int32)
 
     def _layer_freqs(self, layer):
         if self.ratios[layer] > 0:
@@ -881,7 +891,7 @@ class Dsv41FlashEngine:
                     f"{len(rows)} rows, expected {compress_len}")
             if compress_len:
                 parts_rows.append(np.stack(rows))
-                parts_idx.append(np.asarray(idxs, dtype=np.int64) - offset)
+                parts_idx.append(np.asarray(idxs, dtype=np.int64))
         keys = np.concatenate(parts_rows, axis=0)
         index = np.concatenate(parts_idx)
         if _DEBUG:
@@ -898,7 +908,7 @@ class Dsv41FlashEngine:
         rows_max = np.maximum(full.max(axis=1), -1e30)
         weights = np.exp(full - rows_max[:, None])
         denom = weights.sum(axis=1) + np.exp(sink - rows_max)
-        o = (weights @ keys[index[valid]]) / denom[:, None]
+        o = (weights[:, valid] @ keys[index[valid]]) / denom[:, None]
         o = bf16_round_f32(o)
         o[:, -self.rope_dim:] = bf16_round_f32(self._rotate(
             o[:, -self.rope_dim:].copy(), table, position, inverse=True))
@@ -961,8 +971,8 @@ class Dsv41FlashEngine:
                 x, expert_prefix + "w1.weight")), self.limit)
             up = np.clip(bf16_round_f32(self._expert_linear(
                 x, expert_prefix + "w3.weight")), -self.limit, self.limit)
-            activated = bf16_round_f32(_silu(gate) * up)
-            y += weights[i] * bf16_round_f32(self._expert_linear(
+            activated = bf16_round_f32(_silu(gate) * up * weights[i])
+            y += bf16_round_f32(self._expert_linear(
                 activated, expert_prefix + "w2.weight"))
         y += self._shared_expert(layer, x)
         if _DEBUG:
@@ -996,14 +1006,7 @@ class Dsv41FlashEngine:
         value = kv[split:]
         weight = bf16_to_f32(self.st.pread(p + "q_weight")) \
             * bf16_to_f32(self.st.pread(p + "k_weight"))
-        h = streams.astype(np.float32)
-        rstd = (1.0 / np.sqrt((h * h).mean(-1) + self.eps)) \
-            * (1.0 / np.sqrt((key * key).mean(-1) + self.eps))
-        dot = (h * weight * key).sum(-1) * rstd * np.float32(
-            self.hidden ** -0.5)
-        gate = sigmoid(np.copysign(
-            np.sqrt(np.maximum(np.abs(dot), 1e-6)), dot))
-        return bf16_round_f32(h + gate[:, None] * value[None, :])
+        return engram_gate(streams, key, value, weight, self.eps)
 
     def _forward_layer(self, layer, streams, pre_mix, position, cache,
                        shared):

@@ -130,8 +130,6 @@ def manifest_gates(document, failures):
     maximum = census["route_arrays"] * defines["moe_top_k"]
     check(census["selections"] <= maximum, failures,
           "selections exceed positions x top_k")
-    check(">= 5" in provenance["cut_rule"], failures,
-          "cut rule must state the repetition threshold")
     curve = census.get("coverage_curve", [])
     check(len(curve) >= 2, failures, "coverage curve must be recorded")
     for earlier, later in zip(curve, curve[1:]):

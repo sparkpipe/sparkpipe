@@ -31,7 +31,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SOCKET="${LAGUNA_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}"
+SOCKET="${LAGUNA_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}"
 RUNS="${LAGUNA_WARM_RUNS:-5}"
 POOL="${LAGUNA_EXPERT_POOL_BYTES:-0}"   # 0 = this rank's chunked default
 
@@ -44,7 +44,7 @@ RANK="$((16#${HOST#spark}))"
 STAGE="$((RANK / 8))"
 PACK="/home/$HOST/sparkdata/laguna-s-2.1.bf16.tp8pp2/packs/laguna_stage.tp8.pp2.stage${STAGE}.rank${RANK}.lgsp"
 SHA="$(cut -d' ' -f1 "$PACK.sha256")"
-REVISION="$(python3 -c 'import json;print(json.load(open("'"$REPO"'/examples/model_descriptions/laguna_resident_decode_stage_firmware.json"))["model"]["revision"])')"
+REVISION="$(python3 -c 'import json;print(json.load(open("'"$REPO"'/examples/model_descriptions/laguna_resident_decode_stage_bf16_firmware.json"))["model"]["revision"])')"
 WSET="$(mktemp -q /tmp/laguna-wset.XXXXXX)"
 trap 'rm -f "$WSET" "$WSET.chunk."*' EXIT
 

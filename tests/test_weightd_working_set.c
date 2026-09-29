@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_map.h"
 #include "sparkpipe/spark_weightd_spine.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -89,67 +90,6 @@ static void write_fixture(const char *path,const char *manifest_path)
 	assert(fclose(manifest) == 0);
 }
 
-/* Scan /tmp/spark-weightd-spine for the receipt bound to this pack's
- * (size,mtime,ctime) - the same binding the loader validates - and hand
- * back its path and proof basis. Used to assert the prong-1 trust chain:
- * client full hash writes proof 0, the daemon recorder writes proof 1,
- * tampered bases are re-proven. */
-static int find_spine_receipt(const char *pack_path,char *out,size_t out_bytes,
-	uint64_t *proof)
-{
-	static const char directory_path[] = "/tmp/spark-weightd-spine";
-	DIR *directory = opendir(directory_path);
-	struct dirent *entry;
-	struct stat st;
-	int found = 0;
-	if ( directory == 0 || stat(pack_path,&st) != 0 )
-	{
-		if ( directory != 0 )
-			closedir(directory);
-		return(0);
-	}
-	while ( found == 0 && (entry = readdir(directory)) != 0 )
-	{
-		char path[512];
-		uint8_t raw[88];
-		FILE *file;
-		uint64_t magic,size,mtime_ns,ctime_ns,recorded;
-		if ( entry->d_name[0] == '.' )
-			continue;
-		snprintf(path,sizeof(path),"%s/%s",directory_path,entry->d_name);
-		file = fopen(path,"rb");
-		if ( file == 0 || fread(raw,1u,sizeof(raw),file) != sizeof(raw) )
-		{
-			if ( file != 0 )
-				fclose(file);
-			continue;
-		}
-		fclose(file);
-		memcpy(&magic,raw,8u);
-		memcpy(&size,raw + 8u,8u);
-		memcpy(&mtime_ns,raw + 16u,8u);
-		memcpy(&ctime_ns,raw + 24u,8u);
-		memcpy(&recorded,raw + 80u,8u);
-		if ( magic != UINT64_C(0x5350494e45524531) ||
-			size != (uint64_t)st.st_size )
-			continue;
-#if defined(__APPLE__)
-		if ( mtime_ns != ((uint64_t)st.st_mtimespec.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_mtimespec.tv_nsec) ||
-			ctime_ns != ((uint64_t)st.st_ctimespec.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_ctimespec.tv_nsec) )
-			continue;
-#else
-		if ( mtime_ns != ((uint64_t)st.st_mtim.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_mtim.tv_nsec) ||
-			ctime_ns != ((uint64_t)st.st_ctim.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_ctim.tv_nsec) )
-			continue;
-#endif
-		snprintf(out,out_bytes,"%s",path);
-		*proof = recorded;
-		found = 1;
-	}
-	closedir(directory);
-	return(found);
-}
-
 static void check_spine_load(const char *path,const char *manifest_path)
 {
 	SparkWeightdManifest manifest;
@@ -163,10 +103,10 @@ static void check_spine_load(const char *path,const char *manifest_path)
 	assert(SparkSha256File(path,digest) == SPARK_STATUS_OK);
 	assert(posix_memalign((void **)&destination,256u,(size_t)manifest.spine_allocation_bytes) == 0);
 	memset(destination,0xa5,(size_t)manifest.spine_allocation_bytes);
-	assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes - 1u) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes - 1u) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(destination[0] == 0xa5);
 	assert(lseek(fd,123,SEEK_SET) == 123);
-	assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+	assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
 	assert(lseek(fd,0,SEEK_CUR) == 123);
 	for (i=0u; i<manifest.spine_count; i++)
 	{
@@ -176,31 +116,19 @@ static void check_spine_load(const char *path,const char *manifest_path)
 		for (j=manifest.spine[i].compact_offset; j<cursor; j++)
 			assert(destination[j] == ((manifest.spine[i].offset + j - manifest.spine[i].compact_offset) == 512u ? 255u : 0u));
 	}
-	/* Prong-1 trust chain: the load above (full client hash) recorded a
-	 * proof-0 receipt; the daemon recorder writes the same binding with
-	 * the proof-1 basis and the loader accepts it; a tampered basis is
-	 * treated as absent and re-proven by a full hash (proof back to 0). */
 	{
-		char receipt[512];
-		uint8_t sha_bytes[32];
-		uint64_t proof = 99u;
-		int nibble,index;
-		assert(find_spine_receipt(path,receipt,sizeof(receipt),&proof) == 1);
-		assert(proof == UINT64_C(0));
-		for (index=0; index<64; index++)
-		{
-			char letter = digest[index];
-			nibble = letter >= 'a' ? letter - 'a' + 10 : letter - '0';
-			if ( (index % 2) == 0 )
-				sha_bytes[index / 2] = (uint8_t)(nibble << 4);
-			else
-				sha_bytes[index / 2] |= (uint8_t)nibble;
-		}
-		assert(SparkWeightdSpineReceiptRecordDaemon(fd,digest,sha_bytes) == SPARK_STATUS_OK);
-		assert(find_spine_receipt(path,receipt,sizeof(receipt),&proof) == 1);
-		assert(proof == UINT64_C(1));
+		char receipt_path[512];
+		SparkWeightdReceipt first,second;
+		assert(snprintf(receipt_path,sizeof(receipt_path),"%s.verified",path) > 0);
+		assert(SparkWeightdReceiptLoad(receipt_path,&first) == SPARK_STATUS_NOT_FOUND);
+		usleep(1100000);
+		assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+		assert(SparkWeightdReceiptLoad(receipt_path,&first) == SPARK_STATUS_OK);
+		assert(strcmp(first.sha256,digest) == 0 && first.ck128[0] != 0 && strncmp(first.verifier,"client ",7u) == 0);
 		memset(destination,0xa5,(size_t)manifest.spine_allocation_bytes);
-		assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+		assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+		assert(SparkWeightdReceiptLoad(receipt_path,&second) == SPARK_STATUS_OK);
+		assert(second.verified_unix_ns == first.verified_unix_ns);
 		cursor = 0u;
 		for (i=0u; i<manifest.spine_count; i++)
 		{
@@ -211,20 +139,21 @@ static void check_spine_load(const char *path,const char *manifest_path)
 				assert(destination[j] == ((manifest.spine[i].offset + j - manifest.spine[i].compact_offset) == 512u ? 255u : 0u));
 		}
 		{
-			FILE *file = fopen(receipt,"r+b");
-			uint64_t bad = UINT64_C(2);
+			FILE *file = fopen(receipt_path,"r+b");
 			assert(file != 0);
-			assert(fseek(file,80L,SEEK_SET) == 0);
-			assert(fwrite(&bad,8u,1u,file) == 1u);
+			assert(fseek(file,40L,SEEK_SET) == 0);
+			assert(fputc('9',file) != EOF);
 			assert(fclose(file) == 0);
 		}
-		assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
-		assert(find_spine_receipt(path,receipt,sizeof(receipt),&proof) == 1);
-		assert(proof == UINT64_C(0));
+		assert(SparkWeightdReceiptLoad(receipt_path,&second) == SPARK_STATUS_PARSE_ERROR);
+		assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+		assert(SparkWeightdReceiptLoad(receipt_path,&second) == SPARK_STATUS_OK);
+		assert(second.verified_unix_ns > first.verified_unix_ns);
+		assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,"0000000000000000000000000000000000000000000000000000000000000000",destination,manifest.spine_allocation_bytes) == SPARK_STATUS_HASH_MISMATCH);
 	}
 	// Changing an expert byte must invalidate the whole-pack identity too.
 	assert(pwrite(fd,&value,1u,0) == 1);
-	assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_HASH_MISMATCH);
+	assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_HASH_MISMATCH);
 	value = 1u;
 	assert(pwrite(fd,&value,1u,0) == 1);
 	free(destination);
@@ -239,7 +168,7 @@ static uint64_t attach_config(SparkWeightdClient *client,const char *path,uint64
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = arena_bytes;
 	memcpy(request.identity.model,"working-set-test",17u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = (pool * CHUNK);
@@ -702,6 +631,11 @@ static void check_map_eviction(void)
     assert(pthread_join(thread,0) == 0);
     SparkWeightdServerDestroy(state.server);
     assert(spark_stub_cuda_outstanding_allocs() == 0u);
+    {
+    	char verified[1024];
+    	assert(snprintf(verified,sizeof(verified),"%s.verified",path) > 0);
+    	(void)unlink(verified);
+    }
     assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
     puts("PASS partial map: actual eviction epoch, overlapping leases, failed unmap pin retention, 24 bounded reloads, 64-owner limit");
 }
@@ -767,6 +701,11 @@ static void check_many_exports(void)
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(state.server);
 	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	{
+		char verified[1024];
+		assert(snprintf(verified,sizeof(verified),"%s.verified",path) > 0);
+		(void)unlink(verified);
+	}
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
 }
 
@@ -798,7 +737,7 @@ static void check_pooled_attach(void)
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = (65u * CHUNK);
 	memcpy(request.identity.model,"pooled-attach-test",19u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = (66u * CHUNK);
@@ -825,7 +764,198 @@ static void check_pooled_attach(void)
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(state.server);
 	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	{
+		char verified[1024];
+		assert(snprintf(verified,sizeof(verified),"%s.verified",path) > 0);
+		(void)unlink(verified);
+	}
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
+}
+
+#define LARGE_RANGE_BYTES ((4u * CHUNK) + 4096u + 123u)
+#define LARGE_RANGE_STRIDE (5u * CHUNK)
+#define LARGE_RANGE_EXPERTS 3u
+#define LARGE_RANGE_FLIP (LARGE_RANGE_BYTES - 17u)
+
+static uint8_t large_range_byte(uint32_t expert,uint64_t index)
+{
+	return((uint8_t)((expert * 131u) + (index * 7u) + (index >> 20)));
+}
+
+static void write_large_range_fixture(const char *path,const char *manifest_path)
+{
+	FILE *pack = fopen(path,"wb"),*manifest = fopen(manifest_path,"wb");
+	uint32_t header[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,2u,LARGE_RANGE_EXPERTS,0u},expert;
+	uint8_t *data = malloc(LARGE_RANGE_BYTES);
+	uint64_t index;
+	assert(pack != 0 && manifest != 0 && data != 0);
+	assert(ftruncate(fileno(pack),(off_t)((uint64_t)LARGE_RANGE_EXPERTS * LARGE_RANGE_STRIDE)) == 0);
+	assert(fwrite(header,1u,sizeof(header),manifest) == sizeof(header));
+	for (expert=0u; expert<LARGE_RANGE_EXPERTS; expert++)
+	{
+		uint8_t record[48] = {0},digest[16];
+		uint64_t offset = (uint64_t)expert * LARGE_RANGE_STRIDE,bytes = LARGE_RANGE_BYTES;
+		SparkCk128Context ck;
+		for (index=0u; index<LARGE_RANGE_BYTES; index++)
+			data[index] = large_range_byte(expert,index);
+		SparkCk128Initialize(&ck);
+		SparkCk128Update(&ck,data,LARGE_RANGE_BYTES);
+		SparkCk128Finalize(&ck,digest);
+		if ( expert == 1u )
+			data[LARGE_RANGE_FLIP] ^= 0x40u;
+		memcpy(record + 4u,&expert,4u);
+		memcpy(record + 16u,&offset,8u);
+		memcpy(record + 24u,&bytes,8u);
+		memcpy(record + 32u,digest,16u);
+		assert(fwrite(record,1u,sizeof(record),manifest) == sizeof(record));
+		assert(fseek(pack,(long)offset,SEEK_SET) == 0);
+		assert(fwrite(data,1u,LARGE_RANGE_BYTES,pack) == LARGE_RANGE_BYTES);
+	}
+	free(data);
+	assert(fclose(pack) == 0 && fclose(manifest) == 0);
+}
+
+static void check_large_range_expert(uint64_t base,uint32_t expert)
+{
+	const uint8_t *data = (const uint8_t *)(uintptr_t)(base + (uint64_t)expert * LARGE_RANGE_STRIDE);
+	uint64_t index;
+	for (index=0u; index<LARGE_RANGE_BYTES; index++)
+		assert(data[index] == large_range_byte(expert,index));
+}
+
+static void check_large_range_verification(void)
+{
+	char root[] = "/tmp/weightd-large-XXXXXX",path[256],manifest[272],socket_path[256],wset[272],verified[300];
+	TestServer state = {0};
+	SparkWeightdServerConfig config = {0};
+	SparkWeightdClient *client;
+	SparkWeightdWorkingSetResult result;
+	SparkWeightdExpertKey both[2] = {{0u,0u},{0u,2u}};
+	pthread_t thread;
+	uint64_t generation,base;
+	assert(mkdtemp(root) != 0);
+	snprintf(path,sizeof(path),"%s/pack",root);
+	snprintf(manifest,sizeof(manifest),"%s.experts",path);
+	snprintf(wset,sizeof(wset),"%s.wset",path);
+	snprintf(verified,sizeof(verified),"%s.verified",path);
+	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
+	write_large_range_fixture(path,manifest);
+	config.socket_path = socket_path;
+	config.device_bytes_max = (uint64_t)(LARGE_RANGE_EXPERTS * 5u + 1u) * CHUNK;
+	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
+	assert(pthread_create(&thread,0,run_server,&state) == 0);
+	assert(SparkWeightdClientConnect(socket_path,&client,0) == SPARK_STATUS_OK);
+	generation = attach_config(client,path,(uint64_t)LARGE_RANGE_EXPERTS * LARGE_RANGE_STRIDE,LARGE_RANGE_EXPERTS * 5u,LARGE_RANGE_EXPERTS,&base);
+	(void)acquire(client,generation,1u,SPARK_STATUS_HASH_MISMATCH);
+	assert(SparkWeightdClientAcquire(client,generation,both,2u,&result,TIMEOUT) == SPARK_STATUS_OK);
+	assert(result.status == SPARK_STATUS_OK && result.lease_identifier != 0u);
+	check_large_range_expert(base,0u);
+	check_large_range_expert(base,2u);
+	release(client,generation,result.lease_identifier);
+	SparkWeightdClientClose(client);
+	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
+	assert(pthread_join(thread,0) == 0);
+	SparkWeightdServerDestroy(state.server);
+	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	(void)unlink(verified);
+	(void)unlink(wset);
+	assert(unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
+	puts("PASS large range: a range wider than one read block streams across blocks, two in one lease load byte-exact, and a flipped byte in its last block fails the lease");
+}
+
+static void check_shared_attach(void)
+{
+	char root[] = "/tmp/weightd-share-XXXXXX",path[256],manifest[272],socket_path[256],wset[272],receipt[280];
+	SparkWeightdServerConfig config = {0};
+	SparkWeightdLazyAttachRequest request = {0};
+	SparkWeightdLazyAttachResult owner_result,shared_result;
+	SparkWeightdReclaimResult reclaim;
+	SparkWeightdLazyPack *pack = 0;
+	SparkWeightdMap *owner_map = 0,*shared_map = 0;
+	TestServer state = {0};
+	pthread_t thread;
+	SparkWeightdClient *owner,*sharer;
+	void *owner_base,*shared_base;
+	uint8_t scribble[64];
+	assert(mkdtemp(root) != 0);
+	snprintf(path,sizeof(path),"%s/pack",root);
+	snprintf(manifest,sizeof(manifest),"%s.experts",path);
+	snprintf(wset,sizeof(wset),"%s.wset",path);
+	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
+	write_many(path,manifest);
+	memset(scribble,0x5a,sizeof(scribble));
+	config.socket_path = socket_path;
+	config.device_bytes_max = (66u * CHUNK);
+	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
+	assert(pthread_create(&thread,0,run_server,&state) == 0);
+	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+	request.identity.arena_bytes = (65u * CHUNK);
+	memcpy(request.identity.model,"shared-attach-test",19u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
+	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
+	request.expert_pool_bytes = (66u * CHUNK);
+
+	assert(SparkWeightdClientConnect(socket_path,&sharer,0) == SPARK_STATUS_OK);
+	memset(&shared_result,0,sizeof(shared_result));
+	assert(SparkWeightdClientAttachLazyShared(sharer,&request,&shared_result,TIMEOUT) == SPARK_STATUS_NOT_FOUND);
+	assert(shared_result.status == SPARK_STATUS_NOT_FOUND && shared_result.arena_count == 0u && shared_result.resident_bytes == 0u);
+
+	assert(SparkWeightdClientConnect(socket_path,&owner,0) == SPARK_STATUS_OK);
+	memset(&owner_result,0,sizeof(owner_result));
+	assert(SparkWeightdClientAttachLazy(owner,&request,&owner_result,TIMEOUT) == SPARK_STATUS_OK);
+	assert(owner_result.loaded_from_pack == 1u && owner_result.pool_fd >= 0);
+
+	request.expert_pool_bytes = (65u * CHUNK);
+	assert(SparkWeightdClientAttachLazyShared(sharer,&request,&shared_result,TIMEOUT) == SPARK_STATUS_INVALID_ARGUMENT);
+	request.expert_pool_bytes = (66u * CHUNK);
+	memset(&shared_result,0,sizeof(shared_result));
+	assert(SparkWeightdClientAttachLazyShared(sharer,&request,&shared_result,TIMEOUT) == SPARK_STATUS_OK);
+	assert(shared_result.arena_generation == owner_result.arena_generation);
+	assert(shared_result.loaded_from_pack == 0u && shared_result.refcount == 2u && shared_result.arena_count == 1u);
+	assert(shared_result.resident_bytes == owner_result.resident_bytes);
+	assert(shared_result.pool_fd >= 0);
+
+	assert(SparkWeightdMapCreate(owner,&owner_result,-1,owner_result.pool_fd,&owner_map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreateAccess(sharer,&shared_result,-1,shared_result.pool_fd,1u,&shared_map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapReadOnly(owner_map) == 0u && SparkWeightdMapReadOnly(shared_map) == 1u);
+	assert(SparkWeightdMapBase(owner_map,&owner_base) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapBase(shared_map,&shared_base) == SPARK_STATUS_OK);
+	assert(cuda_stub_vmm_probe_write((CUdeviceptr)(uintptr_t)shared_base,scribble,sizeof(scribble)) == CUDA_ERROR_INVALID_VALUE);
+	assert(cuda_stub_vmm_probe_write((CUdeviceptr)(uintptr_t)owner_base,scribble,sizeof(scribble)) == CUDA_SUCCESS);
+	assert(SparkWeightdMapDestroy(shared_map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapDestroy(owner_map) == SPARK_STATUS_OK);
+
+	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,"read-only",1) == 0);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(pack == 0);
+	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,SPARK_WEIGHTD_SHARE_READONLY,1) == 0);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
+	assert(pack != 0 && pack->read_only == 1u && SparkWeightdMapReadOnly(pack->map) == 1u);
+	assert(pack->attached.arena_generation == owner_result.arena_generation && pack->attached.loaded_from_pack == 0u);
+	assert(SparkWeightdMapBase(pack->map,&shared_base) == SPARK_STATUS_OK);
+	assert(cuda_stub_vmm_probe_write((CUdeviceptr)(uintptr_t)shared_base,scribble,sizeof(scribble)) == CUDA_ERROR_INVALID_VALUE);
+	assert(SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_OK);
+	assert(unsetenv(SPARK_WEIGHTD_SHARE_ENV) == 0);
+
+	SparkWeightdClientClose(owner);
+	SparkWeightdClientClose(sharer);
+	assert(SparkWeightdClientConnect(socket_path,&sharer,0) == SPARK_STATUS_OK);
+	assert(SparkWeightdClientReclaimPack(sharer,request.identity.pack_sha256,&reclaim,TIMEOUT) == SPARK_STATUS_OK);
+	assert(reclaim.status == SPARK_STATUS_OK && reclaim.arena_count == 0u);
+	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,SPARK_WEIGHTD_SHARE_READONLY,1) == 0);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_NOT_FOUND);
+	assert(pack == 0);
+	assert(unsetenv(SPARK_WEIGHTD_SHARE_ENV) == 0);
+	SparkWeightdClientClose(sharer);
+	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
+	assert(pthread_join(thread,0) == 0);
+	SparkWeightdServerDestroy(state.server);
+	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	(void)unlink(wset);
+	assert(snprintf(receipt,sizeof(receipt),"%s.verified",path) > 0);
+	(void)unlink(receipt);
+	assert(unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
 }
 
 static SparkStatus reject_manifest(const SparkWeightdManifest *manifest,void *context)
@@ -920,7 +1050,7 @@ static void check_lazy_pack(const char *socket_path,const char *path,const char 
 			{
 				verify_fd = open(path,O_RDONLY);
 				assert(verify_fd >= 0);
-				assert(SparkWeightdSpineLoad(verify_fd,&verify,PACK_BYTES,request.identity.pack_sha256,from_file,capacity) == SPARK_STATUS_OK);
+				assert(SparkWeightdSpineLoad(path,verify_fd,&verify,PACK_BYTES,request.identity.pack_sha256,from_file,capacity) == SPARK_STATUS_OK);
 				assert(memcmp(from_arena,from_file,(size_t)capacity) == 0);
 				(void)close(verify_fd);
 			}
@@ -946,7 +1076,7 @@ static void check_budget_contract(SparkWeightdClient *client,const char *path)
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = PACK_BYTES;
 	memcpy(request.identity.model,"working-set-test",17u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = UINT64_MAX;
 	assert(SparkWeightdClientAttachLazy(client,&request,&result,TIMEOUT) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -1023,7 +1153,7 @@ static void check_spine_residency_modes(const char *path,const char *manifest_pa
 
 int main(int argc,char **argv)
 {
-	char root[] = "/tmp/weightd-set-XXXXXX",path[256],manifest[272],socket_path[256],wset[272];
+	char root[] = "/tmp/weightd-set-XXXXXX",path[256],manifest[272],socket_path[256],wset[272],receipt[280];
 	TestServer state = {0};
 	SparkWeightdServerConfig config = {0};
 	SparkWeightdClient *a,*b;
@@ -1066,10 +1196,14 @@ int main(int argc,char **argv)
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(state.server);
 	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	assert(snprintf(receipt,sizeof(receipt),"%s.verified",path) > 0);
+	(void)unlink(receipt);
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
 	check_map_eviction();
 	check_many_exports();
 	check_pooled_attach();
-	puts("PASS working-set IPC: all ranges, leases, rollback, scoped imports, 65-chunk exports and pooled single-alloc attach");
+	check_shared_attach();
+	check_large_range_verification();
+	puts("PASS working-set IPC: all ranges, leases, rollback, scoped imports, 65-chunk exports, pooled single-alloc attach and read-only shared attach");
 	return(0);
 }

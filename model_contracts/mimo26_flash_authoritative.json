@@ -1,13 +1,56 @@
 {
  "schema_version": 1,
- "model_id": "XiaomiMiMo/mimo-v2.6-flash-rl",
+ "model_id": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
  "architecture": "MiMoV2ForCausalLM (hybrid full/sliding-window GQA, MoE; text stack of the multimodal RL checkpoint)",
+ "source_revision": "3b38d063180c3e4aed9691fdc735f3d10b266ee4",
+ "license": "mit",
+ "source": {
+  "path_on_sparks": "/mnt/model-warm/mimo-v2.6-flash-rl",
+  "receipt": {
+   "format": "ds4-hf-warm-download-receipt-v1",
+   "repo": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+   "revision": "3b38d063180c3e4aed9691fdc735f3d10b266ee4",
+   "files": 90,
+   "bytes": 177767644130,
+   "receipt_sha256": "e54c1a61b7a014a288b059a46c154e5122b57eb1e6cb2154e53443b8a58befc6"
+  },
+  "config_sha256": "61bea4a0f7a0dd8969f8cae528761e26b697dd12ff63e98804c3f0945492e621",
+  "index_sha256": "09d9b96a77ed9765fa4e02a6a45f92797702eef432da426efc6b45c1131b1812",
+  "tokenizer_sha256": "ff15eb925890d6b71b5160de4b846fbd13178438ab463b38ecc953e8cd1dcb3e",
+  "tokenizer_config_sha256": "413a7845f52943ccf4de0e5c838414507d16c44dbf573da9e20bc8902b384d06",
+  "chat_template_sha256": "853650bee57bf95020373e4c928bd5a4b41b9915adf964a77711d2b49a291887",
+  "generation_config_sha256": "eecf00d9701921271c904a916c425ba6db61bcd190902e200d0a322bfd5572dd",
+  "upstream_head": {
+   "revision": "5711b268169967567844e1e560e8a3966da959b1",
+   "checked": "2026-09-28",
+   "weight_identical": true,
+   "changed_files": [
+    "README.md",
+    "MiMo_V2_6_technical_report.pdf",
+    "dflash/config.json"
+   ],
+   "note": "hub tree diff 3b38d06..5711b26: every safetensors blob, config.json, tokenizer and chat template are identical; dflash/config.json gained its invalid-JSON fix (trailing comma) at b2674c7"
+  },
+  "same_geometry_variant": {
+   "model_id": "XiaomiMiMo/MiMo-V2.6-Flash-MOPD",
+   "revision": "2479e2d0029eca9a34cc7e7f55a121925f81908e",
+   "created": "2026-09-27",
+   "bytes": 177765031074,
+   "config_identical": true,
+   "status": "not downloaded; serving it needs a download, a census and new packs"
+  }
+ },
  "sources": {
-  "host_geometry": "model-families/mimo26/include/sparkpipe/spark_mimo26_model.h, derived 2026-09-22 from the released config.json, modeling_mimo_v2.py and the safetensors shard headers (ranged header reads - exact dtypes and shapes, not inference)",
+  "host_geometry": "model-families/mimo26/include/sparkpipe/spark_mimo26_model.h, derived 2026-09-22 from the released config.json, modeling_mimo_v2.py and the safetensors shard headers; rechecked 2026-09-28 against revision 3b38d063 and the hub head 5711b268",
   "census": "model-families/mimo26/census/flash_census.json",
   "census_sha256": "0be2a21623c31253f772c6c9e1cf9a88a0cd5438fbcfa45552899b99ff05cb1a",
   "contract_note": "transcribed from the family header and census so tools/generate_recipe.py has one authoritative JSON per served model; the header remains the ground truth the C side compiles against and tests/test_mimo26_census.py binds the two",
   "precision_policy": "routed experts MXFP4 (e2m1 weights, e8m0 scales, 32-element blocks) exactly as trained; fp8 e4m3 linear weights with F32 scale_inv per [128,128] block; o_proj, embeddings, lm_head, norms and sink biases BF16 byte-identical to source; router gate and bias BF16/F32 as stored; GEMM accumulation FP32; NO requantization anywhere"
+ },
+ "scope": {
+  "serving_target": "text stack only",
+  "vision_tower": "present in checkpoint, out of scope",
+  "audio_encoder": "present in checkpoint, out of scope"
  },
  "model": {
   "hidden_dimension": 4096,
@@ -34,7 +77,8 @@
    47
   ],
   "sliding_window_tokens": 128,
-  "layer_kind_note": "SPARK_MIMO26_MODEL_LAYER_KIND in the family header; sink-bias tensor count 39 equals the SWA layer count"
+  "layer_kind_note": "SPARK_MIMO26_MODEL_LAYER_KIND in the family header; sink-bias tensor count 39 equals the SWA layer count",
+  "sliding_window_rule": "a SWA query at position p attends keys p-127..p (128 keys including itself), transformers create_sliding_window_causal_mask"
  },
  "attention": {
   "query_head_count": 64,
@@ -51,7 +95,12 @@
   "full_sink_bias": false,
   "full_qkv_rows": 13568,
   "swa_qkv_rows": 14848,
-  "o_input_dimension": 8192
+  "o_input_dimension": 8192,
+  "partial_rotary_factor": 0.334,
+  "rope_rule": "rope_dimension = int(head_dimension * 0.334) = 64; rotate_half over the first 64 dims of q and k, the remaining 128 dims unrotated",
+  "softmax_scale": "head_dimension ** -0.5",
+  "sink_rule": "SWA layers append one learned logit per query head to the softmax row and drop its probability; full layers have no sink",
+  "sink_format": "bf16"
  },
  "moe": {
   "routed_expert_count": 256,
@@ -63,7 +112,12 @@
   "router_bias": "e_score_correction_bias",
   "router_norm_epsilon": 1e-20,
   "norm_topk_prob": true,
-  "routing_weight_position": "expert_output"
+  "routing_weight_position": "expert_output",
+  "router_logits": "fp32 matmul of the bf16 hidden and bf16 gate weight (moe_router_dtype bfloat16)",
+  "topk_method": "noaux_tc",
+  "group_count": 1,
+  "top_group_count": 1,
+  "selection_rule": "top-8 of sigmoid(logit) + e_score_correction_bias; weights are the unbiased sigmoid scores divided by their sum + 1e-20"
  },
  "precision": {
   "linear_weight_format": "fp8_e4m3_block_128x128",
@@ -84,6 +138,50 @@
   "kv_element_bits": 16,
   "kv_element_source": "KV is cached pre-scaled BF16 (value scale folded before the cache write); SWA layers cache 128-token windows only"
  },
+ "tokens": {
+  "end_of_text": 151643,
+  "im_end": 151645,
+  "eos_token_ids": [
+   151643,
+   151645,
+   151672
+  ],
+  "pad": 151643,
+  "config_eos_token_id": 151645,
+  "source": "generation_config.json eos_token_id; config.json names 151645 only"
+ },
+ "speculation": {
+  "mtp": {
+   "layer_count": 3,
+   "file": "model_mtp.safetensors",
+   "bytes": 1189405960,
+   "sha256": "f8f78a78a79e4ec9e42e02ff94790d2a0183995ae278ff521416baa25ae2f38c",
+   "tensor_count": 48,
+   "layer_kind": "SWA attention with sink bias + fp8 dense MLP, eh_proj/enorm/hnorm fusion"
+  },
+  "dflash": {
+   "layer_count": 5,
+   "file": "dflash/dflash_draft_model.safetensors",
+   "bytes": 2936121080,
+   "sha256": "94d9c02c17e0b469f88699e98424825ebe13a17f07eb3b86727b5e0c8143d287",
+   "block_size": 8,
+   "predicted_tokens": 7,
+   "target_layer_ids": [
+    0,
+    11,
+    23,
+    35,
+    47
+   ],
+   "sliding_window": 1024,
+   "kv_head_count": 8,
+   "head_dimension": 128,
+   "attention_value_scale": 0.612,
+   "mask_token_id": 151675,
+   "config_note": "the warm dflash/config.json at 3b38d06 is invalid JSON (trailing comma); the hub fixed it at b2674c7 and the fixed file is the one to load"
+  },
+  "status": "not served; speculative and non-speculative results are reported separately"
+ },
  "served": {
   "topology": "tp4",
   "spine_bytes": 7644662656,
@@ -97,5 +195,10 @@
   "vision_tower_bytes": 1457188864,
   "audio_encoder_bytes": 0,
   "speech_embeddings_bytes": 0
+ },
+ "qualification": {
+  "cuda_target": "sm_121a",
+  "status": "CONTRACT_FROZEN",
+  "production_ready": false
  }
 }

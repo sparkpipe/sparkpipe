@@ -1,11 +1,14 @@
 import importlib.util
 import os
 import pathlib
+import subprocess
+import sys
 import time
 import types
 import unittest
 
-spec = importlib.util.spec_from_file_location("lazy_pair", pathlib.Path(__file__).parents[1] / "tools/weightd_lazy_pair.py")
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("lazy_pair", ROOT / "tools/weightd_lazy_pair.py")
 pair = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pair)
 
@@ -45,6 +48,19 @@ class ReadinessTests(unittest.TestCase):
 
     def test_wrong_message(self):
         self.check_pipe(b"PASS\n", "invalid")
+
+
+class OverlappingConsumers(unittest.TestCase):
+    def test_two_processes_share_evict_and_reject_through_the_daemon(self):
+        daemon = ROOT / "build/sparkpipe_weightd"
+        probe = ROOT / "build/weightd_lazy_consumer"
+        for binary in (daemon, probe):
+            self.assertTrue(os.access(binary, os.X_OK), f"{binary} is not built")
+        run = subprocess.run([sys.executable, str(ROOT / "tools/weightd_lazy_pair.py"),
+                              "--daemon", str(daemon), "--probe", str(probe)],
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue(run.stdout.startswith("PASS two simultaneous lazy consumers"), run.stdout)
 
 
 if __name__ == "__main__":

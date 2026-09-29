@@ -1,7 +1,7 @@
 include ../../runtime/weightd_sources.mk
 
 ifndef EXPERT_CODEC
-$(error EXPERT_CODEC is required: int6, int7, int8, fp8, nvfp4, or mxfp4)
+$(error EXPERT_CODEC is required: bf16, int6, int7, int8, fp8, nvfp4, or mxfp4)
 endif
 ifndef MODEL_REVISION
 $(error MODEL_REVISION is required and must be the exact source snapshot revision)
@@ -10,11 +10,14 @@ ifndef CONTRACT_SHA256
 $(error CONTRACT_SHA256 is required and must identify the exact model package contract)
 endif
 
-GLM5_NEXT_EXPERT_CODECS := int6 int7 int8 fp8 nvfp4 mxfp4
+GLM5_NEXT_EXPERT_CODECS := bf16 int6 int7 int8 fp8 nvfp4 mxfp4
 ifeq ($(filter $(EXPERT_CODEC),$(GLM5_NEXT_EXPERT_CODECS)),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': choose $(GLM5_NEXT_EXPERT_CODECS))
 endif
 
+ifeq ($(EXPERT_CODEC),bf16)
+GLM5_NEXT_EXPERT_CODEC_ID := 1
+endif
 ifeq ($(EXPERT_CODEC),int6)
 GLM5_NEXT_EXPERT_CODEC_ID := 2
 endif
@@ -34,9 +37,22 @@ ifeq ($(EXPERT_CODEC),mxfp4)
 GLM5_NEXT_EXPERT_CODEC_ID := 7
 endif
 
+SCORE_DUMP ?= 0
+ifeq ($(filter $(SCORE_DUMP),0 1),)
+$(error SCORE_DUMP must be 0 or 1)
+endif
+ifeq ($(SCORE_DUMP),1)
+GLM5_NEXT_SCORE_DUMP_DIRECTORY := -scoredump
+GLM5_NEXT_SCORE_DUMP_FLAGS := -DSPARK_SCORE_DUMP=1
+GLM5_NEXT_SCORE_DUMP_SOURCES := ../../src/spark_score_dump.c
+endif
+
 MODULE_FAMILY := glm5_next
 MODULE_IDENTIFIER_PREFIX := spark.glm5_next.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h4096.l45.kda34.e288.k8
 MODULE_IDENTIFIER_SUFFIX := v2
+ifeq ($(SCORE_DUMP),1)
+MODULE_IDENTIFIER_SUFFIX = v2.scoredump
+endif
 MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
 # The batch-variant ladder: one archive per power of two, emitted by
 # resident_decode_stage_rules.mk from the single template there. Trim for
@@ -48,7 +64,11 @@ MODULE_ENTRY_PREFIX := SparkGlm5NextResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm5_next_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
+	../../runtime/spark_expert_working_set.c \
 	../../src/spark_speculation_policy.c \
+	../../src/spark_speculation_lookup_draft.c \
+	../../src/spark_speculation_drafter_mix.c \
+	../../src/spark_speculation_reference_draft.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
@@ -59,11 +79,13 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_cache.c \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c \
-	../../cache/kv_model_table.c
+	../../cache/kv_snapshot.c \
+	../../cache/kv_model_table.c \
+	$(GLM5_NEXT_SCORE_DUMP_SOURCES)
 MODULE_CUDA_SOURCE := source/spark_glm5_next_resident_decode_stage_cuda.cu
-MODULE_COMPILE_FLAGS := -DSPARK_BATCH_BUCKET=1024u -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=$(GLM5_NEXT_EXPERT_CODEC_ID) -DGLM5_NEXT_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM5_NEXT_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM5_NEXT_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
+MODULE_COMPILE_FLAGS := -DSPARK_BATCH_BUCKET=1024u -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=$(GLM5_NEXT_EXPERT_CODEC_ID) -DGLM5_NEXT_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM5_NEXT_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM5_NEXT_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\" $(GLM5_NEXT_SCORE_DUMP_FLAGS)
 
-BUILD_DIRECTORY ?= ../../build/modules/glm5_next_resident_decode_stage/$(EXPERT_CODEC)
+BUILD_DIRECTORY ?= ../../build/modules/glm5_next_resident_decode_stage/$(EXPERT_CODEC)$(GLM5_NEXT_SCORE_DUMP_DIRECTORY)
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/libglm5_next_resident_decode_stage_$(EXPERT_CODEC).a
 MODULE_COMMON_HOST_SOURCES := ../../runtime/stage_module_common.c
 MODULE_INCLUDE_FLAGS := \
@@ -92,6 +114,10 @@ GPU_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_cuda.sh
 MTP_PARITY_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_mtp_parity.sh
 
 include ../resident_decode_stage_rules.mk
+
+ifeq ($(SCORE_DUMP),1)
+NVCCFLAGS += -include source/cuda/score_launch.cuh
+endif
 
 .PHONY: validate_mtp_parity
 validate_mtp_parity: require_cuda_target $(MODULE_ARCHIVE)

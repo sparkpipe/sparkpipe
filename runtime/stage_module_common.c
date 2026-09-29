@@ -3,6 +3,7 @@
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_sha256.h"
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -921,50 +922,44 @@ typedef struct SparkStageModulePackArena
 {
 	SparkWeightdAttachOutcome outcome;
 	uint64_t pack_bytes;
+	uint64_t pack_device;
+	uint64_t pack_inode;
 	char pack_path[SPARK_WEIGHTD_PATH_BYTES];
+	char pack_sha256[SPARK_SHA256_HEX_BYTES];
 	SparkStatus status;
+	struct SparkStageModulePackArena *next;
 } SparkStageModulePackArena;
 
 static void SparkStageModulePackArenaRelease(SparkStageModuleLedger *ledger)
 {
-	SparkStageModulePackArena *arena;
-	if (ledger == 0 || ledger->pack_arena == 0)
+	SparkStageModulePackArena *arena,*next;
+	if (ledger == 0)
 		return;
-	arena = (SparkStageModulePackArena *)ledger->pack_arena;
-	if (arena->outcome.client != 0)
-		(void)SparkWeightdAttachRelease(&arena->outcome);
-	free(arena);
+	for (arena = (SparkStageModulePackArena *)ledger->pack_arena; arena != 0; arena = next)
+	{
+		next = arena->next;
+		if (arena->outcome.client != 0)
+			(void)SparkWeightdAttachRelease(&arena->outcome);
+		free(arena);
+	}
 	ledger->pack_arena = 0;
 }
 
-static SparkStatus SparkStageModulePackArenaEnsure(
-	SparkStageModuleLedger *ledger,
-	FILE *file)
+static SparkStageModulePackArena *SparkStageModulePackArenaFind(SparkStageModuleLedger *ledger,const struct stat *pack_stat)
 {
 	SparkStageModulePackArena *arena;
-	SparkWeightdPackSlice slice;
-	struct stat pack_stat;
-	char fd_path[64];
-	char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
-	ssize_t path_bytes;
-	SparkStatus status;
-
-	if (ledger == 0 || file == 0)
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if (ledger->pack_arena != 0)
+	for (arena = (SparkStageModulePackArena *)ledger->pack_arena; arena != 0; arena = arena->next)
 	{
-		arena = (SparkStageModulePackArena *)ledger->pack_arena;
-		return(arena->status);
+		if (arena->pack_device == (uint64_t)pack_stat->st_dev && arena->pack_inode == (uint64_t)pack_stat->st_ino)
+			return(arena);
 	}
-	status = SparkWeightdAttachRequested();
-	if (status != SPARK_STATUS_OK)
-		SPARK_RETURN(status);
-	arena = (SparkStageModulePackArena *)calloc(1u,sizeof(*arena));
-	if (arena == 0)
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	arena->status = SPARK_STATUS_BUSY;
-	ledger->pack_arena = arena;
-	path_bytes = -1;
+	return(0);
+}
+
+static SparkStatus SparkStageModulePackArenaPath(SparkStageModulePackArena *arena,FILE *file)
+{
+	char fd_path[64];
+	ssize_t path_bytes;
 	(void)snprintf(fd_path,sizeof(fd_path),"/proc/self/fd/%d",fileno(file));
 	path_bytes = readlink(fd_path,arena->pack_path,sizeof(arena->pack_path) - 1u);
 #ifdef __APPLE__
@@ -975,31 +970,100 @@ static SparkStatus SparkStageModulePackArenaEnsure(
 	{
 		char fcntl_path[1024];
 		if (fcntl(fileno(file),F_GETPATH,fcntl_path) >= 0)
-			path_bytes = (ssize_t)snprintf(arena->pack_path,
-				sizeof(arena->pack_path),"%s",fcntl_path);
+			path_bytes = (ssize_t)snprintf(arena->pack_path,sizeof(arena->pack_path),"%s",fcntl_path);
 	}
 #endif
-	if (path_bytes <= 0 || (uint64_t)path_bytes >= sizeof(arena->pack_path) || fstat(fileno(file),&pack_stat) != 0 ||
-		pack_stat.st_size <= 0)
-	{
-		arena->status = SPARK_STATUS_IO_ERROR;
-		return(arena->status);
-	}
+	if (path_bytes <= 0 || (uint64_t)path_bytes >= sizeof(arena->pack_path))
+		return(SPARK_STATUS_IO_ERROR);
 	arena->pack_path[path_bytes] = '\0';
-	arena->pack_bytes = (uint64_t)pack_stat.st_size;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkStageModulePackArenaSidecarDigest(SparkStageModulePackArena *arena)
+{
+	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
+	FILE *sidecar;
+	size_t bytes = 0u,index;
+	if (snprintf(path,sizeof(path),"%s.sha256",arena->pack_path) >= (int)sizeof(path))
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	sidecar = fopen(path,"rb");
+	if (sidecar == 0)
+	{
+		fprintf(stderr,"stage-module weightd attach refused: pack=%s is not this ledger's first pack and has no digest sidecar %s\n",arena->pack_path,path);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
+	bytes = fread(arena->pack_sha256,1u,SPARK_SHA256_HEX_BYTES - 1u,sidecar);
+	(void)fclose(sidecar);
+	arena->pack_sha256[SPARK_SHA256_HEX_BYTES - 1u] = '\0';
+	for (index = 0u; bytes == SPARK_SHA256_HEX_BYTES - 1u && index < bytes; index++)
+	{
+		if (!((arena->pack_sha256[index] >= '0' && arena->pack_sha256[index] <= '9') || (arena->pack_sha256[index] >= 'a' && arena->pack_sha256[index] <= 'f')))
+			bytes = 0u;
+	}
+	if (bytes != SPARK_SHA256_HEX_BYTES - 1u)
+	{
+		fprintf(stderr,"stage-module weightd attach refused: digest sidecar %s does not start with 64 lowercase hex digits\n",path);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkStageModulePackArenaAttach(SparkStageModuleLedger *ledger,SparkStageModulePackArena *arena,uint32_t first_pack)
+{
+	SparkWeightdPackSlice slice;
+	char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
+	SparkStatus status;
 	memset(&slice,0,sizeof(slice));
+	memset(reason,0,sizeof(reason));
 	slice.model = ledger->module_tag;
 	slice.pack_bytes = arena->pack_bytes;
-	status = SparkWeightdAttachMappedPack(&slice,arena->pack_path,
-		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&arena->outcome,reason);
+	if (first_pack == 0u)
+	{
+		status = SparkStageModulePackArenaSidecarDigest(arena);
+		if (status != SPARK_STATUS_OK)
+			return(status);
+		slice.pack_sha256 = arena->pack_sha256;
+	}
+	status = SparkWeightdAttachMappedPack(&slice,arena->pack_path,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,&arena->outcome,reason);
 	if (status != SPARK_STATUS_OK || arena->outcome.client == 0)
 	{
-		fprintf(stderr,"stage-module weightd attach failed: pack=%s status=%s reason=%s\n",
-			arena->pack_path,SparkStatusToString(status),reason);
-		arena->status = status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR;
-		return(arena->status);
+		fprintf(stderr,"stage-module weightd attach failed: pack=%s status=%s reason=%s\n",arena->pack_path,SparkStatusToString(status),reason);
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR);
 	}
-	arena->status = SPARK_STATUS_OK;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkStageModulePackArenaEnsure(SparkStageModuleLedger *ledger,FILE *file,SparkStageModulePackArena **selected)
+{
+	SparkStageModulePackArena *arena;
+	struct stat pack_stat;
+	SparkStatus status;
+	uint32_t first_pack;
+	if (ledger == 0 || file == 0 || selected == 0)
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*selected = 0;
+	status = SparkWeightdAttachRequested();
+	if (status != SPARK_STATUS_OK)
+		SPARK_RETURN(status);
+	if (fstat(fileno(file),&pack_stat) != 0 || pack_stat.st_size <= 0)
+		return(SPARK_STATUS_IO_ERROR);
+	arena = SparkStageModulePackArenaFind(ledger,&pack_stat);
+	if (arena == 0)
+	{
+		arena = (SparkStageModulePackArena *)calloc(1u,sizeof(*arena));
+		if (arena == 0)
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		first_pack = ledger->pack_arena == 0 ? 1u : 0u;
+		arena->next = (SparkStageModulePackArena *)ledger->pack_arena;
+		ledger->pack_arena = arena;
+		arena->pack_device = (uint64_t)pack_stat.st_dev;
+		arena->pack_inode = (uint64_t)pack_stat.st_ino;
+		arena->pack_bytes = (uint64_t)pack_stat.st_size;
+		arena->status = SparkStageModulePackArenaPath(arena,file);
+		if (arena->status == SPARK_STATUS_OK)
+			arena->status = SparkStageModulePackArenaAttach(ledger,arena,first_pack);
+	}
+	*selected = arena;
 	return(arena->status);
 }
 
@@ -1014,10 +1078,9 @@ static SparkStatus SparkStageModulePackArenaSlice(
 	SparkStatus status;
 	if ( (offset & UINT64_C(0xff)) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkStageModulePackArenaEnsure(ledger,file);
+	status = SparkStageModulePackArenaEnsure(ledger,file,&arena);
 	if (status != SPARK_STATUS_OK)
 		SPARK_RETURN(status);
-	arena = (SparkStageModulePackArena *)ledger->pack_arena;
 	if (offset > arena->pack_bytes || bytes > arena->pack_bytes - offset)
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*pointer = (uint8_t *)arena->outcome.map_base + offset;
@@ -1445,6 +1508,53 @@ static uint64_t SparkStageModuleMonotonicNanoseconds(void)
     }
     return (uint64_t)current_time.tv_sec * 1000000000ull +
         (uint64_t)current_time.tv_nsec;
+}
+
+SparkStatus SparkStageModulePauseTimespec(
+    uint64_t nanoseconds,
+    struct timespec *pause)
+{
+    uint64_t seconds;
+
+    if (pause == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    seconds = nanoseconds / 1000000000ull;
+    if ((time_t)seconds < 0 || (uint64_t)(time_t)seconds != seconds)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    pause->tv_sec = (time_t)seconds;
+    pause->tv_nsec = (long)(nanoseconds % 1000000000ull);
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkStageModulePauseNanoseconds(uint64_t nanoseconds)
+{
+    struct timespec pause;
+    struct timespec remaining;
+    SparkStatus status;
+
+    status = SparkStageModulePauseTimespec(nanoseconds, &pause);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    for (;;)
+    {
+        remaining.tv_sec = 0;
+        remaining.tv_nsec = 0;
+        if (nanosleep(&pause, &remaining) == 0)
+        {
+            return SPARK_STATUS_OK;
+        }
+        if (errno != EINTR)
+        {
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+        }
+        pause = remaining;
+    }
 }
 
 static int SparkStageModuleAdmissionRejectionIsValid(

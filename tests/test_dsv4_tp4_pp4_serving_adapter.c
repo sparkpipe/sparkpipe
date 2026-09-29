@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,6 +101,20 @@ static void TestDsv4Tp4Pp4BuildSubmission(
 	}
 }
 
+static uint32_t TestDsv4DriverCudaGraphCount(const char *driver_path)
+{
+	uint32_t (*graph_count)(void);
+	uint32_t count;
+	void *driver;
+	driver = dlopen(driver_path,RTLD_NOW | RTLD_NOLOAD);
+	assert(driver != 0);
+	graph_count = (uint32_t (*)(void))dlsym(driver,"TestDsv4ServingDriverLastCreatedCudaGraphCount");
+	assert(graph_count != 0);
+	count = graph_count();
+	dlclose(driver);
+	return(count);
+}
+
 int main(void)
 {
 	static const uint32_t expected_layers[16] =
@@ -118,11 +133,13 @@ int main(void)
 	uint64_t hidden_bytes;
 	void *adapter_state,*hidden_input,*hidden_output;
 	char node_id[32],runtime_root[4096];
+	assert(unsetenv("SPARK_DSV4_DSPARK") == 0 && unsetenv("SPARK_DSV4_SPECULATORS") == 0);
 	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(
 		TEST_DSV4_TP4_PP4_ADAPTER_PATH,
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE,
 		&library) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.descriptor->stage_count == 16u);
 	assert(library.adapter_interface.descriptor->parallel_group_size == 4u);
@@ -151,7 +168,7 @@ int main(void)
 		configuration.runtime_limits.resident_sequence_capacity = 128u;
 		configuration.runtime_limits.kv_logical_page_capacity = 128u;
 		configuration.runtime_limits.kv_physical_page_capacity = 128u;
-		(void)snprintf(node_id,sizeof(node_id),"spark%u",rank);
+		(void)snprintf(node_id,sizeof(node_id),"spark%x",rank);
 		configuration.runtime_root = runtime_root;
 		configuration.node_id = node_id;
 		configuration.node_target = SPARK_DSV4_MODEL_MODULE_TARGET;
@@ -168,7 +185,7 @@ int main(void)
 		assert(adapter_state != 0);
 		assert(library.adapter_interface.snapshot(adapter_state,&snapshot) ==
 			SPARK_STATUS_OK);
-		assert(snapshot.kv_token_capacity ==
+		assert(TestDsv4DriverCudaGraphCount(TEST_DSV4_TP4_PP4_DRIVER_PATH) ==
 			(rank / 4u < 3u ? 34u : 31u));
 		TestDsv4Tp4Pp4BuildSubmission(&submission,&lane,rank,&token_id,
 			&row_lane,&row_position,&row_sequence,hidden_input,hidden_output,

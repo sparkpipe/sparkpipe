@@ -29,7 +29,7 @@ typedef struct LruHarness
 } LruHarness;
 
 static uint64_t lru_seed,lru_state;
-static uint32_t lru_step,lru_evictions,lru_refusals,lru_prefix_binds;
+static uint32_t lru_step,lru_evictions,lru_refusals,lru_prefix_binds,lru_release_all;
 
 static uint32_t LruRand(uint32_t bound)
 {
@@ -213,6 +213,24 @@ static void LruRelease(LruHarness *h, uint32_t slot)
 		CHECK(SparkKvPageCacheReleaseLane(&h->cache,slot,h->sequences[slot].sequence_id) == SPARK_STATUS_OK);
 }
 
+static void LruReleaseAll(LruHarness *h)
+{
+	uint32_t slot,page;
+	CHECK(SparkKvPageCacheReleaseAll(&h->cache) == SPARK_STATUS_OK);
+	LruCheckList(h);
+	CHECK(LruValidCount(h) == 0u && h->cache.lru_head == SPARK_KV_PAGE_CACHE_NO_INDEX && h->cache.live_sequence_count == 0u);
+	for (slot=0u; slot<LRU_SEQUENCES; slot++)
+		CHECK(h->sequences[slot].sequence_id == 0u);
+	for (page=0u; page<LRU_BLOCKS; page++)
+		CHECK((h->blocks[page].flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u);
+	CHECK(SparkKvPageCacheReleaseAll(&h->cache) == SPARK_STATUS_OK);
+	CHECK(SparkKvPageCacheReleaseAll(0) == SPARK_STATUS_INVALID_ARGUMENT);
+	for (slot=0u; slot<LRU_SEQUENCES; slot++)
+		LruStep(h,slot);
+	CHECK(h->cache.live_sequence_count == LRU_SEQUENCES);
+	lru_release_all++;
+}
+
 static void LruRound(void)
 {
 	LruHarness h;
@@ -229,6 +247,11 @@ static void LruRound(void)
 		else
 			LruEvict(&h);
 		LruCheckList(&h);
+	}
+	if ( (lru_seed & 1u) != 0u )
+	{
+		LruReleaseAll(&h);
+		return;
 	}
 	for (slot=0u; slot<LRU_SEQUENCES; slot++)
 		LruRelease(&h,slot);
@@ -250,7 +273,7 @@ int main(void)
 		lru_state = lru_seed;
 		LruRound();
 	}
-	CHECK(lru_evictions > 1000u && lru_refusals > 0u && lru_prefix_binds > 1000u);
-	printf("test_kv_page_cache_lru PASS rounds=%u evictions=%u refusals=%u prefix_binds=%u\n",LRU_ROUNDS,lru_evictions,lru_refusals,lru_prefix_binds);
+	CHECK(lru_evictions > 1000u && lru_refusals > 0u && lru_prefix_binds > 1000u && lru_release_all == LRU_ROUNDS / 2u);
+	printf("test_kv_page_cache_lru PASS rounds=%u evictions=%u refusals=%u prefix_binds=%u release_all=%u\n",LRU_ROUNDS,lru_evictions,lru_refusals,lru_prefix_binds,lru_release_all);
 	return(0);
 }

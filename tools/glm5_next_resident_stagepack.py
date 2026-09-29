@@ -13,9 +13,11 @@ follows model-families/glm5_next/name_map.json:
   - the kv_b split+per-head transpose (glm52's add_kv_b pattern).
   - f32 upcasts where the kernels read f32: hc fn/base/scale, kda o_norm,
     the compressor ape, dt_bias (F32 already), A_log (F32 already).
-  - FP8 MLA/dense/shared projections dequantize to bf16 at pack time
-    (exact: e4m3 values are representable in bf16) - the module's spine
-    path is bf16; routed experts stay packaged fp8 payload + f32 scales.
+  - FP8 MLA/dense/shared projections dequantize to bf16 at pack time as
+    bf16(e4m3 x f32 block scale). The release's block scales are not
+    powers of two, so this is the FP8 grid plus a second bf16 rounding,
+    not an exact copy of the FP8 values - the module's spine path is bf16;
+    routed experts stay packaged fp8 payload + f32 scales.
 
 Run on a spark node with warm ceph (per the fleet notes: NOT sparke - its
 client holds a stale negative cache after the metadata incident).
@@ -26,16 +28,21 @@ the dequant cache):
       --source /mnt/model-warm/glm-5.3-flash --output-dir build/stagepacks \
       --tp-all 16
 
-The expert codec is source-driven: BF16 sources pass through verbatim,
-FP8-native sources package fp8 payload + f32 scales, and nvfp4 releases
-(redhatai GLM-5.3-Flash-NVFP4: *_packed/*_scale/*_global_scale) package
-packed e2m1 + UE4M3 planes + F32 globals verbatim - never quantized.
+The expert codec is source-driven per layer: BF16 sources pass through
+verbatim, FP8-native sources package fp8 payload + f32 scales, and nvfp4
+releases (redhatai GLM-5.3-Flash-NVFP4: *_packed/*_scale/*_global_scale;
+nvidia modelopt: U8 weight + *_scale + *_scale_2) package packed e2m1 +
+UE4M3 planes + F32 globals verbatim - never quantized. The header's
+expert_weight_codec is the single codec of the pack's routed-expert
+entries; a pack whose layers carry different expert codecs is refused,
+and a pack with no routed-expert entries needs --expert-codec.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import signal
 import struct
 import sys
 import tempfile
@@ -67,6 +74,7 @@ CODEC_NVFP4 = 6
 SCALE_NONE = 0
 SCALE_F32 = 1
 SCALE_UE4M3_F32_GLOBAL = 4
+EXPERT_CODEC_NAMES = {"bf16": CODEC_BF16, "fp8": CODEC_FP8, "nvfp4": CODEC_NVFP4}
 
 # Tensor kinds (mirror the format header enum; asserted at the bottom).
 K_EMBEDDING, K_FINAL_NORM, K_LM_HEAD = 0, 1, 2
@@ -207,7 +215,7 @@ class SourceReader:
 
     def spine_bf16(self, name: str) -> np.ndarray:
         """Full-width bf16 matrix [rows, cols]; F8_E4M3 dequantizes through
-        its [128,128]-block weight_scale_inv (exact to bf16)."""
+        its [128,128]-block weight_scale_inv as bf16(e4m3 x f32 scale)."""
         if name in self._cache:
             return self._cache[name]
         dtype, shape, _ = self.meta(name)
@@ -257,7 +265,7 @@ class SourceReader:
             vals[:, 0::2] = self._e2m1[packed & np.uint8(0x0F)]
             vals[:, 1::2] = self._e2m1[packed >> np.uint8(4)]
             vals *= (np.repeat(blocks, 16, axis=1)[:, :real_cols]
-                     * global_f32 * np.float32(0.5))
+                     * np.float32(global_f32))
             matrix = f32_to_bf16_u16(vals)
             del vals, blocks
         else:
@@ -383,7 +391,8 @@ class PlanItem:
 class Packer:
     def __init__(self, source: SourceReader, tp_degree: int, tp_rank: int,
                  first_layer: int, layer_count: int, include_mtp: bool,
-                 owns_embedding: bool, owns_head: bool, expert_codec: int = CODEC_FP8):
+                 owns_embedding: bool, owns_head: bool,
+                 expert_codec: Optional[int] = None):
         self.s = source
         self.tp_degree = tp_degree
         self.tp_rank = tp_rank
@@ -649,6 +658,24 @@ class Packer:
 
         self.plan.append(PlanItem(entry, produce))
 
+    def source_expert_codec(self, layer: int) -> int:
+        prefix = f"model.language_model.layers.{layer}.mlp.experts.0.up_proj.weight"
+        packed = prefix + "_packed"
+        if packed in self.s.weight_map:
+            name = packed
+        elif prefix in self.s.weight_map:
+            name = prefix
+        else:
+            raise PackFailure(f"layer {layer}: no routed expert 0 up_proj in the source")
+        dtype = self.s.meta(name)[0]
+        codec = {"BF16": CODEC_BF16, "F8_E4M3": CODEC_FP8, "U8": CODEC_NVFP4}.get(dtype)
+        if codec is None:
+            raise PackFailure(f"{name}: routed expert source dtype {dtype} has no pack codec")
+        return codec
+
+    def header_expert_codec(self) -> int:
+        return header_expert_codec(self.plan, self.expert_codec)
+
     def add_experts(self, layer: int):
         prefix = f"model.language_model.layers.{layer}.mlp.experts"
         w1_cols = HIDDEN
@@ -665,16 +692,9 @@ class Packer:
                 for projection in ("up","gate"):
                     yield f"{prefix}.{expert}.{projection}_proj.weight",w1_r0,w1_r1
 
-        probe_name = next(
-            (n for n in self.s.weight_map
-             if ".mlp.experts.0.up_proj.weight" in n), None)
-        experts_bf16 = probe_name is not None and self.s.meta(probe_name)[0] == "BF16"
-        probe_packed = next(
-            (n for n in self.s.weight_map
-             if ".mlp.experts.0.up_proj.weight_packed" in n), None)
-        experts_nvfp4 = (
-            (probe_packed is not None and self.s.meta(probe_packed)[0] == "U8")
-            or (probe_name is not None and self.s.meta(probe_name)[0] == "U8"))
+        source_codec = self.source_expert_codec(layer)
+        experts_bf16 = source_codec == CODEC_BF16
+        experts_nvfp4 = source_codec == CODEC_NVFP4
         source = self.s
         if experts_nvfp4:
             w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT,
@@ -723,7 +743,7 @@ class Packer:
             self.plan.append(PlanItem(w1, produce_w1, produce_w1_scale))
             self.plan.append(PlanItem(w2, produce_w2, produce_w2_scale))
             return
-        codec = CODEC_BF16 if experts_bf16 else self.expert_codec
+        codec = source_codec
         w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT, codec,
                    SCALE_NONE if experts_bf16 else SCALE_F32, EXPERTS, w1_out_rows, w1_cols)
         w2 = Entry(K_EXPERT_DOWN, layer, PAYLOAD_PACKED_WEIGHT, codec,
@@ -848,6 +868,25 @@ class Packer:
             self.add_spine_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight", shard="rows")
 
 
+def header_expert_codec(plan: List[PlanItem], requested: Optional[int] = None) -> int:
+    codecs = sorted({item.entry.weight_codec for item in plan
+                     if item.entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN)})
+    if len(codecs) > 1:
+        layers = sorted({(item.entry.layer, item.entry.weight_codec) for item in plan
+                         if item.entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN)})
+        raise PackFailure(f"mixed routed-expert codecs {codecs} in one pack "
+                          f"(layer, codec): {layers}")
+    if not codecs:
+        if requested is None:
+            raise PackFailure("pack has no routed-expert entries; pass the header "
+                              "expert codec explicitly (--expert-codec)")
+        return requested
+    if requested is not None and requested != codecs[0]:
+        raise PackFailure(f"requested expert codec {requested} != source-driven "
+                          f"routed-expert codec {codecs[0]}")
+    return codecs[0]
+
+
 def assemble_header(packer: Packer, header_extra: Dict[str, Any], file_bytes: int,
                     revision: str, contract_sha256: str) -> bytes:
     """Serialize SparkGlm5NextStagePackHeader exactly (C layout)."""
@@ -858,7 +897,7 @@ def assemble_header(packer: Packer, header_extra: Dict[str, Any], file_bytes: in
         header_extra["stage_count"], header_extra["stage_index"],
         header_extra["first_layer"], header_extra["layer_count"], LAYERS,  # total = weight layers (module expects MODEL_LAYER_COUNT)
         HIDDEN, VOCAB, EXPERTS,
-        CODEC_BF16, packer.expert_codec, CODEC_BF16,
+        CODEC_BF16, packer.header_expert_codec(), CODEC_BF16,
         packer.tp_degree, packer.tp_rank,
     ]
     if len(fields) != 20:
@@ -900,8 +939,7 @@ def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes]) -> Non
         raise PackFailure(f"region at {offset}: producer wrote {written}, expected {expected}")
 
 
-def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> int:
-    packer.build()
+def plan_layout(packer: Packer, header_extra: Dict[str, Any], revision: str) -> Tuple[bytes, int, int]:
     directory_offset = (HEADER_BYTES + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
     cursor = directory_offset + len(packer.plan) * ENTRY_BYTES
     for item in packer.plan:
@@ -913,36 +951,115 @@ def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> int:
             cursor = e.scale_offset + e.scale_bytes
     file_bytes = cursor
     header = assemble_header(packer, dict(header_extra, directory_offset=directory_offset),
-                             file_bytes, REVISION, CONTRACT_SHA256)
+                             file_bytes, revision, CONTRACT_SHA256)
+    return header, directory_offset, file_bytes
+
+
+def write_prefix(out, packer: Packer, header: bytes, directory_offset: int) -> None:
+    out.write(header)
+    out.seek(directory_offset)
+    for item in packer.plan:
+        out.write(serialize_entry(item.entry))
+
+
+def emit_item(out, item: PlanItem) -> None:
+    emit_region(out, item.entry.payload_offset, item.entry.payload_bytes,
+                item.produce_payload())
+    emit_region(out, item.entry.scale_offset, item.entry.scale_bytes,
+                item.produce_scale() if item.produce_scale else iter(()))
+
+
+def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any], revision: str = REVISION) -> int:
+    packer.build()
+    header, directory_offset, file_bytes = plan_layout(packer, header_extra, revision)
     with path.open("wb") as out:
-        out.write(header)
-        out.seek(directory_offset)
+        write_prefix(out, packer, header, directory_offset)
         for item in packer.plan:
-            out.write(serialize_entry(item.entry))
-        for item in packer.plan:
-            emit_region(out, item.entry.payload_offset, item.entry.payload_bytes,
-                        item.produce_payload())
-            emit_region(out, item.entry.scale_offset, item.entry.scale_bytes,
-                        item.produce_scale() if item.produce_scale else iter(()))
+            emit_item(out, item)
     return file_bytes
 
 
-def emit(packer: Packer, path: Path, header_extra: Dict[str, Any]) -> None:
+def publish(temporary: str, path: Path) -> None:
+    with open(temporary, "rb") as source:
+        os.fsync(source.fileno())
+    os.link(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def emit_ranks(packers: List[Packer], paths: List[Path], header_extra: Dict[str, Any],
+               revision: str = REVISION, drop_output_cache: bool = False,
+               sync_bytes: int = 2 << 30) -> List[int]:
+    if len(packers) != len(paths) or not packers:
+        raise PackFailure("emit_ranks needs one output path per packer")
+    for path in paths:
+        if path.exists():
+            raise PackFailure(f"output already exists; choose a new artifact path: {path}")
+    if drop_output_cache and not hasattr(os, "posix_fadvise"):
+        raise PackFailure("page-cache drop requested but posix_fadvise is unavailable here")
+    for packer in packers:
+        packer.build()
+    identity = [(item.entry.kind, item.entry.layer) for item in packers[0].plan]
+    for packer in packers[1:]:
+        if [(item.entry.kind, item.entry.layer) for item in packer.plan] != identity:
+            raise PackFailure(f"rank {packer.tp_rank} plan order differs from rank "
+                              f"{packers[0].tp_rank}")
+    layouts = [plan_layout(packer, header_extra, revision) for packer in packers]
+    temporaries: List[str] = []
+    outs = []
+    try:
+        for path in paths:
+            fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial",
+                                             dir=path.parent)
+            os.close(fd)
+            temporaries.append(temporary)
+        outs = [open(temporary, "r+b") for temporary in temporaries]
+        for out, packer, (header, directory_offset, _) in zip(outs, packers, layouts):
+            write_prefix(out, packer, header, directory_offset)
+        pending = 0
+        for index in range(len(identity)):
+            for out, packer in zip(outs, packers):
+                item = packer.plan[index]
+                emit_item(out, item)
+                pending += item.entry.payload_bytes + item.entry.scale_bytes
+            if drop_output_cache and pending >= sync_bytes:
+                for out in outs:
+                    out.flush()
+                    os.fdatasync(out.fileno())
+                    os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+                pending = 0
+        for out, (_, _, file_bytes) in zip(outs, layouts):
+            out.truncate(file_bytes)
+            out.flush()
+            os.fsync(out.fileno())
+            if drop_output_cache:
+                os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            out.close()
+        outs = []
+        for temporary, path in zip(temporaries, paths):
+            publish(temporary, path)
+    finally:
+        for out in outs:
+            out.close()
+        for temporary in temporaries:
+            os.unlink(temporary)
+    for packer, path, (_, _, file_bytes) in zip(packers, paths, layouts):
+        print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes "
+              f"(tp{packer.tp_degree} rank {packer.tp_rank})")
+    return [file_bytes for _, _, file_bytes in layouts]
+
+
+def emit(packer: Packer, path: Path, header_extra: Dict[str, Any], revision: str = REVISION) -> None:
     if path.exists():
         raise PackFailure(f"output already exists; choose a new artifact path: {path}")
     fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
     os.close(fd)
     try:
-        file_bytes = _emit(packer, Path(temporary), header_extra)
-        with open(temporary, "rb") as source:
-            os.fsync(source.fileno())
-        # An exclusive link preserves an existing artifact even across a race.
-        os.link(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        file_bytes = _emit(packer, Path(temporary), header_extra, revision)
+        publish(temporary, path)
     finally:
         os.unlink(temporary)
     print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes "
@@ -962,6 +1079,16 @@ def validate_stage(stage_count, stage_index, first_layer, layer_count,
         raise PackFailure("head/MTP ownership requires the final stage and layer")
 
 
+def mtp_pack_name(tp_degree, tp_rank):
+    return f"glm5_next_mtp.tp{tp_degree}.rank{tp_rank}.g5nsp"
+
+
+def validate_mtp_only(args):
+    if (args.mtp or args.owns_embedding or args.owns_head or args.first_layer != 0
+            or args.layer_count != LAYERS or args.stage_count != 1 or args.stage_index != 0):
+        raise PackFailure("--mtp-only builds the layer-45 MTP pack alone; it takes no layer span, stage or ownership options")
+
+
 def stage_pack_name(tp_degree, tp_rank, stage_count, stage_index):
     pipeline = f".pp{stage_count}.stage{stage_index}" if stage_count != 1 else ""
     return f"glm5_next_stage.tp{tp_degree}{pipeline}.rank{tp_rank}.g5nsp"
@@ -976,35 +1103,65 @@ def main() -> int:
     parser.add_argument("--stage-count", type=int, default=1)
     parser.add_argument("--stage-index", type=int, default=0)
     parser.add_argument("--mtp", action="store_true")
+    parser.add_argument("--mtp-only", action="store_true",
+                        help="emit only the layer-45 MTP pack per rank (glm5_next_mtp.tpN.rankR.g5nsp) for the resident MTP drafter")
     parser.add_argument("--owns-embedding", action="store_true")
     parser.add_argument("--owns-head", action="store_true")
     parser.add_argument("--tp-rank", type=int, default=0)
     parser.add_argument("--tp-degree", type=int, default=1)
     parser.add_argument("--tp-all", type=int, default=0,
-                        help="emit all N rank packs in one process (shared dequant cache)")
+                        help="emit all N rank packs in one pass: entry i of every rank before "
+                             "entry i+1, so each source tensor is read once while it is cached")
+    parser.add_argument("--model-revision", default=REVISION,
+                        help=f"header model revision (default {REVISION}, the FP8 release)")
+    parser.add_argument("--spine-cache-gib", type=float, default=8.0,
+                        help="dequantized spine tensor cache cap")
+    parser.add_argument("--drop-output-cache", action="store_true",
+                        help="--tp-all only: fdatasync and DONTNEED the outputs every 2 GiB")
+    parser.add_argument("--expert-codec", choices=sorted(EXPERT_CODEC_NAMES), default=None,
+                        help="header expert codec; required only for a pack without routed-expert "
+                             "entries, otherwise it must equal the source-driven codec")
     parser.add_argument("--dry-plan", action="store_true",
                         help="plan and print the inventory without writing")
     args = parser.parse_args()
-    validate_stage(args.stage_count, args.stage_index, args.first_layer,
-                   args.layer_count, args.owns_embedding, args.owns_head, args.mtp)
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
+    if args.mtp_only:
+        validate_mtp_only(args)
+    else:
+        validate_stage(args.stage_count, args.stage_index, args.first_layer,
+                       args.layer_count, args.owns_embedding, args.owns_head, args.mtp)
 
-    source = SourceReader(Path(args.source))
+    if args.drop_output_cache and not args.tp_all:
+        parser.error("--drop-output-cache applies to --tp-all")
+    source = SourceReader(Path(args.source), int(args.spine_cache_gib * 1024 ** 3))
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    degree = args.tp_all or args.tp_degree
     ranks = range(args.tp_all) if args.tp_all else [args.tp_rank]
-    for rank in ranks:
-        packer = Packer(source, args.tp_all or args.tp_degree, rank,
-                        args.first_layer, args.layer_count, args.mtp,
-                        args.owns_embedding, args.owns_head)
-        if args.dry_plan:
+    requested = None if args.expert_codec is None else EXPERT_CODEC_NAMES[args.expert_codec]
+    if args.mtp_only:
+        packers = [Packer(source, degree, rank, MTP_LAYER, 0, True, False, False, requested)
+                   for rank in ranks]
+        header = dict(stage_count=1, stage_index=0, first_layer=MTP_LAYER, layer_count=1, flags=1)
+        paths = [out_dir / mtp_pack_name(degree, rank) for rank in ranks]
+    else:
+        packers = [Packer(source, degree, rank, args.first_layer, args.layer_count, args.mtp,
+                          args.owns_embedding, args.owns_head, requested) for rank in ranks]
+        header = dict(stage_count=args.stage_count, stage_index=args.stage_index,
+                      first_layer=args.first_layer, layer_count=args.layer_count,
+                      flags=1 if args.mtp else 0)
+        paths = [out_dir / stage_pack_name(degree, rank, args.stage_count, args.stage_index)
+                 for rank in ranks]
+    if args.dry_plan:
+        for packer, path in zip(packers, paths):
             packer.build()
-            print(f"rank {rank}: {len(packer.plan)} tensors planned")
-            continue
-        emit(packer, out_dir / stage_pack_name(args.tp_all or args.tp_degree,
-                                              rank, args.stage_count, args.stage_index),
-             dict(stage_count=args.stage_count, stage_index=args.stage_index, first_layer=args.first_layer,
-                  layer_count=args.layer_count,
-                  flags=1 if args.mtp else 0))
+            planned = sum(item.entry.payload_bytes + item.entry.scale_bytes for item in packer.plan)
+            print(f"rank {packer.tp_rank}: {len(packer.plan)} tensors planned, {planned} payload bytes, "
+                  f"header expert codec {packer.header_expert_codec()} -> {path.name}")
+    elif args.tp_all:
+        emit_ranks(packers, paths, header, args.model_revision, args.drop_output_cache)
+    else:
+        emit(packers[0], paths[0], header, args.model_revision)
     source.close()
     return 0
 

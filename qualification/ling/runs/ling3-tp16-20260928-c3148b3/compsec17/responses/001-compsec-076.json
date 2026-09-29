@@ -1,0 +1,46 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:8437/v1/completions",
+  "fixture_prompt_token_count": 372,
+  "prompt_sha256": "4bd40d46a7750889a3ca5cab83db44fc58174e142aa6752becc289a3f483b049",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "20",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 441,
+   "completion_tokens": 3,
+   "total_tokens": 444
+  },
+  "tokens": [
+   17,
+   15,
+   156895
+  ],
+  "status": 0
+ },
+ "decoded_text": "20",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "20",
+  "passed": true,
+  "elapsed_ms": 7439.5,
+  "output_sha256": "f5ca38f748a1d6eaf726b8a42fb575c3c71f1864a8143301782de13da2d9202b",
+  "generated_token_count": 3,
+  "status": 0
+ }
+}

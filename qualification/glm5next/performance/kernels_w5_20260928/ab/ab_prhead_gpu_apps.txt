@@ -1,0 +1,4 @@
+pid, process_name, used_gpu_memory [MiB]
+2352069, /home/sparke/sparkdata/weightd/sparkpipe_weightd, 54008 MiB
+587243, ./bin/sparkpipe_model_residentd, 12363 MiB
+1722546, ./bin/sparkpipe_model_residentd, 6597 MiB

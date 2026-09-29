@@ -144,9 +144,14 @@ The policy repairs and verifies:
 
 ### Ceph quarantine
 
-Ceph is not a fleet-supported storage path. Before changing Ceph state, the
-controller fails closed if it finds a Ceph/NFS/CIFS mount, RBD mapping, remote
-filesystem entry, iSCSI node, or NVMe-oF discovery configuration. With that
+This playbook treats Ceph as unsupported. Before changing Ceph state, the
+controller fails closed on remote-storage configuration: a non-comment
+`/etc/ceph/rbdmap` entry, an `/etc/fstab` entry of type `nfs`, `nfs4`, `cifs`
+or `ceph` or with `_netdev`, a file under `/etc/iscsi/nodes`, or an
+`/etc/nvme/discovery.conf` entry (`tools/devcycle/ds4_spark_brickproof.py:676-693`).
+It does not inspect live mounts. A `ceph-fuse@` mount started by its unit
+passes the precheck and is then stopped and masked (`CEPH_MASK_UNITS`,
+`ds4_spark_brickproof.py:44-61`; `remove_ceph_startup`, `:617-649`). With the
 precheck clear, apply performs the complete quarantine:
 
 - stop every active `ceph*.service` and `ceph*.target`
@@ -161,6 +166,14 @@ The audit rejects any active Ceph unit, process, or labeled container, startup
 link, non-mask Ceph systemd artifact, unmasked Ceph unit, legacy marker, or
 obsolete SparkPipe optional-storage file. Re-enabling Ceph requires a separate
 tested design and deployment; it is not a fleet-recovery operation.
+
+**Open policy conflict.** Other current material uses Ceph at `/mnt/model-warm`
+as the pack source: the GLM 5.3 Flash contract (`source.path_on_sparks` in
+`model_contracts/glm53_flash_authoritative.json`) and the fleet runbook's
+warm-storage law ([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#9-laws)).
+spark0 had `/mnt/model-warm` mounted on 2026-09-28 (read-only check). Until the
+operator rules on Ceph, do not run stage 2 on a node that mounts
+`/mnt/model-warm` unless losing that mount is intended.
 
 ## Fleet-duty acceptance
 

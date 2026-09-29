@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -65,7 +66,7 @@ def deployment_gates(deployment, runtime_root, socket, failures):
     # first-decode failure). The list must hold the authoritative contract's
     # end_of_text id, never a hardcoded copy.
     contract = json.loads((ROOT / "model_contracts/k3_authoritative.json").read_text())
-    expected_eos = [int(contract["tokens"]["end_of_text"])]
+    expected_eos = sorted(int(value) for value in contract["eos_token_ids"].values())
     check(deployment.get("eos_token_ids") == expected_eos, failures,
           f"deployment eos_token_ids must be {expected_eos} from the "
           f"authoritative contract, got {deployment.get('eos_token_ids')!r}")
@@ -135,8 +136,8 @@ def adapter_gates(config, rank, failures, per_host_ports):
                     f"{lane.TP_COLLECTIVE_PORT + partner}")
         check(peers[peer_index] == expected, failures,
               f"{host}: STEP peer {peer_index} {peers[peer_index]} != {expected}")
-    per_host_ports.setdefault(host, set()).add(collective["listen_port"])
-    per_host_ports[host].add(lane.CONTROL_BASE + rank)
+    per_host_ports.setdefault(host, []).append(collective["listen_port"])
+    per_host_ports[host].append(lane.CONTROL_BASE + rank)
 
     device = config["device_collective"]
     check(device["local_host"] == host, failures, f"{host}: device local_host")
@@ -160,8 +161,8 @@ def adapter_gates(config, rank, failures, per_host_ports):
                       f"{host}: session value {value} used twice")
                 sessions.add(value)
                 if a == tp:
-                    per_host_ports[host].add(value)
-    per_host_ports[host].add(device["listen_port"])
+                    per_host_ports[host].append(value)
+    per_host_ports[host].append(device["listen_port"])
 
 
 def wrapper_contract_gates(failures):
@@ -268,9 +269,11 @@ def main() -> int:
               "device collective identifiers must differ per PP stage")
 
         for host, ports in per_host_ports.items():
-            check(len(ports) == len(set(ports)), failures,
-                  f"{host}: duplicate listener {ports - set(ports)}")
-            outside = ports - ALL_LANE_PORTS
+            duplicates = sorted(port for port, count in Counter(ports).items()
+                                if count > 1)
+            check(not duplicates, failures,
+                  f"{host}: duplicate listener {duplicates}")
+            outside = set(ports) - ALL_LANE_PORTS
             check(not outside, failures,
                   f"{host}: ports outside lane 3 blocks: {sorted(outside)}")
 
@@ -286,10 +289,12 @@ def main() -> int:
         check(check_run.returncode == 0, failures,
               f"--check failed: {check_run.stderr.strip()}")
 
+    check(shutil.which("bash") is not None, failures,
+          "bash is required to check the wrapper scripts")
     for script in ("tools/k3_multidev_run_family.sh",
                    "tools/k3_multidev_experts_manifest.sh"):
         if shutil.which("bash") is None:
-            continue
+            break
         syntax = subprocess.run(
             ["bash", "-n", str(ROOT / script)],
             capture_output=True, text=True)

@@ -887,7 +887,7 @@ from pathlib import Path
 # families hit it at merge by construction. 215868 exact.
 # ccn lane merge (PR742): env-soup eviction + dump deletes +
 # verbatim-motion extraction + validator tables; nets −2,226. 214793 exact.
-# jit-safety lane: kimi's four disqualifying JIT-KV bugs (docs/
+# jit-safety lane: kimi's four disqualifying JIT-KV bugs (docs/archive/
 # JIT_KV_RESPONSE.md B1-B4), each the cheapest safe design for its hazard:
 # B1 the eviction write-back DEGRADE path in cache/kv_cache.c (ENOSPC drops
 # the block and marks backing invalid instead of wedging admission; fault-
@@ -970,7 +970,7 @@ from pathlib import Path
 # digest-verified page-out through ReserveWrite/CommitWrite, page-in with
 # landing re-verification and a landing buffer that releases tier staging
 # before make-room, admission with exact overflow arithmetic and the
-# queue-not-wedge rule of docs/JIT_KV_RESPONSE.md C1) +
+# queue-not-wedge rule of docs/archive/JIT_KV_RESPONSE.md C1) +
 # SparkKvCacheArenaMarkParkedBlockResident (cache/kv_cache.c +13, the
 # restore-half primitive: re-attach a parked block; MarkBlockResident
 # refuses backing-valid blocks by design, so the pager path had no way
@@ -1020,7 +1020,7 @@ from pathlib import Path
 # (excluded). Makefile/sources.mk carry the registration. 229008 exact.
 CEILING = 280192
 # The jikv-c5 lane (2026-08-29) lands the last two named JIT-KV remainders
-# (docs/JIT_KV_RESPONSE.md C5+W2) in the pager/tier path. C5's reuse-value
+# (docs/archive/JIT_KV_RESPONSE.md C5+W2) in the pager/tier path. C5's reuse-value
 # park policy: the victim rank (cache/kv_cache.c: the keepness helper - one
 # restore-history term, one dirtiness term, recency residual - plus the
 # shared is-better-victim comparator both selectors now call) + the block's
@@ -1045,7 +1045,7 @@ CEILING = 280192
 CEILING = 228248
 # The JIT-KV family wiring (lane/jikv-wire, 2026-08-29) connects the slice
 # to its reference family, per the slice report's remaining-work list and
-# docs/JIT_KV_RESPONSE.md W1+C2: the decode stage module's frame-op seam
+# docs/archive/JIT_KV_RESPONSE.md W1+C2: the decode stage module's frame-op seam
 # (modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c/.h: the
 # KV_BLOCKS_SAVE_OUT 0x1000 / KV_BLOCKS_RESTORE_IN 0x2000 function
 # pointers the pager's SparkKvPagerBlockView contract calls, staging each
@@ -1097,7 +1097,7 @@ CEILING = 228248
 # partial must be bit-identical across ranks) - the instrument that
 # separates a collective-path defect from a per-rank partial-math one.
 # 222250 exact.
-# The jikv-c3c4 lane (2026-08-29) lands docs/JIT_KV_RESPONSE.md C3+C4 in the
+# The jikv-c3c4 lane (2026-08-29) lands docs/archive/JIT_KV_RESPONSE.md C3+C4 in the
 # JIT-KV pager: C3's MEASURED tier bandwidth (the injected-clock EMA over
 # observed page-in/page-out throughput, folded by the async park worker's
 # completion records too, consumed by the admission arithmetic as the
@@ -1559,6 +1559,9 @@ CEILING = 285179
 # (docs/AGENT_LANE_BRIEFS/reports/wave-acc2-accuracy-2026-09-13.md) - that
 # drift is owned by the landings that produced it, not by this lane.
 CEILING = 375598
+CEILING = 379357
+CEILING = 379716
+CEILING = 379779
 
 
 ROOT = Path(__file__).resolve().parent.parent

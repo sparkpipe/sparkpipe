@@ -1,0 +1,2 @@
+utilization.gpu [%], clocks.current.sm [MHz]
+55 %, 2437 MHz
