@@ -41,7 +41,7 @@ static void SparkDsv4TestNonzeroPositionRequiresExactContinuation(void)
 	assert(requires_reset == 0u);
 }
 
-static void SparkDsv4TestPositionZeroRebindsDifferentSequence(void)
+static void SparkDsv4TestPositionZeroRequiresReleaseBeforeRebind(void)
 {
 	uint64_t lane_sequence,next_position;
 	uint8_t requires_reset,touched;
@@ -49,6 +49,13 @@ static void SparkDsv4TestPositionZeroRebindsDifferentSequence(void)
 	next_position = UINT64_C(416);
 	requires_reset = 0u;
 	touched = 0u;
+	assert(SparkDsv4AdvanceLaneContinuity(UINT64_C(176001),0u,&lane_sequence,&next_position,&touched,&requires_reset) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(lane_sequence == UINT64_C(176000));
+	assert(next_position == UINT64_C(416));
+	assert(touched == 0u);
+	assert(requires_reset == 0u);
+	lane_sequence = 0u;
+	next_position = 0u;
 	assert(SparkDsv4AdvanceLaneContinuity(UINT64_C(176001),0u,&lane_sequence,&next_position,&touched,&requires_reset) == SPARK_STATUS_OK);
 	assert(lane_sequence == UINT64_C(176001));
 	assert(next_position == 1u);
@@ -60,6 +67,6 @@ int main(void)
 {
 	SparkDsv4TestPositionZeroReusesSameSequenceSlot();
 	SparkDsv4TestNonzeroPositionRequiresExactContinuation();
-	SparkDsv4TestPositionZeroRebindsDifferentSequence();
+	SparkDsv4TestPositionZeroRequiresReleaseBeforeRebind();
 	return(0);
 }

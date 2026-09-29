@@ -848,6 +848,8 @@ static SparkStatus SparkLingReleaseLanes(SparkLingModuleState *state,const Spark
 		status = SparkKvPageCacheReleaseLane(&state->kv_page_cache,lane->resident_sequence_slot,lane->sequence_id);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
+		if ( lane->resident_sequence_slot < state->resident_sequence_capacity )
+			atomic_store_explicit(&state->lane_bound[lane->resident_sequence_slot],0u,memory_order_release);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1000,9 +1002,10 @@ typedef struct SparkLingTpChain
 	SparkLingModuleState *state;
 	SparkLingExecutionSlot *slot;
 	uint32_t slot_index;
-	SparkModelDriverFrame *frame;
 	const SparkLingResidentDecodeStageFrameContext *context;
 	const SparkLingResidentDecodeStageBatchView *batch;
+	SparkLingResidentDecodeStageFrameContext context_copy;
+	SparkLingResidentDecodeStageBatchView batch_copy;
 	SparkLingCudaWave wave;
 	uint32_t first_row;
 	uint32_t wave_rows;
@@ -1069,7 +1072,7 @@ static void SparkLingBuildWave(SparkLingTpChain *chain)
 	wave->kda_k_window_pool = state->kda_k_window_pool;
 	wave->kda_v_window_pool = state->kda_v_window_pool;
 	wave->kda_window_layer_stride_bytes = state->kda_window_layer_stride_bytes;
-	wave->kda_state_index = state->kda_state_index_device;
+	wave->kda_state_index = slot->resident_slots;
 	wave->kda_layer_count = state->kda_layer_count;
 	wave->page_table = state->page_table;
 	wave->multiprocessor_count = state->multiprocessor_count;
@@ -1287,6 +1290,9 @@ static void SparkLingTpChainFail(SparkLingTpChain *chain,SparkStatus status)
 	SparkLingAsyncCompletion *async;
 	state = chain->state;
 	(void)cudaStreamSynchronize((cudaStream_t)chain->slot->stream);
+	fprintf(stderr,"ling chain_failed rank=%u stage=%u layer=%u status=%u cuda=%s\n",
+		chain->wave.tp_rank,chain->stage,chain->wave.first_layer_index + chain->next_layer,
+		(unsigned)status,cudaGetErrorString(cudaGetLastError()));
 	async = &state->completions[chain->slot_index];
 	async->completion.status = status;
 	chain->active = 0u;
@@ -1303,7 +1309,12 @@ static SparkStatus SparkLingTpChainLaunchLayerStage(SparkLingTpChain *chain,uint
 	else
 		launch = SparkLingLaunchCudaLayerMlp(&chain->wave,chain->next_layer);
 	if ( launch != 0 )
+	{
+		fprintf(stderr,"ling layer_launch_failed rank=%u layer=%u stage=%u launch=%d\n",
+			chain->wave.tp_rank,chain->wave.first_layer_index + chain->next_layer,
+			reduce_stage,(int)launch);
 		return(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	chain->stage = reduce_stage;
 	launch_status = SparkLingModuleReduceAttentionOut(chain,chain->slot->attention_out_bf16);
 	if ( launch_status != SPARK_STATUS_OK )
@@ -1313,6 +1324,7 @@ static SparkStatus SparkLingTpChainLaunchLayerStage(SparkLingTpChain *chain,uint
 
 static void SparkLingTpChainStageBegin(SparkLingTpChain *chain)
 {
+	SparkStatus launch_status;
 	SparkLingBuildWave(chain);
 	SparkLingT1Wave(&chain->wave);
 	if ( SparkLingLaunchCudaWaveBegin(&chain->wave) != 0 )
@@ -1322,7 +1334,14 @@ static void SparkLingTpChainStageBegin(SparkLingTpChain *chain)
 	}
 	chain->stage = SPARK_LING_CHAIN_STAGE_ATTENTION;
 	chain->next_layer = 0u;
-	SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+	if ( chain->state->owns_embedding == 0u )
+	{
+		SparkLingTpChainAdvance(chain,SPARK_STATUS_OK);
+		return;
+	}
+	launch_status = SparkLingModuleReduceAttentionOut(chain,chain->slot->hidden_bf16);
+	if ( launch_status != SPARK_STATUS_OK )
+		SparkLingTpChainFail(chain,launch_status);
 }
 
 static void SparkLingTpChainStageHead(SparkLingTpChain *chain)
@@ -1472,6 +1491,9 @@ static void CUDART_CB SparkLingCompleteAsync(void *context)
 	slot = &state->slots[async->slot_index];
 	if ( slot->host_kv_access_error[0] != 0u )
 	{
+		fprintf(stderr,"ling kv_access_error slot=%u words=%u,%u,%u,%u\n",async->slot_index,
+			slot->host_kv_access_error[0],slot->host_kv_access_error[1],
+			slot->host_kv_access_error[2],slot->host_kv_access_error[3]);
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
 	}
 	if ( async->completion.status == SPARK_STATUS_OK )
@@ -1568,8 +1590,14 @@ static SparkStatus SparkLingExecuteBatch(
 	}
 	SparkLingPrepareAsyncCompletion(state,frame,batch,simulated_bound,simulated_sequence,simulated_next,slot_index);
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_LING_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
-	status = SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"kv_access_reset");
+	status = SPARK_STATUS_OK;
+	if ( state->tp_degree > 1u && state->tp_collective_disabled == 0u && state->tp_device_collective_initialized != 0u )
+		status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective,frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+	if ( status == SPARK_STATUS_OK )
+	{
+		error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_LING_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
+		status = SparkStageModuleCudaStatus(SPARK_LING_MODULE_TAG,error,"kv_access_reset");
+	}
 	wave_rows = status == SPARK_STATUS_OK ? SparkLingRoundMajorWaveRows(batch,0u) : 0u;
 	if ( status == SPARK_STATUS_OK && wave_rows == 0u )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
@@ -1591,9 +1619,15 @@ static SparkStatus SparkLingExecuteBatch(
 	chain->state = state;
 	chain->slot = slot;
 	chain->slot_index = slot_index;
-	chain->frame = frame;
-	chain->context = context;
-	chain->batch = batch;
+	chain->batch_copy = *batch;
+	chain->batch_copy.token_ids = 0;
+	chain->batch_copy.row_positions = 0;
+	chain->batch_copy.row_sequence_ids = 0;
+	chain->batch_copy.row_resident_slots = slot->host_resident_slots;
+	chain->context_copy = *context;
+	chain->context_copy.batch = &chain->batch_copy;
+	chain->context = &chain->context_copy;
+	chain->batch = &chain->batch_copy;
 	chain->first_row = 0u;
 	chain->wave_rows = wave_rows;
 	chain->next_wave_row = wave_rows;
@@ -1604,6 +1638,8 @@ static SparkStatus SparkLingExecuteBatch(
 }
 
 #include "sparkpipe/family/module/spark_module_entry_execute_laguna.h"
+
+#include "sparkpipe/family/module/spark_module_reset_page_cache.h"
 
 SparkStatus SparkLingResidentDecodeStageAdmit(
 	void *module_state,
@@ -1617,7 +1653,17 @@ SparkStatus SparkLingResidentDecodeStageAdmit(
 	state = (SparkLingModuleState *)module_state;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
+		return(SparkLingResetPageCache(state,request,decision));
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
+	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
+	{
+		if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u || request->new_token_count != 0u )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		SparkModelDriverInitializeAdmissionDecision(decision);
+		decision->available_dispatch_slot_count = available;
+		return(SparkLingAdmissionPredicate(state,request,decision));
+	}
 	memset(&table,0,sizeof(table));
 	table.abi_version = SPARK_ADMISSION_ABI_VERSION;
 	table.descriptor_bytes = (uint32_t)sizeof(table);

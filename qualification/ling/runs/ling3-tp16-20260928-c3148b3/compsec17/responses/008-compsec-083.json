@@ -1,0 +1,49 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:8437/v1/completions",
+  "fixture_prompt_token_count": 284,
+  "prompt_sha256": "22136765bc2290c87b89a7384828e46cf4bf34de3fe18eebb949ef59d7d47ea9",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "Answer: 11",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 338,
+   "completion_tokens": 6,
+   "total_tokens": 344
+  },
+  "tokens": [
+   19002,
+   25,
+   220,
+   16,
+   16,
+   156895
+  ],
+  "status": 0
+ },
+ "decoded_text": "Answer: 11",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 5554.7,
+  "output_sha256": "22ea7d7896a20f103f297eee449d5b49d6db94f5c1813a2b36acf2134945cbe5",
+  "generated_token_count": 6,
+  "status": 0
+ }
+}

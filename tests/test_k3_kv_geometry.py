@@ -27,13 +27,14 @@ def defines(path, pattern):
     for name, value in re.findall(pattern, text):
         expression = re.sub(r"\(u?int\d+_t\)", "", value.strip())
         expression = re.sub(r"(?<=\d)ull|(?<=\d)u", "", expression)
+        referenced = re.findall(r"SPARK_K3_\w+|K3_\w+", expression)
+        if any(reference not in values for reference in referenced):
+            continue
         expression = re.sub(r"SPARK_K3_\w+|K3_\w+",
-                            lambda m: str(values.get(m.group(0), 0)),
-                            expression)
-        try:
-            values[name] = int(eval(expression))
-        except Exception:
-            pass
+                            lambda m: str(values[m.group(0)]), expression)
+        if re.fullmatch(r"[\d\s()+\-*/%<>]+", expression) is None:
+            continue
+        values[name] = int(eval(expression.replace("/", "//")))
     return values
 
 
@@ -95,12 +96,12 @@ def main():
          "K3_KDA_A_LOG_SOURCE_HEADS"),
     ]
     for name, expected in contract_pairs:
-        if geometry.get(name) != expected:
+        if geometry.get(name) is None or geometry.get(name) != expected:
             print(f"  FAIL {name}={geometry.get(name)} but the authoritative "
                   f"contract says {expected}")
             failures += 1
     for name, kernel in kernel_pairs:
-        if geometry.get(name) != config.get(kernel):
+        if geometry.get(name) is None or geometry.get(name) != config.get(kernel):
             print(f"  FAIL {name}={geometry.get(name)} but {kernel}="
                   f"{config.get(kernel)}; the tiers disagree")
             failures += 1
@@ -125,7 +126,7 @@ def main():
     else:
         print("  FAIL pp stage parameters missing from the defines layer")
         failures += 1
-    owned = set(geometry)
+    owned = set(re.findall(r"#define (SPARK_K3_\w+)\b", DEFINES.read_text()))
     for shim in SHIMS:
         text = shim.read_text()
         for name in owned:

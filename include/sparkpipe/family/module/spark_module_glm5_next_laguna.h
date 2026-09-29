@@ -29,7 +29,7 @@ static SparkStatus SPARK_FAMILY(PackValidateRanges)(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SPARK_FAMILY(ManifestPlane)(const SparkWeightdManifest *manifest,const SPARK_FAMILY(StagePackEntry) *entry,uint32_t plane)
+static inline SparkStatus SPARK_FAMILY(ManifestPlane)(const SparkWeightdManifest *manifest,const SPARK_FAMILY(StagePackEntry) *entry,uint32_t plane)
 {
 	const SparkWeightdRangeGroup *group;
 	const SparkWeightdRange *range;

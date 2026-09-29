@@ -76,6 +76,10 @@ import os
 import re
 import struct
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fleet_weightd import fleet_weightd_socket_error  # noqa: E402
 
 LANE = 9
 WORLD = 16
@@ -364,8 +368,9 @@ def main() -> int:
         raise SystemExit("runtime root must be the private queue namespace")
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv backing must be a finite positive cap")
-    if not arguments.weightd_socket.startswith("/run/sparkpipe-weightd-shared/"):
-        raise SystemExit("weightd socket must be the operator's shared unit")
+    socket_error = fleet_weightd_socket_error(arguments.weightd_socket)
+    if socket_error:
+        raise SystemExit(socket_error)
 
     files = render(arguments.rank, arguments.runtime_root,
                    arguments.weightd_socket, arguments.codec,

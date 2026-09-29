@@ -28,6 +28,8 @@ typedef struct MockInflight
 	uint32_t committed;
 	uint32_t requires_decision;
 	uint32_t decision_kind;
+	uint32_t carries_prefix;
+	uint32_t carries_stale_prefix;
 	SparkModelServingSubmission submission;
 } MockInflight;
 
@@ -66,6 +68,9 @@ struct SparkModelResidentClient
 	uint32_t is_final_rank;
 	SparkStatus scripted_submit_status;
 	SparkStatus scripted_call_status[MOCK_CALL_COUNT];
+	SparkStatus scripted_prefix_result_status;
+	uint32_t scripted_prefix_result_count;
+	uint64_t scripted_stale_prefix_request_id;
 };
 
 static SparkModelResidentClient *mock_registry[MOCK_RESIDENT_MAX_RANKS];
@@ -137,6 +142,40 @@ void MockResidentClientScriptSubmitStatus(uint32_t stage_index, SparkStatus stat
 	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
 	if ( c != 0 )
 		c->scripted_submit_status = status;
+}
+
+void MockResidentClientScriptPrefixResult(uint32_t stage_index,SparkStatus status,uint32_t count)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	if ( c != 0 )
+	{
+		c->scripted_prefix_result_status = status;
+		c->scripted_prefix_result_count = count;
+	}
+}
+
+void MockResidentClientScriptStalePrefixRequest(uint32_t stage_index,uint64_t request_id)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	if ( c != 0 )
+		c->scripted_stale_prefix_request_id = request_id;
+}
+
+static SparkStatus MockResidentClientScriptedResult(SparkModelResidentClient *c,uint64_t submission_id,uint32_t kind)
+{
+	uint32_t k;
+	for (k=0u; kind == MOCK_EVENT_RESULT && k<c->inflight_count; k++)
+		if ( c->inflight[k].submission_id == submission_id && c->inflight[k].carries_stale_prefix != 0u )
+			return(SPARK_STATUS_NOT_FOUND);
+	if ( kind != MOCK_EVENT_RESULT || c->scripted_prefix_result_count == 0u )
+		return(SPARK_STATUS_OK);
+	for (k=0u; k<c->inflight_count; k++)
+		if ( c->inflight[k].submission_id == submission_id && c->inflight[k].carries_prefix != 0u )
+		{
+			c->scripted_prefix_result_count--;
+			return(c->scripted_prefix_result_status);
+		}
+	return(SPARK_STATUS_OK);
 }
 
 void MockResidentClientScriptCallStatus(uint32_t stage_index, uint32_t kind, SparkStatus status)
@@ -370,6 +409,11 @@ static SparkStatus MockResidentClientEnqueue(
 		client->last_lane = submission->lanes[0];
 	for (lane=0u; client->stage_index == 0u && submission->lanes != 0 && lane<submission->lane_count && mock_lane_log_count<256u; lane++)
 		mock_lane_log[mock_lane_log_count++] = submission->lanes[lane];
+	for (lane=0u; submission->lanes != 0 && lane<submission->lane_count; lane++)
+	{
+		slot->carries_prefix |= (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u ? 1u : 0u;
+		slot->carries_stale_prefix |= (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u && client->scripted_stale_prefix_request_id != 0u && submission->lanes[lane].request_id == client->scripted_stale_prefix_request_id ? 1u : 0u;
+	}
 	if ( MockTraceEnabled() )
 		fprintf(stderr,"MOCK rank=%u %s id=%llu kind=%u rows=%u seq=%llu inflight=%u\n",
 			client->stage_index,op,
@@ -657,7 +701,7 @@ static uint32_t MockResidentClientDriveKind(uint32_t kind)
 			uint64_t id = MockResidentClientPendingEvent(c->stage_index,kind,0u);
 			if ( id == 0u )
 				break;
-			drove += MockResidentClientDeliverEvent(c->stage_index,id,kind,SPARK_STATUS_OK,1u);
+			drove += MockResidentClientDeliverEvent(c->stage_index,id,kind,MockResidentClientScriptedResult(c,id,kind),1u);
 		}
 	}
 	return(drove);

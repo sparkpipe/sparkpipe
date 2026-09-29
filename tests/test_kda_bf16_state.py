@@ -29,13 +29,15 @@ line the harness prints:
 """
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from host_cuda_compiler import host_cuda_cxx
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "kda_bf16_state_host.cu"
-BINARY = Path("/tmp") / "lm_kda_bf16_state_host"
+WORK_DIRECTORY = tempfile.TemporaryDirectory()
+BINARY = Path(WORK_DIRECTORY.name) / "lm_kda_bf16_state_host"
 
 
 def build():

@@ -95,6 +95,7 @@ test_host: contract
 engram_probe: contract
 	mkdir -p $(BUILD_DIRECTORY)
 	$(CC) $(CFLAGS) $(MODULE_POSIX_FLAGS) $(MODULE_INCLUDE_FLAGS) \
+		-I"$(CUDA_HOME)/include" \
 		-DSPARK_DSV41_FLASH_MODEL_REVISION=\"$(MODEL_REVISION)\" \
 		source/spark_dsv41_flash_engram_access.c \
 		tools/dsv41_flash_engram_probe.c \
@@ -103,6 +104,8 @@ engram_probe: contract
 		../../src/spark_status.c \
 		../../src/spark_sha256.c \
 		../../src/spark_ck128.c \
+		-lcuda -lcudart -lm -ldl -pthread \
+		-L"$(CUDA_HOME)/lib64" -L"$(CUDA_HOME)/targets/sbsa-linux/lib" \
 		-o $(BUILD_DIRECTORY)/dsv41_flash_engram_probe
 
 # Real-pack lazy-attach timing harness (the M7 lane tool, now in-tree):

@@ -8,11 +8,11 @@ static int32_t SPARK_FAMILY_BARE(LayerMoeValidate)(
 {
     using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
 
-    static_assert(ExpertCodec != SPARK_WEIGHT_CODEC_BF16,
-        "GLM 5.2 routed experts require an explicit compressed codec");
-    static_assert(SPARK_FAMILY_BARE_CONST(HIDDEN) % ExpertFormat::kScaleGroup == 0u &&
-        SPARK_FAMILY_BARE_CONST(EXPERT_INTERMEDIATE) % ExpertFormat::kScaleGroup == 0u,
-        "GLM 5.2 expert dimensions must contain complete codec scale groups");
+    static_assert(ExpertFormat::kScaleGroup == 0u ||
+        (SPARK_FAMILY_BARE_CONST(HIDDEN) % ExpertFormat::kScaleGroup == 0u &&
+        SPARK_FAMILY_BARE_CONST(EXPERT_INTERMEDIATE) %
+        ExpertFormat::kScaleGroup == 0u),
+        "routed expert dimensions must contain complete codec scale groups");
 
     if (buffers == 0 || rows == 0u ||
         packed_rows != rows * SPARK_FAMILY_BARE_CONST(TOP_K) ||

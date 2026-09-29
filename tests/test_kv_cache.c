@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "sparkpipe/spark_kv_cache.h"
@@ -21,6 +22,7 @@
 #define SPARK_TEST_RESIDENT_SLOT_COUNT 2u
 #define SPARK_TEST_BLOCK_TOKENS 4u
 #define SPARK_TEST_BLOCK_BYTES 32u
+#define SPARK_TEST_BUSY_LIMIT_NANOSECONDS UINT64_C(10000000000)
 
 typedef struct SparkTestKvFixture
 {
@@ -34,6 +36,26 @@ typedef struct SparkTestKvFixture
 	uint32_t evicted_logical_block;
 }
 SparkTestKvFixture;
+
+static uint64_t spark_test_busy_deadline;
+
+static uint64_t SparkTestNowNanoseconds(void)
+{
+	struct timespec now;
+	assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
+}
+
+static void SparkTestBusyStart(void)
+{
+	spark_test_busy_deadline = SparkTestNowNanoseconds() + SPARK_TEST_BUSY_LIMIT_NANOSECONDS;
+}
+
+static void SparkTestYieldBusy(void)
+{
+	assert(SparkTestNowNanoseconds() < spark_test_busy_deadline);
+	(void)sched_yield();
+}
 
 static SparkStatus SparkTestKvEvict(
 	void *context,
@@ -268,9 +290,10 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 		SPARK_STATUS_OK);
 	block2 = SparkTestKvAcquire(&fixture);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
 	}
 	assert(status == SPARK_STATUS_OK);
@@ -279,17 +302,19 @@ static void SparkTestKvPageStoreFullDiskDegradesAndServingContinues(void)
 		SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) != 0u);
 	block3 = SparkTestKvAcquire(&fixture);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block3);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block3);
 	}
 	assert(status == SPARK_STATUS_OK);
 	block4 = SparkTestKvAcquire(&fixture);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block4);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block4);
 	}
 	assert(status == SPARK_STATUS_OK);
@@ -722,9 +747,10 @@ static void SparkTestKvPageStoreWritesDirtyOnceAndRestores(void)
 		SPARK_STATUS_OK);
 	status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
 	assert(status == SPARK_STATUS_BUSY);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2);
 	}
 	assert(status == SPARK_STATUS_OK);
@@ -734,9 +760,10 @@ static void SparkTestKvPageStoreWritesDirtyOnceAndRestores(void)
 	assert(store.write_count == 1u);
 	status = SparkKvPageStorePrefetch(&store,&fixture.arena,block0);
 	assert(status == SPARK_STATUS_BUSY);
+	SparkTestBusyStart();
 	for (;;)
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvPageStoreProgress(&store,&fixture.arena,1u);
 		assert(status == SPARK_STATUS_OK);
 		status = SparkKvPageStorePrefetch(&store,&fixture.arena,block0);
@@ -769,9 +796,10 @@ static void SparkTestKvPageStoreWritesDirtyOnceAndRestores(void)
 		fixture.blocks[block2].generation,
 		fixture.blocks[block2].key_device_address,SPARK_TEST_BLOCK_BYTES,
 		0u,0u);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvPageStoreWriteback(&store,block2,
 			fixture.blocks[block2].resident_slot_index,
 			fixture.blocks[block2].generation,
@@ -875,9 +903,10 @@ static void SparkTestKvPageStoreInvalidationWaitsForTransfer(void)
 	assert(pthread_cond_broadcast(&copy.condition) == 0);
 	assert(pthread_mutex_unlock(&copy.mutex) == 0);
 	status = SPARK_STATUS_BUSY;
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvPageStoreWriteback(&store,block,
 			fixture.blocks[block].resident_slot_index,
 			fixture.blocks[block].generation,
@@ -976,9 +1005,10 @@ static void SparkTestKvPageStoreFailedPrefetchCancelsReservation(void)
 	assert(SparkKvCacheArenaMarkBlockDirty(&fixture.arena,block0) ==
 		SPARK_STATUS_OK);
 	status = SparkKvCacheArenaMarkBlockNonResident(&fixture.arena,block0);
+	SparkTestBusyStart();
 	while ( status == SPARK_STATUS_BUSY )
 	{
-		(void)sched_yield();
+		SparkTestYieldBusy();
 		status = SparkKvCacheArenaMarkBlockNonResident(&fixture.arena,block0);
 	}
 	assert(status == SPARK_STATUS_OK);
@@ -1218,6 +1248,71 @@ static void SparkTestPrefixCachePartialPublication(void)
 		assert(entries[0].reference_count == 0u && entries[1].reference_count == 0u);
 	}
 
+}
+
+static uint32_t SparkTestPrefixCacheValidEntries(const SparkPrefixCacheEntry *entries,uint32_t count)
+{
+	uint32_t index,valid = 0u;
+	for (index=0u; index<count; index++)
+		valid += (entries[index].flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID) != 0u ? 1u : 0u;
+	return(valid);
+}
+
+static void SparkTestPrefixCacheTombstone(uint32_t hashed)
+{
+	SparkPrefixCache cache;
+	SparkPrefixCacheConfiguration config = {0};
+	SparkPrefixCacheEntry entries[8];
+	SparkPrefixCacheSequenceBinding bindings[16];
+	SparkPrefixCacheLookup lookup;
+	uint32_t entry_heads[8],lookup_heads[16],sequence_heads[16],tokens[130],terminal,valid;
+	config.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
+	config.descriptor_bytes = SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	config.block_token_count = 64u;
+	config.entry_count = config.logical_block_count = 8u;
+	config.sequence_binding_count = 16u;
+	config.entries = entries;
+	config.sequence_bindings = bindings;
+	config.entry_hash_bucket_count = hashed != 0u ? 8u : 0u;
+	config.binding_hash_bucket_count = hashed != 0u ? 16u : 0u;
+	config.entry_hash_bucket_heads = hashed != 0u ? entry_heads : 0;
+	config.binding_lookup_hash_bucket_heads = hashed != 0u ? lookup_heads : 0;
+	config.binding_sequence_hash_bucket_heads = hashed != 0u ? sequence_heads : 0;
+	assert(SparkPrefixCacheInitialize(&cache,&config) == SPARK_STATUS_OK);
+	for (uint32_t i=0u; i<130u; i++)
+		tokens[i] = 500u + i;
+	assert(SparkPrefixCacheTombstonePrompt(&cache,tokens,128u) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,128u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheLookupPrompt(&cache,2u,tokens,129u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 128u);
+	terminal = lookup.logical_block_index;
+	assert(entries[terminal].reference_count == 2u);
+	assert(SparkPrefixCacheTombstonePrompt(&cache,tokens,128u) == SPARK_STATUS_OK);
+	assert((entries[terminal].flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID) != 0u && entries[terminal].reference_count == 2u);
+	assert(SparkPrefixCacheProbePrompt(&cache,3u,tokens,129u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 64u);
+	assert(SparkPrefixCacheTombstonePrompt(&cache,tokens,128u) == SPARK_STATUS_NOT_FOUND);
+	valid = SparkTestPrefixCacheValidEntries(entries,8u);
+	assert(SparkPrefixCacheReleaseSequence(&cache,2u) == SPARK_STATUS_OK);
+	assert(SparkTestPrefixCacheValidEntries(entries,8u) == valid && entries[terminal].reference_count == 1u);
+	assert(SparkPrefixCacheReleaseSequence(&cache,1u) == SPARK_STATUS_OK);
+	assert(SparkTestPrefixCacheValidEntries(entries,8u) == valid - 1u);
+	assert(SparkPrefixCacheCommitPrompt(&cache,4u,tokens,128u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheProbePrompt(&cache,5u,tokens,129u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 128u);
+	assert(SparkPrefixCacheReleaseSequence(&cache,4u) == SPARK_STATUS_OK);
+	valid = SparkTestPrefixCacheValidEntries(entries,8u);
+	assert(SparkPrefixCacheTombstonePrompt(&cache,tokens,128u) == SPARK_STATUS_OK);
+	assert(SparkTestPrefixCacheValidEntries(entries,8u) == valid - 1u);
+	assert(SparkPrefixCacheProbePrompt(&cache,5u,tokens,129u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 64u);
+	assert(SparkPrefixCacheCommitPrompt(&cache,6u,tokens + 64u,63u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheLookupPrompt(&cache,7u,tokens + 64u,64u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 63u);
+	assert(SparkPrefixCacheTombstonePrompt(&cache,tokens + 64u,63u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheProbePrompt(&cache,8u,tokens + 64u,64u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 0u);
+	assert(SparkPrefixCacheCommitPrompt(&cache,7u,tokens + 64u,64u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 64u);
+	assert(SparkPrefixCacheProbePrompt(&cache,8u,tokens + 64u,65u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == 64u);
+	assert(SparkPrefixCacheTombstonePrompt(&cache,tokens,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+	for (uint32_t sequence=1u; sequence<=8u; sequence++)
+		assert(SparkPrefixCacheReleaseSequence(&cache,sequence) == SPARK_STATUS_OK);
+	for (uint32_t i=0u; i<8u; i++)
+		assert(entries[i].reference_count == 0u && ((entries[i].flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE) == 0u || (entries[i].flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID) == 0u));
 }
 
 typedef struct SparkTestKvPageFixture
@@ -2176,6 +2271,8 @@ int main(void)
 	SparkTestKvPageStoreFailedPrefetchCancelsReservation();
 	SparkTestPrefixCacheReusesCommittedLogicalBlocks();
 	SparkTestPrefixCachePartialPublication();
+	SparkTestPrefixCacheTombstone(0u);
+	SparkTestPrefixCacheTombstone(1u);
 	SparkTestKvPageCacheSharesImmutableChains();
 	SparkTestKvPageCacheDeduplicatesAndRequiresRelease();
 	SparkTestKvPageCacheRejectsMissingPrefix();

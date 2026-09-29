@@ -1,0 +1,16 @@
+{
+ "class": "thinking",
+ "output_tokens": 768,
+ "thinking": true,
+ "prompts": [
+  {
+   "text": "A rectangle's length is 3 cm more than twice its width, and its perimeter is 54 cm. A square has the same area as the rectangle. What is the side length of the square, to two decimal places?"
+  },
+  {
+   "text": "Three friends split a restaurant bill. Ana paid 40 percent, Ben paid 25 dollars less than Ana, and Cleo paid the rest, which was 15 dollars. How much was the bill and how much did each pay?"
+  },
+  {
+   "text": "You have a 3-litre jug and a 5-litre jug and unlimited water. Describe the shortest sequence of steps that leaves exactly 4 litres in the 5-litre jug, and prove no shorter sequence exists."
+  }
+ ]
+}

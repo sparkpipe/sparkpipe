@@ -214,9 +214,12 @@ static int TestContractExecution(
             "all model operations invoked") &&
         TestExpect(context.commit_count == 1u,"model committed") &&
         TestExpect(context.cancel_count == 0u,"model not cancelled") &&
-        TestExpect(operations[operation_count - 1u] ==
+        TestExpect(memcmp(context.observed_operations,operations,
+            (size_t)operation_count * sizeof(operations[0u])) == 0,
+            "operations invoked in the provider sequence order") &&
+        TestExpect(context.observed_operations[operation_count - 1u] ==
             SPARK_MODEL_RUNTIME_OPERATION_OUTPUT_HEAD,
-            "output head is the terminal operation");
+            "output head is the terminal invoked operation");
 }
 
 static int TestFailureCancels(
@@ -246,8 +249,15 @@ static int TestFailureCancels(
         TestExpect(context.cancel_count == 1u,"failed model cancelled") &&
         TestExpect(context.last_cancel_reason == SPARK_STATUS_IO_ERROR,
             "cancel reason retained") &&
-        TestExpect(operation_count >= context.invoke_count,
-            "failure stopped later operations");
+        TestExpect(operation_count > context.fail_operation_ordinal,
+            "failing operation precedes the output head") &&
+        TestExpect(context.invoke_count == context.fail_operation_ordinal,
+            "failure stopped later operations") &&
+        TestExpect(memcmp(context.observed_operations,operations,
+            (size_t)context.fail_operation_ordinal * sizeof(operations[0u])) == 0,
+            "operations before the failure ran in sequence order") &&
+        TestExpect(context.observed_operations[context.fail_operation_ordinal] == 0u,
+            "no operation invoked after the failure");
 }
 
 static int TestRejectsModifiedContract(

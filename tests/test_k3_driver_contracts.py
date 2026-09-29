@@ -1,40 +1,41 @@
 #!/usr/bin/env python3
-"""K3's driver-side performance contracts, gated as source.
+"""K3's driver-side contracts, gated as source.
 
-Two contracts live in inference/llms/kimi_k3 and nowhere else, and both are
+Three contracts live in inference/llms/kimi_k3 and nowhere else, and all are
 the kind that compiles while it rots:
 
   1. THE BF16 KDA STATE OPTION FAILS CLOSED. The slot is 6 MiB of fp32 per
-     sequence per layer, ~40% of a B64 step's bytes (the roadmap's K3 state
-     correction), so the half-width option is the biggest batch lever in the
-     model - and LmDeltaRuleKernel still addresses the pool as float. A flag
-     that launches against a half-width pool does not crash; it mis-strides
-     every head and sequence and decodes fluently. So the consumer flag must
-     exist, the bind must propagate it, the pool arithmetic must be exactly
-     half, and every launch path must refuse it until the kernel grows the
-     bf16-store variant the flag's comment specifies. Default off, and
-     nothing in the tree may set it.
+     sequence per layer, so the half-width option is the biggest batch lever
+     in the model - and LmDeltaRuleKernel still addresses the pool as float.
+     A flag that launches against a half-width pool does not crash; it
+     mis-strides every head and sequence and decodes fluently. So the
+     consumer flag must exist, the bind must propagate it, the pool
+     arithmetic must be exactly half, and every launch path must refuse it
+     until the kernel grows a bf16-store variant. Default off, and nothing
+     in the tree may set it.
 
-  2. THE LAYER PATH STAYS GRAPH-CAPTURABLE. Roadmap D10/D1 put CUDA graphs
-     first on the attack list (~3,300 launches per K3 token). Capture breaks
-     on host-device traffic between launches, so the layer, slice, engine
-     and bind sources must never name a synchronising or copying CUDA call
-     outside a comment.
+  2. NO HOST-DEVICE TRAFFIC BETWEEN LAUNCHES. The layer, slice, engine and
+     bind sources enqueue work on the caller's stream and never name a
+     synchronising, allocating or copying CUDA call: the runner owns memory
+     and completion, and a sync inside the layer path would serialise every
+     launch.
 
-The gather/indirect-A contract (roadmap D9) is LANDED: the w1 expert GEMM
-reads A rows through route_source_token, so the gather launch, its buffer and
-its recipe-gate check are gone together and the gate now holds the deletion.
+  3. THE PACK V2 BIND IS THE ONLY BIND. The pack emits the fused
+     kda_qkv_beta_weight, the standalone decay_down and the full-rank gate
+     per KDA layer, and interleaved expert weight+scale streams; the V1
+     per-projection tensors do not exist. So the stale fields must be gone
+     from both structs, the bind must propagate the fused tensors, the
+     interleave flag and its tile_k, the KDA projection block must be
+     exactly three wide GEMMs on the normed input plus the one section
+     split, and the routed experts must DISPATCH the interleaved stream
+     through the interleaved weight-only GEMMs at both tile_k 128 and 32 -
+     no far-plane scale descriptor may survive, because the scales are
+     co-tiled with the payload.
 
-  3. THE PACK V2 BIND IS THE ONLY BIND. The pack emits fused
-     kda_qkv_beta_weight and kda_decay_gate_down_weight per KDA layer and
-     interleaved expert weight+scale streams; the V1 per-projection tensors
-     do not exist. So the stale fields must be gone from both structs, the
-     bind must propagate the two fused tensors and the interleave flag, the
-     KDA projection block must be exactly two wide GEMMs on the normed input
-     (six became two: the launch count drops by four per KDA layer) plus the
-     one section split, and the MoE must refuse the interleaved stream until
-     the grouped GEMM learns the 17-row cell - LmScaleTensor cannot address
-     scales co-tiled with payload, so no scale plane call may survive.
+The gather/indirect-A contract is landed: the w1 expert GEMM reads A rows
+through route_source_token, so the gather launch and its buffer are gone.
+tests/test_k3_layer_host.py runs the layer and observes which launches the
+interleave flag reaches.
 """
 import re
 import sys
@@ -132,25 +133,22 @@ def main():
                       f"driver source may turn it on while launches refuse it")
                 failures += 1
 
-    # -- the layer path stays capturable: no host-device traffic --------------
     for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu", "engine.h"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
         for call in ("cudaMemcpy", "cudaMalloc", "cudaFree",
                      "cudaStreamSynchronize", "cudaDeviceSynchronize",
                      "cudaMemcpyAsync"):
             if call in text:
-                print(f"  FAIL {name} names {call}; host-device traffic "
-                      f"between launches is what breaks CUDA graph capture "
-                      f"(roadmap D10)")
+                print(f"  FAIL {name} names {call}; the layer path only "
+                      f"enqueues launches, the runner owns memory and "
+                      f"completion")
                 failures += 1
 
-    # -- the indirect-A contract, LANDED: the gather is gone, the map feeds ---
-    #    the w1 GEMM directly -------------------------------------------------
     if re.search(r"LmGatherRowsKernel|route_gather_bf16",
                  re.sub(r"//[^\n]*", "", layer)):
         print("  FAIL the route gather survived; the grouped GEMM stages A "
-              "rows through route_source_token (route.cuh's contract), so the "
-              "packed copy is a double-touch the kernel made dead (D9)")
+              "rows through route_source_token, so the packed copy is a "
+              "double touch")
         failures += 1
     stripped = re.sub(r"//[^\n]*", "", layer)
     moe = "".join(function_body(stripped, name) for name in
@@ -165,7 +163,6 @@ def main():
               "INDIRECT_A the source_row_map word is refused by the launcher")
         failures += 1
 
-    # -- pack V2: the V1 projection fields are gone, the fused ones bind ------
     for stale in ("kda_q_weight", "kda_q_scale", "kda_k_weight", "kda_k_scale",
                   "kda_v_weight", "kda_v_scale", "kda_beta_weight",
                   "kda_gate_down_weight",
@@ -175,10 +172,6 @@ def main():
                 print(f"  FAIL {name} still names {stale}; pack V2 does not "
                       f"emit it - the fused tensors are the only bind")
                 failures += 1
-    # Released checkpoint (docs/K3_GATE_RECONCILIATION.md): q|k|v|beta is
-    # the fused wide tensor; decay_down stays a standalone 128-wide
-    # bottleneck and the gate is the checkpoint's full-rank g_proj - the
-    # low-rank decay|gate fusion does not exist in this checkpoint.
     for field in ("kda_qkv_beta_weight", "kda_decay_down_weight",
                   "kda_gate_weight"):
         if f"const void *{field};" not in layer:
@@ -188,47 +181,58 @@ def main():
             print(f"  FAIL the bind no longer propagates {field}; a layer "
                   f"would project through a stale pointer")
             failures += 1
-    if "buffers->expert_interleave = weights->expert_interleave;" not in slice_:
-        print("  FAIL the bind no longer propagates the interleave flag; an "
-              "interleaved pack would launch instead of refusing")
-        failures += 1
+    for field in ("expert_interleave", "expert_tile_k"):
+        if f"buffers->{field} = weights->{field};" not in slice_:
+            print(f"  FAIL the bind no longer propagates {field}; an "
+                  f"interleaved pack would launch the wrong GEMM layout")
+            failures += 1
 
-    # -- the KDA projection block: two wide GEMMs plus one section split ------
     kda = function_body(re.sub(r"//[^\n]*", "", layer), "K3LayerKda")
     wide = len(re.findall(r"K3Project<\w+>\(b,b->normed_bf16", kda))
     if wide != 3:
         print(f"  FAIL {wide} projection GEMMs read normed_bf16 in K3LayerKda; "
               f"the released checkpoint keeps qkv_beta fused with "
-              f"decay_down standalone and the full-rank gate (docs/"
+              f"decay_down standalone and the full-rank gate (docs/archive/"
               f"K3_GATE_RECONCILIATION.md), so exactly three wide GEMMs run")
         failures += 1
     if kda.count("LM_LAUNCH((K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>)") != 1:
         print("  FAIL the fused projections lost their section split; every "
               "consumer reads dense rows, so the wide GEMM needs the split")
         failures += 1
-    for scratch in ("fused_qkvb_bf16", "fused_decay_gate_bf16",
-                    "gate_latent_bf16"):
-        if f"uint16_t *{scratch};" not in layer:
-            print(f"  FAIL K3LayerBuffers lost the {scratch} wide scratch")
-            failures += 1
+    if "uint16_t *fused_qkvb_bf16;" not in layer:
+        print("  FAIL K3LayerBuffers lost the fused_qkvb_bf16 wide scratch")
+        failures += 1
 
-    # -- the interleaved expert stream fails closed ---------------------------
-    if "expert_interleave != 0u" not in moe:
-        print("  FAIL K3LayerLatentMoe does not refuse the interleave flag; "
-              "the grouped GEMM cannot read the 17-row cell, so launching "
-              "would read scale bytes as payload")
+    weighted = function_body(stripped, "K3LayerMoeWeighted")
+    branches = re.findall(
+        r"if \( b->expert_interleave != 0u \)\s*\{(.*?)\n\t\}\n\telse",
+        weighted, re.S)
+    launches = [re.findall(r"(LmGemmWeightOnly\w*Launch)<\s*Format,[^>]*?(,32u)?>",
+                           branch) for branch in branches]
+    want = [[("LmGemmWeightOnlyIndirectInterleavedLaunch", ",32u"),
+             ("LmGemmWeightOnlyIndirectInterleavedLaunch", "")],
+            [("LmGemmWeightOnlyInterleavedLaunch", ",32u"),
+             ("LmGemmWeightOnlyInterleavedLaunch", "")]]
+    if launches != want:
+        print(f"  FAIL the interleave flag does not dispatch w1 and w2 to the "
+              f"interleaved weight-only GEMMs at tile_k 32 and 128: {launches}")
+        failures += 1
+    if any("LM_LAUNCH_ERR" in branch for branch in branches):
+        print("  FAIL an interleaved branch returns a launch error; the pack "
+              "V2 interleave is the only expert layout and must launch")
         failures += 1
     if "LmScaleTensorBlockUe8m0" in re.sub(r"//[^\n]*", "", layer):
         print("  FAIL a far-plane scale descriptor survives; pack V2 co-tiles "
-              "the scales with the payload and no LmScaleTensor can address "
-              "them - the descriptor is None until the kernels wave lands")
+              "the scales with the payload and the interleaved GEMMs decode "
+              "them in the load")
         failures += 1
 
     if failures:
         print(f"\nFAIL ({failures})")
         return 1
     print("\nthe bf16 state option is wired, refused, and off; the layer "
-          "path captures; the gather is deleted and the map feeds the GEMM")
+          "path only enqueues; the gather is deleted and the map feeds the "
+          "GEMM; the interleaved experts dispatch at tile_k 32 and 128")
     return 0
 
 

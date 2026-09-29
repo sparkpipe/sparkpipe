@@ -57,9 +57,9 @@ def run_prompt(engine, spec):
             for layer in anchors:
                 arrays[f"pos{position:04d}_layer{layer:04d}_streams"] = \
                     f32_to_bf16_u16(streams.reshape(-1))
-        print(json.dumps({"prompt": spec["name"], "position": position,
-                          "done": True}), flush=True)
         token, score = engine.logits(streams)
+        print(json.dumps({"prompt": spec["name"], "position": position,
+                          "done": True, "top1_token": int(token)}), flush=True)
         if position >= len(prompt_ids) - 1:
             arrays[f"pos{position:04d}_head_top1_score"] = \
                 np.array([score], dtype=np.float32)

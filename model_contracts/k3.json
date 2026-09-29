@@ -7,6 +7,7 @@
   "attnres_sites_per_layer": 2,
   "dense_intermediate_dimension": 33792,
   "eos_token_ids": {
+    "end_of_message": 163586,
     "end_of_text": 163585
   },
   "first_routed_layer": 1,
@@ -25,6 +26,7 @@
   "layer_count": 93,
   "maximum_context_tokens": 1048576,
   "mla_layer_count": 24,
+  "model_id": "moonshotai/Kimi-K3",
   "moe_expert_count": 896,
   "moe_intermediate_dimension": 3072,
   "moe_routed_scaling_factor": 1.0,
@@ -41,11 +43,47 @@
   "routed_expert_activation_format": "bf16",
   "routed_expert_scale_format": "e8m0",
   "routed_expert_weight_format": "mxfp4_e2m1",
+  "source_revision": "f831ab66814297da540d832a5235f8e904f29d06",
   "speculation": {
     "base_checkpoint_mtp_layer_count": 0,
-    "optional_external_draft_architecture": "eagle3",
-    "optional_external_draft_layer_count": 1,
-    "training_unroll_steps": 7
+    "drafter": {
+      "architecture": "DSparkDraftModel",
+      "attention_head_count": 96,
+      "aux_hidden_state_layer_ids": [
+        24,
+        48,
+        72,
+        88,
+        92
+      ],
+      "block_size": 8,
+      "confidence_head": true,
+      "confidence_head_with_markov": true,
+      "config_git_blob_sha1": "8b76fd3b01e3305a8574254f42605c7b78a616dc",
+      "head_dimension": 64,
+      "hf_last_modified": "2026-09-14T19:16:46Z",
+      "hf_repo": "RedHatAI/Kimi-K3-speculator.dspark",
+      "hf_revision": "38a88101e0d46bb22134b9da340f381b954d40d4",
+      "hidden_dimension": 7168,
+      "intermediate_dimension": 14336,
+      "kv_head_count": 16,
+      "layer_count": 5,
+      "license": "apache-2.0",
+      "markov_rank": 256,
+      "mask_token_id": 163837,
+      "method": "dspark",
+      "rope_theta": 10000.0,
+      "sliding_window": 2048,
+      "speculative_tokens": 8,
+      "verifier": "moonshotai/Kimi-K3",
+      "verifier_accept_k": 1,
+      "vocabulary_size": 163840,
+      "warm_path": "/mnt/model-warm/kimi-k3-dspark-redhatai-rev2",
+      "weight_format": "bf16",
+      "weights_bytes": 9489807826,
+      "weights_file": "model.safetensors",
+      "weights_sha256": "0262abfd7418d2ecbc3a077790851c1af2f8879016b00e7decb9d43d7c1277b4"
+    }
   },
   "total_parameters": 2780000000000,
   "value_head_dimension": 128

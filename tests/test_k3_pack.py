@@ -8,10 +8,11 @@ the manifest's bytes are held to the source:
 
   the expert payloads and E8M0 scales are INTERLEAVED, gate first then up,
   experts-major, one 17-row cell per 16 neurons per 128-element k-tile -
-  payload and scales in one zero-padding stream (docs/K3_PACK_FORMAT_V2.md)
-  the six KDA input projections ride as two fused tensors, one TP shard
-  class each: q|k|v|beta and decay_down|gate_down, bytes exactly the
-  checkpoint's sections concatenated
+  payload and scales in one zero-padding stream
+  (docs/archive/K3_PACK_FORMAT_V2.md)
+  q|k|v|beta ride as one fused tensor with one TP shard class, bytes exactly
+  the checkpoint's sections concatenated; decay_down stays the standalone
+  replicated f_a_proj, and the gate is the checkpoint's full-rank g_proj
   every tensor offset is 128-aligned and the payload base is too
   the q-fold equals the einsum it claims, to bf16 round-to-nearest-even
   kv_b's value half lands as its own per-head table

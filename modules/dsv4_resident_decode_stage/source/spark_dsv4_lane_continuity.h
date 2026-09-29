@@ -10,7 +10,7 @@ static inline SparkStatus SparkDsv4AdvanceLaneContinuity(uint64_t sequence,uint6
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( position == 0u )
 	{
-		if ( *lane_touched != 0u )
+		if ( *lane_touched != 0u || (*lane_sequence != 0u && *lane_sequence != sequence) )
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		*lane_sequence = sequence;
 		*lane_next_position = 1u;

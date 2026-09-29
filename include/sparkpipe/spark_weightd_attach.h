@@ -28,6 +28,7 @@ typedef struct SparkWeightdPackSlice
     uint32_t topology;
     uint64_t geometry_fingerprint;
     uint64_t pack_bytes;
+    const char *pack_sha256;
 } SparkWeightdPackSlice;
 
 typedef struct SparkWeightdAttachOutcome
