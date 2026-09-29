@@ -396,6 +396,7 @@ TEST_NAMES := \
     test_speculation_provider_slot \
     test_speculation_reference_draft \
     test_speculation_lookup_draft \
+    test_speculation_ngram_draft \
     test_speculation_drafter_mix \
     test_speculation_relay_draft \
     test_speculation_depth \
@@ -673,6 +674,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_pack_bf16_passthrough.py \
 	tests/test_glm52_pack_nvfp4_passthrough.py \
 	tests/test_glm53_contract.py \
+	tests/test_draftd_mtp_g8.py \
 	tests/test_glm53flash_mtp_reference.py \
 	tests/test_glm5_next_adapter_config_load.py \
 	tests/test_glm5_next_cuda_validator_tier2_oracle.py \
@@ -697,6 +699,7 @@ PYTHON_TESTS := \
 	tests/test_qwen38max_tp16_rank_verify.py \
 	tests/test_qwen4_flash_pack_verify_receipts.py \
 	tests/test_rtx5090_spec_node.py \
+	tests/test_safetensors_subset.py \
 	tests/test_serving_profile_derivation.py \
 	tests/test_spark_ssh_failover.py \
 	tests/test_spark_station.py \
@@ -1886,6 +1889,9 @@ build/test_speculation_reference_draft: tests/test_speculation_reference_draft.c
 
 build/test_speculation_lookup_draft: tests/test_speculation_lookup_draft.c include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_lookup_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_ngram_draft: tests/test_speculation_ngram_draft.c include/sparkpipe/spark_speculation_ngram_draft.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_ngram_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_speculation_drafter_mix: tests/test_speculation_drafter_mix.c include/sparkpipe/spark_speculation_drafter_mix.h include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_drafter_mix.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

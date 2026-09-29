@@ -105,3 +105,42 @@ endpoint, API unit and heartbeats. Two parts still predate the host:
 `deployment/rtx5090_speculation/spark_ssh_failover.example.json` is used by
 [SPARK_MANAGEMENT_FAILOVER.md](SPARK_MANAGEMENT_FAILOVER.md) and is not
 affected.
+
+## draftd drafters (2026-09-29)
+
+Drafters run on this host; the fleet only verifies. Measured on the RTX 5090
+(receipts and roofline lines in the spec-draftd lane notes):
+
+- GLM-5.3 Flash MTP (layer 45). `tools/safetensors_subset.py` copies the MTP
+  layer, `lm_head` and `embed_tokens` out of the checkpoint; running
+  `tools/glm5_next_pack_verify.py --mtp-only --all-tensors --source <subset>`
+  against each fleet sidecar proves the copy equals the TP16 sidecars.
+  `tools/draftd_glm53flash_mtp.py` runs the layer with the C-ABI kernels in
+  `tools/draftd_kernels.cu` (bf16 GEMV and expert-indexed fp8 block-128 GEMV,
+  sm_120, loaded through ctypes) and one CUDA graph per chain depth.
+  `tools/draftd_mtp_g8.py` compares top-1 with
+  `tools/glm53flash_mtp_reference.py` on identical inputs, repeats the device
+  pass with f64 accumulation as a noise-floor control, and checks run-to-run
+  identity. `tools/draftd_bench.py` reports per-depth latency, bytes per draft
+  token and the read peak; `tools/draftd_head_eval.py` compares the bf16 head
+  with an fp8 screen and a certified fp8 screen.
+- Block drafters. `tools/draftd_block_bench.py` times one round of a
+  DFlash-style block drafter from its own weights with synthetic taps and a
+  synthetic head of the target's shape. It measures cost only; top-1 needs the
+  target's taps and a reference.
+- n-gram drafter. `src/spark_speculation_ngram_draft.c` drafts the most
+  frequent continuation of the longest matching context (orders min..max, the
+  last `scan_limit` verified occurrences, ties to the most recent) and chains
+  through its own drafts. It has the policy draft callback signature of the
+  lookup drafter. `tools/draftd_ngram_eval.py` checks it against a brute-force
+  reference on recorded greedy streams and prices it next to the lookup
+  drafter.
+
+`tools/draftd_mtp_g8.py` decides G8 on the real-tap positions only: PASS
+needs at least 1000 of them and top-1 agreement of at least 99%, with
+identical output run to run. With fewer real positions the verdict is PENDING;
+implementation positions are reported but never counted toward the gate.
+
+draftd v0 does not check admission records itself. Load only drafters with an
+admission record in `SPECULATOR-LICENSE-ADMISSION-20260828.json`; the G7 load
+check (checkpoint sha256 plus admission id) belongs to the draftd daemon.
