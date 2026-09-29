@@ -973,8 +973,6 @@ extern "C" int32_t SparkGlm5NextLaunchCudaReplayFold(
 
 
 #define GLM5_NEXT_L2_PREFETCH_RANGES 8u
-#define GLM5_NEXT_L2_PREFETCH_BYTES (12u << 20)
-#define GLM5_NEXT_L2_PREFETCH_BLOCKS 48u
 #define GLM5_NEXT_L2_PREFETCH_THREADS 256u
 #define GLM5_NEXT_L2_PREFETCH_SEARCH 16u
 
@@ -982,7 +980,7 @@ typedef struct Glm5NextL2PrefetchPlan
 {
 	const uint8_t *base[GLM5_NEXT_L2_PREFETCH_RANGES];
 	uint32_t bytes[GLM5_NEXT_L2_PREFETCH_RANGES];
-	uint32_t count,total,misaligned;
+	uint32_t count,total,cap,misaligned;
 }
 Glm5NextL2PrefetchPlan;
 
@@ -1011,9 +1009,9 @@ static void Glm5NextL2PrefetchAdd(Glm5NextL2PrefetchPlan *plan,const void *base,
 	uint64_t room;
 	if ( base != 0 && ((uintptr_t)base % 16u) != 0u )
 		plan->misaligned = 1u;
-	if ( base == 0 || plan->misaligned != 0u || plan->count == GLM5_NEXT_L2_PREFETCH_RANGES || plan->total >= GLM5_NEXT_L2_PREFETCH_BYTES )
+	if ( base == 0 || plan->misaligned != 0u || plan->count == GLM5_NEXT_L2_PREFETCH_RANGES || plan->total >= plan->cap )
 		return;
-	room = GLM5_NEXT_L2_PREFETCH_BYTES - plan->total;
+	room = plan->cap - plan->total;
 	bytes = (bytes < room ? bytes : room) & ~(uint64_t)15u;
 	if ( bytes == 0u )
 		return;
@@ -1066,11 +1064,12 @@ static void Glm5NextL2PlanMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_l
 	Glm5NextL2PrefetchAdd(plan,buffers.shared_gate_up_weight,(uint64_t)buffers.shared_gate_up_rows * row);
 }
 
-static int32_t Glm5NextL2PrefetchPlanFor(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,Glm5NextL2PrefetchPlan *plan)
+static int32_t Glm5NextL2PrefetchPlanFor(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,Glm5NextL2PrefetchPlan *plan)
 {
-	if ( wave == 0 || wave->slot == 0 || wave->layers == 0 || wave->layer_count == 0u || site > SPARK_GLM5_NEXT_L2_SITE_BEGIN )
+	if ( wave == 0 || wave->slot == 0 || wave->layers == 0 || wave->layer_count == 0u || site > SPARK_GLM5_NEXT_L2_SITE_BEGIN || SparkGlm5NextL2PrefetchShapeValid(shape) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	memset(plan,0,sizeof(*plan));
+	plan->cap = shape->bytes;
 	if ( site == SPARK_GLM5_NEXT_L2_SITE_BEGIN )
 		Glm5NextL2PlanAttention(wave,0u,plan);
 	else if ( local_layer >= wave->layer_count )
@@ -1101,7 +1100,7 @@ static cudaGraphNode_t Glm5NextL2PrefetchForkNode(cudaGraphNode_t node)
 	return(0);
 }
 
-extern "C" int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,uint32_t *placed)
+extern "C" int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *placed)
 {
 	Glm5NextL2PrefetchPlan plan;
 	cudaStream_t stream;
@@ -1116,7 +1115,7 @@ extern "C" int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave
 	if ( placed == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	*placed = 0u;
-	status = Glm5NextL2PrefetchPlanFor(wave,local_layer,site,&plan);
+	status = Glm5NextL2PrefetchPlanFor(wave,local_layer,site,shape,&plan);
 	if ( status != LM_LAUNCH_OK || plan.count == 0u )
 		return(status);
 	stream = (cudaStream_t)wave->slot->stream;
@@ -1130,7 +1129,7 @@ extern "C" int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave
 	memset(&params,0,sizeof(params));
 	arguments[0] = &plan;
 	params.func = (void *)Glm5NextL2PrefetchKernel;
-	params.gridDim = dim3(GLM5_NEXT_L2_PREFETCH_BLOCKS);
+	params.gridDim = dim3(shape->blocks);
 	params.blockDim = dim3(GLM5_NEXT_L2_PREFETCH_THREADS);
 	params.kernelParams = arguments;
 	if ( cudaGraphAddKernelNode(&prefetch,graph,&fork,1u,&params) != cudaSuccess ||

@@ -197,7 +197,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('P')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('Q')); }
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave) { (void)wave;return(walk_note('H')); }
-int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,uint32_t *placed) { (void)wave;(void)local_layer;(void)site;*placed = 0u;return(0); }
+int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *placed) { (void)wave;(void)local_layer;(void)site;(void)shape;*placed = 0u;return(0); }
 static uint32_t UNPACK_COUNT,UNPACK_ROWS = 2u,ENQUEUE_ROWS = 2u,ENQUEUE_SEQUENCES = 2u;
 
 static uint32_t SNAPSHOT_SAVES,SNAPSHOT_RESTORES,POISON_LAUNCHES,POISON_PENDING,WS_PLAN[16],WS_PLAN_KEY;
@@ -2623,6 +2623,53 @@ static void check_execution_environment(void)
 	assert(unsetenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") == 0);
 }
 
+static void check_l2_prefetch_environment(void)
+{
+	const char *invalid_bytes[] = {"", "0", "16", "65537", "12648448", "-65536", "4194304x", " 4194304", "+4194304", "4294967296", "18446744073709551616"};
+	const char *invalid_blocks[] = {"", "0", "193", "x", "-1", "16 "};
+	assert(setenv("SPARK_GLM5_NEXT_GRAPH_PATH","1",1) == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_PREFETCH") == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH") == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES") == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS") == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.l2_prefetch == 1u);
+	assert(state.l2_prefetch_shape.bytes == 12582912u && state.l2_prefetch_shape.blocks == 48u);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH","2",1) == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH","0",1) == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.l2_prefetch == 0u);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES","4194304",1) == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES") == 0);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS","16",1) == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH","1",1) == 0);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES","4194304",1) == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.l2_prefetch == 1u);
+	assert(state.l2_prefetch_shape.bytes == 4194304u && state.l2_prefetch_shape.blocks == 16u);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES","65536",1) == 0);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS","1",1) == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.l2_prefetch_shape.bytes == 65536u && state.l2_prefetch_shape.blocks == 1u);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES","12582912",1) == 0);
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS","192",1) == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.l2_prefetch_shape.bytes == 12582912u && state.l2_prefetch_shape.blocks == 192u);
+	for (uint32_t index = 0u; index < sizeof(invalid_bytes) / sizeof(invalid_bytes[0]); index++)
+	{
+		assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES",invalid_bytes[index],1) == 0);
+		assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES","4194304",1) == 0);
+	for (uint32_t index = 0u; index < sizeof(invalid_blocks) / sizeof(invalid_blocks[0]); index++)
+	{
+		assert(setenv("SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS",invalid_blocks[index],1) == 0);
+		assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH") == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES") == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS") == 0);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.l2_prefetch == 1u && state.l2_prefetch_shape.bytes == 12582912u && state.l2_prefetch_shape.blocks == 48u);
+}
+
 static void check_module_reset(void)
 {
 	SparkTestKvTransactions fixture;
@@ -3965,6 +4012,7 @@ int32_t main(void)
 	check_checkpoint_finish(1u,3u,1u);
 	check_module_reset();
 	check_execution_environment();
+	check_l2_prefetch_environment();
 	check_small_kv();
 	check_physical_budget();
 	if ( check_rank_state() != 0 )
