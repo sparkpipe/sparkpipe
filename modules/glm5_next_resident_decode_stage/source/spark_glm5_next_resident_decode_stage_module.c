@@ -349,6 +349,7 @@ struct SparkGlm5NextModuleState
 	uint32_t wave_attempt_retries;
 	uint32_t wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_REASONS];
 	uint32_t graph_path_requested;
+	uint32_t l2_prefetch;
 	uint32_t verify_rows_max;
 	uint32_t verify_drafter;
 	const char *verify_drafter_path;
@@ -872,7 +873,16 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	cursor += rows;
 	slot->host_run_row_indices = cursor;
 	error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->route_ready_event,cudaEventDisableTiming);
-	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"route_ready_event"));
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"route_ready_event"));
+	error = cudaStreamCreateWithFlags((cudaStream_t *)&slot->l2_prefetch_stream,cudaStreamNonBlocking);
+	if ( error == cudaSuccess )
+		error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->l2_prefetch_fork,cudaEventDisableTiming);
+	if ( error == cudaSuccess )
+		error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->l2_prefetch_join,cudaEventDisableTiming);
+	if ( error == cudaSuccess )
+		error = cudaMalloc((void **)&slot->l2_prefetch_sink,sizeof(uint32_t));
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"l2_prefetch"));
 }
 
 static void SparkGlm5NextGraphDestroyAll(SparkGlm5NextExecutionSlot *slot)
@@ -915,6 +925,18 @@ static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
 		if ( state->slots[index].route_ready_event != 0 )
 			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].route_ready_event);
 		state->slots[index].route_ready_event = 0;
+		if ( state->slots[index].l2_prefetch_fork != 0 )
+			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].l2_prefetch_fork);
+		if ( state->slots[index].l2_prefetch_join != 0 )
+			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].l2_prefetch_join);
+		if ( state->slots[index].l2_prefetch_stream != 0 )
+			(void)cudaStreamDestroy((cudaStream_t)state->slots[index].l2_prefetch_stream);
+		if ( state->slots[index].l2_prefetch_sink != 0 )
+			(void)cudaFree(state->slots[index].l2_prefetch_sink);
+		state->slots[index].l2_prefetch_fork = 0;
+		state->slots[index].l2_prefetch_join = 0;
+		state->slots[index].l2_prefetch_stream = 0;
+		state->slots[index].l2_prefetch_sink = 0;
 		state->slots[index].route_recorded = 0u;
 		SparkGlm5NextGraphDestroyAll(&state->slots[index]);
 		if ( state->slots[index].miss_ring != 0 )
@@ -1066,6 +1088,10 @@ static void SparkGlm5NextShareSlotDevice(SparkGlm5NextExecutionSlot *slot,const 
 	*slot = *shared;
 	slot->stream = host.stream;
 	slot->route_ready_event = host.route_ready_event;
+	slot->l2_prefetch_stream = host.l2_prefetch_stream;
+	slot->l2_prefetch_fork = host.l2_prefetch_fork;
+	slot->l2_prefetch_join = host.l2_prefetch_join;
+	slot->l2_prefetch_sink = host.l2_prefetch_sink;
 	slot->route_recorded = 0u;
 	slot->host_staging = host.host_staging;
 	slot->host_row_sampling = host.host_row_sampling;
@@ -3340,8 +3366,22 @@ static SparkStatus SparkGlm5NextGraphReduceHead(SparkGlm5NextTpChain *chain)
 		&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64));
 }
 
+static uint32_t SparkGlm5NextWalkReduce(SparkGlm5NextTpChain *chain,void *device,uint32_t hc_wide,uint32_t layer,uint32_t site)
+{
+	SparkGlm5NextCudaWave *wave = &chain->wave;
+	uint32_t prefetch = chain->state->l2_prefetch != 0u && wave->tp_degree > 1u ? 1u : 0u;
+	if ( prefetch != 0u && SparkGlm5NextL2PrefetchMark(wave) != 0 )
+		return(20u + site);
+	if ( SparkGlm5NextGraphReduce(chain,device,hc_wide) != SPARK_STATUS_OK )
+		return(1u);
+	if ( prefetch != 0u && SparkGlm5NextL2PrefetchJoin(wave,layer,site) != 0 )
+		return(23u + site);
+	return(0u);
+}
+
 static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t layer)
 {
+	uint32_t reduce;
 	SparkGlm5NextModuleState *state = chain->state;
 	SparkGlm5NextCudaWave *wave = &chain->wave;
 	uint32_t gather_sequences = SparkGlm5NextLayerIndexGatherSequences(wave,layer);
@@ -3349,8 +3389,9 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 		return(15u);
 	if ( gather_sequences == 0u && SparkGlm5NextLaunchCudaLayerAttention(wave,layer) != 0 )
 		return(4u);
-	if ( SparkGlm5NextGraphReduce(chain,wave->slot->attention_out_bf16,0u) != SPARK_STATUS_OK )
-		return(5u);
+	reduce = SparkGlm5NextWalkReduce(chain,wave->slot->attention_out_bf16,0u,layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE);
+	if ( reduce != 0u )
+		return(reduce == 1u ? 5u : reduce);
 	if ( SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer) != 0 )
 		return(6u);
 	if ( (wave->first_layer_index + layer) >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
@@ -3362,8 +3403,9 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 	}
 	else if ( SparkGlm5NextLaunchCudaLayerMlp(wave,layer) != 0 )
 		return(9u);
-	if ( SparkGlm5NextGraphReduce(chain,wave->slot->attention_out_bf16,0u) != SPARK_STATUS_OK )
-		return(10u);
+	reduce = SparkGlm5NextWalkReduce(chain,wave->slot->attention_out_bf16,0u,layer,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE);
+	if ( reduce != 0u )
+		return(reduce == 1u ? 10u : reduce);
 	if ( SparkGlm5NextLaunchCudaLayerMlpPost(wave,layer) != 0 )
 		return(11u);
 	if ( state->graph_record_limit != 0u && (state->graph_record_ops += 2u) >= state->graph_record_limit )
@@ -3384,8 +3426,9 @@ static uint32_t SparkGlm5NextWalkChain(SparkGlm5NextTpChain *chain,uint32_t *lay
 		return(2u);
 	if ( wave->expert_cover != 0 && SparkGlm5NextWsSnapshot(wave,0u) != cudaSuccess )
 		return(18u);
-	if ( SparkGlm5NextGraphReduce(chain,wave->slot->hidden_bf16,1u) != SPARK_STATUS_OK )
-		return(3u);
+	site = SparkGlm5NextWalkReduce(chain,wave->slot->hidden_bf16,1u,0u,SPARK_GLM5_NEXT_L2_SITE_BEGIN);
+	if ( site != 0u )
+		return(site == 1u ? 3u : site);
 	for (layer=0u; layer<wave->layer_count && state->graph_record_stop == 0u; layer++)
 	{
 		*layer_out = layer;
@@ -5844,6 +5887,16 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 			fprintf(stderr,"SPARK_GLM5_NEXT_PREFETCH is unsupported; warm the daemon with sparkpipe_weightd_warm before serving\n");
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		}
+	}
+	{
+		const char *l2_env = getenv("SPARK_GLM5_NEXT_L2_PREFETCH");
+		if ( l2_env != 0 && strcmp(l2_env,"0") != 0 && strcmp(l2_env,"1") != 0 )
+		{
+			fprintf(stderr,"SPARK_GLM5_NEXT_L2_PREFETCH must be 0 or 1\n");
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		state->l2_prefetch = l2_env != 0 && strcmp(l2_env,"0") == 0 ? 0u : 1u;
+		fprintf(stderr,"GLM l2 prefetch=%s\n",state->l2_prefetch != 0u ? "on" : "off");
 	}
 	{
 		const char *graph_env = getenv("SPARK_GLM5_NEXT_GRAPH_PATH");

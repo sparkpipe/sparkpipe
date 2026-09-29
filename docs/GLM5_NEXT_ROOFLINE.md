@@ -1397,6 +1397,53 @@ Kernel time at B1 on the idle bench (nsys node trace; shares of GPU busy
 time): BF16 skinny GEMV 36%, FP8 expert GEMV 13%, HC site 10%, head 5%,
 latent attention 5%, RMSNorm 3%. At B8 the FP8 expert GEMV is 55%.
 
+## Weight prefetch during collective waits
+
+At TP16 B1 each of the 92 all-reduce rounds leaves the rank's GPU waiting for
+its peers for about 50 us, and DRAM is idle for that time. The kernels that
+follow a round read weights that do not depend on the round: the next HC
+site's `fn` (1.5 MiB f32) and norm, then either the router and shared
+gate/up (after the attention round) or the next layer's first projections
+(after the MLP round: KDA `qkv_beta` and decay/gate down, or DSA `q_a`,
+index K, index gate and index head).
+
+The walk (graph capture and linear chains) now does this around every round
+(`SparkGlm5NextWalkReduce`):
+
+1. record `l2_prefetch_fork` on the slot stream;
+2. enqueue the collective as before;
+3. on the slot's side stream, wait for the fork, run
+   `Glm5NextL2PrefetchKernel` (48 CTAs of 256 threads, `ld.global.cg` of up to
+   12 MiB of those weights, results discarded), record `l2_prefetch_join`;
+4. make the slot stream wait for the join before the next kernel.
+
+The load kernel is enqueued after the collective so the round's kernels start
+first; forked before the round, the graph ran the 48-CTA kernel first and the
+round only started as its CTAs retired. `cp.async.bulk.prefetch.L2` hints did
+not work on GB10: an 8 MiB read after a hint and 60 us of idle still took
+27.5-30.6 us against 35.6 us cold, while data brought in by loads reads in
+8.2 us.
+
+`SPARK_GLM5_NEXT_L2_PREFETCH=0` turns it off, `1` or unset turns it on, any
+other value fails configuration; the module prints `GLM l2 prefetch=on|off`.
+It only runs when `tp_degree > 1`, since without a round to hide behind the
+load kernel costs time. The arithmetic is unchanged, so outputs are bit
+identical; `ROOFLINE-HASH` matches at B1 and B8.
+
+Single-GPU bench with a spin kernel standing in for each round
+(`--round-spin-us`, `--l2-prefetch`), sparkf, receipts in
+`qualification/glm5next/performance/glmflash_b1_20260929/`:
+
+| B | wait per round | off | on |
+|---|---:|---:|---:|
+| 1 | 40 us | 16.849 ms | 14.758 ms |
+| 1 | 50 us | 17.846 ms | 15.159 ms |
+| 8 | 50 us | 37.522 ms | 35.689 ms |
+
+On the fleet this predicts about 2.1-2.7 ms less per B1 token, if production
+rounds keep DRAM idle for 40-50 us. That prediction is for a fleet window to
+test.
+
 ## Next steps
 
 Collective latency sets most of the B1 gap (see "Where it stands"). The
