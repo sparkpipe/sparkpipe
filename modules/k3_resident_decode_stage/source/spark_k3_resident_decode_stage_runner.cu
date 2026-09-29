@@ -1668,6 +1668,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.context_length = dispatch->context_length;
 	in.sequence_of_row = dispatch->sequence_of_row;
 	in.sequence_row_begin = dispatch->sequence_row_begin;
+	in.sequence_row_indices = dispatch->sequence_row_indices;
 	in.kda_state_index = dispatch->kda_state_index;
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
@@ -1969,6 +1970,7 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	b->route_source_token = state->route_source_token;
 	b->route_weight = state->route_weight;
 	b->sequence_row_begin = 0;
+	b->sequence_row_indices = 0;
 	b->positions = state->positions;
 	b->context_length = state->context_length;
 	b->sequence_of_row = state->sequence_of_row;

@@ -22,6 +22,7 @@ typedef struct SparkK3StepInput
 	const uint32_t *context_length;
 	const uint32_t *sequence_of_row;
 	const uint32_t *sequence_row_begin;
+	const uint32_t *sequence_row_indices;
 	const uint32_t *kda_state_index;
 	uint32_t *route_expert;
 	uint32_t *route_packed_row;

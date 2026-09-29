@@ -75,6 +75,7 @@ typedef struct SparkK3StageRunnerDispatch
     const uint32_t *sequence_of_row;
     const uint32_t *kda_state_index;
     const uint32_t *sequence_row_begin;
+    const uint32_t *sequence_row_indices;
     const void *hidden_input_bf16;
     uint64_t hidden_input_bytes;
     void *hidden_output_bf16;
