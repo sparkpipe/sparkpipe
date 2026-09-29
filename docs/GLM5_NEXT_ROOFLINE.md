@@ -692,7 +692,9 @@ real allocator at TP1, TP4 and TP16 and checks the strides, pool sizes and
 checkpoint page bytes.
 
 Only the KDA state is 1/16 per rank. The DSA path stores the full latent
-(`LmKvStoreKernel`) and the full indexer key on every rank. The attention
+(`LmKvStoreKernel`) and the full indexer key on every rank. This violates
+the owner's 1/16 requirement; the sharded kernels are in Phase 3B below,
+and the serving path does not use them yet. The attention
 heads are split (`attn_heads = 64 / tp`), but MLA shares one latent across
 all heads, so every rank also reads the same KV rows. Replicated DSA state
 costs 16.5 KiB per token per rank:
@@ -1114,41 +1116,152 @@ The harness takes `--index-cp 16` and adds the index read to `step_gb`.
 It simulates the gather with device copies, so its timing covers the
 compute side only.
 
-## Phase 3B: sharding the latent KV itself (design, not implemented)
+## Phase 3B: sharding the latent KV itself (kernels implemented, not serving)
 
-The latent KV (1024 B per token per DSA layer) is still replicated. Storing
-1/16 per rank would mean computing attention where the KV lives:
+Owner requirement (2026-09-28): at TP16 each node holds 1/16 of the KV
+cache. Replicating the latent KV or the indexer keys violates it. The
+shared kernels that store and attend over 1/16 per rank are done and
+tested (#1334). The transport is a draft that does not yet pass its probe
+(#1335). glm5_next and k3 do not use either yet, so production still
+replicates.
 
-1. Each rank computes partial softmax states for all 64 heads over its own
-   selected positions.
-2. The partials `(m, l, o[512])` move to the head owners.
-3. The head owners merge them (`LmLatentAttentionDecodeSplitCombineKernel`
-   already does exactly this, with partitions = ranks).
+### Layout
 
-The problem is the traffic, per row per DSA layer:
+| Item | Rule |
+| --- | --- |
+| Owner of position `p` | `(p / grain) % degree` (`include/sparkpipe/spark_kv_shard.h`) |
+| Latent KV grain | 1: each 64-token page puts 4 tokens on each of 16 ranks |
+| Indexer key grain | 4: one DSA pool per rank per page, so pool scoring stays local |
+| Pages | same page table, page ids and page count on every rank; each rank's page is `page_bytes / degree` |
+| Refused | a degree that does not divide `page_slots / grain`, degree > 16, a rank outside the degree (`SparkKvShardValid`) |
 
-| Transfer | Direction | Size |
-| --- | --- | ---: |
-| All-gather of the latent query | into each rank | about 64 KB |
-| All-to-all of the partials | out of each rank | about 62 KB |
+Keeping the page identity global keeps prefix sharing, JIT-KV snapshot and
+restore, and eviction page-granular and identical on all ranks. Each rank
+saves and restores its own slice of every page.
 
-A 256 KiB mesh slot carries only 16 KiB per peer per SCATTER round, so at
-B64 the all-to-all alone needs about 16 rounds per layer. That is about
-18 ms per step at 100 µs per round, which is worse than the memory it
-saves.
+### Attention
 
-Two ways around this:
+1. Each rank stores only the positions it owns (`LmKvShardStoreKernel`).
+   KV_A is replicated, so every rank already has every row's latent.
+2. The latent queries are all-gathered: 4 heads × 1 KiB per rank per row.
+3. Each rank computes `(m, l, o[512])` for all 64 heads over its own keys
+   (`LmLatentShardPartialKernel`). A row's keys come from the row alone:
+   dense up to 2,048 keys, otherwise its selected list compacted in list
+   order. The partitions are the ranks. No bit depends on wave composition.
+4. The partials move to the head owners, 4 heads × 2,056 B per row per
+   peer.
+5. The head owner merges them in rank order (`LmLatentShardMergeKernel`,
+   the same math as `LmLatentAttentionDecodeSplitCombineKernel`).
 
-- **A 2D split.** For example 4 head groups × 4 context shards:
-  - KV is stored at 1/4 per rank;
-  - traffic is about 24 KB per row per DSA layer, exchanged within a group
-    of 4.
-- **Phase 4 first.** GPU-initiated RDMA with per-peer buffers sized to the
-  exchange.
+`LmKvShardReplicaView` runs step 3 over the replicated cache with the
+ownership filter. It is the test oracle and is not a runtime path.
 
-Until then, capacity for long contexts comes from the existing KV arena. It
-evicts cold pages to the backing store (`resident_block_capacity <
-logical_block_count`).
+### Exchange per DSA layer
+
+Numbers come from `SparkKvShardExchangePlanBuild` (4 heads per rank, fp32
+partials, slot payload 262,192 B):
+
+| B | Query out per rank | Query rounds | Partials per peer | SCATTER rounds | Wire out per rank |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 4 KiB | 1 | 8.0 KiB | 1 | 120 KiB |
+| 8 | 32 KiB | 1 | 64 KiB | 5 | 964 KiB |
+| 16 | 64 KiB | 1 | 128 KiB | 9 | 1.9 MiB |
+| 64 | 256 KiB | 1 | 514 KiB | 33 | 7.5 MiB |
+| 128 | 512 KiB | 2 | 1 MiB | 65 | 15 MiB |
+| 256 | 1 MiB | 4 | 2 MiB | 129 | 30 MiB |
+| 512 | 2 MiB | 8 | 4 MiB | 257 | 60 MiB |
+
+The wire bytes are affordable at every batch size: 7.5 MiB at 25 GB/s is
+about 0.3 ms per layer at B64. The 256 KiB mesh slots are the limit,
+because a SCATTER round carries 16 KiB per peer. The chosen collective
+shape is:
+
+- **B ≤ 8:** SCATTER all-to-all over the existing slots (#1335), 1-5
+  rounds per layer. Above 2,048 tokens of context, the query rides in the
+  index-CP all-gather that already runs, so it costs no round of its own.
+- **B ≥ 16:** per-peer exchange buffers sized to the exchange
+  (GPU-initiated RDMA, Phase 4). Until those exist, the sharded path is
+  still exact, but it pays the round counts above.
+
+### B1 budget
+
+B1 may cost at most 3% more per token: 0.75 ms on the 25.2 ms engine B1.
+
+The estimate:
+
+- **Extra rounds.** 2 per DSA layer (1 above 2,048 tokens) × 11 layers ×
+  about 40 µs (the per-round floor in "Per-token budget" below). That is
+  +0.9 ms, or +0.45 ms above 2,048 tokens.
+- **Attention compute.** It drops from 72-83 µs to 42-45 µs per layer:
+  -0.35 ms.
+- **Net.** About +0.1 to +0.55 ms, inside the budget. This is an estimate
+  until the fleet run below.
+
+### Measured (sparkf GB10, `tests/cuda/kv_shard_cuda.cu` under `perf_window.py`, shared GPU)
+
+Times are per rank per DSA layer.
+
+Two runs on the shared GPU, first under heavier load, second at review:
+
+| Case | KV per rank | Sharded partial + merge | Main's replicated heads kernel |
+| --- | ---: | ---: | ---: |
+| B1, 1k | 64 KiB of 1 MiB | 44.5 / 30.9 µs | 82.6 / 51.2 µs |
+| B1, 8k (selected list) | 0.5 of 8 MiB | 41.5 / 41.2 µs | 71.9 / 59.4 µs |
+| B8, 1k | 0.5 of 8 MiB | 211 / 78.6 µs | 198 / 137.8 µs |
+| B8, 8k | 4 of 64 MiB | 185 / 113.5 µs | 190 / 159.3 µs |
+| B64, 1k | 4 of 64 MiB | 664 / 563 µs | 525 / 419 µs |
+| B64, 8k | 32 of 512 MiB | 964 / 851 µs | 909 / 780 µs |
+
+At B1 both kernels are latency-bound: the sharded B1 8k partial reads about
+128 KiB per rank per layer, about 1% of GB10 memory bandwidth, and does
+about 1.5% of its fp32 compute.
+
+Correctness in the same runs:
+
+- Every case matches the replicated-storage oracle bit for bit, at grain
+  1 (latent KV) and grain 4 (indexer-key ownership).
+- Every owned slot holds the replicated bytes (CPU-shim test).
+- Rows 0, B/2 and B-1 decoded alone have the same bits as inside the
+  batch, so the row law holds for the store, the partials and the merge.
+- `compute-sanitizer --tool memcheck --padding 256` reports no access
+  outside the 1/degree pools.
+- The all-to-all and all-gather receive layouts merge to the same bits.
+- Against an f64 reference the worst difference is 1.2-2.4e-4 on the
+  device and up to 4.8e-4 on the CPU shim. Both tests require less than
+  2e-3. At the earlier bound of 1e-2, a merge that skipped the max rescale
+  or a partial that dropped one key per rank still passed some cases.
+- Against main's replicated kernel the difference is at most 4.9e-4.
+
+That last difference is a reassociation, so COMPSEC-17 and MTP parity
+must be requalified once the path serves. The same tests at rope 64 (the
+k3 shape) and at degrees 4 and 8 pass too. The CPU-shim variant is
+`tests/test_kv_shard_host.py`.
+
+### Not done yet
+
+- **Transport.** #1335 is a draft: the single-GPU mesh probe times out a
+  peer gate at degree 2. Main's own probe also fails on sparkf today, at
+  its first degree-16 case.
+- **glm5_next wiring.**
+  - Per-rank pools of `page_bytes / tp` for the latent and index caches
+    and for the KV arena block.
+  - `SparkGlm5NextPageCopy` per rank.
+  - The sharded store.
+  - Query gather, partial exchange and merge as chain stages in the
+    eager, linear and graph paths.
+  - The indexer on grain 4.
+  - Module init refuses TP16 without sharding.
+- **k3 wiring.** The same pieces at rope 64 (`K3_MLA_*`), on k3's own
+  collective.
+- **Fleet check.** B1 and B64 tok/s and KV bytes per rank against
+  production, in an assigned weightd lane.
+- **Large batches.** Without Phase 4 buffers, B64 pays 33 SCATTER rounds
+  per DSA layer: about 11 × 33 × 40 µs = 14.5 ms on a 68 ms step (+21%).
+  That cost needs its own budget before B ≥ 16 serves sharded.
+- **Indexer keys.** No sharded store or scoring kernel exists for them
+  yet. Only the grain-4 ownership rule is tested.
+- **Prefix reuse and JIT-KV restore.** Untested until the per-rank page
+  copy exists.
 
 ## Head and DSA attention at large batches
 
