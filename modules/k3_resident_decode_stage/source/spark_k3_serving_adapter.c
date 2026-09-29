@@ -598,9 +598,34 @@ static SparkStatus K3ServingValidateSubmission(void *adapter_state,
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
 	if ( state == 0 || submission == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
+	{
+		if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+			return SPARK_STATUS_UNSUPPORTED;
+		return submission->row_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if ( submission->row_count == 0u || submission->row_count > state->max_rows )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	return SPARK_STATUS_OK;
+}
+
+static void K3ServingCompletionHeader(const SparkModelServingSubmission *submission,
+	uint32_t accepted_token_count, SparkModelServingCompletion *completion)
+{
+	memset(completion, 0, sizeof(*completion));
+	completion->abi_version = submission->abi_version;
+	completion->descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
+	completion->submission_id = submission->submission_id;
+	completion->request_id = submission->request_id;
+	completion->sequence_id = submission->sequence_id;
+	completion->sequence_position = submission->sequence_position;
+	completion->control_generation = submission->control_generation;
+	completion->transaction_id = submission->transaction_id;
+	completion->dispatch_generation = submission->dispatch_generation;
+	completion->request_generation = submission->request_generation;
+	completion->step_generation = submission->step_generation;
+	completion->residency = submission->residency;
+	completion->accepted_token_count = accepted_token_count;
 }
 
 static SparkStatus K3ServingSubmit(void *adapter_state,
@@ -613,6 +638,19 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	SparkStatus status;
 	if ( state == 0 || submission == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
+	{
+		SparkModelServingCompletion completion;
+		if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ||
+			submission->row_count != 0u )
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		if ( state->completion_function != 0 )
+		{
+			K3ServingCompletionHeader(submission, 0u, &completion);
+			state->completion_function(state->completion_context, &completion);
+		}
+		return SPARK_STATUS_OK;
+	}
 	rows = submission->row_count;
 	positions_host64 = (uint64_t *)malloc((uint64_t)rows * sizeof(uint64_t));
 	if ( positions_host64 == 0 )
@@ -688,22 +726,8 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	if ( state->completion_function != 0 )
 	{
 		SparkModelServingCompletion completion;
-		uint32_t uses_rows = SparkModelServingWorkKindUsesRows(submission->work_kind);
-		memset(&completion, 0, sizeof(completion));
-		completion.abi_version = submission->abi_version;
-		completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
-		completion.submission_id = submission->submission_id;
-		completion.request_id = submission->request_id;
-		completion.sequence_id = submission->sequence_id;
-		completion.sequence_position = submission->sequence_position;
-		completion.control_generation = submission->control_generation;
-		completion.transaction_id = submission->transaction_id;
-		completion.dispatch_generation = submission->dispatch_generation;
-		completion.request_generation = submission->request_generation;
-		completion.step_generation = submission->step_generation;
-		completion.residency = submission->residency;
-		completion.accepted_token_count = uses_rows != 0u ? rows : 0u;
-		if ( uses_rows != 0u && state->runner.owns_final_head != 0u )
+		K3ServingCompletionHeader(submission, rows, &completion);
+		if ( state->runner.owns_final_head != 0u )
 		{
 			uint32_t *runs = (uint32_t *)state->runs_host.pointer;
 			uint32_t sequences = dispatch.active_sequence_count;

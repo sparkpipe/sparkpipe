@@ -134,31 +134,42 @@ __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	}
 }
 
-__global__ static void K3RunnerCombineTp4TreeKernel(const uint16_t *const *rank_devices,
-	uint16_t *destination,uint32_t tp_rank,uint32_t rows,uint32_t hidden_dimension)
+#define K3_RUNNER_GATHER_SOURCES_MAX 16u
+
+typedef struct K3RunnerRankSources
+{
+	const uint16_t *rank[K3_RUNNER_GATHER_SOURCES_MAX];
+} K3RunnerRankSources;
+
+__global__ static void K3RunnerCombineTp4TreeKernel(K3RunnerRankSources sources,
+	uint16_t *destination,uint32_t rows,uint32_t hidden_dimension)
 {
 	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint32_t elements = rows * hidden_dimension;
 	if ( i >= elements )
 		return;
-	const uint16_t *r0 = rank_devices[0];
-	const uint16_t *r1 = rank_devices[1];
-	const uint16_t *r2 = rank_devices[2];
-	const uint16_t *r3 = rank_devices[3];
-	float a = LmBf16ToFloat(r0[i]) + LmBf16ToFloat(r1[i]);
-	float b = LmBf16ToFloat(r2[i]) + LmBf16ToFloat(r3[i]);
+	float a = LmBf16ToFloat(sources.rank[0][i]) + LmBf16ToFloat(sources.rank[1][i]);
+	float b = LmBf16ToFloat(sources.rank[2][i]) + LmBf16ToFloat(sources.rank[3][i]);
 	destination[i] = LmFloatToBf16(a + b);
-	(void)tp_rank;
 }
 
-__global__ static void K3RunnerGatherStripesKernel(const uint16_t *const *sources,
+__global__ static void K3RunnerCombinePairKernel(const uint16_t *source,
+	uint16_t *destination,uint32_t elements)
+{
+	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if ( i >= elements )
+		return;
+	destination[i] = LmFloatToBf16(LmBf16ToFloat(destination[i]) + LmBf16ToFloat(source[i]));
+}
+
+__global__ static void K3RunnerGatherStripesKernel(K3RunnerRankSources sources,
 	uint16_t *destination,uint32_t rank_count,uint32_t elements_per_rank)
 {
 	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
 	uint32_t total = rank_count * elements_per_rank;
 	if ( i >= total )
 		return;
-	destination[i] = sources[i / elements_per_rank][i % elements_per_rank];
+	destination[i] = sources.rank[i / elements_per_rank][i % elements_per_rank];
 }
 
 static SparkStatus K3RunnerCombineGatherBf16(void *combine_context,
@@ -166,14 +177,22 @@ static SparkStatus K3RunnerCombineGatherBf16(void *combine_context,
 	uint32_t source_count,uint32_t active_sequence_count,
 	uint32_t hidden_dimension,void *cuda_stream)
 {
+	K3RunnerRankSources sources;
 	uint32_t elements_per_rank = active_sequence_count * hidden_dimension;
 	(void)combine_context;
-	if ( source_count == 0u || elements_per_rank == 0u )
+	if ( destination_device == 0 || source_devices == 0 || source_count == 0u ||
+		source_count > K3_RUNNER_GATHER_SOURCES_MAX || elements_per_rank == 0u )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	memset(&sources, 0, sizeof(sources));
+	for ( uint32_t r = 0u; r < source_count; ++r )
+	{
+		if ( source_devices[r] == 0 )
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		sources.rank[r] = (const uint16_t *)source_devices[r];
+	}
 	K3RunnerGatherStripesKernel<<<(source_count * elements_per_rank + 255u) / 256u,
 		256u, 0, (cudaStream_t)cuda_stream>>>(
-		(const uint16_t *const *)source_devices,
-		(uint16_t *)destination_device,source_count,elements_per_rank);
+		sources,(uint16_t *)destination_device,source_count,elements_per_rank);
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
@@ -181,12 +200,13 @@ static SparkStatus K3RunnerCombineBf16(void *combine_context,
 	void *destination_device,const void *source_device,
 	uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream)
 {
+	uint32_t elements = active_sequence_count * hidden_dimension;
 	(void)combine_context;
-	const uint16_t *pair[4] = { (const uint16_t *)destination_device,
-		(const uint16_t *)source_device, 0, 0 };
-	K3RunnerCombineTp4TreeKernel<<<(active_sequence_count * hidden_dimension + 255u) / 256u,
+	if ( destination_device == 0 || source_device == 0 || elements == 0u )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	K3RunnerCombinePairKernel<<<(elements + 255u) / 256u,
 		256u, 0, (cudaStream_t)cuda_stream>>>(
-		pair,(uint16_t *)destination_device,0u,active_sequence_count,hidden_dimension);
+		(const uint16_t *)source_device,(uint16_t *)destination_device,elements);
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
@@ -194,12 +214,44 @@ static SparkStatus K3RunnerCombineTp4Bf16(void *combine_context,
 	void *destination_device,const void *const rank_devices[4],uint32_t tp_rank,
 	uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream)
 {
-	SparkK3RunnerState *state = (SparkK3RunnerState *)combine_context;
-	(void)state;
-	K3RunnerCombineTp4TreeKernel<<<(active_sequence_count * hidden_dimension + 255u) / 256u,
+	K3RunnerRankSources sources;
+	uint32_t elements = active_sequence_count * hidden_dimension;
+	(void)combine_context;
+	if ( destination_device == 0 || rank_devices == 0 || tp_rank >= 4u || elements == 0u )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	memset(&sources, 0, sizeof(sources));
+	for ( uint32_t r = 0u; r < 4u; ++r )
+	{
+		if ( rank_devices[r] == 0 )
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		sources.rank[r] = (const uint16_t *)rank_devices[r];
+	}
+	K3RunnerCombineTp4TreeKernel<<<(elements + 255u) / 256u,
 		256u, 0, (cudaStream_t)cuda_stream>>>(
-		(const uint16_t *const *)rank_devices,(uint16_t *)destination_device,
-		tp_rank,active_sequence_count,hidden_dimension);
+		sources,(uint16_t *)destination_device,active_sequence_count,hidden_dimension);
+	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+__global__ static void K3RunnerCombineU64MaxKernel(const uint64_t *source,
+	uint64_t *destination,uint32_t elements)
+{
+	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if ( i >= elements )
+		return;
+	if ( source[i] > destination[i] )
+		destination[i] = source[i];
+}
+
+static SparkStatus K3RunnerCombineU64Max(void *combine_context,
+	uint64_t *destination_device,const uint64_t *source_device,
+	uint32_t element_count,void *cuda_stream)
+{
+	(void)combine_context;
+	if ( destination_device == 0 || source_device == 0 || element_count == 0u )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	K3RunnerCombineU64MaxKernel<<<(element_count + 255u) / 256u,
+		256u, 0, (cudaStream_t)cuda_stream>>>(
+		source_device,destination_device,element_count);
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
@@ -1170,6 +1222,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 		{
 			device_config.combine_bf16_function = K3RunnerCombineBf16;
 			device_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
+			device_config.combine_u64_max_function = K3RunnerCombineU64Max;
 			device_config.combine_gather_bf16_function = K3RunnerCombineGatherBf16;
 			device_config.combine_context = state;
 		}
@@ -1205,6 +1258,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 		{
 			wide_config.combine_bf16_function = K3RunnerCombineBf16;
 			wide_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
+			wide_config.combine_u64_max_function = K3RunnerCombineU64Max;
 			wide_config.combine_gather_bf16_function = K3RunnerCombineGatherBf16;
 			wide_config.combine_context = state;
 		}
@@ -1464,13 +1518,13 @@ SparkStatus SparkK3StageRunnerSubmit(
 			status = K3Head(b, state->head_norm_weight, state->head_weight, 0,
 				state->vocab_slice_rows, rows, stream);
 		if ( status != LM_LAUNCH_OK )
-			return SPARK_STATUS_INTERNAL_ERROR;
+			{ fprintf(stderr, "sparkpipe_k3: final head launch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
 		if ( state->device_collective_created != 0 )
 		{
 			SparkTpDeviceCollectiveSubmission submission;
 			if ( K3HeadMaxlocPack(state->output_score, state->output_token,
 				state->head_maxloc, rows, stream) != LM_LAUNCH_OK )
-				return SPARK_STATUS_INTERNAL_ERROR;
+				{ fprintf(stderr, "sparkpipe_k3: head maxloc pack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
 			memset(&submission, 0, sizeof(submission));
 			submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 			submission.descriptor_bytes = sizeof(submission);
@@ -1489,10 +1543,10 @@ SparkStatus SparkK3StageRunnerSubmit(
 					&submission,
 					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) !=
 				SPARK_STATUS_OK )
-				return SPARK_STATUS_INTERNAL_ERROR;
+				{ fprintf(stderr, "sparkpipe_k3: head argmax collective enqueue failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
 			if ( K3HeadMaxlocUnpack(state->head_maxloc, state->output_token,
 				state->output_score, rows, stream) != LM_LAUNCH_OK )
-				return SPARK_STATUS_INTERNAL_ERROR;
+				{ fprintf(stderr, "sparkpipe_k3: head maxloc unpack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
 			cudaStreamSynchronize(stream);
 			cudaMemcpy(state->output_token_host, state->output_token,
 				(uint64_t)rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
