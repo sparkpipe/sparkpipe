@@ -279,7 +279,15 @@ static void check_codec_manifest(uint32_t codec,uint32_t encoding,uint64_t paylo
 		assert(288u * 6u * 42u <= SPARK_WEIGHTD_RANGE_COUNT_MAX && per_expert <= SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX);
 	}
 	if ( codec == SPARK_WEIGHT_CODEC_BF16 )
+	{
 		assert(per_expert == 2u);
+		entries[1].scale_offset = entries[1].payload_offset + entries[1].payload_bytes;
+		entries[1].scale_bytes = 288u * 4u;
+		assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+		entries[1].scale_offset = 0u;
+		entries[1].scale_bytes = 0u;
+		assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_OK);
+	}
 }
 
 int main(void)

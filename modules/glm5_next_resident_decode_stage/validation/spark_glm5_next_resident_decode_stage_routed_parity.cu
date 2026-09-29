@@ -66,7 +66,7 @@ static float ParityNormal(void)
 static uint16_t ParityBf16(float value)
 {
 	uint32_t bits;
-	memcpy(&bits,&value,4u);
+	memcpy(&bits,&value,sizeof(bits));
 	bits += 0x7fffu + ((bits >> 16) & 1u);
 	return((uint16_t)(bits >> 16));
 }
@@ -154,18 +154,18 @@ static int ParityAllocateWave(ParityWave *wave,uint32_t rows,uint32_t w1_rows,ui
 	memset(wave,0,sizeof(*wave));
 	wave->rows = rows;
 	wave->packed = packed;
-	return(ParityCuda(cudaMalloc((void **)&wave->x,(size_t)rows * GLM5_NEXT_HIDDEN * 2u),"x") ||
-		ParityCuda(cudaMalloc((void **)&wave->route_expert,(size_t)packed * 4u),"route_expert") ||
-		ParityCuda(cudaMalloc((void **)&wave->route_weight,(size_t)packed * 4u),"route_weight") ||
-		ParityCuda(cudaMalloc((void **)&wave->route_packed_row,(size_t)packed * 4u),"route_packed_row") ||
-		ParityCuda(cudaMalloc((void **)&wave->route_source_token,(size_t)packed * 4u),"route_source_token") ||
-		ParityCuda(cudaMalloc((void **)&wave->group_row_offset,(size_t)(GLM5_NEXT_EXPERTS + 1u) * 4u),"group_row_offset") ||
-		ParityCuda(cudaMalloc((void **)&wave->tile_prefix_w1,(size_t)(GLM5_NEXT_EXPERTS + 1u) * 64u * 4u),"tile_prefix_w1") ||
-		ParityCuda(cudaMalloc((void **)&wave->tile_prefix_w2,(size_t)(GLM5_NEXT_EXPERTS + 1u) * 64u * 4u),"tile_prefix_w2") ||
-		ParityCuda(cudaMalloc((void **)&wave->gate_up,(size_t)packed * w1_rows * 2u),"gate_up") ||
-		ParityCuda(cudaMalloc((void **)&wave->intermediate,(size_t)packed * intermediate * 2u),"intermediate") ||
-		ParityCuda(cudaMalloc((void **)&wave->expert_out,(size_t)packed * GLM5_NEXT_HIDDEN * 2u),"expert_out") ||
-		ParityCuda(cudaMalloc((void **)&wave->out,(size_t)rows * GLM5_NEXT_HIDDEN * 2u),"out"));
+	return(ParityCuda(cudaMalloc((void **)&wave->x,(size_t)rows * GLM5_NEXT_HIDDEN * sizeof(*wave->x)),"x") ||
+		ParityCuda(cudaMalloc((void **)&wave->route_expert,(size_t)packed * sizeof(*wave->route_expert)),"route_expert") ||
+		ParityCuda(cudaMalloc((void **)&wave->route_weight,(size_t)packed * sizeof(*wave->route_weight)),"route_weight") ||
+		ParityCuda(cudaMalloc((void **)&wave->route_packed_row,(size_t)packed * sizeof(*wave->route_packed_row)),"route_packed_row") ||
+		ParityCuda(cudaMalloc((void **)&wave->route_source_token,(size_t)packed * sizeof(*wave->route_source_token)),"route_source_token") ||
+		ParityCuda(cudaMalloc((void **)&wave->group_row_offset,(size_t)(GLM5_NEXT_EXPERTS + 1u) * sizeof(*wave->group_row_offset)),"group_row_offset") ||
+		ParityCuda(cudaMalloc((void **)&wave->tile_prefix_w1,(size_t)(GLM5_NEXT_EXPERTS + 1u) * sizeof(*wave->tile_prefix_w1)),"tile_prefix_w1") ||
+		ParityCuda(cudaMalloc((void **)&wave->tile_prefix_w2,(size_t)(GLM5_NEXT_EXPERTS + 1u) * sizeof(*wave->tile_prefix_w2)),"tile_prefix_w2") ||
+		ParityCuda(cudaMalloc((void **)&wave->gate_up,(size_t)packed * w1_rows * sizeof(*wave->gate_up)),"gate_up") ||
+		ParityCuda(cudaMalloc((void **)&wave->intermediate,(size_t)packed * intermediate * sizeof(*wave->intermediate)),"intermediate") ||
+		ParityCuda(cudaMalloc((void **)&wave->expert_out,(size_t)packed * GLM5_NEXT_HIDDEN * sizeof(*wave->expert_out)),"expert_out") ||
+		ParityCuda(cudaMalloc((void **)&wave->out,(size_t)rows * GLM5_NEXT_HIDDEN * sizeof(*wave->out)),"out"));
 }
 
 static void ParityFreeWave(ParityWave *wave)
@@ -274,15 +274,15 @@ static int ParityRun(const char *out_root,uint32_t layer,const ParityEntry *up,c
 	float *weight_host;
 	int32_t status[PARITY_PATHS];
 	uint16_t *outputs[PARITY_PATHS];
-	uint64_t out_bytes = (uint64_t)rows * GLM5_NEXT_HIDDEN * 2u;
+	uint64_t out_bytes = (uint64_t)rows * GLM5_NEXT_HIDDEN * sizeof(uint16_t);
 	uint32_t pool[64],pool_size = rows == 1u ? GLM5_NEXT_TOP_K : (rows * 2u < 64u ? rows * 2u : 64u);
 	if ( pool_size < GLM5_NEXT_TOP_K )
 		pool_size = GLM5_NEXT_TOP_K;
 	if ( ParityAllocateWave(&wave,rows,up->entry.rows,down->entry.columns) != 0 )
 		return(1);
 	x_host = (uint16_t *)malloc(out_bytes);
-	expert_host = (uint32_t *)malloc((size_t)wave.packed * 4u);
-	weight_host = (float *)malloc((size_t)wave.packed * 4u);
+	expert_host = (uint32_t *)malloc((size_t)wave.packed * sizeof(*expert_host));
+	weight_host = (float *)malloc((size_t)wave.packed * sizeof(*weight_host));
 	for (index=0u; index<pool_size; index++)
 	{
 		do
@@ -306,7 +306,7 @@ static int ParityRun(const char *out_root,uint32_t layer,const ParityEntry *up,c
 			expert_host[row * GLM5_NEXT_TOP_K + index] = pick;
 			weight_host[row * GLM5_NEXT_TOP_K + index] = 0.05f + (float)(ParityNext() % 1000u) / 2000.0f;
 		}
-	if ( ParityCuda(cudaMemcpy(wave.x,x_host,out_bytes,cudaMemcpyHostToDevice),"x") || ParityCuda(cudaMemcpy(wave.route_expert,expert_host,(size_t)wave.packed * 4u,cudaMemcpyHostToDevice),"experts") || ParityCuda(cudaMemcpy(wave.route_weight,weight_host,(size_t)wave.packed * 4u,cudaMemcpyHostToDevice),"weights") )
+	if ( ParityCuda(cudaMemcpy(wave.x,x_host,out_bytes,cudaMemcpyHostToDevice),"x") || ParityCuda(cudaMemcpy(wave.route_expert,expert_host,(size_t)wave.packed * sizeof(*expert_host),cudaMemcpyHostToDevice),"experts") || ParityCuda(cudaMemcpy(wave.route_weight,weight_host,(size_t)wave.packed * sizeof(*weight_host),cudaMemcpyHostToDevice),"weights") )
 		return(1);
 	if ( LmRouteBuild<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_EXPERTS>(wave.route_expert,rows,wave.packed,GLM5_NEXT_TOP_K,wave.group_row_offset,wave.route_packed_row,wave.route_source_token,up->entry.rows,GLM5_NEXT_HIDDEN,GLM5_NEXT_LAYER_TILE_N,wave.tile_prefix_w1,wave.tile_prefix_w2,stream) != LM_LAUNCH_OK )
 		return(ParityFail("route build rows",rows));
@@ -340,7 +340,7 @@ static int ParityRun(const char *out_root,uint32_t layer,const ParityEntry *up,c
 		if ( status[path] == LM_LAUNCH_OK )
 			natural_path = path;
 	natural_equal = status[PARITY_NATURAL] == LM_LAUNCH_OK && natural_path < PARITY_PATHS && memcmp(outputs[PARITY_NATURAL],outputs[natural_path],out_bytes) == 0 ? 1u : 0u;
-	if ( ParityWrite(directory,"x.bf16",x_host,out_bytes,0u) || ParityWrite(directory,"route_expert.u32",expert_host,(uint64_t)wave.packed * 4u,0u) || ParityWrite(directory,"route_weight.f32",weight_host,(uint64_t)wave.packed * 4u,0u) )
+	if ( ParityWrite(directory,"x.bf16",x_host,out_bytes,0u) || ParityWrite(directory,"route_expert.u32",expert_host,(uint64_t)wave.packed * sizeof(*expert_host),0u) || ParityWrite(directory,"route_weight.f32",weight_host,(uint64_t)wave.packed * sizeof(*weight_host),0u) )
 		return(1);
 	fprintf(meta,"%s{\"layer\":%u,\"rows\":%u,\"dir\":\"%s\",\"status\":{\"natural\":%d,\"skinny\":%d,\"grouped\":%d,\"gemm\":%d},\"natural_path\":\"%s\",\"natural_equals_path\":%s}",
 		parity_runs_written++ != 0u ? ",\n" : "",layer,rows,directory,status[0],status[1],status[2],status[3],
