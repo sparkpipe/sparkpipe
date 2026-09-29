@@ -33,6 +33,7 @@ typedef struct BenchRig
 	uint32_t wait_ns;
 	uint32_t l2_prefetch;
 	uint32_t l2_placed;
+	SparkL2PrefetchShape l2_shape;
 	uint32_t tp_degree;
 } BenchRig;
 
@@ -118,7 +119,6 @@ static int BenchRound(BenchRig *rig,const uint16_t *local,uint32_t layer,uint32_
 {
 	cudaStream_t stream = rig->fixture.stream;
 	uint32_t count = SPARK_GLM52_VHIDDEN;
-	SparkL2PrefetchShape shape = {SPARK_L2_PREFETCH_BYTES_DEFAULT,SPARK_L2_PREFETCH_BLOCKS_DEFAULT};
 	uint32_t placed = 0u;
 	rig->rounds_per_step++;
 	if ( rig->emulate_rounds == 0u )
@@ -136,7 +136,7 @@ static int BenchRound(BenchRig *rig,const uint16_t *local,uint32_t layer,uint32_
 	BenchGuardKernel<<<1,1,0,stream>>>(rig->ready_word,rig->request_word);
 	if ( rig->l2_prefetch != 0u && site != UINT32_MAX )
 	{
-		if ( SparkGlm52L2PrefetchAfterRound(&rig->fixture.wave,layer,site,&shape,&placed) != 0 )
+		if ( SparkGlm52L2PrefetchAfterRound(&rig->fixture.wave,layer,site,&rig->l2_shape,&placed) != 0 )
 			return(1);
 		rig->l2_placed += placed;
 	}
@@ -301,6 +301,13 @@ int main(int argc,char **argv)
 	rig->tp_degree = 16u;
 	rig->wait_ns = argc >= 5 ? (uint32_t)atoi(argv[4]) * 1000u : 0u;
 	rig->l2_prefetch = argc >= 6 ? (uint32_t)atoi(argv[5]) : 0u;
+	rig->l2_shape.bytes = argc >= 7 ? (uint32_t)atoi(argv[6]) : SPARK_L2_PREFETCH_BYTES_DEFAULT;
+	rig->l2_shape.blocks = argc >= 8 ? (uint32_t)atoi(argv[7]) : SPARK_L2_PREFETCH_BLOCKS_DEFAULT;
+	if ( SparkL2PrefetchShapeValid(&rig->l2_shape) == 0u )
+	{
+		fprintf(stderr,"glm52_step_bench: bytes must be a multiple of %u up to %u and blocks 1..%u\n",SPARK_L2_PREFETCH_BYTES_STEP,SPARK_L2_PREFETCH_BYTES_MAX,SPARK_L2_PREFETCH_BLOCKS_MAX);
+		return(2);
+	}
 	rig->fixture.split_threshold = BENCH_SPLIT_THRESHOLD;
 	rig->fixture.split_partials = (float *)SparkGlm52ValAllocZeroed(SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BYTES(1u,SPARK_GLM52_MODEL_HEAD_COUNT));
 	if ( rig->fixture.split_partials == 0 ||
@@ -329,8 +336,8 @@ int main(int argc,char **argv)
 					failures++;
 					continue;
 				}
-				printf("glm52_step_bench tp=%u layers=%u position=%u projections=%s rounds=%s collectives=%u peer_wait_us=%u l2_prefetch=%u l2_placed=%u mode=%s nodes=%zu launch_us=%.1f gpu_ms=%.3f wall_ms=%.3f\n",
-					rig->tp_degree,BENCH_LAYERS,BENCH_POSITION,names[split],rounds != 0u ? "emulated" : "none",result.rounds,rig->wait_ns / 1000u,rig->l2_prefetch,result.l2_placed,graph_mode != 0u ? "graph" : "linear",result.nodes,result.launch_us,result.gpu_ms,result.wall_ms);
+				printf("glm52_step_bench tp=%u layers=%u position=%u projections=%s rounds=%s collectives=%u peer_wait_us=%u l2_prefetch=%u l2_bytes=%u l2_blocks=%u l2_placed=%u mode=%s nodes=%zu launch_us=%.1f gpu_ms=%.3f wall_ms=%.3f\n",
+					rig->tp_degree,BENCH_LAYERS,BENCH_POSITION,names[split],rounds != 0u ? "emulated" : "none",result.rounds,rig->wait_ns / 1000u,rig->l2_prefetch,rig->l2_shape.bytes,rig->l2_shape.blocks,result.l2_placed,graph_mode != 0u ? "graph" : "linear",result.nodes,result.launch_us,result.gpu_ms,result.wall_ms);
 			}
 	SparkGlm52ValFixtureDestroy(&rig->fixture);
 	printf("glm52_step_bench %s\n",failures == 0 ? "PASS" : "FAIL");
