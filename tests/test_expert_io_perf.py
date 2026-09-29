@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 LAZY_ATTACH = re.compile(r"weightd lazy-attach model=(\S+) experts=(\d+) arena=(\d+) pool=(\d+)")
-SPINE_RECEIPTS = "/tmp/spark-weightd-spine"
+PACK_VERIFY = re.compile(r"weightd pack-verify path=(\S+) mode=(receipt|sha256|ck128) ")
 FAILURES = []
 
 
@@ -41,11 +41,14 @@ def lazy_attach(node):
 
 
 def spine_receipt(node, arena):
-    rc, out = ssh(node, f"ls {SPINE_RECEIPTS}")
-    names = out.split() if rc == 0 else []
-    pattern = re.compile(rf"[0-9a-f]{{64}}-{arena}-\d+\.receipt")
-    check("spine receipt exists for the attached pack", any(pattern.fullmatch(name) for name in names),
-          f"arena={arena} receipts={len(names)}")
+    rc, out = ssh(node, "grep 'weightd pack-verify path=' ~/weightd.log | grep ' mode=' | tail -1")
+    match = PACK_VERIFY.search(out) if rc == 0 else None
+    check("weightd verified the attached pack", match is not None, f"rc={rc} line={out!r}")
+    if match is None:
+        return
+    path = match.group(1)
+    rc, out = ssh(node, f"r=$(readlink -f {path}).verified; test -f $r && echo $r || ls ~/.local/state/sparkpipe/verified")
+    check("verify-once receipt exists for the attached pack", rc == 0 and out != "", f"arena={arena} path={path} mode={match.group(2)} out={out!r}")
 
 
 def main():

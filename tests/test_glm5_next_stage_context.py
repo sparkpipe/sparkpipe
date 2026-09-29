@@ -170,10 +170,60 @@ uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *col
     return(STREAM_ORDERED);
 }
 
+static uint32_t ALL_TO_ALL_ADVERTISED = 3u,MESH_ATTACHED[2],COLLECTIVES_CREATED;
+static uint8_t COLLECTIVE_MARKERS[2];
+
+static uint32_t collective_slot(const SparkTpDeviceCollective *collective)
+{
+    assert(collective->implementation == &COLLECTIVE_MARKERS[0] || collective->implementation == &COLLECTIVE_MARKERS[1]);
+    return(collective->implementation == &COLLECTIVE_MARKERS[1] ? 1u : 0u);
+}
+
 uint32_t SparkTpDeviceCollectiveAllToAllSupported(const SparkTpDeviceCollective *collective)
 {
-    (void)collective;
-    return(1u);
+    uint32_t slot = collective_slot(collective);
+    return((ALL_TO_ALL_ADVERTISED & (1u << slot)) != 0u && MESH_ATTACHED[slot] != 0u ? 1u : 0u);
+}
+
+SparkStatus SparkTpDeviceCollectiveApplyTopology(const SparkTpDeviceCollectiveTopology *topology,SparkTpDeviceCollectiveConfig *config)
+{
+    (void)topology;(void)config;
+    return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkTpDeviceCollectiveCreate(const SparkTpDeviceCollectiveConfig *config,SparkTpDeviceCollective *collective_out)
+{
+    assert(config->mesh_band_index < 2u && COLLECTIVES_CREATED == config->mesh_band_index);
+    memset(collective_out,0,sizeof(*collective_out));
+    collective_out->implementation = &COLLECTIVE_MARKERS[config->mesh_band_index];
+    COLLECTIVES_CREATED++;
+    return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(SparkTpDeviceCollective *collective,void *receive_device,uint32_t active_sequence_count,uint32_t hidden_dimension,uint32_t step_index,void *cuda_stream)
+{
+    (void)active_sequence_count;(void)hidden_dimension;(void)step_index;(void)cuda_stream;
+    assert(receive_device == (void *)(uintptr_t)state.lazy_pack->attached.mesh_send_buffer_addr);
+    MESH_ATTACHED[collective_slot(collective)] = 1u;
+    return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkTpDeviceCollectiveMeshTopology(uint32_t rank,uint32_t degree,struct SparkWeightdMeshTopology *topology)
+{
+    (void)rank;(void)degree;(void)topology;
+    abort();
+}
+
+SparkStatus SparkWeightdClientConnect(const char *socket_path,SparkWeightdClient **client,SparkWeightdHelloResult *hello_out)
+{
+    (void)socket_path;(void)client;(void)hello_out;
+    abort();
+}
+
+SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,uint32_t requested_lane,const SparkWeightdMeshTopology *topology,uint32_t *lane_out,uint64_t timeout_nanoseconds)
+{
+    (void)client;(void)requested_lane;(void)topology;(void)lane_out;(void)timeout_nanoseconds;
+    abort();
 }
 
 static char WALK_TRACE[256];
@@ -2600,6 +2650,41 @@ static void check_kv_shard_rank_state(void)
 	puts("PASS kv shard rank state: latent KV and indexer key pools are 1/tp of the replicated pools at TP8 and TP16, and GLM-KV-BYTES reports both");
 }
 
+static SparkStatus kv_shard_collective_init(uint32_t kv_shard,uint32_t advertised)
+{
+	static SparkWeightdLazyPack pack;
+	SparkGlm5NextResidentDecodeStageNodeContext context = {0};
+	memset(&state,0,sizeof(state));
+	memset(&pack,0,sizeof(pack));
+	pack.attached.mesh_send_buffer_addr = 0x40000u;
+	state.lazy_pack = &pack;
+	state.lane_client = (SparkWeightdClient *)(uintptr_t)1u;
+	state.tp_degree = 16u;
+	state.tp_rank = 5u;
+	state.kv_shard = kv_shard;
+	state.pipeline_slot_count = 1u;
+	state.execution_row_capacity = 8u;
+	context.tp_collective_backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
+	context.tp_connect_timeout_milli = 1u;
+	context.tp_operation_timeout_milli = 1u;
+	ALL_TO_ALL_ADVERTISED = advertised;
+	MESH_ATTACHED[0] = MESH_ATTACHED[1] = 0u;
+	COLLECTIVES_CREATED = 0u;
+	return(SparkGlm5NextModuleInitializeTpCollective(&state,&context));
+}
+
+static void check_kv_shard_collective_init(void)
+{
+	assert(kv_shard_collective_init(1u,3u) == SPARK_STATUS_OK && COLLECTIVES_CREATED == 2u && MESH_ATTACHED[0] == 1u && MESH_ATTACHED[1] == 1u);
+	assert(state.tp_device_collective_initialized == 1u && state.tp_device_collective_hc_initialized == 1u);
+	assert(kv_shard_collective_init(1u,0u) == SPARK_STATUS_UNSUPPORTED && COLLECTIVES_CREATED == 2u);
+	assert(kv_shard_collective_init(1u,1u) == SPARK_STATUS_UNSUPPORTED && kv_shard_collective_init(1u,2u) == SPARK_STATUS_UNSUPPORTED);
+	assert(kv_shard_collective_init(0u,0u) == SPARK_STATUS_OK && COLLECTIVES_CREATED == 2u);
+	memset(&state,0,sizeof(state));
+	ALL_TO_ALL_ADVERTISED = 3u;
+	puts("PASS kv shard startup: the all-to-all check runs after both collectives attach the mesh, accepts a weightd with slice routes on both bands and refuses otherwise");
+}
+
 static void check_chain_steps(void)
 {
 	SparkGlm5NextTpChain *chain = linear_chain_fixture();
@@ -3447,6 +3532,7 @@ int32_t main(void)
 	check_linear_chain();
 	check_kv_shard_walk();
 	check_kv_shard_rank_state();
+	check_kv_shard_collective_init();
 	check_chain_steps();
 	check_execute_sequence();
 	check_chain_validation();

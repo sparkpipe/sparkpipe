@@ -1,0 +1,7 @@
+{
+ "prompts": [
+  {"name": "capital", "text": "What is the capital of France? Answer in one sentence."},
+  {"name": "arithmetic", "text": "What is 17 multiplied by 23? Give the number and one line of working."},
+  {"name": "code", "text": "Write a Python function that returns the n-th Fibonacci number iteratively."}
+ ]
+}

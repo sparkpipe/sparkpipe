@@ -355,6 +355,10 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         "unknown wait mode fails instead of silently selecting spin");
     setenv("SPARK_TP_WAIT_MODE","hardware",1);
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"hardware create");
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 0u,
+        "a created collective reports all-to-all unsupported until its mesh region is attached, even when weightd advertises slice routes");
+    request->capabilities = 0u;
     cuda_stub_mesh_hardware_prepare_result = cudaErrorUnknown;
     CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_IO_ERROR,
         "unsupported hardware wait preparation fails explicitly");
