@@ -617,6 +617,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_hc_residual_fusion_source.py \
 	tests/test_dsv4_indexer_post_fusion_source.py \
 	tests/test_dsv4_pro_exact32k_stage.py \
+	tests/test_dsv4_pro_merge_stagepacks.py \
 	tests/test_dsv4_pro_rank_pack_verify.py \
 	tests/test_dsv4_pro_tp4pp4_shared_lane.py \
 	tests/test_dsv4_pro_weightd_warm_identity.py \
