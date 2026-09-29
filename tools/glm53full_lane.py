@@ -164,6 +164,9 @@ def render(arguments):
         raise SystemExit("kv backing must be a finite positive byte count")
     if not 1 <= arguments.sequences <= 16 or not 1 <= arguments.inflight <= 4:
         raise SystemExit("sequences must be 1..16 and inflight 1..4")
+    if not 1 <= arguments.execution_row_capacity <= arguments.sequences:
+        raise SystemExit(f"execution row capacity {arguments.execution_row_capacity} must be 1..sequences ({arguments.sequences}): "
+                         "the glm52 adapter and module refuse more rows than resident sequences at startup")
     files = {"model_resident.json": deployment(arguments.lane, arm, arguments.socket, arguments.kv_backing_bytes,
                                                arguments.max_sequence_positions, arguments.sequences,
                                                arguments.execution_row_capacity, arguments.inflight,

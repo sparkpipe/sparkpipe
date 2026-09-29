@@ -25,7 +25,7 @@ def adapter_members():
     return tuple(re.findall(r'"([a-z_0-9]+)"', block))
 
 
-def rendered(lane, codec="fp8", sequences=8, rows=16, positions=4096, inflight=1, arm=None, node_root=None, **score):
+def rendered(lane, codec="fp8", sequences=8, rows=8, positions=4096, inflight=1, arm=None, node_root=None, **score):
     arguments = argparse.Namespace(lane=lane, codec=codec, arm=arm, socket=SOCKET, kv_backing_bytes=4 << 30,
                                    max_sequence_positions=positions, execution_row_capacity=rows,
                                    sequences=sequences, inflight=inflight, node_root=node_root, **score)
@@ -76,7 +76,7 @@ def api_host_problems():
     failures = []
     settings = {"GLMFULL_LANE": "6", "GLMFULL_CODEC": "fp8", "GLMFULL_FIRMWARE": "/nonexistent", "GLMFULL_WEIGHTD_SOCKET": SOCKET,
                 "GLMFULL_EXPERT_POOL_BYTES": "1", "GLMFULL_SPINE_BUDGET_BYTES": "1", "GLMFULL_MEMORY_MAX": "1G",
-                "GLMFULL_SEQUENCES": "8", "GLMFULL_ROWS": "16", "GLMFULL_POSITIONS": "2048", "GLMFULL_INFLIGHT": "1",
+                "GLMFULL_SEQUENCES": "8", "GLMFULL_ROWS": "8", "GLMFULL_POSITIONS": "2048", "GLMFULL_INFLIGHT": "1",
                 "GLMFULL_API_PORT": "8446", "GLMFULL_API_BUILD": "/opt/api", "GLMFULL_API_TOKENIZER": "/opt/tokenizer.json"}
     with tempfile.TemporaryDirectory() as directory:
         fake = Path(directory)
@@ -147,6 +147,14 @@ def main():
             failures.append(f"node root {bad!r} rendered")
         except SystemExit:
             pass
+    for sequences, rows in ((8, 16), (1, 2), (16, 0)):
+        try:
+            rendered(6, "fp8", sequences=sequences, rows=rows)
+            failures.append(f"{rows} execution rows over {sequences} sequences rendered")
+        except SystemExit:
+            pass
+    if rendered(6, "fp8", sequences=16, rows=16, positions=2048)["config/stage_00.json"]["execution_row_capacity"] != 16:
+        failures.append("the served 16 x 2048 x 16-row render changed")
     if any(name in plain[f"config/stage_{rank:02d}.json"] for rank in range(16) for name in glm53full_lane.SCORE_MEMBERS):
         failures.append("a render without score options carries score members")
     for bad in ({"score_probe_path": "score/p.bin"}, {"score_dump_directory": "/abs"}, {"score_dump_directory": "a/../b"},
@@ -159,7 +167,7 @@ def main():
             pass
     with tempfile.TemporaryDirectory() as directory:
         command = [sys.executable, str(ROOT / "tools/glm53full_lane.py"), "--lane", "6", "--codec", "fp8", "--socket", SOCKET,
-                   "--kv-backing-bytes", str(4 << 30), "--max-sequence-positions", "4096", "--execution-row-capacity", "16",
+                   "--kv-backing-bytes", str(4 << 30), "--max-sequence-positions", "4096", "--execution-row-capacity", "8",
                    "--sequences", "8", "--inflight", "1", "--output", directory]
         subprocess.run(command, check=True, capture_output=True)
         if subprocess.run(command + ["--check"], capture_output=True).returncode != 0:
