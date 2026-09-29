@@ -148,9 +148,39 @@ def main():
                 patch.object(verify, "check_stage_header", lambda header, args: None):
             assert verify.main() == 0
         path.unlink()
+
+        builder = build(Source({3: "U8"}), [3])
+        router = pack.Entry(pack.K_ROUTER, 3, pack.PAYLOAD_BF16, pack.CODEC_BF16, pack.SCALE_NONE,
+                            1, 1, 4)
+        router.payload_bytes = 8
+        builder.plan.insert(0, pack.PlanItem(router, lambda: iter([b"\x55" * 8])))
+        _, data = emit_header_codec(builder, directory)
+        directory_offset = struct.unpack_from("<Q", data, 80)[0]
+        for entry_index, scoped_passes in ((0, True), (1, False)):
+            changed = bytearray(data)
+            at = directory_offset + entry_index * pack.ENTRY_BYTES + 6 * 4
+            rows, columns = struct.unpack_from("<2I", changed, at)
+            reshaped = (2, columns // 2) if rows == 1 else (rows // 2, columns * 2)
+            struct.pack_into("<2I", changed, at, *reshaped)
+            path.write_bytes(bytes(changed))
+            for extra, passes in ((["--expert-layers", "3"], scoped_passes), (["--skip-spot"], False)):
+                argv = ["verify", "--pack", str(path), "--source", "fixture", "--tp-degree", "4",
+                        "--tp-rank", "1", "--expected-bytes", str(len(changed)), "--first-layer", "3",
+                        "--layer-count", "1", *extra]
+                with patch.object(sys, "argv", argv), \
+                        patch.object(verify, "SourceReader", return_value=source), \
+                        patch.object(verify, "Packer", return_value=builder), \
+                        patch.object(verify, "check_stage_header", lambda header, args: None):
+                    try:
+                        result = verify.main()
+                    except SystemExit as stop:
+                        result = stop.code
+                assert (result == 0) == passes, (entry_index, extra, result)
+            path.unlink()
     print("PASS header expert codec: bf16/fp8/nvfp4 source-driven, explicit match, "
           "mixed and mismatched codecs refused, no-expert pack needs an explicit codec, "
-          "pack_verify refuses a stale header unless the exact value is accepted")
+          "pack_verify refuses a stale header unless the exact value is accepted, --expert-layers "
+          "scopes the plan diff to routed experts")
 
 
 if __name__ == "__main__":
