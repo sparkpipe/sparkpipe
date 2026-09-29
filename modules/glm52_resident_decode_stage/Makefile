@@ -13,7 +13,7 @@ ifeq ($(filter $(SCORE_DUMP),0 1),)
 $(error SCORE_DUMP must be 0 or 1)
 endif
 ifeq ($(SCORE_DUMP),1)
-MODULE_IDENTIFIER_SUFFIX := v2.scoredump
+MODULE_IDENTIFIER_SUFFIX = v2.scoredump
 GLM52_SCORE_DUMP_SOURCES := ../../src/spark_score_dump.c
 BUILD_DIRECTORY ?= $(GLM_BUILD_ROOT)/$(GLM_FAMILY)_resident_decode_stage/$(EXPERT_CODEC)-scoredump
 endif
