@@ -109,7 +109,7 @@ def main() -> int:
         expect_failure(module, invalid, f"invalid tokenizer accepted: {metadata!r}")
     with tempfile.TemporaryDirectory(prefix="deployment-generator-chat-") as directory:
         output = Path(directory) / "deployment.json"
-        for family in ("glm5_next", "gemma4"):
+        for family in ("glm5_next", "gemma4", "glm52"):
             chat_template = json.loads(
                 (ROOT / "model-families" / family / "chat_template.json").read_text(encoding="utf-8"))
             candidate = copy.deepcopy(specification)

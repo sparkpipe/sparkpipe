@@ -289,7 +289,7 @@ static __device__ __forceinline__ void LmBlockSumGroup(float *values, float (*re
         values[group] = total[group];
 }
 
-template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
+template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmLatentAttentionDecodeSplitKernel(
     const uint16_t *__restrict__ query_latent_bf16,
@@ -362,6 +362,11 @@ void LmLatentAttentionDecodeSplitKernel(
     position_count = selected_positions != 0
         ? selected_count
         : context_length[sequence];
+    if (ROW_INVARIANT && selected_positions == 0 && row_position != 0 &&
+        row_position[row] + 1u < position_count)
+    {
+        position_count = row_position[row] + 1u;
+    }
     partition_span = (position_count + partitions - 1u) / partitions;
     first_position = partition * partition_span;
     last_position = first_position + partition_span;
@@ -789,7 +794,7 @@ static inline cudaError_t LmLatentAttentionHeadsLaunch(
     return cudaErrorNotSupported;
 }
 
-template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
+template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT = false>
 static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
     const uint16_t *query_latent_bf16,
     const uint16_t *query_rope_bf16,
@@ -818,7 +823,8 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
     wanted = multiprocessor_count == 0u || blocks == 0u
         ? 1u
         : (multiprocessor_count * LM_LATENT_ATTN_SPLIT_CTAS_PER_SM +
-           blocks - 1u) / blocks;
+           (ROW_INVARIANT ? heads : blocks) - 1u) /
+          (ROW_INVARIANT ? heads : blocks);
     partitions = wanted < 1u ? 1u : wanted;
     if (partitions > LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS)
     {
@@ -854,7 +860,7 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
     }
     LM_LAUNCH(
         (LmLatentAttentionDecodeSplitKernel<
-            Geometry, THREADS, LATENT, ROPE>),
+            Geometry, THREADS, LATENT, ROPE, ROW_INVARIANT>),
         dim3(rows, heads, partitions),
         THREADS,
         0,
