@@ -13,9 +13,11 @@ follows model-families/glm5_next/name_map.json:
   - the kv_b split+per-head transpose (glm52's add_kv_b pattern).
   - f32 upcasts where the kernels read f32: hc fn/base/scale, kda o_norm,
     the compressor ape, dt_bias (F32 already), A_log (F32 already).
-  - FP8 MLA/dense/shared projections dequantize to bf16 at pack time
-    (exact: e4m3 values are representable in bf16) - the module's spine
-    path is bf16; routed experts stay packaged fp8 payload + f32 scales.
+  - FP8 MLA/dense/shared projections dequantize to bf16 at pack time as
+    bf16(e4m3 x f32 block scale). The release's block scales are not
+    powers of two, so this is the FP8 grid plus a second bf16 rounding,
+    not an exact copy of the FP8 values - the module's spine path is bf16;
+    routed experts stay packaged fp8 payload + f32 scales.
 
 Run on a spark node with warm ceph (per the fleet notes: NOT sparke - its
 client holds a stale negative cache after the metadata incident).
@@ -26,10 +28,14 @@ the dequant cache):
       --source /mnt/model-warm/glm-5.3-flash --output-dir build/stagepacks \
       --tp-all 16
 
-The expert codec is source-driven: BF16 sources pass through verbatim,
-FP8-native sources package fp8 payload + f32 scales, and nvfp4 releases
-(redhatai GLM-5.3-Flash-NVFP4: *_packed/*_scale/*_global_scale) package
-packed e2m1 + UE4M3 planes + F32 globals verbatim - never quantized.
+The expert codec is source-driven per layer: BF16 sources pass through
+verbatim, FP8-native sources package fp8 payload + f32 scales, and nvfp4
+releases (redhatai GLM-5.3-Flash-NVFP4: *_packed/*_scale/*_global_scale;
+nvidia modelopt: U8 weight + *_scale + *_scale_2) package packed e2m1 +
+UE4M3 planes + F32 globals verbatim - never quantized. The header's
+expert_weight_codec is the single codec of the pack's routed-expert
+entries; a pack whose layers carry different expert codecs is refused,
+and a pack with no routed-expert entries needs --expert-codec.
 """
 from __future__ import annotations
 
@@ -67,6 +73,7 @@ CODEC_NVFP4 = 6
 SCALE_NONE = 0
 SCALE_F32 = 1
 SCALE_UE4M3_F32_GLOBAL = 4
+EXPERT_CODEC_NAMES = {"bf16": CODEC_BF16, "fp8": CODEC_FP8, "nvfp4": CODEC_NVFP4}
 
 # Tensor kinds (mirror the format header enum; asserted at the bottom).
 K_EMBEDDING, K_FINAL_NORM, K_LM_HEAD = 0, 1, 2
@@ -207,7 +214,7 @@ class SourceReader:
 
     def spine_bf16(self, name: str) -> np.ndarray:
         """Full-width bf16 matrix [rows, cols]; F8_E4M3 dequantizes through
-        its [128,128]-block weight_scale_inv (exact to bf16)."""
+        its [128,128]-block weight_scale_inv as bf16(e4m3 x f32 scale)."""
         if name in self._cache:
             return self._cache[name]
         dtype, shape, _ = self.meta(name)
@@ -383,7 +390,8 @@ class PlanItem:
 class Packer:
     def __init__(self, source: SourceReader, tp_degree: int, tp_rank: int,
                  first_layer: int, layer_count: int, include_mtp: bool,
-                 owns_embedding: bool, owns_head: bool, expert_codec: int = CODEC_FP8):
+                 owns_embedding: bool, owns_head: bool,
+                 expert_codec: Optional[int] = None):
         self.s = source
         self.tp_degree = tp_degree
         self.tp_rank = tp_rank
@@ -649,6 +657,24 @@ class Packer:
 
         self.plan.append(PlanItem(entry, produce))
 
+    def source_expert_codec(self, layer: int) -> int:
+        prefix = f"model.language_model.layers.{layer}.mlp.experts.0.up_proj.weight"
+        packed = prefix + "_packed"
+        if packed in self.s.weight_map:
+            name = packed
+        elif prefix in self.s.weight_map:
+            name = prefix
+        else:
+            raise PackFailure(f"layer {layer}: no routed expert 0 up_proj in the source")
+        dtype = self.s.meta(name)[0]
+        codec = {"BF16": CODEC_BF16, "F8_E4M3": CODEC_FP8, "U8": CODEC_NVFP4}.get(dtype)
+        if codec is None:
+            raise PackFailure(f"{name}: routed expert source dtype {dtype} has no pack codec")
+        return codec
+
+    def header_expert_codec(self) -> int:
+        return header_expert_codec(self.plan, self.expert_codec)
+
     def add_experts(self, layer: int):
         prefix = f"model.language_model.layers.{layer}.mlp.experts"
         w1_cols = HIDDEN
@@ -665,16 +691,9 @@ class Packer:
                 for projection in ("up","gate"):
                     yield f"{prefix}.{expert}.{projection}_proj.weight",w1_r0,w1_r1
 
-        probe_name = next(
-            (n for n in self.s.weight_map
-             if ".mlp.experts.0.up_proj.weight" in n), None)
-        experts_bf16 = probe_name is not None and self.s.meta(probe_name)[0] == "BF16"
-        probe_packed = next(
-            (n for n in self.s.weight_map
-             if ".mlp.experts.0.up_proj.weight_packed" in n), None)
-        experts_nvfp4 = (
-            (probe_packed is not None and self.s.meta(probe_packed)[0] == "U8")
-            or (probe_name is not None and self.s.meta(probe_name)[0] == "U8"))
+        source_codec = self.source_expert_codec(layer)
+        experts_bf16 = source_codec == CODEC_BF16
+        experts_nvfp4 = source_codec == CODEC_NVFP4
         source = self.s
         if experts_nvfp4:
             w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT,
@@ -723,7 +742,7 @@ class Packer:
             self.plan.append(PlanItem(w1, produce_w1, produce_w1_scale))
             self.plan.append(PlanItem(w2, produce_w2, produce_w2_scale))
             return
-        codec = CODEC_BF16 if experts_bf16 else self.expert_codec
+        codec = source_codec
         w1 = Entry(K_EXPERT_UP_GATE, layer, PAYLOAD_PACKED_WEIGHT, codec,
                    SCALE_NONE if experts_bf16 else SCALE_F32, EXPERTS, w1_out_rows, w1_cols)
         w2 = Entry(K_EXPERT_DOWN, layer, PAYLOAD_PACKED_WEIGHT, codec,
@@ -848,6 +867,25 @@ class Packer:
             self.add_spine_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight", shard="rows")
 
 
+def header_expert_codec(plan: List[PlanItem], requested: Optional[int] = None) -> int:
+    codecs = sorted({item.entry.weight_codec for item in plan
+                     if item.entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN)})
+    if len(codecs) > 1:
+        layers = sorted({(item.entry.layer, item.entry.weight_codec) for item in plan
+                         if item.entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN)})
+        raise PackFailure(f"mixed routed-expert codecs {codecs} in one pack "
+                          f"(layer, codec): {layers}")
+    if not codecs:
+        if requested is None:
+            raise PackFailure("pack has no routed-expert entries; pass the header "
+                              "expert codec explicitly (--expert-codec)")
+        return requested
+    if requested is not None and requested != codecs[0]:
+        raise PackFailure(f"requested expert codec {requested} != source-driven "
+                          f"routed-expert codec {codecs[0]}")
+    return codecs[0]
+
+
 def assemble_header(packer: Packer, header_extra: Dict[str, Any], file_bytes: int,
                     revision: str, contract_sha256: str) -> bytes:
     """Serialize SparkGlm5NextStagePackHeader exactly (C layout)."""
@@ -858,7 +896,7 @@ def assemble_header(packer: Packer, header_extra: Dict[str, Any], file_bytes: in
         header_extra["stage_count"], header_extra["stage_index"],
         header_extra["first_layer"], header_extra["layer_count"], LAYERS,  # total = weight layers (module expects MODEL_LAYER_COUNT)
         HIDDEN, VOCAB, EXPERTS,
-        CODEC_BF16, packer.expert_codec, CODEC_BF16,
+        CODEC_BF16, packer.header_expert_codec(), CODEC_BF16,
         packer.tp_degree, packer.tp_rank,
     ]
     if len(fields) != 20:
@@ -982,6 +1020,9 @@ def main() -> int:
     parser.add_argument("--tp-degree", type=int, default=1)
     parser.add_argument("--tp-all", type=int, default=0,
                         help="emit all N rank packs in one process (shared dequant cache)")
+    parser.add_argument("--expert-codec", choices=sorted(EXPERT_CODEC_NAMES), default=None,
+                        help="header expert codec; required only for a pack without routed-expert "
+                             "entries, otherwise it must equal the source-driven codec")
     parser.add_argument("--dry-plan", action="store_true",
                         help="plan and print the inventory without writing")
     args = parser.parse_args()
@@ -995,10 +1036,12 @@ def main() -> int:
     for rank in ranks:
         packer = Packer(source, args.tp_all or args.tp_degree, rank,
                         args.first_layer, args.layer_count, args.mtp,
-                        args.owns_embedding, args.owns_head)
+                        args.owns_embedding, args.owns_head,
+                        None if args.expert_codec is None else EXPERT_CODEC_NAMES[args.expert_codec])
         if args.dry_plan:
             packer.build()
-            print(f"rank {rank}: {len(packer.plan)} tensors planned")
+            print(f"rank {rank}: {len(packer.plan)} tensors planned, "
+                  f"header expert codec {packer.header_expert_codec()}")
             continue
         emit(packer, out_dir / stage_pack_name(args.tp_all or args.tp_degree,
                                               rank, args.stage_count, args.stage_index),

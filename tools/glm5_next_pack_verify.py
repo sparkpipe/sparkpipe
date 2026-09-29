@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from glm5_next_resident_stagepack import (  # noqa: E402
     ALIGNMENT, ENTRY_BYTES, FORMAT_VERSION, GLOBAL_LAYER, HEADER_BYTES, MAGIC,
     LAYERS, Packer, SCALE_F32, SCALE_NONE, SCALE_UE4M3_F32_GLOBAL, CODEC_NVFP4,
-    SourceReader, validate_stage,
+    SourceReader, validate_stage, header_expert_codec, K_EXPERT_DOWN,
     K_DENSE_GATE_UP, K_EMBEDDING, K_EXPERT_UP_GATE, K_KDA_DECAY_GATE_DOWN,
     K_KDA_QKV_BETA, K_LM_HEAD, K_Q_B, K_SHARED_GATE_UP,
     PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT,
@@ -145,9 +145,16 @@ def main() -> int:
                       help="compare every payload and scale region against the checkpoint")
     mode.add_argument("--skip-spot", action="store_true",
                       help="header/layout/plan-diff only (no checkpoint payload reads)")
+    mode.add_argument("--expert-layers", default=None,
+                      help="comma-separated layers: compare only those layers' routed-expert "
+                           "payload and scale regions against the checkpoint")
     mode.add_argument("--structure-only", action="store_true",
                       help="header + directory + layout contract only; no checkpoint "
                            "and no plan diff (placed-node local verification)")
+    ap.add_argument("--accept-header-expert-codec", type=int, default=None,
+                    help="accept this header expert_weight_codec when it differs from the "
+                         "plan's routed-expert codec (packs emitted before the header fix); "
+                         "the mismatch is still printed")
     args = ap.parse_args()
     if args.structure_only and not args.source:
         args.source = "STRUCTURE-ONLY"
@@ -298,6 +305,17 @@ def main() -> int:
         fail(f"plan diff: {mismatches}/{len(entries)} entries differ")
     print(f"PASS plan diff: all {len(entries)} entries match the fixed "
           f"packer's plan for rank {args.tp_rank}")
+    plan_codec = header_expert_codec(packer.plan, None if any(
+        it.entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN) for it in packer.plan)
+        else h["expert_codec"])
+    if h["expert_codec"] != plan_codec:
+        if args.accept_header_expert_codec != h["expert_codec"]:
+            fail(f"header expert_weight_codec {h['expert_codec']} != plan routed-expert "
+                 f"codec {plan_codec}")
+        print(f"HEADER-CODEC-MISMATCH header expert_weight_codec {h['expert_codec']} != "
+              f"plan {plan_codec}; accepted by --accept-header-expert-codec")
+    else:
+        print(f"PASS header expert codec: {plan_codec}")
 
     # -- spot round-trip ---------------------------------------------------
     spot = [(K_KDA_QKV_BETA, 17), (K_KDA_DECAY_GATE_DOWN, 17),
@@ -309,6 +327,9 @@ def main() -> int:
     entry_by_key = {(e["kind"], e["layer"]): e for e in entries}
     if args.all_tensors:
         spot = list(by_key)
+    if args.expert_layers:
+        spot = [(kind, int(layer)) for layer in args.expert_layers.split(",")
+                for kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN)]
     if args.skip_spot:
         source.close()
         mm.close()
@@ -333,7 +354,9 @@ def main() -> int:
     source.close()
     mm.close()
     f.close()
-    print(f"VERIFY-PASS scope={'all-tensors' if args.all_tensors else 'spot'} rank {args.tp_rank}: {path.name} "
+    scope = ("all-tensors" if args.all_tensors
+             else f"expert-layers-{args.expert_layers}" if args.expert_layers else "spot")
+    print(f"VERIFY-PASS scope={scope} rank {args.tp_rank}: {path.name} "
           f"{size} bytes, {h['entry_count']} tensors, dir_sha {dir_sha[:16]}")
     return 0
 

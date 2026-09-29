@@ -592,6 +592,8 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \
+	tests/test_glm5_next_pack_header_codec.py \
+	tests/test_glm5_next_expert_graft.py \
 	tests/test_glm5_next_nvfp4_spine_scale.py \
 	tests/test_checkpoint_row_read.py \
 	tests/test_glm5_next_pack_regions.py \
