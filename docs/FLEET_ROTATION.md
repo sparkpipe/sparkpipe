@@ -149,7 +149,7 @@ Memory per node while serving. "Beside Flash" means MemAvailable stays >= 20 GiB
 | Qwen3.8-27B TP4 (`qwen`) | spark0/1/2/5, lane 3 | `sp-qwen4-rd` no-spec from `~/sparkdata/qwen27b.mx2.tp4`; `qwen27b-api.service` :8435; completion Paris | ~15 | yes (53-55 left) | validated, default companion |
 | Ling-3.0-flash TP16 (`ling`) | 16, lane 10 | `sp-ling-rd10` from `~/ling-lane10/root`; `ling3-api` :8437 from `~/ling-lane10-api`; completion Paris | ~22 | yes (46-61 left), but TP16 shares every GPU with Flash | companion |
 | MiMo-V2.6-Flash TP4 (`mimo`) | spark4/6/7/8, lane 9 | `sp-mimo-rd9` from `~/mimo-lane9/root`; `mimo26-api` :8439 from `~/mimo-lane9-api`; completion Paris | ~46 | yes (28-35 left) | companion |
-| Gemma 4 31B TP4 (`gemma`) | sparka-d, lane 4, mesh 10-13 | `gemma4_lane_resident.sh` release-11b1d2a, units `sp-g4l4-resident-r0..3`; `gemma4-api.service` :8436; Gemma-template completion Paris | ~36 | yes (44-46 left) | companion |
+| Gemma 4 31B TP4 (`gemma`) | sparka-d, lane 4, mesh 10-13 | `gemma4_lane_resident.sh` release-11b1d2a, units `sp-g4l4-resident-r0..3`; `gemma4-api.service` :8436 from `~/gemma4-api-channel` (declares the gemma4 `chat_template`); chat Paris | ~36 | yes (44-46 left) | companion |
 | Laguna-S 2.1 TP8xPP2 (`laguna`) | 16, lane 11 | - | ~20 | yes | **not runnable**: spark3 not restaged; start command incomplete in lanes/laguna-w6.md |
 | DeepSeek V4.1-Flash (`dsv41`) | TP8 packs | - | - | - | **not runnable**: no module forward, adapter or firmware |
 | DeepSeek V4-Pro (`dsv4pro`) | TP4xPP4 packs 16/16 | - | 94-100 | no | **not runnable**: no serving path |

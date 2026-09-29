@@ -261,7 +261,7 @@
    }
   },
   "gemma": {
-   "title": "Gemma 4 31B bf16 TP4 (sparka..sparkd, weightd lane 4, release-11b1d2a, gemma4-api)",
+   "title": "Gemma 4 31B bf16 TP4 (sparka..sparkd, weightd lane 4, release-11b1d2a, gemma4-api with the gemma4 chat_template)",
    "runnable": true,
    "validated": false,
    "nodes": [
@@ -285,7 +285,7 @@
     "$HOME/sparkdata/gemma4_31b.bf16.tp4/packs/gemma4_31b_tp4_rank@rank@_stage0.gemma4sp.sha256"
    ],
    "api": {
-    "precheck": "systemctl --user cat gemma4-api >/dev/null && ! systemctl --user is-active -q gemma4-api && ! ss -ltn | grep -q ':8436 '",
+    "precheck": "systemctl --user cat gemma4-api >/dev/null && grep -q '\"chat_template\"' $HOME/gemma4-api-channel/model_resident.json && ! systemctl --user is-active -q gemma4-api && ! ss -ltn | grep -q ':8436 '",
     "start": "systemctl --user reset-failed gemma4-api 2>/dev/null; systemctl --user start gemma4-api",
     "stop": "systemctl --user stop gemma4-api; true",
     "up": "systemctl --user is-active -q gemma4-api",
@@ -294,9 +294,14 @@
     "timeout_s": 180
    },
    "smoke": {
-    "path": "/v1/completions",
+    "path": "/v1/chat/completions",
     "body": {
-     "prompt": "<bos><|turn>user\nWhat is the capital of France? Answer in one word.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+     "messages": [
+      {
+       "role": "user",
+       "content": "What is the capital of France? Answer in one word."
+      }
+     ],
      "max_tokens": 16,
      "temperature": 0
     },
