@@ -966,7 +966,7 @@ static void check_verify_rounds(uint32_t drafter)
 	SparkGlm5NextAsyncCompletion *async;
 	SparkStatus status;
 	uint32_t match,fault_frame;
-	uint64_t accepted_before;
+	uint64_t accepted_before,accepted_sum;
 	memset(&state,0,sizeof(state));
 	memset(&sampling,0,sizeof(sampling));
 	memset(&context,0,sizeof(context));
@@ -1144,6 +1144,19 @@ static void check_verify_rounds(uint32_t drafter)
 		assert(state.verify_accepted == 0u && state.verify_accept_depth[0] == rounds && state.verify_proposed == 7u + rounds - 1u && state.verify_depth_cap[row_slot] == 1u);
 	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
 		assert(state.verify_proposed == 7u * rounds && state.verify_depth_cap[row_slot] == 7u);
+	accepted_sum = 0u;
+	for (index=0u; index<SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - 1u; index++)
+	{
+		accepted_sum += state.verify_position_accepted[index];
+		assert(state.verify_position_accepted[index] <= state.verify_position_reached[index]);
+		if ( index != 0u )
+			assert(state.verify_position_reached[index] <= state.verify_position_accepted[index - 1u]);
+		if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
+			assert(state.verify_position_reached[index] == rounds && state.verify_position_accepted[index] == rounds);
+		if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY )
+			assert(state.verify_position_accepted[index] == 0u && state.verify_position_reached[index] == (index == 0u ? rounds : 0u));
+	}
+	assert(accepted_sum == state.verify_accepted && state.verify_position_reached[0] == rounds);
 	FOLD_ANY = 0u;
 	GRAPH_LAUNCH_HOOK = 0;
 	VERIFY_EXPECTED = 0;
