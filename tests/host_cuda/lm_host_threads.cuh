@@ -66,6 +66,7 @@ typedef struct LmHostThreads
 	pthread_barrier_t block_barrier;
 	pthread_barrier_t warp_barrier[LM_HOST_THREADS_MAX / 32u];
 	float shuffle[LM_HOST_THREADS_MAX];
+	unsigned match[LM_HOST_THREADS_MAX];
 }
 LmHostThreads;
 
@@ -91,6 +92,26 @@ static inline float LmHostThreadsShuffleXor(unsigned, float value, int mask, int
 }
 
 #define __shfl_xor_sync LmHostThreadsShuffleXor
+
+static inline unsigned LmHostThreadsMatchAny(unsigned, unsigned value)
+{
+	unsigned thread = threadIdx.x,warp = thread / 32u,lane,mask = 0u;
+	lm_host_threads.match[thread] = value;
+	pthread_barrier_wait(&lm_host_threads.warp_barrier[warp]);
+	for (lane = 0u; lane < 32u; lane++)
+		mask |= lm_host_threads.match[warp * 32u + lane] == value ? 1u << lane : 0u;
+	pthread_barrier_wait(&lm_host_threads.warp_barrier[warp]);
+	return(mask);
+}
+
+static inline void LmHostThreadsWarpBarrier(void)
+{
+	pthread_barrier_wait(&lm_host_threads.warp_barrier[threadIdx.x / 32u]);
+}
+
+#define __match_any_sync LmHostThreadsMatchAny
+#undef __syncwarp
+#define __syncwarp(...) LmHostThreadsWarpBarrier()
 
 template<class Body> struct LmHostThreadsTask
 {

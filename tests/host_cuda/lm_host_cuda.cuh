@@ -95,6 +95,8 @@ static inline float __shfl_down_sync(unsigned, float, unsigned, int = 32) { retu
 static inline float __shfl_sync(unsigned, float value, int, int = 32) { return value; }
 static inline float __shfl_xor_sync(unsigned, float value, int, int = 32) { return value; }
 static inline unsigned __ballot_sync(unsigned, int) { return 0u; }
+static inline unsigned __match_any_sync(unsigned, unsigned) { return 1u << (threadIdx.x % 32u); }
+static inline int __popc(unsigned value) { return __builtin_popcount(value); }
 static inline void __threadfence_block(void) {}
 
 static inline unsigned long long __cvta_generic_to_shared(const void *p) { return (unsigned long long)p; }

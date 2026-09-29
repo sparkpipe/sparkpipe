@@ -99,6 +99,7 @@ int main(int argc,char **argv)
 	Case<256u,256u>(17u,8u,0u,256u,2048u,64u,stream);
 	Case<128u,384u>(9u,6u,0u,768u,2048u,64u,stream);
 	Case<256u,64u>(33u,4u,2u,256u,1024u,32u,stream);
+	Case<16u,64u>(40u,4u,2u,256u,1024u,32u,stream);
 	printf("test_route_build_scan PASS\n");
 	return 0;
 }
