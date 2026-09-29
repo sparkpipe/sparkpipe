@@ -1,0 +1,45 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:8436/v1/completions",
+  "fixture_prompt_token_count": 290,
+  "prompt_sha256": "1424555366f05c20e670d4d6e58484c3d0ab1a924d5439df70e10f998ea75a28",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "\n",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 348,
+   "completion_tokens": 2,
+   "total_tokens": 350
+  },
+  "tokens": [
+   107,
+   1
+  ],
+  "status": 0
+ },
+ "decoded_text": "\n",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "?",
+  "passed": false,
+  "elapsed_ms": 1002.0,
+  "output_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+  "generated_token_count": 2,
+  "status": 0
+ }
+}

@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_sha256.h"
 
 static uint32_t mesh_map_forced,mesh_map_offset,mesh_map_failure,mesh_map_calls;
 static uint8_t *mesh_map_raw;
@@ -68,6 +69,7 @@ static int test_rename(const char *source,const char *destination)
 #define mmap test_mmap
 #define rename test_rename
 #define pread test_pread
+#include "../runtime/spark_weightd_direct.c"
 #include "../runtime/spark_weightd.c"
 #undef pread
 #undef rename
@@ -371,11 +373,17 @@ static void check_short_range_reads(void)
 	assert(arena.staging != 0);
 	memset(destination,0,sizeof(destination));
 	read_limit = 19u;
-	assert(SparkWeightdLoadRangeGroup(&arena,fd,ranges,2u) == SPARK_STATUS_OK);
-	assert(memcmp(source,destination,sizeof(source)) == 0);
-	ranges[1].digest[0] ^= 1u;
-	assert(SparkWeightdLoadRangeGroup(&arena,fd,ranges,2u) == SPARK_STATUS_HASH_MISMATCH);
+	{
+		const SparkWeightdRange *order[2] = {&ranges[1],&ranges[0]};
+		assert(SparkWeightdLoadRanges(&arena,fd,0u,order,2u) == SPARK_STATUS_OK);
+		assert(memcmp(source,destination,sizeof(source)) == 0);
+		ranges[1].digest[0] ^= 1u;
+		order[0] = &ranges[1];
+		order[1] = &ranges[0];
+		assert(SparkWeightdLoadRanges(&arena,fd,0u,order,2u) == SPARK_STATUS_HASH_MISMATCH);
+	}
 	read_limit = 0u;
+	SparkWeightdDirectDestroy(arena.direct);
 	free(arena.staging);
 	assert(close(fd) == 0 && unlink(path) == 0);
 }
@@ -504,7 +512,7 @@ static void check_cold_control_progress(void)
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = sizeof(source);
 	memcpy(request.identity.model,"control-progress",17u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = UINT64_C(2097152);
 	for (uint32_t bytes=0u; bytes<=8u; bytes+=4u)

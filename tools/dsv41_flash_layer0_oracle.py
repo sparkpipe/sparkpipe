@@ -751,8 +751,9 @@ def write_engram_fixture(path, engrams):
 
 def synth_engram_tensors(rng, primes):
     def fp8w(shape):
-        codes = rng.integers(8, 40, size=shape).astype(np.uint8)
-        scales = rng.integers(118, 123, size=(shape[0] // 32, shape[1] // 32)).astype(np.uint8)
+        codes = rng.integers(8, 40, size=shape, dtype=np.uint8)
+        scales = rng.integers(118, 123, size=(shape[0] // 32, shape[1] // 32),
+                              dtype=np.uint8)
         return codes, scales
 
     tables = {}
@@ -776,17 +777,30 @@ def synth_engram_tensors(rng, primes):
     return tables
 
 
+class PackEntryCounter:
+    def __init__(self):
+        self.count = 0
+
+    def add(self, *entry):
+        self.count += 1
+
+
 class PackWriter:
-    def __init__(self, path):
-        self.path = path
+    def __init__(self, path, entry_count):
+        self.entry_count = entry_count
         self.entries = []
-        self.blobs = bytearray()
+        self.cursor = 0
+        self.directory_offset = (HEADER_BYTES + ALIGN - 1) & ~(ALIGN - 1)
+        self.payload_base = (self.directory_offset + entry_count * ENTRY_BYTES
+                             + ALIGN - 1) & ~(ALIGN - 1)
+        self.handle = open(path, "wb")
 
     def _append(self, blob):
-        while len(self.blobs) % ALIGN:
-            self.blobs.append(0)
-        off = len(self.blobs)
-        self.blobs += blob
+        self.cursor = (self.cursor + ALIGN - 1) & ~(ALIGN - 1)
+        off = self.cursor
+        self.handle.seek(self.payload_base + off)
+        self.handle.write(blob)
+        self.cursor += len(blob)
         return off, len(blob)
 
     def add(self, kind, layer, payload_type, codec, scale_enc, groups, rows, cols,
@@ -798,28 +812,27 @@ class PackWriter:
 
     def write(self, rank):
         count = len(self.entries)
-        directory_offset = (HEADER_BYTES + ALIGN - 1) & ~(ALIGN - 1)
-        payload_base = (directory_offset + count * ENTRY_BYTES + ALIGN - 1) & ~(ALIGN - 1)
+        if count != self.entry_count:
+            raise SystemExit(f"pack writer planned {self.entry_count} entries, got {count}")
         for entry in self.entries:
-            entry[8] += payload_base
+            entry[8] += self.payload_base
             if entry[10]:
-                entry[10] += payload_base
-        blob = bytearray(self.blobs)
-        file_bytes = payload_base + len(blob)
+                entry[10] += self.payload_base
+        file_bytes = self.payload_base + self.cursor
         header = bytearray(HEADER_BYTES)
         struct.pack_into("<20I2Q", header, 0,
                          MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0,
                          count, 1, 0, LAYER, 40, 40, HIDDEN, VOCAB, N_EXPERTS,
                          COD_FP8, COD_MXFP4, TP, rank, 0,
-                         directory_offset, file_bytes)
+                         self.directory_offset, file_bytes)
         header[96:96 + len(REVISION)] = REVISION.encode()
         directory = b"".join(struct.pack("<8I4Q", *e) for e in self.entries)
-        with open(self.path, "wb") as f:
-            f.write(header)
-            f.write(b"\x00" * (directory_offset - HEADER_BYTES))
-            f.write(directory)
-            f.write(b"\x00" * (payload_base - directory_offset - len(directory)))
-            f.write(bytes(blob))
+        self.handle.seek(0)
+        self.handle.write(header)
+        self.handle.seek(self.directory_offset)
+        self.handle.write(directory)
+        self.handle.truncate(file_bytes)
+        self.handle.close()
         return file_bytes
 
 
@@ -882,9 +895,14 @@ def synth_tensors(rng):
         tl[K_RBIAS] = f32n(N_EXPERTS, 0.05)
         for kind, shape, srows in ((K_W1, W1_SHAPE, MOE_INTER), (K_W2, W2_SHAPE, HIDDEN),
                                    (K_W3, W3_SHAPE, MOE_INTER)):
-            planes = [fp4w(shape, srows) for _ in range(LOCAL_EXPERTS)]
-            tl[kind] = (np.concatenate([p[0].reshape(-1) for p in planes]),
-                        np.concatenate([p[1].reshape(-1) for p in planes]))
+            codes = np.empty((LOCAL_EXPERTS, shape[0] * shape[1]), dtype=np.uint8)
+            scales = np.empty((LOCAL_EXPERTS, srows * (shape[1] * 2 // 32)),
+                              dtype=np.uint8)
+            for expert in range(LOCAL_EXPERTS):
+                code, scale = fp4w(shape, srows)
+                codes[expert] = code.reshape(-1)
+                scales[expert] = scale.reshape(-1)
+            tl[kind] = (codes.reshape(-1), scales.reshape(-1))
         tl[K_SW1] = fp8w((MOE_INTER, HIDDEN))
         tl[K_SW2] = fp8w((HIDDEN, MOE_INTER))
         tl[K_SW3] = fp8w((MOE_INTER, HIDDEN))
@@ -905,7 +923,14 @@ def synth_tensors(rng):
 
 
 def synth_write_pack(path, t):
-    writer = PackWriter(path)
+    counter = PackEntryCounter()
+    synth_add_entries(counter, t)
+    writer = PackWriter(path, counter.count)
+    synth_add_entries(writer, t)
+    return writer.write(RANK)
+
+
+def synth_add_entries(writer, t):
     tg = t["globals"]
     for kind, payload, codec in ((K_EMBED, tg[K_EMBED], COD_BF16),
                                  (K_FNORM, tg[K_FNORM], COD_BF16),
@@ -957,7 +982,6 @@ def synth_write_pack(path, t):
                 rows, cols = tl[K_CWGATE].shape
                 writer.add(K_CWGATE, layer, PT_BF16, COD_BF16, SE_NONE, 1, rows, cols,
                            tl[K_CWGATE].tobytes(), b"")
-    return writer.write(RANK)
 
 
 class PackReader:

@@ -1,5 +1,7 @@
 #include <assert.h>
+#include <dlfcn.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -33,6 +35,20 @@ static void TestDsv4Tp16Completion(void *context,
 	state->completion_count++;
 }
 
+static uint32_t TestDsv4DriverCudaGraphCount(const char *driver_path)
+{
+	uint32_t (*graph_count)(void);
+	uint32_t count;
+	void *driver;
+	driver = dlopen(driver_path,RTLD_NOW | RTLD_NOLOAD);
+	assert(driver != 0);
+	graph_count = (uint32_t (*)(void))dlsym(driver,"TestDsv4ServingDriverLastCreatedCudaGraphCount");
+	assert(graph_count != 0);
+	count = graph_count();
+	dlclose(driver);
+	return(count);
+}
+
 int main(void)
 {
 	SparkModelServingAdapterDynamicLibrary library;
@@ -46,9 +62,11 @@ int main(void)
 	void *adapter_state;
 	char runtime_root[4096];
 	SparkStatus status;
+	assert(unsetenv("SPARK_DSV4_DSPARK") == 0 && unsetenv("SPARK_DSV4_SPECULATORS") == 0);
 	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(
 		TEST_DSV4_TP16_ADAPTER_PATH,
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE,
 		&library) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.descriptor->stage_count == 16u);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 16u);
@@ -75,7 +93,7 @@ int main(void)
 	configuration.runtime_limits.kv_physical_page_capacity = 128u;
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	configuration.runtime_root = runtime_root;
-	configuration.node_id = "spark15";
+	configuration.node_id = "sparkf";
 	configuration.node_target = SPARK_DSV4_MODEL_MODULE_TARGET;
 	configuration.adapter_configuration_path = TEST_DSV4_TP16_CONFIG_PATH;
 	configuration.driver_shared_object_path = TEST_DSV4_TP16_DRIVER_PATH;
@@ -91,7 +109,7 @@ int main(void)
 	assert(adapter_state != 0);
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) ==
 		SPARK_STATUS_OK);
-	assert(snapshot.kv_token_capacity == 130u);
+	assert(TestDsv4DriverCudaGraphCount(TEST_DSV4_TP16_DRIVER_PATH) == 130u);
 	memset(&lane,0,sizeof(lane));
 	lane.request_id = 900u;
 	lane.request_generation = 1u;

@@ -1,0 +1,83 @@
+{
+ "run": "20260928-tp4-lane4-serve",
+ "phase": "SERVE: Gemma 4 31B bf16 TP4 on sparka..sparkd (lane 4), API rtx5090:8436",
+ "engine": {
+  "release": "~/lanes/gemma4-l4/release-11b1d2a on sparka/b/c/d (SOURCE_COMMIT 11b1d2a63d4c1daad9307a0553c82ff1f79ebf07)",
+  "model_driver_so_sha256_prefix": "2ad9e2a4c99f3c32 (release SHA256SUMS == running root on all 4 ranks)",
+  "units": "sp-g4l4-resident-r0..r3, transient systemd-run units, Restart=no, started 2026-09-28T12:58:12Z",
+  "deployment_limits": {
+   "resident_sequence_capacity": 8,
+   "max_active_sequences": 8,
+   "max_sequence_positions": 4096,
+   "kv_physical_page_capacity": 512
+  }
+ },
+ "api": {
+  "until_2026-09-28T13:15:37Z": "gemma4-api-channel SOURCE_COMMIT 23e4982 (boot_pid 408295)",
+  "from_2026-09-28T13:15:37Z": "gemma4-api-channel SOURCE_COMMIT e0ff52d, sparkpipe_model_api sha256 9db0a05627e64fd6..., redeployed by a parallel session (not this lane agent)",
+  "unit": "gemma4-api.service, active, UnitFileState=disabled, Restart=no"
+ },
+ "token_exactness": {
+  "file": "token_exactness_11b1d2a.jsonl",
+  "reference": "qualification/gemma4/runs/20260928-hf-greedy-reference",
+  "result": "3/3 exact (capital, arithmetic, code; 32 tokens greedy)",
+  "api": "23e4982"
+ },
+ "concurrent_exactness": {
+  "file": "concurrent_9stream_exactness_11b1d2a.jsonl",
+  "result": "9/9 exact (3 prompts x 3, 9 streams against 8 resident sequences)",
+  "api": "23e4982",
+  "caveat": "ran while the first COMPSEC pass was in flight; these prompts are 25-33 tokens, below one 64-token cache page, so they never exercised prefix reuse"
+ },
+ "compsec17": {
+  "bar": "14/17",
+  "warm_cache_11b1d2a_api_23e4982": {
+   "dir": "compsec17-11b1d2a-warm-cache",
+   "result": "3/17 FAIL",
+   "cause": "every prompt reused 256-448 cached prompt tokens from the previous pass (api_request_measurements_boot408295.jsonl); outputs are loops and empty answers"
+  },
+  "first_pass_lost": "a cold first pass (12:58:47Z, cached 0-64 tokens) generated all 17 answers but died on a broken pipe before writing them; compsec-076 was saved and passed (210 tokens, Answer: 20)",
+  "post_fix_e0ff52d": {
+   "dir": "rtx5090:~/g4compsec/out-e0ff52d (run by the parallel session)",
+   "result": "15/17 PASS (fail: compsec-081 got 8 expected 10-15, compsec-092 got 9-12 expected 10-14); cached_prompt_tokens 0 on every request",
+   "wall_s": 144.55
+  }
+ },
+ "prefix_cache_ab_probe": {
+  "file": "prefix_cache_ab_probe_11b1d2a.jsonl",
+  "tool": "tools/gemma4/lane4_serve/cacheprobe.py",
+  "api": "23e4982",
+  "result": "3 COMPSEC prompts x (cold nonce, warm, warm): cold arms (0 cached) coherent and on topic; warm arms (320-448 cached) degenerate and differ from each other between identical requests",
+  "root_cause_per_e0ff52d": "the Gemma 4 adapter allocates blocks per slot and returns a released slot's blocks to its free list without publishing them; the batch engine still applied prefix hits, so a hit attended over another request's KV. e0ff52d applies an empty lookup unless the adapter declares SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH"
+ },
+ "perf_no_spec": {
+  "files": {
+   "baseline": "perf_baseline_97a3a23.jsonl",
+   "current": "perf_11b1d2a.jsonl"
+  },
+  "tool": "tools/gemma4/lane4_serve/g4bench.py",
+  "api": "23e4982 (bench prompts carry a nonce, cached 0, so e0ff52d does not change these numbers)",
+  "B1_decode_128_tok_s": {
+   "97a3a23": 7.313,
+   "11b1d2a": 11.376
+  },
+  "B1_decode_512_tok_s": {
+   "97a3a23": 6.592,
+   "11b1d2a": 11.443
+  },
+  "TTFT_caveat": "the 97a3a23 baseline bench had no nonce: its TTFT runs 2-3 (0.19/0.21 s) were prefix-cache hits, so its recorded median 0.2062 s is not a cold TTFT; only run 1 (6.08 s) is comparable; prompt length 519 tokens on 97a3a23 (no nonce) vs 535 on 11b1d2a",
+  "8_stream_aggregate_tok_s": {
+   "97a3a23": 39.94,
+   "11b1d2a": 53.883
+  },
+  "8_stream_steady_all_active_tok_s": {
+   "97a3a23": 43.608,
+   "11b1d2a": 62.729
+  },
+  "TTFT_s_long_passage_cold": {
+   "97a3a23": 6.0763,
+   "11b1d2a": 4.7222
+  },
+  "prompts_cold_check": "B1 and 8-stream prompts were 48 tokens on 97a3a23 (below one 64-token page), so those baseline numbers are cold"
+ }
+}

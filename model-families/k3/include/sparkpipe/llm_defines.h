@@ -54,5 +54,5 @@
 #define SPARK_LLM_ROUTE_UNION_TRIM              1888u
 
 #define SPARK_LLM_ADAPTER_DESCRIPTOR            "spark.k3.serving-adapter.tp16.mxfp4.v1"
-#define SPARK_LLM_MODEL_SOURCE_URI              "moonshotai/Kimi-K3-MXFP4"
-#define SPARK_LLM_MODEL_REVISION                "config-sha256-9710e121a58d03ac92c8d6da287a19541994319afbbe6d6202af001ffd379213"
+#define SPARK_LLM_MODEL_SOURCE_URI              "moonshotai/Kimi-K3"
+#define SPARK_LLM_MODEL_REVISION                "f831ab66814297da540d832a5235f8e904f29d06"

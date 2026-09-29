@@ -1,0 +1,53 @@
+PASS head rows kernel rows=2 vocabulary=1000 tokens_and_scores_bitwise_equal=yes
+PASS head rows kernel rows=15 vocabulary=1000 tokens_and_scores_bitwise_equal=yes
+PASS head rows kernel rows=16 vocabulary=1000 tokens_and_scores_bitwise_equal=yes
+PASS head rows kernel rows=17 vocabulary=1000 tokens_and_scores_bitwise_equal=yes
+PASS head rows kernel rows=40 vocabulary=1000 tokens_and_scores_bitwise_equal=yes
+PASS head rows kernel rows=256 vocabulary=9680 tokens_and_scores_bitwise_equal=yes
+TIMING head rows=256 vocabulary=9680 per_row_kernel_ms=155.439 rows_kernel_ms=18.362 speedup=5.6
+PASS head rows kernel rows=8 vocabulary=9680 tokens_and_scores_bitwise_equal=yes
+TIMING head rows=8 vocabulary=9680 per_row_kernel_ms=6.835 rows_kernel_ms=3.312 speedup=6.1
+PASS sampled head rows=1 vocabulary=9680 single_rows_sharded_bitwise_equal=yes greedy_rows_unchanged=yes moved=1
+PASS sampled head rows=3 vocabulary=9680 single_rows_sharded_bitwise_equal=yes greedy_rows_unchanged=yes moved=2
+PASS sampled head rows=17 vocabulary=9680 single_rows_sharded_bitwise_equal=yes greedy_rows_unchanged=yes moved=11
+PASS sampled head rows=256 vocabulary=9680 single_rows_sharded_bitwise_equal=yes greedy_rows_unchanged=yes moved=169
+TIMING sampled head rows=256 vocabulary=9680 greedy_ms=29.194 sampled_ms=25.779
+PASS projection query_absorb rows=1 heads=4 bitwise_equal=yes
+TIMING projection query_absorb rows=1 per_row_kernel_ms=0.0556 rows_kernel_ms=0.0087 speedup=6.4 per_step_saving_ms=0.52
+PASS projection value_up rows=1 heads=4 bitwise_equal=yes
+TIMING projection value_up rows=1 per_row_kernel_ms=0.0558 rows_kernel_ms=0.0134 speedup=4.2 per_step_saving_ms=0.47
+PASS projection query_absorb rows=4 heads=4 bitwise_equal=yes
+TIMING projection query_absorb rows=4 per_row_kernel_ms=0.0556 rows_kernel_ms=0.0081 speedup=6.9 per_step_saving_ms=0.52
+PASS projection value_up rows=4 heads=4 bitwise_equal=yes
+TIMING projection value_up rows=4 per_row_kernel_ms=0.0566 rows_kernel_ms=0.0134 speedup=4.2 per_step_saving_ms=0.48
+PASS projection query_absorb rows=5 heads=4 bitwise_equal=yes
+TIMING projection query_absorb rows=5 per_row_kernel_ms=0.0556 rows_kernel_ms=0.0112 speedup=5.0 per_step_saving_ms=0.49
+PASS projection value_up rows=5 heads=4 bitwise_equal=yes
+TIMING projection value_up rows=5 per_row_kernel_ms=0.0571 rows_kernel_ms=0.0220 speedup=2.6 per_step_saving_ms=0.39
+PASS projection query_absorb rows=8 heads=4 bitwise_equal=yes
+TIMING projection query_absorb rows=8 per_row_kernel_ms=0.0558 rows_kernel_ms=0.0112 speedup=5.0 per_step_saving_ms=0.49
+PASS projection value_up rows=8 heads=4 bitwise_equal=yes
+TIMING projection value_up rows=8 per_row_kernel_ms=0.0564 rows_kernel_ms=0.0220 speedup=2.6 per_step_saving_ms=0.38
+PASS projection query_absorb rows=17 heads=4 bitwise_equal=yes
+TIMING projection query_absorb rows=17 per_row_kernel_ms=0.1086 rows_kernel_ms=0.0193 speedup=5.6 per_step_saving_ms=0.98
+PASS projection value_up rows=17 heads=4 bitwise_equal=yes
+TIMING projection value_up rows=17 per_row_kernel_ms=0.1107 rows_kernel_ms=0.0219 speedup=5.1 per_step_saving_ms=0.98
+PASS projection query_absorb rows=256 heads=4 bitwise_equal=yes
+TIMING projection query_absorb rows=256 per_row_kernel_ms=2.1707 rows_kernel_ms=0.0945 speedup=23.0 per_step_saving_ms=22.84
+PASS projection value_up rows=256 heads=4 bitwise_equal=yes
+TIMING projection value_up rows=256 per_row_kernel_ms=2.7096 rows_kernel_ms=0.1013 speedup=26.8 per_step_saving_ms=28.69
+PASS all-heads latent attention rows=3 heads=1 context=700 selected=0 multiprocessors=48 worst_abs=0.000421 old_kernel_worst_abs=0.000421 reference=f64
+PASS all-heads latent attention rows=2 heads=1 context=3000 selected=256 multiprocessors=48 worst_abs=0.000472 old_kernel_worst_abs=0.000472 reference=f64
+PASS all-heads latent attention rows=64 heads=1 context=300 selected=0 multiprocessors=48 worst_abs=0.001896 old_kernel_worst_abs=0.001896 reference=f64
+PASS all-heads latent attention rows=200 heads=1 context=100 selected=0 multiprocessors=48 worst_abs=0.001951 old_kernel_worst_abs=0.001951 reference=f64
+PASS all-heads latent attention rows=3 heads=2 context=700 selected=0 multiprocessors=48 worst_abs=0.000244 old_kernel_worst_abs=0.000244 reference=f64
+PASS all-heads latent attention rows=2 heads=2 context=3000 selected=256 multiprocessors=48 worst_abs=0.000476 old_kernel_worst_abs=0.000476 reference=f64
+PASS all-heads latent attention rows=64 heads=2 context=300 selected=0 multiprocessors=48 worst_abs=0.001952 old_kernel_worst_abs=0.001952 reference=f64
+PASS all-heads latent attention rows=200 heads=2 context=100 selected=0 multiprocessors=48 worst_abs=0.001951 old_kernel_worst_abs=0.001951 reference=f64
+PASS all-heads latent attention rows=3 heads=4 context=700 selected=0 multiprocessors=48 worst_abs=0.000444 old_kernel_worst_abs=0.000444 reference=f64
+PASS all-heads latent attention rows=2 heads=4 context=3000 selected=256 multiprocessors=48 worst_abs=0.000486 old_kernel_worst_abs=0.000486 reference=f64
+PASS all-heads latent attention rows=64 heads=4 context=300 selected=0 multiprocessors=48 worst_abs=0.001939 old_kernel_worst_abs=0.001939 reference=f64
+PASS all-heads latent attention rows=200 heads=4 context=100 selected=0 multiprocessors=48 worst_abs=0.001953 old_kernel_worst_abs=0.001953 reference=f64
+TIMING latent attention rows=8 heads=4 context=1024 per_head_kernel_ms=0.154 all_heads_kernel_ms=0.135 speedup=1.1 kv_gbps=62
+TIMING latent attention rows=256 heads=4 context=1024 per_head_kernel_ms=29.566 all_heads_kernel_ms=3.543 speedup=8.3 kv_gbps=76
+PASS glm5_next row kernels: head rows kernel and per-head projection rows kernel equal the per-row kernels bitwise; all-heads latent attention matches an f64 reference

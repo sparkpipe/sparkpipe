@@ -1,11 +1,18 @@
 # Migrating glm5_next onto the common GLM modules
 
-glm5_next (glm53flash) is excluded from the mod-infra wave because coredev is
-actively working it on hill1. This note is the recipe for the future adoption
-PR. Every step preserves the capability-alignment law: the family copy is
-deleted in the same commit that flips the include.
+glm5_next (glm53flash) was left out of the mod-infra wave that moved glm52
+onto the common GLM modules. This note is the recipe for its adoption. Every
+step preserves the capability-alignment law: the family copy is deleted in the
+same commit that flips the include.
 
-## What exists after the glm52 adoption (lane/mod-infra-glm)
+Status on main (2026-09-28): step 6 is done apart from two wiring changes.
+Steps 1-5, 7 and 8 are still open. glm5_next still has its private
+`source/cuda/{config.h,launch_shape.h,layer.cuh,unity.cu,api.h}`, its
+`llm_defines.h` has 52 `SPARK_LLM_*` keys and none of `TILE_K`, `TILE_WARPS`
+or `HEAD_TILE`, and its Makefile includes only
+`../resident_decode_stage_rules.mk`.
+
+## What exists on main
 
 - `common/common_glm_cuda_tree/` — `spark_glm_cuda_config.h`,
   `spark_glm_cuda_launch_shape.h`, `spark_glm_cuda_layer.cuh`,
@@ -24,8 +31,11 @@ deleted in the same commit that flips the include.
   parameter file, `SPARK_LLM_*` keys congruent with the glm5_next seed and
   the `llm_specifics.h` specimen.
 - `model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh` +
-  `spark_tp_mesh_register.h` (M-0) — already adoptable by glm5_next verbatim;
-  the kernels were seeded from glm5_next's own FP32-accumulate combine.
+  `spark_tp_mesh_register.h` (M-0) — the shared TP mesh kernels, seeded from
+  glm5_next's own FP32-accumulate combine. glm5_next's `cuda.cu` already
+  includes them.
+- `include/sparkpipe/family/module/spark_module_combine.h` — the combine
+  wrappers and `SPARK_FAMILY(ModuleRegisterCombines)`.
 
 ## Steps for glm5_next
 
@@ -66,11 +76,14 @@ deleted in the same commit that flips the include.
    module.c binding block is the template). Delete the 16 identical
    function bodies. glm5_next keeps its superset functions (graph capture,
    MTP, KDA recurrent, page copy, worker completion).
-6. M-0: glm5_next already runs these kernels and takes its combine
-   wrappers from `family/module/spark_module_combine.h`; delete the private
-   `SparkTpLaunchAccumAdd`/`AccumU64Max` copies from its cuda.cu. The
-   numerics win (FP32 accumulate, one rounding step) is coredev's fleet
-   receipt; the win here is deletion.
+6. M-0, done except for wiring. glm5_next defines no private launchers:
+   `SparkTpLaunchAccumAdd` and `SparkTpLaunchAccumU64Max` come from the
+   shared `spark_tp_mesh_kernels.cuh`, and `4b0bcc2` moved its FP32 combine
+   wrappers into `spark_module_combine.h`. Two changes remain. The module
+   assigns the combine wrappers field by field in
+   `SparkGlm5NextModuleInitializeTpCollective` instead of calling
+   `SPARK_FAMILY(ModuleRegisterCombines)`. Its `internal.h` also re-declares
+   the `SparkTpLaunch*` prototypes that `spark_tp_mesh_register.h` provides.
 7. Makefile: set `GLM_FAMILY`, `GLM_EXPERT_CODECS` (no bf16),
    `MODULE_IDENTIFIER_PREFIX` (shape tag `h4096.l45.kda34.e288.k8`) and the
    family sources, then `include ../../common/glm_resident_stage_wrapper.mk`
@@ -85,5 +98,5 @@ deleted in the same commit that flips the include.
 
 Steps 1-3 are mechanical (header shims, no behavior). Step 4 is the largest
 diff — land it alone with the compile gate. Steps 5-7 change module wiring —
-land with the behavior-identity receipt. Step 6 is independent and can land
-first if hill1 wants the deletion early.
+land with the behavior-identity receipt. The rest of step 6 is independent
+and can land at any time.

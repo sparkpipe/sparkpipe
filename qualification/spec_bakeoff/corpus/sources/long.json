@@ -1,0 +1,18 @@
+{
+ "class": "long",
+ "output_tokens": 256,
+ "prompts": [
+  {
+   "generator": "document_qa",
+   "seed": 7,
+   "target_tokens": 8192,
+   "question": "Answer from the document only: which officer is named in section {section}, what percent rise does that section record, and what is its reference code?"
+  },
+  {
+   "generator": "code_edit",
+   "seed": 11,
+   "target_tokens": 32768,
+   "instruction": "In the Python file below, add a `metric_mean` function after the last metric that returns the arithmetic mean of `values` or 0.0 for an empty list, and update REGISTRY so it also includes it. Reply with only the new function and the changed REGISTRY line."
+  }
+ ]
+}

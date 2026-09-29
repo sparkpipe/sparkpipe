@@ -141,7 +141,8 @@ static int32_t manifest_write(FILE *pack, FILE *out, const PackHeader *header,
 	uint32_t i;
 	int32_t err;
 	if (fwrite(words, 1u, sizeof(words), out) != sizeof(words))
-		return(-7);	for (i = 0u; i < header->tensor_count; i++)
+		return(-7);
+	for (i = 0u; i < header->tensor_count; i++)
 	{
 		if (fseeko(pack, (off_t)(header->directory_offset +
 			((uint64_t)i * SPARK_QWEN38_27B_STAGEPACK_ENTRY_BYTES)), SEEK_SET) != 0 ||

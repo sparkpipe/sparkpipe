@@ -11,24 +11,21 @@
 #include "sparkpipe/spark_model_serving_adapter.h"
 
 #ifndef TEST_LAGUNA_SERVING_ADAPTER_PATH
-#define TEST_LAGUNA_SERVING_ADAPTER_PATH ""
+#error "TEST_LAGUNA_SERVING_ADAPTER_PATH must name the adapter under test"
 #endif
 #ifndef TEST_LAGUNA_SERVING_DRIVER_PATH
-#define TEST_LAGUNA_SERVING_DRIVER_PATH ""
+#error "TEST_LAGUNA_SERVING_DRIVER_PATH must name the fixture driver compiled from the adapter's description"
+#endif
+#ifndef TEST_LAGUNA_SERVING_FOREIGN_DRIVER_PATH
+#error "TEST_LAGUNA_SERVING_FOREIGN_DRIVER_PATH must name the fixture driver compiled from another description"
 #endif
 #ifndef TEST_LAGUNA_SERVING_CONFIG_PATH
-#define TEST_LAGUNA_SERVING_CONFIG_PATH ""
+#error "TEST_LAGUNA_SERVING_CONFIG_PATH must name the adapter configuration fixture"
 #endif
 #ifndef TEST_LAGUNA_MODEL_REVISION
-#define TEST_LAGUNA_MODEL_REVISION ""
+#error "TEST_LAGUNA_MODEL_REVISION must name the revision the adapter was built for"
 #endif
 
-/* TP8xPP2: the two pipeline positions exercised by the boundary
-   assertions. Rank 0 is a first-stage rank (a bound frame ships
-   hidden_output to the next stage); rank 8 is a last-stage rank (a
-   bound frame consumes hidden_input). Both parse the tp_rank=0 fixture
-   because 8 % 8 == 0 - the deployment convention carries the global
-   rank in stage_index and the adapter derives stage_index/8. */
 #define TEST_LAGUNA_FIRST_STAGE_RANK 0u
 #define TEST_LAGUNA_LAST_STAGE_RANK 8u
 #define TEST_LAGUNA_STAGE0_TOKEN 5000u
@@ -249,24 +246,18 @@ int main(void)
 		assert(adapter_state != 0);
 		TestLagunaServingDecodeSubmission(&submission,&lane,&token_id,&row_lane,
 			&row_position,&row_sequence);
-		/* unpaired: a hidden pointer without its byte count is a broken
-		   boundary regardless of stage (common validator pairing) */
 		TestLagunaServingApplyBoundaries(&submission,stage_rank,hidden_input,
 			hidden_output,boundary_bytes);
 		submission.hidden_input_address = hidden_input;
 		submission.hidden_input_bytes = 0u;
 		assert(library.adapter_interface.validate_submission(adapter_state,&submission) ==
 			SPARK_STATUS_INVALID_ARGUMENT);
-		/* sidebands: the laguna descriptor declares none - fail closed
-		   on the raw path */
 		TestLagunaServingApplyBoundaries(&submission,stage_rank,hidden_input,
 			hidden_output,boundary_bytes);
 		submission.boundary_sideband_output_address = hidden_output;
 		submission.boundary_sideband_output_bytes = boundary_bytes;
 		assert(library.adapter_interface.validate_submission(adapter_state,&submission) ==
 			SPARK_STATUS_INVALID_ARGUMENT);
-		/* raw wire form: the residentd validates before the route bind
-		   fills the hidden transport - this form must pass everywhere */
 		TestLagunaServingApplyBoundaries(&submission,stage_rank,0,0,0u);
 		assert(library.adapter_interface.validate_submission(adapter_state,&submission) ==
 			SPARK_STATUS_OK);
@@ -282,15 +273,6 @@ int main(void)
 		assert(test_state.completion.submission_id == submission.submission_id);
 		assert(test_state.completion.token_count == 1u);
 		assert(test_state.completion.token_ids[0] == TEST_LAGUNA_RAW_TOKEN);
-		/* route-bound form: exactly the stage's own boundary side wired
-		   (the attach-011d first-decode abort rejected this form at
-		   submission validation with CAPACITY_EXCEEDED - both pipeline
-		   stages must now accept and execute it). The frame contract
-		   follows the route plan: a shipping stage carries the
-		   HIDDEN_OUTPUT flag and NO token buffer (no ids materialize
-		   off the final stage); the consuming stage carries
-		   HIDDEN_INPUT plus the WRITE buffer and emits the stage
-		   receipt token. */
 		TestLagunaServingApplyBoundaries(&submission,stage_rank,hidden_input,
 			hidden_output,boundary_bytes);
 		assert(library.adapter_interface.validate_submission(adapter_state,&submission) ==
@@ -307,23 +289,22 @@ int main(void)
 		assert(test_state.completion.token_count == 1u);
 		if ( stage_rank / 8u != 0u )
 			assert(test_state.completion.token_ids[0] == TEST_LAGUNA_STAGE1_TOKEN);
-		/* the shipping stage completes WITHOUT a token buffer: the
-		   driver fixture rejects any WRITE buffer on a hidden_output
-		   frame, so no fresh ids materialize - the stale pending-slot
-		   value from the raw submit above is a don't-care, exactly as
-		   in production where only the final stage writes ids */
 		assert(library.adapter_interface.snapshot(adapter_state,&snapshot) ==
 			SPARK_STATUS_OK);
 		assert(snapshot.submitted_count == 2u);
 		assert(snapshot.completed_count == 2u);
 		library.adapter_interface.destroy(adapter_state);
 	}
-	/* the config fixture carries tp_rank 0: a rank whose stage_index is
-	   not 0 mod 8 must fail the tp-rank identity check at initialize */
 	TestLagunaServingConfiguration(&configuration,1u,runtime_root,&test_state);
 	adapter_state = 0;
 	assert(library.adapter_interface.initialize(&configuration,&adapter_state) ==
 		SPARK_STATUS_SCHEMA_ERROR);
+	assert(adapter_state == 0);
+	TestLagunaServingConfiguration(&configuration,TEST_LAGUNA_FIRST_STAGE_RANK,runtime_root,&test_state);
+	configuration.driver_shared_object_path = TEST_LAGUNA_SERVING_FOREIGN_DRIVER_PATH;
+	adapter_state = 0;
+	assert(library.adapter_interface.initialize(&configuration,&adapter_state) ==
+		SPARK_STATUS_TARGET_MISMATCH);
 	assert(adapter_state == 0);
 	SparkModelServingAdapterUnloadInterface(&library);
 	free(hidden_input);

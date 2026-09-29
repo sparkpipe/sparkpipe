@@ -27,6 +27,7 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *c,const SparkWeight
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *c,uint64_t g,const SparkWeightdExpertKey *k,uint32_t n,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->lease_identifier=17;printf("ACQUIRE %u %u\n",k[0].layer,n);if(g!=9 || k[0].layer<3)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("acquire_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("acquire_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientRelease(SparkWeightdClient *c,uint64_t g,uint64_t l,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;printf("RELEASE %llu\n",(unsigned long long)l);if(g!=9 || l!=17)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("release_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("release_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *c,SparkWeightdReclaimResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->reclaimed_bytes=UINT64_C(8192);r->reclaimed_arena_count=2;r->resident_bytes=UINT64_C(4096);r->arena_count=3;if(mode("reclaim_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("reclaim_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
+SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *c,const char *sha,SparkWeightdReclaimResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));printf("RECLAIM_PACK %s\n",sha);r->reclaimed_bytes=UINT64_C(4096);r->reclaimed_arena_count=1;r->resident_bytes=UINT64_C(8192);r->arena_count=2;if(mode("reclaim_busy"))r->busy_arena_count=1;if(mode("reclaim_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("reclaim_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 void SparkWeightdClientClose(SparkWeightdClient *c) { if(c)puts("CLOSED"); }
 ''')
         cls.warmer = cls.directory / "warmer"
@@ -35,7 +36,8 @@ void SparkWeightdClientClose(SparkWeightdClient *c) { if(c)puts("CLOSED"); }
                         "-Imodel-families/dsv4/include",
                         "tools/weightd_warm.c", "runtime/spark_weightd_manifest.c",
                         "model-families/dsv4/src/spark_dsv4_parallel_shape.c",
-                        "src/spark_ck128.c",
+                        "src/spark_ck128.c", "src/spark_sha256.c",
+                        "runtime/spark_weightd_receipt.c",
                         str(faults), "-o", str(cls.warmer)], cwd=ROOT, check=True)
         probe = cls.directory / "latch.c"
         probe.write_text(r'''
@@ -76,12 +78,21 @@ int main(void) {
         Path(str(cls.pack)+".experts").write_bytes(data)
         source = (ROOT / "tools/fleet_node_agent.sh").read_text()
         cls.ensure = "ensure_weightd() {" + source.split("ensure_weightd() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
-        cls.ensure = cls.ensure.replace("$HOME", "$TEST_AGENT_HOME")
+        cls.ensure = cls.ensure.replace("$HOME", "$TEST_AGENT_HOME").replace("/tmp/weightd-mesh/", "$TEST_MESH_DIR/")
         cls.loop = source[source.rindex("\nwhile true; do"):]
+        cls.warmup = "warmup_hook() {" + source.split("warmup_hook() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        cls.identity = source.split("\nHOST=$(hostname)\n", 1)[1].split("\nPID_FILE=", 1)[0]
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
+
+    def setUp(self):
+        mesh = tempfile.TemporaryDirectory(prefix="mesh-", dir=self.directory)
+        self.addCleanup(mesh.cleanup)
+        self.mesh = Path(mesh.name)
+        for name in ("mesh-0.rec", "mesh-15.rec", ".ready", ".shipped_sha", "mesh.log"):
+            (self.mesh / name).write_text(name)
 
     def warm(self, mode="", budget="4096", extra=()):
         env = dict(os.environ, WARM_FAILURE=mode)
@@ -196,6 +207,52 @@ int main(void) {
         self.assertIn("weightd_warm SOCKET --reclaim", result.stderr)
         self.assertEqual(result.stdout, "")
 
+    def reclaim_pack(self, *specs, mode=""):
+        env = dict(os.environ, WARM_FAILURE=mode)
+        env.pop("SPARK_WEIGHTD_EXPERT_POOL_BYTES", None)
+        return subprocess.run([str(self.warmer), "unused", "--reclaim-pack", *specs],
+                              env=env, capture_output=True, text=True)
+
+    def test_reclaim_pack_scopes_to_named_packs(self):
+        digest = "ab" * 32
+        pack = self.directory / "lane.rank00.pack"
+        pack.write_bytes(b"pack")
+        Path(str(pack) + ".sha256").write_text(digest + "  lane.rank00.pack\n")
+        upper = "CD" * 32
+        result = self.reclaim_pack(str(pack), upper)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(),
+                         ["RECLAIM_PACK " + digest, "RECLAIM_PACK " + "cd" * 32, "CLOSED"])
+        self.assertIn("RECLAIM-PACK sha=%s spec=%s freed=4096 arenas=1 busy=0" % (digest, pack), result.stderr)
+        self.assertNotIn("RECLAIM freed", result.stderr)
+
+    def test_reclaim_pack_reports_busy_arenas_with_exit_3(self):
+        result = self.reclaim_pack("ef" * 32, mode="reclaim_busy")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("still attached or leased; they were not freed", result.stderr)
+
+    def test_reclaim_pack_rejects_unresolvable_specs_before_connecting(self):
+        for spec in (str(self.directory / "missing.pack"), "ab" * 31, "zz" * 32):
+            with self.subTest(spec=spec):
+                result = self.reclaim_pack("ab" * 32, spec)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("nothing reclaimed", result.stderr)
+        result = self.reclaim_pack()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--reclaim-pack PACK|SHA256", result.stderr)
+
+    def test_reclaim_pack_failures_are_terminal_and_never_global(self):
+        for mode in ("connect_rpc", "reclaim_rpc", "reclaim_status"):
+            with self.subTest(mode=mode):
+                result = self.reclaim_pack("ab" * 32, "cd" * 32, mode=mode)
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn("RECLAIM freed", result.stderr)
+                self.assertEqual(result.stdout.count("RECLAIM_PACK"), mode != "connect_rpc")
+                self.assertEqual(result.stdout.count("CLOSED"), mode != "connect_rpc")
+        result = self.reclaim_pack("ab" * 32, mode="reclaim_rpc")
+        self.assertIn("never fall back to the node-global --reclaim", result.stderr)
+
     def test_latch_never_disturbs_existing_owner(self):
         result = subprocess.run([str(self.latch)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -211,7 +268,7 @@ readlink() { case "$TEST_OWNER" in owned) printf '%s/sparkdata/weightd/sparkpipe
 sha16() { case "$1" in /proc/*) echo running;; *) echo "${TEST_DISK_SHA}";; esac; }
 python3() { return "$TEST_PROBE_STATUS"; }
 kill() { echo FORBIDDEN_KILL; return 1; }
-rm() { echo FORBIDDEN_UNLINK; return 1; }
+rm() { echo "UNLINK $*"; }
 restart_ok() { return "$TEST_RESTART_STATUS"; }
 setsid() { echo SPAWN; }
 sleep() { return 0; }
@@ -222,25 +279,28 @@ sync_rendezvous() { return 0; }
                    TEST_PROBE_STATUS="0" if ready else "1", TEST_OWNER=owner,
                    TEST_BINARY_STATUS="0" if binary else "1",
                    TEST_RESTART_STATUS="0" if restart else "1",
-                   TEST_AGENT_HOME=str(self.directory))
+                   TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh))
         return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
     def test_busy_process_is_preserved(self):
         result = self.agent()
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("FORBIDDEN", result.stdout)
+        self.assertNotIn("UNLINK", result.stdout)
         self.assertIn("retained", result.stderr)
 
     def test_update_waits_for_dependent_engines(self):
         result = self.agent(changed=True)
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("FORBIDDEN", result.stdout)
+        self.assertNotIn("UNLINK", result.stdout)
         self.assertIn("drain", result.stderr)
 
     def test_owned_ready_daemon_needs_no_restart(self):
         result = self.agent(ready=True)
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("FORBIDDEN", result.stdout)
+        self.assertNotIn("UNLINK", result.stdout)
 
     def test_unknown_weightd_blocks_cleanup_and_startup(self):
         for owner in ("unknown", "deleted"):
@@ -249,6 +309,7 @@ sync_rendezvous() { return 0; }
                 self.assertEqual(result.returncode, 1)
                 self.assertIn("unknown owner", result.stderr)
                 self.assertNotIn("FORBIDDEN", result.stdout)
+                self.assertNotIn("UNLINK", result.stdout)
                 self.assertNotIn("starting", result.stdout)
 
     def test_missing_and_backoff_daemon_are_not_ready(self):
@@ -258,18 +319,24 @@ sync_rendezvous() { return 0; }
                 result = self.agent(owner=owner, binary=binary, restart=restart)
                 self.assertEqual(result.returncode, 1)
                 self.assertNotIn("FORBIDDEN", result.stdout)
+                self.assertNotIn("UNLINK", result.stdout)
                 self.assertNotIn("starting", result.stdout)
 
     def test_new_spawn_requires_a_later_readiness_probe(self):
         result = self.agent(owner="shell")
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("starting", result.stdout)
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 3, result.stdout)
+        self.assertEqual(lines[0], "UNLINK -f %s/mesh-0.rec %s/mesh-15.rec %s/.ready" % ((self.mesh,) * 3))
+        self.assertRegex(lines[1], r"^\d\d:\d\d:\d\d weightd: starting \(backoff 1s\)$")
+        self.assertEqual(lines[2], "UNLINK -f %s/.shipped_sha" % self.mesh)
         self.assertEqual((self.directory / "weightd.log").read_text(), "SPAWN\n")
 
     def test_main_loop_gates_every_dependent_action(self):
         script = r'''
 set -u
 ROOTS=test
+load_roots() { ROOT_LIST=test; }
 sync_core() { :; }
 install_core() { :; }
 self_update() { :; }
@@ -280,7 +347,6 @@ sync_root() { echo ROOT_SYNC; }
 sync_rendezvous() { echo RENDEZVOUS; }
 ensure_root() { echo ROOT_START; }
 prune_logs() { :; }
-ensure_api() { echo API_START; }
 warmup_hook() { echo WARMUP; }
 report_if_changed() { echo REPORT; }
 sleep() { exit 0; }
@@ -290,10 +356,43 @@ sleep() { exit 0; }
                 result = subprocess.run(["bash", "-c", script],
                     env=dict(os.environ, TEST_WEIGHTD_STATUS="0" if ready else "1"),
                     capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
                 self.assertEqual(result.stdout.splitlines(),
-                    ["ROOT_SYNC", "RENDEZVOUS", "ROOT_START", "API_START", "WARMUP", "REPORT"]
+                    ["ROOT_SYNC", "RENDEZVOUS", "ROOT_START", "WARMUP", "REPORT"]
                     if ready else ["REPORT"])
+
+    def serving_gate(self, function, **values):
+        script = r'''
+set -uo pipefail
+exec 3>&1
+RANK=0 HUB=hub ROOTS=test LAST_WARM_GEN= LAST_WARM_TS=0
+ssh() { echo FORBIDDEN_SSH >&3; echo 0; }
+root_state() { echo WARMUP_PROBE >&3; echo down; }
+pgrep() { return 1; }
+setsid() { echo FORBIDDEN_SPAWN >&3; }
+curl() { echo FORBIDDEN_CURL >&3; }
+[() { case "$1" in -x) return 0;; esac; builtin [ "$@"; }
+''' + function + function.split("(", 1)[0] + '\nstatus=$?\nwait\nexit "$status"\n'
+        return subprocess.run(["bash", "-c", script], env=dict(os.environ, **values),
+                              capture_output=True, text=True)
+
+    def test_serving_drop_in_skips_the_warmup_request(self):
+        for warmup, expected in (("0", ""), ("1", "WARMUP_PROBE\n")):
+            with self.subTest(warmup=warmup):
+                result = self.serving_gate(self.warmup, G5_WARMUP=warmup)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((result.stdout, result.stderr), (expected, ""))
+
+    def test_rank_comes_from_the_fleet_host_list(self):
+        hosts = ["spark%x" % rank for rank in range(16)]
+        for host in hosts + ["spark10", "sparkg", "rtx5090", ""]:
+            with self.subTest(host=host):
+                result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + self.identity + '\necho "RANK=$RANK"\n'],
+                                        env=dict(os.environ, HOST=host), capture_output=True, text=True)
+                if host in hosts:
+                    self.assertEqual((result.returncode, result.stdout), (0, "RANK=%d\n" % hosts.index(host)))
+                else:
+                    self.assertEqual((result.returncode, result.stdout), (2, ""))
 
 
 if __name__ == "__main__":

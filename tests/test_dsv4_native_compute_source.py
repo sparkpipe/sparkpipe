@@ -4,11 +4,11 @@
 This test deliberately does not claim numerical or hardware qualification.  It
 checks the properties that can be proved without a CUDA toolkit/GPU: the exact
 PTX atoms and packed conversion instructions are reachable from the production
-launchers; DSV4 admits only the three qualified shapes; B1 has exact-width
-expert tiles while B8/B1024 retain tensor-core routes; W13 owns both BF16
-rounding boundaries; W2 never routes through the BF16-dequant weight-only GEMM;
-strided stores keep the full row stride. tests/test_ptx_capability_gate.py
-separately assembles the exact PTX forms when ptxas is installed.
+launchers; the native decode shape gate is exact; B1 has exact-width expert
+tiles; W13 owns both BF16 rounding boundaries; W2 never routes through the
+BF16-dequant weight-only GEMM; strided stores keep the full row stride.
+tests/test_ptx_capability_gate.py separately assembles the exact PTX forms when
+ptxas is installed.
 """
 
 from pathlib import Path
@@ -369,11 +369,6 @@ def main() -> int:
     forbid(scalar_dispatch, "SPARK_LM_SCALAR_NEURONS_PER_WARP",
            "slower multi-neuron scalar projection route")
     dense_w13_dispatch = body(common, "SparkLmHostLaunchSm121FusedDenseW13")
-    # f2d1f67 again: multi-row shared W13 must be bit-identical to the
-    # certified 1-row GEMV, so the launcher loops the exact GEMV once per
-    # row and the tiled B8/B1024 tensor route is retired.
-    require(dense_w13_dispatch, "for (row = 0u; row < row_count; row++)",
-            "exact per-row shared W13 dispatch loop")
     require(dense_w13_dispatch, "SparkLmSm121FusedDenseW13GemvKernel",
             "B1 shared W13 GEMV")
     require(dense_w13_dispatch,
@@ -385,20 +380,12 @@ def main() -> int:
     dense_w13_gemv = body(common, "SparkLmSm121FusedDenseW13GemvKernel")
     require(dense_w13_gemv, "SPARK_LM_SM121_B1_DENSE_W13_CTA_WARPS",
             "B1 shared W13 measured neuron geometry")
-    forbid(dense_w13_dispatch, "SparkLmSm121FusedDenseW13Kernel",
-           "retired B8/B1024 shared W13 tensor route")
     strided_launch = body(dsv4, "SparkDsv4LaunchStridedLinear")
     require(strided_launch, "SparkLmHostLaunchSm121StridedDecodeLinear",
             "shape-aware strided route")
     strided_dispatch = body(common, "SparkLmHostLaunchSm121StridedDecodeLinear")
     require(strided_dispatch, "if ( row_count == 1u )", "true-B1 strided dispatch")
     require(strided_dispatch, "SparkLmStridedLinearKernel", "B1 strided GEMV route")
-    # 47c24f2: multi-row strided decode runs the certified 1-row kernel
-    # once per row; the native tensor fallback is retired.
-    require(strided_dispatch, "for (row = 0u; row < row_count; row++)",
-            "exact per-row strided dispatch loop")
-    forbid(strided_dispatch, "SparkLmHostLaunchSm121NativeLinear",
-           "retired B8/B1024 native strided route")
     require(strided_dispatch,
             "SparkLmStridedLinearKernel<GROUP_SIZE,ACTIVATION_CODEC>",
             "measured one-neuron strided B1 route")
@@ -466,11 +453,6 @@ def main() -> int:
     require(slot_tail, "SparkHeadCertifiedFp8CandidateBytes",
             "full rank-local candidate allocation size")
     project_head = body(module, "SparkDsv4ModuleProjectHead")
-    # d5e09f8: every row runs the certified 1-row head once (the screened
-    # argmax route flipped near-tie argmaxes), so the runtime rows==1u
-    # selection became an unconditional per-row loop.
-    require(project_head, "for (row = 0u; row < rows && error == cudaSuccess; row++)",
-            "certified per-row head selection")
     require(project_head, "SparkDsv4LaunchHeadCertifiedFp8B1Sharded",
             "certified B1 head route")
     require(project_head, "state->head_certified_fp8_norm_f32,\n\t\t\t\tslot->head_certified_scratch",

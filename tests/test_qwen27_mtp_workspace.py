@@ -70,7 +70,7 @@ int main(void)
 }
 ''')
             paths = ['.', 'include', 'src', 'runtime', 'tests/cuda_stub', 'model-families/common/include', 'model-families/qwen38_27b/include', 'model-families/qwen38_27b/include/sparkpipe', 'modules/qwen38_27b_resident_decode_stage/include', 'modules/qwen38_27b_resident_decode_stage/source']
-            command = ['cc', '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-D_DARWIN_C_SOURCE', '-ffunction-sections', '-fdata-sections', *['-I'+str(ROOT/p) for p in paths], str(source), 'runtime/stage_module_common.c', 'tests/cuda_stub/cuda_runtime_stub.c', 'build/libsparkpipe_runtime.a', 'build/libsparkpipe_core.a', '-pthread', '-lm', '-Wl,-dead_strip' if os.uname().sysname == 'Darwin' else '-Wl,--gc-sections', '-o', str(Path(temp)/'test')]
+            command = ['cc', '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-D_DEFAULT_SOURCE', '-D_DARWIN_C_SOURCE', '-ffunction-sections', '-fdata-sections', *['-I'+str(ROOT/p) for p in paths], str(source), 'runtime/stage_module_common.c', 'tests/cuda_stub/cuda_runtime_stub.c', 'build/libsparkpipe_runtime.a', 'build/libsparkpipe_core.a', '-pthread', '-lm', '-Wl,-dead_strip' if os.uname().sysname == 'Darwin' else '-Wl,--gc-sections', '-o', str(Path(temp)/'test')]
             built = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(built.returncode, 0, built.stderr)
             tested = subprocess.run([str(Path(temp)/'test')], text=True, capture_output=True)

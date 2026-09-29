@@ -17,6 +17,7 @@ typedef struct SparkWeightdLazyPack
 	void *spine;
 	uint64_t spine_allocation_bytes;
 	uint32_t ready;
+	uint32_t read_only;
 } SparkWeightdLazyPack;
 
 // Startup-only, explicit budgets/identity, strict .experts, no eager fallback.

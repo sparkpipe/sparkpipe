@@ -1,7 +1,12 @@
 
+#include "tests/host_cuda/lm_host_cuda.cuh"
+#include "inference/kernels/mma.cuh"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 
 #define VERIFY_LANES 32u
 #define VERIFY_TILE_K 128u
@@ -40,20 +45,20 @@ static uint32_t cute_index(const layout_mode_t *thread_mode, const layout_mode_t
 
 static void kernel_a_coordinate(uint32_t lane, uint32_t reg, uint32_t byte, uint32_t *m, uint32_t *k)
 {
-	*m = (lane / 4u) + (8u * (reg % 2u));
-	*k = (4u * (lane % 4u)) + byte + (16u * (reg / 2u));
+	*m = LmMma8OperandARow(lane,reg);
+	*k = LmMma8OperandAByte(lane,reg) + byte;
 }
 
 static void kernel_b_coordinate(uint32_t lane, uint32_t reg, uint32_t byte, uint32_t *n, uint32_t *k)
 {
-	*n = lane / 4u;
-	*k = (4u * (lane % 4u)) + byte + (16u * reg);
+	*n = LmMma8OperandBRow(lane);
+	*k = LmMma8OperandBByte(lane,reg) + byte;
 }
 
 static void kernel_c_coordinate(uint32_t lane, uint32_t accumulator, uint32_t *m, uint32_t *n)
 {
-	*m = (lane / 4u) + (8u * (accumulator / 2u));
-	*n = (2u * (lane % 4u)) + (accumulator % 2u);
+	*m = LmMmaAccumulatorRow(lane,accumulator);
+	*n = LmMmaAccumulatorColumn(lane,accumulator);
 }
 
 static int32_t verify_operand_a(void)
@@ -167,7 +172,7 @@ static uint32_t ldmatrix_chunk_for_lane(uint32_t lane)
 
 static uint32_t swizzle_chunk(uint32_t chunk, uint32_t row)
 {
-	return(chunk ^ (row % VERIFY_SWIZZLE_CHUNKS));
+	return(LmSwizzleChunk(chunk,row,VERIFY_TILE_K,VERIFY_SWIZZLE_CHUNKS * LM_SWIZZLE_CHUNK_BYTES));
 }
 
 static uint32_t count_bank_conflicts(int32_t apply_swizzle, uint32_t k_base)
@@ -340,14 +345,14 @@ static int32_t verify_sm120_equals_sm89(void)
 
 static void kernel_nvfp4_a_coordinate(uint32_t lane, uint32_t reg, uint32_t nibble, uint32_t *m, uint32_t *k)
 {
-	*m = (lane / 4u) + (8u * (reg % 2u));
-	*k = (8u * (lane % 4u)) + nibble + (32u * (reg / 2u));
+	*m = LmMma4OperandARow(lane,reg);
+	*k = (2u * LmMma4OperandAByte(lane,reg)) + nibble;
 }
 
 static void kernel_nvfp4_b_coordinate(uint32_t lane, uint32_t reg, uint32_t nibble, uint32_t *n, uint32_t *k)
 {
-	*n = lane / 4u;
-	*k = (8u * (lane % 4u)) + nibble + (32u * reg);
+	*n = LmMma4OperandBRow(lane);
+	*k = (2u * LmMma4OperandBByte(lane,reg)) + nibble;
 }
 
 static int32_t verify_nvfp4_operands(void)
@@ -395,13 +400,13 @@ static int32_t verify_nvfp4_operands(void)
 
 static void kernel_sfa_coordinate(uint32_t lane, uint32_t value, uint32_t *m, uint32_t *k)
 {
-	*m = (8u * (lane % 2u)) + (lane / 4u);
+	*m = LmMma4ScaleARow(lane);
 	*k = value;
 }
 
 static void kernel_sfb_coordinate(uint32_t lane, uint32_t value, uint32_t *n, uint32_t *k)
 {
-	*n = lane / 4u;
+	*n = LmMma4ScaleBRow(lane);
 	*k = value;
 }
 
@@ -448,78 +453,15 @@ static int32_t verify_nvfp4_scale_layouts(void)
 }
 
 
-static void lm_mma8_a(uint32_t lane, uint32_t reg, uint32_t byte, uint32_t *m, uint32_t *k)
-{
-	*m = (lane / 4u) + (8u * (reg % 2u));
-	*k = (4u * (lane % 4u)) + (16u * (reg / 2u)) + byte;
-}
-static void lm_mma8_b(uint32_t lane, uint32_t reg, uint32_t byte, uint32_t *n, uint32_t *k)
-{
-	*n = lane / 4u;
-	*k = (4u * (lane % 4u)) + (16u * reg) + byte;
-}
-static void lm_mma4_a(uint32_t lane, uint32_t reg, uint32_t nibble, uint32_t *m, uint32_t *k)
-{
-	*m = (lane / 4u) + (8u * (reg % 2u));
-	*k = (8u * (lane % 4u)) + (32u * (reg / 2u)) + nibble;
-}
-static void lm_mma4_b(uint32_t lane, uint32_t reg, uint32_t nibble, uint32_t *n, uint32_t *k)
-{
-	*n = lane / 4u;
-	*k = (8u * (lane % 4u)) + (32u * reg) + nibble;
-}
-static int32_t verify_lm_mma_formulas(void)
-{
-	layout_mode_t a8t = { { 4u, 8u, 0u, 0u }, { 64u, 1u, 0u, 0u }, 2u };
-	layout_mode_t a8v = { { 4u, 2u, 2u, 0u }, { 16u, 8u, 256u, 0u }, 3u };
-	layout_mode_t b8t = { { 4u, 8u, 0u, 0u }, { 32u, 1u, 0u, 0u }, 2u };
-	layout_mode_t b8v = { { 4u, 2u, 0u, 0u }, { 8u, 128u, 0u, 0u }, 2u };
-	layout_mode_t a4t = { { 4u, 8u, 0u, 0u }, { 128u, 1u, 0u, 0u }, 2u };
-	layout_mode_t a4v = { { 8u, 2u, 2u, 0u }, { 16u, 8u, 512u, 0u }, 3u };
-	layout_mode_t b4t = { { 4u, 8u, 0u, 0u }, { 64u, 1u, 0u, 0u }, 2u };
-	layout_mode_t b4v = { { 8u, 2u, 0u, 0u }, { 8u, 256u, 0u, 0u }, 2u };
-	uint32_t lane,value,m,n,k,bad = 0;
-	for (lane = 0; lane < VERIFY_LANES; ++lane)
-	{
-		for (value = 0; value < 16u; ++value)
-		{
-			lm_mma8_a(lane,value / 4u,value % 4u,&m,&k);
-			if ( m + (16u * k) != cute_index(&a8t,&a8v,lane,value) )
-				bad++;
-		}
-		for (value = 0; value < 8u; ++value)
-		{
-			lm_mma8_b(lane,value / 4u,value % 4u,&n,&k);
-			if ( n + (8u * k) != cute_index(&b8t,&b8v,lane,value) )
-				bad++;
-		}
-		for (value = 0; value < 32u; ++value)
-		{
-			lm_mma4_a(lane,value / 8u,value % 8u,&m,&k);
-			if ( m + (16u * k) != cute_index(&a4t,&a4v,lane,value) )
-				bad++;
-		}
-		for (value = 0; value < 16u; ++value)
-		{
-			lm_mma4_b(lane,value / 8u,value % 8u,&n,&k);
-			if ( n + (8u * k) != cute_index(&b4t,&b4v,lane,value) )
-				bad++;
-		}
-	}
-	printf("  lm_mma.cuh operand formulas vs CUTLASS layouts: mismatches=%u/2304\n",bad);
-	return(bad == 0 ? 0 : -1);
-}
-
-
 static void lm_mma16_a(uint32_t lane, uint32_t reg, uint32_t half, uint32_t *m, uint32_t *k)
 {
-	*m = (lane / 4u) + (8u * (reg % 2u));
-	*k = (2u * (lane % 4u)) + half + (8u * (reg / 2u));
+	*m = LmMma16OperandARow(lane,reg);
+	*k = LmMma16OperandAK(lane,reg) + half;
 }
 static void lm_mma16_b(uint32_t lane, uint32_t reg, uint32_t half, uint32_t *n, uint32_t *k)
 {
-	*n = lane / 4u;
-	*k = (2u * (lane % 4u)) + half + (8u * reg);
+	*n = LmMma16OperandBRow(lane);
+	*k = LmMma16OperandBK(lane,reg) + half;
 }
 static int32_t verify_bf16_atom(void)
 {
@@ -697,7 +639,7 @@ static int32_t verify_indirect_staging(void)
 	return(total);
 }
 
-int32_t main(void)
+int main(void)
 {
 	int32_t failures = 0;
 	printf("MMA fragment mappings, checked against CUTLASS CuTe layouts\n");
@@ -718,8 +660,7 @@ int32_t main(void)
 	printf("\nNVFP4 atom SM120::BLOCKSCALED::SM120_16x8x64_TN_VS\n");
 	failures += verify_nvfp4_operands() != 0;
 	failures += verify_nvfp4_scale_layouts() != 0;
-	printf("\nrewrite: lm/ kernel library\n");
-	failures += verify_lm_mma_formulas() != 0;
+	printf("\nBF16 atom m16n8k16\n");
 	failures += verify_bf16_atom() != 0;
 	failures += verify_pipeline_matrix() != 0;
 	failures += verify_pipeline_persistent_matrix() != 0;

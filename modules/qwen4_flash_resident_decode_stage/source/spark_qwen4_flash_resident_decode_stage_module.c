@@ -796,6 +796,8 @@ static SparkStatus SparkQwen4FlashModulePrepare(
 
 #include "sparkpipe/family/module/spark_module_admission_cost.h"
 
+#define SPARK_MODULE_ADMIT_POLICY_FLAGS (SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT | SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS)
+#define SPARK_MODULE_ADMIT_MAX_INPUT_ROWS(state) ((state)->max_active_sequence_count)
 #include "sparkpipe/family/module/spark_module_admit_shape.h"
 
 static void SparkQwen4FlashModuleSnapshotExtend(

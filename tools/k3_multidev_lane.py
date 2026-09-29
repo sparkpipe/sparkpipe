@@ -80,6 +80,19 @@ TRANSPORT_BASE = 64048                          # 64048 .. 64063
 
 TP_COLLECTIVE_PORT = COLLECTIVE_BASE      # + tp rank (group-local, bound)
 DEVICE_SESSION_BASE = COLLECTIVE_BASE + 4 # packed 12-number table below
+
+
+def select_lane(lane: int) -> None:
+    global LANE, CONTROL_BASE, COLLECTIVE_BASE, TRANSPORT_BASE
+    global TP_COLLECTIVE_PORT, DEVICE_SESSION_BASE
+    if lane < 1 or lane > 15:
+        raise SystemExit(f"lane {lane} outside 1..15 (lane 0 is production)")
+    LANE = lane
+    CONTROL_BASE = 23000 + 16 * lane
+    COLLECTIVE_BASE = 53000 + 16 * lane
+    TRANSPORT_BASE = 64000 + 16 * lane
+    TP_COLLECTIVE_PORT = COLLECTIVE_BASE
+    DEVICE_SESSION_BASE = COLLECTIVE_BASE + 4
 MESH_RANKS = ",".join(str(i) for i in range(WORLD))
 
 DEPLOYED_PACK_TEMPLATE = (
@@ -98,12 +111,12 @@ KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS 
 CONTRACT = json.loads((Path(__file__).resolve().parents[1] /
                        "model_contracts/k3_authoritative.json").read_text())
 try:
-    K3_EOS_TOKEN_IDS = [int(CONTRACT["tokens"]["end_of_text"])]
-except (KeyError, TypeError, ValueError):
-    raise SystemExit("k3 contract missing tokens.end_of_text; refusing to emit "
+    K3_EOS_TOKEN_IDS = sorted(int(value) for value in CONTRACT["eos_token_ids"].values())
+except (KeyError, TypeError, ValueError, AttributeError):
+    raise SystemExit("k3 contract missing eos_token_ids; refusing to emit "
                      "a deployment the batch engine would reject")
-if K3_EOS_TOKEN_IDS[0] <= 0:
-    raise SystemExit("k3 contract tokens.end_of_text must be a positive id")
+if not K3_EOS_TOKEN_IDS or K3_EOS_TOKEN_IDS[0] <= 0:
+    raise SystemExit("k3 contract eos_token_ids must hold positive ids")
 
 
 def host_of(rank: int) -> str:
@@ -149,16 +162,17 @@ def group_hosts(rank: int) -> list[str]:
     return HOSTS[first:first + TP]
 
 
-def adapter_config(rank: int, kv_pages: int = 64) -> dict:
+def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
+                   sequences: int = 16, collective: str = "device") -> dict:
     tp = tp_rank_of(rank)
-    return {
+    config = {
         "stage_pack_path": deployed_pack(rank),
         "tp_degree": TP,
         "tp_rank": tp,
         "world_size": WORLD,
-        "max_sequences": 16,
-        "max_rows": 16,
-        "resident_capacity": 16,
+        "max_sequences": sequences,
+        "max_rows": sequences,
+        "resident_capacity": sequences,
         "kv_pages": kv_pages,
         "capture_graphs": 1,
         "hidden": 7168,
@@ -166,7 +180,7 @@ def adapter_config(rank: int, kv_pages: int = 64) -> dict:
             "backend": "hidden_transport",
             "backend_module_path": "lib/hidden_transport.so",
             "local_host": host_of(rank),
-            "collective_identifier": 0x0003_0000_0000_0000 | stage_of(rank),
+            "collective_identifier": (LANE << 48) | stage_of(rank),
             "listen_port": TRANSPORT_BASE + 15,
             "connect_timeout_milli": 300000,
             "operation_timeout_milli": 30000,
@@ -186,20 +200,27 @@ def adapter_config(rank: int, kv_pages: int = 64) -> dict:
             ],
         },
     }
+    if collective == "host":
+        del config["device_collective"]
+    return config
 
 
 def resident_deployment(runtime_root: str, weightd_socket: str,
-                        kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES) -> dict:
+                        kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES,
+                        sequences: int = 16,
+                        kv_pages: int = KV_PAGES_PER_SEQUENCE,
+                        pipeline_transport: str = "host-rdma") -> dict:
     nodes = []
     for rank, host in enumerate(HOSTS):
+        root = runtime_root.format(host=host)
         nodes.append({
             "rank_index": rank,
             "stage_index": rank,
-            "runtime_root": runtime_root,
+            "runtime_root": root,
             "node_target": NODE_TARGET,
             "transport_host": host,
             "adapter_configuration_path": "config/adapter.json",
-            "kv_backing_directory": os.path.join(runtime_root, "kvcache"),
+            "kv_backing_directory": os.path.join(root, "kvcache"),
             "kv_backing_maximum_bytes": kv_backing_bytes,
             "control_endpoint": {
                 "kind": "tcp",
@@ -221,8 +242,9 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "program_name": "k3",
         },
         "transport": {
-            "shared_object_path": "lib/hidden_transport.so",
-            "mode": "host-rdma",
+            "shared_object_path": "lib/hidden_pipeline.so"
+            if pipeline_transport == "host-staged" else "lib/hidden_transport.so",
+            "mode": pipeline_transport,
             "control_port_base": TRANSPORT_BASE,
         },
         "weightd": {
@@ -236,12 +258,12 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
         # kv_pages_per_sequence (64 pages x 64 tokens = the 4096-token
         # per-sequence ceiling the seam already commits to).
         "runtime_limits": {
-            "max_inflight_submissions": 16,
-            "max_active_sequences": 16,
-            "max_input_rows": 16,
-            "resident_sequence_capacity": 16,
-            "kv_logical_page_capacity": 16 * KV_PAGES_PER_SEQUENCE,
-            "kv_physical_page_capacity": 16 * KV_PAGES_PER_SEQUENCE,
+            "max_inflight_submissions": sequences,
+            "max_active_sequences": sequences,
+            "max_input_rows": sequences,
+            "resident_sequence_capacity": sequences,
+            "kv_logical_page_capacity": sequences * kv_pages,
+            "kv_physical_page_capacity": sequences * kv_pages,
         },
         "nodes": nodes,
     }
@@ -282,13 +304,38 @@ def main() -> int:
     parser.add_argument("--rank", type=int, choices=range(WORLD), default=None,
                         help="emit only this rank's adapter.json "
                              "(default: all sixteen)")
+    parser.add_argument("--lane", type=int, default=LANE,
+                        help="weightd mesh lane and port block "
+                             "(default %(default)d)")
+    parser.add_argument("--sequences", type=int, default=16,
+                        help="concurrent sequences per rank; KDA state and "
+                             "KV scale with it (default %(default)d)")
+    parser.add_argument("--kv-pages", type=int, default=KV_PAGES_PER_SEQUENCE,
+                        help="64-token KV pages per sequence "
+                             "(default %(default)d)")
+    parser.add_argument("--collective", choices=("device", "host"),
+                        default="device",
+                        help="TP all-reduce path: the weightd-mesh device "
+                             "collective or the host TCP collective "
+                             "(default %(default)s)")
+    parser.add_argument("--pipeline-transport",
+                        choices=("host-rdma", "host-staged"),
+                        default="host-rdma",
+                        help="stage-to-stage hidden hand-off: the weightd "
+                             "host-rdma module or the host-staged TCP module "
+                             "(lib/hidden_pipeline.so) (default %(default)s)")
     parser.add_argument("--check", action="store_true",
                         help="verify the outputs are current instead of "
                              "writing them")
     arguments = parser.parse_args()
 
+    select_lane(arguments.lane)
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv-backing-bytes must be positive and finite")
+    if not 1 <= arguments.sequences <= 16:
+        raise SystemExit("sequences must be within 1..16")
+    if not 1 <= arguments.kv_pages <= 64:
+        raise SystemExit("kv-pages must be within 1..64")
 
     output = Path(arguments.output_dir)
     if not arguments.check:
@@ -296,13 +343,16 @@ def main() -> int:
 
     deployment = render(resident_deployment(
         arguments.runtime_root, arguments.weightd_socket,
-        arguments.kv_backing_bytes))
+        arguments.kv_backing_bytes, arguments.sequences, arguments.kv_pages,
+        arguments.pipeline_transport))
     wrote = write_or_check(output / "deployment.json", deployment,
                            arguments.check)
 
     ranks = range(WORLD) if arguments.rank is None else [arguments.rank]
     for rank in ranks:
-        text = render(adapter_config(rank))
+        text = render(adapter_config(rank, arguments.kv_pages,
+                                     arguments.sequences,
+                                     arguments.collective))
         name = f"adapter.{host_of(rank)}.json" if arguments.rank is None \
             else "adapter.json"
         wrote = write_or_check(output / name, text, arguments.check) or wrote

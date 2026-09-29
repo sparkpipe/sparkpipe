@@ -55,6 +55,7 @@ static int32_t TestInvalidLayouts(void)
 	uint8_t device[48],packed[16];
 	SparkKvLayeredPageLayout layout = {(uintptr_t)device,sizeof(device),24u,8u,2u,3u},bad;
 	TestCopyState copy = {0u,0u};
+	const SparkStatus expected[7] = {SPARK_STATUS_CAPACITY_EXCEEDED,SPARK_STATUS_CAPACITY_EXCEEDED,SPARK_STATUS_CAPACITY_EXCEEDED,SPARK_STATUS_CAPACITY_EXCEEDED,SPARK_STATUS_CAPACITY_EXCEEDED,SPARK_STATUS_INVALID_ARGUMENT,SPARK_STATUS_INVALID_ARGUMENT};
 	uint32_t index;
 	for (index=0u; index<7u; index++)
 	{
@@ -66,12 +67,12 @@ static int32_t TestInvalidLayouts(void)
 		if ( index == 4u ) bad.device_base = UINTPTR_MAX - 2u;
 		if ( index == 5u ) bad.layer_count = 0u;
 		if ( index == 6u ) bad.page_count = 0u;
-		if ( SparkKvPageStoreCopyLayered(&bad,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,packed,sizeof(packed),TestCopy,&copy) == SPARK_STATUS_OK || copy.calls != 0u )
+		if ( SparkKvPageStoreCopyLayered(&bad,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,packed,sizeof(packed),TestCopy,&copy) != expected[index] || copy.calls != 0u )
 			return(-1);
 	}
-	if ( SparkKvPageStoreCopyLayered(&layout,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,3u,packed,sizeof(packed),TestCopy,&copy) == SPARK_STATUS_OK || copy.calls != 0u )
+	if ( SparkKvPageStoreCopyLayered(&layout,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,3u,packed,sizeof(packed),TestCopy,&copy) != SPARK_STATUS_INVALID_ARGUMENT || copy.calls != 0u )
 		return(-2);
-	if ( SparkKvPageStoreCopyLayered(&layout,0u,0u,packed,sizeof(packed),TestCopy,&copy) == SPARK_STATUS_OK || copy.calls != 0u )
+	if ( SparkKvPageStoreCopyLayered(&layout,0u,0u,packed,sizeof(packed),TestCopy,&copy) != SPARK_STATUS_INVALID_ARGUMENT || copy.calls != 0u )
 		return(-3);
 	copy.fail_at = 1u;
 	if ( SparkKvPageStoreCopyLayered(&layout,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,packed,sizeof(packed),TestCopy,&copy) != SPARK_STATUS_IO_ERROR || copy.calls != 1u )

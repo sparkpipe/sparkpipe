@@ -1,0 +1,35 @@
+{
+  "checkpoint": {
+    "config_sha256": "61bea4a0f7a0dd8969f8cae528761e26b697dd12ff63e98804c3f0945492e621",
+    "index_sha256": "09d9b96a77ed9765fa4e02a6a45f92797702eef432da426efc6b45c1131b1812",
+    "path": "/mnt/model-warm/mimo-v2.6-flash-rl"
+  },
+  "defines_config_mismatches": [],
+  "family": "mimo26",
+  "fixtures": {
+    "capital.t1r": {
+      "bytes": 1021825,
+      "sha256": "cdb3233189a524944d0eadf81bff1b07b5df74828901fe68a7a4b3ffb7dc32d8"
+    },
+    "code.t1r": {
+      "bytes": 1408121,
+      "sha256": "6630b92996e74ac002825c8711fe4ba83155785e387e611777f621975bb132ff"
+    },
+    "science.t1r": {
+      "bytes": 1263491,
+      "sha256": "387fa855f6e7dbc4f5c36384add06d2e03dff7c1c345f3599ec717487a3fa0a0"
+    }
+  },
+  "generated_utc": "2026-09-28T10:51:41Z",
+  "generator": "t1_reference_decoder.py",
+  "host": "rtx5090",
+  "llm_defines_sha256": "6a1c9b4f6834a2ff7fad21329a04d5f5543ff72e3b3e9d9b9cea754878653f6c",
+  "numpy_version": "2.5.2",
+  "prompts_sha256": "54c442e4f9501541f5a0c772315f235e9b58dbfcc2d091ca11e6451f351d4027",
+  "python_version": "3.14.4",
+  "threading_env": {
+    "MKL_NUM_THREADS": null,
+    "OMP_NUM_THREADS": null,
+    "OPENBLAS_NUM_THREADS": "6"
+  }
+}

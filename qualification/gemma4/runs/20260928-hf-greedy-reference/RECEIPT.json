@@ -1,0 +1,48 @@
+{
+ "run": "20260928-hf-greedy-reference",
+ "purpose": "independent greedy reference for the gemma4 31B serving arm (publisher transformers, no SparkPipe code)",
+ "host": "spark5",
+ "unit": "sp-g4l4-hfref (MemoryMax=70G, CPUQuota=800%, nice 15, no GPU)",
+ "utc": "2026-09-28T10:17Z..10:22Z",
+ "command": "python3 tools/gemma4_hf_reference.py --checkpoint /home/spark5/refs2_ckpt/gemma-4-31b-it --prompts qualification/gemma4/reference_prompts.json --output reference.json --max-new-tokens 32 --threads 8",
+ "checkpoint_note": "/home/spark5/refs2_ckpt/gemma-4-31b-it is a byte copy of /mnt/model-warm/gemma-4-31b-it (contract revision 842da3794eaa0b77d5f08bae87a17459d91ff475); index_sha256 equals every tp4 pack receipt source_sha256",
+ "identities": {
+  "model_class": "Gemma4ForConditionalGeneration",
+  "config_sha256": "e967dd38bc5cfd38bd09a995a7bf4a754075df2b46aba68f7fbb5a791e6d8dd1",
+  "index_sha256": "d4aff3b976d69c123a29d1c085d7ba4de1ac3f4ca1726a7f81e1b11462a64ea2",
+  "chat_template_sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+  "tokenizer_sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+  "torch": "2.11.0+cu128",
+  "transformers": "5.17.0",
+  "dtype": "bfloat16",
+  "attention": "eager",
+  "decoding": "greedy",
+  "max_new_tokens": 32,
+  "unbound_checkpoint_tensors": 0
+ },
+ "results": [
+  {
+   "name": "capital",
+   "prompt_tokens": 25,
+   "greedy_text": "The capital of France is Paris.<turn|>",
+   "min_top2_gap": 14.875,
+   "seconds": 61.4
+  },
+  {
+   "name": "arithmetic",
+   "prompt_tokens": 33,
+   "greedy_text": "391\n17 × 23 = 17 × (20 + 3) = 340 + 51 =",
+   "min_top2_gap": 0.375,
+   "seconds": 107.6
+  },
+  {
+   "name": "code",
+   "prompt_tokens": 27,
+   "greedy_text": "Here is the most efficient way to implement this iteratively.\n\n### The Code\n\n```python\ndef fibonacci(n):\n    # Handle negative input\n",
+   "min_top2_gap": 1.375,
+   "seconds": 117.2
+  }
+ ],
+ "tokenizer_check": "SparkPipe tokenizer at 23e4982 (metaspace BPE) reproduces all three prompt_token_ids exactly on the macOS host build and on the rtx5090 x86 build",
+ "reading": "a bf16 engine diverging where the top-2 gap is small (arithmetic, 0.375) is not by itself a failure; divergence where the gap is large is"
+}

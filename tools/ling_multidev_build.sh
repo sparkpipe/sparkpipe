@@ -91,8 +91,7 @@ make -C "$CHECKOUT/$MODULE" -j4 \
   MODEL_REVISION="$MODEL_REVISION" \
   CONTRACT_SHA256="$CONTRACT_SHA256" \
   MODULE_BATCH_VARIANT_BUCKETS="$BUCKET" \
-  "../../build/modules/ling_resident_decode_stage/$EXPERT_CODEC/libling_resident_decode_stage_${EXPERT_CODEC}_b${BUCKET}.a" \
-  adapter
+  "../../build/modules/ling_resident_decode_stage/$EXPERT_CODEC/libling_resident_decode_stage_${EXPERT_CODEC}_b${BUCKET}.a"
 make -C "$CHECKOUT/$MODULE" -j1 \
   CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a \
   EXPERT_CODEC="$EXPERT_CODEC" \
@@ -102,7 +101,7 @@ make -C "$CHECKOUT/$MODULE" -j1 \
   publish_variants
 VARIANT_ARCHIVE="$CHECKOUT/build/modules/ling_resident_decode_stage/$EXPERT_CODEC/libling_resident_decode_stage_${EXPERT_CODEC}_b${BUCKET}.a"
 ADAPTER="$CHECKOUT/build/modules/ling_resident_decode_stage/$EXPERT_CODEC/libling_serving_adapter_$EXPERT_CODEC.so"
-for artifact in "$VARIANT_ARCHIVE" "$ADAPTER"; do
+for artifact in "$VARIANT_ARCHIVE"; do
   [ -f "$artifact" ] || { echo "not built: $artifact" >&2; exit 1; }
 done
 grep -q "$MODULE_ID_BUCKETED" "$CHECKOUT"/build/module_library/active/*.json 2>/dev/null \
@@ -132,6 +131,15 @@ with open(output, "w", encoding="utf-8") as handle:
     handle.write("\n")
 print(f"firmware variant {output}: module id -> {bucketed_id}")
 PYFW
+make -C "$CHECKOUT/$MODULE" -j4 \
+  CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a \
+  EXPERT_CODEC="$EXPERT_CODEC" \
+  MODEL_REVISION="$MODEL_REVISION" \
+  CONTRACT_SHA256="$CONTRACT_SHA256" \
+  MODULE_BATCH_VARIANT_BUCKETS="$BUCKET" \
+  MODEL_DESCRIPTION="$LANE_FIRMWARE" \
+  adapter
+[ -f "$ADAPTER" ] || { echo "not built: $ADAPTER" >&2; exit 1; }
 "$CHECKOUT/build/sparkpipe_model_compile" \
   --model "$LANE_FIRMWARE" \
   --library "$CHECKOUT/build/module_library" \

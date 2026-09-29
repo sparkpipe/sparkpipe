@@ -1,0 +1,61 @@
+{
+ "engine": "glm52 module fp8 TP16 b16, lazy experts (weightd lane 6, pool 8 GiB), branch drivers/glmfull-w7 @ 2f5dde6 (+ lease timing trace)",
+ "packs": "glm53full.fp8.tp16 restamped (contract 6d9751b3), revision 935644c05e76fc198714f4cca449fd8b970ff6d7",
+ "reference": "qualification/t1_reference/glm53full (numpy reference decoder from /mnt/model-warm/glm-5.3-fp8, config sha 3ac72612)",
+ "api": "sparkf:8446 /v1/completions prompt_token_ids, greedy",
+ "cases": [
+  {
+   "name": "capital_of_france",
+   "prompt_token_ids": [
+    785,
+    6722,
+    315,
+    9621,
+    374
+   ],
+   "reference_tokens": [
+    12089,
+    13,
+    31008,
+    504,
+    12089
+   ],
+   "engine_tokens": [
+    12089,
+    13,
+    31008,
+    504,
+    12089
+   ],
+   "match": "5/5"
+  },
+  {
+   "name": "count_up",
+   "prompt_token_ids": [
+    2507,
+    287,
+    39556,
+    25,
+    825,
+    11,
+    1378,
+    11
+   ],
+   "reference_tokens": [
+    2326,
+    11,
+    3040,
+    11,
+    4236
+   ],
+   "engine_tokens": [
+    2326,
+    11,
+    3040,
+    11,
+    4236
+   ],
+   "match": "5/5"
+  }
+ ]
+}

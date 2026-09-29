@@ -14,9 +14,8 @@ The table contains two different rates:
 * ``aggregate_tokens_per_second`` is the recovered sixteen-node serving-rate
   estimate after TP4 and four-stage pipeline overlap.
 
-The native CUDA route admits B1, B8, and B1024 exactly.  B64 and B256 are kept
-because they are part of the recovered analytical table; they do not extend
-the native kernel's launch-shape contract.
+The table is a historical record, not a contract: it says nothing about which
+batch sizes the native CUDA route or the serving layer admit.
 """
 from __future__ import annotations
 
@@ -31,7 +30,6 @@ TP_WIDTH = 4
 PP_STAGE_COUNT = 4
 NODE_COUNT = TP_WIDTH * PP_STAGE_COUNT
 IN_FLIGHT_MICROBATCHES = PP_STAGE_COUNT
-NATIVE_BATCH_SIZES = (1, 8, 1024)
 BATCH_SIZES = (1, 8, 64, 256, 1024)
 
 # Recovered values.  Keep these as source data rather than silently fitting a
@@ -60,7 +58,6 @@ def estimate_batch(batch_size: int) -> dict[str, Any]:
     return {
         "batch_size": batch_size,
         "admitted_requests": IN_FLIGHT_MICROBATCHES * batch_size,
-        "native_launch_shape": batch_size in NATIVE_BATCH_SIZES,
         "single_request_tokens_per_second": per_sequence,
         "per_sequence_tokens_per_second": per_sequence,
         "filled_pipeline_tokens_per_second": aggregate,
@@ -107,7 +104,6 @@ def report(batch_size: int | None = None) -> dict[str, Any]:
             "single_request": "1000 / end_to_end_latency_ms",
             "filled_pipeline": "1000 * batch_size / critical_stage_time_ms",
         },
-        "native_batch_sizes": list(NATIVE_BATCH_SIZES),
         "estimates": rows,
     }
 
@@ -117,7 +113,7 @@ def _print_human(batch_size: int | None) -> None:
     print("DeepSeek V4 Flash, TP4 x PP4 (16 nodes, four PP microbatches)")
     print(
         "batch  admitted  seq tok/s  aggregate tok/s  "
-        "seq step ms  native shape"
+        "seq step ms"
     )
     rows = estimate_table() if batch_size is None else [estimate_batch(batch_size)]
     for row in rows:
@@ -126,8 +122,7 @@ def _print_human(batch_size: int | None) -> None:
             f"{row['admitted_requests']:>8}  "
             f"{row['per_sequence_tokens_per_second']:>9.2f}  "
             f"{row['aggregate_tokens_per_second']:>15.2f}  "
-            f"{row['per_sequence_step_ms']:>11.3f}  "
-            f"{'yes' if row['native_launch_shape'] else 'no':>12}"
+            f"{row['per_sequence_step_ms']:>11.3f}"
         )
 
 

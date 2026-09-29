@@ -1,0 +1,9 @@
+PASS rows=1 heads=4 context=1024 selected=0 partitions=16 full=1 broken_page=0
+PASS rows=1 heads=4 context=1000 selected=0 partitions=16 full=1 broken_page=0
+PASS rows=3 heads=4 context=700 selected=0 partitions=5 full=0 broken_page=0
+PASS rows=2 heads=4 context=3000 selected=256 partitions=16 full=0 broken_page=0
+PASS rows=2 heads=4 context=3000 selected=256 partitions=1 full=0 broken_page=0
+PASS rows=4 heads=2 context=90 selected=0 partitions=16 full=0 broken_page=0
+PASS rows=1 heads=4 context=2048 selected=0 partitions=16 full=1 broken_page=1
+PASS rows=2 heads=4 context=777 selected=300 partitions=7 full=0 broken_page=1
+test_latent_attention_split_group PASS

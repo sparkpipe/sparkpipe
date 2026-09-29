@@ -42,6 +42,20 @@
       "pipeline_payload_bytes_per_row": 12288
     },
     {
+      "id": "glm53_flash_fp8_block128",
+      "family": "glm5_next",
+      "hidden_dimension": 4096,
+      "attention_head_count": 64,
+      "kv_head_count": 1,
+      "moe_expert_count": 288,
+      "moe_top_k": 8,
+      "expert_weight_format": "fp8_e4m3_block_128x128",
+      "expert_activation_format": "bf16",
+      "non_expert_format": "fp8_e4m3",
+      "kernel_roles": ["kda", "gqa", "moe", "dense", "dsa"],
+      "pipeline_payload_bytes_per_row": 32768
+    },
+    {
       "id": "qwen38_27b_27b_bf16",
       "family": "qwen38_27b",
       "hidden_dimension": 5120,

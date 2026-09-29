@@ -39,8 +39,8 @@
 #   SPARK_QUEUE_SIZE           must be 16
 #   LAGUNA_WEIGHTD_SOCKET      shared weightd socket path (supervised
 #                              daemon; this wrapper never starts one).
-#                              Defaults to the fleet shared unit:
-#                              /run/sparkpipe-weightd-shared/weightd.sock
+#                              Defaults to the fleet-agent weightd:
+#                              /tmp/spark_weightd.sock
 #   LAGUNA_EXPERT_POOL_BYTES   bounded routed-expert pool (arena-side
 #                              sizing; default derived from this rank
 #                              pack's .experts sidecar - the exact expert
@@ -73,7 +73,7 @@ EXPERT_CODEC="bf16"
 # revision); the module build and the adapter serving pin must agree.
 MODEL_REVISION="0f573140834b11cfac0c2af97a101a7a69a13e22"
 CONTRACT="model_contracts/laguna_authoritative.json"
-FIRMWARE="examples/model_descriptions/laguna_resident_decode_stage_firmware.json"
+FIRMWARE="examples/model_descriptions/laguna_resident_decode_stage_bf16_firmware.json"
 
 # Lane port math (tools/devcycle/lane_assignments.json): lane L owns
 #   control 23000+16L..+15, collective 53000+16L..+15 (u16-valid, #1094),
@@ -138,7 +138,7 @@ done
 
 # shared-socket only: the lane-8 charter runs smoke and small B* under the
 # shared lanes; a private daemon is never started by this wrapper.
-SOCKET="${LAGUNA_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}}"
+SOCKET="${LAGUNA_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}}"
 [ -S "$SOCKET" ] || fail "shared weightd socket $SOCKET is not a live socket; \
 the operator must establish the shared daemon (never start one by hand)"
 
