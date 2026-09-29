@@ -464,6 +464,31 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 }
 
 template<class Format>
+static int32_t K3LayerMoeOutput(const K3LayerBuffers *b, uint32_t rows,
+	uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status;
+	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
+		b->hidden_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
+		rows,K3_RANK_DIM(b,routed_up_input,K3_ROUTED_EXPERT_HIDDEN),K3_HIDDEN,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->shared_w1_weight,b->shared_w1_scale,
+		b->gate_up_bf16,rows,K3_HIDDEN,
+		K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u),multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
+		b->gate_up_bf16,b->intermediate_bf16,
+		K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),
+		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+	status = K3Project<LmBf16Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
+		b->shared_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
+		rows,K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),K3_HIDDEN,multiprocessors,stream);
+	return(status);
+}
+
+template<class Format>
 static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream,
 	uint32_t phase)
@@ -512,60 +537,7 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 		return(status);
 		return(LM_LAUNCH_OK);
 	}
-	if ( phase == 1u )
-	{
-		const uint32_t w2_in = K3_EXPERT_INTERMEDIATE;
-		LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
-			b->gate_up_bf16,b->intermediate_bf16,
-			K3_EXPERT_INTERMEDIATE,
-			K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-		memset(&gemm, 0, sizeof(gemm));
-		gemm.scale_a = LmScaleTensorNone();
-		gemm.scale_b = LmScaleTensorNone();
-		gemm.group_row_offset = b->group_row_offset;
-		gemm.group_tile_prefix = b->group_tile_prefix_w2;
-		gemm.prefix_built = 1u;
-		gemm.output_bf16 = b->gate_up_bf16;
-		gemm.source_row_map = 0;
-		gemm.source_row_count = 0u;
-		if ( b->expert_interleave != 0u )
-		{
-			if ( b->expert_tile_k == 32u )
-				status = LmGemmWeightOnlyInterleavedLaunch<
-					Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS,32u>(
-					&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-					K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
-					multiprocessors,true,stream);
-			else
-				status = LmGemmWeightOnlyInterleavedLaunch<
-					Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-					&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-					K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
-					multiprocessors,true,stream);
-		}
-		else
-			status = LmGemmWeightOnlyLaunch<
-				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
-				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
-				multiprocessors,true,stream);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-		LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3((moe_in + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-			b->gate_up_bf16,b->route_packed_row,b->route_weight,b->latent_bf16, rows,K3_TOP_K,moe_in);
-		if ( b->tp_sharded != 0u )
-		{
-			if ( moe_in == 0u || K3_ROUTED_EXPERT_HIDDEN % moe_in != 0u ||
-				b->tp_rank >= K3_ROUTED_EXPERT_HIDDEN / moe_in )
-				return(LM_LAUNCH_ERR_SHAPE);
-			LM_LAUNCH((K3LatentScatterKernel<K3_LAYER_THREADS>), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-				b->latent_bf16,b->shared_out_bf16,moe_in,b->tp_rank * moe_in,K3_ROUTED_EXPERT_HIDDEN);
-			return(LM_LAUNCH_OK);
-		}
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (moe_in + 8u) * sizeof(float), stream,
-			b->latent_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_bf16,moe_in,moe_in,K3_RMS_EPSILON);
-	}
-	else
+	if ( phase == 2u )
 	{
 		if ( b->tp_sharded == 0u )
 			return(LM_LAUNCH_ERR_SHAPE);
@@ -573,25 +545,59 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 			b->shared_out_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->shared_out_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
 		LM_LAUNCH((K3LatentSliceKernel<K3_LAYER_THREADS>), dim3((moe_in + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
 			b->shared_out_bf16,b->latent_bf16,moe_in,b->tp_rank * moe_in,K3_ROUTED_EXPERT_HIDDEN);
+		return(K3LayerMoeOutput<Format>(b,rows,multiprocessors,stream));
 	}
-	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
-		b->hidden_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
-		rows,K3_RANK_DIM(b,routed_up_input,K3_ROUTED_EXPERT_HIDDEN),K3_HIDDEN,multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->shared_w1_weight,b->shared_w1_scale,
-		b->gate_up_bf16,rows,K3_HIDDEN,
-		K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u),multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
+	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,
-		K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),
+		K3_EXPERT_INTERMEDIATE,
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	status = K3Project<LmBf16Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
-		b->shared_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
-		rows,K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),K3_HIDDEN,multiprocessors,stream);
-	return(status);
+	memset(&gemm, 0, sizeof(gemm));
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorNone();
+	gemm.group_row_offset = b->group_row_offset;
+	gemm.group_tile_prefix = b->group_tile_prefix_w2;
+	gemm.prefix_built = 1u;
+	gemm.output_bf16 = b->gate_up_bf16;
+	gemm.source_row_map = 0;
+	gemm.source_row_count = 0u;
+	const uint32_t w2_in = K3_EXPERT_INTERMEDIATE;
+	if ( b->expert_interleave != 0u )
+	{
+		if ( b->expert_tile_k == 32u )
+			status = LmGemmWeightOnlyInterleavedLaunch<
+				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS,32u>(
+				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
+				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
+				multiprocessors,true,stream);
+		else
+			status = LmGemmWeightOnlyInterleavedLaunch<
+				Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+				&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
+				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
+				multiprocessors,true,stream);
+	}
+	else
+		status = LmGemmWeightOnlyLaunch<
+			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
+			K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
+			multiprocessors,true,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3((moe_in + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+		b->gate_up_bf16,b->route_packed_row,b->route_weight,b->latent_bf16, rows,K3_TOP_K,moe_in);
+	if ( b->tp_sharded != 0u )
+	{
+		if ( moe_in == 0u || K3_ROUTED_EXPERT_HIDDEN % moe_in != 0u ||
+			b->tp_rank >= K3_ROUTED_EXPERT_HIDDEN / moe_in )
+			return(LM_LAUNCH_ERR_SHAPE);
+		LM_LAUNCH((K3LatentScatterKernel<K3_LAYER_THREADS>), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->latent_bf16,b->shared_out_bf16,moe_in,b->tp_rank * moe_in,K3_ROUTED_EXPERT_HIDDEN);
+		return(LM_LAUNCH_OK);
+	}
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (moe_in + 8u) * sizeof(float), stream,
+		b->latent_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_bf16,moe_in,moe_in,K3_RMS_EPSILON);
+	return(K3LayerMoeOutput<Format>(b,rows,multiprocessors,stream));
 }
 
 template<class Format>
