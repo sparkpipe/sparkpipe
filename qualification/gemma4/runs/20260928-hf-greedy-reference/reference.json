@@ -1,0 +1,577 @@
+{
+ "tool": "tools/gemma4_hf_reference.py",
+ "checkpoint": "/home/spark5/refs2_ckpt/gemma-4-31b-it",
+ "model_class": "Gemma4ForConditionalGeneration",
+ "config_sha256": "e967dd38bc5cfd38bd09a995a7bf4a754075df2b46aba68f7fbb5a791e6d8dd1",
+ "index_sha256": "d4aff3b976d69c123a29d1c085d7ba4de1ac3f4ca1726a7f81e1b11462a64ea2",
+ "chat_template_sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+ "tokenizer_sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+ "torch": "2.11.0+cu128",
+ "transformers": "5.17.0",
+ "host": "spark5",
+ "dtype": "bfloat16",
+ "attention": "eager",
+ "decoding": "greedy",
+ "threads": 8,
+ "max_new_tokens": 32,
+ "load_seconds": 0.3150665760040283,
+ "unbound_checkpoint_tensors": 0,
+ "results": [
+  {
+   "name": "capital",
+   "text": "What is the capital of France? Answer in one sentence.",
+   "rendered_prompt": "<bos><|turn>user\nWhat is the capital of France? Answer in one sentence.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+   "prompt_token_ids": [
+    2,
+    105,
+    2364,
+    107,
+    3689,
+    563,
+    506,
+    5279,
+    529,
+    7001,
+    236881,
+    25685,
+    528,
+    886,
+    13315,
+    236761,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+   ],
+   "greedy_token_ids": [
+    818,
+    5279,
+    529,
+    7001,
+    563,
+    9079,
+    236761,
+    106
+   ],
+   "greedy_text": "The capital of France is Paris.<turn|>",
+   "step_margins": [
+    {
+     "top1": 818,
+     "top2": 506,
+     "margin": 14.875
+    },
+    {
+     "top1": 5279,
+     "top2": 71517,
+     "margin": 19.140625
+    },
+    {
+     "top1": 529,
+     "top2": 3207,
+     "margin": 16.8125
+    },
+    {
+     "top1": 7001,
+     "top2": 123531,
+     "margin": 20.5859375
+    },
+    {
+     "top1": 563,
+     "top2": 3244,
+     "margin": 20.40625
+    },
+    {
+     "top1": 9079,
+     "top2": 119213,
+     "margin": 19.7802734375
+    },
+    {
+     "top1": 236761,
+     "top2": 3155,
+     "margin": 22.359375
+    },
+    {
+     "top1": 106,
+     "top2": 1340,
+     "margin": 15.28125
+    }
+   ],
+   "seconds": 61.38496255874634
+  },
+  {
+   "name": "arithmetic",
+   "text": "What is 17 multiplied by 23? Give the number and one line of working.",
+   "rendered_prompt": "<bos><|turn>user\nWhat is 17 multiplied by 23? Give the number and one line of working.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+   "prompt_token_ids": [
+    2,
+    105,
+    2364,
+    107,
+    3689,
+    563,
+    236743,
+    236770,
+    236832,
+    37764,
+    684,
+    236743,
+    236778,
+    236800,
+    236881,
+    23097,
+    506,
+    1548,
+    532,
+    886,
+    1757,
+    529,
+    2844,
+    236761,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+   ],
+   "greedy_token_ids": [
+    236800,
+    236819,
+    236770,
+    107,
+    236770,
+    236832,
+    15666,
+    236743,
+    236778,
+    236800,
+    578,
+    236743,
+    236770,
+    236832,
+    15666,
+    568,
+    236778,
+    236771,
+    900,
+    236743,
+    236800,
+    236768,
+    578,
+    236743,
+    236800,
+    236812,
+    236771,
+    900,
+    236743,
+    236810,
+    236770,
+    578
+   ],
+   "greedy_text": "391\n17 \u00d7 23 = 17 \u00d7 (20 + 3) = 340 + 51 =",
+   "step_margins": [
+    {
+     "top1": 236800,
+     "top2": 236743,
+     "margin": 14.0625
+    },
+    {
+     "top1": 236819,
+     "top2": 236828,
+     "margin": 17.21875
+    },
+    {
+     "top1": 236770,
+     "top2": 236800,
+     "margin": 17.8125
+    },
+    {
+     "top1": 107,
+     "top2": 108,
+     "margin": 13.75
+    },
+    {
+     "top1": 236770,
+     "top2": 236769,
+     "margin": 1.5
+    },
+    {
+     "top1": 236832,
+     "top2": 236771,
+     "margin": 12.125
+    },
+    {
+     "top1": 15666,
+     "top2": 1123,
+     "margin": 6.75
+    },
+    {
+     "top1": 236743,
+     "top2": 568,
+     "margin": 4.0
+    },
+    {
+     "top1": 236778,
+     "top2": 236770,
+     "margin": 15.5625
+    },
+    {
+     "top1": 236800,
+     "top2": 236771,
+     "margin": 1.75
+    },
+    {
+     "top1": 578,
+     "top2": 236784,
+     "margin": 16.4375
+    },
+    {
+     "top1": 236743,
+     "top2": 568,
+     "margin": 0.375
+    },
+    {
+     "top1": 236770,
+     "top2": 236800,
+     "margin": 13.5625
+    },
+    {
+     "top1": 236832,
+     "top2": 236771,
+     "margin": 14.1875
+    },
+    {
+     "top1": 15666,
+     "top2": 236769,
+     "margin": 6.25
+    },
+    {
+     "top1": 568,
+     "top2": 236743,
+     "margin": 11.125
+    },
+    {
+     "top1": 236778,
+     "top2": 236743,
+     "margin": 18.125
+    },
+    {
+     "top1": 236771,
+     "top2": 236810,
+     "margin": 19.9375
+    },
+    {
+     "top1": 900,
+     "top2": 236862,
+     "margin": 13.8125
+    },
+    {
+     "top1": 236743,
+     "top2": 236800,
+     "margin": 21.40625
+    },
+    {
+     "top1": 236800,
+     "top2": 236771,
+     "margin": 17.25
+    },
+    {
+     "top1": 236768,
+     "top2": 578,
+     "margin": 17.375
+    },
+    {
+     "top1": 578,
+     "top2": 138,
+     "margin": 17.3125
+    },
+    {
+     "top1": 236743,
+     "top2": 568,
+     "margin": 12.625
+    },
+    {
+     "top1": 236800,
+     "top2": 236743,
+     "margin": 20.4375
+    },
+    {
+     "top1": 236812,
+     "top2": 236771,
+     "margin": 19.265625
+    },
+    {
+     "top1": 236771,
+     "top2": 236743,
+     "margin": 22.640625
+    },
+    {
+     "top1": 900,
+     "top2": 236862,
+     "margin": 18.375
+    },
+    {
+     "top1": 236743,
+     "top2": 138,
+     "margin": 22.25
+    },
+    {
+     "top1": 236810,
+     "top2": 236770,
+     "margin": 19.234375
+    },
+    {
+     "top1": 236770,
+     "top2": 578,
+     "margin": 20.0625
+    },
+    {
+     "top1": 578,
+     "top2": 236784,
+     "margin": 16.0
+    }
+   ],
+   "seconds": 107.59481859207153
+  },
+  {
+   "name": "code",
+   "text": "Write a Python function that returns the n-th Fibonacci number iteratively.",
+   "rendered_prompt": "<bos><|turn>user\nWrite a Python function that returns the n-th Fibonacci number iteratively.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+   "prompt_token_ids": [
+    2,
+    105,
+    2364,
+    107,
+    6974,
+    496,
+    17856,
+    1292,
+    600,
+    7623,
+    506,
+    538,
+    236772,
+    594,
+    123466,
+    1548,
+    175290,
+    236761,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+   ],
+   "greedy_token_ids": [
+    8291,
+    563,
+    506,
+    1346,
+    8143,
+    1595,
+    531,
+    4144,
+    672,
+    175290,
+    236761,
+    108,
+    10354,
+    669,
+    8739,
+    108,
+    2717,
+    6719,
+    107,
+    2063,
+    10779,
+    78113,
+    236769,
+    236749,
+    1473,
+    107,
+    140,
+    236865,
+    39694,
+    5676,
+    2744,
+    107
+   ],
+   "greedy_text": "Here is the most efficient way to implement this iteratively.\n\n### The Code\n\n```python\ndef fibonacci(n):\n    # Handle negative input\n",
+   "step_margins": [
+    {
+     "top1": 8291,
+     "top2": 2021,
+     "margin": 9.875
+    },
+    {
+     "top1": 563,
+     "top2": 2375,
+     "margin": 14.4375
+    },
+    {
+     "top1": 506,
+     "top2": 496,
+     "margin": 4.75
+    },
+    {
+     "top1": 1346,
+     "top2": 61216,
+     "margin": 2.0
+    },
+    {
+     "top1": 8143,
+     "top2": 3364,
+     "margin": 11.125
+    },
+    {
+     "top1": 1595,
+     "top2": 61216,
+     "margin": 1.5
+    },
+    {
+     "top1": 531,
+     "top2": 2282,
+     "margin": 17.75
+    },
+    {
+     "top1": 4144,
+     "top2": 9279,
+     "margin": 1.375
+    },
+    {
+     "top1": 672,
+     "top2": 506,
+     "margin": 1.625
+    },
+    {
+     "top1": 175290,
+     "top2": 61216,
+     "margin": 7.75
+    },
+    {
+     "top1": 236761,
+     "top2": 528,
+     "margin": 2.375
+    },
+    {
+     "top1": 108,
+     "top2": 236743,
+     "margin": 1.375
+    },
+    {
+     "top1": 10354,
+     "top2": 2717,
+     "margin": 3.875
+    },
+    {
+     "top1": 669,
+     "top2": 17856,
+     "margin": 10.625
+    },
+    {
+     "top1": 8739,
+     "top2": 17856,
+     "margin": 3.875
+    },
+    {
+     "top1": 108,
+     "top2": 107,
+     "margin": 4.0
+    },
+    {
+     "top1": 2717,
+     "top2": 2595,
+     "margin": 18.84375
+    },
+    {
+     "top1": 6719,
+     "top2": 23181,
+     "margin": 19.4375
+    },
+    {
+     "top1": 107,
+     "top2": 108,
+     "margin": 18.40625
+    },
+    {
+     "top1": 2063,
+     "top2": 101,
+     "margin": 20.625
+    },
+    {
+     "top1": 10779,
+     "top2": 974,
+     "margin": 3.25
+    },
+    {
+     "top1": 78113,
+     "top2": 498,
+     "margin": 14.5
+    },
+    {
+     "top1": 236769,
+     "top2": 236779,
+     "margin": 3.125
+    },
+    {
+     "top1": 236749,
+     "top2": 538,
+     "margin": 17.75
+    },
+    {
+     "top1": 1473,
+     "top2": 68660,
+     "margin": 22.3984375
+    },
+    {
+     "top1": 107,
+     "top2": 236743,
+     "margin": 13.8125
+    },
+    {
+     "top1": 140,
+     "top2": 141,
+     "margin": 16.1875
+    },
+    {
+     "top1": 236865,
+     "top2": 12234,
+     "margin": 2.625
+    },
+    {
+     "top1": 39694,
+     "top2": 123466,
+     "margin": 8.5
+    },
+    {
+     "top1": 5676,
+     "top2": 7377,
+     "margin": 2.875
+    },
+    {
+     "top1": 2744,
+     "top2": 9103,
+     "margin": 3.0
+    },
+    {
+     "top1": 107,
+     "top2": 3636,
+     "margin": 6.0
+    }
+   ],
+   "seconds": 117.19322419166565
+  }
+ ]
+}
