@@ -497,6 +497,41 @@ def test_failed_health_fallback_reports_degraded():
         check("health: a failed fallback is reported degraded, not steady", st.get("phase") == "degraded" and "phase=degraded" in (f.state_dir / "STATUS").read_text() and f.up_on("prod") == HOSTS, out[-500:])
 
 
+def test_mixed_production_is_not_held():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        (f.state_dir / "lock").mkdir(exist_ok=True)
+        (f.state_dir / "lock" / "PERF_HOLDER").write_text("lead-window\n")
+        f.tool("tick", at="2026-09-29T17:10:30Z")
+        w = f.world()
+        w["apis"]["prod"] = False
+        f.save(w)
+        (f.state_dir / "lock" / "PERF_HOLDER").write_text("")
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:15:30Z")
+        lines = f.call_lines()
+        check("mixed production: adopted production with its api down is not held or reclaimed", not any("stop prod" in l or "reclaim prod" in l for l in lines), "\n".join(lines))
+        check("mixed production: its api is restarted and smoked, the companion kept", f.world()["apis"].get("prod") and any("smoke prod" in l for l in lines) and f.state().get("active") == ["prod", "c1"] and f.up_on("c1") == ["n0", "n1"], out[-600:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        (f.state_dir / "lock").mkdir(exist_ok=True)
+        (f.state_dir / "lock" / "PERF_HOLDER").write_text("lead-window\n")
+        f.tool("tick", at="2026-09-29T17:10:30Z")
+        w = f.world()
+        w["apis"]["prod"] = False
+        w["apis"]["c1"] = False
+        for h in ["n0", "n1"]:
+            w["nodes"][h]["up"]["c1"] = False
+        f.save(w)
+        (f.state_dir / "lock" / "PERF_HOLDER").write_text("")
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:15:30Z")
+        lines = f.call_lines()
+        check("mixed production: restoring production with nothing else up does not hold it first", not any("stop prod" in l or "reclaim prod" in l for l in lines) and f.world()["apis"].get("prod") and f.up_on("prod") == HOSTS, "\n".join(lines[-8:]))
+
+
 def test_dry_run_executes_nothing():
     with tempfile.TemporaryDirectory() as tmp:
         f = Fleet(tmp)
@@ -618,7 +653,7 @@ def main():
                  test_ssh_timeout, test_smoke_failure, test_fallback_failure_pauses, test_preemption_and_resync,
                  test_pause_resume_and_foreign_change, test_floor_and_prediction, test_steady_health_and_manual,
                  test_stuck_stop_and_reclaim_guard, test_interrupted_transition_recovers, test_pause_during_running_tick,
-                 test_unexpected_error_falls_back, test_failed_health_fallback_reports_degraded, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation,
+                 test_unexpected_error_falls_back, test_failed_health_fallback_reports_degraded, test_mixed_production_is_not_held, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation,
                  test_dry_run_while_paused_shows_the_plan, test_failure_after_the_hour_boundary_marks_the_starting_hour, test_install_rollback_waits_for_a_running_tick,
                  test_production_config):
         test()

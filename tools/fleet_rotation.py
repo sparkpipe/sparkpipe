@@ -530,10 +530,13 @@ class Rotation:
         rc, _ = self.run.run("hub", self.hub_cmd(model, "health"))
         return rc == 0 or self.dry
 
-    def converge(self, st, current, target, dirty, reason):
-        outgoing = [m for m in current + dirty if m not in target or m in dirty]
-        outgoing = list(dict.fromkeys(outgoing))
+    def moves(self, current, target, dirty):
+        outgoing = [m for m in current + dirty if m not in target or (m in dirty and m != self.fb)]
         incoming = [m for m in target if m not in current or m in dirty]
+        return list(dict.fromkeys(outgoing)), incoming
+
+    def converge(self, st, current, target, dirty, reason):
+        outgoing, incoming = self.moves(current, target, dirty)
         incoming.sort(key=lambda m: m != self.fb)
         outgoing.sort(key=lambda m: m == self.fb)
         st["phase"] = "transition"
@@ -599,8 +602,7 @@ class Rotation:
         avail = self.mem(self.cfg["fleet"])
         for _ in range(len(self.cfg["slots"]) + len(self.cfg["companions"]) + 2):
             _, slot, target = self.target(st, instance * HOUR)
-            incoming = [m for m in target if m not in current or m in dirty]
-            outgoing = [m for m in current + dirty if m not in target]
+            outgoing, incoming = self.moves(current, target, dirty)
             problem = None
             culprit = None
             for model in incoming:
@@ -609,7 +611,7 @@ class Rotation:
                     culprit = model
                     break
             if not problem:
-                short = self.fits(avail, outgoing, incoming)
+                short = self.fits(avail, outgoing, [m for m in incoming if m not in dirty or m in outgoing])
                 if short:
                     culprit = incoming[-1] if incoming else None
                     problem = "predicted MemAvailable below floor: " + " ".join(short)
