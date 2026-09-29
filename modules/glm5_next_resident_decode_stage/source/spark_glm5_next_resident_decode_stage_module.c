@@ -3879,6 +3879,7 @@ static void SparkGlm5NextTapEmit(SparkGlm5NextTpChain *chain,uint32_t rows,uint3
 		record.sequence_id = SparkGlm5NextTapSequence(chain,row);
 		record.position = positions[row];
 		record.token_id = tokens[row];
+		record.next_token_id = outputs[row];
 		record.flags = prefill != 0u ? SPARK_SPECULATION_TAP_FLAG_PREFILL : flags;
 		record.serial = ++state->tap_serial;
 		if ( row == 0u )

@@ -136,6 +136,7 @@ static int RunEngine(char **argv)
 			record.position = position;
 			record.serial = position + 1u;
 			record.token_id = (uint32_t)(position % PROBE_VOCAB);
+			record.next_token_id = (uint32_t)((position + 1u) % PROBE_VOCAB);
 			record.flags = SPARK_SPECULATION_TAP_FLAG_DECODE;
 			(void)SparkSpeculationRelayLinkSendTap(&link,fingerprint,&record,payload,set.record_bytes,SPARK_SPECULATION_TAP_FRAGMENT_PAYLOAD_MAX);
 			token = (uint32_t)(position % PROBE_VOCAB);

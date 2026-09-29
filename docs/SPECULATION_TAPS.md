@@ -26,7 +26,10 @@ host: [RTX5090_SPECULATION_NODE.md](RTX5090_SPECULATION_NODE.md).
     `mean:5,14,24,33,42,44`. The HF convention indexes layer outputs; the
     offline lane sweeps offset +-1 before pinning it.
 - One record per committed position: sequence id, position, the token at that
-  position (the row's input), then one row per tap in configured order.
+  position (the row's input), the engine's output token at that row (the
+  committed token at position+1 for decode and verify rows and for the last
+  row of the final prefill chunk; a prediction for other prefill rows), then
+  one row per tap in configured order.
   Prefill emits every prompt position; a plain step emits its rows; a verify
   round emits rows 0..accepted (the bonus token has no row yet). Rejected
   draft rows are never emitted.
@@ -73,8 +76,8 @@ misses, shadow rounds, proposed, accepted, accepted-length histogram
 
 All frames are little-endian and carry the engine generation.
 
-`SPT1` tap fragment, 64-byte header plus up to 8192 payload bytes (one
-datagram each):
+`SPT1` tap fragment, 72-byte header plus up to 8192 payload bytes (one
+datagram of at most 8264 bytes):
 
 | Offset | Field |
 | --- | --- |
@@ -86,10 +89,12 @@ datagram each):
 | 32 | serial (u64), increasing per record on the tap rank |
 | 40 | tap-set fingerprint (u64) |
 | 48 | token id (u32) |
-| 52 | flags (u32): 1 prefill, 2 decode, 4 verify |
-| 56 | record bytes (u32) = taps x row bytes |
-| 60 | offset of this slice in the record (u32) |
-| 64 | payload slice |
+| 52 | next token id (u32) |
+| 56 | flags (u32): 1 prefill, 2 decode, 4 verify |
+| 60 | record bytes (u32) = taps x row bytes |
+| 64 | offset of this slice in the record (u32) |
+| 68 | reserved (u32), zero |
+| 72 | payload slice |
 
 Fragments of a record are sent in offset order. The assembler keeps one open
 record; a missing or out-of-order slice abandons it (counted), a fingerprint
@@ -104,12 +109,12 @@ draft for an older round is counted stale; in shadow mode it is still scored.
 
 ## Dump (`SPTD`)
 
-128-byte header, then records of a 32-byte record header and the rows.
+128-byte header, then records of a 40-byte record header and the rows.
 
 | Offset | Header field |
 | --- | --- |
 | 0 | magic `SPTD` (0x44545053) |
-| 4 / 8 / 12 | version 1, header bytes 128, record header bytes 32 |
+| 4 / 8 / 12 | version 1, header bytes 128, record header bytes 40 |
 | 16 / 20 / 24 / 28 / 32 | reduction (1 mean, 2 all), tap count, streams, hidden, model layers |
 | 36 / 40 / 44 | row elements, row bytes, dtype (1 = bf16) |
 | 48 | tap layers, 8 x u32 |
@@ -118,9 +123,18 @@ draft for an older round is counted stale; in shadow mode it is still scored.
 | 104 | record count (u64, written at close) |
 | 112 | model tag, 16 bytes |
 
-Record header: sequence id (u64), position (u64), token id (u32), flags (u32),
-serial (u64). `tools/spec_tap_dump.py summary|verify PATH` reads it;
-`iter_records` and `tap_rows` are the offline lane's entry points.
+Record header: sequence id (u64), position (u64), token id (u32), next token
+id (u32), flags (u32), reserved (u32, zero), serial (u64).
+
+`tools/spec_tap_dump.py`:
+- `summary|verify PATH`: header, per-sequence coverage, gaps and repeats;
+- `export-offline PATH OUT --layer L --model M --firmware F [--classes JSON]`:
+  one tapped layer as a `spark-tapdump-1` directory, the format
+  `tools/spec_offline/tapdump.py` reads (tokens = the record tokens plus the
+  last record's next token; the final token's row is zero because the engine
+  never computes it; sequences that do not start at position 0, such as
+  prefix-cache hits, are skipped and listed);
+- `iter_records` and `tap_rows` for direct use.
 
 ## Tools
 

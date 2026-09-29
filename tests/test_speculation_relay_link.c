@@ -107,7 +107,7 @@ static void *DraftdMain(void *context)
 		if ( complete == 0u )
 			continue;
 		RowFill(expected_payload,draftd->set.record_bytes,assembler.record.position);
-		if ( assembler.record.sequence_id != TEST_SEQUENCE || assembler.record.token_id != Target(assembler.record.position) || memcmp(payload,expected_payload,draftd->set.record_bytes) != 0 )
+		if ( assembler.record.sequence_id != TEST_SEQUENCE || assembler.record.token_id != Target(assembler.record.position) || assembler.record.next_token_id != Target(assembler.record.position + 1u) || memcmp(payload,expected_payload,draftd->set.record_bytes) != 0 )
 			draftd->tap_bad++;
 		if ( assembler.record.position != draftd->tap_next_position )
 			draftd->tap_gaps++;
@@ -158,6 +158,7 @@ static void SendTaps(SparkSpeculationRelayLink *link,const SparkSpeculationTapSe
 		record.position = position;
 		record.serial = position;
 		record.token_id = Target(position);
+		record.next_token_id = Target(position + 1u);
 		record.flags = flags;
 		RowFill(payload,set->record_bytes,position);
 		Require(SparkSpeculationRelayLinkSendTap(link,SparkSpeculationTapSetFingerprint(set),&record,payload,set->record_bytes,SPARK_SPECULATION_TAP_FRAGMENT_PAYLOAD_MAX) == SPARK_STATUS_OK,"taps sent");

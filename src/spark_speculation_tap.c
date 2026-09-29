@@ -133,7 +133,7 @@ SparkStatus SparkSpeculationTapEncodeFragment(const SparkSpeculationTapRecord *r
 	if ( record == 0 || payload == 0 || out == 0 || out_length == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*out_length = 0u;
-	if ( (record->flags & ~SPARK_SPECULATION_TAP_FLAG_MASK) != 0u || record_bytes == 0u || bytes == 0u || bytes > SPARK_SPECULATION_TAP_FRAGMENT_PAYLOAD_MAX || offset >= record_bytes || bytes > record_bytes - offset )
+	if ( (record->flags & ~SPARK_SPECULATION_TAP_FLAG_MASK) != 0u || record->reserved != 0u || record_bytes == 0u || bytes == 0u || bytes > SPARK_SPECULATION_TAP_FRAGMENT_PAYLOAD_MAX || offset >= record_bytes || bytes > record_bytes - offset )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( out_capacity < SPARK_SPECULATION_TAP_FRAGMENT_HEADER_BYTES + bytes )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -145,9 +145,11 @@ SparkStatus SparkSpeculationTapEncodeFragment(const SparkSpeculationTapRecord *r
 	SparkSpeculationTapPut64(out + 32,record->serial);
 	SparkSpeculationTapPut64(out + 40,fingerprint);
 	SparkSpeculationTapPut32(out + 48,record->token_id);
-	SparkSpeculationTapPut32(out + 52,record->flags);
-	SparkSpeculationTapPut32(out + 56,record_bytes);
-	SparkSpeculationTapPut32(out + 60,offset);
+	SparkSpeculationTapPut32(out + 52,record->next_token_id);
+	SparkSpeculationTapPut32(out + 56,record->flags);
+	SparkSpeculationTapPut32(out + 60,record_bytes);
+	SparkSpeculationTapPut32(out + 64,offset);
+	SparkSpeculationTapPut32(out + 68,0u);
 	memcpy(out + SPARK_SPECULATION_TAP_FRAGMENT_HEADER_BYTES,payload + offset,bytes);
 	*out_length = SPARK_SPECULATION_TAP_FRAGMENT_HEADER_BYTES + bytes;
 	return(SPARK_STATUS_OK);
@@ -172,12 +174,13 @@ SparkStatus SparkSpeculationTapDecodeFragment(const uint8_t *bytes,uint32_t leng
 	fragment->record.serial = SparkSpeculationTapGet64(bytes + 32);
 	fragment->fingerprint = SparkSpeculationTapGet64(bytes + 40);
 	fragment->record.token_id = SparkSpeculationTapGet32(bytes + 48);
-	fragment->record.flags = SparkSpeculationTapGet32(bytes + 52);
-	fragment->record_bytes = SparkSpeculationTapGet32(bytes + 56);
-	fragment->offset = SparkSpeculationTapGet32(bytes + 60);
+	fragment->record.next_token_id = SparkSpeculationTapGet32(bytes + 52);
+	fragment->record.flags = SparkSpeculationTapGet32(bytes + 56);
+	fragment->record_bytes = SparkSpeculationTapGet32(bytes + 60);
+	fragment->offset = SparkSpeculationTapGet32(bytes + 64);
 	fragment->bytes = length - SPARK_SPECULATION_TAP_FRAGMENT_HEADER_BYTES;
 	fragment->payload = bytes + SPARK_SPECULATION_TAP_FRAGMENT_HEADER_BYTES;
-	if ( (fragment->record.flags & ~SPARK_SPECULATION_TAP_FLAG_MASK) != 0u || fragment->record_bytes == 0u || fragment->offset >= fragment->record_bytes || fragment->bytes > fragment->record_bytes - fragment->offset )
+	if ( (fragment->record.flags & ~SPARK_SPECULATION_TAP_FLAG_MASK) != 0u || SparkSpeculationTapGet32(bytes + 68) != 0u || fragment->record_bytes == 0u || fragment->offset >= fragment->record_bytes || fragment->bytes > fragment->record_bytes - fragment->offset )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
@@ -292,7 +295,7 @@ SparkStatus SparkSpeculationTapDumpAppend(SparkSpeculationTapDump *dump,const Sp
 	uint64_t bytes;
 	if ( dump == 0 || dump->file == 0 || record == 0 || payload == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (record->flags & ~SPARK_SPECULATION_TAP_FLAG_MASK) != 0u )
+	if ( (record->flags & ~SPARK_SPECULATION_TAP_FLAG_MASK) != 0u || record->reserved != 0u )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	bytes = SPARK_SPECULATION_TAP_DUMP_RECORD_HEADER_BYTES + (uint64_t)dump->set.record_bytes;
 	if ( dump->bytes + bytes > dump->max_bytes )
@@ -304,8 +307,10 @@ SparkStatus SparkSpeculationTapDumpAppend(SparkSpeculationTapDump *dump,const Sp
 	SparkSpeculationTapPut64(header,record->sequence_id);
 	SparkSpeculationTapPut64(header + 8,record->position);
 	SparkSpeculationTapPut32(header + 16,record->token_id);
-	SparkSpeculationTapPut32(header + 20,record->flags);
-	SparkSpeculationTapPut64(header + 24,record->serial);
+	SparkSpeculationTapPut32(header + 20,record->next_token_id);
+	SparkSpeculationTapPut32(header + 24,record->flags);
+	SparkSpeculationTapPut32(header + 28,0u);
+	SparkSpeculationTapPut64(header + 32,record->serial);
 	if ( fwrite(header,1u,sizeof(header),dump->file) != sizeof(header) || fwrite(payload,1u,dump->set.record_bytes,dump->file) != dump->set.record_bytes )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	dump->bytes += bytes;

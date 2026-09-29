@@ -65,6 +65,7 @@ static SparkSpeculationTapRecord Record(uint64_t position)
 	record.position = position;
 	record.serial = position + 1000u;
 	record.token_id = (uint32_t)(position * 3u + 1u);
+	record.next_token_id = (uint32_t)(position * 3u + 4u);
 	record.flags = SPARK_SPECULATION_TAP_FLAG_DECODE;
 	return(record);
 }
@@ -86,12 +87,12 @@ static void TestFragments(void)
 	Fill(payload,set.record_bytes,record.position);
 	fragments = SparkSpeculationTapFragmentCount(set.record_bytes,SPARK_SPECULATION_TAP_FRAGMENT_PAYLOAD_MAX);
 	Require(fragments == 6u && SparkSpeculationTapFragmentCount(set.record_bytes,SPARK_SPECULATION_TAP_FRAGMENT_PAYLOAD_MAX + 1u) == 0u,"one 8 KiB fragment per mean tap; payload over 8 KiB refused");
-	Require(SPARK_SPECULATION_TAP_FRAGMENT_BYTES_MAX + 28u <= 9000u,"a fragment fits one datagram at MTU 9000");
-	Require(SparkSpeculationTapEncodeFragment(&record,fingerprint,payload,set.record_bytes,8192u,8192u,datagram,sizeof(datagram),&length) == SPARK_STATUS_OK && length == 64u + 8192u,"fragment encodes");
+	Require(SPARK_SPECULATION_TAP_FRAGMENT_BYTES_MAX == 8264u && SPARK_SPECULATION_TAP_FRAGMENT_BYTES_MAX + 28u <= 9000u,"a fragment fits one datagram at MTU 9000");
+	Require(SparkSpeculationTapEncodeFragment(&record,fingerprint,payload,set.record_bytes,8192u,8192u,datagram,sizeof(datagram),&length) == SPARK_STATUS_OK && length == 72u + 8192u,"fragment encodes");
 	Require(memcmp(datagram,"SPT1",4u) == 0 && datagram[4] == 1u && datagram[6] == 3u,"magic SPT1, version 1, kind 3");
 	Require(Get64(datagram + 8) == record.engine_generation && Get64(datagram + 16) == 77u && Get64(datagram + 24) == 300u && Get64(datagram + 32) == 1300u && Get64(datagram + 40) == fingerprint,"generation, sequence, position, serial, fingerprint at fixed offsets");
-	Require(Get32(datagram + 48) == 901u && Get32(datagram + 52) == SPARK_SPECULATION_TAP_FLAG_DECODE && Get32(datagram + 56) == set.record_bytes && Get32(datagram + 60) == 8192u,"token, flags, record bytes, offset at fixed offsets");
-	Require(memcmp(datagram + 64,payload + 8192u,8192u) == 0,"payload slice follows the 64-byte header");
+	Require(Get32(datagram + 48) == 901u && Get32(datagram + 52) == 904u && Get32(datagram + 56) == SPARK_SPECULATION_TAP_FLAG_DECODE && Get32(datagram + 60) == set.record_bytes && Get32(datagram + 64) == 8192u && Get32(datagram + 68) == 0u,"token, next token, flags, record bytes, offset, reserved at fixed offsets");
+	Require(memcmp(datagram + 72,payload + 8192u,8192u) == 0,"payload slice follows the 72-byte header");
 	Require(SparkSpeculationTapDecodeFragment(datagram,length,&fragment) == SPARK_STATUS_OK && memcmp(&fragment.record,&record,sizeof(record)) == 0 && fragment.offset == 8192u && fragment.bytes == 8192u && fragment.fingerprint == fingerprint,"decode inverts encode");
 	memcpy(saved,datagram,length);
 	saved[0] ^= 1u;
@@ -103,12 +104,15 @@ static void TestFragments(void)
 	saved[6] = 1u;
 	Require(SparkSpeculationTapDecodeFragment(saved,length,&fragment) == SPARK_STATUS_SCHEMA_ERROR,"relay request kind refused as a tap");
 	memcpy(saved,datagram,length);
-	saved[52] = 0x08u;
+	saved[56] = 0x08u;
 	Require(SparkSpeculationTapDecodeFragment(saved,length,&fragment) == SPARK_STATUS_SCHEMA_ERROR,"unknown flag bits refused");
 	memcpy(saved,datagram,length);
-	saved[61] = 0xc0u;
+	saved[68] = 1u;
+	Require(SparkSpeculationTapDecodeFragment(saved,length,&fragment) == SPARK_STATUS_SCHEMA_ERROR,"nonzero reserved word refused");
+	memcpy(saved,datagram,length);
+	saved[65] = 0xc0u;
 	Require(SparkSpeculationTapDecodeFragment(saved,length,&fragment) == SPARK_STATUS_SCHEMA_ERROR,"slice past the record refused");
-	Require(SparkSpeculationTapDecodeFragment(datagram,64u,&fragment) == SPARK_STATUS_PARSE_ERROR,"empty payload refused");
+	Require(SparkSpeculationTapDecodeFragment(datagram,72u,&fragment) == SPARK_STATUS_PARSE_ERROR,"empty payload refused");
 	record.flags = 0x20u;
 	Require(SparkSpeculationTapEncodeFragment(&record,fingerprint,payload,set.record_bytes,0u,8192u,datagram,sizeof(datagram),&length) == SPARK_STATUS_SCHEMA_ERROR,"encoder refuses unknown flags");
 	record = Record(300u);
@@ -148,7 +152,7 @@ static void TestDump(void)
 	close(fd);
 	Require(SparkSpeculationTapDumpOpen(&dump,path,&set,"model",9u,15u,1u << 20) == SPARK_STATUS_IO_ERROR,"an existing file is never overwritten");
 	unlink(path);
-	Require(SparkSpeculationTapDumpOpen(&dump,path,&set,"model",9u,15u,128u + 2u * (32u + sizeof(payload))) == SPARK_STATUS_OK,"dump opens");
+	Require(SparkSpeculationTapDumpOpen(&dump,path,&set,"model",9u,15u,128u + 2u * (40u + sizeof(payload))) == SPARK_STATUS_OK,"dump opens");
 	for (index=0u; index<2u; index++)
 	{
 		record = Record(index + 10u);
@@ -160,18 +164,18 @@ static void TestDump(void)
 	file = fopen(path,"rb");
 	Require(file != 0 && fseek(file,0L,SEEK_END) == 0,"reopen");
 	size = ftell(file);
-	Require(size == (long)(128u + 2u * (32u + sizeof(payload))),"header plus two records");
+	Require(size == (long)(128u + 2u * (40u + sizeof(payload))),"header plus two records");
 	file_bytes = (uint8_t *)malloc((size_t)size);
 	Require(fseek(file,0L,SEEK_SET) == 0 && fread(file_bytes,1u,(size_t)size,file) == (size_t)size,"read back");
 	fclose(file);
-	Require(memcmp(file_bytes,"SPTD",4u) == 0 && Get32(file_bytes + 4) == 1u && Get32(file_bytes + 8) == 128u && Get32(file_bytes + 12) == 32u,"magic, version, header and record header sizes");
+	Require(memcmp(file_bytes,"SPTD",4u) == 0 && Get32(file_bytes + 4) == 1u && Get32(file_bytes + 8) == 128u && Get32(file_bytes + 12) == 40u,"magic, version, header and record header sizes");
 	Require(Get32(file_bytes + 16) == SPARK_SPECULATION_TAP_REDUCTION_MEAN && Get32(file_bytes + 20) == 2u && Get32(file_bytes + 24) == 4u && Get32(file_bytes + 28) == 3u && Get32(file_bytes + 32) == 3u,"reduction, taps, streams, hidden, layers");
 	Require(Get32(file_bytes + 36) == 3u && Get32(file_bytes + 40) == 6u && Get32(file_bytes + 44) == SPARK_SPECULATION_TAP_DTYPE_BF16 && Get32(file_bytes + 48) == 0u && Get32(file_bytes + 52) == 2u,"row elements, row bytes, dtype, layer list");
 	Require(Get64(file_bytes + 80) == SparkSpeculationTapSetFingerprint(&set) && Get64(file_bytes + 88) == 9u && Get32(file_bytes + 96) == 15u,"fingerprint, engine generation, rank");
 	Require(Get32(file_bytes + 100) == (SPARK_SPECULATION_TAP_DUMP_FLAG_TRUNCATED | SPARK_SPECULATION_TAP_DUMP_FLAG_CLOSED) && Get64(file_bytes + 104) == 2u && memcmp(file_bytes + 112,"model",6u) == 0,"close records truncation, record count and model tag");
 	Fill(payload,sizeof(payload),1u);
-	Require(Get64(file_bytes + 128 + 44) == 77u && Get64(file_bytes + 128 + 44 + 8) == 11u && Get32(file_bytes + 128 + 44 + 16) == 34u && Get32(file_bytes + 128 + 44 + 20) == SPARK_SPECULATION_TAP_FLAG_DECODE && Get64(file_bytes + 128 + 44 + 24) == 1011u,"record header: sequence, position, token, flags, serial");
-	Require(memcmp(file_bytes + 128 + 44 + 32,payload,sizeof(payload)) == 0,"record rows follow its header");
+	Require(Get64(file_bytes + 128 + 52) == 77u && Get64(file_bytes + 128 + 52 + 8) == 11u && Get32(file_bytes + 128 + 52 + 16) == 34u && Get32(file_bytes + 128 + 52 + 20) == 37u && Get32(file_bytes + 128 + 52 + 24) == SPARK_SPECULATION_TAP_FLAG_DECODE && Get32(file_bytes + 128 + 52 + 28) == 0u && Get64(file_bytes + 128 + 52 + 32) == 1011u,"record header: sequence, position, token, next token, flags, reserved, serial");
+	Require(memcmp(file_bytes + 128 + 52 + 40,payload,sizeof(payload)) == 0,"record rows follow its header");
 	free(file_bytes);
 	unlink(path);
 }

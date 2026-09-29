@@ -1059,7 +1059,7 @@ static void verify_taps_open(void)
 static void verify_taps_check(const uint32_t *expected,uint32_t first,uint32_t minimum_records,uint32_t drafter)
 {
 	FILE *file;
-	uint8_t header[128],record[32],*payload;
+	uint8_t header[128],record[40],*payload;
 	uint64_t records,index,position,serial;
 	uint32_t flags,byte;
 	SparkGlm5NextReleaseTaps(&state);
@@ -1073,10 +1073,11 @@ static void verify_taps_check(const uint32_t *expected,uint32_t first,uint32_t m
 	{
 		assert(fread(record,1u,sizeof(record),file) == sizeof(record) && fread(payload,1u,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2u,file) == SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2u);
 		memcpy(&position,record + 8,sizeof(position));
-		memcpy(&flags,record + 20,sizeof(flags));
-		memcpy(&serial,record + 24,sizeof(serial));
+		memcpy(&flags,record + 24,sizeof(flags));
+		memcpy(&serial,record + 32,sizeof(serial));
 		assert(record[0] == 44u && position == first + index && serial == index + 1u);
 		assert(record[16] == (uint8_t)expected[position] && record[17] == (uint8_t)(expected[position] >> 8));
+		assert(record[20] == (uint8_t)expected[position + 1u] && record[21] == (uint8_t)(expected[position + 1u] >> 8));
 		assert(flags == SPARK_SPECULATION_TAP_FLAG_VERIFY || flags == SPARK_SPECULATION_TAP_FLAG_DECODE);
 		for (byte=0u; byte<SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2u; byte++)
 			assert(payload[byte] == (flags == SPARK_SPECULATION_TAP_FLAG_DECODE ? 1u : payload[0]));

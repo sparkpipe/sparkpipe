@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """The Python tap-dump reader parses what the C writer produces, and refuses damaged dumps."""
 from pathlib import Path
+import hashlib
+import json
+import struct
 import subprocess
 import sys
 import tempfile
@@ -31,6 +34,7 @@ int main(int argc,char **argv)
 		record.sequence_id = index < 3u ? 11u : 12u;
 		record.position = index < 3u ? 40u + index : index == 3u ? 10u : 12u;
 		record.token_id = 1000u + index;
+		record.next_token_id = 2000u + index;
 		record.flags = index == 0u ? SPARK_SPECULATION_TAP_FLAG_PREFILL : index == 4u ? SPARK_SPECULATION_TAP_FLAG_DECODE : SPARK_SPECULATION_TAP_FLAG_VERIFY;
 		record.serial = index + 1u;
 		for (byte=0u; byte<sizeof(payload); byte++)
@@ -48,6 +52,46 @@ def build(directory):
     subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-O1", "-Iinclude", str(source), "src/spark_speculation_tap.c",
                     "src/spark_status.c", "-o", str(binary)], cwd=ROOT, check=True)
     return binary
+
+
+def sptd_bytes(records, flags=2):
+    header = bytearray(128)
+    struct.pack_into("<4I", header, 0, 0x44545053, 1, 128, 40)
+    struct.pack_into("<8I", header, 16, 1, 2, 4, 4, 9, 4, 8, 1)
+    struct.pack_into("<8I", header, 48, 3, 8, 0, 0, 0, 0, 0, 0)
+    struct.pack_into("<2Q2IQ", header, 80, 0xabc, 9, 15, flags, len(records))
+    header[112:115] = b"glm"
+    body = b"".join(struct.pack("<QQIIIIQ", *fields) + rows for fields, rows in records)
+    return bytes(header) + body
+
+
+def check_export():
+    def row(position, tap):
+        return bytes((position * 8 + tap * 64 + byte) % 256 for byte in range(8))
+    records = []
+    for position in range(6):
+        flags = 1 if position < 4 else 2
+        records.append(((5, position, 100 + position, 101 + position, flags, 0, position + 1), row(position, 0) + row(position, 1)))
+    records.append(((6, 3, 7, 8, 2, 0, 7), row(3, 0) + row(3, 1)))
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "taps.sptd"
+        path.write_bytes(sptd_bytes(records))
+        classes = Path(directory) / "classes.json"
+        classes.write_text(json.dumps({"5": "code"}))
+        out = Path(directory) / "offline"
+        assert spec_tap_dump.main(["export-offline", str(path), str(out), "--layer", "8", "--classes", str(classes), "--model", "glmflash", "--firmware", "f00"]) == 0
+        manifest = json.loads((out / "manifest.json").read_text())
+        assert manifest["format"] == "spark-tapdump-1" and manifest["hidden_dimension"] == 4 and manifest["taps"][0]["name"] == "L8.mean", manifest
+        assert manifest["streams"] == [{"name": "seq5", "class": "code", "tokens": "seq5.u32", "prompt_tokens": 4, "total_tokens": 7, "taps": "seq5.L8.mean.bf16"}], manifest["streams"]
+        assert "6" in manifest["notes"]["skipped"], manifest["notes"]
+        data = (out / "seq5.u32").read_bytes()
+        assert struct.unpack("<II7I", data) == (4, 7, 100, 101, 102, 103, 104, 105, 106), data
+        rows = (out / "seq5.L8.mean.bf16").read_bytes()
+        assert rows == b"".join(row(position, 1) for position in range(6)) + bytes(8), rows
+        for line in (out / "SHA256SUMS").read_text().splitlines():
+            digest, name = line.split("  ", 1)
+            assert hashlib.sha256((out / name).read_bytes()).hexdigest() == digest, name
+        assert spec_tap_dump.main(["export-offline", str(path), str(Path(directory) / "none"), "--layer", "4", "--model", "glmflash", "--firmware", "f00"]) == 1
 
 
 def main():
@@ -68,12 +112,13 @@ def main():
         assert [record["position"] for record in records] == [40, 41, 42, 10, 12]
         assert report["sequences"]["12"] == {"records": 2, "first": 10, "next": 13, "gaps": 1, "repeats": 0}, report["sequences"]
         assert [record["token_id"] for record in records] == [1000, 1001, 1002, 1003, 1004]
+        assert [record["next_token_id"] for record in records] == [2000, 2001, 2002, 2003, 2004]
         rows = spec_tap_dump.tap_rows(header, records[1]["rows"])
         assert rows[0] == bytes(16 + byte for byte in range(16)) and rows[1] == bytes(32 + byte for byte in range(16)), rows
         assert spec_tap_dump.main(["verify", str(path)]) == 0
 
         small = Path(directory) / "small.sptd"
-        subprocess.run([str(binary), str(small), str(128 + 2 * 64)], check=True, stderr=subprocess.DEVNULL)
+        subprocess.run([str(binary), str(small), str(128 + 2 * 72)], check=True, stderr=subprocess.DEVNULL)
         report = spec_tap_dump.summarize(str(small))
         assert report["header"]["truncated"] and report["records"] == 2, report
 
@@ -101,6 +146,7 @@ def main():
         bad = Path(directory) / "bad.sptd"
         bad.write_bytes(bytes(raw))
         assert spec_tap_dump.main(["verify", str(bad)]) == 1
+    check_export()
     print("PASS tap dump: the reader parses the C writer's header, records and per-tap rows, reports truncation and position gaps, and refuses partial, unclosed or foreign dumps")
 
 
