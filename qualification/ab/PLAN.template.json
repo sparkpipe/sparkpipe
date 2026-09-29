@@ -37,5 +37,5 @@
   "ct_short_doubled": false
  },
  "suites": {"mcnemar_alpha": 0.05, "names": ["COMPSEC-17", "ds4-92"], "thinking": "off", "max_tokens": 4096, "b1_sequential": true},
- "exclusions": {"on_policy_dnll_in_verdict": false, "near_tie_rule": "reference top-2 gap < near_tie_nats", "strata_reported": ["prose-pre", "prose-post", "code", "on-policy"]}
+ "exclusions": {"on_policy_dnll_in_verdict": false, "near_tie_rule": "reference top-2 gap < near_tie_nats", "strata_reported": ["prose-recent", "prose-old", "code", "on-policy", "prose-long", "code-long", "retrieval"]}
 }

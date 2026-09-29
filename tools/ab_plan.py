@@ -46,10 +46,14 @@ def require(condition, message):
         raise PlanError(message)
 
 
+def pinned(value, pattern) -> bool:
+    return isinstance(value, str) and bool(pattern.match(value)) and value.strip("0") != ""
+
+
 def validate(plan: dict) -> dict:
     require(plan.get("format") == FORMAT, f"plan: format must be {FORMAT}")
     require(isinstance(plan.get("campaign"), str) and re.match(r"[a-z0-9][a-z0-9._-]*\Z", plan["campaign"]), "plan: campaign must be a lowercase slug")
-    require(isinstance(plan.get("firmware_commit"), str) and COMMIT.match(plan["firmware_commit"]), "plan: firmware_commit must be a 40-hex commit (one pinned firmware per campaign)")
+    require(pinned(plan.get("firmware_commit"), COMMIT), "plan: firmware_commit must be a pinned 40-hex commit, not the template placeholder (one pinned firmware per campaign)")
     arms = plan.get("arms")
     require(isinstance(arms, list) and arms, "plan: arms must be a non-empty list")
     ids = [arm.get("arm_id") for arm in arms]
@@ -71,12 +75,12 @@ def validate(plan: dict) -> dict:
     corpora = plan.get("corpora")
     require(isinstance(corpora, dict) and corpora, "plan: corpora must be a non-empty object")
     for name, corpus in corpora.items():
-        require(isinstance(corpus.get("tokens_sha256"), str) and HEX.match(corpus["tokens_sha256"]), f"plan: corpus {name} tokens_sha256 must be pinned")
-        require(isinstance(corpus.get("index_sha256"), str) and HEX.match(corpus["index_sha256"]), f"plan: corpus {name} index_sha256 must be pinned")
+        require(pinned(corpus.get("tokens_sha256"), HEX), f"plan: corpus {name} tokens_sha256 must be pinned, not the template placeholder")
+        require(pinned(corpus.get("index_sha256"), HEX), f"plan: corpus {name} index_sha256 must be pinned, not the template placeholder")
         require(isinstance(corpus.get("docs"), int) and corpus["docs"] > 0, f"plan: corpus {name} docs must be a positive count")
         if corpus.get("role") == "position-bins":
             require(corpus["docs"] >= CT_LONG_MIN_DOCS, f"plan: corpus {name} carries the K verdicts and needs >= {CT_LONG_MIN_DOCS} documents (critic §10.15)")
-    require(isinstance(plan.get("tokenizer_sha256"), str) and HEX.match(plan["tokenizer_sha256"]), "plan: tokenizer_sha256 must be pinned")
+    require(pinned(plan.get("tokenizer_sha256"), HEX), "plan: tokenizer_sha256 must be pinned, not a placeholder")
     margins = plan.get("margins", {})
     e = margins.get("E", {})
     require(e.get("kl_ratio_vs_anchor_upper", 0) > 1.0, "plan: margins.E.kl_ratio_vs_anchor_upper must exceed 1")
@@ -91,7 +95,7 @@ def validate(plan: dict) -> dict:
     backstops = plan.get("backstops", {})
     require(backstops.get("status") in BACKSTOP_STATUS, f"plan: backstops.status must be one of {BACKSTOP_STATUS}")
     if backstops["status"] == "calibrated":
-        require(isinstance(backstops.get("calibration_comparison_sha256"), str) and HEX.match(backstops["calibration_comparison_sha256"]),
+        require(pinned(backstops.get("calibration_comparison_sha256"), HEX),
                 "plan: calibrated backstops cite the sha256 of the anchor-vs-reference comparison they were calibrated on")
     for key in ("kl_mean_upper", "top1_agree_pct_lower", "dnll_rel_pct_abs"):
         require(isinstance(backstops.get(key), (int, float)) and not isinstance(backstops.get(key), bool), f"plan: backstops.{key} is required")

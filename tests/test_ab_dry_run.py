@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+import hashlib
 import json
 import sys
 import tempfile
@@ -82,8 +83,16 @@ class DryRunTest(unittest.TestCase):
 
 
 class PlanTest(unittest.TestCase):
-    def draft(self):
+    def template(self):
         return json.loads((ROOT / "qualification" / "ab" / "PLAN.template.json").read_text())
+
+    def draft(self):
+        draft = self.template()
+        draft["firmware_commit"] = "2" * 40
+        for name, corpus in draft["corpora"].items():
+            corpus["tokens_sha256"] = hashlib.sha256(f"{name}/tokens".encode()).hexdigest()
+            corpus["index_sha256"] = hashlib.sha256(f"{name}/index".encode()).hexdigest()
+        return draft
 
     def freeze(self, draft):
         with tempfile.TemporaryDirectory() as directory:
@@ -97,6 +106,26 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(plan["margins"]["E"]["top1_diff_vs_anchor_pt_lower"], -0.3)
         self.assertEqual(plan["backstops"]["status"], "calibration")
         self.assertFalse(any(arm["arm_id"].split(".")[2] in ("e-int8", "e-int6", "e-mxfp4") for arm in plan["arms"]))
+
+    def test_template_placeholders_are_refused(self):
+        with self.assertRaisesRegex(ab_plan.PlanError, "firmware_commit .*placeholder"):
+            self.freeze(self.template())
+        draft = self.draft()
+        draft["corpora"]["CT-long"]["index_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ab_plan.PlanError, "CT-long index_sha256 .*placeholder"):
+            self.freeze(draft)
+        draft = self.draft()
+        draft["backstops"]["status"] = "calibrated"
+        draft["backstops"]["calibration_comparison_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ab_plan.PlanError, "calibrated"):
+            self.freeze(draft)
+
+    def test_template_strata_match_the_corpora(self):
+        strata = set()
+        for name in ("CT-short", "CT-long"):
+            strata |= set(json.loads((ROOT / "qualification" / "ab" / "corpora" / f"{name}.index.json").read_text())["strata"])
+        reported = set(self.template()["exclusions"]["strata_reported"])
+        self.assertEqual(strata | {"on-policy"}, reported)
 
     def test_refusals(self):
         draft = self.draft()
