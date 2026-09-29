@@ -229,11 +229,11 @@ static void TestDeadlineRounds(void)
 	Require(draftd.token_mismatch == 0u,"requests carry the committed anchor token");
 	Require(remote.deadline_misses >= 1u && remote.deadline_misses == outcome.zero_rounds,"every late draft is a counted zero-draft round");
 	Require(remote.answered_in_time + remote.deadline_misses == outcome.rounds,"each round is answered in time or missed");
-	Require(remote.answered_late >= 1u,"late drafts are counted when they land");
+	Require(remote.answered_late + remote.mailbox.stale >= 1u,"late drafts are counted when they land, as late for the open round or stale for a closed one");
 	Require(outcome.accepted == 3u * remote.answered_in_time,"in-time drafts commit their correct prefix");
 	Require(remote.rtt_count == remote.answered_in_time && SparkSpeculationRelayRemoteRttPercentileNs(&remote,500u) > 0u && SparkSpeculationRelayRemoteRttPercentileNs(&remote,990u) <= TEST_AWAIT_NS + SPARK_SPECULATION_RELAY_RTT_BUCKET_NS,"round trip percentiles are recorded for in-time drafts");
 	Require(draftd.tap_bad == 0u && draftd.tap_gaps == 0u && draftd.tap_records == TEST_PROMPT + TEST_GENERATE - 1u,"every committed position reaches draftd once, in order, with intact rows");
-	printf("deadline: rounds=%llu zero=%llu in_time=%llu late=%llu p50=%lluus p99=%lluus\n",(unsigned long long)outcome.rounds,(unsigned long long)outcome.zero_rounds,(unsigned long long)remote.answered_in_time,(unsigned long long)remote.answered_late,
+	printf("deadline: rounds=%llu zero=%llu in_time=%llu late=%llu stale=%llu p50=%lluus p99=%lluus\n",(unsigned long long)outcome.rounds,(unsigned long long)outcome.zero_rounds,(unsigned long long)remote.answered_in_time,(unsigned long long)remote.answered_late,(unsigned long long)remote.mailbox.stale,
 		(unsigned long long)SparkSpeculationRelayRemoteRttPercentileNs(&remote,500u) / 1000u,(unsigned long long)SparkSpeculationRelayRemoteRttPercentileNs(&remote,990u) / 1000u);
 }
 

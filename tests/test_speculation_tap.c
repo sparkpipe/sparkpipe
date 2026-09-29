@@ -1,4 +1,3 @@
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,7 +8,6 @@
 #define TEST_LAYERS 45u
 #define TEST_STREAMS 4u
 #define TEST_HIDDEN 4096u
-#define TEST_THREAD_RECORDS 200000u
 
 static void Require(int condition,const char *what)
 {
@@ -105,7 +103,7 @@ static void TestFragments(void)
 	saved[6] = 1u;
 	Require(SparkSpeculationTapDecodeFragment(saved,length,&fragment) == SPARK_STATUS_SCHEMA_ERROR,"relay request kind refused as a tap");
 	memcpy(saved,datagram,length);
-	saved[52] = 0x10u;
+	saved[52] = 0x08u;
 	Require(SparkSpeculationTapDecodeFragment(saved,length,&fragment) == SPARK_STATUS_SCHEMA_ERROR,"unknown flag bits refused");
 	memcpy(saved,datagram,length);
 	saved[61] = 0xc0u;
@@ -131,91 +129,6 @@ static void TestFragments(void)
 	Require(SparkSpeculationTapEncodeFragment(&record,fingerprint + 1u,payload,set.record_bytes,0u,8192u,datagram,sizeof(datagram),&length) == SPARK_STATUS_OK && SparkSpeculationTapAssemblerAccept(&assembler,datagram,length,&complete) == SPARK_STATUS_TARGET_MISMATCH && assembler.rejected == 1u,"another tap set is refused by fingerprint");
 	free(payload);
 	free(received);
-}
-
-typedef struct RingThread
-{
-	SparkSpeculationTapRing *ring;
-	uint32_t record_bytes;
-	uint32_t failures;
-} RingThread;
-
-static void *RingConsumer(void *context)
-{
-	RingThread *thread = (RingThread *)context;
-	SparkSpeculationTapRecord record;
-	uint8_t *payload = (uint8_t *)malloc(thread->record_bytes);
-	uint8_t *expected = (uint8_t *)malloc(thread->record_bytes);
-	uint64_t next = 0u;
-	while ( next < TEST_THREAD_RECORDS )
-	{
-		if ( SparkSpeculationTapRingPop(thread->ring,&record,payload) != SPARK_STATUS_OK )
-			continue;
-		Fill(expected,thread->record_bytes,record.position);
-		if ( record.position != next || memcmp(payload,expected,thread->record_bytes) != 0 )
-			thread->failures++;
-		next++;
-	}
-	free(payload);
-	free(expected);
-	return(0);
-}
-
-static void TestRing(void)
-{
-	SparkSpeculationTapRing ring;
-	SparkSpeculationTapRecord record,popped;
-	RingThread thread;
-	pthread_t consumer;
-	uint8_t payload[512],out[512];
-	uint8_t *storage;
-	uint64_t storage_bytes,position;
-	uint32_t index;
-	Require(SparkSpeculationTapRingSlotBytes(512u) == 64u + 512u && SparkSpeculationTapRingSlotBytes(500u) == 64u + 512u,"slots are 64-byte aligned");
-	storage_bytes = 4u * SparkSpeculationTapRingSlotBytes(512u) + 100u;
-	storage = (uint8_t *)malloc(storage_bytes);
-	Require(storage != 0,"storage");
-	Require(SparkSpeculationTapRingInitialize(&ring,storage,SparkSpeculationTapRingSlotBytes(512u),512u) == SPARK_STATUS_CAPACITY_EXCEEDED,"one slot is not a ring");
-	Require(SparkSpeculationTapRingInitialize(&ring,storage,storage_bytes,512u) == SPARK_STATUS_OK && ring.slot_count == 4u,"four slots");
-	Require(SparkSpeculationTapRingPop(&ring,&popped,out) == SPARK_STATUS_NOT_FOUND,"empty ring pops nothing");
-	for (index=0u; index<4u; index++)
-	{
-		record = Record(index);
-		Fill(payload,sizeof(payload),index);
-		Require(SparkSpeculationTapRingPush(&ring,&record,payload) == SPARK_STATUS_OK,"push while room");
-	}
-	record = Record(4u);
-	Require(SparkSpeculationTapRingPush(&ring,&record,payload) == SPARK_STATUS_CAPACITY_EXCEEDED && ring.dropped == 1u,"full ring drops and counts, never blocks");
-	for (index=0u; index<4u; index++)
-	{
-		Fill(payload,sizeof(payload),index);
-		Require(SparkSpeculationTapRingPop(&ring,&popped,out) == SPARK_STATUS_OK && popped.position == index && memcmp(out,payload,sizeof(out)) == 0 && (popped.flags & SPARK_SPECULATION_TAP_FLAG_GAP) == 0u,"FIFO with intact payloads");
-	}
-	record = Record(5u);
-	Require(SparkSpeculationTapRingPush(&ring,&record,payload) == SPARK_STATUS_OK && SparkSpeculationTapRingPop(&ring,&popped,out) == SPARK_STATUS_OK && (popped.flags & SPARK_SPECULATION_TAP_FLAG_GAP) != 0u,"the record after a drop carries GAP");
-	record = Record(6u);
-	Require(SparkSpeculationTapRingPush(&ring,&record,payload) == SPARK_STATUS_OK && SparkSpeculationTapRingPop(&ring,&popped,out) == SPARK_STATUS_OK && (popped.flags & SPARK_SPECULATION_TAP_FLAG_GAP) == 0u,"GAP is reported once");
-	free(storage);
-	storage_bytes = 64u * SparkSpeculationTapRingSlotBytes(8192u);
-	storage = (uint8_t *)malloc(storage_bytes);
-	Require(storage != 0 && SparkSpeculationTapRingInitialize(&ring,storage,storage_bytes,8192u) == SPARK_STATUS_OK,"threaded ring");
-	thread.ring = &ring;
-	thread.record_bytes = 8192u;
-	thread.failures = 0u;
-	Require(pthread_create(&consumer,0,RingConsumer,&thread) == 0,"consumer thread");
-	{
-		uint8_t *big = (uint8_t *)malloc(8192u);
-		for (position=0u; position<TEST_THREAD_RECORDS; )
-		{
-			record = Record(position);
-			Fill(big,8192u,position);
-			if ( SparkSpeculationTapRingPush(&ring,&record,big) == SPARK_STATUS_OK )
-				position++;
-		}
-		free(big);
-	}
-	Require(pthread_join(consumer,0) == 0 && thread.failures == 0u,"single producer, single consumer: order and payloads intact under contention");
-	free(storage);
 }
 
 static void TestDump(void)
@@ -267,7 +180,6 @@ int main(void)
 {
 	TestParse();
 	TestFragments();
-	TestRing();
 	TestDump();
 	printf("test_speculation_tap: ok\n");
 	return(0);

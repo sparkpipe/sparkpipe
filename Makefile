@@ -598,6 +598,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_graph_regime.py \
 	tests/test_glm5_next_verify_regime.py \
 	tests/test_spec_verify_bench.py \
+	tests/test_spec_tap_dump.py \
 	tests/test_glm5_next_spec_replay.py \
 	tests/test_glm5_next_spec_ab.py \
 	tests/test_glm5_next_rows_kernels_host.py \

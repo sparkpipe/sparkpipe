@@ -16,8 +16,7 @@ extern "C" {
 #define SPARK_SPECULATION_TAP_FLAG_PREFILL 0x1u
 #define SPARK_SPECULATION_TAP_FLAG_DECODE 0x2u
 #define SPARK_SPECULATION_TAP_FLAG_VERIFY 0x4u
-#define SPARK_SPECULATION_TAP_FLAG_GAP 0x8u
-#define SPARK_SPECULATION_TAP_FLAG_MASK 0xfu
+#define SPARK_SPECULATION_TAP_FLAG_MASK 0x7u
 
 #define SPARK_SPECULATION_TAP_FRAGMENT_MAGIC 0x31545053u
 #define SPARK_SPECULATION_TAP_FRAGMENT_VERSION 1u
@@ -80,19 +79,6 @@ typedef struct SparkSpeculationTapAssembler
 	uint64_t rejected;
 } SparkSpeculationTapAssembler;
 
-typedef struct SparkSpeculationTapRing
-{
-	uint8_t *storage;
-	uint64_t slot_bytes;
-	uint32_t slot_count;
-	uint32_t record_bytes;
-	uint64_t head;
-	uint64_t tail;
-	uint64_t pushed;
-	uint64_t dropped;
-	uint32_t gap_pending;
-} SparkSpeculationTapRing;
-
 typedef struct SparkSpeculationTapDump
 {
 	FILE *file;
@@ -112,10 +98,6 @@ SparkStatus SparkSpeculationTapEncodeFragment(const SparkSpeculationTapRecord *r
 SparkStatus SparkSpeculationTapDecodeFragment(const uint8_t *bytes,uint32_t length,SparkSpeculationTapFragment *fragment);
 SparkStatus SparkSpeculationTapAssemblerInitialize(SparkSpeculationTapAssembler *assembler,uint64_t fingerprint,uint32_t record_bytes,uint8_t *payload);
 SparkStatus SparkSpeculationTapAssemblerAccept(SparkSpeculationTapAssembler *assembler,const uint8_t *bytes,uint32_t length,uint32_t *complete_out);
-uint64_t SparkSpeculationTapRingSlotBytes(uint32_t record_bytes);
-SparkStatus SparkSpeculationTapRingInitialize(SparkSpeculationTapRing *ring,uint8_t *storage,uint64_t storage_bytes,uint32_t record_bytes);
-SparkStatus SparkSpeculationTapRingPush(SparkSpeculationTapRing *ring,const SparkSpeculationTapRecord *record,const uint8_t *payload);
-SparkStatus SparkSpeculationTapRingPop(SparkSpeculationTapRing *ring,SparkSpeculationTapRecord *record,uint8_t *payload);
 SparkStatus SparkSpeculationTapDumpOpen(SparkSpeculationTapDump *dump,const char *path,const SparkSpeculationTapSet *set,const char *model_tag,uint64_t engine_generation,uint32_t tp_rank,uint64_t max_bytes);
 SparkStatus SparkSpeculationTapDumpAppend(SparkSpeculationTapDump *dump,const SparkSpeculationTapRecord *record,const uint8_t *payload);
 SparkStatus SparkSpeculationTapDumpClose(SparkSpeculationTapDump *dump);

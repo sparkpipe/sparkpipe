@@ -111,7 +111,7 @@ static int RunEngine(char **argv)
 	await_us = Arg(argv[10]);
 	pace_us = Arg(argv[11]);
 	depth = Arg(argv[12]);
-	if ( rounds == 0u || rows == 0u || await_us == 0u || depth == 0u || depth > SPARK_SPECULATION_RELAY_MAX_TOKENS )
+	if ( rounds == 0u || await_us == 0u || depth == 0u || depth > SPARK_SPECULATION_RELAY_MAX_TOKENS )
 		return(Usage());
 	payload = (uint8_t *)malloc(set.record_bytes);
 	send_ns = (uint64_t *)calloc(rounds,sizeof(uint64_t));
@@ -143,6 +143,8 @@ static int RunEngine(char **argv)
 			position++;
 		}
 		send_ns[round] = SparkSpeculationRelayNowNs() - start;
+		if ( rows == 0u )
+			position++;
 		token = (uint32_t)(position % PROBE_VOCAB);
 		(void)SparkSpeculationRelayRemoteObserve(&remote,PROBE_SEQUENCE,position,&token,1u);
 		(void)SparkSpeculationRelayRemoteRound(&remote,PROBE_SEQUENCE,position,depth,&result);

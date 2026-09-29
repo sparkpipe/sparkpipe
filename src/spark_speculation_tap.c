@@ -5,8 +5,6 @@
 
 #include "sparkpipe/spark_error_site.h"
 
-#define SPARK_SPECULATION_TAP_SLOT_HEADER_BYTES 64u
-
 static void SparkSpeculationTapPut32(uint8_t *bytes,uint32_t value)
 {
 	bytes[0] = (uint8_t)value;
@@ -236,72 +234,6 @@ SparkStatus SparkSpeculationTapAssemblerAccept(SparkSpeculationTapAssembler *ass
 		assembler->completed++;
 		*complete_out = 1u;
 	}
-	return(SPARK_STATUS_OK);
-}
-
-uint64_t SparkSpeculationTapRingSlotBytes(uint32_t record_bytes)
-{
-	return(SPARK_SPECULATION_TAP_SLOT_HEADER_BYTES + SparkCeilDivU64(record_bytes,64u) * 64u);
-}
-
-SparkStatus SparkSpeculationTapRingInitialize(SparkSpeculationTapRing *ring,uint8_t *storage,uint64_t storage_bytes,uint32_t record_bytes)
-{
-	uint64_t slot_bytes,slots;
-	if ( ring == 0 || storage == 0 || record_bytes == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(ring,0,sizeof(*ring));
-	slot_bytes = SparkSpeculationTapRingSlotBytes(record_bytes);
-	slots = storage_bytes / slot_bytes;
-	if ( slots < 2u || slots > UINT32_MAX )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	ring->storage = storage;
-	ring->slot_bytes = slot_bytes;
-	ring->slot_count = (uint32_t)slots;
-	ring->record_bytes = record_bytes;
-	return(SPARK_STATUS_OK);
-}
-
-SparkStatus SparkSpeculationTapRingPush(SparkSpeculationTapRing *ring,const SparkSpeculationTapRecord *record,const uint8_t *payload)
-{
-	SparkSpeculationTapRecord stored;
-	uint64_t head,tail;
-	uint8_t *slot;
-	if ( ring == 0 || ring->storage == 0 || record == 0 || payload == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	tail = __atomic_load_n(&ring->tail,__ATOMIC_RELAXED);
-	head = __atomic_load_n(&ring->head,__ATOMIC_ACQUIRE);
-	if ( tail - head >= ring->slot_count )
-	{
-		__atomic_store_n(&ring->dropped,ring->dropped + 1u,__ATOMIC_RELAXED);
-		ring->gap_pending = 1u;
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
-	stored = *record;
-	if ( ring->gap_pending != 0u )
-		stored.flags |= SPARK_SPECULATION_TAP_FLAG_GAP;
-	ring->gap_pending = 0u;
-	slot = ring->storage + (tail % ring->slot_count) * ring->slot_bytes;
-	memcpy(slot,&stored,sizeof(stored));
-	memcpy(slot + SPARK_SPECULATION_TAP_SLOT_HEADER_BYTES,payload,ring->record_bytes);
-	__atomic_store_n(&ring->pushed,ring->pushed + 1u,__ATOMIC_RELAXED);
-	__atomic_store_n(&ring->tail,tail + 1u,__ATOMIC_RELEASE);
-	return(SPARK_STATUS_OK);
-}
-
-SparkStatus SparkSpeculationTapRingPop(SparkSpeculationTapRing *ring,SparkSpeculationTapRecord *record,uint8_t *payload)
-{
-	uint64_t head,tail;
-	const uint8_t *slot;
-	if ( ring == 0 || ring->storage == 0 || record == 0 || payload == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	head = __atomic_load_n(&ring->head,__ATOMIC_RELAXED);
-	tail = __atomic_load_n(&ring->tail,__ATOMIC_ACQUIRE);
-	if ( head == tail )
-		return(SPARK_STATUS_NOT_FOUND);
-	slot = ring->storage + (head % ring->slot_count) * ring->slot_bytes;
-	memcpy(record,slot,sizeof(*record));
-	memcpy(payload,slot + SPARK_SPECULATION_TAP_SLOT_HEADER_BYTES,ring->record_bytes);
-	__atomic_store_n(&ring->head,head + 1u,__ATOMIC_RELEASE);
 	return(SPARK_STATUS_OK);
 }
 
