@@ -23,7 +23,7 @@
  "arms": {
   "F1": {"root": "qab-f1", "pack_root": "glm53flash.f1.tp16", "lane": 1, "pool_bytes": 42949672960, "arena": "f1", "arena_owner": true, "residentd_gib": 12, "memory_max": "20G", "port_group": 0},
   "F1AA": {"root": "qab-f1aa", "pack_root": "glm53flash.f1.tp16", "lane": 2, "pool_bytes": 42949672960, "arena": "f1", "arena_owner": false, "residentd_gib": 12, "memory_max": "20G", "port_group": 1},
-  "F2": {"root": "qab-f2", "pack_root": "glm53flash.f2.tp16", "lane": 11, "pool_bytes": 34359738368, "arena": "f2", "arena_owner": true, "residentd_gib": 12, "memory_max": "20G", "port_group": 0},
+  "F2": {"root": "qab-f2", "pack_root": "glm53flash.f2.tp16", "lane": 15, "pool_bytes": 34359738368, "arena": "f2", "arena_owner": true, "residentd_gib": 12, "memory_max": "20G", "port_group": 0},
   "F3": {"root": "qab-f3", "pack_root": "glm53flash.f3.tp16", "lane": 13, "pool_bytes": 34359738368, "arena": "f3", "arena_owner": true, "residentd_gib": 12, "memory_max": "20G", "port_group": 1},
   "F0": {"root": "qab-f0", "pack_root": "glm53flash.fp8.tp16", "lane": 14, "pool_bytes": 34359738368, "arena": "production", "arena_owner": false, "residentd_gib": 12, "memory_max": "20G", "port_group": 1}
  },

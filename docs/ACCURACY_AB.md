@@ -109,13 +109,15 @@ sharing a directory, and a non-empty directory under `--fresh`.
 Arms take mesh lanes from the free set. A lane is free when no residentd
 holds it on any node (`SPARK_WEIGHTD_LANE` in the process environment;
 production without the variable takes the lowest free lane, 0) and no other
-lane's notes reserve it. On 2026-09-29 the free set was 1, 2, 11, 13, 14 and 15.
+lane's notes reserve it. On 2026-09-29 the free set was 1, 2, 11, 13, 14 and 15;
+lane 11 is left out because the dormant laguna plan reserves it with the same
+port formula.
 
 | Arm | Lane | Control | Collective | Transport base | Session blocks |
 |---|---|---|---|---|---|
 | F1 | 1 | 23016+r | 53016+r | 64016 | 64256, 64512 (group 0) |
 | F1AA | 2 | 23032+r | 53032+r | 64032 | 64768, 65024 (group 1) |
-| F2 | 11 | 23176+r | 53176+r | 64176 | group 0 |
+| F2 | 15 | 23240+r | 53240+r | 64240 | group 0 |
 | F3 | 13 | 23208+r | 53208+r | 64208 | group 1 |
 | F0 | 14 | 23224+r | 53224+r | 64224 | group 1 |
 

@@ -49,7 +49,7 @@ def memory(avail, window=None, lanes=(0,)):
 class Spec(unittest.TestCase):
     def test_committed_spec_is_valid(self):
         s = ab_fleet.load_spec(SPEC_PATH)
-        self.assertEqual(sorted(a["lane"] for a in s["arms"].values()), [1, 2, 11, 13, 14])
+        self.assertEqual(sorted(a["lane"] for a in s["arms"].values()), [1, 2, 13, 14, 15])
 
     def test_headroom_and_hosts_follow_the_agent(self):
         self.assertEqual(ab_fleet.agent_headroom_gib(), 20)
@@ -72,7 +72,7 @@ class Spec(unittest.TestCase):
         s["arms"]["F2"]["lane"] = 0
         self.refused(s, "not in the free lanes")
         s = spec()
-        s["arms"]["F3"]["lane"] = 11
+        s["arms"]["F3"]["lane"] = 15
         self.refused(s, "also arm F2's lane")
         s = spec()
         s["free_lanes"].append(0)
@@ -187,7 +187,7 @@ class Placement(unittest.TestCase):
 
     def test_live_lane_conflict_refuses_the_slot(self):
         s = ab_fleet.load_spec(SPEC_PATH)
-        report = ab_fleet.place(s, memory(100.0, lanes=(0, 11)), "live", 20)
+        report = ab_fleet.place(s, memory(100.0, lanes=(0, 15)), "live", 20)
         self.assertFalse(self.slot(report, "B")["fits"])
         self.assertTrue(self.slot(report, "A")["fits"])
 
