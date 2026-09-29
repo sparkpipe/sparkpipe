@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the glm52 module's client-reset admission on the host with stubbed CUDA and page cache."""
+"""Drive the glm52 and ling modules' client-reset admission (spark_module_reset_page_cache.h) on the host with stubbed CUDA and page cache."""
 from pathlib import Path
 import subprocess
 import sys
@@ -8,7 +8,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r'''
 #include <assert.h>
-#include "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c"
+#include MODULE_SOURCE
 
 static uint32_t RELEASE_ALL_CALLS,SYNC_CALLS;
 static SparkStatus RELEASE_ALL_STATUS;
@@ -24,7 +24,7 @@ cudaError_t cudaGetLastError(void) { return(cudaSuccess); }
 const char *cudaGetErrorString(cudaError_t error) { (void)error; return("stub"); }
 const char *cudaGetErrorName(cudaError_t error) { (void)error; return("stub"); }
 
-static SparkGlm52ModuleState state;
+static MODULE_STATE state;
 
 static void Bind(void)
 {
@@ -73,7 +73,7 @@ static SparkModelDriverAdmissionRequest ResetRequest(uint64_t generation)
 static SparkStatus Admit(const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
 {
 	memset(decision,0xa5,sizeof(*decision));
-	return(SparkGlm52ModuleAdmit(&state,request,decision));
+	return(MODULE_ADMIT(&state,request,decision));
 }
 
 static void TestResetClearsEveryLane(void)
@@ -141,28 +141,54 @@ int main(void)
 	TestResetClearsEveryLane();
 	TestResetWaitsForInflightSlot();
 	TestResetFailures();
-	printf("glm52 reset: ok\n");
+	printf("%s reset: ok\n",MODULE_NAME);
 	return(0);
 }
 '''
 
 
-def main():
-    identity = subprocess.check_output([sys.executable, "tools/glm52_model_contract.py", "--print-build-identity", "fp8"], cwd=ROOT, text=True).split()
-    with tempfile.TemporaryDirectory() as directory:
-        source, binary = Path(directory) / "probe.c", Path(directory) / "probe"
-        source.write_text(HARNESS)
-        includes = [".", "include", "tests/cuda_stub", "model-families/common/include", "model-families/glm52/include",
-                    "modules/glm52_resident_decode_stage/include", "modules/glm52_resident_decode_stage/source"]
-        subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-O1", "-g", "-ffunction-sections", "-fdata-sections",
-                        "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
-                        *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=16u", "-DGLM_EXPERT_WEIGHT_CODEC=5",
-                        '-DGLM_EXPERT_CODEC_NAME="fp8"', f'-DGLM_MODEL_REVISION="{identity[0]}"', f'-DGLM_CONTRACT_SHA256="{identity[1]}"',
-                        '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"', "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
-                        str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"], cwd=ROOT, check=True)
-        subprocess.run([str(binary)], check=True)
-    print("PASS glm52 reset: client reset accepted, every lane unbound, waits for in-flight slots and lanes, stream and release failures stay loud")
+MODULES = {
+    "glm52": {
+        "source": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
+        "state": "SparkGlm52ModuleState", "admit": "SparkGlm52ModuleAdmit",
+        "includes": ["model-families/glm52/include", "modules/glm52_resident_decode_stage/include", "modules/glm52_resident_decode_stage/source"],
+        "defines": ["-DGLM_EXPERT_WEIGHT_CODEC=5", '-DGLM_EXPERT_CODEC_NAME="fp8"', '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"',
+                    "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h"],
+        "identity": ("GLM_MODEL_REVISION", "GLM_CONTRACT_SHA256", ["tools/glm52_model_contract.py", "--print-build-identity", "fp8"]),
+    },
+    "ling": {
+        "source": "modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c",
+        "state": "SparkLingModuleState", "admit": "SparkLingResidentDecodeStageAdmit",
+        "includes": ["model-families/ling/include", "modules/ling_resident_decode_stage/include", "modules/ling_resident_decode_stage/source"],
+        "defines": ["-DLING_EXPERT_WEIGHT_CODEC=1u", '-DLING_EXPERT_CODEC_NAME="bf16"', '-DLING_MODEL_REVISION="fixture"', '-DLING_CONTRACT_SHA256="fixture"'],
+        "identity": None,
+    },
+}
 
+
+def run_module(name, module, directory):
+    source, binary = Path(directory) / f"{name}.c", Path(directory) / name
+    source.write_text(HARNESS)
+    defines = list(module["defines"])
+    if module["identity"] is not None:
+        revision, contract, command = module["identity"]
+        identity = subprocess.check_output([sys.executable, *command], cwd=ROOT, text=True).split()
+        defines += [f'-D{revision}="{identity[0]}"', f'-D{contract}="{identity[1]}"']
+    includes = [".", "include", "src", "tests/cuda_stub", "model-families/common/include", *module["includes"]]
+    subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-O1", "-g", "-ffunction-sections", "-fdata-sections",
+                    "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
+                    *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=16u", *defines,
+                    f'-DMODULE_SOURCE="{module["source"]}"', f'-DMODULE_STATE={module["state"]}', f'-DMODULE_ADMIT={module["admit"]}',
+                    f'-DMODULE_NAME="{name}"', str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"],
+                   cwd=ROOT, check=True)
+    subprocess.run([str(binary)], check=True)
+
+
+def main():
+    with tempfile.TemporaryDirectory() as directory:
+        for name, module in MODULES.items():
+            run_module(name, module, directory)
+    print("PASS module page-cache reset (glm52, ling): client reset accepted, every lane unbound, waits for in-flight slots and lanes, stream and release failures stay loud")
 
 if __name__ == "__main__":
     main()

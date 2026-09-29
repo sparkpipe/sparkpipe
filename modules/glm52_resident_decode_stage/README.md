@@ -221,7 +221,8 @@ Serving rules for the lane:
   releases every page-cache lane with `SparkKvPageCacheReleaseAll` and
   unbinds the lanes. Before this the admission fell through to the shape
   check, was rejected, and every rank exited `status=9` on the second client
-  (`tests/test_glm52_reset.py`). A stream failure during the drain returns
+  (`tests/test_module_page_cache_reset.py`, which also covers ling, whose
+  module had the same gap). A stream failure during the drain returns
   IO_ERROR and keeps the slots and lanes claimed.
 - `tools/glm53full_lane.sh api`, `api-stop` and `decode` run only on the
   rtx5090. Any other `GLMFULL_API_HOST` is refused before a remote command

@@ -1639,6 +1639,8 @@ static SparkStatus SparkLingExecuteBatch(
 
 #include "sparkpipe/family/module/spark_module_entry_execute_laguna.h"
 
+#include "sparkpipe/family/module/spark_module_reset_page_cache.h"
+
 SparkStatus SparkLingResidentDecodeStageAdmit(
 	void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
@@ -1651,6 +1653,8 @@ SparkStatus SparkLingResidentDecodeStageAdmit(
 	state = (SparkLingModuleState *)module_state;
 	if ( state == 0 || request == 0 || decision == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
+		return(SparkLingResetPageCache(state,request,decision));
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
 	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 	{
