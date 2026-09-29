@@ -237,6 +237,15 @@ def document_tokens(record: dict, tokenizer: Tokenizer, length: int) -> tuple:
     return (tokens[:length] if len(tokens) >= length else None), {}
 
 
+def builder_commit(args) -> str:
+    if args.builder_commit:
+        return args.builder_commit
+    try:
+        return git(str(Path(__file__).resolve().parent.parent), "rev-parse", "HEAD").strip()
+    except (subprocess.CalledProcessError, OSError) as error:
+        raise CorpusError("cannot read the builder commit from git; pass --builder-commit") from error
+
+
 def build(args) -> int:
     quota = {}
     for item in args.quota.split(","):
@@ -273,6 +282,7 @@ def build(args) -> int:
     found = collisions(accepted)
     if found:
         raise CorpusError(f"{len(found)} 64-token blocks repeat across documents; refusing the corpus")
+    commit = builder_commit(args)
     tokens_path = out / f"{args.name}.tokens.u32"
     offset = 0
     with open(tokens_path, "wb") as handle:
@@ -285,7 +295,7 @@ def build(args) -> int:
         "format": FORMAT, "name": args.name, "block_tokens": BLOCK, "document_tokens": args.length,
         "corpus_sha256": sha256_file(tokens_path), "total_tokens": offset,
         "tokenizer_sha256": tokenizer.json_sha256, "tokenizer": args.tokenizer_label,
-        "builder_commit": git(str(Path(__file__).resolve().parent.parent), "rev-parse", "HEAD").strip(),
+        "builder_commit": commit,
         "strata": counts, "documents": meta, "skipped": skipped, "notes": args.note or [],
     }
     index_path = out / f"{args.name}.index.json"
@@ -361,6 +371,7 @@ def main() -> int:
     p.add_argument("--tokenizer-bin", required=True)
     p.add_argument("--quota", required=True)
     p.add_argument("--note", action="append")
+    p.add_argument("--builder-commit")
     p.add_argument("docs", nargs="+")
     p = sub.add_parser("check")
     p.add_argument("index")

@@ -39,7 +39,7 @@ class BuildTest(unittest.TestCase):
         docs.write_text("".join(json.dumps(record) + "\n" for record in records))
         return subprocess.run([sys.executable, str(ROOT / "tools" / "ab_corpus_build.py"), "build", "--name", "T", "--length", str(length),
                                "--out", str(Path(directory) / "out"), "--tokenizer-json", str(TOKENIZER_JSON), "--tokenizer-bin", str(TOKENIZER_BIN),
-                               "--quota", quota, str(docs)], capture_output=True, text=True)
+                               "--quota", quota, "--builder-commit", "test", str(docs)], capture_output=True, text=True)
 
     def test_shared_framing_prefix_is_skipped_and_short_quota_refused(self):
         rng = np.random.default_rng(2)
