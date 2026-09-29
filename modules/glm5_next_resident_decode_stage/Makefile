@@ -1,7 +1,7 @@
 include ../../runtime/weightd_sources.mk
 
 ifndef EXPERT_CODEC
-$(error EXPERT_CODEC is required: int6, int7, int8, fp8, nvfp4, or mxfp4)
+$(error EXPERT_CODEC is required: bf16, int6, int7, int8, fp8, nvfp4, or mxfp4)
 endif
 ifndef MODEL_REVISION
 $(error MODEL_REVISION is required and must be the exact source snapshot revision)
@@ -10,11 +10,14 @@ ifndef CONTRACT_SHA256
 $(error CONTRACT_SHA256 is required and must identify the exact model package contract)
 endif
 
-GLM5_NEXT_EXPERT_CODECS := int6 int7 int8 fp8 nvfp4 mxfp4
+GLM5_NEXT_EXPERT_CODECS := bf16 int6 int7 int8 fp8 nvfp4 mxfp4
 ifeq ($(filter $(EXPERT_CODEC),$(GLM5_NEXT_EXPERT_CODECS)),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': choose $(GLM5_NEXT_EXPERT_CODECS))
 endif
 
+ifeq ($(EXPERT_CODEC),bf16)
+GLM5_NEXT_EXPERT_CODEC_ID := 1
+endif
 ifeq ($(EXPERT_CODEC),int6)
 GLM5_NEXT_EXPERT_CODEC_ID := 2
 endif
@@ -64,6 +67,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/spark_expert_working_set.c \
 	../../src/spark_speculation_policy.c \
 	../../src/spark_speculation_lookup_draft.c \
+	../../src/spark_speculation_drafter_mix.c \
 	../../src/spark_speculation_reference_draft.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../src/spark_status.c \

@@ -273,9 +273,9 @@ static void SparkGlm5NextBindLayer(
 			(wave->expert_lease_all != 0u ||
 			 wave->expert_lease_local_layer == local_layer) ? 1u : 0u;
 		buffers->expert_w1_weight = expert_leased != 0u ? wave->expert_lease_base + weight->expert_up_gate_payload_offset : 0;
-		buffers->expert_w1_scale = expert_leased != 0u ? wave->expert_lease_base + weight->expert_up_gate_scale_offset : 0;
+		buffers->expert_w1_scale = expert_leased != 0u && LmWeightCodec<GLM5_NEXT_EXPERT_WEIGHT_CODEC>::kScaleEncoding != LM_SCALE_ENCODING_NONE ? wave->expert_lease_base + weight->expert_up_gate_scale_offset : 0;
 		buffers->expert_w2_weight = expert_leased != 0u ? wave->expert_lease_base + weight->expert_down_payload_offset : 0;
-		buffers->expert_w2_scale = expert_leased != 0u ? wave->expert_lease_base + weight->expert_down_scale_offset : 0;
+		buffers->expert_w2_scale = expert_leased != 0u && LmWeightCodec<GLM5_NEXT_EXPERT_WEIGHT_CODEC>::kScaleEncoding != LM_SCALE_ENCODING_NONE ? wave->expert_lease_base + weight->expert_down_scale_offset : 0;
 	}
 	buffers->expert_cover = wave->expert_cover;
 	buffers->expert_cover_stride = wave->expert_cover_stride;
@@ -710,36 +710,34 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 	const uint16_t *hidden_input;
 	cudaStream_t stream;
 	cudaError_t error;
-	uint32_t step,token;
+	uint32_t step;
 	uint32_t row_window[2];
 	int32_t status;
+	static_assert(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX >= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,"the draft chain must cover the MTP frame depth");
 	if ( wave == 0 || host_draft_tokens == 0 || committed_hidden_bf16 == 0 || wave->slot == 0 ||
 		wave->mtp_layer_weights == 0 || wave->mtp_eh_proj_bf16 == 0 || wave->mtp_enorm_bf16 == 0 ||
 		wave->mtp_hnorm_bf16 == 0 || wave->mtp_shared_norm_bf16 == 0 || wave->embedding_bf16 == 0 ||
 		wave->lm_head_bf16 == 0 || wave->owns_final_head == 0u || wave->mtp_draft_depth == 0u ||
-		wave->mtp_draft_depth > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH )
+		wave->mtp_draft_depth > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX )
 		return(LM_LAUNCH_ERR_SHAPE);
 	slot = wave->slot;
 	if ( slot->mtp_hidden_bf16 == 0 || slot->mtp_concat_bf16 == 0 || slot->mtp_kv_pool == 0 ||
 		slot->mtp_index_pool == 0 || slot->mtp_page_table == 0 || slot->mtp_sequence == 0 ||
-		slot->mtp_positions == 0 || slot->mtp_context == 0 )
+		slot->mtp_positions == 0 || slot->mtp_context == 0 || slot->mtp_draft_device == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	stream = (cudaStream_t)slot->stream;
 	row_window[0] = 0u;
 	row_window[1] = 1u;
 	error = cudaMemcpyAsync(slot->dense_row_offset,row_window,sizeof(row_window),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->token_ids,&first_token,sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error != cudaSuccess )
 		return(SparkGlm5NextCudaStatus(error));
-	token = first_token;
 	for ( step = 0u; step < wave->mtp_draft_depth; ++step )
 	{
 		hidden_input = step == 0u ? (const uint16_t *)committed_hidden_bf16 : (const uint16_t *)slot->mtp_hidden_bf16;
-		error = cudaMemcpyAsync(slot->token_ids,&token,sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-		if ( error == cudaSuccess )
-		{
-			SparkGlm5NextEmbeddingKernel<<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,1u),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,1u,wave->tp_degree,wave->tp_rank);
-			error = cudaPeekAtLastError();
-		}
+		SparkGlm5NextEmbeddingKernel<<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,1u),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,1u,wave->tp_degree,wave->tp_rank);
+		error = cudaPeekAtLastError();
 		if ( error != cudaSuccess )
 			return(SparkGlm5NextCudaStatus(error));
 		status = SparkGlm5NextMtpReduceRows(ops,slot->hidden_bf16);
@@ -791,13 +789,17 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 		if ( error == cudaSuccess )
 			error = SparkGlm5NextLaunchHeadMaxlocUnpack(stream,slot->head_maxloc_u64,slot->output_token,1u);
 		if ( error == cudaSuccess )
-			error = cudaMemcpyAsync(&host_draft_tokens[step],slot->output_token,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
-		if ( error == cudaSuccess )
-			error = cudaStreamSynchronize(stream);
+			error = cudaMemcpyAsync(slot->mtp_draft_device + step,slot->output_token,sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
+		if ( error == cudaSuccess && step + 1u < wave->mtp_draft_depth )
+			error = cudaMemcpyAsync(slot->token_ids,slot->output_token,sizeof(uint32_t),cudaMemcpyDeviceToDevice,stream);
 		if ( error != cudaSuccess )
 			return(SparkGlm5NextCudaStatus(error));
-		token = host_draft_tokens[step];
 	}
+	error = cudaMemcpyAsync(host_draft_tokens,slot->mtp_draft_device,(uint64_t)wave->mtp_draft_depth * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+	if ( error == cudaSuccess )
+		error = cudaStreamSynchronize(stream);
+	if ( error != cudaSuccess )
+		return(SparkGlm5NextCudaStatus(error));
 	return(LM_LAUNCH_OK);
 }
 static cudaError_t SparkGlm5NextReplayStepsUpload(const SparkGlm5NextCudaWave *wave,uint32_t rows)
