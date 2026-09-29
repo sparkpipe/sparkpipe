@@ -35,8 +35,19 @@ def lane_ports(lane):
     }
 
 
-def runtime_root(host, lane):
-    return f"/home/{host}/glmfull-lane{lane}/root"
+def default_node_root(lane):
+    return f"glmfull-lane{lane}/root"
+
+
+def node_root(value, lane):
+    value = default_node_root(lane) if value is None else value
+    if value == "" or value.startswith("/") or value.endswith("/") or any(part in ("", ".", "..") for part in value.split("/")):
+        raise SystemExit(f"node root must be a normalized path relative to the node's home directory: {value!r}")
+    return value
+
+
+def runtime_root(host, lane, root=None):
+    return f"/home/{host}/{node_root(root, lane)}"
 
 
 def pack_name(arm, rank):
@@ -87,20 +98,20 @@ def stage_config(rank, lane, arm, max_sequence_positions, execution_row_capacity
     }
 
 
-def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight):
+def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight, root=None):
     ports = lane_ports(lane)
     pages = sequences * ((max_sequence_positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS)
     nodes = []
     for rank, host in enumerate(HOSTS):
-        root = runtime_root(host, lane)
+        root_path = runtime_root(host, lane, root)
         nodes.append({
             "rank_index": rank,
             "stage_index": rank,
-            "runtime_root": root,
+            "runtime_root": root_path,
             "node_target": f"cuda.sm121.glm52.resident_decode_stage.bf16.expert_{ARM_CODECS[arm]}",
             "transport_host": host,
             "adapter_configuration_path": f"config/stage_{rank:02d}.json",
-            "kv_backing_directory": f"{root}/kvcache",
+            "kv_backing_directory": f"{root_path}/kvcache",
             "kv_backing_maximum_bytes": kv_backing_bytes,
             "control_endpoint": {"kind": "tcp", "host": host, "port": ports["control"] + rank},
         })
@@ -155,7 +166,8 @@ def render(arguments):
         raise SystemExit("sequences must be 1..16 and inflight 1..4")
     files = {"model_resident.json": deployment(arguments.lane, arm, arguments.socket, arguments.kv_backing_bytes,
                                                arguments.max_sequence_positions, arguments.sequences,
-                                               arguments.execution_row_capacity, arguments.inflight)}
+                                               arguments.execution_row_capacity, arguments.inflight,
+                                               getattr(arguments, "node_root", None))}
     score = score_members(arguments)
     for rank in range(WORLD):
         files[f"config/stage_{rank:02d}.json"] = dict(stage_config(rank, arguments.lane, arm,
@@ -178,6 +190,7 @@ def main():
     parser.add_argument("--score-dump-directory", dest="score_dump_directory")
     parser.add_argument("--score-probe-path", dest="score_probe_path")
     parser.add_argument("--score-tier2-rows-path", dest="score_tier2_rows_path")
+    parser.add_argument("--node-root", dest="node_root")
     parser.add_argument("--output", required=True)
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
@@ -194,6 +207,7 @@ def main():
         with open(path, "w") as handle:
             handle.write(text)
     print(json.dumps({"lane": arguments.lane, "codec": arguments.codec, "arm": arguments.arm or arguments.codec,
+                      "node_root": node_root(arguments.node_root, arguments.lane),
                       "files": len(files), **lane_ports(arguments.lane),
                       "collective_identifier": collective_identifier(arguments.lane)}))
     return 0
