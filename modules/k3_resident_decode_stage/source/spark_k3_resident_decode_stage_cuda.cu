@@ -101,6 +101,19 @@ static int32_t k3_require(const SparkK3BoundLayer *bound,
 	return SPARK_K3_DISPATCH_OK;
 }
 
+static int32_t k3_require_whole_head_table(const SparkK3BoundLayer *bound,
+	const char *name, uint64_t bytes)
+{
+	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
+	if ( entry != 0 && entry->bytes == bytes )
+		return SPARK_K3_DISPATCH_OK;
+	fprintf(stderr, "sparkpipe_k3: %s holds %llu bytes, the per-head table "
+		"must carry all %u heads (%llu bytes)\n", name,
+		(unsigned long long)(entry != 0 ? entry->bytes : 0u), K3_KDA_HEADS,
+		(unsigned long long)bytes);
+	return SPARK_K3_DISPATCH_ERR_BIND;
+}
+
 static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
 {
 	*offset = (*offset + 15u) & ~(size_t)15u;
@@ -332,8 +345,16 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 			status = k3_require(bound, k3_required_mla,
 				(uint32_t)(sizeof(k3_required_mla) / sizeof(k3_required_mla[0])));
 		else
+		{
 			status = k3_require(bound, k3_required_kda,
 				(uint32_t)(sizeof(k3_required_kda) / sizeof(k3_required_kda[0])));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_whole_head_table(bound, "kda_decay_bias",
+					(uint64_t)K3_KDA_QK_DIM * sizeof(float));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_whole_head_table(bound, "kda_head_log_scale",
+					(uint64_t)K3_KDA_HEADS * sizeof(float));
+		}
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 		if ( bound->layer_is_dense )

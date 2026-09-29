@@ -521,6 +521,7 @@ PYTHON_TESTS := \
 	tests/test_k3_quant_recipe.py \
 	tests/test_k3_shard.py \
 	tests/test_k3_slice_host.py \
+	tests/test_k3_kda_rank_heads.py \
 	tests/test_k3_smoke_experts.py \
 	tests/test_kda_bf16_state.py \
 	tests/test_kda_decay.py \
