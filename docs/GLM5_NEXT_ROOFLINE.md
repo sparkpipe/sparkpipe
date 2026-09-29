@@ -104,6 +104,19 @@ Three structural causes explain these numbers.
 | `Glm5NextHcSiteKernel` fuses HC mix, Sinkhorn and pre-reduce into one eight-CTA cluster launch. K is split across the cluster, reduced in fixed order through distributed shared memory, and Sinkhorn runs in registers. | 3 launches per site, 90 sites | HC 8.7 → about 1 ms |
 | HC post spreads each row over `HIDDEN / 256` CTAs. | HC post | about 1 ms |
 
+The HC site cluster synchronizes once. Each CTA arrives on the cluster
+barrier at kernel start and waits for it after its K-slice dot, so every CTA
+has started before any remote write. Each CTA then pushes its 25 partials
+(24 mixes and the sum of squares) into every other CTA's shared memory. After
+one `cluster.sync()` every CTA sums the eight partials in rank order and
+computes the gates itself. The arithmetic and summation order match the
+earlier kernel, which gathered the partials into CTA 0 and broadcast `pre`
+with two more cluster syncs. The result is bitwise equal
+(`test_glm5_next_hc_mix`, `ROOFLINE-HASH`). Only CTA 0 writes `mixes`, `pre`
+and `post` to global memory.
+Bench, sparkf, 5 interleaved rounds: B1 12.912 -> 12.831 ms, B8 31.569 -> 31.531 ms
+(`qualification/glm5next/performance/glmflash_b1_20260929/ab/ab_hc1_one_sync.txt`).
+
 The expected compute total is about 30 ms. Combined with unchanged waits, this
 predicts roughly 40–50 ms per token on a dedicated fleet (about 20–25 tok/s),
 up from about 78 ms. This is a prediction for the fleet measurement to test,
