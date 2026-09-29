@@ -273,9 +273,9 @@ static void SparkGlm5NextBindLayer(
 			(wave->expert_lease_all != 0u ||
 			 wave->expert_lease_local_layer == local_layer) ? 1u : 0u;
 		buffers->expert_w1_weight = expert_leased != 0u ? wave->expert_lease_base + weight->expert_up_gate_payload_offset : 0;
-		buffers->expert_w1_scale = expert_leased != 0u ? wave->expert_lease_base + weight->expert_up_gate_scale_offset : 0;
+		buffers->expert_w1_scale = expert_leased != 0u && LmWeightCodec<GLM5_NEXT_EXPERT_WEIGHT_CODEC>::kScaleEncoding != LM_SCALE_ENCODING_NONE ? wave->expert_lease_base + weight->expert_up_gate_scale_offset : 0;
 		buffers->expert_w2_weight = expert_leased != 0u ? wave->expert_lease_base + weight->expert_down_payload_offset : 0;
-		buffers->expert_w2_scale = expert_leased != 0u ? wave->expert_lease_base + weight->expert_down_scale_offset : 0;
+		buffers->expert_w2_scale = expert_leased != 0u && LmWeightCodec<GLM5_NEXT_EXPERT_WEIGHT_CODEC>::kScaleEncoding != LM_SCALE_ENCODING_NONE ? wave->expert_lease_base + weight->expert_down_scale_offset : 0;
 	}
 	buffers->expert_cover = wave->expert_cover;
 	buffers->expert_cover_stride = wave->expert_cover_stride;

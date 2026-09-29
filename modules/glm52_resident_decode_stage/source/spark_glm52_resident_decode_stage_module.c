@@ -506,39 +506,7 @@ typedef struct SparkGlm52ManifestContext
 	uint32_t count;
 } SparkGlm52ManifestContext;
 
-static SparkStatus SparkGlm52ManifestPlane(const SparkWeightdManifest *manifest,const SparkGlm52StagePackEntry *entry,uint32_t plane)
-{
-	const SparkWeightdRangeGroup *group;
-	const SparkWeightdRange *range;
-	uint32_t kind,expert,index;
-	uint64_t per,base;
-	kind = entry->tensor_kind * 2u + plane;
-	base = plane == 0u ? entry->payload_offset : entry->scale_offset;
-	per = (plane == 0u ? entry->payload_bytes : entry->scale_bytes) / entry->group_count;
-	if ( per == 0u )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	for (expert=0u; expert<entry->group_count; expert++)
-	{
-		group = SparkWeightdManifestFind(manifest,entry->layer_index,expert);
-		if ( group == 0 || group->range_count == 0u || group->range_count > SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-		range = 0;
-		for (index=0u; index<group->range_count; index++)
-		{
-			if ( manifest->ranges[group->first_range + index].kind == kind )
-			{
-				range = &manifest->ranges[group->first_range + index];
-				break;
-			}
-		}
-		if ( range == 0 || range->layer != entry->layer_index || range->expert != expert ||
-			range->offset != (base + ((uint64_t)expert * per)) || range->bytes != per )
-			return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	return(SPARK_STATUS_OK);
-}
-
-#include "sparkpipe/family/module/spark_module_manifest_check_fp8.h"
+#include "sparkpipe/family/module/spark_module_manifest_check.h"
 
 #include "sparkpipe/family/module/spark_module_lazy_open.h"
 

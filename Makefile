@@ -374,6 +374,7 @@ TEST_NAMES := \
     test_weightd_churn \
     test_weightd_expert_stress \
     test_glm5_next_lazy_dispatch \
+    test_glm5_next_codec_lazy_attach \
     test_glm5_next_index_cp_math \
     test_weightd_worker \
     test_weightd_fd_frames \
@@ -1759,6 +1760,9 @@ build/test_weightd_expert_stress: tests/test_weightd_expert_stress.c $(RUNTIME_L
 
 build/test_glm5_next_lazy_dispatch: tests/test_glm5_next_lazy_dispatch.c runtime/spark_weightd_lease.c tests/cuda_stub/cuda_runtime_stub.c runtime/spark_weightd_manifest.c runtime/stage_module_common.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_internal.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -ffunction-sections -fdata-sections $(wordlist 1,5,$^) $(LDFLAGS) -Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $@
+
+build/test_glm5_next_codec_lazy_attach: tests/test_glm5_next_codec_lazy_attach.c build/glm5_next_experts_manifest $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c runtime/stage_module_common.c modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c include/sparkpipe/spark_expert_planes.h include/sparkpipe/family/module/spark_module_manifest_check.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_glm5_next_codec_lazy_attach.c runtime/stage_module_common.c tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xlinker $(if $(filter Darwin,$(UNAME_S)),-dead_strip,--gc-sections) -o $@
 
 build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd_receipt.c runtime/spark_weightd.c runtime/spark_weightd_worker.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c,$^)) $(LDFLAGS) -o $@

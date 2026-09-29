@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "sparkpipe/spark_ck128.h"
+#include "sparkpipe/spark_expert_planes.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_manifest.h"
 #include <stdio.h>
@@ -8,7 +9,6 @@
 #include <unistd.h>
 #include "../modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h"
 
-// Range kind = tensor kind * 2 + plane (0 payload, 1 scale).
 static int32_t range_write(FILE *pack,FILE *out,uint32_t layer,uint32_t expert,uint32_t kind,uint64_t offset,uint64_t bytes)
 {
 	SparkCk128Context ck;
@@ -37,35 +37,35 @@ static int32_t range_write(FILE *pack,FILE *out,uint32_t layer,uint32_t expert,u
 
 static int32_t entry_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackHeader *header,const SparkGlm5NextStagePackEntry *entry,uint32_t *count)
 {
-	uint64_t per,offset,bytes,directory_end;
-	uint32_t plane,expert,kind;
+	SparkExpertPlanes planes;
+	const SparkExpertPlane *plane;
+	uint64_t directory_end,end;
+	uint32_t index,expert;
 	int32_t err;
 	if ( entry->tensor_kind != SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
 		return(0);
-	if ( entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 && entry->weight_codec != SPARK_WEIGHT_CODEC_BF16 )
+	if ( SparkWeightCodecIsKnown(entry->weight_codec) == 0u )
 		return(-4);
 	if ( entry->group_count != header->routed_expert_count || entry->payload_bytes == 0u )
 		return(-5);
 	if ( entry->weight_codec == SPARK_WEIGHT_CODEC_BF16 && (entry->scale_bytes != 0u || entry->scale_offset != 0u || entry->scale_encoding != SPARK_WEIGHT_SCALE_ENCODING_NONE) )
 		return(-24);
-	if ( entry->weight_codec == SPARK_WEIGHT_CODEC_FP8_E4M3 && entry->scale_encoding != SPARK_WEIGHT_SCALE_ENCODING_F32 )
+	if ( entry->scale_encoding != SparkWeightCodecScaleEncoding(entry->weight_codec) )
 		return(-25);
+	if ( SparkExpertPlanesDescribe(entry->tensor_kind,entry->weight_codec,entry->scale_encoding,entry->group_count,entry->payload_offset,entry->payload_bytes,entry->scale_offset,entry->scale_bytes,&planes) != SPARK_STATUS_OK )
+		return(-6);
 	directory_end = (header->directory_offset + ((uint64_t)header->tensor_count * sizeof(*entry)));
-	for (plane=0u; plane<2u; plane++)
+	for (index=0u; index<planes.count; index++)
 	{
-		offset = plane == 0u ? entry->payload_offset : entry->scale_offset;
-		bytes = plane == 0u ? entry->payload_bytes : entry->scale_bytes;
-		if ( plane == 1u && entry->weight_codec == SPARK_WEIGHT_CODEC_BF16 && bytes == 0u )
-			continue;
-		if ( bytes == 0u || (bytes % entry->group_count) != 0u || offset < directory_end || offset > header->file_bytes || bytes > (header->file_bytes - offset) )
+		plane = &planes.planes[index];
+		end = SparkExpertPlaneOffset(plane,entry->group_count - 1u) + plane->bytes;
+		if ( plane->base < directory_end || end < plane->base || end > header->file_bytes )
 			return(-6);
-		per = (bytes / entry->group_count);
-		kind = ((entry->tensor_kind * 2u) + plane);
 		for (expert=0u; expert<entry->group_count; expert++)
 		{
 			if ( *count == SPARK_WEIGHTD_RANGE_COUNT_MAX )
 				return(-7);
-			err = range_write(pack,out,entry->layer_index,expert,kind,(offset + ((uint64_t)expert * per)),per);
+			err = range_write(pack,out,entry->layer_index,expert,plane->kind,SparkExpertPlaneOffset(plane,expert),plane->bytes);
 			if ( err < 0 )
 				return(err);
 			*count += 1u;
@@ -187,7 +187,7 @@ int main(int argc,char **argv)
 		err = manifest_publish(pack,&header,path);
 	fclose(pack);
 	if ( err < 0 )
-		fprintf(stderr,"expert manifest failed: error=%d (FP8/BF16 separate-plane packs only; existing output is preserved)\n",err);
+		fprintf(stderr,"expert manifest failed: error=%d (separate-plane expert packs only; existing output is preserved)\n",err);
 	else
 		printf("published %s version=2\n",path);
 	return(err < 0 ? 1 : 0);
