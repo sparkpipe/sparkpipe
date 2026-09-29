@@ -1678,8 +1678,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 		if ( rows == 1u && state->head_certified_fp8_payload != 0 )
 			status = K3HeadCertifiedB1(b, state->head_norm_weight, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32, state->head_certified_fp8_norm_f32, state->head_certified_scratch, state->head_certified_candidates, state->head_screened_count, state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
 		else
-			status = K3Head(b, state->head_norm_weight, state->head_weight, 0,
-				state->vocab_slice_rows, rows, stream);
+			status = K3HeadRankSlice(b, state->head_norm_weight, state->head_weight,
+				state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, rows, stream);
 		if ( status != LM_LAUNCH_OK )
 			{ fprintf(stderr, "sparkpipe_k3: final head launch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
 		if ( state->device_collective_created != 0 )

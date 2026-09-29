@@ -516,6 +516,7 @@ PYTHON_TESTS := \
 	tests/test_k3_driver_contracts.py \
 	tests/test_k3_stage_ordering.py \
 	tests/test_k3_engine.py \
+	tests/test_k3_head_rank_host.py \
 	tests/test_k3_kv_geometry.py \
 	tests/test_k3_layer_host.py \
 	tests/test_k3_multidev_lane.py \

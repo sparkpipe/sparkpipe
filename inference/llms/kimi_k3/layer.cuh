@@ -701,6 +701,26 @@ static int32_t K3HeadMaxlocUnpack(const uint64_t *maxloc,
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
+__global__ static void K3HeadRankTokenKernel(uint32_t *tokens,
+	uint32_t rows, uint32_t rank_offset)
+{
+	const uint32_t row = blockIdx.y;
+	if ( row < rows && threadIdx.x == 0u && tokens[row] != 0xFFFFFFFFu )
+		tokens[row] += rank_offset;
+}
+
+static int32_t K3HeadRankSlice(const K3LayerBuffers *b, const void *head_norm_weight,
+	const void *head_weight, uint32_t rank_offset, uint32_t vocabulary,
+	uint32_t rows, cudaStream_t stream)
+{
+	int32_t status = K3Head(b,head_norm_weight,head_weight,0,vocabulary,rows,stream);
+	if ( status != LM_LAUNCH_OK || rank_offset == 0u || rows == 0u )
+		return(status);
+	LM_LAUNCH((K3HeadRankTokenKernel), dim3(1u,rows), K3_LAYER_THREADS, 0,
+		stream, b->output_token,rows,rank_offset);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
 template<uint32_t THREADS>
 __global__ static void K3EmbeddingKernel(const uint16_t *embed_weight,
 	const uint32_t *token_ids,uint16_t *hidden_bf16,
