@@ -211,6 +211,36 @@ Expert residency has two modes:
   `EXPERT-RESIDENCY mode=pinned keys=19200 leases=38`, or
   `EXPERT-PIN-FAILED` and fails startup.
 
+Serving rules for the lane:
+
+- A residentd serves one client at a time and resets the adapter on every
+  new client's hello. The module answers the reset admission
+  (`SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET`) through the shared
+  `spark_module_reset_page_cache.h`: it claims every pipeline slot and
+  sequence lane (BUSY while one is in flight), drains the execution stream,
+  releases every page-cache lane with `SparkKvPageCacheReleaseAll` and
+  unbinds the lanes. Before this the admission fell through to the shape
+  check, was rejected, and every rank exited `status=9` on the second client
+  (`tests/test_module_page_cache_reset.py`, which also covers ling, whose
+  module had the same gap). A stream failure during the drain returns
+  IO_ERROR and keeps the slots and lanes claimed.
+- `tools/glm53full_lane.sh api`, `api-stop` and `decode` run only on the
+  rtx5090. Any other `GLMFULL_API_HOST` is refused before a remote command
+  runs (`tests/test_glm53full_lane.py`). Measure on the fleet with
+  `sparkpipe_model_batch`, which the lane build stages next to the residentd.
+- The model's EOS ids always stop a request (invariant I49); an empty
+  `stop_token_ids` does not disable them. Fixed-length decode measurements
+  need a prompt that does not reach EOS within the budget, and a runner that
+  refuses a case whose token count is below its budget.
+- COMPSEC-17 uses the checkpoint's own chat template:
+  `tools/glm53full_compsec17.py render` gives
+  `[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>{question}<|assistant|><think>`,
+  plus `</think>` for thinking off. The committed prompts are
+  `qualification/glm53full/compsec17_prompts_{off,on}.json`
+  (`tests/test_glm53full_compsec17.py`). The GLM-5.3 Flash framing
+  (`<|user|>\n...<|assistant|>\n<think></think>\n`, no system turn) is not
+  the Full template.
+
 ## Chain modes (`SPARK_GLM52_CHAIN_MODE`)
 
 The module runs one token step as a chain: the embedding reduce, then per

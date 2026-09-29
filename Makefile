@@ -551,6 +551,7 @@ PYTHON_TESTS := \
 	tests/test_ling_multidev_lane.py \
 	tests/test_ling_lane.py \
 	tests/test_glm53full_lane.py \
+	tests/test_glm53full_compsec17.py \
 	tests/test_ling_stagepack_resume.py \
 	tests/test_mimo26_emit_order.py \
 	tests/test_ling_smoke_experts.py \
@@ -607,6 +608,7 @@ PYTHON_TESTS := \
 	tests/test_clamped_up_gate.py \
 	tests/test_glm5_next_stage_context.py \
 	tests/test_glm52_chain_modes.py \
+	tests/test_module_page_cache_reset.py \
 	tests/test_glm5_next_expert_cover_host.py \
 	tests/test_glm5_next_wset_from_trace.py \
 	tests/test_ling_cache_admission.py \
