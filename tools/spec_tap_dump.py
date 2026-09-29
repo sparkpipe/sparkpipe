@@ -6,6 +6,7 @@ header followed by tap_count rows of row_bytes each, in the order the taps
 were configured. docs/SPECULATION_TAPS.md is the contract.
 """
 import argparse
+import hashlib
 import json
 import struct
 import sys
@@ -78,6 +79,40 @@ def tap_rows(header, rows):
     return [rows[index * width:(index + 1) * width] for index in range(header["tap_count"])]
 
 
+def stale_row_problems(path):
+    tokens, records = {}, {}
+    for _, record in iter_records(path):
+        tokens.setdefault(record["sequence_id"], {})[record["position"]] = record["token_id"]
+        records.setdefault(record["sequence_id"], {})[record["position"]] = (record["flags"], record["next_token_id"])
+
+    def shared_prefix(first, second, position):
+        return all(tokens[first].get(index) is not None and tokens[first].get(index) == tokens[second].get(index)
+                   for index in range(position + 1))
+
+    problems, seen, mismatched, repeated = [], {}, {}, {}
+    for sequence, entries in records.items():
+        for position, (flags, next_token) in entries.items():
+            following = entries.get(position + 1)
+            if following is None or (flags & 0x1 and following[0] & 0x1):
+                continue
+            if next_token != tokens[sequence][position + 1]:
+                mismatched[sequence] = mismatched.get(sequence, 0) + 1
+    for _, record in iter_records(path):
+        digest = hashlib.blake2b(record["rows"], digest_size=16).digest()
+        key = (record["sequence_id"], record["position"])
+        first = seen.setdefault(digest, key)
+        if first == key:
+            continue
+        if first[1] == key[1] and first[0] != key[0] and shared_prefix(first[0], key[0], key[1]):
+            continue
+        repeated[key[0]] = repeated.get(key[0], 0) + 1
+    for sequence, count in sorted(mismatched.items()):
+        problems.append(f"sequence {sequence}: {count} next tokens differ from the following position's token (stale read)")
+    for sequence, count in sorted(repeated.items()):
+        problems.append(f"sequence {sequence}: {count} tap rows repeat another position's rows (stale read)")
+    return problems
+
+
 def summarize(path):
     with open(path, "rb") as handle:
         header = parse_header(handle.read(HEADER_BYTES))
@@ -97,6 +132,7 @@ def summarize(path):
             entry["gaps"] += 1
         entry["next"] = max(entry["next"], record["position"] + 1)
         entry["records"] += 1
+    problems.extend(stale_row_problems(path))
     if header["closed"] and count != header["records"]:
         problems.append(f"header says {header['records']} records, file holds {count}")
     if not header["closed"]:
@@ -110,7 +146,6 @@ def summarize(path):
 
 def export_offline(path, out, layer, classes, model, firmware):
     """Write one tap of an SPTD dump as a spark-tapdump-1 directory (tools/spec_offline/tapdump.py)."""
-    import hashlib
     import os
     with open(path, "rb") as handle:
         header = parse_header(handle.read(HEADER_BYTES))
@@ -168,7 +203,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     summary = sub.add_parser("summary", help="print header, per-sequence coverage and problems as JSON")
     summary.add_argument("path")
-    verify = sub.add_parser("verify", help="exit 1 unless the dump is closed, complete and has no repeated positions")
+    verify = sub.add_parser("verify", help="exit 1 unless the dump is closed, complete, has no repeated positions and no stale rows or next tokens")
     verify.add_argument("path")
     export = sub.add_parser("export-offline", help="write one tapped layer as a spark-tapdump-1 directory for tools/spec_offline")
     export.add_argument("path")

@@ -138,7 +138,13 @@ Record header: sequence id (u64), position (u64), token id (u32), next token
 id (u32), flags (u32), reserved (u32, zero), serial (u64).
 
 `tools/spec_tap_dump.py`:
-- `summary|verify PATH`: header, per-sequence coverage, gaps and repeats;
+- `summary|verify PATH`: header, per-sequence coverage, gaps and repeats,
+  and stale reads: a record whose next token differs from the following
+  position's token (the final prefill row, decode and verify rows), or tap
+  rows equal to another position's rows (identical rows at the same position
+  of two sequences pass only when both share every token up to it). A tap
+  rank that reads its host rows before the stream finished shows up as
+  either; `verify` exits 1 on any problem;
 - `export-offline PATH OUT --layer L --model M --firmware F [--classes JSON]`:
   one tapped layer as a `spark-tapdump-1` directory, the format
   `tools/spec_offline/tapdump.py` reads (tokens = the record tokens plus the

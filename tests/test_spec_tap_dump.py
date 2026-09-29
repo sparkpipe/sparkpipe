@@ -34,7 +34,7 @@ int main(int argc,char **argv)
 		record.sequence_id = index < 3u ? 11u : 12u;
 		record.position = index < 3u ? 40u + index : index == 3u ? 10u : 12u;
 		record.token_id = 1000u + index;
-		record.next_token_id = 2000u + index;
+		record.next_token_id = 1001u + index;
 		record.flags = index == 0u ? SPARK_SPECULATION_TAP_FLAG_PREFILL : index == 4u ? SPARK_SPECULATION_TAP_FLAG_DECODE : SPARK_SPECULATION_TAP_FLAG_VERIFY;
 		record.serial = index + 1u;
 		for (byte=0u; byte<sizeof(payload); byte++)
@@ -94,6 +94,34 @@ def check_export():
         assert spec_tap_dump.main(["export-offline", str(path), str(Path(directory) / "none"), "--layer", "4", "--model", "glmflash", "--firmware", "f00"]) == 1
 
 
+def check_stale_reads():
+    def row(salt):
+        return bytes((salt * 13 + byte) % 256 for byte in range(16))
+
+    def stream(sequence, tokens, prompt, salts, serial):
+        out = []
+        for position, token in enumerate(tokens[:-1]):
+            flags = 1 if position < prompt else 2
+            out.append(((sequence, position, token, tokens[position + 1], flags, 0, serial + position), row(salts[position])))
+        return out
+
+    clean = stream(5, [10, 11, 12, 13, 14, 15, 16], 4, [1, 2, 3, 4, 5, 6], 1)
+    shared = stream(7, [10, 11, 20, 21], 2, [1, 2, 7, 8], 20) + stream(8, [10, 11, 30, 31], 2, [1, 2, 9, 10], 30)
+    stale_rows = stream(9, [40, 41, 42, 43, 44, 45], 5, [11, 12, 13, 11, 12], 40)
+    stale_token = [(fields[:3] + ((99,) if fields[1] == 3 else (fields[3],)) + fields[4:], rows) for fields, rows in stream(10, [50, 51, 52, 53, 54, 55], 4, [21, 22, 23, 24, 25], 50)]
+    foreign = stream(11, [60, 11, 62], 1, [30, 2], 60)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "stale.sptd"
+        path.write_bytes(sptd_bytes(clean + shared))
+        assert spec_tap_dump.summarize(str(path))["problems"] == [], "identical rows at the same position of sequences with a shared prefix are legitimate"
+        path.write_bytes(sptd_bytes(clean + shared + stale_rows + stale_token + foreign))
+        problems = spec_tap_dump.summarize(str(path))["problems"]
+        assert problems == ["sequence 10: 1 next tokens differ from the following position's token (stale read)",
+                            "sequence 9: 2 tap rows repeat another position's rows (stale read)",
+                            "sequence 11: 1 tap rows repeat another position's rows (stale read)"], problems
+        assert spec_tap_dump.main(["verify", str(path)]) == 1
+
+
 def main():
     with tempfile.TemporaryDirectory() as directory:
         binary = build(directory)
@@ -112,7 +140,7 @@ def main():
         assert [record["position"] for record in records] == [40, 41, 42, 10, 12]
         assert report["sequences"]["12"] == {"records": 2, "first": 10, "next": 13, "gaps": 1, "repeats": 0}, report["sequences"]
         assert [record["token_id"] for record in records] == [1000, 1001, 1002, 1003, 1004]
-        assert [record["next_token_id"] for record in records] == [2000, 2001, 2002, 2003, 2004]
+        assert [record["next_token_id"] for record in records] == [1001, 1002, 1003, 1004, 1005]
         rows = spec_tap_dump.tap_rows(header, records[1]["rows"])
         assert rows[0] == bytes(16 + byte for byte in range(16)) and rows[1] == bytes(32 + byte for byte in range(16)), rows
         assert spec_tap_dump.main(["verify", str(path)]) == 0
@@ -147,7 +175,8 @@ def main():
         bad.write_bytes(bytes(raw))
         assert spec_tap_dump.main(["verify", str(bad)]) == 1
     check_export()
-    print("PASS tap dump: the reader parses the C writer's header, records and per-tap rows, reports truncation and position gaps, and refuses partial, unclosed or foreign dumps")
+    check_stale_reads()
+    print("PASS tap dump: the reader parses the C writer's header, records and per-tap rows, reports truncation and position gaps, refuses partial, unclosed or foreign dumps, and flags tap rows or next tokens read before the GPU wrote them")
 
 
 if __name__ == "__main__":
