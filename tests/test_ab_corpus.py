@@ -31,6 +31,13 @@ class BlockTest(unittest.TestCase):
         repeated_inside = shared + shared + list(rng.integers(0, 150000, 1152))
         self.assertEqual(ab_corpus_build.collisions([repeated_inside]), [])
 
+    def test_collision_in_the_final_block_is_found(self):
+        rng = np.random.default_rng(3)
+        tail = list(rng.integers(0, 150000, 64))
+        first = list(rng.integers(0, 150000, 1216)) + tail
+        second = list(rng.integers(0, 150000, 1216)) + tail
+        self.assertEqual(len(ab_corpus_build.collisions([first, second])), 1)
+
 
 @unittest.skipUnless(TOKENIZER_BIN.exists(), "build/sparkpipe_tokenize_prompt not built on this host")
 class BuildTest(unittest.TestCase):

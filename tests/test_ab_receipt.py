@@ -153,5 +153,150 @@ class ReceiptTest(unittest.TestCase):
             ab_receipt.aa(reference, reference)
 
 
+def k_pair():
+    reference, _ = pair()
+    base = ab_dry_run.receipt(ab_dry_run.arm_descriptor("demo", "S1", "fp8", "fp8", "publisher"), "k-ref", ab_dry_run.hexid("m", "k-ref"),
+                              ab_dry_run.hexid("tok"), None, CORPUS, PLAN, {"EXPERT_CODEC": "fp8"})
+
+    def kv(a):
+        a["kv"].update(latent="fp8", group=128, mode="sim")
+    arm = rearm(base, kv)
+    arm["run_label"] = "k-arm"
+    arm["cache"] = {**arm["cache"], "arm_root": "/home/spark/ab/k-arm", "kv_snapshot_directory": "/home/spark/ab/k-arm/kv-snapshots"}
+    arm["inputs"]["probe_sha256"] = PROBE
+    arm["build"]["flags"] = {"EXPERT_CODEC": "fp8", "KV_QUANT_SIM": "1"}
+    return base, arm
+
+
+class CompareCoverageTest(unittest.TestCase):
+    def refused(self, mutate, needle, axis="E", pairing=pair):
+        reference, arm = pairing()
+        mutate(reference, arm)
+        problems = ab_receipt.compare(reference, arm, axis)
+        self.assertTrue(any(needle in problem for problem in problems), (needle, problems))
+
+    def test_k_pair_is_comparable(self):
+        reference, arm = k_pair()
+        self.assertEqual(ab_receipt.compare(reference, arm, "K"), [])
+
+    def test_every_contract_refusal_fires(self):
+        cases = [
+            (lambda r, a: a["build"].__setitem__("contract_sha256", ab_dry_run.hexid("other-contract")), "C1 build contract_sha256", "E"),
+            (lambda r, a: r["cache"].__setitem__("kv_snapshot_directory", a["cache"]["kv_snapshot_directory"]) or r["cache"].__setitem__("arm_root", a["cache"]["arm_root"]),
+             "C4 both runs share one kv_snapshot_directory", "E"),
+            (lambda r, a: a["execution"].__setitem__("mode", "eager"), "C5 execution mode", "E"),
+            (lambda r, a: a["execution"].__setitem__("dropin_sha256", ab_dry_run.hexid("other-dropin")), "C5 execution dropin_sha256", "E"),
+            (lambda r, a: a["weightd"].__setitem__("residency", "lazy"), "C5 weightd residency", "E"),
+            (lambda r, a: a["inputs"].__setitem__("corpus_tokens_sha256", ab_dry_run.hexid("other-corpus")), "C6 input corpus_tokens_sha256", "E"),
+            (lambda r, a: a["inputs"].__setitem__("corpus_index_sha256", ab_dry_run.hexid("other-index")), "C6 input corpus_index_sha256", "E"),
+            (lambda r, a: a["inputs"].__setitem__("tokenizer_sha256", ab_dry_run.hexid("other-tokenizer")), "C6 input tokenizer_sha256", "E"),
+            (lambda r, a: a["inputs"].__setitem__("corpus", "OTHER"), "C6 input corpus", "E"),
+            (lambda r, a: a["inputs"].__setitem__("probe_sha256", None), "C6 the arm run did not read the reference probe file", "E"),
+            (lambda r, a: a.__setitem__("plan_sha256", ab_dry_run.hexid("other-plan")), "C6 plan sha differs", "E"),
+        ]
+        for mutate, needle, axis in cases:
+            self.refused(mutate, needle, axis)
+        reference, arm = pair()
+        arm["build"]["model_revision"] = "other@1"
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "model_revision differs from the arm revision"):
+            ab_receipt.compare(reference, arm, "E")
+
+    def test_model_revision_outside_a_spine_comparison(self):
+        reference, arm = pair()
+        arm = rearm(arm, lambda a: a.__setitem__("revision", "org/Other@9"))
+        arm["build"]["model_revision"] = "org/Other@9"
+        problems = ab_receipt.compare(reference, arm, "E")
+        self.assertTrue(any("C1 build model_revision differs outside a declared spine comparison" in problem for problem in problems), problems)
+
+    def test_k_arm_on_other_pack_bytes_is_refused(self):
+        def repack(r, a):
+            other = rearm(a, lambda d: d["pack_sha256"].__setitem__(0, ab_dry_run.hexid("other-pack")))
+            a.clear()
+            a.update(other)
+        self.refused(repack, "a K arm runs on its base arm's pack bytes", "K", k_pair)
+
+    def test_plan_commit_is_enforced(self):
+        reference, arm = pair()
+        problems = ab_receipt.compare(reference, arm, "E", {"firmware_commit": "3" * 40, "plan_sha256": PLAN})
+        self.assertTrue(any("not on the plan's pinned firmware commit" in problem for problem in problems), problems)
+        problems = ab_receipt.compare(reference, arm, "E", {"firmware_commit": reference["source_commit"], "plan_sha256": ab_dry_run.hexid("other-plan")})
+        self.assertTrue(any("C6 plan sha differs" in problem for problem in problems), problems)
+
+    def test_validate_refusals(self):
+        def set_path(receipt, path, value):
+            node = receipt
+            for key in path[:-1]:
+                node = node[key]
+            node[path[-1]] = value
+
+        cases = [
+            (("format",), "sparkpipe-ab-receipt-v0", "must be 'sparkpipe-ab-receipt-v1'"),
+            (("weightd", "residency"), "mapped", "must be one of"),
+            (("topology", "tp"), "4", "must be of type"),
+            (("source_commit",), "ABC", "does not match"),
+            (("inputs", "corpus"), "", "is too short"),
+            (("wave", "output_token_budget"), 0, "is below 1"),
+            (("topology", "kv_shard"), 2, "is above 1"),
+            (("arm", "format"), "sparkpipe-quant-arm-v0", "receipt.arm:"),
+            (("ready_event", "pack_set_sha256"), ab_dry_run.hexid("other-pack-set"), "ready event pack_set_sha256 differs"),
+            (("packs", "pack_sha256"), [ab_dry_run.hexid("other-pack", r) for r in range(ab_dry_run.RANKS)], "receipt pack_sha256 differs"),
+            (("topology", "kv_shard"), 0, "receipt topology differs"),
+            (("dumps", "per_rank_sha256"), [ab_dry_run.hexid("dump")], "dumps.per_rank_sha256 has 1 entries"),
+            (("requests", "count"), 2, "one value per request"),
+        ]
+        for path, value, needle in cases:
+            _, arm = pair()
+            set_path(arm, path, value)
+            with self.assertRaisesRegex(ab_receipt.ReceiptError, needle, msg=str(path)):
+                ab_receipt.validate(arm)
+        _, arm = pair()
+        del arm["window"]
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "receipt.window is required"):
+            ab_receipt.validate(arm)
+        reference, arm = pair()
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "axis must be one of"):
+            ab_receipt.compare(reference, arm, "X")
+
+    def test_aa_refusals(self):
+        reference, arm = pair()
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "runs one arm twice"):
+            ab_receipt.aa(reference, arm)
+        second = copy.deepcopy(reference)
+        second["cache"]["arm_root"] = "/home/spark/ab/ref-aa"
+        second["cache"]["kv_snapshot_directory"] = "/home/spark/ab/ref-aa/kv"
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "two distinct runs"):
+            ab_receipt.aa(reference, second)
+        second = copy.deepcopy(reference)
+        second["run_label"] = "ref-aa"
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "two fresh snapshot directories"):
+            ab_receipt.aa(reference, second)
+
+    def test_validate_refuses_a_foreign_arm_digest(self):
+        reference, arm = pair()
+        arm["arm_digest"] = reference["arm_digest"]
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "is not the digest of its arm"):
+            ab_receipt.validate(arm)
+
+    def test_aa_checks_generated_tokens(self):
+        reference, _ = pair()
+        second = copy.deepcopy(reference)
+        second["run_label"] = "ref-aa"
+        second["cache"]["arm_root"] = "/home/spark/ab/ref-aa"
+        second["cache"]["kv_snapshot_directory"] = "/home/spark/ab/ref-aa/kv"
+        second["requests"]["generated_token_ids_sha256"] = ab_dry_run.hexid("other-tokens")
+        self.assertEqual(ab_receipt.aa(reference, second)["status"], "DIVERGED")
+
+    def test_dumpcheck(self):
+        reference, _ = pair()
+        off = copy.deepcopy(reference)
+        off["run_label"] = "ref-off"
+        off["dumps"]["score_dump_on"] = False
+        self.assertTrue(ab_receipt.dumpcheck(reference, off))
+        off["requests"]["generated_token_ids_sha256"] = ab_dry_run.hexid("other-tokens")
+        self.assertFalse(ab_receipt.dumpcheck(reference, off))
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "dump on and one with it off"):
+            ab_receipt.dumpcheck(reference, reference)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
