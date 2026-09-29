@@ -11,7 +11,11 @@ T1R_MAGIC = b"T1R1"
 
 
 def bf16_to_f32(u16):
-    return (u16.astype(np.uint32) << np.uint32(16)).view(np.float32)
+    codes = np.asarray(u16)
+    if codes.dtype != np.uint16:
+        raise TypeError(f"bf16_to_f32 decodes uint16 bf16 codes, got "
+                        f"{codes.dtype}")
+    return (codes.astype(np.uint32) << np.uint32(16)).view(np.float32)
 
 
 def f32_to_bf16_u16(x):
