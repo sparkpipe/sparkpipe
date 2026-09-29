@@ -1561,6 +1561,12 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 		index_total = state->index_layer_stride_bytes * state->index_layer_count;
 		status = SparkStageModuleDeviceAllocate(&state->ledger,index_total,(void **)&state->index_cache);
 	}
+	if ( status == SPARK_STATUS_OK )
+		fprintf(stderr,"GLM-KV-BYTES rank=%u tp=%u shard=%u physical_pages=%u latent_bytes=%llu index_bytes=%llu replicated_latent_bytes=%llu replicated_index_bytes=%llu\n",
+			state->tp_rank,state->tp_degree,state->kv_shard,state->physical_page_count,
+			(unsigned long long)main_total,(unsigned long long)(state->index_layer_stride_bytes * state->index_layer_count),
+			(unsigned long long)((uint64_t)state->physical_page_count * SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES * state->kv_layer_count),
+			(unsigned long long)((uint64_t)state->physical_page_count * SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u * state->index_layer_count));
 	kda_total = state->kda_state_layer_stride_bytes * (uint64_t)state->kda_layer_count;
 	if ( status == SPARK_STATUS_OK && state->kda_layer_count != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,kda_total,(void **)&state->kda_state_pools);

@@ -2560,6 +2560,9 @@ static void check_kv_shard_rank_state(void)
 	uint32_t degrees[2] = {8u,16u},index;
 	for (index=0u; index<2u; index++)
 	{
+		char path[] = "/tmp/g5n_kv_bytes_XXXXXX",text[512] = {0},expected[512];
+		int descriptor = mkstemp(path),saved = dup(2);
+		assert(descriptor >= 0 && saved >= 0 && dup2(descriptor,2) == 2);
 		memset(&state,0,sizeof(state));
 		state.ledger.module_tag = "kv-shard-rank-state";
 		state.tp_degree = degrees[index];
@@ -2572,11 +2575,23 @@ static void check_kv_shard_rank_state(void)
 		state.physical_page_count = 2u;
 		state.kv_backing_directory = "/unused-host-fixture";
 		assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_PENDING);
+		fflush(stderr);
+		assert(dup2(saved,2) == 2 && close(saved) == 0);
+		assert(pread(descriptor,text,sizeof(text) - 1u,0) > 0 && close(descriptor) == 0 && unlink(path) == 0);
+		(void)snprintf(expected,sizeof(expected),"GLM-KV-BYTES rank=%u tp=%u shard=1 physical_pages=2 latent_bytes=%llu index_bytes=%llu replicated_latent_bytes=%llu replicated_index_bytes=%llu\n",
+			degrees[index] - 1u,degrees[index],
+			(unsigned long long)(state.kv_layer_count * 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES / degrees[index]),
+			(unsigned long long)(state.index_layer_count * 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u / degrees[index]),
+			(unsigned long long)(state.kv_layer_count * 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES),
+			(unsigned long long)(state.index_layer_count * 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u));
+		if ( strstr(text,expected) == 0 )
+			fprintf(stderr,"kv bytes line:\n%swant:\n%s",text,expected);
+		assert(state.kv_layer_count != 0u && state.index_layer_count != 0u && strstr(text,expected) != 0);
 		assert(state.kv_layer_stride_bytes * degrees[index] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
 		assert(state.index_layer_stride_bytes * degrees[index] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
 		free_cache_fixture();
 	}
-	puts("PASS kv shard rank state: latent KV and indexer key pools are 1/tp of the replicated pools at TP8 and TP16");
+	puts("PASS kv shard rank state: latent KV and indexer key pools are 1/tp of the replicated pools at TP8 and TP16, and GLM-KV-BYTES reports both");
 }
 
 static void check_chain_steps(void)
