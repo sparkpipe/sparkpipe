@@ -102,7 +102,6 @@
 1 runtime/spark_weightd.c: memcpy uses a direct size/count literal
 1 runtime/spark_weightd.c: typed byte array extent is a raw numeric width
 1 runtime/spark_weightd_manifest.c: memcpy uses a direct size/count literal
-4 runtime/spark_weightd_spine.c: memcpy uses a direct size/count literal
 4 src/spark_ck128.c: memcpy uses a direct size/count literal
 3 tools/dev/ling_gemm_repro.cu: cudaMalloc uses a raw byte-width multiplier
 3 tools/dev/ling_gemm_repro.cu: cudaMemset uses a raw byte-width multiplier

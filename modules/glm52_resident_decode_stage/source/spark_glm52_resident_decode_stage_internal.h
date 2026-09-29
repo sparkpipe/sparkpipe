@@ -143,6 +143,7 @@ typedef struct SparkGlm52CudaWave
 	uint64_t attention_split_partial_blocks;
 	const uint8_t *expert_lease_base;
 	uint32_t expert_lease_local_layer;
+	uint32_t expert_lease_pinned;
 } SparkGlm52CudaWave;
 
 #ifdef __cplusplus

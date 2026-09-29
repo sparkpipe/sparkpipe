@@ -811,6 +811,84 @@ static void SparkTestQwenTokenizerPretokenizesWithQwenSemantics(const char *spli
     SparkTokenizerDestroy(&tokenizer);
 }
 
+static const char *SparkTestMetaspaceTokenizerJsonPath(void)
+{
+    return "build/test_tokenizer_hf_metaspace_bpe.json";
+}
+
+static void SparkTestMetaspaceTokenizerWriteFixtureJson(void)
+{
+    FILE *file;
+
+    file = fopen(SparkTestMetaspaceTokenizerJsonPath(), "wb");
+    assert(file != 0);
+    fprintf(file,
+        "{\"normalizer\":{\"type\":\"Replace\",\"pattern\":{\"String\":\" \"},\"content\":\"\342\226\201\"},"
+        "\"pre_tokenizer\":{\"type\":\"Split\",\"pattern\":{\"String\":\" \"},\"behavior\":\"MergedWithPrevious\",\"invert\":false},"
+        "\"added_tokens\":[{\"id\":11,\"content\":\"<s>\",\"special\":true}],"
+        "\"model\":{\"type\":\"BPE\",\"unk_token\":\"<unk>\",\"byte_fallback\":true,"
+        "\"vocab\":{\"<unk>\":0,\"<0x0A>\":1,\"<0xC3>\":2,\"<0xA9>\":3,\"\342\226\201\":4,\"a\":5,\"b\":6,"
+        "\"\342\226\201a\":7,\"ab\":8,\"\342\226\201ab\":9,\"\342\226\201\342\226\201\":10,\"<s>\":11},"
+        "\"merges\":[[\"\342\226\201\",\"a\"],[\"a\",\"b\"],[\"\342\226\201a\",\"b\"],[\"\342\226\201\",\"\342\226\201\"]]}}\n");
+    assert(fclose(file) == 0);
+}
+
+static void SparkTestMetaspaceTokenizerExpect(const SparkTokenizer *tokenizer, const char *text, const uint32_t *expected, uint32_t expected_count)
+{
+    SparkTokenizerEncoding encoding;
+    uint32_t token_ids[16u];
+    char decoded[64u];
+    uint32_t decoded_bytes;
+    uint32_t index;
+
+    memset(token_ids, 0, sizeof(token_ids));
+    SparkTokenizerEncodingReset(&encoding);
+    encoding.token_capacity = 16u;
+    encoding.token_ids = token_ids;
+    assert(SparkTokenizerEncodeUtf8(tokenizer, text, (uint32_t)strlen(text), 0u, &encoding) == SPARK_STATUS_OK);
+    assert(encoding.token_count == expected_count);
+    for (index = 0u; index < expected_count; ++index)
+    {
+        assert(token_ids[index] == expected[index]);
+    }
+    assert(SparkTokenizerDecodeTokenIds(tokenizer, token_ids, encoding.token_count, 0u, decoded, sizeof(decoded), &decoded_bytes) == SPARK_STATUS_OK);
+    assert(decoded_bytes == strlen(text));
+    assert(memcmp(decoded, text, decoded_bytes) == 0);
+}
+
+static void SparkTestMetaspaceTokenizerEncodesAndDecodes(void)
+{
+    SparkTokenizer tokenizer;
+    SparkTokenizer loaded_tokenizer;
+    SparkTokenizerHuggingFaceJsonConfiguration configuration;
+    SparkTokenizerCompiledFileConfiguration compiled_configuration;
+    static const uint32_t merged_with_fallback[] = {9u, 1u, 2u, 3u};
+    static const uint32_t leading_spaces[] = {4u, 7u};
+    static const uint32_t special_then_word[] = {11u, 8u};
+
+    SparkTestMetaspaceTokenizerWriteFixtureJson();
+    SparkTokenizerReset(&tokenizer);
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    configuration.descriptor_bytes = SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.tokenizer_json_path = SparkTestMetaspaceTokenizerJsonPath();
+    assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &configuration) == SPARK_STATUS_OK);
+    assert(tokenizer.model_kind == SPARK_TOKENIZER_BPE_MODEL_KIND_METASPACE);
+    SparkTestMetaspaceTokenizerExpect(&tokenizer, " ab\n\303\251", merged_with_fallback, 4u);
+    SparkTestMetaspaceTokenizerExpect(&tokenizer, "  a", leading_spaces, 2u);
+    SparkTestMetaspaceTokenizerExpect(&tokenizer, "<s>ab", special_then_word, 2u);
+    SparkTokenizerReset(&loaded_tokenizer);
+    memset(&compiled_configuration, 0, sizeof(compiled_configuration));
+    compiled_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    compiled_configuration.descriptor_bytes = SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+    compiled_configuration.compiled_tokenizer_path = "build/test_tokenizer_metaspace.compiled";
+    assert(SparkTokenizerSaveCompiledFile(&tokenizer, &compiled_configuration) == SPARK_STATUS_OK);
+    assert(SparkTokenizerLoadCompiledFile(&loaded_tokenizer, &compiled_configuration) == SPARK_STATUS_OK);
+    assert(loaded_tokenizer.model_kind == SPARK_TOKENIZER_BPE_MODEL_KIND_METASPACE);
+    SparkTestMetaspaceTokenizerExpect(&loaded_tokenizer, " ab\n\303\251", merged_with_fallback, 4u);
+    SparkTokenizerDestroy(&loaded_tokenizer);
+    SparkTokenizerDestroy(&tokenizer);
+}
 
 static void SparkTestTokenizerWriteNfcFixtureJson(const char *path, const char *normalizer_json)
 {
@@ -887,6 +965,7 @@ int main(void)
     {
         SparkTestQwenTokenizerPretokenizesWithQwenSemantics(g_spark_test_letter_split_patterns[pattern_index]);
     }
+    SparkTestMetaspaceTokenizerEncodesAndDecodes();
     SparkTestTokenizerNfcNormalizerComposesBeforeBpe();
     return 0;
 }

@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_sha256.h"
 
 static uint32_t mesh_map_forced,mesh_map_offset,mesh_map_failure,mesh_map_calls;
 static uint8_t *mesh_map_raw;
@@ -504,7 +505,7 @@ static void check_cold_control_progress(void)
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = sizeof(source);
 	memcpy(request.identity.model,"control-progress",17u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = UINT64_C(2097152);
 	for (uint32_t bytes=0u; bytes<=8u; bytes+=4u)

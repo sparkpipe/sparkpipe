@@ -3032,7 +3032,8 @@ static SparkStatus SparkQwen38_27bModuleAdmit(
     table.max_active_sequence_count = state->max_active_sequence_count;
     table.max_input_row_count = state->max_input_row_count;
     table.max_sequence_positions = SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS;
-    table.flags = SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT |
+    table.flags = (request->admission_flags == 0u ?
+            SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT : 0u) |
         SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS;
     table.predicate = SparkQwen38_27bAdmissionKvPredicate;
     table.predicate_context = state;

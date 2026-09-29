@@ -403,6 +403,15 @@ static void TestSubmissionValidation(void)
 	lane.cache_prefix_identity.sha256[0] = 1u;
 	lane.cache_publish_identity.sha256[0] = 2u;
 	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
+	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	lane.cache_prefix_token_count = 0u;
+	memset(&lane.cache_prefix_identity,0,sizeof(lane.cache_prefix_identity));
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lane.cache_prefix_token_count = 63u;
+	lane.cache_prefix_identity.sha256[0] = 1u;
+	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
 	lane.sequence_position = row_position = 64u;
 	lane.context_token_count = lane.cache_publish_token_count = 65u;
