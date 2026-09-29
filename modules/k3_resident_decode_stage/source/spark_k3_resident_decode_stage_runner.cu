@@ -526,6 +526,31 @@ static cudaError_t K3RunnerCopy(void *destination, const void *source,
 	return cudaStreamSynchronize(stream);
 }
 
+static void K3RunnerHostAllReduce(SparkK3RunnerState *state, uint64_t elements)
+{
+	if ( SparkTpCollectiveAllReduceSumBf16(&state->collective,
+		state->staging_values, elements, state->staging_scratch) != SPARK_STATUS_OK )
+		state->tp_collective_failed = 1u;
+}
+
+static SparkStatus K3RunnerTakeFailure(SparkK3RunnerState *state)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( state->copy_failed != 0u )
+	{
+		fprintf(stderr, "sparkpipe_k3: a stream-ordered copy failed\n");
+		status = SPARK_STATUS_IO_ERROR;
+	}
+	else if ( state->tp_collective_failed != 0u )
+	{
+		fprintf(stderr, "sparkpipe_k3: a tensor-parallel collective failed\n");
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	}
+	state->copy_failed = 0u;
+	state->tp_collective_failed = 0u;
+	return status;
+}
+
 static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t stream,
 	const uint16_t *device_values, uint32_t rows)
 {
@@ -645,8 +670,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			if ( K3RunnerCopy(state->staging_values, reduce_values,
 				(uint64_t)gate_up_elements * sizeof(uint16_t), stream) != cudaSuccess )
 				state->copy_failed = 1u;
-			SparkTpCollectiveAllReduceSumBf16(&state->collective,
-				state->staging_values, gate_up_elements, state->staging_scratch);
+			K3RunnerHostAllReduce(state, gate_up_elements);
 			if ( K3RunnerCopy(reduce_values, state->staging_values,
 				(uint64_t)gate_up_elements * sizeof(uint16_t), stream) != cudaSuccess )
 				state->copy_failed = 1u;
@@ -717,8 +741,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			if ( K3RunnerCopy(state->staging_values, phase0_source,
 				(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
 				state->copy_failed = 1u;
-			SparkTpCollectiveAllReduceSumBf16(&state->collective,
-				state->staging_values, elements, state->staging_scratch);
+			K3RunnerHostAllReduce(state, elements);
 			if ( K3RunnerCopy(phase0_source, state->staging_values,
 				(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
 				state->copy_failed = 1u;
@@ -736,9 +759,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 				if ( K3RunnerCopy(state->staging_values + elements, b->shared_out_bf16,
 					(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
 					state->copy_failed = 1u;
-			SparkTpCollectiveAllReduceSumBf16(&state->collective,
-				state->staging_values, (uint64_t)segments * elements,
-				state->staging_scratch);
+			K3RunnerHostAllReduce(state, (uint64_t)segments * elements);
 			if ( K3RunnerCopy(b->hidden_bf16, state->staging_values,
 				(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
 				state->copy_failed = 1u;
@@ -1665,18 +1686,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 				state->copy_failed = 1u;
 		}
 	}
-	if ( state->copy_failed != 0u )
-	{
-		state->copy_failed = 0u;
-		fprintf(stderr, "sparkpipe_k3: a stream-ordered copy failed\n");
-		return SPARK_STATUS_IO_ERROR;
-	}
-	if ( state->tp_collective_failed != 0u )
-	{
-		state->tp_collective_failed = 0u;
-		fprintf(stderr, "sparkpipe_k3: device collective enqueue failed\n");
-		return SPARK_STATUS_INTERNAL_ERROR;
-	}
+	exchange_status = K3RunnerTakeFailure(state);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
 	if ( state->tp_context_overflow != 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	exchange_status = K3RunnerChainEnd(state, stream);
@@ -1879,6 +1891,11 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 		fprintf(stderr, "sparkpipe_k3: half step layer %u phase %u -> %d\n",
 			layer, phase, status);
 		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	{
+		SparkStatus failure = K3RunnerTakeFailure(state);
+		if ( failure != SPARK_STATUS_OK )
+			return failure;
 	}
 	if ( phase == 1u && layer >= K3_FIRST_ROUTED_LAYER )
 	{
