@@ -19,10 +19,6 @@
 #include "spark_k3_dspark_format.h"
 #include "inference/llms/kimi_k3/spec_verify.h"
 
-#ifndef SPARK_K3_SERVING_TOPOLOGY
-#define SPARK_K3_SERVING_TOPOLOGY 404
-#endif
-
 #if SPARK_K3_SERVING_TOPOLOGY == 404
 #define SPARK_K3_SERVING_ADAPTER_ID "k3-tp4pp4"
 #define SPARK_K3_SERVING_TP_DEGREE 4u
