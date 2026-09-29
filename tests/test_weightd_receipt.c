@@ -138,7 +138,9 @@ static void check_record_rules(void)
 {
 	struct stat info,changed;
 	const char *reason = 0;
-	int32_t fd = open_pack(&info);
+	int32_t fd;
+	assert(utimensat(AT_FDCWD,pack,0,0) == 0);
+	fd = open_pack(&info);
 	assert(SparkWeightdReceiptRecord(pack,fd,&info,sha,ck,"test") == SPARK_STATUS_BUSY);
 	assert(check(pack,sha,0,&reason) == SPARK_STATUS_NOT_FOUND && strcmp(reason,"absent") == 0);
 	settle();
