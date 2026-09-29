@@ -216,6 +216,7 @@ int main(void)
 	state.kda_v_window = v_window;
 	state.mla_cache = cache_views;
 	state.sequences = ROWS;
+	state.kda_rank_heads = K3_KDA_HEADS;
 	printf("rows %u layers %u\n", ROWS, SLICE_LAYERS);
 	Emit("embedding", hidden, ROWS * K3_HIDDEN);
 	Emit("attnw", attn_query_weight, K3_HIDDEN);

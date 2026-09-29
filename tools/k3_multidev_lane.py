@@ -79,7 +79,23 @@ COLLECTIVE_BASE = 53048                         # 53048 .. 53063 (u16-valid, #10
 TRANSPORT_BASE = 64048                          # 64048 .. 64063
 
 TP_COLLECTIVE_PORT = COLLECTIVE_BASE      # + tp rank (group-local, bound)
+K3_SESSION_BLOCK_BASE = 18432             # PORT_LEDGER kimi k3 block, TP16 cells
 DEVICE_SESSION_BASE = COLLECTIVE_BASE + 4 # packed 12-number table below
+
+
+def select_topology(topology: str) -> None:
+    global TOPOLOGY, TP, PP, DEPLOYED_PACK_TEMPLATE
+    TOPOLOGY = topology
+    if topology == "tp16":
+        TP, PP = 16, 1
+        DEPLOYED_PACK_TEMPLATE = (
+            "/home/{host}/sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank{rank:02d}.pack")
+    elif topology == "tp4pp4":
+        TP, PP = 4, 4
+        DEPLOYED_PACK_TEMPLATE = (
+            "/home/{host}/sparkdata/k3.mxfp4.tp4pp4/packs/k3.stage{stage}.rank0{tp}.pack")
+    else:
+        raise SystemExit(f"topology {topology} is not tp4pp4 or tp16")
 
 
 def select_lane(lane: int) -> None:
@@ -95,6 +111,7 @@ def select_lane(lane: int) -> None:
     DEVICE_SESSION_BASE = COLLECTIVE_BASE + 4
 MESH_RANKS = ",".join(str(i) for i in range(WORLD))
 
+TOPOLOGY = "tp4pp4"
 DEPLOYED_PACK_TEMPLATE = (
     "/home/{host}/sparkdata/k3.mxfp4.tp4pp4/packs/k3.stage{stage}.rank0{tp}.pack")
 
@@ -133,7 +150,8 @@ def tp_rank_of(rank: int) -> int:
 
 def deployed_pack(rank: int) -> str:
     return DEPLOYED_PACK_TEMPLATE.format(
-        host=host_of(rank), stage=stage_of(rank), tp=tp_rank_of(rank))
+        host=host_of(rank), stage=stage_of(rank), tp=tp_rank_of(rank),
+        rank=rank)
 
 
 def session_table() -> list[list[int]]:
@@ -145,6 +163,9 @@ def session_table() -> list[list[int]]:
     the twelve numbers left in the collective block after the bound
     tp_collective listeners take 53048..53051.
     """
+    if TOPOLOGY == "tp16":
+        return [[0 if a == b else K3_SESSION_BLOCK_BASE + a * TP + b
+                 for b in range(TP)] for a in range(TP)]
     table = []
     for a in range(TP):
         row = []
@@ -196,7 +217,8 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
                 "{host}:{port}".format(
                     host=HOST_ADDRESSES[group_hosts(rank)[partner]],
                     port=TP_COLLECTIVE_PORT + partner)
-                for partner in (tp ^ 1, tp ^ 2)
+                for partner in [tp ^ (1 << step)
+                                for step in range(TP.bit_length() - 1)]
             ],
         },
     }
@@ -324,11 +346,17 @@ def main() -> int:
                         help="stage-to-stage hidden hand-off: the weightd "
                              "host-rdma module or the host-staged TCP module "
                              "(lib/hidden_pipeline.so) (default %(default)s)")
+    parser.add_argument("--topology", choices=("tp4pp4", "tp16"),
+                        default="tp4pp4",
+                        help="rank layout: 4 PP stages of TP4, or one TP16 "
+                             "group over the TP16 rank packs "
+                             "(default %(default)s)")
     parser.add_argument("--check", action="store_true",
                         help="verify the outputs are current instead of "
                              "writing them")
     arguments = parser.parse_args()
 
+    select_topology(arguments.topology)
     select_lane(arguments.lane)
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv-backing-bytes must be positive and finite")

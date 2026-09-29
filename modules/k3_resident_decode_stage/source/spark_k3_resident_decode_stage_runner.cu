@@ -973,6 +973,64 @@ static SparkStatus K3RunnerEnvUnsigned64(const char *name, uint64_t minimum,
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus K3RunnerCreateDispatch(SparkK3RunnerState *state,
+	const SparkK3StageRunnerConfiguration *configuration)
+{
+	uint64_t budget = 0u, planned;
+	SparkK3RankStateBytes state_plan;
+	memset(&state_plan, 0, sizeof(state_plan));
+	if ( K3RunnerEnvUnsigned64("SPARK_K3_STATE_BUDGET_BYTES", 1u, UINT64_MAX,
+		&budget) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: SPARK_K3_STATE_BUDGET_BYTES is required"
+			" (per-rank KDA state + windows + MLA KV + dispatch scratch)\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( SparkK3RankStateBytesFor(state->module.sizing.kda_layer_count,
+			state->module.sizing.mla_layer_count,
+			configuration->max_active_sequence_count, configuration->tp_degree,
+			configuration->kv_pages_per_sequence, state->kv_page_bytes,
+			&state_plan) == 0u || state_plan.total > budget )
+	{
+		fprintf(stderr, "sparkpipe_k3: rank state %llu exceeds"
+			" SPARK_K3_STATE_BUDGET_BYTES %llu or tp_degree %u is invalid"
+			" (refused before allocation)\n",
+			(unsigned long long)state_plan.total, (unsigned long long)budget,
+			configuration->tp_degree);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	if ( SparkK3DispatchCreate(&state->dispatch, &state->module.sizing,
+		configuration->max_active_sequence_count,
+		configuration->max_input_row_count,
+		configuration->kv_pages_per_sequence,
+		state->kv_page_bytes, configuration->tp_degree, 0) != SPARK_K3_DISPATCH_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: dispatch create failed tp_degree=%u\n",
+			configuration->tp_degree);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	planned = state->dispatch.state_bytes.total + state->dispatch.scratch_bytes;
+	fprintf(stderr, "sparkpipe_k3: rank state planned=%llu budget=%llu"
+		" kda_state=%llu kda_windows=%llu mla_kv=%llu scratch=%llu"
+		" sequences=%u kda_heads_per_rank=%u\n",
+		(unsigned long long)planned, (unsigned long long)budget,
+		(unsigned long long)state->dispatch.state_bytes.kda_state,
+		(unsigned long long)state->dispatch.state_bytes.kda_windows,
+		(unsigned long long)state->dispatch.state_bytes.mla_kv,
+		(unsigned long long)state->dispatch.scratch_bytes,
+		configuration->max_active_sequence_count,
+		state->dispatch.kda_rank_heads);
+	if ( planned > budget )
+	{
+		fprintf(stderr, "sparkpipe_k3: rank state %llu exceeds"
+			" SPARK_K3_STATE_BUDGET_BYTES %llu (fail-closed)\n",
+			(unsigned long long)planned, (unsigned long long)budget);
+		SparkK3DispatchDestroy(&state->dispatch);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus K3RunnerSeedIndices(SparkK3RunnerState *state,
 	const SparkK3StageRunnerConfiguration *configuration)
 {
@@ -1059,12 +1117,8 @@ SparkStatus SparkK3StageRunnerInitialize(
 	}
 	if ( status != SPARK_STATUS_OK )
 		{ runner->private_state = 0; delete state; return status; }
-	if ( SparkK3DispatchCreate(&state->dispatch,&state->module.sizing,
-		configuration->max_active_sequence_count,
-		configuration->max_input_row_count,
-		configuration->kv_pages_per_sequence,
-		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
-		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	if ( K3RunnerCreateDispatch(state, configuration) != SPARK_STATUS_OK )
+		{ SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
 	status = SparkWeightdAttachRequested();
 	if ( status != SPARK_STATUS_OK )
 	{

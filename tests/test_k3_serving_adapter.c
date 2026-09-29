@@ -3,7 +3,11 @@
 #include "inference/llms/kimi_k3/generated_config.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
+#if SPARK_K3_SERVING_TOPOLOGY == 16
+#define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident_tp16.json"
+#else
 #define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident.json"
+#endif
 
 SparkStatus SparkK3StageRunnerInitialize(SparkK3StageRunner *runner,
 	const SparkK3StageRunnerConfiguration *configuration)
@@ -81,6 +85,26 @@ static int32_t TestK3Descriptor(void)
 		"the cache block is one KV page of the kernel's slot count");
 	failures += TestK3Check(strcmp(descriptor->driver_program_name, "k3") == 0,
 		"the descriptor names the k3 driver program");
+#if SPARK_K3_SERVING_TOPOLOGY == 16
+	failures += TestK3Check(strcmp(descriptor->adapter_id, "k3-tp16") == 0 &&
+		descriptor->parallel_group_size == 0u && descriptor->stage_count == 16u &&
+		(descriptor->capability_flags &
+			(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP |
+			 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT)) == 0u &&
+		(descriptor->capability_flags &
+			SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u,
+		"TP16: sixteen parallel ranks, no pipeline hand-off");
+	for (index = 0u; index < SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT; index++)
+		if ( (index < 16u && descriptor->stage_layer_counts[index] !=
+				SPARK_K3_MODEL_LAYER_COUNT) ||
+			(index < 12u && (descriptor->boundary_sideband_kinds[index] != 0u ||
+				descriptor->boundary_sideband_bytes_per_sequence[index] != 0u)) )
+			tiled = 0u;
+	failures += TestK3Check(tiled != 0u &&
+		descriptor->layer_count == SPARK_K3_MODEL_LAYER_COUNT,
+		"TP16: every rank carries all 93 layers and no residual-bank sideband");
+	return(failures);
+#endif
 	failures += TestK3Check(descriptor->parallel_group_size != 0u &&
 		descriptor->stage_count == SPARK_K3_PP_STAGE_COUNT * descriptor->parallel_group_size,
 		"the ranks are the PP stages times the TP group");

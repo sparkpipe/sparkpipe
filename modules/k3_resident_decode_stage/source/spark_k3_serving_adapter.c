@@ -19,6 +19,49 @@
 #include "spark_k3_dspark_format.h"
 #include "inference/llms/kimi_k3/spec_verify.h"
 
+#ifndef SPARK_K3_SERVING_TOPOLOGY
+#define SPARK_K3_SERVING_TOPOLOGY 404
+#endif
+
+#if SPARK_K3_SERVING_TOPOLOGY == 404
+#define SPARK_K3_SERVING_ADAPTER_ID "k3-tp4pp4"
+#define SPARK_K3_SERVING_TP_DEGREE 4u
+#define SPARK_K3_SERVING_PARALLEL_GROUP_SIZE 4u
+#define SPARK_K3_SERVING_CAPABILITIES \
+	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP)
+#define SPARK_K3_SERVING_STAGE_LAYERS \
+	{ \
+		SPARK_K3_PP_STAGE_LAYERS(0u), SPARK_K3_PP_STAGE_LAYERS(0u), \
+		SPARK_K3_PP_STAGE_LAYERS(0u), SPARK_K3_PP_STAGE_LAYERS(0u), \
+		SPARK_K3_PP_STAGE_LAYERS(1u), SPARK_K3_PP_STAGE_LAYERS(1u), \
+		SPARK_K3_PP_STAGE_LAYERS(1u), SPARK_K3_PP_STAGE_LAYERS(1u), \
+		SPARK_K3_PP_STAGE_LAYERS(2u), SPARK_K3_PP_STAGE_LAYERS(2u), \
+		SPARK_K3_PP_STAGE_LAYERS(2u), SPARK_K3_PP_STAGE_LAYERS(2u), \
+		SPARK_K3_PP_STAGE_LAYERS(3u), SPARK_K3_PP_STAGE_LAYERS(3u), \
+		SPARK_K3_PP_STAGE_LAYERS(3u), SPARK_K3_PP_STAGE_LAYERS(3u) \
+	}
+#define SPARK_K3_SERVING_SIDEBAND_KIND \
+	SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK
+#define SPARK_K3_SERVING_SIDEBAND_BYTES SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW
+#elif SPARK_K3_SERVING_TOPOLOGY == 16
+#define SPARK_K3_SERVING_ADAPTER_ID "k3-tp16"
+#define SPARK_K3_SERVING_TP_DEGREE 16u
+#define SPARK_K3_SERVING_PARALLEL_GROUP_SIZE 0u
+#define SPARK_K3_SERVING_CAPABILITIES \
+	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION)
+#define L SPARK_K3_MODEL_LAYER_COUNT
+#define SPARK_K3_SERVING_STAGE_LAYERS \
+	{ L, L, L, L, L, L, L, L, L, L, L, L, L, L, L, L }
+#define SPARK_K3_SERVING_SIDEBAND_KIND 0u
+#define SPARK_K3_SERVING_SIDEBAND_BYTES 0u
+#else
+#error "SPARK_K3_SERVING_TOPOLOGY must be 404 (TP4xPP4) or 16 (TP16)"
+#endif
+
 #define SPARK_K3_SEAM_DRAFT_TIME_BUDGET_MS 20u
 #define SPARK_K3_SEAM_DRAFT_MAX_DEPTH 16u
 #define SPARK_K3_SEAM_DRAFT_MAX_NODE_COUNT 64u
@@ -160,8 +203,8 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	state->runner_config.tp_degree = K3ServingJsonU32(&doc, root, "tp_degree", 1u);
 	{
 		uint32_t world_size = K3ServingJsonU32(&doc, root, "world_size", 16u);
-		if ( state->runner_config.tp_degree == 0u ||
-			world_size % state->runner_config.tp_degree != 0u )
+		if ( state->runner_config.tp_degree != SPARK_K3_SERVING_TP_DEGREE ||
+			world_size != 16u )
 			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
 		state->runner_config.stage_index =
 			configuration->stage_index / state->runner_config.tp_degree;
@@ -289,12 +332,7 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	state->runner_config.rank_pack_path = state->pack_path;
 	state->runner_config.execution_stream = configuration->execution_stream;
 	state->runner_config.multiprocessors = 48u;
-	if ( state->runner_config.tp_degree > SPARK_TP_COLLECTIVE_MAX_STEPS )
-	{
-		if ( state->device_collective_present == 0 )
-			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
-	}
-	else if ( state->runner_config.tp_degree > 1u )
+	if ( state->runner_config.tp_degree > 1u )
 	{
 		int32_t coll = SparkJsonFindObjectMember(&doc, root, "tp_collective");
 		if ( coll < 0 )
@@ -317,7 +355,8 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		int32_t peers_token = SparkJsonFindObjectMember(&doc, coll, "peers");
 		uint32_t peer_count = peers_token >= 0 ?
 			SparkJsonGetArrayElementCount(&doc, peers_token) : 0u;
-		if ( peer_count == 0u || peer_count > SPARK_TP_COLLECTIVE_MAX_STEPS )
+		if ( peer_count == 0u || peer_count > SPARK_TP_COLLECTIVE_MAX_STEPS ||
+			(1u << peer_count) != state->runner_config.tp_degree )
 			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
 		for ( uint32_t i = 0u; i < peer_count; ++i )
 		{
@@ -844,16 +883,12 @@ static SparkStatus K3ServingReset(void *adapter_state, uint64_t control_generati
 static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 {
 	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
-		"k3-tp4pp4",
+		SPARK_K3_SERVING_ADAPTER_ID,
 		SPARK_K3_MODEL_SOURCE_ID,
-		"k3-tp4pp4",
+		SPARK_K3_SERVING_ADAPTER_ID,
 		"k3",
 		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"),
-	.capability_flags =
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,
+	.capability_flags = SPARK_K3_SERVING_CAPABILITIES,
 	.stage_count = 16u,
 	.layer_count = SPARK_K3_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -868,37 +903,27 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
 	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
-	.stage_layer_counts =
-	{
-		SPARK_K3_PP_STAGE_LAYERS(0u), SPARK_K3_PP_STAGE_LAYERS(0u),
-		SPARK_K3_PP_STAGE_LAYERS(0u), SPARK_K3_PP_STAGE_LAYERS(0u),
-		SPARK_K3_PP_STAGE_LAYERS(1u), SPARK_K3_PP_STAGE_LAYERS(1u),
-		SPARK_K3_PP_STAGE_LAYERS(1u), SPARK_K3_PP_STAGE_LAYERS(1u),
-		SPARK_K3_PP_STAGE_LAYERS(2u), SPARK_K3_PP_STAGE_LAYERS(2u),
-		SPARK_K3_PP_STAGE_LAYERS(2u), SPARK_K3_PP_STAGE_LAYERS(2u),
-		SPARK_K3_PP_STAGE_LAYERS(3u), SPARK_K3_PP_STAGE_LAYERS(3u),
-		SPARK_K3_PP_STAGE_LAYERS(3u), SPARK_K3_PP_STAGE_LAYERS(3u)
-	},
+	.stage_layer_counts = SPARK_K3_SERVING_STAGE_LAYERS,
 	.boundary_sideband_kinds =
 	{
-		SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK,
-		SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK,
-		SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK, SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK
+		SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND,
+		SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND,
+		SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND, SPARK_K3_SERVING_SIDEBAND_KIND
 	},
 	.boundary_sideband_bytes_per_sequence =
 	{
-		SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW,
-		SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW,
-		SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW
+		SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES,
+		SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES,
+		SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES, SPARK_K3_SERVING_SIDEBAND_BYTES
 	},
 	.minimum_efficient_submission_row_count = 1u,
-	/* the KV page is the cache block: K3_KV_PAGE_SLOTS tokens per page
-	 * (inference/llms/kimi_k3/config.h; seam_config max_committed uses the
-	 * same product). The generic descriptor check fails closed on zero —
-	 * caught by the first resident launch, like the mesh-kernel symbol. */
 	.cache_block_token_count = SPARK_K3_KV_PAGE_SLOTS,
-	.parallel_group_size = 4u,
+	.parallel_group_size = SPARK_K3_SERVING_PARALLEL_GROUP_SIZE,
 };
+
+#if SPARK_K3_SERVING_TOPOLOGY == 16
+#undef L
+#endif
 
 static const SparkModelServingAdapterInterface K3ServingInterface =
 {

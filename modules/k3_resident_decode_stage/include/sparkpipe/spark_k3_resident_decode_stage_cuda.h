@@ -63,12 +63,15 @@ typedef struct SparkK3Dispatch
 	uint16_t *kda_v_window_pool;
 	uint8_t *scratch;
 	size_t scratch_bytes;
+	uint32_t tp_degree;
+	uint32_t kda_rank_heads;
+	SparkK3RankStateBytes state_bytes;
 	int device;
 } SparkK3Dispatch;
 
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
-	uint64_t kv_page_bytes, int device);
+	uint64_t kv_page_bytes, uint32_t tp_degree, int device);
 void SparkK3DispatchDestroy(SparkK3Dispatch *d);
 int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
 	uint32_t tp_degree, cudaStream_t stream);

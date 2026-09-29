@@ -73,6 +73,7 @@ struct K3SliceState
 	uint16_t *dspark_aux;
 	uint32_t aux_rows;
 	uint32_t sequences;
+	uint32_t kda_rank_heads;
 	uint32_t kda_state_bf16;
 	uint32_t first_mla_index;
 	uint32_t first_kda_index;
@@ -147,17 +148,18 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 	uint32_t mla_index = (layer / 4u) - state->first_mla_index;
 	uint32_t kda_index = (layer - (layer / 4u)) - state->first_kda_index;
 	uint64_t sequences = state->sequences;
-	uint64_t slot_bytes = state->kda_state_bf16 != 0u
-		? (uint64_t)K3_KDA_STATE_SLOT_BYTES_BF16 : (uint64_t)K3_KDA_STATE_SLOT_BYTES;
+	uint64_t heads = state->kda_rank_heads;
+	uint64_t slot_bytes = K3_KDA_RANK_STATE_SLOT_BYTES(state->kda_rank_heads,
+		state->kda_state_bf16);
 	buffers->kda_state_bf16 = state->kda_state_bf16;
 	buffers->kda_state_pool = state->kda_state
 		+ ((uint64_t)kda_index * sequences * slot_bytes);
 	buffers->kda_q_window = state->kda_q_window
-		+ ((uint64_t)kda_index * sequences * K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL);
+		+ ((uint64_t)kda_index * sequences * heads * K3_KDA_KEY_DIM * K3_KDA_CONV_KERNEL);
 	buffers->kda_k_window = state->kda_k_window
-		+ ((uint64_t)kda_index * sequences * K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL);
+		+ ((uint64_t)kda_index * sequences * heads * K3_KDA_KEY_DIM * K3_KDA_CONV_KERNEL);
 	buffers->kda_v_window = state->kda_v_window
-		+ ((uint64_t)kda_index * sequences * K3_KDA_V_DIM * K3_KDA_CONV_KERNEL);
+		+ ((uint64_t)kda_index * sequences * heads * K3_KDA_VALUE_DIM * K3_KDA_CONV_KERNEL);
 	buffers->replay_conv_q = state->replay_conv_q == 0 ? 0 : state->replay_conv_q
 		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_QK_DIM);
 	buffers->replay_conv_k = state->replay_conv_k == 0 ? 0 : state->replay_conv_k
@@ -370,6 +372,8 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 	if ( slab_rows == 0u || (uint64_t)slab_rows > replay_capacity )
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( state->kda_state_bf16 != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	if ( state->kda_rank_heads != K3_KDA_HEADS )
 		return(LM_LAUNCH_ERR_SHAPE);
 	status = K3DeltaRuleOptIn((uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)));
 	if ( status != LM_LAUNCH_OK )
