@@ -187,12 +187,12 @@ static void SparkGlm52BindLayer(
 	buffers->dense_down_weight = weight->dense_down_bf16;
 	buffers->dense_gate_up_fused = weight->dense_gate_up_bf16 != 0 ? 1u : 0u;
 	if ( wave->expert_lease_base != 0 &&
-		wave->expert_lease_local_layer == local_layer )
+		(wave->expert_lease_pinned != 0u || wave->expert_lease_local_layer == local_layer) )
 	{
 		buffers->expert_w1_weight = wave->expert_lease_base + weight->expert_up_gate_payload_offset;
-		buffers->expert_w1_scale = weight->expert_up_gate_scale == 0 ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
+		buffers->expert_w1_scale = weight->expert_up_gate_scale_offset == 0u ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
 		buffers->expert_w2_weight = wave->expert_lease_base + weight->expert_down_payload_offset;
-		buffers->expert_w2_scale = weight->expert_down_scale == 0 ? 0 : wave->expert_lease_base + weight->expert_down_scale_offset;
+		buffers->expert_w2_scale = weight->expert_down_scale_offset == 0u ? 0 : wave->expert_lease_base + weight->expert_down_scale_offset;
 	}
 	else
 	{
@@ -319,7 +319,7 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
 		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 &&
 			SparkGlm52T1Enabled() == 0 )
-			status = GlmHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
+			status = GlmHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
 		else
 			status = GlmHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )

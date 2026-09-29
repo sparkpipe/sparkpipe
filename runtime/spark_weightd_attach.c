@@ -98,7 +98,8 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
             SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
         }
     }
-    digest = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+    digest = slice->pack_sha256 != 0 ? slice->pack_sha256 :
+        SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
     if (digest == 0)
     {
         SparkWeightdAttachSetReason(reason, "no_identity");

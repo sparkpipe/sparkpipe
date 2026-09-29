@@ -1172,15 +1172,6 @@ static int32_t GlmLayerMoeExperts(
     int32_t status = GlmLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows,1u);
     if (status != LM_LAUNCH_OK)
         return status;
-    status = GlmLayerMoeRouterLogits(buffers,rows,multiprocessors,stream);
-    if (status != LM_LAUNCH_OK)
-        return status;
-    status = GlmLayerMoeRouteSelect(buffers,rows,stream);
-    if (status != LM_LAUNCH_OK)
-        return status;
-    status = GlmLayerMoeRoutePack(buffers,rows,packed_rows,stream);
-    if (status != LM_LAUNCH_OK)
-        return status;
     status = GlmLayerMoeRoutedExperts<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
     if (status != LM_LAUNCH_OK)
         return status;
