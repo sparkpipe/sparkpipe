@@ -381,7 +381,6 @@ TEST_NAMES := \
     test_glm5_next_codec_lazy_attach \
     test_glm5_next_index_cp_math \
     test_weightd_worker \
-    test_weightd_direct \
     test_host_staged_tcp \
     test_weightd_fd_frames \
     test_weightd_attach \
@@ -2047,12 +2046,6 @@ clean:
 
 -include $(ALL_HOST_OBJECTS:.o=.d) $(TEST_SUPPORT_OBJECT:.o=.d) \
     $(TEST_MODULE_DEPENDENCIES)
-
-build/test_weightd_direct: tests/test_weightd_direct.c runtime/spark_weightd_direct.c $(CORE_LIBRARY) | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
-
-build/pack_stream_bench: tools/pack_stream_bench.c runtime/spark_weightd_direct.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 build/test_weightd_worker: tests/test_weightd_worker.c runtime/spark_weightd_worker.c tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@

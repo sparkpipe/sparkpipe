@@ -69,7 +69,6 @@ static int test_rename(const char *source,const char *destination)
 #define mmap test_mmap
 #define rename test_rename
 #define pread test_pread
-#include "../runtime/spark_weightd_direct.c"
 #include "../runtime/spark_weightd.c"
 #undef pread
 #undef rename
@@ -373,17 +372,11 @@ static void check_short_range_reads(void)
 	assert(arena.staging != 0);
 	memset(destination,0,sizeof(destination));
 	read_limit = 19u;
-	{
-		const SparkWeightdRange *order[2] = {&ranges[1],&ranges[0]};
-		assert(SparkWeightdLoadRanges(&arena,fd,0u,order,2u) == SPARK_STATUS_OK);
-		assert(memcmp(source,destination,sizeof(source)) == 0);
-		ranges[1].digest[0] ^= 1u;
-		order[0] = &ranges[1];
-		order[1] = &ranges[0];
-		assert(SparkWeightdLoadRanges(&arena,fd,0u,order,2u) == SPARK_STATUS_HASH_MISMATCH);
-	}
+	assert(SparkWeightdLoadRangeGroup(&arena,fd,ranges,2u) == SPARK_STATUS_OK);
+	assert(memcmp(source,destination,sizeof(source)) == 0);
+	ranges[1].digest[0] ^= 1u;
+	assert(SparkWeightdLoadRangeGroup(&arena,fd,ranges,2u) == SPARK_STATUS_HASH_MISMATCH);
 	read_limit = 0u;
-	SparkWeightdDirectDestroy(arena.direct);
 	free(arena.staging);
 	assert(close(fd) == 0 && unlink(path) == 0);
 }
