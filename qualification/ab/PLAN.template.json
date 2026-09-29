@@ -1,0 +1,41 @@
+{
+ "format": "sparkpipe-ab-plan-v1",
+ "campaign": "flash-w1",
+ "firmware_commit": "0000000000000000000000000000000000000000",
+ "notes": "Template. Replace every zero hash with the pinned value, then run tools/ab_plan.py freeze. Spine frame S1 (publisher BF16 release) with F0 as the spine bridge (lead O4). Margins: design §3.5 with the critic's §10.14 top-1 widening; backstops stay in calibration until the F2-vs-F1 comparison fixes them (§10.16). F4-F8 are absent: O1 is not decided.",
+ "arms": [
+  {"arm_id": "flash.S1.e-bf16.k-bf16/bf16/fp32.d-none", "role": "reference", "label": "F1"},
+  {"arm_id": "flash.S1.e-fp8.k-bf16/bf16/fp32.d-none", "role": "anchor", "label": "F2", "axis": "E", "compare_to": "flash.S1.e-bf16.k-bf16/bf16/fp32.d-none", "corpus": "CT-short"},
+  {"arm_id": "flash.S1.e-nvfp4nv.k-bf16/bf16/fp32.d-none", "role": "arm", "label": "F3", "axis": "E", "compare_to": "flash.S1.e-bf16.k-bf16/bf16/fp32.d-none", "anchor": "flash.S1.e-fp8.k-bf16/bf16/fp32.d-none", "corpus": "CT-short"},
+  {"arm_id": "flash.S0.e-fp8.k-bf16/bf16/fp32.d-none", "role": "bridge", "label": "F0", "axis": "spine", "compare_to": "flash.S1.e-fp8.k-bf16/bf16/fp32.d-none", "corpus": "CT-short"}
+ ],
+ "corpora": {
+  "CT-short": {"tokens_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "index_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "docs": 200, "role": "primary"},
+  "CT-long": {"tokens_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "index_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "docs": 32, "role": "position-bins"}
+ },
+ "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+ "margins": {
+  "E": {"kl_ratio_vs_anchor_upper": 1.1, "top1_diff_vs_anchor_pt_lower": -0.3},
+  "K": {"kl_mean_upper": 0.005, "top1_agree_pct_lower": 99.0, "dnll_rel_pct_abs": 0.5, "every_bin": true},
+  "D": {"token_differences": 0}
+ },
+ "backstops": {
+  "status": "calibration",
+  "kl_mean_upper": 0.005,
+  "top1_agree_pct_lower": 99.0,
+  "dnll_rel_pct_abs": 0.5,
+  "calibration_pair": ["flash.S1.e-fp8.k-bf16/bf16/fp32.d-none", "flash.S1.e-bf16.k-bf16/bf16/fp32.d-none"],
+  "calibration_comparison_sha256": null
+ },
+ "statistics": {
+  "alpha": 0.05,
+  "correction": "holm-one-sided",
+  "bootstrap": {"unit": "document", "replicates": 10000, "seed": 20260929, "interval": "conservative-percentile-bca"},
+  "near_tie_nats": 0.001,
+  "decisive_nats": 1.0,
+  "position_bins": [0, 1024, 4096, 16384, 32768],
+  "ct_short_doubled": false
+ },
+ "suites": {"mcnemar_alpha": 0.05, "names": ["COMPSEC-17", "ds4-92"], "thinking": "off", "max_tokens": 4096, "b1_sequential": true},
+ "exclusions": {"on_policy_dnll_in_verdict": false, "near_tie_rule": "reference top-2 gap < near_tie_nats", "strata_reported": ["prose-pre", "prose-post", "code", "on-policy"]}
+}
