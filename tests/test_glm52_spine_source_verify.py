@@ -24,7 +24,7 @@ def source_bytes(rows):
                                bytes(rng.getrandbits(8) for _ in range(row[9]))) for row in rows}
 
 
-def plan_for(rows, data, drop=None):
+def plan_for(rows, data, drop=None, short=None):
     plan = []
     for row in rows:
         if (row[0], row[1]) == drop:
@@ -32,6 +32,8 @@ def plan_for(rows, data, drop=None):
         entry = packer.Entry(*row[:8])
         payload, scale = data[(row[0], row[1])]
         produce_payload = (lambda blob=payload: iter((blob[:len(blob) // 2], blob[len(blob) // 2:])))
+        if (row[0], row[1]) == short:
+            produce_payload = (lambda blob=payload: iter((blob[:len(blob) // 2],)))
         produce_scale = (lambda blob=scale: iter((blob,))) if scale else None
         plan.append(packer.PlanItem(entry, produce_payload, produce_scale, len(payload), len(scale), [f"t{row[0]}"]))
     return plan
@@ -104,6 +106,10 @@ def main():
         report = verifier.verify(plan_for(reshaped, data), good, 16, 5)
         if not any("geometry differs" in failure for failure in report["failures"]):
             failures.append("a directory geometry mismatch was not reported")
+        report = verifier.verify(plan_for(rows, data, short=(packer.K_EMBEDDING, GLOBAL)), good, 16, 5)
+        if report["result"] != "FAIL" or not any("produced" in failure and "pack holds" in failure
+                                                 for failure in report["failures"]):
+            failures.append(f"a source entry shorter than the pack entry was not reported: {report['failures']}")
         report = verifier.verify(plan_for(rows, data), good, 16, 4)
         if not any("verifying tp16 rank 4" in failure for failure in report["failures"]):
             failures.append("a pack of another rank was not reported")
@@ -112,7 +118,7 @@ def main():
             print(f"FAIL {failure}")
         return 1
     print("PASS glm52 spine source verify: byte-exact spine passes, expert entries skipped, flipped bytes, "
-          "missing/extra entries, geometry and rank mismatches reported")
+          "missing/extra entries, short source entries, geometry and rank mismatches reported")
     return 0
 
 

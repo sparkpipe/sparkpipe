@@ -142,6 +142,23 @@ def main():
         code, text = run_cli(common + ["--output", str(base / "u2/c.glm52sp"), "--contract-sha256", "XYZ", "--restage"])
         if code == 0 or "64 lowercase hex" not in text:
             failures.append("a malformed contract digest was accepted")
+        code, text = run_cli(common + ["--output", str(base / "u2/d.glm52sp"), "--contract-sha256", "G" * 64, "--restage"])
+        if code == 0 or "64 lowercase hex" not in text:
+            failures.append("a 64-character non-hex contract digest was accepted")
+        code, text = run_cli(common + ["--output", str(base / "u2/e.glm52sp"), "--contract-sha256", U2_CONTRACT.upper(),
+                                       "--restage"])
+        if code == 0 or "64 lowercase hex" not in text:
+            failures.append("an uppercase contract digest was accepted")
+        flagged = base / "experts/flags.glm52sp"
+        write_pack(flagged, entries(FP8), 2, FP8, EXPERT_REVISION, "6d9751b3" + "0" * 56)
+        flagged_raw = bytearray(flagged.read_bytes())
+        struct.pack_into("<I", flagged_raw, 5 * 4, 1)
+        flagged.write_bytes(bytes(flagged_raw))
+        code, text = run_cli(["--spine-pack", str(spine_path), "--expert-pack", str(flagged), "--expert-codec", "fp8",
+                              "--tp-degree", "16", "--tp-rank", "5", "--model-revision", U2_REVISION,
+                              "--contract-sha256", U2_CONTRACT, "--restage", "--output", str(base / "u2/h.glm52sp")])
+        if code == 0 or "header flags" not in text:
+            failures.append("--restage waived a header field other than stage_count/stage_index")
         output = base / "u2/rank5.glm52sp"
         code, text = run_cli(common + ["--output", str(output), "--contract-sha256", U2_CONTRACT, "--restage",
                                        "--arm", "U2"])
