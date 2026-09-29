@@ -10,7 +10,7 @@ esac
 start_log "rollback-$part"
 K="$KIT"
 hubstate() {
-    hub "echo \$(sha256sum < ~/release/$RELEASE_ROOT_NAME/MANIFEST | cut -d' ' -f1) \$(sha256sum < ~/$RELEASE_API_CHANNEL/bin/sparkpipe_model_api | cut -c1-16) \$(sha256sum < ~/$RELEASE_API_CHANNEL/runtime/lib/model_serving_adapter.so | cut -c1-16) \$(sha256sum < ~/$RELEASE_API_CHANNEL/model_resident.json | cut -c1-16) \$(tr -d '[:space:]' < ~/release/core/WEIGHTSD_BIN)"
+    hub "echo \$(sha256sum < ~/release/$RELEASE_ROOT_NAME/MANIFEST | cut -d' ' -f1) \$(sha256sum < ~/$RELEASE_API_CHANNEL/bin/sparkpipe_model_api | cut -c1-16) \$(sha256sum < ~/$RELEASE_API_CHANNEL/runtime/lib/model_serving_adapter.so | cut -c1-16) \$(sha256sum < ~/$RELEASE_API_CHANNEL/model_resident.json | cut -c1-16) \$(tr -d '[:space:]' < ~/release/core/WEIGHTSD_BIN) \$(sha256sum < ~/release/core/bin/sparkpipe_weightd | cut -c1-16)"
 }
 
 engines_production() {
@@ -30,9 +30,9 @@ do_engines() {
     if ! nodes --expect hold=yes --expect eng_n=0 --log "$log.nodes-held" > /dev/null; then
         bash "$K/hold.sh" any || die "hold (rollback) failed"
     fi
-    read -r served api adapter dep announced <<< "$(hubstate)"
+    read -r served api adapter dep announced core <<< "$(hubstate)"
     [ "$served" = "$SERVED_MANIFEST_SHA" ] || do_root
-    if weightd_changes && [ "$announced" != "$OLD_WEIGHTD" ]; then
+    if weightd_changes && [ "$announced $core" != "$OLD_WEIGHTD $OLD_WEIGHTD" ]; then
         bash "$K/weightd.sh" rollback || die "weightd rollback failed (nodes stay held)"
     fi
     echo "== wait for every agent to apply ${SERVED_MANIFEST_SHA:0:16} (held)"
@@ -58,9 +58,9 @@ case "$part" in
         do_engines
         do_api;;
 esac
-read -r served api adapter dep announced <<< "$(hubstate)"
-echo "ROLLBACK $part DONE $(date -u +%H:%M:%SZ): served=${served:0:16} api=$api adapter=$adapter channel=$dep weightd=$announced (production: ${SERVED_MANIFEST_SHA:0:16}, $OLD_API, $OLD_ADAPTER, $CHANNEL_DEPLOYMENT, $OLD_WEIGHTD)"
-if [ "$part" = all ] && [ "$served $api $adapter $dep $announced" != "$SERVED_MANIFEST_SHA $OLD_API $OLD_ADAPTER $CHANNEL_DEPLOYMENT $OLD_WEIGHTD" ]; then
+read -r served api adapter dep announced core <<< "$(hubstate)"
+echo "ROLLBACK $part DONE $(date -u +%H:%M:%SZ): served=${served:0:16} api=$api adapter=$adapter channel=$dep weightd=$announced core=$core (production: ${SERVED_MANIFEST_SHA:0:16}, $OLD_API, $OLD_ADAPTER, $CHANNEL_DEPLOYMENT, $OLD_WEIGHTD)"
+if [ "$part" = all ] && [ "$served $api $adapter $dep $announced $core" != "$SERVED_MANIFEST_SHA $OLD_API $OLD_ADAPTER $CHANNEL_DEPLOYMENT $OLD_WEIGHTD $OLD_WEIGHTD" ]; then
     echo "ROLLBACK INCOMPLETE: hub is not production"
     exit 1
 fi

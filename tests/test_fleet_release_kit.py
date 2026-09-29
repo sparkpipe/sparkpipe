@@ -402,6 +402,58 @@ def test_hold_waits_for_a_paused_rotation(tmp):
     check("lib: a PENDING value stops every step", r.returncode == 2 and "SHA is still PENDING" in r.stdout, r.stdout)
 
 
+def test_step_gates_refuse_a_running_rotation(tmp):
+    root, ssh = fake_world(tmp, ["na", "nb", "hub"])
+    env = dict(os.environ, FAKE_ROOT=str(root), RELEASE_SSH=ssh, RELEASE_ENV=str(write_env(root, "BUILD_HOST=na\nBUILD_DIR=/nonexistent\nSOURCE_REPO=/nonexistent\n")))
+    for step in ("publish.sh", "precheck.sh"):
+        if (root / "calls.log").exists():
+            (root / "calls.log").unlink()
+        r = subprocess.run(["bash", str(KIT / step)], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        calls = (root / "calls.log").read_text() if (root / "calls.log").exists() else ""
+        touched = [c for c in calls.splitlines() if not c.startswith("hub\t") or "ROTATION_PAUSE" not in c] if step == "publish.sh" else []
+        check(f"{step}: refuses while the rotation runs", r.returncode != 0 and "FAIL rotation is not paused" in r.stdout and not touched, r.stdout[-400:] + calls)
+
+
+def weightd_world(tmp):
+    root, ssh = fake_world(tmp, ["na", "nb", "hub"])
+    rootname = "glm53flash.fp8.tp16"
+    hub = root / "hub"
+    served = hub / "release" / rootname
+    (served / "bin").mkdir(parents=True)
+    (served / "bin" / "engine").write_text("engine")
+    served_sha = manifest(served)
+    core = hub / "release" / "core" / "bin"
+    core.mkdir(parents=True)
+    (core / "sparkpipe_weightd").write_text("new weightd")
+    old_wd = hashlib.sha256(b"old weightd").hexdigest()[:16]
+    new_wd = sha(core / "sparkpipe_weightd")[:16]
+    (hub / "release" / "core" / "WEIGHTSD_BIN").write_text(old_wd + "\n")
+    for rel in ("bin/sparkpipe_model_api", "runtime/lib/model_serving_adapter.so", "model_resident.json"):
+        (hub / "g53-api-channel" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (hub / "g53-api-channel" / rel).write_text(rel)
+    rb = hub / "release-staging" / "weightd-rollback"
+    rb.mkdir(parents=True)
+    (rb / f"sparkpipe_weightd.{old_wd}").write_text("old weightd")
+    for h in ("na", "nb"):
+        (root / h / "sparkdata" / rootname).mkdir(parents=True)
+        (root / h / "sparkdata" / rootname / "agent.hold").write_text("")
+        (root / f"{h}.probe").write_text(f"host={h} agent=active hold=no layout=legacy applied={served_sha[:16]} rootok=yes eng_n=1 exe=r0 drv=d0 ready=1 wd={old_wd} wd_inst={old_wd} wd_n=1 wd_other=0 mem_gib=60 others=none\n")
+    (hub / "fleet-rotation").mkdir()
+    (hub / "fleet-rotation" / "ROTATION_PAUSE").write_text("manual: release\n")
+    extra = f"BUILD_HOST=na\nWEIGHTD_BUNDLE_BUILD=/b\nNEW_RECEIPT=rc\nNEW_WARM=wm\n"
+    envfile = write_env(root, extra)
+    text = envfile.read_text().replace("SERVED_MANIFEST_SHA=served", f"SERVED_MANIFEST_SHA={served_sha}").replace("OLD_WEIGHTD=w0", f"OLD_WEIGHTD={old_wd}").replace("NEW_WEIGHTD=w0", f"NEW_WEIGHTD={new_wd}")
+    envfile.write_text(text + "RELEASE_CONVERGE_MIN=0.1\n")
+    env = dict(os.environ, FAKE_ROOT=str(root), RELEASE_SSH=ssh, RELEASE_ENV=str(envfile))
+    return root, env, core / "sparkpipe_weightd", old_wd
+
+
+def test_rollback_restores_a_published_unannounced_weightd(tmp):
+    root, env, core_bin, old_wd = weightd_world(tmp)
+    r = subprocess.run(["bash", str(KIT / "rollback.sh"), "engines"], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+    check("rollback: a published but unannounced weightd goes back on the hub", r.returncode == 0 and sha(core_bin)[:16] == old_wd and "ROLLBACK engines DONE" in r.stdout, r.stdout + r.stderr)
+
+
 def test_scripts_parse_and_are_model_neutral():
     shells = sorted(KIT.glob("*.sh")) + sorted((KIT / "hub").glob("*.sh"))
     r = subprocess.run(["bash", "-n"] + [str(p) for p in shells], capture_output=True, text=True)
@@ -423,7 +475,7 @@ def main():
     test_nodes_rules_and_resample()
     test_hub_smoke()
     test_scripts_parse_and_are_model_neutral()
-    for test in (test_nodes_cli_sends_rank_pack, test_engine_logs, test_perf_summary, test_stage_config_patch, test_hub_publish_and_rollback, test_hold_waits_for_a_paused_rotation):
+    for test in (test_nodes_cli_sends_rank_pack, test_engine_logs, test_perf_summary, test_stage_config_patch, test_hub_publish_and_rollback, test_hold_waits_for_a_paused_rotation, test_step_gates_refuse_a_running_rotation, test_rollback_restores_a_published_unannounced_weightd):
         with tempfile.TemporaryDirectory() as tmp:
             test(tmp)
     if failures:

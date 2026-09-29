@@ -431,13 +431,13 @@ node has to pass a complete fresh probe.
 ### 4.6 Rollback
 
 `rollback.sh all` works from any state and ends non-zero unless the hub is
-fully production (served MANIFEST, API, adapter, channel deployment and
-`WEIGHTSD_BIN`):
+fully production (served MANIFEST, API, adapter, channel deployment,
+`WEIGHTSD_BIN` and the hub's core `bin/sparkpipe_weightd`):
 
 1. engines: skipped when every node already runs production unheld;
    otherwise `hold.sh any` (if not held), `hub/rollback_root.sh` (only if the
    release was published; it also restores a partial publish whose MANIFEST
-   is still production), `weightd.sh rollback` if a new weightd was announced,
+   is still production), `weightd.sh rollback` if a new weightd was published or announced,
    wait until every node applied and verified the production MANIFEST,
    `unhold.sh old`, `converge.sh old`;
 2. api: `hub/rollback_api.sh` restores the recorded backup channel (api,
