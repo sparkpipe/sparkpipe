@@ -59,7 +59,7 @@ def write_checkpoint(root, seed=3):
     bf16(i + "k_norm.weight", (IDIM,), 0.1, 1.0)
     bf16(i + "k_norm.bias", (IDIM,), 0.1)
     bf16(i + "weights_proj.weight", (IHEADS, HIDDEN), 0.2)
-    bf16(i + "index_kpool_compress_gate.weight", (IDIM, HIDDEN), 0.2)
+    bf16(i + "index_kpool_compress_gate", (IDIM, HIDDEN), 0.2)
     bf16(i + "index_kpool_compress_ape", (KPOOL, IDIM), 0.5)
     bf16(p + "mlp.gate.weight", (EXPERTS, HIDDEN), 0.2)
     tensors[p + "mlp.gate.e_score_correction_bias"] = ("F32", (0.01 * rng.standard_normal(EXPERTS)).astype(np.float32))

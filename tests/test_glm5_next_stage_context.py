@@ -18,6 +18,7 @@ HARNESS = r'''
 #include "src/spark_speculation_lookup_draft.c"
 #include "src/spark_speculation_drafter_mix.c"
 #include "src/spark_speculation_reference_draft.c"
+#include "src/spark_speculation_recorded_draft.c"
 #include "src/spark_speculation_relay_draft.c"
 #include "src/spark_speculation_relay_link.c"
 #include "src/spark_speculation_tap.c"
@@ -1191,6 +1192,48 @@ static void check_tap_config(void)
 	printf("PASS tap configuration: every tap setting needs SPARK_GLM5_NEXT_TAPS, a consumer and explicit bounds; the relay is shadow-only; tap layers must be owned\n");
 }
 
+static uint8_t VERIFY_RECORDED_TABLE[SPARK_SPECULATION_RECORDED_HEADER_BYTES + VERIFY_CAPACITY * (SPARK_SPECULATION_RECORDED_ENTRY_FIXED_BYTES + 28u)];
+
+static void VerifyPut32(uint8_t *bytes,uint32_t value)
+{
+	uint32_t index;
+	for (index=0u; index<4u; index++)
+		bytes[index] = (uint8_t)(value >> (8u * index));
+}
+
+static void VerifyPut64(uint8_t *bytes,uint64_t value)
+{
+	VerifyPut32(bytes,(uint32_t)value);
+	VerifyPut32(bytes + 4,(uint32_t)(value >> 32));
+}
+
+static uint64_t VerifyRecordedTable(const uint32_t *expected,uint64_t sequence)
+{
+	uint32_t entry_bytes = SPARK_SPECULATION_RECORDED_ENTRY_FIXED_BYTES + 28u,anchor,count,index;
+	uint64_t entries = 0u;
+	uint8_t *entry;
+	memset(VERIFY_RECORDED_TABLE,0,sizeof(VERIFY_RECORDED_TABLE));
+	for (anchor=VERIFY_PROMPT - 1u; anchor + 1u < VERIFY_CAPACITY; anchor++)
+	{
+		if ( anchor % 5u == 3u )
+			continue;
+		entry = VERIFY_RECORDED_TABLE + SPARK_SPECULATION_RECORDED_HEADER_BYTES + entries * entry_bytes;
+		count = VERIFY_CAPACITY - 1u - anchor < 7u ? VERIFY_CAPACITY - 1u - anchor : 7u;
+		VerifyPut64(entry,sequence);
+		VerifyPut64(entry + 8,anchor);
+		VerifyPut32(entry + 16,count);
+		for (index=0u; index<count; index++)
+			VerifyPut32(entry + SPARK_SPECULATION_RECORDED_ENTRY_FIXED_BYTES + 4u * index,anchor % 3u == 1u && index == 2u ? (expected[anchor + 1u + index] + 1u) % SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT : expected[anchor + 1u + index]);
+		entries++;
+	}
+	VerifyPut32(VERIFY_RECORDED_TABLE,SPARK_SPECULATION_RECORDED_MAGIC);
+	VerifyPut32(VERIFY_RECORDED_TABLE + 4,SPARK_SPECULATION_RECORDED_VERSION);
+	VerifyPut32(VERIFY_RECORDED_TABLE + 8,7u);
+	VerifyPut32(VERIFY_RECORDED_TABLE + 12,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT);
+	VerifyPut64(VERIFY_RECORDED_TABLE + 16,entries);
+	return(SPARK_SPECULATION_RECORDED_HEADER_BYTES + entries * entry_bytes);
+}
+
 static void check_verify_rounds(uint32_t drafter)
 {
 	static uint32_t history[VERIFY_CAPACITY],expected[VERIFY_CAPACITY];
@@ -1263,6 +1306,12 @@ static void check_verify_rounds(uint32_t drafter)
 		state.verify_draft_function = SparkSpeculationLookupDraftTokens;
 		state.verify_draft_context = &state.verify_lookup;
 	}
+	else if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED )
+	{
+		assert(SparkSpeculationRecordedDraftInitialize(&state.verify_recorded,VERIFY_RECORDED_TABLE,VerifyRecordedTable(expected,row_sequence),SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT) == SPARK_STATUS_OK);
+		state.verify_draft_function = SparkSpeculationRecordedDraftTokens;
+		state.verify_draft_context = &state.verify_recorded;
+	}
 	else
 	{
 		assert(SparkSpeculationReferenceDraftInitialize(&state.verify_reference,drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE ? SPARK_SPECULATION_REFERENCE_ORACLE : SPARK_SPECULATION_REFERENCE_ADVERSARY,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,0u,expected,VERIFY_CAPACITY) == SPARK_STATUS_OK);
@@ -1316,7 +1365,7 @@ static void check_verify_rounds(uint32_t drafter)
 		assert(SparkGlm5NextVerifyDriveDraft(&state,&frame,&batch,&state.slots[0],chain) == SPARK_STATUS_OK);
 		if ( chain->verify_budget == 0u )
 		{
-			assert(drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP && chain->steps == 8u && async->steps == 8u && chain->spec_verify == 0u);
+			assert((drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP || drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED) && chain->steps == 8u && async->steps == 8u && chain->spec_verify == 0u);
 			for (index=0u; index<8u; index++)
 				host_output[index] = expected[length + index];
 			async->burst_token_count = 8u;
@@ -1385,6 +1434,13 @@ static void check_verify_rounds(uint32_t drafter)
 		assert(state.verify_accepted == 0u && state.verify_accept_depth[0] == rounds && state.verify_proposed == 7u + rounds - 1u && state.verify_depth_cap[row_slot] == 1u);
 	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
 		assert(state.verify_proposed == 7u * rounds && state.verify_depth_cap[row_slot] == 7u);
+	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED )
+	{
+		assert(state.verify_recorded.hits != 0u && state.verify_recorded.misses != 0u && state.verify_accepted != 0u && state.verify_frames != 0u && state.verify_plain_frames != 0u);
+		assert(state.verify_accepted < state.verify_proposed);
+		printf("verify recorded: %u frames, %u rounds, proposed %llu accepted %llu, table hits %llu misses %llu, output exact\n",frames,rounds,
+			(unsigned long long)state.verify_proposed,(unsigned long long)state.verify_accepted,(unsigned long long)state.verify_recorded.hits,(unsigned long long)state.verify_recorded.misses);
+	}
 	accepted_sum = 0u;
 	for (index=0u; index<SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - 1u; index++)
 	{
@@ -4602,6 +4658,7 @@ int32_t main(void)
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP);
+	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED);
 	check_tap_config();
 	static char tap_dump_path[96];
 	snprintf(tap_dump_path,sizeof(tap_dump_path),"/tmp/sparkpipe_glm5_next_tap_dump_%ld.sptd",(long)getpid());

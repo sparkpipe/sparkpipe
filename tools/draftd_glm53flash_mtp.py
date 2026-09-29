@@ -180,7 +180,7 @@ class Glm53FlashMtpDrafter:
         i = p + "self_attn.indexer."
         self.index_wq = self._spine(i + "wq_b.weight")
         self.index_wk = self._spine(i + "wk.weight")
-        self.index_gate_w = self._spine(i + "index_kpool_compress_gate.weight")
+        self.index_gate_w = self._spine(i + "index_kpool_compress_gate")
         self.index_head_w = self._spine(i + "weights_proj.weight")
         self.index_norm = self._vector(i + "k_norm.weight")
         self.index_norm_bias = self._vector(i + "k_norm.bias")

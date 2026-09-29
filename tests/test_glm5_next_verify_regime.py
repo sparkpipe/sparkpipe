@@ -72,7 +72,7 @@ static void check_drafter(void)
 {
 	uint32_t kind;
 	const char *path;
-	static const char *bad[] = {"","Lookup","lookup ","oracle","oracle:","adversary:","remote:rtx5090"};
+	static const char *bad[] = {"","Lookup","lookup ","oracle","oracle:","adversary:","recorded:","recorded","remote:rtx5090"};
 	uint32_t index;
 	require(SparkGlm5NextVerifyDrafterParse(0,0u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE && path == 0,"regime off with no drafter",0u,0u,0u);
 	require(SparkGlm5NextVerifyDrafterParse("lookup",0u,&kind,&path) == SPARK_STATUS_INVALID_ARGUMENT && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE,"a drafter without the regime is rejected",0u,0u,0u);
@@ -80,6 +80,8 @@ static void check_drafter(void)
 	require(SparkGlm5NextVerifyDrafterParse("lookup",4u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP && path == 0,"lookup drafter",0u,0u,0u);
 	require(SparkGlm5NextVerifyDrafterParse("oracle:/tmp/r.u32",4u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE && strcmp(path,"/tmp/r.u32") == 0,"oracle drafter names its recording",0u,0u,0u);
 	require(SparkGlm5NextVerifyDrafterParse("adversary:r",8u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY && strcmp(path,"r") == 0,"adversary drafter names its recording",0u,0u,0u);
+	require(SparkGlm5NextVerifyDrafterParse("recorded:/tmp/d.sprd",8u,&kind,&path) == SPARK_STATUS_OK && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED && strcmp(path,"/tmp/d.sprd") == 0,"recorded drafter names its draft table",0u,0u,0u);
+	require(SparkGlm5NextVerifyDrafterUsesMtp(SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED) == 0u && SparkGlm5NextVerifyDrafterUsesLookup(SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED) == 0u,"a recorded table needs neither the MTP sidecar nor lookup",0u,0u,0u);
 	for (index=0u; index<sizeof(bad)/sizeof(bad[0]); index++)
 		require(SparkGlm5NextVerifyDrafterParse(bad[index],4u,&kind,&path) == SPARK_STATUS_INVALID_ARGUMENT && kind == SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE,"unknown drafter rejected",index,0u,0u);
 }
