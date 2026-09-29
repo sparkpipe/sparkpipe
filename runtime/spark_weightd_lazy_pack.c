@@ -80,7 +80,7 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 		if ( status != SPARK_STATUS_UNSUPPORTED && status != SPARK_STATUS_IO_ERROR )
 			SPARK_RETURN(status);
 	}
-	return(SparkWeightdSpineLoad(fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,pack->spine,bytes));
+	return(SparkWeightdSpineLoad(request->pack_path,fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,pack->spine,bytes));
 }
 
 static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context)

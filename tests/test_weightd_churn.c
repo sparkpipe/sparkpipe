@@ -11,6 +11,7 @@
 #include "cuda.h"
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_sha256.h"
 
 /* The vortex and the attach-slot leak, at the boundary where they live.
  *
@@ -104,7 +105,7 @@ static SparkStatus attach_lazy_model(SparkWeightdClient *client,const char *path
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = (3u * CHUNK);
 	snprintf(request.identity.model,sizeof(request.identity.model),"%s",model);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = (2u * CHUNK);

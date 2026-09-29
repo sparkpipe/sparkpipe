@@ -44,7 +44,9 @@
 #define SPARK_GEMMA4_SERVING_PP_STAGE_COUNT 4u
 #define SPARK_GEMMA4_SERVING_STAGE_LAYER_LIST \
 	8u,8u,8u,8u,8u,8u,8u,8u,7u,7u,7u,7u,7u,7u,7u,7u
-#else
+#elif !defined(SPARK_GEMMA4_SERVING_TOPOLOGY)
+#error "SPARK_GEMMA4_SERVING_TOPOLOGY must name the dense serving topology: 16 or 4"
+#elif SPARK_GEMMA4_SERVING_TOPOLOGY == 16
 #define SPARK_GEMMA4_SERVING_ADAPTER_ID "spark.gemma4.serving-adapter.tp16.v1"
 #define SPARK_GEMMA4_SERVING_MODEL_ID "google/gemma-4-31B-it"
 #define SPARK_GEMMA4_SERVING_TARGET "cuda.sm121.gemma4.31b.resident_decode_stage.bf16"
@@ -54,6 +56,18 @@
 #define SPARK_GEMMA4_SERVING_PP_STAGE_COUNT 1u
 #define SPARK_GEMMA4_SERVING_STAGE_LAYER_LIST \
 	60u,60u,60u,60u,60u,60u,60u,60u,60u,60u,60u,60u,60u,60u,60u,60u
+#elif SPARK_GEMMA4_SERVING_TOPOLOGY == 4
+#define SPARK_GEMMA4_SERVING_ADAPTER_ID "spark.gemma4.serving-adapter.tp4.v1"
+#define SPARK_GEMMA4_SERVING_MODEL_ID "google/gemma-4-31B-it"
+#define SPARK_GEMMA4_SERVING_TARGET "cuda.sm121.gemma4.31b.resident_decode_stage.bf16"
+#define SPARK_GEMMA4_SERVING_STAGE_COUNT 4u
+#define SPARK_GEMMA4_SERVING_DEFAULT_TP_DEGREE 4u
+#define SPARK_GEMMA4_SERVING_PARALLEL_GROUP_SIZE 4u
+#define SPARK_GEMMA4_SERVING_PP_STAGE_COUNT 1u
+#define SPARK_GEMMA4_SERVING_STAGE_LAYER_LIST \
+	60u,60u,60u,60u
+#else
+#error "SPARK_GEMMA4_SERVING_TOPOLOGY names no dense serving topology: 16 or 4"
 #endif
 #define SPARK_GEMMA4_SERVING_MAX_PP_STAGE_COUNT SPARK_GEMMA4_SERVING_PP_STAGE_COUNT
 #define SPARK_GEMMA4_SERVING_STAGE_NAME "gemma4_resident_decode_stage"
@@ -83,6 +97,8 @@
 #define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) \
 	SparkGemma4ServingInitializeFamilyState(state)
 #define SPARK_QWEN38_SERVING_ADAPTER_PREFETCH SparkGemma4ServingPrefetch
+#define SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
+	((state)->max_input_row_count)
 #define SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH \
 	SparkGemma4ServingResolvePrefetch
 #define SPARK_QWEN38_SERVING_ADAPTER_RESET SparkGemma4ServingReset

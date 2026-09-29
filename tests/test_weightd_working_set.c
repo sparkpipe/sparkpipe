@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_map.h"
 #include "sparkpipe/spark_weightd_spine.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -89,67 +90,6 @@ static void write_fixture(const char *path,const char *manifest_path)
 	assert(fclose(manifest) == 0);
 }
 
-/* Scan /tmp/spark-weightd-spine for the receipt bound to this pack's
- * (size,mtime,ctime) - the same binding the loader validates - and hand
- * back its path and proof basis. Used to assert the prong-1 trust chain:
- * client full hash writes proof 0, the daemon recorder writes proof 1,
- * tampered bases are re-proven. */
-static int find_spine_receipt(const char *pack_path,char *out,size_t out_bytes,
-	uint64_t *proof)
-{
-	static const char directory_path[] = "/tmp/spark-weightd-spine";
-	DIR *directory = opendir(directory_path);
-	struct dirent *entry;
-	struct stat st;
-	int found = 0;
-	if ( directory == 0 || stat(pack_path,&st) != 0 )
-	{
-		if ( directory != 0 )
-			closedir(directory);
-		return(0);
-	}
-	while ( found == 0 && (entry = readdir(directory)) != 0 )
-	{
-		char path[512];
-		uint8_t raw[88];
-		FILE *file;
-		uint64_t magic,size,mtime_ns,ctime_ns,recorded;
-		if ( entry->d_name[0] == '.' )
-			continue;
-		snprintf(path,sizeof(path),"%s/%s",directory_path,entry->d_name);
-		file = fopen(path,"rb");
-		if ( file == 0 || fread(raw,1u,sizeof(raw),file) != sizeof(raw) )
-		{
-			if ( file != 0 )
-				fclose(file);
-			continue;
-		}
-		fclose(file);
-		memcpy(&magic,raw,8u);
-		memcpy(&size,raw + 8u,8u);
-		memcpy(&mtime_ns,raw + 16u,8u);
-		memcpy(&ctime_ns,raw + 24u,8u);
-		memcpy(&recorded,raw + 80u,8u);
-		if ( magic != UINT64_C(0x5350494e45524531) ||
-			size != (uint64_t)st.st_size )
-			continue;
-#if defined(__APPLE__)
-		if ( mtime_ns != ((uint64_t)st.st_mtimespec.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_mtimespec.tv_nsec) ||
-			ctime_ns != ((uint64_t)st.st_ctimespec.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_ctimespec.tv_nsec) )
-			continue;
-#else
-		if ( mtime_ns != ((uint64_t)st.st_mtim.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_mtim.tv_nsec) ||
-			ctime_ns != ((uint64_t)st.st_ctim.tv_sec * UINT64_C(1000000000) + (uint64_t)st.st_ctim.tv_nsec) )
-			continue;
-#endif
-		snprintf(out,out_bytes,"%s",path);
-		*proof = recorded;
-		found = 1;
-	}
-	closedir(directory);
-	return(found);
-}
-
 static void check_spine_load(const char *path,const char *manifest_path)
 {
 	SparkWeightdManifest manifest;
@@ -163,10 +103,10 @@ static void check_spine_load(const char *path,const char *manifest_path)
 	assert(SparkSha256File(path,digest) == SPARK_STATUS_OK);
 	assert(posix_memalign((void **)&destination,256u,(size_t)manifest.spine_allocation_bytes) == 0);
 	memset(destination,0xa5,(size_t)manifest.spine_allocation_bytes);
-	assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes - 1u) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes - 1u) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(destination[0] == 0xa5);
 	assert(lseek(fd,123,SEEK_SET) == 123);
-	assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+	assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
 	assert(lseek(fd,0,SEEK_CUR) == 123);
 	for (i=0u; i<manifest.spine_count; i++)
 	{
@@ -176,31 +116,19 @@ static void check_spine_load(const char *path,const char *manifest_path)
 		for (j=manifest.spine[i].compact_offset; j<cursor; j++)
 			assert(destination[j] == ((manifest.spine[i].offset + j - manifest.spine[i].compact_offset) == 512u ? 255u : 0u));
 	}
-	/* Prong-1 trust chain: the load above (full client hash) recorded a
-	 * proof-0 receipt; the daemon recorder writes the same binding with
-	 * the proof-1 basis and the loader accepts it; a tampered basis is
-	 * treated as absent and re-proven by a full hash (proof back to 0). */
 	{
-		char receipt[512];
-		uint8_t sha_bytes[32];
-		uint64_t proof = 99u;
-		int nibble,index;
-		assert(find_spine_receipt(path,receipt,sizeof(receipt),&proof) == 1);
-		assert(proof == UINT64_C(0));
-		for (index=0; index<64; index++)
-		{
-			char letter = digest[index];
-			nibble = letter >= 'a' ? letter - 'a' + 10 : letter - '0';
-			if ( (index % 2) == 0 )
-				sha_bytes[index / 2] = (uint8_t)(nibble << 4);
-			else
-				sha_bytes[index / 2] |= (uint8_t)nibble;
-		}
-		assert(SparkWeightdSpineReceiptRecordDaemon(fd,digest,sha_bytes) == SPARK_STATUS_OK);
-		assert(find_spine_receipt(path,receipt,sizeof(receipt),&proof) == 1);
-		assert(proof == UINT64_C(1));
+		char receipt_path[512];
+		SparkWeightdReceipt first,second;
+		assert(snprintf(receipt_path,sizeof(receipt_path),"%s.verified",path) > 0);
+		assert(SparkWeightdReceiptLoad(receipt_path,&first) == SPARK_STATUS_NOT_FOUND);
+		usleep(1100000);
+		assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+		assert(SparkWeightdReceiptLoad(receipt_path,&first) == SPARK_STATUS_OK);
+		assert(strcmp(first.sha256,digest) == 0 && first.ck128[0] != 0 && strncmp(first.verifier,"client ",7u) == 0);
 		memset(destination,0xa5,(size_t)manifest.spine_allocation_bytes);
-		assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+		assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+		assert(SparkWeightdReceiptLoad(receipt_path,&second) == SPARK_STATUS_OK);
+		assert(second.verified_unix_ns == first.verified_unix_ns);
 		cursor = 0u;
 		for (i=0u; i<manifest.spine_count; i++)
 		{
@@ -211,20 +139,21 @@ static void check_spine_load(const char *path,const char *manifest_path)
 				assert(destination[j] == ((manifest.spine[i].offset + j - manifest.spine[i].compact_offset) == 512u ? 255u : 0u));
 		}
 		{
-			FILE *file = fopen(receipt,"r+b");
-			uint64_t bad = UINT64_C(2);
+			FILE *file = fopen(receipt_path,"r+b");
 			assert(file != 0);
-			assert(fseek(file,80L,SEEK_SET) == 0);
-			assert(fwrite(&bad,8u,1u,file) == 1u);
+			assert(fseek(file,40L,SEEK_SET) == 0);
+			assert(fputc('9',file) != EOF);
 			assert(fclose(file) == 0);
 		}
-		assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
-		assert(find_spine_receipt(path,receipt,sizeof(receipt),&proof) == 1);
-		assert(proof == UINT64_C(0));
+		assert(SparkWeightdReceiptLoad(receipt_path,&second) == SPARK_STATUS_PARSE_ERROR);
+		assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_OK);
+		assert(SparkWeightdReceiptLoad(receipt_path,&second) == SPARK_STATUS_OK);
+		assert(second.verified_unix_ns > first.verified_unix_ns);
+		assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,"0000000000000000000000000000000000000000000000000000000000000000",destination,manifest.spine_allocation_bytes) == SPARK_STATUS_HASH_MISMATCH);
 	}
 	// Changing an expert byte must invalidate the whole-pack identity too.
 	assert(pwrite(fd,&value,1u,0) == 1);
-	assert(SparkWeightdSpineLoad(fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_HASH_MISMATCH);
+	assert(SparkWeightdSpineLoad(path,fd,&manifest,PACK_BYTES,digest,destination,manifest.spine_allocation_bytes) == SPARK_STATUS_HASH_MISMATCH);
 	value = 1u;
 	assert(pwrite(fd,&value,1u,0) == 1);
 	free(destination);
@@ -239,7 +168,7 @@ static uint64_t attach_config(SparkWeightdClient *client,const char *path,uint64
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = arena_bytes;
 	memcpy(request.identity.model,"working-set-test",17u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = (pool * CHUNK);
@@ -798,7 +727,7 @@ static void check_pooled_attach(void)
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = (65u * CHUNK);
 	memcpy(request.identity.model,"pooled-attach-test",19u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = (66u * CHUNK);
@@ -920,7 +849,7 @@ static void check_lazy_pack(const char *socket_path,const char *path,const char 
 			{
 				verify_fd = open(path,O_RDONLY);
 				assert(verify_fd >= 0);
-				assert(SparkWeightdSpineLoad(verify_fd,&verify,PACK_BYTES,request.identity.pack_sha256,from_file,capacity) == SPARK_STATUS_OK);
+				assert(SparkWeightdSpineLoad(path,verify_fd,&verify,PACK_BYTES,request.identity.pack_sha256,from_file,capacity) == SPARK_STATUS_OK);
 				assert(memcmp(from_arena,from_file,(size_t)capacity) == 0);
 				(void)close(verify_fd);
 			}
@@ -946,7 +875,7 @@ static void check_budget_contract(SparkWeightdClient *client,const char *path)
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = PACK_BYTES;
 	memcpy(request.identity.model,"working-set-test",17u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = UINT64_MAX;
 	assert(SparkWeightdClientAttachLazy(client,&request,&result,TIMEOUT) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -1023,7 +952,7 @@ static void check_spine_residency_modes(const char *path,const char *manifest_pa
 
 int main(int argc,char **argv)
 {
-	char root[] = "/tmp/weightd-set-XXXXXX",path[256],manifest[272],socket_path[256],wset[272];
+	char root[] = "/tmp/weightd-set-XXXXXX",path[256],manifest[272],socket_path[256],wset[272],receipt[280];
 	TestServer state = {0};
 	SparkWeightdServerConfig config = {0};
 	SparkWeightdClient *a,*b;
@@ -1066,6 +995,8 @@ int main(int argc,char **argv)
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(state.server);
 	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	assert(snprintf(receipt,sizeof(receipt),"%s.verified",path) > 0);
+	(void)unlink(receipt);
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
 	check_map_eviction();
 	check_many_exports();

@@ -84,6 +84,10 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingLoadConfiguration)(
 	return(status);
 }
 
+#ifndef SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS
+#error "a family adapter names the row count of its prefill frames"
+#endif
+
 static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSetEnvironment)(
 	const SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state)
 {
@@ -99,6 +103,7 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSetEnvironment)(
 	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_FIRST_LAYER),state->first_layer_index);
 	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_LAYER_COUNT),state->stage_layer_count);
 	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_MAX_ACTIVE_SEQUENCES),state->max_active_sequence_count);
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_MAX_INPUT_ROWS),SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state));
 	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_PIPELINE_SLOTS),state->pipeline_slot_count);
 	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_KV_BLOCKS),state->kv_block_count);
 	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_MTP),"0");
@@ -555,8 +560,8 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit)(
 			for (wave=0u; status == SPARK_STATUS_OK && wave<lane_rows; wave+=chunk_rows)
 			{
 				chunk_rows = lane_rows - wave;
-				if ( chunk_rows > state->max_active_sequence_count )
-					chunk_rows = state->max_active_sequence_count;
+				if ( chunk_rows > SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) )
+					chunk_rows = SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state);
 				status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingRunFrame)(state,submission,pending,1u,lane,wave,chunk_rows);
 			}
 		}

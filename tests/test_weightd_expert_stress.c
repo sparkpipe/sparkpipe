@@ -11,6 +11,7 @@
 #include "cuda.h"
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_sha256.h"
 
 #define CHUNK (2u * 1024u * 1024u)
 #define EXPERTS 4u
@@ -119,7 +120,7 @@ static SparkStatus attach(SparkWeightdClient *client,const char *path,uint64_t *
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
 	request.identity.arena_bytes = (uint64_t)EXPERTS * CHUNK;
 	memcpy(request.identity.model,"expert-stress",14u);
-	memset(request.identity.pack_sha256,'a',64u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
 	request.expert_pool_bytes = (uint64_t)POOL_CHUNKS * CHUNK;

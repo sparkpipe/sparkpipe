@@ -6,8 +6,8 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_worker.h"
-#include "sparkpipe/spark_weightd_spine.h"
 #include "sparkpipe/spark_weightd_direct.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 #include <stdatomic.h>
 
 #include <errno.h>
@@ -253,19 +253,6 @@ static uint64_t SparkWeightdMonotonicTimeNs(void)
         return 0ull;
     }
     return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
-}
-
-/* The stat change-detector for the verify/load window: size + mtime with
- * whatever nanosecond field the platform names it. */
-static uint64_t SparkWeightdStatMtimeNs(const struct stat *status)
-{
-#if defined(__APPLE__)
-    return (uint64_t)status->st_mtimespec.tv_sec * 1000000000ull +
-        (uint64_t)status->st_mtimespec.tv_nsec;
-#else
-    return (uint64_t)status->st_mtim.tv_sec * 1000000000ull +
-        (uint64_t)status->st_mtim.tv_nsec;
-#endif
 }
 
 static SparkStatus SparkWeightdStringBounded(const char *text, uint32_t capacity)
@@ -1071,9 +1058,110 @@ static SparkStatus SparkWeightdSidecarCk128(const char *pack_path,
     return SPARK_STATUS_OK;
 }
 
-/* The cold path: verify-then-load, all through ONE open file so the bytes
- * loaded are the bytes digested, with a size+mtime re-check after the load
- * closing the window against an in-flight pack rewrite. */
+typedef struct SparkWeightdVerifySink
+{
+    uint8_t *device;
+    SparkSha256Context sha;
+    SparkCk128Context ck;
+    uint32_t hash;
+} SparkWeightdVerifySink;
+
+static SparkStatus SparkWeightdVerifySinkWrite(void *context,
+    const uint8_t *data, uint64_t offset, uint64_t bytes)
+{
+    SparkWeightdVerifySink *sink = (SparkWeightdVerifySink *)context;
+    if (sink->hash == 1u)
+        SparkSha256Update(&sink->sha, data, (size_t)bytes);
+    if (sink->hash == 2u)
+        SparkCk128Update(&sink->ck, data, (size_t)bytes);
+    if (sink->device != 0 &&
+        cudaMemcpy((void *)(sink->device + offset), data, (size_t)bytes,
+            cudaMemcpyHostToDevice) != cudaSuccess)
+        return SPARK_STATUS_IO_ERROR;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkWeightdPackVerifiedLoad(const char *pack_path,
+    int32_t fd, const SparkWeightdIdentity *identity, uint8_t *device,
+    const struct stat *before)
+{
+    SparkWeightdVerifySink sink;
+    SparkWeightdStreamStats stats;
+    struct stat after;
+    char ck_hex[SPARK_SHA256_HEX_BYTES];
+    char computed[SPARK_SHA256_HEX_BYTES];
+    uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+    const char *reason = "absent";
+    const char *mode = "receipt";
+    SparkStatus status;
+    int32_t sidecar;
+    memset(&sink, 0, sizeof(sink));
+    memset(&stats, 0, sizeof(stats));
+    sidecar = SparkWeightdSidecarCk128(pack_path, ck_hex) == SPARK_STATUS_OK;
+    status = SparkWeightdReceiptCheck(pack_path, fd, identity->pack_sha256,
+        sidecar ? ck_hex : 0, &reason);
+    if (status != SPARK_STATUS_OK)
+    {
+        mode = sidecar ? "ck128" : "sha256";
+        sink.hash = sidecar ? 2u : 1u;
+        fprintf(stderr, "weightd pack-verify path=%s receipt=%s status=%s: full %s verification\n",
+            pack_path, reason, SparkStatusToString(status), mode);
+        if (sidecar)
+            SparkCk128Initialize(&sink.ck);
+        else
+            SparkSha256Initialize(&sink.sha);
+    }
+    sink.device = device;
+    status = SPARK_STATUS_OK;
+    if (sink.hash != 0u || device != 0)
+        status = SparkWeightdPackStream(pack_path, fd,
+            identity->arena_bytes, SparkWeightdVerifySinkWrite, &sink, &stats);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "weightd pack-verify path=%s read failed status=%s\n",
+            pack_path, SparkStatusToString(status));
+        return status;
+    }
+    if (sink.hash == 2u)
+    {
+        SparkCk128Finalize(&sink.ck, digest);
+        SparkCk128DigestToHex(digest, computed);
+    }
+    if (sink.hash == 1u)
+    {
+        SparkSha256Finalize(&sink.sha, digest);
+        SparkSha256DigestToHex(digest, computed);
+    }
+    if (sink.hash != 0u && strcmp(computed, sidecar ? ck_hex : identity->pack_sha256) != 0)
+    {
+        fprintf(stderr, "weightd pack-verify HASH MISMATCH path=%s mode=%s expected=%s computed=%s\n",
+            pack_path, mode, sidecar ? ck_hex : identity->pack_sha256, computed);
+        return SPARK_STATUS_HASH_MISMATCH;
+    }
+    if (fstat(fd, &after) != 0 || SparkWeightdPackStatSame(before, &after) == 0)
+    {
+        fprintf(stderr, "weightd pack-verify path=%s changed while it was read\n", pack_path);
+        return SPARK_STATUS_HASH_MISMATCH;
+    }
+    if (sink.hash != 0u)
+    {
+        status = SparkWeightdReceiptRecord(pack_path, fd, before,
+            sink.hash == 1u ? identity->pack_sha256 : 0,
+            sink.hash == 2u ? ck_hex : 0, "weightd");
+        if (status != SPARK_STATUS_OK)
+            fprintf(stderr, "weightd pack-verify path=%s receipt not written status=%s: the next cold load verifies again\n",
+                pack_path, SparkStatusToString(status));
+    }
+    printf("weightd pack-verify path=%s mode=%s bytes=%llu seconds=%.3f gbps=%.2f io=%s read_wait_s=%.3f work_s=%.3f\n",
+        pack_path, mode, (unsigned long long)stats.bytes,
+        (double)stats.elapsed_ns / 1e9,
+        stats.elapsed_ns != 0u ? (double)stats.bytes / (double)stats.elapsed_ns : 0.0,
+        stats.direct != 0u ? "direct" : "buffered",
+        (double)stats.wait_ns / 1e9, (double)stats.sink_ns / 1e9);
+    fflush(stdout);
+    return SPARK_STATUS_OK;
+}
+
 static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     SparkWeightdConnection *connection,
     const SparkWeightdIpcAttach *request,
@@ -1082,21 +1170,9 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     SparkWeightdIdentity identity = request->identity;
     SparkWeightdArena *arena;
     SparkWeightdArena pending;
-    char expected_hex[SPARK_SHA256_HEX_BYTES];
-    char computed_hex[SPARK_SHA256_HEX_BYTES];
     struct stat pack_stat_before;
-    struct stat pack_stat_after;
-    FILE *file = 0;
-    uint8_t *staging = 0;
-    uint8_t materialized_sha[SPARK_SHA256_DIGEST_BYTES];
-    SparkCk128Context ck_context;
-    SparkSha256Context sha_context;
-    SparkStatus verify_status;
-    int use_ck128;
     SparkStatus status;
-    uint64_t loaded = 0ull;
-    uint64_t load_start_ns;
-    uint64_t load_end_ns;
+    int32_t pack_fd;
     uint32_t slot;
 
     memset(&pending, 0, sizeof(pending));
@@ -1141,163 +1217,54 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
 
-    /* cold: claim vs disk, on one open handle */
-    file = fopen(request->pack_path, "rb");
-    if (file == 0)
+    pack_fd = open(request->pack_path, O_RDONLY | O_CLOEXEC);
+    if (pack_fd < 0)
     {
-        fprintf(stderr, "WDATTACH fopen-fail path=%s errno=%d\n",
+        fprintf(stderr, "WDATTACH open-fail path=%s errno=%d\n",
             request->pack_path, errno);
         result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
         return;
     }
-    if (fstat(fileno(file), &pack_stat_before) != 0 ||
+    if (fstat(pack_fd, &pack_stat_before) != 0 ||
+        S_ISREG(pack_stat_before.st_mode) == 0 ||
         pack_stat_before.st_size < 0 ||
         (uint64_t)pack_stat_before.st_size != identity.arena_bytes)
     {
         fprintf(stderr, "WDATTACH size-mismatch path=%s size=%lld arena=%llu\n",
             request->pack_path, (long long)pack_stat_before.st_size,
             (unsigned long long)identity.arena_bytes);
-        (void)fclose(file);
+        (void)close(pack_fd);
         result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
         return;
     }
-    use_ck128 = SparkWeightdSidecarCk128(request->pack_path, expected_hex) ==
-        SPARK_STATUS_OK;
-    if (!use_ck128)
-    {
-        memcpy(expected_hex, identity.pack_sha256, SPARK_SHA256_HEX_BYTES);
-    }
 
-    /* the NO-2x gate: make room by reclaiming COLD arenas only; if a live
-     * arena still blocks the fit, fail closed with nothing allocated — the
-     * update then goes through stop (detach) before attach, per the design */
     SparkWeightdServerReclaimCold(server, identity.arena_bytes);
     if (server->resident_bytes + identity.arena_bytes >
             server->config.device_bytes_max ||
         server->arena_count >= SPARK_WEIGHTD_ARENA_COUNT_MAX)
     {
-        (void)fclose(file);
+        (void)close(pack_fd);
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         result->resident_bytes = server->resident_bytes;
         result->arena_count = server->arena_count;
         return;
     }
 
-    /* the VMM arena: a reserved virtual span carrying physical chunks
-     * mapped read-write for the load below. The identity — not the
-     * allocation — is the contract; the span's chunks can be attached or
-     * detached later without moving the base (docs/WEIGHTD_DESIGN.md). */
     if (SparkWeightdVmmAllocate(identity.arena_bytes, &pending) !=
         SPARK_STATUS_OK)
     {
-        (void)fclose(file);
+        (void)close(pack_fd);
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         return;
     }
-    staging = (uint8_t *)malloc(SPARK_WEIGHTD_LOAD_CHUNK_BYTES);
-    if (staging == 0)
-    {
-        (void)fclose(file);
-        SparkWeightdVmmRelease(&pending);
-        result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
-        return;
-    }
-    load_start_ns = SparkWeightdMonotonicTimeNs();
-    if (use_ck128)
-    {
-        SparkCk128Initialize(&ck_context);
-    }
-    else
-    {
-        SparkSha256Initialize(&sha_context);
-    }
-    while (loaded < identity.arena_bytes)
-    {
-        uint64_t remaining = identity.arena_bytes - loaded;
-        size_t chunk = remaining < SPARK_WEIGHTD_LOAD_CHUNK_BYTES
-            ? (size_t)remaining
-            : (size_t)SPARK_WEIGHTD_LOAD_CHUNK_BYTES;
-        if (fread(staging, 1u, chunk, file) != chunk)
-        {
-            free(staging);
-            (void)fclose(file);
-            SparkWeightdVmmRelease(&pending);
-            result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
-            return;
-        }
-        if (use_ck128)
-        {
-            SparkCk128Update(&ck_context, staging, chunk);
-        }
-        else
-        {
-            SparkSha256Update(&sha_context, staging, chunk);
-        }
-        if (cudaMemcpy((void *)((uint8_t *)pending.device_base + loaded),
-                staging, chunk, cudaMemcpyHostToDevice) != cudaSuccess)
-        {
-            free(staging);
-            (void)fclose(file);
-            SparkWeightdVmmRelease(&pending);
-            result->status = (uint32_t)SPARK_STATUS_IO_ERROR;
-            return;
-        }
-        loaded += (uint64_t)chunk;
-    }
-    free(staging);
-    if (use_ck128)
-    {
-        uint8_t digest[16];
-        SparkCk128Finalize(&ck_context, digest);
-        SparkCk128DigestToHex(digest, computed_hex);
-    }
-    else
-    {
-        uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-        SparkSha256Finalize(&sha_context, digest);
-        SparkSha256DigestToHex(digest, computed_hex);
-        memcpy(materialized_sha, digest, SPARK_SHA256_DIGEST_BYTES);
-    }
-    verify_status = memcmp(computed_hex, expected_hex, use_ck128 ? 32u : 64u) == 0
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_HASH_MISMATCH;
-    if (fstat(fileno(file), &pack_stat_after) != 0 ||
-        pack_stat_after.st_size != pack_stat_before.st_size ||
-        SparkWeightdStatMtimeNs(&pack_stat_after) !=
-            SparkWeightdStatMtimeNs(&pack_stat_before))
-    {
-        verify_status = SPARK_STATUS_HASH_MISMATCH;
-    }
-    if (verify_status == SPARK_STATUS_OK && !use_ck128)
-    {
-        /* Spine fast-path receipt (hill-climb, dedicated PR): the daemon
-         * just proved SHA256 over the whole pack image against
-         * identity.pack_sha256 with the file stat stable across the read.
-         * Record the DAEMON_SHA receipt so the client's first spine load
-         * copies spans without repeating that hash (strictly redundant;
-         * see the trust-chain document). ck128-sidecar mode writes none -
-         * there the client hash is the only SHA256 proof. Best-effort:
-         * failure only costs the one-time client hash. */
-        (void)SparkWeightdSpineReceiptRecordDaemon(fileno(file),
-            expected_hex, materialized_sha);
-    }
-    (void)fclose(file);
-    if (verify_status != SPARK_STATUS_OK)
+    status = SparkWeightdPackVerifiedLoad(request->pack_path, pack_fd,
+        &identity, (uint8_t *)pending.device_base, &pack_stat_before);
+    (void)close(pack_fd);
+    if (status != SPARK_STATUS_OK)
     {
         SparkWeightdVmmRelease(&pending);
-        result->status = (uint32_t)verify_status;
+        result->status = (uint32_t)status;
         return;
-    }
-    load_end_ns = SparkWeightdMonotonicTimeNs();
-    if (load_end_ns > load_start_ns)
-    {
-        printf("weightd cold-load bytes=%llu seconds=%.3f gbps=%.2f checksum=%s\n",
-            (unsigned long long)identity.arena_bytes,
-            (double)(load_end_ns - load_start_ns) / 1e9,
-            (double)identity.arena_bytes /
-                ((double)(load_end_ns - load_start_ns) / 1e9) / 1e9,
-            use_ck128 ? "ck128" : "sha256");
-        fflush(stdout);
     }
 
     slot = server->arena_count;
@@ -1492,6 +1459,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     struct stat pack_stat;
     uint32_t expert_count = 0u;
     uint32_t slot;
+    int32_t pack_fd;
     SparkStatus status;
 
     result->resident_bytes = server->resident_bytes;
@@ -1589,9 +1557,27 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
         return;
     }
 
+    pack_fd = open(request->pack_path, O_RDONLY | O_CLOEXEC);
+    status = pack_fd < 0 || fstat(pack_fd, &pack_stat) != 0 ||
+        S_ISREG(pack_stat.st_mode) == 0 ||
+        (uint64_t)pack_stat.st_size != identity.arena_bytes
+        ? SPARK_STATUS_IO_ERROR
+        : SparkWeightdPackVerifiedLoad(request->pack_path, pack_fd,
+            &identity, 0, &pack_stat);
+    if (status != SPARK_STATUS_OK)
+    {
+        if (pack_fd >= 0)
+            (void)close(pack_fd);
+        free(entries);
+        SparkWeightdManifestDestroy(&manifest);
+        result->status = (uint32_t)status;
+        return;
+    }
+
     SparkWeightdServerReclaimCold(server, request->expert_pool_bytes);
     if (server->arena_count >= SPARK_WEIGHTD_ARENA_COUNT_MAX)
     {
+        (void)close(pack_fd);
         free(entries);
         SparkWeightdManifestDestroy(&manifest);
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -1606,6 +1592,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     if (SparkWeightdVmmReserve(identity.arena_bytes,
             &server->arenas[slot]) != SPARK_STATUS_OK)
     {
+        (void)close(pack_fd);
         memset(&server->arenas[slot], 0, sizeof(server->arenas[slot]));
         free(entries);
         SparkWeightdManifestDestroy(&manifest);
@@ -1627,6 +1614,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     status = SparkWeightdLoadRecordedWorkingSet(arena);
     if ( status != SPARK_STATUS_OK )
     {
+        (void)close(pack_fd);
         SparkWeightdServerFreeArenaSlot(server,slot);
         result->status = (uint32_t)status;
         result->arena_count = server->arena_count;
@@ -1637,18 +1625,20 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     status = SparkWeightdLeaseTableCreate(&arena->manifest,&arena->leases);
     if ( status != SPARK_STATUS_OK || arena->needed_chunks == 0 || arena->created_chunks == 0 )
     {
+        (void)close(pack_fd);
         SparkWeightdServerFreeArenaSlot(server,slot);
         result->status = SPARK_STATUS_CAPACITY_EXCEEDED;
         return;
     }
 
     {
-        int32_t pack_fd = open(request->pack_path,O_RDONLY);
-        status = pack_fd < 0 ? SPARK_STATUS_IO_ERROR : SparkWeightdPremapPool(server,arena);
+        struct stat preloaded;
+        status = SparkWeightdPremapPool(server,arena);
         if (status == SPARK_STATUS_OK && arena->pool_export_handle != 0)
             status = SparkWeightdPreloadSpine(server,arena,pack_fd);
-        if (pack_fd >= 0)
-            (void)close(pack_fd);
+        if (status == SPARK_STATUS_OK && (fstat(pack_fd,&preloaded) != 0 || SparkWeightdPackStatSame(&pack_stat,&preloaded) == 0))
+            status = SPARK_STATUS_HASH_MISMATCH;
+        (void)close(pack_fd);
         if (status != SPARK_STATUS_OK)
         {
             SparkWeightdServerFreeArenaSlot(server,slot);
@@ -2047,7 +2037,7 @@ static SparkStatus SparkWeightdLoadLease(SparkWeightdArena *arena,int32_t fd,uin
 	struct stat info;
 	uint32_t i,j,count = 0u;
 	SparkStatus status;
-	if ( fstat(fd,&info) != 0 || info.st_dev != arena->pack_stat.st_dev || info.st_ino != arena->pack_stat.st_ino || info.st_size != arena->pack_stat.st_size || SparkWeightdStatMtimeNs(&info) != SparkWeightdStatMtimeNs(&arena->pack_stat) )
+	if ( fstat(fd,&info) != 0 || info.st_dev != arena->pack_stat.st_dev || info.st_ino != arena->pack_stat.st_ino || info.st_size != arena->pack_stat.st_size || SparkWeightdPackMtimeNs(&info) != SparkWeightdPackMtimeNs(&arena->pack_stat) )
 		return(SPARK_STATUS_HASH_MISMATCH);
 	for (i=0u; i<lease->count; i++)
 		if ( arena->experts[lease->groups[i]].present == 0u )
@@ -2070,7 +2060,7 @@ static SparkStatus SparkWeightdLoadLease(SparkWeightdArena *arena,int32_t fd,uin
 	free(ranges);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( fstat(fd,&info) != 0 || info.st_size != arena->pack_stat.st_size || SparkWeightdStatMtimeNs(&info) != SparkWeightdStatMtimeNs(&arena->pack_stat) )
+	if ( fstat(fd,&info) != 0 || info.st_size != arena->pack_stat.st_size || SparkWeightdPackMtimeNs(&info) != SparkWeightdPackMtimeNs(&arena->pack_stat) )
 		return(SPARK_STATUS_HASH_MISMATCH);
 	return(SPARK_STATUS_OK);
 }

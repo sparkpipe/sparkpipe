@@ -270,13 +270,100 @@ The spine is the sorted exact complement of the expert ranges. It includes
 headers and padding and has no digest of its own, so the loader validates the
 pack identity before publishing a pointer. Compact spine offsets keep each
 source offset's alignment modulo 256. `SparkWeightdSpineLoad`
-(`runtime/spark_weightd_spine.c`) streams the pack through a 1 MiB buffer,
-SHA-256 hashing all of it while copying only spine bytes, and then writes a
-receipt under `/tmp/spark-weightd-spine` named by the expected digest, size and
-inode. A later load whose receipt still matches the pack's size, mtime and
-ctime, written by a client or by the daemon, copies the spine without
-rehashing. Do not map complement spans at
+(`runtime/spark_weightd_spine.c`) copies only the spine spans when the pack
+has a valid verify-once receipt (below). Without one it streams the whole
+pack through a 1 MiB buffer, SHA-256 hashing all of it while copying only
+spine bytes, and records the receipt. Do not map complement spans at
 their pack VA: small padding gaps would pin nearly every expert chunk.
+
+### Verify once
+
+A pack is hashed once, not once per load. After a full verification succeeds,
+the verifier writes `<pack>.verified` next to the real pack (symlinks are
+resolved). If the pack directory is not writable, the receipt goes to
+`$XDG_STATE_HOME/sparkpipe/verified/<dev>-<inode>.verified`, or
+`~/.local/state/sparkpipe/verified/` when `XDG_STATE_HOME` is unset
+(`runtime/spark_weightd_receipt.c`).
+
+The receipt is a short text file: device, inode, size, mtime_ns, ctime_ns,
+the verified SHA-256 and/or ck128, the verifier (role, host and pid), the
+wall-clock verification time, and a SHA-256 seal over those lines. It is
+written to a temporary file, fsynced, and renamed over the old one, so
+readers see either the old or the new receipt, never a partial one.
+
+A receipt is trusted only if all of the following hold:
+
+- it parses exactly: re-rendering the parsed fields gives the same bytes and
+  the seal matches;
+- it is a regular file owned by the loading user or root, and not group- or
+  world-writable;
+- every stat field matches `fstat` of the open pack descriptor;
+- its digest equals the digest the loader expects: the identity SHA-256, or
+  the `<pack>.ck128` sidecar value in ck128 mode.
+
+If any check fails, the loader logs the reason (`absent`, `stale`,
+`unreadable or malformed`, `untrusted owner or mode`, `digest differs`) and
+runs the full verification. A bad receipt never counts as a pass, and a hash
+mismatch fails the attach with `HASH_MISMATCH`.
+
+Any change to the pack changes its ctime and so invalidates the receipt: a
+restamp (even to the same mtime), chmod, in-place write, copy (new inode), or
+repack-and-rename. File timestamps are coarse. A write in the same timestamp
+tick as the verification would therefore keep the old stat, so a receipt is
+written only if the pack's mtime and ctime are at least
+`SPARK_WEIGHTD_RECEIPT_SETTLE_NS` (1 s) older than the wall clock. A
+just-written pack is verified on every load until it has settled; the loader
+logs `receipt not written status=busy`.
+
+Trust boundary. The seal is an unkeyed checksum: it catches a torn or
+hand-edited receipt, not a forged one. Anyone who can create files as the
+loading user or root can mint a receipt, and could equally rewrite the pack,
+so receipts add no trust beyond that uid. A receipt vouches for the file's
+metadata, not its bytes. Changes that bypass the filesystem's ctime are not
+seen: media corruption after verification, raw block-device or debugfs
+writes, or root moving the clock and restamping. Run
+`weightd_receipt verify <pack>` to re-hash a pack when its bytes are in
+doubt. A writer that already holds a shared writable mapping is covered by
+the `O_DIRECT` verification pass: it writes dirty pages back and
+write-protects them, so the writer's next store updates ctime. The receipt
+also binds `st_dev`. On a node where device numbers can change across a
+reboot (several NVMe drives probed in varying order, or device-mapper), the
+first load after the reboot re-verifies once.
+
+Every cold path reads the receipt:
+
+- The eager attach (`SparkWeightdServerAttachCold`) streams the pack into the
+  arena through `SparkWeightdPackStream`: a reader thread doing `O_DIRECT`
+  reads (buffered where the filesystem refuses `O_DIRECT`, such as tmpfs)
+  into three 32 MiB aligned buffers, overlapped with the device copy. With a
+  valid receipt nothing is hashed. Without one, the same pass also hashes.
+- The lazy attach (`SparkWeightdServerAttachLazy`) checks the receipt, or
+  runs a hash-only pass once, before it preloads the spine. The preload
+  reads the same descriptor, and the stat must be unchanged after it, so
+  the device-to-device spine copy in `SparkWeightdMapSpineCopy` comes from
+  verified bytes.
+- The client spine load (`SparkWeightdSpineLoad`) records a receipt with
+  both SHA-256 and ck128.
+
+The per-boot `/tmp/spark-weightd-spine` receipts are retired.
+
+Each verification logs `weightd pack-verify path=... mode=receipt|sha256|ck128
+bytes= seconds= gbps= io=direct|buffered read_wait_s= work_s=`. `work_s` is
+the time spent hashing and copying, and `read_wait_s` is the time spent
+waiting on the disk.
+
+`build/weightd_receipt` (`tools/weightd_receipt.c`) operates on receipts
+outside the daemon:
+
+- `verify <pack> [sha256]` runs a full SHA-256 and ck128 verification and
+  writes the receipt. Without a digest argument it reads `<pack>.sha256`.
+- `check` reports receipt state.
+- `show` prints the fields.
+- `read` and `hash` measure raw read and hash throughput.
+- `adopt <pack> [dir]` converts a legacy `/tmp/spark-weightd-spine` receipt
+  without rehashing, but only if it is owned by the user, its size, mtime,
+  ctime and inode match the pack, its file name binds the recorded digest,
+  and it agrees with `<pack>.sha256` when that sidecar exists.
 
 ### Pool sizing
 
