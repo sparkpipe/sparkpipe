@@ -4346,7 +4346,9 @@ int32_t main(void)
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP);
 	check_tap_config();
-	VERIFY_TAP_DUMP = "/tmp/sparkpipe_glm5_next_tap_dump_test.sptd";
+	static char tap_dump_path[96];
+	snprintf(tap_dump_path,sizeof(tap_dump_path),"/tmp/sparkpipe_glm5_next_tap_dump_%ld.sptd",(long)getpid());
+	VERIFY_TAP_DUMP = tap_dump_path;
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
 	VERIFY_TAP_DUMP = 0;
