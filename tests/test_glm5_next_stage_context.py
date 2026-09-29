@@ -171,8 +171,64 @@ uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *col
     return(STREAM_ORDERED);
 }
 
+static uint32_t ALL_TO_ALL_ADVERTISED = 3u,MESH_ATTACHED[2],COLLECTIVES_CREATED;
+static uint8_t COLLECTIVE_MARKERS[2];
+
+static uint32_t collective_slot(const SparkTpDeviceCollective *collective)
+{
+    assert(collective->implementation == &COLLECTIVE_MARKERS[0] || collective->implementation == &COLLECTIVE_MARKERS[1]);
+    return(collective->implementation == &COLLECTIVE_MARKERS[1] ? 1u : 0u);
+}
+
+uint32_t SparkTpDeviceCollectiveAllToAllSupported(const SparkTpDeviceCollective *collective)
+{
+    uint32_t slot = collective_slot(collective);
+    return((ALL_TO_ALL_ADVERTISED & (1u << slot)) != 0u && MESH_ATTACHED[slot] != 0u ? 1u : 0u);
+}
+
+SparkStatus SparkTpDeviceCollectiveApplyTopology(const SparkTpDeviceCollectiveTopology *topology,SparkTpDeviceCollectiveConfig *config)
+{
+    (void)topology;(void)config;
+    return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkTpDeviceCollectiveCreate(const SparkTpDeviceCollectiveConfig *config,SparkTpDeviceCollective *collective_out)
+{
+    assert(config->mesh_band_index < 2u && COLLECTIVES_CREATED == config->mesh_band_index);
+    memset(collective_out,0,sizeof(*collective_out));
+    collective_out->implementation = &COLLECTIVE_MARKERS[config->mesh_band_index];
+    COLLECTIVES_CREATED++;
+    return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(SparkTpDeviceCollective *collective,void *receive_device,uint32_t active_sequence_count,uint32_t hidden_dimension,uint32_t step_index,void *cuda_stream)
+{
+    (void)active_sequence_count;(void)hidden_dimension;(void)step_index;(void)cuda_stream;
+    assert(receive_device == (void *)(uintptr_t)state.lazy_pack->attached.mesh_send_buffer_addr);
+    MESH_ATTACHED[collective_slot(collective)] = 1u;
+    return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkTpDeviceCollectiveMeshTopology(uint32_t rank,uint32_t degree,struct SparkWeightdMeshTopology *topology)
+{
+    (void)rank;(void)degree;(void)topology;
+    abort();
+}
+
+SparkStatus SparkWeightdClientConnect(const char *socket_path,SparkWeightdClient **client,SparkWeightdHelloResult *hello_out)
+{
+    (void)socket_path;(void)client;(void)hello_out;
+    abort();
+}
+
+SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,uint32_t requested_lane,const SparkWeightdMeshTopology *topology,uint32_t *lane_out,uint64_t timeout_nanoseconds)
+{
+    (void)client;(void)requested_lane;(void)topology;(void)lane_out;(void)timeout_nanoseconds;
+    abort();
+}
+
 static char WALK_TRACE[256];
-static uint32_t WALK_LENGTH,WALK_GATHER_LAYER,WALK_FAIL_CODE,WALK_DELAY_NS;
+static uint32_t WALK_LENGTH,WALK_GATHER_LAYER,WALK_FAIL_CODE,WALK_DELAY_NS,WALK_SHARD_MASK,SHARD_QUERY_SEQUENCES,SHARD_PARTIAL_SEQUENCES,SHARD_WIDE;
 
 static int32_t walk_note(char code)
 {
@@ -190,6 +246,9 @@ int32_t SparkGlm5NextLaunchCudaLayerAttention(const SparkGlm5NextCudaWave *wave,
 int32_t SparkGlm5NextLaunchCudaLayerAttentionScore(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('S')); }
 int32_t SparkGlm5NextLaunchCudaLayerAttentionSelect(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('T')); }
 uint32_t SparkGlm5NextLayerIndexGatherSequences(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;return(layer == WALK_GATHER_LAYER ? 2u : 0u); }
+uint32_t SparkGlm5NextLayerKvShardActive(const SparkGlm5NextCudaWave *wave,uint32_t layer) { return(wave->kv_shard != 0u && layer < 32u && (WALK_SHARD_MASK & (1u << layer)) != 0u ? 1u : 0u); }
+int32_t SparkGlm5NextLaunchCudaLayerAttentionShardPartial(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(SparkGlm5NextLayerKvShardActive(wave,layer) != 0u);return(walk_note('V')); }
+int32_t SparkGlm5NextLaunchCudaLayerAttentionShardMerge(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(SparkGlm5NextLayerKvShardActive(wave,layer) != 0u);return(walk_note('W')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('M')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('O')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpRouteResident(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('R')); }
@@ -280,8 +339,14 @@ int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const 
 SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation_kind)
 {
 	assert((submission->flags & SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) != 0u);
-	assert(submission->cuda_stream == state.execution_stream && submission->active_sequence_count == ENQUEUE_ROWS && submission->logical_sequence_count == ENQUEUE_SEQUENCES);
-	(void)walk_note(submission->completion_function != 0 ? 'c' : collective == &state.tp_device_collective_hc ? 'h' : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER ? 'g' : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ? 'x' : 'r');
+	uint32_t shard_query = operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->local_device != 0 && submission->local_device == state.slots[submission->slot_index].query_latent_bf16;
+	assert(submission->cuda_stream == state.execution_stream && submission->logical_sequence_count == ENQUEUE_SEQUENCES);
+	assert(submission->active_sequence_count == (operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? SHARD_PARTIAL_SEQUENCES : shard_query != 0u ? SHARD_QUERY_SEQUENCES : ENQUEUE_ROWS));
+	if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+		assert(collective == (SHARD_WIDE != 0u ? &state.tp_device_collective_hc : &state.tp_device_collective) && submission->local_device == state.slots[submission->slot_index].kv_shard_partials_f32 && submission->full_device == state.slots[submission->slot_index].kv_shard_partials_received_f32);
+	if ( shard_query != 0u )
+		assert(collective == &state.tp_device_collective && submission->full_device == state.slots[submission->slot_index].kv_shard_query_gathered_bf16);
+	(void)walk_note(submission->completion_function != 0 ? (operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? 'e' : shard_query != 0u ? 'q' : 'c') : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? 'a' : shard_query != 0u ? 'k' : collective == &state.tp_device_collective_hc ? 'h' : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER ? 'g' : operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ? 'x' : 'r');
 	return(SPARK_STATUS_OK);
 }
 
@@ -1994,11 +2059,15 @@ SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCache
 	assert(table->page_store_config.page_bytes == table->page_store_config.staging_bytes);
 	assert(table->page_store_config.maximum_backing_bytes == state.page_count * table->page_store_config.page_bytes);
 	assert(table->arena_configuration.value_device_base == state.index_cache);
-	assert(table->arena_configuration.value_block_stride_bytes == (uint64_t)state.index_layer_count * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
+	uint32_t shard_divisor = state.kv_shard != 0u ? state.tp_degree : 1u;
+	char shard_fingerprint[96];
+	(void)snprintf(shard_fingerprint,sizeof(shard_fingerprint),"kv-bf16-index-packed-layer-major-gather-v1-shard%ur%u",state.tp_degree,state.tp_rank);
+	assert(strcmp(table->cache_layout_fingerprint,state.kv_shard != 0u ? shard_fingerprint : "kv-bf16-index-packed-layer-major-gather-v1") == 0);
+	assert(table->arena_configuration.value_block_stride_bytes * shard_divisor == (uint64_t)state.index_layer_count * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
 	assert(table->arena_configuration.layer_count == state.kv_layer_count && table->capacity_request.layer_count == state.kv_layer_count);
 	assert(table->arena_configuration.block_token_count == SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT && table->arena_configuration.kv_head_count == 1u);
-	assert(table->arena_configuration.head_dim == SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION && table->arena_configuration.bytes_per_scalar == 2u);
-	assert(table->page_store_config.page_bytes == (uint64_t)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT * state.kv_layer_count * SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION * 2u + table->arena_configuration.value_block_stride_bytes);
+	assert(table->arena_configuration.head_dim * shard_divisor == SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION && table->arena_configuration.bytes_per_scalar == 2u);
+	assert(table->page_store_config.page_bytes == (uint64_t)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT * state.kv_layer_count * (SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION / shard_divisor) * 2u + table->arena_configuration.value_block_stride_bytes);
 	if ( ARENA_KEY_STRIDE_SKEW != 0u )
 	{
 		arena->key_block_stride_bytes = table->page_store_config.page_bytes - table->arena_configuration.value_block_stride_bytes + ARENA_KEY_STRIDE_SKEW;
@@ -3077,6 +3146,154 @@ static void check_linear_chain(void)
 }
 
 #define LINEAR_WALK "Bh" "ArPMrQ" "SgTrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HxU"
+#define SHARD_WALK "Bh" "AkVaWrPMrQ" "SgTkVaWrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HxU"
+
+static uint16_t SHARD_QUERY[8],SHARD_GATHERED[8];
+static float SHARD_PARTIALS[8],SHARD_RECEIVED[8];
+
+static void kv_shard_slot_fixture(SparkGlm5NextExecutionSlot *slot)
+{
+	slot->query_latent_bf16 = SHARD_QUERY;
+	slot->kv_shard_query_gathered_bf16 = SHARD_GATHERED;
+	slot->kv_shard_partials_f32 = SHARD_PARTIALS;
+	slot->kv_shard_partials_received_f32 = SHARD_RECEIVED;
+	SHARD_QUERY_SEQUENCES = SparkGlm5NextKvShardQuerySequences(2u,16u);
+	SHARD_WIDE = SparkGlm5NextKvShardPartialWide(2u,16u,state.execution_row_capacity);
+	SHARD_PARTIAL_SEQUENCES = SparkGlm5NextKvShardPartialSequences(2u,16u,state.execution_row_capacity);
+	assert(SHARD_QUERY_SEQUENCES == 1u && SHARD_PARTIAL_SEQUENCES == (SHARD_WIDE != 0u ? 1u : 3u));
+}
+
+static void check_kv_shard_walk(void)
+{
+	SparkGlm5NextTpChain *chain;
+	SparkGlm5NextAsyncCompletion *async;
+	uint32_t advance;
+	chain = linear_chain_fixture();
+	async = &state.completions[0];
+	state.kv_shard = 1u;
+	kv_shard_slot_fixture(&state.slots[0]);
+	WALK_SHARD_MASK = 3u;
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(SHARD_WIDE == 0u && strcmp(WALK_TRACE,SHARD_WALK) == 0 && async->linear == 1u && async->completion.status == SPARK_STATUS_OK);
+	linear_chain_teardown();
+	chain = linear_chain_fixture();
+	async = &state.completions[0];
+	state.kv_shard = 1u;
+	state.execution_row_capacity = 2u;
+	kv_shard_slot_fixture(&state.slots[0]);
+	WALK_SHARD_MASK = 3u;
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(SHARD_WIDE == 1u && strcmp(WALK_TRACE,SHARD_WALK) == 0 && async->linear == 1u && async->completion.status == SPARK_STATUS_OK);
+	linear_chain_teardown();
+	chain = linear_chain_fixture();
+	async = &state.completions[0];
+	state.kv_shard = 1u;
+	kv_shard_slot_fixture(&state.slots[0]);
+	WALK_SHARD_MASK = 3u;
+	WALK_FAIL_CODE = 'V';
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(strcmp(WALK_TRACE,"Bh" "AkV") == 0 && async->completion.status == SPARK_STATUS_INTERNAL_ERROR);
+	linear_chain_teardown();
+	chain = linear_chain_fixture();
+	state.kv_shard = 1u;
+	kv_shard_slot_fixture(&state.slots[0]);
+	WALK_SHARD_MASK = 3u;
+	STREAM_ORDERED = 0u;
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(strcmp(WALK_TRACE,"Bc") == 0 && chain->stage == SPARK_GLM5_NEXT_CHAIN_STAGE_ATTENTION);
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(strcmp(WALK_TRACE,"Bc" "Aq") == 0 && chain->stage == SPARK_GLM5_NEXT_CHAIN_STAGE_SHARD_QUERY);
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(strcmp(WALK_TRACE,"Bc" "Aq" "Ve") == 0 && chain->stage == SPARK_GLM5_NEXT_CHAIN_STAGE_SHARD_EXCHANGE);
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(strcmp(WALK_TRACE,"Bc" "Aq" "Ve" "Wc") == 0 && chain->stage == SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION);
+	for (advance=0u; advance<16u && strstr(WALK_TRACE,"Sc" "Tq" "Ve" "Wc") == 0 && chain->active != 0u; advance++)
+		SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	if ( strstr(WALK_TRACE,"Sc" "Tq" "Ve" "Wc") == 0 )
+	{
+		fprintf(stderr,"eager shard trace %s\n",WALK_TRACE);
+		abort();
+	}
+	assert(chain->stage == SPARK_GLM5_NEXT_CHAIN_STAGE_REDUCE_ATTENTION && chain->next_layer == 1u);
+	WALK_SHARD_MASK = 0u;
+	free(chain);
+	linear_chain_teardown();
+	puts("PASS kv shard chain: query gather, partials, all-to-all and merge run in order in the linear/graph walk and the eager stages");
+}
+
+static void check_kv_shard_rank_state(void)
+{
+	uint32_t degrees[2] = {8u,16u},index;
+	for (index=0u; index<2u; index++)
+	{
+		char path[] = "/tmp/g5n_kv_bytes_XXXXXX",text[512] = {0},expected[512];
+		int descriptor = mkstemp(path),saved = dup(2);
+		assert(descriptor >= 0 && saved >= 0 && dup2(descriptor,2) == 2);
+		memset(&state,0,sizeof(state));
+		state.ledger.module_tag = "kv-shard-rank-state";
+		state.tp_degree = degrees[index];
+		state.tp_rank = degrees[index] - 1u;
+		state.kv_shard = 1u;
+		state.layer_count = 4u;
+		state.resident_sequence_capacity = 3u;
+		state.max_sequence_positions = 64u;
+		state.page_count = 7u;
+		state.physical_page_count = 2u;
+		state.kv_backing_directory = "/unused-host-fixture";
+		assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_PENDING);
+		fflush(stderr);
+		assert(dup2(saved,2) == 2 && close(saved) == 0);
+		assert(pread(descriptor,text,sizeof(text) - 1u,0) > 0 && close(descriptor) == 0 && unlink(path) == 0);
+		(void)snprintf(expected,sizeof(expected),"GLM-KV-BYTES rank=%u tp=%u shard=1 physical_pages=2 latent_bytes=%llu index_bytes=%llu replicated_latent_bytes=%llu replicated_index_bytes=%llu\n",
+			degrees[index] - 1u,degrees[index],
+			(unsigned long long)(state.kv_layer_count * 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES / degrees[index]),
+			(unsigned long long)(state.index_layer_count * 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u / degrees[index]),
+			(unsigned long long)(state.kv_layer_count * 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES),
+			(unsigned long long)(state.index_layer_count * 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u));
+		if ( strstr(text,expected) == 0 )
+			fprintf(stderr,"kv bytes line:\n%swant:\n%s",text,expected);
+		assert(state.kv_layer_count != 0u && state.index_layer_count != 0u && strstr(text,expected) != 0);
+		assert(state.kv_layer_stride_bytes * degrees[index] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
+		assert(state.index_layer_stride_bytes * degrees[index] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
+		free_cache_fixture();
+	}
+	puts("PASS kv shard rank state: latent KV and indexer key pools are 1/tp of the replicated pools at TP8 and TP16, and GLM-KV-BYTES reports both");
+}
+
+static SparkStatus kv_shard_collective_init(uint32_t kv_shard,uint32_t advertised)
+{
+	static SparkWeightdLazyPack pack;
+	SparkGlm5NextResidentDecodeStageNodeContext context = {0};
+	memset(&state,0,sizeof(state));
+	memset(&pack,0,sizeof(pack));
+	pack.attached.mesh_send_buffer_addr = 0x40000u;
+	state.lazy_pack = &pack;
+	state.lane_client = (SparkWeightdClient *)(uintptr_t)1u;
+	state.tp_degree = 16u;
+	state.tp_rank = 5u;
+	state.kv_shard = kv_shard;
+	state.pipeline_slot_count = 1u;
+	state.execution_row_capacity = 8u;
+	context.tp_collective_backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
+	context.tp_connect_timeout_milli = 1u;
+	context.tp_operation_timeout_milli = 1u;
+	ALL_TO_ALL_ADVERTISED = advertised;
+	MESH_ATTACHED[0] = MESH_ATTACHED[1] = 0u;
+	COLLECTIVES_CREATED = 0u;
+	return(SparkGlm5NextModuleInitializeTpCollective(&state,&context));
+}
+
+static void check_kv_shard_collective_init(void)
+{
+	assert(kv_shard_collective_init(1u,3u) == SPARK_STATUS_OK && COLLECTIVES_CREATED == 2u && MESH_ATTACHED[0] == 1u && MESH_ATTACHED[1] == 1u);
+	assert(state.tp_device_collective_initialized == 1u && state.tp_device_collective_hc_initialized == 1u);
+	assert(kv_shard_collective_init(1u,0u) == SPARK_STATUS_UNSUPPORTED && COLLECTIVES_CREATED == 2u);
+	assert(kv_shard_collective_init(1u,1u) == SPARK_STATUS_UNSUPPORTED && kv_shard_collective_init(1u,2u) == SPARK_STATUS_UNSUPPORTED);
+	assert(kv_shard_collective_init(0u,0u) == SPARK_STATUS_OK && COLLECTIVES_CREATED == 2u);
+	memset(&state,0,sizeof(state));
+	ALL_TO_ALL_ADVERTISED = 3u;
+	puts("PASS kv shard startup: the all-to-all check runs after both collectives attach the mesh, accepts a weightd with slice routes on both bands and refuses otherwise");
+}
 
 static void check_chain_steps(void)
 {
@@ -3958,6 +4175,9 @@ int32_t main(void)
 	check_linear_walk();
 	check_linear_eligibility();
 	check_linear_chain();
+	check_kv_shard_walk();
+	check_kv_shard_rank_state();
+	check_kv_shard_collective_init();
 	check_chain_steps();
 	check_finish_chain_mtp_tap();
 	check_execute_sequence();
@@ -4078,7 +4298,13 @@ int32_t main(void)
 	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
 	context.layer_count = 45u;
 	context.tp_degree = 16u;
-	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_OK);
+	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
+	context.flags = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD;
+	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
+	context.flags = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD | SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_INDEX_CP;
+	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
+	context.tp_collective_identifier = 1u;
+	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_OK && state.kv_shard == 1u && state.index_cp == 1u);
 	assert(state.owns_embedding == 1u && state.owns_final_head == 1u);
 	check_pack_identity();
 	services.kv_physical_page_capacity = 0u;

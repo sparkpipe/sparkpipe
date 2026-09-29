@@ -328,6 +328,18 @@ static void SparkGlm5NextBindLayer(
 	buffers->index_owner_degree = wave->index_cp_degree != 0u ? wave->index_cp_degree : 1u;
 	buffers->index_local_scores = slot->index_local_scores_f32;
 	buffers->index_gathered_scores = slot->index_gathered_scores_f32;
+	if ( wave->kv_shard != 0u )
+	{
+		buffers->kv_shard_active = 1u;
+		buffers->kv_shard = SparkGlm5NextKvShardLatent(wave->tp_rank,wave->tp_degree);
+		buffers->index_shard = SparkGlm5NextKvShardIndex(wave->tp_rank,wave->tp_degree);
+		buffers->shard_query_gathered_bf16 = slot->kv_shard_query_gathered_bf16;
+		buffers->shard_query_stride = SparkGlm5NextKvShardQueryStride(wave->row_count,wave->tp_degree);
+		buffers->shard_partials_f32 = slot->kv_shard_partials_f32;
+		buffers->shard_partials_received_f32 = slot->kv_shard_partials_received_f32;
+		buffers->shard_row_capacity = wave->execution_row_capacity != 0u ? wave->execution_row_capacity : wave->resident_sequence_capacity;
+		buffers->shard_partial_stride = SparkGlm5NextKvShardPartialStride(wave->row_count,wave->tp_degree,buffers->shard_row_capacity);
+	}
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
 	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
@@ -447,6 +459,30 @@ static int32_t SparkGlm5NextRunLayerAttentionSplit(const SparkGlm5NextCudaWave *
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	return(Glm5NextLayerAttentionHead(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,(int32_t)Glm5NextDsaProbeVecPass(&buffers),stream));
+}
+extern "C" uint32_t SparkGlm5NextLayerKvShardActive(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	if ( wave == 0 || wave->kv_shard == 0u || local_layer >= wave->layer_count )
+		return(0u);
+	return(index_ordinal_of(wave,local_layer,wave->first_layer_index + local_layer) != UINT32_MAX ? 1u : 0u);
+}
+static int32_t SparkGlm5NextRunLayerAttentionShard(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t merge)
+{
+	Glm5NextLayerBuffers buffers;
+	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK || SparkGlm5NextLayerKvShardActive(wave,local_layer) == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
+	if ( merge != 0u )
+		return(Glm5NextLayerAttentionShardMerge(&buffers,wave->row_count,wave->first_layer_index + local_layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	return(Glm5NextLayerAttentionShardPartial(&buffers,wave->row_count,wave->maximum_context,(cudaStream_t)wave->slot->stream));
+}
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionShardPartial(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	return(SparkGlm5NextRunLayerAttentionShard(wave,local_layer,0u));
+}
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionShardMerge(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	return(SparkGlm5NextRunLayerAttentionShard(wave,local_layer,1u));
 }
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionScore(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
@@ -599,7 +635,7 @@ static int32_t SparkGlm5NextValidateCover(const SparkGlm5NextCudaWave *wave)
 }
 static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave)
 {
-	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || (wave->execution_row_capacity != 0u && wave->row_count > wave->execution_row_capacity) || (wave->execution_row_capacity == 0u && wave->row_count > wave->resident_sequence_capacity) || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
+	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || (wave->execution_row_capacity != 0u && wave->row_count > wave->execution_row_capacity) || (wave->execution_row_capacity == 0u && wave->row_count > wave->resident_sequence_capacity) || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u || (wave->kv_shard != 0u && SparkGlm5NextKvShardFits(wave->tp_degree,wave->row_count) == 0u) )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextValidateCover(wave));
 }
@@ -655,6 +691,38 @@ static int32_t SparkGlm5NextMtpReduceHead(const SparkGlm5NextMtpDraftOps *ops,ui
 		return(LM_LAUNCH_OK);
 	return(ops->reduce_max_u64(ops->context,maxloc,1u) == SPARK_STATUS_OK ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
+static int32_t SparkGlm5NextMtpJoin(
+	const SparkGlm5NextCudaWave *wave,
+	const SparkGlm5NextMtpDraftOps *ops,
+	const uint16_t *hidden_input,
+	cudaStream_t stream)
+{
+	SparkGlm5NextExecutionSlot *slot = wave->slot;
+	cudaError_t error;
+	int32_t status;
+	SparkGlm5NextEmbeddingKernel<<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,1u),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,1u,wave->tp_degree,wave->tp_rank);
+	error = cudaPeekAtLastError();
+	if ( error != cudaSuccess )
+		return(SparkGlm5NextCudaStatus(error));
+	status = SparkGlm5NextMtpReduceRows(ops,slot->hidden_bf16);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH(
+		(LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+		1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
+		slot->hidden_bf16,0,(const uint16_t *)wave->mtp_enorm_bf16,0,slot->mtp_concat_bf16,
+		GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
+	LM_LAUNCH(
+		(LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+		1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
+		hidden_input,0,(const uint16_t *)wave->mtp_hnorm_bf16,0,slot->mtp_concat_bf16 + GLM5_NEXT_HIDDEN,
+		GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
+	error = cudaPeekAtLastError();
+	if ( error != cudaSuccess )
+		return(SparkGlm5NextCudaStatus(error));
+	return(Glm5NextLaunchBf16Linear(slot->mtp_concat_bf16,wave->mtp_eh_proj_bf16,slot->mtp_hidden_bf16,
+		slot->dense_row_offset,slot->dense_tile_prefix,1u,2u * GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,0u,wave->multiprocessor_count,stream));
+}
 static int32_t SparkGlm5NextBindMtpLayer(
 	const SparkGlm5NextCudaWave *wave,
 	uint32_t step,
@@ -679,6 +747,7 @@ static int32_t SparkGlm5NextBindMtpLayer(
 	draft.kda_layer_count = 0u;
 	draft.kv_cache = 0;
 	draft.index_cache = 0;
+	draft.kv_shard = 0u;
 	SparkGlm5NextBindLayer(&draft,0u,buffers);
 	buffers->hc_collapsed_bf16 = slot->mtp_hidden_bf16;
 	buffers->hc_mean_bf16 = slot->mtp_hidden_bf16;
@@ -736,25 +805,7 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 	for ( step = 0u; step < wave->mtp_draft_depth; ++step )
 	{
 		hidden_input = step == 0u ? (const uint16_t *)committed_hidden_bf16 : (const uint16_t *)slot->mtp_hidden_bf16;
-		SparkGlm5NextEmbeddingKernel<<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,1u),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,1u,wave->tp_degree,wave->tp_rank);
-		error = cudaPeekAtLastError();
-		if ( error != cudaSuccess )
-			return(SparkGlm5NextCudaStatus(error));
-		status = SparkGlm5NextMtpReduceRows(ops,slot->hidden_bf16);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-		LM_LAUNCH(
-			(LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
-			1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
-			slot->hidden_bf16,0,(const uint16_t *)wave->mtp_enorm_bf16,0,slot->mtp_concat_bf16 + GLM5_NEXT_HIDDEN,
-			GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
-		LM_LAUNCH(
-			(LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
-			1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
-			hidden_input,0,(const uint16_t *)wave->mtp_hnorm_bf16,0,slot->mtp_concat_bf16,
-			GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
-		status = Glm5NextLaunchBf16Linear(slot->mtp_concat_bf16,wave->mtp_eh_proj_bf16,slot->mtp_hidden_bf16,
-			slot->dense_row_offset,slot->dense_tile_prefix,1u,2u * GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,0u,wave->multiprocessor_count,stream);
+		status = SparkGlm5NextMtpJoin(wave,ops,hidden_input,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		status = SparkGlm5NextBindMtpLayer(wave,step,&buffers);

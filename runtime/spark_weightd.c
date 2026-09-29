@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_worker.h"
+#include "sparkpipe/spark_weightd_direct.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include <stdatomic.h>
 
@@ -141,12 +142,15 @@ typedef struct SparkWeightdArena
     uint64_t epoch;
     void *pool_export_handle;
     uint8_t *staging;
+    SparkWeightdDirect *direct;
     uint64_t *recorded_keys;
     uint32_t recorded_count;
     uint32_t recorded_capacity;
 } SparkWeightdArena;
 
 #define SPARK_WEIGHTD_ARENA_STAGING_BYTES (4ull * 1024ull * 1024ull)
+#define SPARK_WEIGHTD_DIRECT_BLOCK_BYTES (8ull * 1024ull * 1024ull)
+#define SPARK_WEIGHTD_DIRECT_READERS 4u
 
 static SparkStatus SparkWeightdLoadRecordedWorkingSet(SparkWeightdArena *arena);
 
@@ -638,6 +642,8 @@ static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
     }
     free(arena->chunk_refs);
     free(arena->staging);
+    SparkWeightdDirectDestroy(arena->direct);
+    arena->direct = 0;
     free(arena->recorded_keys);
     arena->recorded_keys = 0;
     arena->recorded_count = 0u;
@@ -1985,111 +1991,107 @@ static SparkStatus SparkWeightdLoadRangeFromStaging(SparkWeightdArena *arena,
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkWeightdLoadRangeGroup(SparkWeightdArena *arena,int32_t fd,
-	const SparkWeightdRange *ranges,uint32_t range_count)
+typedef struct SparkWeightdLeaseSink
 {
-	uint64_t staging_bytes = (uint64_t)SPARK_WEIGHTD_ARENA_STAGING_BYTES;
-	uint32_t first = 0u;
-	ssize_t moved;
-	while ( first < range_count )
+	SparkWeightdArena *arena;
+	const SparkWeightdRange **ranges;
+	SparkCk128Context context;
+} SparkWeightdLeaseSink;
+
+static int SparkWeightdCompareRangeOffset(const void *left,const void *right)
+{
+	const SparkWeightdRange *a = *(const SparkWeightdRange *const *)left;
+	const SparkWeightdRange *b = *(const SparkWeightdRange *const *)right;
+	return(a->offset < b->offset ? -1 : a->offset > b->offset);
+}
+
+static SparkStatus SparkWeightdLeaseSinkRange(void *context,uint32_t span_index,uint64_t span_offset,const uint8_t *data,uint64_t bytes)
+{
+	SparkWeightdLeaseSink *sink = context;
+	const SparkWeightdRange *range = sink->ranges[span_index];
+	uint8_t digest[16];
+	if ( span_offset == 0u && bytes == range->bytes )
+		return(SparkWeightdLoadRangeFromStaging(sink->arena,range,data,range->offset));
+	if ( span_offset == 0u )
+		SparkCk128Initialize(&sink->context);
+	SparkCk128Update(&sink->context,data,(size_t)bytes);
+	if ( cudaMemcpy((uint8_t *)sink->arena->device_base + range->offset + span_offset,data,(size_t)bytes,cudaMemcpyHostToDevice) != cudaSuccess )
 	{
-		uint64_t span_offset = ranges[first].offset;
-		uint64_t span_bytes = ranges[first].bytes;
-		uint32_t last = first;
-		while ( last + 1u < range_count &&
-			ranges[last + 1u].offset == ranges[last].offset + ranges[last].bytes &&
-			span_bytes + ranges[last + 1u].bytes <= staging_bytes )
-		{
-			last++;
-			span_bytes += ranges[last].bytes;
-		}
-		if ( ranges[first].bytes > staging_bytes )
-		{
-			uint64_t offset = 0u,bytes;
-			SparkCk128Context context;
-			uint8_t digest[16];
-			SparkCk128Initialize(&context);
-			while ( offset < ranges[first].bytes )
-			{
-				bytes = (ranges[first].bytes - offset);
-				if ( bytes > staging_bytes )
-					bytes = staging_bytes;
-				moved = pread(fd,arena->staging,(size_t)bytes,(off_t)(ranges[first].offset + offset));
-				if ( moved < 0 && errno == EINTR )
-					continue;
-				if ( moved <= 0 )
-				{
-					fprintf(stderr,"WD-LOADRANGE-FAIL pread fd=%d off=%llu req=%llu moved=%ld errno=%d\n",
-						fd,(unsigned long long)(ranges[first].offset + offset),
-						(unsigned long long)bytes,(long)moved,errno);
-					return(SPARK_STATUS_IO_ERROR);
-				}
-				SparkCk128Update(&context,arena->staging,(size_t)moved);
-				if ( cudaMemcpy((uint8_t *)arena->device_base + ranges[first].offset + offset,
-					arena->staging,(size_t)moved,cudaMemcpyHostToDevice) != cudaSuccess )
-				{
-					fprintf(stderr,"WD-LOADRANGE-FAIL memcpy dst_off=%llu bytes=%llu cuda=%s\n",
-						(unsigned long long)(ranges[first].offset + offset),
-						(unsigned long long)moved,cudaGetErrorString(cudaGetLastError()));
-					return(SPARK_STATUS_IO_ERROR);
-				}
-				offset += (uint64_t)moved;
-			}
-			SparkCk128Finalize(&context,digest);
-			if ( memcmp(digest,ranges[first].digest,sizeof(digest)) != 0 )
-				return(SPARK_STATUS_HASH_MISMATCH);
-		}
-		else
-		{
-			uint64_t offset = 0u;
-			while ( offset < span_bytes )
-			{
-				uint64_t bytes = span_bytes - offset;
-				if ( bytes > staging_bytes )
-					bytes = staging_bytes;
-				moved = pread(fd,arena->staging + offset,(size_t)bytes,(off_t)(span_offset + offset));
-				if ( moved < 0 && errno == EINTR )
-					continue;
-				if ( moved <= 0 )
-				{
-					fprintf(stderr,"WD-LOADRANGE-FAIL pread fd=%d off=%llu req=%llu moved=%ld errno=%d\n",
-						fd,(unsigned long long)(span_offset + offset),
-						(unsigned long long)bytes,(long)moved,errno);
-					return(SPARK_STATUS_IO_ERROR);
-				}
-				offset += (uint64_t)moved;
-			}
-			for (uint32_t index = first; index <= last; index++)
-			{
-				SparkStatus status = SparkWeightdLoadRangeFromStaging(arena,
-					&ranges[index],arena->staging,span_offset);
-				if ( status != SPARK_STATUS_OK )
-					return(status);
-			}
-		}
-		first = last + 1u;
+		fprintf(stderr,"WD-LOADRANGE-FAIL memcpy dst_off=%llu bytes=%llu cuda=%s\n",
+			(unsigned long long)(range->offset + span_offset),
+			(unsigned long long)bytes,cudaGetErrorString(cudaGetLastError()));
+		return(SPARK_STATUS_IO_ERROR);
+	}
+	if ( span_offset + bytes == range->bytes )
+	{
+		SparkCk128Finalize(&sink->context,digest);
+		if ( memcmp(digest,range->digest,sizeof(digest)) != 0 )
+			return(SPARK_STATUS_HASH_MISMATCH);
 	}
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkWeightdLoadLease(SparkWeightdArena *arena,int32_t fd,const SparkWeightdLease *lease)
+static SparkStatus SparkWeightdLoadRanges(SparkWeightdArena *arena,int32_t fd,uint32_t is_direct,const SparkWeightdRange **ranges,uint32_t count)
+{
+	SparkWeightdDirectSpan *spans;
+	SparkWeightdLeaseSink sink;
+	SparkStatus status;
+	uint32_t i;
+	if ( count == 0u )
+		return(SPARK_STATUS_OK);
+	if ( arena->direct == 0 )
+	{
+		status = SparkWeightdDirectCreate(SPARK_WEIGHTD_DIRECT_BLOCK_BYTES,SPARK_WEIGHTD_DIRECT_READERS,&arena->direct);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	spans = calloc(count,sizeof(*spans));
+	if ( spans == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	qsort(ranges,count,sizeof(*ranges),SparkWeightdCompareRangeOffset);
+	for (i=0u; i<count; i++)
+	{
+		spans[i].offset = ranges[i]->offset;
+		spans[i].bytes = ranges[i]->bytes;
+	}
+	memset(&sink,0,sizeof(sink));
+	sink.arena = arena;
+	sink.ranges = ranges;
+	status = SparkWeightdDirectStream(arena->direct,fd,is_direct,spans,count,SparkWeightdLeaseSinkRange,&sink,0);
+	free(spans);
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkWeightdLoadLease(SparkWeightdArena *arena,int32_t fd,uint32_t is_direct,const SparkWeightdLease *lease)
 {
 	const SparkWeightdRangeGroup *group;
+	const SparkWeightdRange **ranges;
 	struct stat info;
-	uint32_t i;
+	uint32_t i,j,count = 0u;
 	SparkStatus status;
 	if ( fstat(fd,&info) != 0 || info.st_dev != arena->pack_stat.st_dev || info.st_ino != arena->pack_stat.st_ino || info.st_size != arena->pack_stat.st_size || SparkWeightdPackMtimeNs(&info) != SparkWeightdPackMtimeNs(&arena->pack_stat) )
 		return(SPARK_STATUS_HASH_MISMATCH);
+	for (i=0u; i<lease->count; i++)
+		if ( arena->experts[lease->groups[i]].present == 0u )
+			count += arena->manifest.groups[lease->groups[i]].range_count;
+	if ( count == 0u )
+		return(SPARK_STATUS_OK);
+	ranges = calloc(count,sizeof(*ranges));
+	if ( ranges == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	count = 0u;
 	for (i=0u; i<lease->count; i++)
 	{
 		if ( arena->experts[lease->groups[i]].present != 0u )
 			continue;
 		group = &arena->manifest.groups[lease->groups[i]];
-		status = SparkWeightdLoadRangeGroup(arena,fd,
-			&arena->manifest.ranges[group->first_range],group->range_count);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_RETURN(status);
+		for (j=0u; j<group->range_count; j++)
+			ranges[count++] = &arena->manifest.ranges[group->first_range + j];
 	}
+	status = SparkWeightdLoadRanges(arena,fd,is_direct,ranges,count);
+	free(ranges);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	if ( fstat(fd,&info) != 0 || info.st_size != arena->pack_stat.st_size || SparkWeightdPackMtimeNs(&info) != SparkWeightdPackMtimeNs(&arena->pack_stat) )
 		return(SPARK_STATUS_HASH_MISMATCH);
 	return(SPARK_STATUS_OK);
@@ -2123,7 +2125,7 @@ static void SparkWeightdCommitLease(SparkWeightdArena *arena,const SparkWeightdL
 
 static SparkStatus SparkWeightdAcquireLoad(SparkWeightdServer *server,SparkWeightdArena *arena,const SparkWeightdLease *lease)
 {
-	uint32_t i;
+	uint32_t i,is_direct = 0u;
 	int32_t fd;
 	SparkStatus status;
 	memset(arena->created_chunks,0,arena->chunk_count);
@@ -2143,15 +2145,20 @@ static SparkStatus SparkWeightdAcquireLoad(SparkWeightdServer *server,SparkWeigh
 				SPARK_RETURN(status);
 			}
 		}
-	fd = open(arena->pack_path,O_RDONLY | O_NONBLOCK);
+	fd = SparkWeightdDirectOpen(arena->pack_path,&is_direct);
 	if ( fd < 0 )
 	{
 		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=open_pack path=%s errno=%d\n",arena->pack_path,errno);
 		return(SPARK_STATUS_IO_ERROR);
 	}
-	status = SparkWeightdLoadLease(arena,fd,lease);
+	status = SparkWeightdLoadLease(arena,fd,is_direct,lease);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=load_lease status=%u\n",(unsigned)status);
+	else if ( cudaDeviceSynchronize() != cudaSuccess )
+	{
+		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=load_complete cuda=%d\n",(int)cudaGetLastError());
+		status = SPARK_STATUS_IO_ERROR;
+	}
 	(void)close(fd);
 	if ( status == SPARK_STATUS_OK )
 		SparkWeightdCommitLease(arena,lease);
