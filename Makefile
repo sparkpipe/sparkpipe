@@ -712,6 +712,7 @@ PYTHON_TESTS := \
 	tests/test_spark_station.py \
 	tests/test_spark_tiktoken_compile.py \
 	tests/test_t1_reference_decoder.py \
+	tests/test_t1_reference_dsa_cache.py \
 	tests/test_t1_reference_dsv41.py \
 	tests/test_t1_reference_engines.py \
 	tests/test_t1_reference_glm53flash.py \
