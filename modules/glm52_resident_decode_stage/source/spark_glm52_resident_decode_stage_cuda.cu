@@ -5,6 +5,7 @@
 
 #include "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
+#include "sparkpipe/spark_graph_l2_prefetch.cuh"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #define SPARK_FAMILY_CAMEL Glm52
 #define SPARK_FAMILY_UPPER GLM52
@@ -387,6 +388,92 @@ extern "C" int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *w
 	if ( wave->slot->route_ready_event == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm52RunLayerMlpRoute(wave,local_layer));
+}
+
+static void SparkGlm52L2PlanProject(const SparkGlm52CudaWave *wave,uint32_t local_layer,SparkL2PrefetchPlan *plan)
+{
+	GlmLayerBuffers buffers;
+	const uint64_t row = (uint64_t)GLM_HIDDEN * sizeof(uint16_t);
+	uint32_t q_first,q_count,kv_first,kv_count;
+	SparkGlm52BindLayer(wave,local_layer,&buffers);
+	SparkL2PrefetchAdd(plan,buffers.attn_norm_weight,row);
+	q_first = 0u;
+	q_count = GLM_QUERY_A_DIM;
+	kv_first = 0u;
+	kv_count = GLM_LATENT_ROW;
+	if ( wave->projection_split != 0u )
+	{
+		GlmProjectionSlice(GLM_QUERY_A_DIM,wave->tp_degree,wave->tp_rank,&q_first,&q_count);
+		GlmProjectionSlice(GLM_LATENT_ROW,wave->tp_degree,wave->tp_rank,&kv_first,&kv_count);
+	}
+	if ( q_count != 0u )
+		SparkL2PrefetchAdd(plan,(const uint16_t *)buffers.q_a_weight + (uint64_t)q_first * GLM_HIDDEN,(uint64_t)q_count * row);
+	if ( kv_count != 0u )
+		SparkL2PrefetchAdd(plan,(const uint16_t *)buffers.kv_a_weight + (uint64_t)kv_first * GLM_HIDDEN,(uint64_t)kv_count * row);
+	SparkL2PrefetchAdd(plan,buffers.q_a_norm_weight,(uint64_t)GLM_QUERY_A_DIM * sizeof(uint16_t));
+	SparkL2PrefetchAdd(plan,buffers.q_b_weight,(uint64_t)buffers.q_b_rows * GLM_QUERY_A_DIM * sizeof(uint16_t));
+	SparkL2PrefetchAdd(plan,buffers.kv_b_key_transposed_weight,(uint64_t)buffers.attn_heads * GLM_LATENT * GLM_QK_NOPE_DIM * sizeof(uint16_t));
+	SparkL2PrefetchAdd(plan,buffers.kv_b_value_weight,(uint64_t)buffers.attn_heads * GLM_VALUE_DIM * GLM_LATENT * sizeof(uint16_t));
+}
+
+static void SparkGlm52L2PlanOutput(const SparkGlm52CudaWave *wave,uint32_t local_layer,SparkL2PrefetchPlan *plan)
+{
+	GlmLayerBuffers buffers;
+	SparkGlm52BindLayer(wave,local_layer,&buffers);
+	SparkL2PrefetchAdd(plan,buffers.output_weight,(uint64_t)GLM_HIDDEN * buffers.attn_output_columns * sizeof(uint16_t));
+}
+
+static void SparkGlm52L2PlanMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer,SparkL2PrefetchPlan *plan)
+{
+	GlmLayerBuffers buffers;
+	const uint64_t row = (uint64_t)GLM_HIDDEN * sizeof(uint16_t);
+	SparkGlm52BindLayer(wave,local_layer,&buffers);
+	SparkL2PrefetchAdd(plan,buffers.mlp_norm_weight,row);
+	if ( wave->first_layer_index + local_layer < GLM_FIRST_ROUTED_LAYER )
+	{
+		SparkL2PrefetchAdd(plan,buffers.dense_gate_weight,(uint64_t)buffers.dense_gate_up_rows * row);
+		SparkL2PrefetchAdd(plan,buffers.dense_down_weight,(uint64_t)buffers.dense_intermediate * row);
+		return;
+	}
+	SparkL2PrefetchAdd(plan,buffers.router_weight,(uint64_t)GLM_EXPERTS * row);
+	SparkL2PrefetchAdd(plan,buffers.shared_gate_up_weight,(uint64_t)buffers.shared_gate_up_rows * row);
+	SparkL2PrefetchAdd(plan,buffers.shared_down_weight,(uint64_t)buffers.shared_intermediate * row);
+}
+
+static int32_t SparkGlm52L2PrefetchPlanFor(const SparkGlm52CudaWave *wave,uint32_t local_layer,uint32_t site,const SparkL2PrefetchShape *shape,SparkL2PrefetchPlan *plan)
+{
+	if ( wave == 0 || wave->slot == 0 || wave->layers == 0 || wave->layer_count == 0u || site >= SPARK_GLM52_L2_SITE_COUNT || SparkL2PrefetchShapeValid(shape) == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	SparkL2PrefetchPlanBegin(plan,shape);
+	if ( site == SPARK_GLM52_L2_SITE_BEGIN )
+		SparkGlm52L2PlanProject(wave,0u,plan);
+	else if ( local_layer >= wave->layer_count )
+		return(LM_LAUNCH_ERR_SHAPE);
+	else if ( site == SPARK_GLM52_L2_SITE_PROJECTION )
+		SparkGlm52L2PlanOutput(wave,local_layer,plan);
+	else if ( site == SPARK_GLM52_L2_SITE_ATTENTION )
+		SparkGlm52L2PlanMlp(wave,local_layer,plan);
+	else if ( local_layer + 1u < wave->layer_count )
+		SparkGlm52L2PlanProject(wave,local_layer + 1u,plan);
+	return(plan->misaligned != 0u ? LM_LAUNCH_ERR_SHAPE : LM_LAUNCH_OK);
+}
+
+extern "C" int32_t SparkGlm52L2PrefetchAfterRound(const SparkGlm52CudaWave *wave,uint32_t local_layer,uint32_t site,const SparkL2PrefetchShape *shape,uint32_t *placed)
+{
+	SparkL2PrefetchPlan plan;
+	cudaStreamCaptureStatus capture;
+	int32_t status;
+	if ( placed == 0 || wave == 0 || wave->slot == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	*placed = 0u;
+	if ( cudaStreamIsCapturing((cudaStream_t)wave->slot->stream,&capture) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	if ( capture != cudaStreamCaptureStatusActive )
+		return(LM_LAUNCH_OK);
+	status = SparkGlm52L2PrefetchPlanFor(wave,local_layer,site,shape,&plan);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(SparkL2PrefetchPlaceAfterWait((cudaStream_t)wave->slot->stream,&plan,shape,placed) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 #include "sparkpipe/family/glm/spark_glm_layer_mlp.cuh"

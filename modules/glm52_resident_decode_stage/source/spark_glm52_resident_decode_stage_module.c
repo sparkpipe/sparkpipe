@@ -1,5 +1,6 @@
 #define _FILE_OFFSET_BITS 64
 
+#include <errno.h>
 #include <stdatomic.h>
 #include "sparkpipe/spark_error_site.h"
 #include <stdint.h>
@@ -160,6 +161,9 @@ struct SparkGlm52ModuleState
 #endif
 	uint32_t projection_split;
 	uint32_t prefill_wave_rows;
+	uint32_t l2_prefetch;
+	SparkL2PrefetchShape l2_prefetch_shape;
+	uint64_t l2_prefetch_rounds;
 	uint32_t chain_wait_initialized;
 	SparkStageModuleCudaWait chain_wait;
 	atomic_uint chain_busy;
@@ -1992,6 +1996,19 @@ static SparkStatus SparkGlm52WalkReduce(SparkGlm52TpChain *chain,void *device,ui
 	return(SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,operation));
 }
 
+static SparkStatus SparkGlm52WalkReduceAt(SparkGlm52TpChain *chain,void *device,uint32_t layer,uint32_t site)
+{
+	SparkGlm52ModuleState *state = chain->state;
+	uint32_t placed = 0u;
+	SparkStatus status = SparkGlm52WalkReduce(chain,device,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+	if ( status != SPARK_STATUS_OK || state->l2_prefetch == 0u || state->tp_degree == 1u || state->tp_collective_disabled != 0u )
+		return(status);
+	if ( SparkGlm52L2PrefetchAfterRound(&chain->wave,layer,site,&state->l2_prefetch_shape,&placed) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	state->l2_prefetch_rounds += placed;
+	return(SPARK_STATUS_OK);
+}
+
 static uint32_t SparkGlm52WalkWave(void *context)
 {
 	SparkGlm52TpChain *chain = (SparkGlm52TpChain *)context;
@@ -2001,7 +2018,7 @@ static uint32_t SparkGlm52WalkWave(void *context)
 	uint32_t layer;
 	if ( SparkGlm52LaunchCudaWaveBegin(wave) != 0 )
 		return(1u);
-	if ( SparkGlm52WalkReduce(chain,slot->hidden_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+	if ( SparkGlm52WalkReduceAt(chain,slot->hidden_bf16,0u,SPARK_GLM52_L2_SITE_BEGIN) != SPARK_STATUS_OK )
 		return(2u);
 	for (layer=0u; layer<wave->layer_count; layer++)
 	{
@@ -2010,18 +2027,18 @@ static uint32_t SparkGlm52WalkWave(void *context)
 		{
 			if ( SparkGlm52LaunchCudaLayerAttentionProject(wave,layer) != 0 )
 				return(11u);
-			if ( SparkGlm52WalkReduce(chain,slot->projection_gather_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+			if ( SparkGlm52WalkReduceAt(chain,slot->projection_gather_bf16,layer,SPARK_GLM52_L2_SITE_PROJECTION) != SPARK_STATUS_OK )
 				return(12u);
 			if ( SparkGlm52LaunchCudaLayerAttentionCore(wave,layer) != 0 )
 				return(13u);
 		}
 		else if ( SparkGlm52LaunchCudaLayerAttention(wave,layer) != 0 )
 			return(3u);
-		if ( SparkGlm52WalkReduce(chain,slot->attention_out_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+		if ( SparkGlm52WalkReduceAt(chain,slot->attention_out_bf16,layer,SPARK_GLM52_L2_SITE_ATTENTION) != SPARK_STATUS_OK )
 			return(4u);
 		if ( SparkGlm52LaunchCudaLayerMlp(wave,layer) != 0 )
 			return(5u);
-		if ( SparkGlm52WalkReduce(chain,slot->hidden_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+		if ( SparkGlm52WalkReduceAt(chain,slot->hidden_bf16,layer,SPARK_GLM52_L2_SITE_MLP) != SPARK_STATUS_OK )
 			return(6u);
 	}
 	if ( SparkGlm52LaunchCudaWaveHead(wave) != 0 )
@@ -2061,11 +2078,12 @@ static SparkStatus SparkGlm52GraphWalk(SparkGlm52TpChain *chain,const SparkTpCha
 	if ( *entry == 0 )
 	{
 		chain->wave.maximum_context = bound;
+		state->l2_prefetch_rounds = 0u;
 		status = SparkTpChainGraphRecord(collectives,chain->slot->stream,SparkGlm52WalkWave,chain,entry,site);
 		chain->wave.maximum_context = context;
 		chain->captured = 1u;
 		state->graphs[chain->slot_index].captures++;
-		fprintf(stderr,"GLM52-GRAPH-CAPTURE slot=%u rows=%u regime=%u bound=%u context=%u status=%s site=%u\n",chain->slot_index,chain->wave_rows,regime,bound,context,SparkStatusToString(status),*site);
+		fprintf(stderr,"GLM52-GRAPH-CAPTURE slot=%u rows=%u regime=%u bound=%u context=%u status=%s site=%u l2_prefetch_rounds=%llu\n",chain->slot_index,chain->wave_rows,regime,bound,context,SparkStatusToString(status),*site,(unsigned long long)state->l2_prefetch_rounds);
 		if ( status != SPARK_STATUS_OK )
 		{
 			state->graphs[chain->slot_index].failed++;
@@ -2228,6 +2246,69 @@ static SparkStatus SparkGlm52ProjectionSplitConfigure(SparkGlm52ModuleState *sta
 	}
 	if ( state->projection_split != 0u )
 		fprintf(stderr,"GLM52-PROJECTION-SPLIT rank=%u degree=%u\n",state->tp_rank,state->tp_degree);
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkGlm52EnvDecimal(const char *name,const char *text,uint32_t *value)
+{
+	char *end = 0;
+	unsigned long parsed;
+	if ( text == 0 || text[0] < '0' || text[0] > '9' )
+	{
+		fprintf(stderr,"%s must be a decimal number\n",name);
+		return(0u);
+	}
+	errno = 0;
+	parsed = strtoul(text,&end,10);
+	if ( errno != 0 || end == text || *end != '\0' || parsed > UINT32_MAX )
+	{
+		fprintf(stderr,"%s must be a decimal number\n",name);
+		return(0u);
+	}
+	*value = (uint32_t)parsed;
+	return(1u);
+}
+
+static SparkStatus SparkGlm52L2PrefetchConfigure(SparkGlm52ModuleState *state)
+{
+	const char *text = getenv("SPARK_GLM52_L2_PREFETCH");
+	const char *bytes = getenv("SPARK_GLM52_L2_PREFETCH_BYTES");
+	const char *blocks = getenv("SPARK_GLM52_L2_PREFETCH_BLOCKS");
+	state->l2_prefetch = 0u;
+	state->l2_prefetch_rounds = 0u;
+	state->l2_prefetch_shape.bytes = SPARK_L2_PREFETCH_BYTES_DEFAULT;
+	state->l2_prefetch_shape.blocks = SPARK_L2_PREFETCH_BLOCKS_DEFAULT;
+	if ( text == 0 || strcmp(text,"0") == 0 )
+	{
+		if ( bytes != 0 || blocks != 0 )
+		{
+			fprintf(stderr,"SPARK_GLM52_L2_PREFETCH_BYTES and SPARK_GLM52_L2_PREFETCH_BLOCKS shape the prefetch; they need SPARK_GLM52_L2_PREFETCH=1\n");
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		return(SPARK_STATUS_OK);
+	}
+	if ( strcmp(text,"1") != 0 )
+	{
+		fprintf(stderr,"SPARK_GLM52_L2_PREFETCH must be 0 or 1\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( bytes != 0 && SparkGlm52EnvDecimal("SPARK_GLM52_L2_PREFETCH_BYTES",bytes,&state->l2_prefetch_shape.bytes) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( blocks != 0 && SparkGlm52EnvDecimal("SPARK_GLM52_L2_PREFETCH_BLOCKS",blocks,&state->l2_prefetch_shape.blocks) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkL2PrefetchShapeValid(&state->l2_prefetch_shape) == 0u )
+	{
+		fprintf(stderr,"SPARK_GLM52_L2_PREFETCH_BYTES must be a multiple of %u from %u to %u and SPARK_GLM52_L2_PREFETCH_BLOCKS from 1 to %u, found bytes=%u blocks=%u\n",
+			SPARK_L2_PREFETCH_BYTES_STEP,SPARK_L2_PREFETCH_BYTES_STEP,SPARK_L2_PREFETCH_BYTES_MAX,SPARK_L2_PREFETCH_BLOCKS_MAX,state->l2_prefetch_shape.bytes,state->l2_prefetch_shape.blocks);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( state->chain_mode != SPARK_TP_CHAIN_MODE_GRAPH || state->tp_degree == 1u || state->tp_collective_disabled != 0u )
+	{
+		fprintf(stderr,"GLM52-L2-PREFETCH-REFUSED reason=the load is placed beside a captured peer wait, so it needs SPARK_GLM52_CHAIN_MODE=graph and the TP collective\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	state->l2_prefetch = 1u;
+	fprintf(stderr,"GLM52-L2-PREFETCH on bytes=%u blocks=%u rank=%u\n",state->l2_prefetch_shape.bytes,state->l2_prefetch_shape.blocks,state->tp_rank);
 	return(SPARK_STATUS_OK);
 }
 
@@ -2589,6 +2670,8 @@ static SparkStatus SparkGlm52ModulePrepare(
 		status = SparkGlmStageBuildHeadShadow(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ChainModeConfigure(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52L2PrefetchConfigure(state);
 #ifdef SPARK_SCORE_DUMP
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ScoreOpen(state,(const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context);

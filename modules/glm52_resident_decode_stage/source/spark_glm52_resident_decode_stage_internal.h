@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_model.h"
+#include "sparkpipe/spark_l2_prefetch_shape.h"
 #include "sparkpipe/spark_status.h"
 
 typedef struct SparkGlm52LayerWeights
@@ -150,6 +151,12 @@ typedef struct SparkGlm52CudaWave
 	uint32_t row_head_certified;
 } SparkGlm52CudaWave;
 
+#define SPARK_GLM52_L2_SITE_BEGIN 0u
+#define SPARK_GLM52_L2_SITE_PROJECTION 1u
+#define SPARK_GLM52_L2_SITE_ATTENTION 2u
+#define SPARK_GLM52_L2_SITE_MLP 3u
+#define SPARK_GLM52_L2_SITE_COUNT 4u
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -173,6 +180,7 @@ struct SparkScoreDumpStats;
 cudaError_t SparkGlm52LaunchHeadScore(cudaStream_t stream,const uint16_t *normed_bf16,const void *head_bf16,float *logits,uint32_t rows,uint32_t width,uint32_t id_base,const uint32_t *probe_offsets,const uint32_t *probe_local,float *probe_logits,struct SparkScoreDumpStats *stats);
 #endif
 int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
+int32_t SparkGlm52L2PrefetchAfterRound(const SparkGlm52CudaWave *wave,uint32_t local_layer,uint32_t site,const SparkL2PrefetchShape *shape,uint32_t *placed);
 
 #ifdef __cplusplus
 }

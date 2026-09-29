@@ -2,6 +2,8 @@
 #include "spark_glm52_resident_decode_stage_cuda_validation.cu"
 #undef main
 
+#include <cuda.h>
+
 #include "sparkpipe/spark_glm52_graph_regime.h"
 
 #define PARITY_STEPS 96u
@@ -15,7 +17,8 @@
 #define PARITY_MODE_GRAPH_WRONG_REGIME 3u
 #define PARITY_MODE_PROJECTION_SPLIT 4u
 #define PARITY_MODE_SPLIT_DROP_RANK 5u
-#define PARITY_MODE_COUNT 6u
+#define PARITY_MODE_GRAPH_L2_PREFETCH 6u
+#define PARITY_MODE_COUNT 7u
 
 typedef struct ParityRig
 {
@@ -29,13 +32,18 @@ typedef struct ParityRig
 	uint16_t *gather;
 	uint16_t *gather_sum;
 	uint16_t *residual_saved;
+	uint64_t *request_word;
+	uint64_t *ready_word;
+	uint32_t prefetch;
+	uint32_t prefetch_placed;
+	uint32_t prefetch_sites;
 	uint16_t *outputs[PARITY_MODE_COUNT];
 	uint32_t tp_degree;
 	uint32_t captures[PARITY_MODE_COUNT];
 	uint32_t replays[PARITY_MODE_COUNT];
 } ParityRig;
 
-static const char *const PARITY_MODE_NAMES[PARITY_MODE_COUNT] = {"staged","linear","graph","graph-wrong-regime","projection-split","split-drop-last-rank"};
+static const char *const PARITY_MODE_NAMES[PARITY_MODE_COUNT] = {"staged","linear","graph","graph-wrong-regime","projection-split","split-drop-last-rank","graph-l2-prefetch"};
 
 static void ParityBuild(ParityRig *rig,uint32_t step)
 {
@@ -66,18 +74,71 @@ static void ParityBuild(ParityRig *rig,uint32_t step)
 	wave->max_sequence_positions = SPARK_GLM52_VALIDATION_DSA_CONTEXT;
 }
 
+__global__ static void ParityRequestKernel(uint64_t *request,uint64_t kind)
+{
+	*(volatile uint64_t *)request = kind;
+}
+
+__global__ static void ParityGuardKernel(const uint64_t *ready,uint64_t *request)
+{
+	if ( *(volatile const uint64_t *)ready != 1u )
+		*(volatile uint64_t *)request = UINT64_MAX;
+}
+
+static int ParityPeerWait(ParityRig *rig,uint32_t layer,uint32_t site)
+{
+	cudaStream_t stream = rig->fixture.stream;
+	CUstreamCaptureStatus capture;
+	cuuint64_t id;
+	CUgraph graph;
+	const CUgraphNode *dependencies;
+	size_t dependency_count;
+	CUstreamBatchMemOpParams operation;
+	CUDA_BATCH_MEM_OP_NODE_PARAMS params;
+	CUgraphNode wait;
+	SparkL2PrefetchShape shape = {SPARK_L2_PREFETCH_BYTES_DEFAULT,SPARK_L2_PREFETCH_BLOCKS_DEFAULT};
+	uint32_t placed = 0u;
+	if ( rig->prefetch == 0u )
+		return(0);
+	ParityRequestKernel<<<1,1,0,stream>>>(rig->request_word,1u);
+	if ( cuStreamGetCaptureInfo((CUstream)stream,&capture,&id,&graph,&dependencies,0,&dependency_count) != CUDA_SUCCESS || capture != CU_STREAM_CAPTURE_STATUS_ACTIVE )
+		return(50);
+	memset(&operation,0,sizeof(operation));
+	memset(&params,0,sizeof(params));
+	operation.operation = CU_STREAM_MEM_OP_WAIT_VALUE_64;
+	operation.waitValue.address = (CUdeviceptr)rig->ready_word;
+	operation.waitValue.value64 = 1u;
+	operation.waitValue.flags = CU_STREAM_WAIT_VALUE_EQ;
+	if ( cuCtxGetCurrent(&params.ctx) != CUDA_SUCCESS )
+		return(51);
+	params.count = 1u;
+	params.paramArray = &operation;
+	if ( cuGraphAddBatchMemOpNode(&wait,graph,dependencies,dependency_count,&params) != CUDA_SUCCESS ||
+		cuStreamUpdateCaptureDependencies((CUstream)stream,&wait,0,1u,CU_STREAM_SET_CAPTURE_DEPENDENCIES) != CUDA_SUCCESS )
+		return(52);
+	ParityGuardKernel<<<1,1,0,stream>>>(rig->ready_word,rig->request_word);
+	if ( cudaPeekAtLastError() != cudaSuccess || SparkGlm52L2PrefetchAfterRound(&rig->fixture.wave,layer,site,&shape,&placed) != 0 )
+		return(53);
+	rig->prefetch_placed += placed;
+	rig->prefetch_sites++;
+	return(0);
+}
+
 static int ParityWalk(ParityRig *rig,uint32_t staged)
 {
 	SparkGlm52CudaWave *wave = &rig->fixture.wave;
 	cudaStream_t stream = rig->fixture.stream;
 	uint32_t layer;
-	if ( SparkGlm52LaunchCudaWaveBegin(wave) != 0 || (staged != 0u && cudaStreamSynchronize(stream) != cudaSuccess) )
+	if ( SparkGlm52LaunchCudaWaveBegin(wave) != 0 || (staged != 0u && cudaStreamSynchronize(stream) != cudaSuccess) ||
+		ParityPeerWait(rig,0u,SPARK_GLM52_L2_SITE_BEGIN) != 0 )
 		return(1);
 	for (layer=0u; layer<PARITY_LAYERS; layer++)
 	{
-		if ( SparkGlm52LaunchCudaLayerAttention(wave,layer) != 0 || (staged != 0u && cudaStreamSynchronize(stream) != cudaSuccess) )
+		if ( SparkGlm52LaunchCudaLayerAttention(wave,layer) != 0 || (staged != 0u && cudaStreamSynchronize(stream) != cudaSuccess) ||
+			ParityPeerWait(rig,layer,SPARK_GLM52_L2_SITE_ATTENTION) != 0 )
 			return(2);
-		if ( SparkGlm52LaunchCudaLayerMlp(wave,layer) != 0 || (staged != 0u && cudaStreamSynchronize(stream) != cudaSuccess) )
+		if ( SparkGlm52LaunchCudaLayerMlp(wave,layer) != 0 || (staged != 0u && cudaStreamSynchronize(stream) != cudaSuccess) ||
+			ParityPeerWait(rig,layer,SPARK_GLM52_L2_SITE_MLP) != 0 )
 			return(3);
 	}
 	if ( SparkGlm52LaunchCudaWaveHead(wave) != 0 )
@@ -137,7 +198,7 @@ static int ParitySplitWalk(ParityRig *rig,uint32_t ranks)
 	return(0);
 }
 
-static int ParityCapture(ParityRig *rig,uint32_t bound,cudaGraphExec_t *exec)
+static int ParityCapture(ParityRig *rig,uint32_t mode,uint32_t bound,cudaGraphExec_t *exec)
 {
 	cudaStream_t stream = rig->fixture.stream;
 	cudaGraph_t graph = 0;
@@ -146,7 +207,9 @@ static int ParityCapture(ParityRig *rig,uint32_t bound,cudaGraphExec_t *exec)
 	rig->fixture.wave.maximum_context = bound;
 	if ( cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal) != cudaSuccess )
 		return(10);
+	rig->prefetch = mode == PARITY_MODE_GRAPH_L2_PREFETCH ? 1u : 0u;
 	site = ParityWalk(rig,0u);
+	rig->prefetch = 0u;
 	rig->fixture.wave.maximum_context = context;
 	if ( cudaStreamEndCapture(stream,&graph) != cudaSuccess || site != 0 || graph == 0 )
 		return(11 + site);
@@ -179,7 +242,7 @@ static int ParityRun(ParityRig *rig,uint32_t mode)
 				status = 40;
 			if ( status == 0 && graphs[regime] == 0 )
 			{
-				status = ParityCapture(rig,bound,&graphs[regime]);
+				status = ParityCapture(rig,mode,bound,&graphs[regime]);
 				rig->captures[mode]++;
 			}
 			if ( status == 0 && cudaGraphLaunch(graphs[regime],rig->fixture.stream) != cudaSuccess )
@@ -231,6 +294,8 @@ static int ParityRunDegree(ParityRig *rig,uint32_t tp_degree)
 	rig->tp_degree = tp_degree;
 	memset(rig->captures,0,sizeof(rig->captures));
 	memset(rig->replays,0,sizeof(rig->replays));
+	rig->prefetch_placed = 0u;
+	rig->prefetch_sites = 0u;
 	for (mode=0u; mode<PARITY_MODE_COUNT; mode++)
 		if ( ParityRun(rig,mode) != 0 )
 			return(1);
@@ -247,6 +312,14 @@ static int ParityRunDegree(ParityRig *rig,uint32_t tp_degree)
 		printf("glm52_chain_graph_parity tp=%u mode=%s steps=%u differing_steps=%u first=%d captures=%u replays=%u %s\n",
 			tp_degree,PARITY_MODE_NAMES[mode],PARITY_STEPS,differ,first == UINT32_MAX ? -1 : (int)first,rig->captures[mode],rig->replays[mode],differ == 0u ? "BIT-EXACT" : "FAIL");
 		failures += differ != 0u ? 1 : 0;
+	}
+	printf("glm52_chain_graph_parity tp=%u l2_prefetch sites=%u placed=%u (expected %u sites, %u placed)\n",tp_degree,rig->prefetch_sites,rig->prefetch_placed,
+		rig->captures[PARITY_MODE_GRAPH_L2_PREFETCH] * (1u + 2u * PARITY_LAYERS),rig->captures[PARITY_MODE_GRAPH_L2_PREFETCH] * (2u * PARITY_LAYERS));
+	if ( rig->prefetch_sites != rig->captures[PARITY_MODE_GRAPH_L2_PREFETCH] * (1u + 2u * PARITY_LAYERS) ||
+		rig->prefetch_placed != rig->captures[PARITY_MODE_GRAPH_L2_PREFETCH] * (2u * PARITY_LAYERS) )
+	{
+		fprintf(stderr,"glm52_chain_graph_parity tp=%u FAIL L2 prefetch was not placed after every emulated peer wait\n",tp_degree);
+		failures++;
 	}
 	if ( rig->captures[PARITY_MODE_GRAPH] != SPARK_GLM52_GRAPH_REGIME_COUNT )
 	{
@@ -284,8 +357,15 @@ int main(void)
 		cudaMalloc((void **)&rig->boundary,PARITY_BOUNDARY * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->gather,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->gather_sum,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc((void **)&rig->residual_saved,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess )
+		cudaMalloc((void **)&rig->residual_saved,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc((void **)&rig->request_word,sizeof(uint64_t)) != cudaSuccess ||
+		cudaMalloc((void **)&rig->ready_word,sizeof(uint64_t)) != cudaSuccess )
 		return(1);
+	{
+		uint64_t one = 1u;
+		if ( cudaMemcpy(rig->ready_word,&one,sizeof(one),cudaMemcpyHostToDevice) != cudaSuccess )
+			return(1);
+	}
 	rig->host_slot = rig->host_token + 1u;
 	rig->host_position = rig->host_token + 2u;
 	for (mode=0u; mode<PARITY_MODE_COUNT; mode++)
