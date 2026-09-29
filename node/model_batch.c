@@ -115,7 +115,7 @@ static void SparkModelBatchFileDestroy(SparkModelBatchFile *file)
 	uint32_t index;
 	if ( file == 0 )
 		return;
-	for (index=0u; index<file->request_count; index++)
+	for (index=0u; file->requests != 0 && index<file->request_count; index++)
 		free(file->requests[index].prompt_token_ids);
 	free(file->requests);
 	memset(file,0,sizeof(*file));
@@ -228,17 +228,21 @@ static SparkStatus SparkModelBatchParseRequests(
 	int32_t array,
 	SparkModelBatchFile *file)
 {
-	uint32_t index;
+	uint32_t count,index;
 	int32_t element;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	file->request_count = SparkJsonGetArrayElementCount(document,array);
-	if ( file->request_count == 0u || file->request_count > file->engine.request_capacity )
+	count = SparkJsonGetArrayElementCount(document,array);
+	if ( count == 0u || count > file->engine.request_capacity )
+	{
+		fprintf(stderr,"sparkpipe_model_batch refused: the batch has %u requests and request_capacity is %u; every request must fit the engine's request_capacity\n",count,file->engine.request_capacity);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	file->requests = (SparkModelBatchFileRequest *)calloc(file->request_count,sizeof(*file->requests));
+	}
+	file->requests = (SparkModelBatchFileRequest *)calloc(count,sizeof(*file->requests));
 	if ( file->requests == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	file->request_count = count;
 	status = SPARK_STATUS_OK;
 	element = SparkJsonGetArrayElementFirst(document,array);
 	for (index=0u; status==SPARK_STATUS_OK && index<file->request_count; index++)

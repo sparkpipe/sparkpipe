@@ -962,6 +962,16 @@ def validate_stage(stage_count, stage_index, first_layer, layer_count,
         raise PackFailure("head/MTP ownership requires the final stage and layer")
 
 
+def mtp_pack_name(tp_degree, tp_rank):
+    return f"glm5_next_mtp.tp{tp_degree}.rank{tp_rank}.g5nsp"
+
+
+def validate_mtp_only(args):
+    if (args.mtp or args.owns_embedding or args.owns_head or args.first_layer != 0
+            or args.layer_count != LAYERS or args.stage_count != 1 or args.stage_index != 0):
+        raise PackFailure("--mtp-only builds the layer-45 MTP pack alone; it takes no layer span, stage or ownership options")
+
+
 def stage_pack_name(tp_degree, tp_rank, stage_count, stage_index):
     pipeline = f".pp{stage_count}.stage{stage_index}" if stage_count != 1 else ""
     return f"glm5_next_stage.tp{tp_degree}{pipeline}.rank{tp_rank}.g5nsp"
@@ -976,6 +986,8 @@ def main() -> int:
     parser.add_argument("--stage-count", type=int, default=1)
     parser.add_argument("--stage-index", type=int, default=0)
     parser.add_argument("--mtp", action="store_true")
+    parser.add_argument("--mtp-only", action="store_true",
+                        help="emit only the layer-45 MTP pack per rank (glm5_next_mtp.tpN.rankR.g5nsp) for the resident MTP drafter")
     parser.add_argument("--owns-embedding", action="store_true")
     parser.add_argument("--owns-head", action="store_true")
     parser.add_argument("--tp-rank", type=int, default=0)
@@ -985,26 +997,35 @@ def main() -> int:
     parser.add_argument("--dry-plan", action="store_true",
                         help="plan and print the inventory without writing")
     args = parser.parse_args()
-    validate_stage(args.stage_count, args.stage_index, args.first_layer,
-                   args.layer_count, args.owns_embedding, args.owns_head, args.mtp)
+    if args.mtp_only:
+        validate_mtp_only(args)
+    else:
+        validate_stage(args.stage_count, args.stage_index, args.first_layer,
+                       args.layer_count, args.owns_embedding, args.owns_head, args.mtp)
 
     source = SourceReader(Path(args.source))
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     ranks = range(args.tp_all) if args.tp_all else [args.tp_rank]
     for rank in ranks:
-        packer = Packer(source, args.tp_all or args.tp_degree, rank,
-                        args.first_layer, args.layer_count, args.mtp,
-                        args.owns_embedding, args.owns_head)
+        tp_degree = args.tp_all or args.tp_degree
+        if args.mtp_only:
+            packer = Packer(source, tp_degree, rank, MTP_LAYER, 0, True, False, False)
+            path = out_dir / mtp_pack_name(tp_degree, rank)
+            header_extra = dict(stage_count=1, stage_index=0, first_layer=MTP_LAYER, layer_count=1, flags=1)
+        else:
+            packer = Packer(source, tp_degree, rank,
+                            args.first_layer, args.layer_count, args.mtp,
+                            args.owns_embedding, args.owns_head)
+            path = out_dir / stage_pack_name(tp_degree, rank, args.stage_count, args.stage_index)
+            header_extra = dict(stage_count=args.stage_count, stage_index=args.stage_index, first_layer=args.first_layer,
+                                layer_count=args.layer_count, flags=1 if args.mtp else 0)
         if args.dry_plan:
             packer.build()
-            print(f"rank {rank}: {len(packer.plan)} tensors planned")
+            planned = sum(item.entry.payload_bytes + item.entry.scale_bytes for item in packer.plan)
+            print(f"rank {rank}: {len(packer.plan)} tensors planned, {planned} payload bytes -> {path.name}")
             continue
-        emit(packer, out_dir / stage_pack_name(args.tp_all or args.tp_degree,
-                                              rank, args.stage_count, args.stage_index),
-             dict(stage_count=args.stage_count, stage_index=args.stage_index, first_layer=args.first_layer,
-                  layer_count=args.layer_count,
-                  flags=1 if args.mtp else 0))
+        emit(packer, path, header_extra)
     source.close()
     return 0
 
