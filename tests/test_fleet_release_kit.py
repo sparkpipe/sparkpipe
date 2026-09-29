@@ -384,7 +384,7 @@ def test_hold_waits_for_a_paused_rotation(tmp):
         (root / f"{h}.probe").write_text(f"host={h} agent=active hold=no layout=legacy applied=served rootok=yes eng_n=1 exe=r0 drv=d0 wd=w0 wd_n=1 mem_gib=60 others=none\n")
     env = dict(os.environ, FAKE_ROOT=str(root), RELEASE_SSH=ssh, RELEASE_ENV=str(write_env(root)))
     r = subprocess.run(["bash", str(KIT / "hold.sh")], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
-    calls = (root / "calls.log").read_text()
+    calls = (root / "calls.log").read_text() if (root / "calls.log").exists() else ""
     check("hold: refuses while the rotation runs, before touching a node", r.returncode == 1 and "rotation is not paused" in r.stdout and "agent.hold" not in calls, r.stdout)
     (root / "hub" / "fleet-rotation").mkdir()
     (root / "hub" / "fleet-rotation" / "ROTATION_PAUSE").write_text("manual: release\n")
