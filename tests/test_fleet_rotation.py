@@ -610,8 +610,17 @@ def test_exclusive_floor_and_abort():
         st = f.state()
         check("abort: MemAvailable under abort_gib in steady state falls back to production", rc == 1 and st.get("active") == ["prod"] and f.up_on("k") == [] and f.up_on("prod") == HOSTS, out[-600:])
         check("abort: alerted with the node and level", "abort level" in f.alerts() and "n2=5<6" in f.alerts(), f.alerts())
+        log = (f.state_dir / "rotation.log").read_text()
+        check("abort: the fallback's own floor check is the global floor", re.search(r"FLOOR when=after-fallback .*floor=20", log), log[-600:])
         rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
         check("abort: the next hour follows the schedule again", f.state().get("active") == ["prod", "c1"], out[-300:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp)
+        f.tool("tick", at="2026-09-29T16:00:30Z")
+        (f.state_dir / "rotation.log").write_text("")
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        log = (f.state_dir / "rotation.log").read_text()
+        check("exclusive floor: leaving the exclusive hour checks before at the model's floor and after at the global floor", rc == 0 and f.state().get("active") == ["prod", "c1"] and f.up_on("k") == [] and re.search(r"FLOOR when=before .*floor=8", log) and re.search(r"FLOOR when=after .*floor=20", log) and "FALLBACK" not in log, out[-600:] + log[-600:])
     with tempfile.TemporaryDirectory() as tmp:
         f = exclusive_fleet(tmp, floor=False)
         rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
