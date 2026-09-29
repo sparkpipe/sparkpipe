@@ -60,6 +60,19 @@ class BuildTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("not enough documents", result.stderr)
 
+    def test_frozen_corpus_is_never_rewritten(self):
+        text = " ".join(f"word{i}" for i in range(400))
+        with tempfile.TemporaryDirectory() as directory:
+            record = [{"id": "t", "stratum": "s", "text": text, "source": {}}]
+            self.assertEqual(self.build(directory, record, "s=1").returncode, 0)
+            tokens = (Path(directory) / "out" / "T.tokens.u32").read_bytes()
+            index = (Path(directory) / "out" / "T.index.json").read_bytes()
+            again = self.build(directory, [{"id": "u", "stratum": "s", "text": text + " more", "source": {}}], "s=1")
+            self.assertEqual(again.returncode, 1)
+            self.assertIn("never rewritten", again.stderr)
+            self.assertEqual((Path(directory) / "out" / "T.tokens.u32").read_bytes(), tokens)
+            self.assertEqual((Path(directory) / "out" / "T.index.json").read_bytes(), index)
+
     def test_text_documents_are_tokenized_and_pinned(self):
         text = " ".join(f"word{i}" for i in range(400))
         with tempfile.TemporaryDirectory() as directory:

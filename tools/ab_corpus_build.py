@@ -252,6 +252,9 @@ def build(args) -> int:
         stratum, _, count = item.partition("=")
         quota[stratum] = int(count)
     out = Path(args.out)
+    for existing in (out / f"{args.name}.tokens.u32", out / f"{args.name}.index.json"):
+        if existing.exists() or existing.is_symlink():
+            raise CorpusError(f"{existing} exists; a frozen corpus is never rewritten (build a new name or a new directory)")
     out.mkdir(parents=True, exist_ok=True)
     accepted, meta, skipped = [], [], []
     owner = set()
@@ -285,7 +288,7 @@ def build(args) -> int:
     commit = builder_commit(args)
     tokens_path = out / f"{args.name}.tokens.u32"
     offset = 0
-    with open(tokens_path, "wb") as handle:
+    with open(tokens_path, "xb") as handle:
         for tokens, entry in zip(accepted, meta):
             data = tokens_bytes(tokens)
             handle.write(data)
@@ -299,7 +302,8 @@ def build(args) -> int:
         "strata": counts, "documents": meta, "skipped": skipped, "notes": args.note or [],
     }
     index_path = out / f"{args.name}.index.json"
-    index_path.write_text(json.dumps(index, indent=1, sort_keys=True) + "\n")
+    with open(index_path, "x") as handle:
+        handle.write(json.dumps(index, indent=1, sort_keys=True) + "\n")
     print(f"build: {args.name} {len(accepted)} documents, {offset} tokens, corpus_sha256 {index['corpus_sha256']}, "
           f"index_sha256 {sha256_file(index_path)}, skipped {len(skipped)}")
     return 0
