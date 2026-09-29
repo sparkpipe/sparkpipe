@@ -999,7 +999,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->expert_lease_pinned = state->experts_pinned;
 	wave->route_host_copy = state->lazy_pack != 0 && state->experts_pinned == 0u ? 1u : 0u;
 	wave->projection_split = state->projection_split;
-	wave->row_head_certified = chain->prefill;
+	wave->row_head_certified = chain->prefill != 0u && state->prefill_wave_rows != 0u ? 1u : 0u;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
 	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
 	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;

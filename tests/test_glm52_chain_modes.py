@@ -435,7 +435,7 @@ static void TestPrefillWaves(void)
 	assert(Count("begin11") == 1u && Count("begin13") == 1u && Count("unpack2") == 2u && Count("reduce-attn2") == 2u && Count("head1") == 2u);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,0u));
-	assert(Count("begin10") == 1u && Count("begin13") == 1u && Count("unpack1") == 4u);
+	assert(Count("begin10") == 1u && Count("begin13") == 1u && Count("unpack1") == 4u && Count("head0") == 4u && Count("head1") == 0u);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	SparkGlm52RunChain(NewPrefillChain(9u,4u,0u,4u));
 	assert(Count("unpack1") == 4u && Count("unpack4") == 0u && Count("head0") == 4u);

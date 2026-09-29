@@ -314,10 +314,11 @@ after each row's own position.
 A wave never mixes attention regimes. The regime of a round is the largest of
 its rows' regimes, where a row's regime is its graph regime (split or unsplit
 attention at `decode_split_context_threshold`) plus whether its context passes
-the 2048-token DSA selection width. A prefill wave runs the certified B1 head
-once per row (`row_head_certified`), so every row's token, including the one
-the prefill emits, comes from the same head arithmetic as a one-row wave.
-Decode waves of several sequences keep the full-vocabulary head.
+the 2048-token DSA selection width. With the variable set, a prefill wave runs
+the certified B1 head once per row (`row_head_certified`), so every row's
+token, including the one the prefill emits, comes from the same head
+arithmetic as a one-row wave. Decode waves of several sequences, and every
+wave with the variable unset, keep today's head choice.
 
 The startup line `GLM52-PREFILL-WAVE-ROWS rows=N exact_rows=8 exact=yes|no`
 names the bound. Up to 8 rows every linear takes the skinny path and each row
