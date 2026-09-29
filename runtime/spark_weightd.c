@@ -417,6 +417,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return SPARK_WEIGHTD_IPC_RECLAIM_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM_RESULT:
             return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK:
+            return SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK_RESULT:
+            return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT:
             return SPARK_WEIGHTD_IPC_EXPORT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT:
@@ -459,6 +463,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_DETACH_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM:
             return SPARK_WEIGHTD_IPC_KIND_RECLAIM_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK:
+            return SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_EXPORT:
             return SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_MAP:
@@ -2850,7 +2856,7 @@ static uint32_t SparkWeightdServerOnEpochExport(SparkWeightdServer *server, Spar
     return SPARK_WEIGHTD_IPC_EPOCH_EXPORT_RESULT_BYTES;
 }
 
-static uint32_t SparkWeightdServerOnReclaim(SparkWeightdServer *server, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+static uint32_t SparkWeightdServerReclaimMatching(SparkWeightdServer *server, uint8_t *response, uint32_t result_kind, uint64_t request_id, const char *pack_sha256)
 {
     SparkWeightdIpcReclaimResult *result =
         (SparkWeightdIpcReclaimResult *)response;
@@ -2861,17 +2867,51 @@ static uint32_t SparkWeightdServerOnReclaim(SparkWeightdServer *server, uint8_t 
     SparkWeightdBuildHeader(response, result_kind, request_id);
     for (index = server->arena_count; index > 0u; index--)
     {
-        if (server->arenas[index - 1u].refcount == 0u && SparkWeightdArenaHasLeases(&server->arenas[index - 1u]) == 0u)
-        {
+        SparkWeightdArena *arena = &server->arenas[index - 1u];
+        if (pack_sha256 != 0 && strcmp(arena->identity.pack_sha256, pack_sha256) != 0)
+            continue;
+        if (arena->refcount == 0u && SparkWeightdArenaHasLeases(arena) == 0u)
             SparkWeightdServerFreeArenaSlot(server, index - 1u);
-        }
+        else
+            result->busy_arena_count++;
     }
     result->status = (uint32_t)SPARK_STATUS_OK;
     result->reclaimed_bytes = resident_before - server->resident_bytes;
     result->resident_bytes = server->resident_bytes;
     result->reclaimed_arena_count = arenas_before - server->arena_count;
     result->arena_count = server->arena_count;
+    fprintf(stderr,"weightd reclaim scope=%s freed_arenas=%u freed_bytes=%llu busy=%u resident=%llu arenas=%u\n",
+        pack_sha256 != 0 ? pack_sha256 : "all-cold",result->reclaimed_arena_count,
+        (unsigned long long)result->reclaimed_bytes,result->busy_arena_count,
+        (unsigned long long)result->resident_bytes,result->arena_count);
     return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES;
+}
+
+static uint32_t SparkWeightdServerOnReclaim(SparkWeightdServer *server, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+{
+    return(SparkWeightdServerReclaimMatching(server,response,result_kind,request_id,0));
+}
+
+static uint32_t SparkWeightdServerOnReclaimPack(SparkWeightdServer *server, const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+{
+    const SparkWeightdIpcReclaimPack *reclaim = (const SparkWeightdIpcReclaimPack *)request;
+    SparkWeightdIpcReclaimResult *result = (SparkWeightdIpcReclaimResult *)response;
+    char pack_sha256[SPARK_WEIGHTD_SHA256_HEX_BYTES];
+    uint32_t index;
+    memcpy(pack_sha256,reclaim->pack_sha256,sizeof(pack_sha256));
+    for (index = 0u; index < sizeof(reclaim->reserved); index++)
+        if (reclaim->reserved[index] != 0)
+            break;
+    if (index != sizeof(reclaim->reserved) || pack_sha256[SPARK_WEIGHTD_SHA256_HEX_BYTES - 1u] != '\0' || !SparkSha256HexIsValid(pack_sha256))
+    {
+        memset(result, 0, sizeof(*result));
+        SparkWeightdBuildHeader(response, result_kind, request_id);
+        result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+        result->resident_bytes = server->resident_bytes;
+        result->arena_count = server->arena_count;
+        return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES;
+    }
+    return(SparkWeightdServerReclaimMatching(server,response,result_kind,request_id,pack_sha256));
 }
 
 static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeightdConnection *connection, const uint8_t *request, uint8_t *response)
@@ -2916,6 +2956,8 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeig
             return(SparkWeightdServerOnEpochExport(server,connection,response,request_header,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM:
             return(SparkWeightdServerOnReclaim(server,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK:
+            return(SparkWeightdServerOnReclaimPack(server,request,response,result_kind,request_id));
         default:
             return(0u);
     }
@@ -4620,6 +4662,44 @@ SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *client,
     result->resident_bytes = wire_result.resident_bytes;
     result->reclaimed_arena_count = wire_result.reclaimed_arena_count;
     result->arena_count = wire_result.arena_count;
+    result->busy_arena_count = wire_result.busy_arena_count;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *client,
+    const char *pack_sha256,
+    SparkWeightdReclaimResult *result,
+    uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcReclaimPack wire;
+    SparkWeightdIpcReclaimResult wire_result;
+    SparkStatus status;
+
+    if (client == 0 || result == 0)
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    memset(result, 0, sizeof(*result));
+    if (pack_sha256 == 0 || !SparkSha256HexIsValid(pack_sha256))
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    memset(&wire, 0, sizeof(wire));
+    wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    wire.header.kind = SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK;
+    wire.header.body_bytes =
+        SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+    wire.header.request_id = ++client->next_request_id;
+    memcpy(wire.pack_sha256, pack_sha256, SPARK_WEIGHTD_SHA256_HEX_BYTES);
+    memset(&wire_result, 0, sizeof(wire_result));
+    status = SparkWeightdClientExchange(client, &wire,
+        SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES, &wire_result,
+        SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES, timeout_nanoseconds);
+    if (status != SPARK_STATUS_OK)
+        SPARK_RETURN(status);
+    result->status = SparkWeightdStatusFromWire(wire_result.status);
+    result->reclaimed_bytes = wire_result.reclaimed_bytes;
+    result->resident_bytes = wire_result.resident_bytes;
+    result->reclaimed_arena_count = wire_result.reclaimed_arena_count;
+    result->arena_count = wire_result.arena_count;
+    result->busy_arena_count = wire_result.busy_arena_count;
     return SPARK_STATUS_OK;
 }
 
