@@ -609,6 +609,9 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_verify_regime.py \
 	tests/test_spec_verify_bench.py \
 	tests/test_glm5_next_spec_replay.py \
+	tests/test_spec_offline.py \
+	tests/test_spec_bakeoff.py \
+	tests/test_spec_bakeoff_corpus.py \
 	tests/test_glm5_next_spec_ab.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \

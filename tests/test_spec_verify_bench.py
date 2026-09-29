@@ -139,6 +139,16 @@ def check_endpoint():
         Handler.omit_tokens = True
         assert refused(["run", "--endpoint", endpoint, "--classes", "code", "--max-tokens", "3", "--label", "t", "--out", str(results)])
         Handler.omit_tokens = False
+        corpus = Path(directory) / "corpus"
+        corpus.mkdir()
+        (corpus / "chat.json").write_text(json.dumps({"prompts": [{"index": 0, "prompt_token_ids": [10, 20, 30, 40], "output_tokens": 3, "sha256": "abc"},
+                                                                  {"index": 1, "prompt_token_ids": [1, 2, 3], "output_tokens": 2, "sha256": "def"}]}))
+        assert bench.main(["run", "--endpoint", endpoint, "--corpus", str(corpus), "--classes", "chat", "--label", "t", "--out", str(results)]) == 0
+        run = json.loads(results.read_text())
+        assert [entry["token_ids"] for entry in run["results"]] == [[21, 31, 41], [2, 3]] and run["results"][0]["prompt_sha256"] == "abc" and run["corpus"] == str(corpus)
+        assert refused(["run", "--endpoint", endpoint, "--corpus", str(corpus), "--classes", "prose", "--label", "t", "--out", str(results)])
+        (corpus / "chat.json").write_text(json.dumps({"prompts": [{"index": 0, "text": "hi", "prompt_token_ids": [], "output_tokens": 3, "sha256": "abc"}]}))
+        assert refused(["run", "--endpoint", endpoint, "--corpus", str(corpus), "--classes", "chat", "--label", "t", "--out", str(results)])
     server.shutdown()
 
 
