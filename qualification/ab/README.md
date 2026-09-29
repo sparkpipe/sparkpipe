@@ -151,7 +151,9 @@ The analysis reads one merged `.npz` per (arm, corpus run). It is written by `to
 - pack SHAs per rank;
 - topology;
 - `cached_prompt_tokens == 0` for every request;
-- the KV snapshot directory strictly inside the arm's own root. `SparkKvSnapshotPrune` deletes other layouts' files, so a shared directory would delete another root's snapshots.
+- the KV snapshot directory strictly inside the arm's own root. `SparkKvSnapshotPrune` deletes other layouts' files, so a shared directory would delete another root's snapshots. Both paths must be absolute and normalized, and the arm root must be its own directory (not `/`, a top-level directory or a home directory);
+- a weightd lane of its own: lane 0 is the fleet weightd's default lane, which production holds;
+- a MemAvailable record before and after attach for every rank node, none below the 20 GiB headroom floor of `tools/fleet_node_agent.sh`. Lowering the floor for a window is a lead decision and is not something a receipt can declare.
 
 `compare` refuses the comparison if any of these fail:
 

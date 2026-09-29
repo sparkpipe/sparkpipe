@@ -82,8 +82,42 @@ class ReceiptTest(unittest.TestCase):
         for path in ("/home/spark/release/glm/kv", "/home/spark/ab/arm/../ref/kv", "/home/spark/ab/arm"):
             broken = copy.deepcopy(arm)
             broken["cache"]["kv_snapshot_directory"] = path
-            with self.assertRaisesRegex(ab_receipt.ReceiptError, "not under the arm's own root"):
+            with self.assertRaisesRegex(ab_receipt.ReceiptError, "not under the arm's own root|absolute, normalized"):
                 ab_receipt.validate(broken)
+
+    def test_arm_root_must_be_a_private_absolute_directory(self):
+        reference, arm = pair()
+        for root, snapshot, message in (("run", "run/kv", "absolute, normalized"), ("/home/spark/ab/arm/", "/home/spark/ab/arm/kv", "absolute, normalized"),
+                                        ("~/ab/arm", "~/ab/arm/kv", "absolute, normalized"), ("/home/spark", "/home/spark/release/kv", "not an arm's own directory"),
+                                        ("/", "/home/spark/release/kv", "not an arm's own directory")):
+            broken = copy.deepcopy(arm)
+            broken["cache"]["arm_root"] = root
+            broken["cache"]["kv_snapshot_directory"] = snapshot
+            with self.assertRaisesRegex(ab_receipt.ReceiptError, message):
+                ab_receipt.validate(broken)
+
+    def test_default_weightd_lane_is_refused(self):
+        reference, arm = pair()
+        arm["weightd"]["lane"] = 0
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "weightd.lane 0"):
+            ab_receipt.validate(arm)
+
+    def test_headroom_floor_and_memory_coverage(self):
+        reference, arm = pair()
+        broken = copy.deepcopy(arm)
+        broken["memory"]["nodes"][1]["mem_available_after_gib"] = 19.5
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "headroom floor on \\['node1'\\]"):
+            ab_receipt.validate(broken)
+        broken = copy.deepcopy(arm)
+        del broken["memory"]["nodes"][2]
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "no MemAvailable record for rank nodes \\['node2'\\]"):
+            ab_receipt.validate(broken)
+        broken = copy.deepcopy(arm)
+        broken["memory"]["nodes"][0]["mem_available_before_gib"] = "80"
+        with self.assertRaisesRegex(ab_receipt.ReceiptError, "must be a number"):
+            ab_receipt.validate(broken)
+        arm["memory"]["nodes"][1]["mem_available_after_gib"] = 20
+        ab_receipt.validate(arm)
 
     def test_ready_event_must_name_the_arm(self):
         reference, arm = pair()

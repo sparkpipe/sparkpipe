@@ -36,6 +36,8 @@ AXIS_BUILD_FLAGS = {
     "D": {"DRAFT_EXPERT_CODECS"},
     "spine": {"MODEL_REVISION", "CONTRACT_SHA256"},
 }
+HEADROOM_FLOOR_GIB = 20.0
+DEFAULT_WEIGHTD_LANE = 0
 TYPES = {"object": dict, "array": list, "string": str, "integer": int, "boolean": bool, "null": type(None)}
 
 
@@ -93,6 +95,10 @@ def inside(path: str, root: str) -> bool:
     return ".." not in PurePosixPath(path).parts and child != parent and parent in child.parents
 
 
+def private_path(path: str) -> bool:
+    return path.startswith("/") and os.path.normpath(path) == path and "~" not in path
+
+
 def validate(receipt: dict) -> dict:
     check_schema(receipt, json.loads(SCHEMA_PATH.read_text()))
     try:
@@ -126,8 +132,27 @@ def validate(receipt: dict) -> dict:
     if cached:
         raise ReceiptError(f"cached_prompt_tokens > 0 on {len(cached)} requests: prefix reuse contaminated the run (C4)")
     cache = receipt["cache"]
+    for key in ("arm_root", "kv_snapshot_directory"):
+        if not private_path(cache[key]):
+            raise ReceiptError(f"cache.{key} {cache[key]!r} must be an absolute, normalized path (C4)")
+    if len(PurePosixPath(cache["arm_root"]).parts) < 4:
+        raise ReceiptError(f"cache.arm_root {cache['arm_root']!r} is not an arm's own directory (/, a top-level directory or a home directory holds other roots) (C4)")
     if not inside(cache["kv_snapshot_directory"], cache["arm_root"]):
         raise ReceiptError("kv_snapshot_directory is not under the arm's own root: SparkKvSnapshotPrune would delete another root's snapshots (C4)")
+    if receipt["weightd"]["lane"] == DEFAULT_WEIGHTD_LANE:
+        raise ReceiptError("weightd.lane 0 is the fleet weightd default lane production attaches to; an arm run takes its own lane")
+    memory = {}
+    for entry in receipt["memory"]["nodes"]:
+        for key in ("mem_available_before_gib", "mem_available_after_gib"):
+            if isinstance(entry[key], bool) or not isinstance(entry[key], (int, float)):
+                raise ReceiptError(f"memory.nodes {entry['node']!r} {key} must be a number")
+        memory[entry["node"]] = entry
+    missing = sorted(set(receipt["topology"]["rank_nodes"]) - set(memory))
+    if missing:
+        raise ReceiptError(f"memory.nodes has no MemAvailable record for rank nodes {missing}")
+    low = sorted(node for node, entry in memory.items() if min(entry["mem_available_before_gib"], entry["mem_available_after_gib"]) < HEADROOM_FLOOR_GIB)
+    if low:
+        raise ReceiptError(f"MemAvailable fell below the {HEADROOM_FLOOR_GIB:g} GiB headroom floor on {low}: the run broke the node budget")
     return receipt
 
 
