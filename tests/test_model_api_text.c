@@ -17,6 +17,7 @@
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tokenizer_sidecar.h"
+#include "fixtures/test_child_guard.h"
 
 #ifndef TEST_MODEL_API_PATH
 #define TEST_MODEL_API_PATH ""
@@ -254,7 +255,7 @@ static pid_t TestApiStartResident(const char *deployment_path,uint32_t rank_inde
 	pid_t child;
 	char rank[16];
 	assert(snprintf(rank,sizeof(rank),"%u",rank_index) > 0);
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{
@@ -503,7 +504,7 @@ static void TestApiStartApi(TestApiStack *stack)
 {
 	struct timespec delay;
 	uint32_t attempt;
-	stack->api_child = fork();
+	stack->api_child = TestChildGuardFork();
 	assert(stack->api_child >= 0);
 	if ( stack->api_child == 0 )
 	{
@@ -954,7 +955,7 @@ static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *
 	if ( stack.api_port == 0u )
 		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
 	TestApiStartStack(&stack,tokenizer_asset_path);
-	stack.api_child = fork();
+	stack.api_child = TestChildGuardFork();
 	assert(stack.api_child >= 0);
 	if ( stack.api_child == 0 )
 	{

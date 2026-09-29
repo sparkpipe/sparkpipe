@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_sha256.h"
+#include "fixtures/test_child_guard.h"
 
 #define CHUNK (2u * 1024u * 1024u)
 #define EXPERTS 4u
@@ -270,7 +271,7 @@ static void check_mid_acquire_death(void)
 	assert(attach(a,state.path,&generation) == SPARK_STATUS_OK);
 	baseline = spark_stub_cuda_outstanding_allocs();
 	spark_stub_cuda_set_create_delay(200000u);
-	pid = fork();
+	pid = TestChildGuardFork();
 	assert(pid >= 0);
 	if ( pid == 0 )
 	{
