@@ -242,6 +242,11 @@ int main(void)
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(server.server);
 	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	{
+		char command[512];
+		assert(snprintf(command,sizeof(command),"rm -rf %s",root) < (int)sizeof(command));
+		assert(system(command) == 0);
+	}
 	puts("PASS GLM codec lazy attach: fp8/bf16/nvfp4 synthetic packs, generator manifest, weightd attach, PIN_EXPERTS, every plane resident at the kernel address");
 	return(0);
 }
