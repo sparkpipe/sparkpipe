@@ -26,10 +26,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ab_plan  # noqa: E402
-import ab_receipt  # noqa: E402
-import ab_stats  # noqa: E402
-import ab_verdict  # noqa: E402
+import ab_plan
+import ab_receipt
+import ab_stats
+import ab_verdict
 
 ROOFLINE = re.compile(r"roofline @B=\d+: memory [0-9.]+% \(ceiling [0-9.]+ tok/s\) \| compute [0-9.]+% \| transport bw [0-9.]+% \+ latency [0-9.]+% \(inputs: .+\)")
 

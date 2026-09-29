@@ -35,8 +35,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ab_plan  # noqa: E402
-import ab_stats  # noqa: E402
+import ab_plan
+import ab_stats
 
 FORMAT = "sparkpipe-ab-verdicts-v1"
 EQUIVALENT, INFERIOR, INCONCLUSIVE = "EQUIVALENT", "INFERIOR", "INCONCLUSIVE"

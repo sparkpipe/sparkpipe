@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Statistics for quantization A/B comparisons (lanes/quant-ab-design.md §3).
-
-Everything here is deterministic: the document bootstrap draws its resample
-indices from a SplitMix64 stream keyed by (seed, replicate, draw), so the same
-seed gives the same intervals on every host and numpy version.
-"""
 from __future__ import annotations
 
 import math

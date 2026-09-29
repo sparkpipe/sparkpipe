@@ -23,15 +23,15 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ab_arm  # noqa: E402
-import ab_dump  # noqa: E402
-import ab_plan  # noqa: E402
-import ab_receipt  # noqa: E402
-import ab_report  # noqa: E402
-import ab_score_compare  # noqa: E402
-import ab_stats  # noqa: E402
-import ab_suite_compare  # noqa: E402
-import ab_verdict  # noqa: E402
+import ab_arm
+import ab_dump
+import ab_plan
+import ab_receipt
+import ab_report
+import ab_score_compare
+import ab_stats
+import ab_suite_compare
+import ab_verdict
 
 VOCAB = 512
 PROBES = 64

@@ -30,8 +30,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ab_dump  # noqa: E402
-import ab_stats  # noqa: E402
+import ab_dump
+import ab_stats
 
 FORMAT = "sparkpipe-ab-comparison-v1"
 

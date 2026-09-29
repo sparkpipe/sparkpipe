@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""Merged score dumps as the A/B analysis reads them (sparkpipe-score-merged-v1).
-
-One uncompressed .npz per (arm, corpus run). tools/score_merge.py (lane L1)
-writes it from the per-rank dumps; the comparison tools only read it. Arrays,
-one row per scored position, rows in corpus order:
-
-  header        0-d unicode array: canonical JSON {format, arm_digest,
-                corpus_sha256, tokenizer_sha256, probe_sha256 (null for a run
-                that defines the probes), probe_k, rows}
-  doc           uint32[N]   corpus document index
-  pos           uint32[N]   position of the predicted token inside the document
-  target        uint32[N]   corpus token at pos
-  lse           float64[N]  merged log-sum-exp over the full vocabulary
-  target_logit  float32[N]
-  top_ids       uint32[N,K] this run's global top-K ids, logit descending, lowest id first on ties
-  top_logits    float32[N,K]
-  probe_logits  float32[N,K] logits at the probe ids (the reference's top_ids)
-
-Optional:
-  select_hash   uint64[N,L] per-row hash of the sparse-attention selection per indexed layer
-
-Exact full-vocabulary KL on the Tier-2 rows comes from tools/score_kl_partial.py
-as sparkpipe-score-exact-kl-v1: header {format, reference_arm_digest,
-arm_digest, corpus_sha256}, rows uint32[M], kl float64[M].
-"""
 from __future__ import annotations
 
 import hashlib

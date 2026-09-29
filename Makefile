@@ -417,6 +417,13 @@ SHELL_TESTS := \
 	tests/fuzz_system_loopback.sh \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
+	tests/test_ab_stats.py \
+	tests/test_ab_arm.py \
+	tests/test_ab_receipt.py \
+	tests/test_ab_suite_compare.py \
+	tests/test_ab_corpus.py \
+	tests/test_ab_dry_run.py \
+	tests/test_pack_spine_sha.py \
 	tests/test_glm5_next_compsec17.py \
 	tests/test_compsec17.py \
 	tests/test_ling_compsec17.py \

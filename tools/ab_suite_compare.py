@@ -27,8 +27,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "qualification" / "ds4_eval"))
-import ab_stats  # noqa: E402
-from compare_runs import answer_matches, extract_answer  # noqa: E402
+import ab_stats
+from compare_runs import answer_matches, extract_answer
 
 FORMAT = "sparkpipe-ab-suite-v1"
 
