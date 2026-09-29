@@ -70,6 +70,10 @@ engine. What GLM needs first is in
 Report the farm as serving only when a served model drafts through it with
 measured acceptance and end-to-end tokens per second.
 
+The fleet side for GLM Flash (hidden-row taps, `SPT1` tap frames, the tap
+dump, the shadow-mode relay and the sparkf-rtx5090 relay probe with measured
+round trips) is in [SPECULATION_TAPS.md](SPECULATION_TAPS.md).
+
 Drafters in `/srv/workspace/drafters/`, copied 09-03 with the transfer record
 `TRANSFER-RECEIPT.json` (source, route, destination, SHA-256 per weight file):
 `deepseek-v4-flash-dflash-redhatai`, `glm-5.3-flash-dflash2`,

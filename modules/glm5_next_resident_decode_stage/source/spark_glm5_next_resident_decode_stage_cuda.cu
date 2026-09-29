@@ -614,6 +614,22 @@ extern "C" int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWa
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextRunLayerHcPost(wave,local_layer));
 }
+extern "C" int32_t SparkGlm5NextLaunchCudaTapCapture(const SparkGlm5NextCudaWave *wave,uint32_t all_streams,uint16_t *destination)
+{
+	cudaStream_t stream;
+	cudaError_t error;
+	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK || destination == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	stream = (cudaStream_t)wave->slot->stream;
+	if ( all_streams != 0u )
+		error = cudaMemcpyAsync(destination,wave->slot->hidden_bf16,(uint64_t)wave->row_count * GLM5_NEXT_HC * GLM5_NEXT_HIDDEN * sizeof(uint16_t),cudaMemcpyDeviceToDevice,stream);
+	else
+	{
+		Glm5NextHcHeadMeanKernel<<<wave->row_count,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(wave->slot->hidden_bf16,destination,wave->row_count,GLM5_NEXT_HC,GLM5_NEXT_HIDDEN);
+		error = cudaPeekAtLastError();
+	}
+	return(SparkGlm5NextCudaStatus(error));
+}
 
 static __global__ void SparkGlm5NextHeadMaxlocUnpackKernel(
 	const uint64_t *maxloc,

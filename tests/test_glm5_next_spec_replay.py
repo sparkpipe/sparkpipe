@@ -78,6 +78,12 @@ def main() -> int:
         report = json.loads(out.read_text())
         assert report["acceptance_per_position"] == [0.75, 0.5, 0.0] and [d["depth"] for d in report["depths"]] == [1, 2, 3]
         assert report["depths"][0]["tokens_per_full_round"] == 1.75 and report["best_depth"] in (1, 2, 3)
+        cost = directory / "cost.json"
+        cost.write_text(json.dumps({"samples": {"1": {"engine_median_ms": 19.74, "measured": True}, "8": {"engine_median_ms": 50.0, "measured": True}},
+                                    "fit": {"intercept_ms": 19.78, "per_row_ms": 4.32}}))
+        assert estimate.main(["positions", "--log", str(log), "--cost-model", str(cost), "--out", str(out)]) == 0
+        fitted = json.loads(out.read_text())
+        assert fitted["model"]["b1_ms"] == 19.74 and fitted["model"]["row_ms"] == 4.32 and fitted["spec_off_tok_s"] == round(1000.0 / 19.74, 2)
         try:
             estimate.main(["positions", "--acceptance", "0.5,1.5", "--out", str(out)])
         except SystemExit as failure:

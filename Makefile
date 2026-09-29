@@ -401,6 +401,8 @@ TEST_NAMES := \
     test_speculation_ngram_draft \
     test_speculation_drafter_mix \
     test_speculation_relay_draft \
+    test_speculation_tap \
+    test_speculation_relay_link \
     test_speculation_depth \
     test_driver_compiler \
     test_orchestrator \
@@ -608,7 +610,11 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_graph_regime.py \
 	tests/test_glm5_next_verify_regime.py \
 	tests/test_spec_verify_bench.py \
+	tests/test_spec_tap_dump.py \
 	tests/test_glm5_next_spec_replay.py \
+	tests/test_spec_offline.py \
+	tests/test_spec_bakeoff.py \
+	tests/test_spec_bakeoff_corpus.py \
 	tests/test_glm5_next_spec_ab.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \
@@ -1915,6 +1921,15 @@ build/test_speculation_depth: tests/test_speculation_depth.c include/sparkpipe/s
 
 build/test_speculation_relay_draft: tests/test_speculation_relay_draft.c include/sparkpipe/spark_speculation_relay_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_relay_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_tap: tests/test_speculation_tap.c include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_tap.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_relay_link: tests/test_speculation_relay_link.c include/sparkpipe/spark_speculation_relay_link.h include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_relay_link.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/spark_speculation_relay_probe: tools/spec_relay_probe.c include/sparkpipe/spark_speculation_relay_link.h include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tools/spec_relay_probe.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_speculation_provider_slot: tests/test_speculation_provider_slot.c runtime/speculation_provider.c include/sparkpipe/spark_speculation_provider.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_provider_slot.c runtime/speculation_provider.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
