@@ -18,6 +18,9 @@ HARNESS = r'''
 #include "src/spark_speculation_lookup_draft.c"
 #include "src/spark_speculation_drafter_mix.c"
 #include "src/spark_speculation_reference_draft.c"
+#include "src/spark_speculation_relay_draft.c"
+#include "src/spark_speculation_relay_link.c"
+#include "src/spark_speculation_tap.c"
 #include "runtime/spark_expert_working_set.c"
 #include "src/spark_sha256.c"
 #define SparkKvBackendInitialize SparkTestRealKvBackendInitialize
@@ -255,6 +258,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpRouteResident(const SparkGlm5NextCudaWave
 int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(wave->expert_lease_all == 1u);(void)layer;return(walk_note('E')); }
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('P')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('Q')); }
+int32_t SparkGlm5NextLaunchCudaTapCapture(const SparkGlm5NextCudaWave *wave,uint32_t all_streams,uint16_t *destination) { (void)wave;(void)all_streams;(void)destination;return(walk_note('T')); }
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave) { (void)wave;return(walk_note('H')); }
 static uint32_t L2_CALLS,L2_SITES,L2_BYTES,L2_BLOCKS;
 int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *placed) { (void)wave;(void)local_layer;L2_CALLS++;L2_SITES |= 1u << site;L2_BYTES = shape != 0 ? shape->bytes : 0u;L2_BLOCKS = shape != 0 ? shape->blocks : 0u;*placed = 1u;return(0); }
@@ -463,6 +467,16 @@ cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,cu
 	(void)stream;
 	COPY_COUNT++;
 	return(cudaMemcpy(destination,source,bytes,kind));
+}
+
+cudaError_t cudaMemcpy2DAsync(void *destination,size_t destination_pitch,const void *source,size_t source_pitch,size_t width,size_t height,cudaMemcpyKind kind,cudaStream_t stream)
+{
+	size_t row;
+	(void)kind;
+	(void)stream;
+	for (row=0u; row<height; row++)
+		memcpy((uint8_t *)destination + row * destination_pitch,(const uint8_t *)source + row * source_pitch,width);
+	return(cudaSuccess);
 }
 
 static SparkWeightdWorkFunction COMPLETION_WORK;
@@ -1021,6 +1035,119 @@ static void check_verify_rank_local(void)
 	free(chains);
 }
 
+static const char *VERIFY_TAP_DUMP;
+static uint16_t VERIFY_TAP_DEVICE[8u * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION];
+
+static void verify_taps_open(void)
+{
+	uint32_t row;
+	(void)unlink(VERIFY_TAP_DUMP);
+	assert(SparkSpeculationTapSetParse("mean:44",SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,SPARK_GLM5_NEXT_MODEL_HC_MULT,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,&state.tap_set) == SPARK_STATUS_OK);
+	state.tap_scratch = malloc(state.tap_set.record_bytes);
+	state.slots[0].tap_device = VERIFY_TAP_DEVICE;
+	state.slots[0].tap_host = malloc((uint64_t)state.execution_row_capacity * state.tap_set.record_bytes);
+	assert(state.tap_scratch != 0 && state.slots[0].tap_host != 0 && pthread_mutex_init(&state.tap_lock,0) == 0);
+	for (row=0u; row<state.execution_row_capacity; row++)
+		memset((uint8_t *)state.slots[0].tap_host + (uint64_t)row * state.tap_set.row_bytes,(int)(row + 1u),state.tap_set.row_bytes);
+	state.tap_lock_ready = 1u;
+	state.tap_generation = 5u;
+	assert(SparkSpeculationTapDumpOpen(&state.tap_dump,VERIFY_TAP_DUMP,&state.tap_set,"glm5_next",5u,0u,UINT64_C(1) << 30) == SPARK_STATUS_OK);
+	state.tap_dump_open = 1u;
+	state.tap_enabled = 1u;
+}
+
+static void verify_taps_check(const uint32_t *expected,uint32_t first,uint32_t minimum_records,uint32_t drafter)
+{
+	FILE *file;
+	uint8_t header[128],record[32],*payload;
+	uint64_t records,index,position,serial;
+	uint32_t flags,byte;
+	SparkGlm5NextReleaseTaps(&state);
+	assert(state.tap_enabled == 0u && state.slots[0].tap_host == 0 && state.tap_scratch == 0);
+	file = fopen(VERIFY_TAP_DUMP,"rb");
+	payload = malloc(SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2u);
+	assert(file != 0 && payload != 0 && fread(header,1u,sizeof(header),file) == sizeof(header));
+	memcpy(&records,header + 104,sizeof(records));
+	assert(memcmp(header,"SPTD",4u) == 0 && header[100] == SPARK_SPECULATION_TAP_DUMP_FLAG_CLOSED && records >= minimum_records);
+	for (index=0u; index<records; index++)
+	{
+		assert(fread(record,1u,sizeof(record),file) == sizeof(record) && fread(payload,1u,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2u,file) == SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2u);
+		memcpy(&position,record + 8,sizeof(position));
+		memcpy(&flags,record + 20,sizeof(flags));
+		memcpy(&serial,record + 24,sizeof(serial));
+		assert(record[0] == 44u && position == first + index && serial == index + 1u);
+		assert(record[16] == (uint8_t)expected[position] && record[17] == (uint8_t)(expected[position] >> 8));
+		assert(flags == SPARK_SPECULATION_TAP_FLAG_VERIFY || flags == SPARK_SPECULATION_TAP_FLAG_DECODE);
+		for (byte=0u; byte<SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * 2u; byte++)
+			assert(payload[byte] == (flags == SPARK_SPECULATION_TAP_FLAG_DECODE ? 1u : payload[0]));
+		assert(flags == SPARK_SPECULATION_TAP_FLAG_DECODE || drafter != SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE || payload[0] == (uint8_t)(1u + (position - first) % 8u));
+	}
+	assert(fread(record,1u,1u,file) == 0u);
+	fclose(file);
+	free(payload);
+	(void)unlink(VERIFY_TAP_DUMP);
+	printf("verify taps drafter=%u: %llu committed rows dumped once each, in order, each verify row from its wave slot\n",drafter,(unsigned long long)records);
+}
+
+static void tap_env_clear(void)
+{
+	static const char *names[] = {"SPARK_GLM5_NEXT_TAPS","SPARK_GLM5_NEXT_TAP_RANK","SPARK_GLM5_NEXT_TAP_DUMP","SPARK_GLM5_NEXT_TAP_DUMP_MAX_BYTES","SPARK_GLM5_NEXT_TAP_RELAY_LOCAL","SPARK_GLM5_NEXT_TAP_RELAY_PEER","SPARK_GLM5_NEXT_TAP_RELAY_SHADOW","SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US","SPARK_GLM5_NEXT_TAP_RELAY_DEPTH"};
+	uint32_t index;
+	for (index=0u; index<sizeof(names) / sizeof(names[0]); index++)
+		unsetenv(names[index]);
+}
+
+static void check_tap_config(void)
+{
+	memset(&state,0,sizeof(state));
+	state.tp_degree = 16u;
+	state.tp_rank = 3u;
+	state.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT;
+	state.owns_embedding = state.owns_final_head = 1u;
+	tap_env_clear();
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_OK && state.tap_enabled == 0u);
+	setenv("SPARK_GLM5_NEXT_TAP_DUMP","/tmp/x",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	tap_env_clear();
+	setenv("SPARK_GLM5_NEXT_TAPS","mean:45",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_SCHEMA_ERROR);
+	setenv("SPARK_GLM5_NEXT_TAPS","mean:5,14,24,33,42,44",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	setenv("SPARK_GLM5_NEXT_TAP_DUMP","/tmp/x",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	setenv("SPARK_GLM5_NEXT_TAP_DUMP_MAX_BYTES","1000000",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_OK && state.tap_enabled == 0u && state.tap_rank == 15u && state.tap_set.tap_count == 6u);
+	setenv("SPARK_GLM5_NEXT_TAP_RANK","16",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	setenv("SPARK_GLM5_NEXT_TAP_RANK","3",1);
+	state.layer_count = 40u;
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.tap_enabled == 0u);
+	state.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT;
+	state.mtp_enabled = 1u;
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_UNSUPPORTED && state.tap_enabled == 0u);
+	state.mtp_enabled = 0u;
+	unsetenv("SPARK_GLM5_NEXT_TAP_DUMP");
+	unsetenv("SPARK_GLM5_NEXT_TAP_DUMP_MAX_BYTES");
+	unsetenv("SPARK_GLM5_NEXT_TAP_RANK");
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_LOCAL","127.0.0.1:0",1);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_PEER","127.0.0.1:9",1);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US","300",1);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_DEPTH","7",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_SHADOW","0",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_SHADOW","1",1);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_DEPTH","17",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_DEPTH","7",1);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US","100001",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+	setenv("SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US","300",1);
+	assert(SparkGlm5NextConfigureTaps(&state) == SPARK_STATUS_OK && state.tap_enabled == 0u && state.tap_relay_depth == 7u);
+	tap_env_clear();
+	printf("PASS tap configuration: every tap setting needs SPARK_GLM5_NEXT_TAPS, a consumer and explicit bounds; the relay is shadow-only; tap layers must be owned\n");
+}
+
 static void check_verify_rounds(uint32_t drafter)
 {
 	static uint32_t history[VERIFY_CAPACITY],expected[VERIFY_CAPACITY];
@@ -1107,6 +1234,8 @@ static void check_verify_rounds(uint32_t drafter)
 	batch.row_positions = positions;
 	batch.row_sequence_ids = sequences;
 	assert(SparkGlm5NextVerifyObserveRows(&state,&batch) == SPARK_STATUS_OK);
+	if ( VERIFY_TAP_DUMP != 0 )
+		verify_taps_open();
 	length = VERIFY_PROMPT + 1u;
 	DRAIN_STATUS = cudaSuccess;
 	FOLD_ANY = 1u;
@@ -1226,6 +1355,8 @@ static void check_verify_rounds(uint32_t drafter)
 			assert(state.verify_position_accepted[index] == 0u && state.verify_position_reached[index] == (index == 0u ? rounds : 0u));
 	}
 	assert(accepted_sum == state.verify_accepted && state.verify_position_reached[0] == rounds);
+	if ( VERIFY_TAP_DUMP != 0 )
+		verify_taps_check(expected,VERIFY_PROMPT,length - 1u - VERIFY_PROMPT,drafter);
 	FOLD_ANY = 0u;
 	GRAPH_LAUNCH_HOOK = 0;
 	VERIFY_EXPECTED = 0;
@@ -4213,6 +4344,11 @@ int32_t main(void)
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP);
+	check_tap_config();
+	VERIFY_TAP_DUMP = "/tmp/sparkpipe_glm5_next_tap_dump_test.sptd";
+	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE);
+	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
+	VERIFY_TAP_DUMP = 0;
 	check_verify_mtp_admission();
 	check_verify_mtp_tap_frames();
 	check_verify_mtp_draft_guards();

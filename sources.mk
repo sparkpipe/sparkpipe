@@ -26,6 +26,8 @@ SPARKPIPE_CORE_SOURCES := \
     src/spark_speculation_lookup_draft.c \
     src/spark_speculation_drafter_mix.c \
     src/spark_speculation_relay_draft.c \
+    src/spark_speculation_relay_link.c \
+    src/spark_speculation_tap.c \
     ring/transport/draft_bridge.c \
     runtime/filesystem.c \
     runtime/json.c
