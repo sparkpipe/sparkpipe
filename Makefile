@@ -572,6 +572,7 @@ PYTHON_TESTS := \
 	tests/test_weightd_manifest.py \
 	tests/test_glm5_next_range_manifest.py \
 	tests/test_glm5_next_routed_oracle.py \
+	tests/test_glm52_experts_manifest.py \
 	tests/test_weightd_lazy_pair.py \
 	tests/test_glm5_next_driver_probe.py \
 	tests/test_generated_control_admission.py \
