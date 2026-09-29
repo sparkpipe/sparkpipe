@@ -202,7 +202,7 @@ static int32_t SparkQuantArmTokenIsNull(const SparkJsonDocument *document,int32_
 	int32_t result;
 	if ( token < 0 || !SparkJsonTokenIsType(document,token,SPARK_JSON_TOKEN_PRIMITIVE) || SparkJsonCopyRawValue(document,token,&raw,&raw_bytes) != SPARK_STATUS_OK )
 		return(0);
-	result = raw_bytes == 4u && memcmp(raw,"null",4u) == 0 ? 1 : 0;
+	result = strcmp(raw,"null") == 0 ? 1 : 0;
 	free(raw);
 	return(result);
 }
