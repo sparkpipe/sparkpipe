@@ -101,8 +101,8 @@ static void host_staged_signal(HostStagedState *state)
 
 static void host_staged_drain(HostStagedState *state)
 {
-	uint8_t bytes[64];
-	while ( read(state->wake[0],bytes,sizeof(bytes)) > 0 )
+	uint8_t wake_tokens[64];
+	while ( read(state->wake[0],wake_tokens,sizeof(wake_tokens)) > 0 )
 		;
 }
 
@@ -319,6 +319,8 @@ static void host_staged_match(HostStagedState *state)
 			status = SPARK_STATUS_IO_ERROR;
 		if ( status == SPARK_STATUS_OK && sideband != 0u && cudaMemcpy((void *)packet->sideband_payload,frame->payload + hidden,(size_t)sideband,cudaMemcpyDefault) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"host_staged_tcp receive failed status=%d cuda=%d hidden=%llu sideband=%llu frame_hidden=%llu frame_sideband=%llu rows=%u frame_rows=%u\n",(int)status,(int)cudaPeekAtLastError(),(unsigned long long)hidden,(unsigned long long)sideband,(unsigned long long)frame->header.hidden_bytes,(unsigned long long)frame->header.sideband_bytes,packet->active_sequence_count,frame->header.active_sequence_count);
 		host_staged_complete(state,packet,status);
 		free(frame->payload);
 		free(frame);

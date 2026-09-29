@@ -1184,7 +1184,7 @@ $(HIDDEN_TRANSPORT_HOST_STAGED_TCP): ring/transport/host_staged_tcp.c include/sp
 	$(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) ring/transport/host_staged_tcp.c $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lpthread -o $@
 
 build/test_host_staged_tcp: tests/test_host_staged_tcp.c ring/transport/host_staged_tcp.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_host_staged_tcp.c ring/transport/host_staged_tcp.c $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 
