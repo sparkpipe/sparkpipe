@@ -107,7 +107,7 @@ reclaim() {
   local rank host
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
-    $SSH "$host" "systemctl --user is-active -q $UNIT && { echo $host: $UNIT still active; exit 1; }; $(root_of "$host")/bin/weightd_warm $K3_WEIGHTD_SOCKET --reclaim 2>&1 | sed 's/^/$host: /'" &
+    $SSH "$host" "systemctl --user is-active -q $UNIT && { echo $host: $UNIT still active; exit 1; }; $(root_of "$host")/bin/weightd_warm $K3_WEIGHTD_SOCKET --reclaim-pack $(pack_of "$rank") 2>&1 | sed 's/^/$host: /'" &
     PIDS[$rank]=$!
   done
   join_ranks reclaim
