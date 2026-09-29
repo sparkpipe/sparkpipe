@@ -32,6 +32,7 @@ from host_cuda_compiler import host_cuda_cxx
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "k3_slice_host.cu"
 ROWS, HIDDEN, BLOCK, LAYERS = 2, 7168, 12, 14
+FIRST_ROUTED, EXPERTS, TOP_K = 1, 896, 16
 EPS = 1e-5
 
 
@@ -193,6 +194,18 @@ def main():
         print(f"  FAIL fold differs from the committed truth "
               f"({fold.group(1) if fold else 'missing'} bytes)")
         failures += 1
+    routes = {}
+    for match in re.finditer(r"^route (\d+) (\d+) (\d+)$", run.stdout, re.M):
+        routes.setdefault((int(match.group(1)), int(match.group(2))), set()).add(int(match.group(3)))
+    for layer in range(FIRST_ROUTED, LAYERS):
+        want = {e for e in range(EXPERTS)
+                if (e * 7919 + layer * 104729) % EXPERTS >= EXPERTS - TOP_K}
+        for row in range(ROWS):
+            if routes.get((layer, row)) != want:
+                print(f"  FAIL layer {layer} row {row} routed by another "
+                      f"layer's router bias: {sorted(routes.get((layer, row), []))[:4]}... "
+                      f"want {sorted(want)[:4]}...")
+                failures += 1
     failures, _ = compare("bank slot 0", embedding, series["bank0"], failures, 5e-2)
     failures, _ = compare("bank slot 1", bank[1], series["bank1"], failures, 5e-2)
 

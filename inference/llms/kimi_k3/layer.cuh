@@ -322,7 +322,10 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	const uint32_t rank_heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
 	const uint32_t rank_qk = rank_heads * K3_KDA_KEY_DIM;
 	const uint32_t rank_v = rank_heads * K3_KDA_VALUE_DIM;
+	const uint32_t head_base = b->tp_rank * rank_heads;
 	if ( b->kda_state_bf16 != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	if ( head_base + rank_heads > K3_KDA_HEADS )
 		return(LM_LAUNCH_ERR_SHAPE);
 	state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
@@ -373,7 +376,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	float *retention = b->replay_retention != 0
 		? b->replay_retention : b->kda_retention;
 	LM_LAUNCH((LmBoundedDecayKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS)), K3_LAYER_THREADS, 0, stream,
-		b->decay_logit_bf16,b->kda_decay_bias,b->kda_head_log_scale,retention,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),K3_KDA_GATE_LOWER_BOUND,rows);
+		b->decay_logit_bf16,b->kda_decay_bias + ((uint64_t)head_base * K3_KDA_KEY_DIM),b->kda_head_log_scale + head_base,retention,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),K3_KDA_GATE_LOWER_BOUND,rows);
 	float *write_gate = b->replay_write_gate != 0
 		? b->replay_write_gate : b->kda_write_gate_out;
 	LM_LAUNCH((LmSigmoidRowsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,

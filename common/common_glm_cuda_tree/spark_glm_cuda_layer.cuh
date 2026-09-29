@@ -258,10 +258,6 @@ static int32_t GlmLayerIndexer(
     {
         return LM_LAUNCH_OK;
     }
-    if (context <= GLM_DSA_SELECTED)
-    {
-        return LM_LAUNCH_OK;
-    }
     if (buffers == 0 || rows == 0u || context == 0u ||
         buffers->positions == 0 || buffers->sequence_of_row == 0 ||
         buffers->context_length == 0 ||
@@ -273,23 +269,6 @@ static int32_t GlmLayerIndexer(
         buffers->index_head_weight_bf16 == 0)
     {
         return LM_LAUNCH_ERR_SHAPE;
-    }
-    status = GlmLaunchBf16Linear(
-        buffers->q_compressed_bf16,
-        buffers->index_q_weight,
-        buffers->index_query_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM_QUERY_A_DIM,
-        GLM_DSA_QUERY_DIM,
-        GLM_DSA_QUERY_DIM,
-        0u,
-        multiprocessors,
-        stream);
-    if (status != LM_LAUNCH_OK)
-    {
-        return status;
     }
     status = GlmLaunchBf16Linear(
         buffers->normed_bf16,
@@ -321,36 +300,6 @@ static int32_t GlmLayerIndexer(
         GLM_DSA_INDEX_DIM,
         GLM_DSA_INDEX_DIM,
         GLM_DSA_INDEX_EPSILON);
-    status = GlmLaunchBf16Linear(
-        buffers->normed_bf16,
-        buffers->index_head_weight,
-        buffers->index_head_weight_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM_HIDDEN,
-        GLM_DSA_INDEX_HEADS,
-        GLM_DSA_INDEX_HEADS,
-        0u,
-        multiprocessors,
-        stream);
-    if (status != LM_LAUNCH_OK)
-    {
-        return status;
-    }
-    LM_LAUNCH(
-        (LmRopePerHeadKernel<GLM_LAYER_THREADS,LM_ROPE_INTERLEAVED>),
-        dim3(rows,GLM_DSA_INDEX_HEADS),
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->index_query_bf16,
-        buffers->positions,
-        GLM_DSA_INDEX_HEADS,
-        GLM_DSA_INDEX_DIM,
-        0u,
-        GLM_ROPE_DIM,
-        GLM_ROPE_THETA);
     LM_LAUNCH(
         (LmRopeKernel<GLM_LAYER_THREADS,LM_ROPE_INTERLEAVED>),
         rows,
@@ -385,6 +334,53 @@ static int32_t GlmLayerIndexer(
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
+    status = GlmLaunchBf16Linear(
+        buffers->q_compressed_bf16,
+        buffers->index_q_weight,
+        buffers->index_query_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM_QUERY_A_DIM,
+        GLM_DSA_QUERY_DIM,
+        GLM_DSA_QUERY_DIM,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    status = GlmLaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->index_head_weight,
+        buffers->index_head_weight_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM_HIDDEN,
+        GLM_DSA_INDEX_HEADS,
+        GLM_DSA_INDEX_HEADS,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    LM_LAUNCH(
+        (LmRopePerHeadKernel<GLM_LAYER_THREADS,LM_ROPE_INTERLEAVED>),
+        dim3(rows,GLM_DSA_INDEX_HEADS),
+        GLM_LAYER_THREADS,
+        0,
+        stream,
+        buffers->index_query_bf16,
+        buffers->positions,
+        GLM_DSA_INDEX_HEADS,
+        GLM_DSA_INDEX_DIM,
+        0u,
+        GLM_ROPE_DIM,
+        GLM_ROPE_THETA);
     LM_LAUNCH(
         (LmWeightedSparseScoreKernel<
             GlmIndexKv,GLM_LAYER_THREADS,GLM_DSA_INDEX_DIM>),
@@ -716,7 +712,7 @@ static int32_t GlmLayerAttentionCore(
         rows,
         GLM_LATENT_ROW);
     if (LmLatentAttentionDecodeSplitLaunch<
-            GlmKv, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM>(
+            GlmKv, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM, true>(
             buffers->query_latent_bf16,
             buffers->query_rope_bf16,
             buffers->cache,

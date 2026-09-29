@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 WORLD = 16
 HEX = "0123456789abcdef"
@@ -10,7 +11,10 @@ HOSTS = [f"spark{HEX[index]}" for index in range(WORLD)]
 REVISIONS = {
     "fp8": "935644c05e76fc198714f4cca449fd8b970ff6d7",
     "bf16": "935644c05e76fc198714f4cca449fd8b970ff6d7",
+    "fp8_s1": "304b8051cfb2b260b61ce0cbe330e02a98e73639",
 }
+ARM_CODECS = {"fp8": "fp8", "bf16": "bf16", "fp8_s1": "fp8"}
+CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "model-families/glm52/chat_template.json"
 EOS_TOKEN_IDS = [154820, 154827, 154829]
 TOKENIZER_SHA256 = "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
 TOKENIZER_TOKEN_COUNT = 154856
@@ -33,8 +37,12 @@ def runtime_root(host, lane):
     return f"/home/{host}/glmfull-lane{lane}/root"
 
 
-def pack_name(codec, rank):
-    return f"glm53full.{codec}.tp16-rank{rank}.glm52sp"
+def pack_name(arm, rank):
+    return f"glm53full.{arm}.tp16-rank{rank}.glm52sp"
+
+
+def chat_template():
+    return json.loads(CHAT_TEMPLATE_PATH.read_text(encoding="utf-8"))
 
 
 def collective_identifier(lane):
@@ -45,13 +53,13 @@ def session_matrix(base):
     return [[0 if column == row else base + column for column in range(WORLD)] for row in range(WORLD)]
 
 
-def stage_config(rank, lane, codec, max_sequence_positions, execution_row_capacity):
+def stage_config(rank, lane, arm, max_sequence_positions, execution_row_capacity):
     ports = lane_ports(lane)
     return {
         "schema_version": 3,
-        "model_revision": REVISIONS[codec],
-        "expert_weight_codec": codec,
-        "stage_pack_path": f"packs/{pack_name(codec, rank)}",
+        "model_revision": REVISIONS[arm],
+        "expert_weight_codec": ARM_CODECS[arm],
+        "stage_pack_path": f"packs/{pack_name(arm, rank)}",
         "max_sequence_positions": max_sequence_positions,
         "execution_row_capacity": execution_row_capacity,
         "decode_split_context_threshold": 64,
@@ -77,7 +85,7 @@ def stage_config(rank, lane, codec, max_sequence_positions, execution_row_capaci
     }
 
 
-def deployment(lane, codec, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight):
+def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight):
     ports = lane_ports(lane)
     pages = sequences * ((max_sequence_positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS)
     nodes = []
@@ -87,7 +95,7 @@ def deployment(lane, codec, socket_path, kv_backing_bytes, max_sequence_position
             "rank_index": rank,
             "stage_index": rank,
             "runtime_root": root,
-            "node_target": f"cuda.sm121.glm52.resident_decode_stage.bf16.expert_{codec}",
+            "node_target": f"cuda.sm121.glm52.resident_decode_stage.bf16.expert_{ARM_CODECS[arm]}",
             "transport_host": host,
             "adapter_configuration_path": f"config/stage_{rank:02d}.json",
             "kv_backing_directory": f"{root}/kvcache",
@@ -113,24 +121,28 @@ def deployment(lane, codec, socket_path, kv_backing_bytes, max_sequence_position
             "max_sequence_positions": max_sequence_positions,
         },
         "tokenizer": {"path": "tokenizer/tokenizer.json", "sha256": TOKENIZER_SHA256, "vocabulary_size": TOKENIZER_TOKEN_COUNT},
+        "chat_template": chat_template(),
         "nodes": nodes,
     }
 
 
 def render(arguments):
-    if arguments.codec not in REVISIONS:
-        raise SystemExit(f"codec must be one of {tuple(REVISIONS)}")
+    arm = getattr(arguments, "arm", None) or arguments.codec
+    if arm not in REVISIONS:
+        raise SystemExit(f"arm must be one of {tuple(REVISIONS)}")
+    if ARM_CODECS[arm] != arguments.codec:
+        raise SystemExit(f"arm {arm} carries {ARM_CODECS[arm]} experts, not {arguments.codec}")
     if not arguments.socket.startswith("/") or not arguments.socket.endswith(".sock"):
         raise SystemExit("weightd socket must be an absolute .sock path")
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv backing must be a finite positive byte count")
     if not 1 <= arguments.sequences <= 16 or not 1 <= arguments.inflight <= 4:
         raise SystemExit("sequences must be 1..16 and inflight 1..4")
-    files = {"model_resident.json": deployment(arguments.lane, arguments.codec, arguments.socket, arguments.kv_backing_bytes,
+    files = {"model_resident.json": deployment(arguments.lane, arm, arguments.socket, arguments.kv_backing_bytes,
                                                arguments.max_sequence_positions, arguments.sequences,
                                                arguments.execution_row_capacity, arguments.inflight)}
     for rank in range(WORLD):
-        files[f"config/stage_{rank:02d}.json"] = stage_config(rank, arguments.lane, arguments.codec,
+        files[f"config/stage_{rank:02d}.json"] = stage_config(rank, arguments.lane, arm,
                                                              arguments.max_sequence_positions, arguments.execution_row_capacity)
     return {name: json.dumps(document, indent=1) + "\n" for name, document in files.items()}
 
@@ -138,7 +150,8 @@ def render(arguments):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--lane", type=int, required=True)
-    parser.add_argument("--codec", choices=tuple(REVISIONS), required=True)
+    parser.add_argument("--codec", choices=("fp8", "bf16"), required=True)
+    parser.add_argument("--arm", choices=tuple(REVISIONS))
     parser.add_argument("--socket", required=True)
     parser.add_argument("--kv-backing-bytes", type=int, required=True)
     parser.add_argument("--max-sequence-positions", type=int, required=True)
@@ -160,7 +173,8 @@ def main():
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as handle:
             handle.write(text)
-    print(json.dumps({"lane": arguments.lane, "codec": arguments.codec, "files": len(files), **lane_ports(arguments.lane),
+    print(json.dumps({"lane": arguments.lane, "codec": arguments.codec, "arm": arguments.arm or arguments.codec,
+                      "files": len(files), **lane_ports(arguments.lane),
                       "collective_identifier": collective_identifier(arguments.lane)}))
     return 0
 

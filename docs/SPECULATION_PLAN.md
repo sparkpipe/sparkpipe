@@ -532,7 +532,8 @@ round's anchor; otherwise it returns no draft and counts it as `cold`, which
 happens once per sequence when the prefill spans several waves.
 
 **Draft.** A chain of up to 7 tokens (`MTP_CHAIN_MAX`) through layer 45:
-vocab-sharded embedding, `enorm`/`hnorm`, the replicated `eh_proj`, DSA
+vocab-sharded embedding, `enorm`/`hnorm`, the replicated `eh_proj` over
+`[enorm(embed) | hnorm(hidden)]` (embedding first, see "Input order" below), DSA
 attention on this rank's heads, the MoE on this rank's slice of every expert,
 and the shared head on this rank's vocabulary shard. Per drafted token that
 is three bf16 all-reduces and one max all-reduce, issued as stream-ordered
@@ -542,6 +543,20 @@ device; the host syncs once per draft and checks the deferred collective
 rounds. Every rank computes the same chain from the same all-reduced rows, so
 the verify shape agrees across ranks without a broadcast. A token outside
 the vocabulary truncates the draft (`truncated`).
+
+**Input order.** The checkpoint's `eh_proj` [4096, 8192] reads the
+normalized embedding in columns 0..4095 and the normalized hidden row in
+columns 4096..8191, the same order as the DeepSeek-V3, GLM-4.5 and Ling MTP
+layers. The first implementation had the halves swapped. Exactness did not
+notice (a wrong draft is rejected), but every draft was wrong: window W2
+(2026-09-29, TP16) measured 2 accepted of 3216 MTP draft tokens, 35 tok/s
+against 44 tok/s with spec off. `tools/glm53flash_mtp_reference.py` runs the
+layer-45 MTP forward in numpy from the checkpoint over the T1 fixtures' final
+streams. On the 17 fixture positions the swapped order predicts 0 of 17 next-next tokens
+for every hidden tap and context, and the checkpoint order 6-7 of 17.
+`build/test_glm5_next_mtp_join` (sm_121a) checks the device join at TP1 and
+TP16, including the embedding all-reduce: it fails with 4096 of 4096
+mismatches on the swapped order.
 
 **Mix (`mtp+lookup`).** The model-neutral
 `SparkSpeculationDrafterMix` asks the lookup drafter first and uses it when it

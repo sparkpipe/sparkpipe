@@ -299,3 +299,63 @@ with the other regime's bound, and the split gather missing one rank.
 walk order, capture and replay per regime, the selected-context and multi-wave
 gates, settle, walk and stream failures, a refused worker, and the busy gate
 (including its release when a submission fails before the chain starts).
+
+## Multi-row prefill waves (`SPARK_GLM52_PREFILL_WAVE_ROWS`)
+
+Without the variable (or with `0`) a prefill submission runs one round per
+wave: a single prompt of 16 rows is 16 full 78-layer waves, so a 300-token
+prompt costs about 300 B1 steps. With `SPARK_GLM52_PREFILL_WAVE_ROWS=N`
+(1 up to the execution row capacity; any other value refuses startup) a
+prefill wave spans consecutive whole rounds up to N rows. The rows of one
+sequence in a wave are causal: every layer stores the wave's KV and DSA index
+rows before attention, and attention, index scoring and top-k mask positions
+after each row's own position.
+
+A wave never mixes attention regimes. The regime of a round is the largest of
+its rows' regimes, where a row's regime is its graph regime (split or unsplit
+attention at `decode_split_context_threshold`) plus whether its context passes
+the 2048-token DSA selection width. With the variable set, a prefill wave runs
+the certified B1 head once per row (`row_head_certified`), so every row's
+token, including the one the prefill emits, comes from the same head
+arithmetic as a one-row wave. Decode waves of several sequences, and every
+wave with the variable unset, keep today's head choice. In graph mode the
+captured graph is keyed by the head path as well as the attention regime and
+the row count (`GLM52-GRAPH-CAPTURE regime=2|3` for per-row certified heads),
+so a prefill wave never replays a decode wave's graph of the same shape, and
+the reverse.
+
+The startup line `GLM52-PREFILL-WAVE-ROWS rows=N exact_rows=8 exact=yes|no`
+names the bound. Up to 8 rows every linear takes the skinny path and each row
+is bit-identical to one-row prefill; above 8 rows the linears take the GEMM and
+the rows are not bit-equal, which the line states.
+
+Two kernel changes make multi-row waves exact:
+- `LmLatentAttentionDecodeSplitLaunch<..., true>` sizes the split partitions
+  per row (from the head count, as for one row) and bounds each row's span by
+  its own position, so a row's attention sums do not depend on the other rows
+  in the wave. At one row per sequence this is the previous launch.
+- The glm52 wave metadata kernel sets each sequence's context length to the
+  maximum over its rows in the wave (the previous kernel let the last writer
+  win).
+
+The DSA indexer stores every position's index key, also while the context is
+within the selection width (the query projection, scoring and top-k still run
+only past it). Before this, positions 0..2047 of every sequence had no index
+key, so any sequence that grew past 2048 tokens selected from zero keys.
+
+`validation/run_glm52_prefill_rows_parity.sh fp8 16` builds
+`glm52_prefill_rows_parity`: on the validator's synthetic weights (a dense and
+a routed layer, TP1, split threshold 64) it prefills 2112 positions one row per
+wave as the reference, then with waves of up to 2, 4, 8 and 16 rows, with and
+without the regime split, and compares every row's hidden and residual, the KV
+pool and the DSA index pool. It then runs verify waves of up to 8 rows at
+anchors in the unsplit, split and selected regimes on the reference cache: an
+oracle wave (reference tokens) must be bit-exact, an adversary wave (wrong
+draft tokens) must leave the anchor row equal and change every drafted row,
+and a one-row replay after the adversary must equal the reference. The run
+also prints FNV hashes of the reference rows before and after 2048 for a
+comparison against another build. With a third argument `head` the rig runs
+the same walks at TP16 rank-local shapes with the final head (a synthetic
+rank-local lm_head and its certified FP8 shadow) and compares every row's
+token: prefill waves up to 8 rows and oracle verify waves must be token-exact
+against one-row waves, and an adversary wave must keep the anchor token.

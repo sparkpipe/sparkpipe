@@ -49,6 +49,7 @@ static const struct SparkK3WeightBind
 	WF(mla_gate_weight, "mla_gate_weight"),
 	WF(mla_out_weight, "mla_out_weight"),
 	WF(router_weight, "router_weight"),
+	WF(router_bias, "router_bias"),
 	WF(routed_down_weight, "routed_down_weight"),
 	WF(routed_up_weight, "routed_up_weight"),
 	WF(routed_norm_weight, "routed_norm_weight"),
@@ -83,7 +84,7 @@ static const char *const k3_required_mla[] =
 };
 static const char *const k3_required_moe[] =
 {
-	"router_weight", "routed_down_weight", "routed_up_weight",
+	"router_weight", "router_bias", "routed_down_weight", "routed_up_weight",
 	"routed_norm_weight", "expert_w1_weight", "expert_w2_weight",
 	"shared_w1_weight", "shared_w2_weight",
 };
@@ -99,6 +100,31 @@ static int32_t k3_require(const SparkK3BoundLayer *bound,
 		if ( SparkK3BoundEntry(bound, names[i]) == 0 )
 			return SPARK_K3_DISPATCH_ERR_BIND;
 	return SPARK_K3_DISPATCH_OK;
+}
+
+static int32_t k3_require_whole_head_table(const SparkK3BoundLayer *bound,
+	const char *name, uint64_t bytes)
+{
+	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
+	if ( entry != 0 && entry->bytes == bytes )
+		return SPARK_K3_DISPATCH_OK;
+	fprintf(stderr, "sparkpipe_k3: %s holds %llu bytes, the per-head table "
+		"must carry all %u heads (%llu bytes)\n", name,
+		(unsigned long long)(entry != 0 ? entry->bytes : 0u), K3_KDA_HEADS,
+		(unsigned long long)bytes);
+	return SPARK_K3_DISPATCH_ERR_BIND;
+}
+
+static int32_t k3_require_f32_table(const SparkK3BoundLayer *bound,
+	const char *name, uint32_t count)
+{
+	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
+	if ( entry != 0 && entry->kind == SPARK_K3_PACK_KIND_F32 &&
+		entry->bytes == (uint64_t)count * sizeof(float) )
+		return SPARK_K3_DISPATCH_OK;
+	fprintf(stderr, "sparkpipe_k3: %s must be %u F32 values per layer\n",
+		name, count);
+	return SPARK_K3_DISPATCH_ERR_BIND;
 }
 
 static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
@@ -356,16 +382,28 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 			status = k3_require(bound, k3_required_mla,
 				(uint32_t)(sizeof(k3_required_mla) / sizeof(k3_required_mla[0])));
 		else
+		{
 			status = k3_require(bound, k3_required_kda,
 				(uint32_t)(sizeof(k3_required_kda) / sizeof(k3_required_kda[0])));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_whole_head_table(bound, "kda_decay_bias",
+					(uint64_t)K3_KDA_QK_DIM * sizeof(float));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_whole_head_table(bound, "kda_head_log_scale",
+					(uint64_t)K3_KDA_HEADS * sizeof(float));
+		}
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 		if ( bound->layer_is_dense )
 			status = k3_require(bound, k3_required_dense,
 				(uint32_t)(sizeof(k3_required_dense) / sizeof(k3_required_dense[0])));
 		else
+		{
 			status = k3_require(bound, k3_required_moe,
 				(uint32_t)(sizeof(k3_required_moe) / sizeof(k3_required_moe[0])));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_f32_table(bound, "router_bias", K3_EXPERTS);
+		}
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 	}
@@ -442,26 +480,6 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		else
 			d->buffers_host->attnres_out_weight = 0;
 		d->buffers_host->router_bias = 0;
-		for ( uint32_t off = 0u; off < layer_count; ++off )
-		{
-			const SparkK3PackEntry *bias_entry =
-				SparkK3BoundEntry(&bounds[off], "router_bias");
-			const void *bias = 0;
-			if ( bias_entry == 0 )
-				continue;
-			status = SparkWeightdLazyPackSlice(lazy,
-				pack->payload_base + bias_entry->payload_offset,
-				bias_entry->bytes, &bias);
-			if ( status != SPARK_K3_DISPATCH_OK )
-				break;
-			d->buffers_host->router_bias = (const float *)bias;
-			break;
-		}
-		if ( status != SPARK_K3_DISPATCH_OK )
-		{
-			delete[] host;
-			return status;
-		}
 		memcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights));
 	}
 	delete[] host;

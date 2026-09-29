@@ -59,8 +59,7 @@ typedef struct SparkK3RunnerTpContext
 static SparkK3RunnerTpContext *K3RunnerTpContextAcquire(
 	SparkK3RunnerState *state);
 static void K3RunnerTpContextRelease(SparkK3RunnerTpContext *context);
-static void K3RunnerTpCompletion(void *context,
-	const SparkTpDeviceCollectiveCompletion *completion);
+static void K3RunnerTpApply(SparkK3RunnerTpContext *tp);
 
 __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	const uint16_t *hidden,const uint16_t *shared,const uint16_t *gate_up,
@@ -434,16 +433,12 @@ static void K3RunnerTpContextRelease(SparkK3RunnerTpContext *context)
 	state->tp_context_free_head = context;
 }
 
-static void K3RunnerTpCompletion(void *context,
-	const SparkTpDeviceCollectiveCompletion *completion)
+static void K3RunnerTpApply(SparkK3RunnerTpContext *tp)
 {
-	SparkK3RunnerTpContext *tp = (SparkK3RunnerTpContext *)context;
 	K3LayerBuffers *b = tp->buffers;
 	uint32_t rows = tp->rows;
 	uint32_t elements = rows * K3_HIDDEN;
 	uint16_t *fused = tp->fused;
-	if ( completion != 0 && completion->status != SPARK_STATUS_OK )
-		tp->owner->tp_collective_failed = 1u;
 	if ( tp->phase == 2u )
 	{
 		if ( cudaMemcpyAsync(b->gate_up_bf16, fused,
@@ -667,7 +662,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 				&submission,
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
 				state->tp_collective_failed = 1u;
-			K3RunnerTpCompletion(completion_context, 0);
+			K3RunnerTpApply(completion_context);
 			return;
 		}
 		if ( state->collective_created != 0 )
@@ -734,7 +729,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 					&submission,
 					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
 					state->tp_collective_failed = 1u;
-				K3RunnerTpCompletion(completion_context, 0);
+				K3RunnerTpApply(completion_context);
 			}
 		}
 		return;

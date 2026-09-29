@@ -110,6 +110,28 @@ def main():
         if report["result"] != "FAIL" or not any("produced" in failure and "pack holds" in failure
                                                  for failure in report["failures"]):
             failures.append(f"a source entry shorter than the pack entry was not reported: {report['failures']}")
+        report = verifier.verify(plan_for(rows, data), good, 16, 5, experts=True)
+        if report["result"] != "PASS" or report["expert_entries"] != 2 or report["spine_entries_skipped"] != 3:
+            failures.append(f"a byte-exact pack did not pass the expert verify: {report['failures']}")
+        if verifier.verify(plan_for(rows, expert_data), grafted, 16, 5, experts=True)["result"] != "PASS":
+            failures.append("the grafted pack's expert entries failed against their own source")
+        report = verifier.verify(plan_for(rows, data), grafted, 16, 5, experts=True)
+        if report["result"] != "FAIL" or not any("kind=22" in failure and "differs from the source" in failure
+                                                 for failure in report["failures"]):
+            failures.append(f"replaced expert entries passed the expert verify: {report['failures']}")
+        flipped = base / "flip-experts.glm52sp"
+        write_pack(flipped, rows, data, flip=(packer.K_EXPERT_DOWN, 3))
+        report = verifier.verify(plan_for(rows, data), flipped, 16, 5, experts=True)
+        if report["result"] != "FAIL" or not any("kind=23" in failure for failure in report["failures"]):
+            failures.append(f"a flipped expert byte was not reported: {report['failures']}")
+        spine_flip = base / f"flip-{packer.K_EMBEDDING}.glm52sp"
+        if verifier.verify(plan_for(rows, data), spine_flip, 16, 5, experts=True)["result"] != "PASS":
+            failures.append("a spine difference failed the expert-only verify")
+        subset = [row for row in rows if row[0] != packer.K_EXPERT_DOWN]
+        report = verifier.verify(plan_for(subset, data), good, 16, 5, experts=True)
+        if report["result"] != "FAIL" or not any("kind=23" in failure and "not in the packer's plan" in failure
+                                                 for failure in report["failures"]):
+            failures.append("an expert entry of a planned layer absent from the plan was not reported")
         report = verifier.verify(plan_for(rows, data), good, 16, 4)
         if not any("verifying tp16 rank 4" in failure for failure in report["failures"]):
             failures.append("a pack of another rank was not reported")
@@ -118,7 +140,8 @@ def main():
             print(f"FAIL {failure}")
         return 1
     print("PASS glm52 spine source verify: byte-exact spine passes, expert entries skipped, flipped bytes, "
-          "missing/extra entries, short source entries, geometry and rank mismatches reported")
+          "missing/extra entries, short source entries, geometry and rank mismatches reported; --experts "
+          "verifies expert entries only and reports replaced or flipped expert bytes")
     return 0
 
 

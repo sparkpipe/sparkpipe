@@ -1,0 +1,108 @@
+{
+ "arms": [
+  {
+   "arm_id": "full.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "label": "U2",
+   "role": "reference"
+  },
+  {
+   "arm_id": "full.S0.e-fp8.k-bf16/bf16/fp32.d-none",
+   "axis": "E",
+   "compare_to": "full.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "corpus": "CT-short",
+   "label": "U0",
+   "role": "anchor"
+  },
+  {
+   "anchor": "full.S0.e-fp8.k-bf16/bf16/fp32.d-none",
+   "arm_id": "full.S1.e-nvfp4ra.k-bf16/bf16/fp32.d-none",
+   "axis": "E",
+   "compare_to": "full.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "corpus": "CT-short",
+   "label": "U3p",
+   "role": "arm"
+  }
+ ],
+ "backstops": {
+  "calibration_comparison_sha256": null,
+  "calibration_pair": [
+   "full.S0.e-fp8.k-bf16/bf16/fp32.d-none",
+   "full.S1.e-fp8.k-bf16/bf16/fp32.d-none"
+  ],
+  "dnll_rel_pct_abs": 0.5,
+  "kl_mean_upper": 0.005,
+  "status": "calibration",
+  "top1_agree_pct_lower": 99.0
+ },
+ "campaign": "full-wu",
+ "corpora": {
+  "CT-short": {
+   "docs": 200,
+   "index_sha256": "d5bbbb30a391beee2160c1a7ef3b185fba3a7c859dd6a3d27187e0a524896788",
+   "role": "primary",
+   "tokens_sha256": "bde6ca4c7f8378ffe7b055a0534250b8c007f295dcdc6e280a31e8cb736c2103"
+  }
+ },
+ "exclusions": {
+  "near_tie_rule": "reference top-2 gap < near_tie_nats",
+  "on_policy_dnll_in_verdict": false,
+  "strata_reported": [
+   "prose-recent",
+   "prose-old",
+   "code",
+   "on-policy",
+   "prose-long",
+   "code-long",
+   "retrieval"
+  ]
+ },
+ "firmware_commit": "851f844ee1cf003e10ba428d529ca6004474d4c4",
+ "format": "sparkpipe-ab-plan-v1",
+ "margins": {
+  "D": {
+   "token_differences": 0
+  },
+  "E": {
+   "kl_ratio_vs_anchor_upper": 1.1,
+   "top1_diff_vs_anchor_pt_lower": -0.3
+  },
+  "K": {
+   "dnll_rel_pct_abs": 0.5,
+   "every_bin": true,
+   "kl_mean_upper": 0.005,
+   "top1_agree_pct_lower": 99.0
+  }
+ },
+ "notes": "GLM-5.3 Full quant A/B WU (lanes/glmfull-nvfp4.md). Reference U2 = publisher FP8 experts on the S1 BF16 spine (U1 BF16 experts cannot be resident: ~98 GB/rank). U3p = RadixArk NVFP4 experts on S1 (nvfp4_s1). U0 = production precision (S0 spine, publisher FP8) is the E yardstick: U3p passes if its KL to U2 is at most 1.1x U0's and its top-1 agreement is within 0.3 pt of U0's (lead decision: U0 declared as the E anchor, not a spine bridge). One pinned firmware per campaign: replace firmware_commit with the campaign merge commit and rebuild all three SCORE_DUMP arms there before freezing. Suites: COMPSEC-17 thinking off at 512 tokens (Full's measured budget).",
+ "statistics": {
+  "alpha": 0.05,
+  "bootstrap": {
+   "interval": "conservative-percentile-bca",
+   "replicates": 10000,
+   "seed": 20260929,
+   "unit": "document"
+  },
+  "correction": "holm-one-sided",
+  "ct_short_doubled": false,
+  "decisive_nats": 1.0,
+  "near_tie_nats": 0.001,
+  "position_bins": [
+   0,
+   1024,
+   4096,
+   16384,
+   32768
+  ]
+ },
+ "suites": {
+  "b1_sequential": true,
+  "max_tokens": 512,
+  "mcnemar_alpha": 0.05,
+  "names": [
+   "COMPSEC-17",
+   "ds4-92"
+  ],
+  "thinking": "off"
+ },
+ "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
+}

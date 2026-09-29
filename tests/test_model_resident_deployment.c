@@ -271,6 +271,7 @@ static void TestChatTemplates(void)
 	const char *unresolved = 0;
 	char *glm = TestReadText("model-families/glm5_next/chat_template.json");
 	char *gemma = TestReadText("model-families/gemma4/chat_template.json");
+	char *glm52 = TestReadText("model-families/glm52/chat_template.json");
 
 	assert(TestLoadWithChatTemplate(0,&deployment) == SPARK_STATUS_OK);
 	assert(deployment.chat_template.declared == 0u);
@@ -365,6 +366,20 @@ static void TestChatTemplates(void)
 		free(k3);
 	}
 
+	assert(TestLoadWithChatTemplate(glm52,&deployment) == SPARK_STATUS_OK);
+	assert(deployment.chat_template.declared == 1u && deployment.chat_template.stop_marker_count == 3u);
+	TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
+		"[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>hi<|assistant|><think></think>");
+	TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+		"[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>hi<|assistant|><think>");
+	TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+		"[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>Be terse.<|user|>hi<|assistant|><think></think>ok<|user|>bye<|assistant|><think>");
+	TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+		"[gMASK]<sop><|system|>Reasoning Effort: Max<|system|>Be terse.<|user|>hi<|assistant|><think></think>ok<|user|>bye<|assistant|><think></think>");
+	TestRender(&deployment,"{\"messages\":[{\"role\":\"observation\",\"content\":\"42\"}]}",false,
+		SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED,0);
+	SparkModelResidentDeploymentDestroy(&deployment);
+
 	assert(TestLoadWithChatTemplate(minimal,&deployment) == SPARK_STATUS_OK);
 	TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,"UhiG");
 	TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_THINKING_UNSUPPORTED,0);
@@ -402,7 +417,8 @@ static void TestChatTemplates(void)
 	TestChatTemplateSchema("\"[gMASK]\"",SPARK_STATUS_SCHEMA_ERROR);
 	free(glm);
 	free(gemma);
-	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token or one declared control marker)\n");
+	free(glm52);
+	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, GLM-5.2, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token or one declared control marker)\n");
 }
 
 int main(int argc,char **argv)
