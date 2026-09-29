@@ -13,12 +13,18 @@ require rc=0.
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONTRACT = ROOT / "model_contracts/glm53_flash_authoritative.json"
+FIRMWARE = ROOT / ("modules/glm5_next_resident_decode_stage/include/sparkpipe/"
+                   "spark_glm5_next_resident_decode_stage_firmware.h")
+KV_SHARD_REQUIRED_DEGREE = int(re.search(
+    r"#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_KV_SHARD_REQUIRED_DEGREE (\d+)u",
+    FIRMWARE.read_text()).group(1))
 
 HARNESS = r"""
 #include <stdio.h>
@@ -406,8 +412,8 @@ int main(int argc, char **argv)
     memset(&state, 0, sizeof(state));
     SparkStatus rc = SparkGlm5NextServingLoadConfiguration(
         argv[1], argv[2], &state, &msp, &erc, &dsct, &tpd, &tpr);
-    printf("rc=%d msp=%u erc=%u dsct=%u tpd=%u tpr=%u\n",
-        (int)rc, msp, erc, dsct, tpd, tpr);
+    printf("rc=%d msp=%u erc=%u dsct=%u tpd=%u tpr=%u icp=%u kvs=%u\n",
+        (int)rc, msp, erc, dsct, tpd, tpr, state.index_cp, state.kv_shard);
     printf("artifact=%s revision=%s\n", SparkGlm5NextServingDescriptor.artifact_sha256, SparkGlm5NextServingDescriptor.model_revision);
     if ( argc != 5 || TestDeployment(argv[3],msp) != 0 || TestDeployment(argv[4],msp) != 0 )
         return(9);
@@ -471,6 +477,18 @@ def main() -> int:
             print("FAIL the adapter rejects the generator's stage config - "
                   "generator/adapter drift (this is the incident class the "
                   "drift gate cannot see: it compares member names, not shapes)")
+            return 1
+        loaded = json.load(open(config))
+        want = "tpd=%d tpr=0 icp=%d kvs=%d" % (
+            loaded["tp_degree"], loaded.get("dsa_index_context_parallel", 0),
+            loaded.get("kv_shard", 0))
+        if want not in run.stdout:
+            print("FAIL the adapter does not carry the generated tp degree, "
+                  "dsa_index_context_parallel and kv_shard: want " + want)
+            return 1
+        if loaded["tp_degree"] >= KV_SHARD_REQUIRED_DEGREE and "icp=1 kvs=1" not in run.stdout:
+            print("FAIL the TP16 deployment config does not select the "
+                  "sharded KV cache the module requires at that degree")
             return 1
         if f"artifact={contract_sha} revision={revision}\n" not in run.stdout:
             print("FAIL the adapter does not report the contract digest and model revision it was built with")
