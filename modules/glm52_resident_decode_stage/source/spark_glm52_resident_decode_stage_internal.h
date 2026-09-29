@@ -166,6 +166,10 @@ int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave);
 cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlmLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
+#ifdef SPARK_SCORE_DUMP
+struct SparkScoreDumpStats;
+cudaError_t SparkGlm52LaunchHeadScore(cudaStream_t stream,const uint16_t *normed_bf16,const void *head_bf16,float *logits,uint32_t rows,uint32_t width,uint32_t id_base,const uint32_t *probe_offsets,const uint32_t *probe_local,float *probe_logits,struct SparkScoreDumpStats *stats);
+#endif
 int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
 
 #ifdef __cplusplus

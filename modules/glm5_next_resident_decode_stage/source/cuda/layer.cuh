@@ -7,6 +7,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/hc.cuh"
 #include "inference/kernels/attn.cuh"
+#include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/topk_exact.cuh"
@@ -23,6 +24,7 @@
 #include "modules/glm5_next_resident_decode_stage/source/cuda/config.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
+#include "sparkpipe/spark_glm5_next_kv_shard.h"
 #define SPARK_FAMILY_CAMEL Glm5Next
 #define SPARK_FAMILY_UPPER GLM5_NEXT
 #define SPARK_FAMILY_LOWER glm5_next
@@ -67,12 +69,22 @@ void Glm5NextIndexPackKernel(
         packed_bf16[base + 2u * dimension] = 0x3F80u;
 }
 
-template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS>
+static __device__ __forceinline__ const uint16_t *Glm5NextIndexSlot(const LmKvView &cache, uint32_t sequence, uint32_t position, uint32_t row)
+{
+    return (const uint16_t *)LmKvSlotRequired<Glm5NextIndexKv>(cache, sequence, position, row, LM_KV_ACCESS_READ);
+}
+
+static __device__ __forceinline__ const uint16_t *Glm5NextIndexSlot(const LmKvShardView &cache, uint32_t sequence, uint32_t position, uint32_t row)
+{
+    return (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(cache, sequence, position, row, LM_KV_ACCESS_READ);
+}
+
+template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS, class Pages>
 __global__ __launch_bounds__(THREADS, 1)
 void Glm5NextPoolScoreKernel(
     const uint16_t *__restrict__ query_bf16,
     const uint16_t *__restrict__ head_weight_bf16,
-    LmKvView index_cache,
+    Pages index_cache,
     const uint32_t *__restrict__ sequence_of_row,
     const uint32_t *__restrict__ context_length,
     const uint32_t *__restrict__ row_positions,
@@ -111,8 +123,7 @@ void Glm5NextPoolScoreKernel(
         for (slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool)
         {
             uint32_t position = first + slot_in_pool;
-            const uint16_t *slot = (const uint16_t *)LmKvSlotRequired<Glm5NextIndexKv>(
-                index_cache, sequence, position, row, LM_KV_ACCESS_READ);
+            const uint16_t *slot = Glm5NextIndexSlot(index_cache, sequence, position, row);
             if (slot == 0)
                 return;
             logits[slot_in_pool] =
@@ -134,8 +145,7 @@ void Glm5NextPoolScoreKernel(
             if (mix[slot_in_pool] == 0.0f)
                 continue;
             uint32_t position = first + slot_in_pool;
-            const uint16_t *slot = (const uint16_t *)LmKvSlotRequired<Glm5NextIndexKv>(
-                index_cache, sequence, position, row, LM_KV_ACCESS_READ);
+            const uint16_t *slot = Glm5NextIndexSlot(index_cache, sequence, position, row);
             if (slot == 0)
                 return;
             key += mix[slot_in_pool] * LmBf16ToFloat(slot[index]);
@@ -386,6 +396,15 @@ struct Glm5NextLayerBuffers
 
     LmKvView cache;
     LmKvView index_cache;
+    uint32_t kv_shard_active;
+    SparkKvShard kv_shard;
+    SparkKvShard index_shard;
+    const uint16_t *shard_query_gathered_bf16;
+    uint64_t shard_query_stride;
+    float *shard_partials_f32;
+    const float *shard_partials_received_f32;
+    uint64_t shard_partial_stride;
+    uint32_t shard_row_capacity;
     const uint32_t *sequence_of_row;
     const uint32_t *context_length;
     const uint32_t *positions;
@@ -412,9 +431,144 @@ static_assert(
 
 #include "sparkpipe/family/glm/spark_glm_layer_bf16_linear.cuh"
 
+static LmKvShardView Glm5NextShardView(const LmKvView &pages, SparkKvShard shard)
+{
+    LmKvShardView view;
+    view.pages = pages;
+    view.shard = shard;
+    return view;
+}
+
+static uint32_t Glm5NextKvShardBound(const Glm5NextLayerBuffers *buffers)
+{
+    return buffers->kv_shard_active == 0u ||
+        (SparkKvShardValid(buffers->kv_shard, Glm5NextKv::kPageSlots) != 0u &&
+         SparkKvShardValid(buffers->index_shard, Glm5NextIndexKv::kPageSlots) != 0u &&
+         buffers->kv_shard.grain == 1u &&
+         buffers->index_shard.grain == GLM5_NEXT_DSA_KPOOL &&
+         buffers->kv_shard.degree == buffers->index_shard.degree &&
+         buffers->kv_shard.rank == buffers->index_shard.rank) ? 1u : 0u;
+}
+
 static uint32_t Glm5NextIndexCpDegree(const Glm5NextLayerBuffers *buffers, uint32_t context)
 {
     return(SparkGlm5NextIndexCpActive(context, buffers->index_owner_degree) != 0u ? buffers->index_owner_degree : 1u);
+}
+
+static int32_t Glm5NextLayerIndexStore(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    if (Glm5NextKvShardBound(buffers) == 0u)
+        return LM_LAUNCH_ERR_SHAPE;
+    if (buffers->kv_shard_active != 0u)
+        LM_LAUNCH(
+            (LmKvShardStoreKernel<Glm5NextIndexKv,GLM5_NEXT_LAYER_THREADS>),
+            rows,
+            GLM5_NEXT_LAYER_THREADS,
+            0,
+            stream,
+            Glm5NextShardView(buffers->index_cache, buffers->index_shard),
+            buffers->index_packed_bf16,
+            buffers->sequence_of_row,
+            buffers->positions,
+            rows,
+            SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION);
+    else
+        LM_LAUNCH(
+            (LmKvStoreKernel<Glm5NextIndexKv,GLM5_NEXT_LAYER_THREADS>),
+            rows,
+            GLM5_NEXT_LAYER_THREADS,
+            0,
+            stream,
+            buffers->index_cache,
+            buffers->index_packed_bf16,
+            buffers->sequence_of_row,
+            buffers->positions,
+            rows,
+            SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextLayerIndexPoolScore(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    cudaStream_t stream)
+{
+    uint32_t pools, degree, local_stride;
+    degree = Glm5NextIndexCpDegree(buffers, context);
+    if (buffers->selection_scores == 0 || buffers->selected_positions == 0 ||
+        buffers->selected_pools == 0 ||
+        (degree > 1u && (buffers->index_local_scores == 0 || buffers->index_gathered_scores == 0 || buffers->index_owner_rank >= degree)) ||
+        (buffers->kv_shard_active != 0u && (degree != buffers->index_shard.degree || buffers->index_owner_rank != buffers->index_shard.rank)))
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    pools = SparkGlm5NextIndexCpPools(context);
+    local_stride = SparkGlm5NextIndexCpLocalStride(pools, degree);
+    if (buffers->kv_shard_active != 0u)
+    {
+        LM_LAUNCH(
+            (Glm5NextPoolScoreKernel<
+                GLM5_NEXT_LAYER_THREADS,
+                GLM5_NEXT_DSA_INDEX_DIM,
+                GLM5_NEXT_DSA_KPOOL,
+                GLM5_NEXT_DSA_INDEX_HEADS,
+                LmKvShardView>),
+            dim3(local_stride,rows),
+            GLM5_NEXT_LAYER_THREADS,
+            0,
+            stream,
+            buffers->index_query_bf16,
+            buffers->index_head_weight_bf16,
+            Glm5NextShardView(buffers->index_cache, buffers->index_shard),
+            buffers->sequence_of_row,
+            buffers->context_length,
+            buffers->row_positions,
+            (const float *)buffers->index_compress_ape,
+            pools,
+            buffers->index_owner_rank,
+            degree,
+            local_stride,
+            GLM5_NEXT_DSA_INDEX_SCALE,
+            GLM5_NEXT_DSA_INDEX_HEAD_WEIGHT_SCALE,
+            buffers->index_local_scores);
+        return cudaPeekAtLastError() == cudaSuccess
+            ? LM_LAUNCH_OK
+            : LM_LAUNCH_ERR_LAUNCH;
+    }
+    LM_LAUNCH(
+        (Glm5NextPoolScoreKernel<
+            GLM5_NEXT_LAYER_THREADS,
+            GLM5_NEXT_DSA_INDEX_DIM,
+            GLM5_NEXT_DSA_KPOOL,
+            GLM5_NEXT_DSA_INDEX_HEADS,
+            LmKvView>),
+        dim3(local_stride,rows),
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->index_query_bf16,
+        buffers->index_head_weight_bf16,
+        buffers->index_cache,
+        buffers->sequence_of_row,
+        buffers->context_length,
+        buffers->row_positions,
+        (const float *)buffers->index_compress_ape,
+        pools,
+        degree > 1u ? buffers->index_owner_rank : 0u,
+        degree,
+        local_stride,
+        GLM5_NEXT_DSA_INDEX_SCALE,
+        GLM5_NEXT_DSA_INDEX_HEAD_WEIGHT_SCALE,
+        degree > 1u ? buffers->index_local_scores : buffers->selection_scores);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
 }
 
 static int32_t Glm5NextLayerIndexerScore(
@@ -426,7 +580,6 @@ static int32_t Glm5NextLayerIndexerScore(
     cudaStream_t stream)
 {
     int32_t status;
-    uint32_t pools, degree, local_stride;
 
     if (buffers == 0 || rows == 0u || context == 0u ||
         buffers->positions == 0 || buffers->sequence_of_row == 0 ||
@@ -537,60 +690,16 @@ static int32_t Glm5NextLayerIndexerScore(
         buffers->index_gate_bf16,
         buffers->index_packed_bf16,
         GLM5_NEXT_DSA_INDEX_DIM);
-    LM_LAUNCH(
-        (LmKvStoreKernel<Glm5NextIndexKv,GLM5_NEXT_LAYER_THREADS>),
-        rows,
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->index_cache,
-        buffers->index_packed_bf16,
-        buffers->sequence_of_row,
-        buffers->positions,
-        rows,
-        SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION);
+    status = Glm5NextLayerIndexStore(buffers, rows, stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
     if (context <= GLM5_NEXT_DSA_SELECTED)
     {
         return cudaPeekAtLastError() == cudaSuccess
             ? LM_LAUNCH_OK
             : LM_LAUNCH_ERR_LAUNCH;
     }
-    degree = Glm5NextIndexCpDegree(buffers, context);
-    if (buffers->selection_scores == 0 || buffers->selected_positions == 0 ||
-        buffers->selected_pools == 0 ||
-        (degree > 1u && (buffers->index_local_scores == 0 || buffers->index_gathered_scores == 0 || buffers->index_owner_rank >= degree)))
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
-    pools = SparkGlm5NextIndexCpPools(context);
-    local_stride = SparkGlm5NextIndexCpLocalStride(pools, degree);
-    LM_LAUNCH(
-        (Glm5NextPoolScoreKernel<
-            GLM5_NEXT_LAYER_THREADS,
-            GLM5_NEXT_DSA_INDEX_DIM,
-            GLM5_NEXT_DSA_KPOOL,
-            GLM5_NEXT_DSA_INDEX_HEADS>),
-        dim3(local_stride,rows),
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->index_query_bf16,
-        buffers->index_head_weight_bf16,
-        buffers->index_cache,
-        buffers->sequence_of_row,
-        buffers->context_length,
-        buffers->row_positions,
-        (const float *)buffers->index_compress_ape,
-        pools,
-        degree > 1u ? buffers->index_owner_rank : 0u,
-        degree,
-        local_stride,
-        GLM5_NEXT_DSA_INDEX_SCALE,
-        GLM5_NEXT_DSA_INDEX_HEAD_WEIGHT_SCALE,
-        degree > 1u ? buffers->index_local_scores : buffers->selection_scores);
-    return cudaPeekAtLastError() == cudaSuccess
-        ? LM_LAUNCH_OK
-        : LM_LAUNCH_ERR_LAUNCH;
+    return Glm5NextLayerIndexPoolScore(buffers, rows, context, stream);
 }
 
 static int32_t Glm5NextLayerIndexerSelect(
@@ -827,6 +936,56 @@ static int32_t Glm5NextLayerAttentionHead(
         stream);
 }
 
+static int32_t Glm5NextLayerLatentStore(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    if (Glm5NextKvShardBound(buffers) == 0u)
+        return LM_LAUNCH_ERR_SHAPE;
+    if (buffers->kv_shard_active != 0u)
+    {
+        LM_LAUNCH(
+            (LmKvShardStoreKernel<Glm5NextKv, GLM5_NEXT_LAYER_THREADS>),
+            rows,
+            GLM5_NEXT_LAYER_THREADS,
+            0,
+            stream,
+            Glm5NextShardView(buffers->cache, buffers->kv_shard),
+            buffers->kv_slot_bf16,
+            buffers->sequence_of_row,
+            buffers->positions,
+            rows,
+            GLM5_NEXT_LATENT_ROW);
+        return cudaPeekAtLastError() == cudaSuccess
+            ? LM_LAUNCH_OK
+            : LM_LAUNCH_ERR_LAUNCH;
+    }
+    LM_LAUNCH(
+        (LmKvStoreKernel<Glm5NextKv, GLM5_NEXT_LAYER_THREADS>),
+        rows,
+        GLM5_NEXT_LAYER_THREADS,
+        0,
+        stream,
+        buffers->cache,
+        buffers->kv_slot_bf16,
+        buffers->sequence_of_row,
+        buffers->positions,
+        rows,
+        GLM5_NEXT_LATENT_ROW);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextLayerAttentionOutput(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    int32_t vec_pass,
+    cudaStream_t stream);
+
 static int32_t Glm5NextLayerAttentionTail(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -911,18 +1070,9 @@ static int32_t Glm5NextLayerAttentionTail(
     if ( vec_pass != 0 )
         Glm5NextProbeVecU16(stream,buffers->query_latent_bf16,
             vec_rank_heads * GLM5_NEXT_LATENT,layer_index,(uint32_t)vec_pass,"query_latent");
-    LM_LAUNCH(
-        (LmKvStoreKernel<Glm5NextKv, GLM5_NEXT_LAYER_THREADS>),
-        rows,
-        GLM5_NEXT_LAYER_THREADS,
-        0,
-        stream,
-        buffers->cache,
-        buffers->kv_slot_bf16,
-        buffers->sequence_of_row,
-        buffers->positions,
-        rows,
-        GLM5_NEXT_LATENT_ROW);
+    status = Glm5NextLayerLatentStore(buffers, rows, stream);
+    if (status != LM_LAUNCH_OK || buffers->kv_shard_active != 0u)
+        return status;
     static_assert(GLM5_NEXT_ROPE_DIM == 0u, "the all-heads latent kernel carries no RoPE part");
     if (buffers->attention_decode_wave != 0u && LmLatentAttentionHeadsSupported(buffers->attn_heads) != 0u)
     {
@@ -970,6 +1120,19 @@ static int32_t Glm5NextLayerAttentionTail(
     {
         return LM_LAUNCH_ERR_LAUNCH;
     }
+    return Glm5NextLayerAttentionOutput(buffers, rows, layer_index, multiprocessors, vec_pass, stream);
+}
+
+static int32_t Glm5NextLayerAttentionOutput(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    int32_t vec_pass,
+    cudaStream_t stream)
+{
+    int32_t status;
+    uint32_t vec_rank_heads = vec_pass != 0 ? buffers->attn_heads : 0u;
     if ( vec_pass != 0 )
         Glm5NextProbeVecU16(stream,buffers->attention_latent_bf16,
             vec_rank_heads * GLM5_NEXT_LATENT,layer_index,(uint32_t)vec_pass,"attn_latent");
@@ -1013,6 +1176,74 @@ static int32_t Glm5NextLayerAttention(
     if (status != LM_LAUNCH_OK)
         return status;
     return Glm5NextLayerAttentionTail(buffers, rows, context, layer_index, multiprocessors, vec_pass, stream);
+}
+
+static int32_t Glm5NextLayerAttentionShardPartial(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    cudaStream_t stream)
+{
+    uint32_t listed = context > GLM5_NEXT_DSA_SELECTED ? 1u : 0u;
+    if (buffers == 0 || rows == 0u || buffers->kv_shard_active == 0u ||
+        Glm5NextKvShardBound(buffers) == 0u ||
+        buffers->attn_heads != SparkGlm5NextKvShardHeads(buffers->kv_shard.degree) ||
+        buffers->shard_query_gathered_bf16 == 0 || buffers->shard_partials_f32 == 0 ||
+        buffers->shard_query_stride != SparkGlm5NextKvShardQueryStride(rows, buffers->kv_shard.degree) ||
+        buffers->shard_partial_stride != SparkGlm5NextKvShardPartialStride(rows, buffers->kv_shard.degree, buffers->shard_row_capacity) ||
+        (listed != 0u && (buffers->selected_positions == 0 ||
+            buffers->selected_position_count != SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH)))
+        return LM_LAUNCH_ERR_SHAPE;
+    return LmLatentShardPartialLaunch<Glm5NextKv, LmKvShardView, GLM5_NEXT_LATENT, GLM5_NEXT_ROPE_DIM>(
+        Glm5NextShardView(buffers->cache, buffers->kv_shard),
+        buffers->shard_query_gathered_bf16,
+        buffers->shard_query_stride,
+        buffers->attn_heads,
+        buffers->sequence_of_row,
+        buffers->context_length,
+        buffers->row_positions,
+        listed != 0u ? buffers->selected_positions : 0,
+        listed != 0u ? buffers->selected_position_count : 0u,
+        GLM5_NEXT_DSA_SELECTED,
+        buffers->qk_scale,
+        buffers->shard_partials_f32,
+        buffers->shard_partial_stride,
+        rows,
+        stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextLayerAttentionShardMergeLatent(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    if (buffers == 0 || rows == 0u || buffers->kv_shard_active == 0u ||
+        Glm5NextKvShardBound(buffers) == 0u ||
+        buffers->attn_heads != SparkGlm5NextKvShardHeads(buffers->kv_shard.degree) ||
+        buffers->shard_partials_received_f32 == 0 || buffers->attention_latent_bf16 == 0 ||
+        buffers->shard_partial_stride != SparkGlm5NextKvShardPartialStride(rows, buffers->kv_shard.degree, buffers->shard_row_capacity))
+        return LM_LAUNCH_ERR_SHAPE;
+    return LmLatentShardMergeLaunch<GLM5_NEXT_LATENT>(
+            buffers->shard_partials_received_f32,
+            buffers->shard_partial_stride,
+            buffers->kv_shard.degree,
+            buffers->attn_heads,
+            buffers->attention_latent_bf16,
+            rows,
+            stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextLayerAttentionShardMerge(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status = Glm5NextLayerAttentionShardMergeLatent(buffers, rows, stream);
+    if (status != LM_LAUNCH_OK)
+        return status;
+    return Glm5NextLayerAttentionOutput(buffers, rows, layer_index, multiprocessors, (int32_t)Glm5NextDsaProbeVecPass(buffers), stream);
 }
 
 template<uint32_t THREADS, uint32_t LOW_RANK>

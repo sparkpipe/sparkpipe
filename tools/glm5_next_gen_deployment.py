@@ -48,6 +48,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOKENIZER_ASSET = REPO_ROOT / "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json"
 TOKENIZER_RUNTIME_PATH = "tokenizer/tokenizer.json"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
+FIRMWARE_HEADER = (Path(__file__).resolve().parents[1] / "modules"
+                   / "glm5_next_resident_decode_stage/include/sparkpipe"
+                   / "spark_glm5_next_resident_decode_stage_firmware.h")
+KV_SHARD_REQUIRED_DEGREE = int(re.search(
+    r"#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_KV_SHARD_REQUIRED_DEGREE "
+    r"(\d+)u", FIRMWARE_HEADER.read_text()).group(1))
 
 TP_COLLECTIVE = {
     "backend": BACKEND,
@@ -96,7 +102,7 @@ def stage_config(rank: int) -> dict:
     # shipped single-pass behavior. The capacities ride the module firmware
     # header defaults; the KV backing directory flows through the deployment
     # node (not the stage config).
-    return {
+    configuration = {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": "fp8",
@@ -127,6 +133,10 @@ def stage_config(rank: int) -> dict:
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),
     }
+    if TP >= KV_SHARD_REQUIRED_DEGREE:
+        configuration["dsa_index_context_parallel"] = 1
+        configuration["kv_shard"] = 1
+    return configuration
 
 
 def score_members(values: dict, root_name: str, runtime_root: str, output: Path) -> dict:
