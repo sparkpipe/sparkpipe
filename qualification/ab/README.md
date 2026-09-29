@@ -192,7 +192,11 @@ The analysis reads one merged `.npz` per (arm, corpus run). It is written by `to
 
 Report the strata separately.
 
-**On-policy stratum.** It is a separate corpus (CT-onpolicy), because it has to be generated through the production API. It is built from token ids with `score_from` at the start of the generation. Its dNLL never enters a verdict (the plan's `exclusions`).
+**On-policy stratum.** It is a separate corpus (CT-onpolicy), because it has to be generated through the production API.
+
+- Each of the 92 ds4-eval prompts carries a unique `Case <id>.` line in front of the question. Without it the shared instruction text makes 16 prompts collide on their first 64-token block.
+- Documents are token ids with `score_from` at the first generated token. Only rows at or after `score_from` are scored.
+- The text is F0's greedy output, so its dNLL favours F0-like arms and never enters a verdict (the plan's `exclusions`). Regenerate it from F1 for an unbiased stratum.
 
 **CT-long** (32 documents of exactly 32,768 tokens, 1,048,576 tokens, `corpus_sha256 5afe80e7…`):
 
