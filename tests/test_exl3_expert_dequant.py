@@ -62,6 +62,75 @@ def check_inner_against_bitwise_reference():
                                   reference_inner(trellis, codebook).view(np.uint16)), (bits, codebook)
 
 
+KNOWN_TILE_PERMUTATION = "0e4298d72984e59f1dc4e54bc1369f652eff7261aa539292353a7aad2114062e"
+KNOWN_INNER = {
+    (0, 3): "102b99d67cb19e9dcbd770b7ec5f6138", (0, 4): "9c0665c228876cb0ed984d8ec7a66ca5",
+    (1, 3): "53cca9ea1b4220ebb335d47ccda13e62", (1, 4): "d7bc5ada98aaa9b96397d6718452e83f",
+    (2, 3): "5288b3e7cdf3633758bdbc56d39ee35a", (2, 4): "09ff61f60e8c729f15c8935c4f68ee87",
+}
+KNOWN_WEIGHT = {
+    0: "9e258aeded3387f63ab8d5921ff203fbec602a7ca6e26d3851103d45209217b2",
+    1: "95429c686887ef51fa60573b706dc028f9bc56c8033bf77a99c20fd45821a36c",
+    2: "b906a2712a3b0c623fbdfdb76226074246b61cced5764476ee9008a8fd1c1b18",
+}
+
+
+def known_stream(tag, count):
+    return np.frombuffer(hashlib.shake_256(tag.encode()).digest(count), dtype=np.uint8)
+
+
+def known_trellis(tag, tiles_k, tiles_n, bits):
+    raw = known_stream(tag, tiles_k * tiles_n * 16 * bits * 2).view("<i2")
+    return raw.reshape(tiles_k, tiles_n, 16 * bits).astype(np.int16)
+
+
+def known_scales(tag, count, low, high):
+    raw = known_stream(tag, count * 2).view("<u2").astype(np.float64)
+    sign = np.where(raw.astype(np.int64) & 1, -1.0, 1.0)
+    return (sign * (low + (high - low) * raw / 65535.0)).astype(np.float16)
+
+
+def sylvester(order):
+    h = np.ones((1, 1))
+    while h.shape[0] < order:
+        h = np.block([[h, h], [h, -h]])
+    return h
+
+
+def check_known_answers():
+    got = hashlib.sha256(dq.tile_permutation().astype("<i8").tobytes()).hexdigest()
+    assert got == KNOWN_TILE_PERMUTATION, got
+    decoder = dq.Decoder()
+    for (codebook, bits), want in KNOWN_INNER.items():
+        inner = decoder.inner(known_trellis(f"inner-{codebook}-{bits}", 2, 3, bits), codebook)
+        got = hashlib.sha256(inner.view("<u2").tobytes()).hexdigest()[:32]
+        assert got == want, (codebook, bits, got)
+    for codebook, want in KNOWN_WEIGHT.items():
+        codes, _ = decoder.weight_bf16(known_trellis(f"weight-{codebook}", 16, 16, 4),
+                                       known_scales(f"suh-{codebook}", 256, 0.5, 2.0),
+                                       known_scales(f"svh-{codebook}", 256, 0.002, 0.02), codebook)
+        got = hashlib.sha256(codes.astype("<u2").tobytes()).hexdigest()
+        assert got == want, (codebook, got)
+
+
+def check_reconstruction_against_blockwise_reference():
+    decoder = dq.Decoder()
+    h = sylvester(128)
+    for codebook in (0, 1, 2):
+        trellis = known_trellis(f"blockwise-{codebook}", 16, 24, 3)
+        suh = known_scales(f"blockwise-suh-{codebook}", 256, 0.5, 2.0)
+        svh = known_scales(f"blockwise-svh-{codebook}", 384, 0.002, 0.02)
+        inner = decoder.inner(trellis, codebook).astype(np.float64)
+        want = np.empty_like(inner)
+        for i in range(0, 256, 128):
+            for j in range(0, 384, 128):
+                block = h @ inner[i:i + 128, j:j + 128] @ h
+                block = block * suh[i:i + 128].astype(np.float64)[:, None]
+                want[i:i + 128, j:j + 128] = block * svh[j:j + 128].astype(np.float64)[None, :] / 128
+        got = decoder.weight_f64(trellis, suh, svh, codebook)
+        assert np.array_equal(got.view(np.uint64), want.view(np.uint64)), codebook
+
+
 def exact_bf16(value):
     if value == 0:
         return 0
@@ -249,6 +318,12 @@ def check_end_to_end(marker_shape):
                 code, out, err = run(["check", "--source", source, "--pack", output,
                                       "--layers", "3,4", "--experts", "0,2"])
                 assert code == 0 and "CHECK-PASS" in out, out + err
+                bad = tmp / "arm" / f"armx.bad{rank}.sp"
+                blob = bytearray(data)
+                blob[experts[(pack.K_EXPERT_UP_GATE, 4)]["payload_offset"] + 2 * 128 * SMALL_HIDDEN * 2 + 1] ^= 0x40
+                bad.write_bytes(bytes(blob))
+                code, out, err = run(["check", "--source", source, "--pack", bad, "--layers", "4", "--experts", "1"])
+                assert code == 1 and "CHECK-FAIL" in out and "2/3 equal" in out, out + err
                 code, out, err = run(["graft", "--slices", slices, "--spine-pack", spine, "--output", output,
                                       "--tp-degree", TP, "--tp-rank", rank, "--model-revision", "f12e0fe1"])
                 assert code == 1 and "already exist" in err
@@ -298,6 +373,8 @@ def check_refusals():
 
 def main():
     check_lut_known_answers()
+    check_known_answers()
+    check_reconstruction_against_blockwise_reference()
     check_inner_against_bitwise_reference()
     check_bf16_rounding_is_exact()
     check_slices_are_exact()
