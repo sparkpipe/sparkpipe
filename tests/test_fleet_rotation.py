@@ -775,6 +775,14 @@ def test_rotation_fairness_across_cycles():
         check("fairness: the unrunnable companion never runs", "c3" not in seen)
     with tempfile.TemporaryDirectory() as tmp:
         f = pack_fleet(tmp)
+        f.state_dir.mkdir()
+        old = {str(int(H17) - k): ["tb"] for k in range(10, 40)}
+        (f.state_dir / "state.json").write_text(json.dumps({"active": ["prod"], "phase": "steady", "dropped": old, "demoted": dict(old), "picks": {h: {"slot": "flash_plus", "primary": "prod", "companions": []} for h in old}}))
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        st = f.state()
+        check("fairness: per-hour records keep the last 24 hours", all(len(st.get(k)) == 24 for k in ("picks", "dropped", "demoted")) and H17 in st["picks"] and H17 in st["dropped"], json.dumps({k: len(st.get(k) or {}) for k in ("picks", "dropped", "demoted")}))
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
         rc, out = f.tool("schedule", "--hours", "9", at="2026-09-29T15:10:00Z")
         rows = json.loads(out)
         companions = {m for r in rows for m in r["companions"]}

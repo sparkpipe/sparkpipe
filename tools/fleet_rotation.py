@@ -789,8 +789,9 @@ class Rotation:
         chosen, waiting = self.pack(room, candidates, self.ranking(st, instance), self.pool(slot, forced))
         picks = st.setdefault("picks", {})
         picks[key] = {"slot": slot, "primary": primary, "companions": chosen, "waiting": waiting}
-        for old in sorted(picks, key=int)[:-24]:
-            del picks[old]
+        for record in (picks, st["dropped"], st.get("demoted") or {}):
+            for old in sorted(record, key=int)[:-24]:
+                del record[old]
         runs.update({c: instance for c in chosen})
         st["last_run"] = runs
         st.pop("companions", None)
