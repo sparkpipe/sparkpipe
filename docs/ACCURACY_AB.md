@@ -181,13 +181,31 @@ Stopping a residentd leaves its arena resident (cold). Two ways to free it:
   scripts use it only when `RECLAIM_NODE_GLOBAL_APPROVED=yes` is set by the
   lead, and only after checking that no residentd other than the arms is
   running. F0 then reloads production's arena (need 33 GiB instead of 12, use
-  `--evicted production` in the dry run). Production restarts on the arena
-  that F0 left warm.
+  `--evicted production` in the dry run).
 
 A node-global reclaim between a production stop and its restart drops
 production's arena. Before a window, run it while production still serves
 (its arena is busy and stays); after a window, run it once production is
 ready again.
+
+### 4.1 Production's arena after F0
+
+weightd maps an attached arena read-write for every client unless the
+client asks for `SPARK_WEIGHTD_SHARE=readonly` (#1345). F0 runs experiment
+firmware on production's arena, so production never restarts on an arena
+that an arm mapped read-write:
+
+- With `W1_SHARE_READONLY=1` (fleet weightd and campaign commit both carry
+  #1345; the scripts refuse the flag if the campaign commit has no
+  `SPARK_WEIGHTD_SHARE` client code) and production's arena not evicted, F0
+  maps it read-only and production may restart on it warm.
+- Otherwise slot C drops production's arena after F0 stops, while production
+  is still held: pack-scoped reclaim if available, else the node-global
+  reclaim with `RECLAIM_NODE_GLOBAL_APPROVED=yes` and no residentd running.
+  Production then loads its own pack when the hold is released.
+- The window's release check (lane notes) refuses while an arm's read-write mapping
+  of production's arena is still resident, and checks that production's root
+  files are identical to the baseline taken before the window.
 
 ## 5. The W1 window
 
@@ -202,7 +220,7 @@ exact commands):
 |---|---|---|
 | A | F1 (50), then F1AA on F1's arena (12) | F1 reference CT-short; merge and probe file; F1AA A/A in permuted order concurrently with F1's COMPSEC-17; stop; reclaim F1's pack |
 | B | F2 (33) + F3 (24) | F2 and F3 probe runs concurrently; F2 second run (fresh engine); COMPSEC-17 on both, F2 with the dump on and off; stop F3 (and F2 unless it is kept for C) |
-| C | F0 (12 on production's arena), F2 kept only if every node fits | F0 probe run; stop; production's arena stays for production's restart |
+| C | F0 (12 on production's arena), F2 kept only if every node fits | F0 probe run; stop; production's arena is dropped before the hold is released unless F0 mapped it read-only (§4.1) |
 
 Every run:
 
@@ -233,7 +251,11 @@ stops.
 
 ## 6. After a window
 
-- Stop the arm units, reclaim only the arm packs, leave production's arena.
+- Before releasing the production hold, run the release check (§4.1). After
+  production is ready, compare its root files and greedy smoke tokens with
+  the baseline taken before the window.
+- Restart every lane the window stopped, from its own lane notes.
+- Stop the arm units and reclaim only the arm packs.
 - Flip the arm roots' `~/KEEP` lines to `DELETE-OK` unless the next window
   needs them. Packs that later windows need stay `KEEP`.
 - Copy the Tier-1 dumps and receipts off the nodes. Delete an arm's Tier-2 rows
