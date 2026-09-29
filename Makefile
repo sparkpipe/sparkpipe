@@ -634,6 +634,9 @@ PYTHON_TESTS := \
 	tests/test_glm52_model_identity.py \
 	tests/test_glm52_expert_graft.py \
 	tests/test_glm52_spine_source_verify.py \
+	tests/test_glm52_routed_parity.py \
+	tests/test_glm52_module_host_syntax.py \
+	tests/test_glm52_adapter_score_members.py \
 	tests/test_module_page_cache_reset.py \
 	tests/test_glm5_next_expert_cover_host.py \
 	tests/test_glm5_next_wset_from_trace.py \
