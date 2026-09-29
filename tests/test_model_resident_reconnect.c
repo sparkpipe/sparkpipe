@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_model_resident_client.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "fixtures/test_child_guard.h"
 
 #ifndef TEST_MODEL_RESIDENTD_PATH
 #define TEST_MODEL_RESIDENTD_PATH ""
@@ -81,7 +82,7 @@ static pid_t TestModelResidentStart(
 	pid_t child;
 	char rank[16];
 	assert(snprintf(rank,sizeof(rank),"%u",rank_index) > 0);
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{

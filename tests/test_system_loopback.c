@@ -23,6 +23,7 @@
 
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "fixtures/test_child_guard.h"
 
 #ifndef TEST_MODEL_API_PATH
 #define TEST_MODEL_API_PATH ""
@@ -63,8 +64,6 @@ typedef struct TestLoopbackStack
 	uint32_t api_port;
 } TestLoopbackStack;
 
-static TestLoopbackStack TestLoopbackTracked;
-static uint32_t TestLoopbackTrackArmed;
 static uint32_t TestLoopbackSendChunk;
 static uint32_t TestLoopbackDisconnectAt;
 
@@ -74,32 +73,6 @@ static uint64_t TestLoopbackNowMs(void)
 	assert(clock_gettime(CLOCK_MONOTONIC,&timestamp) == 0);
 	return((uint64_t)timestamp.tv_sec * 1000u +
 		(uint64_t)timestamp.tv_nsec / 1000000u);
-}
-
-static void TestLoopbackReapOrphans(void)
-{
-	uint32_t rank;
-	if ( TestLoopbackTrackArmed == 0u )
-		return;
-	for (rank=0u; rank<TEST_LOOPBACK_RANK_COUNT; rank++)
-		if ( TestLoopbackTracked.residents[rank] > 0 )
-			(void)kill(TestLoopbackTracked.residents[rank],SIGKILL);
-	if ( TestLoopbackTracked.api_child > 0 )
-		(void)kill(TestLoopbackTracked.api_child,SIGKILL);
-}
-
-static void TestLoopbackFatalSignal(int32_t signal_number)
-{
-	TestLoopbackReapOrphans();
-	(void)signal(signal_number,SIG_DFL);
-	(void)raise(signal_number);
-	_exit(128 + signal_number);
-}
-
-static void TestLoopbackTrackReset(void)
-{
-	memset(&TestLoopbackTracked,0,sizeof(TestLoopbackTracked));
-	TestLoopbackTrackArmed = 1u;
 }
 
 static uint32_t TestLoopbackProbeFreeTcpPort(void)
@@ -263,7 +236,7 @@ static pid_t TestLoopbackStartResident(
 	char log_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	assert(snprintf(rank,sizeof(rank),"%u",rank_index) > 0);
 	assert(snprintf(log_path,sizeof(log_path),"%s/rank%u.log",stack->root,rank_index) > 0);
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{
@@ -321,7 +294,6 @@ static void TestLoopbackKillRank(TestLoopbackStack *stack,uint32_t rank_index)
 	assert(waitpid(stack->residents[rank_index],&child_status,0) == stack->residents[rank_index]);
 	assert(WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGKILL);
 	stack->residents[rank_index] = 0;
-	TestLoopbackTracked.residents[rank_index] = 0;
 	if ( rank_index != 0u )
 		unlink(stack->socket_paths[rank_index]);
 }
@@ -330,7 +302,6 @@ static void TestLoopbackRestartRank(TestLoopbackStack *stack,uint32_t rank_index
 {
 	assert(stack->residents[rank_index] == 0);
 	stack->residents[rank_index] = TestLoopbackStartResident(stack,rank_index);
-	TestLoopbackTracked.residents[rank_index] = stack->residents[rank_index];
 	TestLoopbackWaitRankReady(stack,rank_index);
 }
 
@@ -338,7 +309,7 @@ static void TestLoopbackStartApi(TestLoopbackStack *stack)
 {
 	struct timespec delay;
 	uint32_t attempt;
-	stack->api_child = fork();
+	stack->api_child = TestChildGuardFork();
 	assert(stack->api_child >= 0);
 	if ( stack->api_child == 0 )
 	{
@@ -361,7 +332,6 @@ static void TestLoopbackStartApi(TestLoopbackStack *stack)
 		execv(TEST_MODEL_API_PATH,argv);
 		_exit(127);
 	}
-	TestLoopbackTracked.api_child = stack->api_child;
 	delay.tv_sec = 0;
 	delay.tv_nsec = 20000000;
 	for (attempt=0u; attempt<750u; attempt++)
@@ -385,7 +355,6 @@ static void TestLoopbackKillApi(TestLoopbackStack *stack,int32_t signal_number)
 	assert(waitpid(stack->api_child,&child_status,0) == stack->api_child);
 	assert(WIFEXITED(child_status) || WIFSIGNALED(child_status));
 	stack->api_child = 0;
-	TestLoopbackTracked.api_child = 0;
 }
 
 static int32_t TestLoopbackHttpPost(
@@ -627,7 +596,7 @@ static pid_t TestLoopbackForkRequest(
 	uint64_t deadline_ms)
 {
 	pid_t child;
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{
@@ -897,15 +866,12 @@ static void TestLoopbackStopStack(TestLoopbackStack *stack)
 	for (rank=0u; rank<TEST_LOOPBACK_RANK_COUNT; rank++)
 		if ( stack->residents[rank] > 0 )
 			TestLoopbackKillRank(stack,rank);
-	TestLoopbackTrackReset();
-	TestLoopbackTrackArmed = 0u;
 	TestLoopbackRemoveTree(stack);
 }
 
 static void TestLoopbackBoot(TestLoopbackStack *stack)
 {
 	memset(stack,0,sizeof(*stack));
-	TestLoopbackTrackReset();
 	assert(setenv("SPARK_BATCH_INFLIGHT_BUDGET_NS","5000000000",1) == 0);
 	stack->control_tcp_port = TestLoopbackProbeFreeTcpPort();
 	assert(stack->control_tcp_port != 0u);
@@ -914,16 +880,12 @@ static void TestLoopbackBoot(TestLoopbackStack *stack)
 	TestLoopbackSetupRoot(stack);
 	TestLoopbackWriteDeployment(stack);
 	TestLoopbackStartResidents(stack);
-	memcpy(TestLoopbackTracked.residents,stack->residents,sizeof(stack->residents));
 	TestLoopbackStartApi(stack);
 }
 
 int main(int argc,char **argv)
 {
 	TestLoopbackStack stack;
-	assert(atexit(TestLoopbackReapOrphans) == 0);
-	assert(signal(SIGABRT,TestLoopbackFatalSignal) != SIG_ERR);
-	assert(signal(SIGSEGV,TestLoopbackFatalSignal) != SIG_ERR);
 	assert(signal(SIGPIPE,SIG_IGN) != SIG_ERR);
 	if ( (argc == 3 || argc == 4) && strcmp(argv[1],"--fuzz") == 0 )
 	{
