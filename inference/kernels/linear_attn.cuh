@@ -215,9 +215,9 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 				uint32_t channel = flat / COLUMNS,element_index = flat % COLUMNS;
 				float v = LmBf16ToFloat(value_bf16[value_base + element_index]);
 				float previous = state_s[flat];
-				state_s[flat] =
+				state_s[flat] = LmStateUpdateGrid<State>::Apply(
 					(forget[channel] * previous)
-					+ (beta * (v - shared_predicted[element_index]) * shared_key[channel]);
+					+ (beta * (v - shared_predicted[element_index]) * shared_key[channel]));
 			}
 		}
 		__syncthreads();

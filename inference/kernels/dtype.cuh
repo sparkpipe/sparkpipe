@@ -208,3 +208,12 @@ static __device__ __forceinline__ float LmScaleFromAbsmax(float absmax)
 		maximum = LM_E4M3_MAX;
 	return(fmaxf(absmax / maximum,1.0e-8f));
 }
+
+template<class State>
+struct LmStateUpdateGrid
+{
+	static __device__ __forceinline__ float Apply(float value)
+	{
+		return(value);
+	}
+};
