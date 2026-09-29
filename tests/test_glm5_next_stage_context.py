@@ -197,7 +197,8 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('P')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('Q')); }
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave) { (void)wave;return(walk_note('H')); }
-int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *placed) { (void)wave;(void)local_layer;(void)site;(void)shape;*placed = 0u;return(0); }
+static uint32_t L2_CALLS,L2_SITES,L2_BYTES,L2_BLOCKS;
+int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *placed) { (void)wave;(void)local_layer;L2_CALLS++;L2_SITES |= 1u << site;L2_BYTES = shape != 0 ? shape->bytes : 0u;L2_BLOCKS = shape != 0 ? shape->blocks : 0u;*placed = 1u;return(0); }
 static uint32_t UNPACK_COUNT,UNPACK_ROWS = 2u,ENQUEUE_ROWS = 2u,ENQUEUE_SEQUENCES = 2u;
 
 static uint32_t SNAPSHOT_SAVES,SNAPSHOT_RESTORES,POISON_LAUNCHES,POISON_PENDING,WS_PLAN[16],WS_PLAN_KEY;
@@ -2897,6 +2898,21 @@ static void check_linear_walk(void)
 	state.graph_record_limit = 0u;
 	state.graph_record_ops = 0u;
 	state.graph_record_stop = 0u;
+	L2_CALLS = L2_SITES = L2_BYTES = L2_BLOCKS = 0u;
+	chain.tp_op_index = chain.tp_hc_op_index = 0u;
+	WALK_LENGTH = 0u;
+	assert(SparkGlm5NextWalkChain(&chain,&layer) == 0u && layer == 5u && L2_CALLS == 0u && state.l2_prefetch_rounds == 0u);
+	state.l2_prefetch = 1u;
+	state.l2_prefetch_shape.bytes = 4194304u;
+	state.l2_prefetch_shape.blocks = 16u;
+	chain.wave.tp_degree = 16u;
+	chain.tp_op_index = chain.tp_hc_op_index = 0u;
+	WALK_LENGTH = 0u;
+	assert(SparkGlm5NextWalkChain(&chain,&layer) == 0u && layer == 5u && strcmp(WALK_TRACE,"Bh" "ArPMrQ" "SgTrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HxU") == 0);
+	assert(L2_CALLS == 11u && state.l2_prefetch_rounds == L2_CALLS && L2_SITES == 7u && L2_BYTES == 4194304u && L2_BLOCKS == 16u);
+	state.l2_prefetch = 0u;
+	state.l2_prefetch_rounds = 0u;
+	chain.wave.tp_degree = 0u;
 }
 
 static void pin_fixture_experts(void)
