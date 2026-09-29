@@ -605,28 +605,24 @@ and spec-on results are reported separately, per content class.
 1. Release the merged main through the normal path (FLEET_RELEASE_RUNBOOK
    section 4) and rebuild the hub API channel from the same SHA (section 6).
    With no `SPARK_GLM5_NEXT_VERIFY_*` variable the MTP and mix code is inert.
-2. Build the 16 MTP sidecar packs in one Ceph window (about 10 GB written on
-   sparkf; the checkpoint's layer 45 lives in shards 1 and 2):
-
-   ```sh
-   python3 /Users/mac/sparkpipe-coord/tools/ceph_window.py glm-spec 60 -- \
-     ssh sparkf 'cd ~/build-spec/glmspec && python3 tools/glm5_next_resident_stagepack.py \
-       --source /mnt/model-warm/glm-5.3-flash --output-dir $HOME/sparkdata/glm53flash-mtp.tp16 \
-       --mtp-only --tp-all 16 && cd $HOME/sparkdata/glm53flash-mtp.tp16 && sha256sum *.g5nsp > SHA256SUMS'
-   ```
-
-3. Place rank R's file on node R and register it:
-
-   ```sh
-   hosts=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
-   for r in $(seq 0 15); do h=${hosts[$r]}; f=glm5_next_mtp.tp16.rank$r.g5nsp
-     ssh $h 'mkdir -p ~/sparkdata/glm53flash.fp8.tp16/packs/mtp'
-     ssh sparkf "scp ~/sparkdata/glm53flash-mtp.tp16/$f $h:sparkdata/glm53flash.fp8.tp16/packs/mtp/$f"
-     want=$(ssh sparkf "grep ' $f\$' ~/sparkdata/glm53flash-mtp.tp16/SHA256SUMS | cut -c1-64")
-     ssh $h "cd ~/sparkdata/glm53flash.fp8.tp16/packs/mtp && [ \"\$(sha256sum < $f | cut -c1-64)\" = $want ] && echo $h OK &&
-       printf '%s\t%s\t%s\t%s\n' \$HOME/sparkdata/glm53flash.fp8.tp16/packs/mtp glm-spec KEEP 'GLM MTP sidecar pack (617 MB), speculation A/B' >> ~/KEEP"
-   done
-   ```
+2. The 16 MTP sidecar packs are built and placed (glm-mtp lane, 2026-09-29):
+   - one Ceph window copied the checkpoint's `config.json`, index and shards
+     1-2 (layer 45) to sparkf, checked against the archive's `SHA256SUMS`;
+     `--mtp-only --tp-all 16` built from that local copy;
+   - `tools/glm5_next_pack_verify.py --mtp-only --all-tensors` passes on all
+     16 ranks (27 tensors, 616,613,888 bytes, one directory sha256
+     `231f6528b92a65c3...` across ranks, every payload and scale region equal
+     to the checkpoint through the packer);
+   - the module's own loader (`SparkGlm5NextMtpPackOpen`, TP16, rank 0..15)
+     accepts every rank's header and directory;
+   - rank R's file is at `~/sparkdata/glm53flash.fp8.tp16.mtp/` on node R
+     (sparkf holds all 16), with its `SHA256SUMS` line checked on the node and
+     a `~/KEEP` line.
+3. The directory is the production root's sibling on every node, so one
+   `agent.env` line serves all 16 without touching the root:
+   `SPARK_GLM5_NEXT_VERIFY_MTP_DIR=../glm53flash.fp8.tp16.mtp` (relative to
+   the root, the engine's working directory). A dev root on weightd lane 7
+   runs the same arms first; its staged script is in the glm-mtp lane notes.
 
 4. Move the production root's engine environment into `agent.env`. The GLM
    root is a legacy root today: its engine gets `SPARK_GLM5_NEXT_*` only from
@@ -685,7 +681,7 @@ ready`, then run the arm inside one perf window from the hub build checkout.
 | off | none | `tools/glm5_next_spec_ab.sh off $OUT`; `tools/spec_verify_bench.py record --endpoint http://127.0.0.1:8433 --prompt-ids spec_p.json --max-tokens 512 --out spec_oracle.u32`; COMPSEC-17 to `$OUT/compsec-off` | 36 tok/s class, COMPSEC 14/17 |
 | oracle | `SPARK_GLM5_NEXT_VERIFY_ROWS=8`, `SPARK_GLM5_NEXT_VERIFY_DRAFTER=oracle:config/spec_oracle.u32` | `tools/spec_verify_bench.py replay --endpoint http://127.0.0.1:8433 --prompt-ids spec_p.json --expect spec_oracle.u32` | `"exact": true`; rank log `produced=8 rounds=1 accepted=7` on nearly every frame (G-ROWEQ at TP16 and the round-machinery ceiling) |
 | adversary | as oracle with `adversary:config/spec_oracle.u32` | the same replay | `"exact": true`, `accepted=0` |
-| mtp8 | `SPARK_GLM5_NEXT_VERIFY_ROWS=8`, `SPARK_GLM5_NEXT_VERIFY_DRAFTER=mtp`, `SPARK_GLM5_NEXT_VERIFY_MTP_DIR=packs/mtp` | `tools/glm5_next_spec_ab.sh mtp8 $OUT $OUT/off.json`; COMPSEC-17 to `$OUT/compsec-mtp8`, then `tools/glm5_next_compsec17.py --compare $OUT/compsec-off $OUT/compsec-mtp8` | script exit 0 (token ids equal to off per class); COMPSEC compare exit 0 |
+| mtp8 | `SPARK_GLM5_NEXT_VERIFY_ROWS=8`, `SPARK_GLM5_NEXT_VERIFY_DRAFTER=mtp`, `SPARK_GLM5_NEXT_VERIFY_MTP_DIR=../glm53flash.fp8.tp16.mtp` | `tools/glm5_next_spec_ab.sh mtp8 $OUT $OUT/off.json`; COMPSEC-17 to `$OUT/compsec-mtp8`, then `tools/glm5_next_compsec17.py --compare $OUT/compsec-off $OUT/compsec-mtp8` | script exit 0 (token ids equal to off per class); COMPSEC compare exit 0 |
 | mtp4 | as mtp8 with `SPARK_GLM5_NEXT_VERIFY_ROWS=4` | `tools/glm5_next_spec_ab.sh mtp4 $OUT $OUT/off.json` | exit 0 |
 | mix8 | as mtp8 with `SPARK_GLM5_NEXT_VERIFY_DRAFTER=mtp+lookup` | `tools/glm5_next_spec_ab.sh mix8 $OUT $OUT/off.json` | exit 0 |
 
@@ -699,7 +695,7 @@ Expected ready lines per node, in `residentd.log`:
 ```
 GLM execution mode=graph
 GLM verify regime rows=8 drafter=4                       (drafter 1 lookup, 2 oracle, 3 adversary, 4 mtp, 5 mtp+lookup)
-GLM verify MTP pack packs/mtp/glm5_next_mtp.tp16.rank<R>.g5nsp tensors=27 device_bytes=616611584 tp=16 rank=<R>
+GLM verify MTP pack ../glm53flash.fp8.tp16.mtp/glm5_next_mtp.tp16.rank<R>.g5nsp tensors=27 device_bytes=616611584 tp=16 rank=<R>
 model_residentd ready
 GRAPH-VERIFY-TABLE slot=<s> rows_max=8 status=0 capture_ms=<t>     (after the first warm chain)
 VERIFY-FRAME ... and VERIFY-MTP ...                                  (per frame, once requests run)
