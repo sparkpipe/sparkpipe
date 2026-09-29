@@ -295,16 +295,27 @@ def main() -> int:
     if len(want) != len(entries):
         fail(f"plan entry count {len(want)} != pack {len(entries)}")
     mismatches = 0
+    out_of_scope = 0
     for i, (w, e) in enumerate(zip(want, entries)):
         e_sub = {k: e[k] for k in cmp_keys}
         if w != e_sub:
+            if args.expert_layers and w["kind"] not in (K_EXPERT_UP_GATE, K_EXPERT_DOWN) \
+                    and (w["kind"], w["layer"]) == (e["kind"], e["layer"]):
+                out_of_scope += 1
+                print(f"NOTE entry {i} kind={w['kind']} layer={w['layer']:#x} differs from the "
+                      f"plan; outside the --expert-layers scope: pack {e_sub} != plan {w}")
+                continue
             mismatches += 1
             if mismatches <= 5:
                 print(f"FAIL entry {i}: pack {e_sub} != plan {w}")
     if mismatches:
         fail(f"plan diff: {mismatches}/{len(entries)} entries differ")
-    print(f"PASS plan diff: all {len(entries)} entries match the fixed "
-          f"packer's plan for rank {args.tp_rank}")
+    if out_of_scope:
+        print(f"PASS plan diff (routed experts): every routed-expert entry matches; "
+              f"{out_of_scope} non-expert entries differ and are outside this scope")
+    else:
+        print(f"PASS plan diff: all {len(entries)} entries match the fixed "
+              f"packer's plan for rank {args.tp_rank}")
     plan_codec = header_expert_codec(packer.plan, None if any(
         it.entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN) for it in packer.plan)
         else h["expert_codec"])

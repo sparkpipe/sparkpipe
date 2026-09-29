@@ -44,6 +44,7 @@ import datetime
 import hashlib
 import json
 import os
+import signal
 import socket
 import struct
 import sys
@@ -496,6 +497,7 @@ def main() -> int:
     parser.add_argument("--spine-digest", metavar="PACK",
                         help="print the sparkpipe-spine-digest-v1 of PACK and exit")
     args = parser.parse_args()
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     try:
         if args.spine_digest:
             print(f"{pack_spine_digest(Path(args.spine_digest), args.chunk_bytes)}  {args.spine_digest}")
