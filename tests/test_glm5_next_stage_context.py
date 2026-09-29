@@ -1621,6 +1621,8 @@ static void check_mtp_pack(void)
 	memset(&state,0,sizeof(state));
 }
 
+static SparkWeightdLazyPack ADMISSION_PACK;
+
 static void check_verify_mtp_admission(void)
 {
 	uint32_t kind;
@@ -1637,14 +1639,31 @@ static void check_verify_mtp_admission(void)
 	assert(SparkGlm5NextMtpPackPath("",16u,1u,buffer,(uint32_t)sizeof(buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(SparkGlm5NextMtpPackPath("/a/very/long/directory/name",16u,1u,buffer,16u) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(&state,0,sizeof(state));
-	state.verify_rows_max = 8u;
+	state.verify_rows_max = SPARK_GLM5_NEXT_VERIFY_ROWS_MAX;
 	state.verify_mtp = 1u;
 	state.verify_drafter = SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP;
 	state.tp_degree = 16u;
+	state.owns_embedding = 1u;
+	state.owns_final_head = 1u;
+	state.lazy_pack = &ADMISSION_PACK;
+	state.execution_row_capacity = SPARK_GLM5_NEXT_VERIFY_ROWS_MAX;
+	state.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT;
+	state.expert_pin_key_count = SparkGlm5NextPinnedExpected(&state);
+	state.mtp_sidecar = 1u;
+	assert(state.expert_pin_key_count != 0u && SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_OK);
+	state.mtp_sidecar = 0u;
 	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_UNSUPPORTED);
 	state.mtp_sidecar = 1u;
 	state.pack_has_mtp = 1u;
 	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_UNSUPPORTED);
+	state.pack_has_mtp = 0u;
+	state.verify_drafter = SPARK_GLM5_NEXT_VERIFY_DRAFTER_MTP_LOOKUP;
+	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_OK);
+	state.mtp_sidecar = 0u;
+	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_UNSUPPORTED);
+	state.verify_mtp = 0u;
+	state.verify_drafter = SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP;
+	assert(SparkGlm5NextValidateSpeculation(&state) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));
 }
 
