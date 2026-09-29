@@ -1,0 +1,44 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:8436/v1/completions",
+  "fixture_prompt_token_count": 223,
+  "prompt_sha256": "95822ec9850690f40fec83862de8bf20c55c9123d12505e0d7de7a2e2479ea1d",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 267,
+   "completion_tokens": 1,
+   "total_tokens": 268
+  },
+  "tokens": [
+   1
+  ],
+  "status": 0
+ },
+ "decoded_text": "",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "?",
+  "passed": false,
+  "elapsed_ms": 373.5,
+  "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "generated_token_count": 1,
+  "status": 0
+ }
+}

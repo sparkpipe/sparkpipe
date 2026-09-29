@@ -43,3 +43,26 @@ static SparkStatus SPARK_FAMILY(ModuleTpSubmitOrdered)(SPARK_FAMILY(ModuleState)
 	fprintf(stderr,"%s tp_all_reduce_stall\n",SPARK_FAMILY_CONST(MODULE_TAG));
 	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
+
+static inline SparkStatus SPARK_FAMILY(ModuleTpSubmitDeferred)(SPARK_FAMILY(ModuleState) *state,void *device_buffer,uint32_t count,SPARK_FAMILY(ModuleSlot) *slot,uint32_t u64_max)
+{
+	SparkTpDeviceCollectiveSubmission submission;
+	if ( state->tp_degree == 1u || state->tp_standalone != 0u )
+		return(SPARK_STATUS_OK);
+	if ( state->tp_collective_initialized == 0u )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	memset(&submission,0,sizeof(submission));
+	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	submission.descriptor_bytes = sizeof(submission);
+	submission.slot_index = 0u;
+	submission.active_sequence_count = count;
+	submission.logical_sequence_count = slot->logical_sequence_count;
+	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+	submission.ordinal = atomic_fetch_add_explicit(&state->tp_next_ordinal,1u,memory_order_relaxed);
+	submission.local_device = device_buffer;
+	submission.full_device = device_buffer;
+	submission.cuda_stream = slot->cuda_stream;
+	SPARK_RETURN(u64_max != 0u
+		? SparkTpDeviceCollectiveSubmitU64Max(&state->tp_device_collective,&submission)
+		: SparkTpDeviceCollectiveSubmitBf16(&state->tp_device_collective,&submission));
+}

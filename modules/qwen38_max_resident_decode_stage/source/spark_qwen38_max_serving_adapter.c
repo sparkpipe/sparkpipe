@@ -502,4 +502,6 @@ static SparkStatus SparkQwen38MaxServingReset(void *adapter_state,uint64_t contr
 #define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 \
 	QWEN38_MAX_MODEL_DESCRIPTION_SHA256
 
+#define SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
+	((state)->max_active_sequence_count)
 #include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"

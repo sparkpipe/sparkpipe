@@ -1,20 +1,54 @@
 {
  "schema_version": 1,
- "lane": "dsv5-flash",
  "model_id": "deepseek-ai/DeepSeek-V4.1-Flash",
  "architecture": "DeepseekV41ForCausalLM (model_type deepseek_v41; text model_type deepseek_v41_text)",
  "source_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+ "license": {
+  "spdx": "MIT",
+  "file": "LICENSE",
+  "bytes": 1084,
+  "sha256": "f2c6c602815669d292889e5be8c802f2ed950653b77999b1584e8e6aed25d040",
+  "note": "MIT: no revenue or field-of-use restriction; external API and provider network allowed"
+ },
+ "hf_card": {
+  "verified_at": "2026-09-28",
+  "main_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+  "main_equals_source_revision": true,
+  "last_modified": "2026-09-10T08:18:10Z",
+  "gated": false,
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "safetensors_parameters": {
+   "BF16": 1976441856,
+   "F32": 42307282,
+   "F8_E4M3": 204015223296,
+   "I8": 557171343360,
+   "total": 763205315794
+  },
+  "parameter_note": "HF counts I8 as packed FP4 expert values (557,171,343,360 values in 278,585,671,680 bytes); F8_E4M3 holds the two engram tables (196,613,849,600 values) plus 7,401,373,696 FP8 dense values; the card's 552B backbone excludes the 196B engram tables",
+  "chat_template": "none: tokenizer_config.json carries no template; the encoding/ directory holds the reference encoder (tool calling, thinking mode, reasoning effort 1-100)",
+  "recommended_sampling": {
+   "temperature": 1.0,
+   "top_p": [
+    0.95,
+    1.0
+   ],
+   "max_tokens_at_least": 262144
+  },
+  "method": "HF API model + tree at the pinned revision; config.json, model.safetensors.index.json, tokenizer.json, tokenizer_config.json and LICENSE downloaded at the revision and hashed; LFS oids read from the tree listing"
+ },
  "scope": {
   "text_decode_path_only": true,
   "vision_tower": "vision.* and aligner.* out of scope (32 layers / 1024 hidden ViT + 2-layer projector)",
-  "lane_note": "engram conditional-memory tables are host-resident (196B params, RDMA prefetch per tech report 2.4.2) and are NOT GPU pack residents; dspark markov/confidence heads ride the MTP sidecar per MTP-sidecar law"
+  "engram": "engram tables are row-sharded engram shard packs outside the GPU stagepack (engram.residency)",
+  "dspark": "dspark blocks (mtp.0-2) and markov/confidence heads ship as a separate sidecar pack"
  },
  "sources": {
-  "warm_path": "PENDING (download in flight; do not pack until the weights gate passes)",
   "hf_repo": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash",
   "hf_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
   "published_at": "2026-09-10T08:18:10Z",
-  "verification": "Hugging Face LFS SHA-256 oids recorded per file below; warm/cold per-file equality receipt required before any pack build",
+  "warm_path": "/mnt/model-warm/deepseek-v4.1-flash (ceph /models, mounted on every Spark)",
+  "verification": "Hugging Face LFS SHA-256 oids per shard; warm/cold per-file equality receipt required before any pack build",
   "pinned_files": {
    "config.json": {
     "bytes": 3311,
@@ -29,10 +63,16 @@
     "sha256": "ba68e2e40408125ae6d2f63a9a241b61c73910691c74ec1a2a7023c851eac08d"
    },
    "tokenizer.json": {
-    "bytes": 6367257
+    "bytes": 6367257,
+    "sha256": "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b"
    },
    "tokenizer_config.json": {
-    "bytes": 801
+    "bytes": 801,
+    "sha256": "6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547"
+   },
+   "LICENSE": {
+    "bytes": 1084,
+    "sha256": "f2c6c602815669d292889e5be8c802f2ed950653b77999b1584e8e6aed25d040"
    }
   },
   "shards": {
@@ -46,13 +86,17 @@
    ],
    "digest_note": "all 48 LFS oids pinned in the HF tree API at revision dba1be0a; index.json weight_map maps every tensor to its shard",
    "reference_implementation": {
-    "files": "inference/model.py, inference/kernel.py, inference/engram.py at the pinned revision (warm copies under cache/dsv41_warm/ref/; kernel.py was previously thought unreleased - it is a tilelang kernel module present in the repo at dba1be0a and is now the pinned source for hc_split_sinkhorn, sparse_attn, act_quant, fp8_gemm and fp4_gemm)",
+    "files": "inference/model.py, inference/kernel.py, inference/engram.py at the pinned revision (kernel.py is the tilelang module for hc_split_sinkhorn, sparse_attn, act_quant, fp8_gemm and fp4_gemm)",
     "sha256": {
      "inference/model.py": "4e9ae23620edc8028ccc5d5fef552ab7fdc7dcd6f79608754fe9f67644056f65",
      "inference/engram.py": "11f35ecbead8150c35aa002b3d180ef290b05a25afe883a11884f94d476d3897",
      "inference/kernel.py": "1236c3507019ed176f5dba5e04bcea58867cf654818c6cf138ed4845398c2455"
-    },
-    "note": "warm copy cross-checks: config.json, model.safetensors.index.json and DeepSeek_V41_Tech_Report.pdf sha256 == pinned LFS oids (receipt in PR #914)"
+    }
+   },
+   "lfs_oids_sample": {
+    "model-00001-of-00048.safetensors": "886aebdafa08cc27bbae2165ed35bdfe0de9370bf88c1411283c155c6ae4ff89",
+    "model-00047-of-00048.safetensors": "824db4881320407ac340736d14dcee5ecd748c27d0f5836b8127ecc2e3781b0f",
+    "model-00048-of-00048.safetensors": "976330f4954338e1ad8b508c32aa912032c7ad908959fd53c8307650fe4520ed"
    }
   }
  },
@@ -64,7 +108,6 @@
   "head_dimension": 512,
   "qk_rope_head_dim": 64,
   "kv_latent_dimension": 512,
-  "value_head_dim": 64,
   "q_lora_rank": 1280,
   "o_lora_rank": 1024,
   "o_groups": 8,
@@ -87,7 +130,41 @@
   "pad_token_id": 2,
   "activated_params_prefill": "8B",
   "activated_params_decode": "16B",
-  "backbone_params": "552B (+196B engram)"
+  "backbone_params": "552B (+196B engram)",
+  "o_group_input_dimension": 4096,
+  "o_group_input_dimension_note": "wo_a = ColumnParallelLinear(n_heads*head_dim // o_groups, o_groups*o_lora_rank) = [8192, 4096]; the reference has no v_head_dim: attention values are the 512-wide latent per head (wkv = Linear(dim, head_dim))",
+  "image_token_id": 129264,
+  "num_nextn_predict_layers": 3
+ },
+ "tokenizer": {
+  "class": "PreTrainedTokenizerFast",
+  "base_vocabulary": 128000,
+  "added_tokens": 1283,
+  "highest_token_id": 129279,
+  "bos": {
+   "id": 0,
+   "text": "<｜begin▁of▁sentence｜>"
+  },
+  "eos": {
+   "id": 1,
+   "text": "<｜end▁of▁sentence｜>"
+  },
+  "pad": {
+   "id": 2,
+   "text": "<｜▁pad▁｜>",
+   "note": "config.json pad_token_id 2 (used by engram hashing); tokenizer_config.json names the EOS text as pad_token, which serving never emits"
+  },
+  "add_bos_token": false,
+  "add_eos_token": false,
+  "image_token": {
+   "id": 129264,
+   "text": "<｜deepseek_image｜>"
+  },
+  "dspark_noise_token": {
+   "id": 128799,
+   "text": "<｜System｜>"
+  },
+  "model_max_length": 1048576
  },
  "moe": {
   "routed_expert_count": 384,
@@ -153,19 +230,17 @@
    1,
    1,
    1,
-   0,
-   0,
+   1,
+   1,
    0,
    0,
    0
   ],
-  "compress_ratios_note": "entries 0-39 are backbone layers; 40-42 are the three dspark blocks (SWA-only)",
+  "compress_ratios_note": "entries 0-39 are backbone layers; 40-42 are the three dspark blocks (SWA-only); verified against config.json text_config.compress_ratios and inference/config.json at the pinned revision: layers 38 and 39 are ratio-1 reuse layers (compressed KV from kv_source 20, topk from index_source 36, compress_rope_theta with YaRN), not SWA-only",
   "layer_plan": {
    "swa_only_layers": [
     0,
-    1,
-    38,
-    39
+    1
    ],
    "encoder_csa2_m2": [
     2,
@@ -205,7 +280,9 @@
     34,
     35,
     36,
-    37
+    37,
+    38,
+    39
    ],
    "full_mode_layers": [
     2,
@@ -302,14 +379,13 @@
   "n_heads": 8,
   "max_ngram_size": 4,
   "embed_tensor": "layers.N.engram.embed.weight F8_E4M3 [384006168, 256] + scale F8_E8M0 [384006168, 8]",
-  "residency": "host memory with background RDMA prefetch; NOT in GPU stagepack",
+  "residency": "operator ruling 2026-09-11: row-shard both tables across the 16 mesh ranks of TP8xPP2 via weightd lazy attach + mesh broadcast (engram_row_shard); no host-resident table and no all_reduce gather",
   "hash_addressing_resolved": {
    "token_map": "token ids mapped through a 99092-entry compressed vocab (normalization-collapsed: NFKC/NFD/strip/lowercase); map size is asserted == engram_compressed_vocab_size",
    "hash": "per position: last up-to-4 tokens (lookback stops at sequence start and DEAD/image tokens, pad-filled); per (layer, lookback) odd multiplier from RNG seed 10007*layer_id bounded by int64/compressed_vocab; rolling XOR across lookbacks; id = (rolling % prime) + offset",
    "primes": "disjoint prime bucket ranges per (layer, ngram 2..4, head 0..7), drawn in order starting from engram_vocab_size-1 = 15999999; 24 ids per layer per token ((4-1) orders x 8 heads)",
    "decode_read": "per decode step per engram layer: 24 row gathers of 256B fp8 E4M3 + 8B E8M0 scales (~6.3KB) -> dequant bf16 -> wkv Linear(6144 -> 5120*(hc_mult+1)=25600) -> split key[4,5120]+value[5120] -> normalized-dot sigmoid sqrt-gate per hc copy -> residual add"
   },
-  "residency_engine_question": "RESOLVED by operator ruling 2026-09-11: ROW-SHARD across the 16 sparks of the TP8xPP2 topology via weightd's host-map/lease + mesh machinery (see engram_row_shard); no all_reduce gather, no host-resident 98GiB table per node",
   "embed_table_bytes_measured": {
    "layer_1": {
     "embed_weight_F8_E4M3": 98305579008,
@@ -379,8 +455,6 @@
   }
  },
  "topology": {
-  "preferred": "TP16",
-  "standard_fallback": "TP4xPP4",
   "tp_divisibility": {
    "attention_heads_64": [
     1,
@@ -414,61 +488,25 @@
     8
    ],
    "resolved_o_groups": "reference implementation (inference/model.py Attention.__init__) computes n_local_groups = o_groups // world_size and requires it >= 1: the o-path is reference-faithful only for TP in {1,2,4,8}. wo_a is block-diagonal per group (einsum over n_local_groups x [o_lora_rank, heads_per_group*head_dim]); wo_b is RowParallel over n_groups*o_lora_rank. TP16 (8 % 16 != 0) has NO reference-supported o-path; an exemption would need a half-group split with pairwise partial-sum reduction that does not exist in the reference code. Topology decision (TP16 exemption design vs TP4xPP4/TP8 fallback) is an operator/architecture call, escalated in PR #914"
-  }
+  },
+  "reference_supported_tp_degrees": [
+   1,
+   2,
+   4,
+   8
+  ],
+  "unsupported": "TP16: 8 o_groups cannot split across 16 ranks in the reference o-path",
+  "packed": [
+   "TP8 (8 ranks, 40 layers per rank)",
+   "TP8xPP2 (16 ranks, 20 layers per stage)"
+  ],
+  "serving": "TP8xPP2 on 16 Sparks: world size 16 equals the engram row-shard mesh; TP8 alone needs an 8-rank engram cut that does not exist",
+  "hill_climb": "TP4xPP4 and TP2xPP8 are reference-supported and must be measured before a topology is fixed"
  },
  "variants": {
   "base": "40 backbone layers, no dspark, global KV producer+consumer, TP-rank param",
   "dense_probe": "single-layer slice for layer-0 style validation gates (SWA-only layer 0 has no CSA2 deps)",
   "dspark_sidecar": "3 dspark blocks + markov/confidence heads as separate sidecar pack; LAST per MTP-sidecar law",
   "excluded": "vision tower, aligner, engram GPU residency"
- },
- "qualification": {
-  "status": "WIP",
-  "weights_gate": "PASSED 2026-09-11 ~04:30 KST: 48/48 shards at spark6 /mnt/model-warm/deepseek-v4.1-flash (revision dba1be0a; download was found stalled twice - original root downloader died ~00:56 KST, flock ghost-locks from a dead ceph client blocked retries - recovered via detached systemd unit dsv5-warm-resume hf download resume, then ghost .lock removal). Receipts: dd-probe warm FIRST 318/355 MB/s; sha256 model-00001 == 886aebda... and model-00047 == 824db488... equal to HF tree API LFS oids at the pinned revision (byte counts 970533624 / 101535150936 also equal); config.json + index.json re-verified on node (8be45ce0... / 74b0686a...); real-index census PASS on mac and spark6 (96085 entries, compressor 11, indexer 24); M5 synth chain under sparkcap (MemoryMax 4096M) PASS mxfp4+fp8 tp128 l40",
-  "open_facts": "RESOLVED 2026-09-10 from the pinned reference implementation + hash-verified real index: o_groups TP ceiling, wq_b 448+64 rope split, compressor m=1 vs m=2 semantics, engram hash addressing, and the real-index census corrections (wgate absent on layer 20; indexer wk+k_norm only on kv_source layers 2/8/14/20 - reindex layers 24/28/32/36 carry query-side wq_b+weights_proj only, matching reference Indexer owns_k; stagepack kind map + validator literals + census tests corrected). Remaining OPEN (operator/architecture): engram host-residency engine seam; TP16 o_groups exemption design",
-  "next": "M7 decode hill climb on the TP8 set (successor); DSpark sidecar LAST; TP16 pack set after the operator topology ruling; engram host-residency seam decision consumes packs/engram_report.json",
-  "pack_build": "REPACKED 2026-09-11 (r2, o_a reference layout): real-source TP8 stagepack set at spark6 /home/spark6/dsv41-flash-tp8/packs-r2 (rank0..rank7.spstage, 39,158,874,624 B each; spine 3,061,536,448 B + expert 36,097,228,800 B per rank; expert codec MXFP4 as-checkpoint; o_a per rank [1024,4096] fp8 rows-slice x FULL 4096 cols + scale [32,128]). Identity: revision dba1be0a, contract bb8adaf7 (corrected facts), recipe d58a0258 (converter at 229147f). Chain: headers==weight_map 96,085; census PASS on node; layout byte-identical to C packer (1038/1038 records + file_bytes); copy 313,270,121,984 B over 11 chunks == byte-verify total, zero deltas; .experts manifests 8/8; host contract validator PASS rank0..7; sha256 8/8 recorded (examples/release/dsv41_flash_tp8/m7_ladder0_receipt.json). r1 diag-layout packs retired in packs/ (fail closed at the oracle and at the current module ExpectedShape)"
- },
- "m7_decode": {
-  "status": "REAL-PACK piece ladder GREEN: 3-layer cell dsv5m7h-ladder0 (684 pieces, layers 0/2/8) + extended 7-layer cell dsv5m7h-ladder7c (935 pieces, layers 0/2/8/14/20/38/39 to the Engram fail-closed boundary), independent C impl agrees; synth CI GREEN 552 pieces",
-  "tools": "tools/dsv41_flash_layer0_oracle.py + tests/test_dsv41_flash_layer0_anchor.c + CI wrapper tests/test_dsv41_flash_layer0_anchor.py",
-  "method": "python oracle recomputes the layer-0 block and the kv_source CSA2 blocks (layer_plan: 2/8/14 m=2, 20 m=1) from pack bytes per the pinned reference semantics and emits per-piece expectations; the C anchor recomputes the same pieces independently from the same pack and compares (NO driver code on either side)",
-  "pieces": "layer 0: hc mixes/pre/post/comb, collapse+norm both sublayers, q_lora, per-head q, window kv row (fp8 round trip), attention out + inverse rope, wo_a/wo_b, router scores/indices/weights, routed expert sum (mxfp4), shared expert (fp8), moe out, hc stream per position. Layers 2/8 add: compressor m=2 (wkv/wgate fp32 projections, kv_state/score_state carry, softmax-gated 2-token pooling, normed latent pre-rope, compressed kv row post-rope fp4-e4m3 round trip) and indexer (idx_k fp4-e8m0 round trip at group position pos-1, idx_q per head roped then fp4-e8m0 round trip, idx_w = weights_proj x 128^-0.5 x 32^-0.5, rank-0 partial idx_score, idx_topk mapped +window)",
-  "csa2_ladder_notes": {
-   "input": "ladder layers consume the synthetic tiled-embedding stream (their true input depends on the engram-gated layers 1/14 and the pre-layer-1 chain); per-piece instruments, not an end-to-end chain",
-   "indexer_score": "rank-0 PARTIAL (sum over 4 local heads, pre-all-reduce) - one pack has no cross-rank summands; top-512 selection is trivially exercised at 132 positions (topk = min(512, T), T <= 132 at ratio 1 so all positions are selected); the candidate pool (layer 20, 2048 blocks x 8) is NOT exercised since uses_candidates requires candidate_source_layer < layer_id",
-   "chaos": "the bf16 hc-feedback chain diverges chaotically under ~1-ulp implementation-order differences (numpy BLAS/pairwise vs C sequential), so CSA2 stream pieces are emitted only to position 40 (first real-weight noise crossing measured at position 46, cell dsv5m7h-ladder0) and feedback-path tagged pieces carry a 25x tolerance amplifier (was 5x, raised from measured cascade ratios up to 19x base) that still separates flip cascades from semantic errors",
-   "noise_model": "recalibrated from the dsv5m7g-ladder0 triage (session 9, bit-level): independent f32 gemm accumulation orders differ by 1 bf16 ulp and e4m3 quantization inputs land EXACTLY on fp8 code midpoints at ~2.75% density (measured 1882/67584 at l2, 1848/67584 at l8 kv quant inputs), so a 1-ulp input delta flips one fp8 code step (<=12.5% per element, e.g. l8 p0 kv_normed[112] 0x3e28 vs 0x3e29 -> dequant 0.15625 vs 0.171875); kv_row and attn_out_rope_inv carry dequant-boundary tolerances (rel 3e-2 x tol_amp, drift-exempt) while wo_b_out stays drift-exempt at its tight tolerance (measured <= 0.19 of limit at every tagged position); router_indices accepts a slot flip when the two experts' own selection keys differ below ROUTER_TIE_FLOOR 0.03 (measured oracle key gaps at all flips: 0.0003-0.0033)",
-   "wo_a": "consumed in the reference-faithful TP8 layout (rank rows-slice x FULL 4096 cols); r2 packs (2026-09-11) carry the corrected layout; r1 packs retired"
-  },
-  "engram_seam": "layers 1 and 14 fail-closed UNSUPPORTED at the engram access (2 modules) - the operator seam question shape; layer 14 stays per-piece instrumentable (its dense-block formulas are engram-free)",
-  "real_pack_receipt": {
-   "cell": "dsv5m7f-anchor5 on spark6 (2026-09-11), STALE (pre-o_a-ruling layout, superseded as chain evidence; still valid as the fail-closed/inventory receipt)",
-   "result": "PASS at the time: 204 pieces agreed against the then-current rank0 pack with o_a consumed as-pack diag",
-   "next": "re-run the 3-layer ladder against the repacked packs after the converter fix"
-  },
-  "o_path_pack_layout": {
-   "status": "RESOLVED DONE (operator ruling 2026-09-10; repacked 2026-09-11): converter, verifier and module ExpectedShape all on the reference layout; r2 packs carry it",
-   "pack_has": "r2 packs: o_a per rank [1024, 4096] fp8 (rows-slice x FULL 4096 cols) + scale [32, 128] - matches the reference ColumnParallel slice",
-   "reference_requires": "wo_a = ColumnParallelLinear(4096, 8192): rank slice = checkpoint ROWS [r*1024..] x FULL 4096 cols, scale [32,128]",
-   "queued": "converter rank_window diag->rows for O_A + module ExpectedShape O_A cols -> 4096 + repack 8 ranks on spark6 + 3-layer ladder re-run; TP16 packs NOT needed (TP8 confirmed, de facto exemption)"
-  },
-  "fp8_quant_subnormal_fix": "FOUND by the compressed-KV fp4-e4m3 scale path (min scale 2^-9 is an e4m3 subnormal): both the oracle and the C anchor had the same two fp8-code bugs - subnormal shift constant 268-biased_exp instead of 141-biased_exp (subnormals collapsed to 0) and sub/normal boundary at 2^-7 instead of 2^-6 ([2^-7,2^-6) mis-coded); dual agreement masked both until the e4m3 scale divide-by-zero exposed them; both implementations now match true e4m3 RNE semantics",
-  "real_pack_ladder": {
-   "layer0": "GREEN 204/204 on r1 pack (session 6); l0 pieces re-verified GREEN on r2 (commit 229147f) and in dsv5m7h-ladder0/7c",
-   "layers_2_8_synth": "GREEN 732/732 (session 7, synth pack); re-GREEN 684/684 and 552/552 under the session-9 emission rule",
-   "triage_root_cause": "RESOLVED (session 9, cells dsv5m7h-ladder0/7b/7c): the 26 divergences are NOT semantic. Bit-level: oracle kv_normed[l8][112]=0x3e29 vs anchor 0x3e28 - one bf16 ulp from f32 accumulation order (numpy pairwise vs C sequential inside the 32-wide k-block); 0x3e28 is the EXACT fp8 tie 1.3125x2^-3, so RNE-even gives dequant 0.15625 vs 0.171875 (one code step, 9%), and the amplified element crosses the attention softmax into the cascade. fp8-midpoint tie density measured ~2.75% of kv quant inputs at BOTH l2 and l8 (1882/1848 of 67584) - exposure is layer-uniform; which ties fire is 1-ulp luck. l2 router flips sit at oracle key gaps 0.0003-0.0033 (top-6 boundary); l8 flips at 0.0015-0.0033 under stream contamination",
-   "instrument_noise_model": "session 9 recalibration, all measured: kv_row + attn_out_rope_inv carry dequant-boundary tolerances (rel 3e-2 x tol_amp, drift-exempt); wo_b_out drift-exempt at 2e-2 x tol_amp (measured <= 0.19 of limit everywhere); ffn-side tagged pieces carry a 25x drift amplifier (was 5x; measured cascade need up to 19x), attn-side 1x at p0 / 25x at p1+; router_indices accepts a slot flip when the two experts' own selection keys differ below ROUTER_TIE_FLOOR 0.03; stream emission restructured - end-to-end stream pieces are layer 0 only (chaos crossings are layer-dependent on the synthetic fixture: l2/l8 pos 46, l14 pos 40, l20 pos 4, l38 pos 7) and the router/routed/moe group is tagged at p0 only (l20 p4 had an admitted key-gap-0.00018 swap whose routed composition delta 0.14 has no honest per-element tolerance)",
-   "engram_boundary_extension": "dsv5m7h-ladder7c GREEN 935 pieces at layers 0/2/8/14/20/38/39: layer 14 (engram-gated in the DRIVER) is per-piece instrumentable like any kv_source layer; layer 20 adds the m=1 compressor branch (norm(wkv(x)) per token, no gate/state, ratio-1 position mapping); layers 38/39 (SWA, ratio 0, pure theta table per the reference freqs_cis branch) are tagged at p0 only. Reuse-mode CSA2 layers (3-7, 9-13, 15-19, 21-37) are OUT of instrument scope: they read the SHARED compressed-KV cache from kv_source layers, so their pieces are not self-computable without the true chain, which is engram-broken at layer 1 - extending them is the same operator seam as the layer 1/14 driver implementation"
-  }
- },
- "spine_load_instrumentation": {
-  "receipt": "dsv5m7f-spine4 on spark6 (2026-09-11), LD_PRELOAD interposer tools/dsv41_spine_instrument.c on weightd+probe, rank0 real pack",
-  "pread": "595,275 calls, 39,011,930,624 B (whole 39 GB pack), 5.068 s = 7.34 GB/s",
-  "h2d": "44,515 cudaMemcpy calls, 2,914,701,824 B (spine only), 0.138 s = 20.2 GB/s",
-  "init_wall_ms": 25726.9,
-  "unaccounted": "~20.5 s (79%) = scalar sha256 over the whole 39 GB pack at ~1.9 GB/s",
-  "finding": "session-5 '71 MB/s nvme' framing was wrong: pread and H2D run at GB/s rates. SparkWeightdSpineLoad preads + hashes the ENTIRE pack (spine_stream over pack_bytes) to verify one sha256 but serves only 2.9 GB of spine spans. Fix belongs to weightd (runtime/spark_weightd_spine.c): pread + hash ONLY the spine spans (0.6 s read + 1.5 s hash), hash the expert region lazily on first expert fetch (or trust staged sha256sum receipts), keep 64KiB+ streaming. Expected init after fix ~3 s vs 26-41 s.",
-  "owner": "weightd domain (mgr1); this lane contributes evidence only"
  }
 }

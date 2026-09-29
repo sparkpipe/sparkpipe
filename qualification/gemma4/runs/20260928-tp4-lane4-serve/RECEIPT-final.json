@@ -1,0 +1,36 @@
+{
+ "run": "20260928-tp4-lane4-serve (final state left serving)",
+ "utc": "2026-09-28T14:05Z",
+ "topology": "Gemma 4 31B-it bf16, TP4 on sparka..sparkd (mesh ranks 10-13), weightd lane 4 on the shared weightd 3da98597 (/tmp/spark_weightd.sock), beside GLM-5.3 Flash TP16",
+ "engine": {
+  "release": "~/lanes/gemma4-l4/release-11b1d2a (SOURCE_COMMIT 11b1d2a63d4c1daad9307a0553c82ff1f79ebf07), identical on all 4 ranks",
+  "sha256_prefix": {"sparkpipe_model_residentd": "11febb619905a49e", "model_driver.so": "2ad9e2a4c99f3c32", "model_serving_adapter.so": "ee6342d818c51d79", "hidden_transport.so": "779a2ed57ebfb64d"},
+  "build": "sparkf ~/build-gemma4 (~/build-gemma4.sh + tests/test_gemma4_admission.py): host tests PASS, GPU validator PASS 29 sites",
+  "deployment": "engine_model_resident.json = tools/gemma4_tp16_gen_deployment.py @558671e --hosts sparka,sparkb,sparkc,sparkd --lane 4 --max-sequence-positions 4096 --resident-sequences 8 (input rows 96, SPARK_TP_WAIT_MODE=hardware)",
+  "units": "sp-g4l4-resident-r0..3 (transient, MemoryMax 40G), root ~/lanes/gemma4-l4/root"
+ },
+ "api": {
+  "channel": "rtx5090 ~/gemma4-api-channel, unit gemma4-api (user, port 8436), SOURCE_COMMIT e0ff52dd6ded3a6c97b77231d6cb9cd5bcc0607c built in ~/gemma4-api-build-e0ff52d",
+  "sha256_prefix": {"sparkpipe_model_api": "9db0a05627e64fd6", "model_serving_adapter.so": "47e31937d8c9feb3"},
+  "model_resident": "api_model_resident.json (context 4096, input rows 96)",
+  "usage": "POST /v1/completions with the Gemma chat template; /v1/chat/completions renders the GLM template"
+ },
+ "correctness": {
+  "hf_greedy_token_exact": "3/3 (token_exactness_11b1d2a_rows96.jsonl)",
+  "concurrent_9_streams_exact": "9/9 (concurrent_9stream_exactness_11b1d2a_rows96.jsonl)",
+  "long_context_1898_tokens": "recalled the first-line code word (windowed sliding path)",
+  "compsec17": "15/17 PASS, thinking off, 512 tokens, concurrency 4 (compsec17-e0ff52d; input rows 24 at the time, rows-96 replays token-identical)"
+ },
+ "perf_no_spec": {
+  "method": "greedy, no speculation, natural-language essay prompt with a per-run nonce (no prefix-cache hits), streaming SSE timing on rtx5090, all runs inside perf_window.py",
+  "B1_decode_tok_s_median3": {"128": 11.998, "512": 11.413, "file": "perf_final_11b1d2a_rows24.jsonl (decode is independent of input rows; rows96 B1-128 = 11.945 in perf_rows96_ttft_b1.jsonl)"},
+  "TTFT_535_token_prompt_s_median3": {"rows24": 4.7307, "rows96": 2.8195},
+  "streams8_256_tokens": {"aggregate_tok_s": 57.429, "steady_all_active_tok_s": 62.569, "file": "perf_rows96_streams8_glm_ab.jsonl"},
+  "baseline_97a3a23": {"B1_128": 7.313, "B1_512": 6.592, "streams8_aggregate": 39.94, "TTFT_cold_519": 6.0763}
+ },
+ "glm_coresidency": {
+  "glm_B1_128_gemma_idle_tok_s": [32.96, 38.27],
+  "glm_B1_128_gemma_8stream_busy_tok_s": [6.28],
+  "caveat": "one busy sample; the other busy request failed (IO error, GLM client_reconnect_fail rank=9 = spark9, which is not a Gemma node, self-healed); not repeated to avoid loading production"
+ }
+}
