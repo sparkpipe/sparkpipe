@@ -25,10 +25,10 @@ def adapter_members():
     return tuple(re.findall(r'"([a-z_0-9]+)"', block))
 
 
-def rendered(lane, codec="fp8", sequences=8, rows=16, positions=4096, inflight=1, arm=None):
+def rendered(lane, codec="fp8", sequences=8, rows=16, positions=4096, inflight=1, arm=None, node_root=None, **score):
     arguments = argparse.Namespace(lane=lane, codec=codec, arm=arm, socket=SOCKET, kv_backing_bytes=4 << 30,
                                    max_sequence_positions=positions, execution_row_capacity=rows,
-                                   sequences=sequences, inflight=inflight)
+                                   sequences=sequences, inflight=inflight, node_root=node_root, **score)
     return {name: json.loads(text) for name, text in glm53full_lane.render(arguments).items()}
 
 
@@ -115,16 +115,46 @@ def api_host_problems():
 def main():
     failures = []
     members = adapter_members()
-    for arm, codec in (("fp8", "fp8"), ("bf16", "bf16"), ("fp8_s1", "fp8")):
+    for arm, codec in (("fp8", "fp8"), ("bf16", "bf16"), ("fp8_s1", "fp8"), ("nvfp4_s1", "nvfp4")):
         revision = subprocess.run([sys.executable, str(ROOT / "tools/glm52_model_contract.py"), "--print-build-identity", arm,
                                    "--expert-codec", codec], capture_output=True, text=True, check=True).stdout.split()[0]
         for lane in range(16):
             failures += [f"lane {lane} {arm}: {problem}"
                          for problem in lane_problems(lane, codec, rendered(lane, codec, arm=arm), members, revision, arm)]
-    for arm, codec in (("fp8_s1", "bf16"), ("bf16", "fp8"), ("nvfp4", "fp8")):
+    for arm, codec in (("fp8_s1", "bf16"), ("bf16", "fp8"), ("nvfp4", "fp8"), ("nvfp4_s1", "fp8"), ("fp8_s1", "nvfp4")):
         try:
             rendered(6, codec, arm=arm)
             failures.append(f"arm {arm} rendered with {codec} experts")
+        except SystemExit:
+            pass
+    score = {"score_dump_directory": "score/u3", "score_probe_path": "score/probe2.bin", "score_tier2_rows_path": None}
+    stages = rendered(6, "nvfp4", arm="nvfp4_s1", **score)
+    for rank in range(16):
+        stage = stages[f"config/stage_{rank:02d}.json"]
+        if stage.get("score_dump_directory") != "score/u3" or stage.get("score_probe_path") != "score/probe2.bin" or "score_tier2_rows_path" in stage:
+            failures.append(f"rank {rank}: score members not rendered as given")
+    plain = rendered(6, "nvfp4", arm="nvfp4_s1")
+    moved = rendered(6, "nvfp4", arm="nvfp4_s1", node_root="glmfull-ab-lane6/u3p")
+    for rank, node in enumerate(moved["model_resident.json"]["nodes"]):
+        root = f"/home/{glm53full_lane.HOSTS[rank]}/glmfull-ab-lane6/u3p"
+        if node["runtime_root"] != root or node["kv_backing_directory"] != root + "/kvcache":
+            failures.append(f"rank {rank}: --node-root not rendered into runtime_root and kv_backing_directory")
+    if {name: document for name, document in moved.items() if name != "model_resident.json"} != {name: document for name, document in plain.items() if name != "model_resident.json"}:
+        failures.append("--node-root changed a stage config")
+    for bad in ("", "/abs/root", "a/../b", "root/", "./root", "a//b"):
+        try:
+            rendered(6, "nvfp4", arm="nvfp4_s1", node_root=bad)
+            failures.append(f"node root {bad!r} rendered")
+        except SystemExit:
+            pass
+    if any(name in plain[f"config/stage_{rank:02d}.json"] for rank in range(16) for name in glm53full_lane.SCORE_MEMBERS):
+        failures.append("a render without score options carries score members")
+    for bad in ({"score_probe_path": "score/p.bin"}, {"score_dump_directory": "/abs"}, {"score_dump_directory": "a/../b"},
+                {"score_dump_directory": ""}, {"score_dump_directory": "score/"}):
+        values = dict({"score_dump_directory": None, "score_probe_path": None, "score_tier2_rows_path": None}, **bad)
+        try:
+            rendered(6, "nvfp4", arm="nvfp4_s1", **values)
+            failures.append(f"score members {bad} rendered")
         except SystemExit:
             pass
     with tempfile.TemporaryDirectory() as directory:

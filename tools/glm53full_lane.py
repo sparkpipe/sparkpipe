@@ -12,8 +12,10 @@ REVISIONS = {
     "fp8": "935644c05e76fc198714f4cca449fd8b970ff6d7",
     "bf16": "935644c05e76fc198714f4cca449fd8b970ff6d7",
     "fp8_s1": "304b8051cfb2b260b61ce0cbe330e02a98e73639",
+    "nvfp4_s1": "304b8051cfb2b260b61ce0cbe330e02a98e73639",
 }
-ARM_CODECS = {"fp8": "fp8", "bf16": "bf16", "fp8_s1": "fp8"}
+ARM_CODECS = {"fp8": "fp8", "bf16": "bf16", "fp8_s1": "fp8", "nvfp4_s1": "nvfp4"}
+SCORE_MEMBERS = ("score_dump_directory", "score_probe_path", "score_tier2_rows_path")
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "model-families/glm52/chat_template.json"
 EOS_TOKEN_IDS = [154820, 154827, 154829]
 TOKENIZER_SHA256 = "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
@@ -33,8 +35,19 @@ def lane_ports(lane):
     }
 
 
-def runtime_root(host, lane):
-    return f"/home/{host}/glmfull-lane{lane}/root"
+def default_node_root(lane):
+    return f"glmfull-lane{lane}/root"
+
+
+def node_root(value, lane):
+    value = default_node_root(lane) if value is None else value
+    if value == "" or value.startswith("/") or value.endswith("/") or any(part in ("", ".", "..") for part in value.split("/")):
+        raise SystemExit(f"node root must be a normalized path relative to the node's home directory: {value!r}")
+    return value
+
+
+def runtime_root(host, lane, root=None):
+    return f"/home/{host}/{node_root(root, lane)}"
 
 
 def pack_name(arm, rank):
@@ -85,20 +98,20 @@ def stage_config(rank, lane, arm, max_sequence_positions, execution_row_capacity
     }
 
 
-def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight):
+def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight, root=None):
     ports = lane_ports(lane)
     pages = sequences * ((max_sequence_positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS)
     nodes = []
     for rank, host in enumerate(HOSTS):
-        root = runtime_root(host, lane)
+        root_path = runtime_root(host, lane, root)
         nodes.append({
             "rank_index": rank,
             "stage_index": rank,
-            "runtime_root": root,
+            "runtime_root": root_path,
             "node_target": f"cuda.sm121.glm52.resident_decode_stage.bf16.expert_{ARM_CODECS[arm]}",
             "transport_host": host,
             "adapter_configuration_path": f"config/stage_{rank:02d}.json",
-            "kv_backing_directory": f"{root}/kvcache",
+            "kv_backing_directory": f"{root_path}/kvcache",
             "kv_backing_maximum_bytes": kv_backing_bytes,
             "control_endpoint": {"kind": "tcp", "host": host, "port": ports["control"] + rank},
         })
@@ -126,6 +139,19 @@ def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions,
     }
 
 
+def score_members(arguments):
+    members = {name: getattr(arguments, name, None) for name in SCORE_MEMBERS}
+    members = {name: value for name, value in members.items() if value is not None}
+    if not members:
+        return {}
+    if "score_dump_directory" not in members:
+        raise SystemExit("score_probe_path and score_tier2_rows_path require score_dump_directory")
+    for name, value in members.items():
+        if value == "" or value.startswith("/") or value.endswith("/") or any(part in ("", ".", "..") for part in value.split("/")):
+            raise SystemExit(f"{name} must be a normalized path relative to the arm's runtime root: {value!r}")
+    return members
+
+
 def render(arguments):
     arm = getattr(arguments, "arm", None) or arguments.codec
     if arm not in REVISIONS:
@@ -140,17 +166,20 @@ def render(arguments):
         raise SystemExit("sequences must be 1..16 and inflight 1..4")
     files = {"model_resident.json": deployment(arguments.lane, arm, arguments.socket, arguments.kv_backing_bytes,
                                                arguments.max_sequence_positions, arguments.sequences,
-                                               arguments.execution_row_capacity, arguments.inflight)}
+                                               arguments.execution_row_capacity, arguments.inflight,
+                                               getattr(arguments, "node_root", None))}
+    score = score_members(arguments)
     for rank in range(WORLD):
-        files[f"config/stage_{rank:02d}.json"] = stage_config(rank, arguments.lane, arm,
-                                                             arguments.max_sequence_positions, arguments.execution_row_capacity)
+        files[f"config/stage_{rank:02d}.json"] = dict(stage_config(rank, arguments.lane, arm,
+                                                                  arguments.max_sequence_positions,
+                                                                  arguments.execution_row_capacity), **score)
     return {name: json.dumps(document, indent=1) + "\n" for name, document in files.items()}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--lane", type=int, required=True)
-    parser.add_argument("--codec", choices=("fp8", "bf16"), required=True)
+    parser.add_argument("--codec", choices=("fp8", "bf16", "nvfp4"), required=True)
     parser.add_argument("--arm", choices=tuple(REVISIONS))
     parser.add_argument("--socket", required=True)
     parser.add_argument("--kv-backing-bytes", type=int, required=True)
@@ -158,6 +187,10 @@ def main():
     parser.add_argument("--execution-row-capacity", type=int, required=True)
     parser.add_argument("--sequences", type=int, required=True)
     parser.add_argument("--inflight", type=int, required=True)
+    parser.add_argument("--score-dump-directory", dest="score_dump_directory")
+    parser.add_argument("--score-probe-path", dest="score_probe_path")
+    parser.add_argument("--score-tier2-rows-path", dest="score_tier2_rows_path")
+    parser.add_argument("--node-root", dest="node_root")
     parser.add_argument("--output", required=True)
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
@@ -174,6 +207,7 @@ def main():
         with open(path, "w") as handle:
             handle.write(text)
     print(json.dumps({"lane": arguments.lane, "codec": arguments.codec, "arm": arguments.arm or arguments.codec,
+                      "node_root": node_root(arguments.node_root, arguments.lane),
                       "files": len(files), **lane_ports(arguments.lane),
                       "collective_identifier": collective_identifier(arguments.lane)}))
     return 0

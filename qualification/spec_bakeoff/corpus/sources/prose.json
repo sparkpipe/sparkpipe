@@ -1,0 +1,19 @@
+{
+ "class": "prose",
+ "output_tokens": 512,
+ "prompts": [
+  {
+   "text": "Explain, in three careful paragraphs, why the sky appears blue during the day and red at sunset."
+  },
+  {
+   "text": "Write a short essay on the history of the printing press and its effect on literacy in Europe."
+  },
+  {
+   "text": "Summarize the causes and consequences of the 2008 financial crisis for a general reader."
+  },
+  {
+   "text": "Write a long-form magazine feature, at least two thousand words, about how a small coastal town adapted its fishing economy to a changing climate over thirty years. Use named (fictional) residents, concrete dates and numbers, and end with what the next decade may hold.",
+   "output_tokens": 2048
+  }
+ ]
+}

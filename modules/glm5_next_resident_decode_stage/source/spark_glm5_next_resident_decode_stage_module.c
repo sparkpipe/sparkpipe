@@ -24,6 +24,8 @@
 #include "sparkpipe/spark_speculation_reference_draft.h"
 #include "sparkpipe/spark_speculation_depth.h"
 #include "sparkpipe/spark_speculation_drafter_mix.h"
+#include "sparkpipe/spark_speculation_relay_link.h"
+#include "sparkpipe/spark_speculation_tap.h"
 #define SPARK_FAMILY_CAMEL Glm5Next
 #define SPARK_FAMILY_UPPER GLM5_NEXT
 #define SPARK_FAMILY_LOWER glm5_next
@@ -380,6 +382,24 @@ struct SparkGlm5NextModuleState
 	uint64_t verify_position_accepted[SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - 1u];
 	uint32_t *verify_depth_cap;
 	uint64_t *verify_depth_sequence;
+	SparkSpeculationTapSet tap_set;
+	uint32_t tap_enabled;
+	uint32_t tap_rank;
+	uint32_t tap_dump_open;
+	uint32_t tap_lock_ready;
+	uint32_t tap_relay_depth;
+	uint32_t tap_dump_warned;
+	uint64_t tap_generation;
+	uint64_t tap_fingerprint;
+	uint64_t tap_serial;
+	uint64_t tap_records;
+	uint64_t tap_emits;
+	uint64_t tap_dump_failed;
+	uint8_t *tap_scratch;
+	pthread_mutex_t tap_lock;
+	SparkSpeculationTapDump tap_dump;
+	SparkSpeculationRelayLink tap_link;
+	SparkSpeculationRelayRemote *tap_remote;
 	uint32_t verify_mtp;
 	uint32_t mtp_sidecar;
 	uint64_t mtp_sidecar_bytes;
@@ -2057,6 +2077,7 @@ static void SparkGlm5NextTpChainFail(SparkGlm5NextTpChain *chain,SparkStatus sta
 static void CUDART_CB SparkGlm5NextCompleteAsync(void *context);
 static SparkStatus SparkGlm5NextMtpTap(SparkGlm5NextModuleState *state,SparkGlm5NextExecutionSlot *slot,uint32_t row,uint32_t lane,uint64_t sequence_id,uint64_t next_position);
 static SparkStatus SparkGlm5NextMtpTapFrame(SparkGlm5NextTpChain *chain);
+static void SparkGlm5NextTapEmit(SparkGlm5NextTpChain *chain,uint32_t rows,uint32_t flags);
 static void CUDART_CB SparkGlm5NextMtpResolveHost(void *context);
 static SparkStatus SparkGlm5NextEnqueueAsyncCompletion(
 	SparkGlm5NextModuleState *state,
@@ -2850,6 +2871,7 @@ static void SparkGlm5NextFeedStep(SparkGlm5NextTpChain *chain)
 {
 	SparkGlm5NextExecutionSlot *slot = chain->slot;
 	uint32_t row,index;
+	SparkGlm5NextTapEmit(chain,chain->wave_rows,SPARK_SPECULATION_TAP_FLAG_DECODE);
 	for (row=0u; row<chain->wave_rows; row++)
 	{
 		index = chain->first_row + row;
@@ -2902,6 +2924,11 @@ static void SparkGlm5NextFinishChain(SparkGlm5NextTpChain *chain)
 	status = chain->expert_lease != 0u ? SparkGlm5NextLazyRelease(chain) : SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextMtpTapFrame(chain);
+	if ( status == SPARK_STATUS_OK && chain->verify_budget == 0u && chain->state->tap_enabled != 0u && chain->state->ws_enabled == 0u &&
+		SparkGlm5NextBoundedStreamSync(chain->state,chain->slot->stream,UINT64_C(35000000000)) != 0 )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK && chain->verify_budget == 0u )
+		SparkGlm5NextTapEmit(chain,chain->wave_rows,SPARK_SPECULATION_TAP_FLAG_DECODE);
 	async->finish_ns = SparkGlm5NextNowNs();
 	async->graph_path = SparkGlm5NextGraphPathState(chain->state);
 	if ( status == SPARK_STATUS_OK )
@@ -3764,6 +3791,295 @@ static SparkStatus SparkGlm5NextMtpDraftTokens(void *context,const SparkSpeculat
 	return(index == 0u ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_OK);
 }
 
+#define SPARK_GLM5_NEXT_TAPS_ENV "SPARK_GLM5_NEXT_TAPS"
+#define SPARK_GLM5_NEXT_TAP_RANK_ENV "SPARK_GLM5_NEXT_TAP_RANK"
+#define SPARK_GLM5_NEXT_TAP_DUMP_ENV "SPARK_GLM5_NEXT_TAP_DUMP"
+#define SPARK_GLM5_NEXT_TAP_DUMP_MAX_BYTES_ENV "SPARK_GLM5_NEXT_TAP_DUMP_MAX_BYTES"
+#define SPARK_GLM5_NEXT_TAP_RELAY_LOCAL_ENV "SPARK_GLM5_NEXT_TAP_RELAY_LOCAL"
+#define SPARK_GLM5_NEXT_TAP_RELAY_PEER_ENV "SPARK_GLM5_NEXT_TAP_RELAY_PEER"
+#define SPARK_GLM5_NEXT_TAP_RELAY_SHADOW_ENV "SPARK_GLM5_NEXT_TAP_RELAY_SHADOW"
+#define SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US_ENV "SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US"
+#define SPARK_GLM5_NEXT_TAP_RELAY_DEPTH_ENV "SPARK_GLM5_NEXT_TAP_RELAY_DEPTH"
+#define SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US_MAX 100000u
+
+static uint32_t SparkGlm5NextTapCapture(SparkGlm5NextTpChain *chain,uint32_t local_layer)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	uint32_t ordinal;
+	if ( state->tap_enabled == 0u )
+		return(0u);
+	ordinal = SparkSpeculationTapSetOrdinal(&state->tap_set,chain->wave.first_layer_index + local_layer);
+	if ( ordinal == UINT32_MAX )
+		return(0u);
+	return(SparkGlm5NextLaunchCudaTapCapture(&chain->wave,state->tap_set.reduction == SPARK_SPECULATION_TAP_REDUCTION_ALL ? 1u : 0u,
+		chain->slot->tap_device + (uint64_t)ordinal * state->execution_row_capacity * state->tap_set.row_elements) != 0 ? 1u : 0u);
+}
+
+static uint32_t SparkGlm5NextTapFlush(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	uint64_t pitch;
+	if ( state->tap_enabled == 0u )
+		return(0u);
+	pitch = (uint64_t)state->execution_row_capacity * state->tap_set.row_bytes;
+	return(cudaMemcpy2DAsync(chain->slot->tap_host,pitch,chain->slot->tap_device,pitch,(uint64_t)chain->wave.row_count * state->tap_set.row_bytes,state->tap_set.tap_count,cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream) != cudaSuccess ? 1u : 0u);
+}
+
+static void SparkGlm5NextTapReport(SparkGlm5NextModuleState *state,const char *label)
+{
+	const SparkSpeculationRelayRemote *remote = state->tap_remote;
+	char accepted_at[160];
+	uint32_t index;
+	int length = 0;
+	accepted_at[0] = '\0';
+	for (index=0u; remote != 0 && index<=state->tap_relay_depth && length >= 0 && (size_t)length < sizeof(accepted_at); index++)
+		length += snprintf(accepted_at + length,sizeof(accepted_at) - (size_t)length,"%s%llu",index == 0u ? "" : ",",(unsigned long long)remote->shadow_accepted_at[index]);
+	fprintf(stderr,"%s rank=%u taps=%u records=%llu dump_records=%llu dump_refused=%llu dump_failed=%llu relay_records=%llu relay_unsent=%llu send_errors=%llu foreign=%llu requests=%llu unsynced=%llu unsent=%llu in_time=%llu late=%llu misses=%llu shadow_rounds=%llu proposed=%llu accepted=%llu evicted=%llu accepted_at=%s rtt_p50_us=%llu rtt_p99_us=%llu rtt_max_us=%llu\n",
+		label,state->tap_rank,state->tap_set.tap_count,(unsigned long long)state->tap_records,(unsigned long long)state->tap_dump.records,(unsigned long long)state->tap_dump.refused,(unsigned long long)state->tap_dump_failed,
+		(unsigned long long)state->tap_link.tap_records_sent,(unsigned long long)state->tap_link.tap_records_unsent,(unsigned long long)state->tap_link.send_errors,(unsigned long long)state->tap_link.datagrams_foreign,
+		(unsigned long long)(remote != 0 ? remote->requests : 0u),(unsigned long long)(remote != 0 ? remote->unsynced : 0u),(unsigned long long)(remote != 0 ? remote->unsent : 0u),
+		(unsigned long long)(remote != 0 ? remote->answered_in_time : 0u),(unsigned long long)(remote != 0 ? remote->answered_late : 0u),(unsigned long long)(remote != 0 ? remote->deadline_misses : 0u),
+		(unsigned long long)(remote != 0 ? remote->shadow_rounds : 0u),(unsigned long long)(remote != 0 ? remote->shadow_proposed : 0u),(unsigned long long)(remote != 0 ? remote->shadow_accepted : 0u),(unsigned long long)(remote != 0 ? remote->shadow_evicted : 0u),
+		accepted_at,(unsigned long long)(remote != 0 ? SparkSpeculationRelayRemoteRttPercentileNs(remote,500u) / 1000u : 0u),(unsigned long long)(remote != 0 ? SparkSpeculationRelayRemoteRttPercentileNs(remote,990u) / 1000u : 0u),
+		(unsigned long long)(remote != 0 ? remote->rtt_max_ns / 1000u : 0u));
+}
+
+static uint64_t SparkGlm5NextTapSequence(const SparkGlm5NextTpChain *chain,uint32_t row)
+{
+	const SparkGlm5NextAsyncCompletion *async = &chain->state->completions[chain->slot_index];
+	uint32_t index = chain->first_row + row,lane;
+	if ( chain->verify_budget != 0u )
+		return(chain->verify_sequence_id);
+	if ( chain->batch != 0 && index < chain->batch->row_count )
+		return(chain->batch->row_sequence_ids[index]);
+	for (lane=0u; lane<async->lane_count; lane++)
+		if ( async->lane_indices[lane] == chain->slot->host_resident_slots[index] )
+			return(async->lane_sequence_ids[lane]);
+	return(UINT64_MAX);
+}
+
+static void SparkGlm5NextTapEmit(SparkGlm5NextTpChain *chain,uint32_t rows,uint32_t flags)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextExecutionSlot *slot = chain->slot;
+	const uint32_t *positions,*tokens,*outputs;
+	SparkSpeculationPolicyDraftResult result;
+	SparkSpeculationTapRecord record;
+	SparkStatus status;
+	uint64_t sequence = 0u,next_position;
+	uint32_t row,tap,single = 1u,prefill,next_token;
+	if ( state->tap_enabled == 0u || rows == 0u || slot->host_positions == 0 || slot->host_token_ids == 0 || slot->host_output_token_ids == 0 )
+		return;
+	positions = slot->host_positions + chain->first_row;
+	tokens = slot->host_token_ids + chain->first_row;
+	outputs = slot->host_output_token_ids + chain->first_row;
+	prefill = chain->frame != 0 && (chain->frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
+	pthread_mutex_lock(&state->tap_lock);
+	for (row=0u; row<rows; row++)
+	{
+		memset(&record,0,sizeof(record));
+		record.engine_generation = state->tap_generation;
+		record.sequence_id = SparkGlm5NextTapSequence(chain,row);
+		record.position = positions[row];
+		record.token_id = tokens[row];
+		record.next_token_id = outputs[row];
+		record.flags = prefill != 0u ? SPARK_SPECULATION_TAP_FLAG_PREFILL : flags;
+		record.serial = ++state->tap_serial;
+		if ( row == 0u )
+			sequence = record.sequence_id;
+		else if ( record.sequence_id != sequence || positions[row] != positions[row - 1u] + 1u )
+			single = 0u;
+		for (tap=0u; tap<state->tap_set.tap_count; tap++)
+			memcpy(state->tap_scratch + (uint64_t)tap * state->tap_set.row_bytes,(const uint8_t *)slot->tap_host + ((uint64_t)tap * state->execution_row_capacity + row) * state->tap_set.row_bytes,state->tap_set.row_bytes);
+		if ( state->tap_dump_open != 0u )
+		{
+			status = SparkSpeculationTapDumpAppend(&state->tap_dump,&record,state->tap_scratch);
+			if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_CAPACITY_EXCEEDED )
+				state->tap_dump_failed++;
+			if ( status != SPARK_STATUS_OK && state->tap_dump_warned == 0u )
+			{
+				state->tap_dump_warned = 1u;
+				fprintf(stderr,"TAP-DUMP-STOPPED status=%d records=%llu bytes=%llu max_bytes=%llu; serving continues, later records are counted as refused\n",(int)status,(unsigned long long)state->tap_dump.records,(unsigned long long)state->tap_dump.bytes,(unsigned long long)state->tap_dump.max_bytes);
+			}
+		}
+		if ( state->tap_remote != 0 )
+			(void)SparkSpeculationRelayLinkSendTap(&state->tap_link,state->tap_fingerprint,&record,state->tap_scratch,state->tap_set.record_bytes,SPARK_SPECULATION_TAP_FRAGMENT_PAYLOAD_MAX);
+		state->tap_records++;
+	}
+	if ( state->tap_remote != 0 && single != 0u && sequence != UINT64_MAX )
+	{
+		(void)SparkSpeculationRelayRemoteObserve(state->tap_remote,sequence,positions[0],tokens,rows);
+		next_position = (uint64_t)positions[rows - 1u] + 1u;
+		next_token = outputs[rows - 1u];
+		memset(&result,0,sizeof(result));
+		if ( prefill == 0u && next_token < SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT && SparkSpeculationRelayRemoteObserve(state->tap_remote,sequence,next_position,&next_token,1u) == SPARK_STATUS_OK )
+			(void)SparkSpeculationRelayRemoteRound(state->tap_remote,sequence,next_position,state->tap_relay_depth,&result);
+	}
+	state->tap_emits++;
+	if ( (state->tap_emits & (state->tap_emits - 1u)) == 0u )
+		SparkGlm5NextTapReport(state,"TAP-STATS");
+	pthread_mutex_unlock(&state->tap_lock);
+}
+
+static SparkStatus SparkGlm5NextTapEnvU64(const char *name,uint64_t minimum,uint64_t maximum,uint64_t *value_out)
+{
+	const char *text = getenv(name);
+	char *end;
+	unsigned long long value;
+	if ( text == 0 )
+		return(SPARK_STATUS_NOT_FOUND);
+	errno = 0;
+	value = strtoull(text,&end,10);
+	if ( text[0] < '0' || text[0] > '9' || errno != 0 || *end != '\0' || value < minimum || value > maximum )
+	{
+		fprintf(stderr,"%s must be an integer in %llu..%llu\n",name,(unsigned long long)minimum,(unsigned long long)maximum);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	*value_out = value;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextConfigureTaps(SparkGlm5NextModuleState *state)
+{
+	const char *taps = getenv(SPARK_GLM5_NEXT_TAPS_ENV),*dump = getenv(SPARK_GLM5_NEXT_TAP_DUMP_ENV);
+	const char *local = getenv(SPARK_GLM5_NEXT_TAP_RELAY_LOCAL_ENV),*peer = getenv(SPARK_GLM5_NEXT_TAP_RELAY_PEER_ENV),*shadow = getenv(SPARK_GLM5_NEXT_TAP_RELAY_SHADOW_ENV);
+	uint64_t rank,max_bytes = 0u,await_us = 0u,depth = 0u,bytes;
+	struct timespec now;
+	SparkStatus status;
+	uint32_t index;
+	if ( taps == 0 )
+	{
+		if ( dump != 0 || local != 0 || peer != 0 || shadow != 0 || getenv(SPARK_GLM5_NEXT_TAP_RANK_ENV) != 0 || getenv(SPARK_GLM5_NEXT_TAP_DUMP_MAX_BYTES_ENV) != 0 || getenv(SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US_ENV) != 0 || getenv(SPARK_GLM5_NEXT_TAP_RELAY_DEPTH_ENV) != 0 )
+		{
+			fprintf(stderr,"GLM tap settings need %s\n",SPARK_GLM5_NEXT_TAPS_ENV);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		return(SPARK_STATUS_OK);
+	}
+	status = SparkSpeculationTapSetParse(taps,SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,SPARK_GLM5_NEXT_MODEL_HC_MULT,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,&state->tap_set);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s must be mean:L[,L...] or all:L[,L...] with 1..%u increasing layers below %u\n",SPARK_GLM5_NEXT_TAPS_ENV,SPARK_SPECULATION_TAP_MAX_TAPS,SPARK_GLM5_NEXT_MODEL_LAYER_COUNT);
+		SPARK_RETURN(status);
+	}
+	rank = state->tp_degree - 1u;
+	status = SparkGlm5NextTapEnvU64(SPARK_GLM5_NEXT_TAP_RANK_ENV,0u,state->tp_degree - 1u,&rank);
+	if ( status == SPARK_STATUS_OK || status == SPARK_STATUS_NOT_FOUND )
+		status = dump != 0 ? SparkGlm5NextTapEnvU64(SPARK_GLM5_NEXT_TAP_DUMP_MAX_BYTES_ENV,SPARK_SPECULATION_TAP_DUMP_HEADER_BYTES,UINT64_MAX,&max_bytes) : SPARK_STATUS_OK;
+	if ( status == SPARK_STATUS_OK && local != 0 )
+		status = SparkGlm5NextTapEnvU64(SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US_ENV,0u,SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US_MAX,&await_us);
+	if ( status == SPARK_STATUS_OK && local != 0 )
+		status = SparkGlm5NextTapEnvU64(SPARK_GLM5_NEXT_TAP_RELAY_DEPTH_ENV,1u,SPARK_SPECULATION_RELAY_MAX_TOKENS,&depth);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"GLM taps: %s needs %s; %s needs %s, %s and %s\n",SPARK_GLM5_NEXT_TAP_DUMP_ENV,SPARK_GLM5_NEXT_TAP_DUMP_MAX_BYTES_ENV,SPARK_GLM5_NEXT_TAP_RELAY_LOCAL_ENV,SPARK_GLM5_NEXT_TAP_RELAY_PEER_ENV,SPARK_GLM5_NEXT_TAP_RELAY_AWAIT_US_ENV,SPARK_GLM5_NEXT_TAP_RELAY_DEPTH_ENV);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( (dump == 0 && local == 0) || (local == 0) != (peer == 0) || (local != 0 && (shadow == 0 || strcmp(shadow,"1") != 0)) || (local == 0 && shadow != 0) )
+	{
+		fprintf(stderr,"GLM taps need a consumer: %s, or %s with %s and %s=1. Drafts served through the relay need the root-rank broadcast, which is not built, so the relay runs in shadow mode only\n",
+			SPARK_GLM5_NEXT_TAP_DUMP_ENV,SPARK_GLM5_NEXT_TAP_RELAY_LOCAL_ENV,SPARK_GLM5_NEXT_TAP_RELAY_PEER_ENV,SPARK_GLM5_NEXT_TAP_RELAY_SHADOW_ENV);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	state->tap_rank = (uint32_t)rank;
+	state->tap_relay_depth = (uint32_t)depth;
+	state->tap_fingerprint = SparkSpeculationTapSetFingerprint(&state->tap_set);
+	fprintf(stderr,"GLM taps %s rank=%u fingerprint=%016llx record_bytes=%u dump=%s max_bytes=%llu relay=%s>%s shadow await_us=%llu depth=%llu this_rank=%u\n",
+		taps,state->tap_rank,(unsigned long long)state->tap_fingerprint,state->tap_set.record_bytes,dump != 0 ? dump : "-",(unsigned long long)max_bytes,local != 0 ? local : "-",peer != 0 ? peer : "-",
+		(unsigned long long)await_us,(unsigned long long)depth,state->tp_rank);
+	if ( state->tp_rank != state->tap_rank )
+		return(SPARK_STATUS_OK);
+	for (index=0u; index<state->tap_set.tap_count; index++)
+		if ( state->tap_set.layers[index] < state->first_layer_index || state->tap_set.layers[index] >= state->first_layer_index + state->layer_count )
+		{
+			fprintf(stderr,"GLM tap layer %u is outside this stage's layers %u..%u\n",state->tap_set.layers[index],state->first_layer_index,state->first_layer_index + state->layer_count - 1u);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+	if ( state->owns_embedding == 0u || state->owns_final_head == 0u || state->mtp_enabled != 0u )
+	{
+		fprintf(stderr,"GLM taps need a rank that owns the embedding and the head, without the legacy MTP chain\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	bytes = (uint64_t)state->tap_set.tap_count * state->execution_row_capacity * state->tap_set.row_bytes;
+	status = SparkGlm5NextAllocateBytes(state,(uint64_t)state->tap_set.tap_count * state->execution_row_capacity,state->tap_set.row_elements,sizeof(uint16_t),(void **)&state->slots[0].tap_device);
+	for (index=0u; status == SPARK_STATUS_OK && index<state->pipeline_slot_count; index++)
+	{
+		state->slots[index].tap_device = state->slots[0].tap_device;
+		if ( cudaHostAlloc((void **)&state->slots[index].tap_host,bytes,cudaHostAllocPortable) != cudaSuccess )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	state->tap_scratch = status == SPARK_STATUS_OK ? (uint8_t *)malloc(state->tap_set.record_bytes) : 0;
+	if ( status == SPARK_STATUS_OK && (state->tap_scratch == 0 || pthread_mutex_init(&state->tap_lock,0) != 0) )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	state->tap_lock_ready = 1u;
+	clock_gettime(CLOCK_REALTIME,&now);
+	state->tap_generation = ((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec) | 1u;
+	if ( dump != 0 )
+	{
+		status = SparkSpeculationTapDumpOpen(&state->tap_dump,dump,&state->tap_set,"glm5_next",state->tap_generation,state->tp_rank,max_bytes);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"GLM tap dump %s cannot be created (it must not exist)\n",dump);
+			SPARK_RETURN(status);
+		}
+		state->tap_dump_open = 1u;
+	}
+	if ( local != 0 )
+	{
+		state->tap_remote = (SparkSpeculationRelayRemote *)calloc(1u,sizeof(*state->tap_remote));
+		if ( state->tap_remote == 0 )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		status = SparkSpeculationRelayLinkOpen(&state->tap_link,local,peer);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkSpeculationRelayRemoteInitialize(state->tap_remote,&state->tap_link,state->tap_generation,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,await_us * 1000u,1u);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"GLM tap relay %s>%s cannot open\n",local,peer);
+			SparkSpeculationRelayLinkClose(&state->tap_link);
+			free(state->tap_remote);
+			state->tap_remote = 0;
+			SPARK_RETURN(status);
+		}
+		fprintf(stderr,"GLM tap relay open send_buffer=%u receive_buffer=%u\n",state->tap_link.send_buffer_bytes,state->tap_link.receive_buffer_bytes);
+	}
+	state->tap_enabled = 1u;
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm5NextReleaseTaps(SparkGlm5NextModuleState *state)
+{
+	uint32_t index;
+	if ( state->tap_enabled != 0u )
+		SparkGlm5NextTapReport(state,"TAP-SUMMARY");
+	state->tap_enabled = 0u;
+	if ( state->tap_dump_open != 0u )
+	{
+		if ( SparkSpeculationTapDumpClose(&state->tap_dump) != SPARK_STATUS_OK )
+			fprintf(stderr,"TAP-DUMP-CLOSE-FAILED records=%llu\n",(unsigned long long)state->tap_dump.records);
+		state->tap_dump_open = 0u;
+	}
+	if ( state->tap_remote != 0 )
+	{
+		SparkSpeculationRelayLinkClose(&state->tap_link);
+		free(state->tap_remote);
+		state->tap_remote = 0;
+	}
+	for (index=0u; index<state->pipeline_slot_count; index++)
+	{
+		if ( state->slots[index].tap_host != 0 )
+			(void)cudaFreeHost(state->slots[index].tap_host);
+		state->slots[index].tap_host = 0;
+		state->slots[index].tap_device = 0;
+	}
+	free(state->tap_scratch);
+	state->tap_scratch = 0;
+	if ( state->tap_lock_ready != 0u )
+		pthread_mutex_destroy(&state->tap_lock);
+	state->tap_lock_ready = 0u;
+}
+
 static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t layer)
 {
 	uint32_t reduce;
@@ -3804,6 +4120,8 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 		return(reduce == 1u ? 10u : reduce);
 	if ( SparkGlm5NextLaunchCudaLayerMlpPost(wave,layer) != 0 )
 		return(11u);
+	if ( SparkGlm5NextTapCapture(chain,layer) != 0u )
+		return(40u);
 	if ( state->graph_record_limit != 0u && (state->graph_record_ops += 2u) >= state->graph_record_limit )
 		state->graph_record_stop = 1u;
 	return(0u);
@@ -3843,6 +4161,8 @@ static uint32_t SparkGlm5NextWalkChain(SparkGlm5NextTpChain *chain,uint32_t *lay
 		return(14u);
 	if ( state->owns_final_head != 0u && cudaMemcpyAsync(wave->slot->host_output_token_ids + chain->first_row,wave->slot->output_token,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream) != cudaSuccess )
 		return(16u);
+	if ( SparkGlm5NextTapFlush(chain) != 0u )
+		return(41u);
 	return(0u);
 }
 
@@ -4663,6 +4983,7 @@ static SparkStatus SparkGlm5NextVerifyCommit(SparkGlm5NextTpChain *chain,uint32_
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for (index=0u; index<committed; index++)
 		chain->verify_tokens[chain->verify_produced + index] = slot->host_output_token_ids[index];
+	SparkGlm5NextTapEmit(chain,committed,SPARK_SPECULATION_TAP_FLAG_VERIFY);
 	status = SparkGlm5NextMtpTap(state,slot,committed - 1u,chain->verify_lane,chain->verify_sequence_id,chain->verify_position + committed);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -4721,6 +5042,7 @@ static SparkStatus SparkGlm5NextVerifyPlainStep(SparkGlm5NextTpChain *chain)
 		return(SparkGlm5NextTerminalFailure(state,status,"verify-plain-step"));
 	}
 	chain->verify_tokens[chain->verify_produced] = slot->host_output_token_ids[0];
+	SparkGlm5NextTapEmit(chain,1u,SPARK_SPECULATION_TAP_FLAG_DECODE);
 	status = SparkGlm5NextMtpTap(state,slot,0u,chain->verify_lane,chain->verify_sequence_id,chain->verify_position + 1u);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -5219,6 +5541,11 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 			return;
 		}
+		if ( SparkGlm5NextTapCapture(chain,chain->next_layer) != 0u )
+		{
+			SparkGlm5NextTpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+			return;
+		}
 		SparkGlm5NextT1Streams(chain,chain->wave.first_layer_index + chain->next_layer);
 		SparkGlm5NextT1Route(chain,chain->wave.first_layer_index + chain->next_layer);
 		chain->next_layer++;
@@ -5248,6 +5575,8 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		error = SparkGlm5NextLaunchHeadMaxlocUnpack((cudaStream_t)chain->slot->stream,chain->slot->head_maxloc_u64,chain->slot->output_token,chain->wave_rows);
 		if ( error == cudaSuccess && state->owns_final_head != 0u )
 			error = cudaMemcpyAsync(chain->slot->host_output_token_ids + chain->first_row,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream);
+		if ( error == cudaSuccess && SparkGlm5NextTapFlush(chain) != 0u )
+			error = cudaErrorLaunchFailure;
 		launch_status = SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"tp_head_unpack");
 		if ( (state->hbound_probes & (1u << 31u)) == 0u &&
 		     SparkGlm5NextBoundedStreamSync(chain->state,chain->slot->stream,UINT64_C(35000000000)) == 0 )
@@ -6500,6 +6829,7 @@ void SparkGlm5NextResidentDecodeStageDestroy(void *module_state)
 	}
 	if ( SparkGlm5NextReleaseCaches(state) != SPARK_STATUS_OK )
 		return;
+	SparkGlm5NextReleaseTaps(state);
 	SparkGlm5NextReleaseSlotHost(state);
 	SparkGlm5NextRouteTraceClose(state);
 	SparkExpertWorkingSetDestroy(&state->expert_ws);
@@ -6802,6 +7132,8 @@ static SparkStatus SparkGlm5NextInitializeState(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextAllocateMtp(state);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextConfigureTaps(state);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextModuleInitializeTpCollective(state,(const SparkGlm5NextResidentDecodeStageNodeContext *)host_services->node_context);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextBuildHeadShadow(state);
@@ -6831,6 +7163,7 @@ static SparkStatus SparkGlm5NextInitializeState(
 		}
 		if ( SparkGlm5NextReleaseCaches(state) != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
+		SparkGlm5NextReleaseTaps(state);
 		SparkGlm5NextReleaseSlotHost(state);
 		SparkGlm5NextRouteTraceClose(state);
 		SparkExpertWorkingSetDestroy(&state->expert_ws);

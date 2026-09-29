@@ -1559,8 +1559,10 @@ CEILING = 285179
 # (docs/AGENT_LANE_BRIEFS/reports/wave-acc2-accuracy-2026-09-13.md) - that
 # drift is owned by the landings that produced it, not by this lane.
 CEILING = 375598
-CEILING = 375955
-CEILING = 375991
+CEILING = 379357
+CEILING = 379716
+CEILING = 379779
+CEILING = 380206
 
 
 ROOT = Path(__file__).resolve().parent.parent

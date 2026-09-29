@@ -1,0 +1,109 @@
+{
+ "arms": [
+  {
+   "arm_id": "full.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "label": "U2",
+   "role": "reference"
+  },
+  {
+   "arm_id": "full.S0.e-fp8.k-bf16/bf16/fp32.d-none",
+   "axis": "E",
+   "compare_to": "full.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "corpus": "CT-short",
+   "label": "U0",
+   "role": "anchor"
+  },
+  {
+   "anchor": "full.S0.e-fp8.k-bf16/bf16/fp32.d-none",
+   "arm_id": "full.S1.e-nvfp4ra.k-bf16/bf16/fp32.d-none",
+   "axis": "E",
+   "compare_to": "full.S1.e-fp8.k-bf16/bf16/fp32.d-none",
+   "corpus": "CT-short",
+   "label": "U3p",
+   "role": "arm"
+  }
+ ],
+ "backstops": {
+  "calibration_comparison_sha256": null,
+  "calibration_pair": [
+   "full.S0.e-fp8.k-bf16/bf16/fp32.d-none",
+   "full.S1.e-fp8.k-bf16/bf16/fp32.d-none"
+  ],
+  "dnll_rel_pct_abs": 0.5,
+  "kl_mean_upper": 0.005,
+  "status": "calibration",
+  "top1_agree_pct_lower": 99.0
+ },
+ "campaign": "full-wu",
+ "corpora": {
+  "CT-short": {
+   "docs": 200,
+   "index_sha256": "d5bbbb30a391beee2160c1a7ef3b185fba3a7c859dd6a3d27187e0a524896788",
+   "role": "primary",
+   "tokens_sha256": "bde6ca4c7f8378ffe7b055a0534250b8c007f295dcdc6e280a31e8cb736c2103"
+  }
+ },
+ "exclusions": {
+  "near_tie_rule": "reference top-2 gap < near_tie_nats",
+  "on_policy_dnll_in_verdict": false,
+  "strata_reported": [
+   "prose-recent",
+   "prose-old",
+   "code",
+   "on-policy",
+   "prose-long",
+   "code-long",
+   "retrieval"
+  ]
+ },
+ "firmware_commit": "dfa12a5da848474782aa349cd7e08a59e924b406",
+ "format": "sparkpipe-ab-plan-v1",
+ "frozen": true,
+ "margins": {
+  "D": {
+   "token_differences": 0
+  },
+  "E": {
+   "kl_ratio_vs_anchor_upper": 1.1,
+   "top1_diff_vs_anchor_pt_lower": -0.3
+  },
+  "K": {
+   "dnll_rel_pct_abs": 0.5,
+   "every_bin": true,
+   "kl_mean_upper": 0.005,
+   "top1_agree_pct_lower": 99.0
+  }
+ },
+ "notes": "GLM-5.3 Full quant A/B WU (lanes/glmfull-nvfp4.md, lanes/glmfull-nvfp4-ab.md). Reference U2 = publisher FP8 experts on the S1 BF16 spine (U1 BF16 experts cannot be resident: ~98 GB/rank). U3p = RadixArk NVFP4 experts on S1 (nvfp4_s1). U0 = production precision (S0 spine, publisher FP8) is the E yardstick: U3p passes if its KL to U2 is at most 1.1x U0's and its top-1 agreement is within 0.3 pt of U0's (lead decision: U0 declared as the E anchor, not a spine bridge; U0 differs from U2 on the spine, so the ratio measures U3p's expert error against production's whole precision gap). Firmware: SCORE_DUMP builds at dfa12a5da (tools/glm53full_lane_build.sh, bucket 16; publish validators dense/routed/dsa PASS): U2 fp8_s1 SHA256SUMS d3ba29ca, U3p nvfp4_s1 db2683af, U0 fp8 cf205005. Arm digests: U2 22375c02135abca7, U3p ec2d1bf78a1ae899, U0 83375463fae14fbe (kv_shard 0; spine digests U2 = U3p on 16/16 ranks, U0 differs on 16/16). Score path: SPARK_GLM52_CHAIN_MODE=linear, SPARK_GLM52_PREFILL_WAVE_ROWS=8 (bit-exact to one-row prefill, #1373), pinned experts, prefix reuse off, 16 sequences x 2048 positions, SPARK_MODEL_BATCH_SEQUENTIAL=1, CT-short as 20 batch files of 10 documents with output budget 1. Pass 1 (U2) probes targets.bin; pass 2 (U3p, U0) probes the union of U2's per-segment probe-out files. Tier-2 rows are recorded; exact KL is not part of this plan's verdict. Execution is split across FULL-hour windows: an arm is scored in residentd segments that end at batch-file boundaries; each segment is merged against the same probe file and the segments are combined in corpus order before export; a segment that does not end cleanly is discarded and its files are scored again. A/A: U2 is scored a second time (same firmware, config and probe file) and the two combined merged dumps must be bit-identical before any verdict. Suites: COMPSEC-17 thinking off at 512 tokens, sequential B1, per arm on its no-dump config (breakage detector); ds4-92 is not scheduled.",
+ "plan_sha256": "6f3a8be7957660d5268ebcb4295eece53be7afa41acb74fea9be4917aa45a097",
+ "statistics": {
+  "alpha": 0.05,
+  "bootstrap": {
+   "interval": "conservative-percentile-bca",
+   "replicates": 10000,
+   "seed": 20260929,
+   "unit": "document"
+  },
+  "correction": "holm-one-sided",
+  "ct_short_doubled": false,
+  "decisive_nats": 1.0,
+  "near_tie_nats": 0.001,
+  "position_bins": [
+   0,
+   1024,
+   4096,
+   16384,
+   32768
+  ]
+ },
+ "suites": {
+  "b1_sequential": true,
+  "max_tokens": 512,
+  "mcnemar_alpha": 0.05,
+  "names": [
+   "COMPSEC-17"
+  ],
+  "thinking": "off"
+ },
+ "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
+}
