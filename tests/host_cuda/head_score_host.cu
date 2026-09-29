@@ -3,6 +3,8 @@
 #else
 #include "tests/host_cuda/lm_host_cuda.cuh"
 LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
+#include "inference/kernels/dtype.cuh"
+#include "inference/kernels/mma.cuh"
 #undef LM_WARP_LANES
 #define LM_WARP_LANES LM_HOST_WARP_LANES
 #endif

@@ -4,11 +4,8 @@
 #include <stdint.h>
 
 #include "inference/kernels/dtype.cuh"
+#include "inference/kernels/mma.cuh"
 #include "include/sparkpipe/spark_score_dump.h"
-
-#ifndef LM_WARP_LANES
-#define LM_WARP_LANES 32u
-#endif
 
 #define LM_HEAD_SCORE_THREADS 256u
 #define LM_HEAD_SCORE_ROWS_PER_PASS 16u
