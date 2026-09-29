@@ -592,6 +592,29 @@ static void K3ServingDestroy(void *adapter_state)
 	free(state);
 }
 
+static SparkStatus K3ServingReleaseSlots(const SparkK3ServingState *state,
+	const SparkModelServingSubmission *submission, uint32_t *slots)
+{
+	uint32_t count = submission->active_sequence_count;
+	if ( submission->row_count != 0u ||
+		count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT ||
+		count > state->runner_config.max_active_sequence_count ||
+		(count != 0u && (submission->lanes == 0 || submission->lane_count < count)) )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for ( uint32_t lane = 0u; lane < count; ++lane )
+	{
+		uint32_t slot = submission->lanes[lane].resident_sequence_slot;
+		if ( slot >= state->runner_config.max_active_sequence_count )
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		for ( uint32_t earlier = 0u; earlier < lane; ++earlier )
+			if ( submission->lanes[earlier].resident_sequence_slot == slot )
+				return SPARK_STATUS_INVALID_ARGUMENT;
+		if ( slots != 0 )
+			slots[lane] = slot;
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus K3ServingValidateSubmission(void *adapter_state,
 	const SparkModelServingSubmission *submission)
 {
@@ -602,7 +625,7 @@ static SparkStatus K3ServingValidateSubmission(void *adapter_state,
 	{
 		if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 			return SPARK_STATUS_UNSUPPORTED;
-		return submission->row_count == 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
+		return K3ServingReleaseSlots(state, submission, 0);
 	}
 	if ( submission->row_count == 0u || submission->row_count > state->max_rows )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -641,9 +664,16 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 	{
 		SparkModelServingCompletion completion;
-		if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ||
-			submission->row_count != 0u )
+		uint32_t slots[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+		if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 			return SPARK_STATUS_INVALID_ARGUMENT;
+		status = K3ServingReleaseSlots(state, submission, slots);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		status = SparkK3StageRunnerResetSlots(&state->runner, slots,
+			submission->active_sequence_count);
+		if ( status != SPARK_STATUS_OK )
+			return status;
 		if ( state->completion_function != 0 )
 		{
 			K3ServingCompletionHeader(submission, 0u, &completion);

@@ -123,6 +123,10 @@ SparkStatus SparkK3StageRunnerSubmit(
     SparkK3StageRunner *runner,
     const SparkK3StageRunnerDispatch *dispatch);
 
+SparkStatus SparkK3StageRunnerResetSlots(
+    SparkK3StageRunner *runner,
+    const uint32_t *slots,
+    uint32_t count);
 SparkStatus SparkK3StageRunnerGetStats(
     const SparkK3StageRunner *runner,
     SparkK3StageRunnerStats *stats_out);

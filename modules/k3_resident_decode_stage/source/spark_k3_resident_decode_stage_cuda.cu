@@ -236,6 +236,29 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	return SPARK_K3_DISPATCH_OK;
 }
 
+int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
+	uint32_t tp_degree, cudaStream_t stream)
+{
+	SparkK3SlotResetSpan spans[SPARK_K3_SLOT_RESET_SPANS_MAX];
+	uint8_t *pools[SPARK_K3_SLOT_POOLS];
+	uint32_t count;
+	if ( d == 0 || d->kda_state_pool == 0 )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	count = SparkK3SlotResetSpans(d->kda_count, d->sequences, tp_degree, slot,
+		spans, SPARK_K3_SLOT_RESET_SPANS_MAX);
+	if ( count != d->kda_count * SPARK_K3_SLOT_POOLS )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	pools[SPARK_K3_SLOT_POOL_STATE] = d->kda_state_pool;
+	pools[SPARK_K3_SLOT_POOL_Q_WINDOW] = (uint8_t *)d->kda_q_window_pool;
+	pools[SPARK_K3_SLOT_POOL_K_WINDOW] = (uint8_t *)d->kda_k_window_pool;
+	pools[SPARK_K3_SLOT_POOL_V_WINDOW] = (uint8_t *)d->kda_v_window_pool;
+	for ( uint32_t i = 0u; i < count; ++i )
+		if ( cudaMemsetAsync(pools[spans[i].pool] + spans[i].offset, 0,
+				spans[i].bytes, stream) != cudaSuccess )
+			return SPARK_K3_DISPATCH_ERR_CUDA;
+	return SPARK_K3_DISPATCH_OK;
+}
+
 void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 {
 	if ( d == 0 )

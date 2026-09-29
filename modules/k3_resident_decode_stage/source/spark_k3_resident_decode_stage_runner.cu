@@ -996,6 +996,8 @@ SparkStatus SparkK3StageRunnerInitialize(
 	}
 	if ( status != SPARK_STATUS_OK )
 		{ runner->private_state = 0; delete state; return status; }
+	if ( configuration->resident_sequence_capacity > configuration->max_active_sequence_count )
+		{ fprintf(stderr, "sparkpipe_k3: resident_sequence_capacity %u exceeds the %u KDA state slots\n", configuration->resident_sequence_capacity, configuration->max_active_sequence_count); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
 	if ( SparkK3DispatchCreate(&state->dispatch,&state->module.sizing,
 		configuration->max_active_sequence_count,
 		configuration->max_input_row_count,
@@ -1623,6 +1625,29 @@ SparkStatus SparkK3StageRunnerSubmit(
 		completion.status = SPARK_STATUS_OK;
 		dispatch->completion_function(dispatch->completion_context, &completion);
 	}
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkK3StageRunnerResetSlots(
+	SparkK3StageRunner *runner,
+	const uint32_t *slots,
+	uint32_t count)
+{
+	SparkK3RunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 || (count != 0u && slots == 0) )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	state = (SparkK3RunnerState *)runner->private_state;
+	for ( uint32_t i = 0u; i < count; ++i )
+	{
+		int32_t status = SparkK3DispatchResetSlot(&state->dispatch, slots[i],
+			runner->tp_degree, state->stream);
+		if ( status == SPARK_K3_DISPATCH_ERR_ARGUMENT )
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		if ( status != SPARK_K3_DISPATCH_OK )
+			return SPARK_STATUS_IO_ERROR;
+	}
+	if ( cudaStreamSynchronize(state->stream) != cudaSuccess )
+		return SPARK_STATUS_IO_ERROR;
 	return SPARK_STATUS_OK;
 }
 
