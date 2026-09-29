@@ -314,9 +314,10 @@ after each row's own position.
 A wave never mixes attention regimes. The regime of a round is the largest of
 its rows' regimes, where a row's regime is its graph regime (split or unsplit
 attention at `decode_split_context_threshold`) plus whether its context passes
-the 2048-token DSA selection width. The batch's final round is always a wave
-of its own, so the token a prefill emits comes from the same head path (the
-certified B1 head for a single sequence) as before.
+the 2048-token DSA selection width. A prefill wave runs the certified B1 head
+once per row (`row_head_certified`), so every row's token, including the one
+the prefill emits, comes from the same head arithmetic as a one-row wave.
+Decode waves of several sequences keep the full-vocabulary head.
 
 The startup line `GLM52-PREFILL-WAVE-ROWS rows=N exact_rows=8 exact=yes|no`
 names the bound. Up to 8 rows every linear takes the skinny path and each row
@@ -348,4 +349,8 @@ oracle wave (reference tokens) must be bit-exact, an adversary wave (wrong
 draft tokens) must leave the anchor row equal and change every drafted row,
 and a one-row replay after the adversary must equal the reference. The run
 also prints FNV hashes of the reference rows before and after 2048 for a
-comparison against another build.
+comparison against another build. With a third argument `head` the rig runs
+the same walks at TP16 rank-local shapes with the final head (a synthetic
+rank-local lm_head and its certified FP8 shadow) and compares every row's
+token: prefill waves up to 8 rows and oracle verify waves must be token-exact
+against one-row waves, and an adversary wave must keep the anchor token.

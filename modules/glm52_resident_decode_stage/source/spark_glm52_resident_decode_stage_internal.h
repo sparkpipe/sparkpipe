@@ -147,6 +147,7 @@ typedef struct SparkGlm52CudaWave
 	uint32_t expert_lease_pinned;
 	uint32_t route_host_copy;
 	uint32_t projection_split;
+	uint32_t row_head_certified;
 } SparkGlm52CudaWave;
 
 #ifdef __cplusplus

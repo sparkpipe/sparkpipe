@@ -188,7 +188,6 @@ typedef struct SparkGlm52TpChain
 	uint32_t wave_rows;
 	uint32_t next_wave_row;
 	uint32_t prefill;
-	uint32_t final_round_row;
 	uint32_t stage;
 	uint32_t next_layer;
 	struct timespec lazy_synced;
@@ -1000,6 +999,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->expert_lease_pinned = state->experts_pinned;
 	wave->route_host_copy = state->lazy_pack != 0 && state->experts_pinned == 0u ? 1u : 0u;
 	wave->projection_split = state->projection_split;
+	wave->row_head_certified = chain->prefill;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
 	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
 	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
@@ -1034,25 +1034,11 @@ static uint32_t SparkGlm52RowRegime(void *context,uint32_t row)
 		(tokens > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u));
 }
 
-static uint32_t SparkGlm52FinalRoundRow(const SparkGlm52ModuleState *state,const SparkGlm52ResidentDecodeStageBatchView *batch)
-{
-	uint32_t row,count;
-	row = 0u;
-	for (;;)
-	{
-		count = SparkGlmStageRoundMajorWaveRows(state,batch,row);
-		if ( count == 0u || row + count >= batch->row_count )
-			return(row);
-		row += count;
-	}
-}
-
 static uint32_t SparkGlm52WaveRows(const SparkGlm52TpChain *chain,uint32_t first_row)
 {
 	SparkGlm52ModuleState *state = chain->state;
 	SparkStageModuleClaimedLaneContext lanes;
 	SparkGlm52WaveRegimeContext regime;
-	uint32_t row_count;
 	if ( chain->prefill == 0u || state->prefill_wave_rows == 0u )
 		return(SparkGlmStageRoundMajorWaveRows(state,chain->batch,first_row));
 	lanes.index_states = state->lane_states;
@@ -1060,8 +1046,7 @@ static uint32_t SparkGlm52WaveRows(const SparkGlm52TpChain *chain,uint32_t first
 	regime.positions = chain->slot->host_positions;
 	regime.split_threshold = state->decode_split_context_threshold;
 	regime.max_positions = state->max_sequence_positions;
-	row_count = first_row < chain->final_round_row ? chain->final_round_row : chain->batch->row_count;
-	return(SparkRowLayoutRoundSpanWaveRowCount(first_row,row_count,chain->batch->row_resident_slots,SparkStageModuleClaimedLaneOrdinal,&lanes,SparkGlm52RowRegime,&regime,state->prefill_wave_rows));
+	return(SparkRowLayoutRoundSpanWaveRowCount(first_row,chain->batch->row_count,chain->batch->row_resident_slots,SparkStageModuleClaimedLaneOrdinal,&lanes,SparkGlm52RowRegime,&regime,state->prefill_wave_rows));
 }
 
 #define SPARK_GLM52_MODULE_TP_DISABLED(state) ((state)->tp_collective_disabled != 0u)
@@ -2098,7 +2083,6 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	chain->batch = &chain->batch_copy;
 	chain->first_row = 0u;
 	chain->prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
-	chain->final_round_row = SparkGlm52FinalRoundRow(state,chain->batch);
 	chain->wave_rows = SparkGlm52WaveRows(chain,0u);
 	chain->next_wave_row = chain->wave_rows;
 	chain->stage = SPARK_GLM52_CHAIN_STAGE_BEGIN;

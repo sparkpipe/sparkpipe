@@ -338,13 +338,25 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 	error = cudaSuccess;
 	if ( wave->owns_final_head != 0u )
 	{
-		GlmLayerBuffers buffers;
-		uint32_t rank_offset;
+		GlmLayerBuffers buffers,row_buffers;
+		uint32_t rank_offset,row;
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 &&
+		if ( (wave->row_count == 1u || wave->row_head_certified != 0u) && wave->head_certified_fp8_payload != 0 &&
 			SparkGlm52T1Enabled() == 0 )
-			status = GlmHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
+		{
+			status = LM_LAUNCH_OK;
+			for (row=0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
+			{
+				row_buffers = buffers;
+				row_buffers.hidden_bf16 = buffers.hidden_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.residual_bf16 = buffers.residual_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.normed_bf16 = buffers.normed_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.output_token = buffers.output_token + row;
+				row_buffers.output_score = buffers.output_score + row;
+				status = GlmHeadCertifiedB1(&row_buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
+			}
+		}
 		else
 			status = GlmHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )

@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_glm52_graph_regime.h"
 #include "sparkpipe/spark_row_layout.h"
+#include "sparkpipe/spark_head_screen.h"
 
 #define ROWS_MAX 16u
 #define ROWS_LAYERS 2u
@@ -35,6 +36,18 @@ typedef struct RowsRig
 	uint64_t kv_bytes;
 	uint64_t index_bytes;
 	uint64_t waves;
+	uint32_t head;
+	uint32_t tp_degree;
+	uint32_t row_head_certified;
+	uint32_t wave_first;
+	SparkGlm52ValMatrix lm_head;
+	SparkGlm52ValMatrix final_norm;
+	uint8_t *certified_payload;
+	float *certified_scale;
+	float *certified_norm;
+	uint32_t *reference_tokens;
+	uint32_t *mode_tokens;
+	uint32_t *host_output;
 } RowsRig;
 
 typedef struct RowsRegimeContext
@@ -50,6 +63,37 @@ static uint32_t RowsToken(uint32_t position)
 static void *RowsAlloc(uint64_t bytes)
 {
 	return(SparkGlm52ValAllocZeroed(bytes));
+}
+
+static int RowsSetupHead(RowsRig *rig)
+{
+	SparkGlm52ExecutionSlot *slot = &rig->fixture.slot;
+	uint64_t shard_rows = SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT / rig->tp_degree;
+	uint64_t tiles = (SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT + 1023u) / 1024u;
+	if ( SparkGlm52ValAllocMatrix(&rig->lm_head,(uint32_t)shard_rows,SPARK_GLM52_VHIDDEN,0,0.02f) != 0 ||
+		SparkGlm52ValAllocMatrix(&rig->final_norm,1u,SPARK_GLM52_VHIDDEN,1,0.0f) != 0 )
+		return(1);
+	rig->certified_payload = (uint8_t *)RowsAlloc(shard_rows * SPARK_GLM52_VHIDDEN);
+	rig->certified_scale = (float *)RowsAlloc(shard_rows * (SPARK_GLM52_VHIDDEN / 32u) * sizeof(float));
+	rig->certified_norm = (float *)RowsAlloc(shard_rows * (SPARK_GLM52_VHIDDEN / 32u) * sizeof(float));
+	slot->head_candidate_score = (float *)RowsAlloc(ROWS_MAX * tiles * sizeof(float));
+	slot->head_candidate_token = (uint32_t *)RowsAlloc(ROWS_MAX * tiles * sizeof(uint32_t));
+	slot->output_token = (uint32_t *)RowsAlloc(ROWS_MAX * sizeof(uint32_t));
+	slot->output_score = (float *)RowsAlloc(ROWS_MAX * sizeof(float));
+	slot->head_certified_scratch = RowsAlloc(SparkHeadCertifiedFp8ScratchBytes(shard_rows,SPARK_GLM52_VHIDDEN));
+	slot->head_certified_candidates = (uint32_t *)RowsAlloc(SparkHeadCertifiedFp8CandidateBytes(shard_rows));
+	slot->head_screened_count = (uint32_t *)RowsAlloc(sizeof(uint32_t));
+	rig->reference_tokens = (uint32_t *)calloc(rig->positions_total,sizeof(uint32_t));
+	rig->mode_tokens = (uint32_t *)calloc(rig->positions_total,sizeof(uint32_t));
+	rig->host_output = (uint32_t *)calloc(ROWS_MAX,sizeof(uint32_t));
+	if ( rig->certified_payload == 0 || rig->certified_scale == 0 || rig->certified_norm == 0 || slot->head_candidate_score == 0 ||
+		slot->head_candidate_token == 0 || slot->output_token == 0 || slot->output_score == 0 || slot->head_certified_scratch == 0 ||
+		slot->head_certified_candidates == 0 || slot->head_screened_count == 0 || rig->reference_tokens == 0 || rig->mode_tokens == 0 || rig->host_output == 0 )
+		return(1);
+	if ( SparkGlmLaunchHeadCertifiedQuantize(rig->fixture.stream,rig->lm_head.device,rig->certified_payload,rig->certified_scale,rig->certified_norm,(uint32_t)shard_rows,SPARK_GLM52_VHIDDEN) != cudaSuccess ||
+		cudaStreamSynchronize(rig->fixture.stream) != cudaSuccess )
+		return(1);
+	return(0);
 }
 
 static int RowsSetup(RowsRig *rig,uint32_t positions_total)
@@ -133,7 +177,7 @@ static int RowsSetup(RowsRig *rig,uint32_t positions_total)
 		slot->dense_tile_prefix == 0 || slot->context_lengths == 0 || slot->token_ids == 0 || slot->resident_slots == 0 || slot->positions == 0 ||
 		slot->head_maxloc_u64 == 0 || fixture->split_partials == 0 )
 		return(1);
-	return(0);
+	return(rig->head != 0u ? RowsSetupHead(rig) : 0);
 }
 
 static void RowsWave(RowsRig *rig,uint32_t first_position,uint32_t rows,const uint32_t *tokens)
@@ -166,8 +210,17 @@ static void RowsWave(RowsRig *rig,uint32_t first_position,uint32_t rows,const ui
 	wave->host_resident_slots = rig->host_slots;
 	wave->host_positions = rig->host_positions;
 	wave->owns_embedding = 1u;
-	wave->owns_final_head = 0u;
-	wave->hidden_output_bf16 = rig->boundary;
+	wave->owns_final_head = rig->head;
+	wave->tp_degree = rig->tp_degree;
+	wave->tp_rank = 0u;
+	wave->row_head_certified = rig->row_head_certified;
+	wave->final_norm_bf16 = rig->head != 0u ? rig->final_norm.device : 0;
+	wave->lm_head_bf16 = rig->head != 0u ? rig->lm_head.device : 0;
+	wave->head_certified_fp8_payload = rig->head != 0u ? rig->certified_payload : 0;
+	wave->head_certified_fp8_scale_f32 = rig->head != 0u ? rig->certified_scale : 0;
+	wave->head_certified_fp8_norm_f32 = rig->head != 0u ? rig->certified_norm : 0;
+	rig->wave_first = first_position;
+	wave->hidden_output_bf16 = rig->head != 0u ? 0 : rig->boundary;
 	wave->boundary_row_offset = first_position;
 	wave->kv_cache = rig->kv_cache;
 	wave->kv_layer_stride_bytes = SPARK_GLM52_VKV_LAYER_BYTES;
@@ -195,8 +248,13 @@ static int RowsWalk(RowsRig *rig)
 	}
 	if ( SparkGlm52LaunchCudaWaveHead(wave) != 0 )
 		return(4);
+	if ( rig->head != 0u && (SparkGlm52LaunchHeadMaxlocUnpack(rig->fixture.stream,rig->fixture.slot.head_maxloc_u64,rig->fixture.slot.output_token,wave->row_count) != cudaSuccess ||
+		cudaMemcpyAsync(rig->host_output,rig->fixture.slot.output_token,wave->row_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,rig->fixture.stream) != cudaSuccess) )
+		return(7);
 	if ( cudaStreamSynchronize(rig->fixture.stream) != cudaSuccess )
 		return(5);
+	if ( rig->head != 0u )
+		memcpy(rig->mode_tokens + rig->wave_first,rig->host_output,wave->row_count * sizeof(uint32_t));
 	return(SparkGlm52ValCheckAccessError(&rig->fixture) != 0 ? 6 : 0);
 }
 
@@ -393,6 +451,89 @@ static int RowsVerify(RowsRig *rig,uint32_t anchor,uint32_t depth,uint32_t adver
 	return(differing == 0u ? 0 : 1);
 }
 
+static uint32_t RowsTokenDiffer(const RowsRig *rig,uint32_t first,uint32_t count,uint32_t *first_differing)
+{
+	uint32_t position,differing = 0u;
+	*first_differing = UINT32_MAX;
+	for (position=first; position<first + count && position<rig->positions_total; position++)
+		if ( rig->mode_tokens[position] != rig->reference_tokens[position] )
+		{
+			if ( *first_differing == UINT32_MAX )
+				*first_differing = position;
+			differing++;
+		}
+	return(differing);
+}
+
+static int RowsVerifyHead(RowsRig *rig,uint32_t anchor,uint32_t depth,uint32_t adversary)
+{
+	uint32_t tokens[ROWS_MAX],lane_ids[ROWS_MAX],positions[ROWS_MAX],row,first,differing;
+	SparkRowLayoutDenseLaneContext lanes;
+	RowsRegimeContext regime;
+	for (row=0u; row<depth; row++)
+	{
+		lane_ids[row] = 0u;
+		positions[row] = anchor + row;
+	}
+	lanes.lane_count = 1u;
+	regime.positions = positions;
+	depth = SparkRowLayoutRoundSpanWaveRowCount(0u,depth,lane_ids,SparkRowLayoutDenseLaneOrdinal,&lanes,RowsRegime,&regime,depth);
+	if ( depth < 2u )
+		return(0);
+	if ( cudaMemcpy(rig->kv_cache,rig->reference_kv,rig->kv_bytes,cudaMemcpyHostToDevice) != cudaSuccess ||
+		cudaMemcpy(rig->index_cache,rig->reference_index,rig->index_bytes,cudaMemcpyHostToDevice) != cudaSuccess )
+		return(300);
+	memcpy(rig->mode_tokens,rig->reference_tokens,rig->positions_total * sizeof(uint32_t));
+	for (row=0u; row<depth; row++)
+		tokens[row] = adversary != 0u && row != 0u ? (RowsToken(anchor + row) + 1u + row) % SPARK_GLM52_VALIDATION_EMBED_ROWS : RowsToken(anchor + row);
+	rig->row_head_certified = 1u;
+	RowsWave(rig,anchor,depth,tokens);
+	if ( RowsWalk(rig) != 0 )
+		return(301);
+	differing = RowsTokenDiffer(rig,anchor,adversary != 0u ? 1u : depth,&first);
+	printf("glm52_prefill_rows_parity head verify=%s anchor=%u depth=%u differing_tokens=%u first=%d %s\n",adversary != 0u ? "adversary-anchor" : "oracle",anchor,depth,differing,first == UINT32_MAX ? -1 : (int)first,differing == 0u ? "TOKEN-EXACT" : "DIFFER");
+	return(differing == 0u ? 0 : 1);
+}
+
+static int RowsHeadMain(RowsRig *rig)
+{
+	static const uint32_t widths[] = {2u,4u,8u,16u};
+	static const uint32_t anchors[] = {5u,100u,1500u,2044u,2060u,2090u};
+	uint32_t index,waves,differing,first,distinct,position;
+	int failures = 0;
+	rig->row_head_certified = 0u;
+	if ( RowsRun(rig,1u,0u,rig->reference_boundary,rig->reference_kv,rig->reference_index,&waves) != 0 )
+		return(1);
+	memcpy(rig->reference_tokens,rig->mode_tokens,rig->positions_total * sizeof(uint32_t));
+	distinct = 0u;
+	for (position=1u; position<rig->positions_total; position++)
+		distinct += rig->reference_tokens[position] != rig->reference_tokens[position - 1u] ? 1u : 0u;
+	printf("glm52_prefill_rows_parity head reference tp=%u rank-local positions=%u waves=%u certified B1 head, token changes=%u %s\n",rig->tp_degree,rig->positions_total,waves,distinct,distinct != 0u ? "NONTRIVIAL" : "FAIL");
+	failures += distinct == 0u ? 1 : 0;
+	for (index=0u; index<sizeof(widths)/sizeof(widths[0]); index++)
+	{
+		rig->row_head_certified = 1u;
+		if ( RowsRun(rig,widths[index],1u,rig->mode_boundary,rig->mode_kv,rig->mode_index,&waves) != 0 )
+			return(1);
+		differing = RowsTokenDiffer(rig,0u,rig->positions_total,&first);
+		printf("glm52_prefill_rows_parity head prefill rows<=%u row_certified=1 waves=%u differing_tokens=%u first=%d %s\n",widths[index],waves,differing,first == UINT32_MAX ? -1 : (int)first,
+			differing == 0u ? "TOKEN-EXACT" : (widths[index] > SparkGlm52ExactWaveRows() ? "DIFFER-EXPECTED" : "DIFFER"));
+		failures += widths[index] <= SparkGlm52ExactWaveRows() && differing != 0u ? 1 : 0;
+	}
+	rig->row_head_certified = 0u;
+	if ( RowsRun(rig,8u,1u,rig->mode_boundary,rig->mode_kv,rig->mode_index,&waves) != 0 )
+		return(1);
+	differing = RowsTokenDiffer(rig,0u,rig->positions_total,&first);
+	printf("glm52_prefill_rows_parity head control rows<=8 row_certified=0 (full-vocabulary head) waves=%u differing_tokens=%u first=%d (informational)\n",waves,differing,first == UINT32_MAX ? -1 : (int)first);
+	for (index=0u; index<sizeof(anchors)/sizeof(anchors[0]); index++)
+	{
+		failures += RowsVerifyHead(rig,anchors[index],ROWS_VERIFY_DEPTH,0u) != 0 ? 1 : 0;
+		failures += RowsVerifyHead(rig,anchors[index],ROWS_VERIFY_DEPTH,1u) != 0 ? 1 : 0;
+	}
+	printf("glm52_prefill_rows_parity head %s\n",failures == 0 ? "PASS" : "FAIL");
+	return(failures == 0 ? 0 : 1);
+}
+
 int main(int argc,char **argv)
 {
 	static const uint32_t widths[] = {2u,4u,8u,16u};
@@ -406,11 +547,19 @@ int main(int argc,char **argv)
 	rig = (RowsRig *)calloc(1u,sizeof(*rig));
 	if ( rig == 0 || positions_total <= SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT || positions_total > 4096u )
 		return(1);
+	rig->tp_degree = 1u;
+	if ( argc > 3 && strcmp(argv[3],"head") == 0 )
+	{
+		rig->head = 1u;
+		rig->tp_degree = 16u;
+	}
 	if ( SparkGlm52ValFixtureSetup(&rig->fixture) != 0 || RowsSetup(rig,positions_total) != 0 )
 	{
 		fprintf(stderr,"glm52_prefill_rows_parity setup failed\n");
 		return(1);
 	}
+	if ( rig->head != 0u )
+		return(RowsHeadMain(rig));
 	if ( RowsRun(rig,1u,0u,rig->reference_boundary,rig->reference_kv,rig->reference_index,&waves) != 0 )
 		return(1);
 	if ( RowsNonzero(rig) == 0u )
