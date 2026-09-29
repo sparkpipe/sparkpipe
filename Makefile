@@ -421,6 +421,7 @@ PYTHON_TESTS := \
 	tests/test_weightd_supervised.py \
 	tests/test_weightd_supervision.py \
 	tests/test_fleet_agent_multi_root.py \
+	tests/test_ab_fleet.py \
 	tests/test_spark_queue.py \
 	tests/test_multi_dev_orchestrate.py \
 	tests/test_inference_smoke.py \
