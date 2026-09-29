@@ -615,6 +615,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_expert_shard_math.py \
 	tests/test_glm5_next_pack_header_codec.py \
 	tests/test_glm5_next_expert_graft.py \
+	tests/test_exl3_expert_dequant.py \
 	tests/test_glm5_next_pack_tp_all.py \
 	tests/test_glm5_next_pack_tool_refusals.py \
 	tests/test_glm5_next_nvfp4_spine_scale.py \
