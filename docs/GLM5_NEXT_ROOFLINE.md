@@ -1535,6 +1535,62 @@ Kernel time at B1 on the idle bench (nsys node trace; shares of GPU busy
 time): BF16 skinny GEMV 36%, FP8 expert GEMV 13%, HC site 10%, head 5%,
 latent attention 5%, RMSNorm 3%. At B8 the FP8 expert GEMV is 55%.
 
+## Weight prefetch during collective waits
+
+At TP16 B1 each of the 92 all-reduce rounds leaves the rank's GPU waiting for
+its peers for about 50 us, and DRAM is idle for that time. The kernels that
+follow a round read weights that do not depend on the round:
+- after the attention round: the ffn HC site's `fn` (1.5 MiB f32) and norm,
+  then the router and shared gate/up (or the dense gate/up);
+- after the MLP round: the next layer's attn HC `fn` and norm, then KDA
+  `qkv_beta` and decay/gate down, or DSA `q_a`, index K, index gate and index
+  head.
+
+When the walk captures a decode graph, `SparkGlm5NextL2PrefetchAfterRound`
+adds one kernel node per round, `Glm5NextL2PrefetchKernel`: 48 CTAs of 256
+threads that `ld.global.cg` up to 12 MiB of those weights and discard them.
+Placement:
+- It walks back from the round's last captured node to the round's last
+  wait-value node (`CU_GRAPH_NODE_TYPE_BATCH_MEM_OP`, the peer wait), and hangs
+  the load kernel off the node before that wait. The kernel therefore starts
+  after the round's request and publish kernels, while the GPU front end waits
+  for the peers.
+- The next captured node depends on both the round and the load kernel.
+
+How it behaves:
+- `GRAPH-CAPTURE-OK` reports `l2_prefetch_rounds`.
+- Linear chains and rounds without a wait-value node get no load kernel.
+- `SPARK_GLM5_NEXT_L2_PREFETCH=0` turns it off; `1` or unset turns it on.
+  Any other value fails configuration. The module prints
+  `GLM l2 prefetch=on|off`.
+- It only runs when `tp_degree > 1`.
+- The arithmetic is unchanged, so outputs are bit identical: `ROOFLINE-HASH`
+  matches at B1 and B8.
+
+What did not work on GB10:
+- `cp.async.bulk.prefetch.L2` hints. After a hint and 60 us of idle, an
+  8 MiB read still took 27.5-30.6 us against 35.6 us cold. Data brought in
+  by real loads reads in 8.2 us.
+- Forking the load kernel on a side stream before the round. The wide load
+  kernel delayed the round's own small kernels. A second pre-wait kernel
+  started a median 23.6 us late, and in production that would delay this
+  rank's publish for every peer.
+
+The bench emulates a round with `--round-spin-us N --round-wait 2`: two
+one-thread kernels, then a wait-value node that a host thread releases N us
+after the first kernel ran. That is the shape of the hardware-wait round.
+
+| B | wait per round | off | on |
+|---|---:|---:|---:|
+| 1 | 40 us | 16.904 ms | 14.992 ms |
+| 1 | 50 us | 17.843 ms | 15.383 ms |
+| 8 | 50 us | 36.631 ms | 35.211 ms |
+
+On the fleet this predicts about 1.9-2.5 ms less per B1 token, if production
+rounds keep DRAM idle for 40-50 us. That prediction is for a fleet window to
+test.
+Results are in `qualification/glm5next/performance/glmflash_b1_20260929/`.
+
 ## Next steps
 
 Collective latency sets most of the B1 gap (see "Where it stands"). The

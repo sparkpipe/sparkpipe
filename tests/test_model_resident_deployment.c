@@ -4,6 +4,8 @@
 #include <unistd.h>
 
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_tokenizer_sidecar.h"
 
 static void TestBuildDescriptor(
 	SparkModelServingAdapterDescriptor *descriptor)
@@ -140,6 +142,36 @@ static void TestSequencePositions(void)
 	SparkModelResidentDeploymentDestroy(&deployment);
 }
 
+static void TestGlm5NextDeploymentServesText(void)
+{
+	SparkModelResidentDeployment deployment;
+	SparkTokenizerSidecarConfiguration configuration;
+	SparkTokenizerSidecar sidecar;
+	char actual_sha256[SPARK_SHA256_HEX_BYTES];
+	const char *asset = "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json";
+	uint32_t index;
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad("deployment/glm5_next_tp16/model_resident.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.tokenizer_asset_path != 0);
+	assert(strcmp(deployment.tokenizer_asset_path,"tokenizer/tokenizer.json") == 0);
+	assert(deployment.tokenizer_asset_sha256 != 0);
+	assert(SparkSha256File(asset,actual_sha256) == SPARK_STATUS_OK);
+	assert(strcmp(actual_sha256,deployment.tokenizer_asset_sha256) == 0);
+	SparkTokenizerSidecarReset(&sidecar);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_TOKENIZER_SIDECAR_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_TOKENIZER_SIDECAR_CONFIGURATION_DESCRIPTOR_BYTES;
+	configuration.asset_path = asset;
+	configuration.format = SPARK_TOKENIZER_SIDECAR_FORMAT_AUTO;
+	assert(SparkTokenizerSidecarLoad(&sidecar,&configuration) == SPARK_STATUS_OK);
+	assert((uint64_t)sidecar.tokenizer.maximum_token_id + 1u == deployment.tokenizer_vocabulary_size);
+	assert(deployment.eos_token_count != 0u);
+	for (index=0u; index<deployment.eos_token_count; index++)
+		assert(deployment.eos_token_ids[index] < deployment.tokenizer_vocabulary_size);
+	SparkTokenizerSidecarUnload(&sidecar);
+	SparkModelResidentDeploymentDestroy(&deployment);
+}
+
 int main(int argc,char **argv)
 {
 	SparkModelResidentDeployment deployment;
@@ -173,6 +205,7 @@ int main(int argc,char **argv)
 	TestPrefixReuse("\"prefix_reuse\":false,",SPARK_STATUS_OK,1u);
 	TestPrefixReuse("\"prefix_reuse\":0,",SPARK_STATUS_SCHEMA_ERROR,0u);
 	TestSequencePositions();
+	TestGlm5NextDeploymentServesText();
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.node_count == 3u);

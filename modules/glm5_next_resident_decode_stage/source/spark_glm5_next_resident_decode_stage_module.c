@@ -353,6 +353,8 @@ struct SparkGlm5NextModuleState
 	uint32_t wave_attempt_retries;
 	uint32_t wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_REASONS];
 	uint32_t graph_path_requested;
+	uint32_t l2_prefetch;
+	uint64_t l2_prefetch_rounds;
 	uint32_t verify_rows_max;
 	uint32_t verify_drafter;
 	const char *verify_drafter_path;
@@ -415,7 +417,7 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( SparkGlm5NextResidentDecodeStageSpanIsValid(context->stage_count,context->stage_index,context->first_layer_index,context->layer_count) == 0u || context->layer_count > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE || context->expert_weight_codec != GLM5_NEXT_EXPERT_WEIGHT_CODEC || context->resident_sequence_capacity == 0u || context->resident_sequence_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || context->pipeline_slot_count == 0u || context->pipeline_slot_count > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT || context->max_sequence_positions == 0u || context->max_sequence_positions > SPARK_GLM5_NEXT_MODEL_MAXIMUM_CONTEXT_TOKENS || context->execution_row_capacity == 0u || context->execution_row_capacity > SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || context->execution_row_capacity > SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS || context->decode_split_context_threshold > context->max_sequence_positions || context->tp_degree == 0u || context->tp_rank >= context->tp_degree || (context->flags & ~SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KNOWN_FLAGS) != 0u || context->stage_pack_path == 0 || context->stage_pack_path[0] == '\0' || context->model_revision == 0 || context->model_revision[0] == '\0' || strlen(context->model_revision) >= sizeof(state->model_revision) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u || context->expert_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
+	if ( SparkWeightCodecIsKnown(context->expert_weight_codec) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( (context->flags & SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_MTP) != 0u && (context->stage_index + 1u) != context->stage_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -644,7 +646,7 @@ static SparkStatus SparkGlm5NextAllocateBytes(
 
 #include "sparkpipe/family/module/spark_module_glm5_next_laguna.h"
 
-#include "sparkpipe/family/module/spark_module_manifest_check_fp8.h"
+#include "sparkpipe/family/module/spark_module_manifest_check.h"
 
 static SparkStatus SparkGlm5NextPinAllExperts(SparkGlm5NextModuleState *state);
 
@@ -3521,6 +3523,22 @@ static SparkStatus SparkGlm5NextGraphReduceHead(SparkGlm5NextTpChain *chain)
 		&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64));
 }
 
+static uint32_t SparkGlm5NextWalkReduce(SparkGlm5NextTpChain *chain,void *device,uint32_t hc_wide,uint32_t layer,uint32_t site)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextCudaWave *wave = &chain->wave;
+	uint32_t placed = 0u;
+	if ( SparkGlm5NextGraphReduce(chain,device,hc_wide) != SPARK_STATUS_OK )
+		return(1u);
+	if ( state->l2_prefetch != 0u && wave->tp_degree > 1u )
+	{
+		if ( SparkGlm5NextL2PrefetchAfterRound(wave,layer,site,&placed) != 0 )
+			return(20u + site);
+		state->l2_prefetch_rounds += placed;
+	}
+	return(0u);
+}
+
 static SparkStatus SparkGlm5NextMtpReduceRowsOp(void *context,uint16_t *rows_bf16,uint32_t row_count,uint32_t width)
 {
 	SparkGlm5NextTpChain *chain = (SparkGlm5NextTpChain *)context;
@@ -3657,6 +3675,7 @@ static SparkStatus SparkGlm5NextMtpDraftTokens(void *context,const SparkSpeculat
 
 static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t layer)
 {
+	uint32_t reduce;
 	SparkGlm5NextModuleState *state = chain->state;
 	SparkGlm5NextCudaWave *wave = &chain->wave;
 	uint32_t gather_sequences = SparkGlm5NextLayerIndexGatherSequences(wave,layer);
@@ -3664,8 +3683,9 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 		return(15u);
 	if ( gather_sequences == 0u && SparkGlm5NextLaunchCudaLayerAttention(wave,layer) != 0 )
 		return(4u);
-	if ( SparkGlm5NextGraphReduce(chain,wave->slot->attention_out_bf16,0u) != SPARK_STATUS_OK )
-		return(5u);
+	reduce = SparkGlm5NextWalkReduce(chain,wave->slot->attention_out_bf16,0u,layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE);
+	if ( reduce != 0u )
+		return(reduce == 1u ? 5u : reduce);
 	if ( SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer) != 0 )
 		return(6u);
 	if ( (wave->first_layer_index + layer) >= SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER )
@@ -3677,8 +3697,9 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 	}
 	else if ( SparkGlm5NextLaunchCudaLayerMlp(wave,layer) != 0 )
 		return(9u);
-	if ( SparkGlm5NextGraphReduce(chain,wave->slot->attention_out_bf16,0u) != SPARK_STATUS_OK )
-		return(10u);
+	reduce = SparkGlm5NextWalkReduce(chain,wave->slot->attention_out_bf16,0u,layer,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE);
+	if ( reduce != 0u )
+		return(reduce == 1u ? 10u : reduce);
 	if ( SparkGlm5NextLaunchCudaLayerMlpPost(wave,layer) != 0 )
 		return(11u);
 	if ( state->graph_record_limit != 0u && (state->graph_record_ops += 2u) >= state->graph_record_limit )
@@ -3699,8 +3720,9 @@ static uint32_t SparkGlm5NextWalkChain(SparkGlm5NextTpChain *chain,uint32_t *lay
 		return(2u);
 	if ( wave->expert_cover != 0 && SparkGlm5NextWsSnapshot(wave,0u) != cudaSuccess )
 		return(18u);
-	if ( SparkGlm5NextGraphReduce(chain,wave->slot->hidden_bf16,1u) != SPARK_STATUS_OK )
-		return(3u);
+	site = SparkGlm5NextWalkReduce(chain,wave->slot->hidden_bf16,1u,0u,SPARK_GLM5_NEXT_L2_SITE_BEGIN);
+	if ( site != 0u )
+		return(site == 1u ? 3u : site);
 	for (layer=0u; layer<wave->layer_count && state->graph_record_stop == 0u; layer++)
 	{
 		*layer_out = layer;
@@ -4307,6 +4329,7 @@ static SparkStatus SparkGlm5NextGraphCaptureRows(SparkGlm5NextTpChain *chain,uin
 		fprintf(stderr,"GRAPH-ARM-FAILED slot=%u rows=%u\n",chain->slot_index,index + 1u);
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	}
+	state->l2_prefetch_rounds = 0u;
 	SparkGlm5NextGraphRecord(chain,&exec);
 	SparkGlm5NextGraphDisarm(state);
 	if ( exec == 0 )
@@ -4317,7 +4340,7 @@ static SparkStatus SparkGlm5NextGraphCaptureRows(SparkGlm5NextTpChain *chain,uin
 	}
 	slot->graph_exec_rows[regime][index] = exec;
 	slot->graph_bound_rows[regime][index] = bound;
-	fprintf(stderr,"GRAPH-CAPTURE-OK rows=%u regime=%u bound=%u\n",index + 1u,regime,bound);
+	fprintf(stderr,"GRAPH-CAPTURE-OK rows=%u regime=%u bound=%u l2_prefetch_rounds=%llu\n",index + 1u,regime,bound,(unsigned long long)state->l2_prefetch_rounds);
 	return(SPARK_STATUS_OK);
 }
 
@@ -6519,6 +6542,16 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 			fprintf(stderr,"SPARK_GLM5_NEXT_PREFETCH is unsupported; warm the daemon with sparkpipe_weightd_warm before serving\n");
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		}
+	}
+	{
+		const char *l2_env = getenv("SPARK_GLM5_NEXT_L2_PREFETCH");
+		if ( l2_env != 0 && strcmp(l2_env,"0") != 0 && strcmp(l2_env,"1") != 0 )
+		{
+			fprintf(stderr,"SPARK_GLM5_NEXT_L2_PREFETCH must be 0 or 1\n");
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		state->l2_prefetch = l2_env != 0 && strcmp(l2_env,"0") == 0 ? 0u : 1u;
+		fprintf(stderr,"GLM l2 prefetch=%s\n",state->l2_prefetch != 0u ? "on" : "off");
 	}
 	{
 		const char *graph_env = getenv("SPARK_GLM5_NEXT_GRAPH_PATH");

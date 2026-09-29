@@ -92,8 +92,14 @@ The lazy settings are:
 | `SPARK_WEIGHTD_ATTACH` | `0` with a socket fails with `INVALID_ARGUMENT`. `1` without a socket fails the same way. |
 
 GLM supplies its module identity, pack revision and TP degree. Lazy MTP fails
-with `UNSUPPORTED`. The manifest check (`spark_module_manifest_check_fp8.h`)
-accepts only FP8 expert payloads. Attach retries once per second for up to
+with `UNSUPPORTED`. The manifest check (`spark_module_manifest_check.h`)
+accepts every expert codec whose planes the `.experts` manifest covers exactly
+once per expert, as laid out by `include/sparkpipe/spark_expert_planes.h`:
+BF16 has a payload plane only; FP8, INT and MXFP4 have a payload plane and a
+contiguous per-expert scale slice (kind `tensor_kind * 2 + plane`); NVFP4 has
+a payload plane, block scales at `scale_offset + E*4 + e*per` (kind
+`tensor_kind * 2 + 1`) and the f32 global at `scale_offset + e*4` (kind
+`0x10000 + tensor_kind`). Attach retries once per second for up to
 600 attempts. It logs `LAZY-ATTACH-RETRY` while the attach fails, and
 `LAZY-ATTACH-MESH-PENDING` while a TP rank's mesh send buffer is not yet
 published.

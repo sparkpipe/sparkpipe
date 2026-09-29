@@ -197,6 +197,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('P')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('Q')); }
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave) { (void)wave;return(walk_note('H')); }
+int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,uint32_t *placed) { (void)wave;(void)local_layer;(void)site;*placed = 0u;return(0); }
 static uint32_t UNPACK_COUNT,UNPACK_ROWS = 2u,ENQUEUE_ROWS = 2u,ENQUEUE_SEQUENCES = 2u;
 
 static uint32_t SNAPSHOT_SAVES,SNAPSHOT_RESTORES,POISON_LAUNCHES,POISON_PENDING,WS_PLAN[16],WS_PLAN_KEY;

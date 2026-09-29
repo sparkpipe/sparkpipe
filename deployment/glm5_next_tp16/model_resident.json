@@ -271,5 +271,10 @@
     "port": 19575
    }
   }
- ]
+ ],
+ "tokenizer": {
+  "path": "tokenizer/tokenizer.json",
+  "sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+  "vocabulary_size": 154856
+ }
 }

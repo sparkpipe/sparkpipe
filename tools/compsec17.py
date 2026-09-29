@@ -44,6 +44,7 @@ import hashlib
 import json
 import sys
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -122,9 +123,30 @@ def call(endpoint: str, prompt: str, max_tokens: int, temperature: float,
         endpoint.rstrip("/") + "/v1/completions", data=body,
         headers={"Content-Type": "application/json"}, method="POST")
     t0 = time.monotonic()
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError as error:
+        with error:
+            detail = error.read().decode("utf-8", "replace")
+        raise RunError(f"HTTP {error.code} from {req.full_url}: {detail}") from error
     return {"elapsed_s": time.monotonic() - t0, "payload": payload}
+
+
+def require_text_endpoint(endpoint: str, timeout: int = 30) -> dict:
+    url = endpoint.rstrip("/") + "/health"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            health = json.loads(resp.read())
+    except (OSError, ValueError) as error:
+        raise RunError(f"{url}: {error}") from error
+    if not isinstance(health, dict) or health.get("tokenizer") is not True:
+        reported = health.get("tokenizer") if isinstance(health, dict) else health
+        raise RunError(f"{url} reports tokenizer={reported!r}: the API has no tokenizer sidecar, "
+                       "so every text prompt is answered HTTP 400 tokenizer_unavailable; start it "
+                       "from a deployment whose \"tokenizer\" block names the asset staged under "
+                       "its runtime root")
+    return health
 
 
 def grade(text: str, answer: str) -> tuple:
@@ -239,14 +261,24 @@ def run(args, prompt_builder, chat_template: str, decode, decode_output) -> int:
         return 2
     cases.sort(key=lambda c: c["id"])
 
+    try:
+        require_text_endpoint(args.endpoint, args.timeout)
+    except RunError as error:
+        print(f"FATAL: {error}", file=sys.stderr)
+        return 2
+
     out = Path(args.out)
     (out / "responses").mkdir(parents=True, exist_ok=True)
 
     prompts = [prompt_builder(decode(c["prompt_token_ids"]), args.thinking) for c in cases]
     started = time.monotonic()
-    with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
-        replies = list(pool.map(lambda p: call(args.endpoint, p, args.max_tokens,
-                                               args.temperature, args.timeout), prompts))
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
+            replies = list(pool.map(lambda p: call(args.endpoint, p, args.max_tokens,
+                                                   args.temperature, args.timeout), prompts))
+    except RunError as error:
+        print(f"FATAL: {error}", file=sys.stderr)
+        return 2
     wall_s = time.monotonic() - started
 
     results = []
