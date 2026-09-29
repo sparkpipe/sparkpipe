@@ -508,10 +508,10 @@ static void check_graph_epoch_ownership(void)
 	assert(SparkGlm5NextGraphResult(&chain,SPARK_STATUS_UNSUPPORTED) == 0u && atomic_load(&state.terminal_status) == SPARK_STATUS_OK);
 	assert(SparkGlm5NextGraphResult(&chain,SPARK_STATUS_INTERNAL_ERROR) == 1u && atomic_load(&state.terminal_status) == SPARK_STATUS_INTERNAL_ERROR);
 	atomic_store(&state.terminal_status,SPARK_STATUS_OK);
-	GRAPH_ERROR = 7u;
+	GRAPH_ERROR = 7u;state.tp_device_collective_initialized = 1u;
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_INTERNAL_ERROR && position == 7u);
-	GRAPH_ERROR = 0u;
+	GRAPH_ERROR = 0u;state.tp_device_collective_initialized = 0u;
 	state.lane_client = (SparkWeightdClient *)(uintptr_t)1u;HEALTH_DEAD_MASK = 1u;
 	SparkGlm5NextGraphStep(&chain,&status);
 	assert(status == SPARK_STATUS_IO_ERROR && position == 7u && GRAPH_LAUNCHES == 6u);
