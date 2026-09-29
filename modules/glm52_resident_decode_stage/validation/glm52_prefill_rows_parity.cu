@@ -151,7 +151,7 @@ static void RowsWave(RowsRig *rig,uint32_t first_position,uint32_t rows,const ui
 	for (layer=0u; layer<ROWS_LAYERS; layer++)
 	{
 		rig->layers[layer] = fixture->weights;
-		rig->ordinals[layer] = GlmLayerHasFullIndexer(ROWS_FIRST_LAYER + layer) != 0u ? 0u : UINT32_MAX;
+		rig->ordinals[layer] = 0u;
 	}
 	wave->first_layer_index = ROWS_FIRST_LAYER;
 	wave->layer_count = ROWS_LAYERS;
