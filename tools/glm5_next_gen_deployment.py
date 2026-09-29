@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -41,6 +42,9 @@ PACK_TEMPLATE = os.environ.get(
     "GLM5_NEXT_PACK_TEMPLATE",
     "packs/" + ROOT_NAME + ".rank%x.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TOKENIZER_ASSET = REPO_ROOT / "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json"
+TOKENIZER_RUNTIME_PATH = "tokenizer/tokenizer.json"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 
 TP_COLLECTIVE = {
@@ -123,8 +127,25 @@ def stage_config(rank: int) -> dict:
     }
 
 
+def tokenizer_block(eos_token_ids: list) -> dict:
+    data = TOKENIZER_ASSET.read_bytes()
+    document = json.loads(data)
+    ids = list(document["model"]["vocab"].values())
+    ids += [token["id"] for token in document.get("added_tokens", [])]
+    vocabulary_size = max(ids) + 1
+    outside = [token for token in eos_token_ids if token >= vocabulary_size]
+    if outside:
+        raise SystemExit(f"{TOKENIZER_ASSET}: eos_token_ids {outside} are outside "
+                         f"the tokenizer vocabulary of {vocabulary_size}")
+    return {
+        "path": TOKENIZER_RUNTIME_PATH,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "vocabulary_size": vocabulary_size,
+    }
+
+
 def resident_deployment() -> dict:
-    contract = json.loads((Path(__file__).resolve().parents[1] / "model_contracts/glm53_flash_authoritative.json").read_text())
+    contract = json.loads((REPO_ROOT / "model_contracts/glm53_flash_authoritative.json").read_text())
     # Single source of truth: every dependent constant derives from the
     # seed via tools/spark_serving_profile.py (#1210 drift law). The old
     # hand-pinned literals are gone; GLM5_NEXT_SEQUENCES is the seed.
@@ -176,6 +197,7 @@ def resident_deployment() -> dict:
         },
         "runtime_limits": derived_runtime_limits,
         "nodes": nodes,
+        "tokenizer": tokenizer_block(contract["tokens"]["eos_token_ids"]),
     }
 
 

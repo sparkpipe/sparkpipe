@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-import argparse, json, os, statistics, sys, time, urllib.request
+import argparse, json, os, statistics, sys, time, urllib.error, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import compsec17
 
 HOME = Path.home()
 LOG = HOME / "g53-api-channel" / "api.log"
@@ -23,9 +26,18 @@ def post(body, timeout=900):
     req = urllib.request.Request(EP, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     t0 = time.monotonic()
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        p = json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            p = json.loads(r.read())
+    except urllib.error.HTTPError as error:
+        with error:
+            detail = error.read().decode("utf-8", "replace")
+        raise compsec17.RunError(f"HTTP {error.code} from {EP}: {detail}") from error
     return time.monotonic() - t0, p
+
+
+def endpoint_base():
+    return EP.rsplit("/v1/", 1)[0]
 
 
 def log_offset():
@@ -129,6 +141,7 @@ def ttft(args):
 
 
 def conc(args):
+    compsec17.require_text_endpoint(endpoint_base())
     tk = tokenizer()
     fx = json.loads(FIX.read_text())
     cases = sorted([c for c in fx["cases"] if c["id"] in [f"compsec-{i:03d}" for i in range(76, 93)]],
@@ -176,7 +189,11 @@ def main():
     ap.add_argument("--conc-tokens", type=int, default=128)
     ap.add_argument("--warm", action="store_true")
     a = ap.parse_args()
-    r = {"b1": b1, "ttft": ttft, "conc": conc}[a.mode](a)
+    try:
+        r = {"b1": b1, "ttft": ttft, "conc": conc}[a.mode](a)
+    except compsec17.RunError as error:
+        print(f"FATAL: {error}", file=sys.stderr)
+        return 2
     r["generated_at"] = time.strftime("%FT%TZ", time.gmtime())
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(r, indent=1))
