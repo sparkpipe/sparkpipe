@@ -287,6 +287,7 @@ typedef struct SparkK3RunnerState
 	SparkK3RunnerTpContext *tp_context_free_head;
 	SparkK3RunnerTpContext tp_context_pool[K3_RUNNER_TP_CONTEXT_POOL_DEPTH];
 	uint32_t tp_context_overflow;
+	uint32_t tp_collective_failed;
 	uint32_t rows;
 	uint32_t logical_sequence_count;
 	const uint16_t *embed_weight;
@@ -618,11 +619,13 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			submission.local_device = state->fused_device;
 			submission.full_device = state->fused_device;
 			submission.cuda_stream = stream;
-			submission.completion_function = K3RunnerTpCompletion;
-			submission.completion_context = completion_context;
-			SparkTpDeviceCollectiveEnqueue(&state->device_collective_wide,
+			submission.completion_function = K3RunnerEmbedCompletion;
+			submission.completion_context = 0;
+			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective_wide,
 				&submission,
-				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+				state->tp_collective_failed = 1u;
+			K3RunnerTpCompletion(completion_context, 0);
 			return;
 		}
 		if ( state->collective_created != 0 )
@@ -682,11 +685,13 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 				submission.local_device = segment;
 				submission.full_device = segment;
 				submission.cuda_stream = stream;
-				submission.completion_function = K3RunnerTpCompletion;
-				submission.completion_context = completion_context;
-				SparkTpDeviceCollectiveEnqueue(&state->device_collective,
+				submission.completion_function = K3RunnerEmbedCompletion;
+				submission.completion_context = 0;
+				if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
 					&submission,
-					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+					state->tp_collective_failed = 1u;
+				K3RunnerTpCompletion(completion_context, 0);
 			}
 		}
 		return;
@@ -1589,6 +1594,12 @@ SparkStatus SparkK3StageRunnerSubmit(
 			cudaMemcpy(dispatch->residual_bank_output, b->attnres_bank_bf16,
 				(uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, cudaMemcpyDefault);
 		}
+	}
+	if ( state->tp_collective_failed != 0u )
+	{
+		state->tp_collective_failed = 0u;
+		fprintf(stderr, "sparkpipe_k3: device collective enqueue failed\n");
+		return SPARK_STATUS_INTERNAL_ERROR;
 	}
 	if ( state->tp_context_overflow != 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
