@@ -112,3 +112,29 @@ static inline SparkStatus SparkExpertPlaneCovered(const SparkWeightdManifest *ma
 	}
 	return(SPARK_STATUS_OK);
 }
+
+static inline SparkStatus SparkExpertPlanesCovered(
+	const SparkWeightdManifest *manifest,
+	uint32_t tensor_kind,
+	uint32_t layer,
+	uint32_t codec,
+	uint32_t scale_encoding,
+	uint32_t group_count,
+	uint64_t payload_offset,
+	uint64_t payload_bytes,
+	uint64_t scale_offset,
+	uint64_t scale_bytes,
+	uint64_t *covered)
+{
+	SparkExpertPlanes planes;
+	SparkStatus status;
+	uint32_t plane;
+	status = SparkExpertPlanesDescribe(tensor_kind,codec,scale_encoding,group_count,payload_offset,payload_bytes,scale_offset,scale_bytes,&planes);
+	for (plane=0u; status == SPARK_STATUS_OK && plane<planes.count; plane++)
+	{
+		status = SparkExpertPlaneCovered(manifest,layer,group_count,&planes.planes[plane]);
+		if ( status == SPARK_STATUS_OK )
+			*covered += group_count;
+	}
+	return(status);
+}

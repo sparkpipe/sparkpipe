@@ -5,6 +5,7 @@
 #include "sparkpipe/spark_weightd_manifest.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "../modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h"
@@ -165,30 +166,62 @@ static int32_t manifest_publish(FILE *pack,const SparkGlm5NextStagePackHeader *h
 	return(err);
 }
 
+static int32_t manifest_check(FILE *pack,const SparkGlm5NextStagePackHeader *header,const char *path)
+{
+	SparkGlm5NextStagePackEntry entry;
+	SparkWeightdManifest manifest;
+	uint64_t covered = 0u;
+	uint32_t i,entries = 0u;
+	int32_t err = 0;
+	if ( SparkWeightdManifestLoad(path,header->file_bytes,&manifest) != SPARK_STATUS_OK )
+		return(-27);
+	for (i=0u; err == 0 && i<header->tensor_count; i++)
+	{
+		if ( fseeko(pack,(off_t)(header->directory_offset + ((uint64_t)i * sizeof(entry))),SEEK_SET) != 0 || fread(&entry,1u,sizeof(entry),pack) != sizeof(entry) )
+			err = -9;
+		else if ( entry.tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry.tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
+		{
+			entries++;
+			if ( SparkExpertPlanesCovered(&manifest,entry.tensor_kind,entry.layer_index,entry.weight_codec,entry.scale_encoding,entry.group_count,entry.payload_offset,entry.payload_bytes,entry.scale_offset,entry.scale_bytes,&covered) != SPARK_STATUS_OK )
+				err = -28;
+		}
+	}
+	if ( err == 0 && (entries == 0u || covered != manifest.range_count) )
+		err = -29;
+	if ( err == 0 )
+		printf("checked %s ranges=%u expert_entries=%u header_expert_codec=%u\n",path,manifest.range_count,entries,header->expert_weight_codec);
+	SparkWeightdManifestDestroy(&manifest);
+	return(err);
+}
+
 int main(int argc,char **argv)
 {
 	SparkGlm5NextStagePackHeader header;
 	FILE *pack;
 	char path[4096];
+	const char *pack_path;
+	uint32_t check;
 	int32_t err,written;
-	if ( argc != 2 )
+	check = argc == 3 && strcmp(argv[1],"--check") == 0 ? 1u : 0u;
+	if ( argc != 2 && check == 0u )
 	{
-		fprintf(stderr,"usage: %s <verified-separate-plane-pack.sp>\n",argv[0]);
+		fprintf(stderr,"usage: %s [--check] <verified-separate-plane-pack.sp>\n",argv[0]);
 		return(2);
 	}
-	written = snprintf(path,sizeof(path),"%s.experts",argv[1]);
+	pack_path = argv[argc - 1];
+	written = snprintf(path,sizeof(path),"%s.experts",pack_path);
 	if ( written < 0 || (uint32_t)written >= sizeof(path) )
 		return(3);
-	pack = fopen(argv[1],"rb");
+	pack = fopen(pack_path,"rb");
 	if ( pack == 0 )
 		return(4);
 	err = header_read(pack,&header);
 	if ( err == 0 )
-		err = manifest_publish(pack,&header,path);
+		err = check != 0u ? manifest_check(pack,&header,path) : manifest_publish(pack,&header,path);
 	fclose(pack);
 	if ( err < 0 )
-		fprintf(stderr,"expert manifest failed: error=%d (separate-plane expert packs only; existing output is preserved)\n",err);
-	else
+		fprintf(stderr,"expert manifest %s: error=%d (separate-plane expert packs only; existing output is preserved)\n",check != 0u ? "check failed" : "failed",err);
+	else if ( check == 0u )
 		printf("published %s version=2\n",path);
 	return(err < 0 ? 1 : 0);
 }

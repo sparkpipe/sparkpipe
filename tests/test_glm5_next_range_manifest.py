@@ -38,6 +38,8 @@ def planes_per_expert(binary, root, data):
     path.write_bytes(data)
     subprocess.run([str(binary), str(path)], check=True, capture_output=True)
     records = records_of(output.read_bytes())
+    checked = subprocess.run([str(binary), "--check", str(path)], capture_output=True, text=True)
+    assert checked.returncode == 0, checked
     output.unlink()
     result = {}
     for layer, expert, kind, zero, offset, size, _ in records:
@@ -99,6 +101,14 @@ def main():
             ranges = {r[2]: (r[4], r[5]) for r in records if r[1] == expert}
             assert ranges == {44: (768 + expert * 32, 32), 45: (832 + expert * 8, 8),
                               46: (1024 + expert * 32, 32), 47: (1088 + expert * 8, 8)}
+        checked = subprocess.run([str(binary), "--check", str(path)], capture_output=True, text=True)
+        assert checked.returncode == 0 and checked.stdout.startswith("checked "), checked
+        tampered = bytearray(original)
+        struct.pack_into("<I", tampered, 16 + 1 * 48 + 8, 999)
+        output.write_bytes(tampered)
+        checked = subprocess.run([str(binary), "--check", str(path)], capture_output=True, text=True)
+        assert checked.returncode == 1 and "error=-28" in checked.stderr, checked
+        output.write_bytes(original)
         rejected(binary, path, -22)
         assert output.read_bytes() == original
         output.unlink()
