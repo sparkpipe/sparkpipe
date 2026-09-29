@@ -127,6 +127,34 @@ TP16 firmwares (12089 13 758 8584, "Paris. In French"). The fixture says
 `qualification/t1_reference/glm53flash` (glm53flash engine, current
 decoder, header `model-families/glm5_next/include/sparkpipe/llm_defines.h`).
 
+### DSA latent cache (2026-09-29)
+
+`dsa_attention` in `tools/t1_reference_glm53flash.py` and
+`tools/t1_reference_glm5_next.py` appended bf16-rounded float32 latent
+rows to the cache and read them back through `bf16_to_f32`, which decodes
+uint16 codes. A float cast to uint32 and shifted is 0 or a denormal, so
+every cached row decoded to ~0 and all DSA layers returned ~0 attention at
+every position, position 0 included. The caches now hold bf16 codes, and
+`bf16_to_f32` refuses any input that is not uint16, so a float passed as
+codes fails loud in every engine. `tests/test_t1_reference_dsa_cache.py`
+checks both engines bitwise against a hand-computed latent attention over
+four positions and fails on the old code.
+
+Affected fixtures: `glm53flash` (#1363, 2026-09-29T07:59Z), regenerated
+with the fixed engine; `glm5_next` (2026-09-14), which stays quarantined.
+`tests/test_t1_reference_quarantine.py` requires every glm53flash or
+glm5_next manifest older than the fix (`DSA_CACHE_FIX_UTC`) to be
+quarantined with a reason naming the DSA latent cache. No other engine
+had the pattern: every other attention cache reads back the representation
+it stored (codes in ling, glm53full, gemma4, laguna, muse, minimax and
+qwen4_flash; floats in k3, mimo26, qwen38_27b and qwen38_max).
+
+The guard also caught the qwen38_27b synthetic test writing `A_log` and
+`dt_bias` as F32. The engine decodes them as bf16, and the real
+checkpoints (qwen3.8-27b-fp8, qwen3.8-max, qwen3.8-flash-next-fp8) store
+them and every norm weight the engines decode as BF16, so the test now
+writes BF16. The committed qwen38_27b fixtures are unaffected.
+
 ## Position-0 anchor
 
 For families with a committed checkpoint layer oracle, the generator's

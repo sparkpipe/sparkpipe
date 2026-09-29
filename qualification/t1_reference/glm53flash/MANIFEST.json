@@ -15,15 +15,15 @@
   "family": "glm53flash",
   "fixtures": {
     "capital_of_france.t1r": {
-      "bytes": 1120493,
-      "sha256": "1de62351783b5e1f1ec4c2743d06d2df2d362df6c7801b76f0f37464cbbac8ac"
+      "bytes": 1120594,
+      "sha256": "0bfed3f592f1a12fb239c19359d22df5293159f760ef0099c74a40506da9e33a"
     },
     "count_up.t1r": {
-      "bytes": 1493452,
-      "sha256": "f353838ec5d0f61468432178f5abbec70dd6d6ddad7a8936fc7b9a145f81c098"
+      "bytes": 1494425,
+      "sha256": "20e954b39a3952df2e2429c0ebddc23ee2ea0af94053f89d81752b43044e98ec"
     }
   },
-  "generated_utc": "2026-09-29T07:59:29Z",
+  "generated_utc": "2026-09-29T15:11:58Z",
   "generator": "t1_reference_decoder.py",
   "host": "spark6",
   "llm_defines_sha256": "6121fa6c8ef3f817654f0be02ff4b9ad83550897316302148452984538dcdc18",

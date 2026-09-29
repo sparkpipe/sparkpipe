@@ -11,7 +11,7 @@
     {
       "id": "kimi_k3_mxfp4_experts_bf16_rest",
       "model_family": "k3",
-      "model_id": "moonshotai/Kimi-K3-MXFP4",
+      "model_id": "moonshotai/Kimi-K3",
       "contract": "model_contracts/k3_authoritative.json",
       "routed_expert_weight_format": "mxfp4_e2m1",
       "routed_expert_activation_format": "bf16",

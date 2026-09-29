@@ -360,11 +360,11 @@ class Glm53FlashEngine:
             kv_raw[:self.latent],
             self.tensor(prefix + "self_attn.kv_a_layernorm.weight"),
             self.eps))
-        cache.append(slot)
+        cache.append(f32_to_bf16_u16(slot))
         kvb = self.raw(prefix + "self_attn.kv_b_proj.weight")
         if kvb.dtype != np.uint16:
             raise ValueError("reference kv_b_proj must be BF16")
-        slots = np.stack([bf16_to_f32(row) for row in cache])
+        slots = bf16_to_f32(np.stack(cache))
         qh = q.reshape(self.heads, self.nope)
         attn = np.empty((self.heads, self.vdim), dtype=np.float32)
         for h in range(self.heads):

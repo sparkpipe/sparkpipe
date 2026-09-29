@@ -16,29 +16,11 @@ HIDDEN_TAPS = ("final_norm", "hc_mean", "streams")
 CONTEXTS = ("sequence", "chain")
 
 
-class Bf16Cache(list):
-    def append(self, row):
-        super().append(row if row.dtype == np.uint16 else f32_to_bf16_u16(row))
-
-
-def bf16_latent_cache(engine):
-    attention = engine.dsa_attention
-
-    def dsa_attention(prefix, x, cache):
-        shadow = Bf16Cache(cache)
-        output = attention(prefix, x, shadow)
-        cache[:] = shadow
-        return output
-
-    engine.dsa_attention = dsa_attention
-    return engine
-
-
-def load_engine(checkpoint, header, latent_cache_bf16=True):
+def load_engine(checkpoint, header):
     config = json.load(open(os.path.join(checkpoint, "config.json")))
     config = config.get("text_config", config)
     engine = flash.Glm53FlashEngine(checkpoint, parse_llm_defines(header), config)
-    return (bf16_latent_cache(engine) if latent_cache_bf16 else engine), config
+    return engine, config
 
 
 def fixture_rows(path, final_layer):
@@ -141,13 +123,13 @@ def decoded_rows(engine, path, count, final_layer):
 
 
 def run(arguments):
-    engine, config = load_engine(arguments.checkpoint, arguments.header, arguments.latent_cache == "bf16")
+    engine, config = load_engine(arguments.checkpoint, arguments.header)
     layer = int(config["num_hidden_layers"])
     if int(config.get("num_nextn_predict_layers", 0)) < 1:
         raise ValueError("the checkpoint declares no MTP layer")
     mtp = MtpReference(engine, layer)
     variants = [(o, t, c) for o in arguments.orders.split(",") for t in HIDDEN_TAPS for c in CONTEXTS if not (t == "streams" and c == "sequence")]
-    report = {"layer": layer, "latent_cache": arguments.latent_cache, "fixtures": {}, "variants": {}}
+    report = {"layer": layer, "fixtures": {}, "variants": {}}
     columns = []
     slots = []
     sources = []
@@ -199,8 +181,6 @@ def main():
     parser.add_argument("--header", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--orders", default=",".join(ORDERS))
-    parser.add_argument("--latent-cache", choices=("bf16", "t1"), default="bf16",
-                        help="bf16 stores the DSA latent rows as bf16 codes so dsa_attention decodes them; t1 keeps t1_reference_glm53flash's float cache")
     parser.add_argument("--sequence", action="append", default=[], help="tokens.u32:count:prompt_tokens, decoded teacher-forced")
     parser.add_argument("fixtures", nargs="*")
     return run(parser.parse_args())

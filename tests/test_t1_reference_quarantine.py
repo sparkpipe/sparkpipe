@@ -16,6 +16,8 @@ from t1_reference_common import (read_fixture, sha256_file,  # noqa: E402
 COMPARE = os.path.join(ROOT, "tools", "t1_reference_compare.py")
 T1_ROOT = os.path.join(ROOT, "qualification", "t1_reference")
 DECODER_FEED_FIX_UTC = "2026-09-19T11:22:17Z"
+DSA_CACHE_FIX_UTC = "2026-09-29T14:45:29Z"
+DSA_CACHE_FAMILIES = ("glm53flash", "glm5_next")
 STALE_E2M1_DIRECTORIES = (
     os.path.join(ROOT, "qualification", "t1_reference", "qwen38_max"),
     os.path.join(ROOT, "qualification", "t1_reference", "qwen38_27b", "nvfp4a16"),
@@ -67,6 +69,19 @@ def check_decoder_feed(directory, manifest):
     return True
 
 
+def check_dsa_cache(directory, manifest):
+    if manifest.get("family") not in DSA_CACHE_FAMILIES:
+        return False
+    if manifest.get("generated_utc", "") >= DSA_CACHE_FIX_UTC:
+        return False
+    quarantine = manifest.get("quarantine") or {}
+    expect(sorted(quarantine.get("fixtures", [])) == sorted(manifest["fixtures"]),
+           f"{directory}: generated before the DSA latent cache fix; every fixture must be quarantined")
+    expect("DSA latent cache" in quarantine.get("reason", ""),
+           f"{directory}: the quarantine must name the DSA latent cache")
+    return True
+
+
 def synthetic(workspace):
     directory = os.path.join(workspace, "family")
     os.makedirs(directory)
@@ -99,9 +114,15 @@ def main():
     stale_feed = [os.path.relpath(directory, T1_ROOT) for directory, manifest in committed_manifests()
                   if check_decoder_feed(directory, manifest)]
     expect("glm5_next" in stale_feed, f"glm5_next predates the double-feed fix and must be quarantined: {stale_feed}")
+    stale_dsa = [os.path.relpath(directory, T1_ROOT) for directory, manifest in committed_manifests()
+                 if check_dsa_cache(directory, manifest)]
+    expect(stale_dsa == ["glm5_next"], f"only glm5_next may predate the DSA latent cache fix: {stale_dsa}")
     glm53flash = os.path.join(T1_ROOT, "glm53flash")
     current = verify(glm53flash)
     expect(current.returncode == 0, f"{glm53flash}: the GLM-5.3 Flash fixtures must verify: {current.stdout}")
+    flash_manifest = json.load(open(os.path.join(glm53flash, "MANIFEST.json")))
+    expect(flash_manifest["generated_utc"] >= DSA_CACHE_FIX_UTC,
+           f"{glm53flash}: the GLM-5.3 Flash fixtures must postdate the DSA latent cache fix")
     workspace = tempfile.mkdtemp(prefix="t1ref-quarantine-")
     try:
         directory, path, manifest = synthetic(workspace)
@@ -132,7 +153,9 @@ def main():
         shutil.rmtree(workspace, ignore_errors=True)
     print("PASS t1_reference quarantine: stale e2m1 fixtures refused by verify-manifest, "
           "read_fixture and compare; fixtures older than the decoder double-feed fix quarantined "
-          f"({', '.join(stale_feed)}); glm53flash verifies; clean, quarantined and malformed synthetic manifests")
+          f"({', '.join(stale_feed)}); GLM fixtures older than the DSA latent cache fix quarantined "
+          f"({', '.join(stale_dsa)}); glm53flash verifies and postdates it; clean, quarantined and malformed "
+          "synthetic manifests")
     return 0
 
 

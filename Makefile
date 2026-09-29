@@ -85,6 +85,7 @@ MOONCAKE_LIB ?= $(MOONCAKE_ROOT)/build/mooncake-store/src
 MOONCAKE_DEP_INCLUDE ?= $(MOONCAKE_ROOT)/local/include
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
+HIDDEN_TRANSPORT_HOST_STAGED_TCP := build/libhidden_transport_host_staged_tcp.$(SHARED_LIBRARY_EXT)
 
 include sources.mk
 
@@ -382,6 +383,7 @@ TEST_NAMES := \
     test_glm5_next_codec_lazy_attach \
     test_glm5_next_index_cp_math \
     test_weightd_worker \
+    test_host_staged_tcp \
     test_weightd_direct \
     test_weightd_fd_frames \
     test_weightd_attach \
@@ -515,7 +517,9 @@ PYTHON_TESTS := \
 	tests/test_spark_transport_probe.py \
 	tests/test_spark_topology_probe.py \
 	tests/test_spark_pmtu_probe.py \
+	tests/test_k3_checkpoint_contract.py \
 	tests/test_k3_driver_contracts.py \
+	tests/test_k3_stage_ordering.py \
 	tests/test_k3_engine.py \
 	tests/test_k3_kv_geometry.py \
 	tests/test_k3_layer_host.py \
@@ -525,6 +529,7 @@ PYTHON_TESTS := \
 	tests/test_k3_quant_recipe.py \
 	tests/test_k3_shard.py \
 	tests/test_k3_slice_host.py \
+	tests/test_k3_kda_rank_heads.py \
 	tests/test_k3_smoke_experts.py \
 	tests/test_kda_bf16_state.py \
 	tests/test_kda_decay.py \
@@ -592,6 +597,7 @@ PYTHON_TESTS := \
 	tests/test_status_truth.py \
 	tests/test_site.py \
 	tests/test_weightd_manifest.py \
+	tests/test_weightd_spine_budget.py \
 	tests/test_glm5_next_range_manifest.py \
 	tests/test_glm5_next_routed_oracle.py \
 	tests/test_glm52_experts_manifest.py \
@@ -707,6 +713,7 @@ PYTHON_TESTS := \
 	tests/test_spark_station.py \
 	tests/test_spark_tiktoken_compile.py \
 	tests/test_t1_reference_decoder.py \
+	tests/test_t1_reference_dsa_cache.py \
 	tests/test_t1_reference_dsv41.py \
 	tests/test_t1_reference_engines.py \
 	tests/test_t1_reference_glm53flash.py \
@@ -1272,6 +1279,12 @@ $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_
 		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=0 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
 
+$(HIDDEN_TRANSPORT_HOST_STAGED_TCP): ring/transport/host_staged_tcp.c include/sparkpipe/spark_hidden_transport.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) ring/transport/host_staged_tcp.c $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lpthread -o $@
+
+build/test_host_staged_tcp: tests/test_host_staged_tcp.c ring/transport/host_staged_tcp.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_host_staged_tcp.c ring/transport/host_staged_tcp.c $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 
 $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_memlink.h include/sparkpipe/spark_weightd.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
@@ -1502,7 +1515,7 @@ build/test_gemma4_tp4_serving_adapter: tests/test_gemma4_serving_adapter.c tests
 # nvcc/spark-gated: no nvcc on the build host (offline mac gate) leaves the
 # artifact unbuilt instead of failing `make all` — same contract as
 # test_qwen38_math_kernels below; a spark node builds and validates it for real.
-$(K3_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(K3_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h $(wildcard inference/llms/kimi_k3/*.cu inference/llms/kimi_k3/*.cuh inference/llms/kimi_k3/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c runtime/speculation_provider.c src/spark_status.c ring/transport/tp_collective.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 build/test_model_resident_reconnect: tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c build/sparkpipe_model_residentd $(DSV4_SERVING_ADAPTER) $(TEST_DSV4_SERVING_DRIVER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
