@@ -296,6 +296,37 @@ static void TestGuardRunMode(const char *self,const TestGuardMode *mode)
 	printf("PASS %s: %u fixture children gone after the test failed\n",mode->name,count);
 }
 
+static void TestGuardManySequentialChildren(void)
+{
+	pid_t child,sleeper;
+	uint32_t index,total;
+	int status;
+	total = TEST_CHILD_GUARD_CAPACITY * 3u;
+	for (index=0u; index<total; index++)
+	{
+		child = TestChildGuardFork();
+		assert(child >= 0);
+		if ( child == 0 )
+			_exit(0);
+		assert(waitpid(child,&status,0) == child);
+		assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	}
+	assert(TestChildGuardTrackedCount() == 0u);
+	sleeper = TestChildGuardFork();
+	assert(sleeper >= 0);
+	if ( sleeper == 0 )
+	{
+		for (;;)
+			(void)pause();
+	}
+	assert(TestChildGuardTrackedCount() == 1u);
+	TestChildGuardKillAll();
+	assert(TestGuardProcessGone(sleeper) != 0u);
+	assert(TestChildGuardTrackedCount() == 0u);
+	printf("PASS sequential: %u reaped fixture children do not exhaust the %u-slot guard, and a live one is still killed\n",
+		total,TEST_CHILD_GUARD_CAPACITY);
+}
+
 int main(int argc,char **argv)
 {
 	uint32_t index;
@@ -315,6 +346,7 @@ int main(int argc,char **argv)
 #endif
 		TestGuardRunMode(argv[0],&TestGuardModes[index]);
 	}
+	TestGuardManySequentialChildren();
 	printf("PASS test_child_guard\n");
 	return(0);
 }

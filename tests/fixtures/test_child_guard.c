@@ -146,23 +146,48 @@ static int32_t TestChildGuardArm(void)
 	return(0);
 }
 
+static void TestChildGuardForgetReaped(void)
+{
+	siginfo_t info;
+	uint32_t index,count,kept;
+	count = (uint32_t)TestChildGuardCount;
+	kept = 0u;
+	for (index=0u; index<count; index++)
+	{
+		memset(&info,0,sizeof(info));
+		if ( TestChildGuardPids[index] <= 0 ||
+			(waitid(P_PID,(id_t)TestChildGuardPids[index],&info,WEXITED | WNOHANG | WNOWAIT) != 0 && errno == ECHILD) )
+			continue;
+		TestChildGuardPids[kept] = TestChildGuardPids[index];
+		kept++;
+	}
+	for (index=kept; index<count; index++)
+		TestChildGuardPids[index] = 0;
+	TestChildGuardCount = (sig_atomic_t)kept;
+}
+
 pid_t TestChildGuardFork(void)
 {
 	sigset_t blocked,previous;
 	pid_t child,owner;
 	uint32_t index;
+	int saved_errno;
 	if ( TestChildGuardArm() != 0 )
 		return(-1);
-	if ( (uint32_t)TestChildGuardCount >= TEST_CHILD_GUARD_CAPACITY )
-	{
-		errno = EAGAIN;
-		return(-1);
-	}
 	owner = getpid();
 	(void)sigemptyset(&blocked);
 	for (index=0u; index<sizeof(TestChildGuardSignals)/sizeof(TestChildGuardSignals[0]); index++)
 		(void)sigaddset(&blocked,TestChildGuardSignals[index]);
 	(void)sigprocmask(SIG_BLOCK,&blocked,&previous);
+	saved_errno = errno;
+	TestChildGuardForgetReaped();
+	errno = saved_errno;
+	if ( (uint32_t)TestChildGuardCount >= TEST_CHILD_GUARD_CAPACITY )
+	{
+		(void)sigprocmask(SIG_SETMASK,&previous,0);
+		errno = EAGAIN;
+		return(-1);
+	}
 	child = fork();
 	if ( child == 0 )
 	{
