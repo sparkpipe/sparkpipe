@@ -54,9 +54,10 @@ nodes:
   agent.env                 rendered by tools/ab_fleet.py env
   model_resident.json       runtime_root, control ports, kv_backing_directory = <root>/run/kv_backing
   config/stage_NN.json      one per rank; stage.json -> stage_<rank>.json
-  bin/ lib/ stages/         the arm firmware (identical SHA256SUMS on every node)
+  arm.json                  sparkpipe-quant-arm-v1 descriptor; the client passes it as --quant-arm
+  bin/ lib/ stages/         the arm firmware, a SCORE_DUMP=1 build (identical SHA256SUMS on every node)
   packs/                    symlinks to the arm's pack directory (read-only)
-  inputs/                   probe file, Tier-2 row list (same SHA on every node)
+  inputs/                   targets.bin, probe.bin, tier2_rows.bin (same SHA on every node)
   run/                      the current run's private directories; created empty per run
   runs/<run_id>/            finished runs (dumps, logs), moved out of run/
 ```
@@ -239,8 +240,45 @@ Every run:
    and event counts, per-rank dump SHAs, MemAvailable before and after and unit
    MemoryCurrent per node, the weightd map lines, co-tenants, UTC start and end.
 
-The A/A gate is hard: the F1 and F1AA merged dumps and generated token ids
-must be bit-identical, and so must F2's first and second runs. If they are
+### 5.1 Score flow
+
+Every arm firmware is a `SCORE_DUMP=1` build of one campaign commit, with its
+description derived from the fp8 release description (codec, `MODEL_REVISION`,
+module identifier suffix `.scoredump`). The `nodump` runs use the same build
+with no score members.
+
+- **Before the window:**
+  - `tools/score_export.py corpus` turns the frozen CT-short index into the
+    JSON lines that `tools/score_merge.py` reads.
+  - `score_merge.py targets` writes the pass-1 probe file.
+  - `score_merge.py tier2` writes 20,000 Tier-2 rows, seed 20260929.
+  - `tools/pack_spine_sha.py` on every node gives the arms' per-rank spine
+    digests and pack SHAs, from which each `arm.json` is written.
+- **Probe files:**
+  - F1 and F1AA read `targets.bin`.
+  - F1's merge (`--probe-out`) writes the pass-2 probe file, the targets plus
+    F1's top-64. F2 and F3 read it.
+  - F2's first merge (`--probe-out`) adds F2's top-64. F0 reads that file, so one
+    F0 run scores both against F1 and, for the spine bridge, against F2.
+- **After each run:**
+  - The build host merges the rank files with `--require-served-match`.
+  - `score_export.py dump` writes the run in corpus order: one row per
+    (document, position), each document's rows taken from the dump segment
+    that scored it. That is the `sparkpipe-score-merged-v1` input of
+    `tools/ab_score_compare.py`.
+  - F2's first run is also exported as the probe-defining reference for the
+    bridge.
+- **Exact KL:**
+  - Each node runs `tools/score_kl_partial.py partial` on its own Tier-2 shard
+    against F1's (or, for the bridge, F2's).
+  - The build host combines the partials and `score_export.py exact` indexes
+    them by export row.
+- **Transfers:** 16 nodes connecting to the build host at once exceed its
+  default sshd `MaxStartups`, so every node-to-build-host transfer retries.
+
+The A/A gate is hard: the F1 and F1AA exports and generated token ids
+must be bit-identical, and so must F2's first and second runs. The exports are
+in corpus order, so a run submitted in permuted order compares directly. If they are
 not, the campaign stops and a determinism bug is filed. If a node cannot fit
 F1AA beside F1 when the window opens, slot A runs without F1AA and the gate is
 F2's repeat alone (F2's second run is concurrent with F3).
