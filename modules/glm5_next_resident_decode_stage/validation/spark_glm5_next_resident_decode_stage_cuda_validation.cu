@@ -1117,6 +1117,10 @@ static int SparkGlm5NextValFixtureComplete(SparkGlm5NextValFixture *fixture)
 	return(0);
 }
 
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+static uint32_t spark_glm5_next_val_kv_sim;
+#endif
+
 static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t layer,uint32_t token,uint32_t position)
 {
 	SparkGlm5NextCudaWave *wave = &fixture->wave;
@@ -1235,6 +1239,9 @@ static void SparkGlm5NextValBuildWave(SparkGlm5NextValFixture *fixture,uint32_t 
 	(void)cudaMemcpy(fixture->positions,position_words,sizeof(position_words),cudaMemcpyHostToDevice);
 	(void)cudaMemcpy(fixture->context_lengths,context_words,sizeof(context_words),cudaMemcpyHostToDevice);
 	memset(wave,0,sizeof(*wave));
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	wave->kv_sim = spark_glm5_next_val_kv_sim;
+#endif
 	wave->stage_index = 0u;
 	wave->first_layer_index = layer;
 	wave->layer_count = 1u;
@@ -1559,6 +1566,137 @@ static int32_t SparkGlm5NextValCheckOutputProjection(const SparkGlm5NextValFixtu
 	return(SparkGlm5NextValReport("probe o_proj gemm (device y vs host recompute)",&metrics,0.02,0.999));
 }
 
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+#include "sparkpipe/spark_kv_quant_sim.h"
+
+#define SPARK_GLM5_NEXT_VAL_KV_ROWS ((uint64_t)SPARK_GLM5_NEXT_VALIDATION_PAGES * 64u)
+#define SPARK_GLM5_NEXT_VAL_LATENT_ELEMENTS (SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES / 2u)
+#define SPARK_GLM5_NEXT_VAL_INDEX_QUANT (2u * SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_DIMENSION)
+
+static float SparkGlm5NextValKvSimRound(float scaled,uint32_t codec)
+{
+	float magnitude = fabsf(scaled);
+	int exponent,quantum;
+	frexpf(magnitude,&exponent);
+	if ( codec == SPARK_KV_QUANT_SIM_MXFP4 )
+		quantum = magnitude >= 2.0f ? exponent - 2 : -1;
+	else
+		quantum = magnitude >= 0.015625f ? exponent - 4 : -9;
+	return(copysignf(ldexpf(rintf(ldexpf(magnitude,-quantum)),quantum),scaled));
+}
+
+static uint32_t SparkGlm5NextValKvSimOffGrid(const uint16_t *rows,uint64_t row_count,uint32_t stride,uint32_t width,uint32_t codec,uint32_t group)
+{
+	uint64_t row;
+	uint32_t base,element,off = 0u;
+	float format_max = codec == SPARK_KV_QUANT_SIM_MXFP4 ? 6.0f : 448.0f,amax,mantissa,max_mantissa;
+	int amax_exponent,max_exponent,exponent;
+	for (row = 0u; row < row_count; row++)
+		for (base = 0u; base < width; base += group)
+		{
+			const uint16_t *values = rows + row * stride + base;
+			amax = 0.0f;
+			for (element = 0u; element < group; element++)
+				amax = fmaxf(amax,fabsf(SparkGlm5NextValFromBf16(values[element])));
+			if ( amax == 0.0f )
+				continue;
+			mantissa = frexpf(amax,&amax_exponent);
+			max_mantissa = frexpf(format_max,&max_exponent);
+			exponent = amax_exponent - max_exponent + (mantissa > max_mantissa ? 1 : 0);
+			exponent = exponent < -127 ? -127 : exponent;
+			for (element = 0u; element < group; element++)
+			{
+				float value = SparkGlm5NextValFromBf16(values[element]);
+				if ( ldexpf(SparkGlm5NextValKvSimRound(ldexpf(value,-exponent),codec),exponent) != value )
+					off++;
+			}
+		}
+	return(off);
+}
+
+static uint32_t SparkGlm5NextValDiffer(const void *a,const void *b,uint64_t bytes)
+{
+	uint64_t index;
+	uint32_t count = 0u;
+	for (index = 0u; index < bytes; index++)
+		count += ((const uint8_t *)a)[index] != ((const uint8_t *)b)[index] ? 1u : 0u;
+	return(count);
+}
+
+typedef struct SparkGlm5NextValKvSimCapture
+{
+	uint16_t streams[SPARK_GLM5_NEXT_VHC * SPARK_GLM5_NEXT_VHIDDEN];
+	uint16_t latent[SPARK_GLM5_NEXT_VAL_KV_ROWS * SPARK_GLM5_NEXT_VAL_LATENT_ELEMENTS];
+	uint16_t index[SPARK_GLM5_NEXT_VAL_KV_ROWS * SPARK_GLM5_NEXT_VINDEX_PACKED];
+	uint32_t state[SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER / 4u];
+}
+SparkGlm5NextValKvSimCapture;
+
+static int SparkGlm5NextValKvSimRun(SparkGlm5NextValFixture *fixture,int (*driver)(SparkGlm5NextValFixture*,uint32_t,uint16_t*),uint32_t packed,SparkGlm5NextValKvSimCapture *capture)
+{
+	if (cudaMemset(fixture->kda_state_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER) != cudaSuccess ||
+		cudaMemset(fixture->kda_window_pools,0,SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER) != cudaSuccess ||
+		cudaMemset(fixture->kv_cache,0,sizeof(capture->latent)) != cudaSuccess ||
+		cudaMemset(fixture->index_cache,0,sizeof(capture->index)) != cudaSuccess)
+		return(SparkGlm5NextValFail("kv_sim","reset"));
+	spark_glm5_next_val_kv_sim = packed;
+	if (driver(fixture,0u,capture->streams) != 0)
+	{
+		spark_glm5_next_val_kv_sim = 0u;
+		return(SparkGlm5NextValFail("kv_sim","walk"));
+	}
+	spark_glm5_next_val_kv_sim = 0u;
+	if (cudaMemcpy(capture->latent,fixture->kv_cache,sizeof(capture->latent),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(capture->index,fixture->index_cache,sizeof(capture->index),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(capture->state,fixture->kda_state_pools,sizeof(capture->state),cudaMemcpyDeviceToHost) != cudaSuccess)
+		return(SparkGlm5NextValFail("kv_sim","readback"));
+	return(0);
+}
+
+static int SparkGlm5NextValKvSimCheck(SparkGlm5NextValFixture *fixture)
+{
+	static SparkGlm5NextValKvSimCapture base,arm,again;
+	static const uint32_t latent_arms[3][3] = {{1u,SPARK_KV_QUANT_SIM_FP8_E4M3,128u},{5u,SPARK_KV_QUANT_SIM_FP8_E4M3,64u},{2u,SPARK_KV_QUANT_SIM_MXFP4,32u}};
+	uint32_t index,off,grid_off = 0u,differ;
+	int failures = 0;
+	if (SparkGlm5NextValKvSimRun(fixture,SparkGlm5NextValRunTier1,0u,&base) != 0 ||
+		SparkGlm5NextValKvSimRun(fixture,SparkGlm5NextValRunTier1,64u,&arm) != 0)
+		return(1);
+	for (index = 0u; index < sizeof(arm.state) / 4u; index++)
+		grid_off += (arm.state[index] & 0xffffu) != 0u ? 1u : 0u;
+	differ = SparkGlm5NextValDiffer(base.state,arm.state,sizeof(base.state));
+	printf("kv_sim kda state bf16: off-grid %u, state bytes differing from fp32 %u, streams differing %u\n",grid_off,differ,SparkGlm5NextValDiffer(base.streams,arm.streams,sizeof(base.streams)));
+	failures += grid_off != 0u || differ == 0u ? 1 : 0;
+	if (SparkGlm5NextValKvSimRun(fixture,SparkGlm5NextValRunTier2aAttention,0u,&base) != 0 ||
+		SparkGlm5NextValKvSimRun(fixture,SparkGlm5NextValRunTier2aAttention,0u,&again) != 0)
+		return(1);
+	differ = SparkGlm5NextValDiffer(&base,&again,sizeof(base));
+	printf("kv_sim identity (bf16/bf16/fp32) dsa walk vs identity walk: %u bytes differ\n",differ);
+	failures += differ != 0u ? 1 : 0;
+	off = SparkGlm5NextValKvSimOffGrid(base.latent,SPARK_GLM5_NEXT_VAL_KV_ROWS,SPARK_GLM5_NEXT_VAL_LATENT_ELEMENTS,SPARK_GLM5_NEXT_VAL_LATENT_ELEMENTS,SPARK_KV_QUANT_SIM_FP8_E4M3,128u);
+	printf("kv_sim identity latent cache: %u values off the fp8 g128 grid (expected > 0: the cache is BF16)\n",off);
+	failures += off == 0u ? 1 : 0;
+	for (index = 0u; index < 3u; index++)
+	{
+		if (SparkGlm5NextValKvSimRun(fixture,SparkGlm5NextValRunTier2aAttention,latent_arms[index][0],&arm) != 0)
+			return(1);
+		off = SparkGlm5NextValKvSimOffGrid(arm.latent,SPARK_GLM5_NEXT_VAL_KV_ROWS,SPARK_GLM5_NEXT_VAL_LATENT_ELEMENTS,SPARK_GLM5_NEXT_VAL_LATENT_ELEMENTS,latent_arms[index][1],latent_arms[index][2]);
+		differ = SparkGlm5NextValDiffer(base.latent,arm.latent,sizeof(base.latent));
+		printf("kv_sim latent packed=%u: %u values off grid, %u latent cache bytes differ from bf16, index cache bytes differ %u, streams differ %u\n",
+			latent_arms[index][0],off,differ,SparkGlm5NextValDiffer(base.index,arm.index,sizeof(base.index)),SparkGlm5NextValDiffer(base.streams,arm.streams,sizeof(base.streams)));
+		failures += off != 0u || differ == 0u ? 1 : 0;
+	}
+	if (SparkGlm5NextValKvSimRun(fixture,SparkGlm5NextValRunTier2aAttention,8u,&arm) != 0)
+		return(1);
+	off = SparkGlm5NextValKvSimOffGrid(arm.index,SPARK_GLM5_NEXT_VAL_KV_ROWS,SPARK_GLM5_NEXT_VINDEX_PACKED,SPARK_GLM5_NEXT_VAL_INDEX_QUANT,SPARK_KV_QUANT_SIM_FP8_E4M3,128u);
+	differ = SparkGlm5NextValDiffer(base.index,arm.index,sizeof(base.index));
+	printf("kv_sim index fp8 g128 (context <= 2048, dense attention): %u values off grid, %u index cache bytes differ, latent cache bytes differ %u, streams differ %u (inert: both must be 0)\n",off,differ,SparkGlm5NextValDiffer(base.latent,arm.latent,sizeof(base.latent)),SparkGlm5NextValDiffer(base.streams,arm.streams,sizeof(base.streams)));
+	failures += off != 0u || differ == 0u || SparkGlm5NextValDiffer(base.latent,arm.latent,sizeof(base.latent)) != 0u || SparkGlm5NextValDiffer(base.streams,arm.streams,sizeof(base.streams)) != 0u ? 1 : 0;
+	printf("kv_sim layer hooks: %s\n",failures == 0 ? "PASS" : "FAIL");
+	return(failures);
+}
+#endif
+
 int main(int argc,char **argv)
 {
 	static SparkGlm5NextValFixture fixture;
@@ -1666,6 +1804,9 @@ int main(int argc,char **argv)
 		return(1);
 	failures += SparkGlm5NextValCheckDeterminism(&fixture,SparkGlm5NextValRunTier2aAttention,"tier2a determinism");
 
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	failures += SparkGlm5NextValKvSimCheck(&fixture);
+#endif
 	printf("coverage: synthetic TP1 B1; KDA+dense+HC numerical; DSA attention determinism only; distributed, routed MLP and multirow numerical checks remain required\n");
 	printf("glm5_next component validator: %s (%d failures)\n",
 		failures == 0 ? "PASS" : "FAIL",failures);

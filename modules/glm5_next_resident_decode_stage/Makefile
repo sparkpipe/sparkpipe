@@ -103,6 +103,10 @@ RUNTIME_CONFIGURATION := \
 	SPARK_GLM5_NEXT_STAGE_EXECUTION_ROW_CAPACITY=$(EXECUTION_ROW_CAPACITY) \
 	SPARK_GLM5_NEXT_STAGE_PIPELINE_SLOTS=$(PIPELINE_SLOT_COUNT)
 
+ifeq ($(KV_QUANT_SIM),1)
+RUNTIME_CONFIGURATION += SPARK_KV_QUANT_SIM_EXPERIMENT=1
+endif
+
 GPU_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_cuda.sh
 MTP_PARITY_VALIDATOR := validation/validate_glm5_next_resident_decode_stage_mtp_parity.sh
 
