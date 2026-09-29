@@ -1,0 +1,9 @@
+PASS threads=256 experts=288 rows=1 top_k=8 skew=0 tile_m=16
+PASS threads=256 experts=288 rows=8 top_k=8 skew=0 tile_m=16
+PASS threads=256 experts=288 rows=8 top_k=8 skew=3 tile_m=16
+PASS threads=256 experts=288 rows=64 top_k=8 skew=0 tile_m=16
+PASS threads=256 experts=288 rows=128 top_k=8 skew=5 tile_m=16
+PASS threads=256 experts=256 rows=17 top_k=8 skew=0 tile_m=16
+PASS threads=128 experts=384 rows=9 top_k=6 skew=0 tile_m=16
+PASS threads=256 experts=64 rows=33 top_k=4 skew=2 tile_m=16
+test_route_build_scan PASS

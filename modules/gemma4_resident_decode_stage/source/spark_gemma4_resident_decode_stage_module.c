@@ -37,6 +37,7 @@
 typedef struct SparkGemma4ModuleSlot
 {
 	uint32_t logical_sequence_count;
+	uint32_t frame_max_context;
 	void *cuda_stream;
 	uint32_t *host_row_lane_indices;
 	uint64_t *host_row_positions;
@@ -67,6 +68,7 @@ typedef struct SparkGemma4ModuleSlot
 	void *attn_output_bf16;
 	void *delta_bf16;
 	void *mlp_gate_up_bf16;
+	void *mlp_activation_bf16;
 	void *mlp_down_bf16;
 	void *branch_bf16;
 	uint32_t *moe_indices_u32;
@@ -99,6 +101,7 @@ typedef struct SparkGemma4ModuleState
 	atomic_ullong tp_next_ordinal;
 	uint32_t tp_operation_timeout_milli;
 	uint32_t max_active_sequence_count;
+	uint32_t max_input_row_count;
 	uint32_t pipeline_slot_count;
 	atomic_uint slot_states[SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	uint32_t kv_block_count;
@@ -111,6 +114,8 @@ typedef struct SparkGemma4ModuleState
 	void *full_kv_pool_bf16;
 	uint64_t sliding_kv_pool_bytes;
 	uint64_t full_kv_pool_bytes;
+	uint64_t sliding_kv_layer_bytes;
+	uint64_t full_kv_layer_bytes;
 	uint32_t sliding_kv_heads_per_rank;
 	uint32_t full_kv_heads_per_rank;
 	SparkGemma4ModuleSlot slots[SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -122,6 +127,7 @@ typedef struct SparkGemma4ModuleState
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
 	uint32_t tp_standalone;
+	uint32_t tp_deferred_rounds;
 	uint32_t tp_vocab_base;
 	uint32_t tp_vocab_rows;
 	uint32_t sliding_layer_count;
@@ -175,6 +181,10 @@ static SparkStatus SparkGemma4ModuleConfigureTp(SparkGemma4ModuleState *state)
 	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	{
+		const char *wait_mode = getenv("SPARK_TP_WAIT_MODE");
+		state->tp_deferred_rounds = wait_mode != 0 && strcmp(wait_mode,"hardware") == 0 ? 1u : 0u;
+	}
 	state->tp_vocab_rows = SPARK_GEMMA4_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;
 	state->tp_vocab_base = state->tp_rank * state->tp_vocab_rows;
 	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_GEMMA4_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_operation_timeout_milli);
@@ -196,6 +206,10 @@ static SparkStatus SparkGemma4ModuleConfigure(SparkGemma4ModuleState *state)
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_LAYER_COUNT",1u,SPARK_GEMMA4_MODEL_LAYER_COUNT,&state->layer_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_MAX_ACTIVE_SEQUENCES",1u,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,&state->max_active_sequence_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_MAX_INPUT_ROWS",1u,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,state->max_active_sequence_count,&state->max_input_row_count);
+	if ( status == SPARK_STATUS_OK && state->max_input_row_count < state->max_active_sequence_count )
+		status = SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_STAGE_PIPELINE_SLOTS",1u,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&state->pipeline_slot_count);
 	if ( status == SPARK_STATUS_OK )
@@ -425,9 +439,10 @@ extern cudaError_t SparkGemma4LaunchRope(cudaStream_t stream, void *q_bf16, cons
 extern cudaError_t SparkGemma4LaunchSlidingWindowPositions(cudaStream_t stream, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *row_positions, uint32_t row_count, uint32_t *positions_out);
 extern cudaError_t SparkGemma4LaunchKvStoreSliding(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *key_bf16, const void *value_bf16, const uint32_t *sequence_of_row, const uint32_t *positions, uint32_t row_count, uint32_t kv_heads);
 extern cudaError_t SparkGemma4LaunchKvStoreFull(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *key_bf16, const void *value_bf16, const uint32_t *sequence_of_row, const uint32_t *positions, uint32_t row_count);
-extern cudaError_t SparkGemma4LaunchAttentionDecodeSliding(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *window_positions, uint32_t query_heads, void *output_bf16, uint32_t row_count, uint32_t kv_heads);
-extern cudaError_t SparkGemma4LaunchAttentionDecodeFull(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, uint32_t query_heads, void *output_bf16, uint32_t row_count);
+extern cudaError_t SparkGemma4LaunchAttentionDecodeSliding(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *window_positions, const uint32_t *row_positions, uint32_t query_heads, void *output_bf16, uint32_t row_count, uint32_t kv_heads);
+extern cudaError_t SparkGemma4LaunchAttentionDecodeFull(cudaStream_t stream, void *pool, const uint32_t *page_table, uint32_t page_table_stride, uint32_t sequence_count, uint32_t pool_page_count, void *access_error, const void *query_bf16, const uint32_t *sequence_of_row, const uint32_t *context_lengths, const uint32_t *row_positions, uint32_t query_heads, void *output_bf16, uint32_t row_count);
 extern cudaError_t SparkGemma4LaunchGatedGelu(cudaStream_t stream, void *gate_up_bf16, uint32_t row_count, uint32_t intermediate);
+extern cudaError_t SparkGemma4LaunchGatedGeluCompact(cudaStream_t stream, const void *gate_up_bf16, void *activation_bf16, uint32_t row_count, uint32_t intermediate);
 extern cudaError_t SparkGemma4LaunchHeadMaxLocPack(cudaStream_t stream, const float *scores_f32, const uint32_t *token_ids_u32, uint64_t *keys_u64, uint32_t row_count);
 extern cudaError_t SparkGemma4LaunchHeadMaxLocUnpack(cudaStream_t stream, const uint64_t *keys_u64, uint32_t *token_ids_u32, uint32_t row_count);
 extern uint32_t SparkGemma4HeadDirectArgmaxScratchElements(uint32_t rows);
@@ -495,13 +510,33 @@ static SparkStatus SparkGemma4ModulePrepare(
 static void SparkGemma4ModuleReportReady(void *module_state)
 {
 	SparkGemma4ModuleState *state = (SparkGemma4ModuleState *)module_state;
-	fprintf(stderr,"%s initialize ok slice=%u+%u sliding=%u full=%u tp=%u/%u owns_embedding=%u owns_head=%u\n",SPARK_GEMMA4_MODULE_TAG,state->first_layer_index,state->layer_count,state->sliding_layer_count,state->full_layer_count,state->tp_rank,state->tp_degree,state->owns_embedding,state->owns_final_head);
+	fprintf(stderr,"%s initialize ok slice=%u+%u sliding=%u full=%u tp=%u/%u owns_embedding=%u owns_head=%u tp_rounds=%s\n",SPARK_GEMMA4_MODULE_TAG,state->first_layer_index,state->layer_count,state->sliding_layer_count,state->full_layer_count,state->tp_rank,state->tp_degree,state->owns_embedding,state->owns_final_head,state->tp_deferred_rounds != 0u ? "deferred" : "ordered");
 }
 
 #include "sparkpipe/family/module/spark_module_admission_kv_predicate.h"
 
 #include "sparkpipe/family/module/spark_module_admission_cost.h"
 
+static SparkStatus SparkGemma4ModuleReset(SparkGemma4ModuleState *state, const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t index;
+	cudaError_t drain;
+	if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (index = 0u; index < state->pipeline_slot_count; index++)
+	{
+		if ( state->slots[index].cuda_stream == 0 )
+			continue;
+		drain = cudaStreamSynchronize((cudaStream_t)state->slots[index].cuda_stream);
+		if ( drain != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,drain,"reset_stream_drain"));
+	}
+	return(SPARK_STATUS_OK);
+}
+
+#define SPARK_MODULE_ADMIT_MAX_INPUT_ROWS(state) ((state)->max_input_row_count)
+#define SPARK_MODULE_ADMIT_POLICY_FLAGS SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS
+#define SPARK_MODULE_ADMIT_RESET(state,request) SparkGemma4ModuleReset((state),(request))
 #include "sparkpipe/family/module/spark_module_admit_shape.h"
 
 static SparkStatus SparkGemma4ModuleStateTeardown(void *module_state)
@@ -559,17 +594,23 @@ static SparkStatus SparkGemma4ModuleAllocatePools(SparkGemma4ModuleState *state)
 	uint64_t full_slot_bytes = SPARK_HYBRID_KV_SLOT_BYTES(state->full_kv_heads_per_rank,SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION,SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES);
 	if ( sliding_slot_bytes % 16u != 0u || full_slot_bytes % 16u != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	state->sliding_kv_pool_bytes = SPARK_HYBRID_KV_POOL_BYTES(state->kv_block_count,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,sliding_slot_bytes);
-	state->full_kv_pool_bytes = SPARK_HYBRID_KV_POOL_BYTES(state->kv_block_count,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,full_slot_bytes);
-	status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state->sliding_kv_pool_bytes,&state->sliding_kv_pool_bf16);
-	if ( status == SPARK_STATUS_OK )
+	if ( state->sliding_layer_count + state->full_layer_count != state->layer_count )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state->sliding_kv_layer_bytes = SPARK_HYBRID_KV_POOL_BYTES(state->kv_block_count,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,sliding_slot_bytes);
+	state->full_kv_layer_bytes = SPARK_HYBRID_KV_POOL_BYTES(state->kv_block_count,SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,full_slot_bytes);
+	state->sliding_kv_pool_bytes = state->sliding_kv_layer_bytes * state->sliding_layer_count;
+	state->full_kv_pool_bytes = state->full_kv_layer_bytes * state->full_layer_count;
+	fprintf(stderr,"%s kv_pools blocks=%u sliding=%u x %llu full=%u x %llu bytes\n",SPARK_GEMMA4_MODULE_TAG,state->kv_block_count,state->sliding_layer_count,(unsigned long long)state->sliding_kv_layer_bytes,state->full_layer_count,(unsigned long long)state->full_kv_layer_bytes);
+	if ( state->sliding_layer_count != 0u )
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state->sliding_kv_pool_bytes,&state->sliding_kv_pool_bf16);
+	if ( status == SPARK_STATUS_OK && state->full_layer_count != 0u )
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,state->full_kv_pool_bytes,&state->full_kv_pool_bf16);
 	return(status);
 }
 
 static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot)
 {
-	uint64_t rows = state->max_active_sequence_count;
+	uint64_t rows = state->max_input_row_count;
 	uint64_t hidden_bytes = rows * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t sliding_query_bytes = rows * ((SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	/* sliding K and V live in SEPARATE buffers (rows x kv_per_rank x dim each):
@@ -597,7 +638,7 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->slot_mapping);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->context_lengths);
+		status = SparkStageModuleDeviceAllocate(&state->ledger,SPARK_GEMMA4_MODULE_HOST_ROW_CAPACITY * sizeof(uint32_t),(void **)&slot->context_lengths);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint64_t),(void **)&slot->row_positions);
 	if ( status == SPARK_STATUS_OK )
@@ -630,6 +671,8 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->delta_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,mlp_gate_up_bytes,&slot->mlp_gate_up_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,mlp_gate_up_bytes / 2u,&slot->mlp_activation_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,hidden_bytes,&slot->mlp_down_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -708,7 +751,7 @@ static void SparkGemma4T1Frame(SparkGemma4ModuleState *state, SparkGemma4ModuleS
 	fputc('\n',stderr);
 }
 
-static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
+static void SparkGemma4T1Buffer(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const char *tag, uint32_t layer, uint32_t rows, const void *buffer)
 {
 	static uint16_t *rows_host = 0;
 	static uint32_t rows_host_capacity = 0;
@@ -727,16 +770,21 @@ static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4Modul
 		rows_host_capacity = rows_host != 0 ? rows : 0u;
 	}
 	if ( rows_host == 0 ||
-		cudaMemcpy(rows_host,slot->hidden_bf16,bytes,cudaMemcpyDeviceToHost) != cudaSuccess )
+		cudaMemcpy(rows_host,buffer,bytes,cudaMemcpyDeviceToHost) != cudaSuccess )
 		return;
 	for (row = 0u; row < rows; row++)
 	{
 		uint16_t *values = rows_host + (uint64_t)row * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION;
-		fprintf(stderr,"G4-T1 stream L%u pos%u",layer,slot->host_row_positions_u32[row]);
+		fprintf(stderr,"G4-T1 %s L%u pos%u",tag,layer,slot->host_row_positions_u32[row]);
 		for (i = 0u; i < SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION; i++)
 			fprintf(stderr," %04x",values[i]);
 		fputc('\n',stderr);
 	}
+}
+
+static void SparkGemma4T1Streams(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t layer, uint32_t rows)
+{
+	SparkGemma4T1Buffer(state,slot,"stream",layer,rows,slot->hidden_bf16);
 }
 
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
@@ -776,7 +824,7 @@ static void SparkGemma4T1Route(SparkGemma4ModuleState *state, SparkGemma4ModuleS
 }
 #endif
 
-static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t first_row, uint32_t copy_rows)
+static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, uint32_t position_row, uint32_t copy_rows)
 {
 	static uint32_t *tokens_host = 0;
 	static float *scores_host = 0;
@@ -793,16 +841,102 @@ static void SparkGemma4T1Head(SparkGemma4ModuleState *state, SparkGemma4ModuleSl
 		head_capacity = tokens_host != 0 && scores_host != 0 ? copy_rows : 0u;
 	}
 	if ( tokens_host == 0 || scores_host == 0 ||
-		cudaMemcpy(tokens_host,slot->argmax_token_ids + first_row,(uint64_t)copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
-		cudaMemcpy(scores_host,slot->argmax_score_f32 + first_row,(uint64_t)copy_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
+		cudaMemcpy(tokens_host,slot->argmax_token_ids,(uint64_t)copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(scores_host,slot->argmax_score_f32,(uint64_t)copy_rows * sizeof(float),cudaMemcpyDeviceToHost) != cudaSuccess )
 		return;
 	for (i = 0u; i < copy_rows; i++)
 		fprintf(stderr,"G4-T1 head pos%u token %u score_bits %08x\n",
-			slot->host_row_positions_u32[first_row + i],tokens_host[i],
+			slot->host_row_positions_u32[position_row + i],tokens_host[i],
 			((const uint32_t *)scores_host)[i]);
 }
 
 #include "sparkpipe/family/module/spark_module_tp_all_reduce_hidden.h"
+
+static SparkStatus SparkGemma4ModuleTpReduce(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, void *device_buffer, uint32_t count, uint32_t u64_max)
+{
+	if ( state->tp_deferred_rounds != 0u )
+		return(SparkGemma4ModuleTpSubmitDeferred(state,device_buffer,count,slot,u64_max));
+	return(u64_max != 0u ? SparkGemma4ModuleTpReduceU64Max(state,slot,(uint64_t *)device_buffer,count) : SparkGemma4ModuleTpAllReduceHidden(state,slot,device_buffer,count));
+}
+
+#define SPARK_GEMMA4_PROFILE_EVENTS 1024u
+#define SPARK_GEMMA4_PROFILE_KINDS 8u
+
+static struct
+{
+	int enabled;
+	uint32_t ready;
+	uint32_t active;
+	uint32_t count;
+	uint64_t frames;
+	uint64_t rows;
+	double milliseconds[SPARK_GEMMA4_PROFILE_KINDS];
+	double frame_milliseconds;
+	cudaEvent_t events[SPARK_GEMMA4_PROFILE_EVENTS];
+	uint8_t kinds[SPARK_GEMMA4_PROFILE_EVENTS];
+} SparkGemma4Profile = {.enabled = -1};
+
+static const char *const SparkGemma4ProfileNames[SPARK_GEMMA4_PROFILE_KINDS] =
+	{"upload","qkv","attention","o_proj","all_reduce","mlp","elementwise","head"};
+
+static void SparkGemma4ProfileBegin(SparkGemma4ModuleSlot *slot)
+{
+	uint32_t index;
+	if ( SparkGemma4Profile.enabled < 0 )
+		SparkGemma4Profile.enabled = getenv("SPARK_GEMMA4_PROFILE") != 0 ? 1 : 0;
+	if ( SparkGemma4Profile.enabled == 0 )
+		return;
+	if ( SparkGemma4Profile.ready == 0u )
+	{
+		for (index = 0u; index < SPARK_GEMMA4_PROFILE_EVENTS; index++)
+			if ( cudaEventCreate(&SparkGemma4Profile.events[index]) != cudaSuccess )
+			{
+				SparkGemma4Profile.enabled = 0;
+				return;
+			}
+		SparkGemma4Profile.ready = 1u;
+	}
+	SparkGemma4Profile.active = 1u;
+	SparkGemma4Profile.count = 1u;
+	(void)cudaEventRecord(SparkGemma4Profile.events[0],(cudaStream_t)slot->cuda_stream);
+}
+
+static void SparkGemma4ProfileMark(SparkGemma4ModuleSlot *slot, uint32_t kind)
+{
+	if ( SparkGemma4Profile.active == 0u || SparkGemma4Profile.count >= SPARK_GEMMA4_PROFILE_EVENTS )
+		return;
+	SparkGemma4Profile.kinds[SparkGemma4Profile.count] = (uint8_t)kind;
+	(void)cudaEventRecord(SparkGemma4Profile.events[SparkGemma4Profile.count++],(cudaStream_t)slot->cuda_stream);
+}
+
+static void SparkGemma4ProfileEnd(const SparkGemma4ModuleState *state, uint32_t rows)
+{
+	uint32_t index;
+	float elapsed;
+	if ( SparkGemma4Profile.active == 0u )
+		return;
+	SparkGemma4Profile.active = 0u;
+	if ( SparkGemma4Profile.count < 2u || cudaEventSynchronize(SparkGemma4Profile.events[SparkGemma4Profile.count - 1u]) != cudaSuccess )
+		return;
+	for (index = 1u; index < SparkGemma4Profile.count; index++)
+		if ( cudaEventElapsedTime(&elapsed,SparkGemma4Profile.events[index - 1u],SparkGemma4Profile.events[index]) == cudaSuccess )
+			SparkGemma4Profile.milliseconds[SparkGemma4Profile.kinds[index]] += elapsed;
+	if ( cudaEventElapsedTime(&elapsed,SparkGemma4Profile.events[0],SparkGemma4Profile.events[SparkGemma4Profile.count - 1u]) == cudaSuccess )
+		SparkGemma4Profile.frame_milliseconds += elapsed;
+	SparkGemma4Profile.frames++;
+	SparkGemma4Profile.rows += rows;
+	if ( (SparkGemma4Profile.frames % 32u) == 0u )
+	{
+		fprintf(stderr,"G4-PROFILE rank=%u frames=%llu rows_per_frame=%.2f frame_ms=%.3f",state->tp_rank,(unsigned long long)SparkGemma4Profile.frames,(double)SparkGemma4Profile.rows / (double)SparkGemma4Profile.frames,SparkGemma4Profile.frame_milliseconds / (double)SparkGemma4Profile.frames);
+		for (index = 0u; index < SPARK_GEMMA4_PROFILE_KINDS; index++)
+			fprintf(stderr," %s=%.3f",SparkGemma4ProfileNames[index],SparkGemma4Profile.milliseconds[index] / (double)SparkGemma4Profile.frames);
+		fputc('\n',stderr);
+		memset(SparkGemma4Profile.milliseconds,0,sizeof(SparkGemma4Profile.milliseconds));
+		SparkGemma4Profile.frame_milliseconds = 0.0;
+		SparkGemma4Profile.frames = 0u;
+		SparkGemma4Profile.rows = 0u;
+	}
+}
 
 static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const SparkGemma4ResidentDecodeStageFrameContext *context, uint32_t layer, uint32_t rows, uint32_t is_full)
 {
@@ -811,12 +945,16 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 	uint32_t kv_heads = is_full != 0u ? state->full_kv_heads_per_rank : state->sliding_kv_heads_per_rank;
 	uint32_t query_heads = is_full != 0u ? SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT / state->tp_degree : SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / state->tp_degree;
 	uint32_t head_dimension = is_full != 0u ? SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION : SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION;
-	void *pool = is_full != 0u ? state->full_kv_pool_bf16 : state->sliding_kv_pool_bf16;
+	uint32_t kind_ordinal = is_full != 0u ? state->full_ordinal_by_layer[layer] : state->sliding_ordinal_by_layer[layer];
+	uint8_t *pool = (uint8_t *)(is_full != 0u ? state->full_kv_pool_bf16 : state->sliding_kv_pool_bf16);
 	const uint32_t *page_table = table != 0 ? table->physical_block_indices : 0;
 	uint32_t page_table_stride = table != 0 ? table->lane_stride : 0u;
 	uint32_t sequence_count = table != 0 ? table->lane_capacity : state->max_active_sequence_count;
 	uint32_t pool_page_count = state->kv_block_count;
 	SparkStatus status;
+	if ( kind_ordinal >= (is_full != 0u ? state->full_layer_count : state->sliding_layer_count) || pool == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	pool += (uint64_t)kind_ordinal * (is_full != 0u ? state->full_kv_layer_bytes : state->sliding_kv_layer_bytes);
 	if ( is_full != 0u )
 	{
 		const SparkGemma4FullLayerWeights *weights = &state->full_by_layer[layer];
@@ -834,18 +972,24 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 			error = SparkGemma4LaunchHeadRmsNorm(stream,slot->full_key_bf16,weights->key_norm_weight_bf16,slot->full_key_bf16,rows,kv_per_rank,head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchRope(stream,slot->full_key_bf16,slot->row_positions_u32,rows,kv_per_rank,&state->full_rope);
+		SparkGemma4ProfileMark(slot,1u);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchKvStoreFull(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->full_key_bf16,slot->full_value_bf16,slot->row_sequences_u32,slot->row_positions_u32,rows);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchAttentionDecodeFull(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->full_query_bf16,slot->row_sequences_u32,slot->context_lengths,query_heads,slot->attn_head_output_bf16,rows);
+			error = SparkGemma4LaunchAttentionDecodeFull(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->full_query_bf16,slot->row_sequences_u32,slot->context_lengths,slot->row_positions_u32,query_heads,slot->attn_head_output_bf16,rows);
+		SparkGemma4ProfileMark(slot,2u);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchLinear(stream,&weights->output,slot->attn_head_output_bf16,slot->attn_output_bf16,rows);
+		SparkGemma4ProfileMark(slot,3u);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,error,"full_attention"));
 	}
 	else
 	{
 		const SparkGemma4SlidingLayerWeights *weights = &state->sliding_by_layer[layer];
 		uint32_t kv_per_rank = state->sliding_kv_heads_per_rank;
 		uint32_t kv_half_dimension = kv_per_rank * head_dimension;
+		uint32_t windowed = slot->frame_max_context > SPARK_GEMMA4_MODEL_SLIDING_WINDOW_TOKENS ? 1u : 0u;
 		SparkGemma4LinearView key_view = weights->kv_fused;
 		SparkGemma4LinearView value_view = weights->kv_fused;
 		key_view.output_dimension = kv_half_dimension;
@@ -867,24 +1011,31 @@ static SparkStatus SparkGemma4ModuleRunAttentionBody(SparkGemma4ModuleState *sta
 			error = SparkGemma4LaunchHeadRmsNorm(stream,slot->sliding_value_bf16,0,slot->sliding_value_bf16,rows,kv_per_rank,head_dimension,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchRope(stream,slot->sliding_kv_bf16,slot->row_positions_u32,rows,kv_per_rank,&state->sliding_rope);
-		if ( error == cudaSuccess )
+		SparkGemma4ProfileMark(slot,1u);
+		if ( error == cudaSuccess && windowed != 0u )
 			error = SparkGemma4LaunchSlidingWindowPositions(stream,slot->row_sequences_u32,slot->context_lengths,slot->row_positions_u32,rows,slot->window_positions_u32);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchKvStoreSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_kv_bf16,slot->sliding_value_bf16,slot->row_sequences_u32,slot->row_positions_u32,rows,kv_heads);
 		if ( error == cudaSuccess )
-			error = SparkGemma4LaunchAttentionDecodeSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_query_bf16,slot->row_sequences_u32,slot->context_lengths,slot->window_positions_u32,query_heads,slot->attn_head_output_bf16,rows,kv_heads);
+			error = SparkGemma4LaunchAttentionDecodeSliding(stream,pool,page_table,page_table_stride,sequence_count,pool_page_count,slot->frame_error,slot->sliding_query_bf16,slot->row_sequences_u32,slot->context_lengths,windowed != 0u ? slot->window_positions_u32 : 0,slot->row_positions_u32,query_heads,slot->attn_head_output_bf16,rows,kv_heads);
+		SparkGemma4ProfileMark(slot,2u);
 		if ( error == cudaSuccess )
 			error = SparkGemma4LaunchLinear(stream,&weights->output,slot->attn_head_output_bf16,slot->attn_output_bf16,rows);
+		SparkGemma4ProfileMark(slot,3u);
+		if ( error != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,error,"sliding_attention"));
 	}
 	if ( state->tp_degree > 1u )
 	{
-		status = SparkGemma4ModuleTpAllReduceHidden(state,slot,slot->attn_output_bf16,rows);
+		status = SparkGemma4ModuleTpReduce(state,slot,slot->attn_output_bf16,rows,0u);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
+		SparkGemma4ProfileMark(slot,4u);
 	}
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,cudaGetLastError(),"attention");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	SparkGemma4T1Buffer(state,slot,"attn",layer,rows,slot->attn_output_bf16);
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchRmsNorm(stream,slot->attn_output_bf16,state->layer_post_attention_norm_by_layer[layer],slot->delta_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON),"post_attention_norm");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -897,18 +1048,21 @@ static SparkStatus SparkGemma4ModuleRunFeedForward(SparkGemma4ModuleState *state
 	const SparkGemma4DenseMlpWeights *mlp = &state->mlp_by_layer[layer];
 	uint32_t local_intermediate = SPARK_GEMMA4_MODEL_DENSE_INTERMEDIATE_DIMENSION / state->tp_degree;
 	SparkStatus status;
+	SparkGemma4ProfileMark(slot,6u);
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchRmsNorm(stream,slot->hidden_bf16,state->layer_pre_feedforward_norm_by_layer[layer],slot->normalized_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON),"pre_ff_norm");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	SparkGemma4ProfileMark(slot,6u);
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchLinear(stream,&mlp->gate_up,slot->normalized_bf16,slot->mlp_gate_up_bf16,rows),"mlp_gate_up");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchGatedGelu(stream,slot->mlp_gate_up_bf16,rows,local_intermediate),"mlp_gelu");
+	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchGatedGeluCompact(stream,slot->mlp_gate_up_bf16,slot->mlp_activation_bf16,rows,local_intermediate),"mlp_gelu");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchLinear(stream,&mlp->down,slot->mlp_gate_up_bf16,slot->mlp_down_bf16,rows),"mlp_down");
+	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchLinear(stream,&mlp->down,slot->mlp_activation_bf16,slot->mlp_down_bf16,rows),"mlp_down");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	SparkGemma4ProfileMark(slot,5u);
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
 	{
 		const SparkGemma4MoeLayerWeights *moe = &state->moe_by_layer[layer];
@@ -945,10 +1099,13 @@ static SparkStatus SparkGemma4ModuleRunFeedForward(SparkGemma4ModuleState *state
 #endif
 	if ( state->tp_degree > 1u )
 	{
-		status = SparkGemma4ModuleTpAllReduceHidden(state,slot,slot->mlp_down_bf16,rows);
+		status = SparkGemma4ModuleTpReduce(state,slot,slot->mlp_down_bf16,rows,0u);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
+		SparkGemma4ProfileMark(slot,4u);
 	}
+	SparkGemma4T1Buffer(state,slot,"mid",layer,rows,slot->hidden_bf16);
+	SparkGemma4T1Buffer(state,slot,"mlp",layer,rows,slot->mlp_down_bf16);
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchRmsNorm(stream,slot->mlp_down_bf16,state->layer_post_feedforward_norm_by_layer[layer],slot->delta_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON),"post_ff_norm");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -961,6 +1118,7 @@ static SparkStatus SparkGemma4ModuleRunLayer(SparkGemma4ModuleState *state, Spar
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchRmsNorm((cudaStream_t)slot->cuda_stream,slot->hidden_bf16,state->layer_input_norm_by_layer[layer],slot->normalized_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON),"layer_input_norm");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	SparkGemma4ProfileMark(slot,6u);
 	status = SparkGemma4ModuleRunAttentionBody(state,slot,context,layer,rows,SPARK_GEMMA4_MODEL_LAYER_IS_FULL(layer));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -970,6 +1128,7 @@ static SparkStatus SparkGemma4ModuleRunLayer(SparkGemma4ModuleState *state, Spar
 	status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,SparkGemma4LaunchLayerScale((cudaStream_t)slot->cuda_stream,slot->hidden_bf16,state->layer_scalar_by_layer[layer],rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION),"layer_scalar");
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	SparkGemma4ProfileMark(slot,6u);
 	SparkGemma4T1Streams(state,slot,layer,rows);
 	return(SPARK_STATUS_OK);
 }
@@ -1022,22 +1181,41 @@ static SparkStatus SparkGemma4ModuleEmbedRows(SparkGemma4ModuleState *state, Spa
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->tp_degree > 1u )
-		return(SparkGemma4ModuleTpAllReduceHidden(state,slot,slot->hidden_bf16,rows));
+		return(SparkGemma4ModuleTpReduce(state,slot,slot->hidden_bf16,rows,0u));
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const SparkModelDriverFrame *frame, uint32_t rows)
+static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, const SparkModelDriverFrame *frame, const SparkGemma4ResidentDecodeStageFrameContext *context, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	const SparkGemma4DecodeBatchView *batch;
+	uint32_t lane_capacity,lane_span = 0u;
 	cudaError_t error;
 	uint32_t row;
+	batch = context != 0 && (context->flags & SPARK_GEMMA4_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) != 0u ? context->decode_batch : 0;
+	if ( batch == 0 || batch->abi_version != SPARK_GEMMA4_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION ||
+		batch->descriptor_bytes != sizeof(*batch) || batch->row_count != rows ||
+		batch->row_lane_indices == 0 || batch->row_positions == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	lane_capacity = context->kv_block_table != 0 ? context->kv_block_table->lane_capacity : state->max_active_sequence_count;
+	slot->frame_max_context = 0u;
+	if ( lane_capacity > SPARK_GEMMA4_MODULE_HOST_ROW_CAPACITY )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (row = 0u; row < rows; row++)
 	{
+		uint32_t lane = batch->row_lane_indices[row];
+		uint64_t position = batch->row_positions[row];
+		if ( lane >= lane_capacity || position >= UINT32_MAX )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		slot->host_row_lane_indices[row] = row;
-		slot->host_row_positions[row] = frame->sequence_position;
-		slot->host_row_positions_u32[row] = (uint32_t)frame->sequence_position;
-		slot->host_row_sequences_u32[row] = row;
-		slot->host_context_lengths[row] = (uint32_t)frame->sequence_position + 1u;
+		slot->host_row_positions[row] = position;
+		slot->host_row_positions_u32[row] = (uint32_t)position;
+		slot->host_row_sequences_u32[row] = lane;
+		slot->host_context_lengths[lane] = (uint32_t)position + 1u;
+		if ( (uint32_t)position + 1u > slot->frame_max_context )
+			slot->frame_max_context = (uint32_t)position + 1u;
+		if ( lane + 1u > lane_span )
+			lane_span = lane + 1u;
 	}
 	error = cudaMemsetAsync(slot->frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),stream);
 	memset(slot->host_frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t));
@@ -1050,7 +1228,7 @@ static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, Sp
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(slot->row_sequences_u32,slot->host_row_sequences_u32,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
-		error = cudaMemcpyAsync(slot->context_lengths,slot->host_context_lengths,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+		error = cudaMemcpyAsync(slot->context_lengths,slot->host_context_lengths,lane_span * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess && state->owns_embedding != 0u )
 	{
 		if ( frame->buffer_count < 1u || frame->buffers == 0 || frame->buffers[0].address == 0 )
@@ -1068,22 +1246,24 @@ static SparkStatus SparkGemma4ModuleUploadRows(SparkGemma4ModuleState *state, Sp
 	return(SPARK_STATUS_OK);
 }
 
-static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, SparkModelDriverFrame *frame, uint32_t rows, uint32_t first_row, uint32_t copy_rows)
+static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, SparkModelDriverFrame *frame, uint32_t first_row, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
-	cudaError_t error = SparkGemma4LaunchRmsNorm(stream,slot->hidden_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
+	const uint8_t *head_hidden = (const uint8_t *)slot->hidden_bf16 + (uint64_t)first_row * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
+	cudaError_t error = SparkGemma4LaunchRmsNorm(stream,head_hidden,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
 		error = SparkGemma4LaunchHeadDirectArgmax(stream,slot->normalized_bf16,state->token_embedding_bf16,slot->argmax_scratch,slot->argmax_candidate_counts,slot->argmax_token_ids,slot->argmax_score_f32,state->tp_vocab_base,rows,state->tp_vocab_rows);
 	if ( error == cudaSuccess )
 		error = SparkGemma4LaunchHeadMaxLocPack(stream,slot->argmax_score_f32,slot->argmax_token_ids,slot->head_maxloc_u64,rows);
 	if ( error == cudaSuccess && state->tp_degree > 1u )
 	{
-		SparkStatus status = SparkGemma4ModuleTpReduceU64Max(state,slot,slot->head_maxloc_u64,rows);
+		SparkStatus status = SparkGemma4ModuleTpReduce(state,slot,slot->head_maxloc_u64,rows,1u);
 		if ( status != SPARK_STATUS_OK )
 			return(cudaErrorInvalidValue);
 	}
 	if ( error == cudaSuccess )
 		error = SparkGemma4LaunchHeadMaxLocUnpack(stream,slot->head_maxloc_u64,slot->argmax_token_ids,rows);
+	SparkGemma4ProfileMark(slot,7u);
 	if ( error == cudaSuccess )
 		error = cudaMemcpyAsync(slot->host_frame_error,slot->frame_error,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	if ( error == cudaSuccess )
@@ -1094,7 +1274,7 @@ static cudaError_t SparkGemma4ModuleEmitHead(SparkGemma4ModuleState *state, Spar
 		return(cudaErrorInvalidValue);
 	}
 	if ( error == cudaSuccess && frame->buffer_count >= 2u && frame->buffers[1].address != 0 )
-		error = cudaMemcpyAsync(frame->buffers[1].address,slot->argmax_token_ids + first_row,copy_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+		error = cudaMemcpyAsync(frame->buffers[1].address,slot->argmax_token_ids,rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	if ( error == cudaSuccess )
 		error = cudaStreamSynchronize(stream);
 	return(error);
@@ -1104,7 +1284,8 @@ static SparkStatus SparkGemma4ModuleRunDecode(SparkGemma4ModuleState *state, Spa
 {
 	uint32_t layer;
 	SparkStatus status;
-	status = SparkGemma4ModuleUploadRows(state,slot,frame,rows);
+	SparkGemma4ProfileBegin(slot);
+	status = SparkGemma4ModuleUploadRows(state,slot,frame,context,rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->owns_embedding != 0u )
@@ -1113,6 +1294,7 @@ static SparkStatus SparkGemma4ModuleRunDecode(SparkGemma4ModuleState *state, Spa
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
+	SparkGemma4ProfileMark(slot,0u);
 	SparkGemma4T1Frame(state,slot,rows,0u);
 	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
 	{
@@ -1122,9 +1304,10 @@ static SparkStatus SparkGemma4ModuleRunDecode(SparkGemma4ModuleState *state, Spa
 	}
 	if ( state->owns_final_head != 0u )
 	{
-		cudaError_t error = SparkGemma4ModuleEmitHead(state,slot,frame,rows,0u,rows);
+		cudaError_t error = SparkGemma4ModuleEmitHead(state,slot,frame,0u,rows);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,error,"emit_head"));
+		SparkGemma4ProfileEnd(state,rows);
 		SparkGemma4T1Head(state,slot,0u,rows);
 	}
 	return(SPARK_STATUS_OK);
@@ -1151,8 +1334,11 @@ static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, Sp
 		slot->host_row_positions_u32[row] = view->base_position + row;
 		slot->host_row_sequences_u32[row] = view->lane_index;
 		slot->host_slot_mapping[row] = row;
-		slot->host_context_lengths[row] = view->base_position + row + 1u;
 	}
+	if ( view->lane_index >= SPARK_GEMMA4_MODULE_HOST_ROW_CAPACITY )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	slot->host_context_lengths[view->lane_index] = view->base_position + rows;
+	slot->frame_max_context = view->base_position + rows;
 	if ( cudaMemsetAsync(slot->frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t),stream) != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,cudaGetLastError(),"prefill_frame_error"));
 	memset(slot->host_frame_error,0,SPARK_FRAME_ERROR_WORDS * sizeof(uint32_t));
@@ -1162,7 +1348,7 @@ static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, Sp
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,cudaMemcpyAsync(slot->row_sequences_u32,slot->host_row_sequences_u32,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream),"prefill_sequences");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,cudaMemcpyAsync(slot->context_lengths,slot->host_context_lengths,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream),"prefill_context_lengths");
+		status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,cudaMemcpyAsync(slot->context_lengths + view->lane_index,slot->host_context_lengths + view->lane_index,sizeof(uint32_t),cudaMemcpyHostToDevice,stream),"prefill_context_lengths");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,cudaMemcpyAsync(slot->row_lane_indices,slot->host_row_lane_indices,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream),"prefill_lanes");
 	if ( status != SPARK_STATUS_OK )
@@ -1185,6 +1371,7 @@ static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, Sp
 			return(status);
 	}
 	SparkGemma4T1Frame(state,slot,rows,1u);
+	SparkGemma4T1Buffer(state,slot,"embed",0u,rows,slot->hidden_bf16);
 	for (layer = state->first_layer_index; layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		status = SparkGemma4ModuleRunLayer(state,slot,context,layer,rows);
@@ -1193,12 +1380,49 @@ static SparkStatus SparkGemma4ModuleRunPrefill(SparkGemma4ModuleState *state, Sp
 	}
 	if ( state->owns_final_head != 0u )
 	{
-		cudaError_t error = SparkGemma4ModuleEmitHead(state,slot,frame,rows,rows - 1u,1u);
+		cudaError_t error = SparkGemma4ModuleEmitHead(state,slot,frame,rows - 1u,1u);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,error,"prefill_emit_head"));
 		SparkGemma4T1Head(state,slot,rows - 1u,1u);
 	}
 	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkGemma4ModuleChained(const SparkGemma4ModuleState *state)
+{
+	return(state->tp_degree > 1u && state->tp_standalone == 0u && state->tp_collective_initialized != 0u ? 1u : 0u);
+}
+
+static SparkStatus SparkGemma4ModuleChainBegin(SparkGemma4ModuleState *state, const SparkModelDriverFrame *frame)
+{
+	SparkStatus status;
+	if ( SparkGemma4ModuleChained(state) == 0u )
+		return(SPARK_STATUS_OK);
+	status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective,frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s tp_chain_key_failed status=%d request=%llu\n",SPARK_GEMMA4_MODULE_TAG,(int)status,(unsigned long long)frame->request_id);
+	return(status);
+}
+
+static SparkStatus SparkGemma4ModuleChainEnd(SparkGemma4ModuleState *state, SparkGemma4ModuleSlot *slot, SparkStatus frame_status)
+{
+	SparkStatus status;
+	if ( SparkGemma4ModuleChained(state) == 0u )
+		return(frame_status);
+	if ( frame_status == SPARK_STATUS_OK )
+	{
+		cudaError_t drain = cudaStreamSynchronize((cudaStream_t)slot->cuda_stream);
+		if ( drain != cudaSuccess )
+			return(SparkStageModuleCudaStatus(SPARK_GEMMA4_MODULE_TAG,drain,"tp_chain_drain"));
+	}
+	status = SparkTpDeviceCollectiveVerifyDeferred(&state->tp_device_collective,slot->cuda_stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveEndChain(&state->tp_device_collective,slot->cuda_stream);
+	if ( frame_status != SPARK_STATUS_OK )
+		return(frame_status);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s tp_chain_end_failed status=%d\n",SPARK_GEMMA4_MODULE_TAG,(int)status);
+	return(status);
 }
 
 static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelDriverFrame *frame)
@@ -1213,7 +1437,7 @@ static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelD
 	{
 		SparkStatus prefill_status;
 		rows = frame->new_token_count;
-		if ( rows == 0u || rows > state->max_active_sequence_count )
+		if ( rows == 0u || rows > state->max_input_row_count )
 		{
 			atomic_fetch_add_explicit(&state->rejected_count,1u,memory_order_relaxed);
 			return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1228,7 +1452,10 @@ static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelD
 				return(prefill_status);
 		}
 		atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-		prefill_status = SparkGemma4ModuleRunPrefill(state,slot,frame,context);
+		prefill_status = SparkGemma4ModuleChainBegin(state,frame);
+		if ( prefill_status == SPARK_STATUS_OK )
+			prefill_status = SparkGemma4ModuleRunPrefill(state,slot,frame,context);
+		prefill_status = SparkGemma4ModuleChainEnd(state,slot,prefill_status);
 		if ( prefill_status != SPARK_STATUS_OK )
 		{
 			atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
@@ -1266,7 +1493,10 @@ static SparkStatus SparkGemma4ModuleExecuteFrame(void *module_state, SparkModelD
 			return(status);
 	}
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	status = SparkGemma4ModuleRunDecode(state,slot,frame,context,rows);
+	status = SparkGemma4ModuleChainBegin(state,frame);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGemma4ModuleRunDecode(state,slot,frame,context,rows);
+	status = SparkGemma4ModuleChainEnd(state,slot,status);
 	if ( status != SPARK_STATUS_OK )
 	{
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);

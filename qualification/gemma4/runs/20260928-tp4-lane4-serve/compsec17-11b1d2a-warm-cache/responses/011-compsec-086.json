@@ -1,0 +1,52 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:8436/v1/completions",
+  "fixture_prompt_token_count": 330,
+  "prompt_sha256": "102bb1f859448547e648dd0c80cfe0f7b52f19074218902f391a9a40c3c3c8ef",
+  "thinking": "off",
+  "max_tokens": 512,
+  "temperature": 0.0
+ },
+ "response": {
+  "object": "text_completion",
+  "choices": [
+   {
+    "index": 0,
+    "text": "The provided code in this format numbers>",
+    "finish_reason": "stop"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 401,
+   "completion_tokens": 9,
+   "total_tokens": 410
+  },
+  "tokens": [
+   818,
+   3847,
+   3393,
+   528,
+   672,
+   6518,
+   4945,
+   236813,
+   106
+  ],
+  "status": 0
+ },
+ "decoded_text": "The provided code in this format numbers>",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "?",
+  "passed": false,
+  "elapsed_ms": 1824.7,
+  "output_sha256": "c3327a3592289c9a886237005d0a3559959e22e2b07f390a268405be83bc0975",
+  "generated_token_count": 9,
+  "status": 0
+ }
+}

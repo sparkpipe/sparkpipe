@@ -1,0 +1,90 @@
+round=1 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=15.269 min_ms=15.103 max_ms=25.428 mean_ms=17.901
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=17.90 compute_tok_s=56 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=143 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=32.104 min_ms=31.766 max_ms=36.407 mean_ms=32.189
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.19 compute_tok_s=249 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=184 memory_bound_ms=21.66 hidden_finite=1
+round=1 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=13.125 min_ms=12.995 max_ms=14.078 mean_ms=13.153
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=13.15 compute_tok_s=76 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=195 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=32.054 min_ms=31.718 max_ms=35.833 mean_ms=32.119
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.12 compute_tok_s=249 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=184 memory_bound_ms=21.66 hidden_finite=1
+round=2 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=15.235 min_ms=15.169 max_ms=16.127 mean_ms=15.292
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=15.29 compute_tok_s=65 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=168 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=32.215 min_ms=32.029 max_ms=36.293 mean_ms=32.333
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.33 compute_tok_s=247 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=183 memory_bound_ms=21.66 hidden_finite=1
+round=2 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=13.061 min_ms=12.961 max_ms=13.836 mean_ms=13.087
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=13.09 compute_tok_s=76 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=196 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=31.921 min_ms=31.786 max_ms=35.646 mean_ms=32.038
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.04 compute_tok_s=250 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=185 memory_bound_ms=21.66 hidden_finite=1
+round=3 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=15.410 min_ms=15.326 max_ms=16.296 mean_ms=15.444
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=15.44 compute_tok_s=65 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=166 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=32.141 min_ms=31.978 max_ms=36.191 mean_ms=32.259
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.26 compute_tok_s=248 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=183 memory_bound_ms=21.66 hidden_finite=1
+round=3 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=13.097 min_ms=12.984 max_ms=13.874 mean_ms=13.108
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=13.11 compute_tok_s=76 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=196 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=34.845 min_ms=31.757 max_ms=58.440 mean_ms=37.372
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=37.37 compute_tok_s=214 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=158 memory_bound_ms=21.66 hidden_finite=1
+round=4 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=18.263 min_ms=15.426 max_ms=57.330 mean_ms=23.511
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=23.51 compute_tok_s=43 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=109 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=35.515 min_ms=31.807 max_ms=104.619 mean_ms=44.754
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=44.75 compute_tok_s=179 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=132 memory_bound_ms=21.66 hidden_finite=1
+round=4 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=13.330 min_ms=12.559 max_ms=23.708 mean_ms=15.082
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=15.08 compute_tok_s=66 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=170 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=31.828 min_ms=31.452 max_ms=36.544 mean_ms=32.160
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.16 compute_tok_s=249 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=184 memory_bound_ms=21.66 hidden_finite=1
+round=5 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=22.487 min_ms=14.866 max_ms=27.525 mean_ms=20.808
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=20.81 compute_tok_s=48 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=123 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=31.868 min_ms=31.470 max_ms=55.162 mean_ms=37.109
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=37.11 compute_tok_s=216 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=159 memory_bound_ms=21.66 hidden_finite=1
+round=5 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=12.941 min_ms=12.843 max_ms=13.753 mean_ms=12.965
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=12.97 compute_tok_s=77 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=198 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=31.975 min_ms=31.706 max_ms=36.187 mean_ms=32.062
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.06 compute_tok_s=250 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=184 memory_bound_ms=21.66 hidden_finite=1
+round=6 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=15.291 min_ms=15.213 max_ms=16.067 mean_ms=15.308
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=15.31 compute_tok_s=65 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=167 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=32.162 min_ms=31.947 max_ms=33.134 mean_ms=32.178
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.18 compute_tok_s=249 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=184 memory_bound_ms=21.66 hidden_finite=1
+round=6 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=12.938 min_ms=12.833 max_ms=13.778 mean_ms=12.955
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=12.96 compute_tok_s=77 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=198 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=31.993 min_ms=31.708 max_ms=33.615 mean_ms=32.026
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.03 compute_tok_s=250 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=185 memory_bound_ms=21.66 hidden_finite=1
+round=7 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=15.549 min_ms=15.392 max_ms=18.068 mean_ms=15.635
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=15.64 compute_tok_s=64 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=164 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=31.713 min_ms=31.417 max_ms=38.855 mean_ms=32.729
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=32.73 compute_tok_s=244 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=181 memory_bound_ms=21.66 hidden_finite=1
+round=7 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=12.983 min_ms=12.848 max_ms=15.793 mean_ms=13.061
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=13.06 compute_tok_s=77 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=196 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=31.870 min_ms=31.628 max_ms=32.776 mean_ms=31.918
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=31.92 compute_tok_s=251 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=185 memory_bound_ms=21.66 hidden_finite=1
+round=8 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=15.442 min_ms=15.309 max_ms=18.350 mean_ms=15.533
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=15.53 compute_tok_s=64 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=165 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=32.183 min_ms=31.893 max_ms=46.712 mean_ms=36.369
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=36.37 compute_tok_s=220 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=163 memory_bound_ms=21.66 hidden_finite=1
+round=8 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=12.908 min_ms=12.861 max_ms=13.803 mean_ms=12.965
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=12.97 compute_tok_s=77 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=198 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=31.800 min_ms=31.705 max_ms=32.552 mean_ms=31.875
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=31.87 compute_tok_s=251 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=185 memory_bound_ms=21.66 hidden_finite=1
+round=9 variant=base
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1462 replays=100 median_ms=15.513 min_ms=15.385 max_ms=15.778 mean_ms=15.520
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=15.52 compute_tok_s=64 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=165 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1462 replays=100 median_ms=32.221 min_ms=31.537 max_ms=49.154 mean_ms=34.598
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=34.60 compute_tok_s=231 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=171 memory_bound_ms=21.66 hidden_finite=1
+round=9 variant=c13
+ROOFLINE-GRAPH rows=1 route_readback=0 nodes=1394 replays=100 median_ms=13.025 min_ms=12.868 max_ms=15.555 mean_ms=13.638
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=13.64 compute_tok_s=73 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=188 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-GRAPH rows=8 route_readback=0 nodes=1394 replays=100 median_ms=31.908 min_ms=31.632 max_ms=57.540 mean_ms=34.410
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=34.41 compute_tok_s=232 distinct_experts=56.0 uniform_expect=58.1 step_gb=5.91 achieved_gbps=172 memory_bound_ms=21.66 hidden_finite=1

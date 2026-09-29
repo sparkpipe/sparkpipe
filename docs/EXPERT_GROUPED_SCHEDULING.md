@@ -2,61 +2,94 @@
 
 ## The idea
 
-Stop thinking about batch sizes. Stop thinking about B1, B8, B64, B1024
-as fixed operating points. Instead:
+Stop thinking about batch sizes. Stop thinking about B1, B8, B64 and B1024
+as fixed operating points.
 
-**Process every request that is ready to be processed, in one
-expert-grouped pass.** The batch size is however many requests are
-pending — from 1 to ∞ — and the MoE weight cost is the same regardless.
+**Process every request that is ready, in one expert-grouped pass.** The
+batch size is however many requests are pending. Each expert's weights are
+read once per step for all of the rows routed to it.
+
+Weight traffic does not stay flat as B grows. It grows with the number of
+**distinct** experts the step touches and saturates at E:
+
+- At B1 only top_k experts per layer are read: 8 of 288 for GLM 5.3 Flash,
+  16 of 896 for K3. That is why B1 is fast, and the TP16 B1 target depends
+  on it.
+- Once most experts are touched, traffic is roughly constant and extra rows
+  cost compute only. README §Batching is the short, authoritative form of
+  this rule.
 
 ## Why this works: the weight-amortization crossover
 
-For a MoE layer with E experts, top-k routing, and B pending requests:
+For a MoE layer with E experts, top-k routing and B pending rows:
 
 | | Memory (weight stream) | Compute (expert math) |
 |---|---|---|
-| Traffic | E × bytes_per_expert (constant!) | B × top_k × FLOPs (linear in B) |
-| Time | E × bytes / HBM_BW | B × top_k × FLOPs / compute_rate |
+| Traffic | D(B) × bytes_per_expert, with D(B) ≤ E | B × top_k × FLOPs_per_expert (linear in B) |
+| Time | D(B) × bytes / BW | B × top_k × FLOPs / compute_rate |
 
-At small B, **memory dominates**: loading the expert weights costs more
-than computing with them. At large B, **compute dominates**: the weights
-are loaded once and the math is the cost.
-
-The crossover B* where memory time = compute time:
+D(B) is the number of distinct experts the step touches. Assuming uniform,
+independent routing (arithmetic, not a measurement):
 
 ```
-E × bytes / BW = B × top_k × FLOPs / rate
-B* = (E × bytes × rate) / (top_k × FLOPs × BW)
+D(B) = E × (1 − (1 − top_k/E)^B)
 ```
 
-Below B*: adding tokens is nearly free (weight amortization).
-Above B*: adding tokens costs compute (but that compute is useful work).
+For GLM 5.3 Flash (E=288, top-8) this gives D(1)=8, D(8)≈58 and
+D(64)≈241. That matches README's "B64 already touches 240 experts".
 
-**The optimal operating point is B\* — full weight amortization, minimal
-queuing latency beyond the compute itself.**
+**Small B: memory dominates.** Loading the touched experts costs more than
+computing with them. Adding a row adds only the experts no other row had
+already touched.
+
+**Large B: compute dominates.** Once D(B) ≈ E, the weights are loaded once
+and the math is the cost. The crossover B* is where D(B) × bytes / BW
+equals B × top_k × FLOPs / rate.
+
+**The optimal operating point is B\*.** There, weight amortization is full
+and queuing latency adds little beyond the compute itself.
 
 ## Concrete numbers (K3: 896 experts, top-16, MXFP4, 93 layers)
 
-- Per-expert weights: 25.7 MB (MXFP4)
-- HBM bandwidth: 250 GB/s
-- Per-layer weight stream: 896 × 25.7 MB = 23 GB → 92 ms
+All values below are arithmetic from the model definition. None is
+measured.
 
-At B=1024 (1024 pending decode requests):
-- Each expert activated ~18.3 times (1024 × 16 / 896)
-- Weight traffic: **23 GB** (same as B=1!)
-- Naive token-major would be 420 TB (18.3× re-read × 896 experts)
-- **The grouped approach is 18× less traffic at B=1024, and the ratio
-  grows with B**
+**Model constants.**
 
-At B=100,000:
-- Each expert activated ~1,786 times
-- Weight traffic: **still 23 GB**
-- Hidden-state scratch: 100K × 7168 × 2 = 1.4 GB
-- Compute: 100K × 16 × 2 × 7168 × 3584 FLOPs per layer = 8.2 TFLOP
-  → at ~50 TFLOPS effective: 165 ms
-- MoE HBM+compute: 92 + 165 = 257 ms per layer
-- Per-token: 257/100000 = 2.6 µs per layer = 240 µs for 93 layers
-- Aggregate: **~4,200 tok/s decode** (compute-bound, not memory-bound)
+- **Expert shape.** An expert maps the 3584-dim routed latent through a
+  3072-dim intermediate:
+  - `SPARK_K3_MODEL_MOE_ROUTED_EXPERT_HIDDEN_DIMENSION` = 3584 and
+    `SPARK_K3_MODEL_MOE_INTERMEDIATE_DIMENSION` = 3072
+    (`model-families/k3/include/sparkpipe/spark_k3_llm_defines.h`);
+  - the same values appear as `latent_dimension` and
+    `expert_intermediate_dimension` in `model_contracts/k3_authoritative.json`.
+- **Bytes per expert: 17,547,264**, about 17.5 MB
+  (`full_model_expert_bytes` in `model-families/k3/smoke_experts.json`).
+  That is 3 × 3584 × 3072 weights at 4.25 bits each: 4-bit E2M1, plus one
+  E8M0 scale per 32 weights.
+- **All experts of one layer:** 896 × 17.5 MB ≈ 15.7 GB.
+- **Layers.** Layers 1-92 are routed (`SPARK_LLM_FIRST_ROUTED_LAYER` 1 of
+  93), so all routed experts together are ≈ 1.45 TB.
+- **Fleet bandwidth:** 16 × 273 GB/s ≈ 4.4 TB/s (`README.md`).
+
+**Weight traffic per layer by batch size.** Grouped traffic assumes the
+D(B) formula above.
+
+| B | Distinct experts D(B) | Grouped (GB/layer) | Token-major (GB/layer) | Token-major ÷ grouped |
+|---:|---:|---:|---:|---:|
+| 1 | 16 | 0.28 | 0.28 | 1.0 |
+| 8 | 120 | 2.1 | 2.2 | 1.06 |
+| 64 | 613 | 10.8 | 18.0 | 1.7 |
+| 256 | 887 | 15.6 | 71.9 | 4.6 |
+| 1024 | 896 | 15.7 | 287.5 | 18.3 |
+
+- **B1.** 16 experts × 17.5 MB × 92 layers ≈ 25.8 GB of expert weight per
+  token.
+- **Saturation.** Once D(B) ≈ E, a step streams all ≈ 1.45 TB of routed
+  experts. At the full fleet bandwidth that takes about 0.33 s. This is an
+  ideal: every Spark at 273 GB/s, with the experts evenly sharded.
+- **B*_compute** must be measured on the fleet. Profile the MoE layer at
+  increasing B and find where per-token cost stops dropping.
 
 ## The scheduling rule
 
@@ -93,26 +126,22 @@ There are no operating points — there is one continuous function from
 queue depth to aggregate throughput, and the scheduler always operates
 on the full ready set (or the compute-bound cap of it).
 
-**The scoreboard changes**: instead of "tok/s at B=8", the metric is
-"aggregate tok/s at queue depth Q" — or better, "tok/s at the
-compute-bound knee" (the maximum sustainable throughput).
+**The scoreboard changes.** Instead of "tok/s at B=8", report aggregate
+tok/s at queue depth Q, and the maximum sustainable throughput at the
+compute-bound knee. Report per-stream tok/s next to it. Per-stream speed
+falls as B grows, because the bytes read per step grow with the number of
+experts touched (see the GLM 5.3 Flash TP16 projection table in
+`PERFORMANCE_STATUS.md`).
 
 ## What needs to change in the code
 
-| Component | Current | Needed |
-|---|---|---|
-| Batch engine admission | KV-resident per microbatch | Admit ALL with KV resident |
-| Decode batch assembly | row_count = current lanes | row_count = all pending |
-| Route build input | rows = microbatch rows | rows = all pending rows |
-| Grouped GEMM | Already handles any rows | Nothing |
-| Output scatter | route_source_token already does it | Nothing |
-| Hidden-state buffer | Per-microbatch | Persistent buffer sized to MAX_PENDING |
-| MAX_ACTIVE_SEQUENCE_COUNT | 64–512 | Raise, or chunk into 512-slices with pipelined weight reuse |
-| Scheduler | Fixed batch buckets | Ready-set admission + compute-bound cap |
+`model_batch_engine` is already a submission-wave continuous batcher. It
+admits the whole ready set and interleaves chunked prefill with decode
+(README §Batching). The GLM Flash scheduler already selects any count up to
+its configured limit.
 
-The counting sort kernel needs zero changes. The grouped GEMM needs zero
-changes. The route_source_token scatter needs zero changes. **All the
-work is in the batch engine's admission and assembly logic.**
+The remaining work is listed in TECHDEBT §Dynamic batching: qualifying
+larger capacities, and bitwise B1 equality.
 
 ## Cross-layer dataflow (second-order optimization)
 

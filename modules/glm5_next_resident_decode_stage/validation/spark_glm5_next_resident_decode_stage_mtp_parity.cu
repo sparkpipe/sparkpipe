@@ -4,11 +4,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_weight_codec.h"
 #include "sparkpipe/spark_speculation_policy.h"
+#include "sparkpipe/spark_speculation_reference_draft.h"
+#include "sparkpipe/spark_glm5_next_verify_regime.h"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_head_screen.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
@@ -24,11 +28,17 @@
 #define SPARK_GLM5_NEXT_MTP_PARITY_DECODE_TOKENS 80u
 #define SPARK_GLM5_NEXT_MTP_PARITY_VERIFY_ROWS \
 	(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + 1u)
+#define SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS SPARK_GLM5_NEXT_VERIFY_ROWS_MAX
 #define SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS \
-	(SPARK_GLM5_NEXT_MTP_PARITY_DECODE_TOKENS + SPARK_GLM5_NEXT_MTP_PARITY_VERIFY_ROWS)
+	(SPARK_GLM5_NEXT_MTP_PARITY_DECODE_TOKENS + SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS)
+#define SPARK_GLM5_NEXT_MTP_PARITY_REFERENCE_MODES 3u
+#define SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL 2040u
+#define SPARK_GLM5_NEXT_MTP_PARITY_LONG_DECODE 40u
+#define SPARK_GLM5_NEXT_MTP_PARITY_LONG_REF_TOKENS \
+	(SPARK_GLM5_NEXT_MTP_PARITY_LONG_DECODE + SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS)
 #define SPARK_GLM5_NEXT_MTP_PARITY_LAYERS 4u
 #define SPARK_GLM5_NEXT_MTP_PARITY_KDA_ORDINALS 3u
-#define SPARK_GLM5_NEXT_MTP_PARITY_PAGES 2u
+#define SPARK_GLM5_NEXT_MTP_PARITY_PAGES 34u
 #define SPARK_GLM5_NEXT_MTP_PARITY_PAGE_TOKENS 64u
 #define SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS \
 	(SPARK_GLM5_NEXT_MTP_PARITY_PAGES * SPARK_GLM5_NEXT_MTP_PARITY_PAGE_TOKENS)
@@ -41,6 +51,7 @@
 	 SPARK_GLM5_NEXT_MTP_PARITY_HEAD_TILE)
 #define SPARK_GLM5_NEXT_MTP_PARITY_FILL_CHUNK_ELEMENTS (1u << 22)
 #define SPARK_GLM5_NEXT_MTP_PARITY_KV_ACCESS_WORDS 6u
+#define SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD 64u
 
 #define SPARK_GLM5_NEXT_MTP_PARITY_SCALE_PROJ 0.02f
 #define SPARK_GLM5_NEXT_MTP_PARITY_SCALE_ATTN_OUT 0.01f
@@ -79,10 +90,18 @@
 
 static_assert(
 	SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS + SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS + \
-		SPARK_GLM5_NEXT_MTP_PARITY_VERIFY_ROWS <= SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS,
+		SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS <= SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS,
 	"parity walk must fit the page table");
-static_assert(SPARK_GLM5_NEXT_MTP_PARITY_VERIFY_ROWS <= SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY,
+static_assert(SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS <= SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY,
 	"verify wave must fit the scratch row capacity");
+static_assert(SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL + SPARK_GLM5_NEXT_MTP_PARITY_LONG_REF_TOKENS +
+		SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS <= SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS &&
+		SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL < SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K &&
+		SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL + SPARK_GLM5_NEXT_MTP_PARITY_LONG_DECODE / 2u > SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K,
+	"the long walk must cross into the selected-attention regime and fit the page table");
+static_assert(SPARK_GLM5_NEXT_MTP_PARITY_VERIFY_ROWS <= SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS &&
+		SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS <= SPARK_GLM5_NEXT_REPLAY_ROWS_MAX,
+	"every verify wave must fit the replay fold");
 static_assert(SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS <= SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY,
 	"prefill wave must fit the scratch row capacity");
 static_assert(SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH == 2u,
@@ -144,6 +163,9 @@ typedef struct SparkGlm5NextMtpParityWeights
 	uint16_t *embedding_bf16;
 	uint16_t *lm_head_bf16;
 	uint16_t *mtp_eh_proj_bf16;
+	uint8_t *head_certified_payload;
+	float *head_certified_scale_f32;
+	float *head_certified_norm_f32;
 } SparkGlm5NextMtpParityWeights;
 
 typedef struct SparkGlm5NextMtpParityFixture
@@ -172,10 +194,26 @@ typedef struct SparkGlm5NextMtpParityFixture
 	uint32_t host_resident_slots[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY];
 	uint32_t host_run_begin[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY + 1u];
 	uint32_t host_run_state_index[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY];
+	uint32_t host_run_row_indices[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY];
 	uint32_t host_output[SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY];
 	uint32_t reference_tokens[SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS];
+	uint32_t long_prompt[SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL];
+	uint32_t long_reference_tokens[SPARK_GLM5_NEXT_MTP_PARITY_LONG_REF_TOKENS];
 	uint8_t *snapshots;
+	uint8_t *long_snapshots;
 } SparkGlm5NextMtpParityFixture;
+
+typedef struct SparkGlm5NextMtpParityPhase
+{
+	const char *name;
+	const uint32_t *prompt;
+	uint32_t prompt_rows;
+	const uint32_t *reference;
+	uint32_t reference_count;
+	uint32_t decode_tokens;
+	uint8_t *snapshots;
+	uint32_t capture_bound;
+} SparkGlm5NextMtpParityPhase;
 
 static int SparkGlm5NextMtpParityFail(const char *check,const char *detail)
 {
@@ -565,13 +603,20 @@ static int SparkGlm5NextMtpParityBuildScratch(SparkGlm5NextMtpParityFixture *fix
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(dense_tile_prefix,4u)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(run_begin,rows + 1u)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(run_state_index,rows)
+	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(run_row_indices,rows)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(output_token,rows)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_F32(output_score,rows,1u)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_F32(head_candidate_score,rows,SPARK_GLM5_NEXT_MTP_PARITY_HEAD_TILES)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(head_candidate_token,rows * SPARK_GLM5_NEXT_MTP_PARITY_HEAD_TILES)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(kv_access_error,SPARK_GLM5_NEXT_MTP_PARITY_KV_ACCESS_WORDS)
 	slot->head_maxloc_u64 = (uint64_t *)SparkGlm5NextMtpParityAlloc(rows * sizeof(uint64_t),"head_maxloc_u64");
-	if ( slot->head_maxloc_u64 == 0 )
+	slot->head_certified_scratch = SparkGlm5NextMtpParityAlloc(
+		SparkHeadCertifiedFp8ScratchBytes(SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,hidden),"head_certified_scratch");
+	slot->head_certified_candidates = (uint32_t *)SparkGlm5NextMtpParityAlloc(
+		SparkHeadCertifiedFp8CandidateBytes(SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT),"head_certified_candidates");
+	slot->head_screened_count = (uint32_t *)SparkGlm5NextMtpParityAlloc(sizeof(uint32_t),"head_screened_count");
+	if ( slot->head_maxloc_u64 == 0 || slot->head_certified_scratch == 0 || slot->head_certified_candidates == 0 ||
+		slot->head_screened_count == 0 )
 		return(1);
 	slot->attention_split_partials_f32 = (float *)SparkGlm5NextMtpParityAlloc(
 		SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BYTES(rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT),
@@ -580,8 +625,9 @@ static int SparkGlm5NextMtpParityBuildScratch(SparkGlm5NextMtpParityFixture *fix
 		return(1);
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_BF16(mtp_hidden_bf16,1u,hidden)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_BF16(mtp_concat_bf16,1u,2u * hidden)
-	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(mtp_positions,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH)
-	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(mtp_context,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH)
+	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(mtp_positions,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX)
+	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(mtp_context,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX)
+	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(mtp_draft_device,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(mtp_page_table,1u)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(mtp_sequence,1u)
 	SPARK_GLM5_NEXT_MTP_PARITY_SCRATCH_U32(mtp_committed,1u)
@@ -591,10 +637,10 @@ static int SparkGlm5NextMtpParityBuildScratch(SparkGlm5NextMtpParityFixture *fix
 		(uint64_t)SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u *
 			SPARK_GLM5_NEXT_MODEL_DSA_LAYER_COUNT,"mtp_index_pool");
 	slot->mtp_replay_steps = SparkGlm5NextMtpParityAlloc(
-		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_KDA_ORDINALS * SPARK_GLM5_NEXT_MTP_PARITY_VERIFY_ROWS *
+		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_KDA_ORDINALS * SPARK_GLM5_NEXT_REPLAY_ROWS_MAX * SPARK_GLM5_NEXT_REPLAY_ROWS_MAX *
 			SPARK_GLM5_NEXT_MTP_REPLAY_STEP_BYTES,"mtp_replay_steps");
 	slot->mtp_conv_scratch = (uint16_t *)SparkGlm5NextMtpParityAlloc(
-		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_VERIFY_ROWS * kda_dim * sizeof(uint16_t),"mtp_conv_scratch");
+		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS * kda_dim * sizeof(uint16_t),"mtp_conv_scratch");
 	slot->kda_replay_pool = (uint8_t *)SparkGlm5NextMtpParityAlloc(
 		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_KDA_ORDINALS * fixture->kda_replay_layer_bytes,"kda_replay_pool");
 	if ( slot->mtp_kv_pool == 0 || slot->mtp_index_pool == 0 || slot->mtp_replay_steps == 0 ||
@@ -690,6 +736,7 @@ static void SparkGlm5NextMtpParityBuildWave(
 		fixture->host_token_ids[row] = tokens[row];
 		fixture->host_positions[row] = first_position + row;
 		fixture->host_resident_slots[row] = 0u;
+		fixture->host_run_row_indices[row] = row;
 	}
 	fixture->host_run_begin[0] = 0u;
 	fixture->host_run_begin[1] = row_count;
@@ -714,6 +761,9 @@ static void SparkGlm5NextMtpParityBuildWave(
 	wave->embedding_bf16 = fixture->weights.embedding_bf16;
 	wave->final_norm_bf16 = fixture->weights.norm_hidden_bf16;
 	wave->lm_head_bf16 = fixture->weights.lm_head_bf16;
+	wave->head_certified_fp8_payload = fixture->weights.head_certified_payload;
+	wave->head_certified_fp8_scale_f32 = fixture->weights.head_certified_scale_f32;
+	wave->head_certified_fp8_norm_f32 = fixture->weights.head_certified_norm_f32;
 	wave->layers = fixture->layers;
 	wave->slot = &fixture->slot;
 	wave->kv_cache = fixture->kv_cache;
@@ -737,6 +787,9 @@ static void SparkGlm5NextMtpParityBuildWave(
 	wave->run_state_index = fixture->slot.run_state_index;
 	wave->host_sequence_row_begin = fixture->host_run_begin;
 	wave->host_run_state_index = fixture->host_run_state_index;
+	wave->sequence_row_indices = fixture->slot.run_row_indices;
+	wave->host_sequence_row_indices = fixture->host_run_row_indices;
+	wave->index_cp_degree = 1u;
 	wave->commit = commit;
 	wave->mtp_verify = mtp_verify;
 	wave->mtp_draft_depth = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
@@ -747,8 +800,9 @@ static void SparkGlm5NextMtpParityBuildWave(
 	wave->mtp_shared_norm_bf16 = fixture->weights.norm_hidden_bf16;
 	wave->kda_replay_layer_bytes = fixture->kda_replay_layer_bytes;
 	wave->page_table = fixture->page_table;
+	wave->physical_page_count = SPARK_GLM5_NEXT_MTP_PARITY_PAGES;
 	wave->multiprocessor_count = fixture->multiprocessor_count;
-	wave->decode_split_context_threshold = 0u;
+	wave->decode_split_context_threshold = SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD;
 	wave->attention_split_partials_f32 = fixture->slot.attention_split_partials_f32;
 	wave->attention_split_partial_blocks = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(
 		SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT);
@@ -802,6 +856,9 @@ static int SparkGlm5NextMtpParityCheckKvAccess(SparkGlm5NextMtpParityFixture *fi
 	return(0);
 }
 
+static uint16_t *spark_glm5_next_mtp_parity_tap_mean;
+static uint16_t *spark_glm5_next_mtp_parity_tap_all;
+
 static int SparkGlm5NextMtpParityRunWave(SparkGlm5NextMtpParityFixture *fixture,const char *label)
 {
 	uint32_t local;
@@ -825,6 +882,14 @@ static int SparkGlm5NextMtpParityRunWave(SparkGlm5NextMtpParityFixture *fixture,
 		status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,local);
 		if ( status != 0 )
 			return(SparkGlm5NextMtpParityLaunchFail(label,"mlp_post",status));
+		if ( spark_glm5_next_mtp_parity_tap_mean != 0 )
+		{
+			status = SparkGlm5NextLaunchCudaTapCapture(&fixture->wave,0u,spark_glm5_next_mtp_parity_tap_mean + (uint64_t)local * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION);
+			if ( status == 0 )
+				status = SparkGlm5NextLaunchCudaTapCapture(&fixture->wave,1u,spark_glm5_next_mtp_parity_tap_all + (uint64_t)local * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION);
+			if ( status != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail(label,"tap_capture",status));
+		}
 	}
 	status = SparkGlm5NextLaunchCudaWaveHead(&fixture->wave);
 	if ( status != 0 )
@@ -871,10 +936,8 @@ static uint8_t *SparkGlm5NextMtpParitySnapshotBlock(
 		(uint64_t)snapshot_index * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES);
 }
 
-static int SparkGlm5NextMtpParitySnapshot(SparkGlm5NextMtpParityFixture *fixture,uint32_t snapshot_index)
+static int SparkGlm5NextMtpParitySnapshotTo(SparkGlm5NextMtpParityFixture *fixture,uint8_t *block)
 {
-	uint8_t *block;
-	block = SparkGlm5NextMtpParitySnapshotBlock(fixture,snapshot_index);
 	if ( SparkGlm5NextMtpParityCuda(cudaMemcpy(block,fixture->kda_state_pools,
 		(size_t)SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES,cudaMemcpyDeviceToHost),"snapshot","kda_state") != 0 ||
 		SparkGlm5NextMtpParityCuda(cudaMemcpy(block + SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES,fixture->kda_window_pools,
@@ -887,6 +950,11 @@ static int SparkGlm5NextMtpParitySnapshot(SparkGlm5NextMtpParityFixture *fixture
 		(size_t)SPARK_GLM5_NEXT_MTP_PARITY_INDEX_BYTES,cudaMemcpyDeviceToHost),"snapshot","index_cache") != 0 )
 		return(1);
 	return(0);
+}
+
+static int SparkGlm5NextMtpParitySnapshot(SparkGlm5NextMtpParityFixture *fixture,uint32_t snapshot_index)
+{
+	return(SparkGlm5NextMtpParitySnapshotTo(fixture,SparkGlm5NextMtpParitySnapshotBlock(fixture,snapshot_index)));
 }
 
 static int SparkGlm5NextMtpParityCompareRegion(
@@ -912,16 +980,15 @@ static int SparkGlm5NextMtpParityCompareRegion(
 	return(0);
 }
 
-static int SparkGlm5NextMtpParityCompareState(
+static int SparkGlm5NextMtpParityCompareStateAt(
 	SparkGlm5NextMtpParityFixture *fixture,
+	const uint8_t *block,
 	uint32_t snapshot_index,
 	uint8_t *scratch,
 	const char *label)
 {
-	const uint8_t *block;
 	uint64_t kv_bytes;
 	uint64_t index_bytes;
-	block = SparkGlm5NextMtpParitySnapshotBlock(fixture,snapshot_index);
 	if ( SparkGlm5NextMtpParityCompareRegion(block,fixture->kda_state_pools,
 		SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES,scratch,label,"kda_state",snapshot_index) != 0 )
 		return(1);
@@ -944,14 +1011,47 @@ static int SparkGlm5NextMtpParityCompareState(
 	return(0);
 }
 
+static int SparkGlm5NextMtpParityCompareState(
+	SparkGlm5NextMtpParityFixture *fixture,
+	uint32_t snapshot_index,
+	uint8_t *scratch,
+	const char *label)
+{
+	return(SparkGlm5NextMtpParityCompareStateAt(fixture,SparkGlm5NextMtpParitySnapshotBlock(fixture,snapshot_index),snapshot_index,scratch,label));
+}
+
 static const uint32_t SPARK_GLM5_NEXT_MTP_PARITY_PROMPT[SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS] =
 	{ 11u, 902u, 47u, 1888u, 5u, 203u };
+
+static int SparkGlm5NextMtpParityBuildCertifiedHead(SparkGlm5NextMtpParityFixture *fixture,uint32_t ties)
+{
+	SparkGlm5NextMtpParityWeights *weights = &fixture->weights;
+	uint64_t row_bytes = (uint64_t)SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
+	uint64_t groups = (uint64_t)SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT * (SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION / SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE);
+	if ( ties != 0u && SparkGlm5NextMtpParityCuda(cudaMemcpy2DAsync(weights->lm_head_bf16 + SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,2u * row_bytes,
+		weights->lm_head_bf16,2u * row_bytes,row_bytes,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT / 2u,cudaMemcpyDeviceToDevice,fixture->stream),"head_ties","twin_rows") != 0 )
+		return(1);
+	if ( weights->head_certified_payload == 0 )
+	{
+		weights->head_certified_payload = (uint8_t *)SparkGlm5NextMtpParityAlloc(
+			(uint64_t)SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,"head_certified_payload");
+		weights->head_certified_scale_f32 = (float *)SparkGlm5NextMtpParityAlloc(groups * sizeof(float),"head_certified_scale");
+		weights->head_certified_norm_f32 = (float *)SparkGlm5NextMtpParityAlloc(groups * sizeof(float),"head_certified_norm");
+		if ( weights->head_certified_payload == 0 || weights->head_certified_scale_f32 == 0 || weights->head_certified_norm_f32 == 0 )
+			return(1);
+	}
+	if ( SparkGlm5NextMtpParityCuda(SparkGlm5NextLaunchHeadCertifiedQuantize(fixture->stream,weights->lm_head_bf16,weights->head_certified_payload,
+		weights->head_certified_scale_f32,weights->head_certified_norm_f32,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION),
+		"head_certified","quantize") != 0 )
+		return(1);
+	return(SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),"head_certified","sync"));
+}
 
 static int SparkGlm5NextMtpParityFixtureBuild(SparkGlm5NextMtpParityFixture *fixture)
 {
 	SparkGlm5NextKdaReplayLayout replay_layout;
 	uint32_t host_page_table[SPARK_GLM5_NEXT_MTP_PARITY_PAGES];
-	uint32_t mtp_meta[2u * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH];
+	uint32_t mtp_meta[2u * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX];
 	uint32_t zero;
 	uint32_t index;
 	memset(fixture,0,sizeof(*fixture));
@@ -964,10 +1064,11 @@ static int SparkGlm5NextMtpParityFixtureBuild(SparkGlm5NextMtpParityFixture *fix
 	if ( SparkGlm5NextMtpParityCuda(cudaStreamCreate(&fixture->stream),"fixture","stream") != 0 )
 		return(1);
 	replay_layout = SparkGlm5NextKdaReplayLayoutFor(
-		SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,SPARK_GLM5_NEXT_MTP_PARITY_VERIFY_ROWS);
+		SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS);
 	fixture->kda_replay_layer_bytes = replay_layout.layer_bytes;
 	if ( SparkGlm5NextMtpParityBuildWeights(fixture) != 0 ||
-		SparkGlm5NextMtpParityBuildScratch(fixture) != 0 )
+		SparkGlm5NextMtpParityBuildScratch(fixture) != 0 ||
+		SparkGlm5NextMtpParityBuildCertifiedHead(fixture,0u) != 0 )
 		return(1);
 	fixture->kda_state_pools = (uint8_t *)SparkGlm5NextMtpParityAlloc(
 		SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES,"kda_state_pools");
@@ -990,26 +1091,30 @@ static int SparkGlm5NextMtpParityFixtureBuild(SparkGlm5NextMtpParityFixture *fix
 	for ( index = 0u; index < SPARK_GLM5_NEXT_MTP_PARITY_PAGES; index++ )
 		host_page_table[index] = index;
 	zero = 0u;
-	for ( index = 0u; index < SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH; index++ )
+	for ( index = 0u; index < SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX; index++ )
 	{
 		mtp_meta[index] = index;
-		mtp_meta[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH + index] = index + 1u;
+		mtp_meta[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX + index] = index + 1u;
 	}
 	if ( SparkGlm5NextMtpParityUpload(fixture->page_table,host_page_table,sizeof(host_page_table),"page_table") != 0 ||
 		SparkGlm5NextMtpParityUpload(fixture->kda_state_index_device,&zero,sizeof(zero),"kda_state_index") != 0 ||
 		SparkGlm5NextMtpParityUpload(fixture->slot.mtp_positions,mtp_meta,
-			SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH * sizeof(uint32_t),"mtp_positions") != 0 ||
+			SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX * sizeof(uint32_t),"mtp_positions") != 0 ||
 		SparkGlm5NextMtpParityUpload(fixture->slot.mtp_context,
-			mtp_meta + SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH,
-			SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH * sizeof(uint32_t),"mtp_context") != 0 ||
+			mtp_meta + SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX,
+			SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX * sizeof(uint32_t),"mtp_context") != 0 ||
 		SparkGlm5NextMtpParityUpload(fixture->slot.mtp_page_table,&zero,sizeof(zero),"mtp_page_table") != 0 ||
 		SparkGlm5NextMtpParityUpload(fixture->slot.mtp_sequence,&zero,sizeof(zero),"mtp_sequence") != 0 )
 		return(1);
 	fixture->slot.kda_state_index = fixture->kda_state_index_device;
 	fixture->snapshots = (uint8_t *)malloc(
 		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_COUNT * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES);
-	if ( fixture->snapshots == 0 )
+	fixture->long_snapshots = (uint8_t *)malloc(
+		(uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_LONG_REF_TOKENS * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES);
+	if ( fixture->snapshots == 0 || fixture->long_snapshots == 0 )
 		return(SparkGlm5NextMtpParityFail("alloc_host","snapshots"));
+	for ( index = 0u; index < SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL; index++ )
+		fixture->long_prompt[index] = (index * 7919u + 13u) % 50021u;
 	SparkGlm5NextMtpParityBindLayers(fixture);
 	SparkGlm5NextMtpParityBuildDraftWave(fixture);
 	return(0);
@@ -1160,7 +1265,9 @@ static int SparkGlm5NextMtpParityRunSpeculative(SparkGlm5NextMtpParityFixture *f
 			return(1);
 		{
 			int32_t commit_status;
-			commit_status = SparkGlm5NextLaunchCudaMtpCommit(&fixture->wave,committed);
+			commit_status = SparkGlm5NextPrepareCudaReplayFold(&fixture->wave,fixture->wave.row_count);
+			if ( commit_status == 0 )
+				commit_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
 			if ( commit_status != 0 )
 				return(SparkGlm5NextMtpParityLaunchFail("spec_commit","fold",commit_status));
 		}
@@ -1188,6 +1295,545 @@ static int SparkGlm5NextMtpParityRunSpeculative(SparkGlm5NextMtpParityFixture *f
 	return(0);
 }
 
+static const char *SparkGlm5NextMtpParityReferenceName(uint32_t mode)
+{
+	switch ( mode )
+	{
+	case 0u: return("oracle");
+	case 1u: return("adversary");
+	default: return("fault");
+	}
+}
+
+static int SparkGlm5NextMtpParityPrefill(SparkGlm5NextMtpParityFixture *fixture,const uint32_t *prompt,uint32_t rows,const char *label,uint32_t *last_out)
+{
+	uint32_t offset,count;
+	for ( offset = 0u; offset < rows; offset += count )
+	{
+		count = rows - offset < SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY ? rows - offset : SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY;
+		SparkGlm5NextMtpParityBuildWave(fixture,prompt + offset,offset,count,1u,0u);
+		if ( SparkGlm5NextMtpParityRunWave(fixture,label) != 0 )
+			return(1);
+		*last_out = fixture->host_output[count - 1u];
+	}
+	return(0);
+}
+
+static int SparkGlm5NextMtpParityRunLongBaseline(SparkGlm5NextMtpParityFixture *fixture)
+{
+	uint32_t step,first;
+	if ( SparkGlm5NextMtpParityResetPools(fixture) != 0 ||
+		SparkGlm5NextMtpParityPrefill(fixture,fixture->long_prompt,SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL,"long_baseline_prefill",&first) != 0 )
+		return(1);
+	fixture->long_reference_tokens[0] = first;
+	if ( SparkGlm5NextMtpParitySnapshotTo(fixture,fixture->long_snapshots) != 0 )
+		return(1);
+	for ( step = 0u; step + 1u < SPARK_GLM5_NEXT_MTP_PARITY_LONG_REF_TOKENS; step++ )
+	{
+		SparkGlm5NextMtpParityBuildWave(fixture,&fixture->long_reference_tokens[step],
+			SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL + step,1u,1u,0u);
+		if ( SparkGlm5NextMtpParityRunWave(fixture,"long_baseline_decode") != 0 )
+			return(1);
+		fixture->long_reference_tokens[step + 1u] = fixture->host_output[0];
+		if ( SparkGlm5NextMtpParitySnapshotTo(fixture,fixture->long_snapshots + (uint64_t)(step + 1u) * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES) != 0 )
+			return(1);
+	}
+	printf("long baseline: %u prompt positions, %u reference tokens across context %u\n",SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL,
+		SPARK_GLM5_NEXT_MTP_PARITY_LONG_REF_TOKENS,SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K);
+	return(0);
+}
+
+static int SparkGlm5NextMtpParityRunReference(SparkGlm5NextMtpParityFixture *fixture,const SparkGlm5NextMtpParityPhase *phase)
+{
+	SparkSpeculationPolicyVerifyResult result;
+	uint8_t *scratch;
+	uint32_t draft_tokens[SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS];
+	uint32_t verify_tokens[SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS];
+	uint32_t counts[SPARK_GLM5_NEXT_MTP_PARITY_REFERENCE_MODES][SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS + 1u];
+	uint32_t accepted_total[SPARK_GLM5_NEXT_MTP_PARITY_REFERENCE_MODES];
+	uint32_t emitted,current,round,mode,rows,depth,fault,expected,committed,index,anchor,first,regimes = 0u,trimmed = 0u,fold_count = 0u;
+	uint64_t fold_ns = 0u;
+	scratch = (uint8_t *)malloc(SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES);
+	if ( scratch == 0 )
+		return(SparkGlm5NextMtpParityFail("alloc_host","compare_scratch"));
+	memset(counts,0,sizeof(counts));
+	memset(accepted_total,0,sizeof(accepted_total));
+	if ( SparkGlm5NextMtpParityResetPools(fixture) != 0 ||
+		SparkGlm5NextMtpParityPrefill(fixture,phase->prompt,phase->prompt_rows,phase->name,&first) != 0 )
+		return(1);
+	if ( first != phase->reference[0] )
+		return(SparkGlm5NextMtpParityFail(phase->name,"prefill token differs from baseline"));
+	emitted = 1u;
+	current = phase->reference[0];
+	round = 0u;
+	while ( emitted < phase->decode_tokens )
+	{
+		SparkSpeculationReferenceDraft draft;
+		SparkSpeculationPolicyDraftRequest request;
+		SparkSpeculationPolicyDraftResult proposal;
+		SparkStatus status;
+		anchor = phase->prompt_rows + emitted - 1u;
+		rows = SPARK_GLM5_NEXT_VERIFY_ROWS_MIN + round % SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT;
+		if ( SparkGlm5NextVerifyRowsFit(anchor,rows,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD,SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS) < rows )
+		{
+			rows = SparkGlm5NextVerifyRowsFit(anchor,rows,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD,SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS);
+			trimmed++;
+		}
+		if ( rows < SPARK_GLM5_NEXT_VERIFY_ROWS_MIN )
+		{
+			SparkGlm5NextMtpParityBuildWave(fixture,&current,anchor,1u,1u,0u);
+			if ( SparkGlm5NextMtpParityRunWave(fixture,phase->name) != 0 )
+				return(1);
+			if ( fixture->host_output[0] != phase->reference[emitted] )
+				return(SparkGlm5NextMtpParityFail(phase->name,"plain step at a regime edge differs from baseline"));
+			current = fixture->host_output[0];
+			emitted++;
+			regimes++;
+			continue;
+		}
+		mode = (round / SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT + round) % SPARK_GLM5_NEXT_MTP_PARITY_REFERENCE_MODES;
+		depth = rows - 1u;
+		fault = (round * 5u + 3u) % depth;
+		if ( SparkSpeculationReferenceDraftInitialize(&draft,mode == 1u ? SPARK_SPECULATION_REFERENCE_ADVERSARY : SPARK_SPECULATION_REFERENCE_ORACLE,
+				SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,phase->prompt_rows,phase->reference,phase->reference_count) != SPARK_STATUS_OK )
+			return(SparkGlm5NextMtpParityFail("reference_draft","initialize"));
+		memset(&request,0,sizeof(request));
+		memset(&proposal,0,sizeof(proposal));
+		request.requested_token_count = depth;
+		request.sequence_position = anchor;
+		if ( SparkSpeculationReferenceDraftTokens(&draft,&request,&proposal) != SPARK_STATUS_OK || proposal.token_count != depth )
+			return(SparkGlm5NextMtpParityFail("reference_draft","tokens"));
+		for ( index = 0u; index < depth; index++ )
+			draft_tokens[index] = proposal.token_ids[index];
+		expected = mode == 0u ? depth : 0u;
+		if ( mode == 2u )
+		{
+			draft_tokens[fault] = (draft_tokens[fault] + 7u) % SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
+			expected = fault;
+		}
+		verify_tokens[0] = current;
+		for ( index = 0u; index < depth; index++ )
+			verify_tokens[index + 1u] = draft_tokens[index];
+		if ( SparkGlm5NextMtpParityResetKvAccess(fixture,phase->name) != 0 )
+			return(1);
+		SparkGlm5NextMtpParityBuildWave(fixture,verify_tokens,anchor,rows,0u,1u);
+		if ( phase->capture_bound != 0u )
+		{
+			uint32_t context = anchor + rows,regime = SparkGlm5NextGraphRegime(context,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD);
+			uint32_t bound = SparkGlm5NextVerifyCaptureBound(regime,rows,context,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD,SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS);
+			if ( bound < context )
+				return(SparkGlm5NextMtpParityFail(phase->name,"no capture bound covers the wave"));
+			fixture->wave.maximum_context = bound;
+		}
+		if ( SparkGlm5NextMtpParityRunWave(fixture,phase->name) != 0 )
+			return(1);
+		status = SparkSpeculationPolicyResolveVerifierTokens(draft_tokens,depth,fixture->host_output,rows,
+			SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,&result);
+		if ( status != SPARK_STATUS_OK || result.committed_token_count != result.accepted_draft_token_count + 1u )
+			return(SparkGlm5NextMtpParityFail("reference_resolve","status"));
+		if ( result.accepted_draft_token_count != expected )
+		{
+			printf("FAIL %s: %s rows %u round %u anchor %u expected %u accepted, got %u\n",phase->name,
+				SparkGlm5NextMtpParityReferenceName(mode),rows,round,anchor,expected,result.accepted_draft_token_count);
+			return(1);
+		}
+		committed = result.committed_token_count;
+		for ( index = 0u; index < committed; index++ )
+			if ( fixture->host_output[index] != phase->reference[emitted + index] )
+			{
+				printf("FAIL %s: token mismatch at emitted position %u: spec %u baseline %u (rows %u round %u mode %s)\n",phase->name,
+					emitted + index,fixture->host_output[index],phase->reference[emitted + index],
+					rows,round,SparkGlm5NextMtpParityReferenceName(mode));
+				return(1);
+			}
+		{
+			struct timespec fold_start,fold_end;
+			int32_t fold_status;
+			fold_status = SparkGlm5NextPrepareCudaReplayFold(&fixture->wave,rows);
+			if ( fold_status != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail(phase->name,"fold_prepare",fold_status));
+			clock_gettime(CLOCK_MONOTONIC,&fold_start);
+			fold_status = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
+			if ( fold_status != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail(phase->name,"fold",fold_status));
+			if ( SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),phase->name,"sync") != 0 )
+				return(1);
+			clock_gettime(CLOCK_MONOTONIC,&fold_end);
+			if ( round >= SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT )
+			{
+				fold_ns += (uint64_t)(fold_end.tv_sec - fold_start.tv_sec) * UINT64_C(1000000000) + (uint64_t)(fold_end.tv_nsec - fold_start.tv_nsec);
+				fold_count++;
+			}
+		}
+		index = phase->prompt_rows + emitted + committed - 1u;
+		if ( SparkGlm5NextMtpParityCompareStateAt(fixture,phase->snapshots + (uint64_t)(emitted + committed - 1u) * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES,
+			index,scratch,phase->name) != 0 )
+			return(1);
+		counts[mode][rows]++;
+		accepted_total[mode] += result.accepted_draft_token_count;
+		current = fixture->host_output[committed - 1u];
+		emitted += committed;
+		round++;
+	}
+	free(scratch);
+	for ( mode = 0u; mode < SPARK_GLM5_NEXT_MTP_PARITY_REFERENCE_MODES; mode++ )
+	{
+		uint32_t total = 0u;
+		for ( rows = SPARK_GLM5_NEXT_VERIFY_ROWS_MIN; rows <= SPARK_GLM5_NEXT_VERIFY_ROWS_MAX; rows++ )
+			total += counts[mode][rows];
+		if ( total == 0u )
+		{
+			printf("FAIL %s: mode %s never executed\n",phase->name,SparkGlm5NextMtpParityReferenceName(mode));
+			return(1);
+		}
+		printf("%s %s: %u rounds, %u drafts accepted, rows",phase->name,SparkGlm5NextMtpParityReferenceName(mode),total,accepted_total[mode]);
+		for ( rows = SPARK_GLM5_NEXT_VERIFY_ROWS_MIN; rows <= SPARK_GLM5_NEXT_VERIFY_ROWS_MAX; rows++ )
+			printf(" %u:%u",rows,counts[mode][rows]);
+		printf("\n");
+	}
+	printf("%s: %u tokens emitted in %u verify rounds of 2..%u rows (%u trimmed and %u plain steps at a regime edge, capture bound %s); fold+sync %.1f us per round over %u warm rounds, %u KDA layers\n",phase->name,
+		emitted,round,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX,trimmed,regimes,phase->capture_bound != 0u ? "on" : "off",
+		fold_count != 0u ? (double)fold_ns / 1000.0 / fold_count : 0.0,fold_count,SPARK_GLM5_NEXT_MTP_PARITY_KDA_ORDINALS);
+	return(0);
+}
+
+static int SparkGlm5NextMtpParityRunShortPhases(SparkGlm5NextMtpParityFixture *fixture,const char *name,const char *bound_name)
+{
+	SparkGlm5NextMtpParityPhase phase;
+	uint32_t bound;
+	for ( bound = 0u; bound < 2u; bound++ )
+	{
+		phase.name = bound != 0u ? bound_name : name;
+		phase.prompt = SPARK_GLM5_NEXT_MTP_PARITY_PROMPT;
+		phase.prompt_rows = SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS;
+		phase.reference = fixture->reference_tokens;
+		phase.reference_count = SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS;
+		phase.decode_tokens = SPARK_GLM5_NEXT_MTP_PARITY_DECODE_TOKENS;
+		phase.snapshots = fixture->snapshots + (uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES;
+		phase.capture_bound = bound;
+		if ( SparkGlm5NextMtpParityRunReference(fixture,&phase) != 0 )
+			return(1);
+	}
+	return(0);
+}
+
+static int SparkGlm5NextMtpParityRunReferencePhases(SparkGlm5NextMtpParityFixture *fixture)
+{
+	SparkGlm5NextMtpParityPhase phase;
+	uint32_t bound;
+	if ( SparkGlm5NextMtpParityRunShortPhases(fixture,"reference","reference_bound") != 0 ||
+		SparkGlm5NextMtpParityRunLongBaseline(fixture) != 0 )
+		return(1);
+	for ( bound = 0u; bound < 2u; bound++ )
+	{
+		phase.name = bound != 0u ? "long_reference_bound" : "long_reference";
+		phase.prompt = fixture->long_prompt;
+		phase.prompt_rows = SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL;
+		phase.reference = fixture->long_reference_tokens;
+		phase.reference_count = SPARK_GLM5_NEXT_MTP_PARITY_LONG_REF_TOKENS;
+		phase.decode_tokens = SPARK_GLM5_NEXT_MTP_PARITY_LONG_DECODE;
+		phase.snapshots = fixture->long_snapshots;
+		phase.capture_bound = bound;
+		if ( SparkGlm5NextMtpParityRunReference(fixture,&phase) != 0 )
+			return(1);
+	}
+	return(0);
+}
+
+#define SPARK_GLM5_NEXT_MTP_PARITY_MTP_MODES 3u
+
+static uint32_t SPARK_GLM5_NEXT_MTP_PARITY_OPS_ROWS;
+static uint32_t SPARK_GLM5_NEXT_MTP_PARITY_OPS_MAX;
+
+static SparkStatus SparkGlm5NextMtpParityOpsRows(void *context,uint16_t *rows_bf16,uint32_t row_count,uint32_t width)
+{
+	(void)context;
+	if ( rows_bf16 == 0 || row_count != 1u || width != SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	SPARK_GLM5_NEXT_MTP_PARITY_OPS_ROWS++;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextMtpParityOpsMax(void *context,uint64_t *values,uint32_t count)
+{
+	(void)context;
+	if ( values == 0 || count != 1u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	SPARK_GLM5_NEXT_MTP_PARITY_OPS_MAX++;
+	return(SPARK_STATUS_OK);
+}
+
+static const char *SparkGlm5NextMtpParityMtpModeName(uint32_t mode)
+{
+	switch ( mode )
+	{
+	case 0u: return("mtp");
+	case 1u: return("mtp_splice");
+	default: return("mtp_ops");
+	}
+}
+
+static int SparkGlm5NextMtpParityRunMtpDrafted(SparkGlm5NextMtpParityFixture *fixture,const SparkGlm5NextMtpParityPhase *phase)
+{
+	SparkSpeculationPolicyVerifyResult result;
+	SparkGlm5NextMtpDraftOps ops;
+	uint8_t *scratch;
+	uint32_t draft_tokens[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX];
+	uint32_t twin_tokens[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_CHAIN_MAX];
+	uint32_t verify_tokens[SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS];
+	uint32_t counts[SPARK_GLM5_NEXT_MTP_PARITY_MTP_MODES][SPARK_GLM5_NEXT_MTP_PARITY_REPLAY_ROWS + 1u];
+	uint32_t proposed_total[SPARK_GLM5_NEXT_MTP_PARITY_MTP_MODES],accepted_total[SPARK_GLM5_NEXT_MTP_PARITY_MTP_MODES];
+	uint32_t emitted,current,round,mode,rows,depth,splice,committed,index,anchor,first,trimmed = 0u,regimes = 0u,organic_hits = 0u,organic_positions = 0u;
+	int32_t launch;
+	scratch = (uint8_t *)malloc(SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES);
+	if ( scratch == 0 )
+		return(SparkGlm5NextMtpParityFail("alloc_host","compare_scratch"));
+	memset(counts,0,sizeof(counts));
+	memset(proposed_total,0,sizeof(proposed_total));
+	memset(accepted_total,0,sizeof(accepted_total));
+	memset(&ops,0,sizeof(ops));
+	ops.reduce_rows_bf16 = SparkGlm5NextMtpParityOpsRows;
+	ops.reduce_max_u64 = SparkGlm5NextMtpParityOpsMax;
+	if ( SparkGlm5NextMtpParityResetPools(fixture) != 0 ||
+		SparkGlm5NextMtpParityPrefill(fixture,phase->prompt,phase->prompt_rows,phase->name,&first) != 0 )
+		return(1);
+	if ( first != phase->reference[0] )
+		return(SparkGlm5NextMtpParityFail(phase->name,"prefill token differs from baseline"));
+	if ( SparkGlm5NextMtpParityStashHidden(fixture,fixture->wave.row_count - 1u) != 0 )
+		return(1);
+	emitted = 1u;
+	current = phase->reference[0];
+	round = 0u;
+	while ( emitted < phase->decode_tokens )
+	{
+		anchor = phase->prompt_rows + emitted - 1u;
+		rows = SPARK_GLM5_NEXT_VERIFY_ROWS_MIN + round % SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT;
+		if ( SparkGlm5NextVerifyRowsFit(anchor,rows,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD,SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS) < rows )
+		{
+			rows = SparkGlm5NextVerifyRowsFit(anchor,rows,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD,SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS);
+			trimmed++;
+		}
+		if ( rows < SPARK_GLM5_NEXT_VERIFY_ROWS_MIN )
+		{
+			SparkGlm5NextMtpParityBuildWave(fixture,&current,anchor,1u,1u,0u);
+			if ( SparkGlm5NextMtpParityRunWave(fixture,phase->name) != 0 )
+				return(1);
+			if ( fixture->host_output[0] != phase->reference[emitted] )
+				return(SparkGlm5NextMtpParityFail(phase->name,"plain step at a regime edge differs from baseline"));
+			if ( SparkGlm5NextMtpParityStashHidden(fixture,0u) != 0 )
+				return(1);
+			current = fixture->host_output[0];
+			emitted++;
+			regimes++;
+			continue;
+		}
+		mode = (round / SPARK_GLM5_NEXT_VERIFY_TABLE_COUNT + round) % SPARK_GLM5_NEXT_MTP_PARITY_MTP_MODES;
+		depth = rows - 1u;
+		fixture->draft_wave.mtp_draft_depth = depth;
+		if ( SparkGlm5NextMtpParityResetKvAccess(fixture,phase->name) != 0 )
+			return(1);
+		launch = SparkGlm5NextLaunchCudaMtpDraft(&fixture->draft_wave,0,fixture->draft_hidden_bf16,current,draft_tokens);
+		if ( launch != 0 )
+			return(SparkGlm5NextMtpParityLaunchFail(phase->name,"mtp_draft",launch));
+		if ( SparkGlm5NextMtpParityCheckKvAccess(fixture,phase->name) != 0 )
+			return(1);
+		for ( index = 0u; index < depth; index++ )
+			if ( draft_tokens[index] >= SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT )
+				return(SparkGlm5NextMtpParityFail(phase->name,"the MTP chain drafted a token outside the vocabulary"));
+		if ( mode == 2u )
+		{
+			SPARK_GLM5_NEXT_MTP_PARITY_OPS_ROWS = 0u;
+			SPARK_GLM5_NEXT_MTP_PARITY_OPS_MAX = 0u;
+			launch = SparkGlm5NextLaunchCudaMtpDraft(&fixture->draft_wave,&ops,fixture->draft_hidden_bf16,current,twin_tokens);
+			if ( launch != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail(phase->name,"mtp_draft_ops",launch));
+			if ( memcmp(twin_tokens,draft_tokens,(uint64_t)depth * sizeof(uint32_t)) != 0 )
+				return(SparkGlm5NextMtpParityFail(phase->name,"the same hidden row and anchor drafted different chains"));
+			if ( SPARK_GLM5_NEXT_MTP_PARITY_OPS_ROWS != 3u * depth || SPARK_GLM5_NEXT_MTP_PARITY_OPS_MAX != depth )
+				return(SparkGlm5NextMtpParityFail(phase->name,"the draft chain issued the wrong number of TP reductions"));
+		}
+		for ( index = 0u; index < depth; index++ )
+		{
+			organic_positions++;
+			if ( draft_tokens[index] == phase->reference[emitted + index] )
+				organic_hits++;
+			else
+				break;
+		}
+		splice = 0u;
+		if ( mode == 1u )
+		{
+			splice = 1u + round % depth;
+			for ( index = 0u; index < splice; index++ )
+				draft_tokens[index] = phase->reference[emitted + index];
+		}
+		verify_tokens[0] = current;
+		for ( index = 0u; index < depth; index++ )
+			verify_tokens[index + 1u] = draft_tokens[index];
+		if ( SparkGlm5NextMtpParityResetKvAccess(fixture,phase->name) != 0 )
+			return(1);
+		SparkGlm5NextMtpParityBuildWave(fixture,verify_tokens,anchor,rows,0u,1u);
+		if ( phase->capture_bound != 0u )
+		{
+			uint32_t context = anchor + rows,regime = SparkGlm5NextGraphRegime(context,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD);
+			uint32_t bound = SparkGlm5NextVerifyCaptureBound(regime,rows,context,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD,SPARK_GLM5_NEXT_MTP_PARITY_MAX_POSITIONS);
+			if ( bound < context )
+				return(SparkGlm5NextMtpParityFail(phase->name,"no capture bound covers the wave"));
+			fixture->wave.maximum_context = bound;
+		}
+		if ( SparkGlm5NextMtpParityRunWave(fixture,phase->name) != 0 )
+			return(1);
+		if ( SparkSpeculationPolicyResolveVerifierTokens(draft_tokens,depth,fixture->host_output,rows,
+			SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,&result) != SPARK_STATUS_OK || result.committed_token_count != result.accepted_draft_token_count + 1u )
+			return(SparkGlm5NextMtpParityFail("mtp_resolve","status"));
+		if ( result.accepted_draft_token_count < splice )
+		{
+			printf("FAIL %s: %s rows %u round %u spliced %u reference drafts but accepted %u\n",phase->name,
+				SparkGlm5NextMtpParityMtpModeName(mode),rows,round,splice,result.accepted_draft_token_count);
+			return(1);
+		}
+		committed = result.committed_token_count;
+		for ( index = 0u; index < committed; index++ )
+			if ( fixture->host_output[index] != phase->reference[emitted + index] )
+			{
+				printf("FAIL %s: token mismatch at emitted position %u: spec %u baseline %u (rows %u round %u mode %s)\n",phase->name,
+					emitted + index,fixture->host_output[index],phase->reference[emitted + index],
+					rows,round,SparkGlm5NextMtpParityMtpModeName(mode));
+				return(1);
+			}
+		if ( SparkGlm5NextMtpParityStashHidden(fixture,committed - 1u) != 0 )
+			return(1);
+		launch = SparkGlm5NextPrepareCudaReplayFold(&fixture->wave,rows);
+		if ( launch == 0 )
+			launch = SparkGlm5NextLaunchCudaReplayFold(&fixture->wave,committed);
+		if ( launch != 0 )
+			return(SparkGlm5NextMtpParityLaunchFail(phase->name,"fold",launch));
+		if ( SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),phase->name,"sync") != 0 )
+			return(1);
+		if ( SparkGlm5NextMtpParityCompareStateAt(fixture,phase->snapshots + (uint64_t)(emitted + committed - 1u) * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES,
+			phase->prompt_rows + emitted + committed - 1u,scratch,phase->name) != 0 )
+			return(1);
+		counts[mode][rows]++;
+		proposed_total[mode] += depth;
+		accepted_total[mode] += result.accepted_draft_token_count;
+		current = fixture->host_output[committed - 1u];
+		emitted += committed;
+		round++;
+	}
+	free(scratch);
+	fixture->draft_wave.mtp_draft_depth = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH;
+	for ( mode = 0u; mode < SPARK_GLM5_NEXT_MTP_PARITY_MTP_MODES; mode++ )
+	{
+		uint32_t total = 0u;
+		for ( rows = SPARK_GLM5_NEXT_VERIFY_ROWS_MIN; rows <= SPARK_GLM5_NEXT_VERIFY_ROWS_MAX; rows++ )
+			total += counts[mode][rows];
+		if ( total == 0u )
+		{
+			printf("FAIL %s: mode %s never executed\n",phase->name,SparkGlm5NextMtpParityMtpModeName(mode));
+			return(1);
+		}
+		printf("%s %s: %u rounds, %u of %u drafts accepted, rows",phase->name,SparkGlm5NextMtpParityMtpModeName(mode),total,accepted_total[mode],proposed_total[mode]);
+		for ( rows = SPARK_GLM5_NEXT_VERIFY_ROWS_MIN; rows <= SPARK_GLM5_NEXT_VERIFY_ROWS_MAX; rows++ )
+			printf(" %u:%u",rows,counts[mode][rows]);
+		printf("\n");
+	}
+	printf("%s: %u tokens emitted in %u MTP-drafted verify rounds of 2..%u rows (%u trimmed and %u plain steps at a regime edge, capture bound %s); organic MTP prefix agreement %u of %u draft positions (synthetic weights)\n",
+		phase->name,emitted,round,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX,trimmed,regimes,phase->capture_bound != 0u ? "on" : "off",organic_hits,organic_positions);
+	return(0);
+}
+
+static int SparkGlm5NextMtpParityRunMtpPhases(SparkGlm5NextMtpParityFixture *fixture)
+{
+	SparkGlm5NextMtpParityPhase phase;
+	uint32_t bound;
+	for ( bound = 0u; bound < 2u; bound++ )
+	{
+		phase.name = bound != 0u ? "mtp_rounds_bound" : "mtp_rounds";
+		phase.prompt = SPARK_GLM5_NEXT_MTP_PARITY_PROMPT;
+		phase.prompt_rows = SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS;
+		phase.reference = fixture->reference_tokens;
+		phase.reference_count = SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS;
+		phase.decode_tokens = SPARK_GLM5_NEXT_MTP_PARITY_DECODE_TOKENS;
+		phase.snapshots = fixture->snapshots + (uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS * SPARK_GLM5_NEXT_MTP_PARITY_SNAPSHOT_BLOCK_BYTES;
+		phase.capture_bound = bound;
+		if ( SparkGlm5NextMtpParityRunMtpDrafted(fixture,&phase) != 0 )
+			return(1);
+	}
+	phase.name = "long_mtp_rounds";
+	phase.prompt = fixture->long_prompt;
+	phase.prompt_rows = SPARK_GLM5_NEXT_MTP_PARITY_LONG_PREFILL;
+	phase.reference = fixture->long_reference_tokens;
+	phase.reference_count = SPARK_GLM5_NEXT_MTP_PARITY_LONG_REF_TOKENS;
+	phase.decode_tokens = SPARK_GLM5_NEXT_MTP_PARITY_LONG_DECODE;
+	phase.snapshots = fixture->long_snapshots;
+	phase.capture_bound = 1u;
+	return(SparkGlm5NextMtpParityRunMtpDrafted(fixture,&phase));
+}
+
+static int SparkGlm5NextMtpParityTapRowsEqual(const void *device_a,const void *device_b,uint64_t bytes,const char *label)
+{
+	uint8_t *a = (uint8_t *)malloc(bytes),*b = (uint8_t *)malloc(bytes);
+	int result = a == 0 || b == 0 ? SparkGlm5NextMtpParityFail(label,"host buffers") : 0;
+	if ( result == 0 && (cudaMemcpy(a,device_a,bytes,cudaMemcpyDeviceToHost) != cudaSuccess || cudaMemcpy(b,device_b,bytes,cudaMemcpyDeviceToHost) != cudaSuccess) )
+		result = SparkGlm5NextMtpParityFail(label,"readback");
+	if ( result == 0 && memcmp(a,b,bytes) != 0 )
+		result = SparkGlm5NextMtpParityFail(label,"tap differs from the engine buffer");
+	free(a);
+	free(b);
+	return(result);
+}
+
+static int SparkGlm5NextMtpParityRunTapped(SparkGlm5NextMtpParityFixture *fixture)
+{
+	const uint64_t mean_bytes = (uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_LAYERS * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
+	const uint64_t last = SPARK_GLM5_NEXT_MTP_PARITY_LAYERS - 1u;
+	uint8_t *scratch = (uint8_t *)malloc(SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES);
+	uint32_t step,rows,token;
+	int result = 0;
+	if ( scratch == 0 )
+		return(SparkGlm5NextMtpParityFail("alloc_host","tap_compare_scratch"));
+	if ( SparkGlm5NextMtpParityCuda(cudaMalloc((void **)&spark_glm5_next_mtp_parity_tap_mean,mean_bytes),"taps","alloc_mean") != 0 ||
+		SparkGlm5NextMtpParityCuda(cudaMalloc((void **)&spark_glm5_next_mtp_parity_tap_all,mean_bytes * SPARK_GLM5_NEXT_MODEL_HC_MULT),"taps","alloc_all") != 0 )
+		return(1);
+	if ( SparkGlm5NextMtpParityResetPools(fixture) != 0 )
+		result = 1;
+	for ( step = 0u; result == 0 && step < SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS; step++ )
+	{
+		rows = step == 0u ? SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS : 1u;
+		if ( step == 0u )
+			SparkGlm5NextMtpParityBuildWave(fixture,SPARK_GLM5_NEXT_MTP_PARITY_PROMPT,0u,rows,1u,0u);
+		else
+			SparkGlm5NextMtpParityBuildWave(fixture,&fixture->reference_tokens[step - 1u],SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS + step - 1u,1u,1u,0u);
+		if ( SparkGlm5NextMtpParityRunWave(fixture,step == 0u ? "tapped_prefill" : "tapped_decode") != 0 )
+		{
+			result = 1;
+			break;
+		}
+		token = fixture->host_output[rows - 1u];
+		if ( token != fixture->reference_tokens[step] )
+		{
+			fprintf(stderr,"tapped step %u token %u, taps-off baseline %u\n",step,token,fixture->reference_tokens[step]);
+			result = SparkGlm5NextMtpParityFail("taps","served token changed with taps on");
+			break;
+		}
+		result = SparkGlm5NextMtpParityTapRowsEqual(spark_glm5_next_mtp_parity_tap_mean + last * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
+			fixture->slot.hc_mean_bf16,(uint64_t)rows * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),"tap_mean_last_equals_mtp_input");
+		if ( result == 0 )
+			result = SparkGlm5NextMtpParityTapRowsEqual(spark_glm5_next_mtp_parity_tap_all + last * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
+				fixture->slot.hidden_bf16,(uint64_t)rows * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),"tap_all_last_equals_streams");
+		if ( result == 0 && SparkGlm5NextMtpParityCompareState(fixture,SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS + step,scratch,"tapped") != 0 )
+			result = 1;
+	}
+	free(scratch);
+	(void)cudaFree(spark_glm5_next_mtp_parity_tap_mean);
+	(void)cudaFree(spark_glm5_next_mtp_parity_tap_all);
+	spark_glm5_next_mtp_parity_tap_mean = 0;
+	spark_glm5_next_mtp_parity_tap_all = 0;
+	if ( result == 0 )
+		printf("PASS glm5_next taps: %u steps with every layer tapped (mean and all streams) serve the taps-off tokens byte-exact with identical state; the last-layer mean tap equals the MTP input row and the all-streams tap equals the residual streams\n",SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS);
+	return(result);
+}
+
 int main(int argc,char **argv)
 {
 	static SparkGlm5NextMtpParityFixture fixture;
@@ -1201,9 +1847,19 @@ int main(int argc,char **argv)
 		return(1);
 	if ( SparkGlm5NextMtpParityRunBaseline(&fixture) != 0 )
 		return(1);
+	if ( SparkGlm5NextMtpParityRunTapped(&fixture) != 0 )
+		return(1);
 	if ( SparkGlm5NextMtpParityRunSpeculative(&fixture) != 0 )
 		return(1);
-	printf("PASS glm5_next MTP parity: %u tokens, spec == baseline byte-exact (tokens, KDA state, conv windows, KV, index)\n",
-		SPARK_GLM5_NEXT_MTP_PARITY_DECODE_TOKENS);
+	if ( SparkGlm5NextMtpParityRunReferencePhases(&fixture) != 0 )
+		return(1);
+	if ( SparkGlm5NextMtpParityRunMtpPhases(&fixture) != 0 )
+		return(1);
+	if ( SparkGlm5NextMtpParityBuildCertifiedHead(&fixture,1u) != 0 ||
+		SparkGlm5NextMtpParityRunBaseline(&fixture) != 0 ||
+		SparkGlm5NextMtpParityRunShortPhases(&fixture,"head_ties","head_ties_bound") != 0 )
+		return(1);
+	printf("PASS glm5_next speculative parity: the MTP chain, 2..%u-row reference verify rounds and MTP-drafted verify rounds at short and %u+ contexts, split threshold %u, certified FP8 head on B1 and verify rows, and a twin-row lm_head where every argmax is a tie; spec == baseline byte-exact (tokens, KDA state, conv windows, KV, index)\n",
+		SPARK_GLM5_NEXT_VERIFY_ROWS_MAX,SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K,SPARK_GLM5_NEXT_MTP_PARITY_SPLIT_THRESHOLD);
 	return(0);
 }

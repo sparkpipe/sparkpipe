@@ -71,6 +71,25 @@ Every tier stores content-addressed package bytes. Path names alone never prove
 device placement; startup binds each mount to its expected physical device,
 capacity, role, and package identity.
 
+## RTX 5090 host
+
+The RTX 5090 workstation (`rtx5090`, x86_64, one RTX 5090 with 32 GB) is the
+fleet's release hub, runs the GLM API and is the draft-model host
+([RTX5090_SPECULATION_NODE.md](RTX5090_SPECULATION_NODE.md)). It is not on the
+inference fabric:
+
+- its 10 GbE port `eno1` (`10.10.250.2/30`) is cabled to sparkf's former
+  management port `enP7s7` (`10.10.250.1`);
+- the other Sparks reach it through sparkf on the switched fabric
+  (`10.10.250.0/30 via 10.10.100.25 dev enp1s0f1np1`), a route installed by
+  `sparkpipe-hub-route.service`.
+
+The busy-polled 64 B UDP round trip is 22.6 µs p50 and 25.2 µs p99 from
+sparkf, and about 300 µs p50 from the other Sparks through sparkf (lead-dev
+measurement, 2026-09-28). Treat this link as its own link class: a design that
+puts the host in every decode step budgets these round trips. Operations on
+the host are in [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md).
+
 ## Mac Studio pool
 
 Eight Mac Studios with M5 Ultra and 256 GB are on order. Per Apple's

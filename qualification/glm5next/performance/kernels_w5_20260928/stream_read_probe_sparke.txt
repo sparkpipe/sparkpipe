@@ -1,0 +1,18 @@
+PROBE-DEVICE name=NVIDIA GB10 sm=12.1 multiprocessors=48 l2_bytes=25165824
+PROBE-EMPTY per_launch_us median=0.412 min=0.411
+PROBE-READ bytes=262144 best_us=1.99 min_us=1.99 gbps=131.5 blocks=96 depth=1
+PROBE-READ bytes=524288 best_us=3.02 min_us=3.01 gbps=173.6 blocks=384 depth=1
+PROBE-READ bytes=1048576 best_us=5.08 min_us=5.03 gbps=206.4 blocks=384 depth=1
+PROBE-READ bytes=2097152 best_us=9.21 min_us=9.12 gbps=227.7 blocks=384 depth=1
+PROBE-READ bytes=4194304 best_us=17.70 min_us=17.66 gbps=237.0 blocks=384 depth=8
+PROBE-READ bytes=8388608 best_us=34.57 min_us=34.29 gbps=242.7 blocks=384 depth=1
+PROBE-READ bytes=16777216 best_us=69.01 min_us=68.69 gbps=243.1 blocks=192 depth=1
+PROBE-READ bytes=33554432 best_us=137.41 min_us=137.04 gbps=244.2 blocks=96 depth=4
+PROBE-READ bytes=67108864 best_us=276.59 min_us=274.79 gbps=242.6 blocks=48 depth=4
+PROBE-READ bytes=268435456 best_us=1116.51 min_us=1107.05 gbps=240.4 blocks=48 depth=8
+PROBE-READ bytes=1073741824 best_us=4538.70 min_us=4526.10 gbps=236.6 blocks=96 depth=1
+PROBE-COPY bytes=16777216 best_us=150.91 read_plus_write_gbps=222.4
+PROBE-COPY bytes=33554432 best_us=303.53 read_plus_write_gbps=221.1
+PROBE-COPY bytes=67108864 best_us=616.79 read_plus_write_gbps=217.6
+PROBE-COPY bytes=268435456 best_us=2516.12 read_plus_write_gbps=213.4
+PROBE-COPY bytes=1073741824 best_us=9886.10 read_plus_write_gbps=217.2

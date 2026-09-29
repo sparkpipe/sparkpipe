@@ -81,6 +81,6 @@ Record:
 - direct and switched interface counters; and
 - full token parity with the accepted control.
 
-Write accepted measurements to [`../PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
-Write remaining work to [`../TECHDEBT.md`](../TECHDEBT.md). Do not add a phase
+Write accepted measurements to [`../PERFORMANCE_STATUS.md`](../../PERFORMANCE_STATUS.md).
+Write remaining work to [`../TECHDEBT.md`](../../TECHDEBT.md). Do not add a phase
 report, handoff diary, or second status ledger.

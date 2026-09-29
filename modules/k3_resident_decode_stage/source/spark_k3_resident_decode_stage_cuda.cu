@@ -49,6 +49,7 @@ static const struct SparkK3WeightBind
 	WF(mla_gate_weight, "mla_gate_weight"),
 	WF(mla_out_weight, "mla_out_weight"),
 	WF(router_weight, "router_weight"),
+	WF(router_bias, "router_bias"),
 	WF(routed_down_weight, "routed_down_weight"),
 	WF(routed_up_weight, "routed_up_weight"),
 	WF(routed_norm_weight, "routed_norm_weight"),
@@ -83,7 +84,7 @@ static const char *const k3_required_mla[] =
 };
 static const char *const k3_required_moe[] =
 {
-	"router_weight", "routed_down_weight", "routed_up_weight",
+	"router_weight", "router_bias", "routed_down_weight", "routed_up_weight",
 	"routed_norm_weight", "expert_w1_weight", "expert_w2_weight",
 	"shared_w1_weight", "shared_w2_weight",
 };
@@ -99,6 +100,31 @@ static int32_t k3_require(const SparkK3BoundLayer *bound,
 		if ( SparkK3BoundEntry(bound, names[i]) == 0 )
 			return SPARK_K3_DISPATCH_ERR_BIND;
 	return SPARK_K3_DISPATCH_OK;
+}
+
+static int32_t k3_require_whole_head_table(const SparkK3BoundLayer *bound,
+	const char *name, uint64_t bytes)
+{
+	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
+	if ( entry != 0 && entry->bytes == bytes )
+		return SPARK_K3_DISPATCH_OK;
+	fprintf(stderr, "sparkpipe_k3: %s holds %llu bytes, the per-head table "
+		"must carry all %u heads (%llu bytes)\n", name,
+		(unsigned long long)(entry != 0 ? entry->bytes : 0u), K3_KDA_HEADS,
+		(unsigned long long)bytes);
+	return SPARK_K3_DISPATCH_ERR_BIND;
+}
+
+static int32_t k3_require_f32_table(const SparkK3BoundLayer *bound,
+	const char *name, uint32_t count)
+{
+	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
+	if ( entry != 0 && entry->kind == SPARK_K3_PACK_KIND_F32 &&
+		entry->bytes == (uint64_t)count * sizeof(float) )
+		return SPARK_K3_DISPATCH_OK;
+	fprintf(stderr, "sparkpipe_k3: %s must be %u F32 values per layer\n",
+		name, count);
+	return SPARK_K3_DISPATCH_ERR_BIND;
 }
 
 static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
@@ -179,6 +205,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	st->mla_cache = d->mla_cache;
 	st->sequences = sequences;
 	st->kda_state_bf16 = 0u;
+	st->first_mla_index = d->first_layer / 4u;
+	st->first_kda_index = d->first_layer - (d->first_layer / 4u);
 
 	size_t off = 0u;
 	d->scratch_bytes = 0u;
@@ -231,6 +259,29 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	b->intermediate_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u);
 	b->kda_retention = (float *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u);
 	b->router_logits = (float *)k3_carve(d, &off, (size_t)max_rows * K3_EXPERTS * 4u);
+	return SPARK_K3_DISPATCH_OK;
+}
+
+int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
+	uint32_t tp_degree, cudaStream_t stream)
+{
+	SparkK3SlotResetSpan spans[SPARK_K3_SLOT_RESET_SPANS_MAX];
+	uint8_t *pools[SPARK_K3_SLOT_POOLS];
+	uint32_t count;
+	if ( d == 0 || d->kda_state_pool == 0 )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	count = SparkK3SlotResetSpans(d->kda_count, d->sequences, tp_degree, slot,
+		spans, SPARK_K3_SLOT_RESET_SPANS_MAX);
+	if ( count != d->kda_count * SPARK_K3_SLOT_POOLS )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	pools[SPARK_K3_SLOT_POOL_STATE] = d->kda_state_pool;
+	pools[SPARK_K3_SLOT_POOL_Q_WINDOW] = (uint8_t *)d->kda_q_window_pool;
+	pools[SPARK_K3_SLOT_POOL_K_WINDOW] = (uint8_t *)d->kda_k_window_pool;
+	pools[SPARK_K3_SLOT_POOL_V_WINDOW] = (uint8_t *)d->kda_v_window_pool;
+	for ( uint32_t i = 0u; i < count; ++i )
+		if ( cudaMemsetAsync(pools[spans[i].pool] + spans[i].offset, 0,
+				spans[i].bytes, stream) != cudaSuccess )
+			return SPARK_K3_DISPATCH_ERR_CUDA;
 	return SPARK_K3_DISPATCH_OK;
 }
 
@@ -307,52 +358,71 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 			status = k3_require(bound, k3_required_mla,
 				(uint32_t)(sizeof(k3_required_mla) / sizeof(k3_required_mla[0])));
 		else
+		{
 			status = k3_require(bound, k3_required_kda,
 				(uint32_t)(sizeof(k3_required_kda) / sizeof(k3_required_kda[0])));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_whole_head_table(bound, "kda_decay_bias",
+					(uint64_t)K3_KDA_QK_DIM * sizeof(float));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_whole_head_table(bound, "kda_head_log_scale",
+					(uint64_t)K3_KDA_HEADS * sizeof(float));
+		}
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 		if ( bound->layer_is_dense )
 			status = k3_require(bound, k3_required_dense,
 				(uint32_t)(sizeof(k3_required_dense) / sizeof(k3_required_dense[0])));
 		else
+		{
 			status = k3_require(bound, k3_required_moe,
 				(uint32_t)(sizeof(k3_required_moe) / sizeof(k3_required_moe[0])));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_f32_table(bound, "router_bias", K3_EXPERTS);
+		}
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 	}
 	if ( status == SPARK_K3_DISPATCH_OK )
 	{
 		char dim_name[96];
-		uint32_t base = d->first_layer;
+		SparkK3SliceKindLayers kinds;
 		SparkK3PackEntry dim_entry;
-#define K3_FILL_RANK(layer, field_name, field_ptr, columns) \
+		SparkK3SliceKindLayersFor(d->first_layer, layer_count, &kinds);
+#define K3_FILL_RANK(layer, field_name, field_ptr, axis, rank) \
 		do { \
+			if ( status != SPARK_K3_DISPATCH_OK || (layer) == SPARK_K3_SLICE_NO_LAYER ) \
+				break; \
 			snprintf(dim_name, sizeof(dim_name), "model.layers.%u.%s", \
 				(uint32_t)(layer), field_name); \
-			if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 && \
-				dim_entry.shape_count >= 2u ) \
-				*(field_ptr) = (columns) ? dim_entry.shape[1] : dim_entry.shape[0]; \
+			if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) != 0 || \
+				dim_entry.shape_count < (rank) || dim_entry.shape[axis] == 0u ) \
+			{ \
+				fprintf(stderr, "sparkpipe_k3: rank dimension missing %s\n", dim_name); \
+				status = SPARK_K3_DISPATCH_ERR_BIND; \
+				break; \
+			} \
+			*(field_ptr) = (uint32_t)dim_entry.shape[axis]; \
 		} while ( 0 )
-		K3_FILL_RANK(base, "kda_qkv_beta_weight", &d->buffers->kda_qkvb_rows, 0);
-		K3_FILL_RANK(base, "kda_gate_weight", &d->buffers->kda_gate_rows, 0);
-		K3_FILL_RANK(base, "kda_decay_up_weight", &d->buffers->kda_decay_up_rows, 0);
-		K3_FILL_RANK(base, "kda_out_weight", &d->buffers->kda_out_input, 1);
-		K3_FILL_RANK(base + 3u, "mla_q_up_weight", &d->buffers->mla_q_up_rows, 0);
-		K3_FILL_RANK(base + 3u, "mla_gate_weight", &d->buffers->mla_gate_rows, 0);
-		K3_FILL_RANK(base + 3u, "mla_out_weight", &d->buffers->mla_out_input, 1);
-		K3_FILL_RANK(base + 1u, "routed_down_weight", &d->buffers->routed_down_rows, 0);
-		K3_FILL_RANK(base + 1u, "routed_up_weight", &d->buffers->routed_up_input, 1);
-		K3_FILL_RANK(base + 1u, "expert_w1_weight", &d->buffers->expert_w1_output, 1);
-		K3_FILL_RANK(base + 1u, "shared_w1_weight", &d->buffers->shared_w1_rows, 0);
-		K3_FILL_RANK(base + 1u, "shared_w2_weight", &d->buffers->shared_w2_input, 1);
-		snprintf(dim_name, sizeof(dim_name), "model.layers.%u.expert_w2_weight", base + 1u);
-		if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 &&
-			dim_entry.shape_count >= 3u )
-			d->buffers->expert_w2_input = dim_entry.shape[2];
-		if ( d->first_layer == 0u )
+		K3_FILL_RANK(kinds.kda, "kda_qkv_beta_weight", &d->buffers->kda_qkvb_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_gate_weight", &d->buffers->kda_gate_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_decay_up_weight", &d->buffers->kda_decay_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_out_weight", &d->buffers->kda_out_input, 1u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_q_up_weight", &d->buffers->mla_q_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_gate_weight", &d->buffers->mla_gate_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_out_weight", &d->buffers->mla_out_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "routed_down_weight", &d->buffers->routed_down_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.routed, "routed_up_weight", &d->buffers->routed_up_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "expert_w1_weight", &d->buffers->expert_w1_output, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "shared_w1_weight", &d->buffers->shared_w1_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.routed, "shared_w2_weight", &d->buffers->shared_w2_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "expert_w2_weight", &d->buffers->expert_w2_input, 2u, 3u);
+		K3_FILL_RANK(kinds.dense, "dense_gate_up_weight", &d->buffers->dense_gate_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.dense, "dense_down_weight", &d->buffers->dense_down_input, 1u, 2u);
+		if ( status != SPARK_K3_DISPATCH_OK )
 		{
-			K3_FILL_RANK(0u, "dense_gate_up_weight", &d->buffers->dense_gate_up_rows, 0);
-			K3_FILL_RANK(0u, "dense_down_weight", &d->buffers->dense_down_input, 1);
+			delete[] host;
+			return status;
 		}
 		if ( d->buffers->kda_qkvb_rows != 0u )
 			d->buffers->kda_heads_rank = d->buffers->kda_qkvb_rows / 385u;
@@ -376,26 +446,6 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		else
 			d->buffers_host->attnres_out_weight = 0;
 		d->buffers_host->router_bias = 0;
-		for ( uint32_t off = 0u; off < layer_count; ++off )
-		{
-			const SparkK3PackEntry *bias_entry =
-				SparkK3BoundEntry(&bounds[off], "router_bias");
-			const void *bias = 0;
-			if ( bias_entry == 0 )
-				continue;
-			status = SparkWeightdLazyPackSlice(lazy,
-				pack->payload_base + bias_entry->payload_offset,
-				bias_entry->bytes, &bias);
-			if ( status != SPARK_K3_DISPATCH_OK )
-				break;
-			d->buffers_host->router_bias = (const float *)bias;
-			break;
-		}
-		if ( status != SPARK_K3_DISPATCH_OK )
-		{
-			delete[] host;
-			return status;
-		}
 		memcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights));
 	}
 	delete[] host;

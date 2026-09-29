@@ -22,6 +22,22 @@ import qwen4_flash_pack_verify as V
 TOOL = ROOT / "tools" / "qwen4_flash_pack_verify.py"
 
 
+HEADER_FIELDS = ("magic", "format_version", "header_bytes", "directory_entry_bytes",
+                 "tensor_count", "hidden_dimension", "layer_count", "first_layer_index",
+                 "total_layer_count", "attention_period", "full_attention_phase",
+                 "gdn_key_head_count", "gdn_value_head_count", "gdn_head_key_dimension",
+                 "gdn_head_value_dimension", "gdn_conv_kernel", "attn_query_head_count",
+                 "attn_kv_head_count", "attn_head_dimension", "attn_rope_dimension",
+                 "routed_expert_count", "experts_per_token", "expert_intermediate_dimension",
+                 "output_vocab_count", "mxfp4_group_size", "mtp_layer_count",
+                 "directory_offset", "file_bytes")
+
+
+def require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
 def run_tool(pack: Path, *extra: str):
     done = subprocess.run(
         [sys.executable, str(TOOL), "--pack", str(pack), *extra],
@@ -36,14 +52,14 @@ def test_emit_receipt_writes_the_fleet_pair():
         header = {"first_layer_index": 0, "layer_count": 48,
                   "tensor_count": 1246}
         written = V.emit_receipt(pack, header, 8, 3, True)
-        assert written is not None
+        require(written is not None, "emit_receipt wrote nothing")
         receipt_path, sidecar = written
         receipt = json.loads(receipt_path.read_text())
         digest = hashlib.sha256(pack.read_bytes()).hexdigest()
-        assert receipt["output_sha256"] == digest == receipt["sha256"]
-        assert receipt["verify_mode"].startswith("structure-only")
-        assert receipt["tp_degree"] == 8 and receipt["tp_rank"] == 3
-        assert sidecar.read_text() == f"{digest}  {pack.name}\n"
+        require(receipt["output_sha256"] == digest == receipt["sha256"], receipt)
+        require(receipt["verify_mode"].startswith("structure-only"), receipt["verify_mode"])
+        require(receipt["tp_degree"] == 8 and receipt["tp_rank"] == 3, receipt)
+        require(sidecar.read_text() == f"{digest}  {pack.name}\n", sidecar.read_text())
 
 
 def test_emit_receipt_never_overwrites_a_packer_receipt():
@@ -53,8 +69,12 @@ def test_emit_receipt_never_overwrites_a_packer_receipt():
         packer_receipt = Path(str(pack) + ".receipt.json")
         packer_receipt.write_text(json.dumps({"kind": "packer", "output_sha256": "0"}))
         header = {"first_layer_index": 0, "layer_count": 48, "tensor_count": 1}
-        assert V.emit_receipt(pack, header, 8, 3, True) is None
-        assert json.loads(packer_receipt.read_text())["kind"] == "packer"
+        require(V.emit_receipt(pack, header, 8, 3, True) is None,
+                "emit_receipt must not replace a packer receipt")
+        require(json.loads(packer_receipt.read_text())["kind"] == "packer",
+                packer_receipt.read_text())
+        require(not Path(str(pack) + ".sha256").exists(),
+                "no digest sidecar is written beside a packer receipt")
 
 
 def test_structure_only_mode_runs_without_checkpoint():
@@ -62,23 +82,25 @@ def test_structure_only_mode_runs_without_checkpoint():
         pack = Path(tmp) / "short.pack"
         pack.write_bytes(b"\0" * 8)
         code, output = run_tool(pack)
-        assert code == 1, output
-        assert "truncated" in output
-        assert "--checkpoint" not in output
-        assert "required" not in output
+        require(code == 1, output)
+        require("pack header truncated: 8 bytes" in output, output)
+        require("--checkpoint" not in output and "required" not in output, output)
 
 
-def test_header_geometry_gate_still_fails_loud():
+def test_header_format_version_gate_fails_loud():
     with tempfile.TemporaryDirectory() as tmp:
         pack = Path(tmp) / "qwenflash.tp8.rank3.pack"
-        from qwen4_flash_stagepack import ENTRY_BYTES, FORMAT_VERSION, HEADER_BYTES
-        header = struct.pack(
-            "<26I2Q", 0x50533451, FORMAT_VERSION + 1, HEADER_BYTES, ENTRY_BYTES,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            HEADER_BYTES, HEADER_BYTES)
-        pack.write_bytes(header)
+        from qwen4_flash_stagepack import FORMAT_VERSION, HEADER_BYTES, HEADER_STRUCT
+        fields = V.expected_header_geometry(0, 48, 0)
+        fields["format_version"] = FORMAT_VERSION + 1
+        fields["directory_offset"] = HEADER_BYTES
+        fields["file_bytes"] = HEADER_BYTES
+        pack.write_bytes(HEADER_STRUCT.pack(*[fields[name] for name in HEADER_FIELDS]))
         code, output = run_tool(pack)
-        assert code == 1, output
+        require(code == 1, output)
+        require(output.splitlines() ==
+                [f"FAIL header format_version={FORMAT_VERSION + 1} expected {FORMAT_VERSION}"],
+                f"only the format version may fail: {output}")
 
 
 if __name__ == "__main__":

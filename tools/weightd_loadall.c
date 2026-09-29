@@ -11,6 +11,7 @@
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -171,9 +172,9 @@ int main(int argc, char **argv)
         char sha_hex[SPARK_SHA256_HEX_BYTES];
         if (join_bounded(arms[index].manifest, sizeof(arms[index].manifest),
                 arms[index].pack, ".experts") != 0 ||
-            SparkSha256File(arms[index].manifest, sha_hex) != SPARK_STATUS_OK)
+            SparkWeightdPackDigestRead(arms[index].pack, sha_hex) != SPARK_STATUS_OK)
         {
-            fprintf(stderr, "weightd_loadall: manifest missing for %u\n",
+            fprintf(stderr, "weightd_loadall: manifest or pack .sha256 missing for %u\n",
                 (unsigned)index);
             SparkWeightdClientClose(client);
             return 1;

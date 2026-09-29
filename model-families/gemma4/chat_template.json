@@ -1,0 +1,17 @@
+{
+ "prefix": "<bos>",
+ "thinking_prefix": "<|turn>system\n<|think|>\n<turn|>\n",
+ "system": "<|turn>system\n",
+ "system_thinking": "<|turn>system\n<|think|>\n",
+ "user": "<|turn>user\n",
+ "observation": null,
+ "assistant": "<|turn>model\n",
+ "assistant_thinking": "<|turn>model\n",
+ "turn_suffix": "<turn|>\n",
+ "generation": "<|turn>model\n<|channel>thought\n<channel|>",
+ "generation_thinking": "<|turn>model\n",
+ "stop_markers": [
+  "<turn|>",
+  "<|turn>"
+ ]
+}

@@ -48,8 +48,11 @@ prompts sha256, per-fixture sha256, and generator versions.
 
 ## Driver-side comparison (serving-gated half)
 
-The driver hook dumps the same array names (bf16 patterns for streams, the
-integer routing decisions, head top-1) into a T1R1 file, then:
+No C or CUDA code writes T1R1. A driver with a T1 dump path (glm5_next,
+glm52, gemma4, laguna, ling) prints per-row `<TAG>-T1` stream, route and head
+lines to stderr when its T1 switch is set, and the family's assembler
+(`tools/t1_{g53,gfull,gemma4,lag,ling}_log_assembly.py`) builds the candidate
+T1R1 file with the same array names from those logs, then:
 
     tools/t1_reference_compare.py compare \
         --reference OUT/F/<prompt>.t1r --candidate DRIVER.t1r
@@ -70,6 +73,88 @@ of a copy and require the conviction,
 must exit 1 naming the corrupted array. `verify-manifest` re-checks every
 committed fixture against its manifest sha256.
 
+## Fixture quarantine
+
+A family directory's `MANIFEST.json` may carry
+`"quarantine": {"reason": ..., "fixtures": [...], "since": ...}`. A listed
+fixture is refused everywhere: `read_fixture` raises, so `compare` and
+every tool built on the reader fail, and `verify-manifest` exits 1 naming
+the reason. A quarantine without a reason or fixture list, or one naming a
+fixture absent from the manifest, is itself a failure. Remove the
+quarantine only in the commit that regenerates the fixtures.
+`tests/test_t1_reference_quarantine.py` pins this behaviour.
+
+### e2m1 table (2026-09-28, #1288)
+
+`t1_reference_common._E2M1_LUT` decoded e2m1 as
+{0, .5, 2, 3, 4, 6, 8, 12}: every normal code 2x, the subnormal 0.5
+correct. The OCP set is {0, .5, 1, 1.5, 2, 3, 4, 6}. Two generators had
+absorbed the doubling as a 0.5 factor fitted against their fp8 twins,
+which still left code 0.5 decoded as 0.25. With the corrected table the
+fit to the twin is 1.0 without the factor (glm-5.3-flash-nvfp4-nvidia vs
+bf16-official: 0.993 to 0.999 on dense and expert tensors; qwen3.8-27b
+nvfp4a16 vs fp8: 0.994), so the factor is removed.
+
+| family / arm | path | state |
+|---|---|---|
+| qwen38_max (nvfp4 experts) | `_E2M1_LUT` direct, no factor: experts 2x | fixtures quarantined; `model-families/qwen38_max/smoke_experts.json` derives from their route ids |
+| qwen38_27b nvfp4a16 | `nvfp4_to_f32` x 0.5 / global | fixtures quarantined; top-level fp8 fixtures unaffected |
+| glm53flash nvfp4 | `nvfp4_to_f32` x scale_2 x 0.5 | no committed fixtures; any nvfp4-arm fixture made before #1288 is invalid; bf16 and fp8 arms unaffected |
+| mimo26 | written after the fix | valid |
+
+Regenerate a quarantined set with `tools/t1_reference_decoder.py` on its
+pinned checkpoint and drop the quarantine in the same commit.
+
+### Decoder double-feed (2026-09-29)
+
+Until 7865648d3 (#1051, 2026-09-19T11:22Z) the decoder fed every
+position after the first generated one a token outside the generated
+chain: first the prompt-prefix argmaxes (the self-append loop before
+e2a0518a4), then the duplicated prompt tail. #1051 and the regeneration
+commits ad18209e1 / 29f6ebcee rebuilt every family's fixtures except two,
+which kept the artifact: glm5_next (2026-09-14) and qwen4_flash
+(2026-09-17). Both are quarantined. `tests/test_t1_reference_quarantine.py`
+requires every committed manifest older than the fix to be quarantined
+with a reason that names the double-feed.
+
+glm5_next is also not reproducible at its first generated token. The same
+committed engine rerun from the frozen checkpoint 84c6a6aa (spark6
+`~/sparkdata/t1ref-warm/glm-5.3-flash`, config and index sha equal to the
+manifest's) gives `capital_of_france` 12089 at the last prompt position,
+as do the glm53flash engine, production a477cfa and a597ff0 and both dev
+TP16 firmwares (12089 13 758 8584, "Paris. In French"). The fixture says
+3837 271 271 12. GLM-5.3 Flash T1 compares against
+`qualification/t1_reference/glm53flash` (glm53flash engine, current
+decoder, header `model-families/glm5_next/include/sparkpipe/llm_defines.h`).
+
+### DSA latent cache (2026-09-29)
+
+`dsa_attention` in `tools/t1_reference_glm53flash.py` and
+`tools/t1_reference_glm5_next.py` appended bf16-rounded float32 latent
+rows to the cache and read them back through `bf16_to_f32`, which decodes
+uint16 codes. A float cast to uint32 and shifted is 0 or a denormal, so
+every cached row decoded to ~0 and all DSA layers returned ~0 attention at
+every position, position 0 included. The caches now hold bf16 codes, and
+`bf16_to_f32` refuses any input that is not uint16, so a float passed as
+codes fails loud in every engine. `tests/test_t1_reference_dsa_cache.py`
+checks both engines bitwise against a hand-computed latent attention over
+four positions and fails on the old code.
+
+Affected fixtures: `glm53flash` (#1363, 2026-09-29T07:59Z), regenerated
+with the fixed engine; `glm5_next` (2026-09-14), which stays quarantined.
+`tests/test_t1_reference_quarantine.py` requires every glm53flash or
+glm5_next manifest older than the fix (`DSA_CACHE_FIX_UTC`) to be
+quarantined with a reason naming the DSA latent cache. No other engine
+had the pattern: every other attention cache reads back the representation
+it stored (codes in ling, glm53full, gemma4, laguna, muse, minimax and
+qwen4_flash; floats in k3, mimo26, qwen38_27b and qwen38_max).
+
+The guard also caught the qwen38_27b synthetic test writing `A_log` and
+`dt_bias` as F32. The engine decodes them as bf16, and the real
+checkpoints (qwen3.8-27b-fp8, qwen3.8-max, qwen3.8-flash-next-fp8) store
+them and every norm weight the engines decode as BF16, so the test now
+writes BF16. The committed qwen38_27b fixtures are unaffected.
+
 ## Position-0 anchor
 
 For families with a committed checkpoint layer oracle, the generator's
@@ -78,6 +163,16 @@ before fixtures are trusted: glm5_next was verified against
 `tools/glm5_next_checkpoint_layer_reference.py` (top-1 token equal, layer
 output norms within 2.3 percent over 45 layers). A generator whose
 position-0 anchor disagrees with the committed oracle is not fixture-grade.
+
+## Families with engines and fixtures
+
+`tools/t1_reference_decoder.py --family F` imports `tools/t1_reference_F.py`.
+Engines exist for 14 families: dsv41, gemma4, glm53flash, glm53full,
+glm5_next, hy4, k3, laguna, ling, minimax, muse, qwen38_27b, qwen38_max and
+qwen4_flash. `qualification/t1_reference/` has 15 directories (gemma4_26b
+runs the gemma4 engine with its own `llm_defines_26b.h`); 14 hold committed
+fixtures and a `MANIFEST.json` (glm5_next and qwen4_flash quarantined), and
+hy4 holds only `prompts.json`.
 
 ## Wave-refs2 families (ling, gemma4 31b, laguna)
 
@@ -98,6 +193,48 @@ same two prompt texts as glm5_next, tokenized per family tokenizer).
   ported line-by-line from
   `modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu`,
   which ACC-2 verified checkpoint-faithful at layers 0/21/41.
+- ling publisher-code reference (2026-09-28): `tools/ling_hf_reference.py`
+  runs the pinned publisher `modeling_bailing_moe_v3.py` (sha256
+  c2509bf7...) with its fla KDA kernels on one Spark GPU, loading the
+  non-expert tensors once (about 10 GB of device memory) and each routed
+  expert on demand with `pread`, so the bf16 checkpoint never has to fit.
+  Two transformers 5 compatibility shims are applied and nothing else:
+  `is_torch_fx_available` returns False (it only decides whether a mask
+  helper is fx-wrapped) and the `default` rope initializer, which
+  transformers 5 removed, is restored with the transformers 4.45 formula.
+  `rope_scaling` is reset to None after transformers 5 rewrites the null
+  value into a dict; `rope_theta` is checked after the reset. The receipt
+  `qualification/ling_reference/ling_hf_reference.json` holds three
+  prompts x 16 greedy tokens with the top-5 logits of every step:
+  "The capital of France is" -> " Paris. (Rewrite the sentence as a
+  question.)\nIs the capital of France", "Counting upward: one, two," ->
+  " three, four, five, six, seven, eight, nine, ten.", and a Python
+  fibonacci docstring prompt -> "    if n <= 0:\n        return 0\n
+  elif n". The committed numpy fixtures above agree with it on all ten
+  tokens they hold, including the 0.0625-logit near tie at the third
+  capital token. `tests/test_ling_reference_agreement.py` checks the
+  receipt against the pinned modeling, checkpoint and prompts and against
+  the numpy fixtures. The run on spark0 used
+  `~/vllm-venv` (torch 2.13, transformers 5.8.1, fla 0.5.2), a
+  `systemd-run --user` unit with `MemoryMax=28G`, and took 440 s:
+  `python ling_hf_reference.py --checkpoint /mnt/model-warm/ling-3.0-flash
+  --prompts prompts.json --out ling_hf_reference.json --new-tokens 16
+  --expert-cache 256 --top 5 --swiglu-limits modeling`. Logits are bf16,
+  so scores are quantized to 1/16 at this magnitude.
+- ling SwiGLU limits: the config carries `expert_swiglu_limit_list` (4 on
+  layers 35-41) and `share_expert_swiglu_limit_list` (5 on layers 34-39,
+  7 on 40-41). The publisher HF modeling ignores them. The publisher
+  serving implementations apply `silu(gate).clamp(max=L) *
+  up.clamp(-L, L)` to the routed experts and the shared expert of those
+  layers: sglang `python/sglang/srt/models/bailing_moe_v3.py` (81f27fb3)
+  and vLLM `vllm/model_executor/models/bailing_moe_v3.py` (d8818125).
+  `--swiglu-limits serving` applies the same clamp. The 2026-09-28 run on
+  spark3 (`qualification/ling_reference/ling_hf_reference_serving_limits.json`,
+  478 s) gives the same 48 greedy tokens as the modeling receipt. Its
+  top-5 logits move by at most 0.5 from a modeling run on the same node.
+  A modeling rerun on spark3 also differs from the spark0 receipt by up
+  to 0.5, so these prompts cannot separate the clamp from run-to-run
+  noise. The CUDA driver implements no clamp (TECHDEBT).
 - gemma4 31b (60 layers, 5 sliding : 1 full): verified against the
   publishers' HF implementation on the fleet — the anchor oracle
   (`tools/t1_gemma4_anchor_check.py`) reproduces the committed
@@ -118,8 +255,80 @@ same two prompt texts as glm5_next, tokenized per family tokenizer).
   attention factor 1.4852030263919618, 64-dim partial rotation) and
   sliding layers theta 1e4 full-head rotation, half-split pairing,
   per-head q/k RMSNorms, softplus per-head output gating, sigmoid router
-  with e_score_correction_bias (zeros when absent) top-10 with routed
-  scaling 2.5, shared expert, dense layer 0.
+  with e_score_correction_bias top-10 with routed scaling 2.5, shared
+  expert, dense layer 0. The checkpoint stores the bias as
+  `mlp.experts.e_score_correction_bias` (the publisher remaps it onto the
+  router at load). Before 2026-09-28 the engine looked only for
+  `mlp.gate.e_score_correction_bias` and silently used zeros when it was
+  absent. The engine now reads either name and refuses a layer that has
+  neither. In revision 0f573140 all 47 bias vectors are exactly zero, so
+  the committed fixtures do not change. The canonical T1 prompt set has no
+  BOS token (id 2, which the tokenizer adds by default), and that is why
+  its greedy text is degenerate (" isThe ofThe"). The fixtures remain a
+  valid engine reference for those exact ids.
+
+### laguna torch reference (publisher semantics, GPU)
+
+`tools/laguna_reference_torch.py` is a second, independent laguna
+reference. It follows `modeling_laguna.py` step by step in bf16 with the
+publisher's casts: RMSNorm in f32 then cast, rope cos/sin cast to bf16, SDPA
+attention, softplus gate in f32, bf16 router logits upcast before the sigmoid,
+and experts accumulated in expert order. Tensors stream from the safetensors
+shards through a GPU LRU of routed experts. It prefills the prompt, then
+decodes with a KV cache.
+
+```sh
+python3 tools/laguna_reference_torch.py --checkpoint /mnt/model-warm/laguna-s-2.1 \
+  --prompts model-families/laguna/reference_prompts.json --output out \
+  --device cuda:0 --expert-cache 400
+```
+
+On the rtx5090 (torch 2.11, 32 GB) the three prompts x 16 tokens take
+about 10 minutes. About 9-18 s per token is spent reading experts from the
+ceph mount. The raw `out/reference.json` keeps routes, bf16 logits, timings
+and the absolute checkpoint path. The committed
+`model-families/laguna/reference_tokens.json` is derived from it by
+`tools/laguna_reference_fixture.py`, which drops the per-run fields, rounds
+the f32 top-2 logits to 4 places, decodes the generated text and records the
+strict prefix of every prompt:
+
+```sh
+python3 tools/laguna_reference_fixture.py --raw out/reference.json \
+  --tokenizer /mnt/model-warm/laguna-s-2.1/tokenizer.json \
+  --checkpoint-label "poolside/Laguna-S-2.1 0f573140834b11cfac0c2af97a101a7a69a13e22 (bf16)" \
+  --tie-margin 0.1 --output model-families/laguna/reference_tokens.json
+```
+
+Engine comparison rule: `strict_steps` is the index of the first step whose
+f32 top-2 margin is below `tie_margin` (0.1). The engine must emit exactly
+the reference tokens before that step, must emit one of the two f32
+candidates at that step, and is not compared after it, because the
+continuation depends on the tie. capital_of_france and count_up both stop at
+step 13 (margins 0.006 and 0.058; at capital_of_france step 13 the bf16
+argmax 340 is not the f32 argmax 22345). python_is_prime has no near tie
+(smallest margin 0.73), so all 16 tokens are strict.
+
+Tests:
+- `tests/test_laguna_reference_fixture.py` (in `make test`, no torch) checks
+  the derivation, its refusals (foreign generator, token/step disagreement, a
+  token outside the f32 top-2, missing header fields) and that the committed
+  fixture matches `reference_prompts.json` by sha256 and ids, follows
+  `tie_margin`, and is byte-identical to the tool's encoding.
+- `tests/test_t1_reference_engines.py` (in `make test`) checks the numpy
+  engine's router bias on a single-file synthetic checkpoint: the bias is
+  read under `mlp.experts.` and `mlp.gate.` with identical fixtures, a +4
+  bias forces an expert into every route and a -4 bias excludes it, and a
+  checkpoint without the bias is refused with an error naming
+  `e_score_correction_bias`. The name lookup goes through
+  `Safetensors.has`, which reads the shard header, so it works with and
+  without `model.safetensors.index.json`.
+- `tests/test_laguna_reference_torch.py` needs torch and is run by hand on a
+  torch host. It checks that incremental decode equals full recompute
+  across the sliding window, pins the sliding mask against the publisher
+  rule (`key > query - window`: a query sees itself and the previous
+  window-1 keys), checks the correction bias under both names and the
+  refusal of a missing bias or attention sinks, and checks that the yarn
+  table equals the numpy engine's.
 
 Checkpoint staging note: the wave's fixture runs decoded from
 byte-identical node-local copies of the warm checkpoints

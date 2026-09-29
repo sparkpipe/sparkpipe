@@ -23,8 +23,8 @@ HIDDEN = 32
 HEAD_DIM = 32
 ROPE_DIM = 8
 HEADS = 2
-Q_LORA = 8
-O_LORA = 6
+Q_LORA = 32
+O_LORA = 16
 O_GROUPS = 2
 INDEX_HEADS = 2
 INDEX_DIM = 32
@@ -324,7 +324,38 @@ def expect(condition, message):
         raise AssertionError(message)
 
 
+def check_hc_post_orientation():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import numpy as np
+    from t1_reference_dsv41 import Dsv41FlashEngine
+    rng = np.random.default_rng(3)
+    comb = rng.random((4, 4)).astype(np.float32)
+    residual = rng.random((4, 8)).astype(np.float32)
+    post = rng.random(4).astype(np.float32)
+    x = rng.random(8).astype(np.float32)
+    got = Dsv41FlashEngine._hc_post(None, x, residual, post, comb)
+    official = post[:, None] * x[None, :] + np.sum(comb[:, :, None] * residual[:, None, :], axis=0)
+    expect(np.allclose(got, official, rtol=1e-2, atol=1e-2),
+           "hc_post must follow the reference sum over comb rows (comb^T @ residual)")
+    expect(not np.allclose(got, post[:, None] * x[None, :] + comb @ residual, rtol=1e-3, atol=1e-3),
+           "hc_post fixture comb must be asymmetric enough to separate the orientations")
+
+
+def check_round_half_even():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from t1_reference_dsv41 import _fp4_round_abs, _fp8_round_abs
+    fp4 = _fp4_round_abs(np.array([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0],
+                                  dtype=np.float32))
+    expect(fp4.tolist() == [0.0, 1.0, 1.0, 2.0, 2.0, 4.0, 4.0],
+           f"fp4 ties must round to the even code (cvt.rn), got {fp4}")
+    fp8 = _fp8_round_abs(np.array([0.96875, 1.0625, 17.0], dtype=np.float32))
+    expect(fp8.tolist() == [1.0, 1.0, 16.0],
+           f"fp8 e4m3 ties must round to the even code (cvt.rn), got {fp8}")
+
+
 def main():
+    check_round_half_even()
+    check_hc_post_orientation()
     workspace = tempfile.mkdtemp(prefix="t1ref-dsv41-")
     try:
         checkpoint = os.path.join(workspace, "checkpoint")
@@ -375,7 +406,7 @@ def main():
                f"identical fixtures must PASS: {identical.stdout}")
         mutated = os.path.join(workspace, "checkpoint_mutated")
         write_checkpoint(mutated, mutate=(
-            "layers.3.ffn.experts.2.w1.weight", 0, 0x25))
+            "layers.3.ffn.shared_experts.w2.scale", 0, 147))
         out_c = os.path.join(workspace, "run_c")
         result_c = run_generator(mutated, header, prompts, out_c)
         expect(result_c.returncode == 0,
@@ -384,6 +415,18 @@ def main():
         diverged = compare(fixture_a, fixture_c)
         expect(diverged.returncode == 1,
                "perturbed expert weight must change the output fixtures")
+        compressed = os.path.join(workspace, "checkpoint_compressed")
+        write_checkpoint(compressed, mutate=(
+            "layers.1.attn.compressor.norm.weight", 0, 0x4100))
+        out_h = os.path.join(workspace, "run_h")
+        result_h = run_generator(compressed, header, prompts, out_h)
+        expect(result_h.returncode == 0,
+               f"compressor-perturbed generator failed: {result_h.stderr}")
+        attended = compare(fixture_a, os.path.join(out_h, "dsv41",
+                                                   "synth_a.t1r"))
+        expect(attended.returncode == 1,
+               "compressed KV rows must be attended: perturbing the "
+               "ratio-2 compressor norm must change the output fixtures")
         bad_header = os.path.join(workspace, "llm_defines_bad.h")
         write_defines(bad_header, hidden=17)
         mismatch = run_generator(checkpoint, bad_header, prompts,

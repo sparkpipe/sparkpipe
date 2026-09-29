@@ -17,6 +17,15 @@
 #ifndef TEST_MODEL_RESIDENT_TRANSPORT_PATH
 #define TEST_MODEL_RESIDENT_TRANSPORT_PATH ""
 #endif
+#ifndef TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH
+#define TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH ""
+#endif
+#ifndef TEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH
+#define TEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH ""
+#endif
+#ifndef TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH
+#define TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH ""
+#endif
 
 #define TEST_RANKS 3u
 #define TEST_MAX_REQUESTS 8u
@@ -39,6 +48,10 @@ typedef struct TestBatchState
 	uint32_t error_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t total_terminals;
 	uint32_t cached_tokens[TEST_MAX_REQUESTS + 1u];
+	uint32_t stale_recomputes[TEST_MAX_REQUESTS + 1u];
+	uint64_t accepted_ns[TEST_MAX_REQUESTS + 1u];
+	uint64_t first_dispatch_ns[TEST_MAX_REQUESTS + 1u];
+	uint64_t first_token_ns[TEST_MAX_REQUESTS + 1u];
 } TestBatchState;
 
 static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
@@ -47,11 +60,16 @@ static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
 	uint64_t id = event->request_id;
 	if ( id > TEST_MAX_REQUESTS )
 		return;
+	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
+		s->accepted_ns[id] = event->monotonic_ns;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
 	{
-		s->token_events[id]++;
+		if ( s->token_events[id]++ == 0u )
+			s->first_token_ns[id] = event->monotonic_ns;
 		s->cached_tokens[id] = event->cached_prompt_token_count;
+		s->first_dispatch_ns[id] = event->first_dispatch_ns;
 	}
+	s->stale_recomputes[id] = event->stale_prefix_recompute_count;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED )
 	{
 		s->completed_events[id]++;
@@ -70,7 +88,7 @@ static const char *const TestTransportHosts[TEST_RANKS] =
 	"mock-stage-a","mock-stage-b","mock-stage-c"
 };
 
-static void TestWriteDeployment(const char *path, const char *runtime_root)
+static void TestWriteDeployment(const char *path, const char *runtime_root, const char *adapter_path)
 {
 	TestModelResidentDeploymentFixture fixture;
 	const char *runtime_roots[TEST_RANKS];
@@ -89,8 +107,8 @@ static void TestWriteDeployment(const char *path, const char *runtime_root)
 		endpoints[rank].tcp_port = (uint32_t)(59100u + rank);
 	}
 	memset(&fixture,0,sizeof(fixture));
-	fixture.adapter_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
-	fixture.driver_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
+	fixture.adapter_shared_object_path = adapter_path;
+	fixture.driver_shared_object_path = adapter_path;
 	fixture.driver_program_name = "resident_decode";
 	fixture.transport_shared_object_path = TEST_MODEL_RESIDENT_TRANSPORT_PATH;
 	fixture.transport_mode = "host-rdma";
@@ -395,6 +413,164 @@ static void TestScenarioPartialPrefixAppend(const SparkModelResidentDeployment *
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static uint32_t TestLaneLogCount(uint64_t request_id,uint32_t flag)
+{
+	SparkModelServingLane lane;
+	uint32_t index,count;
+	count = 0u;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+		if ( (request_id == 0u || lane.request_id == request_id) && (lane.flags & flag) != 0u )
+			count++;
+	return(count);
+}
+
+static uint32_t TestLaneLogFind(uint64_t request_id,uint64_t position,uint32_t flags,SparkModelServingLane *found)
+{
+	SparkModelServingLane lane;
+	uint32_t index;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+		if ( lane.request_id == request_id && lane.sequence_position == position && lane.flags == flags )
+		{
+			*found = lane;
+			return(1u);
+		}
+	return(0u);
+}
+
+static SparkModelBatchEngine *TestConnectCapturingLog(const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,char *log,size_t log_bytes)
+{
+	SparkModelBatchEngine *engine;
+	FILE *capture;
+	size_t read_bytes;
+	int saved;
+	log[0] = '\0';
+	capture = tmpfile();
+	CHECK(capture != 0,"cache mode log: capture file opens");
+	if ( capture == 0 )
+		return(TestConnect(deployment,state,runtime_root));
+	fflush(stderr);
+	saved = dup(2);
+	(void)dup2(fileno(capture),2);
+	engine = TestConnect(deployment,state,runtime_root);
+	fflush(stderr);
+	(void)dup2(saved,2);
+	close(saved);
+	rewind(capture);
+	read_bytes = fread(log,1u,log_bytes - 1u,capture);
+	log[read_bytes] = '\0';
+	fclose(capture);
+	return(engine);
+}
+
+static void TestScenarioAdapterWithoutPrefixReuse(const SparkModelResidentDeployment *deployment,const char *runtime_root,const char *expected_mode)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[9] = {11u,12u,13u,14u,15u,16u,17u,18u,19u};
+	char log[4096];
+	MockResidentClientReset();
+	engine = TestConnectCapturingLog(deployment,&state,runtime_root,log,sizeof(log));
+	if ( engine == 0 )
+		return;
+	CHECK(strstr(log,expected_mode) != 0,"no prefix reuse: startup names the adapter's cache mode");
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,700u,1u,prompt,8u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && TestLaneLogCount(1u,SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u,"no prefix reuse: the first prompt completes and its checkpoints are still named");
+	TestSubmitPrompt(engine,2u,701u,1u,prompt,9u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.sequence_position == 0u && lane.cache_prefix_token_count == 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == 0u,"no prefix reuse: a prompt sharing a published prefix prefills from position zero");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u && state.cached_tokens[2] == 0u,"no prefix reuse: the second prompt reports no cached tokens");
+	CHECK(TestLaneLogCount(2u,SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u && TestLaneLogCount(0u,SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == 0u,"no prefix reuse: the adapter never receives a cache prefix lane");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioSpeculativeCompletionSkipsDecodeCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0},requested = {0};
+	uint32_t prompt[4] = {11u,12u,13u,14u};
+	uint32_t extended[10] = {11u,12u,13u,14u,1000u,1000u,1001u,1002u,1000u,31u};
+	char log[4096];
+	MockResidentClientReset();
+	engine = TestConnectCapturingLog(deployment,&state,runtime_root,log,sizeof(log));
+	if ( engine == 0 )
+		return;
+	CHECK(strstr(log,"adapter=test.model.serving.adapter.speculative-inline.v1 prefix_reuse=on decode_checkpoints=inline-until-speculative") != 0,"speculative inline: startup names the adapter's cache mode");
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,710u,8u,prompt,4u);
+	CHECK(TestWaitLane(engine,1u,4u,&lane) != 0u,"speculative inline: prefill emits before decode");
+	MockResidentClientSetAutoTokens(3u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 8u,"speculative inline: a speculative completion across the block boundary is not UNSUPPORTED");
+	CHECK(TestLaneLogFind(1u,7u,SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH,&requested) != 0u && requested.cache_publish_token_count == 8u,"speculative inline: the boundary decode lane names its checkpoint before the completion is known");
+	CHECK(TestLaneLogFind(1u,10u,SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,&lane) != 0u,"speculative inline: after a speculative completion the request names no further decode checkpoints");
+	MockResidentClientSetAutoTokens(1u);
+	TestSubmitPrompt(engine,2u,711u,1u,extended,10u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 4u && lane.sequence_position == 4u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u,"speculative inline: the prompt checkpoint is reused and the speculative decode block is not indexed");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"speculative inline: the extending request reports only the prompt checkpoint");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioSpeculationOffPublishesDecodeCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0},published = {0};
+	uint32_t prompt[4] = {11u,12u,13u,14u};
+	uint32_t extended[9] = {11u,12u,13u,14u,1000u,1000u,1000u,1000u,31u};
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,720u,6u,prompt,4u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 6u,"speculation off: the request completes one token per frame");
+	CHECK(TestLaneLogFind(1u,7u,SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH,&published) != 0u && published.cache_publish_token_count == 8u,"speculation off: the boundary decode lane publishes inline");
+	TestSubmitPrompt(engine,2u,721u,1u,extended,9u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 8u && lane.sequence_position == 8u && memcmp(&lane.cache_prefix_identity,&published.cache_publish_identity,sizeof(lane.cache_prefix_identity)) == 0,"speculation off: a later prompt reuses the generated decode block");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 8u,"speculation off: the extending request reports the decode checkpoint");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioSpeculativePublishAdapterDefers(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0},published = {0};
+	uint32_t prompt[4] = {11u,12u,13u,14u};
+	uint32_t extended[9] = {11u,12u,13u,14u,1000u,1000u,1000u,1000u,31u};
+	char log[4096];
+	MockResidentClientReset();
+	engine = TestConnectCapturingLog(deployment,&state,runtime_root,log,sizeof(log));
+	if ( engine == 0 )
+		return;
+	CHECK(strstr(log,"adapter=test.model.serving.adapter.speculative-deferred.v1 prefix_reuse=on decode_checkpoints=deferred") != 0,"speculative deferred: startup names the adapter's cache mode");
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,730u,6u,prompt,4u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 6u,"speculative deferred: the request completes");
+	CHECK(TestLaneLogFind(1u,7u,SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,&lane) != 0u && lane.cache_publish_token_count == 0u,"speculative deferred: the boundary decode lane carries no inline checkpoint");
+	CHECK(TestLaneLogFind(1u,8u,SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH,&published) != 0u && published.context_token_count == 8u && published.cache_publish_token_count == 8u,"speculative deferred: a publish frame names the boundary checkpoint");
+	TestSubmitPrompt(engine,2u,731u,1u,extended,9u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 8u && memcmp(&lane.cache_prefix_identity,&published.cache_publish_identity,sizeof(lane.cache_prefix_identity)) == 0,"speculative deferred: the deferred checkpoint is reusable");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 8u,"speculative deferred: the extending request reports the deferred checkpoint");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioChainPublishesFinalCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -651,6 +827,171 @@ static void TestScenarioPartialCopyCapacity(const SparkModelResidentDeployment *
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioMeasurements(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,800u,1u,prompt,4u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.prefix_miss_count == 1u && view.prefix_hit_count == 0u && view.first_token_count == 1u,"measure: a cold prompt counts one miss and one first token");
+	CHECK(view.ttft_ns_total != 0u && view.ttft_ns_total == view.ttft_ns_maximum && view.queue_ns_total + view.prefill_ns_total == view.ttft_ns_total,"measure: queue and prefill split the first-token latency");
+	CHECK(state.first_dispatch_ns[1] >= state.accepted_ns[1] && state.first_token_ns[1] >= state.first_dispatch_ns[1] && state.accepted_ns[1] != 0u,"measure: the token event carries the request's first dispatch time");
+	TestSubmitPrompt(engine,2u,801u,1u,prompt,8u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.prefix_hit_count == 1u && view.prefix_hit_token_count == 4u && view.prefix_miss_count == 1u && view.first_token_count == 2u,"measure: a shared prefix counts one hit with its cached tokens");
+	CHECK(view.rejected_lane_count == 0u && view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] == 0u,"measure: an unrejected run counts no rejections");
+	MockResidentClientScriptSubmitStatus(1u,SPARK_STATUS_BUSY);
+	TestSubmitPrompt(engine,3u,802u,1u,prompt,3u);
+	TestDrive(engine,20u);
+	MockResidentClientScriptSubmitStatus(1u,SPARK_STATUS_OK);
+	TestDriveUntilTerminal(engine,&state,3u,400u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] != 0u && view.rejected_lane_count == view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] && view.stale_prefix_recompute_count == 0u,"measure: a BUSY rank counts its rejected waves by status");
+	CHECK(state.completed_events[3] == 1u && view.prefix_miss_count == 2u && view.first_token_count == 3u,"measure: retried waves count the prefix outcome once");
+	CHECK(state.first_dispatch_ns[3] >= state.accepted_ns[3] + UINT64_C(10000000),"measure: BUSY retry time before admission is booked as queue, not prefill");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static uint32_t TestFindLane(uint64_t request_id,uint64_t position,uint32_t prefix_tokens,SparkModelServingLane *found)
+{
+	SparkModelServingLane lane;
+	uint32_t index;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+		if ( lane.request_id == request_id && lane.sequence_position == position && lane.cache_prefix_token_count == prefix_tokens )
+		{
+			*found = lane;
+			return(1u);
+		}
+	return(0u);
+}
+
+static void TestScenarioStalePrefixRecomputes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u},plain_a[3] = {31u,32u,33u},plain_b[3] = {41u,42u,43u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	SparkModelServingLane canonical = {0},stale = {0},rebuilt = {0},reused = {0};
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,900u,1u,prompt,4u);
+	CHECK(TestWaitLane(engine,1u,0u,&canonical) != 0u && canonical.cache_publish_token_count == 4u,"stale: capture the canonical first block identity");
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_NOT_FOUND,1u);
+	TestSubmitPrompt(engine,2u,901u,1u,prompt,8u);
+	TestSubmitPrompt(engine,3u,902u,1u,plain_a,3u);
+	TestSubmitPrompt(engine,4u,903u,1u,plain_b,3u);
+	TestDriveUntilTerminal(engine,&state,4u,800u);
+	CHECK(state.completed_events[2] == 1u && state.completed_events[3] == 1u && state.completed_events[4] == 1u && state.error_events[2] + state.error_events[3] + state.error_events[4] == 0u,"stale: a stale prefix hint fails no lane of its wave");
+	CHECK(state.token_events[2] == 1u && state.token_events[3] == 1u && state.token_events[4] == 1u,"stale: every lane of the rejected wave emits its token exactly once");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_NOT_FOUND] == 1u && view.rejected_lane_count == 3u && view.stale_prefix_recompute_count == 1u,"stale: one rejected wave of three lanes recomputes one prefix");
+	CHECK(state.stale_recomputes[2] == 1u && state.stale_recomputes[3] == 0u && state.stale_recomputes[4] == 0u && state.cached_tokens[2] == 0u,"stale: only the prefix lane is reset and reports no cached tokens");
+	CHECK(TestFindLane(2u,4u,4u,&stale) != 0u && (stale.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u,"stale: the rejected lane carried the cached prefix");
+	CHECK(TestFindLane(2u,0u,0u,&rebuilt) != 0u && (rebuilt.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == 0u && rebuilt.cache_publish_token_count == 4u && memcmp(&rebuilt.cache_publish_identity,&canonical.cache_publish_identity,sizeof(canonical.cache_publish_identity)) == 0,"stale: the recompute starts at position zero and republishes the canonical block");
+	TestSubmitPrompt(engine,5u,904u,1u,prompt,8u);
+	TestDriveUntilTerminal(engine,&state,5u,400u);
+	CHECK(state.completed_events[5] == 1u && state.cached_tokens[5] == 4u && TestFindLane(5u,4u,4u,&reused) != 0u && memcmp(&reused.cache_prefix_identity,&canonical.cache_publish_identity,sizeof(canonical.cache_publish_identity)) == 0,"stale: the republished block serves the next hit");
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_BUSY,1u);
+	TestSubmitPrompt(engine,6u,905u,1u,prompt,8u);
+	TestDriveUntilTerminal(engine,&state,6u,400u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] == 1u && view.stale_prefix_recompute_count == 1u,"stale: BUSY keeps its backoff retry and recomputes nothing");
+	CHECK(state.completed_events[6] == 1u && state.cached_tokens[6] == 4u && state.stale_recomputes[6] == 0u,"stale: a BUSY-rejected hit still completes from its prefix");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioStalePrefixIsolatesLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt_a[8] = {11u,12u,13u,14u,15u,16u,17u,18u},prompt_b[8] = {51u,52u,53u,54u,55u,56u,57u,58u},plain[3] = {61u,62u,63u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	SparkModelServingLane lane = {0};
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,920u,1u,prompt_a,4u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestSubmitPrompt(engine,2u,921u,1u,prompt_b,4u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	MockResidentClientScriptStalePrefixRequest(1u,3u);
+	TestSubmitPrompt(engine,3u,922u,1u,prompt_a,8u);
+	TestSubmitPrompt(engine,4u,923u,1u,prompt_b,8u);
+	TestSubmitPrompt(engine,5u,924u,1u,plain,3u);
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	MockResidentClientScriptStalePrefixRequest(1u,0u);
+	CHECK(state.completed_events[3] == 1u && state.completed_events[4] == 1u && state.completed_events[5] == 1u && state.error_events[3] + state.error_events[4] + state.error_events[5] == 0u,"stale isolate: every lane of a wave with two prefix lanes completes");
+	CHECK(state.stale_recomputes[3] == 1u && state.cached_tokens[3] == 0u,"stale isolate: the stale prefix lane alone is recomputed");
+	CHECK(state.stale_recomputes[4] == 0u && state.cached_tokens[4] == 4u && TestFindLane(4u,4u,4u,&lane) != 0u,"stale isolate: the valid prefix lane keeps its prefix");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.stale_prefix_recompute_count == 1u && view.stale_prefix_isolation_count == 1u && view.rejected_submission_count_by_status[SPARK_STATUS_NOT_FOUND] == 2u,"stale isolate: one isolation, then one single-lane NOT_FOUND tombstones exactly one prefix");
+	CHECK(view.prefix_hit_count == 1u && view.prefix_miss_count == 4u,"stale isolate: hits count only admitted prefix waves");
+	TestSubmitPrompt(engine,6u,925u,1u,prompt_b,8u);
+	TestDriveUntilTerminal(engine,&state,6u,400u);
+	CHECK(state.completed_events[6] == 1u && state.cached_tokens[6] == 4u,"stale isolate: the untouched prefix still serves the next hit");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioVerificationFailureIsFatal(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,930u,1u,prompt,4u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_VALIDATION_FAILED,1u);
+	TestSubmitPrompt(engine,2u,931u,1u,prompt,8u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_OK,0u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.stale_prefix_recompute_count == 0u && view.rejected_submission_count_by_status[SPARK_STATUS_VALIDATION_FAILED] == 1u,"validation: VALIDATION_FAILED is never treated as a stale prefix");
+	CHECK(state.error_events[2] == 1u && state.completed_events[2] == 0u && state.stale_recomputes[2] == 0u,"validation: the request fails loudly instead of recomputing");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioStalePrefixTerminates(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[13] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	SparkModelServingLane lane = {0};
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,910u,1u,prompt,12u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_NOT_FOUND,10u);
+	TestSubmitPrompt(engine,2u,911u,1u,prompt,13u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	MockResidentClientScriptPrefixResult(1u,SPARK_STATUS_OK,0u);
+	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u && state.token_events[2] == 1u,"stale chain: a request whose every cached block is stale still completes once");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.stale_prefix_recompute_count == 3u && state.stale_recomputes[2] == 3u && view.rejected_submission_count_by_status[SPARK_STATUS_NOT_FOUND] == 3u,"stale chain: recomputes stop within the prompt's block count");
+	CHECK(TestFindLane(2u,12u,12u,&lane) != 0u && TestFindLane(2u,8u,8u,&lane) != 0u && TestFindLane(2u,4u,4u,&lane) != 0u && TestFindLane(2u,0u,0u,&lane) != 0u,"stale chain: each retry drops exactly the deepest stale block");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRankKilledAndRevived(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -863,6 +1204,39 @@ static void TestScenarioEventDeadlines(const SparkModelResidentDeployment *deplo
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestLoadVariantDeployment(const char *runtime_root,const char *name,const char *adapter_path,char *path,size_t path_bytes,SparkModelResidentDeployment *deployment)
+{
+	(void)snprintf(path,path_bytes,"%s/mock-batch-deployment-%s.json",runtime_root,name);
+	TestWriteDeployment(path,runtime_root,adapter_path);
+	assert(SparkModelResidentDeploymentLoad(path,deployment) == SPARK_STATUS_OK);
+	deployment->eos_token_count = 1u;
+	deployment->eos_token_ids[0] = 154820u;
+}
+
+static void TestScenarioAdapterCacheModes(const char *runtime_root)
+{
+	SparkModelResidentDeployment deployment;
+	char path[512];
+	TestLoadVariantDeployment(runtime_root,"without-prefix-reuse",TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH,path,sizeof(path),&deployment);
+	TestScenarioAdapterWithoutPrefixReuse(&deployment,runtime_root,"adapter=test.model.serving.adapter.without-prefix-reuse.v1 prefix_reuse=off decode_checkpoints=inline");
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
+	TestLoadVariantDeployment(runtime_root,"prefix-reuse-deployment-off",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);
+	deployment.prefix_reuse_disabled = 1u;
+	TestScenarioAdapterWithoutPrefixReuse(&deployment,runtime_root,"adapter=test.model.serving.adapter.v1 prefix_reuse=deployment-off decode_checkpoints=inline");
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
+	TestLoadVariantDeployment(runtime_root,"speculative-inline",TEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH,path,sizeof(path),&deployment);
+	TestScenarioSpeculativeCompletionSkipsDecodeCheckpoint(&deployment,runtime_root);
+	TestScenarioSpeculationOffPublishesDecodeCheckpoint(&deployment,runtime_root);
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
+	TestLoadVariantDeployment(runtime_root,"speculative-deferred",TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH,path,sizeof(path),&deployment);
+	TestScenarioSpeculativePublishAdapterDefers(&deployment,runtime_root);
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
@@ -871,42 +1245,41 @@ int main(void)
 
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	(void)snprintf(path,sizeof(path),"%s/mock-batch-deployment.json",runtime_root);
-	TestWriteDeployment(path,runtime_root);
+	TestWriteDeployment(path,runtime_root,TEST_MODEL_SERVING_ADAPTER_PATH);
 	assert(SparkModelResidentDeploymentLoad(path,&deployment) == SPARK_STATUS_OK);
 	deployment.eos_token_count = 1u;
 	deployment.eos_token_ids[0] = 154820u;
 
-	if ( getenv("ONLY_BUSY") != 0 )
-	{
-		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
-	}
-	else
-	{
-		char *coordinator_root = deployment.nodes[0].runtime_root;
-		deployment.nodes[0].runtime_root = "/remote-resident-only/runtime";
-		TestScenarioHappyPath(&deployment,runtime_root);
-		deployment.nodes[0].runtime_root = coordinator_root;
-		TestScenarioEventDeadlines(&deployment,runtime_root);
-		TestScenarioHappyPath(&deployment,runtime_root);
-		TestScenarioDeploymentPositionLimit(&deployment,runtime_root);
-		TestScenarioRankDiesMidDecode(&deployment,runtime_root);
-		TestScenarioRankKilledAndRevived(&deployment,runtime_root);
-		TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
-		TestScenarioPartialPrefixAppend(&deployment,runtime_root);
-		TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
-		TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
-		TestScenarioSingleTokenEosSkipsPublish(&deployment,runtime_root);
-		TestScenarioChainEosCheckpoint(&deployment,runtime_root);
-		TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
-		TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
-		TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
-		TestScenarioPartialCopyCapacity(&deployment,runtime_root);
-		TestScenarioSamplingValidation(&deployment,runtime_root);
-		TestScenarioRankBusyBackpressure(&deployment,runtime_root);
-		TestScenarioDriverIoError(&deployment,runtime_root);
-		TestScenarioEosEarlyStop(&deployment,runtime_root);
-		TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
-	}
+	char *coordinator_root = deployment.nodes[0].runtime_root;
+	deployment.nodes[0].runtime_root = "/remote-resident-only/runtime";
+	TestScenarioHappyPath(&deployment,runtime_root);
+	deployment.nodes[0].runtime_root = coordinator_root;
+	TestScenarioEventDeadlines(&deployment,runtime_root);
+	TestScenarioHappyPath(&deployment,runtime_root);
+	TestScenarioDeploymentPositionLimit(&deployment,runtime_root);
+	TestScenarioRankDiesMidDecode(&deployment,runtime_root);
+	TestScenarioRankKilledAndRevived(&deployment,runtime_root);
+	TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
+	TestScenarioPartialPrefixAppend(&deployment,runtime_root);
+	TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
+	TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
+	TestScenarioSingleTokenEosSkipsPublish(&deployment,runtime_root);
+	TestScenarioChainEosCheckpoint(&deployment,runtime_root);
+	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
+	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
+	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
+	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
+	TestScenarioSamplingValidation(&deployment,runtime_root);
+	TestScenarioMeasurements(&deployment,runtime_root);
+	TestScenarioStalePrefixRecomputes(&deployment,runtime_root);
+	TestScenarioStalePrefixTerminates(&deployment,runtime_root);
+	TestScenarioStalePrefixIsolatesLanes(&deployment,runtime_root);
+	TestScenarioVerificationFailureIsFatal(&deployment,runtime_root);
+	TestScenarioRankBusyBackpressure(&deployment,runtime_root);
+	TestScenarioDriverIoError(&deployment,runtime_root);
+	TestScenarioEosEarlyStop(&deployment,runtime_root);
+	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
+	TestScenarioAdapterCacheModes(runtime_root);
 
 	SparkModelResidentDeploymentReset(&deployment);
 	MockResidentClientReset();

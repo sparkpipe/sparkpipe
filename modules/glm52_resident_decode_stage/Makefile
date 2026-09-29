@@ -8,6 +8,15 @@ GLM_MODULE_ROOT := .
 GLM_EXPERT_CODECS := bf16 int6 int7 int8 fp8 nvfp4 mxfp4
 MODULE_IDENTIFIER_PREFIX := spark.glm52.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h6144.l78.e256.k8
 MODULE_IDENTIFIER_SUFFIX := v2
+SCORE_DUMP ?= 0
+ifeq ($(filter $(SCORE_DUMP),0 1),)
+$(error SCORE_DUMP must be 0 or 1)
+endif
+ifeq ($(SCORE_DUMP),1)
+MODULE_IDENTIFIER_SUFFIX = v2.scoredump
+GLM52_SCORE_DUMP_SOURCES := ../../src/spark_score_dump.c
+BUILD_DIRECTORY ?= $(GLM_BUILD_ROOT)/$(GLM_FAMILY)_resident_decode_stage/$(EXPERT_CODEC)-scoredump
+endif
 MODULE_TARGET := cuda.sm121.glm52.resident_decode_stage.bf16.expert_$(EXPERT_CODEC)
 MODEL_HEADER := ../../model-families/glm52/include/sparkpipe/spark_glm52_model.h
 MODULE_ENTRY_PREFIX := SparkGlm52ResidentDecodeStage
@@ -24,15 +33,26 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_cache.c \
 	../../cache/kv_page_cache.c \
 	../../cache/kv_page_store.c \
-	../../cache/kv_model_table.c
+	../../cache/kv_snapshot.c \
+	../../cache/kv_model_table.c \
+	$(GLM52_SCORE_DUMP_SOURCES)
 MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
 
 include ../../common/glm_resident_stage_wrapper.mk
 
 MODULE_POSIX_FLAGS := -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
-MODEL_DESCRIPTION ?= ../../examples/model_descriptions/glm52_resident_decode_stage_$(EXPERT_CODEC)_firmware.json
+MODEL_ARM ?= $(EXPERT_CODEC)
+MODEL_DESCRIPTION ?= ../../examples/model_descriptions/glm52_resident_decode_stage_$(MODEL_ARM)_firmware.json
+MODEL_ID := $(shell python3 ../../tools/glm52_model_contract.py --print-model-id $(MODEL_ARM) --expert-codec $(EXPERT_CODEC))
+ifeq ($(MODEL_ID),)
+$(error MODEL_ARM '$(MODEL_ARM)' names no served model id for EXPERT_CODEC '$(EXPERT_CODEC)')
+endif
 MODEL_DESCRIPTION_SHA256 ?= $(shell sha256sum "$(MODEL_DESCRIPTION)" | awk '{print $$1}')
 MODULE_COMPILE_FLAGS += -DGLM_MODEL_DESCRIPTION_SHA256=\"$(MODEL_DESCRIPTION_SHA256)\"
+MODULE_COMPILE_FLAGS += -DGLM_MODEL_ID=\"$(MODEL_ID)\"
+ifeq ($(SCORE_DUMP),1)
+MODULE_COMPILE_FLAGS += -DSPARK_SCORE_DUMP=1
+endif
 
 STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/glm52_stage.$(EXPERT_CODEC).glm52sp
 STAGE_INDEX ?= 0

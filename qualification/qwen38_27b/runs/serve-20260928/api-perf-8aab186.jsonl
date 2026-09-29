@@ -1,0 +1,5 @@
+{"case": "api_ttft427", "mode": "dflash2", "prompt_tokens": 427, "completion_tokens": 1, "wall_s": 2.255, "e2e_tok_s": 0.44, "finish_reason": "length"}
+{"case": "api_ttft427", "mode": "dflash2", "prompt_tokens": 427, "completion_tokens": 1, "wall_s": 0.299, "e2e_tok_s": 3.35, "finish_reason": "length"}
+{"case": "api_ttft427", "mode": "dflash2", "prompt_tokens": 427, "completion_tokens": 1, "wall_s": 0.282, "e2e_tok_s": 3.54, "finish_reason": "length"}
+{"case": "api_prose256", "mode": "dflash2", "prompt_tokens": 40, "completion_tokens": 256, "wall_s": 21.732, "e2e_tok_s": 11.78, "finish_reason": "length"}
+{"case": "api_code256", "mode": "dflash2", "prompt_tokens": 44, "completion_tokens": 256, "wall_s": 11.132, "e2e_tok_s": 23.0, "finish_reason": "length"}

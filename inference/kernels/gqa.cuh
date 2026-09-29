@@ -73,8 +73,7 @@ void LmGqaKvStoreKernel(LmKvView view, const uint16_t *__restrict__ key_bf16, co
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
-__global__ __launch_bounds__(THREADS, 1)
-void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position)
+static __device__ __forceinline__ void LmGqaAttentionDecodeRow(const uint16_t *__restrict__ query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position, float initial_max, float initial_sum)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_query[HEAD_DIM];
@@ -85,7 +84,7 @@ void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvVie
 	uint32_t sequence = sequence_of_row[row];
 	uint32_t kv_head;
 	uint64_t query_base;
-	float running_max = -INFINITY,running_sum = 0.0f;
+	float running_max = initial_max,running_sum = initial_sum;
 
 	if ( !LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count )
 	{
@@ -160,4 +159,18 @@ void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvVie
 			output_bf16[(((uint64_t)row * heads) + head) * VALUE_DIM + element] =
 				LmFloatToBf16(accumulator[index] / fmaxf(running_sum,1.0e-20f));
 	}
+}
+
+template<class Geometry, uint32_t THREADS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position)
+{
+	LmGqaAttentionDecodeRow<Geometry,THREADS,KV_HEADS,HEAD_DIM,VALUE_DIM>(query_bf16,cache,sequence_of_row,context_length,selected_positions,selected_count,heads,qk_scale,output_bf16,row_position,-INFINITY,0.0f);
+}
+
+template<class Geometry, uint32_t THREADS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmGqaSinkAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position, const uint16_t *__restrict__ sink_bf16)
+{
+	LmGqaAttentionDecodeRow<Geometry,THREADS,KV_HEADS,HEAD_DIM,VALUE_DIM>(query_bf16,cache,sequence_of_row,context_length,selected_positions,selected_count,heads,qk_scale,output_bf16,row_position,LmBf16ToFloat(sink_bf16[blockIdx.y < heads ? blockIdx.y : 0u]),1.0f);
 }

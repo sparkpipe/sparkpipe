@@ -13,18 +13,13 @@
 #ifndef LAGUNA_CONTRACT_SHA256
 #error "LAGUNA_CONTRACT_SHA256 must match the adapter build"
 #endif
+#ifndef LAGUNA_MODEL_DESCRIPTION_SHA256
+#error "LAGUNA_MODEL_DESCRIPTION_SHA256 must name the firmware description this driver was compiled from"
+#endif
 #ifndef LAGUNA_EXPERT_CODEC_NAME
 #error "LAGUNA_EXPERT_CODEC_NAME must match the adapter build"
 #endif
 
-/* The boundary receipt tokens: the frame reaches the driver either as
-   the raw wire form (no hidden transport bound yet - the residentd
-   validates before the route bind) or as the route-bound form (exactly
-   one hidden side wired: a first-stage frame ships hidden_output, a
-   last-stage frame consumes hidden_input). The stage markers let the
-   test pin that the bound form survives validation and execution - the
-   attach-011d first-decode abort was the validator rejecting exactly
-   that form. */
 #define TEST_LAGUNA_STAGE0_TOKEN 5000u
 #define TEST_LAGUNA_STAGE1_TOKEN 6000u
 #define TEST_LAGUNA_RAW_TOKEN 7000u
@@ -72,7 +67,7 @@ static const SparkModelDriverDescriptor TestLagunaServingDriverDescriptor =
 	.model_revision = LAGUNA_MODEL_REVISION,
 	.stage_name = "laguna_resident_decode_stage",
 	.target = "cuda.sm121.laguna.resident_decode_stage.bf16.expert_" LAGUNA_EXPERT_CODEC_NAME,
-	.model_description_sha256 = LAGUNA_CONTRACT_SHA256,
+	.model_description_sha256 = LAGUNA_MODEL_DESCRIPTION_SHA256,
 	.compiled_program_sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 	.program_count = 1u,
 	.module_instance_count = 1u,
@@ -139,12 +134,6 @@ static SparkStatus TestLagunaServingDriverSubmit(
 	rows = context->batch->row_count;
 	if ( rows == 0u || rows != frame->new_token_count || frame->active_slot_count != context->batch->active_sequence_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* Two legitimate frame forms: the raw wire form (no hidden side
-	   bound yet, token buffer present) and the route-bound form. A
-	   bound frame ships hidden_output WITHOUT a token buffer (the final
-	   stage alone materializes tokens - the module's ValidateFrame
-	   rejects a WRITE buffer on a shipping stage); a consuming frame
-	   carries hidden_input plus the WRITE buffer. */
 	if ( (context->hidden_input_bytes == 0u) != (context->hidden_input_bf16 == 0) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (context->hidden_output_bytes == 0u) != (context->hidden_output_bf16 == 0) )

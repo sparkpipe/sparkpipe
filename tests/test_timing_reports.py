@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MESH_TAIL = "gates=1 gate_us=64/64 gate_ms=0 self=0 starts=1 start_us=64/64 start_ms=0 start_self=0 worst_us=40 worst_tag=23:1 worst_closer=2 peers=1:32/32/0/0/0,2:64/64/1/1/37,3:32/32/0/0/0"
 MESH_SELF = "gates=1 gate_us=1/1 gate_ms=0 self=1 starts=1 start_us=1/1 start_ms=0 start_self=1 worst_us=0 worst_tag=0:0 worst_closer=0 peers=1:128/128/0/0/0,2:128/128/0/0/0,3:128/128/0/0/0"
-WAVE = "G5N-WAVE-TIMING rank=3 waves=3 rows=24 steps=6 prefill=1 graph=2 eager=1 linear=1 graph_path=1 retries=2 busy=1/1/0/0/0 captures=1 capture_ms=250 idle_us=8388608/8388608 wait_us=128/4096 key_us=512/512 setup_us=1024/262144 run_us=65536/131072 post_us=512/512 idle_ms=10593 wait_ms=3 key_ms=0 setup_ms=252 run_ms=210 post_ms=1 graph_run_ms=150 eager_run_ms=60 linear_run_ms=60 linear_walk_ms=45 decode_wait_ms=3 source_wait_ms=3 peer_wait_ms=60 copy_ms=6 combine_ms=9 worst_ms=311 worst_request=7 worst_epochs=11/12 worst_us=0/100/300/251000/60000/500"
+WAVE = (ROOT / "tests" / "fixtures" / "glm5_next_wave_timing.txt").read_text().strip()
 WAVE_BEFORE_STEPS = WAVE.replace("rank=3", "rank=5").replace(" steps=6", "").replace(" linear_walk_ms=45", "")
 WAVE_BEFORE_LINEAR = WAVE_BEFORE_STEPS.replace("rank=5", "rank=4").replace(" linear=1", "").replace(" linear_run_ms=60", "")
 
@@ -24,9 +24,7 @@ def check(condition, message, output):
 
 def main():
     mock = (ROOT / "tests" / "test_weightd_mesh_mock.c").read_text()
-    harness = (ROOT / "tests" / "test_glm5_next_stage_context.py").read_text()
     check(MESH_TAIL in mock and MESH_SELF in mock, "the weightd lines match what test_weightd_mesh_mock.c asserts", "")
-    check(WAVE in harness, "the wave line matches what test_glm5_next_stage_context.py asserts", "")
     with tempfile.TemporaryDirectory() as directory:
         mesh0, mesh1, wave, older, linear = Path(directory) / "w0.log", Path(directory) / "w1.log", Path(directory) / "r3.log", Path(directory) / "r4.log", Path(directory) / "r5.log"
         prefix = "WD-MESH-TIMING posts=1 post_us=1/1 ship_us=1/1 credits=1 credit_us=1/1 "

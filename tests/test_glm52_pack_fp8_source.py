@@ -7,8 +7,8 @@ Covers (no checkpoint, no torch, no safetensors):
   3. Fp8SourceReader over a synthetic blockwise-FP8 safetensors store:
      BF16 passthrough byte-exactness, code*scale_inv dequant, expert fp8
      payload verbatim slicing, row-expanded scale slicing,
-  4. every plan entry of tools/glm52_resident_stagepack.py (tp=1 and tp=8,
-     all ranks) matches the C-module policy mirror in
+  4. every plan entry of tools/glm52_resident_stagepack.py (tp=1, tp=8 and
+     tp=16, all ranks) matches the C-module policy mirror in
      tools/glm52_validate_pack.py: fields, payload/scale byte counts, and
      the global/layer inventory masks.
 """
@@ -248,10 +248,10 @@ def build_entries(tp_degree: int, tp_rank: int):
     return instance
 
 
-def check_plan_against_validator(tp_degree: int):
+def check_rank_plan(tp_degree: int, tp_rank: int):
     seen_global = 0
     seen_layer: dict = {}
-    instance = build_entries(tp_degree, 0)
+    instance = build_entries(tp_degree, tp_rank)
     for item in instance.plan:
         entry = item.entry
         expected = validator.expected_shape(entry.kind, entry.layer, tp_degree)
@@ -283,8 +283,13 @@ def check_plan_against_validator(tp_degree: int):
             f"layer {layer} inventory drift at tp{tp_degree}"
     total_bytes = sum(item.entry.payload_bytes + item.entry.scale_bytes
                       for item in instance.plan)
-    print(f"PASS plan mirrors validator policy at tp{tp_degree} "
+    print(f"PASS plan mirrors validator policy at tp{tp_degree} rank {tp_rank} "
           f"({len(instance.plan)} tensors, {total_bytes} payload+scale bytes)")
+
+
+def check_plan_against_validator(tp_degree: int):
+    for tp_rank in range(tp_degree):
+        check_rank_plan(tp_degree, tp_rank)
 
 
 def check_tp_slices_partition():
@@ -326,6 +331,7 @@ def main() -> int:
     check_reader()
     check_plan_against_validator(1)
     check_plan_against_validator(8)
+    check_plan_against_validator(16)
     check_tp_slices_partition()
     print("PASS glm52 fp8-source packer unit checks")
     return 0

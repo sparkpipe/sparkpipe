@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -34,27 +35,29 @@ COLLECTIVE_SESSION_HC_BASE = int(os.environ.get(
     "GLM5_NEXT_SESSION_HC_BASE", "62550"))
 COLLECTIVE_ID = 9911223344556679
 BACKEND = os.environ.get("GLM5_NEXT_BACKEND", "hidden_transport")
+if BACKEND != "hidden_transport":
+    raise SystemExit(f"GLM5_NEXT_BACKEND={BACKEND}: the TP device collective "
+                     "accepts only hidden_transport")
 PACK_TEMPLATE = os.environ.get(
     "GLM5_NEXT_PACK_TEMPLATE",
     "packs/" + ROOT_NAME + ".rank%x.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
+PRODUCTION_ROOT_NAME = "glm53flash.fp8.tp16"
+SCORE_MEMBERS = ("score_dump_directory", "score_probe_path", "score_tier2_rows_path")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TOKENIZER_ASSET = REPO_ROOT / "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json"
+TOKENIZER_RUNTIME_PATH = "tokenizer/tokenizer.json"
 NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
+FIRMWARE_HEADER = (Path(__file__).resolve().parents[1] / "modules"
+                   / "glm5_next_resident_decode_stage/include/sparkpipe"
+                   / "spark_glm5_next_resident_decode_stage_firmware.h")
+KV_SHARD_REQUIRED_DEGREE = int(re.search(
+    r"#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_KV_SHARD_REQUIRED_DEGREE "
+    r"(\d+)u", FIRMWARE_HEADER.read_text()).group(1))
 
 TP_COLLECTIVE = {
-    # THE NCCL ACTIVATION: the backend (ring/transport/tp_device_collective_
-    # _nccl.c) is implemented + dispatched; in-process bootstrap (rank 0
-    # serves the unique-id over this same peer mesh - no files, no ssh).
-    # 16-rank receipts: 105.9us @8KB / 103.3us @14KB vs ~820us/hop on the
-    # host tier (docs/NCCL_16WIDE_RECEIPTS.md). Env pins REQUIRED (the fabric
-    # has two RoCE ports; unpinned NCCL picks the wrong one):
-    # NCCL_SOCKET_IFNAME=enp1s0f1np1 NCCL_IB_HCA=rocep1s0f1
-    # NCCL_IB_GID_INDEX=3 - the wave exports them.
-    # GLM5_NEXT_BACKEND=hidden_transport selects the tree allreduce
-    # (algorithms [tree], explicit session port tables).
     "backend": BACKEND,
-    "backend_module_path":
-        "lib/hidden_transport.so" if BACKEND == "hidden_transport"
-        else "lib/libnccl.so.2",
+    "backend_module_path": "lib/hidden_transport.so",
     "algorithms": ["tree"],
     "collective_identifier": COLLECTIVE_ID,
     "listen_port": COLLECTIVE_BASE,
@@ -65,8 +68,6 @@ TP_COLLECTIVE = {
     # d2a rides beside recursive doubling at TP16 (the ABI-13 transport
     # routes tp_degree-1 peers on step rows; 80KB is the lane's payload
     # bound from the d2d measurements) - #760's committed configs.
-    # hidden_transport only (stripped below for nccl: that backend
-    # validates the BASE member set - no algorithms/rails/d2a).
     "split_ring_min_payload_bytes": 0,
     "direct_all_to_all_max_payload_bytes": 0,
     # The schema REQUIRES exactly 2 rails (MAX_RAIL_COUNT=2) and 3
@@ -91,14 +92,6 @@ TP_COLLECTIVE = {
 }
 
 
-if TP_COLLECTIVE["backend"] == "nccl":
-    for _nccl_extra in ("algorithms", "direct_all_to_all_max_payload_bytes",
-                        "split_ring_min_payload_bytes", "rail_peer_hosts",
-                        "step_rail_indices", "session_ports",
-                        "session_ports_hc"):
-        TP_COLLECTIVE.pop(_nccl_extra, None)
-
-
 
 def stage_config(rank: int) -> dict:
     host = HOSTS[rank]
@@ -109,7 +102,7 @@ def stage_config(rank: int) -> dict:
     # shipped single-pass behavior. The capacities ride the module firmware
     # header defaults; the KV backing directory flows through the deployment
     # node (not the stage config).
-    return {
+    configuration = {
         "schema_version": 3,
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": "fp8",
@@ -140,10 +133,51 @@ def stage_config(rank: int) -> dict:
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),
     }
+    if TP >= KV_SHARD_REQUIRED_DEGREE:
+        configuration["dsa_index_context_parallel"] = 1
+        configuration["kv_shard"] = 1
+    return configuration
+
+
+def score_members(values: dict, root_name: str, runtime_root: str, output: Path) -> dict:
+    members = {name: values[name] for name in SCORE_MEMBERS if values.get(name) is not None}
+    if not members:
+        return {}
+    empty = [name for name, value in members.items() if value == ""]
+    if empty:
+        raise SystemExit(f"score-dump members must not be empty: {', '.join(empty)}")
+    if "score_dump_directory" not in members:
+        raise SystemExit("score_probe_path and score_tier2_rows_path require score_dump_directory")
+    committed = (Path(__file__).resolve().parents[1] / "deployment/glm5_next_tp16").resolve()
+    if (root_name == PRODUCTION_ROOT_NAME or PRODUCTION_ROOT_NAME in runtime_root
+            or output.resolve() == committed):
+        raise SystemExit(f"score-dump members are experiment-only and refused for the production root "
+                         f"{PRODUCTION_ROOT_NAME} and the committed deployment tree")
+    for name, value in members.items():
+        if value.startswith("/") or value.endswith("/") or any(part in ("", ".", "..") for part in value.split("/")):
+            raise SystemExit(f"{name} must be a normalized path relative to the arm's runtime root: {value}")
+    return members
+
+
+def tokenizer_block(eos_token_ids: list) -> dict:
+    data = TOKENIZER_ASSET.read_bytes()
+    document = json.loads(data)
+    ids = list(document["model"]["vocab"].values())
+    ids += [token["id"] for token in document.get("added_tokens", [])]
+    vocabulary_size = max(ids) + 1
+    outside = [token for token in eos_token_ids if token >= vocabulary_size]
+    if outside:
+        raise SystemExit(f"{TOKENIZER_ASSET}: eos_token_ids {outside} are outside "
+                         f"the tokenizer vocabulary of {vocabulary_size}")
+    return {
+        "path": TOKENIZER_RUNTIME_PATH,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "vocabulary_size": vocabulary_size,
+    }
 
 
 def resident_deployment() -> dict:
-    contract = json.loads((Path(__file__).resolve().parents[1] / "model_contracts/glm53_flash_authoritative.json").read_text())
+    contract = json.loads((REPO_ROOT / "model_contracts/glm53_flash_authoritative.json").read_text())
     # Single source of truth: every dependent constant derives from the
     # seed via tools/spark_serving_profile.py (#1210 drift law). The old
     # hand-pinned literals are gone; GLM5_NEXT_SEQUENCES is the seed.
@@ -195,6 +229,7 @@ def resident_deployment() -> dict:
         },
         "runtime_limits": derived_runtime_limits,
         "nodes": nodes,
+        "tokenizer": tokenizer_block(contract["tokens"]["eos_token_ids"]),
     }
 
 
@@ -208,12 +243,15 @@ def render_stage(configuration: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
+    for name in SCORE_MEMBERS:
+        parser.add_argument("--" + name.replace("_", "-"), dest=name)
     args = parser.parse_args()
     root = Path(args.output)
+    score = score_members(vars(args), ROOT_NAME, RUNTIME_ROOT, root)
     (root / "config").mkdir(parents=True, exist_ok=True)
     for rank in range(TP):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
-            render_stage(stage_config(rank)))
+            render_stage(dict(stage_config(rank), **score)))
     (root / "model_resident.json").write_text(
         json.dumps(resident_deployment(), indent=1) + "\n")
     print(f"{root}: {TP} stage configs + model_resident.json "

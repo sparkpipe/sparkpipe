@@ -36,6 +36,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL 3u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
@@ -372,6 +373,7 @@ SparkStatus SparkTpDeviceCollectiveHardwareStats(
     SparkTpDeviceCollectiveHardwareTiming *timing_out);
 
 uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *collective);
+uint32_t SparkTpDeviceCollectiveAllToAllSupported(const SparkTpDeviceCollective *collective);
 
 SparkStatus SparkTpDeviceCollectiveVerifyDeferred(SparkTpDeviceCollective *collective,void *stream);
 
@@ -392,6 +394,9 @@ SparkStatus SparkTpDeviceCollectiveGraphPreLaunch(
 
 SparkStatus SparkTpDeviceCollectiveDisarmCapture(
     SparkTpDeviceCollective *collective);
+
+SparkStatus SparkTpDeviceCollectiveGraphSettle(
+    SparkTpDeviceCollective *collective,void *stream,uint64_t *error_out);
 
 uint64_t SparkTpDeviceCollectiveGraphProgress(
     SparkTpDeviceCollective *collective,

@@ -4,7 +4,7 @@ model names to the fleet's per-model sparkpipe APIs (OpenAI-compatible:
 /v1/models, /v1/completions, /v1/chat/completions).
 
   generate_litellm_config.py --registry models.json --out litellm_config.yaml
-  generate_litellm_config.py --pair glm53flash.bf16.tp16=http://spark0:8433 ...
+  generate_litellm_config.py --pair glm53flash.bf16.tp16=http://100.123.97.61:8433 ...
 
 registry JSON: [{"name": "<arm>", "base_url": "http://host:port"}, ...]
 The proxy serves the admin page at /ui and OpenAI traffic at /v1; the

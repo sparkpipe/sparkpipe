@@ -13,6 +13,7 @@
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 
 #define SPARK_TEST_ARENA_BYTES (1024ull * 1024ull)
 #define SPARK_TEST_CEILING_BYTES (1536ull * 1024ull)
@@ -159,6 +160,21 @@ static void SparkTestConfigurationGates(void)
         SPARK_TEST_TIMEOUT_NS, &outcome, reason) != SPARK_STATUS_OK);
     assert(outcome.client == 0);
     assert(strcmp(reason, "no_socket") == 0);
+
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
+    SparkTestSetEnv(SPARK_WEIGHTD_SHARE_ENV, SPARK_WEIGHTD_SHARE_READONLY);
+    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
+        SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_UNSUPPORTED);
+    assert(outcome.client == 0);
+    assert(strcmp(reason, "share_unsupported") == 0);
+    SparkTestSetEnv(SPARK_WEIGHTD_SHARE_ENV, "typo");
+    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
+        SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_UNSUPPORTED);
+    assert(outcome.client == 0);
+    assert(strcmp(reason, "share_unsupported") == 0);
+    SparkTestSetEnv(SPARK_WEIGHTD_SHARE_ENV, 0);
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, 0);
 
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "0");
@@ -351,12 +367,151 @@ static void SparkTestColdWarmAndRetention(void)
     printf("cold load, warm hit, and cold retention green\n");
 }
 
+typedef struct SparkTestConcurrentAttach
+{
+    const SparkWeightdPackSlice *slice;
+    SparkWeightdAttachOutcome outcome;
+    SparkStatus status;
+} SparkTestConcurrentAttach;
+
+static void *SparkTestConcurrentAttachMain(void *raw)
+{
+    SparkTestConcurrentAttach *attach = (SparkTestConcurrentAttach *)raw;
+    char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
+    attach->status = SparkWeightdAttachPack(attach->slice, SPARK_TEST_PACK,
+        SPARK_TEST_TIMEOUT_NS, &attach->outcome, reason);
+    return 0;
+}
+
+static void SparkTestFlipPackByte(uint64_t offset)
+{
+    FILE *file = fopen(SPARK_TEST_PACK, "r+b");
+    int value;
+    assert(file != 0);
+    assert(fseek(file, (long)offset, SEEK_SET) == 0);
+    value = fgetc(file);
+    assert(value != EOF);
+    assert(fseek(file, (long)offset, SEEK_SET) == 0);
+    assert(fputc(value ^ 0x5a, file) != EOF);
+    assert(fclose(file) == 0);
+}
+
+static void SparkTestVerifyOnce(void)
+{
+    SparkWeightdPackSlice slice;
+    SparkWeightdAttachOutcome outcome;
+    SparkWeightdReceipt first;
+    SparkWeightdReceipt second;
+    SparkTestConcurrentAttach racers[2];
+    pthread_t racer_threads[2];
+    char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
+    char digest[SPARK_SHA256_HEX_BYTES];
+    char resolved[4096];
+    char receipt_path[4200];
+    SparkTestServerThread thread_context;
+    pthread_t thread_handle;
+    static uint8_t pack_bytes[SPARK_TEST_ARENA_BYTES];
+    FILE *pack_file;
+    uint32_t index;
+
+    spark_stub_cuda_reset_faults();
+    SparkTestWritePack(SPARK_TEST_PACK, 51u, SPARK_TEST_ARENA_BYTES, digest);
+    assert(realpath(SPARK_TEST_PACK, resolved) != 0);
+    assert(snprintf(receipt_path, sizeof(receipt_path), "%s%s", resolved,
+        SPARK_WEIGHTD_RECEIPT_SUFFIX) > 0);
+    (void)remove(receipt_path);
+    SparkTestMakeSlice(&slice, SPARK_TEST_ARENA_BYTES);
+    SparkTestClearAttachEnv();
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
+    usleep(1100000);
+
+    SparkTestStartServer(&thread_context, &thread_handle);
+    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
+        SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_OK);
+    assert(outcome.loaded_from_pack == 1u);
+    SparkWeightdAttachRelease(&outcome);
+    SparkTestStopServer(&thread_context, thread_handle);
+    assert(SparkWeightdReceiptLoad(receipt_path, &first) == SPARK_STATUS_OK);
+    assert(strcmp(first.sha256, digest) == 0);
+    assert(strncmp(first.verifier, "weightd ", 8u) == 0);
+
+    SparkTestStartServer(&thread_context, &thread_handle);
+    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
+        SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_OK);
+    assert(outcome.loaded_from_pack == 1u);
+    pack_file = fopen(SPARK_TEST_PACK, "rb");
+    assert(pack_file != 0);
+    assert(fread(pack_bytes, 1u, sizeof(pack_bytes), pack_file) ==
+        sizeof(pack_bytes));
+    assert(fclose(pack_file) == 0);
+    assert(memcmp((const void *)(uintptr_t)outcome.device_handle, pack_bytes,
+        sizeof(pack_bytes)) == 0);
+    SparkWeightdAttachRelease(&outcome);
+    SparkTestStopServer(&thread_context, thread_handle);
+    assert(SparkWeightdReceiptLoad(receipt_path, &second) == SPARK_STATUS_OK);
+    assert(second.verified_unix_ns == first.verified_unix_ns);
+
+    SparkTestStartServer(&thread_context, &thread_handle);
+    for (index = 0u; index < 2u; index++)
+    {
+        memset(&racers[index], 0, sizeof(racers[index]));
+        racers[index].slice = &slice;
+        assert(pthread_create(&racer_threads[index], 0,
+            SparkTestConcurrentAttachMain, &racers[index]) == 0);
+    }
+    for (index = 0u; index < 2u; index++)
+    {
+        assert(pthread_join(racer_threads[index], 0) == 0);
+        assert(racers[index].status == SPARK_STATUS_OK);
+    }
+    assert(racers[0].outcome.arena_generation ==
+        racers[1].outcome.arena_generation);
+    assert(racers[0].outcome.loaded_from_pack +
+        racers[1].outcome.loaded_from_pack == 1u);
+    SparkWeightdAttachRelease(&racers[0].outcome);
+    SparkWeightdAttachRelease(&racers[1].outcome);
+    SparkTestStopServer(&thread_context, thread_handle);
+
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256,
+        "2222222222222222222222222222222222222222222222222222222222222222");
+    SparkTestStartServer(&thread_context, &thread_handle);
+    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
+        SPARK_TEST_TIMEOUT_NS, &outcome, reason) != SPARK_STATUS_OK);
+    assert(strcmp(reason, "hash_mismatch") == 0);
+    SparkTestStopServer(&thread_context, thread_handle);
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
+
+    SparkTestFlipPackByte(4097u);
+    SparkTestStartServer(&thread_context, &thread_handle);
+    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
+        SPARK_TEST_TIMEOUT_NS, &outcome, reason) != SPARK_STATUS_OK);
+    assert(strcmp(reason, "hash_mismatch") == 0);
+    SparkTestFlipPackByte(4097u);
+    usleep(1100000);
+    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
+        SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_OK);
+    SparkWeightdAttachRelease(&outcome);
+    SparkTestStopServer(&thread_context, thread_handle);
+    assert(SparkWeightdReceiptLoad(receipt_path, &second) == SPARK_STATUS_OK);
+    assert(second.verified_unix_ns > first.verified_unix_ns);
+    assert(second.inode == first.inode && second.ctime_ns != first.ctime_ns);
+
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, 0);
+    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, 0);
+    assert(remove(receipt_path) == 0);
+    (void)remove(SPARK_TEST_PACK);
+    (void)remove(SPARK_TEST_SOCKET);
+    printf("verify once: receipt skips the rehash, stale or mismatched receipts force a full verify, concurrent cold loads share one arena\n");
+}
+
 int main(void)
 {
     (void)signal(SIGPIPE, SIG_IGN);
     SparkTestConfigurationGates();
     SparkTestRefusedAttachFailsAndAllocatesNothing();
     SparkTestColdWarmAndRetention();
+    SparkTestVerifyOnce();
     printf("w2 weightd lane: serving-side attach errors + warm hit green\n");
     return 0;
 }

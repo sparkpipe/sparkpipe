@@ -10,13 +10,21 @@ loop end to end: generate the deployment set, compile the REAL adapter
 SparkGlm5NextServingLoadConfiguration on the generated stage config, and
 require rc=0.
 """
+import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+CONTRACT = ROOT / "model_contracts/glm53_flash_authoritative.json"
+FIRMWARE = ROOT / ("modules/glm5_next_resident_decode_stage/include/sparkpipe/"
+                   "spark_glm5_next_resident_decode_stage_firmware.h")
+KV_SHARD_REQUIRED_DEGREE = int(re.search(
+    r"#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_KV_SHARD_REQUIRED_DEGREE (\d+)u",
+    FIRMWARE.read_text()).group(1))
 
 HARNESS = r"""
 #include <stdio.h>
@@ -281,6 +289,8 @@ static int32_t TestChainFrame(void)
     state.completion_function = TestDeferredComplete;
     if ( (SparkGlm5NextServingDescriptor.capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) == 0u )
         return(-40);
+    if ( (SparkGlm5NextServingDescriptor.capability_flags & (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH)) != (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) )
+        return(-48);
     if ( TestSubmitChain(&state,3u) != 0 || DeferredFrame->tokens_per_sequence != 3u || pending->buffer.bytes != 9u * sizeof(uint32_t) || pending->last_row_by_lane[0] != 1u || pending->last_row_by_lane[2] != 0u )
         return(-41);
     for (index=0u; index<9u; index++)
@@ -404,13 +414,62 @@ int main(int argc, char **argv)
     memset(&state, 0, sizeof(state));
     SparkStatus rc = SparkGlm5NextServingLoadConfiguration(
         argv[1], argv[2], &state, &msp, &erc, &dsct, &tpd, &tpr);
-    printf("rc=%d msp=%u erc=%u dsct=%u tpd=%u tpr=%u\n",
-        (int)rc, msp, erc, dsct, tpd, tpr);
+    printf("rc=%d msp=%u erc=%u dsct=%u tpd=%u tpr=%u icp=%u kvs=%u\n",
+        (int)rc, msp, erc, dsct, tpd, tpr, state.index_cp, state.kv_shard);
+    printf("artifact=%s revision=%s\n", SparkGlm5NextServingDescriptor.artifact_sha256, SparkGlm5NextServingDescriptor.model_revision);
+#ifdef SPARK_SCORE_DUMP
+    printf("score=0x%x dir=%s probe=%s tier2=%s\n", state.score_present, state.score_paths[0], state.score_paths[1], state.score_paths[2]);
+#endif
     if ( argc != 5 || TestDeployment(argv[3],msp) != 0 || TestDeployment(argv[4],msp) != 0 )
         return(9);
     return rc == 0 ? 0 : 1;
 }
 """
+
+
+def run_harness(binary, config, deploy):
+    run = subprocess.run([str(binary), str(config), str(ROOT), str(deploy), str(deploy)], capture_output=True, text=True)
+    return run.stdout
+
+
+def loaded(output):
+    return re.search(r"(?m)^rc=0 ", output) is not None
+
+
+def check_score_members(tmpdir, cmd, production_binary, config):
+    base = json.load(open(config))
+    deploy = tmpdir / "deploy/model_resident.json"
+    variants = {
+        "plain": base,
+        "full": dict(base, score_dump_directory="score/run-a", score_probe_path="score/probe.bin",
+                     score_tier2_rows_path="score/tier2.bin"),
+        "probe_only": dict(base, score_probe_path="score/probe.bin"),
+        "absolute": dict(base, score_dump_directory="/tmp/score"),
+        "empty": dict(base, score_dump_directory=""),
+    }
+    paths = {}
+    for name, value in variants.items():
+        paths[name] = tmpdir / f"score_{name}.json"
+        paths[name].write_text(json.dumps(value))
+    production = run_harness(production_binary, paths["full"], deploy)
+    if loaded(production):
+        return "the production adapter accepted score-dump members: " + production[-300:]
+    score_binary = tmpdir / "harness_score"
+    build = subprocess.run([cmd[0], "-DSPARK_SCORE_DUMP=1", *cmd[1:-4], "-o", str(score_binary), "-ldl", "-lpthread"],
+                           capture_output=True, text=True)
+    if build.returncode != 0:
+        return "the SCORE_DUMP adapter harness did not compile: " + build.stderr[-400:]
+    plain = run_harness(score_binary, paths["plain"], deploy)
+    if not loaded(plain) or "score=0x0 " not in plain:
+        return "the SCORE_DUMP adapter changed the plain configuration: " + plain[-200:]
+    full = run_harness(score_binary, paths["full"], deploy)
+    want = f"score=0x7 dir={ROOT}/score/run-a probe={ROOT}/score/probe.bin tier2={ROOT}/score/tier2.bin"
+    if not loaded(full) or want not in full:
+        return "the SCORE_DUMP adapter did not resolve the score members under the runtime root: " + full[-300:]
+    for name in ("probe_only", "absolute", "empty"):
+        if loaded(run_harness(score_binary, paths[name], deploy)):
+            return f"the SCORE_DUMP adapter accepted the {name} score configuration"
+    return None
 
 
 def main() -> int:
@@ -427,15 +486,14 @@ def main() -> int:
         config = tmpdir / "deploy/config/stage_00.json"
         subprocess.run([sys.executable, str(ROOT / "tools/glm5_next_gen_tp4pp4_deployment.py"),
                         "--output", str(tmpdir / "tp4pp4")], check=True, capture_output=True)
-        contract = json.load(
-            open(ROOT / "model_contracts/glm53_flash_authoritative.json")) \
-            if (ROOT / "model_contracts/glm53_flash_authoritative.json").exists() \
-            else None
         revision = json.load(open(config))["model_revision"]
-        firmware = ROOT / ("examples/model_descriptions/"
-                           "glm5_next_resident_decode_stage_fp8_firmware.json")
-        import hashlib
-        fw_sha = hashlib.sha256(firmware.read_bytes()).hexdigest()
+        contract_sha = hashlib.sha256(CONTRACT.read_bytes()).hexdigest()
+        archives = [ROOT / "build" / name for name in
+                    ("libsparkpipe_runtime.a", "libsparkpipe_model_common.a", "libsparkpipe_core.a")]
+        missing = [str(path.relative_to(ROOT)) for path in archives if not path.is_file()]
+        if missing:
+            print("FAIL the adapter harness links " + ", ".join(missing) + "; run make all first")
+            return 1
         harness = tmpdir / "harness.c"
         harness.write_text(HARNESS)
         binary = tmpdir / "harness"
@@ -450,11 +508,9 @@ def main() -> int:
                "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"",
                "-DGLM5_NEXT_MODEL_REVISION=\"" + revision + "\"",
-               "-DGLM5_NEXT_CONTRACT_SHA256=\"" + fw_sha + "\"",
+               "-DGLM5_NEXT_CONTRACT_SHA256=\"" + contract_sha + "\"",
                str(harness),
-               str(ROOT / "build/libsparkpipe_runtime.a"),
-               str(ROOT / "build/libsparkpipe_model_common.a"),
-               str(ROOT / "build/libsparkpipe_core.a"),
+               *[str(path) for path in archives],
                "-o", str(binary), "-ldl", "-lpthread"]
         build = subprocess.run(cmd, capture_output=True, text=True)
         if build.returncode != 0:
@@ -471,6 +527,25 @@ def main() -> int:
             print("FAIL the adapter rejects the generator's stage config - "
                   "generator/adapter drift (this is the incident class the "
                   "drift gate cannot see: it compares member names, not shapes)")
+            return 1
+        loaded = json.load(open(config))
+        want = "tpd=%d tpr=0 icp=%d kvs=%d" % (
+            loaded["tp_degree"], loaded.get("dsa_index_context_parallel", 0),
+            loaded.get("kv_shard", 0))
+        if want not in run.stdout:
+            print("FAIL the adapter does not carry the generated tp degree, "
+                  "dsa_index_context_parallel and kv_shard: want " + want)
+            return 1
+        if loaded["tp_degree"] >= KV_SHARD_REQUIRED_DEGREE and "icp=1 kvs=1" not in run.stdout:
+            print("FAIL the TP16 deployment config does not select the "
+                  "sharded KV cache the module requires at that degree")
+            return 1
+        if f"artifact={contract_sha} revision={revision}\n" not in run.stdout:
+            print("FAIL the adapter does not report the contract digest and model revision it was built with")
+            return 1
+        failure = check_score_members(tmpdir, cmd, binary, config)
+        if failure:
+            print("FAIL " + failure)
             return 1
         print("PASS actual GLM B3 admission, deferred lifetime, release, K-token chains and concurrent reservation; "
               "adapter loads the generator's deployment config")

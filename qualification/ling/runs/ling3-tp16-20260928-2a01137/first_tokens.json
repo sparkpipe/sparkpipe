@@ -1,0 +1,204 @@
+{
+ "run": "ling3-tp16-20260928",
+ "driver_commit": "20cf491",
+ "topology": "TP16 bf16, spark0..sparkf, weightd lane 10 attached to the fleet weightd, API rtx5090:8437",
+ "firmware_sha256": {
+  "model_driver.so": "a61aed01ac094429903bd376f157ad6a5fdf5d0afa185cf4e1839f75325d2dfd",
+  "model_serving_adapter.so (aarch64)": "2a8d174f8c25b801529fe9127c56c2a55404c3f55d49fa450c99a4fa017fea20",
+  "sparkpipe_model_residentd": "0866642d6618ffe9a7b391295d38c8eca6a03bac3f9224e6540bb1daaee37ac3"
+ },
+ "reference": "qualification/ling_reference/ling_hf_reference.json (publisher modeling, greedy)",
+ "serving_limits_reference_has_same_tokens": true,
+ "swiglu_limits": "applied (serving semantics, layers 34-41)",
+ "request": "POST /v1/completions with the reference prompt_token_ids, max_tokens 16, temperature 0; python_fibonacci was also sent as text through the API tokenizer (17 prompt tokens, identical ids and output)",
+ "prompts": [
+  {
+   "name": "capital_of_france",
+   "prompt_token_ids": [
+    678,
+    7706,
+    300,
+    11406,
+    341
+   ],
+   "expected": [
+    13997,
+    13,
+    363,
+    93740,
+    268,
+    9606,
+    409,
+    259,
+    3244,
+    6959,
+    198,
+    3517,
+    268,
+    7706,
+    300,
+    11406
+   ],
+   "got": [
+    13997,
+    13,
+    468,
+    7706,
+    300,
+    11462,
+    341,
+    24752,
+    13,
+    468,
+    7706,
+    300,
+    15003,
+    341,
+    21924,
+    13
+   ],
+   "text": " Paris. The capital of Germany is Berlin. The capital of Italy is Rome.",
+   "matching_prefix": 2,
+   "divergence": {
+    "step": 2,
+    "expected": 363,
+    "got": 468,
+    "reference_top5_logits": [
+     [
+      363,
+      15.125
+     ],
+     [
+      468,
+      15.0625
+     ],
+     [
+      198,
+      14.6875
+     ],
+     [
+      2632,
+      14.1875
+     ],
+     [
+      2464,
+      13.1875
+     ]
+    ],
+    "reading": "near tie in the reference itself: the two tokens are 0.0625 apart in bf16 logits (one bf16 ulp at 15), below the 0.5 run-to-run spread the reference shows between spark0 and spark3; the driver picks the runner-up and continues coherently"
+   }
+  },
+  {
+   "name": "count_up",
+   "prompt_token_ids": [
+    5212,
+    283,
+    39043,
+    25,
+    810,
+    11,
+    1307,
+    11
+   ],
+   "expected": [
+    2274,
+    11,
+    3173,
+    11,
+    4428,
+    11,
+    5039,
+    11,
+    8897,
+    11,
+    8793,
+    11,
+    13097,
+    11,
+    6588,
+    13
+   ],
+   "got": [
+    2274,
+    11,
+    3173,
+    11,
+    4428,
+    11,
+    5039,
+    11,
+    8897,
+    11,
+    8793,
+    11,
+    13097,
+    11,
+    6588,
+    13
+   ],
+   "text": " three, four, five, six, seven, eight, nine, ten.",
+   "matching_prefix": 16
+  },
+  {
+   "name": "python_fibonacci",
+   "prompt_token_ids": [
+    1413,
+    13871,
+    66472,
+    3733,
+    3535,
+    198,
+    305,
+    9913,
+    9854,
+    268,
+    320,
+    10477,
+    97227,
+    1788,
+    1904,
+    7980,
+    198
+   ],
+   "expected": [
+    305,
+    624,
+    320,
+    8664,
+    220,
+    15,
+    25,
+    198,
+    394,
+    944,
+    220,
+    15,
+    198,
+    305,
+    13918,
+    320
+   ],
+   "got": [
+    305,
+    624,
+    320,
+    8664,
+    220,
+    15,
+    25,
+    198,
+    394,
+    944,
+    220,
+    15,
+    198,
+    305,
+    13918,
+    320
+   ],
+   "text": "    if n <= 0:\n        return 0\n    elif n",
+   "matching_prefix": 16
+  }
+ ],
+ "perf_and_compsec_build": "firmware 8cc64a4 (same driver code as 20cf491; 20cf491 changes only where the SwiGLU limit macros live and the contract notes), deployment 2a01137"
+}

@@ -8,7 +8,7 @@ Line grammar (one line per row):
   G5N-T1 route L<layer> pos<p> ids <8 ints> weights <8 hex f32 bits>
   G5N-T1 head pos<p> token <t> score_bits <hex f32 bits>
 
-Array names follow qualification/t1_reference/glm5_next (T1R1 contract):
+Array names follow qualification/t1_reference/glm53flash (T1R1 contract):
 streams at every dumped layer/position, route ids/weights at every routed
 layer/position, head top-1 token/score, prompt_token_ids (row 0 of the
 first wave of a sequence) and generated_token_ids (head tokens strictly

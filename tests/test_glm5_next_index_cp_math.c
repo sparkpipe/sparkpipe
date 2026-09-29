@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,7 +29,10 @@ static void TestCover(uint32_t pools,uint32_t degree)
 			assert(SparkGlm5NextIndexCpLocalPool(pool,degree) == local);
 		}
 	assert(count == pools);
-	assert(degree <= 1u || (uint64_t)stride * degree < (uint64_t)pools + (uint64_t)degree * SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE);
+	assert(degree <= 1u || (uint64_t)stride * degree < (uint64_t)pools + degree);
+	for (pool=0u; pool<pools; pool++)
+		for (local=0u; local<SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL; local++)
+			assert(SparkKvShardOwner(SparkGlm5NextIndexCpShard(0u,degree),pool * SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL + local) == SparkGlm5NextIndexCpOwner(pool,degree));
 }
 
 int main(void)
@@ -47,6 +51,6 @@ int main(void)
 	assert(SparkGlm5NextIndexCpFits(32768u,2u,8u) == 0u);
 	assert(SparkGlm5NextIndexCpFits(16384u,2u,8u) == 1u);
 	assert(SparkGlm5NextIndexCpGatherSequences(128u,512u) == 32u);
-	puts("test_glm5_next_index_cp_math: ownership covers every pool exactly once for degrees 1-16; gather fits up to 128K context at TP16");
+	puts("test_glm5_next_index_cp_math: ownership covers every pool exactly once for degrees 1-16 and matches the index key shard owner; gather fits up to 128K context at TP16");
 	return(0);
 }

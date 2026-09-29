@@ -401,6 +401,153 @@ static void AttentionCaseRun(uint32_t rows,uint32_t heads,uint32_t maximum_conte
     printf("PASS all-heads latent attention rows=%u heads=%u context=%u selected=%u multiprocessors=%u worst_abs=%.6f old_kernel_worst_abs=%.6f reference=f64 each_row_alone_bitwise_equal=yes\n",rows,heads,maximum_context,selected,multiprocessors,worst,worst_old);
 }
 
+static void WsSpans(uint32_t layers,uint32_t capacity,uint8_t *const *pools,std::vector<SparkStateSpan> &spans,uint64_t *snapshot_bytes,uint32_t *row_words)
+{
+    const uint64_t strides[4] = {
+        (uint64_t)capacity * (SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER / 16u),
+        (uint64_t)capacity * (SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / (3u * 16u)),
+        (uint64_t)capacity * (SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / (3u * 16u)),
+        (uint64_t)capacity * (SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / (3u * 16u))};
+    spans.assign(4u * layers,SparkStateSpan{});
+    for (uint32_t part=0u; part<4u; part++)
+        for (uint32_t layer=0u; layer<layers; layer++)
+        {
+            SparkStateSpan &span = spans[part * layers + layer];
+            span.base = pools[part] + (uint64_t)layer * strides[part];
+            span.row_stride = strides[part] / capacity;
+            span.row_bytes = (uint32_t)span.row_stride;
+            span.state_rows = capacity;
+        }
+    *snapshot_bytes = SparkStateSpansLayout(spans.data(),4u * layers,SPARK_GLM5_NEXT_WS_ROWS_MAX,row_words);
+    REQUIRE(*snapshot_bytes != 0u);
+}
+
+static void WsPools(uint32_t layers,uint32_t capacity,uint8_t **pools,uint64_t *bytes)
+{
+    bytes[0] = (uint64_t)layers * capacity * (SPARK_GLM5_NEXT_MODEL_KDA_STATE_BYTES_PER_LAYER / 16u);
+    bytes[1] = bytes[2] = bytes[3] = (uint64_t)layers * capacity * (SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / (3u * 16u));
+    CUDA(cudaMalloc((void **)&pools[0],bytes[0]));
+    CUDA(cudaMalloc((void **)&pools[1],3u * bytes[1]));
+    pools[2] = pools[1] + bytes[1];
+    pools[3] = pools[2] + bytes[1];
+}
+
+static void WsRecoveryCase(cudaStream_t stream)
+{
+    const uint32_t layers = 3u,capacity = 4u,rows = 2u,index_host[rows] = {3u,1u};
+    uint8_t *pools[4],*snapshot,*spans_device;
+    uint32_t *state_index,*ring,*tokens,row_words = 0u,token_host[rows];
+    uint64_t bytes[4],snapshot_bytes = 0u,*maxloc,maxloc_host[rows],poisoned[rows];
+    std::vector<SparkStateSpan> spans;
+    WsPools(layers,capacity,pools,bytes);
+    WsSpans(layers,capacity,pools,spans,&snapshot_bytes,&row_words);
+    std::vector<uint8_t> before[4],after(bytes[0]);
+    for (uint32_t part=0u; part<4u; part++)
+    {
+        before[part].resize(bytes[part]);
+        for (uint64_t item=0u; item<bytes[part]; item++)
+            before[part][item] = (uint8_t)Random();
+        CUDA(cudaMemcpy(pools[part],before[part].data(),bytes[part],cudaMemcpyHostToDevice));
+    }
+    CUDA(cudaMalloc((void **)&snapshot,snapshot_bytes));
+    CUDA(cudaMalloc((void **)&spans_device,spans.size() * sizeof(SparkStateSpan)));
+    CUDA(cudaMemcpy(spans_device,spans.data(),spans.size() * sizeof(SparkStateSpan),cudaMemcpyHostToDevice));
+    CUDA(cudaMalloc((void **)&state_index,sizeof(index_host)));
+    CUDA(cudaMemcpy(state_index,index_host,sizeof(index_host),cudaMemcpyHostToDevice));
+    CUDA(SparkGlm5NextLaunchStateSnapshot(stream,spans_device,(uint32_t)spans.size(),row_words,snapshot,state_index,rows,0u));
+    for (uint32_t part=0u; part<4u; part++)
+        CUDA(cudaMemsetAsync(pools[part],0x5a,bytes[part],stream));
+    CUDA(SparkGlm5NextLaunchStateSnapshot(stream,spans_device,(uint32_t)spans.size(),row_words,snapshot,state_index,rows,1u));
+    CUDA(cudaStreamSynchronize(stream));
+    for (uint32_t part=0u; part<4u; part++)
+    {
+        uint64_t row_bytes = spans[part * layers].row_bytes;
+        after.resize(bytes[part]);
+        CUDA(cudaMemcpy(after.data(),pools[part],bytes[part],cudaMemcpyDeviceToHost));
+        for (uint32_t layer=0u; layer<layers; layer++)
+            for (uint32_t slot=0u; slot<capacity; slot++)
+            {
+                uint64_t offset = ((uint64_t)layer * capacity + slot) * row_bytes;
+                bool wave = slot == index_host[0] || slot == index_host[1];
+                if ( wave )
+                    REQUIRE(memcmp(after.data() + offset,before[part].data() + offset,row_bytes) == 0);
+                else
+                    REQUIRE(std::all_of(after.begin() + (long)offset,after.begin() + (long)(offset + row_bytes),[](uint8_t value){ return value == 0x5au; }));
+            }
+    }
+    CUDA(cudaHostAlloc((void **)&ring,SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES,cudaHostAllocMapped));
+    CUDA(cudaMalloc((void **)&maxloc,sizeof(maxloc_host)));
+    CUDA(cudaMalloc((void **)&tokens,sizeof(token_host)));
+    for (uint32_t row=0u; row<rows; row++)
+        maxloc_host[row] = ((uint64_t)(0x80000000u + row) << 32u) | (UINT32_MAX - (7u + row));
+    for (uint32_t flag=0u; flag<2u; flag++)
+    {
+        memset(ring,0,SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES);
+        ring[SPARK_STEP_MISS_FLAG] = flag;
+        CUDA(cudaMemcpy(maxloc,maxloc_host,sizeof(maxloc_host),cudaMemcpyHostToDevice));
+        CUDA(SparkGlm5NextLaunchHeadMissPoison(stream,ring,maxloc,rows));
+        CUDA(cudaMemcpyAsync(poisoned,maxloc,sizeof(poisoned),cudaMemcpyDeviceToHost,stream));
+        CUDA(SparkGlm5NextLaunchHeadMaxlocUnpack(stream,maxloc,tokens,rows));
+        CUDA(cudaMemcpyAsync(token_host,tokens,sizeof(token_host),cudaMemcpyDeviceToHost,stream));
+        CUDA(cudaStreamSynchronize(stream));
+        for (uint32_t row=0u; row<rows; row++)
+        {
+            REQUIRE(poisoned[row] == (flag != 0u ? UINT64_MAX : maxloc_host[row]));
+            REQUIRE(token_host[row] == (flag != 0u ? SPARK_STEP_POISON_TOKEN : 7u + row));
+        }
+    }
+    printf("PASS working-set recovery launchers tp16 layout: kda_layers=%u capacity=%u spans=%zu snapshot_bytes=%llu restore_bitwise=yes untouched_rows=yes poison_token=yes clean_token=yes\n",layers,capacity,spans.size(),(unsigned long long)snapshot_bytes);
+    CUDA(cudaFreeHost(ring));
+    CUDA(cudaFree(maxloc));
+    CUDA(cudaFree(tokens));
+    CUDA(cudaFree(state_index));
+    CUDA(cudaFree(spans_device));
+    CUDA(cudaFree(snapshot));
+    CUDA(cudaFree(pools[0]));
+    CUDA(cudaFree(pools[1]));
+}
+
+static void WsSnapshotTiming(uint32_t layers,cudaStream_t stream)
+{
+    const uint32_t capacity = SPARK_GLM5_NEXT_WS_ROWS_MAX;
+    uint8_t *pools[4],*snapshot,*spans_device;
+    uint32_t *state_index,row_words = 0u,index_host[SPARK_GLM5_NEXT_WS_ROWS_MAX];
+    uint64_t bytes[4],snapshot_bytes = 0u;
+    std::vector<SparkStateSpan> spans;
+    cudaEvent_t start,stop;
+    WsPools(layers,capacity,pools,bytes);
+    WsSpans(layers,capacity,pools,spans,&snapshot_bytes,&row_words);
+    CUDA(cudaMalloc((void **)&snapshot,snapshot_bytes));
+    CUDA(cudaMalloc((void **)&spans_device,spans.size() * sizeof(SparkStateSpan)));
+    CUDA(cudaMemcpy(spans_device,spans.data(),spans.size() * sizeof(SparkStateSpan),cudaMemcpyHostToDevice));
+    for (uint32_t row=0u; row<capacity; row++)
+        index_host[row] = capacity - 1u - row;
+    CUDA(cudaMalloc((void **)&state_index,sizeof(index_host)));
+    CUDA(cudaMemcpy(state_index,index_host,sizeof(index_host),cudaMemcpyHostToDevice));
+    CUDA(cudaEventCreate(&start));
+    CUDA(cudaEventCreate(&stop));
+    for (uint32_t rows : {1u,8u})
+    {
+        float ms = 0.0f;
+        for (uint32_t warm=0u; warm<5u; warm++)
+            CUDA(SparkGlm5NextLaunchStateSnapshot(stream,spans_device,(uint32_t)spans.size(),row_words,snapshot,state_index,rows,0u));
+        CUDA(cudaEventRecord(start,stream));
+        for (uint32_t repeat=0u; repeat<100u; repeat++)
+            CUDA(SparkGlm5NextLaunchStateSnapshot(stream,spans_device,(uint32_t)spans.size(),row_words,snapshot,state_index,rows,0u));
+        CUDA(cudaEventRecord(stop,stream));
+        CUDA(cudaEventSynchronize(stop));
+        CUDA(cudaEventElapsedTime(&ms,start,stop));
+        printf("TIMING working-set snapshot save tp16 kda_layers=%u rows=%u bytes=%llu us=%.1f\n",layers,rows,(unsigned long long)((uint64_t)rows * snapshot_bytes / SPARK_GLM5_NEXT_WS_ROWS_MAX),ms * 10.0f);
+    }
+    CUDA(cudaEventDestroy(start));
+    CUDA(cudaEventDestroy(stop));
+    CUDA(cudaFree(state_index));
+    CUDA(cudaFree(spans_device));
+    CUDA(cudaFree(snapshot));
+    CUDA(cudaFree(pools[0]));
+    CUDA(cudaFree(pools[1]));
+}
+
 int main(int argc,char **argv)
 {
     cudaStream_t stream;
@@ -442,6 +589,8 @@ int main(int argc,char **argv)
     }
     AttentionTiming(8u,1024u,(uint32_t)properties.multiProcessorCount,stream);
     AttentionTiming(256u,1024u,(uint32_t)properties.multiProcessorCount,stream);
+    WsRecoveryCase(stream);
+    WsSnapshotTiming(SPARK_GLM5_NEXT_MODEL_KDA_LAYER_COUNT,stream);
     CUDA(cudaStreamDestroy(stream));
     puts("PASS glm5_next row kernels: head rows kernel and per-head projection rows kernel equal the per-row kernels bitwise; all-heads latent attention matches an f64 reference");
     return 0;

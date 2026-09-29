@@ -1,9 +1,12 @@
 #include <cuda_runtime.h>
+#include <cuda.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <unistd.h>
+#include <pthread.h>
+#include <time.h>
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu"
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h"
 
@@ -14,6 +17,7 @@
 #define ROOF_MAX_COPIES 8u
 #define ROOF_MAX_BATCHES 16u
 #define ROOF_PHASES 7u
+#define ROOF_MAX_BATCH_ROWS_PRINT 64u
 #define ROOF_PHASE_EVENTS (2u + ROOF_LAYERS * 5u)
 #define ROOF_EXPERT_INTERMEDIATE (SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / ROOF_TP)
 #define ROOF_EXPERT_W1_ROWS (2u * ROOF_EXPERT_INTERMEDIATE)
@@ -23,7 +27,8 @@
 typedef struct RoofConfig
 {
 	uint32_t batches[ROOF_MAX_BATCHES];
-	uint32_t batch_count,context,iterations,copies,max_batch,index_cp;
+	uint32_t batch_count,context,iterations,copies,max_batch,index_cp,graph,route_readback,l2_prefetch,round_spin_us,round_wait;
+	SparkGlm5NextL2PrefetchShape l2_shape;
 	double round_us,nic_gbps,memory_gbps;
 }
 RoofConfig;
@@ -52,7 +57,11 @@ typedef struct RoofState
 	uint32_t *host_slots,*host_positions,*host_run_begin,*host_run_rows,*host_run_state;
 	void *hidden_input;
 	uint32_t *page_table;
-	uint32_t pages_per_sequence,max_positions;
+	uint32_t pages_per_sequence,max_positions,route_readback,l2_prefetch,round_spin_us,round_wait;
+	SparkGlm5NextL2PrefetchShape l2_shape;
+	uint64_t *round_flag;
+	volatile uint32_t round_host_stop;
+	pthread_t round_host_thread;
 }
 RoofState;
 
@@ -292,10 +301,10 @@ static void RoofAllocateSlotHidden(SparkGlm5NextExecutionSlot *slot,uint32_t row
 	slot->kda_output_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,2u);
 	slot->kda_retention = (float *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,4u);
 	slot->kda_write_gate = (float *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT,4u);
-	slot->kv_slot_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS,2u);
+	slot->kv_slot_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS > SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION ? SPARK_GLM5_NEXT_MODEL_CACHE_TOKEN_ELEMENTS : SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,2u);
 	slot->attention_latent_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_LATENT_DIMENSION,2u);
 	slot->attention_value_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT * SPARK_GLM5_NEXT_MODEL_VALUE_HEAD_DIMENSION,2u);
-	slot->attention_out_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,2u);
+	slot->attention_out_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION > SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION ? SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION : SPARK_GLM5_NEXT_MODEL_KDA_QKV_DIMENSION,2u);
 	slot->gate_up_bf16 = (uint16_t *)RoofRows(rows * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K,SPARK_GLM5_NEXT_MODEL_MOE_ROUTED_GATE_UP_DIMENSION,2u);
 	slot->intermediate_bf16 = (uint16_t *)RoofRows(rows,SPARK_GLM5_NEXT_MODEL_MOE_TOP_K * SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION,2u);
 	slot->expert_out_bf16 = (uint16_t *)RoofRows(rows * SPARK_GLM5_NEXT_MODEL_MOE_TOP_K,SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,2u);
@@ -364,6 +373,8 @@ static void RoofAllocateHost(RoofState *state,const RoofConfig *config)
 	ROOF_CUDA(cudaEventCreateWithFlags((cudaEvent_t *)&slot->route_ready_event,cudaEventDisableTiming));
 }
 
+static void *RoofRoundHostRelay(void *context);
+
 static void RoofBuildState(RoofState *state,const RoofModel *model,const RoofConfig *config,cudaStream_t stream)
 {
 	SparkGlm5NextCudaWave *wave;
@@ -371,6 +382,13 @@ static void RoofBuildState(RoofState *state,const RoofModel *model,const RoofCon
 	memset(state,0,sizeof(*state));
 	wave = &state->wave;
 	state->slot.stream = stream;
+	{
+		ROOF_CUDA(cudaHostAlloc((void **)&state->round_flag,sizeof(uint64_t),cudaHostAllocMapped));
+		*state->round_flag = 1ull;
+		state->round_host_stop = 0u;
+		if ( config->round_wait != 0u && pthread_create(&state->round_host_thread,0,RoofRoundHostRelay,state) != 0 )
+			exit(1);
+	}
 	RoofAllocateCaches(state,config);
 	RoofAllocateSlotRows(&state->slot,config->max_batch,state->max_positions);
 	if ( config->index_cp > 1u )
@@ -438,18 +456,127 @@ static void RoofAttention(const RoofState *state,uint32_t layer)
 	ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionSelect(wave,layer));
 }
 
+static __global__ void RoofRoundSpinKernel(uint64_t nanoseconds)
+{
+	uint64_t start,now;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start));
+	do
+		asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+	while ( now - start < nanoseconds );
+}
+
+static __global__ void RoofRoundArmKernel(uint64_t *flag)
+{
+	*(volatile uint64_t *)flag = 0ull;
+	__threadfence_system();
+}
+
+static void RoofRoundWaitValue(const RoofState *state)
+{
+	cudaStream_t stream = (cudaStream_t)state->slot.stream;
+	cudaStreamCaptureStatus capture;
+	CUstreamCaptureStatus driver_capture;
+	CUstreamBatchMemOpParams operation;
+	CUDA_BATCH_MEM_OP_NODE_PARAMS params;
+	const CUgraphNode *dependencies;
+	size_t dependency_count;
+	cuuint64_t id;
+	CUgraph graph;
+	CUgraphNode wait;
+	ROOF_CUDA(cudaStreamIsCapturing(stream,&capture));
+	if ( capture == cudaStreamCaptureStatusNone )
+	{
+		if ( cuStreamWaitValue64((CUstream)stream,(CUdeviceptr)state->round_flag,1u,CU_STREAM_WAIT_VALUE_EQ) != CUDA_SUCCESS )
+			exit(1);
+		return;
+	}
+	memset(&operation,0,sizeof(operation));
+	memset(&params,0,sizeof(params));
+	operation.operation = CU_STREAM_MEM_OP_WAIT_VALUE_64;
+	operation.waitValue.address = (CUdeviceptr)state->round_flag;
+	operation.waitValue.value64 = 1u;
+	operation.waitValue.flags = CU_STREAM_WAIT_VALUE_EQ;
+	if ( cuStreamGetCaptureInfo((CUstream)stream,&driver_capture,&id,&graph,&dependencies,0,&dependency_count) != CUDA_SUCCESS || cuCtxGetCurrent(&params.ctx) != CUDA_SUCCESS )
+		exit(1);
+	params.count = 1u;
+	params.paramArray = &operation;
+	if ( cuGraphAddBatchMemOpNode(&wait,graph,dependencies,dependency_count,&params) != CUDA_SUCCESS ||
+	     cuStreamUpdateCaptureDependencies((CUstream)stream,&wait,0,1u,CU_STREAM_SET_CAPTURE_DEPENDENCIES) != CUDA_SUCCESS )
+		exit(1);
+}
+
+static uint64_t RoofNowNs(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC,&now);
+	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
+}
+
+static void *RoofRoundHostRelay(void *context)
+{
+	RoofState *state = (RoofState *)context;
+	volatile uint64_t *flag = state->round_flag;
+	uint64_t armed;
+	while ( state->round_host_stop == 0u )
+	{
+		if ( __atomic_load_n(flag,__ATOMIC_ACQUIRE) != 0ull )
+			continue;
+		armed = RoofNowNs();
+		while ( RoofNowNs() - armed < (uint64_t)state->round_spin_us * 1000ull )
+			;
+		__atomic_store_n(flag,1ull,__ATOMIC_RELEASE);
+	}
+	return(0);
+}
+
+static void RoofRoundHostWait(const RoofState *state)
+{
+	cudaStream_t stream = (cudaStream_t)state->slot.stream;
+	uint64_t *device_flag;
+	ROOF_CUDA(cudaHostGetDevicePointer((void **)&device_flag,state->round_flag,0u));
+	RoofRoundArmKernel<<<1,1,0,stream>>>(device_flag);
+	ROOF_CUDA(cudaPeekAtLastError());
+	if ( state->round_wait == 2u )
+	{
+		RoofRoundArmKernel<<<1,1,0,stream>>>(device_flag);
+		ROOF_CUDA(cudaPeekAtLastError());
+	}
+	{
+		RoofState copy = *state;
+		copy.round_flag = device_flag;
+		RoofRoundWaitValue(&copy);
+	}
+}
+
+static void RoofRound(const RoofState *state,uint32_t layer,uint32_t site)
+{
+	uint32_t placed = 0u;
+	if ( state->round_spin_us != 0u && state->round_wait != 0u )
+		RoofRoundHostWait(state);
+	else if ( state->round_spin_us != 0u )
+	{
+		RoofRoundSpinKernel<<<1,32,0,(cudaStream_t)state->slot.stream>>>((uint64_t)state->round_spin_us * 1000u);
+		ROOF_CUDA(cudaPeekAtLastError());
+	}
+	if ( state->l2_prefetch != 0u )
+		ROOF_LAUNCH(SparkGlm5NextL2PrefetchAfterRound(&state->wave,layer,site,&state->l2_shape,&placed));
+}
+
 static void RoofStep(const RoofState *state)
 {
 	const SparkGlm5NextCudaWave *wave;
 	uint32_t layer;
 	wave = &state->wave;
 	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveBegin(wave));
+	RoofRound(state,0u,SPARK_GLM5_NEXT_L2_SITE_BEGIN);
 	for (layer=0u; layer<ROOF_LAYERS; layer++)
 	{
 		RoofAttention(state,layer);
+		RoofRound(state,layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE);
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerAttentionPost(wave,layer));
-		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer));
+		ROOF_LAUNCH(state->route_readback != 0u ? SparkGlm5NextLaunchCudaLayerMlpRoute(wave,layer) : SparkGlm5NextLaunchCudaLayerMlpRouteResident(wave,layer));
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpExperts(wave,layer));
+		RoofRound(state,layer,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE);
 		ROOF_LAUNCH(SparkGlm5NextLaunchCudaLayerMlpPost(wave,layer));
 	}
 	ROOF_LAUNCH(SparkGlm5NextLaunchCudaWaveHead(wave));
@@ -639,6 +766,24 @@ static uint32_t RoofHiddenFinite(const RoofState *state,uint32_t rows)
 	return(finite);
 }
 
+static void RoofHash(const RoofState *state,uint32_t rows)
+{
+	uint64_t count,index,hash;
+	uint16_t *hidden;
+	uint32_t tokens[ROOF_MAX_BATCH_ROWS_PRINT];
+	count = (uint64_t)rows * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION;
+	hidden = (uint16_t *)malloc(count * sizeof(uint16_t));
+	if ( hidden == 0 )
+		exit(1);
+	ROOF_CUDA(cudaMemcpy(hidden,state->slot.hidden_bf16,count * sizeof(uint16_t),cudaMemcpyDeviceToHost));
+	ROOF_CUDA(cudaMemcpy(tokens,state->slot.output_token,(rows < ROOF_MAX_BATCH_ROWS_PRINT ? rows : ROOF_MAX_BATCH_ROWS_PRINT) * sizeof(uint32_t),cudaMemcpyDeviceToHost));
+	hash = 0xcbf29ce484222325ull;
+	for (index=0u; index<count; index++)
+		hash = (hash ^ hidden[index]) * 0x100000001b3ull;
+	printf("ROOFLINE-HASH rows=%u hidden_fnv=%016llx token0=%u\n",rows,(unsigned long long)hash,tokens[0]);
+	free(hidden);
+}
+
 static void RoofReport(const RoofModel *model,const RoofState *state,const RoofConfig *config,uint32_t rows,double step_ms)
 {
 	double distinct,bytes,payload,direct_ms,rsag_ms,collectives;
@@ -652,15 +797,72 @@ static void RoofReport(const RoofModel *model,const RoofState *state,const RoofC
 	printf("ROOFLINE-FLEET rows=%u collectives=%.0f direct_ms=%.1f rsag_ms=%.1f tok_s_direct=%.0f tok_s_rsag=%.0f tok_s_rsag_overlapped=%.0f\n",rows,collectives,direct_ms,rsag_ms,rows * 1000.0 / (step_ms + direct_ms),rows * 1000.0 / (step_ms + rsag_ms),rows * 1000.0 / (step_ms > rsag_ms ? step_ms : rsag_ms));
 }
 
+static double RoofMeasureGraph(RoofState *state,const RoofConfig *config,uint32_t rows,cudaStream_t stream)
+{
+	cudaGraph_t graph;
+	cudaGraphExec_t exec;
+	cudaEvent_t start,stop;
+	double *samples,total,sorted;
+	size_t nodes;
+	uint32_t iteration,other;
+	float elapsed;
+	ROOF_CUDA(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+	RoofStep(state);
+	ROOF_CUDA(cudaStreamEndCapture(stream,&graph));
+	ROOF_CUDA(cudaGraphGetNodes(graph,0,&nodes));
+	ROOF_CUDA(cudaGraphInstantiate(&exec,graph,0));
+	ROOF_CUDA(cudaGraphLaunch(exec,stream));
+	ROOF_CUDA(cudaGraphLaunch(exec,stream));
+	ROOF_CUDA(cudaStreamSynchronize(stream));
+	samples = (double *)calloc(config->iterations,sizeof(double));
+	if ( samples == 0 )
+		exit(1);
+	ROOF_CUDA(cudaEventCreate(&start));
+	ROOF_CUDA(cudaEventCreate(&stop));
+	total = 0.0;
+	for (iteration=0u; iteration<config->iterations; iteration++)
+	{
+		ROOF_CUDA(cudaEventRecord(start,stream));
+		ROOF_CUDA(cudaGraphLaunch(exec,stream));
+		ROOF_CUDA(cudaEventRecord(stop,stream));
+		ROOF_CUDA(cudaEventSynchronize(stop));
+		ROOF_CUDA(cudaEventElapsedTime(&elapsed,start,stop));
+		samples[iteration] = (double)elapsed;
+		total += (double)elapsed;
+	}
+	for (iteration=1u; iteration<config->iterations; iteration++)
+		for (other=iteration; other>0u && samples[other - 1u] > samples[other]; other--)
+		{
+			sorted = samples[other - 1u];
+			samples[other - 1u] = samples[other];
+			samples[other] = sorted;
+		}
+	printf("ROOFLINE-GRAPH rows=%u route_readback=%u l2_prefetch=%u l2_bytes=%u l2_blocks=%u round_spin_us=%u round_wait=%u nodes=%zu replays=%u median_ms=%.3f min_ms=%.3f max_ms=%.3f mean_ms=%.3f\n",rows,state->route_readback,state->l2_prefetch,state->l2_shape.bytes,state->l2_shape.blocks,state->round_spin_us,state->round_wait,nodes,config->iterations,samples[config->iterations / 2u],samples[0],samples[config->iterations - 1u],total / config->iterations);
+	free(samples);
+	ROOF_CUDA(cudaEventDestroy(start));
+	ROOF_CUDA(cudaEventDestroy(stop));
+	ROOF_CUDA(cudaGraphExecDestroy(exec));
+	ROOF_CUDA(cudaGraphDestroy(graph));
+	return(total / config->iterations);
+}
+
 static double RoofMeasure(RoofState *state,const RoofConfig *config,uint32_t rows,cudaStream_t stream)
 {
 	cudaEvent_t start,stop;
 	uint32_t iteration;
 	float elapsed;
 	RoofSetRows(state,rows,config->context);
+	state->route_readback = 1u;
 	RoofStep(state);
 	RoofStep(state);
 	ROOF_CUDA(cudaStreamSynchronize(stream));
+	state->route_readback = config->route_readback;
+	state->l2_prefetch = config->l2_prefetch;
+	state->l2_shape = config->l2_shape;
+	state->round_spin_us = config->round_spin_us;
+	state->round_wait = config->round_wait;
+	if ( config->graph != 0u )
+		return(RoofMeasureGraph(state,config,rows,stream));
 	ROOF_CUDA(cudaEventCreate(&start));
 	ROOF_CUDA(cudaEventCreate(&stop));
 	ROOF_CUDA(cudaEventRecord(start,stream));
@@ -701,6 +903,10 @@ static int RoofParse(int argc,char **argv,RoofConfig *config)
 	config->round_us = 100.0;
 	config->nic_gbps = 11.5;
 	config->memory_gbps = 273.0;
+	config->route_readback = 1u;
+	config->l2_prefetch = 1u;
+	config->l2_shape.bytes = SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_DEFAULT;
+	config->l2_shape.blocks = SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_DEFAULT;
 	for (index=1; index + 1 < argc; index+=2)
 	{
 		if ( strcmp(argv[index],"--batches") == 0 )
@@ -717,12 +923,26 @@ static int RoofParse(int argc,char **argv,RoofConfig *config)
 			config->round_us = strtod(argv[index + 1],0);
 		else if ( strcmp(argv[index],"--nic-gbps") == 0 )
 			config->nic_gbps = strtod(argv[index + 1],0);
+		else if ( strcmp(argv[index],"--graph") == 0 )
+			config->graph = (uint32_t)strtoul(argv[index + 1],0,10);
+		else if ( strcmp(argv[index],"--route-readback") == 0 )
+			config->route_readback = (uint32_t)strtoul(argv[index + 1],0,10);
+		else if ( strcmp(argv[index],"--l2-prefetch") == 0 )
+			config->l2_prefetch = (uint32_t)strtoul(argv[index + 1],0,10);
+		else if ( strcmp(argv[index],"--l2-prefetch-bytes") == 0 )
+			config->l2_shape.bytes = (uint32_t)strtoul(argv[index + 1],0,10);
+		else if ( strcmp(argv[index],"--l2-prefetch-blocks") == 0 )
+			config->l2_shape.blocks = (uint32_t)strtoul(argv[index + 1],0,10);
+		else if ( strcmp(argv[index],"--round-spin-us") == 0 )
+			config->round_spin_us = (uint32_t)strtoul(argv[index + 1],0,10);
+		else if ( strcmp(argv[index],"--round-wait") == 0 )
+			config->round_wait = (uint32_t)strtoul(argv[index + 1],0,10);
 		else
 			return(-1);
 	}
 	for (batch=0u; batch<config->batch_count; batch++)
 		config->max_batch = config->batches[batch] > config->max_batch ? config->batches[batch] : config->max_batch;
-	return(config->batch_count == 0u || config->context < 2u || config->iterations == 0u || config->copies == 0u || config->copies > ROOF_MAX_COPIES || config->index_cp > ROOF_TP || (config->index_cp > 1u && SparkGlm5NextIndexCpFits(((config->context + 63u) / 64u) * 64u,config->index_cp,config->max_batch) == 0u) || config->max_batch == 0u || config->max_batch > SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS * 2u ? -1 : 0);
+	return((argc % 2) == 0 || config->batch_count == 0u || config->l2_prefetch > 1u || SparkGlm5NextL2PrefetchShapeValid(&config->l2_shape) == 0u || config->round_wait > 2u || config->context < 2u || config->iterations == 0u || config->copies == 0u || config->copies > ROOF_MAX_COPIES || config->index_cp > ROOF_TP || (config->index_cp > 1u && SparkGlm5NextIndexCpFits(((config->context + 63u) / 64u) * 64u,config->index_cp,config->max_batch) == 0u) || config->max_batch == 0u || config->max_batch > SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS * 2u ? -1 : 0);
 }
 
 int main(int argc,char **argv)
@@ -735,7 +955,7 @@ int main(int argc,char **argv)
 	uint32_t batch;
 	if ( RoofParse(argc,argv,&config) != 0 )
 	{
-		fprintf(stderr,"usage: glm5_next_batch_roofline [--batches 1,8,32,64,128,256] [--context 1024] [--iterations 5] [--copies 2] [--index-cp 16] [--round-us 100] [--nic-gbps 11.5]\n");
+		fprintf(stderr,"usage: glm5_next_batch_roofline [--batches 1,8,32,64,128,256] [--context 1024] [--iterations 5] [--copies 2] [--index-cp 16] [--round-us 100] [--nic-gbps 11.5] [--graph 0|1] [--route-readback 0|1] [--l2-prefetch 0|1] [--l2-prefetch-bytes 12582912] [--l2-prefetch-blocks 48] [--round-spin-us 0] [--round-wait 0|1|2]\n");
 		return(2);
 	}
 	setvbuf(stdout,0,_IOLBF,0);
@@ -750,6 +970,7 @@ int main(int argc,char **argv)
 	for (batch=0u; batch<config.batch_count; batch++)
 	{
 		RoofReport(&model,&state,&config,config.batches[batch],RoofMeasure(&state,&config,config.batches[batch],stream));
+		RoofHash(&state,config.batches[batch]);
 		RoofProfile(&state,config.batches[batch],stream);
 		RoofExpertsProfile(&state,config.batches[batch],stream);
 	}

@@ -115,10 +115,6 @@ def bf16(shape, rng, scale=0.05):
                            * scale)
 
 
-def f32(shape, rng, scale=0.05):
-    return rng.standard_normal(shape).astype(np.float32) * scale
-
-
 def nearest_codes(lut, values):
     finite = np.isfinite(lut)
     keep = np.flatnonzero(finite)
@@ -170,8 +166,8 @@ def build_tensors():
                 t[p + "linear_attn.in_proj_qkv.weight"] = \
                     bf16((CHANNELS, HIDDEN), rng)
             t[p + "linear_attn.conv1d.weight"] = bf16((CHANNELS, 1, CONV), rng)
-            t[p + "linear_attn.A_log"] = f32((GDN_V_HEADS,), rng, scale=0.1)
-            t[p + "linear_attn.dt_bias"] = f32((GDN_V_HEADS,), rng, scale=0.1)
+            t[p + "linear_attn.A_log"] = bf16((GDN_V_HEADS,), rng, scale=0.1)
+            t[p + "linear_attn.dt_bias"] = bf16((GDN_V_HEADS,), rng, scale=0.1)
             t[p + "linear_attn.in_proj_a.weight"] = bf16((GDN_V_HEADS, HIDDEN),
                                                          rng)
             t[p + "linear_attn.in_proj_b.weight"] = bf16((GDN_V_HEADS, HIDDEN),
@@ -283,6 +279,43 @@ def expect(condition, message):
         raise AssertionError(message)
 
 
+OCP_E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+
+
+class Nvfp4Store:
+    def __init__(self, arrays):
+        self.arrays = arrays
+
+    def pread(self, name):
+        return self.arrays[name]
+
+    def entry(self, name):
+        return self.arrays[name]
+
+
+def nvfp4_scale_semantics():
+    name = "w.weight"
+    global_scale = np.float32(0.5)
+    codes = np.array([list(range(16)), list(range(15, -1, -1))],
+                     dtype=np.uint8)
+    payload = (codes[:, 0::2] | (codes[:, 1::2] << 4)).astype(np.uint8)
+    scales = np.array([[0x38], [0x40]], dtype=np.uint8)
+    want = np.array([[(-1.0 if c & 8 else 1.0) * OCP_E2M1[c & 7]
+                      for c in row] for row in codes], dtype=np.float32)
+    want *= np.array([[1.0], [2.0]], dtype=np.float32) / global_scale
+    engine = object.__new__(engine_module.ENGINE_CLASS)
+    engine.st = Nvfp4Store({name + "_packed": payload,
+                            name + "_scale": scales,
+                            name + "_global_scale":
+                                np.array([global_scale], dtype=np.float32)})
+    engine._weights = {}
+    engine._memo_bytes = 0
+    engine._memo_limit = 0
+    got = engine.tensor(name)
+    expect(np.array_equal(got, want),
+           f"nvfp4 decode is not e2m1 x e4m3 / global_scale: {got} vs {want}")
+
+
 def main():
     workspace = tempfile.mkdtemp(prefix="t1ref-q27-test-")
     try:
@@ -347,6 +380,7 @@ def main():
                    f"defines/config disagreement must fail loud for {needle}")
             expect(needle in mismatch.stderr,
                    f"failure must name {needle}: {mismatch.stderr}")
+        nvfp4_scale_semantics()
         parsed = parse_llm_defines(header)
         config = json.load(open(os.path.join(checkpoint, "config.json")))
         engine = engine_module.ENGINE_CLASS(checkpoint, parsed, config)
@@ -362,6 +396,7 @@ def main():
         shutil.rmtree(workspace, ignore_errors=True)
         print("PASS t1_reference_qwen38_27b synthetic proof: determinism, "
               "manifest sha, negative control, fp8+nvfp4+bf16 dequant paths, "
+              "nvfp4 OCP scale semantics, "
               "defines/config fail-closed, vocabulary bounds")
         return 0
     except AssertionError:
