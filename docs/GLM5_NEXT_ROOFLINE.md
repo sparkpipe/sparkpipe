@@ -1073,7 +1073,7 @@ below).
 The prefill chunk is `execution_row_capacity` in the adapter configuration,
 together with the engine's `max_prefill_rows_per_submission`. It is
 independent of the sequence bucket: the module caps it at 65536, and the
-mesh at `SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS` (128). With 64- or 128-row
+mesh at `SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS` (1,024 since weightd ABI 9; 128 before). With 64- or 128-row
 chunks:
 
 - a 176-token prompt takes 2–3 prefill submissions instead of 22;

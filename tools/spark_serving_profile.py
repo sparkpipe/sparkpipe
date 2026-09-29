@@ -9,13 +9,14 @@ emitters must go through derive(); verify() rejects drifted configs.
 
 Compile-time ceilings (keep in sync with the C headers; verify() checks
 the derived values against them):
-  SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS = 128   (include/sparkpipe/spark_weightd.h)
+  SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS = 1024  (include/sparkpipe/spark_weightd.h)
   SPARK_GLM5_NEXT_..._MAX_INPUT_ROW_COUNT = 65536 (module firmware)
   KV page granularity = 64 positions/page
 """
 from __future__ import annotations
 
-MESH_MAX_BATCH_ROWS = 128
+MESH_MAX_BATCH_ROWS = 1024
+PROFILE_ROW_CAPACITY = 128
 FIRMWARE_MAX_INPUT_ROWS = 65536
 KV_PAGE_TOKENS = 64
 KV_POOL_PAGES_PER_RESIDENT_PAGE = 16
@@ -53,7 +54,7 @@ def derive(sequences: int, positions: int = 512) -> dict:
         raise ValueError("sequences and positions must be positive")
     pages_per_sequence = (positions + KV_PAGE_TOKENS - 1) // KV_PAGE_TOKENS
     kv_pages = KV_POOL_PAGES_PER_RESIDENT_PAGE * sequences * pages_per_sequence
-    row_capacity = min(MESH_MAX_BATCH_ROWS, FIRMWARE_MAX_INPUT_ROWS)
+    row_capacity = min(PROFILE_ROW_CAPACITY, MESH_MAX_BATCH_ROWS, FIRMWARE_MAX_INPUT_ROWS)
     return {
         "max_active_sequences": sequences,
         "resident_sequence_capacity": sequences,
