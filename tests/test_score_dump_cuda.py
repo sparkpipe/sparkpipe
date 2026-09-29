@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix="score-dump-cuda-") as directory:
         subprocess.run(["cc", "-std=c11", "-O2", "-D_POSIX_C_SOURCE=200809L", "-Iinclude", "-c", source, "-o", objects[-1]],
                        cwd=ROOT, check=True)
     subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a", "-I.", "-Iinclude",
-                    "-x", "cu", "tests/host_cuda/head_score_host.cu", *objects, "-o", binary], cwd=ROOT, check=True)
+                    *objects, "tests/host_cuda/head_score_host.cu", "-o", binary], cwd=ROOT, check=True)
     for name, shape in (("tp16_small", score_dump_oracle.SMALL), ("tp1_flash_head", TP1)):
-        result = score_dump_oracle.check_pipeline(binary, work / name, shape)
+        result = score_dump_oracle.check_pipeline(binary, work / name, shape, lanes=32)
         print(f"PASS {name} {result}")

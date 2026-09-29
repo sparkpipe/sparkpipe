@@ -13,7 +13,6 @@ import score_kl_partial
 
 SMALL = {"tp": 16, "rows": 40, "hidden": 64, "width": 80, "document_rows": 10, "tier2": 7}
 SEED = 20260929
-TOLERANCE = 1.0e-5
 
 
 def bf16_to_f32(raw):
@@ -35,33 +34,49 @@ def run_harness(binary, shape, directory, probe="-", tier2="-"):
     return sorted(directory.glob("score.r*.bin"))
 
 
-def numpy_logits(directory, shape):
+def load_inputs(directory, shape):
     rows, hidden_size = shape["rows"], shape["hidden"]
-    hidden = bf16_to_f32((directory / "hidden.bf16").read_bytes()).reshape(rows, hidden_size).astype(np.float64)
+    hidden = bf16_to_f32((directory / "hidden.bf16").read_bytes()).reshape(rows, hidden_size)
     head = bf16_to_f32((directory / "head.bf16").read_bytes()).reshape(shape["tp"] * shape["width"], hidden_size)
-    chunk = 8192
-    return np.concatenate([hidden @ head[start:start + chunk].astype(np.float64).T
-                           for start in range(0, head.shape[0], chunk)], axis=1)
+    return hidden, head
+
+
+def exact_logits(hidden, head):
+    return np.concatenate([hidden.astype(np.float64) @ head[start:start + 8192].astype(np.float64).T
+                           for start in range(0, head.shape[0], 8192)], axis=1)
+
+
+def kernel_order_logits(hidden, head, lanes):
+    rows, dimension = hidden.shape
+    steps = dimension // lanes
+    assert steps * lanes == dimension
+    lane_rows = hidden.reshape(rows, steps, lanes)
+    out = np.empty((rows, head.shape[0]), dtype=np.float32)
+    for start in range(0, head.shape[0], 4096):
+        weight = head[start:start + 4096].reshape(-1, steps, lanes)
+        accumulator = np.zeros((rows, weight.shape[0], lanes), dtype=np.float32)
+        for step in range(steps):
+            accumulator += lane_rows[:, None, step, :] * weight[None, :, step, :]
+        offset = lanes // 2
+        while offset:
+            accumulator = accumulator + accumulator[..., np.arange(lanes) ^ offset]
+            offset //= 2
+        out[:, start:start + weight.shape[0]] = accumulator[..., 0]
+    return out
+
+
+def log_partition(logits):
+    values = logits.astype(np.float64)
+    peak = values.max(axis=1)
+    return peak + np.log(np.sum(np.exp(values - peak[:, None]), axis=1))
 
 
 def expected_top(logits):
     ids = np.arange(logits.shape[1], dtype=np.int64)
-    return np.stack([ids[np.lexsort((ids, -row))][:score_merge.TOP_K] for row in logits])
+    return np.stack([ids[np.lexsort((ids, -row.astype(np.float64)))][:score_merge.TOP_K] for row in logits])
 
 
-def check_top_ids(merged_ids, reference_logits):
-    expected = expected_top(reference_logits)
-    for row in range(len(merged_ids)):
-        got = merged_ids[row].astype(np.int64)
-        if np.array_equal(got, expected[row]):
-            continue
-        values_got = reference_logits[row][got]
-        values_expected = reference_logits[row][expected[row]]
-        if np.max(np.abs(values_got - values_expected)) > TOLERANCE:
-            raise AssertionError(f"row {row}: top-k ids differ beyond a numerical tie")
-
-
-def check_pipeline(binary, work, shape=SMALL):
+def check_pipeline(binary, work, shape=SMALL, lanes=1):
     work = pathlib.Path(work)
     tp, rows, document_rows = shape["tp"], shape["rows"], shape["document_rows"]
     first = run_harness(binary, shape, work / "pass1")
@@ -71,15 +86,16 @@ def check_pipeline(binary, work, shape=SMALL):
     assert score_merge.main(["targets", str(corpus), "--out", str(work / "targets.bin")]) == 0
     assert score_merge.main(["tier2", str(corpus), "--count", str(shape["tier2"]), "--seed", str(SEED),
                              "--out", str(work / "tier2.bin")]) == 0
-    reference = numpy_logits(work / "pass1", shape)
-    log_z = np.log(np.sum(np.exp(reference - reference.max(axis=1, keepdims=True)), axis=1)) + reference.max(axis=1)
+    hidden, head = load_inputs(work / "pass1", shape)
+    reference = kernel_order_logits(hidden, head, lanes)
+    log_z = log_partition(reference)
+    accumulation = float(np.max(np.abs(reference.astype(np.float64) - exact_logits(hidden, head))))
     dumps = [score_merge.read_rank_file(p) for p in first]
     dumps, merged, _ = score_merge.merge(dumps)
-    assert np.max(np.abs(merged["log_z"] - log_z)) <= TOLERANCE, np.max(np.abs(merged["log_z"] - log_z))
-    got = merged["top_logits"].astype(np.float64) - merged["log_z"][:, None]
-    want = np.take_along_axis(reference, merged["top_ids"].astype(np.int64), axis=1) - log_z[:, None]
-    assert np.max(np.abs(got - want)) <= TOLERANCE
-    check_top_ids(merged["top_ids"], reference)
+    assert np.max(np.abs(merged["log_z"] - log_z)) <= 1.0e-9 * np.max(np.abs(log_z)), np.max(np.abs(merged["log_z"] - log_z))
+    assert np.array_equal(merged["top_ids"].astype(np.int64), expected_top(reference)), "global top-k differs from numpy"
+    assert np.array_equal(merged["top_logits"], np.take_along_axis(reference, merged["top_ids"].astype(np.int64), axis=1)), \
+        "top-k logits are not bit-identical to the numpy kernel-order logits"
 
     second = run_harness(binary, shape, work / "pass2", work / "targets.bin", work / "tier2.bin")
     merged_path = work / "ref.merged"
@@ -96,8 +112,7 @@ def check_pipeline(binary, work, shape=SMALL):
             target = int(tokens[row + 1])
             ids = probes2[row]["id"].tolist()
             assert target in ids, (row, target, ids)
-            logit = float(probes2[row]["logit"][ids.index(target)])
-            assert abs((logit - merged2["log_z"][row]) - (reference[row, target] - log_z[row])) <= TOLERANCE
+            assert probes2[row]["logit"][ids.index(target)] == reference[row, target], (row, target)
     tier2_rows = int(((merged2["flags"] & score_merge.ROW_TIER2) != 0).sum())
     assert tier2_rows == shape["tier2"], tier2_rows
     tier2_logits = {}
@@ -108,7 +123,7 @@ def check_pipeline(binary, work, shape=SMALL):
     for index in np.nonzero(merged2["flags"] & score_merge.ROW_TIER2)[0]:
         identity = (int(merged2["key"][index]), int(merged2["position"][index]))
         kernel = np.concatenate(tier2_logits[identity])
-        assert np.max(np.abs(kernel - reference[index])) <= TOLERANCE * max(1.0, float(np.max(np.abs(reference[index]))))
+        assert np.array_equal(kernel.astype(np.float32), reference[index]), f"Tier-2 row {index} logits differ from numpy"
         ids = np.arange(kernel.size)
         exact = ids[np.lexsort((ids, -kernel))][:score_merge.TOP_K]
         assert np.array_equal(merged2["top_ids"][index], exact), index
@@ -133,4 +148,5 @@ def check_pipeline(binary, work, shape=SMALL):
     exact_report = json.loads(exact.read_text())
     assert exact_report["kl_mean"] == 0.0 and len(exact_report["rows"]) == shape["tier2"]
     assert exact_report["max_mass_error"] <= 1.0e-9
-    return {"rows": rows, "tp": tp, "log_z_max_error": float(np.max(np.abs(merged["log_z"] - log_z)))}
+    return {"rows": rows, "tp": tp, "lanes": lanes, "log_z_max_error": float(np.max(np.abs(merged["log_z"] - log_z))),
+            "fp32_accumulation_vs_float64": accumulation}

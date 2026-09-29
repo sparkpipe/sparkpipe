@@ -125,7 +125,7 @@ int main(int argc, char **argv)
 		head[index] = RandomBf16(0.25f);
 	for (index = 0u; index < dimension; index++)
 	{
-		head[(uint64_t)(width + 3u) * dimension + index] = head[(uint64_t)5u * dimension + index];
+		head[(uint64_t)(tp > 1u ? width + 3u : width / 2u) * dimension + index] = head[(uint64_t)5u * dimension + index];
 		head[(uint64_t)(vocabulary - 1u) * dimension + index] = head[(uint64_t)5u * dimension + index];
 		head[(uint64_t)9u * dimension + index] = head[(uint64_t)7u * dimension + index];
 	}
