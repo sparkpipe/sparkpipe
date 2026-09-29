@@ -250,6 +250,7 @@ TOOL_NAMES := \
     spark_kv_backing_test \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
+    sparkpipe_quant_arm \
     sparkpipe_nfc \
     sparkpipe_split \
     sparkpipe_tokenizer_benchmark \
@@ -315,6 +316,7 @@ TEST_NAMES := \
     test_model_resident_reconnect \
     test_distributed_work \
 	    test_json \
+	    test_quant_arm \
 	    test_hidden_transport \
 	    test_hidden_transport_rdma_control \
 	    test_draft_bridge \
@@ -418,6 +420,14 @@ SHELL_TESTS := \
 	tests/fuzz_system_loopback.sh \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
+	tests/test_ab_stats.py \
+	tests/test_ab_verdict.py \
+	tests/test_ab_arm.py \
+	tests/test_ab_receipt.py \
+	tests/test_ab_suite_compare.py \
+	tests/test_ab_corpus.py \
+	tests/test_ab_dry_run.py \
+	tests/test_pack_spine_sha.py \
 	tests/test_glm5_next_compsec17.py \
 	tests/test_compsec17.py \
 	tests/test_ling_compsec17.py \
@@ -1136,6 +1146,9 @@ build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(GLM52_HOST_LI
 build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_quant_arm: tools/sparkpipe_quant_arm.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/sparkpipe_nfc: tools/sparkpipe_nfc.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1485,6 +1498,9 @@ build/test_distributed_work: tests/test_distributed_work.c $(MODEL_COMMON_LIBRAR
 
 build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_quant_arm: tests/test_quant_arm.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_fabric_topology: tests/test_fabric_topology.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
