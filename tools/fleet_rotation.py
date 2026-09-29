@@ -4,6 +4,7 @@ import concurrent.futures
 import datetime
 import fcntl
 import http.server
+import itertools
 import json
 import os
 import re
@@ -29,6 +30,14 @@ class ConfigError(Exception):
 
 
 class Preempted(Exception):
+    pass
+
+
+class Refused(Failure):
+    pass
+
+
+class Stuck(Exception):
     pass
 
 
@@ -66,6 +75,20 @@ def require(condition, message):
         raise ConfigError(message)
 
 
+SMOKE_RULES = {"finish_reason": list, "min_words": int, "min_distinct_words": int, "look_for": str}
+
+
+def validate_smoke(name, smoke):
+    require(isinstance(smoke, dict) and smoke.get("path") and isinstance(smoke.get("body"), dict), f"model {name}: smoke path/body missing")
+    require(isinstance(smoke.get("timeout_s"), (int, float)), f"model {name}: smoke.timeout_s missing")
+    reply = smoke.get("reply")
+    require(bool(smoke.get("expect")) or isinstance(reply, dict), f"model {name}: smoke needs expect or reply")
+    if reply is not None:
+        require(isinstance(reply, dict) and reply, f"model {name}: smoke.reply must be a non-empty object")
+        for key, value in reply.items():
+            require(key in SMOKE_RULES and isinstance(value, SMOKE_RULES[key]), f"model {name}: smoke.reply.{key} unknown or of the wrong type")
+
+
 def validate_model(cfg, name, model):
     require(isinstance(model.get("title"), str), f"model {name}: title missing")
     if not model.get("runnable", False):
@@ -87,17 +110,18 @@ def validate_model(cfg, name, model):
             require(isinstance(api.get(key), str) and api[key], f"model {name}: api.{key} missing")
         require(isinstance(api.get("port"), int), f"model {name}: api.port missing")
         require(isinstance(api.get("timeout_s"), (int, float)), f"model {name}: api.timeout_s missing")
-        smoke = model.get("smoke")
-        require(isinstance(smoke, dict) and smoke.get("path") and isinstance(smoke.get("body"), dict) and smoke.get("expect"), f"model {name}: smoke path/body/expect missing")
-        require(isinstance(smoke.get("timeout_s"), (int, float)), f"model {name}: smoke.timeout_s missing")
+        validate_smoke(name, model.get("smoke"))
 
 
 def validate(cfg):
-    for key in ("hub", "state_dir", "fleet", "floor_gib", "cycle", "slots", "fallback", "companions", "models", "commands", "ssh", "ssh_timeout_s", "poll_s", "rollback_models", "schedule_port", "lock"):
+    for key in ("hub", "state_dir", "fleet", "floor_gib", "node_free_gib", "cycle", "slots", "fallback", "models", "commands", "ssh", "ssh_timeout_s", "poll_s", "rollback_models", "schedule_port", "lock"):
         require(key in cfg, f"config: {key} missing")
+    require(isinstance(cfg["node_free_gib"], (int, float)) and cfg["node_free_gib"] > cfg["floor_gib"], "config: node_free_gib (MemAvailable of a node with no model resident) must exceed floor_gib")
     models = cfg["models"]
     for name, model in models.items():
         validate_model(cfg, name, model)
+    ports = [m["api"]["port"] for m in models.values() if m.get("runnable") and m.get("api")]
+    require(len(ports) == len(set(ports)), "config: two runnable models share an api.port; companions serve side by side")
     for key in ("mem_probe", "reclaim", "smoke"):
         require(isinstance(cfg["commands"].get(key), str), f"config: commands.{key} missing")
     require("--reclaim-pack" in cfg["commands"]["reclaim"] and "@packs@" in cfg["commands"]["reclaim"], "commands.reclaim must be a --reclaim-pack command over @packs@")
@@ -106,16 +130,22 @@ def validate(cfg):
     slots = cfg["slots"]
     require(cfg["cycle"].get("slots") and all(s in slots for s in cfg["cycle"]["slots"]), "cycle.slots names an unknown slot")
     require(isinstance(cfg["cycle"].get("anchor_hour"), int), "cycle.anchor_hour missing")
+    fb = cfg["fallback"]
+    bases = {slot.get("base") for slot in slots.values()} | {fb}
     for name, slot in slots.items():
         require(slot.get("base") in models, f"slot {name}: base model unknown")
         fallback_slot = slot.get("fallback_slot")
         require(fallback_slot is None or fallback_slot in slots, f"slot {name}: fallback_slot unknown")
-    fb = cfg["fallback"]
+        pool = slot.get("companions", [])
+        require(isinstance(pool, list) and len(pool) == len(set(pool)), f"slot {name}: companions must be a list without repeats")
+        for companion in pool:
+            require(companion in models, f"slot {name}: companion {companion} unknown")
+            require(companion not in bases, f"slot {name}: companion {companion} is a slot base or the fallback")
     require(fb in models and models[fb].get("runnable"), "fallback model must exist and be runnable")
     require(set(models[fb]["nodes"]) == set(cfg["fleet"]), "fallback model must span the whole fleet")
     require(models[fb].get("api") is not None, "fallback model needs an api")
-    for name in cfg["companions"] + cfg["rollback_models"] + [cfg.get("default_companion")] * bool(cfg.get("default_companion")):
-        require(name in models, f"companion/rollback model {name} unknown")
+    for name in cfg["rollback_models"]:
+        require(name in models, f"rollback model {name} unknown")
     require(all(models[m].get("runnable") for m in cfg["rollback_models"]), "rollback models must be runnable")
     for name in slots:
         seen = set()
@@ -174,6 +204,8 @@ class Rotation:
         self.models = cfg["models"]
         self.fb = cfg["fallback"]
         self.honor_locks = True
+        self.write = not runner.dry
+        self.bases = {slot["base"] for slot in cfg["slots"].values()} | {cfg["fallback"]}
         self.instance = self.slot_at(self.now())[0]
 
     def now(self):
@@ -190,7 +222,7 @@ class Rotation:
             return {}
 
     def save_state(self, st):
-        if self.dry:
+        if not self.write:
             return
         os.makedirs(self.dir, exist_ok=True)
         tmp = self.path("state.json.tmp")
@@ -199,7 +231,7 @@ class Rotation:
         os.replace(tmp, self.path("state.json"))
 
     def append(self, name, line):
-        if self.dry:
+        if not self.write:
             return
         os.makedirs(self.dir, exist_ok=True)
         with open(self.path(name), "a") as f:
@@ -247,7 +279,7 @@ class Rotation:
         st["resync"] = True
 
     def auto_pause(self, st, why):
-        if not self.dry:
+        if self.write:
             os.makedirs(self.dir, exist_ok=True)
             with open(self.path(self.cfg["lock"]["pause_file"]), "w") as f:
                 f.write(f"auto {iso(time.time())}: {why}\n")
@@ -269,48 +301,114 @@ class Rotation:
                 return None
             name = slot["fallback_slot"]
 
-    def next_companion(self, after, skip=()):
-        order = self.cfg["companions"]
-        start = order.index(after) + 1 if after in order else 0
-        for k in range(len(order)):
-            name = order[(start + k) % len(order)]
-            if self.models[name].get("runnable") and name not in skip:
-                return name
-        return self.cfg.get("default_companion")
+    def is_companion(self, model):
+        return model not in self.bases
 
-    def companion_for(self, st, instance):
-        chosen = st.setdefault("companions", {})
-        key = str(instance)
-        if key not in chosen:
-            chosen[key] = self.next_companion(st.get("last_companion"), st.get("dropped", {}).get(key, []))
-            if chosen[key] in self.cfg["companions"]:
-                st["last_companion"] = chosen[key]
-            for old in sorted(chosen, key=int)[:-24]:
-                del chosen[old]
-        return chosen[key]
-
-    def target(self, st, t):
-        instance, name = self.slot_at(t)
+    def slot_for(self, st, instance):
+        _, name = self.slot_at(instance * HOUR)
         override = st.get("override")
-        companion = None
+        forced = None
         if override and override.get("instance") == instance:
             name = override["slot"]
-            companion = override.get("companion")
+            forced = override.get("companions")
+            if forced is None and override.get("companion"):
+                forced = [override["companion"]]
         if st.get("skip") == instance:
-            return instance, f"{name}:skipped", [self.fb]
+            return f"{name}:skipped", None, None
         if st.get("failed_instance") == instance:
-            return instance, f"{name}:failed", [self.fb]
+            return f"{name}:failed", None, None
         eff = self.effective_slot(st, instance, name)
         if eff is None:
-            return instance, f"{name}:unavailable", [self.fb]
-        slot = self.cfg["slots"][eff]
-        models = [slot["base"]]
-        if slot.get("companion"):
-            if companion is None:
-                companion = self.companion_for(st, instance)
-            if companion and companion not in st.get("dropped", {}).get(str(instance), []):
-                models.append(companion)
-        return instance, eff, models
+            return f"{name}:unavailable", None, None
+        return eff, self.cfg["slots"][eff]["base"], forced
+
+    def dropped(self, st, instance):
+        return st.get("dropped", {}).get(str(instance), [])
+
+    def pick_of(self, st, instance, slot, primary):
+        pick = st.get("picks", {}).get(str(instance))
+        if pick and pick.get("slot") == slot and pick.get("primary") == primary:
+            return pick
+        return None
+
+    def pool(self, slot, forced):
+        return list(forced) if forced is not None else list(self.cfg["slots"][slot].get("companions", []))
+
+    def last_runs(self, st):
+        runs = {}
+        for key, name in (st.get("companions") or {}).items():
+            if name:
+                runs[name] = max(runs.get(name, -1), int(key))
+        runs.update(st.get("last_run") or {})
+        return runs
+
+    def ranking(self, st, instance):
+        runs = self.last_runs(st)
+        running = (st.get("companions") or {}).get(str(instance))
+        if running in (st.get("active") or []):
+            runs[running] = min([-1, *runs.values()]) - 1
+        return runs
+
+    def nominal_base(self, st):
+        recorded = st.get("base_gib") or {}
+        return {h: recorded.get(h, self.cfg["node_free_gib"]) for h in self.cfg["fleet"]}
+
+    def measured_base(self, avail, resident):
+        base = {}
+        for host, value in avail.items():
+            if value is None:
+                return None
+            held = sum(self.models[m]["mem_gib"] for m in resident if host in self.models[m]["nodes"])
+            base[host] = min(value + held, self.cfg["node_free_gib"])
+        return base
+
+    def room(self, base, models):
+        out = {}
+        for host, value in base.items():
+            need = sum(self.models[m]["mem_gib"] for m in models if host in self.models[m]["nodes"])
+            out[host] = None if value is None else value - self.cfg["floor_gib"] - need
+        return out
+
+    def shortfall(self, room, extra):
+        short = []
+        for host, value in sorted(room.items()):
+            need = sum(self.models[m]["mem_gib"] for m in extra if host in self.models[m]["nodes"])
+            if value is not None and value - need < 0:
+                short.append(f"{host}:{value + self.cfg['floor_gib']}-{need}<{self.cfg['floor_gib']}")
+        return short
+
+    def pack(self, room, candidates, runs, order):
+        rank = sorted(candidates, key=lambda c: (runs.get(c, -1), order.index(c) if c in order else len(order)))
+        anchor = next((c for c in rank if not self.shortfall(room, [c])), None)
+        chosen = []
+        if anchor is not None:
+            rest = [c for c in rank if c != anchor]
+            chosen = [anchor]
+            for size in range(len(rest), 0, -1):
+                hit = next((group for group in itertools.combinations(rest, size) if not self.shortfall(room, [anchor, *group])), None)
+                if hit:
+                    chosen = [anchor, *hit]
+                    break
+        waiting = {c: " ".join(self.shortfall(room, chosen + [c])) or "fits alone" for c in rank if c not in chosen}
+        return chosen, waiting
+
+    def candidates(self, st, instance, slot, primary, forced):
+        dropped = self.dropped(st, instance)
+        return [c for c in self.pool(slot, forced) if self.models.get(c, {}).get("runnable") and c not in dropped and c != primary]
+
+    def target(self, st, t):
+        instance = int(t // HOUR)
+        slot, primary, forced = self.slot_for(st, instance)
+        if primary is None:
+            return instance, slot, [self.fb]
+        pick = self.pick_of(st, instance, slot, primary)
+        if pick is not None:
+            chosen = pick["companions"]
+        else:
+            room = self.room(self.nominal_base(st), [primary])
+            chosen, _ = self.pack(room, self.candidates(st, instance, slot, primary, forced), self.ranking(st, instance), self.pool(slot, forced))
+        dropped = self.dropped(st, instance)
+        return instance, slot, [primary] + [c for c in chosen if c not in dropped]
 
     def predict(self, st, t, hours):
         shadow = json.loads(json.dumps(st))
@@ -318,7 +416,11 @@ class Rotation:
         for k in range(hours):
             at = (int(t // HOUR) + k) * HOUR
             instance, slot, models = self.target(shadow, at)
-            rows.append({"start": iso(at), "end": iso(at + HOUR), "slot": slot, "models": models})
+            key = str(instance)
+            if key not in shadow.get("picks", {}) and slot in self.cfg["slots"]:
+                shadow.setdefault("picks", {})[key] = {"slot": slot, "primary": models[0], "companions": models[1:]}
+                shadow.setdefault("last_run", self.last_runs(shadow)).update({c: instance for c in models[1:]})
+            rows.append({"start": iso(at), "end": iso(at + HOUR), "slot": slot, "primary": models[0], "companions": models[1:], "models": models})
         return rows
 
     def node_cmds(self, model, key, extra=None, section="engine"):
@@ -382,25 +484,14 @@ class Rotation:
             out[host] = int(match.group(0))
         return out
 
-    def floor_check(self, when):
-        avail = self.mem(self.cfg["fleet"])
+    def floor_check(self, when, hosts=None):
+        avail = self.mem(hosts or self.cfg["fleet"])
         low = {h: v for h, v in avail.items() if v is not None and v < self.cfg["floor_gib"]}
         known = [v for v in avail.values() if v is not None]
         self.log("FLOOR", when=when, min_gib=min(known) if known else "dry", floor=self.cfg["floor_gib"])
         if low:
             raise Failure(f"MemAvailable below {self.cfg['floor_gib']} GiB {when}: " + " ".join(f"{h}={v}" for h, v in sorted(low.items())))
         return avail
-
-    def fits(self, avail, outgoing, incoming):
-        short = []
-        for host, value in avail.items():
-            if value is None:
-                continue
-            gain = sum(self.models[m]["mem_gib"] for m in outgoing if host in self.models[m]["nodes"])
-            need = sum(self.models[m]["mem_gib"] for m in incoming if host in self.models[m]["nodes"])
-            if value + gain - need < self.cfg["floor_gib"]:
-                short.append(f"{host}={value}+{gain}-{need}")
-        return short
 
     def precheck(self, model):
         m = self.models[model]
@@ -497,7 +588,7 @@ class Rotation:
         avail = self.mem(cold)
         short = {h: v for h, v in avail.items() if v is not None and v < m["mem_gib"] + self.cfg["floor_gib"]}
         if short:
-            raise Failure(f"{model}: needs {m['mem_gib']}+{self.cfg['floor_gib']} GiB, short on " + " ".join(f"{h}={v}" for h, v in sorted(short.items())))
+            raise Refused(f"{model}: needs {m['mem_gib']}+{self.cfg['floor_gib']} GiB, short on " + " ".join(f"{h}={v}" for h, v in sorted(short.items())))
         results = self.run.each({h: c for h, c in self.node_cmds(model, "start", {"stamp": self.stamp}).items()}, timeout=self.cfg["ssh_timeout_s"])
         bad = sorted(f"{h}:rc{rc}" for h, (rc, _) in results.items() if rc != 0)
         if bad:
@@ -512,6 +603,25 @@ class Rotation:
             self.smoke(model)
         self.log("SERVING", model=model)
 
+    def reply_problem(self, text, rules):
+        try:
+            choice = json.loads(text)["choices"][0]
+        except (ValueError, KeyError, IndexError, TypeError):
+            return "the reply is not a completion", None
+        answer = choice.get("text") if "text" in choice else (choice.get("message") or {}).get("content")
+        if not isinstance(answer, str):
+            return "the reply carries no text", None
+        if "finish_reason" in rules and choice.get("finish_reason") not in rules["finish_reason"]:
+            return f"finish_reason {choice.get('finish_reason')!r} not in {rules['finish_reason']}", answer
+        if rules.get("look_for") and rules["look_for"] in answer:
+            return None, answer
+        words = [w.lower() for w in re.findall(r"[^\W\d_]+", answer)]
+        if len(words) < rules.get("min_words", 1):
+            return f"{len(words)} words, want at least {rules.get('min_words', 1)}", answer
+        if len(set(words)) < rules.get("min_distinct_words", 0):
+            return f"{len(set(words))} distinct words, want at least {rules['min_distinct_words']}", answer
+        return None, answer
+
     def smoke(self, model):
         m = self.models[model]
         s = m["smoke"]
@@ -519,9 +629,20 @@ class Rotation:
         rc, text = self.run.run("hub", command, timeout=s["timeout_s"] + 30)
         if self.dry:
             return
-        if rc != 0 or s["expect"] not in text:
-            raise Failure(f"{model}: smoke failed (rc {rc}, want '{s['expect']}'): {text.strip()[:200]}")
-        self.log("SMOKE-PASS", model=model, expect=s["expect"])
+        problem, answer = (f"rc {rc}", None) if rc != 0 else (None, None)
+        if not problem and s.get("expect") and s["expect"] not in text:
+            problem = f"want '{s['expect']}'"
+        if not problem and s.get("reply"):
+            problem, answer = self.reply_problem(text, s["reply"])
+        if problem:
+            raise Failure(f"{model}: smoke failed ({problem}): {text.strip()[:200]}")
+        fields = {"expect": s["expect"]} if s.get("expect") else {}
+        if answer is not None:
+            fields["reply"] = json.dumps(answer[:80])
+            look = s["reply"].get("look_for")
+            if look:
+                fields["look_for"] = f"{look}:{'found' if look in answer else 'absent'}"
+        self.log("SMOKE-PASS", model=model, **fields)
 
     def healthy(self, model):
         m = self.models[model]
@@ -533,36 +654,84 @@ class Rotation:
     def moves(self, current, target, dirty):
         outgoing = [m for m in current + dirty if m not in target or (m in dirty and m != self.fb)]
         incoming = [m for m in target if m not in current or m in dirty]
-        return list(dict.fromkeys(outgoing)), incoming
+        order = list(dict.fromkeys(current + dirty))
+        outgoing = sorted(dict.fromkeys(outgoing), key=lambda m: (m == self.fb, not self.is_companion(m), -order.index(m)))
+        incoming.sort(key=lambda m: (self.is_companion(m), m != self.fb))
+        return outgoing, incoming
+
+    def why(self, e):
+        return str(e) if isinstance(e, Failure) else f"{type(e).__name__}: {e}"
+
+    def start_companion(self, model):
+        try:
+            self.start_model(model)
+            self.floor_check(f"after-{model}", self.models[model]["nodes"])
+        except (Preempted, Stuck):
+            raise
+        except Exception as e:
+            return self.why(e), not isinstance(e, Refused)
+        return None, True
+
+    def drop_companion(self, st, model, why, started=True):
+        dropped = st.setdefault("dropped", {}).setdefault(str(self.instance), [])
+        if model not in dropped:
+            dropped.append(model)
+        self.alert(st, "ERROR", f"companion {model} failed and is skipped for this hour: {why}")
+        if not started:
+            return
+        try:
+            self.stop_model(model)
+        except Preempted:
+            raise
+        except Exception as e:
+            raise Stuck(f"companion {model} failed ({why}) and could not be stopped: {self.why(e)}")
+
+    def degrade(self, st, message):
+        try:
+            st["active"] = [m for m, s in self.observe().items() if s == "up"]
+        except Exception:
+            st["active"] = []
+        st["phase"] = "degraded"
+        self.alert(st, "CRITICAL", f"{message}; rotation auto-paused, fleet needs the lead")
+        self.auto_pause(st, message)
+        self.save_state(st)
+        return False
 
     def converge(self, st, current, target, dirty, reason):
         outgoing, incoming = self.moves(current, target, dirty)
-        incoming.sort(key=lambda m: m != self.fb)
-        outgoing.sort(key=lambda m: m == self.fb)
         st["phase"] = "transition"
         st["transition"] = {"from": current, "to": target, "reason": reason, "started": iso(time.time())}
         self.save_state(st)
         self.log("TRANSITION-BEGIN", frm=",".join(current) or "-", to=",".join(target), reason=json.dumps(reason))
+        failed = []
         try:
             self.floor_check("before")
             for model in outgoing:
                 self.stop_model(model)
             for model in incoming:
-                self.start_model(model)
+                if not self.is_companion(model):
+                    self.start_model(model)
+                    continue
+                problem, started = self.start_companion(model)
+                if problem:
+                    failed.append(model)
+                    self.drop_companion(st, model, problem, started)
             self.floor_check("after")
         except Preempted:
             raise
+        except Stuck as e:
+            return self.degrade(st, str(e))
         except Exception as e:
-            why = str(e) if isinstance(e, Failure) else f"{type(e).__name__}: {e}"
+            why = self.why(e)
             self.alert(st, "ERROR", f"transition {','.join(current) or '-'} -> {','.join(target)} failed: {why}")
             return self.fallback(st, why)
-        st["active"] = list(target)
+        st["active"] = [m for m in target if m not in failed]
         st["phase"] = "steady"
         st["transition"] = None
         st["since"] = iso(time.time())
-        self.log("TRANSITION-OK", active=",".join(target))
+        self.log("TRANSITION-OK", active=",".join(st["active"]), skipped=",".join(failed) or "-")
         self.save_state(st)
-        return True
+        return not failed
 
     def fallback(self, st, why):
         st["failed_instance"] = self.instance
@@ -572,24 +741,16 @@ class Rotation:
         self.log("FALLBACK-BEGIN", why=json.dumps(why))
         try:
             state = self.observe()
-            for model in [m for m, s in state.items() if s in ("up", "mixed") and m != self.fb]:
+            order = list(st["transition"]["from"])
+            running = [m for m, s in state.items() if s in ("up", "mixed") and m != self.fb]
+            for model in sorted(running, key=lambda m: (not self.is_companion(m), -order.index(m) if m in order else 0)):
                 self.stop_model(model)
             self.start_model(self.fb)
             self.floor_check("after-fallback")
         except Preempted:
             raise
         except Exception as e:
-            if not isinstance(e, Failure):
-                e = f"{type(e).__name__}: {e}"
-            try:
-                st["active"] = [m for m, s in self.observe().items() if s == "up"]
-            except Exception:
-                st["active"] = []
-            st["phase"] = "degraded"
-            self.alert(st, "CRITICAL", f"fallback to {self.fb} failed: {e}; rotation auto-paused, fleet needs the lead")
-            self.auto_pause(st, f"fallback failed: {e}")
-            self.save_state(st)
-            return False
+            return self.degrade(st, f"fallback to {self.fb} failed: {self.why(e)}")
         st["active"] = [self.fb]
         st["phase"] = "fallback"
         st["transition"] = None
@@ -598,36 +759,67 @@ class Rotation:
         self.save_state(st)
         return False
 
-    def plan(self, st, instance, current, dirty):
-        avail = self.mem(self.cfg["fleet"])
-        for _ in range(len(self.cfg["slots"]) + len(self.cfg["companions"]) + 2):
-            _, slot, target = self.target(st, instance * HOUR)
-            outgoing, incoming = self.moves(current, target, dirty)
-            problem = None
-            culprit = None
-            for model in incoming:
-                problem = self.precheck(model)
+    def choose(self, st, instance, slot, primary, forced, current, dirty, base):
+        key = str(instance)
+        dropped = st.setdefault("dropped", {}).setdefault(key, [])
+        room = self.room(base, [primary])
+        pick = self.pick_of(st, instance, slot, primary)
+        if pick is not None:
+            chosen = [c for c in pick["companions"] if c not in dropped]
+            while chosen and self.shortfall(room, chosen):
+                late = chosen.pop()
+                dropped.append(late)
+                self.alert(st, "WARN", f"companion {late} skipped this hour: " + " ".join(self.shortfall(room, chosen + [late])))
+            for c in list(chosen):
+                problem = self.precheck(c) if c not in current or c in dirty else None
                 if problem:
-                    culprit = model
-                    break
+                    chosen.remove(c)
+                    dropped.append(c)
+                    self.alert(st, "WARN", f"companion {c} skipped this hour: {problem}")
+            return chosen
+        candidates = []
+        for c in self.candidates(st, instance, slot, primary, forced):
+            problem = self.precheck(c) if c not in current or c in dirty else None
+            if problem:
+                dropped.append(c)
+                self.alert(st, "WARN", f"companion {c} skipped this hour: {problem}")
+            else:
+                candidates.append(c)
+        runs = self.last_runs(st)
+        chosen, waiting = self.pack(room, candidates, self.ranking(st, instance), self.pool(slot, forced))
+        picks = st.setdefault("picks", {})
+        picks[key] = {"slot": slot, "primary": primary, "companions": chosen, "waiting": waiting}
+        for old in sorted(picks, key=int)[:-24]:
+            del picks[old]
+        runs.update({c: instance for c in chosen})
+        st["last_run"] = runs
+        st.pop("companions", None)
+        st.pop("last_companion", None)
+        self.log("PACK", slot=slot, primary=primary, companions=",".join(chosen) or "-", waiting=json.dumps(waiting))
+        return chosen
+
+    def plan(self, st, instance, current, dirty):
+        resident = list(dict.fromkeys(current + dirty))
+        base = self.measured_base(self.mem(self.cfg["fleet"]), resident)
+        if base is None:
+            base = self.nominal_base(st)
+        else:
+            st["base_gib"] = base
+        for _ in range(len(self.cfg["slots"]) + 2):
+            slot, primary, forced = self.slot_for(st, instance)
+            if primary is None:
+                return slot, [self.fb]
+            problem = self.precheck(primary) if primary not in current or primary in dirty else None
             if not problem:
-                short = self.fits(avail, outgoing, [m for m in incoming if m not in dirty or m in outgoing])
+                short = self.shortfall(self.room(base, [primary]), [])
                 if short:
-                    culprit = incoming[-1] if incoming else None
                     problem = "predicted MemAvailable below floor: " + " ".join(short)
             if not problem:
-                return slot, target
-            if culprit is None or culprit == self.fb:
+                return slot, [primary] + self.choose(st, instance, slot, primary, forced, current, dirty, base)
+            if primary == self.fb:
                 raise Failure(f"cannot plan slot {slot}: {problem}")
-            base = self.cfg["slots"].get(slot, {}).get("base")
-            key = str(instance)
-            if culprit == base:
-                st.setdefault("demoted", {}).setdefault(key, []).append(slot)
-                self.alert(st, "WARN", f"slot {slot} demoted for this hour: {culprit}: {problem}")
-            else:
-                st.setdefault("dropped", {}).setdefault(key, []).append(culprit)
-                st.setdefault("companions", {}).pop(key, None)
-                self.alert(st, "WARN", f"companion {culprit} skipped this hour: {problem}")
+            st.setdefault("demoted", {}).setdefault(str(instance), []).append(slot)
+            self.alert(st, "WARN", f"slot {slot} demoted for this hour: {primary}: {problem}")
         raise Failure("planning did not settle")
 
     def tick(self):
@@ -651,6 +843,16 @@ class Rotation:
             self.finish(st)
             return 1
 
+    def shed(self, st, current, companions, why):
+        try:
+            for model in companions:
+                self.drop_companion(st, model, why)
+        except Stuck as e:
+            self.degrade(st, str(e))
+            return
+        st["active"] = [m for m in current if m not in companions]
+        self.save_state(st)
+
     def step(self, st):
         if st.get("phase") in ("transition", "recovering"):
             self.alert(st, "ERROR", f"previous {st['phase']} {json.dumps(st.get('transition'))} did not finish; falling back to {self.fb}")
@@ -658,6 +860,8 @@ class Rotation:
             self.finish(st)
             return 1
         instance, slot, target = self.target(st, self.instance * HOUR)
+        slot_name, primary, _ = self.slot_for(st, instance)
+        unpicked = primary is not None and self.pick_of(st, instance, slot_name, primary) is None
         try:
             state = self.observe()
         except Failure as e:
@@ -668,6 +872,7 @@ class Rotation:
         dirty = [m for m, s in state.items() if s == "mixed"]
         if self.dry:
             up = list(st.get("active") or [self.fb])
+            state = {m: "up" if m in up else "down" for m in state}
         if "active" not in st or st.get("resync"):
             self.log("ADOPT", up=",".join(up) or "-", mixed=",".join(dirty) or "-")
             st["active"] = up
@@ -686,16 +891,24 @@ class Rotation:
                 self.alert(st, "ERROR", f"{self.fb} is {state.get(self.fb)} while the rotation expects it serving; no transition until it is back or the lead pauses")
                 self.finish(st)
                 return 1
-            if lost:
+            if [m for m in lost if not self.is_companion(m)]:
                 self.alert(st, "ERROR", f"{','.join(lost)} stopped serving; falling back to {self.fb}")
                 self.fallback(st, "lost " + ",".join(lost))
                 self.finish(st)
                 return 1
-        if sorted(current) == sorted(target) and not dirty:
+            if lost:
+                self.shed(st, current, lost, "stopped serving")
+                self.finish(st)
+                return 1
+        if sorted(current) == sorted(target) and not dirty and not unpicked:
             sick = [m for m in current if not self.healthy(m)]
-            if sick and sick != [self.fb]:
+            if [m for m in sick if m != self.fb and not self.is_companion(m)]:
                 self.alert(st, "ERROR", f"api health failed for {','.join(sick)}; falling back to {self.fb}")
                 self.fallback(st, "unhealthy " + ",".join(sick))
+                self.finish(st)
+                return 1
+            if [m for m in sick if self.is_companion(m)]:
+                self.shed(st, current, [m for m in sick if self.is_companion(m)], "api health failed")
                 self.finish(st)
                 return 1
             if sick:
@@ -730,16 +943,23 @@ class Rotation:
                 f"target={','.join(target)} next={nxt['slot']}@{nxt['start']}({','.join(nxt['models'])}) "
                 f"lock={json.dumps(st.get('lock') or '-')} alert={json.dumps(st.get('alert') or '-')}")
 
+    def role(self, name):
+        if name == self.fb:
+            return "fallback"
+        return "companion" if self.is_companion(name) else "primary"
+
     def schedule_document(self, st):
         rows = self.predict(st, self.now(), 12)
         active = st.get("active") or []
         models = []
         for name, m in self.models.items():
-            nxt = next((r["start"] for r in rows if name in r["models"]), None)
+            starts = [r["start"] for r in rows if name in r["models"]]
+            port = (m.get("api") or {}).get("port")
             models.append({"id": name, "title": m["title"], "runnable": bool(m.get("runnable")), "validated": bool(m.get("validated")),
-                           "active": name in active, "port": (m.get("api") or {}).get("port"), "next_slot_start": nxt,
-                           "not_runnable": m.get("not_runnable")})
-        return {"generated": iso(time.time()), "phase": st.get("phase"), "active": active, "slots": rows, "models": models}
+                           "role": self.role(name), "active": name in active, "port": port, "next_slot_start": starts[0] if starts else None,
+                           "scheduled_starts": starts, "not_runnable": m.get("not_runnable")})
+        serving = [{"id": name, "role": self.role(name), "port": (self.models[name].get("api") or {}).get("port")} for name in active if name in self.models]
+        return {"generated": iso(time.time()), "phase": st.get("phase"), "active": active, "serving": serving, "slots": rows, "models": models}
 
     def finish(self, st):
         st["updated"] = iso(time.time())
@@ -794,6 +1014,31 @@ def cmd_now(rot, st):
         tail = []
     for line in tail:
         print(f"  | {line}")
+
+
+def cmd_plan(rot):
+    rot.write = False
+    rot.honor_locks = False
+    st = rot.load_state()
+    kind, reason = rot.pause_reason()
+    print(f"lock: {reason or 'none'}")
+    try:
+        state = rot.observe()
+        up = [m for m, s in state.items() if s == "up"]
+        dirty = [m for m, s in state.items() if s == "mixed"]
+        current = up if "active" not in st or st.get("resync") else list(st["active"])
+        st["active"] = current
+        slot, target = rot.plan(st, rot.instance, current, dirty)
+    except (Failure, ConfigError) as e:
+        print(f"PLAN failed: {e}")
+        return 1
+    outgoing, incoming = rot.moves(current, target, dirty)
+    base = st.get("base_gib") or rot.nominal_base(st)
+    after = {h: v + rot.cfg["floor_gib"] for h, v in rot.room(base, target).items()}
+    print(f"PLAN {iso(rot.instance * HOUR)} slot={slot} observed={','.join(up) or '-'} mixed={','.join(dirty) or '-'} current={','.join(current) or '-'}")
+    print(f"  target={','.join(target)} stop={','.join(outgoing) or '-'} start={','.join(incoming) or '-'}")
+    print("  predicted MemAvailable after (GiB, from config mem_gib): " + " ".join(f"{h}={v}" for h, v in sorted(after.items())))
+    return 0
 
 
 def cmd_sync(cfg, runner, lanes):
@@ -861,7 +1106,7 @@ def main(argv=None):
     sub.add_parser("resume")
     p = sub.add_parser("force")
     p.add_argument("slot")
-    p.add_argument("companion", nargs="?")
+    p.add_argument("companions", nargs="*")
     sub.add_parser("skip")
     p = sub.add_parser("schedule")
     p.add_argument("--hours", type=int, default=12)
@@ -869,6 +1114,7 @@ def main(argv=None):
     p.add_argument("models", nargs="*")
     p.add_argument("--rollback", action="store_true")
     sub.add_parser("check-config")
+    sub.add_parser("plan")
     p = sub.add_parser("sync")
     p.add_argument("--lanes", required=True)
     sub.add_parser("serve-schedule")
@@ -898,6 +1144,8 @@ def main(argv=None):
             os.replace(rot.path(cfg["lock"]["pause_file"] + ".tmp"), rot.path(cfg["lock"]["pause_file"]))
         rot.log("PAUSE", reason=json.dumps(" ".join(args.reason)))
         return 0
+    if args.command == "plan":
+        return cmd_plan(rot)
     if args.command in ("status", "now", "schedule"):
         st = rot.load_state()
         if args.command == "status":
@@ -922,11 +1170,14 @@ def main(argv=None):
                 if args.slot not in cfg["slots"]:
                     print(f"unknown slot {args.slot}; slots: {', '.join(cfg['slots'])}", file=sys.stderr)
                     return 2
-                if args.companion and not cfg["models"].get(args.companion, {}).get("runnable"):
-                    print(f"companion {args.companion} is not a runnable model", file=sys.stderr)
+                wrong = [c for c in args.companions if not cfg["models"].get(c, {}).get("runnable") or not rot.is_companion(c)]
+                if wrong:
+                    print(f"not a runnable companion: {' '.join(wrong)}", file=sys.stderr)
                     return 2
-                st["override"] = {"instance": instance, "slot": args.slot, "companion": args.companion}
-                rot.log("FORCE", slot=args.slot, companion=args.companion or "-", until=iso((instance + 1) * HOUR))
+                st["override"] = {"instance": instance, "slot": args.slot, "companions": list(args.companions) or None}
+                for key in ("picks", "dropped"):
+                    st.get(key, {}).pop(str(instance), None)
+                rot.log("FORCE", slot=args.slot, companions=",".join(args.companions) or "packed", until=iso((instance + 1) * HOUR))
             elif args.command == "skip":
                 st["skip"] = instance
                 rot.log("SKIP", instance=iso(instance * HOUR))

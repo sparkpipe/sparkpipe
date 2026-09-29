@@ -12,6 +12,7 @@
  "ssh_timeout_s": 120,
  "poll_s": 10,
  "floor_gib": 20,
+ "node_free_gib": 106,
  "weightd_warm": "$HOME/weightd-bundle-stage/bin/weightd_warm",
  "weightd_socket": "/tmp/spark_weightd.sock",
  "schedule_port": 8430,
@@ -44,32 +45,37 @@
  "slots": {
   "full": {
    "base": "glmfull",
+   "companions": [
+    "qwen",
+    "gemma",
+    "mimo"
+   ],
    "fallback_slot": "flash_plus"
   },
   "k3": {
    "base": "k3",
+   "companions": [],
    "fallback_slot": "flash_plus"
   },
   "flash_plus": {
    "base": "flash",
-   "companion": true,
+   "companions": [
+    "qwen",
+    "gemma",
+    "mimo",
+    "ling",
+    "laguna",
+    "hy4",
+    "dsv41",
+    "dsv4pro",
+    "minimax",
+    "qwenmax",
+    "muse"
+   ],
    "fallback_slot": null
   }
  },
  "fallback": "flash",
- "companions": [
-  "ling",
-  "mimo",
-  "gemma",
-  "laguna",
-  "hy4",
-  "dsv41",
-  "dsv4pro",
-  "minimax",
-  "qwenmax",
-  "muse"
- ],
- "default_companion": "qwen",
  "rollback_models": [
   "flash",
   "qwen"
@@ -306,7 +312,13 @@
      "temperature": 0
     },
     "expect": "Paris",
-    "timeout_s": 600
+    "timeout_s": 600,
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ]
+    }
    }
   },
   "ling": {
@@ -361,7 +373,15 @@
      "max_tokens": 8,
      "temperature": 0
     },
-    "expect": "Paris",
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ],
+     "min_words": 3,
+     "min_distinct_words": 3,
+     "look_for": "Paris"
+    },
     "timeout_s": 600
    }
   },
@@ -405,7 +425,15 @@
      "max_tokens": 8,
      "temperature": 0
     },
-    "expect": "Paris",
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ],
+     "min_words": 3,
+     "min_distinct_words": 3,
+     "look_for": "Paris"
+    },
     "timeout_s": 600
    }
   },
