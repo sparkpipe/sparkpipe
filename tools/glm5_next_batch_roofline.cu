@@ -769,8 +769,13 @@ static double RoofMeasure(RoofState *state,const RoofConfig *config,uint32_t row
 	state->route_readback = config->route_readback;
 	state->l2_prefetch = config->l2_prefetch;
 	state->round_spin_us = config->round_spin_us;
+	state->wave.hc_comb_deferred = config->l2_prefetch;
 	if ( config->graph != 0u )
-		return(RoofMeasureGraph(state,config,rows,stream));
+	{
+		double measured = RoofMeasureGraph(state,config,rows,stream);
+		state->wave.hc_comb_deferred = 0u;
+		return(measured);
+	}
 	ROOF_CUDA(cudaEventCreate(&start));
 	ROOF_CUDA(cudaEventCreate(&stop));
 	ROOF_CUDA(cudaEventRecord(start,stream));
@@ -781,6 +786,7 @@ static double RoofMeasure(RoofState *state,const RoofConfig *config,uint32_t row
 	ROOF_CUDA(cudaEventElapsedTime(&elapsed,start,stop));
 	ROOF_CUDA(cudaEventDestroy(start));
 	ROOF_CUDA(cudaEventDestroy(stop));
+	state->wave.hc_comb_deferred = 0u;
 	return((double)elapsed / config->iterations);
 }
 

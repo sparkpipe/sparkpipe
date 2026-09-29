@@ -296,6 +296,7 @@ typedef struct SparkGlm5NextCudaWave
 	const void *mtp_hnorm_bf16;
 	const void *mtp_shared_norm_bf16;
 	uint64_t kda_replay_layer_bytes;
+	uint32_t hc_comb_deferred;
 } SparkGlm5NextCudaWave;
 
 #define SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE 0u

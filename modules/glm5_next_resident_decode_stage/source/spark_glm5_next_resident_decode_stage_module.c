@@ -3413,7 +3413,7 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 	return(0u);
 }
 
-static uint32_t SparkGlm5NextWalkChain(SparkGlm5NextTpChain *chain,uint32_t *layer_out)
+static uint32_t SparkGlm5NextWalkChainBody(SparkGlm5NextTpChain *chain,uint32_t *layer_out)
 {
 	SparkGlm5NextModuleState *state = chain->state;
 	SparkGlm5NextCudaWave *wave = &chain->wave;
@@ -3448,6 +3448,16 @@ static uint32_t SparkGlm5NextWalkChain(SparkGlm5NextTpChain *chain,uint32_t *lay
 	if ( state->owns_final_head != 0u && cudaMemcpyAsync(wave->slot->host_output_token_ids + chain->first_row,wave->slot->output_token,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream) != cudaSuccess )
 		return(16u);
 	return(0u);
+}
+
+static uint32_t SparkGlm5NextWalkChain(SparkGlm5NextTpChain *chain,uint32_t *layer_out)
+{
+	SparkGlm5NextCudaWave *wave = &chain->wave;
+	uint32_t site;
+	wave->hc_comb_deferred = chain->state->l2_prefetch != 0u && wave->tp_degree > 1u ? 1u : 0u;
+	site = SparkGlm5NextWalkChainBody(chain,layer_out);
+	wave->hc_comb_deferred = 0u;
+	return(site);
 }
 
 static void SparkGlm5NextGraphRecord(SparkGlm5NextTpChain *chain,void **exec_out)

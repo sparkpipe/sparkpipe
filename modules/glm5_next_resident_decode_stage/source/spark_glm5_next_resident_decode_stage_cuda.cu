@@ -232,6 +232,7 @@ static void SparkGlm5NextBindLayer(
 	buffers->shared_intermediate = SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / wave->tp_degree;
 	buffers->head_vocabulary = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT / wave->tp_degree;
 	buffers->kda_heads = SPARK_GLM5_NEXT_MODEL_KDA_HEAD_COUNT / wave->tp_degree;
+	buffers->hc_comb_deferred = wave->hc_comb_deferred;
 	buffers->dense_row_offset = slot->dense_row_offset;
 	buffers->dense_tile_prefix = slot->dense_tile_prefix;
 	buffers->attn_norm_weight = weight->attn_norm_bf16;
@@ -1099,6 +1100,18 @@ extern "C" int32_t SparkGlm5NextL2PrefetchJoin(const SparkGlm5NextCudaWave *wave
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( cudaStreamWaitEvent((cudaStream_t)slot->l2_prefetch_stream,(cudaEvent_t)slot->l2_prefetch_fork,0u) != cudaSuccess )
 		return(LM_LAUNCH_ERR_LAUNCH);
+	if ( wave->hc_comb_deferred != 0u && site != SPARK_GLM5_NEXT_L2_SITE_BEGIN )
+	{
+		Glm5NextLayerBuffers buffers;
+		if ( local_layer >= wave->layer_count )
+			return(LM_LAUNCH_ERR_SHAPE);
+		SparkGlm5NextBindLayer(wave,local_layer,&buffers);
+		status = site == SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE ?
+			Glm5NextHcComb(&buffers,buffers.hc_attn_base,buffers.hc_attn_scale,wave->row_count,(cudaStream_t)slot->l2_prefetch_stream) :
+			Glm5NextHcComb(&buffers,buffers.hc_ffn_base,buffers.hc_ffn_scale,wave->row_count,(cudaStream_t)slot->l2_prefetch_stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+	}
 	status = SparkGlm5NextLaunchCudaL2Prefetch(wave,local_layer,site,slot->l2_prefetch_stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);

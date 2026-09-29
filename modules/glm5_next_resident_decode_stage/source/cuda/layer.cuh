@@ -343,6 +343,7 @@ struct Glm5NextLayerBuffers
     const void *kda_out_norm_weight;
     const void *kda_out_weight;
     uint32_t kda_heads;
+    uint32_t hc_comb_deferred;
     uint8_t *kda_state_pool;
     uint32_t kda_state_slot_bytes;
     const uint32_t *kda_state_index;
@@ -1820,7 +1821,7 @@ static __device__ void Glm5NextHcCollapse(const float *pre, const uint16_t *stre
 	}
 }
 
-__global__ void __cluster_dims__(GLM5_NEXT_HC_CLUSTER, 1, 1) __launch_bounds__(GLM5_NEXT_LAYER_THREADS) Glm5NextHcSiteKernel(const uint16_t *__restrict__ streams_bf16, const float *__restrict__ fn_f32, const float *__restrict__ scale3_f32, const float *__restrict__ base_f32, float *__restrict__ mixes_f32, float *__restrict__ pre_f32, float *__restrict__ post_f32, float *__restrict__ comb_f32, uint16_t *__restrict__ collapsed_bf16, uint16_t *__restrict__ snapshot_bf16)
+__global__ void __cluster_dims__(GLM5_NEXT_HC_CLUSTER, 1, 1) __launch_bounds__(GLM5_NEXT_LAYER_THREADS) Glm5NextHcSiteKernel(const uint16_t *__restrict__ streams_bf16, const float *__restrict__ fn_f32, const float *__restrict__ scale3_f32, const float *__restrict__ base_f32, float *__restrict__ mixes_f32, float *__restrict__ pre_f32, float *__restrict__ post_f32, float *__restrict__ comb_f32, uint16_t *__restrict__ collapsed_bf16, uint16_t *__restrict__ snapshot_bf16, uint32_t comb_deferred)
 {
 	__shared__ Glm5NextHcShared shared;
 	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
@@ -1842,12 +1843,30 @@ __global__ void __cluster_dims__(GLM5_NEXT_HC_CLUSTER, 1, 1) __launch_bounds__(G
 	Glm5NextHcScatter(cluster, &shared, slice);
 	cluster.sync();
 	Glm5NextHcFinish(&shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)row * GLM5_NEXT_HC_MIX, pre_f32 + (uint64_t)row * GLM5_NEXT_HC, post_f32 + (uint64_t)row * GLM5_NEXT_HC, slice);
-	if (slice != 0u)
+	if (slice != 0u || comb_deferred != 0u)
 		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN, snapshot_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT, slice * GLM5_NEXT_HC_PRE_SLICE, threadIdx.x, GLM5_NEXT_LAYER_THREADS);
 	else if (threadIdx.x >= LM_WARP_LANES)
 		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN, snapshot_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT, 0u, threadIdx.x - LM_WARP_LANES, GLM5_NEXT_LAYER_THREADS - LM_WARP_LANES);
 	else
 		Glm5NextHcCombWarp(shared.mixes, scale3_f32, base_f32, comb_f32 + (uint64_t)row * GLM5_NEXT_HC * GLM5_NEXT_HC);
+}
+
+__global__ void __launch_bounds__(LM_WARP_LANES) Glm5NextHcCombKernel(const float *__restrict__ mixes_f32, const float *__restrict__ scale3_f32, const float *__restrict__ base_f32, float *__restrict__ comb_f32)
+{
+	Glm5NextHcCombWarp(mixes_f32 + (uint64_t)blockIdx.x * GLM5_NEXT_HC_MIX, scale3_f32, base_f32, comb_f32 + (uint64_t)blockIdx.x * GLM5_NEXT_HC * GLM5_NEXT_HC);
+}
+
+static int32_t Glm5NextHcComb(
+    const Glm5NextLayerBuffers *buffers,
+    const void *base_weight,
+    const void *scale_weight,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    if (buffers->hc_mixes_f32 == 0 || buffers->hc_comb_f32 == 0 || base_weight == 0 || scale_weight == 0 || rows == 0u)
+        return LM_LAUNCH_ERR_SHAPE;
+    LM_LAUNCH((Glm5NextHcCombKernel), rows, LM_WARP_LANES, 0, stream, buffers->hc_mixes_f32, (const float *)scale_weight, (const float *)base_weight, buffers->hc_comb_f32);
+    return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
 __global__ void Glm5NextHcHeadMeanKernel(
@@ -1904,7 +1923,8 @@ static int32_t Glm5NextHcSite(
         buffers->hc_post_f32,
         buffers->hc_comb_f32,
         buffers->hc_collapsed_bf16,
-        buffers->hc_snapshot_bf16);
+        buffers->hc_snapshot_bf16,
+        buffers->hc_comb_deferred);
     return LM_LAUNCH_OK;
 }
 

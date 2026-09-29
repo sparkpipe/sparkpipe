@@ -55,10 +55,14 @@ static float Bf16Value(uint16_t value)
     return out;
 }
 
-static void Launch(bool production,cudaStream_t stream,const uint16_t *input,const float *weight,const float *scale,const float *base,const HcPlanes *planes,uint32_t rows)
+static void Launch(bool production,cudaStream_t stream,const uint16_t *input,const float *weight,const float *scale,const float *base,const HcPlanes *planes,uint32_t rows,uint32_t comb_deferred = 0u)
 {
     if (production)
-        Glm5NextHcSiteKernel<<<rows*GLM5_NEXT_HC_CLUSTER,GLM5_NEXT_LAYER_THREADS,0u,stream>>>(input,weight,scale,base,planes->mixes,planes->pre,planes->post,planes->comb,planes->collapsed,planes->snapshot);
+    {
+        Glm5NextHcSiteKernel<<<rows*GLM5_NEXT_HC_CLUSTER,GLM5_NEXT_LAYER_THREADS,0u,stream>>>(input,weight,scale,base,planes->mixes,planes->pre,planes->post,planes->comb,planes->collapsed,planes->snapshot,comb_deferred);
+        if (comb_deferred != 0u)
+            Glm5NextHcCombKernel<<<rows,LM_WARP_LANES,0u,stream>>>(planes->mixes,scale,base,planes->comb);
+    }
     else
     {
         Glm5NextHcMixBaselineKernel<<<rows,256u,4096u*sizeof(float),stream>>>(input,weight,planes->mixes,rows,flat,mixes,GLM5_NEXT_RMS_EPSILON);
@@ -122,6 +126,17 @@ static void Compare(const HcHost *actual,const HcHost *replayed,const std::vecto
     Bitwise(actual->collapsed.data(),replayed->collapsed.data(),actual->collapsed.size()*sizeof(uint16_t),"collapsed",dataset,rows);
     Bitwise(actual->snapshot.data(),replayed->snapshot.data(),actual->snapshot.size()*sizeof(uint16_t),"snapshot",dataset,rows);
     printf("PASS dataset=%u rows=%u mix_error_over_l1=%.3g sinkhorn_and_collapse=bitwise_vs_frozen_on_same_mixes\n",dataset,rows,error);
+}
+
+static void Deferred(const HcHost *actual,const HcHost *deferred,uint32_t dataset,uint32_t rows)
+{
+    Bitwise(deferred->mixes.data(),actual->mixes.data(),actual->mixes.size()*sizeof(float),"deferred mixes",dataset,rows);
+    Bitwise(deferred->pre.data(),actual->pre.data(),actual->pre.size()*sizeof(float),"deferred pre",dataset,rows);
+    Bitwise(deferred->post.data(),actual->post.data(),actual->post.size()*sizeof(float),"deferred post",dataset,rows);
+    Bitwise(deferred->comb.data(),actual->comb.data(),actual->comb.size()*sizeof(float),"deferred comb",dataset,rows);
+    Bitwise(deferred->collapsed.data(),actual->collapsed.data(),actual->collapsed.size()*sizeof(uint16_t),"deferred collapsed",dataset,rows);
+    Bitwise(deferred->snapshot.data(),actual->snapshot.data(),actual->snapshot.size()*sizeof(uint16_t),"deferred snapshot",dataset,rows);
+    printf("PASS dataset=%u rows=%u deferred_comb=bitwise_vs_fused\n",dataset,rows);
 }
 
 static void Replay(cudaStream_t stream,const uint16_t *input,const float *scale,const float *base,const HcPlanes *actual,const HcPlanes *replayed,uint32_t rows)
@@ -200,8 +215,8 @@ int main(int argc,char **argv)
     cudaStream_t stream;
     uint16_t *input;
     float *weights,*scale,*base;
-    HcPlanes baseline_planes,actual_planes;
-    HcHost baseline,actual;
+    HcPlanes baseline_planes,actual_planes,deferred_planes;
+    HcHost baseline,actual,deferred;
     std::vector<uint16_t> host_input(max_rows*flat);
     std::vector<float> host_weights((uint64_t)matrices*flat*mixes),host_scale(3u),host_base(mixes);
     if (argc != 2 || strcmp(argv[1],"--run") != 0)
@@ -219,6 +234,7 @@ int main(int argc,char **argv)
     CUDA(cudaMalloc(&base,host_base.size()*sizeof(float)));
     AllocatePlanes(&baseline_planes);
     AllocatePlanes(&actual_planes);
+    AllocatePlanes(&deferred_planes);
     for (uint32_t dataset=0u; dataset<3u; dataset++)
     {
         Fill(dataset,&host_input,&host_weights,&host_scale,&host_base);
@@ -235,6 +251,12 @@ int main(int argc,char **argv)
             Fetch(&baseline_planes,rows,&baseline);
             Fetch(&actual_planes,rows,&actual);
             Compare(&actual,&baseline,host_input,host_weights,dataset,rows);
+            CUDA(cudaMemsetAsync(deferred_planes.comb,0xff,max_rows*hc*hc*sizeof(float),stream));
+            CUDA(cudaMemsetAsync(deferred_planes.collapsed,0xff,max_rows*hidden*sizeof(uint16_t),stream));
+            Launch(true,stream,input,weights,scale,base,&deferred_planes,rows,1u);
+            CUDA(cudaStreamSynchronize(stream));
+            Fetch(&deferred_planes,rows,&deferred);
+            Deferred(&actual,&deferred,dataset,rows);
         }
     }
     for (uint32_t distinct : {1u,90u})
