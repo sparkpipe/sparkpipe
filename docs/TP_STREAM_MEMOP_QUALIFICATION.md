@@ -1,16 +1,59 @@
 # CUDA stream memory waits and qualification
 
-The isolated prototype has qualified the primitive described below. The shared
-collective now also has an explicit `SPARK_TP_WAIT_MODE=hardware` path under
-qualification; `spin` remains the default. Selecting hardware requires supported
-64-bit stream operations and a valid CUDA alias for the registered mesh mapping.
-An unsupported configuration fails rather than switching wait implementations.
-The shared GPU numerical path has passed the bounded single-device fixture
-below; no distributed model-throughput pass is claimed here.
+This is the authoritative document for the shared collective's hardware
+waits. `SPARK_TP_WAIT_MODE=hardware` is the fleet's serving mode; with the
+variable unset the code still selects `spin`
+(`ring/transport/tp_device_collective.c`, `SparkTpDeviceCollectiveCreate`).
+Hardware mode requires 64-bit stream memory operations, and
+`SparkTpMeshHardwarePrepare` fails without them rather than switching wait
+implementations. It no longer requires a registered mapping or a CUDA alias;
+see the production status below.
+
+## Production status (2026-09-28)
+
+- All sixteen fleet ranks serve in hardware mode. The fleet-agent drop-in
+  `20-serving.conf` sets `SPARK_TP_WAIT_MODE=hardware`, and every rank's
+  current `residentd.log` reports `MESH-WAIT-MODE ... mode=hardware`
+  (read-only check on all sixteen Sparks, 2026-09-28).
+- The COMPSEC-17 run in
+  `qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`
+  records this drop-in with engine source `dd3526b`. It scored 14/17, and its 17
+  sequential completions were byte-identical to the same prompts served earlier
+  that day in eager/spin mode. The same report shows that concurrent runs are
+  not batch-invariant.
+- B1 decode measured 36 tok/s (23-24.5 ms/token, 8-step graph chains, all 12096
+  experts pinned) on 2026-09-28 (lead-dev measurement, no receipt in the tree).
+- Since 5814bf2 (2026-09-23) the collective tolerates a mesh region that CUDA
+  cannot register. If `cudaHostRegister` returns `cudaErrorInvalidValue`, it logs
+  `MESH-REGISTER-SKIP` and keeps the unregistered mapping; any other error is
+  fatal (`MESH-REGISTER-FAIL`). If `cudaHostGetDevicePointer` then fails,
+  `SparkTpMeshHardwarePrepare` uses the host address as an identity alias
+  (`MESH-DEVICE-ALIAS-IDENTITY`,
+  `model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`). The
+  commit reproduced the skip against a shared weightd whose RDMA-registered
+  mesh pages CUDA refused. No retained `residentd` log on the sixteen fleet
+  ranks contains either line (same read-only check), so the fleet currently
+  runs a registered mapping with a real alias. No qualification below exercised
+  either fallback.
+- The fleet mesh runs on `rocep1s0f1`, GID index 3 (`MESH_INTERFACE` and
+  `MESH_SGID_INDEX` in `tools/fleet_node_agent.sh`). The two-host check below
+  used `rocep1s0f0`.
+
+Passed: the primitive prototype, the two-host NIC-to-GPU visibility check, the
+single-device shared numerical fixture, their negative controls, and the
+sequential fleet evidence above. Open, with no receipt: the real daemon/NIC path
+under rank skew, missing peers, timeout, cancellation, failed Begin/End and
+source-slot reuse; the register-skip and identity-alias paths; and batched
+output.
+
+## Qualification history
+
 The original local gate prototype compiled and ran on Spark0 with CUDA 13.0.88
 for GB10 `sm_121a`. Source commit `6db0dd333ebb089336cd8d9362c5e6a6d36ff202`,
-receipt `spark0:/tmp/sparkpipe-hw-wait-6db0dd33/run.log`, reported 4,258.53 ns per
-91-node update replay (46.80 ns/node) and all three local GPU cases passed.
+receipt `spark0:/tmp/sparkpipe-hw-wait-6db0dd33/run.log` (copied into
+[`tp-stream-memop-local-20260922.json`](receipts/tp-stream-memop-local-20260922.json)),
+reported 4,258.53 ns per 91-node update replay (46.80 ns/node) and all three
+local GPU cases passed.
 Source SHA256 was `307b5b21fea6cd4b022794e43eefd435ed4151a988120c4d270c32b9c68e4425`;
 binary SHA256 was `e10ad2bc35c8881b2a3a39019529e37816c6379672a59417d8c300355a064dc3`.
 The two existing weightd/resident processes and their measured GPU allocations
@@ -39,10 +82,12 @@ The sender checked every signaled work completion before reusing source memory.
 The 1,000 repetitions of 91 node-value updates averaged 4,249.49 ns per replay
 (46.70 ns/node). The separate local memfd run passed all three GPU cases and
 reported 4,078.29 ns per replay (44.82 ns/node). These are host update timings
-on shared machines, not collective latency or serving throughput. Local receipt
-bundle `/private/tmp/sparkpipe-pr1082-receipts/cd344a64-rdma` contains
-`result.json`, `receiver.log` and `sender.log`; the local GPU receipt is
-`spark0:/tmp/sparkpipe-hw-rdma-cd344a64/local-memfd.log`.
+on shared machines, not collective latency or serving throughput. The two-host
+commands, outputs and hashes are in
+[`tp-hardware-wait-cd344a64.json`](receipts/tp-hardware-wait-cd344a64.json). The
+local GPU log `spark0:/tmp/sparkpipe-hw-rdma-cd344a64/local-memfd.log` is copied
+into [`tp-stream-memop-local-20260922.json`](receipts/tp-stream-memop-local-20260922.json).
+The original local bundle under `/private/tmp/sparkpipe-pr1082-receipts/` is gone.
 
 ## Safe invocation
 
@@ -98,8 +143,9 @@ the MR. TCP messages coordinate phases only; NIC writes release the graph.
 Read-only sysfs inventory on 2026-09-22 found `rocep1s0f0`, port 1, GID index 3
 active on both hosts, RoCE v2, IPv4-mapped GIDs `10.10.200.0` (Spark0) and
 `10.10.200.1` (Spark1). Selection is explicit, with no interface/GID fallback;
-active MTU below 4096 is rejected. An assigned run can use these commands after
-checking that the chosen TCP port is unused:
+active MTU below 4096 is rejected. The production mesh uses the other port,
+`rocep1s0f1`, which this check did not cover. An assigned run can use these
+commands after checking that the chosen TCP port is unused:
 
 ```sh
 python3 tools/tp_stream_memop_probe.py --run --rdma-receive --memfd --ib-device rocep1s0f0 --ib-port 1 --gid-index 3 --address 10.10.200.0 --tcp-port 49387 --iterations 8
@@ -107,8 +153,10 @@ python3 tools/tp_stream_memop_probe.py --run --rdma-send --ib-device rocep1s0f0 
 ```
 
 This tests the selected CUDA-mapped host allocation on one link. The executed
-`--memfd` mode matches the production allocation/registration shape. The pass
-does not qualify cross-process shared ownership, allreduce,
+`--memfd` mode creates, CUDA-registers and NIC-registers its own memfd in one
+process. Production maps a memfd that weightd created and RDMA-registered in
+another process, and may run it unregistered with an identity alias. The pass
+does not qualify that shape, cross-process shared ownership, allreduce,
 missing-peer recovery, or model throughput. No unsupported remote FLUSH is
 requested; failure of ordering or visibility is a qualification failure.
 
@@ -124,8 +172,10 @@ Read-only device queries on Spark0 returned success for these CUDA 13 attributes
 
 These describe the sampled device, not every deployment. The tool checks 64-bit
 wait support and fails explicitly if absent. It obtains the mapped device alias
-with `cudaHostGetDevicePointer` and does not request unsupported remote FLUSH.
-CPU publication into this mapped gate cannot qualify RDMA payload visibility.
+with `cudaHostGetDevicePointer`, with no fallback, and does not request
+unsupported remote FLUSH. The production preparation falls back to the identity
+alias instead (production status above). CPU publication into this mapped gate
+cannot qualify RDMA payload visibility.
 
 ## Shared GPU numerical qualification
 
@@ -134,7 +184,10 @@ Source `52d2944262eb643d901df08f7662e5272fa7351b` passed all 70 cases of
 `CUDA_MODULE_LOADING=LAZY`, `CUDA_MODULE_DATA_LOADING=LAZY` and
 `CUDA_DEVICE_MAX_CONNECTIONS=32`. Receipt directory:
 `spark0:/tmp/sparkpipe-hardware-52d29442/build/qualification/` contains
-`gpu.log`, `receipt.json` and before/after GPU/process inventories. Binary SHA256:
+`gpu.log`, `receipt.json` and before/after GPU/process inventories, copied with
+the negative control and the `277a33f6` logs into
+[`tp-mesh-hardware-52d29442.json`](receipts/tp-mesh-hardware-52d29442.json).
+Binary SHA256:
 `7793d1b87f296cc896b2974cb1f7a99870400a5a74b063bfdfbd89e201404c8b`.
 
 The fixture runs the actual shared GPU arithmetic, hardware waits and daemon
@@ -155,7 +208,8 @@ LAZY rerun passed in 3.776 seconds. This moves CUDA's potentially synchronizing
 first function load before dependent waits, following NVIDIA's
 [lazy-loading guidance](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/lazy-loading.html).
 The historical comparison logs remain under
-`spark0:/tmp/sparkpipe-hardware-277a33f6/build/qualification{,-eager}/`.
+`spark0:/tmp/sparkpipe-hardware-277a33f6/build/qualification{,-eager}/` and are
+copied into the same receipt.
 
 The same final fixture killed a negative control that changed exact peer-tag
 equality to accept future tags: after 66 ordinary numerical cases it failed the
@@ -177,10 +231,10 @@ receiver's mapped local host memory. GPU `ld.global.cv` polling is not an RDMA
 read from another host. Hardware mode removes SM-resident waiting while keeping
 the existing arithmetic and transfer protocol.
 
-1. ABI 6 provides one 128-byte `SparkWeightdMeshWaitRequest` per rank/band in
-   the existing mapped mesh region. Its producer and consumer fields occupy
-   separate 64-byte halves. Source-credit and received-peer waits use this same
-   record and the acknowledged mesh activity interval.
+1. The mapped mesh region holds one 128-byte `SparkWeightdMeshWaitRequest` per
+   rank/band (`SPARK_WEIGHTD_MESH_WAIT_ENTRY`). Its producer and consumer
+   fields occupy separate 64-byte halves. Source-credit and received-peer
+   waits use this same record and the acknowledged mesh activity interval.
 2. A stream-ordered request kernel clears `ready`, writes the condition, exact
    collective tag, peer mask, expected cancellation value and timeout, performs
    a system fence, then publishes an increasing request ID. Eager execution
@@ -235,15 +289,17 @@ The original 91-node update loop is unchanged. Its local
 `cudaStreamQuery` must report not-ready after GPU entry. It failed by assertion,
 not by timeout, demonstrating that the scheduled-stale oracle detects a bypassed
 wait. Receipt: `negative-run.log`; source and binary hashes are recorded in
-`build/qualification/SHA256SUMS` in that directory. This is an isolated source
-mutation, not a runtime fallback or production build mode.
+`build/qualification/SHA256SUMS` in that directory; both are copied into
+[`tp-stream-memop-local-20260922.json`](receipts/tp-stream-memop-local-20260922.json).
+This is an isolated source mutation, not a runtime fallback or production build
+mode.
 
 ## Qualification gates
 
 The local memfd checks, two-host NIC visibility checks, shared GPU numerical
-fixture and their negative controls passed their expected outcomes. Distributed
-serving still requires the actual daemon/NIC path under rank skew, missing peers,
-timeout, cancellation, failed Begin/End and source-slot reuse, then numerical
-output and whole-chain latency with identical model/configuration inputs.
-The separate primitive and single-device passes do not establish distributed
-serving reliability or a token-throughput benefit.
+fixture and their negative controls passed their expected outcomes. Hardware
+mode was deployed before the distributed fault gates ran: the actual daemon/NIC
+path under rank skew, missing peers, timeout, cancellation, failed Begin/End and
+source-slot reuse, and the register-skip and identity-alias paths on the
+daemon-owned region, still have no receipt. The sequential fleet evidence in
+the production status covers output tokens only, not these faults.

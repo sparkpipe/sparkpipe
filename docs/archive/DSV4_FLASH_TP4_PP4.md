@@ -73,7 +73,7 @@ missing rail or invalid route fails readiness.
 The collective contract is
 [`PAIRED_DUAL_LINK_ALLREDUCE.md`](PAIRED_DUAL_LINK_ALLREDUCE.md). Measured
 crossovers and model throughput live only in
-[`../PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
+[`../PERFORMANCE_STATUS.md`](../../PERFORMANCE_STATUS.md).
 
 ## Package contract
 
@@ -92,4 +92,4 @@ collective profile, and ready generation before the endpoint publishes the
 model.
 
 Implementation gaps and qualification work are maintained only in
-[`../TECHDEBT.md`](../TECHDEBT.md).
+[`../TECHDEBT.md`](../../TECHDEBT.md).

@@ -1,0 +1,11 @@
+ROOFLINE-DEVICE sm=12.1 multiprocessors=48 l2_bytes=25165824 tp=16 layers=45 experts=288 copies=2
+ROOFLINE-MODEL fixed_mb_kda_dense=41.2 fixed_mb_kda_moe=27.9 fixed_mb_dsa_moe=85.5 expert_mb=1.622 head_mb=79.3
+ROOFLINE rows=1 context=1024 index_cp=1 step_ms=38.67 compute_tok_s=26 distinct_experts=8.0 uniform_expect=8.0 step_gb=2.56 achieved_gbps=66 memory_bound_ms=9.39 hidden_finite=1
+ROOFLINE-FLEET rows=1 collectives=92 direct_ms=10.2 rsag_ms=18.5 tok_s_direct=20 tok_s_rsag=17 tok_s_rsag_overlapped=26
+ROOFLINE-PHASES rows=1 attention_kda_ms=9.56 attention_dsa_ms=5.92 attention_post_ms=0.36 route_ms=4.79 experts_ms=6.31 mlp_post_ms=0.39 begin_head_ms=1.17
+ROOFLINE-EXPERTS rows=1 up_ms=29.89 down_ms=1.39 combine_ms=2.06 up_gbps=12 down_gbps=126
+ROOFLINE rows=8 context=1024 index_cp=1 step_ms=66.44 compute_tok_s=120 distinct_experts=55.9 uniform_expect=58.1 step_gb=5.91 achieved_gbps=89 memory_bound_ms=21.64 hidden_finite=1
+ROOFLINE-FLEET rows=8 collectives=92 direct_ms=17.1 rsag_ms=19.4 tok_s_direct=96 tok_s_rsag=93 tok_s_rsag_overlapped=120
+ROOFLINE-PHASES rows=8 attention_kda_ms=10.43 attention_dsa_ms=10.76 attention_post_ms=0.51 route_ms=5.42 experts_ms=56.24 mlp_post_ms=0.64 begin_head_ms=0.82
+ROOFLINE-EXPERTS rows=8 up_ms=15.64 down_ms=7.38 combine_ms=2.52 up_gbps=157 down_gbps=167
+ROOFLINE-DONE

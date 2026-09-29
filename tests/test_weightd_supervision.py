@@ -78,7 +78,6 @@ int main(void) {
         cls.ensure = "ensure_weightd() {" + source.split("ensure_weightd() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         cls.ensure = cls.ensure.replace("$HOME", "$TEST_AGENT_HOME").replace("/tmp/weightd-mesh/", "$TEST_MESH_DIR/")
         cls.loop = source[source.rindex("\nwhile true; do"):]
-        cls.api = "ensure_api() {" + source.split("ensure_api() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         cls.warmup = "warmup_hook() {" + source.split("warmup_hook() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         cls.identity = source.split("\nHOST=$(hostname)\n", 1)[1].split("\nPID_FILE=", 1)[0]
 
@@ -289,6 +288,7 @@ sync_rendezvous() { return 0; }
         script = r'''
 set -u
 ROOTS=test
+load_roots() { ROOT_LIST=test; }
 sync_core() { :; }
 install_core() { :; }
 self_update() { :; }
@@ -308,7 +308,7 @@ sleep() { exit 0; }
                 result = subprocess.run(["bash", "-c", script],
                     env=dict(os.environ, TEST_WEIGHTD_STATUS="0" if ready else "1"),
                     capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
                 self.assertEqual(result.stdout.splitlines(),
                     ["ROOT_SYNC", "RENDEZVOUS", "ROOT_START", "WARMUP", "REPORT"]
                     if ready else ["REPORT"])
@@ -317,9 +317,8 @@ sleep() { exit 0; }
         script = r'''
 set -uo pipefail
 exec 3>&1
-RANK=0 HUB=hub ROOTS=test LAST_API_START=0 LAST_WARM_GEN= LAST_WARM_TS=0
-api_root() { echo test; }
-ssh() { echo API_PROBE >&3; echo 0; }
+RANK=0 HUB=hub ROOTS=test LAST_WARM_GEN= LAST_WARM_TS=0
+ssh() { echo FORBIDDEN_SSH >&3; echo 0; }
 root_state() { echo WARMUP_PROBE >&3; echo down; }
 pgrep() { return 1; }
 setsid() { echo FORBIDDEN_SPAWN >&3; }
@@ -328,13 +327,6 @@ curl() { echo FORBIDDEN_CURL >&3; }
 ''' + function + function.split("(", 1)[0] + '\nstatus=$?\nwait\nexit "$status"\n'
         return subprocess.run(["bash", "-c", script], env=dict(os.environ, **values),
                               capture_output=True, text=True)
-
-    def test_serving_drop_in_keeps_the_node_api_down(self):
-        for disabled, expected in (("1", ""), ("", "API_PROBE\n")):
-            with self.subTest(disabled=disabled):
-                result = self.serving_gate(self.api, G5_API_DISABLED=disabled)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual((result.stdout, result.stderr), (expected, ""))
 
     def test_serving_drop_in_skips_the_warmup_request(self):
         for warmup, expected in (("0", ""), ("1", "WARMUP_PROBE\n")):

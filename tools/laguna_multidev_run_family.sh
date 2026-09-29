@@ -73,7 +73,7 @@ EXPERT_CODEC="bf16"
 # revision); the module build and the adapter serving pin must agree.
 MODEL_REVISION="0f573140834b11cfac0c2af97a101a7a69a13e22"
 CONTRACT="model_contracts/laguna_authoritative.json"
-FIRMWARE="examples/model_descriptions/laguna_resident_decode_stage_firmware.json"
+FIRMWARE="examples/model_descriptions/laguna_resident_decode_stage_bf16_firmware.json"
 
 # Lane port math (tools/devcycle/lane_assignments.json): lane L owns
 #   control 23000+16L..+15, collective 53000+16L..+15 (u16-valid, #1094),

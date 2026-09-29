@@ -1,0 +1,27 @@
+{
+ "format": "ds4-eval-run-integrity-v1",
+ "file_sha256": {
+  "cases.json": "19b8f181769d6165c25f6c45902ddf783e36a7429fa8f14fb04c382e4b968de2",
+  "responses/001-compsec-076.json": "4304e12d9d91ea83e2e07c7e170c0dba5fc620f16513a2bc82f08df845ff8814",
+  "responses/002-compsec-077.json": "5e09ce3b430d79a4d0079b82c3ea534f6e5d23f33ff0f13c28fa615436cceb0c",
+  "responses/003-compsec-078.json": "d58fd3fedd4129e6702ca717462cd02d34b7af0e81f9522f507ef0019c2f9295",
+  "responses/004-compsec-079.json": "7df1facab1272efc1f479064237ee15b548981214afce6f5294682c52a159e96",
+  "responses/005-compsec-080.json": "523c3eeba3e6657ac2a3c18a54aa392fafadd1d0252ca7fa2e80ae5a8fc91549",
+  "responses/006-compsec-081.json": "b42785544e948120ecd6ae6c7300354781e6519c1cf24728fcaeaff177c656f6",
+  "responses/007-compsec-082.json": "d97f19a24d391c81c489193ef443a2b4c22585433bb92aca205d1ab40bd29867",
+  "responses/008-compsec-083.json": "f2e3413fe04c1056be6d3c6e385cdd90cdf7ff96f2dc04a00bd8c6bb3b83810e",
+  "responses/009-compsec-084.json": "b871914258d756ca80f9cc04dca2f90be6da944af39afb046856975baf411bfd",
+  "responses/010-compsec-085.json": "f30d1d5107f4ffa6f58536e71345b39e526216d267a6e34196eae5bab7d82236",
+  "responses/011-compsec-086.json": "119a8711a6a9045bde96df0e19fbc1fbc07dc50d2af7e0c92dc93525e1c0ce35",
+  "responses/012-compsec-087.json": "93d7de5d79688b632ffb61422a052b3489a824649f25f5c503ef08f73e818592",
+  "responses/013-compsec-088.json": "4748b37331196d3174494b1c2c61fd442c81d30384d074063482c27fda7f16e0",
+  "responses/014-compsec-089.json": "f5a053d18dbb701a48bc632c5d915f9623c8ebb85d66f4e945061d6d37d93dd2",
+  "responses/015-compsec-090.json": "e49d7db72c4209e38a4df5fccb1ff5c86ea65e51caf018a765d2b88b7966d7db",
+  "responses/016-compsec-091.json": "5e02c482eeb028aaa064ed933b7cbf767177df9abc072106b40fb011eee5a97b",
+  "responses/017-compsec-092.json": "6b614e3bee54eed28d9f510ef955ce1eac1e109d24ee3dba9d6793a34c588080",
+  "summary.json": "abdfc508279d938736b3151628c2055409810785d154d05dfa40a498002ceb18"
+ },
+ "response_count": 17,
+ "response_stream_sha256": "f66963bfaee68ab2bea1132f09b250f752f4ff790524e3d4d59457feb38b73df",
+ "response_stream_paths": "run-relative-posix"
+}

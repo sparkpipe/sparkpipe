@@ -188,17 +188,27 @@ LING_SERVING_ADAPTER := build/libling_serving_adapter.$(SHARED_LIBRARY_EXT)
 LING_MODEL_REVISION ?= e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3
 LING_CONTRACT_SOURCE := model_contracts/ling_authoritative.json
 LING_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LING_CONTRACT_SOURCE)"; else shasum -a 256 "$(LING_CONTRACT_SOURCE)"; fi | awk '{print $$1}')
-LING_SERVING_ADAPTER_FLAGS := -DLING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" -DLING_CONTRACT_SHA256=\"$(LING_CONTRACT_SHA256)\" -DLING_EXPERT_WEIGHT_CODEC=1u -DLING_EXPERT_CODEC_NAME=\"bf16\"
+LING_DESCRIPTION_SOURCE := examples/model_descriptions/ling_resident_decode_stage_firmware.json
+LING_DESCRIPTION_SHA256 := $(shell python3 -c 'import hashlib; print(hashlib.sha256(open("$(LING_DESCRIPTION_SOURCE)","rb").read()).hexdigest())')
+LING_SERVING_ADAPTER_FLAGS := -DLING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" -DLING_CONTRACT_SHA256=\"$(LING_CONTRACT_SHA256)\" -DLING_MODEL_DESCRIPTION_SHA256=\"$(LING_DESCRIPTION_SHA256)\" -DLING_EXPERT_WEIGHT_CODEC=1u -DLING_EXPERT_CODEC_NAME=\"bf16\"
 TEST_LING_SERVING_DRIVER_MODULE := \
     build/test_modules/libling_serving_driver_module.$(SHARED_LIBRARY_EXT)
+TEST_LING_SERVING_DRIFTED_DRIVER_MODULE := \
+    build/test_modules/libling_serving_drifted_driver_module.$(SHARED_LIBRARY_EXT)
 
 LAGUNA_SERVING_ADAPTER := build/liblaguna_serving_adapter.$(SHARED_LIBRARY_EXT)
 LAGUNA_MODEL_REVISION ?= 0f573140834b11cfac0c2af97a101a7a69a13e22
 LAGUNA_CONTRACT_SOURCE := model_contracts/laguna_authoritative.json
 LAGUNA_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LAGUNA_CONTRACT_SOURCE)"; else shasum -a 256 "$(LAGUNA_CONTRACT_SOURCE)"; fi | awk '{print $$1}')
-LAGUNA_SERVING_ADAPTER_FLAGS := -DLAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DLAGUNA_CONTRACT_SHA256=\"$(LAGUNA_CONTRACT_SHA256)\" -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\"
+LAGUNA_DESCRIPTION_SOURCE := examples/model_descriptions/laguna_resident_decode_stage_bf16_firmware.json
+LAGUNA_DESCRIPTION_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LAGUNA_DESCRIPTION_SOURCE)"; else shasum -a 256 "$(LAGUNA_DESCRIPTION_SOURCE)"; fi | awk '{print $$1}')
+LAGUNA_DRIVER_IDENTITY_FLAGS := -DLAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DLAGUNA_CONTRACT_SHA256=\"$(LAGUNA_CONTRACT_SHA256)\" -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\"
+LAGUNA_SERVING_ADAPTER_FLAGS := $(LAGUNA_DRIVER_IDENTITY_FLAGS) -DLAGUNA_MODEL_DESCRIPTION_SHA256=\"$(LAGUNA_DESCRIPTION_SHA256)\"
+LAGUNA_FOREIGN_DESCRIPTION_SHA256 := 0000000000000000000000000000000000000000000000000000000000000000
 TEST_LAGUNA_SERVING_DRIVER_MODULE := \
     build/test_modules/liblaguna_serving_driver_module.$(SHARED_LIBRARY_EXT)
+TEST_LAGUNA_SERVING_FOREIGN_DRIVER_MODULE := \
+    build/test_modules/liblaguna_serving_foreign_driver_module.$(SHARED_LIBRARY_EXT)
 MUSE_GLIMMER_MODEL_REVISION ?= 4177486a9f199bd7be520eff14431071d5d41ec5
 MUSE_GLIMMER_CONTRACT_SOURCE := model_contracts/muse_glimmer_authoritative.json
 MUSE_GLIMMER_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(MUSE_GLIMMER_CONTRACT_SOURCE)"; else shasum -a 256 "$(MUSE_GLIMMER_CONTRACT_SOURCE)"; fi | awk '{print $$1}')
@@ -238,6 +248,8 @@ TOOL_NAMES := \
     spark_kv_backing_test \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
+    sparkpipe_nfc \
+    sparkpipe_split \
     sparkpipe_tokenizer_benchmark \
     sparkpipe_memlink \
     sparkpipe_prevcp \
@@ -312,6 +324,7 @@ TEST_NAMES := \
     test_gdn_reference \
     test_numerical_metrics \
     test_kv_cache \
+    test_kv_snapshot \
     test_kv_page_layout \
 	test_k3_kv_cache \
 	test_k3_llm_defines \
@@ -365,9 +378,15 @@ TEST_NAMES := \
     test_weightd_expert \
     test_stage_module_weightd \
     test_weightd_map \
+    test_expert_working_set \
+    test_graph_reloc \
     test_weightd_mesh_mock \
     test_module_library \
     test_speculation_provider_slot \
+    test_speculation_reference_draft \
+    test_speculation_lookup_draft \
+    test_speculation_relay_draft \
+    test_speculation_depth \
     test_driver_compiler \
     test_orchestrator \
 	test_dsv4_lane_continuity \
@@ -393,8 +412,10 @@ SHELL_TESTS := \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
 	tests/test_glm5_next_compsec17.py \
+	tests/test_ling_compsec17.py \
 	tests/test_weightd_supervised.py \
 	tests/test_weightd_supervision.py \
+	tests/test_fleet_agent_multi_root.py \
 	tests/test_spark_queue.py \
 	tests/test_multi_dev_orchestrate.py \
 	tests/test_inference_smoke.py \
@@ -406,8 +427,11 @@ PYTHON_TESTS := \
 	tests/test_gemma4_tp16_shared_socket.py \
 	tests/test_gemma4_smoke_manifest.py \
 	tests/test_ling_model_header.py \
+	tests/test_ling_contract_freeze.py \
+	tests/test_ling_swiglu_limits.py \
 	tests/test_laguna_model_header.py \
 	tests/test_laguna_multidev_lane.py \
+	tests/test_laguna_reference_fixture.py \
 	tests/test_laguna_smoke_experts.py \
 	tests/test_api_stress.py \
 	tests/test_batch_variants.py \
@@ -418,6 +442,8 @@ PYTHON_TESTS := \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_cuda_math_policy.py \
 	tests/test_dry_law.py \
+	tests/test_unicode_nfc.py \
+	tests/test_tokenizer_unicode_split.py \
 	tests/test_dsv4_contracts.py \
 	tests/test_dsv4_compressor_emission_source.py \
 	tests/test_dsv4_driver_source_contracts.py \
@@ -516,6 +542,7 @@ PYTHON_TESTS := \
 	tests/test_qwen38_max_validation_harness.py \
 	tests/test_qwen38max_multidev_lane.py \
 	tests/test_ling_multidev_lane.py \
+	tests/test_ling_lane.py \
 	tests/test_ling_stagepack_resume.py \
 	tests/test_mimo26_emit_order.py \
 	tests/test_ling_smoke_experts.py \
@@ -543,6 +570,8 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_index_kv.py \
 	tests/test_topk_exact_host.py \
 	tests/test_glm5_next_graph_regime.py \
+	tests/test_glm5_next_verify_regime.py \
+	tests/test_spec_verify_bench.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \
 	tests/test_skinny_grouped_host.py \
@@ -555,6 +584,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \
+	tests/test_glm5_next_nvfp4_spine_scale.py \
 	tests/test_checkpoint_row_read.py \
 	tests/test_glm5_next_pack_regions.py \
 	tests/test_glm5_next_queue_build.py \
@@ -564,6 +594,8 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_graph_failure.py \
 	tests/test_clamped_up_gate.py \
 	tests/test_glm5_next_stage_context.py \
+	tests/test_glm5_next_expert_cover_host.py \
+	tests/test_glm5_next_wset_from_trace.py \
 	tests/test_ling_cache_admission.py \
 	tests/test_stage_module_teardown.py \
 	tests/test_acc_parity_oracle.py \
@@ -599,8 +631,10 @@ PYTHON_TESTS := \
 	tests/test_hy4_fp8_scale_contract.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
+	tests/test_ling_reference_agreement.py \
 	tests/test_mesh_lane_ladder_receipt.py \
 	tests/test_mimo26_census.py \
+	tests/test_mimo26_model_inputs.py \
 	tests/test_mimo26_stagepack.py \
 	tests/test_mimo26_stagepack_format.py \
 	tests/test_model_api_queue_lifetime.py \
@@ -622,9 +656,11 @@ PYTHON_TESTS := \
 	tests/test_t1_reference_glm53flash.py \
 	tests/test_t1_reference_hy4.py \
 	tests/test_t1_reference_k3.py \
+	tests/test_t1_reference_mimo26.py \
 	tests/test_t1_reference_minimax.py \
 	tests/test_t1_reference_muse.py \
 	tests/test_t1_reference_qwen38_27b.py \
+	tests/test_t1_reference_quarantine.py \
 	tests/test_tp_collective_open.py \
 	tests/test_module_default_goal.py \
 	tests/test_adapter_description_identity.py \
@@ -711,6 +747,8 @@ model_driver_contracts: build/test_model_description build/test_stage_module_com
 
 MODEL_COMMON_LINK_TARGETS := \
     build/sparkpipe_tokenize_prompt \
+    build/sparkpipe_nfc \
+    build/sparkpipe_split \
     build/sparkpipe_tokenizer_benchmark \
     build/sparkpipe_memlink \
     build/sparkpipe_prevcp \
@@ -753,7 +791,7 @@ $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
 GLM5_NEXT_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm5_next/include -Imodules/glm5_next_resident_decode_stage/include $(DEFAULT_BATCH_FLAGS) -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 -DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"
 GLM5_NEXT_CUDA_LINK = -L$(CUDA_HOME)/lib64 -lcudart -lcuda
-GLM5_NEXT_ROOFLINE_DEPS = tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h
+GLM5_NEXT_ROOFLINE_DEPS = tools/glm5_next_batch_roofline.cu modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h include/sparkpipe/family/glm/*.cuh) runtime/launch.h
 
 build:
 	mkdir -p build
@@ -792,6 +830,64 @@ build/test_glm5_next_rows_kernels: tests/test_glm5_next_rows_kernels.cu inferenc
 .PHONY: test-glm5-next-rows-kernels
 test-glm5-next-rows-kernels: build/test_glm5_next_rows_kernels
 	./build/test_glm5_next_rows_kernels --run
+
+build/test_head_candidate_stage: tests/test_head_candidate_stage.cu inference/kernels/head.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-head-candidate-stage
+test-head-candidate-stage: build/test_head_candidate_stage
+	./build/test_head_candidate_stage --run
+
+build/test_delta_rule_columns: tests/test_delta_rule_columns.cu inference/kernels/linear_attn.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-delta-rule-columns
+test-delta-rule-columns: build/test_delta_rule_columns
+	./build/test_delta_rule_columns --run
+
+build/test_route_build_scan: tests/test_route_build_scan.cu inference/kernels/route.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-route-build-scan
+test-route-build-scan: build/test_route_build_scan
+	./build/test_route_build_scan --run
+
+build/test_latent_attention_split_group: tests/test_latent_attention_split_group.cu inference/kernels/attn.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-latent-attention-split-group
+test-latent-attention-split-group: build/test_latent_attention_split_group
+	./build/test_latent_attention_split_group --run
+
+build/test_rms_norm_staged: tests/test_rms_norm_staged.cu inference/kernels/norm.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-rms-norm-staged
+test-rms-norm-staged: build/test_rms_norm_staged
+	./build/test_rms_norm_staged --run
+
+build/test_causal_conv_streams: tests/test_causal_conv_streams.cu inference/kernels/linear_attn.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-causal-conv-streams
+test-causal-conv-streams: build/test_causal_conv_streams
+	./build/test_causal_conv_streams --run
+
+build/test_skinny_dense_multi: tests/test_skinny_dense_multi.cu inference/kernels/skinny.cuh | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-skinny-dense-multi
+test-skinny-dense-multi: build/test_skinny_dense_multi
+	./build/test_skinny_dense_multi --run
+
+WORKING_SET_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude
+
+build/test_working_set_rollback: tests/test_working_set_rollback.cu runtime/spark_expert_working_set.c include/sparkpipe/spark_expert_working_set.h include/sparkpipe/spark_step_verdict.h inference/kernels/expert_cover.cuh inference/kernels/state_snapshot.cuh include/sparkpipe/spark_state_span.h | build
+	$(WORKING_SET_NVCC) tests/test_working_set_rollback.cu runtime/spark_expert_working_set.c -L$(CUDA_HOME)/lib64 -lcudart -o $@
+
+.PHONY: test-working-set-rollback
+test-working-set-rollback: build/test_working_set_rollback
+	./build/test_working_set_rollback
 
 build/glm5_next_batch_roofline: $(GLM5_NEXT_ROOFLINE_DEPS) | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
@@ -957,6 +1053,17 @@ build/test_glm5_next_index_cp_math: tests/test_glm5_next_index_cp_math.c model-f
 build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
+build/test_kv_snapshot: tests/test_kv_snapshot.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kv_snapshot_cuda: tests/test_kv_snapshot_cuda.c tests/test_kv_snapshot_cuda_kernels.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -c tests/test_kv_snapshot_cuda_kernels.cu -o build/test_kv_snapshot_cuda_kernels.o
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) tests/test_kv_snapshot_cuda.c build/test_kv_snapshot_cuda_kernels.o $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -L$(CUDA_HOME)/lib64 -lcudart -lstdc++ -o $@
+
+.PHONY: test-kv-snapshot-cuda
+test-kv-snapshot-cuda: build/test_kv_snapshot_cuda
+	./build/test_kv_snapshot_cuda $(CURDIR)/build
+
 build/test_k3_kv_cache: tests/test_k3_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -999,6 +1106,12 @@ build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(GLM52_HOST_LI
 build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_nfc: tools/sparkpipe_nfc.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_split: tools/sparkpipe_split.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1023,7 +1136,7 @@ build/sparkpipe_model_batch: node/model_batch.c scheduler/continuous_batch.c inc
 build/spark_kv_backing_test: tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY)
 	$(CC) $(CFLAGS) -Iinclude tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# Fleet startup protocol phase 1+1b registrar (docs/FLEET_STARTUP_PROTOCOL.md):
+# Fleet startup protocol phase 1+1b registrar (docs/archive/FLEET_STARTUP_PROTOCOL.md):
 # pure POSIX TCP, poll-driven, no threads; deliberately links NOTHING — it
 # must start in milliseconds on every node with zero library dependencies.
 build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
@@ -1134,8 +1247,14 @@ $(TEST_MUSE_GLIMMER_SERVING_DRIVER_MODULE): tests/fixtures/muse_glimmer_serving_
 $(TEST_LING_SERVING_DRIVER_MODULE): tests/fixtures/ling_serving_adapter_driver.c modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_resident_decode_stage_firmware.h model-families/ling/include/sparkpipe/spark_ling_model.h model-families/ling/include/sparkpipe/spark_ling_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LING_CONTRACT_SOURCE) | build/test_modules
 	$(CC) $(CPPFLAGS) -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include $(CFLAGS) $(LING_SERVING_ADAPTER_FLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-$(TEST_LAGUNA_SERVING_DRIVER_MODULE): tests/fixtures/laguna_serving_adapter_driver.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LAGUNA_CONTRACT_SOURCE) | build/test_modules
+$(TEST_LING_SERVING_DRIFTED_DRIVER_MODULE): tests/fixtures/ling_serving_adapter_driver.c modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_resident_decode_stage_firmware.h model-families/ling/include/sparkpipe/spark_ling_model.h model-families/ling/include/sparkpipe/spark_ling_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LING_CONTRACT_SOURCE) | build/test_modules
+	$(CC) $(CPPFLAGS) -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include $(CFLAGS) $(LING_SERVING_ADAPTER_FLAGS) -ULING_MODEL_DESCRIPTION_SHA256 -DLING_MODEL_DESCRIPTION_SHA256=\"0000000000000000000000000000000000000000000000000000000000000000\" -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+$(TEST_LAGUNA_SERVING_DRIVER_MODULE): tests/fixtures/laguna_serving_adapter_driver.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LAGUNA_CONTRACT_SOURCE) $(LAGUNA_DESCRIPTION_SOURCE) | build/test_modules
 	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_SERVING_ADAPTER_FLAGS) $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+$(TEST_LAGUNA_SERVING_FOREIGN_DRIVER_MODULE): tests/fixtures/laguna_serving_adapter_driver.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h include/sparkpipe/spark_model_driver.h include/sparkpipe/spark_model_driver_support.h $(LAGUNA_CONTRACT_SOURCE) | build/test_modules
+	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_DRIVER_IDENTITY_FLAGS) -DLAGUNA_MODEL_DESCRIPTION_SHA256=\"$(LAGUNA_FOREIGN_DESCRIPTION_SHA256)\" $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_gemma4_defines: tests/test_gemma4_defines.c model-families/gemma4/include/sparkpipe/llm_defines.h model-families/common/include/sparkpipe/spark_hybrid_state.h model-families/common/include/sparkpipe/spark_rope_plan.h
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/gemma4/include -Imodel-families/k3/include -DSPARK_GEMMA4_MODULE_BUILD=1 $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
@@ -1258,14 +1377,14 @@ build/test_muse_glimmer_serving_adapter: tests/test_muse_glimmer_serving_adapter
 $(LING_SERVING_ADAPTER): modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_serving_adapter.h modules/ling_resident_decode_stage/include/sparkpipe/spark_ling_resident_decode_stage_firmware.h model-families/ling/include/sparkpipe/spark_ling_model.h model-families/ling/include/sparkpipe/spark_ling_kv_geometry.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include $(LING_SERVING_ADAPTER_FLAGS) $(CFLAGS) -shared -fPIC $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-build/test_ling_serving_adapter: tests/test_ling_serving_adapter.c tests/fixtures/ling_serving_adapter_config.json $(LING_SERVING_ADAPTER) $(TEST_LING_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -I tests/cuda_stub -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include -DLING_EXPERT_WEIGHT_CODEC=1u -DLING_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" -DTEST_LING_SERVING_ADAPTER_PATH=\"$(LING_SERVING_ADAPTER)\" -DTEST_LING_SERVING_DRIVER_PATH=\"$(TEST_LING_SERVING_DRIVER_MODULE)\" -DTEST_LING_SERVING_CONFIG_PATH=\"tests/fixtures/ling_serving_adapter_config.json\" $(CFLAGS) tests/test_ling_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+build/test_ling_serving_adapter: tests/test_ling_serving_adapter.c tests/fixtures/ling_serving_adapter_config.json $(LING_SERVING_ADAPTER) $(TEST_LING_SERVING_DRIVER_MODULE) $(TEST_LING_SERVING_DRIFTED_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -I tests/cuda_stub -I modules/ling_resident_decode_stage/include -I model-families/ling/include -I model-families/common/include -DLING_EXPERT_WEIGHT_CODEC=1u -DLING_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" -DTEST_LING_SERVING_ADAPTER_PATH=\"$(LING_SERVING_ADAPTER)\" -DTEST_LING_SERVING_DRIVER_PATH=\"$(TEST_LING_SERVING_DRIVER_MODULE)\" -DTEST_LING_SERVING_DRIFTED_DRIVER_PATH=\"$(TEST_LING_SERVING_DRIFTED_DRIVER_MODULE)\" -DTEST_LING_SERVING_CONFIG_PATH=\"tests/fixtures/ling_serving_adapter_config.json\" $(CFLAGS) tests/test_ling_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-$(LAGUNA_SERVING_ADAPTER): modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_serving_adapter.h modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+$(LAGUNA_SERVING_ADAPTER): modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_serving_adapter.h $(LAGUNA_DESCRIPTION_SOURCE) modules/laguna_resident_decode_stage/include/sparkpipe/spark_laguna_resident_decode_stage_firmware.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/spark_laguna_kv_geometry.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(LAGUNA_SERVING_ADAPTER_FLAGS) $(DEFAULT_BATCH_FLAGS) $(CFLAGS) -shared -fPIC $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-build/test_laguna_serving_adapter: tests/test_laguna_serving_adapter.c tests/fixtures/laguna_serving_adapter_config.json $(LAGUNA_SERVING_ADAPTER) $(TEST_LAGUNA_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) -I tests/cuda_stub -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(DEFAULT_BATCH_FLAGS) -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DTEST_LAGUNA_SERVING_ADAPTER_PATH=\"$(LAGUNA_SERVING_ADAPTER)\" -DTEST_LAGUNA_SERVING_DRIVER_PATH=\"$(TEST_LAGUNA_SERVING_DRIVER_MODULE)\" -DTEST_LAGUNA_SERVING_CONFIG_PATH=\"tests/fixtures/laguna_serving_adapter_config.json\" $(CFLAGS) tests/test_laguna_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+build/test_laguna_serving_adapter: tests/test_laguna_serving_adapter.c tests/fixtures/laguna_serving_adapter_config.json $(LAGUNA_SERVING_ADAPTER) $(TEST_LAGUNA_SERVING_DRIVER_MODULE) $(TEST_LAGUNA_SERVING_FOREIGN_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) -I tests/cuda_stub -I modules/laguna_resident_decode_stage/include -I model-families/laguna/include -I model-families/common/include $(CORE_INCLUDE_FLAGS) $(DEFAULT_BATCH_FLAGS) -DLAGUNA_EXPERT_WEIGHT_CODEC=1u -DLAGUNA_EXPERT_CODEC_NAME=\"bf16\" -DTEST_LAGUNA_MODEL_REVISION=\"$(LAGUNA_MODEL_REVISION)\" -DTEST_LAGUNA_SERVING_ADAPTER_PATH=\"$(LAGUNA_SERVING_ADAPTER)\" -DTEST_LAGUNA_SERVING_DRIVER_PATH=\"$(TEST_LAGUNA_SERVING_DRIVER_MODULE)\" -DTEST_LAGUNA_SERVING_FOREIGN_DRIVER_PATH=\"$(TEST_LAGUNA_SERVING_FOREIGN_DRIVER_MODULE)\" -DTEST_LAGUNA_SERVING_CONFIG_PATH=\"tests/fixtures/laguna_serving_adapter_config.json\" $(CFLAGS) tests/test_laguna_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_gemma4_serving_adapter: tests/test_gemma4_serving_adapter.c tests/fixtures/gemma4_serving_adapter_config.json tests/fixtures/gemma4_moe_serving_adapter_config.json $(GEMMA4_SERVING_ADAPTER) $(GEMMA4_MOE_SERVING_ADAPTER) $(TEST_GEMMA4_SERVING_DRIVER_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(GEMMA4_INCLUDE_FLAGS) -DTEST_GEMMA4_SERVING_ADAPTER_PATH=\"$(GEMMA4_SERVING_ADAPTER)\" -DTEST_GEMMA4_MOE_SERVING_ADAPTER_PATH=\"$(GEMMA4_MOE_SERVING_ADAPTER)\" -DTEST_GEMMA4_SERVING_DRIVER_PATH=\"$(TEST_GEMMA4_SERVING_DRIVER_MODULE)\" -DTEST_GEMMA4_SERVING_CONFIG_PATH=\"tests/fixtures/gemma4_serving_adapter_config.json\" -DTEST_GEMMA4_MODEL_REVISION=\"$(GEMMA4_MODEL_REVISION)\" -DTEST_GEMMA4_MOE_MODEL_REVISION=\"$(GEMMA4_MOE_MODEL_REVISION)\" $(CFLAGS) tests/test_gemma4_serving_adapter.c $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
@@ -1616,6 +1735,19 @@ build/test_weightd_expert: tests/test_weightd_expert.c $(RUNTIME_LIBRARY) $(CORE
 build/test_stage_module_weightd: tests/test_stage_module_weightd.c runtime/stage_module_common.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
+build/test_expert_working_set: tests/test_expert_working_set.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+build/test_graph_reloc: tests/test_graph_reloc.c runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c tests/cuda_stub/cuda_runtime_stub.c include/sparkpipe/spark_graph_reloc.h $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_graph_reloc_gpu: tests/test_graph_reloc_gpu.cu runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c include/sparkpipe/spark_graph_reloc.h | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude tests/test_graph_reloc_gpu.cu runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+
+.PHONY: test-graph-reloc-gpu
+test-graph-reloc-gpu: build/test_graph_reloc_gpu
+	./build/test_graph_reloc_gpu
+
 # W3 weightd (docs/WEIGHTD_DESIGN.md): the fd tier - chunk shareable-fd
 # export over SCM_RIGHTS and the consumer's import/map, including a real
 # forked consumer process for the cross-process receipt. Stub-pinned like
@@ -1628,6 +1760,18 @@ build/test_weightd_mesh_mock: tests/test_weightd_mesh_mock.c node/weightd_mesh.c
 
 build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(TEST_VALIDATOR_CHANGED) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_speculation_reference_draft: tests/test_speculation_reference_draft.c include/sparkpipe/spark_speculation_reference_draft.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_reference_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_lookup_draft: tests/test_speculation_lookup_draft.c include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_lookup_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_depth: tests/test_speculation_depth.c include/sparkpipe/spark_speculation_depth.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_depth.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_relay_draft: tests/test_speculation_relay_draft.c include/sparkpipe/spark_speculation_relay_draft.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_relay_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_speculation_provider_slot: tests/test_speculation_provider_slot.c runtime/speculation_provider.c include/sparkpipe/spark_speculation_provider.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_provider_slot.c runtime/speculation_provider.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 

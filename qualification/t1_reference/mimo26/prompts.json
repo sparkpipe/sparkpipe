@@ -1,0 +1,71 @@
+{
+ "prompts": [
+  {
+   "name": "capital",
+   "text": "The capital of France is",
+   "prompt_token_ids": [
+    785,
+    6722,
+    315,
+    9625,
+    374
+   ],
+   "new_tokens": 16,
+   "capture_layers": [
+    0,
+    1,
+    5,
+    47
+   ]
+  },
+  {
+   "name": "code",
+   "text": "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number.\"\"\"\n",
+   "prompt_token_ids": [
+    750,
+    75698,
+    1445,
+    982,
+    262,
+    4210,
+    5598,
+    279,
+    308,
+    7563,
+    79683,
+    1372,
+    14442
+   ],
+   "new_tokens": 16,
+   "capture_layers": [
+    0,
+    1,
+    5,
+    47
+   ]
+  },
+  {
+   "name": "science",
+   "text": "Water boils at 100 degrees Celsius because",
+   "prompt_token_ids": [
+    28253,
+    88955,
+    518,
+    220,
+    16,
+    15,
+    15,
+    12348,
+    61347,
+    1576
+   ],
+   "new_tokens": 16,
+   "capture_layers": [
+    0,
+    1,
+    5,
+    47
+   ]
+  }
+ ]
+}

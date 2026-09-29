@@ -1,6 +1,7 @@
 # SparkPipe firmware architecture contract
 
-This is the authoritative production architecture.
+This is the authoritative firmware, module library and compiler contract.
+The system as a whole is described in [`README.md`](README.md).
 
 ## 1. Input language
 
