@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 #include "inference/kernels/head_score.cuh"
+#include "sparkpipe/spark_glm5_next_model.h"
 
 extern "C" cudaError_t SparkGlm5NextLaunchHeadScore(cudaStream_t stream,const uint16_t *normed_bf16,const void *head_bf16,float *logits,uint32_t rows,uint32_t width,uint32_t id_base,const uint32_t *probe_offsets,const uint32_t *probe_local,float *probe_logits,SparkScoreDumpStats *stats)
 {
