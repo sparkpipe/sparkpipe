@@ -453,7 +453,7 @@ cudaError_t cudaGraphLaunch(cudaGraphExec_t exec,cudaStream_t stream)
 SparkStatus SparkTpDeviceCollectiveGraphPreLaunch(SparkTpDeviceCollective *collective,void *stream)
 { (void)collective;(void)stream;return(SPARK_STATUS_OK); }
 SparkStatus SparkTpDeviceCollectiveGraphSettle(SparkTpDeviceCollective *collective,void *stream,uint64_t *error_out)
-{ (void)collective;(void)stream;if ( error_out != 0 ) *error_out = 0u;return(SPARK_STATUS_OK); }
+{ (void)collective;(void)stream;if ( error_out == 0 ) return(SPARK_STATUS_INVALID_ARGUMENT);*error_out = GRAPH_ERROR;return(SPARK_STATUS_OK); }
 SparkStatus SparkTpDeviceCollectiveGraphCancelSeed(SparkTpDeviceCollective *collective,void *stream)
 { (void)collective;(void)stream;return(SPARK_STATUS_OK); }
 SparkStatus SparkTpDeviceCollectiveDisarmCapture(SparkTpDeviceCollective *collective)
