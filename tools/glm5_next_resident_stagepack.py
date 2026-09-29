@@ -1079,6 +1079,16 @@ def validate_stage(stage_count, stage_index, first_layer, layer_count,
         raise PackFailure("head/MTP ownership requires the final stage and layer")
 
 
+def mtp_pack_name(tp_degree, tp_rank):
+    return f"glm5_next_mtp.tp{tp_degree}.rank{tp_rank}.g5nsp"
+
+
+def validate_mtp_only(args):
+    if (args.mtp or args.owns_embedding or args.owns_head or args.first_layer != 0
+            or args.layer_count != LAYERS or args.stage_count != 1 or args.stage_index != 0):
+        raise PackFailure("--mtp-only builds the layer-45 MTP pack alone; it takes no layer span, stage or ownership options")
+
+
 def stage_pack_name(tp_degree, tp_rank, stage_count, stage_index):
     pipeline = f".pp{stage_count}.stage{stage_index}" if stage_count != 1 else ""
     return f"glm5_next_stage.tp{tp_degree}{pipeline}.rank{tp_rank}.g5nsp"
@@ -1093,6 +1103,8 @@ def main() -> int:
     parser.add_argument("--stage-count", type=int, default=1)
     parser.add_argument("--stage-index", type=int, default=0)
     parser.add_argument("--mtp", action="store_true")
+    parser.add_argument("--mtp-only", action="store_true",
+                        help="emit only the layer-45 MTP pack per rank (glm5_next_mtp.tpN.rankR.g5nsp) for the resident MTP drafter")
     parser.add_argument("--owns-embedding", action="store_true")
     parser.add_argument("--owns-head", action="store_true")
     parser.add_argument("--tp-rank", type=int, default=0)
@@ -1113,8 +1125,11 @@ def main() -> int:
                         help="plan and print the inventory without writing")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
-    validate_stage(args.stage_count, args.stage_index, args.first_layer,
-                   args.layer_count, args.owns_embedding, args.owns_head, args.mtp)
+    if args.mtp_only:
+        validate_mtp_only(args)
+    else:
+        validate_stage(args.stage_count, args.stage_index, args.first_layer,
+                       args.layer_count, args.owns_embedding, args.owns_head, args.mtp)
 
     if args.drop_output_cache and not args.tp_all:
         parser.error("--drop-output-cache applies to --tp-all")
@@ -1124,18 +1139,25 @@ def main() -> int:
     degree = args.tp_all or args.tp_degree
     ranks = range(args.tp_all) if args.tp_all else [args.tp_rank]
     requested = None if args.expert_codec is None else EXPERT_CODEC_NAMES[args.expert_codec]
-    packers = [Packer(source, degree, rank, args.first_layer, args.layer_count, args.mtp,
-                      args.owns_embedding, args.owns_head, requested) for rank in ranks]
-    header = dict(stage_count=args.stage_count, stage_index=args.stage_index,
-                  first_layer=args.first_layer, layer_count=args.layer_count,
-                  flags=1 if args.mtp else 0)
-    paths = [out_dir / stage_pack_name(degree, rank, args.stage_count, args.stage_index)
-             for rank in ranks]
+    if args.mtp_only:
+        packers = [Packer(source, degree, rank, MTP_LAYER, 0, True, False, False, requested)
+                   for rank in ranks]
+        header = dict(stage_count=1, stage_index=0, first_layer=MTP_LAYER, layer_count=1, flags=1)
+        paths = [out_dir / mtp_pack_name(degree, rank) for rank in ranks]
+    else:
+        packers = [Packer(source, degree, rank, args.first_layer, args.layer_count, args.mtp,
+                          args.owns_embedding, args.owns_head, requested) for rank in ranks]
+        header = dict(stage_count=args.stage_count, stage_index=args.stage_index,
+                      first_layer=args.first_layer, layer_count=args.layer_count,
+                      flags=1 if args.mtp else 0)
+        paths = [out_dir / stage_pack_name(degree, rank, args.stage_count, args.stage_index)
+                 for rank in ranks]
     if args.dry_plan:
-        for packer in packers:
+        for packer, path in zip(packers, paths):
             packer.build()
-            print(f"rank {packer.tp_rank}: {len(packer.plan)} tensors planned, "
-                  f"header expert codec {packer.header_expert_codec()}")
+            planned = sum(item.entry.payload_bytes + item.entry.scale_bytes for item in packer.plan)
+            print(f"rank {packer.tp_rank}: {len(packer.plan)} tensors planned, {planned} payload bytes, "
+                  f"header expert codec {packer.header_expert_codec()} -> {path.name}")
     elif args.tp_all:
         emit_ranks(packers, paths, header, args.model_revision, args.drop_output_cache)
     else:
