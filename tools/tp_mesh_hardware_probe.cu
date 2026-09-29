@@ -171,8 +171,8 @@ struct Probe
                 {
                     uint64_t peer=i/elements,j=i%elements;
                     uint16_t bits=static_cast<uint16_t>((rank*31u+peer*7u+1u)*977u+j*3u+salt);
-                    std::memcpy(inputs[rank].data()+i*2u,&bits,2u);
-                    std::memcpy(expected_rank[peer].data()+(rank*elements+j)*2u,&bits,2u);
+                    std::memcpy(inputs[rank].data()+i*sizeof(bits),&bits,sizeof(bits));
+                    std::memcpy(expected_rank[peer].data()+(rank*elements+j)*sizeof(bits),&bits,sizeof(bits));
                 }
         for (uint32_t rank=0u;rank<degree;rank++)
         {
