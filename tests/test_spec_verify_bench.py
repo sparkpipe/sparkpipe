@@ -63,6 +63,20 @@ def check_log():
     assert report["verify_frames"] == 3 and report["rounds"] == 6 and report["accepted_drafts"] == 12 and report["plain_steps"] == 3
     assert report["produced_tokens"] == 21 and abs(report["tokens_per_round"] - 18 / 6) < 1e-9
     assert abs(report["frame_fill"] - 21 / 24) < 1e-9
+    assert "sources" not in report
+    lines.append("VERIFY-MTP drafts=3 tokens=12 cold=1 truncated=0 taps=9 draft_us=1500 | lookup rounds=2 proposed=6 accepted=5 declined=1 | mtp rounds=3 proposed=12 accepted=4")
+    lines.append("VERIFY-MTP drafts=4 tokens=19 cold=1 truncated=1 taps=12 draft_us=1400 | lookup rounds=2 proposed=6 accepted=5 declined=1 | mtp rounds=4 proposed=19 accepted=9")
+    sources = bench.parse_log(lines)["sources"]
+    assert sources["mtp_drafts"] == 4 and sources["mtp_truncated"] == 1 and sources["mtp_draft_us"] == 1400 and sources["lookup_declined"] == 1
+    assert sources["mtp"]["rounds"] == 4 and abs(sources["mtp"]["acceptance"] - 9 / 19) < 1e-9 and abs(sources["mtp"]["accept_length"] - 9 / 4) < 1e-9
+    assert abs(sources["lookup"]["tokens_per_round"] - 7 / 2) < 1e-9
+    assert "acceptance_per_position" not in bench.parse_log(lines)
+    lines.append("VERIFY-POSITIONS p1=5/8 p2=2/5 p3=0/2 p4=0/0 p5=0/0 p6=0/0 p7=0/0")
+    lines.append("VERIFY-POSITIONS p1=9/12 p2=4/9 p3=1/4 p4=0/1 p5=0/0 p6=0/0 p7=0/0")
+    positions = bench.parse_log(lines)["acceptance_per_position"]
+    assert [item["position"] for item in positions] == list(range(1, 8))
+    assert [(item["accepted"], item["reached"]) for item in positions[:4]] == [(9, 12), (4, 9), (1, 4), (0, 1)]
+    assert abs(positions[0]["acceptance"] - 0.75) < 1e-9 and positions[3]["acceptance"] == 0.0 and positions[4]["acceptance"] is None
 
 
 def entry(klass, tokens, text, decode_s, ids):
@@ -132,7 +146,7 @@ def main():
     check_log()
     check_compare()
     check_endpoint()
-    print("PASS spec_verify_bench needs an explicit endpoint and token ids, replays recorded oracle sequences, measures decode rate after the first token and parses VERIFY-FRAME logs")
+    print("PASS spec_verify_bench needs an explicit endpoint and token ids, replays recorded oracle sequences, measures decode rate after the first token and parses VERIFY-FRAME and VERIFY-MTP logs")
 
 
 if __name__ == "__main__":

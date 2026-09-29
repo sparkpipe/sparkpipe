@@ -2068,6 +2068,22 @@ static SparkStatus SparkKvPageCacheEvictUnreferencedChains(SparkKvPageCache *cac
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkKvPageCacheReleaseAll(SparkKvPageCache *cache)
+{
+	SparkStatus status;
+	uint32_t slot;
+	if ( SparkKvPageCacheIsValid(cache) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (slot=0u; slot<cache->sequence_capacity; slot++)
+		if ( cache->sequences[slot].sequence_id != 0u )
+		{
+			status = SparkKvPageCacheReleaseLane(cache,slot,cache->sequences[slot].sequence_id);
+			if ( status != SPARK_STATUS_OK )
+				SPARK_RETURN(status);
+		}
+	return(SparkKvPageCacheEvictUnreferencedChains(cache));
+}
+
 SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions)
 {
 	SparkKvPageCache *cache;
@@ -2088,12 +2104,5 @@ SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions)
 				SPARK_RETURN(status);
 		}
 	}
-	for (slot=0u; slot<cache->sequence_capacity; slot++)
-		if ( cache->sequences[slot].sequence_id != 0u )
-		{
-			status = SparkKvPageCacheReleaseLane(cache,slot,cache->sequences[slot].sequence_id);
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-		}
-	return(SparkKvPageCacheEvictUnreferencedChains(cache));
+	return(SparkKvPageCacheReleaseAll(cache));
 }

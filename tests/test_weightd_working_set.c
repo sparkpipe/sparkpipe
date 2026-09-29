@@ -631,6 +631,11 @@ static void check_map_eviction(void)
     assert(pthread_join(thread,0) == 0);
     SparkWeightdServerDestroy(state.server);
     assert(spark_stub_cuda_outstanding_allocs() == 0u);
+    {
+    	char verified[1024];
+    	assert(snprintf(verified,sizeof(verified),"%s.verified",path) > 0);
+    	(void)unlink(verified);
+    }
     assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
     puts("PASS partial map: actual eviction epoch, overlapping leases, failed unmap pin retention, 24 bounded reloads, 64-owner limit");
 }
@@ -696,6 +701,11 @@ static void check_many_exports(void)
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(state.server);
 	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	{
+		char verified[1024];
+		assert(snprintf(verified,sizeof(verified),"%s.verified",path) > 0);
+		(void)unlink(verified);
+	}
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
 }
 
@@ -754,6 +764,11 @@ static void check_pooled_attach(void)
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(state.server);
 	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	{
+		char verified[1024];
+		assert(snprintf(verified,sizeof(verified),"%s.verified",path) > 0);
+		(void)unlink(verified);
+	}
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
 }
 
