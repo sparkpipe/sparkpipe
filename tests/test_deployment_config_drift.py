@@ -137,6 +137,23 @@ def main() -> int:
             if list(dev_stage.keys()) != want or len(adapter_score) != 3:
                 failures.append(f"glm5_next: dev score-dump stage members {list(dev_stage.keys())} != adapter "
                                 f"base + optional score members {want}")
+        refusals = {
+            "production empty directory": ({}, ["--score-dump-directory", ""]),
+            "dev empty directory": (dev_env, ["--score-dump-directory", ""]),
+            "dev empty probe": (dev_env, ["--score-dump-directory", "score", "--score-probe-path", ""]),
+            "dev probe without directory": (dev_env, ["--score-probe-path", "score/probe.bin"]),
+            "dev absolute": (dev_env, ["--score-dump-directory", "/tmp/score"]),
+            "dev parent": (dev_env, ["--score-dump-directory", "score/../packs"]),
+            "dev dot": (dev_env, ["--score-dump-directory", "./score"]),
+            "dev double slash": (dev_env, ["--score-dump-directory", "score//a"]),
+            "dev trailing slash": (dev_env, ["--score-dump-directory", "score/"]),
+        }
+        for label, (env, extra) in refusals.items():
+            target = scratch / ("glm5_score_refused_" + label.replace(" ", "_"))
+            outcome = subprocess.run(["python3", "tools/glm5_next_gen_deployment.py", "--output", str(target), *extra],
+                                     cwd=ROOT, capture_output=True, text=True, env=dict(os.environ, **env))
+            if outcome.returncode == 0 or (target / "config").exists():
+                failures.append(f"glm5_next: the generator accepted the {label} score-dump configuration")
 
         # --- glm52: no committed tree; the generator's output must still
         # satisfy the adapter's exact-member list (r3-flashdecode drift) ---
