@@ -342,6 +342,10 @@ int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const 
 int32_t SparkGlm5NextPrepareCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t rows);
 int32_t SparkGlm5NextLaunchCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps);
 int32_t SparkGlm5NextConfigureCudaModule(uint32_t *multiprocessor_count);
+#ifdef SPARK_SCORE_DUMP
+struct SparkScoreDumpStats;
+cudaError_t SparkGlm5NextLaunchHeadScore(cudaStream_t stream,const uint16_t *normed_bf16,const void *head_bf16,float *logits,uint32_t rows,uint32_t width,uint32_t id_base,const uint32_t *probe_offsets,const uint32_t *probe_local,float *probe_logits,struct SparkScoreDumpStats *stats);
+#endif
 
 #ifdef __cplusplus
 }
