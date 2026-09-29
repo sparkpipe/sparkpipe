@@ -6,7 +6,7 @@ import numpy as np
 
 from .drafters import Drafter, chain_from
 from .streams import Stream
-from .tree import Node, Shape, build_tree, build_trie, resolve_tree
+from .tree import Node, Shape, build_tree, build_trie, path_tokens, resolve_tree
 
 DEPTH_MAX = 7
 
@@ -103,17 +103,18 @@ def round_replay(stream: Stream, drafter: Drafter, taps: np.ndarray | None, shap
             nodes = build_tree(drafter, anchor, shape, max_depth)
         truth_after = list(stream.tokens[anchor + 1:anchor + 1 + remaining])
         if nodes:
-            accepted, committed_count, _ = resolve_tree(nodes, truth_after)
+            accepted, committed_count, _, best_node = resolve_tree(nodes, truth_after)
             committed_count = min(committed_count, remaining)
+            round_tokens = path_tokens(nodes, best_node)[:committed_count]
         else:
-            accepted, committed_count = 0, 1
+            accepted, committed_count, round_tokens = 0, 1, []
+        round_tokens = round_tokens + truth_after[len(round_tokens):committed_count]
         result.rounds += 1
         result.proposed_rows += len(nodes) + 1
         result.accepted += accepted
         result.committed += committed_count
         result.accepted_histogram[min(accepted, shape.rows)] += 1
-        for offset in range(committed_count):
-            token = stream.tokens[anchor + 1 + offset]
+        for offset, token in enumerate(round_tokens):
             committed.append(token)
             drafter.observe(anchor + 1 + offset, token)
             for member in members or []:

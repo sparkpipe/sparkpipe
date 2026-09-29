@@ -126,7 +126,7 @@ def check_report(directory: Path) -> None:
     assert prose["gates"]["G1_exactness"] == "PASS" and prose["gates"]["G2_determinism"] == "not evaluated (one run)"
     assert prose["gates"]["G4_regression_floor"].startswith("not eligible") and prose["gates"]["G5_memory"] == "PASS" and prose["gates"]["G7_licence"] == "PASS"
     assert prose["gates"]["G8_drafter_correctness"] == "not evaluated" and prose["gates"]["G3_offline_online"] == "not evaluated"
-    assert ledger["ledger"]["windows"][f"glmflash/{window}"]["G2_off_determinism"] == "PASS"
+    assert ledger["ledger"]["windows"][f"glmflash/{window}/B1"]["G2_off_determinism"] == "PASS"
     assert {row["class"]: row["no_spec_tok_s"] for row in ledger["ledger"]["no_spec"] if row["repeat"] == 1} == {"prose": 43.74, "code": 43.48, "repetitive": 43.76}
     verdict = ledger["verdicts"]["glmflash/mtp:l45@fleet/chain-k3/B1"]
     assert not verdict["eligible"] and 0.78 < verdict["geometric_mean_ratio"] < 0.80
@@ -160,6 +160,33 @@ def check_report(directory: Path) -> None:
     assert refused(["ingest", "--arm", "glmflash/nope@fleet/chain-k3/B1", "--window", window, "--out-root", str(receipts), "--run", write_run(directory, run_json(W2_OFF))])
 
 
+def check_matching(directory: Path) -> None:
+    receipts = directory / "receipts"
+    window = "20260929T2000Z-sb1"
+    fast = [(content_class, index, tokens, seconds / 6) for content_class, index, tokens, seconds in W2_OFF]
+    ingest(receipts, "glmflash/off@fleet/chain-k0/B1", window, run_json(W2_OFF), roofline_for(43.74))
+    ingest(receipts, "glmflash/off@fleet/chain-k0/B8", window, run_json(fast), roofline_for(262.0))
+    ingest(receipts, "glmflash/lookup@rtx5090/chain-k3/B8", window, run_json(fast), roofline_for(262.0))
+    ingest(receipts, "glmflash/suffix@rtx5090/chain-k3/B2", window, run_json(W2_OFF), roofline_for(43.74))
+    code, ledger = report(directory)
+    batched = [row for row in ledger["ledger"]["rows"] if row["arm"].startswith("glmflash/lookup")]
+    assert code == 0 and batched and all(row["ratio"] == 1.0 and row["no_spec_tok_s"] > 200 for row in batched), batched
+    assert any(item["arm"].startswith("glmflash/suffix") and "B2" in item["reason"] for item in ledger["ledger"]["refused"])
+    changed = run_json(W2_OFF)
+    changed["results"][2]["token_ids"][7] += 1
+    ingest(receipts, "glmflash/lookup@rtx5090/chain-k7/B1", window, run_json(W2_OFF), roofline_for(43.74))
+    ingest(receipts, "glmflash/lookup@rtx5090/chain-k7/B1", window, changed, roofline_for(43.74), repeat=2)
+    code, ledger = report(directory)
+    repeated = next(row for row in ledger["ledger"]["rows"] if row["arm"] == "glmflash/lookup@rtx5090/chain-k7/B1")
+    assert code == 1 and repeated["gates"]["G1_exactness"] == "FAIL" and repeated["gates"]["G1_mismatches"] == ["prose[2]"]
+    extra = run_json(W2_OFF + [("chat", 0, 64, 1.5)])
+    ingest(receipts, "glmflash/ngram3@rtx5090/chain-k3/B1", window, extra, roofline_for(43.74), memavailable_min_gib=12.0)
+    code, ledger = report(directory)
+    ngram = next(row for row in ledger["ledger"]["rows"] if row["arm"].startswith("glmflash/ngram3"))
+    assert ngram["gates"]["G1_exactness"] == "FAIL" and ngram["gates"]["G1_unmatched"] == ["chat[0]"] and ngram["gates"]["G5_memory"] == "FAIL"
+    assert not ledger["verdicts"]["glmflash/ngram3@rtx5090/chain-k3/B1"]["eligible"]
+
+
 def write_run(directory: Path, run: dict) -> str:
     path = directory / f"run{len(list(directory.iterdir()))}.json"
     path.write_text(json.dumps(run))
@@ -184,12 +211,12 @@ def check_oracle_anchor(directory: Path) -> None:
     code, ledger = report(directory)
     anchor = next(row for row in ledger["ledger"]["rows"] if row["arm"].startswith("glmflash/oracle") and row["class"] == "anchor")
     assert anchor["spec_tok_s"] == 84.32 and anchor["no_spec_tok_s"] is None and anchor["gates"]["G1_exactness"] == "PASS"
-    assert ledger["ledger"]["windows"][f"glmflash/{window}"]["G2_off_determinism"] == "not evaluated (one off run)"
+    assert ledger["ledger"]["windows"][f"glmflash/{window}/B1"]["G2_off_determinism"] == "not evaluated (one off run)"
     other = directory / "other_oracle.u32"
     other.write_bytes(struct.pack(f"<II{len(prompt) + len(output)}I", len(prompt), len(prompt) + len(output), *prompt, *output[:-1], output[-1] + 1))
     assert bakeoff.main(["ingest", "--arm", "glmflash/off@fleet/chain-k0/B1", "--window", window, "--out-root", str(receipts), "--repeat", "4", "--expect", str(other), "--roofline", off_line]) == 0
     code, ledger = report(directory)
-    assert ledger["ledger"]["windows"][f"glmflash/{window}"]["G2_off_determinism"] == "FAIL: anchor[0]"
+    assert ledger["ledger"]["windows"][f"glmflash/{window}/B1"]["G2_off_determinism"] == "FAIL: anchor[0]" and code == 1
     assert anchor["acceptance_per_position"] == [1.0] * 7
     bad = dict(W2_ORACLE_REPLAY, exact=False)
     replay.write_text(json.dumps(bad))
@@ -204,12 +231,16 @@ def write_log(directory: Path, lines: list[str]) -> str:
 
 def check_plan(directory: Path) -> None:
     out = directory / "plan.json"
-    assert bakeoff.main(["plan", "--model", "glmflash", "--arms", "mtp:l45", "lookup", "--placements", "fleet,rtx5090", "--shapes", "chain-k3,adaptive", "--batches", "1,8", "--out", str(out)]) == 0
+    assert bakeoff.main(["plan", "--model", "glmflash", "--arms", "mtp:l45", "lookup", "--placements", "rtx5090,offline", "--shapes", "chain-k3,adaptive", "--batches", "1,8", "--out", str(out)]) == 0
     plan = json.loads(out.read_text())
     arms = [row["arm"] for row in plan["arms"]]
     assert arms[:4] == bakeoff.baseline_arms("glmflash", 1) and arms.count("glmflash/off@fleet/chain-k0/B1") == 2
-    assert "glmflash/mtp:l45@rtx5090/adaptive/B8" in arms and "glmflash/lookup@fleet/chain-k3/B1" in arms
+    assert "glmflash/mtp:l45@rtx5090/adaptive/B8" in arms and "glmflash/lookup@offline/chain-k3/B1" in arms
     assert [row["repeat"] for row in plan["arms"][:2]] == [1, 2] and plan["classes"][:3] == ["prose", "code", "repetitive"]
+    assert refused(["plan", "--model", "glmflash", "--arms", "mtp:l45", "--placements", "fleet", "--out", str(out)])
+    assert bakeoff.main(["plan", "--model", "glmflash", "--arms", "suffix", "--out", str(out)]) == 0
+    drafted = [row for row in json.loads(out.read_text())["arms"] if row["method"] not in bakeoff.FLEET_BASELINES]
+    assert drafted and all(row["placement"] == "rtx5090" for row in drafted)
 
 
 def main() -> int:
@@ -220,9 +251,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as scratch:
         check_oracle_anchor(Path(scratch))
     with tempfile.TemporaryDirectory() as scratch:
+        check_matching(Path(scratch))
+    with tempfile.TemporaryDirectory() as scratch:
         check_plan(Path(scratch))
     print("PASS spec_bakeoff: arm ids parse strictly, the W2 off/mtp3/oracle numbers (43.74, 34.88, 84.32, VERIFY-POSITIONS) re-report from receipts, "
-          "one changed token fails G1, text without ids is refused, spec rows without a matched off arm or a roofline line are refused, "
+          "one changed token in any run fails G1 and the report, off arms match by batch, drafter arms plan on the rtx5090, text without ids is refused, spec rows without a matched off arm or a roofline line are refused, "
           "and roofline lines follow ROOFLINE_REPORTING.md")
     return 0
 

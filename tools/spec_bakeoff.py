@@ -22,6 +22,7 @@ METHODS = ("off", "oracle", "adversary", "lookup", "mtp", "mtp+lookup", "suffix"
 DRAFTER_FREE = {"off", "oracle", "adversary", "lookup", "suffix", "ngram3"}
 LICENSED = {"mtp", "mtp+lookup", "dflash2", "dflash", "dspark", "eagle3"}
 PLACEMENTS = ("fleet", "rtx5090", "offline")
+FLEET_BASELINES = {"off", "oracle", "adversary"}
 BATCHES = (1, 2, 4, 8)
 SCORED_CLASSES = {"prose": 1.0, "code": 1.0, "chat": 1.0, "long": 1.0, "repetitive": 0.5, "thinking": 1.0, "tool_json": 1.0, "chinese": 1.0}
 REGRESSION_FLOOR = 0.98
@@ -81,11 +82,14 @@ def baseline_arms(model: str, batch: int) -> list[str]:
 
 def plan(args: argparse.Namespace) -> int:
     arms: list[str] = []
+    placements = args.placements.split(",")
+    if "fleet" in placements:
+        raise SystemExit(f"drafter arms run on the rtx5090 or offline; fleet placement is only for the {sorted(FLEET_BASELINES)} baselines")
     for batch in (int(b) for b in args.batches.split(",")):
         arms.extend(baseline_arms(args.model, batch))
         for spec in args.arms or []:
             method, _, drafter = spec.partition(":")
-            for placement in args.placements.split(","):
+            for placement in placements:
                 for shape in args.shapes.split(","):
                     drafter_text = f":{drafter}" if drafter else ""
                     arms.append(f"{args.model}/{method}{drafter_text}@{placement}/{shape}/B{batch}")
@@ -121,7 +125,7 @@ def ingest(args: argparse.Namespace) -> int:
         replay = json.loads(Path(args.replay_json).read_text())
         stream = expected_stream(Path(args.expect), args.expect_prompt_tokens)
         if not replay.get("exact"):
-            raise SystemExit(f"{args.replay_json}: the replay was not exact; ingest it only as evidence with --allow-inexact")
+            raise SystemExit(f"{args.replay_json}: the replay was not exact; an inexact replay is not a receipt")
         results = [{"class": args.anchor_class, "index": 0, "token_ids": list(stream.generated), "decode_tokens": stream.length - stream.prompt - 1,
                     "decode_s": (stream.length - stream.prompt - 1) / replay["decode_tok_s"] if replay.get("decode_tok_s") else None,
                     "decode_tok_s": replay.get("decode_tok_s"), "ttft_s": replay.get("ttft_s"), "text": None}]
@@ -180,16 +184,16 @@ def class_rates(results: list[dict]) -> dict[str, float | None]:
 
 def ledger_rows(receipts: list[dict]) -> dict:
     ledger = {"rows": [], "no_spec": [], "refused": [], "windows": {}}
-    by_window: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    by_window: dict[tuple[str, str, int], list[dict]] = defaultdict(list)
     for record in receipts:
-        by_window[(record["model"], record["window"])].append(record)
-    for (model, window), records in sorted(by_window.items()):
+        by_window[(record["model"], record["window"], int(record["batch"]))].append(record)
+    for (model, window, batch), records in sorted(by_window.items()):
         offs = [record for record in records if record["method"] == "off"]
-        verdicts = {"window": window, "model": model, "off_runs": len(offs)}
+        verdicts = {"window": window, "model": model, "batch": batch, "off_runs": len(offs)}
         if not offs:
             for record in records:
-                ledger["refused"].append({"arm": record["arm"], "window": window, "reason": "no matched off (no-spec) arm in the same window"})
-            ledger["windows"][f"{model}/{window}"] = verdicts
+                ledger["refused"].append({"arm": record["arm"], "window": window, "reason": f"no matched off (no-spec) arm at B{batch} in the same window"})
+            ledger["windows"][f"{model}/{window}/B{batch}"] = verdicts
             continue
         reference_hashes: dict[str, str] = {}
         off_conflicts = []
@@ -221,8 +225,8 @@ def ledger_rows(receipts: list[dict]) -> dict:
             hashes = [item["stream_sha256"] for item in items]
             determinism = all(h == hashes[0] for h in hashes[1:]) if len(items) > 1 else None
             record = items[0]
-            mismatches = [key for key, digest in record["stream_sha256"].items() if reference["stream_sha256"].get(key) not in (None, digest)]
-            unmatched = [key for key in record["stream_sha256"] if key not in reference["stream_sha256"]]
+            mismatches = sorted({key for item in items for key, digest in item["stream_sha256"].items() if reference["stream_sha256"].get(key) not in (None, digest)})
+            unmatched = sorted({key for item in items for key in item["stream_sha256"] if key not in reference["stream_sha256"]})
             exact = not mismatches and not unmatched
             gates = {"G1_exactness": "PASS" if exact else "FAIL", "G1_mismatches": mismatches, "G1_unmatched": unmatched,
                      "G2_determinism": "PASS" if determinism else ("FAIL" if determinism is False else "not evaluated (one run)"),
@@ -250,7 +254,7 @@ def ledger_rows(receipts: list[dict]) -> dict:
                                        "ratio": ratios[content_class], "tokens_per_round": acceptance.get("tokens_per_round"),
                                        "acceptance_per_position": [item["acceptance"] for item in positions] if positions else None,
                                        "gates": gates, "roofline": record["roofline"], "evidence_only": not exact})
-        ledger["windows"][f"{model}/{window}"] = verdicts
+        ledger["windows"][f"{model}/{window}/B{batch}"] = verdicts
     return ledger
 
 
@@ -320,7 +324,9 @@ def report(args: argparse.Namespace) -> int:
     if args.markdown:
         Path(args.markdown).write_text(text)
     print(text)
-    return 0 if not any(row["gates"]["G1_exactness"] == "FAIL" for row in ledger["rows"]) else 1
+    exactness_failed = any(row["gates"]["G1_exactness"] == "FAIL" for row in ledger["rows"])
+    off_nondeterministic = any(str(window.get("G2_off_determinism", "")).startswith("FAIL") for window in ledger["windows"].values())
+    return 1 if exactness_failed or off_nondeterministic else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -332,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("plan")
     p.add_argument("--model", required=True)
     p.add_argument("--arms", nargs="*", help="method[:drafter] entries, e.g. mtp:l45 lookup suffix")
-    p.add_argument("--placements", default="fleet")
+    p.add_argument("--placements", default="rtx5090")
     p.add_argument("--shapes", default="chain-k3")
     p.add_argument("--batches", default="1")
     p.add_argument("--classes", default="prose,code,repetitive,chat,long,thinking,tool_json,chinese")

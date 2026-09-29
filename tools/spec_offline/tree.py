@@ -105,17 +105,27 @@ def build_trie(drafters: list[Drafter], anchor: int, rows: int, max_depth: int) 
     return nodes
 
 
-def resolve_tree(nodes: list[Node], truth_after_anchor: list[int]) -> tuple[int, int, int]:
+def resolve_tree(nodes: list[Node], truth_after_anchor: list[int]) -> tuple[int, int, int, int]:
     accepted_depth = [0] * len(nodes)
     best_depth = 0
+    best_node = ROOT
     accepted_nodes = 0
     for index, node in enumerate(nodes):
         parent_depth = 0 if node.parent == ROOT else accepted_depth[node.parent]
         if (node.parent == ROOT or parent_depth != 0) and parent_depth < len(truth_after_anchor) and node.token == truth_after_anchor[parent_depth]:
             accepted_depth[index] = parent_depth + 1
             accepted_nodes += 1
-            best_depth = max(best_depth, accepted_depth[index])
-    return best_depth, best_depth + 1, accepted_nodes
+            if accepted_depth[index] > best_depth:
+                best_depth, best_node = accepted_depth[index], index
+    return best_depth, best_depth + 1, accepted_nodes, best_node
+
+
+def path_tokens(nodes: list[Node], node: int) -> list[int]:
+    tokens = []
+    while node != ROOT:
+        tokens.append(nodes[node].token)
+        node = nodes[node].parent
+    return tokens[::-1]
 
 
 def resolve_tree_rows(tokens: list[int], parents: list[int], verifier: list[int]) -> tuple[int, int]:

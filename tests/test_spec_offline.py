@@ -93,7 +93,8 @@ def check_tree_resolver() -> None:
             depth = len(path)
             verifier.append(truth[depth])
         nodes = [tree.Node(token, parent, 0) for token, parent in zip(tokens, parents)]
-        best, committed, _ = tree.resolve_tree(nodes, truth)
+        best, committed, _, best_node = tree.resolve_tree(nodes, truth)
+        assert tree.path_tokens(nodes, best_node) == truth[:best]
         rows_best, rows_committed = tree.resolve_tree_rows(tokens, parents, verifier)
         assert best == rows_best and committed == rows_committed, (tokens, parents, truth)
     shape = tree.parse_shape("tree-top2d2-r8")
@@ -125,6 +126,13 @@ def check_round_replay(files: list[Path]) -> None:
         members = [drafters.make_drafter("synthetic:0"), drafters.make_drafter("oracle")]
         trie = acceptance.round_replay(stream, members[0], None, tree.parse_shape("trie-synthetic0+oracle-r8"), members)
         assert trie.stream_exact and trie.tokens_per_round() > 3.0
+        honest = acceptance.resolve_tree
+        acceptance.resolve_tree = lambda nodes, truth: (1, 2, 1, 0)
+        try:
+            lying = acceptance.round_replay(stream, drafters.make_drafter("adversary"), None, tree.parse_shape("chain-k1"))
+        finally:
+            acceptance.resolve_tree = honest
+        assert not lying.stream_exact, "a resolver that accepts a wrong draft token must break the committed-stream identity"
     repetitive = read_u32(files[0])
     table = acceptance.position_table(repetitive, drafters.make_drafter("lookup"), None)
     rates = table.acceptance()
