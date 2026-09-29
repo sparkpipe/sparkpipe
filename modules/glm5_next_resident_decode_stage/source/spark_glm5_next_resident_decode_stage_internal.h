@@ -201,6 +201,7 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint32_t *mtp_sequence;
 	uint32_t *mtp_positions;
 	uint32_t *mtp_context;
+	uint32_t *mtp_draft_device;
 	uint32_t *mtp_committed;
 	void *mtp_replay_steps;
 	uint16_t *mtp_conv_scratch;
