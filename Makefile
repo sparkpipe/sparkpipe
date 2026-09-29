@@ -891,6 +891,13 @@ build/test_glm5_next_index_cp: tests/test_glm5_next_index_cp.cu model-families/g
 test-glm5-next-index-cp: build/test_glm5_next_index_cp
 	./build/test_glm5_next_index_cp --run
 
+build/test_k3_tp16_expert_gemm: tests/test_k3_tp16_expert_gemm.cu runtime/gemm.cuh runtime/tensor_map.h inference/kernels/tile.cuh inference/kernels/gemm.cuh inference/kernels/tensor_map.cuh inference/kernels/formats/mxfp4.cuh | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
+
+.PHONY: test-k3-tp16-expert-gemm
+test-k3-tp16-expert-gemm: build/test_k3_tp16_expert_gemm
+	./build/test_k3_tp16_expert_gemm
+
 build/test_glm5_next_kv_shard: tests/test_glm5_next_kv_shard.cu model-families/glm5_next/include/sparkpipe/spark_glm5_next_kv_shard.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h include/sparkpipe/spark_kv_shard.h inference/kernels/kv_shard.cuh inference/kernels/attn_shard.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
 

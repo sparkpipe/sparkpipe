@@ -240,6 +240,7 @@ typedef struct SparkK3RunnerState
 	uint32_t *group_offset_host;
 	uint64_t layer_w1_offset[K3_LAYERS];
 	uint64_t layer_w2_offset[K3_LAYERS];
+	uint32_t lease_tensor_base;
 	uint32_t tp_rank;
 	uint16_t *fused_device;
 	uint32_t fused_rows;
@@ -882,6 +883,20 @@ static SparkStatus SparkK3RunnerReleaseLease(SparkK3RunnerState *state)
 	return(status);
 }
 
+static SparkStatus K3RunnerLeaseTensorBase(SparkK3RunnerState *state,
+	uint32_t layer, SparkWeightdExpertKey *keys, uint32_t *count)
+{
+	if ( state->lease_tensor_base == 0u || (*count != 0u && keys[0].expert == 0u) )
+		return SPARK_STATUS_OK;
+	if ( *count >= SPARK_WEIGHTD_LEASE_GROUPS_MAX )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memmove(&keys[1], &keys[0], (size_t)*count * sizeof(keys[0]));
+	keys[0].layer = layer;
+	keys[0].expert = 0u;
+	(*count)++;
+	return SPARK_STATUS_OK;
+}
+
 static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 	void *buffers_void)
 {
@@ -911,6 +926,9 @@ static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 	status = SparkWeightdRouteKeys(layer, state->group_offset_host,
 		K3_EXPERTS, state->rows * K3_TOP_K, keys,
 		SPARK_WEIGHTD_LEASE_GROUPS_MAX, &count);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = K3RunnerLeaseTensorBase(state, layer, keys, &count);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	SparkK3RunnerStrayAccount(state, keys, count);
@@ -1287,6 +1305,8 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->vocab_slice_rows = (uint32_t)embed_rows;
 	}
 	state->dispatch.buffers->tp_sharded = configuration->tp_degree > 1u ? 1u : 0u;
+	state->lease_tensor_base = (uint32_t)(state->dispatch.buffers->routed_down_rows %
+		K3_LAYER_TILE_N != 0u);
 	state->dispatch.buffers->tp_rank = configuration->tp_rank;
 	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 	state->dispatch.slice_state->collective_context = state;
