@@ -1,0 +1,164 @@
+{
+ "metrics": {
+  "b1_128_wall": {
+   "file": "b1.json",
+   "key": [
+    "128",
+    "median_wall_tok_s"
+   ],
+   "prev": 42.21,
+   "lo": 40.0,
+   "hi": 46.0,
+   "tol": 0.95,
+   "lower_is_better": false,
+   "gate": true,
+   "note": "d37568d 42.21 wall tok/s (13:11Z, qwen up)"
+  },
+  "b1_128_ms": {
+   "file": "b1.json",
+   "key": [
+    "128",
+    "median_ms_per_token"
+   ],
+   "prev": 21.42,
+   "lo": 20.5,
+   "hi": 22.0,
+   "tol": 1.05,
+   "lower_is_better": true,
+   "gate": true,
+   "note": "d37568d 21.42 ms/token decode"
+  },
+  "b1_512_wall": {
+   "file": "b1.json",
+   "key": [
+    "512",
+    "median_wall_tok_s"
+   ],
+   "prev": 46.45,
+   "lo": 38.5,
+   "hi": 48.0,
+   "tol": 0.95,
+   "lower_is_better": false,
+   "gate": true,
+   "note": "d37568d 46.45 wall tok/s"
+  },
+  "b1_512_ms": {
+   "file": "b1.json",
+   "key": [
+    "512",
+    "median_ms_per_token"
+   ],
+   "prev": 20.97,
+   "lo": 20.0,
+   "hi": 25.3,
+   "tol": 1.05,
+   "lower_is_better": true,
+   "gate": true,
+   "note": "d37568d 20.97 ms/token decode"
+  },
+  "ttft_372": {
+   "file": "ttft.json",
+   "key": [
+    "372",
+    "median_ttft_ms"
+   ],
+   "prev": 1.3,
+   "lo": 0.85,
+   "hi": 1.4,
+   "tol": 1.1,
+   "lower_is_better": true,
+   "gate": true,
+   "note": "d37568d 1.30 s (a597ff0 1.02 s; kv_shard rounds, lanes/kvshard-rounds.md)",
+   "scale": 0.001
+  },
+  "ttft_742": {
+   "file": "ttft.json",
+   "key": [
+    "742",
+    "median_ttft_ms"
+   ],
+   "prev": 2.52,
+   "lo": 1.7,
+   "hi": 2.7,
+   "tol": 1.1,
+   "lower_is_better": true,
+   "gate": true,
+   "note": "d37568d 2.52 s (a597ff0 1.96 s)",
+   "scale": 0.001
+  },
+  "cold_8": {
+   "file": "conc.json",
+   "key": [
+    "8",
+    "median_aggregate_tok_s"
+   ],
+   "prev": 69.07,
+   "lo": 55.0,
+   "hi": 85.0,
+   "tol": 0.8,
+   "lower_is_better": false,
+   "gate": false,
+   "note": "d37568d 69.1; prefill-bound, high variance, reported only",
+   "batch": 8
+  },
+  "cold_16": {
+   "file": "conc.json",
+   "key": [
+    "16",
+    "median_aggregate_tok_s"
+   ],
+   "prev": 82.56,
+   "lo": 70.0,
+   "hi": 105.0,
+   "tol": 0.8,
+   "lower_is_better": false,
+   "gate": false,
+   "note": "d37568d 82.6; prefill-bound, high variance, reported only",
+   "batch": 16
+  },
+  "warm_8": {
+   "file": "conc_warm.json",
+   "key": [
+    "8",
+    "median_aggregate_tok_s"
+   ],
+   "prev": 118.46,
+   "lo": 110.0,
+   "hi": 135.0,
+   "tol": 0.9,
+   "lower_is_better": false,
+   "gate": true,
+   "note": "d37568d 118.5",
+   "batch": 8
+  },
+  "warm_16": {
+   "file": "conc_warm.json",
+   "key": [
+    "16",
+    "median_aggregate_tok_s"
+   ],
+   "prev": 155.82,
+   "lo": 145.0,
+   "hi": 175.0,
+   "tol": 0.9,
+   "lower_is_better": false,
+   "gate": true,
+   "note": "d37568d 155.8",
+   "batch": 16
+  }
+ },
+ "roofline": {
+  "bytes_per_token": 2560000000.0,
+  "read_peak": 243000000000.0,
+  "rounds": 114,
+  "round_floor_s": 4e-05,
+  "topology_bytes": 2000000.0,
+  "link": 50000000000.0,
+  "compute": "~1-2%",
+  "budget_file": "budget.txt",
+  "b1_ms_metrics": [
+   "b1_128_ms",
+   "b1_512_ms"
+  ]
+ }
+}

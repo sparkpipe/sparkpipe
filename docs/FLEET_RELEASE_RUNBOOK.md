@@ -4,14 +4,19 @@ The one current guide for the production Spark fleet: hosts and routes, the
 node agent, weightd ownership, releasing a runtime root, releasing the agent
 and weightd, the GLM API on the hub, bootstrap and triage. It was checked on
 2026-09-28 against origin/main `bbf5432` and read-only inspection of the hub
-and all sixteen Sparks. It replaces `FLEET_RELEASE.md`, `FLEET_RUNBOOK.md` and
+and all sixteen Sparks. Sections 4.2-4.6, 5.2 and 5.3 were rewritten on
+2026-09-29 from the d37568d and a597ff0 releases and origin/main `dfa12a5`;
+they use the release kit in `tools/fleet_release/`. The agent line references
+(`:NNN`) in sections 2, 7 and 8 date from `bbf5432`; the agent has moved since,
+so look functions up by name. It replaces `FLEET_RELEASE.md`, `FLEET_RUNBOOK.md` and
 the unmerged 09-28 fleet handoff, which are now history in
 [`archive/`](archive/). Queue and lane work is in [DEVCYCLE.md](DEVCYCLE.md)
 and [PARALLEL_DRIVER_DEBUG.md](PARALLEL_DRIVER_DEBUG.md).
 
-The rule: never deploy by killing and reloading engines by hand. Install
-verified files into the hub, write the MANIFEST last, and let each node's
-agent converge. Bare line references (`:NNN`) are to
+The rule: never deploy by killing and reloading engines by hand. Pause the
+fleet rotation, hold the root, install verified files into the hub, write the
+MANIFEST last, wait until every node has applied and verified it, release the
+hold and let each node's agent converge. Bare line references (`:NNN`) are to
 `tools/fleet_node_agent.sh`.
 
 ## 1. Hosts and network
@@ -281,105 +286,172 @@ Never rsync sparkf's `~/release` to the hub. On 2026-09-28 it held:
 
 (Audit, read-only.)
 
-### 4.2 Stage into the hub
+### 4.2 The release kit
 
-From the build node, which reaches the hub as `spec@100.123.97.61`:
+`tools/fleet_release/` carries every step below as a script that checks
+before it writes, logs to `$LOGS/<step>-<utc>.log`, and exits non-zero on
+anything unexpected. The kit has no model knowledge. Everything
+model-specific sits in a profile under the deployment, and everything
+release-specific sits in one env file:
 
-```sh
-ssh spec@100.123.97.61 'mkdir -p ~/release-staging'
-scp build/glm53_release.tar.gz build/glm53_release.tar.gz.sha256 spec@100.123.97.61:release-staging/
-```
+| File | Holds |
+| --- | --- |
+| `deployment/<deployment>/release/profile.env` | nodes, hub, root name, rank-pack template (`@hex@` = the node's position in `RELEASE_NODES`), driver path, build files, API channel, unit and port, x86 build command, required API log lines, rotation pause file and unit, memory gates, converge expectations |
+| `deployment/<deployment>/release/checks.json` | engine log gates (`converge_logs`, `smoke_logs`, `perf_logs`), allowed ERRSITEs, the smoke requests, the perf windows and score gates |
+| `deployment/<deployment>/release/probe_extra.sh` | extra node columns (for GLM Flash: `kvs`, `kvref`, `l2`, `gmode`) |
+| `deployment/<deployment>/release/perf_expect.json` | the previous release's numbers, ranges and roofline inputs |
+| `deployment/<deployment>/release/stage_drift.json` | why the served stage configs differ from the generator |
+| release env (lane directory, from `tools/fleet_release/release.env.example`) | sources the profile, then `SHA`, old/new identities (residentd, driver, weightd, API, adapter, channel deployment, root MANIFEST), `EXPECT_CHANGED`, `CHANNEL_ADD`, `STAGE_CONFIG_ADD` |
 
-On the hub, verify and unpack the tarball. Stop unless it prints `tarball OK`
-and the merged SHA, with no `SHA256SUMS` failure:
+GLM Flash's profile is `deployment/glm5_next_tp16/release/`. Every value is
+required: a missing or `PENDING` value stops the step with exit 2, and
+optional features are switched off with an explicit `none`. Run each step as
+`RELEASE_ENV=<file> bash tools/fleet_release/<step>.sh`.
 
-```sh
-cd ~/release-staging
-[ "$(sha256sum < glm53_release.tar.gz | cut -d' ' -f1)" = "$(cut -d' ' -f1 glm53_release.tar.gz.sha256)" ] && echo tarball OK
-rm -rf glm53_release && mkdir glm53_release && tar -xzf glm53_release.tar.gz -C glm53_release
-(cd glm53_release && sha256sum -c --quiet SHA256SUMS && cat SOURCE_COMMIT)
-```
+Preparation (production keeps serving):
 
-Then keep one rollback generation, install each file with temp + `mv`, and
-write the MANIFEST last:
+1. `build.sh`: a shallow clone of the merged SHA, rsynced to the build host
+   and built under a capped `systemd-run` unit; it refuses while
+   `PERF_HOLDER` starts with a prefix in `RELEASE_GPU_HOLDER_BLOCK`.
+2. `stage_config_patch.py patch` when the release changes stage configs: it
+   appends the new members to every served config (byte format kept, checked
+   against the served MANIFEST) and explains every member where the result
+   differs from the generator (`--generator`, `--committed`, `--drift`). The
+   hub re-checks the result with `stage_config_patch.py check` in
+   `assemble_root.sh` and `precheck.sh`.
+3. `stage.sh`: the tarball and new configs to the hub, `hub/assemble_root.sh`
+   (the served root plus the build files, MANIFEST regenerated), the x86 API
+   and adapter build from `git archive $SHA`, and `hub/stage_channel.sh`,
+   which adds each `CHANNEL_ADD` block (for example the declared chat
+   template, `chat_template=model-families/glm5_next/chat_template.json@<sha256>`)
+   to the live channel deployment and checks that every stop marker is
+   exactly one special token of the channel tokenizer. Copy the printed
+   identities into the release env.
+4. For a weightd change, stage the bundle first (section 5.2).
 
-```sh
-R=~/release/glm53flash.fp8.tp16 S=~/release-staging/glm53_release
-cd ~/release-staging
-rm -rf rollback && mkdir rollback && cp -a $R/bin $R/lib $R/stages $R/model_resident.json $R/MANIFEST rollback/
-for f in bin/sparkpipe_model_residentd bin/sparkpipe_model_api lib/hidden_transport.so lib/model_serving_adapter.so; do
-    cp $S/$f $R/$f.new && mv -f $R/$f.new $R/$f
-done
-rm -rf $R/stages.new && cp -a $S/stages $R/stages.new && rm -rf $R/stages && mv $R/stages.new $R/stages
-cd $R && find lib bin stages config model_resident.json -type f ! -name stage.json ! -name MANIFEST |
-    sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST
-```
+### 4.3 Before the window: the rotation
 
-The MANIFEST file set is the one `publish_local.sh:47-49` uses. The root's
-`config/stage_*.json` and `model_resident.json` come from the deployment
-generator, not from the build. When they change, every `runtime_root` in
-`model_resident.json` must name this root; that is the guard in
-`publish_local.sh:15-24`. The root's `bin/sparkpipe_weightd` and
-`bin/sparkpipe_registrar` are not used by the agent.
-
-### 4.3 Converge and verify
-
-Each agent sees the new MANIFEST within about a second, fetches the changed
-files and restarts its own root. No node waits for another, and GLM serves
-again once all sixteen engines are ready.
-
-A pending weightd announce (section 5.2) stops root convergence on every node
-whose engine is running. Before staging, check that each node's running
-weightd matches `core/WEIGHTSD_BIN` (section 5.2, step 4).
-
-To drain a root by hand, send a cwd-scoped TERM; the agent then restarts the
-root. Drain for a deployment-only change, a stuck engine or a weightd update.
-Draining all sixteen is a planned GLM outage: every engine restarts cold and
-pins every expert again (section 2.1), so schedule it with the operator:
+The fleet rotation (`tools/fleet_rotation.py`, [FLEET_ROTATION.md](FLEET_ROTATION.md))
+drives production through the same `agent.hold` file, stops and starts the
+production API, and runs `--reclaim-pack` on the production packs. A tick
+that runs during a release would hold or unhold production underneath the
+release scripts. So every release step starts with the rotation paused:
 
 ```sh
-for h in spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 \
-         spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf; do
-    ssh -o BatchMode=yes $h 'rr=$HOME/sparkdata/glm53flash.fp8.tp16
-        for p in $(pgrep -f "bin/sparkpipe_model_[r]esidentd"); do
-            [ "$(readlink /proc/$p/cwd)" = "$rr" ] && kill -TERM $p
-        done; exit 0' &
-done; wait
+T="python3 ~/fleet-rotation/bin/fleet_rotation.py --config ~/fleet-rotation/rotation.json"
+ssh rtx5090 "$T pause release <sha7>"
+ssh rtx5090 'systemctl --user show -p ActiveState --value fleet-rotation.service'   # inactive, not activating
+ssh rtx5090 "$T status"
 ```
 
-Verify:
+`pause` does not wait for a running tick; the tick stops at its next step.
+The kit's `rotation_gate` (in `precheck.sh`, `hold.sh` and `publish.sh`)
+refuses unless `~/fleet-rotation/ROTATION_PAUSE` exists and the unit is
+`inactive` or `failed`.
 
-```sh
-tools/fleet_sync.sh glm53flash.fp8.tp16 status
-for h in spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 \
-         spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf; do
-    ssh -o BatchMode=yes $h 'rr=$HOME/sparkdata/glm53flash.fp8.tp16
-        echo $(hostname) $(systemctl --user is-active fleet-agent) \
-            $(sha256sum < $rr/bin/sparkpipe_model_residentd | cut -c1-16) \
-            engines=$(pgrep -c -f "bin/sparkpipe_model_[r]esidentd") \
-            ready=$(grep -c "model_residentd ready" $rr/residentd.log)'
-done
-```
+Then make production the only model on the fleet:
 
-`status` prints the hub's heartbeat view, which can be stale (section 2.2).
-The loop reads each live node directly. Then update and check the API
-(section 6).
+- In a `flash_plus` hour production already serves; its companion may keep
+  running through a root-only release, but not through a weightd change or
+  `perf.sh`.
+- In a FULL or K3 hour production is held and the slot model owns the
+  memory. Run `$T converge flash` (a manual converge ignores the pause):
+  it stops the slot model, reclaims its packs by sha, and restores
+  production alone with its API and smoke.
+- For a weightd change or the perf gates, also stop the companion:
+  `$T converge flash` leaves production alone.
 
-### 4.4 Rollback
+After `SMOKE PASS` (or after `perf.sh`), run `$T resume`. The next tick
+adopts the fleet as it finds it and moves to the hour's target. If the
+release changed production's memory per node, update the `flash` entry's
+`mem_gib` in `deployment/fleet_rotation/rotation.json` so the rotation's
+floor prediction stays true.
 
-On the hub, restore the saved generation and write its MANIFEST last:
+A `lead-*` `PERF_HOLDER` also preempts the rotation within one tick, but only
+once the coord-sync patch mirrors it to the hub; the pause file does not
+depend on that.
 
-```sh
-R=~/release/glm53flash.fp8.tp16 B=~/release-staging/rollback
-rm -rf $R/bin $R/lib $R/stages && cp -a $B/bin $B/lib $B/stages $R/
-cp $B/model_resident.json $R/model_resident.json.new && mv -f $R/model_resident.json.new $R/model_resident.json
-cp $B/MANIFEST $R/MANIFEST.tmp && mv $R/MANIFEST.tmp $R/MANIFEST
-```
+### 4.4 The window: hold, publish, applied, unhold, converge, API, smoke
 
-Roll back the API channel too (section 6). On 09-28 the same mechanism,
-re-staging proven files and writing the MANIFEST, restored the dd3526b-era
-binaries and `WEIGHTSD_BIN`, and all sixteen nodes converged to them (handoff,
-section 3.4).
+This is the flow that released d37568d on 2026-09-29 (MEASURED, lane logs in
+`/Users/mac/wf/release-next/logs`, GLM Flash TP16, weightd unchanged):
+
+| Step | Script | What it checks, then does | d37568d |
+| --- | --- | --- | --- |
+| 1 | `precheck.sh` | read-only: rotation paused, SHA on origin/main, CI green, hub assembled root and channel, build host clean, every node on production, weightd bundle staged when weightd changes | PASS 13:09:52Z |
+| 2 | `hold.sh` | node gate (production identities, not held; for a weightd change also no other residentd and a staged bundle with valid receipts), then `touch agent.hold` on every node; each agent drains its residentd (TERM, `kill -9` after 15 s). Waits up to 3 min for `hold=yes eng_n=0` everywhere. **The model is down from here.** | HOLD DONE 13:09:57Z |
+| 3 | `weightd.sh publish`, `announce`, `wait` | only for a weightd change (section 5.2) | - |
+| 4 | `publish.sh` | hub `WEIGHTSD_BIN` is the new weightd, served MANIFEST is production, every node held and down with the new weightd running; then `hub/publish_root.sh` under `.publish.lock`: rollback copy of every changed file to `~/release-rollback-<ts>-<prev>` (path in `ROLLBACK_DIR`), changed files by temp + `mv`, **MANIFEST last** after `sha256sum -c` of the new MANIFEST against the served tree | PUBLISHED, 24 files |
+| 5 | (inside `publish.sh`) | waits up to 5 min until every agent has **applied** the new MANIFEST (`.applied_manifest` sha) and the node's root **verifies** (`sha256sum -c .applied_manifest`, column `rootok`). Held roots sync files but never start | applied + verified 16/16 13:10:04Z |
+| 6 | `unhold.sh new` | served MANIFEST is the release, every node held, down, applied, verified, weightd as expected, MemAvailable >= `RELEASE_MEM_UNHOLD_GIB`; then `rm agent.hold` everywhere | 13:10:07Z |
+| 7 | `converge.sh new` | waits up to `RELEASE_CONVERGE_MIN` for every node: one residentd of the new sha from the root, new driver, applied MANIFEST, new weightd running (one process), ready, MemAvailable >= floor, plus `RELEASE_CONVERGE_EXPECT` (GLM Flash: `l2=on kvref=0 kvs=1of16 gmode=graph`). Prints the per-node pack-verify mode (`verify=receipt` means the verify-once receipt held, section 5.2) and runs the `converge_logs` gates | CONVERGED 13:10:22Z |
+| 8 | `api_install.sh` | engines on the release everywhere; then `hub/api_install.sh`: the staged api, adapter and channel deployment by sha, the deployment equals the live one plus the `CHANNEL_ADD` keys only, tokenizer block and vocabulary checked, backup to `~/<channel>.bak-<prev>-<ts>` (path in `API_BACKUP_DIR`), temp + `mv`, `SHA256SUMS`, one unit restart, health with tokenizer, every `RELEASE_API_REQUIRED_LOG` line in the new `api.log` (GLM Flash: `tokenizer sidecar ready`, `chat_template declared stop_markers=3`) | API-INSTALLED 13:10:28Z |
+| 9 | `smoke.sh` | `hub_smoke.py` sends the profile's requests (health, warmup ids, two chats with no think block and the old prompt length, system + user, role `tool` refused with 400, a text completion), scans `api.log` since the install for ERRSITEs outside `api_errsite_allow`, runs the `smoke_logs` gates (graph mode on every rank, no graph failures, a rows=1 capture, engine ERRSITEs outside the allow list), and re-checks the identities | SMOKE PASS 13:10:31Z |
+| 10 | rotation | `$T resume` (or keep it paused for step 11) | - |
+| 11 | `perf.sh` | production alone (other residentds refuse unless `ALLOW_OTHERS=1`); the profile's perf windows through `perf_window.py` as `lead-<sha7>-<label>`, its score gates, the `perf_logs` gates on copied engine logs, `tp_chain_budget.py`, and `perf_summary.py` against `perf_expect.json`, with a roofline line on every B1 number | see below |
+
+The d37568d outage, hold to `SMOKE PASS`, was 39 s. The a597ff0 release,
+which also swapped weightd, took 54 s from drain to converged with every
+node in `verify=receipt` mode (MEASURED, `/Users/mac/wf/release-a597ff0/logs`).
+
+d37568d perf gates (13:10-13:30Z, qwen up, non-spec, temp 0): B1 128 21.42
+ms/token, 42.21 wall tok/s; B1 512 20.97 ms/token; TTFT 372/742 tokens 1.30/2.52 s
+(a597ff0 1.02/1.96 s: flagged REGRESSION); warm B8/B16 118.5/155.8 aggregate
+tok/s; COMPSEC-17 seq 15/17 twice (byte-identical), c17 13/17 and 14/17.
+roofline @B=1 at 21.42 ms/token: memory 49% (2.56 GB/token/node vs 243 GB/s,
+ceiling 95 tok/s) | compute ~1-2% | transport bw 1% + latency 71% (114 rounds
+x 40 us floor against a 6.46 ms peer term). The perf gate failed on the two
+TTFT numbers; that is a finding for the kv_shard rounds lane, not a release
+blocker by itself.
+
+### 4.5 Node gates and re-sampling
+
+Every gate above is one call of `tools/fleet_release/nodes.py`: one ssh per
+node runs `node_probe.sh` (plus the profile's `probe_extra.sh`) and prints one
+`key=value` row; `--expect KEY=V|KEY!=V|KEY>=N|KEY<=N` rules are checked on
+every row, and a column the probe does not print fails the rule. The probe
+counts only processes whose `/proc/<pid>/exe` is `sparkpipe_model_residentd`
+and whose cwd is the root, so a `pgrep` whose own command line names the
+binary is not an engine.
+
+- `--wait-min M --interval S` polls until every node passes or the deadline
+  passes.
+- At the final decision (at once for a gate without `--wait-min`, at the
+  deadline for a wait), only the failing nodes are probed again, up to
+  `--resample` times (default 2) `--resample-interval` apart (default 5 s).
+  A node that passes on a re-sample is logged `TRANSIENT <host>: ... cleared
+  on resample n/N`; one that still fails fails the gate.
+- Every run appends its table to `--log`, and prints `NODES-OK n/n` or
+  `NODES-FAIL k node(s): ...`.
+
+Re-sampling exists because a single probe can catch an agent pass or a
+heartbeat mid-write; it never turns a real failure into a pass, because the
+node has to pass a complete fresh probe.
+
+### 4.6 Rollback
+
+`rollback.sh all` works from any state and ends non-zero unless the hub is
+fully production (served MANIFEST, API, adapter, channel deployment,
+`WEIGHTSD_BIN` and the hub's core `bin/sparkpipe_weightd`):
+
+1. engines: skipped when every node already runs production unheld;
+   otherwise `hold.sh any` (if not held), `hub/rollback_root.sh` (only if the
+   release was published; it also restores a partial publish whose MANIFEST
+   is still production), `weightd.sh rollback` if a new weightd was published or announced,
+   wait until every node applied and verified the production MANIFEST,
+   `unhold.sh old`, `converge.sh old`;
+2. api: `hub/rollback_api.sh` restores the recorded backup channel (api,
+   adapter and deployment together), or confirms the live channel is
+   already production.
+
+Parts: `rollback.sh engines|root|api`; `root` alone runs only while every node
+is held and down. If step 2 ran and step 4 did not: `unhold.sh old` then
+`converge.sh old`. Roll back when an engine is not ready 10 min after the
+unhold or the smoke fails. Resume the rotation afterwards.
+
+The hand commands this section replaced (copy into `~/release`, regenerate
+the MANIFEST, drain by cwd-scoped TERM) are in git history; the laws in
+section 9 still hold for any manual step.
 
 ## 5. Releasing core: agent and weightd
 
@@ -416,34 +488,88 @@ git show <SHA>:tools/fleet_node_agent.sh | ssh rtx5090 'set -e; cd ~/release/cor
 Then check the `agent` field in the heartbeats, and run
 `journalctl --user -u fleet-agent | grep self-updating` on a node.
 
-### 5.2 weightd (planned GLM outage)
+### 5.2 weightd: the bundle rollout (planned outage)
 
-A weightd change restarts every engine cold.
+A weightd change restarts every engine cold, and each agent swaps weightd only
+while no residentd of any root runs on its node (`ensure_weightd`,
+"requires dependent engines to drain"). The bundle is three binaries built
+from the release SHA in one tree whose host suite ran: `sparkpipe_weightd`,
+`weightd_receipt`, `weightd_warm`. Set `OLD_WEIGHTD`, `NEW_WEIGHTD`,
+`NEW_RECEIPT`, `NEW_WARM`, `WEIGHTD_BUNDLE_BUILD` and `BUILD_HOST` in the
+release env; with `OLD_WEIGHTD = NEW_WEIGHTD` every weightd step refuses and
+the root steps expect the running weightd unchanged.
 
-1. Take `bin/sparkpipe_weightd` from the verified release build; the tarball
-   carries it (`module_build_release.sh:62`). Install it into the hub core with
-   temp + `mv` and regenerate the core MANIFEST. The nodes fetch it into
-   `~/sparkdata/core/bin/`; nothing else happens yet.
-2. Announce it on the hub: `ssh rtx5090 'bash -s' < tools/weightsd_announce.sh`.
-   The script writes `core/WEIGHTSD_BIN` with temp + `mv`
-   (`weightsd_announce.sh:13-14`). Each node's `install_core` then installs the
-   binary into `~/sparkdata/weightd/`.
-3. Every node's loop now stops at `ensure_weightd` while its engine runs
-   (section 2.2, step 5). Drain the root on all sixteen (section 4.3). Each
-   agent then:
-   1. sends TERM to the old weightd;
-   2. starts the new weightd and rewires the mesh;
-   3. lets `ensure_root` start the engine, which pins every expert again.
-4. On every node, verify that the running weightd is the announced sha:
-   `sha256sum < /proc/$(pgrep -o -f 'sparkdata/weightd/sparkpipe_[w]eightd')/exe | cut -c1-16`.
-   The heartbeat's `weightd` field is the installed file, not the running
-   process (`:80-82`).
+**Verify-once receipts.** A weightd from #1336 on hashes a pack in full only
+once. It then writes `<pack>.verified` (device, inode, size, mtime, ctime and
+the digest; [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md)), and every later cold path
+trusts the receipt while the file's stat is unchanged, so a restart streams the
+spine at disk speed instead of hashing 20.2 GiB. Each verification logs
+`weightd pack-verify path=... mode=receipt|sha256|ck128`; the probe's
+`verify` column is that mode for the node's rank pack.
 
-weightd reclaims a stale `/tmp/spark_weightd.sock` itself before `bind`
-(`runtime/spark_weightd.c:3419-3420`), and the agent recycles weightd with
-TERM only (`:445-447`). That code contradicts the 09-28 handoff's stale-socket
-diagnosis. When a new weightd will not start, look for a surviving weightd pid
-and for a holder of the latch port (`ss -ltnp | grep 61900`).
+Before the window (production keeps serving):
+
+1. `weightd.sh stage`: checks the build tree is at `SHA` with the three
+   shas, copies them to `~/weightd-bundle-stage/bin` on every node (KEEP line
+   added), and checks `stage_wd`, `stage_rc`, `stage_warm` everywhere.
+2. `weightd.sh receipts-adopt`: `weightd_receipt adopt <rank pack>` converts a
+   legacy `/tmp/spark-weightd-spine` receipt without rehashing (`legacy=none`
+   means the node verifies in full next). `HASH MISMATCH` stops everything:
+   investigate that pack.
+3. `weightd.sh receipts-verify`: only nodes without a valid receipt run
+   `weightd_receipt verify` (nice 19, idle IO, one node at a time, about
+   15-25 s per 20 GiB pack).
+4. `weightd.sh receipts-check`: `receipt=rc0` on every node. `precheck.sh`
+   and `hold.sh` require this whenever weightd changes.
+
+In the window, between `hold.sh` and `publish.sh` (every other lane's
+residentd stopped: `hold.sh` checks `others=none`):
+
+5. `weightd.sh publish`: saves the old core binary as
+   `~/release-staging/weightd-rollback/sparkpipe_weightd.<old>` (verified by
+   sha), installs the new one into `~/release/core/bin` under
+   `~/release/.core.publish.lock`, regenerates the core MANIFEST. Nodes fetch
+   it; nothing restarts.
+6. `weightd.sh announce`: `tools/weightsd_announce.sh` writes
+   `WEIGHTSD_BIN`; each agent's `install_core` installs it and, with no engine
+   running, replaces the running weightd.
+7. `weightd.sh wait`: the new weightd installed and running (one process, no
+   foreign weightd) on every node within 5 min.
+8. `publish.sh` and the rest of section 4.4. After `converge.sh new`, run
+   `weightd.sh verify`: every node on the new weightd with RECLAIM_PACK live
+   (`reclaim_pack=freed=0 arenas=0 busy=0` for an all-zero sha) and the
+   receipt mode count.
+
+This order (hold, weightd, root, unhold) is DERIVED from the agent's rules and
+the two MEASURED releases; it has not run end to end yet, so run its first use
+supervised. a597ff0 used the older order: weightd publish and announce while
+serving (agents then hold at `ensure_weightd`), root publish, then a
+cwd-scoped drain of every engine; drain to converged took 54 s. Its first
+drain attempt stopped because qwen still ran on four nodes: the gate that now
+lives in `hold.sh`.
+
+Rollback: `weightd.sh rollback` (while held) restores the saved binary and
+`WEIGHTSD_BIN` and waits for the old weightd on every node; `rollback.sh all`
+calls it when needed. The `.verified` receipts are ignored by an older weightd
+and need no cleanup.
+
+### 5.3 Freeing memory: `--reclaim-pack`, never `--reclaim`
+
+`weightd_warm SOCKET --reclaim-pack PACK|SHA256 ...` (#1345) frees only the
+cold arenas of the named packs and reports busy (attached or leased) arenas
+instead of freeing them; exit 0 all freed, 3 busy, 2 bad argument, 1 daemon
+error. The node-global `--reclaim` frees every cold arena of every lane: on
+2026-09-28 it freed two cold qwen arenas while GLM Full was reclaimed. Use:
+
+- `tools/fleet_window.sh reclaim [--list] [ROOT_GLOB...]` in the coordination
+  directory: one `--reclaim-pack` per unique pack sha under
+  `~/sparkdata/<ROOT_GLOB>` (sidecars and `SHA256SUMS` entries), with the
+  staged bundle's `weightd_warm`; `--list` resolves packs and touches no
+  weightd;
+- the rotation, which reclaims a stopped model's own packs by sha and rejects
+  any `--reclaim` in its config.
+
+A weightd older than the bundle answers `reclaim_pack=unsupported`.
 
 ## 6. The GLM API on the hub (`g53-api`)
 
@@ -513,6 +639,11 @@ make -C modules/glm5_next_resident_decode_stage adapter EXPERT_CODEC=fp8 \
 `build/modules/glm5_next_resident_decode_stage/fp8/libglm5_next_serving_adapter_fp8.so`
 (`modules/resident_decode_stage_rules.mk:233`).
 
+`tools/fleet_release/api_install.sh` (section 4.4, step 8) does this install
+with the staged, declared channel deployment and checks the API's log lines;
+use it. The commands below are the manual equivalent from 2026-09-28, before
+the channel declared a chat template.
+
 Install once the engines run the new root, from the same build directory.
 The steps keep the previous channel, install with temp + `mv`, and refresh
 `model_resident.json` from the release root plus the channel's tokenizer
@@ -543,8 +674,17 @@ echo $SHA > $C/SOURCE_COMMIT
 systemctl --user restart g53-api && sleep 5 && systemctl --user is-active g53-api
 ```
 
+Since #1359 the channel's `model_resident.json` also declares the chat
+template (`chat_template` block from `model-families/glm5_next/chat_template.json`,
+added by `hub/stage_channel.sh` through `CHANNEL_ADD`). The API renders chats
+from it and logs `chat_template declared stop_markers=3`; roles it does not
+declare (`tool`, `developer`) get HTTP 400 `role_unsupported`, and non-string
+content gets 400 `invalid_messages`. The Paris chat still renders 16 prompt
+tokens, as with the old hardcoded layout. A channel without the block
+answers chats with `chat_template_missing`.
+
 The unit has `Restart=no`, so a crashed API stays down until someone restarts
-it. For a smoke check, send the agent's warmup request (`:550-553`):
+it. The rotation also stops and starts this unit around FULL and K3 hours. For a smoke check, send the agent's warmup request (`:550-553`):
 
 ```sh
 curl -s --max-time 900 http://127.0.0.1:8433/v1/completions -H 'Content-Type: application/json' \
@@ -654,7 +794,8 @@ Each of these was paid for in an incident.
 1. Publish from a merged main SHA and check `SOURCE_COMMIT`; never publish from
    a lane tree.
 2. The MANIFEST is written last and is the commit bit. A binary's sha is its
-   version.
+   version. A node has taken a release only when its `.applied_manifest` is
+   that MANIFEST and its root passes `sha256sum -c` against it.
 3. Install with temp + `mv`. Writing over a running binary fails with ETXTBSY.
 4. Kill by `/proc/<pid>/cwd` or `exe`, never with `pkill -f`, which also matches
    your own ssh command. Drain with TERM before any `-9`.
@@ -692,3 +833,8 @@ Each of these was paid for in an incident.
 13. Required configuration fails loudly: no silent fallbacks and no `#ifndef`
     defaults. Grade every claim MEASURED, DERIVED or ASSUMED, with its artifact
     (file, node, date, build sha).
+14. Pause the fleet rotation before any release step and resume it after the
+    smoke; a rotation tick holds and releases the same `agent.hold` the
+    release uses.
+15. Free weightd memory by pack (`--reclaim-pack`), never with the
+    node-global `--reclaim`, which frees other lanes' cold arenas.
