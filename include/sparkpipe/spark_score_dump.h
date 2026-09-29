@@ -133,6 +133,7 @@ typedef struct SparkScoreDumpWriter
 	SparkScoreDumpEndRecord end;
 	char rows_path[SPARK_SCORE_DUMP_PATH_BYTES];
 	char tier2_path[SPARK_SCORE_DUMP_PATH_BYTES];
+	uint32_t failed;
 } SparkScoreDumpWriter;
 
 uint64_t SparkScoreDumpKeyNext(uint64_t previous, uint32_t token);
@@ -150,6 +151,7 @@ SparkStatus SparkScoreDumpOpen(const SparkScoreDumpConfig *config, SparkScoreDum
 SparkStatus SparkScoreDumpWriteRow(SparkScoreDumpWriter *writer, const SparkScoreDumpRowRecord *row, const uint32_t *probe_ids, const float *probe_logits);
 SparkStatus SparkScoreDumpWriteTier2(SparkScoreDumpWriter *writer, uint64_t key, uint32_t position, const float *logits);
 void SparkScoreDumpNoteWave(SparkScoreDumpWriter *writer, uint32_t skipped);
+void SparkScoreDumpFail(SparkScoreDumpWriter *writer);
 SparkStatus SparkScoreDumpClose(SparkScoreDumpWriter *writer);
 
 #ifdef __cplusplus

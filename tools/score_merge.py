@@ -325,7 +325,12 @@ def row_index(merged):
     table = {}
     for index in range(len(merged)):
         if merged["flags"][index] & ROW_KEY_VALID and not merged["flags"][index] & ROW_NONFINITE:
-            table.setdefault((int(merged["key"][index]), int(merged["position"][index])), index)
+            identity = (int(merged["key"][index]), int(merged["position"][index]))
+            first = table.setdefault(identity, index)
+            if first != index and (merged["log_z"][first] != merged["log_z"][index]
+                                   or not np.array_equal(merged["top_ids"][first], merged["top_ids"][index])
+                                   or not np.array_equal(merged["top_logits"][first], merged["top_logits"][index])):
+                raise DumpError(f"rows {first} and {index} score the same (key, position) {identity} differently")
     return table
 
 

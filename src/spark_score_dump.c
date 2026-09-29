@@ -331,6 +331,8 @@ SparkStatus SparkScoreDumpWriteRow(SparkScoreDumpWriter *writer, const SparkScor
 	uint32_t index;
 	if ( writer == 0 || writer->rows == 0 || row == 0 || row->record_kind != SPARK_SCORE_DUMP_RECORD_ROW || (row->probe_count != 0u && (probe_ids == 0 || probe_logits == 0)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( writer->failed != 0u )
+		return(SPARK_STATUS_IO_ERROR);
 	status = SparkScoreDumpWriteAll(writer->rows, row, sizeof(*row));
 	for (index = 0u; status == SPARK_STATUS_OK && index < row->probe_count; index++)
 	{
@@ -339,7 +341,10 @@ SparkStatus SparkScoreDumpWriteRow(SparkScoreDumpWriter *writer, const SparkScor
 			status = SparkScoreDumpWriteAll(writer->rows, probe_logits + index, sizeof(float));
 	}
 	if ( status != SPARK_STATUS_OK )
+	{
+		writer->failed = 1u;
 		return(status);
+	}
 	writer->end.row_count++;
 	if ( (row->flags & SPARK_SCORE_DUMP_ROW_KEY_VALID) == 0u )
 		writer->end.keyless_row_count++;
@@ -356,6 +361,8 @@ SparkStatus SparkScoreDumpWriteTier2(SparkScoreDumpWriter *writer, uint64_t key,
 	uint32_t width;
 	if ( writer == 0 || writer->tier2 == 0 || logits == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( writer->failed != 0u )
+		return(SPARK_STATUS_IO_ERROR);
 	width = writer->header.shard_end - writer->header.shard_begin;
 	status = SparkScoreDumpWriteAll(writer->tier2, &key, sizeof(key));
 	if ( status == SPARK_STATUS_OK )
@@ -366,7 +373,15 @@ SparkStatus SparkScoreDumpWriteTier2(SparkScoreDumpWriter *writer, uint64_t key,
 		status = SparkScoreDumpWriteAll(writer->tier2, logits, (size_t)width * sizeof(float));
 	if ( status == SPARK_STATUS_OK )
 		writer->end.tier2_row_count++;
+	else
+		writer->failed = 1u;
 	return(status);
+}
+
+void SparkScoreDumpFail(SparkScoreDumpWriter *writer)
+{
+	if ( writer != 0 )
+		writer->failed = 1u;
 }
 
 void SparkScoreDumpNoteWave(SparkScoreDumpWriter *writer, uint32_t skipped)
@@ -384,6 +399,11 @@ SparkStatus SparkScoreDumpClose(SparkScoreDumpWriter *writer)
 	SparkStatus status;
 	if ( writer == 0 || writer->rows == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( writer->failed != 0u )
+	{
+		SparkScoreDumpRelease(writer);
+		return(SPARK_STATUS_IO_ERROR);
+	}
 	status = SparkScoreDumpWriteAll(writer->rows, &writer->end, sizeof(writer->end));
 	if ( status == SPARK_STATUS_OK && (fflush(writer->rows) != 0 || fsync(fileno(writer->rows)) != 0) )
 		status = SPARK_STATUS_IO_ERROR;

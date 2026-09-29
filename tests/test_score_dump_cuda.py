@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="score-dump-cuda-") as directory:
     objects = []
     for source in ("src/spark_score_dump.c", "src/spark_sha256.c"):
         objects.append(str(work / (pathlib.Path(source).stem + ".o")))
-        subprocess.run(["cc", "-std=c11", "-O2", "-D_POSIX_C_SOURCE=200809L", "-Iinclude", "-c", source, "-o", objects[-1]],
+        subprocess.run(["cc", "-std=c11", "-O2", "-D_POSIX_C_SOURCE=200809L", "-D_DARWIN_C_SOURCE", "-Iinclude", "-c", source, "-o", objects[-1]],
                        cwd=ROOT, check=True)
     subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a", "-I.", "-Iinclude",
                     *objects, "tests/host_cuda/head_score_host.cu", "-o", binary], cwd=ROOT, check=True)

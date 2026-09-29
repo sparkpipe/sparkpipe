@@ -26,10 +26,11 @@ def corpus_from_tokens(tokens, path, document_rows):
             handle.write(json.dumps({"doc": f"d{doc}", "tokens": [int(t) for t in chunk]}) + "\n")
 
 
-def run_harness(binary, shape, directory, probe="-", tier2="-"):
+def run_harness(binary, shape, directory, probe="-", tier2="-", fail_rank=None):
     directory.mkdir(parents=True, exist_ok=True)
+    extra = [] if fail_rank is None else [str(fail_rank)]
     subprocess.run([str(binary), str(directory), str(shape["tp"]), str(shape["rows"]), str(shape["hidden"]),
-                    str(shape["width"]), str(shape["document_rows"]), str(SEED), str(probe), str(tier2)],
+                    str(shape["width"]), str(shape["document_rows"]), str(SEED), str(probe), str(tier2), *extra],
                    check=True, timeout=1800)
     return sorted(directory.glob("score.r*.bin"))
 
@@ -148,5 +149,12 @@ def check_pipeline(binary, work, shape=SMALL, lanes=1):
     exact_report = json.loads(exact.read_text())
     assert exact_report["kl_mean"] == 0.0 and len(exact_report["rows"]) == shape["tier2"]
     assert exact_report["max_mass_error"] <= 1.0e-9
+    failed = run_harness(binary, shape, work / "failed", fail_rank=tp // 2)
+    try:
+        score_merge.read_rank_file(failed[tp // 2])
+    except score_merge.DumpError:
+        pass
+    else:
+        raise AssertionError("a rank file marked failed was written with an end record")
     return {"rows": rows, "tp": tp, "lanes": lanes, "log_z_max_error": float(np.max(np.abs(merged["log_z"] - log_z))),
             "fp32_accumulation_vs_float64": accumulation}

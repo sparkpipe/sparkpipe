@@ -134,6 +134,9 @@ def read_tier2(path):
     if header["magic"] != score_merge.TIER2_OUT_MAGIC or header["version"] != score_merge.VERSION:
         raise CompareError(f"{path}: not a Tier-2 dump")
     width = header["shard_end"] - header["shard_begin"]
+    record = 16 + 4 * width
+    if (len(data) - score_merge.HEADER.size) % record != 0:
+        raise CompareError(f"{path}: truncated Tier-2 dump")
     rows = {}
     offset = score_merge.HEADER.size
     while offset < len(data):
@@ -141,9 +144,17 @@ def read_tier2(path):
         if used != width:
             raise CompareError(f"{path}: Tier-2 row width {used} != shard width {width}")
         logits = np.frombuffer(data, dtype="<f4", count=width, offset=offset + 16).astype(np.float64)
-        rows.setdefault((key, position), logits)
-        offset += 16 + 4 * width
+        previous = rows.setdefault((key, position), logits)
+        if previous is not logits and not np.array_equal(previous, logits):
+            raise CompareError(f"{path}: Tier-2 row {(key, position)} appears twice with different logits")
+        offset += record
     return header, rows
+
+
+def tier2_identities(merged):
+    wanted = score_merge.ROW_KEY_VALID | score_merge.ROW_TIER2
+    return sorted({(int(merged["key"][i]), int(merged["position"][i])) for i in range(len(merged))
+                   if merged["flags"][i] & wanted == wanted})
 
 
 def partial(ref_tier2, arm_tier2, ref_merged, arm_merged):
@@ -159,6 +170,11 @@ def partial(ref_tier2, arm_tier2, ref_merged, arm_merged):
     identities = sorted(ref_rows)
     if identities != sorted(arm_rows):
         raise CompareError("reference and arm Tier-2 row sets differ")
+    if identities != tier2_identities(ref) or identities != tier2_identities(arm):
+        raise CompareError("Tier-2 dump rows differ from the merged rows flagged Tier-2 (incomplete Tier-2 dump)")
+    missing = [identity for identity in identities if identity not in ref_index or identity not in arm_index]
+    if missing:
+        raise CompareError(f"Tier-2 rows {missing[:4]} have no finite merged row")
     out = np.zeros(len(identities), dtype=PARTIAL_DTYPE)
     for index, identity in enumerate(identities):
         lp = ref_rows[identity] - ref["log_z"][ref_index[identity]]

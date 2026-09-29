@@ -84,7 +84,7 @@ int main(int argc, char **argv)
 	const char *directory;
 	const char *probe_path;
 	const char *tier2_path;
-	uint32_t tp, rows, dimension, width, vocabulary, document_rows, rank, row, index, count, owned, id_count;
+	uint32_t tp, rows, dimension, width, vocabulary, document_rows, rank, row, index, count, owned, id_count, fail_rank;
 	uint16_t *hidden, *head;
 	uint32_t *tokens, *offsets, *local, *owned_ids;
 	float *logits, *probe_logits;
@@ -93,11 +93,12 @@ int main(int argc, char **argv)
 	uint32_t *valid;
 	const uint32_t *ids;
 	SparkStatus status;
-	if ( argc != 10 )
+	if ( argc != 10 && argc != 11 )
 	{
-		fprintf(stderr, "usage: %s dir tp rows hidden width document_rows seed probe|- tier2|-\n", argv[0]);
+		fprintf(stderr, "usage: %s dir tp rows hidden width document_rows seed probe|- tier2|- [fail_rank]\n", argv[0]);
 		return(2);
 	}
+	fail_rank = argc == 11 ? (uint32_t)strtoul(argv[10], 0, 10) : UINT32_MAX;
 	directory = argv[1];
 	tp = (uint32_t)strtoul(argv[2], 0, 10);
 	rows = (uint32_t)strtoul(argv[3], 0, 10);
@@ -198,6 +199,14 @@ int main(int argc, char **argv)
 				return(5);
 		}
 		SparkScoreDumpNoteWave(&writer, 0u);
+		if ( rank == fail_rank )
+		{
+			SparkScoreDumpFail(&writer);
+			record.probe_count = 0u;
+			if ( SparkScoreDumpWriteRow(&writer, &record, 0, 0) != SPARK_STATUS_IO_ERROR || SparkScoreDumpClose(&writer) != SPARK_STATUS_IO_ERROR )
+				return(8);
+			continue;
+		}
 		if ( SparkScoreDumpClose(&writer) != SPARK_STATUS_OK )
 			return(6);
 	}

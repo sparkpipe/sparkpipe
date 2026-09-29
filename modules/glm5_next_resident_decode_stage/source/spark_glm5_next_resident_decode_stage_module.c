@@ -3460,6 +3460,7 @@ typedef struct SparkGlm5NextScore
 	float *host_tier2;
 	uint64_t *host_keys;
 	uint32_t *host_flags;
+	pthread_mutex_t lock;
 	uint64_t wave_ordinal;
 	uint32_t rows_capacity;
 	uint32_t width;
@@ -3483,6 +3484,7 @@ static void SparkGlm5NextScoreRelease(SparkGlm5NextScore *score)
 	free(score->host_tier2);
 	free(score->host_keys);
 	free(score->host_flags);
+	(void)pthread_mutex_destroy(&score->lock);
 	free(score);
 }
 
@@ -3503,6 +3505,11 @@ static SparkStatus SparkGlm5NextScoreOpen(SparkGlm5NextModuleState *state,const 
 	score = (SparkGlm5NextScore *)calloc(1u,sizeof(*score));
 	if ( score == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( pthread_mutex_init(&score->lock,0) != 0 )
+	{
+		free(score);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	memset(&config,0,sizeof(config));
 	config.directory = context->score_dump_directory;
 	config.probe_path = context->score_probe_path;
@@ -3516,6 +3523,7 @@ static SparkStatus SparkGlm5NextScoreOpen(SparkGlm5NextModuleState *state,const 
 	status = SparkScoreDumpOpen(&config,&score->writer);
 	if ( status != SPARK_STATUS_OK )
 	{
+		(void)pthread_mutex_destroy(&score->lock);
 		free(score);
 		fprintf(stderr,"SCORE-DUMP open failed status=%d directory=%s\n",(int)status,context->score_dump_directory);
 		SPARK_RETURN(status);
@@ -3545,6 +3553,7 @@ static SparkStatus SparkGlm5NextScoreOpen(SparkGlm5NextModuleState *state,const 
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status != SPARK_STATUS_OK )
 	{
+		SparkScoreDumpFail(&score->writer);
 		(void)SparkScoreDumpClose(&score->writer);
 		SparkGlm5NextScoreRelease(score);
 		SPARK_FAIL(status);
@@ -3572,8 +3581,12 @@ static void SparkGlm5NextScoreClose(SparkGlm5NextModuleState *state)
 
 static void SparkGlm5NextScoreSkip(SparkGlm5NextTpChain *chain)
 {
-	if ( chain->state->score != 0 )
-		SparkScoreDumpNoteWave(&chain->state->score->writer,1u);
+	SparkGlm5NextScore *score = chain->state->score;
+	if ( score == 0 )
+		return;
+	(void)pthread_mutex_lock(&score->lock);
+	SparkScoreDumpNoteWave(&score->writer,1u);
+	(void)pthread_mutex_unlock(&score->lock);
 }
 
 static SparkStatus SparkGlm5NextScorePlan(SparkGlm5NextScore *score,const SparkGlm5NextExecutionSlot *slot,uint32_t first,uint32_t rows,uint32_t *probe_count)
@@ -3640,7 +3653,7 @@ static SparkStatus SparkGlm5NextScoreWrite(SparkGlm5NextScore *score,const Spark
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm5NextScoreWave(SparkGlm5NextTpChain *chain)
+static SparkStatus SparkGlm5NextScoreWaveLocked(SparkGlm5NextTpChain *chain)
 {
 	SparkGlm5NextModuleState *state = chain->state;
 	SparkGlm5NextScore *score = state->score;
@@ -3649,8 +3662,6 @@ static SparkStatus SparkGlm5NextScoreWave(SparkGlm5NextTpChain *chain)
 	cudaError_t error;
 	SparkStatus status;
 	uint32_t rows,first,count,row;
-	if ( score == 0 )
-		return(SPARK_STATUS_OK);
 	if ( chain->spec_verify != 0u )
 	{
 		SparkScoreDumpNoteWave(&score->writer,1u);
@@ -3678,16 +3689,36 @@ static SparkStatus SparkGlm5NextScoreWave(SparkGlm5NextTpChain *chain)
 	status = SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"score_dump_launch");
 	if ( status == SPARK_STATUS_OK && SparkGlm5NextBoundedStreamSync(state,slot->stream,UINT64_C(35000000000)) != 0 )
 		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK && state->ws_enabled != 0u && SparkStepVerdictClassify(slot->host_output_token_ids + first,rows,slot->miss_ring != 0 ? slot->miss_ring[SPARK_STEP_MISS_FLAG] : 0u) != SPARK_STEP_VERDICT_COMMIT )
+	{
+		SparkScoreDumpNoteWave(&score->writer,1u);
+		return(SPARK_STATUS_OK);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextScoreWrite(score,slot,first,rows);
 	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"SCORE-DUMP wave failed rank=%u status=%d rows=%u; the dump is incomplete\n",state->tp_rank,(int)status,rows);
 		SPARK_RETURN(status);
-	}
 	SparkScoreDumpNoteWave(&score->writer,0u);
 	score->wave_ordinal++;
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextScoreWave(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextScore *score = chain->state->score;
+	SparkStatus status;
+	if ( score == 0 )
+		return(SPARK_STATUS_OK);
+	if ( pthread_mutex_lock(&score->lock) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkGlm5NextScoreWaveLocked(chain);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkScoreDumpFail(&score->writer);
+		fprintf(stderr,"SCORE-DUMP wave failed rank=%u status=%d rows=%u; the dump is incomplete and gets no end record\n",chain->state->tp_rank,(int)status,chain->wave_rows);
+	}
+	(void)pthread_mutex_unlock(&score->lock);
+	return(status);
 }
 #endif
 
