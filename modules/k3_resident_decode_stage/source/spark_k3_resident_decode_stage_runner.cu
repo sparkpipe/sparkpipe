@@ -1214,9 +1214,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->module.bound,state->module.bound_count,
 			state->lazy_pack) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
-	cudaMemset(state->dispatch.page_table, 0,
-		(uint64_t)state->module.sizing.mla_layer_count *
-		configuration->kv_pages_per_sequence * 4u);
 	state->vocab = state->module.pack.config.vocab;
 	{
 		uint32_t routed;

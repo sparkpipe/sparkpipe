@@ -52,10 +52,8 @@
 1 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: fread uses a direct size/count literal
 1 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: memcpy uses a direct size/count literal
 3 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: strncmp uses a direct size/count literal
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu: cudaMalloc uses a raw byte-width multiplier
 6 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMalloc uses a direct size/count literal
 13 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMalloc uses a raw byte-width multiplier
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: malloc uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memcpy uses a direct size/count literal
 2 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memset uses a raw byte-width multiplier

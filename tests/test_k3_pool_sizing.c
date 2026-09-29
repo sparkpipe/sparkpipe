@@ -122,9 +122,9 @@ static int check_rank_state_bytes(void)
 	failures += expect(tp1.kda_windows == 69ull * 16u * SPARK_K3_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER &&
 		tp16.kda_windows * 16u == tp1.kda_windows,
 		"a TP rank holds only its own heads' q/k/v conv windows");
-	failures += expect(tp16.mla_kv == 24ull * 64u * 73728u &&
+	failures += expect(tp16.mla_kv == 24ull * 16u * 64u * 73728u &&
 		tp16.total == tp16.kda_state + tp16.kda_windows + tp16.mla_kv,
-		"the MLA KV pool and the total are counted");
+		"every resident sequence owns its KV pages and the total is counted");
 	failures += expect(SparkK3RankStateBytesFor(69u, 24u, 16u, 5u, 64u, 73728u, &tp1) == 0u &&
 		SparkK3RankStateBytesFor(69u, 24u, 0u, 4u, 64u, 73728u, &tp1) == 0u &&
 		SparkK3KdaRankLayoutFor(0u, &layout) == 0u,

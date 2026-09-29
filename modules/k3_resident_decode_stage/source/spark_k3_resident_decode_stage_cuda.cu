@@ -154,22 +154,35 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	cudaMemset(d->kda_k_window_pool, 0, qk_bytes);
 	cudaMemset(d->kda_v_window_pool, 0, v_bytes);
 
-	uint64_t kv_total = (uint64_t)d->mla_count * kv_pages_per_view * kv_page_bytes;
+	const uint64_t view_pages = (uint64_t)sequences * kv_pages_per_view;
+	const uint64_t kv_total = (uint64_t)d->mla_count * view_pages * kv_page_bytes;
+	if ( kv_total != state_plan.mla_kv )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	if ( cudaMalloc(&d->kv_pool, kv_total) != cudaSuccess ||
-		cudaMalloc(&d->page_table, (size_t)d->mla_count * kv_pages_per_view * 4u) != cudaSuccess ||
+		cudaMalloc(&d->page_table, (size_t)d->mla_count * view_pages * sizeof(uint32_t)) != cudaSuccess ||
 		cudaMalloc(&d->access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 	cudaMemset(d->kv_pool, 0, kv_total);
 	cudaMemset(d->access_error, 0, (size_t)d->mla_count * sizeof(LmKvAccessError));
+	{
+		uint32_t *identity = new uint32_t[view_pages];
+		for ( uint64_t page = 0u; page < view_pages; ++page )
+			identity[page] = (uint32_t)page;
+		for ( uint32_t i = 0u; i < d->mla_count; ++i )
+			if ( cudaMemcpy(d->page_table + (size_t)i * view_pages, identity,
+					view_pages * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess )
+				{ delete[] identity; SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
+		delete[] identity;
+	}
 	d->mla_cache = new LmKvView[d->mla_count];
 	for ( uint32_t i = 0u; i < d->mla_count; ++i )
 	{
 		memset(&d->mla_cache[i], 0, sizeof(d->mla_cache[i]));
-		d->mla_cache[i].pool = d->kv_pool + (size_t)i * kv_pages_per_view * kv_page_bytes;
-		d->mla_cache[i].page_table = d->page_table + (size_t)i * kv_pages_per_view;
-		d->mla_cache[i].page_table_stride = 1u;
+		d->mla_cache[i].pool = d->kv_pool + (size_t)i * view_pages * kv_page_bytes;
+		d->mla_cache[i].page_table = d->page_table + (size_t)i * view_pages;
+		d->mla_cache[i].page_table_stride = kv_pages_per_view;
 		d->mla_cache[i].sequence_count = sequences;
-		d->mla_cache[i].pool_page_count = kv_pages_per_view;
+		d->mla_cache[i].pool_page_count = (uint32_t)view_pages;
 		d->mla_cache[i].access_error = d->access_error + i;
 	}
 
