@@ -1,25 +1,30 @@
 {
   "checkpoint": {
     "config_sha256": "9710e121a58d03ac92c8d6da287a19541994319afbbe6d6202af001ffd379213",
-    "index_sha256": "9878d878d90a7e13b7b41409cd2128d887587ad979dde77debfce10003575db0",
-    "path": "/home/spark7/lane-k3-t1/kimi-k3-local"
+    "index_sha256": "f1d0ab47fb86aa78de6a25baee4de876f25f64e4cf7619943a42e08ab28b70f5",
+    "path": "/home/spark6/k3next-t1ref/ckpt",
+    "source": {
+      "index_sha256": "a1c5210650ce71d2d3ae9ec5a101ac4afd3cf4b10091be589853437eb967febd",
+      "path": "/mnt/model-warm/kimi-k3",
+      "staging": "language_model non-expert tensors copied with per-tensor sha256 re-read checks; experts read from the source path"
+    }
   },
   "defines_config_mismatches": [],
   "family": "k3",
   "fixtures": {
     "capital_of_france.t1r": {
-      "bytes": 841735,
-      "sha256": "3cad0e67ddabe8e07d947edf71dc0e108c75beb1cc79fe8a27a39ed97bf982ac"
+      "bytes": 841746,
+      "sha256": "97a5fa04ad56f30bb32c6ba3635c43375b0ea259fcb2001e61b7f96011605767"
     },
     "count_up.t1r": {
-      "bytes": 1121657,
-      "sha256": "a74538ca379e1da237e733f676f6075ade173d624006836cb6d1ec7b18c1039b"
+      "bytes": 1121522,
+      "sha256": "4d62a2d79c6a3b0ee7755a5f1a9155865594e554bc6cbe88e655a7115fb25cf1"
     }
   },
-  "generated_utc": "2026-09-20T03:51:18Z",
+  "generated_utc": "2026-09-29T14:20:05Z",
   "generator": "t1_reference_decoder.py",
-  "host": "spark7",
-  "llm_defines_sha256": "f98797f3c60b68bd323b47eda53bc549b01986254b86113b742c69c45e291d56",
+  "host": "spark6",
+  "llm_defines_sha256": "0e084a66331712118cfc8ea3839e2db6c84271d52ac35db92304bcead7d02d89",
   "numpy_version": "2.5.3",
   "prompts_sha256": "7d2644ce628f720b873c30c3e71fe6d72f527fb692aba90802c9a11b3548ec3a",
   "python_version": "3.12.3",
