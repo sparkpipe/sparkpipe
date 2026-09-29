@@ -224,6 +224,10 @@ def main() -> int:
                              "experts [r*384/4, (r+1)*384/4)); the warmer "
                              "validates keys against the rank pack's own "
                              ".experts manifest")
+    parser.add_argument("--wset-tp", type=int, metavar="TP", default=NODES,
+                        help="with --wset-rank: the tp degree of the rank "
+                             "packs the wset targets (rank r owns experts "
+                             "[r*384/TP, (r+1)*384/TP))")
     parser.add_argument("--check", action="store_true",
                         help="regenerate and compare against the committed manifest")
     args = parser.parse_args()
@@ -238,7 +242,9 @@ def main() -> int:
         return 0
     Path(args.output).write_text(rendered)
     if args.emit_wset:
-        shard = sp.ROUTED_EXPERTS // NODES
+        if args.wset_tp < 1 or sp.ROUTED_EXPERTS % args.wset_tp:
+            fail(f"--wset-tp {args.wset_tp} does not divide {sp.ROUTED_EXPERTS} experts")
+        shard = sp.ROUTED_EXPERTS // args.wset_tp
         selected = [entry for entry in manifest["experts"]
                     if args.wset_rank is None
                     or entry["expert"] // shard == args.wset_rank]
