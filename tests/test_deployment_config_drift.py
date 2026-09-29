@@ -59,15 +59,52 @@ def adapter_members(relative_source: str, symbol: str) -> list[str]:
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
+def adapter_optional_members(relative_source: str, function: str) -> list[str]:
+    """Extract the optional members the adapter appends to its exact list."""
+    text = (ROOT / relative_source).read_text(encoding="utf-8")
+    match = re.search(rf"\b{function}\s*\([^)]*\)\s*\{{(.*?)\n\}}", text, re.S)
+    if not match:
+        raise RuntimeError(f"{function} not found in {relative_source}")
+    return re.findall(r'list\[count\+\+\]\s*=\s*"([^"]+)"', match.group(1))
+
+
 def check_member_list(failures: list, family: str, source: str, symbol: str,
-                      emitted: dict) -> None:
+                      emitted: dict, optional: list[str] | None = None) -> None:
     want = adapter_members(source, symbol)
     got = list(emitted.keys())
-    if got != want:
+    extra = got[len(want):]
+    allowed = [name for name in (optional or []) if name in extra]
+    if got[:len(want)] != want or extra != allowed:
         failures.append(
             f"{family}: generator stage-config members {got} != adapter "
-            f"exact-member list {want} ({source}:{symbol}); the adapter "
-            f"rejects the generator's output SCHEMA_ERROR at load")
+            f"exact-member list {want} plus optional {optional or []} "
+            f"({source}:{symbol}); the adapter rejects the generator's "
+            f"output SCHEMA_ERROR at load")
+
+
+def firmware_constant(relative_header: str, name: str) -> int:
+    text = (ROOT / relative_header).read_text(encoding="utf-8")
+    match = re.search(rf"#define {name} (\d+)u", text)
+    if not match:
+        raise RuntimeError(f"{name} not found in {relative_header}")
+    return int(match.group(1))
+
+
+def check_glm5_next_kv_shard(failures: list, tree: Path) -> None:
+    required = firmware_constant(
+        "modules/glm5_next_resident_decode_stage/include/sparkpipe/"
+        "spark_glm5_next_resident_decode_stage_firmware.h",
+        "SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_KV_SHARD_REQUIRED_DEGREE")
+    for path in sorted((tree / "config").glob("stage_*.json")):
+        stage = json.loads(path.read_text())
+        if stage["tp_degree"] < required:
+            continue
+        if stage.get("kv_shard") != 1 or \
+                stage.get("dsa_index_context_parallel") != 1:
+            failures.append(
+                f"{path}: tp_degree {stage['tp_degree']} >= {required} "
+                f"needs kv_shard=1 and dsa_index_context_parallel=1; the "
+                f"module refuses GLM-KV-SHARD-REQUIRED at init")
 
 
 def main() -> int:
@@ -106,7 +143,13 @@ def main() -> int:
         check_member_list(failures, "glm5_next",
                           "modules/glm5_next_resident_decode_stage/source/"
                           "spark_glm5_next_serving_adapter.c",
-                          "SparkGlm5NextServingConfigurationMembers", stage)
+                          "SparkGlm5NextServingConfigurationMembers", stage,
+                          adapter_optional_members(
+                              "modules/glm5_next_resident_decode_stage/"
+                              "source/spark_glm5_next_serving_adapter.c",
+                              "SparkGlm5NextServingConfigurationList"))
+        check_glm5_next_kv_shard(failures, glm5_gen)
+        check_glm5_next_kv_shard(failures, glm5_tree)
 
         for relative in ["config/stage_%02d.json" % i for i in range(16)]:
             committed = json.loads((glm5_tree / relative).read_text())
@@ -132,11 +175,15 @@ def main() -> int:
             failures.append(f"glm5_next: the generator refused score-dump members for a dev root: {accepted.stderr[-300:]}")
         else:
             dev_stage = json.loads((dev / "config/stage_00.json").read_text())
+            check_glm5_next_kv_shard(failures, dev)
+            optional = adapter_optional_members("modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
+                                                "SparkGlm5NextServingConfigurationList")
             want = adapter_members("modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
-                                   "SparkGlm5NextServingConfigurationMembers") + adapter_score
+                                   "SparkGlm5NextServingConfigurationMembers") + \
+                [name for name in optional if name in dev_stage] + adapter_score
             if list(dev_stage.keys()) != want or len(adapter_score) != 3:
                 failures.append(f"glm5_next: dev score-dump stage members {list(dev_stage.keys())} != adapter "
-                                f"base + optional score members {want}")
+                                f"base + present optional members + score members {want}")
         refusals = {
             "production empty directory": ({}, ["--score-dump-directory", ""]),
             "dev empty directory": (dev_env, ["--score-dump-directory", ""]),

@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm5_next_model.h"
+#include "sparkpipe/spark_kv_shard.h"
 
 #if defined(__CUDACC__)
 #define SPARK_GLM5_NEXT_INDEX_CP_FN static inline __host__ __device__
@@ -10,8 +11,6 @@
 #define SPARK_GLM5_NEXT_INDEX_CP_FN static inline
 #endif
 
-#define SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE \
-	(SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS / SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL)
 #define SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS \
 	(SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION / 2u)
 
@@ -20,26 +19,33 @@ SPARK_GLM5_NEXT_INDEX_CP_FN uint32_t SparkGlm5NextIndexCpPools(uint32_t context)
 	return(context / SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL);
 }
 
+SPARK_GLM5_NEXT_INDEX_CP_FN SparkKvShard SparkGlm5NextIndexCpShard(uint32_t rank,uint32_t degree)
+{
+	SparkKvShard shard;
+	shard.degree = degree <= 1u ? 1u : degree;
+	shard.rank = degree <= 1u ? 0u : rank;
+	shard.grain = SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL;
+	return(shard);
+}
+
 SPARK_GLM5_NEXT_INDEX_CP_FN uint32_t SparkGlm5NextIndexCpLocalStride(uint32_t pools,uint32_t degree)
 {
-	uint32_t pages;
-	pages = (pools + SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE - 1u) / SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE;
-	return(degree <= 1u ? pools : ((pages + degree - 1u) / degree) * SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE);
+	return(degree <= 1u ? pools : (pools + degree - 1u) / degree);
 }
 
 SPARK_GLM5_NEXT_INDEX_CP_FN uint32_t SparkGlm5NextIndexCpGlobalPool(uint32_t local,uint32_t rank,uint32_t degree)
 {
-	return(degree <= 1u ? local : ((local / SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE) * degree + rank) * SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE + local % SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE);
+	return(SparkKvShardLocalPosition(SparkGlm5NextIndexCpShard(rank,degree),local * SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL) / SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL);
 }
 
 SPARK_GLM5_NEXT_INDEX_CP_FN uint32_t SparkGlm5NextIndexCpOwner(uint32_t pool,uint32_t degree)
 {
-	return(degree <= 1u ? 0u : (pool / SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE) % degree);
+	return(SparkKvShardOwner(SparkGlm5NextIndexCpShard(0u,degree),pool * SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL));
 }
 
 SPARK_GLM5_NEXT_INDEX_CP_FN uint32_t SparkGlm5NextIndexCpLocalPool(uint32_t pool,uint32_t degree)
 {
-	return(degree <= 1u ? pool : ((pool / SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE) / degree) * SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE + pool % SPARK_GLM5_NEXT_INDEX_CP_POOLS_PER_PAGE);
+	return(degree <= 1u ? pool : pool / degree);
 }
 
 SPARK_GLM5_NEXT_INDEX_CP_FN uint32_t SparkGlm5NextIndexCpGatherSequences(uint32_t rows,uint32_t local_stride)

@@ -12,7 +12,7 @@ with tempfile.TemporaryDirectory(prefix="glm-index-kv-") as directory:
     end = cuda.index("\nstatic uint32_t index_ordinal_of(", begin)
     (pathlib.Path(directory) / "glm_kv_view_body.h").write_text(cuda[begin:end])
     layer = (ROOT / "modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh").read_text()
-    begin = layer.index("template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS>")
+    begin = layer.index("static __device__ __forceinline__ const uint16_t *Glm5NextIndexSlot(")
     end = layer.index('\n#include "modules/', begin)
     (pathlib.Path(directory) / "glm_pool_kernels.h").write_text(layer[begin:end])
     subprocess.run([host_cuda_cxx(), "-std=c++17", "-O0", "-I.",
