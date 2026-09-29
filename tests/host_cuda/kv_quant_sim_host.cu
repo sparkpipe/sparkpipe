@@ -12,7 +12,6 @@ float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 #include "inference/kernels/mma.cuh"
 #undef LM_WARP_LANES
 #define LM_WARP_LANES LM_HOST_WARP_LANES
-#define LM_KV_QUANT_SIM_LANES LM_HOST_WARP_LANES
 
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/kv_quant_sim.cuh"

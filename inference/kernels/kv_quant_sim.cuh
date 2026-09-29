@@ -1,15 +1,12 @@
 #pragma once
 
 #include "inference/kernels/dtype.cuh"
+#include "inference/kernels/mma.cuh"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_kv_quant_sim.h"
 #include <float.h>
 #include <math.h>
 #include <stdint.h>
-
-#ifndef LM_KV_QUANT_SIM_LANES
-#define LM_KV_QUANT_SIM_LANES 32u
-#endif
 
 #define LM_KV_QUANT_SIM_NAN_BF16 ((uint16_t)0x7fc0u)
 
@@ -94,10 +91,10 @@ static int32_t LmKvQuantSimRowsLaunch(uint16_t *rows_bf16, uint64_t row_stride, 
 		return(LM_LAUNCH_ERR_SHAPE);
 	grid = dim3(rows,width / group,1u);
 	if ( codec == SPARK_KV_QUANT_SIM_FP8_E4M3 )
-		LM_LAUNCH((LmKvQuantSimRowsKernel<LM_KV_QUANT_SIM_LANES,SPARK_KV_QUANT_SIM_FP8_E4M3>),grid,LM_KV_QUANT_SIM_LANES,0,stream,
+		LM_LAUNCH((LmKvQuantSimRowsKernel<LM_WARP_LANES,SPARK_KV_QUANT_SIM_FP8_E4M3>),grid,LM_WARP_LANES,0,stream,
 			rows_bf16,row_stride,rows,width,group);
 	else
-		LM_LAUNCH((LmKvQuantSimRowsKernel<LM_KV_QUANT_SIM_LANES,SPARK_KV_QUANT_SIM_MXFP4>),grid,LM_KV_QUANT_SIM_LANES,0,stream,
+		LM_LAUNCH((LmKvQuantSimRowsKernel<LM_WARP_LANES,SPARK_KV_QUANT_SIM_MXFP4>),grid,LM_WARP_LANES,0,stream,
 			rows_bf16,row_stride,rows,width,group);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
