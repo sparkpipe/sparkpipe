@@ -603,7 +603,10 @@ static void TestGraphSettle(SparkTpDeviceCollective *collective,SparkTpMeshRound
     control->error_word = 0u;
     syncs = cuda_stub_stream_sync_calls;
     CHECK(SparkTpDeviceCollectiveGraphSettle(collective,(void *)1,&graph_error) == SPARK_STATUS_OK && graph_error == 0u && cuda_stub_stream_sync_calls == syncs + 1u,"one read-back settles both the capture state and the error word");
-    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs + 1u,"after settling, a stream-ordered round is deferred, not captured");
+    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs + 1u,"after settling, a stream-ordered round runs without a read-back");
+    control->rounds_done = 0u;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_IO_ERROR,"after settling, the round is deferred, not captured: verify expects its completion");
+    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK,"a second deferred round after settling");
     control->rounds_done = 1u;
     CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_OK,"the deferred round after settling verifies");
     control->error_word = 9u;
