@@ -174,6 +174,7 @@ class Rotation:
         self.models = cfg["models"]
         self.fb = cfg["fallback"]
         self.honor_locks = True
+        self.instance = self.slot_at(self.now())[0]
 
     def now(self):
         return self.clock if self.clock is not None else time.time()
@@ -561,7 +562,7 @@ class Rotation:
         return True
 
     def fallback(self, st, why):
-        st["failed_instance"] = self.slot_at(self.now())[0]
+        st["failed_instance"] = self.instance
         st["phase"] = "recovering"
         st["transition"] = {"from": st.get("active") or [], "to": [self.fb], "reason": why, "started": iso(time.time())}
         self.save_state(st)
@@ -597,7 +598,7 @@ class Rotation:
     def plan(self, st, instance, current, dirty):
         avail = self.mem(self.cfg["fleet"])
         for _ in range(len(self.cfg["slots"]) + len(self.cfg["companions"]) + 2):
-            _, slot, target = self.target(st, self.now())
+            _, slot, target = self.target(st, instance * HOUR)
             incoming = [m for m in target if m not in current or m in dirty]
             outgoing = [m for m in current + dirty if m not in target]
             problem = None
@@ -630,7 +631,11 @@ class Rotation:
     def tick(self):
         st = self.load_state()
         kind, reason = self.pause_reason()
-        if kind:
+        if kind and self.dry:
+            self.log("HOLD-OFF", kind=kind, reason=json.dumps(reason), dry_run=json.dumps("the real tick holds off; planning as if resumed"))
+            st["resync"] = True
+            self.honor_locks = False
+        elif kind:
             self.hold_off(st, kind, reason)
             self.finish(st)
             return 0
@@ -650,7 +655,7 @@ class Rotation:
             self.fallback(st, f"interrupted {st['phase']}")
             self.finish(st)
             return 1
-        instance, slot, target = self.target(st, self.now())
+        instance, slot, target = self.target(st, self.instance * HOUR)
         try:
             state = self.observe()
         except Failure as e:
@@ -905,7 +910,7 @@ def main(argv=None):
             st = rot.load_state()
             if args.command == "tick":
                 return rot.tick()
-            instance, _ = rot.slot_at(rot.now())
+            instance = rot.instance
             if args.command == "resume":
                 if not rot.dry and os.path.exists(rot.path(cfg["lock"]["pause_file"])):
                     os.remove(rot.path(cfg["lock"]["pause_file"]))

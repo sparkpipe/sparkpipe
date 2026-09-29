@@ -545,6 +545,62 @@ def test_config_validation():
         check("config: a runnable model needs every engine command", rc == 2 and "engine.ready" in out, out)
 
 
+def test_dry_run_while_paused_shows_the_plan():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("pause", "install", at="2026-09-29T17:00:30Z")
+        f.tool("force", "flash_plus", "c2", at="2026-09-29T17:00:30Z")
+        before = (f.state_dir / "state.json").read_text()
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:01:00Z", dry=True)
+        check("dry-run paused: reports the hold-off and still prints the plan", "HOLD-OFF" in out and "DRY n2: fake start c2 0" in out and "DRY hub: fake smoke c2" in out, out[-600:])
+        check("dry-run paused: executes nothing, keeps the pause and the state", f.call_lines() == [] and (f.state_dir / "ROTATION_PAUSE").exists() and (f.state_dir / "state.json").read_text() == before)
+
+
+def test_failure_after_the_hour_boundary_marks_the_starting_hour():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.behave(never_ready=["c1"])
+        sys.path.insert(0, str(TOOL.parent))
+        import fleet_rotation
+        os.environ["FAKE_WORLD"] = str(f.world_path)
+        os.environ["PATH"] = f"{f.tmp / 'bin'}:{os.environ['PATH']}"
+        start = fleet_rotation.parse_time("2026-09-29T17:59:50Z")
+        rot = fleet_rotation.Rotation(f.cfg, fleet_rotation.Runner(f.cfg, False, lambda *_: None), now=start, out=lambda *_: None)
+        rot.clock = fleet_rotation.parse_time("2026-09-29T18:00:10Z")
+        rot.tick()
+        st = f.state()
+        check("boundary: a failed transition blocks the hour it started in, not the next one", st.get("failed_instance") == int(start // 3600) and st.get("active") == ["prod"], json.dumps(st)[:300])
+        nxt = fleet_rotation.Rotation(f.cfg, fleet_rotation.Runner(f.cfg, False, lambda *_: None), now=fleet_rotation.parse_time("2026-09-29T18:00:30Z"), out=lambda *_: None)
+        check("boundary: the next hour runs its own slot", nxt.target(f.state(), nxt.now())[2] == ["big"])
+
+
+def test_install_rollback_waits_for_a_running_tick():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        (tmp / "bin").mkdir()
+        log = tmp / "ssh.log"
+        (tmp / "bin" / "ssh").write_text(f"""#!/bin/sh
+printf '%s\\n' "$*" >> {log}
+case "$*" in
+  *"show -p ActiveState"*)
+    n=$(grep -c 'show -p ActiveState' {log})
+    if [ "$n" -le 2 ]; then echo activating; else echo inactive; fi ;;
+esac
+exit 0
+""")
+        (tmp / "bin" / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        for name in ("ssh", "sleep"):
+            (tmp / "bin" / name).chmod(0o755)
+        env = dict(os.environ, PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", FLEET_ROTATION_CONFIG=str(PRODUCTION))
+        p = subprocess.run(["bash", str(REPOSITORY / "tools" / "fleet_rotation_install.sh"), "rollback"], capture_output=True, text=True, env=env, timeout=60)
+        lines = log.read_text().splitlines() if log.exists() else []
+        waits = [i for i, l in enumerate(lines) if "show -p ActiveState" in l]
+        converge = first_index(lines, r"converge --rollback")
+        disable = first_index(lines, r"disable --now fleet-rotation.timer")
+        check("rollback: waits while the oneshot tick is activating, then converges", p.returncode == 0 and len(waits) == 3 and 0 <= disable < waits[0] and converge > waits[-1], p.stdout + p.stderr + "\n".join(lines[-6:]))
+
+
 def test_production_config():
     cfg = json.loads(PRODUCTION.read_text())
     p = subprocess.run([sys.executable, str(TOOL), "--config", str(PRODUCTION), "check-config"], capture_output=True, text=True)
@@ -562,7 +618,9 @@ def main():
                  test_ssh_timeout, test_smoke_failure, test_fallback_failure_pauses, test_preemption_and_resync,
                  test_pause_resume_and_foreign_change, test_floor_and_prediction, test_steady_health_and_manual,
                  test_stuck_stop_and_reclaim_guard, test_interrupted_transition_recovers, test_pause_during_running_tick,
-                 test_unexpected_error_falls_back, test_failed_health_fallback_reports_degraded, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation, test_production_config):
+                 test_unexpected_error_falls_back, test_failed_health_fallback_reports_degraded, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation,
+                 test_dry_run_while_paused_shows_the_plan, test_failure_after_the_hour_boundary_marks_the_starting_hour, test_install_rollback_waits_for_a_running_tick,
+                 test_production_config):
         test()
     if failures:
         print(f"\n{len(failures)} FAILED: {', '.join(failures)}")

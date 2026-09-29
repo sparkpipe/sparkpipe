@@ -8,6 +8,7 @@ FLEET="$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1])
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=8"
 DIR=fleet-rotation
 TOOL="python3 \$HOME/$DIR/bin/fleet_rotation.py --config \$HOME/$DIR/rotation.json"
+WAIT_POLLS=210
 
 usage() {
   cat >&2 <<USAGE
@@ -16,7 +17,7 @@ usage: $0 check | install | status | dry-run [UTC-TIME] | rollback
   install   copy tool + config to $HUB:~/$DIR, write the units, pause the rotation, enable --now the timer and the schedule responder
   status    timer state and the rotation's 'now' view
   dry-run   the installed tool's tick in --dry-run (prints every command, runs none) at UTC-TIME (default now)
-  rollback  pause, disable the timer, wait for a running tick, stop the schedule responder, converge to the config's rollback_models
+  rollback  pause, disable the timer, wait for a running tick (up to its 100 min TimeoutStartSec), stop the schedule responder, converge to the config's rollback_models
 USAGE
   exit 2
 }
@@ -91,9 +92,12 @@ dry_run() {
 
 rollback() {
   on_hub "echo \"rollback \$(date -u +%FT%TZ)\" > ~/$DIR/ROTATION_PAUSE.tmp && mv -f ~/$DIR/ROTATION_PAUSE.tmp ~/$DIR/ROTATION_PAUSE; systemctl --user disable --now fleet-rotation.timer"
-  local i=0
-  while on_hub "systemctl --user is-active -q fleet-rotation.service"; do
-    [ "$i" -ge 120 ] && { echo "a tick is still running after 60 min; stop it by hand (systemctl --user stop fleet-rotation.service) and rerun rollback" >&2; exit 1; }
+  local i=0 tick
+  while :; do
+    tick="$(on_hub "systemctl --user show -p ActiveState --value fleet-rotation.service")" || { echo "rollback: cannot read the tick unit state on $HUB" >&2; exit 1; }
+    case "$tick" in activating|active|deactivating|reloading) ;; *) break ;; esac
+    [ "$i" -ge "$WAIT_POLLS" ] && { echo "a tick is still $tick after $((WAIT_POLLS / 2)) min; stop it by hand (systemctl --user stop fleet-rotation.service) and rerun rollback" >&2; exit 1; }
+    [ "$i" -eq 0 ] && echo "waiting for the running tick ($tick) to finish"
     sleep 30; i=$((i + 1))
   done
   on_hub "systemctl --user disable --now fleet-rotation-schedule.service"
