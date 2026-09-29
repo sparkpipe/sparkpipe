@@ -483,6 +483,12 @@ section 2.2, reduced to what can be tested on a host:
   only by REQUEST frames) answers through encoded frames and every fifth
   draft arrives after the deadline: output equals the greedy stream and the
   late rounds are counted misses.
+- **Taps and relay link (built, shadow only).** glm5_next captures the
+  configured layer outputs on the tap rank, sends one `SPT1` record per
+  committed position and a REQUEST per round over UDP to draftd, and scores
+  the returned drafts without verifying them; the same records can go to an
+  `SPTD` dump for offline acceptance. Contract, exactness evidence and
+  measured round trips: [SPECULATION_TAPS.md](SPECULATION_TAPS.md).
 - **Still to build (S5).** The rank-15 relay thread (busy-polled socket on
   the sparkf-rtx5090 link, pinned core), the root-15 mesh broadcast of each
   round's draft ids so all 16 ranks run the same verify shape (the module's

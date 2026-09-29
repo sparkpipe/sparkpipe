@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import calendar
 import json
 import os
 import re
@@ -45,6 +46,8 @@ with open(world_path + ".lock", "w") as lock:
                 node["mem"] -= world["arena"][model]
             if model in b.get("dies", []):
                 node["up"][model] = False
+            for other, gib in b.get("start_eats", {}).get(model, {}).items():
+                world["nodes"][other]["mem"] -= gib
     elif verb == "stop":
         if model not in b.get("stop_stuck", []):
             node["up"][model] = False
@@ -70,7 +73,7 @@ with open(world_path + ".lock", "w") as lock:
     elif verb == "api-health":
         rc = 0 if world["apis"].get(model) and model not in b.get("unhealthy", []) else 1
     elif verb == "smoke":
-        out = "garbage" if model in b.get("smoke_bad", []) else '{"text": "Paris"}'
+        out = b.get("smoke_text", {}).get(model) or ("garbage" if model in b.get("smoke_bad", []) else '{"text": "Paris"}')
     else:
         rc = 2
     json.dump(world, open(world_path, "w"))
@@ -85,7 +88,7 @@ FAKE_HOST=$host exec bash -c "$*"
 '''
 
 
-def model(nodes, mem, api=True, runnable=True, validated=False):
+def model(nodes, mem, api=True, runnable=True, validated=False, port=9000):
     m = {"title": "t", "runnable": runnable, "validated": validated}
     if not runnable:
         m["not_runnable"] = "test"
@@ -98,7 +101,7 @@ def model(nodes, mem, api=True, runnable=True, validated=False):
     })
     if api:
         m["api"] = {"start": "fake api-start @model@", "stop": "fake api-stop @model@", "up": "fake api-up @model@",
-                    "health": "fake api-health @model@", "port": 9000, "timeout_s": 1}
+                    "health": "fake api-health @model@", "port": port, "timeout_s": 1}
         m["smoke"] = {"path": "/v1/completions", "body": {"prompt": "x"}, "expect": "Paris", "timeout_s": 1}
     return m
 
@@ -106,16 +109,16 @@ def model(nodes, mem, api=True, runnable=True, validated=False):
 def config(tmp):
     return {
         "hub": "fakehub", "state_dir": str(tmp / "state"), "ssh": [str(tmp / "bin" / "fakessh")], "ssh_timeout_s": 3, "poll_s": 0.05,
-        "floor_gib": 20, "weightd_warm": "/w/weightd_warm", "weightd_socket": "/tmp/s.sock", "schedule_port": 0,
+        "floor_gib": 20, "node_free_gib": 110, "weightd_warm": "/w/weightd_warm", "weightd_socket": "/tmp/s.sock", "schedule_port": 0,
         "fleet": HOSTS, "cycle": {"anchor_hour": 0, "slots": ["full", "k3", "flash_plus"]},
-        "slots": {"full": {"base": "big", "fallback_slot": "flash_plus"}, "k3": {"base": "k", "fallback_slot": "flash_plus"},
-                  "flash_plus": {"base": "prod", "companion": True, "fallback_slot": None}},
-        "fallback": "prod", "companions": ["c1", "c3", "c2"], "default_companion": "dflt", "rollback_models": ["prod", "dflt"],
+        "slots": {"full": {"base": "big", "companions": [], "fallback_slot": "flash_plus"}, "k3": {"base": "k", "companions": [], "fallback_slot": "flash_plus"},
+                  "flash_plus": {"base": "prod", "companions": ["c1", "c3", "c2"], "fallback_slot": None}},
+        "fallback": "prod", "rollback_models": ["prod", "dflt"],
         "lock": {"pause_file": "ROTATION_PAUSE", "mirror_pause_file": "lock/ROTATION_PAUSE", "holder_file": "lock/PERF_HOLDER", "holder_prefixes": ["lead-"]},
         "commands": {"mem_probe": "fake mem", "reclaim": "fake reclaim @model@ --reclaim-pack @packs@", "smoke": "fake smoke @model@ @port@ @path@"},
-        "models": {"prod": model(HOSTS, 38, validated=True), "big": model(HOSTS, 68), "k": model([], 0, runnable=False),
-                   "c1": model(["n0", "n1"], 22), "c2": model(["n2", "n3"], 46), "c3": model([], 0, runnable=False),
-                   "dflt": model(["n0", "n1"], 15, validated=True)},
+        "models": {"prod": model(HOSTS, 38, validated=True, port=9000), "big": model(HOSTS, 68, port=9001), "k": model([], 0, runnable=False),
+                   "c1": model(["n0", "n1"], 22, port=9002), "c2": model(["n1", "n2"], 46, port=9003), "c3": model([], 0, runnable=False),
+                   "dflt": model(["n0", "n1"], 15, validated=True, port=9004)},
     }
 
 
@@ -132,7 +135,7 @@ class Fleet:
         self.cfg_path.write_text(json.dumps(self.cfg))
         self.calls = self.tmp / "calls.log"
         self.world_path = self.tmp / "world.json"
-        arena = {"prod": 38, "big": 68, "c1": 22, "c2": 46, "dflt": 15}
+        arena = {name: m["mem_gib"] for name, m in self.cfg["models"].items() if m.get("runnable")}
         nodes = {h: {"mem": 110 - 38, "up": {"prod": True}, "ready": {"prod": True}, "arena": {"prod": 38}} for h in HOSTS}
         self.save({"calls": str(self.calls), "behave": {}, "nodes": nodes, "apis": {"prod": True}, "arena": arena})
         self.state_dir = self.tmp / "state"
@@ -582,7 +585,7 @@ def test_config_validation():
 
 def exclusive_fleet(tmp, floor=True, arena=95):
     cfg = config(Path(tmp))
-    cfg["models"]["k"] = model(HOSTS, 95)
+    cfg["models"]["k"] = model(HOSTS, 95, port=9005)
     if floor:
         cfg["models"]["k"].update({"floor_gib": 8, "abort_gib": 6})
     f = Fleet(tmp, cfg)
@@ -603,6 +606,9 @@ def test_exclusive_floor_and_abort():
         f.clear_calls()
         rc, out = f.tool("tick", at="2026-09-29T16:05:30Z")
         check("exclusive floor: a steady tick probes memory for the abort level and changes nothing", rc == 0 and f.state().get("active") == ["k"] and any(" mem" in l for l in f.call_lines()) and not any(" stop " in l for l in f.call_lines()), out[-400:])
+        check("exclusive floor: the steady floor guard reads the model's own floor (15 GiB free raises no shed warning)", "no companion there to shed" not in f.alerts() and f.state().get("phase") == "steady", f.alerts())
+        rc, out = f.tool("plan", at="2026-09-29T16:07:30Z")
+        check("exclusive floor: plan keeps the exclusive model and predicts at its own floor", rc == 0 and "target=k " in out and "demoted" not in f.alerts(), out[-400:])
         w = f.world()
         w["nodes"]["n2"]["mem"] = 5
         f.save(w)
@@ -645,10 +651,11 @@ def test_exclusive_floor_validation():
         cases = (
             ("companion", lambda c: c["models"]["c1"].update({"floor_gib": 8, "abort_gib": 6}), "floor_gib is only"),
             ("fallback", lambda c: c["models"]["prod"].update({"floor_gib": 8, "abort_gib": 6}), "floor_gib is only"),
-            ("partial fleet", lambda c: c["models"].update({"k": dict(model(["n0", "n1"], 95), floor_gib=8, abort_gib=6)}), "whole fleet"),
-            ("abort above floor", lambda c: c["models"].update({"k": dict(model(HOSTS, 95), floor_gib=8, abort_gib=9)}), "abort_gib"),
-            ("floor above the global floor", lambda c: c["models"].update({"k": dict(model(HOSTS, 95), floor_gib=30, abort_gib=6)}), "abort_gib"),
-            ("floor without abort", lambda c: c["models"].update({"k": dict(model(HOSTS, 95), floor_gib=8)}), "come together"),
+            ("base of a slot with companions", lambda c: (c["models"].update({"k": dict(model(HOSTS, 95, port=9005), floor_gib=8, abort_gib=6)}), c["slots"]["k3"].update({"companions": ["c1"]})), "floor_gib is only"),
+            ("partial fleet", lambda c: c["models"].update({"k": dict(model(["n0", "n1"], 95, port=9005), floor_gib=8, abort_gib=6)}), "whole fleet"),
+            ("abort above floor", lambda c: c["models"].update({"k": dict(model(HOSTS, 95, port=9005), floor_gib=8, abort_gib=9)}), "abort_gib"),
+            ("floor above the global floor", lambda c: c["models"].update({"k": dict(model(HOSTS, 95, port=9005), floor_gib=30, abort_gib=6)}), "abort_gib"),
+            ("floor without abort", lambda c: c["models"].update({"k": dict(model(HOSTS, 95, port=9005), floor_gib=8)}), "come together"),
         )
         for label, mutate, want in cases:
             bad = config(Path(tmp))
@@ -657,7 +664,7 @@ def test_exclusive_floor_validation():
             rc, out = f.tool("check-config", at=None)
             check(f"config: exclusive floor refused ({label})", rc == 2 and want in out, out)
         good = config(Path(tmp))
-        good["models"]["k"] = dict(model(HOSTS, 95), floor_gib=8, abort_gib=6)
+        good["models"]["k"] = dict(model(HOSTS, 95, port=9005), floor_gib=8, abort_gib=6)
         f.cfg_path.write_text(json.dumps(good))
         rc, out = f.tool("check-config", at=None)
         check("config: exclusive floor accepted on a whole-fleet slot base", rc == 0, out)
@@ -720,14 +727,15 @@ def test_dry_run_while_paused_shows_the_plan():
         before = (f.state_dir / "state.json").read_text()
         f.clear_calls()
         rc, out = f.tool("tick", at="2026-09-29T17:01:00Z", dry=True)
-        check("dry-run paused: reports the hold-off and still prints the plan", "HOLD-OFF" in out and "DRY n2: fake start c2 0" in out and "DRY hub: fake smoke c2" in out, out[-600:])
+        check("dry-run paused: reports the hold-off and still prints the plan", "HOLD-OFF" in out and "DRY n1: fake start c2 0" in out and "DRY hub: fake smoke c2" in out, out[-600:])
         check("dry-run paused: executes nothing, keeps the pause and the state", f.call_lines() == [] and (f.state_dir / "ROTATION_PAUSE").exists() and (f.state_dir / "state.json").read_text() == before)
 
 
 def test_failure_after_the_hour_boundary_marks_the_starting_hour():
     with tempfile.TemporaryDirectory() as tmp:
         f = Fleet(tmp)
-        f.behave(never_ready=["c1"])
+        f.behave(never_ready=["big"])
+        f.tool("force", "full", at="2026-09-29T17:59:40Z")
         sys.path.insert(0, str(TOOL.parent))
         import fleet_rotation
         os.environ["FAKE_WORLD"] = str(f.world_path)
@@ -768,6 +776,479 @@ exit 0
         check("rollback: waits while the oneshot tick is activating, then converges", p.returncode == 0 and len(waits) == 3 and 0 <= disable < waits[0] and converge > waits[-1], p.stdout + p.stderr + "\n".join(lines[-6:]))
 
 
+def hour_key(text):
+    return str(calendar.timegm(time.strptime(text, "%Y-%m-%dT%H:%M:%SZ")) // 3600)
+
+
+H17 = hour_key("2026-09-29T17:00:00Z")
+H19 = hour_key("2026-09-29T19:00:00Z")
+
+
+def pack_config(tmp):
+    cfg = config(Path(tmp))
+    cfg["slots"]["full"]["companions"] = ["ta"]
+    cfg["slots"]["flash_plus"]["companions"] = ["ta", "tb", "tc", "wide", "c3"]
+    cfg["rollback_models"] = ["prod", "ta"]
+    for name in ("c1", "c2", "dflt"):
+        del cfg["models"][name]
+    cfg["models"].update({"ta": model(["n0"], 15, port=9010), "tb": model(["n1"], 36, port=9011),
+                          "tc": model(["n2"], 46, port=9012), "wide": model(HOSTS, 22, port=9013)})
+    return cfg
+
+
+def pack_fleet(tmp):
+    return Fleet(tmp, pack_config(tmp))
+
+
+def starts(lines):
+    return [l.split()[2] for l in lines if re.match(r"\S+ start ", l)]
+
+
+def test_packing_fills_the_nodes():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        st = f.state()
+        check("packing: the primary plus every node-disjoint companion that fits", rc == 0 and st.get("active") == ["prod", "ta", "tb", "tc"] and st.get("phase") == "steady", out[-800:])
+        check("packing: the wide companion that does not fit waits, with the short node named", "tc" not in st["picks"][H17]["waiting"] and "n2:" in st["picks"][H17]["waiting"].get("wide", ""), json.dumps(st.get("picks")))
+        lines = f.call_lines()
+        order = [first_index(lines, p) for p in (r"n0 start ta", r"fakehub smoke ta", r"n1 start tb", r"fakehub smoke tb", r"n2 start tc", r"fakehub smoke tc")]
+        check("packing: companions start one at a time, each smoked before the next starts", all(i >= 0 for i in order) and order == sorted(order), str(order))
+        check("packing: the running primary is not restarted", not any(" start prod" in l or " stop prod" in l for l in lines))
+        mem = {h: f.world()["nodes"][h]["mem"] for h in HOSTS}
+        check("packing: every node keeps the floor after all starts", min(mem.values()) >= 20, str(mem))
+        log = (f.state_dir / "rotation.log").read_text()
+        check("packing: memory is checked on each companion's nodes after its start", all(re.search(rf"FLOOR when=after-{m} ", log) for m in ("ta", "tb", "tc")), log[-600:])
+
+
+def test_packing_per_node_floor():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        w = f.world()
+        w["nodes"]["n1"]["mem"] = 50
+        f.save(w)
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        st = f.state()
+        check("floor: a node with less memory keeps its companion out, the others still pack", st.get("active") == ["prod", "ta", "tc"] and "n1:" in st["picks"][H17]["waiting"].get("tb", ""), json.dumps(st.get("picks")) + out[-400:])
+        check("floor: no start on the short node", not any(l.startswith("n1 start") for l in f.call_lines()))
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.behave(start_eats={"ta": {"n2": 30}})
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        st = f.state()
+        check("live gate: MemAvailable is read again before each companion start", st.get("active") == ["prod", "ta", "tb"] and not any(l.startswith("n2 start") for l in f.call_lines()), out[-600:])
+        check("live gate: the refused companion is skipped for the hour and alerted", "tc" in st["dropped"][H17] and "needs 46+20" in f.alerts() and st.get("phase") == "steady", f.alerts())
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        w = f.world()
+        w["arena"]["tb"] = 60
+        f.save(w)
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        st = f.state()
+        check("floor after start: a companion that leaves its node under the floor is stopped and reclaimed", st.get("active") == ["prod", "ta", "tc"] and f.up_on("tb") == [] and f.world()["nodes"]["n1"]["mem"] == 72, out[-600:])
+        check("floor after start: the primary and the other companions keep serving", f.up_on("prod") == HOSTS and f.up_on("ta") == ["n0"] and f.up_on("tc") == ["n2"] and "below 20 GiB after-tb" in f.alerts(), f.alerts())
+
+
+def test_partial_companion_failure():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.behave(smoke_bad=["tb"])
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        st = f.state()
+        lines = f.call_lines()
+        check("partial: a failing companion is stopped and reclaimed, the rest serve", rc == 1 and st.get("active") == ["prod", "ta", "tc"] and f.up_on("tb") == [] and f.world()["nodes"]["n1"]["arena"].get("tb") == 0, out[-800:])
+        check("partial: the primary is never touched", not any("prod" in l.split()[1:3] and l.split()[1] in ("start", "stop", "reclaim") for l in lines) and f.world()["apis"].get("prod"), "\n".join(lines[-10:]))
+        check("partial: the companion after the failed one still starts", first_index(lines, r"n2 start tc") > first_index(lines, r"n1 stop tb") >= 0)
+        check("partial: steady, not a fallback; alerted", st.get("phase") == "steady" and st.get("failed_instance") is None and "companion tb failed" in f.alerts(), f.alerts())
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:05:30Z")
+        check("partial: the failed companion is not retried within the hour", rc == 0 and starts(f.call_lines()) == [] and f.state().get("active") == ["prod", "ta", "tc"], out[-400:])
+        f.behave(smoke_bad=[])
+        rc, out = f.tool("tick", at="2026-09-29T19:00:30Z")
+        st = f.state()
+        check("partial: the next companion hour considers it again", "tb" not in st["dropped"].get(H19, []) and ("tb" in st["picks"][H19]["companions"] or "tb" in st["picks"][H19]["waiting"]), json.dumps(st.get("picks", {}).get(H19)))
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.behave(smoke_bad=["tb"], stop_stuck=["tb"])
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        st = f.state()
+        check("partial: a failed companion that cannot be stopped pauses the rotation and leaves the primary serving", st.get("phase") == "degraded" and (f.state_dir / "ROTATION_PAUSE").exists() and "CRITICAL" in f.alerts() and f.up_on("prod") == HOSTS and not any(" stop prod" in l for l in f.call_lines()), out[-600:])
+        check("partial: a stuck companion is not treated as a failed transition", st.get("failed_instance") is None and "FALLBACK" not in (f.state_dir / "rotation.log").read_text(), out[-600:])
+
+
+def test_steady_companion_loss_and_health():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        w = f.world()
+        w["nodes"]["n2"]["up"]["tc"] = False
+        f.save(w)
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:05:30Z")
+        lines = f.call_lines()
+        check("lost companion: only that companion is cleaned up", f.state().get("active") == ["prod", "ta", "tb"] and any("reclaim tc" in l for l in lines) and not any(re.search(r" (stop|reclaim) (prod|ta|tb)", l) for l in lines), "\n".join(lines[-8:]))
+        f.behave(unhealthy=["ta"])
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:10:30Z")
+        lines = f.call_lines()
+        check("sick companion: only that companion is stopped", f.state().get("active") == ["prod", "tb"] and f.up_on("ta") == [] and f.up_on("tb") == ["n1"] and not any(" stop prod" in l or " stop tb" in l for l in lines), out[-500:])
+
+
+def test_rotation_fairness_across_cycles():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        ran = {}
+        for hour in ("2026-09-29T16:00:30Z", "2026-09-29T17:00:30Z", "2026-09-29T19:00:30Z", "2026-09-29T20:00:30Z", "2026-09-29T22:00:30Z", "2026-09-29T23:00:30Z"):
+            rc, out = f.tool("tick", at=hour)
+            active = f.state().get("active")
+            ran[hour[11:13]] = active
+            check(f"fairness: {hour[11:16]} runs production plus a packed set", rc == 0 and active[0] == "prod" and len(active) >= 2, out[-400:])
+            mem = [f.world()["nodes"][h]["mem"] for h in HOSTS]
+            check(f"fairness: {hour[11:16]} keeps the floor", min(mem) >= 20, str(mem))
+        seen = {m for active in ran.values() for m in active[1:]}
+        check("fairness: every runnable companion gets runtime within three companion hours", seen == {"ta", "tb", "tc", "wide"} and "wide" in ran["17"] + ran["19"] + ran["20"], json.dumps(ran))
+        check("fairness: the wide companion alternates with the node-disjoint set it cannot join", [("wide" in ran[h]) for h in ("16", "17", "19", "20")] in ([False, True, False, True], [True, False, True, False]), json.dumps(ran))
+        check("fairness: the unrunnable companion never runs", "c3" not in seen)
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.state_dir.mkdir()
+        old = {str(int(H17) - k): ["tb"] for k in range(10, 40)}
+        (f.state_dir / "state.json").write_text(json.dumps({"active": ["prod"], "phase": "steady", "dropped": old, "demoted": dict(old), "picks": {h: {"slot": "flash_plus", "primary": "prod", "companions": []} for h in old}}))
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        st = f.state()
+        check("fairness: per-hour records keep the last 24 hours", all(len(st.get(k)) == 24 for k in ("picks", "dropped", "demoted")) and H17 in st["picks"] and H17 in st["dropped"], json.dumps({k: len(st.get(k) or {}) for k in ("picks", "dropped", "demoted")}))
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        rc, out = f.tool("schedule", "--hours", "9", at="2026-09-29T15:10:00Z")
+        rows = json.loads(out)
+        companions = {m for r in rows for m in r["companions"]}
+        check("schedule: predicted rows carry primary and companions, and rotate every companion in", companions == {"ta", "tb", "tc", "wide"} and all(r["models"] == [r["primary"]] + r["companions"] for r in rows), out[:600])
+
+
+def test_full_slot_with_companion():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T18:00:30Z")
+        st = f.state()
+        lines = f.call_lines()
+        check("full + companion: the small companion that fits stays beside the full slot", rc == 0 and st.get("active") == ["big", "ta"] and f.up_on("ta") == ["n0"] and f.up_on("big") == HOSTS, out[-800:])
+        check("full + companion: the kept companion is not restarted", not any(re.search(r" (stop|start) ta", l) for l in lines))
+        order = [first_index(lines, p) for p in (r" stop tc", r" stop tb", r"fakehub api-stop prod", r"n\d start big")]
+        check("full + companion: stop order is the reverse of start order, primary last, then the new primary starts", all(i >= 0 for i in order) and order == sorted(order), str(order))
+        check("full + companion: the floor holds", min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20, str(f.world()["nodes"]))
+        rc, out = f.tool("tick", at="2026-09-29T19:00:30Z")
+        lines = f.call_lines()
+        check("full -> flash_plus: production starts before any companion", f.state().get("active")[0] == "prod" and first_index(lines, r"start prod") < min(i for i in [first_index(lines, rf"start {c}") for c in ("tb", "tc", "wide")] if i >= 0), out[-500:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.behave(never_ready=["big"])
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T18:00:30Z")
+        lines = f.call_lines()
+        check("full primary failure: falls back to production, companion stopped before the failed primary", f.state().get("active") == ["prod"] and f.state().get("phase") == "fallback" and 0 <= first_index(lines, r"n0 stop ta") < first_index(lines, r"n\d stop big"), "\n".join(lines[-12:]))
+
+
+def test_packing_schedule_document_and_force():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        doc = json.loads((f.state_dir / "schedule.json").read_text())
+        by_id = {m["id"]: m for m in doc["models"]}
+        check("schedule doc: the current row lists the primary and every companion", doc["slots"][0]["primary"] == "prod" and doc["slots"][0]["companions"] == ["ta", "tb", "tc"], json.dumps(doc["slots"][0]))
+        check("schedule doc: serving lists every active model with its port and role", [(s["id"], s["role"], s["port"]) for s in doc["serving"]] == [("prod", "fallback", 9000), ("ta", "companion", 9010), ("tb", "companion", 9011), ("tc", "companion", 9012)], json.dumps(doc["serving"]))
+        check("schedule doc: per-model role and scheduled hours", by_id["big"]["role"] == "primary" and by_id["wide"]["role"] == "companion" and by_id["wide"]["scheduled_starts"] and by_id["wide"]["next_slot_start"] == by_id["wide"]["scheduled_starts"][0] and by_id["c3"]["scheduled_starts"] == [], json.dumps(by_id["wide"]))
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        rc, out = f.tool("force", "flash_plus", "ta", "wide", at="2026-09-29T15:00:30Z")
+        rc, out = f.tool("tick", at="2026-09-29T15:00:30Z")
+        check("force: several companions for this hour", f.state().get("active") == ["prod", "ta", "wide"], out[-400:])
+        rc, out = f.tool("force", "flash_plus", "big", at="2026-09-29T15:00:30Z")
+        check("force: a slot primary is refused as a companion", rc == 2, out)
+
+
+def test_plan_is_read_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        before = (f.state_dir / "state.json").read_text()
+        log_before = (f.state_dir / "rotation.log").read_text()
+        f.clear_calls()
+        rc, out = f.tool("plan", at="2026-09-29T19:00:30Z")
+        verbs = {l.split()[1] for l in f.call_lines()}
+        check("plan: prints the packing decision for the hour", rc == 0 and "PLAN 2026-09-29T19:00:00Z slot=flash_plus" in out and "target=prod,wide,ta" in out and "stop=tc,tb" in out, out[-800:])
+        check("plan: runs only read-only probes", verbs <= {"up", "api-up", "mem", "precheck"}, str(verbs))
+        check("plan: writes no state or log", (f.state_dir / "state.json").read_text() == before and (f.state_dir / "rotation.log").read_text() == log_before)
+
+
+def test_smoke_reply_rules():
+    sys.path.insert(0, str(TOOL.parent))
+    import fleet_rotation
+    cfg = json.loads(PRODUCTION.read_text())
+    rot = fleet_rotation.Rotation(cfg, fleet_rotation.Runner(cfg, True, lambda *_: None), out=lambda *_: None)
+    recorded = '{"object":"text_completion","choices":[{"index":0,"text":" a city of romance, art, and","finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":8,"total_tokens":13}}'
+    smokes = {name: m["smoke"] for name, m in cfg["models"].items() if m.get("runnable")}
+    for name in ("mimo", "ling"):
+        problem, _ = rot.reply_problem(recorded, smokes[name]["reply"])
+        check(f"smoke rules: {name} accepts the coherent reply MiMo gave live at 17:02Z", problem is None and not smokes[name].get("expect"), str(problem))
+        for label, text in (("a short right answer", '{"choices":[{"text":" Paris.","finish_reason":"stop"}]}'),):
+            problem, _ = rot.reply_problem(text, smokes[name]["reply"])
+            check(f"smoke rules: {name} accepts {label}", problem is None, str(problem))
+        for label, text in (("garbage", "garbage"), ("an empty text", '{"choices":[{"text":"","finish_reason":"stop"}]}'),
+                            ("a repeated token", '{"choices":[{"text":" the the the the","finish_reason":"length"}]}'),
+                            ("punctuation only", '{"choices":[{"text":"!!!! ??? 1234","finish_reason":"length"}]}'),
+                            ("an error finish", '{"choices":[{"text":" a city of romance, art","finish_reason":"error"}]}')):
+            problem, _ = rot.reply_problem(text, smokes[name]["reply"])
+            check(f"smoke rules: {name} rejects {label}", problem is not None)
+    chat = '{"choices":[{"message":{"role":"assistant","content":"Paris"},"finish_reason":"stop"}]}'
+    check("smoke rules: chat replies are read from message.content", rot.reply_problem(chat, {"finish_reason": ["stop"]})[0] is None)
+    check("smoke rules: templated models keep the Paris answer", all(smokes[m].get("expect") == "Paris" for m in ("flash", "glmfull", "qwen", "gemma")))
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = pack_config(tmp)
+        cfg["models"]["tb"]["smoke"] = {"path": "/v1/completions", "body": {"prompt": "x"}, "timeout_s": 1, "reply": {"finish_reason": ["stop", "length"], "min_distinct_words": 3}}
+        f = Fleet(tmp, cfg)
+        f.behave(smoke_text={"tb": recorded})
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        check("smoke rules: a companion with a coherent reply passes end to end", "tb" in f.state().get("active", []) and 'SMOKE-PASS model=tb reply=" a city of romance, art, and"' in out, out[-600:])
+
+
+def test_packing_config_validation():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        cases = (
+            ("a slot base as companion", lambda c: c["slots"]["flash_plus"]["companions"].append("big"), "slot base"),
+            ("an unknown companion", lambda c: c["slots"]["flash_plus"]["companions"].append("nosuch"), "unknown"),
+            ("two runnable models on one port", lambda c: c["models"]["tb"]["api"].update(port=9010), "api.port"),
+            ("a smoke without expect or reply", lambda c: c["models"]["tb"]["smoke"].pop("expect"), "expect or reply"),
+            ("an unknown reply rule", lambda c: c["models"]["tb"]["smoke"].update(reply={"contains": "x"}), "smoke.reply.contains"),
+            ("no node_free_gib", lambda c: c.pop("node_free_gib"), "node_free_gib"),
+        )
+        for label, mutate, want in cases:
+            bad = pack_config(tmp)
+            mutate(bad)
+            f.cfg_path.write_text(json.dumps(bad))
+            rc, out = f.tool("check-config", at=None)
+            check(f"config: refused ({label})", rc == 2 and want in out, out)
+    cfg = json.loads(PRODUCTION.read_text())
+    wide = [m for m in cfg["slots"]["full"]["companions"] if set(cfg["models"][m].get("nodes", [])) == set(cfg["fleet"])]
+    check("production: the full slot takes no companion that spans the whole fleet", not wide, str(wide))
+    check("production: every runnable companion is in the flash_plus pool", all(n in cfg["slots"]["flash_plus"]["companions"] for n, m in cfg["models"].items() if m.get("runnable") and n not in {s["base"] for s in cfg["slots"].values()} | {cfg["fallback"]}))
+
+
+def install_harness(tmp, paused=False, new_config_ok=True):
+    tmp = Path(tmp)
+    (tmp / "bin").mkdir()
+    log = tmp / "ssh.log"
+    (tmp / "bin" / "ssh").write_text(f"""#!/bin/sh
+printf 'ssh %s\\n' "$*" >> {log}
+case "$*" in
+  *fleet-rotation-sshcheck*) echo "hub-ssh 16/16" ;;
+  *"test -e ~/fleet-rotation/ROTATION_PAUSE"*) echo {"paused" if paused else "running"} ;;
+  *"cat ~/fleet-rotation/ROTATION_PAUSE"*) echo "manual: lead window" ;;
+  *"show -p ActiveState"*) echo inactive ;;
+  *"ls -1d backup-*"*) echo backup-20260929T200000Z ;;
+  *"rotation.json.new check-config"*) exit {0 if new_config_ok else 2} ;;
+esac
+exit 0
+""")
+    (tmp / "bin" / "scp").write_text(f"""#!/bin/sh
+printf 'scp %s\\n' "$*" >> {log}
+for last; do :; done
+case "$last" in rtx5090:*) ;; *) echo copied > "$last" ;; esac
+exit 0
+""")
+    (tmp / "bin" / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    for name in ("ssh", "scp", "sleep"):
+        (tmp / "bin" / name).chmod(0o755)
+    env = dict(os.environ, PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", FLEET_ROTATION_CONFIG=str(PRODUCTION))
+    return log, env
+
+
+def run_install(env, *args):
+    p = subprocess.run(["bash", str(REPOSITORY / "tools" / "fleet_rotation_install.sh"), *args], capture_output=True, text=True, env=env, timeout=60)
+    return p.returncode, p.stdout + p.stderr
+
+
+def test_install_upgrade_and_revert():
+    with tempfile.TemporaryDirectory() as tmp:
+        log, env = install_harness(tmp)
+        rc, out = run_install(env, "upgrade")
+        lines = log.read_text().splitlines()
+        steps = [first_index(lines, p) for p in (r"sshcheck", r"fleet_rotation.py --config \S+ pause upgrade-", r"show -p ActiveState", r"mkdir backup-\d{8}T\d{6}Z && cp -p bin/fleet_rotation.py rotation.json INSTALLED.sha256",
+                                                  r"^scp .*fleet_rotation.py rtx5090:fleet-rotation/bin/fleet_rotation.py.new", r"rotation.json.new check-config", r"mv -f bin/fleet_rotation.py.new bin/fleet_rotation.py",
+                                                  r"--config \S+ plan", r"--dry-run tick", r"restart fleet-rotation-schedule.service", r"--config \S+ resume")]
+        check("upgrade: pause, wait for the tick, back up, install, check, plan and dry-run, then resume", rc == 0 and all(i >= 0 for i in steps) and steps == sorted(steps), f"{steps}\n{out[-400:]}")
+    with tempfile.TemporaryDirectory() as tmp:
+        log, env = install_harness(tmp, paused=True)
+        rc, out = run_install(env, "upgrade")
+        lines = log.read_text().splitlines()
+        check("upgrade: an existing pause is kept, not overwritten or resumed", rc == 0 and first_index(lines, r" pause upgrade-") < 0 and first_index(lines, r" resume") < 0 and first_index(lines, r"--dry-run tick") >= 0, out[-400:])
+    with tempfile.TemporaryDirectory() as tmp:
+        log, env = install_harness(tmp)
+        rc, out = run_install(env, "upgrade", "--no-resume")
+        check("upgrade --no-resume: stays paused", rc == 0 and first_index(log.read_text().splitlines(), r" resume") < 0, out[-300:])
+    with tempfile.TemporaryDirectory() as tmp:
+        log, env = install_harness(tmp, new_config_ok=False)
+        rc, out = run_install(env, "upgrade")
+        lines = log.read_text().splitlines()
+        check("upgrade: a new config the new tool refuses changes nothing and stays paused", rc != 0 and first_index(lines, r"mv -f bin/fleet_rotation.py.new") < 0 and first_index(lines, r" resume") < 0 and "nothing changed" in out, out[-400:])
+    with tempfile.TemporaryDirectory() as tmp:
+        log, env = install_harness(tmp)
+        rc, out = run_install(env, "revert")
+        lines = log.read_text().splitlines()
+        steps = [first_index(lines, p) for p in (r" pause revert-", r"show -p ActiveState", r"mkdir revert-", r"^scp -q rtx5090:fleet-rotation/backup-20260929T200000Z/fleet_rotation.py",
+                                                  r"mv -f bin/fleet_rotation.py.new", r"--dry-run tick", r" resume")]
+        check("revert: restores the newest backup through the same checked swap", rc == 0 and all(i >= 0 for i in steps) and steps == sorted(steps), f"{steps}\n{out[-400:]}")
+
+
+def test_upgrade_keeps_the_running_companion_for_its_hour():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        w = f.world()
+        for h in HOSTS:
+            w["nodes"][h]["up"]["wide"] = True
+            w["nodes"][h]["ready"]["wide"] = True
+            w["nodes"][h]["arena"]["wide"] = 22
+            w["nodes"][h]["mem"] -= 22
+        w["apis"]["wide"] = True
+        f.save(w)
+        f.state_dir.mkdir()
+        (f.state_dir / "state.json").write_text(json.dumps({"active": ["prod", "wide"], "phase": "steady", "companions": {H17: "wide", hour_key("2026-09-29T16:00:00Z"): "tb"}, "last_companion": "wide"}))
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:20:30Z")
+        st = f.state()
+        check("upgrade state: the companion the old rotation started this hour keeps running, others join", rc == 0 and st.get("active") == ["prod", "wide", "ta"] and not any(re.search(r" (stop|reclaim) wide", l) for l in f.call_lines()), out[-600:])
+        check("upgrade state: the old per-hour choices seed the fairness record", st.get("last_run", {}).get("tb") == int(hour_key("2026-09-29T16:00:00Z")) and "companions" not in st and "last_companion" not in st, json.dumps(st.get("last_run")))
+
+
+def test_dry_run_of_a_running_rotation_shows_the_plan():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T18:00:30Z", dry=True)
+        check("dry-run running: plans the next slot from the recorded fleet without an alert", rc == 0 and "DRY n0: fake start big 0" in out and "DRY n2: fake stop tc" in out and "ALERT" not in out and f.call_lines() == [], out[-600:])
+
+
+def strand(f, name):
+    w = f.world()
+    for h in f.cfg["models"][name]["nodes"]:
+        w["nodes"][h]["up"][name] = False
+        w["nodes"][h]["ready"][name] = False
+    w["apis"][name] = False
+    f.save(w)
+
+
+def test_resident_arenas_of_a_stopped_model_are_reclaimed():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T15:00:30Z")
+        f.tool("pause", "verify", "window")
+        strand(f, "big")
+        f.tool("resume", at="2026-09-29T15:09:00Z")
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T15:09:39Z")
+        lines = f.call_lines()
+        st = f.state()
+        check("stranded arenas: a primary stopped outside the rotation with its arenas resident does not block production", rc == 0 and st.get("active") == ["prod"] and f.up_on("prod") == HOSTS and f.world()["apis"].get("prod"), out[-800:])
+        check("stranded arenas: its packs are reclaimed by pack before production starts", 0 <= first_index(lines, r"n\d reclaim big --reclaim-pack") < first_index(lines, r"n\d start prod") and all(f.world()["nodes"][h]["arena"].get("big") == 0 for h in HOSTS), "\n".join(lines[-12:]))
+        check("stranded arenas: no auto-pause, no node-global reclaim", not (f.state_dir / "ROTATION_PAUSE").exists() and "CRITICAL" not in f.alerts() and not any(re.search(r"--reclaim(?![-\w])", l) for l in lines), f.alerts())
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.tool("tick", at="2026-09-29T18:00:30Z")
+        f.tool("pause", "verify", "window")
+        strand(f, "big")
+        f.tool("resume", at="2026-09-29T18:09:00Z")
+        rc, out = f.tool("tick", at="2026-09-29T18:09:39Z")
+        st = f.state()
+        check("stranded arenas: with a companion still serving, the slot is re-established from reclaimed memory", rc == 0 and st.get("active") == ["big", "ta"] and f.up_on("big") == HOSTS and min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20 and "CRITICAL" not in f.alerts(), out[-800:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T15:00:30Z")
+        f.state_dir.joinpath("state.json").write_text(json.dumps(dict(f.state(), phase="recovering", transition={"from": ["big"], "to": ["prod"], "reason": "x", "started": "x"})))
+        strand(f, "big")
+        rc, out = f.tool("tick", at="2026-09-29T15:20:30Z")
+        check("stranded arenas: a fallback reclaims idle packs before it starts production", f.state().get("active") == ["prod"] and f.up_on("prod") == HOSTS and "CRITICAL" not in f.alerts(), out[-800:])
+
+
+def test_api_down_with_engines_up_restarts_the_api():
+    for paused in (True, False):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Fleet(tmp)
+            f.tool("tick", at="2026-09-29T15:00:30Z")
+            if paused:
+                f.tool("pause", "verify", "window")
+            w = f.world()
+            w["apis"]["big"] = False
+            f.save(w)
+            if paused:
+                f.tool("resume", at="2026-09-29T15:09:00Z")
+            f.clear_calls()
+            rc, out = f.tool("tick", at="2026-09-29T15:09:39Z")
+            lines = f.call_lines()
+            label = "after a pause" if paused else "in a steady hour"
+            check(f"api down ({label}): the api is restarted and smoked, the engines are kept", rc == 0 and f.state().get("active") == ["big"] and f.world()["apis"].get("big") and f.up_on("big") == HOSTS and starts(lines) == [] and not any(" stop big" in l or "reclaim big" in l for l in lines) and any("smoke big" in l for l in lines), out[-800:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T15:00:30Z")
+        w = f.world()
+        w["apis"]["big"] = False
+        f.save(w)
+        f.behave(smoke_bad=["big"])
+        rc, out = f.tool("tick", at="2026-09-29T15:09:39Z")
+        check("api down: a failed api restart falls back with the engines stopped and reclaimed", f.state().get("active") == ["prod"] and f.up_on("big") == [] and f.up_on("prod") == HOSTS and "api restart failed" in f.alerts(), out[-800:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        w = f.world()
+        for h in HOSTS:
+            w["nodes"][h]["up"]["big"] = True
+            w["nodes"][h]["arena"]["big"] = 0
+        f.save(w)
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:05:30Z")
+        check("api down: an engine the rotation did not start is never given an api", not f.world()["apis"].get("big") and not any("api-start big" in l for l in f.call_lines()) and (f.state_dir / "ROTATION_PAUSE").exists(), out[-600:])
+
+
+def test_fallback_tries_production_past_a_stuck_model():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        f.tool("tick", at="2026-09-29T18:00:30Z")
+        w = f.world()
+        for h in HOSTS:
+            w["nodes"][h]["up"]["big"] = False
+        f.save(w)
+        f.behave(stop_stuck=["ta"])
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T18:10:30Z")
+        st = f.state()
+        check("stuck in fallback: production is still restored before the rotation pauses", f.up_on("prod") == HOSTS and f.world()["apis"].get("prod") and st.get("phase") == "degraded" and "prod" in st.get("active") and (f.state_dir / "ROTATION_PAUSE").exists(), out[-800:])
+        check("stuck in fallback: the stuck companion is not reclaimed", not any("reclaim ta" in l for l in f.call_lines()) and "CRITICAL" in f.alerts() and "ta:" in f.alerts(), f.alerts())
+
+
+def test_steady_floor_guard_sheds_a_companion():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = pack_fleet(tmp)
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        w = f.world()
+        w["nodes"]["n1"]["mem"] = 15
+        f.save(w)
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:10:30Z")
+        lines = f.call_lines()
+        check("steady floor: a node under the floor sheds only the companion on it", f.state().get("active") == ["prod", "ta", "tc"] and f.up_on("tb") == [] and not any(re.search(r" (stop|reclaim) (prod|ta|tc)", l) for l in lines) and "below 20 GiB on n1=15" in f.alerts(), "\n".join(lines[-8:]))
+        w = f.world()
+        w["nodes"]["n3"]["mem"] = 15
+        f.save(w)
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T17:15:30Z")
+        check("steady floor: with no companion on the low node the primary is left serving and alerted", rc == 0 and f.state().get("active") == ["prod", "ta", "tc"] and not any(" stop " in l for l in f.call_lines()) and "no companion there to shed" in f.alerts(), f.alerts())
+
+
 def test_production_config():
     cfg = json.loads(PRODUCTION.read_text())
     p = subprocess.run([sys.executable, str(TOOL), "--config", str(PRODUCTION), "check-config"], capture_output=True, text=True)
@@ -787,7 +1268,13 @@ def main():
                  test_stuck_stop_and_reclaim_guard, test_interrupted_transition_recovers, test_pause_during_running_tick,
                  test_unexpected_error_falls_back, test_failed_health_fallback_reports_degraded, test_mixed_production_is_not_held, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation,
                  test_exclusive_floor_and_abort, test_exclusive_floor_validation, test_pack_cache_trim,
-                 test_dry_run_while_paused_shows_the_plan, test_failure_after_the_hour_boundary_marks_the_starting_hour, test_install_rollback_waits_for_a_running_tick,
+                 test_dry_run_while_paused_shows_the_plan, test_failure_after_the_hour_boundary_marks_the_starting_hour, test_install_rollback_waits_for_a_running_tick, test_install_upgrade_and_revert,
+                 test_packing_fills_the_nodes, test_packing_per_node_floor, test_partial_companion_failure, test_steady_companion_loss_and_health,
+                 test_rotation_fairness_across_cycles, test_full_slot_with_companion, test_packing_schedule_document_and_force, test_plan_is_read_only,
+                 test_smoke_reply_rules, test_packing_config_validation, test_upgrade_keeps_the_running_companion_for_its_hour,
+                 test_dry_run_of_a_running_rotation_shows_the_plan,
+                 test_resident_arenas_of_a_stopped_model_are_reclaimed, test_api_down_with_engines_up_restarts_the_api,
+                 test_fallback_tries_production_past_a_stuck_model, test_steady_floor_guard_sheds_a_companion,
                  test_production_config):
         test()
     if failures:

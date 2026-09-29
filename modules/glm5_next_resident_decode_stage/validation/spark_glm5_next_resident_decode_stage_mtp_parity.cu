@@ -856,6 +856,9 @@ static int SparkGlm5NextMtpParityCheckKvAccess(SparkGlm5NextMtpParityFixture *fi
 	return(0);
 }
 
+static uint16_t *spark_glm5_next_mtp_parity_tap_mean;
+static uint16_t *spark_glm5_next_mtp_parity_tap_all;
+
 static int SparkGlm5NextMtpParityRunWave(SparkGlm5NextMtpParityFixture *fixture,const char *label)
 {
 	uint32_t local;
@@ -879,6 +882,14 @@ static int SparkGlm5NextMtpParityRunWave(SparkGlm5NextMtpParityFixture *fixture,
 		status = SparkGlm5NextLaunchCudaLayerMlpPost(&fixture->wave,local);
 		if ( status != 0 )
 			return(SparkGlm5NextMtpParityLaunchFail(label,"mlp_post",status));
+		if ( spark_glm5_next_mtp_parity_tap_mean != 0 )
+		{
+			status = SparkGlm5NextLaunchCudaTapCapture(&fixture->wave,0u,spark_glm5_next_mtp_parity_tap_mean + (uint64_t)local * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION);
+			if ( status == 0 )
+				status = SparkGlm5NextLaunchCudaTapCapture(&fixture->wave,1u,spark_glm5_next_mtp_parity_tap_all + (uint64_t)local * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION);
+			if ( status != 0 )
+				return(SparkGlm5NextMtpParityLaunchFail(label,"tap_capture",status));
+		}
 	}
 	status = SparkGlm5NextLaunchCudaWaveHead(&fixture->wave);
 	if ( status != 0 )
@@ -1759,6 +1770,70 @@ static int SparkGlm5NextMtpParityRunMtpPhases(SparkGlm5NextMtpParityFixture *fix
 	return(SparkGlm5NextMtpParityRunMtpDrafted(fixture,&phase));
 }
 
+static int SparkGlm5NextMtpParityTapRowsEqual(const void *device_a,const void *device_b,uint64_t bytes,const char *label)
+{
+	uint8_t *a = (uint8_t *)malloc(bytes),*b = (uint8_t *)malloc(bytes);
+	int result = a == 0 || b == 0 ? SparkGlm5NextMtpParityFail(label,"host buffers") : 0;
+	if ( result == 0 && (cudaMemcpy(a,device_a,bytes,cudaMemcpyDeviceToHost) != cudaSuccess || cudaMemcpy(b,device_b,bytes,cudaMemcpyDeviceToHost) != cudaSuccess) )
+		result = SparkGlm5NextMtpParityFail(label,"readback");
+	if ( result == 0 && memcmp(a,b,bytes) != 0 )
+		result = SparkGlm5NextMtpParityFail(label,"tap differs from the engine buffer");
+	free(a);
+	free(b);
+	return(result);
+}
+
+static int SparkGlm5NextMtpParityRunTapped(SparkGlm5NextMtpParityFixture *fixture)
+{
+	const uint64_t mean_bytes = (uint64_t)SPARK_GLM5_NEXT_MTP_PARITY_LAYERS * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
+	const uint64_t last = SPARK_GLM5_NEXT_MTP_PARITY_LAYERS - 1u;
+	uint8_t *scratch = (uint8_t *)malloc(SPARK_GLM5_NEXT_MTP_PARITY_STATE_BYTES);
+	uint32_t step,rows,token;
+	int result = 0;
+	if ( scratch == 0 )
+		return(SparkGlm5NextMtpParityFail("alloc_host","tap_compare_scratch"));
+	if ( SparkGlm5NextMtpParityCuda(cudaMalloc((void **)&spark_glm5_next_mtp_parity_tap_mean,mean_bytes),"taps","alloc_mean") != 0 ||
+		SparkGlm5NextMtpParityCuda(cudaMalloc((void **)&spark_glm5_next_mtp_parity_tap_all,mean_bytes * SPARK_GLM5_NEXT_MODEL_HC_MULT),"taps","alloc_all") != 0 )
+		return(1);
+	if ( SparkGlm5NextMtpParityResetPools(fixture) != 0 )
+		result = 1;
+	for ( step = 0u; result == 0 && step < SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS; step++ )
+	{
+		rows = step == 0u ? SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS : 1u;
+		if ( step == 0u )
+			SparkGlm5NextMtpParityBuildWave(fixture,SPARK_GLM5_NEXT_MTP_PARITY_PROMPT,0u,rows,1u,0u);
+		else
+			SparkGlm5NextMtpParityBuildWave(fixture,&fixture->reference_tokens[step - 1u],SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS + step - 1u,1u,1u,0u);
+		if ( SparkGlm5NextMtpParityRunWave(fixture,step == 0u ? "tapped_prefill" : "tapped_decode") != 0 )
+		{
+			result = 1;
+			break;
+		}
+		token = fixture->host_output[rows - 1u];
+		if ( token != fixture->reference_tokens[step] )
+		{
+			fprintf(stderr,"tapped step %u token %u, taps-off baseline %u\n",step,token,fixture->reference_tokens[step]);
+			result = SparkGlm5NextMtpParityFail("taps","served token changed with taps on");
+			break;
+		}
+		result = SparkGlm5NextMtpParityTapRowsEqual(spark_glm5_next_mtp_parity_tap_mean + last * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
+			fixture->slot.hc_mean_bf16,(uint64_t)rows * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),"tap_mean_last_equals_mtp_input");
+		if ( result == 0 )
+			result = SparkGlm5NextMtpParityTapRowsEqual(spark_glm5_next_mtp_parity_tap_all + last * SPARK_GLM5_NEXT_MTP_PARITY_ROW_CAPACITY * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION,
+				fixture->slot.hidden_bf16,(uint64_t)rows * SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),"tap_all_last_equals_streams");
+		if ( result == 0 && SparkGlm5NextMtpParityCompareState(fixture,SPARK_GLM5_NEXT_MTP_PARITY_PREFILL_ROWS + step,scratch,"tapped") != 0 )
+			result = 1;
+	}
+	free(scratch);
+	(void)cudaFree(spark_glm5_next_mtp_parity_tap_mean);
+	(void)cudaFree(spark_glm5_next_mtp_parity_tap_all);
+	spark_glm5_next_mtp_parity_tap_mean = 0;
+	spark_glm5_next_mtp_parity_tap_all = 0;
+	if ( result == 0 )
+		printf("PASS glm5_next taps: %u steps with every layer tapped (mean and all streams) serve the taps-off tokens byte-exact with identical state; the last-layer mean tap equals the MTP input row and the all-streams tap equals the residual streams\n",SPARK_GLM5_NEXT_MTP_PARITY_REF_TOKENS);
+	return(result);
+}
+
 int main(int argc,char **argv)
 {
 	static SparkGlm5NextMtpParityFixture fixture;
@@ -1771,6 +1846,8 @@ int main(int argc,char **argv)
 	if ( SparkGlm5NextMtpParityFixtureBuild(&fixture) != 0 )
 		return(1);
 	if ( SparkGlm5NextMtpParityRunBaseline(&fixture) != 0 )
+		return(1);
+	if ( SparkGlm5NextMtpParityRunTapped(&fixture) != 0 )
 		return(1);
 	if ( SparkGlm5NextMtpParityRunSpeculative(&fixture) != 0 )
 		return(1);
