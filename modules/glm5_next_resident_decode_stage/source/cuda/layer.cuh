@@ -2264,7 +2264,7 @@ static int32_t Glm5NextLayerMoeExperts(
     int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
     if (status != LM_LAUNCH_OK)
         return status;
-    if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 || buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
+    if ( buffers->expert_w1_weight == 0 || buffers->expert_w2_weight == 0 || (LmWeightCodec<ExpertCodec>::kScaleEncoding != LM_SCALE_ENCODING_NONE && (buffers->expert_w1_scale == 0 || buffers->expert_w2_scale == 0)) )
         return(LM_LAUNCH_ERR_SHAPE);
     status = Glm5NextLayerMoeUp<ExpertCodec>(buffers, rows, packed_rows, multiprocessors, stream);
     if (status == LM_LAUNCH_OK)
