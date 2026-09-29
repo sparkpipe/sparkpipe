@@ -46,7 +46,43 @@ def main():
         fp8 = synthetic_pack(Path(directory) / "fp8.sp", 5, 1, bytes([0x38] * 512), struct.pack("<4f", 1.0, 1.0, 0.25, 3.0), cols=128)
         w, _ = fp8.weight(3, oracle.EXPERT_DOWN, 1)
         assert w[0, 0] == 0.25 and w[1, 5] == 3.0
-    print("PASS routed oracle: e4m3/e2m1 tables, bf16 RNE, nvfp4 global + block addressing, fp8 block scales")
+        check_ceiling(Path(directory))
+    print("PASS routed oracle: e4m3/e2m1 tables, bf16 RNE, nvfp4 global + block addressing, fp8 block scales, ceiling refused unless inputs match")
+
+
+def refused(call):
+    try:
+        call()
+    except SystemExit as error:
+        return "ceiling" in str(error)
+    return False
+
+
+def check_ceiling(root):
+    rows = 1
+    run = root / "arm" / "layer03_rows001"
+    ceiling = root / "ceiling" / "layer03_rows001"
+    run.mkdir(parents=True)
+    ceiling.mkdir(parents=True)
+    inputs = {"x.bf16": b"\x01\x02" * oracle.HIDDEN, "route_expert.u32": bytes(range(4 * oracle.TOP_K)), "route_weight.f32": b"\x00" * (4 * oracle.TOP_K)}
+    for name, data in inputs.items():
+        (run / name).write_bytes(data)
+    call = lambda: oracle.load_ceiling(root / "ceiling", run, rows)
+    assert refused(call)
+    for name, data in inputs.items():
+        (ceiling / name).write_bytes(data)
+    assert refused(call)
+    reference = np.arange(rows * oracle.HIDDEN, dtype=np.float64)
+    reference.tofile(ceiling / "ref.f64")
+    assert np.array_equal(call(), reference.reshape(rows, oracle.HIDDEN))
+    (ceiling / "route_expert.u32").write_bytes(bytes(reversed(range(4 * oracle.TOP_K))))
+    assert refused(call)
+    (ceiling / "route_expert.u32").write_bytes(inputs["route_expert.u32"])
+    (ceiling / "x.bf16").write_bytes(b"\x02\x01" * oracle.HIDDEN)
+    assert refused(call)
+    (ceiling / "x.bf16").write_bytes(inputs["x.bf16"])
+    reference[:-1].tofile(ceiling / "ref.f64")
+    assert refused(call)
 
 
 if __name__ == "__main__":
