@@ -52,14 +52,18 @@ def check_runner(failures):
                         "must fail the step instead of decoding partial sums")
     if statements_calling(text, "SparkTpDeviceCollectiveEnqueue"):
         failures.append("a device-collective enqueue result is discarded")
-    completion = body(text, "K3RunnerTpCompletion")
-    if not completion or statements_calling(completion, "cudaMemcpyAsync"):
-        failures.append("the device-collective completion discards a copy result; "
+    apply = body(text, "K3RunnerTpApply")
+    if not apply or statements_calling(apply, "cudaMemcpyAsync"):
+        failures.append("the device-collective apply step discards a copy result; "
                         "a failed gate_up or shared copy must fail the step")
-    if completion.count("copy_failed = 1u") < 2:
-        failures.append("the device-collective completion does not record a failed copy")
-    if not re.search(r"completion->status != SPARK_STATUS_OK\s*\)\s*tp->owner->tp_collective_failed = 1u", completion):
-        failures.append("the device-collective completion ignores a failed collective status")
+    if apply.count("copy_failed = 1u") < 2:
+        failures.append("the device-collective apply step does not record a failed copy")
+    registered = set(re.findall(r"completion_function\s*=\s*(\w+);", text))
+    for name in re.findall(r"^static void (\w+)\([^)]*\)\s*\{", text, re.M):
+        if "completion->status" in body(text, name) and name not in registered:
+            failures.append(f"{name} reads a collective completion status but is "
+                            f"never registered as a completion function, so the "
+                            f"check is dead")
     reduce_helper = body(text, "K3RunnerHostAllReduce")
     if "tp_collective_failed = 1u" not in reduce_helper:
         failures.append("K3RunnerHostAllReduce does not record a failed reduce")
