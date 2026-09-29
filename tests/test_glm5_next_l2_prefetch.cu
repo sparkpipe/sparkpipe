@@ -13,6 +13,8 @@
 
 static constexpr uint32_t test_layers = 5u, routed_dsa_layer = 3u;
 static constexpr uint64_t weight_bytes = 16ull << 20;
+static const SparkGlm5NextL2PrefetchShape default_shape = {SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_DEFAULT,SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_DEFAULT};
+static const SparkGlm5NextL2PrefetchShape narrow_shape = {4u << 20,16u};
 
 typedef struct PrefetchFixture
 {
@@ -148,7 +150,7 @@ static size_t Dependencies(cudaGraphNode_t node,CUgraphNode *out,size_t capacity
     return(count);
 }
 
-static uint32_t PrefetchNodes(cudaGraph_t graph,cudaGraphNode_t *found)
+static uint32_t PrefetchNodes(cudaGraph_t graph,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *plan_total,cudaGraphNode_t *found)
 {
     cudaGraphNode_t nodes[64];
     CUgraphNodeType type;
@@ -165,7 +167,9 @@ static uint32_t PrefetchNodes(cudaGraph_t graph,cudaGraphNode_t *found)
         CUDA(cudaGraphKernelNodeGetParams(nodes[index],&params));
         if ( params.func != (void *)Glm5NextL2PrefetchKernel )
             continue;
-        REQUIRE(params.gridDim.x == GLM5_NEXT_L2_PREFETCH_BLOCKS && params.blockDim.x == GLM5_NEXT_L2_PREFETCH_THREADS);
+        REQUIRE(params.gridDim.x == shape->blocks && params.blockDim.x == GLM5_NEXT_L2_PREFETCH_THREADS);
+        *plan_total = ((const Glm5NextL2PrefetchPlan *)params.kernelParams[0])->total;
+        REQUIRE(*plan_total <= shape->bytes);
         *found = nodes[index];
         prefetch++;
     }
@@ -179,42 +183,55 @@ static void TestPlans(PrefetchFixture *fixture)
     const uint64_t fn_bytes = (uint64_t)GLM5_NEXT_HC_MIX * GLM5_NEXT_HC_FLAT * sizeof(float);
     uint32_t range;
     uint64_t total = 0u;
-    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&plan) == LM_LAUNCH_OK);
+    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&default_shape,&plan) == LM_LAUNCH_OK);
     REQUIRE(plan.count == 4u && plan.base[0] == fixture->weights + 16u && plan.bytes[0] == fn_bytes);
     REQUIRE(plan.base[1] == fixture->weights + 48u && plan.bytes[1] == row);
     REQUIRE(plan.base[2] == fixture->weights + 128u && plan.bytes[2] == (uint64_t)GLM5_NEXT_EXPERTS * row);
     REQUIRE(plan.base[3] == fixture->weights + 144u);
-    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer - 1u,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE,&plan) == LM_LAUNCH_OK);
+    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer - 1u,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE,&default_shape,&plan) == LM_LAUNCH_OK);
     REQUIRE(plan.count >= 3u && plan.base[0] == fixture->weights && plan.bytes[0] == fn_bytes && plan.base[1] == fixture->weights + 32u && plan.base[2] == fixture->weights + 64u);
     for (range=0u; range<plan.count; range++)
     {
         REQUIRE(plan.bytes[range] % 16u == 0u);
         total += plan.bytes[range];
     }
-    REQUIRE(total == plan.total && plan.total == GLM5_NEXT_L2_PREFETCH_BYTES);
-    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,0u,SPARK_GLM5_NEXT_L2_SITE_BEGIN,&plan) == LM_LAUNCH_OK);
+    REQUIRE(total == plan.total && plan.total == SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_DEFAULT);
+    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,0u,SPARK_GLM5_NEXT_L2_SITE_BEGIN,&default_shape,&plan) == LM_LAUNCH_OK);
     REQUIRE(plan.count >= 3u && plan.base[0] == fixture->weights && plan.base[2] == fixture->weights + 160u);
-    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,test_layers - 1u,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE,&plan) == LM_LAUNCH_OK && plan.count == 0u);
-    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,test_layers,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&plan) == LM_LAUNCH_ERR_SHAPE);
-    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,0u,SPARK_GLM5_NEXT_L2_SITE_BEGIN + 1u,&plan) == LM_LAUNCH_ERR_SHAPE);
+    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,test_layers - 1u,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE,&default_shape,&plan) == LM_LAUNCH_OK && plan.count == 0u);
+    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,test_layers,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&default_shape,&plan) == LM_LAUNCH_ERR_SHAPE);
+    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,0u,SPARK_GLM5_NEXT_L2_SITE_BEGIN + 1u,&default_shape,&plan) == LM_LAUNCH_ERR_SHAPE);
     fixture->layers[routed_dsa_layer].router_bf16 = fixture->weights + 8u;
-    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&plan) == LM_LAUNCH_ERR_SHAPE);
+    REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&default_shape,&plan) == LM_LAUNCH_ERR_SHAPE);
     fixture->layers[routed_dsa_layer].router_bf16 = fixture->weights + 128u;
+    {
+        const SparkGlm5NextL2PrefetchShape one_mib = {1u << 20,48u};
+        const SparkGlm5NextL2PrefetchShape invalid[] = {{0u,48u},{16u,48u},{(1u << 20) + 16u,48u},{SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_MAX + SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_STEP,48u},
+            {1u << 20,0u},{1u << 20,SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_MAX + 1u}};
+        REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&one_mib,&plan) == LM_LAUNCH_OK);
+        REQUIRE(plan.count == 1u && plan.base[0] == fixture->weights + 16u && plan.bytes[0] == (1u << 20) && plan.total == (1u << 20));
+        REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&narrow_shape,&plan) == LM_LAUNCH_OK);
+        REQUIRE(plan.count == 4u && plan.bytes[0] == fn_bytes && plan.bytes[1] == row && plan.bytes[2] == (uint64_t)GLM5_NEXT_EXPERTS * row);
+        REQUIRE(plan.bytes[3] == narrow_shape.bytes - fn_bytes - row - (uint64_t)GLM5_NEXT_EXPERTS * row && plan.total == narrow_shape.bytes);
+        REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,0,&plan) == LM_LAUNCH_ERR_SHAPE);
+        for (range=0u; range<sizeof(invalid)/sizeof(invalid[0]); range++)
+            REQUIRE(Glm5NextL2PrefetchPlanFor(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&invalid[range],&plan) == LM_LAUNCH_ERR_SHAPE);
+    }
 }
 
-static void TestPlacement(PrefetchFixture *fixture)
+static void TestPlacement(PrefetchFixture *fixture,const SparkGlm5NextL2PrefetchShape *shape,uint32_t want_total)
 {
     RoundNodes round;
     cudaGraph_t graph;
     cudaGraphExec_t exec;
     cudaGraphNode_t next,prefetch = 0;
     CUgraphNode dependencies[4];
-    uint32_t placed = 7u,marks[8];
+    uint32_t placed = 7u,marks[8],total = 0u;
     size_t count;
     CUDA(cudaStreamBeginCapture(fixture->stream,cudaStreamCaptureModeGlobal));
     (void)Mark(fixture,0u);
     round = HardwareRound(fixture,1u);
-    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&placed) == LM_LAUNCH_OK && placed == 1u);
+    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,shape,&placed) == LM_LAUNCH_OK && placed == 1u);
     TestMarkKernel<<<1,1,0,fixture->stream>>>(fixture->marks,5u);
     CUDA(cudaPeekAtLastError());
     {
@@ -226,7 +243,7 @@ static void TestPlacement(PrefetchFixture *fixture)
         next = tail[0];
     }
     CUDA(cudaStreamEndCapture(fixture->stream,&graph));
-    REQUIRE(PrefetchNodes(graph,&prefetch) == 1u);
+    REQUIRE(PrefetchNodes(graph,shape,&total,&prefetch) == 1u && total == want_total);
     count = Dependencies(prefetch,dependencies,4u);
     REQUIRE(count == 1u && dependencies[0] == (CUgraphNode)round.request);
     count = Dependencies(round.wait,dependencies,4u);
@@ -252,23 +269,33 @@ static void TestNoPlacement(PrefetchFixture *fixture)
     cudaGraph_t graph;
     cudaGraphNode_t prefetch = 0;
     uint32_t placed = 7u,mark;
-    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&placed) == LM_LAUNCH_OK && placed == 0u);
-    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,0) == LM_LAUNCH_ERR_SHAPE);
+    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&default_shape,&placed) == LM_LAUNCH_OK && placed == 0u);
+    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&default_shape,0) == LM_LAUNCH_ERR_SHAPE);
     CUDA(cudaStreamBeginCapture(fixture->stream,cudaStreamCaptureModeGlobal));
     for (mark=0u; mark<6u; mark++)
         (void)Mark(fixture,mark);
     placed = 7u;
-    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&placed) == LM_LAUNCH_OK && placed == 0u);
+    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&default_shape,&placed) == LM_LAUNCH_OK && placed == 0u);
     (void)HardwareRound(fixture,6u);
+    {
+        const SparkGlm5NextL2PrefetchShape zero_blocks = {1u << 20,0u};
+        placed = 7u;
+        REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&zero_blocks,&placed) == LM_LAUNCH_ERR_SHAPE && placed == 0u);
+        placed = 7u;
+        REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,0,&placed) == LM_LAUNCH_ERR_SHAPE && placed == 0u);
+    }
     placed = 7u;
-    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,test_layers - 1u,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE,&placed) == LM_LAUNCH_OK && placed == 0u);
+    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,test_layers - 1u,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE,&default_shape,&placed) == LM_LAUNCH_OK && placed == 0u);
     (void)WaitValue(fixture);
     for (mark=10u; mark<10u + GLM5_NEXT_L2_PREFETCH_SEARCH; mark++)
         (void)Mark(fixture,mark);
     placed = 7u;
-    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&placed) == LM_LAUNCH_OK && placed == 0u);
+    REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,&default_shape,&placed) == LM_LAUNCH_OK && placed == 0u);
     CUDA(cudaStreamEndCapture(fixture->stream,&graph));
-    REQUIRE(PrefetchNodes(graph,&prefetch) == 0u);
+    {
+        uint32_t total = 0u;
+        REQUIRE(PrefetchNodes(graph,&default_shape,&total,&prefetch) == 0u);
+    }
     CUDA(cudaGraphDestroy(graph));
 }
 
@@ -282,12 +309,13 @@ int main(int argc,char **argv)
     }
     FixtureCreate(&fixture);
     TestPlans(&fixture);
-    TestPlacement(&fixture);
+    TestPlacement(&fixture,&default_shape,(uint32_t)((uint64_t)GLM5_NEXT_HC_MIX * GLM5_NEXT_HC_FLAT * sizeof(float) + (uint64_t)GLM5_NEXT_HIDDEN * sizeof(uint16_t) * (1u + GLM5_NEXT_EXPERTS) + (uint64_t)GLM5_NEXT_HIDDEN * sizeof(uint16_t) * (2u * SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION / 16u)));
+    TestPlacement(&fixture,&narrow_shape,narrow_shape.bytes);
     TestNoPlacement(&fixture);
     CUDA(cudaStreamDestroy(fixture.stream));
     CUDA(cudaFreeHost(fixture.flag_host));
     CUDA(cudaFree(fixture.marks));
     CUDA(cudaFree(fixture.weights));
-    puts("PASS glm5_next l2 prefetch plans, placement after the pre-wait request node, join into the next node, no placement without a peer wait");
+    puts("PASS glm5_next l2 prefetch plans, byte cap and block count from the shape, invalid shapes refused, placement after the pre-wait request node, join into the next node, no placement without a peer wait");
     return(0);
 }

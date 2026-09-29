@@ -298,6 +298,24 @@ typedef struct SparkGlm5NextCudaWave
 #define SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE 0u
 #define SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE 1u
 #define SPARK_GLM5_NEXT_L2_SITE_BEGIN 2u
+#define SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_DEFAULT (12u << 20)
+#define SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_MAX (12u << 20)
+#define SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_STEP 65536u
+#define SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_DEFAULT 48u
+#define SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_MAX 192u
+
+typedef struct SparkGlm5NextL2PrefetchShape
+{
+	uint32_t bytes;
+	uint32_t blocks;
+} SparkGlm5NextL2PrefetchShape;
+
+static inline uint32_t SparkGlm5NextL2PrefetchShapeValid(const SparkGlm5NextL2PrefetchShape *shape)
+{
+	return(shape != 0 && shape->bytes != 0u && shape->bytes <= SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_MAX &&
+		shape->bytes % SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_STEP == 0u && shape->blocks != 0u &&
+		shape->blocks <= SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_MAX ? 1u : 0u);
+}
 
 typedef struct SparkGlm5NextMtpDraftOps
 {
@@ -330,7 +348,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
-int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,uint32_t *placed);
+int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *placed);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,const uint32_t *miss,uint64_t *maxloc,uint32_t row_count);
