@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_weightd_include.h"
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
 typedef struct SparkK3RunnerState SparkK3RunnerState;
@@ -154,6 +155,22 @@ static SparkStatus K3RunnerCombineGatherBf16(void *combine_context,
 		256u, 0, (cudaStream_t)cuda_stream>>>(
 		sources,(uint16_t *)destination_device,source_count,elements_per_rank);
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+static SparkStatus K3RunnerCombineSumRanksF32(void *combine_context,
+	void *destination_device,const void *const *source_devices,
+	uint32_t source_count,uint32_t active_sequence_count,
+	uint32_t hidden_dimension,void *cuda_stream)
+{
+	uint64_t elements = (uint64_t)active_sequence_count * hidden_dimension;
+	(void)combine_context;
+	if ( destination_device == 0 || source_devices == 0 || source_count == 0u ||
+		source_count > K3_RUNNER_GATHER_SOURCES_MAX || elements == 0u ||
+		elements > UINT32_MAX )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SparkTpLaunchSumRanksF32((cudaStream_t)cuda_stream,
+		destination_device,source_devices,source_count,(uint32_t)elements) ==
+		cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 static SparkStatus K3RunnerCombineBf16(void *combine_context,
@@ -1359,6 +1376,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 			device_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
 			device_config.combine_u64_max_function = K3RunnerCombineU64Max;
 			device_config.combine_gather_bf16_function = K3RunnerCombineGatherBf16;
+			device_config.combine_fused_bf16_function = K3RunnerCombineSumRanksF32;
 			device_config.combine_context = state;
 		}
 		status = SparkTpDeviceCollectiveCreate(&device_config,
@@ -1395,6 +1413,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 			wide_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
 			wide_config.combine_u64_max_function = K3RunnerCombineU64Max;
 			wide_config.combine_gather_bf16_function = K3RunnerCombineGatherBf16;
+			wide_config.combine_fused_bf16_function = K3RunnerCombineSumRanksF32;
 			wide_config.combine_context = state;
 		}
 		status = SparkTpDeviceCollectiveCreate(&wide_config,

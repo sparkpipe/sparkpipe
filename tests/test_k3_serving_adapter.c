@@ -22,6 +22,7 @@ static uint32_t test_dispatch_sequences;
 static uint32_t test_dispatch_row_begin[9];
 static uint32_t test_dispatch_state_index[8];
 static uint32_t test_dispatch_sequence_of_row[8];
+static uint32_t test_dispatch_context[4];
 
 SparkStatus SparkK3StageRunnerSubmit(SparkK3StageRunner *runner,
 	const SparkK3StageRunnerDispatch *dispatch)
@@ -41,6 +42,8 @@ SparkStatus SparkK3StageRunnerSubmit(SparkK3StageRunner *runner,
 		(size_t)dispatch->active_sequence_count * sizeof(uint32_t));
 	memcpy(test_dispatch_sequence_of_row, dispatch->sequence_of_row,
 		(size_t)dispatch->row_count * sizeof(uint32_t));
+	if ( dispatch->context_length != 0 )
+		memcpy(test_dispatch_context, dispatch->context_length, sizeof(test_dispatch_context));
 	return(SPARK_STATUS_OK);
 }
 
@@ -241,6 +244,7 @@ static int32_t TestK3PrefillRuns(void)
 	uint32_t index;
 	memset(&state, 0, sizeof(state));
 	state.max_rows = 8u;
+	state.runner_config.max_active_sequence_count = 4u;
 	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(host) / sizeof(host[0]); index++ )
 		status = SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t));
 	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(device) / sizeof(device[0]); index++ )
@@ -271,6 +275,33 @@ static int32_t TestK3PrefillRuns(void)
 	failures += TestK3Check(test_dispatch_sequence_of_row[0] == 2u && test_dispatch_sequence_of_row[2] == 2u &&
 		test_dispatch_sequence_of_row[3] == 0u && test_dispatch_sequence_of_row[4] == 0u,
 		"attention KV stays indexed per row");
+	failures += TestK3Check(test_dispatch_context[2] == 3u && test_dispatch_context[0] == 9u &&
+		test_dispatch_context[1] == 0u && test_dispatch_context[3] == 0u,
+		"attention reads each sequence's context by its slot: slot 2 holds 3 tokens, slot 0 holds 9");
+	{
+		static const uint32_t split_lane_of_row[5] = { 0u, 1u, 0u, 1u, 1u };
+		test_dispatch_rows = 0u;
+		submission.row_lane_indices = split_lane_of_row;
+		status = K3ServingSubmit(&state, &submission);
+		failures += TestK3Check(status == SPARK_STATUS_VALIDATION_FAILED && test_dispatch_rows == 0u,
+			"a sequence whose rows are not contiguous is refused before dispatch");
+		submission.row_lane_indices = lane_of_row;
+		lanes[0].resident_sequence_slot = 4u;
+		status = K3ServingSubmit(&state, &submission);
+		failures += TestK3Check(status == SPARK_STATUS_VALIDATION_FAILED && test_dispatch_rows == 0u,
+			"a row whose slot is outside the sequence pool is refused before dispatch");
+		lanes[0].resident_sequence_slot = 2u;
+		lanes[1].resident_sequence_slot = 1u;
+		static const uint64_t decode_positions[2] = { 11u, 4u };
+		static const uint32_t decode_lanes[2] = { 1u, 0u };
+		submission.row_count = 2u;
+		submission.row_positions = decode_positions;
+		submission.row_lane_indices = decode_lanes;
+		status = K3ServingSubmit(&state, &submission);
+		failures += TestK3Check(status == SPARK_STATUS_OK && test_dispatch_context[1] == 12u &&
+			test_dispatch_context[2] == 5u && test_dispatch_context[0] == 0u,
+			"a decode whose rows are not in slot order still gives each slot its own context");
+	}
 	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
 		SparkMemoryBufferFree(host[index]);
 	for ( index = 0u; index < sizeof(device) / sizeof(device[0]); index++ )

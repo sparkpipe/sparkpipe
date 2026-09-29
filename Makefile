@@ -520,6 +520,7 @@ PYTHON_TESTS := \
 	tests/test_spark_pmtu_probe.py \
 	tests/test_k3_checkpoint_contract.py \
 	tests/test_k3_driver_contracts.py \
+	tests/test_k3_device_combine.py \
 	tests/test_k3_stage_ordering.py \
 	tests/test_k3_engine.py \
 	tests/test_k3_head_rank_host.py \
