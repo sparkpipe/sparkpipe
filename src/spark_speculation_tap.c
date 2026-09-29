@@ -5,6 +5,9 @@
 
 #include "sparkpipe/spark_error_site.h"
 
+static const char SparkSpeculationTapMeanPrefix[] = "mean:";
+static const char SparkSpeculationTapAllPrefix[] = "all:";
+
 static void SparkSpeculationTapPut32(uint8_t *bytes,uint32_t value)
 {
 	bytes[0] = (uint8_t)value;
@@ -56,9 +59,9 @@ SparkStatus SparkSpeculationTapSetParse(const char *text,uint32_t layer_count,ui
 	if ( text == 0 || set == 0 || layer_count == 0u || stream_count == 0u || hidden_dimension == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(set,0,sizeof(*set));
-	if ( strncmp(text,"mean:",5u) == 0 )
+	if ( strncmp(text,SparkSpeculationTapMeanPrefix,sizeof(SparkSpeculationTapMeanPrefix) - 1u) == 0 )
 		set->reduction = SPARK_SPECULATION_TAP_REDUCTION_MEAN;
-	else if ( strncmp(text,"all:",4u) == 0 )
+	else if ( strncmp(text,SparkSpeculationTapAllPrefix,sizeof(SparkSpeculationTapAllPrefix) - 1u) == 0 )
 		set->reduction = SPARK_SPECULATION_TAP_REDUCTION_ALL;
 	else
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
