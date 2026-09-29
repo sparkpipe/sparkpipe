@@ -2148,11 +2148,6 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_device_collective_hc_initialized = 1u;
-	if ( state->kv_shard != 0u && (SparkTpDeviceCollectiveAllToAllSupported(&state->tp_device_collective) == 0u || SparkTpDeviceCollectiveAllToAllSupported(&state->tp_device_collective_hc) == 0u) )
-	{
-		fprintf(stderr,"GLM-KV-SHARD-REFUSED tp=%u rank=%u: the sharded KV exchange needs all-to-all on both collectives (hardware waits and a weightd that advertises slice routes)\n",state->tp_degree,state->tp_rank);
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	}
 	if ( state->lazy_pack != 0 &&
 	     state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 		status = SparkTpDeviceCollectivePrepareReceiveBf16(
@@ -2161,6 +2156,11 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		    0u,0u,0u,0u);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	if ( state->kv_shard != 0u && (SparkTpDeviceCollectiveAllToAllSupported(&state->tp_device_collective) == 0u || SparkTpDeviceCollectiveAllToAllSupported(&state->tp_device_collective_hc) == 0u) )
+	{
+		fprintf(stderr,"GLM-KV-SHARD-REFUSED tp=%u rank=%u: the sharded KV exchange needs all-to-all on both collectives (hardware waits and a weightd that advertises slice routes)\n",state->tp_degree,state->tp_rank);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
 	return(SPARK_STATUS_OK);
 }
 
