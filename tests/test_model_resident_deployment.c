@@ -320,6 +320,9 @@ static void TestChatTemplates(void)
 		"<bos><|turn>system\n<|think|>\nBe terse.<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\nok<turn|>\n<|turn>user\nbye<turn|>\n<|turn>model\n");
 	TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
 		"<bos><|turn>system\nBe terse.<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\nok<turn|>\n<|turn>user\nbye<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+	TestRender(&deployment,"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"system\",\"content\":\"s\"}]}",
+		true,SPARK_CHAT_TEMPLATE_RENDERED,
+		"<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nhi<turn|>\n<|turn>system\ns<turn|>\n<|turn>model\n");
 	TestRender(&deployment,"{\"messages\":[{\"role\":\"observation\",\"content\":\"42\"}]}",false,
 		SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED,0);
 	SparkModelResidentDeploymentDestroy(&deployment);
