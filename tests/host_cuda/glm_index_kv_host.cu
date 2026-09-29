@@ -12,6 +12,7 @@ LmHostDim3 blockIdx,threadIdx,blockDim,gridDim;
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/topk_exact.cuh"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
+#include "inference/kernels/kv_shard.cuh"
 #include "glm_pool_kernels.h"
 
 static uint32_t check_row_positions(const uint32_t *expanded,uint32_t width,uint32_t context,uint32_t kpool)

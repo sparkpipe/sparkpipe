@@ -437,6 +437,7 @@ PYTHON_TESTS := \
 	tests/test_weightd_supervision.py \
 	tests/test_fleet_agent_multi_root.py \
 	tests/test_ab_fleet.py \
+	tests/test_ab_campaign_plans.py \
 	tests/test_spark_queue.py \
 	tests/test_multi_dev_orchestrate.py \
 	tests/test_inference_smoke.py \
@@ -887,6 +888,13 @@ build/test_glm5_next_index_cp: tests/test_glm5_next_index_cp.cu model-families/g
 .PHONY: test-glm5-next-index-cp
 test-glm5-next-index-cp: build/test_glm5_next_index_cp
 	./build/test_glm5_next_index_cp --run
+
+build/test_glm5_next_kv_shard: tests/test_glm5_next_kv_shard.cu model-families/glm5_next/include/sparkpipe/spark_glm5_next_kv_shard.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h include/sparkpipe/spark_kv_shard.h inference/kernels/kv_shard.cuh inference/kernels/attn_shard.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
+	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@
+
+.PHONY: test-glm5-next-kv-shard
+test-glm5-next-kv-shard: build/test_glm5_next_kv_shard
+	./build/test_glm5_next_kv_shard --run
 
 build/test_glm5_next_rows_kernels: tests/test_glm5_next_rows_kernels.cu inference/kernels/head.cuh inference/kernels/attn.cuh inference/kernels/project.cuh inference/kernels/rows_tile.cuh modules/glm5_next_resident_decode_stage/source/cuda/layer.cuh modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu | build
 	$(GLM5_NEXT_NVCC) $< $(GLM5_NEXT_CUDA_LINK) -o $@

@@ -328,6 +328,18 @@ static void SparkGlm5NextBindLayer(
 	buffers->index_owner_degree = wave->index_cp_degree != 0u ? wave->index_cp_degree : 1u;
 	buffers->index_local_scores = slot->index_local_scores_f32;
 	buffers->index_gathered_scores = slot->index_gathered_scores_f32;
+	if ( wave->kv_shard != 0u )
+	{
+		buffers->kv_shard_active = 1u;
+		buffers->kv_shard = SparkGlm5NextKvShardLatent(wave->tp_rank,wave->tp_degree);
+		buffers->index_shard = SparkGlm5NextKvShardIndex(wave->tp_rank,wave->tp_degree);
+		buffers->shard_query_gathered_bf16 = slot->kv_shard_query_gathered_bf16;
+		buffers->shard_query_stride = SparkGlm5NextKvShardQueryStride(wave->row_count,wave->tp_degree);
+		buffers->shard_partials_f32 = slot->kv_shard_partials_f32;
+		buffers->shard_partials_received_f32 = slot->kv_shard_partials_received_f32;
+		buffers->shard_row_capacity = wave->execution_row_capacity != 0u ? wave->execution_row_capacity : wave->resident_sequence_capacity;
+		buffers->shard_partial_stride = SparkGlm5NextKvShardPartialStride(wave->row_count,wave->tp_degree,buffers->shard_row_capacity);
+	}
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
 	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
@@ -447,6 +459,30 @@ static int32_t SparkGlm5NextRunLayerAttentionSplit(const SparkGlm5NextCudaWave *
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	return(Glm5NextLayerAttentionHead(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,(int32_t)Glm5NextDsaProbeVecPass(&buffers),stream));
+}
+extern "C" uint32_t SparkGlm5NextLayerKvShardActive(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	if ( wave == 0 || wave->kv_shard == 0u || local_layer >= wave->layer_count )
+		return(0u);
+	return(index_ordinal_of(wave,local_layer,wave->first_layer_index + local_layer) != UINT32_MAX ? 1u : 0u);
+}
+static int32_t SparkGlm5NextRunLayerAttentionShard(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t merge)
+{
+	Glm5NextLayerBuffers buffers;
+	if ( SparkGlm5NextValidateWaveShape(wave) != LM_LAUNCH_OK || SparkGlm5NextLayerKvShardActive(wave,local_layer) == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	SparkGlm5NextBindLayer(wave,local_layer,&buffers);
+	if ( merge != 0u )
+		return(Glm5NextLayerAttentionShardMerge(&buffers,wave->row_count,wave->first_layer_index + local_layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+	return(Glm5NextLayerAttentionShardPartial(&buffers,wave->row_count,wave->maximum_context,(cudaStream_t)wave->slot->stream));
+}
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionShardPartial(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	return(SparkGlm5NextRunLayerAttentionShard(wave,local_layer,0u));
+}
+extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionShardMerge(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
+{
+	return(SparkGlm5NextRunLayerAttentionShard(wave,local_layer,1u));
 }
 extern "C" int32_t SparkGlm5NextLaunchCudaLayerAttentionScore(const SparkGlm5NextCudaWave *wave,uint32_t local_layer)
 {
@@ -599,7 +635,7 @@ static int32_t SparkGlm5NextValidateCover(const SparkGlm5NextCudaWave *wave)
 }
 static int32_t SparkGlm5NextValidateWaveShape(const SparkGlm5NextCudaWave *wave)
 {
-	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || (wave->execution_row_capacity != 0u && wave->row_count > wave->execution_row_capacity) || (wave->execution_row_capacity == 0u && wave->row_count > wave->resident_sequence_capacity) || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
+	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || (wave->execution_row_capacity != 0u && wave->row_count > wave->execution_row_capacity) || (wave->execution_row_capacity == 0u && wave->row_count > wave->resident_sequence_capacity) || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u || (wave->kv_shard != 0u && SparkGlm5NextKvShardFits(wave->tp_degree,wave->row_count) == 0u) )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(SparkGlm5NextValidateCover(wave));
 }
@@ -679,6 +715,7 @@ static int32_t SparkGlm5NextBindMtpLayer(
 	draft.kda_layer_count = 0u;
 	draft.kv_cache = 0;
 	draft.index_cache = 0;
+	draft.kv_shard = 0u;
 	SparkGlm5NextBindLayer(&draft,0u,buffers);
 	buffers->hc_collapsed_bf16 = slot->mtp_hidden_bf16;
 	buffers->hc_mean_bf16 = slot->mtp_hidden_bf16;
