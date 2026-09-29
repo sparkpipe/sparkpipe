@@ -15,11 +15,19 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-glmfull-rd$GLMFULL_LANE"
+API_HOST=rtx5090
 MESH_RANKS="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
 host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/home/$1/glmfull-lane$GLMFULL_LANE/root"; }
 pack_of() { echo "/home/$1/sparkdata/glm53full.$GLMFULL_CODEC.tp16/packs/glm53full.$GLMFULL_CODEC.tp16-rank$2.glm52sp"; }
 PIDS=()
+
+api_host_only() {
+  if [ -n "${GLMFULL_API_HOST:-}" ] && [ "$GLMFULL_API_HOST" != "$API_HOST" ]; then
+    echo "glm53full_lane: refused: model APIs run only on $API_HOST, never on a Spark; GLMFULL_API_HOST=$GLMFULL_API_HOST" >&2
+    exit 2
+  fi
+}
 
 join_ranks() {
   local label="$1" rank failed=""
@@ -97,30 +105,30 @@ stop() {
 }
 
 api() {
-  : "${GLMFULL_API_HOST:?GLMFULL_API_HOST is the API host}"
+  api_host_only
   : "${GLMFULL_API_PORT:?GLMFULL_API_PORT is the API listen port}"
-  : "${GLMFULL_API_BUILD:?GLMFULL_API_BUILD is the API host directory holding sparkpipe_model_api and model_serving_adapter.so built for that host}"
-  : "${GLMFULL_API_TOKENIZER:?GLMFULL_API_TOKENIZER is the GLM tokenizer.json on the API host}"
+  : "${GLMFULL_API_BUILD:?GLMFULL_API_BUILD is the rtx5090 directory holding the x86 sparkpipe_model_api and model_serving_adapter.so}"
+  : "${GLMFULL_API_TOKENIZER:?GLMFULL_API_TOKENIZER is the GLM tokenizer.json on the rtx5090}"
   local generated root unit
   unit="glmfull-api$GLMFULL_LANE"
   generated="$(mktemp -d)"
   render "$generated" >/dev/null
   root="glmfull-lane$GLMFULL_LANE-api"
-  $SSH "$GLMFULL_API_HOST" "mkdir -p $root/bin $root/runtime/lib $root/runtime/tokenizer && cp $GLMFULL_API_BUILD/sparkpipe_model_api $root/bin/ && cp $GLMFULL_API_BUILD/model_serving_adapter.so $root/runtime/lib/ && cp $GLMFULL_API_TOKENIZER $root/runtime/tokenizer/tokenizer.json && echo '$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tokenizer"]["sha256"])' "$generated/model_resident.json")  $root/runtime/tokenizer/tokenizer.json' | sha256sum -c --quiet"
-  scp -q "$generated/model_resident.json" "$GLMFULL_API_HOST:$root/"
+  $SSH "$API_HOST" "mkdir -p $root/bin $root/runtime/lib $root/runtime/tokenizer && cp $GLMFULL_API_BUILD/sparkpipe_model_api $root/bin/ && cp $GLMFULL_API_BUILD/model_serving_adapter.so $root/runtime/lib/ && cp $GLMFULL_API_TOKENIZER $root/runtime/tokenizer/tokenizer.json && echo '$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tokenizer"]["sha256"])' "$generated/model_resident.json")  $root/runtime/tokenizer/tokenizer.json' | sha256sum -c --quiet"
+  scp -q "$generated/model_resident.json" "$API_HOST:$root/"
   rm -rf "$generated"
-  $SSH "$GLMFULL_API_HOST" "cd $root && systemctl --user stop $unit 2>/dev/null; systemctl --user reset-failed $unit 2>/dev/null; systemd-run --user --unit=$unit -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=\$HOME/$root -E SPARK_GLM52_SERVING_FLAT_RANKS=16 bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root \$HOME/$root/runtime --port $GLMFULL_API_PORT >> api.log 2>&1'"
+  $SSH "$API_HOST" "cd $root && systemctl --user stop $unit 2>/dev/null; systemctl --user reset-failed $unit 2>/dev/null; systemd-run --user --unit=$unit -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=\$HOME/$root -E SPARK_GLM52_SERVING_FLAT_RANKS=16 bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root \$HOME/$root/runtime --port $GLMFULL_API_PORT >> api.log 2>&1'"
 }
 
 api_stop() {
-  : "${GLMFULL_API_HOST:?GLMFULL_API_HOST is the API host}"
-  $SSH "$GLMFULL_API_HOST" "systemctl --user stop glmfull-api$GLMFULL_LANE 2>/dev/null; systemctl --user reset-failed glmfull-api$GLMFULL_LANE 2>/dev/null; true"
+  api_host_only
+  $SSH "$API_HOST" "systemctl --user stop glmfull-api$GLMFULL_LANE 2>/dev/null; systemctl --user reset-failed glmfull-api$GLMFULL_LANE 2>/dev/null; true"
 }
 
 decode() {
-  : "${GLMFULL_API_HOST:?GLMFULL_API_HOST is the API host}"
+  api_host_only
   : "${GLMFULL_API_PORT:?GLMFULL_API_PORT is the API listen port}"
-  $SSH "$GLMFULL_API_HOST" "curl -s --max-time 900 -X POST http://localhost:$GLMFULL_API_PORT/v1/completions -H 'Content-Type: application/json' -d '{\"prompt_token_ids\":[$1],\"max_tokens\":$2}'"
+  $SSH "$API_HOST" "curl -s --max-time 900 -X POST http://localhost:$GLMFULL_API_PORT/v1/completions -H 'Content-Type: application/json' -d '{\"prompt_token_ids\":[$1],\"max_tokens\":$2}'"
   echo
 }
 
