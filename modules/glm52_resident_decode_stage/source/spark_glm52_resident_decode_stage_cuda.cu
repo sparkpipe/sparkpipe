@@ -84,7 +84,7 @@ __global__ static void SparkGlm52EmbeddingKernel(
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_unpack.cuh"
 
-#include "sparkpipe/family/glm/spark_glm_wave_metadata_parallel.cuh"
+#include "sparkpipe/family/glm/spark_glm_wave_metadata_rows.cuh"
 
 static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 {
@@ -100,7 +100,7 @@ static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess )
 	{
-		SparkGlm52WaveMetadataKernel<<<(wave->row_count + SPARK_GLM_CUDA_THREADS - 1u) / SPARK_GLM_CUDA_THREADS,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
+		SparkGlm52WaveMetadataKernel<<<1u,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
 	}
 	return(SparkGlm52CudaStatus(error));
