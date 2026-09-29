@@ -691,6 +691,38 @@ static int32_t SparkGlm5NextMtpReduceHead(const SparkGlm5NextMtpDraftOps *ops,ui
 		return(LM_LAUNCH_OK);
 	return(ops->reduce_max_u64(ops->context,maxloc,1u) == SPARK_STATUS_OK ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
+static int32_t SparkGlm5NextMtpJoin(
+	const SparkGlm5NextCudaWave *wave,
+	const SparkGlm5NextMtpDraftOps *ops,
+	const uint16_t *hidden_input,
+	cudaStream_t stream)
+{
+	SparkGlm5NextExecutionSlot *slot = wave->slot;
+	cudaError_t error;
+	int32_t status;
+	SparkGlm5NextEmbeddingKernel<<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,1u),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,1u,wave->tp_degree,wave->tp_rank);
+	error = cudaPeekAtLastError();
+	if ( error != cudaSuccess )
+		return(SparkGlm5NextCudaStatus(error));
+	status = SparkGlm5NextMtpReduceRows(ops,slot->hidden_bf16);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH(
+		(LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+		1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
+		slot->hidden_bf16,0,(const uint16_t *)wave->mtp_enorm_bf16,0,slot->mtp_concat_bf16,
+		GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
+	LM_LAUNCH(
+		(LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
+		1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
+		hidden_input,0,(const uint16_t *)wave->mtp_hnorm_bf16,0,slot->mtp_concat_bf16 + GLM5_NEXT_HIDDEN,
+		GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
+	error = cudaPeekAtLastError();
+	if ( error != cudaSuccess )
+		return(SparkGlm5NextCudaStatus(error));
+	return(Glm5NextLaunchBf16Linear(slot->mtp_concat_bf16,wave->mtp_eh_proj_bf16,slot->mtp_hidden_bf16,
+		slot->dense_row_offset,slot->dense_tile_prefix,1u,2u * GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,0u,wave->multiprocessor_count,stream));
+}
 static int32_t SparkGlm5NextBindMtpLayer(
 	const SparkGlm5NextCudaWave *wave,
 	uint32_t step,
@@ -773,25 +805,7 @@ extern "C" int32_t SparkGlm5NextLaunchCudaMtpDraft(
 	for ( step = 0u; step < wave->mtp_draft_depth; ++step )
 	{
 		hidden_input = step == 0u ? (const uint16_t *)committed_hidden_bf16 : (const uint16_t *)slot->mtp_hidden_bf16;
-		SparkGlm5NextEmbeddingKernel<<<dim3((GLM5_NEXT_HIDDEN + SPARK_GLM5_NEXT_CUDA_THREADS - 1u) / SPARK_GLM5_NEXT_CUDA_THREADS,1u),SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->token_ids,(const uint16_t *)wave->embedding_bf16,slot->hidden_bf16,1u,wave->tp_degree,wave->tp_rank);
-		error = cudaPeekAtLastError();
-		if ( error != cudaSuccess )
-			return(SparkGlm5NextCudaStatus(error));
-		status = SparkGlm5NextMtpReduceRows(ops,slot->hidden_bf16);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-		LM_LAUNCH(
-			(LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
-			1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
-			slot->hidden_bf16,0,(const uint16_t *)wave->mtp_enorm_bf16,0,slot->mtp_concat_bf16 + GLM5_NEXT_HIDDEN,
-			GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
-		LM_LAUNCH(
-			(LmFusedResidualRmsNormKernel<GLM5_NEXT_LAYER_THREADS,uint16_t>),
-			1u,GLM5_NEXT_LAYER_THREADS,(GLM5_NEXT_HIDDEN + 8u) * sizeof(float),stream,
-			hidden_input,0,(const uint16_t *)wave->mtp_hnorm_bf16,0,slot->mtp_concat_bf16,
-			GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_RMS_EPSILON);
-		status = Glm5NextLaunchBf16Linear(slot->mtp_concat_bf16,wave->mtp_eh_proj_bf16,slot->mtp_hidden_bf16,
-			slot->dense_row_offset,slot->dense_tile_prefix,1u,2u * GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,GLM5_NEXT_HIDDEN,0u,wave->multiprocessor_count,stream);
+		status = SparkGlm5NextMtpJoin(wave,ops,hidden_input,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		status = SparkGlm5NextBindMtpLayer(wave,step,&buffers);
