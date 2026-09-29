@@ -49,6 +49,9 @@ static int SparkGlm5NextProbeEnabled(void)
 #include "sparkpipe/spark_glm5_next_kv_geometry.h"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "sparkpipe/spark_glm5_next_kv_shard.h"
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+#include "sparkpipe/spark_kv_quant_sim.h"
+#endif
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_weightd_attach.h"
@@ -243,6 +246,12 @@ struct SparkGlm5NextModuleState
 	uint32_t index_cp;
 	uint32_t kv_shard;
 	char kv_layout_fingerprint[96];
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	SparkKvQuantSim kv_sim;
+	uint32_t kv_sim_packed;
+	char kv_sim_token[SPARK_KV_QUANT_SIM_TOKEN_BYTES];
+	char kv_sim_fingerprint[96 + SPARK_KV_QUANT_SIM_TOKEN_BYTES];
+#endif
 	uint16_t *mtp_lane_hidden_bf16;
 	uint8_t *mtp_lane_armed;
 	uint64_t kda_replay_layer_bytes;
@@ -430,6 +439,15 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	state->kv_shard = (context->flags & SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD) != 0u ? 1u : 0u;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	state->kv_sim_packed = (context->flags & SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KV_SIM_MASK) >> SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KV_SIM_SHIFT;
+	if ( SparkKvQuantSimUnpack(state->kv_sim_packed,&state->kv_sim) != 0 || SparkKvQuantSimToken(&state->kv_sim,state->kv_sim_token,sizeof(state->kv_sim_token)) != 0 )
+	{
+		fprintf(stderr,"GLM-KV-SIM-REFUSED rank=%u packed=0x%x: not a valid KV sim configuration\n",context->tp_rank,state->kv_sim_packed);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	fprintf(stderr,"GLM-KV-SIM rank=%u %s descriptor_kv_cache_codec=bf16 allocation=bf16 mtp_draft_kv=bf16\n",context->tp_rank,state->kv_sim_token);
+#endif
 	if ( state->kv_shard == 0u && context->tp_degree >= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_KV_SHARD_REQUIRED_DEGREE )
 	{
 		fprintf(stderr,"GLM-KV-SHARD-REQUIRED tp=%u: at this degree each rank must hold 1/tp of the latent KV and indexer keys; set kv_shard (and dsa_index_context_parallel)\n",context->tp_degree);
@@ -1492,6 +1510,13 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	}
 	else
 		table.cache_layout_fingerprint = "kv-bf16-index-packed-layer-major-gather-v1";
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	if ( SparkKvQuantSimIdentity(&state->kv_sim) == 0u )
+	{
+		(void)snprintf(state->kv_sim_fingerprint,sizeof(state->kv_sim_fingerprint),"%s+%s",table.cache_layout_fingerprint,state->kv_sim_token);
+		table.cache_layout_fingerprint = state->kv_sim_fingerprint;
+	}
+#endif
 
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
 	if ( status != SPARK_STATUS_OK )
@@ -1907,6 +1932,9 @@ static SparkStatus SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->tp_rank = state->tp_rank;
 	wave->index_cp_degree = state->index_cp != 0u ? state->tp_degree : 1u;
 	wave->kv_shard = state->kv_shard;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	wave->kv_sim = state->kv_sim_packed;
+#endif
 	wave->row_count = chain->wave_rows;
 	wave->commit = chain->spec_verify != 0u ? 0u : 1u;
 	wave->mtp_verify = chain->spec_verify;

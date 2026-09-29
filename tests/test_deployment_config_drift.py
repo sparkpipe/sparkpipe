@@ -106,6 +106,39 @@ def check_glm5_next_kv_shard(failures: list, tree: Path) -> None:
                 f"module refuses GLM-KV-SHARD-REQUIRED at init")
 
 
+KV_SIM_MEMBERS = ("kv_latent_codec", "kv_index_codec", "kv_state_codec",
+                  "kv_codec_group")
+KV_SIM_GUARD = "#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)"
+
+
+def check_glm5_next_kv_sim_absent(failures: list, tree: Path) -> None:
+    for path in [tree / "model_resident.json"] + sorted(
+            (tree / "config").glob("stage_*.json")):
+        present = [name for name in KV_SIM_MEMBERS
+                   if f'"{name}"' in path.read_text()]
+        if present:
+            failures.append(
+                f"{path}: KV sim members {present} are experiment-only; a "
+                f"production root must not carry them (I22)")
+
+
+def check_kv_sim_guarded(failures: list, relative_source: str) -> None:
+    depth = 0
+    guarded = []
+    for line in (ROOT / relative_source).read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#if"):
+            guarded.append(stripped == KV_SIM_GUARD)
+        elif stripped.startswith("#endif") and guarded:
+            guarded.pop()
+        depth = sum(guarded)
+        for name in KV_SIM_MEMBERS:
+            if f'"{name}"' in line and depth == 0:
+                failures.append(
+                    f"{relative_source}: {name} is accepted outside "
+                    f"{KV_SIM_GUARD}; the production adapter must refuse it")
+
+
 def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory(prefix="cfgdrift") as scratch:
@@ -149,6 +182,11 @@ def main() -> int:
                               "SparkGlm5NextServingConfigurationList"))
         check_glm5_next_kv_shard(failures, glm5_gen)
         check_glm5_next_kv_shard(failures, glm5_tree)
+        check_glm5_next_kv_sim_absent(failures, glm5_gen)
+        check_glm5_next_kv_sim_absent(failures, glm5_tree)
+        check_kv_sim_guarded(failures,
+                             "modules/glm5_next_resident_decode_stage/source/"
+                             "spark_glm5_next_serving_adapter.c")
 
         # --- glm52: no committed tree; the generator's output must still
         # satisfy the adapter's exact-member list (r3-flashdecode drift) ---

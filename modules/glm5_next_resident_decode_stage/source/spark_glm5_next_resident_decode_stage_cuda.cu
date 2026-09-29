@@ -328,6 +328,9 @@ static void SparkGlm5NextBindLayer(
 	buffers->index_owner_degree = wave->index_cp_degree != 0u ? wave->index_cp_degree : 1u;
 	buffers->index_local_scores = slot->index_local_scores_f32;
 	buffers->index_gathered_scores = slot->index_gathered_scores_f32;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	buffers->kv_sim = wave->kv_sim;
+#endif
 	if ( wave->kv_shard != 0u )
 	{
 		buffers->kv_shard_active = 1u;
@@ -716,6 +719,9 @@ static int32_t SparkGlm5NextBindMtpLayer(
 	draft.kv_cache = 0;
 	draft.index_cache = 0;
 	draft.kv_shard = 0u;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	draft.kv_sim = 0u;
+#endif
 	SparkGlm5NextBindLayer(&draft,0u,buffers);
 	buffers->hc_collapsed_bf16 = slot->mtp_hidden_bf16;
 	buffers->hc_mean_bf16 = slot->mtp_hidden_bf16;
@@ -889,6 +895,19 @@ static int32_t SparkGlm5NextReplayFoldRecord(const SparkGlm5NextCudaWave *wave,u
 		weight = &wave->layers[local];
 		record = slot->kda_replay_pool + (uint64_t)ordinal * wave->kda_replay_layer_bytes;
 		device_steps = (const LmReplayStep *)slot->mtp_replay_steps + SparkGlm5NextReplayStepsIndex(ordinal,rows);
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+		if ( Glm5NextLayerKvSimState(wave->kv_sim) != SPARK_KV_STATE_SIM_FP32 )
+			LM_LAUNCH(
+				(LmReplayFoldKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM,LmKvStateBf16Grid>),
+				dim3(1u,rank_heads),GLM5_NEXT_LAYER_THREADS,0,stream,
+				wave->kda_state_pools + (uint64_t)ordinal * wave->kda_state_layer_stride_bytes,
+				GLM5_NEXT_KDA_STATE_BYTES_PER_LAYER / wave->tp_degree,
+				slot->resident_slots,
+				device_steps,
+				slot->mtp_committed,
+				rank_heads,1u,1u);
+		else
+#endif
 		LM_LAUNCH(
 			(LmReplayFoldKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM,float>),
 			dim3(1u,rank_heads),GLM5_NEXT_LAYER_THREADS,0,stream,

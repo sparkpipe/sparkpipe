@@ -130,7 +130,11 @@ static const char *const SparkGlm5NextServingConfigurationMembers[] =
 };
 
 #define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE (sizeof(SparkGlm5NextServingConfigurationMembers) / sizeof(SparkGlm5NextServingConfigurationMembers[0]))
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 8u)
+#else
 #define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 4u)
+#endif
 
 static uint32_t SparkGlm5NextServingConfigurationList(uint32_t bridge,uint32_t index_cp,uint32_t kv_shard,const char **list)
 {
@@ -148,6 +152,78 @@ static uint32_t SparkGlm5NextServingConfigurationList(uint32_t bridge,uint32_t i
 		list[count++] = "kv_shard";
 	return(count);
 }
+
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+#include "sparkpipe/spark_kv_quant_sim.h"
+
+static const char *const SparkGlm5NextServingKvSimMembers[] =
+{
+	"kv_latent_codec",
+	"kv_index_codec",
+	"kv_state_codec",
+	"kv_codec_group"
+};
+
+static SparkStatus SparkGlm5NextServingKvSimCodec(const SparkJsonDocument *document,int32_t token,uint32_t state_stream,uint32_t *codec)
+{
+	char *text = 0;
+	SparkStatus status = SparkJsonCopyString(document,token,&text);
+	if ( status == SPARK_STATUS_OK && (state_stream != 0u ? SparkKvStateSimParseCodec(text,codec) : SparkKvQuantSimParseCodec(text,codec)) != 0 )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER KV sim codec '%s' is not one of %s\n",text,state_stream != 0u ? "fp32|bf16" : "bf16|fp8_e4m3|mxfp4");
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	}
+	free(text);
+	return(status);
+}
+
+static uint32_t SparkGlm5NextServingKvSimGroup(uint32_t codec,uint32_t group)
+{
+	if ( codec == SPARK_KV_QUANT_SIM_FP8_E4M3 )
+		return(group);
+	return(codec == SPARK_KV_QUANT_SIM_MXFP4 ? 32u : 0u);
+}
+
+static SparkStatus SparkGlm5NextServingKvSimLoad(const SparkJsonDocument *document,int32_t root,const char **list,uint32_t *count,uint32_t *packed)
+{
+	SparkKvQuantSim sim;
+	int32_t tokens[4];
+	uint32_t index,group = 0u,fp8;
+	SparkStatus status = SPARK_STATUS_OK;
+	memset(&sim,0,sizeof(sim));
+	*packed = 0u;
+	for (index = 0u; index < 4u; index++)
+	{
+		tokens[index] = SparkJsonFindObjectMember(document,root,SparkGlm5NextServingKvSimMembers[index]);
+		if ( tokens[index] >= 0 )
+			list[(*count)++] = SparkGlm5NextServingKvSimMembers[index];
+	}
+	if ( status == SPARK_STATUS_OK && tokens[0] >= 0 )
+		status = SparkGlm5NextServingKvSimCodec(document,tokens[0],0u,&sim.latent_codec);
+	if ( status == SPARK_STATUS_OK && tokens[1] >= 0 )
+		status = SparkGlm5NextServingKvSimCodec(document,tokens[1],0u,&sim.index_codec);
+	if ( status == SPARK_STATUS_OK && tokens[2] >= 0 )
+		status = SparkGlm5NextServingKvSimCodec(document,tokens[2],1u,&sim.state_codec);
+	if ( status == SPARK_STATUS_OK && tokens[3] >= 0 )
+		status = SparkJsonGetUInt32(document,tokens[3],&group);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	fp8 = sim.latent_codec == SPARK_KV_QUANT_SIM_FP8_E4M3 || sim.index_codec == SPARK_KV_QUANT_SIM_FP8_E4M3 ? 1u : 0u;
+	if ( (tokens[3] >= 0) != (fp8 != 0u) )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER kv_codec_group is required with an fp8_e4m3 KV stream and refused without one\n");
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	sim.latent_group = SparkGlm5NextServingKvSimGroup(sim.latent_codec,group);
+	sim.index_group = SparkGlm5NextServingKvSimGroup(sim.index_codec,group);
+	if ( SparkKvQuantSimPack(&sim,packed) != 0 )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER KV sim configuration refused (fp8 group must be 64 or 128)\n");
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+#endif
 
 typedef struct SparkGlm5NextServingPending
 {
@@ -200,6 +276,9 @@ typedef struct SparkGlm5NextServingState
 	uint32_t mtp_enabled;
 	uint32_t index_cp;
 	uint32_t kv_shard;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	uint32_t kv_sim;
+#endif
 	SparkSpeculationSeam *speculation_seam;
 	char *bridge_host;
 	uint32_t bridge_port;
@@ -348,8 +427,18 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER draft_bridge_host and draft_bridge_port must both be present or both absent\n");
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	}
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	if ( status == SPARK_STATUS_OK )
+	{
+		uint32_t member_count = SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,kv_shard_token >= 0 ? 1u : 0u,members);
+		status = SparkGlm5NextServingKvSimLoad(&document,root,members,&member_count,&state->kv_sim);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkJsonValidateObjectMembersExact(&document,root,members,member_count);
+	}
+#else
 	if ( status == SPARK_STATUS_OK )
 		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,kv_shard_token >= 0 ? 1u : 0u,members));
+#endif
 	state->index_cp = 0u;
 	if ( status == SPARK_STATUS_OK && index_cp_token >= 0 )
 		status = SparkJsonGetUInt32(&document,index_cp_token,&state->index_cp);
@@ -702,6 +791,9 @@ static SparkStatus SparkGlm5NextServingInitialize(
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_INDEX_CP;
 		if ( state->kv_shard != 0u )
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+		state->node_context.flags |= state->kv_sim << SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_KV_SIM_SHIFT;
+#endif
 		state->node_context.stage_pack_path = state->stage_pack_path;
 		state->node_context.model_revision = GLM5_NEXT_MODEL_REVISION;
 		state->node_context.tp_collective_backend_kind = state->tp_collective_backend_kind;

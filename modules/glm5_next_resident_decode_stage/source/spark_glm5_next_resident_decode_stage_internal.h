@@ -221,6 +221,9 @@ typedef struct SparkGlm5NextCudaWave
 	uint32_t tp_rank;
 	uint32_t index_cp_degree;
 	uint32_t kv_shard;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	uint32_t kv_sim;
+#endif
 	uint32_t row_count;
 	uint32_t maximum_context;
 	uint32_t resident_sequence_capacity;

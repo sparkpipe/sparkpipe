@@ -25,6 +25,9 @@
 #include "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "sparkpipe/spark_glm5_next_kv_shard.h"
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+#include "inference/kernels/kv_quant_sim.cuh"
+#endif
 #define SPARK_FAMILY_CAMEL Glm5Next
 #define SPARK_FAMILY_UPPER GLM5_NEXT
 #define SPARK_FAMILY_LOWER glm5_next
@@ -397,6 +400,9 @@ struct Glm5NextLayerBuffers
     LmKvView cache;
     LmKvView index_cache;
     uint32_t kv_shard_active;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+    uint32_t kv_sim;
+#endif
     SparkKvShard kv_shard;
     SparkKvShard index_shard;
     const uint16_t *shard_query_gathered_bf16;
@@ -455,6 +461,38 @@ static uint32_t Glm5NextIndexCpDegree(const Glm5NextLayerBuffers *buffers, uint3
     return(SparkGlm5NextIndexCpActive(context, buffers->index_owner_degree) != 0u ? buffers->index_owner_degree : 1u);
 }
 
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+static uint32_t Glm5NextLayerKvSimState(uint32_t packed)
+{
+    SparkKvQuantSim sim;
+    if (SparkKvQuantSimUnpack(packed, &sim) != 0)
+        return SPARK_KV_STATE_SIM_CODEC_COUNT;
+    return sim.state_codec;
+}
+
+static int32_t Glm5NextLayerKvSimRows(
+    uint32_t packed,
+    uint32_t index_stream,
+    uint16_t *rows_bf16,
+    uint64_t row_stride,
+    uint32_t width,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    SparkKvQuantSim sim;
+    if (SparkKvQuantSimUnpack(packed, &sim) != 0)
+        return LM_LAUNCH_ERR_SHAPE;
+    return LmKvQuantSimRowsLaunch(
+        rows_bf16,
+        row_stride,
+        rows,
+        width,
+        index_stream != 0u ? sim.index_codec : sim.latent_codec,
+        index_stream != 0u ? sim.index_group : sim.latent_group,
+        stream);
+}
+#endif
+
 static int32_t Glm5NextLayerIndexStore(
     const Glm5NextLayerBuffers *buffers,
     uint32_t rows,
@@ -462,6 +500,11 @@ static int32_t Glm5NextLayerIndexStore(
 {
     if (Glm5NextKvShardBound(buffers) == 0u)
         return LM_LAUNCH_ERR_SHAPE;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+    if (Glm5NextLayerKvSimRows(buffers->kv_sim, 1u, buffers->index_packed_bf16,
+            SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION, 2u * GLM5_NEXT_DSA_INDEX_DIM, rows, stream) != LM_LAUNCH_OK)
+        return LM_LAUNCH_ERR_SHAPE;
+#endif
     if (buffers->kv_shard_active != 0u)
         LM_LAUNCH(
             (LmKvShardStoreKernel<Glm5NextIndexKv,GLM5_NEXT_LAYER_THREADS>),
@@ -943,6 +986,11 @@ static int32_t Glm5NextLayerLatentStore(
 {
     if (Glm5NextKvShardBound(buffers) == 0u)
         return LM_LAUNCH_ERR_SHAPE;
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+    if (Glm5NextLayerKvSimRows(buffers->kv_sim, 0u, buffers->kv_slot_bf16,
+            GLM5_NEXT_LATENT_ROW, GLM5_NEXT_LATENT, rows, stream) != LM_LAUNCH_OK)
+        return LM_LAUNCH_ERR_SHAPE;
+#endif
     if (buffers->kv_shard_active != 0u)
     {
         LM_LAUNCH(
@@ -1743,6 +1791,34 @@ static int32_t Glm5NextLayerKda(
         rank_heads,1u,sequences,buffers->kda_state_slot_bytes,
         (void*)buffers->q_bf16,(void*)buffers->kv_slot_bf16,(void*)buffers->gate_up_bf16,
         (void*)buffers->attention_out_bf16);
+#endif
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+    if (Glm5NextLayerKvSimState(buffers->kv_sim) >= SPARK_KV_STATE_SIM_CODEC_COUNT)
+        return LM_LAUNCH_ERR_SHAPE;
+    if (Glm5NextLayerKvSimState(buffers->kv_sim) == SPARK_KV_STATE_SIM_BF16)
+        LM_LAUNCH(
+            (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM,LmKvStateBf16Grid,GLM5_NEXT_KDA_DELTA_COLUMNS>),
+            dim3(sequences,rank_heads,GLM5_NEXT_KDA_VALUE_DIM / GLM5_NEXT_KDA_DELTA_COLUMNS),
+            GLM5_NEXT_LAYER_THREADS,
+            GLM5_NEXT_KDA_KEY_DIM * GLM5_NEXT_KDA_DELTA_COLUMNS * sizeof(float),
+            stream,
+            buffers->kda_state_pool,
+            buffers->kda_state_slot_bytes,
+            buffers->kda_state_index,
+            buffers->sequence_row_begin,
+            0,
+            buffers->q_bf16,
+            buffers->kv_slot_bf16,
+            buffers->gate_up_bf16,
+            buffers->kda_retention,
+            buffers->kda_write_gate,
+            buffers->attention_out_bf16,
+            rank_heads,
+            1u,
+            sequences,
+            commit,
+            buffers->sequence_row_indices);
+    else
 #endif
     LM_LAUNCH(
         (LmDeltaRuleKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_KDA_KEY_DIM,GLM5_NEXT_KDA_VALUE_DIM,float,GLM5_NEXT_KDA_DELTA_COLUMNS>),

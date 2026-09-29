@@ -67,6 +67,17 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 MODULE_CUDA_SOURCE := source/spark_glm5_next_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DSPARK_BATCH_BUCKET=1024u -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=$(GLM5_NEXT_EXPERT_CODEC_ID) -DGLM5_NEXT_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM5_NEXT_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM5_NEXT_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\"
 
+KV_QUANT_SIM ?= 0
+ifeq ($(filter $(KV_QUANT_SIM),0 1),)
+$(error KV_QUANT_SIM must be 0 (production) or 1 (experiment archive with the KV sim), got '$(KV_QUANT_SIM)')
+endif
+ifeq ($(KV_QUANT_SIM),1)
+MODULE_IDENTIFIER_SUFFIX := v2.kvsim
+MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
+MODULE_COMPILE_FLAGS += -DSPARK_KV_QUANT_SIM_EXPERIMENT=1
+BUILD_DIRECTORY ?= ../../build/modules/glm5_next_resident_decode_stage/$(EXPERT_CODEC)_kvsim
+endif
+
 BUILD_DIRECTORY ?= ../../build/modules/glm5_next_resident_decode_stage/$(EXPERT_CODEC)
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/libglm5_next_resident_decode_stage_$(EXPERT_CODEC).a
 MODULE_COMMON_HOST_SOURCES := ../../runtime/stage_module_common.c
