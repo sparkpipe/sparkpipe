@@ -392,6 +392,7 @@ TEST_NAMES := \
     test_module_library \
     test_speculation_provider_slot \
     test_speculation_reference_draft \
+    test_speculation_recorded_draft \
     test_speculation_lookup_draft \
     test_speculation_drafter_mix \
     test_speculation_relay_draft \
@@ -669,6 +670,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_pack_bf16_passthrough.py \
 	tests/test_glm52_pack_nvfp4_passthrough.py \
 	tests/test_glm53_contract.py \
+	tests/test_spec_recorded_drafts.py \
 	tests/test_glm5_next_adapter_config_load.py \
 	tests/test_glm5_next_cuda_validator_tier2_oracle.py \
 	tests/test_glm5_next_geometry.py \
@@ -1865,6 +1867,9 @@ build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 build/test_speculation_reference_draft: tests/test_speculation_reference_draft.c include/sparkpipe/spark_speculation_reference_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_reference_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_recorded_draft: tests/test_speculation_recorded_draft.c include/sparkpipe/spark_speculation_recorded_draft.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_recorded_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_speculation_lookup_draft: tests/test_speculation_lookup_draft.c include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_lookup_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
