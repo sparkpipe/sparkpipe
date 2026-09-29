@@ -474,6 +474,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_ga_reference_fixture.py \
 	tests/test_fleet_registrar.py \
+	tests/test_fleet_rotation.py \
 	tests/test_dsv4_native_compute_source.py \
 	tests/test_dsv4_module_host_syntax.py \
 	tests/test_dsv4_stage_source.py \
