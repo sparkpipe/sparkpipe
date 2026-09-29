@@ -933,7 +933,7 @@ static int RoofParse(int argc,char **argv,RoofConfig *config)
 	}
 	for (batch=0u; batch<config->batch_count; batch++)
 		config->max_batch = config->batches[batch] > config->max_batch ? config->batches[batch] : config->max_batch;
-	return(config->batch_count == 0u || config->l2_prefetch > 1u || config->round_wait > 2u || config->context < 2u || config->iterations == 0u || config->copies == 0u || config->copies > ROOF_MAX_COPIES || config->index_cp > ROOF_TP || (config->index_cp > 1u && SparkGlm5NextIndexCpFits(((config->context + 63u) / 64u) * 64u,config->index_cp,config->max_batch) == 0u) || config->max_batch == 0u || config->max_batch > SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS * 2u ? -1 : 0);
+	return((argc % 2) == 0 || config->batch_count == 0u || config->l2_prefetch > 1u || config->round_wait > 2u || config->context < 2u || config->iterations == 0u || config->copies == 0u || config->copies > ROOF_MAX_COPIES || config->index_cp > ROOF_TP || (config->index_cp > 1u && SparkGlm5NextIndexCpFits(((config->context + 63u) / 64u) * 64u,config->index_cp,config->max_batch) == 0u) || config->max_batch == 0u || config->max_batch > SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS * 2u ? -1 : 0);
 }
 
 int main(int argc,char **argv)
