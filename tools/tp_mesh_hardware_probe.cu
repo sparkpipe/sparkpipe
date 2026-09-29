@@ -302,7 +302,7 @@ struct Probe
             {
                 uint32_t width=operation==2u ? 8u : operation==1u ? 4u : 2u;
                 uint64_t chunks=(elements-1u)/((SPARK_WEIGHTD_MESH_SLOT_BYTES-16u)/width)+1u;
-                uint64_t advances=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes) : chunks*2u*SparkTpMeshTreeLevels(degree);
+                uint64_t advances=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
                 REQUIRE(control.seq==launch_count*rounds*advances);
             }
             if (failed) REQUIRE(std::all_of(output.begin(),output.end(),[](uint8_t byte){return byte==0xcdu;}));
@@ -326,6 +326,21 @@ struct Probe
                     Case(n,SPARK_TP_MESH_OPERATION_ALL_TO_ALL,1u,count,false);Case(n,SPARK_TP_MESH_OPERATION_ALL_TO_ALL,1u,count,true);
                     std::printf("ALL-TO-ALL routes=%s degree=%u per_peer=%llu rounds=%llu PASS\n",(routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? "peer" : "scatter",n,(unsigned long long)count,
                         (unsigned long long)((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(count,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(count,n,SPARK_WEIGHTD_MESH_SLOT_BYTES)));
+                }
+        routes=saved;
+    }
+    void PeerReduce()
+    {
+        uint32_t saved=routes;
+        for (uint32_t route_set:{SPARK_TP_MESH_ROUTES_SLICE,SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER})
+            for (uint32_t n:{4u,5u,16u})
+                for (uint64_t count:{UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u,UINT64_C(524288),SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+4099u})
+                {
+                    if (count*2u>tensor_bytes) continue;
+                    routes=route_set;
+                    Case(n,1u,1u,count,false);Case(n,1u,1u,count,true);
+                    std::printf("ALL-REDUCE routes=%s degree=%u elements=%llu rounds=%llu PASS\n",(routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? "peer" : "slice",n,(unsigned long long)count,
+                        (unsigned long long)((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? ((count-1u)/SparkTpMeshDirectPeerCapacity(n,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(count,n,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES)*2u));
                 }
         routes=saved;
     }
@@ -400,9 +415,9 @@ struct Probe
 
 int main(int argc,char **argv)
 {
-    if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0))
+    if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0 && std::strcmp(argv[1],"--peer-reduce")!=0))
     {
-        std::fprintf(stderr,"usage: %s --run | --all-to-all\n",argv[0]);return 2;
+        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce\n",argv[0]);return 2;
     }
     REQUIRE(std::setvbuf(stdout,nullptr,_IOLBF,0)==0);
     CUDA(cudaSetDeviceFlags(cudaDeviceMapHost));CUDA(cudaSetDevice(0));
@@ -417,6 +432,12 @@ int main(int argc,char **argv)
         return 2;
     }
     Probe probe;
+    if (std::strcmp(argv[1],"--peer-reduce")==0)
+    {
+        probe.PeerReduce();
+        std::printf("PASS tp_mesh_hardware_probe peer-reduce cases=%u\n",probe.completed_cases);
+        return 0;
+    }
     if (std::strcmp(argv[1],"--all-to-all")==0)
     {
         probe.AllToAll();
@@ -444,6 +465,7 @@ int main(int argc,char **argv)
             probe.Case(degree,1u,1u,elements,false);probe.Case(degree,1u,1u,elements,true);
         }
     probe.AllToAll();
+    probe.PeerReduce();
     probe.routes=0u;probe.Case(16u,1u,1u,65536u,true);probe.routes=1u;
     probe.Faults();probe.Timings();
     std::printf("PASS tp_mesh_hardware_probe cases=%u GPU_math=actual GPU_wait=actual daemon_gate=actual transport=cpu-copy\n",probe.completed_cases);

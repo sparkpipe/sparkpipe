@@ -563,7 +563,7 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
 {
     SparkTpDeviceCollective collective = {0};
     SparkTpDeviceCollectiveSubmission submission = {0};
-    static uint16_t local[16u * 1024u],output[16u * 1024u];
+    static uint16_t local[64u * 1024u],output[64u * 1024u];
     SparkWeightdMeshWaitRequest *request = (SparkWeightdMeshWaitRequest *)
         ((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u));
     uint32_t calls;
@@ -604,6 +604,18 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
         cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) &&
         cuda_stub_mesh_hardware_staging == mock_staging_mapping && cuda_stub_mesh_hardware_elements == 128u * 64u,
         "an all-to-all with peer routes launches with this band's staging slots");
+    submission.active_sequence_count = 1024u;
+    submission.logical_sequence_count = 1u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) &&
+        cuda_stub_mesh_hardware_staging == mock_staging_mapping && cuda_stub_mesh_hardware_elements == 1024u * 64u,
+        "a large sum launches with peer routes and this band's staging");
+    CHECK(SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2097152u &&
+        SparkTpMeshDirectPeerCapacity(4u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 524288u &&
+        SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u) == 131096u,
+        "a peer reduce-scatter chunk carries one staging slot per peer: 2,097,152 BF16 values at TP16, 16x the slot chunk");
+    submission.active_sequence_count = 128u;
+    submission.logical_sequence_count = 2u;
     request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_OK &&
         cuda_stub_mesh_hardware_slice_routes == SPARK_TP_MESH_ROUTES_SLICE && cuda_stub_mesh_hardware_staging == 0,

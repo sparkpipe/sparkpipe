@@ -268,11 +268,27 @@ Daemons of both ABIs therefore wire to each other during a per-node roll.
 
 **Row cap.** `SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS` is 1,024 (was 128). The cap
 is compile-time in the engine, so it applies only to engines built against
-ABI 9. A deployment still chooses its own `execution_row_capacity`. Above 128
-rows, the tree all-reduce (multi-row, hardware wait mode) still adds
-`2 x log2(degree)` rounds for every `(slot_bytes - 16) / 4` elements. Rounds
-stop growing linearly with rows only when drivers move large exchanges to PEER
-routes (see "Round counts" below).
+ABI 9. A deployment still chooses its own `execution_row_capacity`.
+
+**Drivers on PEER routes.** When the lane advertises PEER_ROUTES, the
+hardware-wait device collective maps the staging export once, through the
+lane owner's client. Two operations then use PEER:
+
+- **kv_shard all-to-all.** Each peer receives up to 131,072 BF16 values per
+  round. The rank's own share goes straight to its own slot.
+- **Large BF16 sums: reduce-scatter + all-gather.**
+  - One chunk carries degree x 131,072 values: 2,097,152 at TP16, against
+    131,096 for the slot chunk.
+  - Reduce-scatter: every owner's slice leaves from its staging slot, and the
+    owner sums the degree contributions from offset 0 of each peer's slot. The
+    per-element order (peers 0..degree-1, fp32 accumulation, the same BF16
+    truncation) is the same as the slot path, so the result bits are the same.
+  - All-gather: a FULL route of the owner's reduced slice from offset 0 of its
+    own slot.
+- **Failure.** If the lane advertises PEER_ROUTES but the staging export fails,
+  preparation stops. It does not fall back.
+- **Direct rounds.** Single-row direct rounds (below 49,152 values or below
+  degree 4) keep their slot path.
 
 **Round counts (TP16, arithmetic).**
 
@@ -288,15 +304,15 @@ bf16 values per row per peer.
 | 512 | 257 | 17 |
 | 1,024 | 514 | 33 |
 
-Hidden all-reduce at 4,096 wide:
-- It moves 1,024 rows as 4,194,304 elements.
-- Today's multi-row tree: 64 chunks of 65,548 fp32 x 8 phases = 512 rounds.
-  At 128 rows it is 8 x 8 = 64.
-- PEER reduce-scatter carrying fp32 partials (65,536 per peer per round) is
-  4 rounds. The slot-sized all-gather of each rank's 262,144 bf16 values is
-  2 more, so 6 in total. At 128 rows it is 1 + 1 = 2.
-- The reduce-scatter must sum in the tree's pairwise order to keep today's
-  bits.
+Hidden all-reduce at 4,096 wide (hardware wait mode, reduce-scatter +
+all-gather, 2 rounds per chunk):
+
+| rows | values | slot chunks (131,096) | rounds | PEER chunks (2,097,152) | rounds |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 65,536 | 1 | 2 | 1 | 2 |
+| 128 | 524,288 | 4 | 8 | 1 | 2 |
+| 256 | 1,048,576 | 8 | 16 | 1 | 2 |
+| 1,024 | 4,194,304 | 32 | 64 | 2 | 4 |
 
 **Memory.** +128 MiB of pinned host memory per node, for the staging area.
 

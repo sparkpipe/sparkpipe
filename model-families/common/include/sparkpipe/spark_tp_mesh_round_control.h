@@ -130,6 +130,14 @@ static inline uint64_t SparkTpMeshAllToAllPeerChunks(uint64_t per_peer_elements,
 #if defined(__CUDACC__)
 __host__ __device__
 #endif
+static inline uint64_t SparkTpMeshDirectPeerCapacity(uint32_t degree,uint64_t staging_slot_bytes)
+{
+    return (uint64_t)degree * ((staging_slot_bytes / 2u) & ~UINT64_C(3));
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
 static inline uint64_t SparkTpMeshRsagSlice(uint64_t count,uint32_t degree)
 {
     return ((count + degree - 1u) / degree + 3u) & ~UINT64_C(3);
