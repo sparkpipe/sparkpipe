@@ -1117,8 +1117,9 @@ SparkStatus SparkK3StageRunnerInitialize(
 	}
 	if ( status != SPARK_STATUS_OK )
 		{ runner->private_state = 0; delete state; return status; }
-	if ( K3RunnerCreateDispatch(state, configuration) != SPARK_STATUS_OK )
-		{ SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	status = K3RunnerCreateDispatch(state, configuration);
+	if ( status != SPARK_STATUS_OK )
+		{ SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
 	status = SparkWeightdAttachRequested();
 	if ( status != SPARK_STATUS_OK )
 	{
