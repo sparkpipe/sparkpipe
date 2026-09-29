@@ -1252,9 +1252,21 @@ k3 shape) and at degrees 4 and 8 pass too. The CPU-shim variant is
 
 ### Not done yet
 
-- **Transport.** #1335 is a draft: the single-GPU mesh probe times out a
-  peer gate at degree 2. Main's own probe also fails on sparkf today, at
-  its first degree-16 case.
+- **Transport.** #1335 passes the single-GPU mesh probe (117 cases,
+  including all-to-all at degrees 2/3/4/8/16, eager and graph, under lazy
+  module loading). Two faults had hidden it:
+  - The two all-to-all kernels were not in the preload list of
+    `SparkTpMeshHardwarePrepare`. Under lazy loading, rank 0's host enqueue
+    loaded the unpack kernel while its own stream was already blocked on the
+    peer gate. The load waited on that stream, rank 1 was never enqueued,
+    and the gate timed out after 2 s. They are preloaded now.
+  - The probe runs 16 logical ranks as 16 streams on one GPU. With the
+    default 8 hardware queues (`CUDA_DEVICE_MAX_CONNECTIONS` unset), two rank
+    streams share a queue, and a rank blocked on its peer wait also blocks
+    the other. That is why main's probe failed at its first degree-16 case.
+    With `CUDA_DEVICE_MAX_CONNECTIONS=32`, the setting the qualification
+    receipt used, main passes all 87 cases on sparkf. The probe now refuses
+    to run with fewer than 16 connections.
 - **glm5_next wiring.**
   - Per-rank pools of `page_bytes / tp` for the latent and index caches
     and for the KV arena block.
