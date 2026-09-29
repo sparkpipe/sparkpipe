@@ -205,6 +205,15 @@ static void SparkTestIdentityCanonicalization(void)
     assert(SparkWeightdIdentityEqual(&left, &right));
     assert(memcmp(&left, &right, sizeof(left)) == 0);
 
+    SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
+    broken.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN;
+    assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_OK);
+    assert(broken.abi_version == SPARK_WEIGHTD_IPC_ABI_VERSION);
+    assert(SparkWeightdIdentityEqual(&left, &broken));
+    SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
+    broken.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN - 1u;
+    assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_OK);
+    assert(!SparkWeightdIdentityEqual(&left, &broken));
     SparkTestMakeIdentity(&broken, "model", "rev1", 16u, 0xAull, digest,
         4096ull);
     assert(!SparkWeightdIdentityEqual(&left, &broken));
@@ -612,6 +621,7 @@ static void SparkTestServedAbiVersions(void)
     SparkWeightdIpcHeader request;
     SparkWeightdIpcHelloAck ack;
     SparkWeightdIpcMeshStagingMapResult staging;
+    SparkWeightdIpcMeshMapResult map;
     SparkWeightdClient *client = 0;
     void *mapping = (void *)&thread_context;
     uint32_t version;
@@ -635,8 +645,13 @@ static void SparkTestServedAbiVersions(void)
             ack.header.request_id == 7u && ack.status == SPARK_STATUS_OK);
         assert(SparkWeightdIpcValidateHeaderVersion(&ack.header, sizeof(ack),
             SPARK_WEIGHTD_IPC_KIND_HELLO_ACK, version) == SPARK_STATUS_OK);
-        SparkTestRawFrame(&request, version == 8u ? 9u : 8u, SPARK_WEIGHTD_IPC_KIND_HELLO, 8u);
-        assert(SparkTestRawExchange(fd, &request, &ack, sizeof(ack)) == 0);
+        SparkTestRawFrame(&request, version, SPARK_WEIGHTD_IPC_KIND_MESH_MAP, 8u);
+        memset(&map, 0, sizeof(map));
+        assert(SparkTestRawExchange(fd, &request, &map, sizeof(map)) == (ssize_t)sizeof(map));
+        assert(map.header.abi_version == version && map.header.kind == SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT &&
+            map.status == SPARK_STATUS_INVALID_ARGUMENT);
+        SparkTestRawFrame(&request, version == 8u ? 9u : 8u, SPARK_WEIGHTD_IPC_KIND_MESH_MAP, 9u);
+        assert(SparkTestRawExchange(fd, &request, &map, sizeof(map)) == 0);
         (void)close(fd);
     }
     fd = SparkTestRawConnect(socket_path);

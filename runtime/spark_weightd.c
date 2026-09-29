@@ -322,6 +322,11 @@ SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
+    if (identity->abi_version >= SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN &&
+        identity->abi_version <= SPARK_WEIGHTD_IPC_ABI_VERSION)
+    {
+        identity->abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    }
     if (SparkWeightdStringBounded(identity->model, SPARK_WEIGHTD_ID_BYTES) !=
         SPARK_STATUS_OK)
     {

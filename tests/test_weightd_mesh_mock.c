@@ -583,6 +583,7 @@ static void test_peer_routes(uint32_t local_rank)
     for ( case_index = 0u; case_index < sizeof(rows) / sizeof(rows[0]); case_index++ )
     {
         uint64_t bytes = test_peer_route_bytes(rows[case_index]);
+        CHECK(rows[case_index] <= SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS,"the mesh row cap admits every tested exchange height up to 1024 rows");
         uint64_t slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
             ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
         slot_base = (8u * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
