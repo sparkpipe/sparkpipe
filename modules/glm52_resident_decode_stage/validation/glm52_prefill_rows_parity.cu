@@ -304,6 +304,15 @@ static uint32_t RowsCompareBoundary(const RowsRig *rig,const uint16_t *a,const u
 	return(differing);
 }
 
+static uint64_t RowsHash(const uint16_t *values,uint32_t first,uint32_t count)
+{
+	uint64_t hash = UINT64_C(1469598103934665603),index;
+	const uint8_t *bytes = (const uint8_t *)(values + (uint64_t)first * ROWS_BOUNDARY);
+	for (index=0u; index<(uint64_t)count * ROWS_BOUNDARY * sizeof(uint16_t); index++)
+		hash = (hash ^ bytes[index]) * UINT64_C(1099511628211);
+	return(hash);
+}
+
 static uint32_t RowsNonzero(const RowsRig *rig)
 {
 	uint64_t index,count = (uint64_t)rig->positions_total * ROWS_BOUNDARY;
@@ -395,7 +404,7 @@ int main(int argc,char **argv)
 	positions_total = argc > 1 ? (uint32_t)strtoul(argv[1],0,10) : 2112u;
 	exact_required = argc > 2 ? atoi(argv[2]) : 1;
 	rig = (RowsRig *)calloc(1u,sizeof(*rig));
-	if ( rig == 0 || positions_total < 80u || positions_total > 4096u )
+	if ( rig == 0 || positions_total <= SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT || positions_total > 4096u )
 		return(1);
 	if ( SparkGlm52ValFixtureSetup(&rig->fixture) != 0 || RowsSetup(rig,positions_total) != 0 )
 	{
@@ -415,6 +424,12 @@ int main(int argc,char **argv)
 	printf("glm52_prefill_rows_parity reference positions=%u waves=%u layers=%u..%u split_threshold=%u index_keys_missing=%u %s\n",
 		positions_total,waves,ROWS_FIRST_LAYER,ROWS_FIRST_LAYER + ROWS_LAYERS - 1u,ROWS_SPLIT_THRESHOLD,missing,missing == 0u ? "INDEX-STORED" : "FAIL");
 	failures += missing != 0u ? 1 : 0;
+	printf("glm52_prefill_rows_parity reference-hash dense=%016llx selected=%016llx (rows [0,%u) and [%u,%u))\n",
+		(unsigned long long)RowsHash(rig->reference_boundary,0u,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT),
+		(unsigned long long)RowsHash(rig->reference_boundary,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,positions_total - SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT),
+		SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,positions_total);
+	if ( exact_required < 0 )
+		return(0);
 	for (split=0u; split<2u; split++)
 		for (index=0u; index<sizeof(widths)/sizeof(widths[0]); index++)
 		{
