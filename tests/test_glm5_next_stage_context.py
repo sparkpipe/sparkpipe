@@ -3233,6 +3233,23 @@ static void check_kv_shard_walk(void)
 	puts("PASS kv shard chain: query gather, partials, all-to-all and merge run in order in the linear/graph walk and the eager stages");
 }
 
+static void check_kv_shard_gather_plan(void)
+{
+	uint32_t sequences[5] = {2u,0u,2u,1u,0u},positions[5] = {16u,40u,15u,3u,41u},list[5],offset[3],context[3],count,most;
+	uint64_t keys;
+	SparkGlm5NextKvShardRoundPlan plan;
+	memset(list,0xff,sizeof(list));
+	memset(offset,0xff,sizeof(offset));
+	memset(context,0xff,sizeof(context));
+	count = SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(5u,16u),sequences,positions,5u,list,offset,context,&keys,&most);
+	assert(count == 3u && keys == 6u && most == 3u && list[0] == 2u && list[1] == 0u && list[2] == 1u);
+	assert(offset[2] == 0u && offset[0] == 2u && offset[1] == 5u && context[2] == 17u && context[0] == 42u && context[1] == 4u);
+	assert(SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(0u,16u),sequences,positions,5u,0,0,0,&keys,&most) == 3u && keys == 6u && most == 3u);
+	assert(SparkGlm5NextKvShardPlanRounds(64u,16u,128u,2048u,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 0u && plan.gather_sequences > SparkGlm5NextKvShardGatherCapacity(16u,128u) &&
+		SparkKvShardExchangeCostNs(plan.gather_rounds,plan.gather_wire_bytes) < SparkKvShardExchangeCostNs(plan.scatter_rounds,plan.scatter_wire_bytes));
+	assert(SparkGlm5NextKvShardPlanRounds(128u,16u,128u,47u,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 1u && plan.gather_rounds == 1u && plan.scatter_rounds == 68u);
+}
+
 static void check_kv_shard_gather_walk(void)
 {
 	SparkGlm5NextTpChain *chain;
@@ -3274,15 +3291,17 @@ static void check_kv_shard_gather_walk(void)
 	state.kv_shard = 1u;
 	kv_shard_slot_fixture(&state.slots[0]);
 	state.kv_shard_scatter_only = 0u;
-	LINEAR_POSITIONS[0] = 1500u;
-	LINEAR_POSITIONS[1] = 2000u;
+	LINEAR_POSITIONS[0] = 1023u;
+	LINEAR_POSITIONS[1] = 1023u;
 	count = SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(0u,16u),LINEAR_SLOTS,LINEAR_POSITIONS,2u,0,0,0,&keys,&most);
-	assert(SparkGlm5NextKvShardPlanRounds(2u,16u,state.execution_row_capacity,keys,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 0u && plan.gather_sequences > SparkGlm5NextKvShardGatherCapacity(16u,state.execution_row_capacity));
+	assert(SparkGlm5NextKvShardPlanRounds(2u,16u,state.execution_row_capacity,keys,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 0u && plan.gather_sequences > SparkGlm5NextKvShardGatherCapacity(16u,state.execution_row_capacity) &&
+		SparkKvShardExchangeCostNs(plan.gather_rounds,plan.gather_wire_bytes) < SparkKvShardExchangeCostNs(plan.scatter_rounds,plan.scatter_wire_bytes));
 	WALK_SHARD_MASK = 3u;
 	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
 	assert(strcmp(WALK_TRACE,SHARD_WALK) == 0 && async->completion.status == SPARK_STATUS_OK);
 	WALK_SHARD_MASK = 0u;
 	linear_chain_teardown();
+	check_kv_shard_gather_plan();
 	puts("PASS kv shard gather walk: the linear walk gathers keys in one all-gather when that costs fewer rounds, runs the own-heads partials and the same merge, and keeps the scatter exchange when the keys do not fit");
 }
 
