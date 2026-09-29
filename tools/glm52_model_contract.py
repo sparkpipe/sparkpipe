@@ -60,6 +60,7 @@ CODECS = {
 }
 ARMS = {
     "fp8_s1": {"expert_codec": "fp8", "spine_source": "bf16"},
+    "nvfp4_s1": {"expert_codec": "nvfp4", "spine_source": "bf16", "expert_source": "nvfp4"},
 }
 TARGETS = tuple(CODECS) + tuple(ARMS)
 INTEGER_MACROS = {
@@ -473,10 +474,18 @@ def render_arm_description(contract: Dict[str, Any], target: str) -> str:
     description = json.loads(render_model_description(contract, codec))
     description["model"]["revision"] = source["revision"]
     description["metadata"]["source_model"] = {"id": source["repo"], "revision": source["revision"]}
+    if "expert_source" in ARMS[target]:
+        experts = contract.get("three_resolution_sources", {}).get(ARMS[target]["expert_source"])
+        if experts is None:
+            raise ValueError(f"arm {target} needs the {ARMS[target]['expert_source']} resolution source pin")
+        description["metadata"]["expert_source_model"] = {"id": experts["repo"], "revision": experts["revision"]}
+        origin = f"the {experts['repo']}@{experts['revision']} checkpoint"
+    else:
+        origin = "the published checkpoint"
     description["metadata"]["purpose"] = (
         f"GLM 5.3-full resident firmware for the {target} arm: the {ARMS[target]['spine_source']} "
         f"source spine ({source['repo']}@{source['revision']}) with {codec} routed-expert weights "
-        "grafted from the published checkpoint, BF16 KV cache and FP32 accumulation")
+        f"grafted from {origin}, BF16 KV cache and FP32 accumulation")
     return json.dumps(description, indent=2, sort_keys=True) + "\n"
 
 

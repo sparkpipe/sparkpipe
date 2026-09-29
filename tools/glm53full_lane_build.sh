@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-: "${GLMFULL_CODEC:?GLMFULL_CODEC is fp8 or bf16}"
+: "${GLMFULL_CODEC:?GLMFULL_CODEC is fp8, bf16 or nvfp4}"
 : "${GLMFULL_BUCKET:?GLMFULL_BUCKET is the batch variant bucket the lane serves, e.g. 16}"
 : "${GLMFULL_FIRMWARE_ROOT:?GLMFULL_FIRMWARE_ROOT is the output directory for the staged firmware}"
 : "${GLMFULL_STAGE_PACK:?GLMFULL_STAGE_PACK is a readable placed pack the publish receipt binds}"
 case "$GLMFULL_CODEC" in
-  fp8|bf16) ;;
-  *) echo "glm53full build: GLMFULL_CODEC must be fp8 or bf16" >&2; exit 2 ;;
+  fp8|bf16|nvfp4) ;;
+  *) echo "glm53full build: GLMFULL_CODEC must be fp8, bf16 or nvfp4" >&2; exit 2 ;;
 esac
 GLMFULL_ARM="${GLMFULL_ARM:-$GLMFULL_CODEC}"
 CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
