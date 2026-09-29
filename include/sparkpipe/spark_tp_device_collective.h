@@ -395,6 +395,9 @@ SparkStatus SparkTpDeviceCollectiveGraphPreLaunch(
 SparkStatus SparkTpDeviceCollectiveDisarmCapture(
     SparkTpDeviceCollective *collective);
 
+SparkStatus SparkTpDeviceCollectiveGraphSettle(
+    SparkTpDeviceCollective *collective,void *stream,uint64_t *error_out);
+
 uint64_t SparkTpDeviceCollectiveGraphProgress(
     SparkTpDeviceCollective *collective,
     uint64_t *cell_out);

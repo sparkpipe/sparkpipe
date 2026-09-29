@@ -2252,6 +2252,37 @@ SparkStatus SparkTpDeviceCollectiveDisarmCapture(
     return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkTpDeviceCollectiveGraphSettle(
+    SparkTpDeviceCollective *collective,void *stream,uint64_t *error_out)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    uint64_t cell;
+    if ( error_out == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    *error_out = 0ull;
+    if ( collective == 0 || collective->implementation == 0 || stream == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    implementation->capture_armed = 0u;
+    if ( implementation->seq_cell == 0 )
+        return(SPARK_STATUS_OK);
+    if ( cudaMemcpyAsync((void *)implementation->published_host_cell,implementation->round_control,
+            SPARK_TP_MESH_ROUND_CONTROL_BYTES,SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,stream) != 0 ||
+         cudaStreamSynchronize(stream) != 0 )
+    {
+        *error_out = 1ull;
+        return SPARK_STATUS_IO_ERROR;
+    }
+    cell = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ];
+    implementation->publish_ack_prev = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUND_SEQ];
+    implementation->cell_mirror = cell;
+    implementation->capture_rounds = 0u;
+    if ( cell != 0ull )
+        implementation->round_seq = cell;
+    *error_out = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_ERROR];
+    return(SPARK_STATUS_OK);
+}
+
 uint64_t SparkTpDeviceCollectiveChainEpoch(
     const SparkTpDeviceCollective *collective)
 {

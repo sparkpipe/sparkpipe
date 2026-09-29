@@ -35,6 +35,9 @@
 #ifndef GLM_MODEL_DESCRIPTION_SHA256
 #error "GLM_MODEL_DESCRIPTION_SHA256 must identify the exact model description"
 #endif
+#ifndef GLM_MODEL_ID
+#error "GLM_MODEL_ID must name the served model repository of GLM_MODEL_REVISION"
+#endif
 
 #define SPARK_GLM52_SERVING_FLAT_RANKS_ENV "SPARK_GLM52_SERVING_FLAT_RANKS"
 #define SPARK_GLM52_SERVING_FLAT_RANKS_TP8 8ul
@@ -42,7 +45,7 @@
 #define SPARK_GLM52_SERVING_ADAPTER_ID_BYTES 64u
 #define SPARK_GLM52_SERVING_TOPOLOGY_FLAG \
 	SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT
-#define SPARK_GLM52_SERVING_MODEL_ID "zai-org/GLM-5.2"
+#define SPARK_GLM52_SERVING_MODEL_ID GLM_MODEL_ID
 #if GLM_EXPERT_WEIGHT_CODEC == 1
 #define SPARK_GLM52_SERVING_DRIVER_MODEL_ID \
 	"zai.glm-5.3-full.resident-decode-stage-firmware"
@@ -364,6 +367,7 @@ static SparkStatus SparkGlm52ServingInitializeSpeculationSeam(
 		seam_configuration.bridge_host = state->draft_bridge_host;
 		seam_configuration.bridge_port = state->draft_bridge_port;
 	}
+	_Static_assert(sizeof(SPARK_GLM52_SERVING_MODEL_ID) <= SPARK_SPECULATION_SEAM_TARGET_MODEL_BYTES,"GLM_MODEL_ID must fit the speculation seam target model");
 	memcpy(seam_configuration.target_model,SPARK_GLM52_SERVING_MODEL_ID,sizeof(SPARK_GLM52_SERVING_MODEL_ID));
 	seam_configuration.model_contract.abi_version = SPARK_SPECULATION_ABI_VERSION;
 	seam_configuration.model_contract.descriptor_bytes = SPARK_SPECULATION_MODEL_CONTRACT_DESCRIPTOR_BYTES;

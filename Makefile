@@ -605,6 +605,7 @@ PYTHON_TESTS := \
 	tests/test_kv_shard_host.py \
 	tests/test_kv_shard_cuda.py \
 	tests/test_score_merge.py \
+	tests/test_score_export.py \
 	tests/test_score_dump_cuda.py \
 	tests/test_kernel_codegen_diff.py \
 	tests/test_host_codegen_diff.py \
@@ -615,6 +616,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_expert_shard_math.py \
 	tests/test_glm5_next_pack_header_codec.py \
 	tests/test_glm5_next_expert_graft.py \
+	tests/test_exl3_expert_dequant.py \
 	tests/test_glm5_next_pack_tp_all.py \
 	tests/test_glm5_next_pack_tool_refusals.py \
 	tests/test_glm5_next_nvfp4_spine_scale.py \
@@ -628,6 +630,9 @@ PYTHON_TESTS := \
 	tests/test_clamped_up_gate.py \
 	tests/test_glm5_next_stage_context.py \
 	tests/test_glm52_chain_modes.py \
+	tests/test_glm52_model_identity.py \
+	tests/test_glm52_expert_graft.py \
+	tests/test_glm52_spine_source_verify.py \
 	tests/test_module_page_cache_reset.py \
 	tests/test_glm5_next_expert_cover_host.py \
 	tests/test_glm5_next_wset_from_trace.py \

@@ -1,0 +1,4 @@
+scripts/syncprobe.cu on sparkf (GB10), perf window glmflash-b1 2026-09-29, 2000 iterations each, idle non-blocking stream.
+cudaMemcpy 8B D2H pageable: 4.97 us each
+cudaMemcpyAsync 144B D2H pinned + stream sync: 4.54 us each
+3x cudaMemcpy 8B (disarm+error per band): 14.99 us

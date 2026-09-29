@@ -45,6 +45,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
 	runtime/model_serving_adapter.c \
 	runtime/model_resident_endpoint.c \
 	runtime/model_resident_deployment.c \
+	runtime/chat_template.c \
 	runtime/model_continuation_lease.c \
 	runtime/model_resident_ipc.c \
 	runtime/model_resident_client.c \

@@ -35,12 +35,15 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
 | anything else | — | `404 {"error":"not found"}` |
 
-A request with `messages` and no `prompt` or `prompt_token_ids` gets the GLM
-chat layout (`api_build_chat_prompt`): `[gMASK]<sop>`, a role marker before
-each turn (`<|system|>`, `<|user|>`, `<|assistant|>`, `<|observation|>`) and
-a trailing `<|assistant|>\n`. Unless the request names `stop_token_ids`, the
-reply stops at the next turn marker. The layout does not append
-`<think></think>`, so the model reasons before it answers.
+A request with `messages` and no `prompt` or `prompt_token_ids` is rendered
+with the chat template the deployment declares (`chat_template` in
+`model_resident.json`, see below). A deployment without one answers every
+`messages` request `400 chat_template_missing`; send `prompt` or
+`prompt_token_ids` instead. The API never falls back to another model's
+layout: before this rule it rendered every model with the GLM layout, and a
+Gemma 4 channel answered `messages` with garbage (`LCBCBCBC`, 2026-09-29).
+Unless the request names `stop_token_ids`, the reply also stops at the
+template's `stop_markers`.
 
 Optional request fields:
 
@@ -56,14 +59,56 @@ Optional request fields:
 | `top_p` | accepted only as `1`: nucleus sampling is not implemented |
 | `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
-`messages` are rendered as `[gMASK]<sop>`, then `<|system|>\n`,
-`<|user|>\n` or `<|observation|>\n` plus the content for each turn. The
-assistant header is `<|assistant|>\n<think></think>\n` with thinking off,
-the layout the COMPSEC-17 quality gate validates
-(`tools/glm5_next_compsec17.py --thinking off`), and `<|assistant|>\n<think>`
-with `enable_thinking`. Past assistant turns and the generation prompt use
-the same header, so the next turn's prompt extends the previous prompt and
-reply and reuses its cached prefix.
+### Declared chat template
+
+The `chat_template` member of the API channel's `model_resident.json` has
+exactly these members; the model family ships its declaration
+(`model-families/glm5_next/chat_template.json`,
+`model-families/gemma4/chat_template.json`), and
+`tools/generate_model_resident_deployment.py` copies a `chat_template`
+object from the deployment specification after the same checks.
+
+| Member | Kind | Meaning |
+| --- | --- | --- |
+| `prefix` | string | text before the first turn (`[gMASK]<sop>`, `<bos>`) |
+| `thinking_prefix` | string | with `enable_thinking`, text after the prefix when the first message is not `system` (Gemma's `<|think|>` system turn); `""` otherwise |
+| `system` | string or null | header of a `system` turn; null refuses `system` messages |
+| `system_thinking` | string or null | header of a leading `system` turn with `enable_thinking`; declared together with `system` |
+| `user` | nonempty string | header of a `user` turn |
+| `observation` | string or null | header of an `observation` turn; null refuses them |
+| `assistant` | nonempty string | header of a past `assistant` turn |
+| `assistant_thinking` | string or null | the same with `enable_thinking`; declared together with `generation_thinking` |
+| `turn_suffix` | string | text after every turn's content (`""`, `<turn|>\n`) |
+| `generation` | nonempty string | generation prompt after the last turn |
+| `generation_thinking` | string or null | generation prompt with `enable_thinking`; null answers `400 thinking_unsupported` |
+| `stop_markers` | 1 to 8 nonempty strings | each must be exactly one special token of the channel tokenizer, or `model_api` refuses to start |
+
+A turn is `header + content + turn_suffix`. Roles other than `system`,
+`user`, `assistant` and `observation`, and roles the template declares null,
+are `400 role_unsupported`; a message that is not an object with string
+`role` and `content`, or an empty `messages` array, is `400
+invalid_messages`. Both answers name the code; nothing is dropped or mapped
+to another role.
+
+The GLM declaration reproduces the earlier fixed layout byte for byte:
+`[gMASK]<sop>`, `<|system|>\n`, `<|user|>\n`, `<|observation|>\n`, and the
+assistant header `<|assistant|>\n<think></think>\n` with thinking off (the
+layout COMPSEC-17 validates, `tools/glm5_next_compsec17.py --thinking off`)
+or `<|assistant|>\n<think>` with `enable_thinking`. Past assistant turns use
+the same header as the generation prompt, so the next turn's prompt extends
+the previous prompt and reply and reuses its cached prefix.
+
+The Gemma 4 declaration follows the publisher template for text turns:
+`<bos>`, `<|turn>user\n...<turn|>\n`, generation `<|turn>model\n` plus
+`<|channel>thought\n<channel|>` with thinking off, and with
+`enable_thinking` a `<|turn>system\n<|think|>\n` system turn that also
+carries a leading system message. It does not declare tool turns
+(`observation` is null), and system content is sent as given (the publisher
+template trims it).
+
+An older `model_api` refuses a `model_resident.json` that carries
+`chat_template` (unknown member), so a channel gains the block in the same
+install as the API binary that reads it.
 
 A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed`,
 `top_p` or `chat_template_kwargs`, or `chat_template_kwargs` on a
