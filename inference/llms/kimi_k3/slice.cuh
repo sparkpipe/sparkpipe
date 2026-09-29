@@ -192,6 +192,7 @@ static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t lay
 	}
 }
 
+
 static int32_t K3SliceFailure(uint32_t layer,const char *phase,int32_t status)
 {
 	fprintf(stderr,"k3 slice failed layer=%u phase=%s status=%d\n",layer,phase,status);
@@ -244,6 +245,16 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,2u);
 			if ( status == LM_LAUNCH_OK )
 				status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
+			if ( status == LM_LAUNCH_OK && buffers->tp_sharded != 0u )
+			{
+				if ( state->layer_collective == 0 )
+					status = LM_LAUNCH_ERR_SHAPE;
+				else
+				{
+					state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,3u);
+					status = K3LayerMoeWeighted<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u);
+				}
+			}
 		}
 		else
 		{
@@ -252,6 +263,16 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,2u);
 			if ( status == LM_LAUNCH_OK )
 				status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
+			if ( status == LM_LAUNCH_OK && buffers->tp_sharded != 0u )
+			{
+				if ( state->layer_collective == 0 )
+					status = LM_LAUNCH_ERR_SHAPE;
+				else
+				{
+					state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,3u);
+					status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u);
+				}
+			}
 		}
 		if ( status != LM_LAUNCH_OK )
 			return(K3SliceFailure(layer,layer < K3_FIRST_ROUTED_LAYER ? "dense" : state->lazy_acquire != 0 ? "routed-lazy" : "routed",status));
@@ -324,7 +345,9 @@ static int32_t K3LaunchSliceHalf(const K3LayerWeights *weights, const K3SliceSta
 			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 		return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u));
 	}
-	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u));
+	if ( phase == 2u )
+		return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u));
+	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u));
 }
 
 template<class Format>

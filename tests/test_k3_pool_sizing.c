@@ -59,6 +59,34 @@ int main(void)
 	SparkK3PoolSizingForSlice(0u, 1u, &first);
 	failures += expect(first.mla_layer_count == 0u && first.kda_layer_count == 1u &&
 		first.mla_bytes_per_token == 0u, "layer 0 is KDA");
+	{
+		static const uint32_t expect_kda[SPARK_K3_PP_STAGE_COUNT] = { 0u, 24u, 48u, 70u };
+		static const uint32_t expect_mla[SPARK_K3_PP_STAGE_COUNT] = { 3u, 27u, 47u, 71u };
+		static const uint32_t expect_routed[SPARK_K3_PP_STAGE_COUNT] = { 1u, 24u, 47u, 70u };
+		static const uint32_t expect_dense[SPARK_K3_PP_STAGE_COUNT] = {
+			0u, SPARK_K3_SLICE_NO_LAYER, SPARK_K3_SLICE_NO_LAYER, SPARK_K3_SLICE_NO_LAYER };
+		SparkK3SliceKindLayers kinds;
+		for (index = 0u; index < SPARK_K3_PP_STAGE_COUNT; index++)
+		{
+			SparkK3SliceKindLayersFor(SPARK_K3_PP_STAGE_FIRST(index),
+				SPARK_K3_PP_STAGE_LAYERS(index), &kinds);
+			snprintf(what, sizeof(what),
+				"stage %u reads its KDA, MLA, routed and dense shapes from layers %u, %u, %u, %u",
+				index, expect_kda[index], expect_mla[index], expect_routed[index],
+				expect_dense[index]);
+			failures += expect(kinds.kda == expect_kda[index] &&
+				kinds.mla == expect_mla[index] &&
+				kinds.routed == expect_routed[index] &&
+				kinds.dense == expect_dense[index], what);
+			failures += expect(!SparkK3LayerIsMla(kinds.kda) &&
+				SparkK3LayerIsMla(kinds.mla),
+				"the chosen KDA layer is KDA and the chosen MLA layer is MLA");
+		}
+		SparkK3SliceKindLayersFor(SPARK_K3_MODEL_LAYER_COUNT - 1u, 1u, &kinds);
+		failures += expect(kinds.kda == SPARK_K3_SLICE_NO_LAYER &&
+			kinds.mla == SPARK_K3_MODEL_LAYER_COUNT - 1u,
+			"a slice without a KDA layer names none");
+	}
 	printf("test_k3_pool_sizing: %d failures\n", failures);
 	return(failures != 0 ? 1 : 0);
 }

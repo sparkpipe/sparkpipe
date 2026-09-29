@@ -29,6 +29,42 @@ static inline uint32_t SparkK3MlaLayersInSlice(uint32_t first_layer,
 	return(count);
 }
 
+#define SPARK_K3_SLICE_NO_LAYER UINT32_MAX
+
+typedef struct SparkK3SliceKindLayers
+{
+	uint32_t kda;
+	uint32_t mla;
+	uint32_t routed;
+	uint32_t dense;
+} SparkK3SliceKindLayers;
+
+static inline void SparkK3SliceKindLayersFor(uint32_t first_layer,
+	uint32_t layer_count, SparkK3SliceKindLayers *kinds)
+{
+	kinds->kda = SPARK_K3_SLICE_NO_LAYER;
+	kinds->mla = SPARK_K3_SLICE_NO_LAYER;
+	kinds->routed = SPARK_K3_SLICE_NO_LAYER;
+	kinds->dense = SPARK_K3_SLICE_NO_LAYER;
+	for ( uint32_t layer = first_layer; layer < first_layer + layer_count; layer++ )
+	{
+		if ( SparkK3LayerIsMla(layer) )
+		{
+			if ( kinds->mla == SPARK_K3_SLICE_NO_LAYER )
+				kinds->mla = layer;
+		}
+		else if ( kinds->kda == SPARK_K3_SLICE_NO_LAYER )
+			kinds->kda = layer;
+		if ( layer < SPARK_K3_MODEL_FIRST_ROUTED_LAYER )
+		{
+			if ( kinds->dense == SPARK_K3_SLICE_NO_LAYER )
+				kinds->dense = layer;
+		}
+		else if ( kinds->routed == SPARK_K3_SLICE_NO_LAYER )
+			kinds->routed = layer;
+	}
+}
+
 static inline void SparkK3PoolSizingForSlice(uint32_t first_layer,
 	uint32_t layer_count, SparkK3PoolSizing *sizing)
 {

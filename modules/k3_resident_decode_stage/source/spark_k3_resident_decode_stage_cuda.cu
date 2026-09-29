@@ -325,36 +325,43 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	if ( status == SPARK_K3_DISPATCH_OK )
 	{
 		char dim_name[96];
-		uint32_t base = d->first_layer;
+		SparkK3SliceKindLayers kinds;
 		SparkK3PackEntry dim_entry;
-#define K3_FILL_RANK(layer, field_name, field_ptr, columns) \
+		SparkK3SliceKindLayersFor(d->first_layer, layer_count, &kinds);
+#define K3_FILL_RANK(layer, field_name, field_ptr, axis, rank) \
 		do { \
+			if ( status != SPARK_K3_DISPATCH_OK || (layer) == SPARK_K3_SLICE_NO_LAYER ) \
+				break; \
 			snprintf(dim_name, sizeof(dim_name), "model.layers.%u.%s", \
 				(uint32_t)(layer), field_name); \
-			if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 && \
-				dim_entry.shape_count >= 2u ) \
-				*(field_ptr) = (columns) ? dim_entry.shape[1] : dim_entry.shape[0]; \
+			if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) != 0 || \
+				dim_entry.shape_count < (rank) || dim_entry.shape[axis] == 0u ) \
+			{ \
+				fprintf(stderr, "sparkpipe_k3: rank dimension missing %s\n", dim_name); \
+				status = SPARK_K3_DISPATCH_ERR_BIND; \
+				break; \
+			} \
+			*(field_ptr) = (uint32_t)dim_entry.shape[axis]; \
 		} while ( 0 )
-		K3_FILL_RANK(base, "kda_qkv_beta_weight", &d->buffers->kda_qkvb_rows, 0);
-		K3_FILL_RANK(base, "kda_gate_weight", &d->buffers->kda_gate_rows, 0);
-		K3_FILL_RANK(base, "kda_decay_up_weight", &d->buffers->kda_decay_up_rows, 0);
-		K3_FILL_RANK(base, "kda_out_weight", &d->buffers->kda_out_input, 1);
-		K3_FILL_RANK(base + 3u, "mla_q_up_weight", &d->buffers->mla_q_up_rows, 0);
-		K3_FILL_RANK(base + 3u, "mla_gate_weight", &d->buffers->mla_gate_rows, 0);
-		K3_FILL_RANK(base + 3u, "mla_out_weight", &d->buffers->mla_out_input, 1);
-		K3_FILL_RANK(base + 1u, "routed_down_weight", &d->buffers->routed_down_rows, 0);
-		K3_FILL_RANK(base + 1u, "routed_up_weight", &d->buffers->routed_up_input, 1);
-		K3_FILL_RANK(base + 1u, "expert_w1_weight", &d->buffers->expert_w1_output, 1);
-		K3_FILL_RANK(base + 1u, "shared_w1_weight", &d->buffers->shared_w1_rows, 0);
-		K3_FILL_RANK(base + 1u, "shared_w2_weight", &d->buffers->shared_w2_input, 1);
-		snprintf(dim_name, sizeof(dim_name), "model.layers.%u.expert_w2_weight", base + 1u);
-		if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 &&
-			dim_entry.shape_count >= 3u )
-			d->buffers->expert_w2_input = dim_entry.shape[2];
-		if ( d->first_layer == 0u )
+		K3_FILL_RANK(kinds.kda, "kda_qkv_beta_weight", &d->buffers->kda_qkvb_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_gate_weight", &d->buffers->kda_gate_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_decay_up_weight", &d->buffers->kda_decay_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_out_weight", &d->buffers->kda_out_input, 1u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_q_up_weight", &d->buffers->mla_q_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_gate_weight", &d->buffers->mla_gate_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_out_weight", &d->buffers->mla_out_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "routed_down_weight", &d->buffers->routed_down_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.routed, "routed_up_weight", &d->buffers->routed_up_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "expert_w1_weight", &d->buffers->expert_w1_output, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "shared_w1_weight", &d->buffers->shared_w1_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.routed, "shared_w2_weight", &d->buffers->shared_w2_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "expert_w2_weight", &d->buffers->expert_w2_input, 2u, 3u);
+		K3_FILL_RANK(kinds.dense, "dense_gate_up_weight", &d->buffers->dense_gate_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.dense, "dense_down_weight", &d->buffers->dense_down_input, 1u, 2u);
+		if ( status != SPARK_K3_DISPATCH_OK )
 		{
-			K3_FILL_RANK(0u, "dense_gate_up_weight", &d->buffers->dense_gate_up_rows, 0);
-			K3_FILL_RANK(0u, "dense_down_weight", &d->buffers->dense_down_input, 1);
+			delete[] host;
+			return status;
 		}
 		if ( d->buffers->kda_qkvb_rows != 0u )
 			d->buffers->kda_heads_rank = d->buffers->kda_qkvb_rows / 385u;
