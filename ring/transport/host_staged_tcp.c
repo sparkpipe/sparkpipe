@@ -315,9 +315,11 @@ static void host_staged_match(HostStagedState *state)
 		*link = frame->next;
 		if ( frame->header.active_sequence_count != packet->active_sequence_count || frame->header.hidden_bytes != hidden || frame->header.sideband_bytes != sideband )
 			status = SPARK_STATUS_VALIDATION_FAILED;
-		if ( status == SPARK_STATUS_OK && cudaMemcpy((void *)packet->hidden_bf16,frame->payload,(size_t)hidden,cudaMemcpyDefault) != cudaSuccess )
+		if ( status == SPARK_STATUS_OK && cudaMemcpyAsync((void *)packet->hidden_bf16,frame->payload,(size_t)hidden,cudaMemcpyDefault,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
-		if ( status == SPARK_STATUS_OK && sideband != 0u && cudaMemcpy((void *)packet->sideband_payload,frame->payload + hidden,(size_t)sideband,cudaMemcpyDefault) != cudaSuccess )
+		if ( status == SPARK_STATUS_OK && sideband != 0u && cudaMemcpyAsync((void *)packet->sideband_payload,frame->payload + hidden,(size_t)sideband,cudaMemcpyDefault,(cudaStream_t)packet->cuda_stream) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)packet->cuda_stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr,"host_staged_tcp receive failed status=%d cuda=%d hidden=%llu sideband=%llu frame_hidden=%llu frame_sideband=%llu rows=%u frame_rows=%u\n",(int)status,(int)cudaGetLastError(),(unsigned long long)hidden,(unsigned long long)sideband,(unsigned long long)frame->header.hidden_bytes,(unsigned long long)frame->header.sideband_bytes,packet->active_sequence_count,frame->header.active_sequence_count);

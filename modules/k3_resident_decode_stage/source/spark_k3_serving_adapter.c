@@ -697,12 +697,13 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 			: i;
 	}
 	free(positions_host64);
-	(void)SparkMemoryBufferCopy(&state->positions_device,
-		&state->positions_host, (uint64_t)rows * 4u, 0);
-	(void)SparkMemoryBufferCopy(&state->context_device,
-		&state->context_host, (uint64_t)rows * 4u, 0);
-	(void)SparkMemoryBufferCopy(&state->state_device,
-		&state->state_host, (uint64_t)rows * 4u, 0);
+	if ( SparkMemoryBufferCopy(&state->positions_device, &state->positions_host,
+			(uint64_t)rows * 4u, state->runner_config.execution_stream) != SPARK_STATUS_OK ||
+		SparkMemoryBufferCopy(&state->context_device, &state->context_host,
+			(uint64_t)rows * 4u, state->runner_config.execution_stream) != SPARK_STATUS_OK ||
+		SparkMemoryBufferCopy(&state->state_device, &state->state_host,
+			(uint64_t)rows * 4u, state->runner_config.execution_stream) != SPARK_STATUS_OK )
+		return SPARK_STATUS_IO_ERROR;
 	{
 		uint32_t *runs = (uint32_t *)state->runs_host.pointer;
 		uint32_t *slots = (uint32_t *)state->state_host.pointer;
@@ -718,10 +719,13 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		for ( uint32_t s = 0u; s < active; ++s )
 			seqslots[s] = slots[runs[s]];
-		(void)SparkMemoryBufferCopy(&state->runs_device,
-			&state->runs_host, ((uint64_t)active + 1u) * sizeof(uint32_t), 0);
-		(void)SparkMemoryBufferCopy(&state->seqslot_device,
-			&state->seqslot_host, (uint64_t)active * sizeof(uint32_t), 0);
+		if ( SparkMemoryBufferCopy(&state->runs_device, &state->runs_host,
+				((uint64_t)active + 1u) * sizeof(uint32_t),
+				state->runner_config.execution_stream) != SPARK_STATUS_OK ||
+			SparkMemoryBufferCopy(&state->seqslot_device, &state->seqslot_host,
+				(uint64_t)active * sizeof(uint32_t),
+				state->runner_config.execution_stream) != SPARK_STATUS_OK )
+			return SPARK_STATUS_IO_ERROR;
 	}
 	memset(&dispatch, 0, sizeof(dispatch));
 	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
@@ -766,8 +770,9 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 			SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
 				SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * 4u);
-			(void)SparkMemoryBufferCopy(&tokens, &state->output_tokens,
-				(uint64_t)rows * 4u, 0);
+			if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens,
+					(uint64_t)rows * 4u, 0) != SPARK_STATUS_OK )
+				{ free(tokens_host); SPARK_FAIL(SPARK_STATUS_IO_ERROR); }
 			completion.tokens_per_sequence = 1u;
 			completion.token_count = sequences;
 			completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
