@@ -39,7 +39,6 @@ ifeq ($(filter $(SCORE_DUMP),0 1),)
 $(error SCORE_DUMP must be 0 or 1)
 endif
 ifeq ($(SCORE_DUMP),1)
-GLM5_NEXT_SCORE_DUMP_IDENTIFIER := .scoredump
 GLM5_NEXT_SCORE_DUMP_DIRECTORY := -scoredump
 GLM5_NEXT_SCORE_DUMP_FLAGS := -DSPARK_SCORE_DUMP=1
 GLM5_NEXT_SCORE_DUMP_SOURCES := ../../src/spark_score_dump.c
@@ -47,7 +46,10 @@ endif
 
 MODULE_FAMILY := glm5_next
 MODULE_IDENTIFIER_PREFIX := spark.glm5_next.resident_decode_stage.bf16.expert_$(EXPERT_CODEC).h4096.l45.kda34.e288.k8
-MODULE_IDENTIFIER_SUFFIX := v2$(GLM5_NEXT_SCORE_DUMP_IDENTIFIER)
+MODULE_IDENTIFIER_SUFFIX := v2
+ifeq ($(SCORE_DUMP),1)
+MODULE_IDENTIFIER_SUFFIX = v2.scoredump
+endif
 MODULE_IDENTIFIER := $(MODULE_IDENTIFIER_PREFIX).$(MODULE_IDENTIFIER_SUFFIX)
 # The batch-variant ladder: one archive per power of two, emitted by
 # resident_decode_stage_rules.mk from the single template there. Trim for
