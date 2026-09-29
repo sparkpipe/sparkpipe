@@ -20,6 +20,7 @@
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_tp_chain_ordinal.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_quant_arm.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tokenizer_sidecar.h"
 #include "sparkpipe/spark_sampling.h"
@@ -109,6 +110,8 @@ static ApiState S;
 
 static SparkTokenizerSidecar Sidecar;
 static int HaveSidecar;
+static SparkQuantArm QuantArm;
+static int HaveQuantArm;
 static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
 static uint32_t EngineStopTokenCount;
 static char ApiBootTag[32];
@@ -165,7 +168,10 @@ static void api_log_request_measurements(const ApiRequest *request)
 	fprintf(stderr,"{\"event\":\"request_measurements\",\"boot_pid\":%d,\"request_id\":%llu,\"status\":%u,\"engine_completed\":%u,\"accepted_ns\":%llu,\"first_dispatch_ns\":%llu,\"stale_prefix_recomputes\":%u,\"prompt_tokens\":%u,\"cached_prompt_tokens\":%u,\"prompt_sha256\":\"%s\",\"adapter_id\":\"%s\",\"model_id\":\"%s\",\"model_revision\":\"%s\",\"driver_program\":\"%s\",\"driver_artifact_sha256\":\"%s\",\"session_fingerprint\":%llu,\"priority\":%u,\"deadline_expired\":%u,\"stream\":%u,\"temperature\":%.9g,\"seed\":%llu,\"finish_reason\":\"%s\",\"tokens\":[",(int)getpid(),(unsigned long long)request->id,request->status,request->engine_completed,(unsigned long long)request->accepted_ns,(unsigned long long)request->first_dispatch_ns,request->stale_prefix_recompute_count,request->prompt_count,request->cached_prompt_token_count,prompt_sha256,api_identity(adapter != 0 ? adapter->adapter_id : 0),api_identity(adapter != 0 ? adapter->model_id : 0),api_identity(adapter != 0 ? adapter->model_revision : 0),api_identity(adapter != 0 ? adapter->driver_program_name : 0),api_identity(adapter != 0 ? adapter->artifact_sha256 : 0),(unsigned long long)(S.engine != 0 ? SparkModelBatchEngineSessionFingerprint(S.engine) : 0u),request->priority,request->deadline_expired,request->stream,(double)request->temperature,(unsigned long long)request->seed,request->status == 0u && request->deadline_expired == 0u ? api_finish_reason(request) : "error");
 	for (index=0u; index<request->output_token_count; index++)
 		fprintf(stderr,"%s[%u,%llu]",index == 0u ? "" : ",",request->output_token_ids[index],(unsigned long long)request->token_ready_ns[index]);
-	fputs("]}\n",stderr);
+	fputs("]",stderr);
+	if ( HaveQuantArm )
+		fprintf(stderr,",\"arm_id\":\"%s\",\"arm_digest\":\"%s\",\"arm_kv\":\"%s\",\"pack_set_sha256\":\"%s\"",QuantArm.arm_id,QuantArm.arm_digest,QuantArm.kv_text,QuantArm.pack_set_sha256);
+	fputs("}\n",stderr);
 	funlockfile(stderr);
 }
 
@@ -1563,7 +1569,7 @@ static void *api_connection(void *arg)
 
 int main(int argc, char **argv)
 {
-	const char *dep_path = 0, *root = 0, *port_s = "8080";
+	const char *dep_path = 0, *root = 0, *port_s = "8080", *quant_arm_path = 0;
 	SparkModelResidentDeployment dep;
 	SparkModelBatchEngineConfiguration cfg;
 	pthread_t worker;
@@ -1576,11 +1582,23 @@ int main(int argc, char **argv)
 			root = argv[++i];
 		else if (!strcmp(argv[i], "--port") && i + 1 < argc)
 			port_s = argv[++i];
+		else if (!strcmp(argv[i], "--quant-arm") && i + 1 < argc)
+			quant_arm_path = argv[++i];
 	}
 	if (dep_path == 0 || root == 0)
 	{
-		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--port N]\n", argv[0]);
+		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--port N] [--quant-arm ARM_JSON]\n", argv[0]);
 		return 1;
+	}
+	if (quant_arm_path != 0)
+	{
+		char quant_arm_error[512];
+		if (SparkQuantArmLoadFile(quant_arm_path, &QuantArm, quant_arm_error, (uint32_t)sizeof(quant_arm_error)) != SPARK_STATUS_OK)
+		{
+			fprintf(stderr, "model_api: --quant-arm %s REFUSED: %s\n", quant_arm_path, quant_arm_error);
+			return 1;
+		}
+		HaveQuantArm = 1;
 	}
 	(void)snprintf(ApiBootTag, sizeof(ApiBootTag), "%d", (int)getpid());
 	{

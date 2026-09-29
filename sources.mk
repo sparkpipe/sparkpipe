@@ -17,6 +17,7 @@ include $(dir $(lastword $(MAKEFILE_LIST)))runtime/weightd_sources.mk
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
+    src/spark_quant_arm.c \
     src/spark_ck128.c \
     src/spark_admission.c \
     src/spark_speculation_policy.c \
