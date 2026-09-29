@@ -51,9 +51,47 @@ static void *complete_delayed(void *context)
 	return(0);
 }
 
+typedef struct PendingCopy2D
+{
+	void *destination;
+	const void *source;
+	size_t destination_pitch;
+	size_t source_pitch;
+	size_t width;
+	size_t height;
+} PendingCopy2D;
+static PendingCopy2D PENDING_2D[8];
+static uint32_t PENDING_2D_COUNT;
+
+static void pending_2d_land(void)
+{
+	uint32_t index;
+	size_t row;
+	for (index=0u; index<PENDING_2D_COUNT; index++)
+		for (row=0u; row<PENDING_2D[index].height; row++)
+			memcpy((uint8_t *)PENDING_2D[index].destination + row * PENDING_2D[index].destination_pitch,(const uint8_t *)PENDING_2D[index].source + row * PENDING_2D[index].source_pitch,PENDING_2D[index].width);
+	PENDING_2D_COUNT = 0u;
+}
+
+cudaError_t cudaMemcpy2DAsync(void *destination,size_t destination_pitch,const void *source,size_t source_pitch,size_t width,size_t height,cudaMemcpyKind kind,cudaStream_t stream)
+{
+	(void)kind;
+	(void)stream;
+	assert(PENDING_2D_COUNT < 8u);
+	PENDING_2D[PENDING_2D_COUNT].destination = destination;
+	PENDING_2D[PENDING_2D_COUNT].source = source;
+	PENDING_2D[PENDING_2D_COUNT].destination_pitch = destination_pitch;
+	PENDING_2D[PENDING_2D_COUNT].source_pitch = source_pitch;
+	PENDING_2D[PENDING_2D_COUNT].width = width;
+	PENDING_2D[PENDING_2D_COUNT].height = height;
+	PENDING_2D_COUNT++;
+	return(cudaSuccess);
+}
+
 cudaError_t cudaLaunchHostFunc(cudaStream_t stream,cudaHostFn_t function,void *context)
 {
 	uint32_t index = HOST_COUNT++;
+	pending_2d_land();
 	assert(IN_CUDA_CALLBACK == 0u);
 	(void)stream;
 	assert(index < 16u);
@@ -432,6 +470,8 @@ cudaError_t cudaStreamQuery(cudaStream_t stream)
 {
 	assert(IN_CUDA_CALLBACK == 0u && (stream != 0 || state.execution_stream == 0));
 	STREAM_QUERY_COUNT++;
+	if ( DRAIN_STATUS == cudaSuccess )
+		pending_2d_land();
 	return(DRAIN_STATUS);
 }
 
@@ -441,6 +481,8 @@ cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
 	(void)stream;
 	SYNC_COUNT++;
+	if ( DRAIN_STATUS == cudaSuccess )
+		pending_2d_land();
 	return(DRAIN_STATUS);
 }
 
@@ -478,15 +520,6 @@ cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,cu
 	return(cudaMemcpy(destination,source,bytes,kind));
 }
 
-cudaError_t cudaMemcpy2DAsync(void *destination,size_t destination_pitch,const void *source,size_t source_pitch,size_t width,size_t height,cudaMemcpyKind kind,cudaStream_t stream)
-{
-	size_t row;
-	(void)kind;
-	(void)stream;
-	for (row=0u; row<height; row++)
-		memcpy((uint8_t *)destination + row * destination_pitch,(const uint8_t *)source + row * source_pitch,width);
-	return(cudaSuccess);
-}
 
 static SparkWeightdWorkFunction COMPLETION_WORK;
 static void *COMPLETION_CONTEXT;
@@ -3164,6 +3197,7 @@ static void check_linear_walk(void)
 	chain.tp_op_index = chain.tp_hc_op_index = 0u;
 	WALK_LENGTH = 0u;
 	assert(SparkGlm5NextWalkChain(&chain,&layer) == 0u && layer == 5u && strcmp(WALK_TRACE,"Bh" "ArPMrQ" "SgTrPMrQY" "ArPMrQ" "ArPRErQY" "ArPRErQ" "HxU") == 0 && TAP_CAPTURES == 2u);
+	assert(PENDING_2D_COUNT == 1u && cudaStreamSynchronize((cudaStream_t)state.execution_stream) == cudaSuccess && PENDING_2D_COUNT == 0u);
 	for (limit=0u; limit<2u; limit++)
 		assert(tap_row_is((const uint8_t *)state.slots[0].tap_host + (uint64_t)limit * state.execution_row_capacity * state.tap_set.row_bytes,state.tap_set.row_bytes,(limit + 1u) * 8u) != 0u &&
 			tap_row_is((const uint8_t *)state.slots[0].tap_host + ((uint64_t)limit * state.execution_row_capacity + 1u) * state.tap_set.row_bytes,state.tap_set.row_bytes,(limit + 1u) * 8u + 1u) != 0u);
@@ -4082,7 +4116,10 @@ static void tap_sink_drain(TapRelaySink *sink)
 
 static void tap_sink_expect(TapRelaySink *sink,const char *order)
 {
-	tap_sink_drain(sink);
+	uint64_t deadline = SparkSpeculationRelayNowNs() + UINT64_C(5000000000);
+	do
+		tap_sink_drain(sink);
+	while ( sink->events < strlen(order) && SparkSpeculationRelayNowNs() < deadline );
 	assert(strcmp(sink->order,order) == 0);
 	sink->events = 0u;
 	sink->order[0] = 0;
@@ -4102,7 +4139,7 @@ static void check_execute_sequence_taps(void)
 	struct sockaddr_in address;
 	socklen_t address_length;
 	uint8_t header[128],record[40],*payload,reply_bytes[SPARK_SPECULATION_RELAY_FRAME_BYTES];
-	uint64_t records,position,serial,sequence;
+	uint64_t records,position,serial,sequence,deadline;
 	uint32_t index,tap,flags,token,next;
 	char path[96],peer[64];
 	FILE *file;
@@ -4147,6 +4184,10 @@ static void check_execute_sequence_taps(void)
 	address_length = sizeof(address);
 	assert(getsockname(state.tap_link.socket_fd,(struct sockaddr *)&address,&address_length) == 0 && SparkSpeculationRelayEncode(&reply,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,reply_bytes) == SPARK_STATUS_OK);
 	assert(sendto(sink.fd,reply_bytes,sizeof(reply_bytes),0,(const struct sockaddr *)&address,address_length) == (ssize_t)sizeof(reply_bytes));
+	deadline = SparkSpeculationRelayNowNs() + UINT64_C(5000000000);
+	while ( recv(state.tap_link.socket_fd,reply_bytes,sizeof(reply_bytes),MSG_PEEK | MSG_DONTWAIT) != (ssize_t)sizeof(reply_bytes) && SparkSpeculationRelayNowNs() < deadline )
+		;
+	assert(recv(state.tap_link.socket_fd,reply_bytes,sizeof(reply_bytes),MSG_PEEK | MSG_DONTWAIT) == (ssize_t)sizeof(reply_bytes));
 	sequence_idle(6u);
 	assert(sequence_frame(1u,6u,1u,2u,0u) == SPARK_STATUS_OK && SEQ_BUFFER[0] == 411u && SEQ_BUFFER[1] == 511u);
 	tap_sink_expect(&sink,"TRTR");

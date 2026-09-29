@@ -2924,6 +2924,9 @@ static void SparkGlm5NextFinishChain(SparkGlm5NextTpChain *chain)
 	status = chain->expert_lease != 0u ? SparkGlm5NextLazyRelease(chain) : SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextMtpTapFrame(chain);
+	if ( status == SPARK_STATUS_OK && chain->verify_budget == 0u && chain->state->tap_enabled != 0u && chain->state->ws_enabled == 0u &&
+		SparkGlm5NextBoundedStreamSync(chain->state,chain->slot->stream,UINT64_C(35000000000)) != 0 )
+		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK && chain->verify_budget == 0u )
 		SparkGlm5NextTapEmit(chain,chain->wave_rows,SPARK_SPECULATION_TAP_FLAG_DECODE);
 	async->finish_ns = SparkGlm5NextNowNs();

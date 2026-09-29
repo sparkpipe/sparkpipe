@@ -38,6 +38,11 @@ host: [RTX5090_SPECULATION_NODE.md](RTX5090_SPECULATION_NODE.md).
 
 Taps only read the residual after the layer finished; nothing downstream reads
 the tap buffers, and a disabled tap set adds no graph node or launch.
+Records are emitted only after the stream that wrote them finished: graph
+steps and inner steps of a multi-step chain already wait for it, and with
+taps on the tap rank also waits for the stream at the end of a prefill or
+eager chain before reading the rows (an idle-stream query when the graph
+already waited).
 
 - GPU (sparkf, `make -C modules/glm5_next_resident_decode_stage
   validate_mtp_parity`): 88 steps with every layer tapped (`mean` and `all`)
