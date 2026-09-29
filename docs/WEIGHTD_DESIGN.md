@@ -256,10 +256,38 @@ kind, zero, offset, bytes, 16-byte ck128 digest), as documented in
 (layer, expert), checks framing, bounds, overlap and unique kinds per expert,
 and never infers version 1. Range kinds are producer-defined; producer and
 consumer must agree on them, including separate scale ranges. Limits:
-`SPARK_WEIGHTD_RANGE_COUNT_MAX` (131072) ranges per manifest,
+`SPARK_WEIGHTD_RANGE_COUNT_MAX` (262144) ranges per manifest,
 `SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX` (16) per expert, and
 `SPARK_WEIGHTD_EXPERT_BYTES_MAX` (64 MiB) per range
-(`runtime/spark_weightd_manifest.c`). The GLM 5.3 Flash TP16 rank pack has
+(`runtime/spark_weightd_manifest.c`).
+
+#### Range count bound
+
+The range bound is derived from the host memory the manifest tables cost,
+not picked to fit one model. Each range costs at most 120 bytes of host
+tables in the daemon: the parsed range (48), its group slot (16, groups are
+allocated at the range count), its spine span (24, the spine is allocated at
+range count + 1) and at most 32 bytes of per-group daemon state (the expert
+entry, 24, plus the lease pin, 4;
+`SPARK_WEIGHTD_MANIFEST_GROUP_STATE_BYTES_MAX`).
+`SPARK_WEIGHTD_MANIFEST_TABLE_BYTES_MAX` gives one manifest 32 MiB of host
+tables. `SPARK_WEIGHTD_RANGE_COUNT_MAX` is the largest power of two that fits:
+262144 × 120 B = 30 MiB, while 524288 would need 60 MiB. With at most
+`SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas, the daemon's worst case is
+16 × 32 MiB = 512 MiB (`SPARK_WEIGHTD_MANIFEST_DAEMON_BYTES_MAX`), 2.5% of
+the 20 GiB per-node MemAvailable floor. Static assertions in
+`include/sparkpipe/spark_weightd_manifest.h` and `runtime/spark_weightd.c`
+fail the build if a struct grows or a constant is raised without the budget.
+The on-disk manifest at the bound is 16 + 262144 × 48 B = 12 MiB.
+
+A manifest above the bound is refused before any table is allocated. The
+loader prints the path, the range count, the bound and the budget to stderr
+and returns `SPARK_STATUS_CAPACITY_EXCEEDED`; nothing is clamped or truncated.
+The bound covers the known large ranks: Kimi K3 TP16 (164,864 ranges, 63% of
+the bound) and DSV4-Pro TP16 (147,456 ranges, 56%), both of which the old
+131072 cap refused. `tests/test_weightd_manifest.py` loads manifests of both
+shapes and one of exactly 262144 ranges, and checks that 262145 is refused
+with the message. The GLM 5.3 Flash TP16 rank pack has
 (45 − 3) × 288 = 12,096 routed experts and 12,096 × 4 = 48,384 ranges, two
 weights and two scales per expert (arithmetic from
 `model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h`).

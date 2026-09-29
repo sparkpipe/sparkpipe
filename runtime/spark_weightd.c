@@ -106,6 +106,11 @@ typedef struct SparkWeightdExpertEntry
     uint32_t present;
 } SparkWeightdExpertEntry;
 
+_Static_assert(sizeof(SparkWeightdExpertEntry) + sizeof(((SparkWeightdLeaseTable *)0)->pins[0]) <= SPARK_WEIGHTD_MANIFEST_GROUP_STATE_BYTES_MAX,
+    "per-group daemon state (expert entry and lease pin) must fit the manifest table budget");
+_Static_assert((uint64_t)SPARK_WEIGHTD_ARENA_COUNT_MAX * SPARK_WEIGHTD_MANIFEST_TABLE_BYTES_MAX <= SPARK_WEIGHTD_MANIFEST_DAEMON_BYTES_MAX,
+    "every arena slot holding a maximal manifest must fit the daemon manifest budget");
+
 typedef struct SparkWeightdArena
 {
     SparkWeightdIdentity identity; /* canonical (prepared) */
