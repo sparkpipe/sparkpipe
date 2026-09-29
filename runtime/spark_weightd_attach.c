@@ -87,7 +87,8 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         SparkWeightdAttachSetReason(reason, "no_socket");
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-    digest = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+    digest = slice->pack_sha256 != 0 ? slice->pack_sha256 :
+        SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
     if (digest == 0)
     {
         SparkWeightdAttachSetReason(reason, "no_identity");
