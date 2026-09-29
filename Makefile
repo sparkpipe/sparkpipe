@@ -478,6 +478,7 @@ PYTHON_TESTS := \
 	tests/test_dsv4_driver_source_contracts.py \
 	tests/test_dsv4_ga_reference_fixture.py \
 	tests/test_fleet_registrar.py \
+	tests/test_fleet_rotation.py \
 	tests/test_dsv4_native_compute_source.py \
 	tests/test_dsv4_module_host_syntax.py \
 	tests/test_dsv4_stage_source.py \
@@ -714,6 +715,7 @@ PYTHON_TESTS := \
 	tests/test_spark_station.py \
 	tests/test_spark_tiktoken_compile.py \
 	tests/test_t1_reference_decoder.py \
+	tests/test_t1_reference_dsa_cache.py \
 	tests/test_t1_reference_dsv41.py \
 	tests/test_t1_reference_engines.py \
 	tests/test_t1_reference_glm53flash.py \
