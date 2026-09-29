@@ -68,6 +68,20 @@ def invalid():
     return out
 
 
+def raw_invalid():
+    text = json.dumps(base_arm())
+    overflow = base_arm()
+    overflow["topology"].update(tp=64, pp=67108865)
+    overflow["spine"]["spine_digest"] = [overflow["spine"]["spine_digest"][0]] * 64
+    overflow["pack_sha256"] = [overflow["pack_sha256"][0]] * 64
+    return {
+        "negative zero": text.replace('"kv_shard": 1', '"kv_shard": -0'),
+        "negative": text.replace('"pp": 1', '"pp": -1'),
+        "leading zero": text.replace('"tp": 4', '"tp": 04'),
+        "wrapping rank product": json.dumps(overflow),
+    }
+
+
 class ArmTest(unittest.TestCase):
     def test_digest_is_stable_under_formatting(self):
         arm = base_arm()
@@ -84,12 +98,21 @@ class ArmTest(unittest.TestCase):
             ab_arm.parse_text('{"format": "sparkpipe-quant-arm-v1", "format": "x"}')
         with self.assertRaises(ab_arm.ArmError):
             ab_arm.parse_text(json.dumps(base_arm()).replace('"tp": 4', '"tp": 4.0'))
+        for text in raw_invalid().values():
+            with self.assertRaises(ab_arm.ArmError):
+                ab_arm.parse_text(text)
 
     def test_axes(self):
         arms = variants()
         self.assertEqual(ab_arm.differing_axes(arms["base"], arms["kv"]), ["K"])
         self.assertEqual(ab_arm.differing_axes(arms["base"], arms["drafter"]), ["D"])
         self.assertEqual(ab_arm.differing_axes(arms["base"], arms["experiment"]), ["E"])
+        revision = copy.deepcopy(arms["base"])
+        revision["revision"] = "org/Other@2"
+        self.assertEqual(ab_arm.differing_axes(arms["base"], revision), ["spine"])
+        sidecar = copy.deepcopy(arms["drafter"])
+        sidecar["drafter"]["sidecar_sha256"][0] = "0" * 64
+        self.assertEqual(ab_arm.differing_axes(arms["drafter"], sidecar), ["D"])
         both = copy.deepcopy(arms["kv"])
         both["expert"] = copy.deepcopy(arms["experiment"]["expert"])
         both["arm_id"] = ab_arm.expected_id(both)
@@ -111,9 +134,11 @@ class ArmTest(unittest.TestCase):
                 summary = json.loads(subprocess.run([str(CLI), "--summary", str(path)], capture_output=True, text=True, check=True).stdout)
                 self.assertEqual(summary["pack_set_sha256"], ab_arm.pack_set_sha256(arm))
                 self.assertEqual(summary["arm_kv"], ab_arm.kv_text(arm))
-            for name, arm in invalid().items():
+            cases = {name: json.dumps(arm) for name, arm in invalid().items()}
+            cases.update(raw_invalid())
+            for name, text in cases.items():
                 path = Path(directory) / "invalid.json"
-                path.write_text(json.dumps(arm))
+                path.write_text(text)
                 result = subprocess.run([str(CLI), "--digest", str(path)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1, name)
                 self.assertIn("REFUSED", result.stderr, name)

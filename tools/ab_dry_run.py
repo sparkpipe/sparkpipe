@@ -191,7 +191,7 @@ def run(out: Path, replicates: int) -> str:
         entry["tokens_sha256"] = corpus["corpus_sha256"]
         entry["index_sha256"] = hexid("index")
     draft["corpora"]["CT-short"]["docs"] = len(corpus["documents"])
-    draft["corpora"]["CT-long"]["docs"] = 32
+    draft["corpora"]["CT-long"]["docs"] = len(corpus["documents"])
     ids = {name: arm["arm_id"] for name, arm in arms.items()}
     draft["arms"] = [
         {"arm_id": ids["reference"], "role": "reference", "label": "R"},

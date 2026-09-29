@@ -418,6 +418,7 @@ SHELL_TESTS := \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
 	tests/test_ab_stats.py \
+	tests/test_ab_verdict.py \
 	tests/test_ab_arm.py \
 	tests/test_ab_receipt.py \
 	tests/test_ab_suite_compare.py \

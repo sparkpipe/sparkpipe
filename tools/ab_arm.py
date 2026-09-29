@@ -126,6 +126,12 @@ def _reject_constant(token):
     raise ArmError(f"arm: not valid JSON ({token})")
 
 
+def _canonical_integer(token):
+    if not token.isdigit():
+        raise ArmError(f"arm: {token} is not a canonical unsigned integer")
+    return int(token)
+
+
 def validate(arm) -> dict:
     _object(arm, "root", ROOT)
     fmt = _text(arm["format"], "format", TOKEN_BYTES)
@@ -211,7 +217,7 @@ def validate(arm) -> dict:
 def parse_text(text: str) -> dict:
     try:
         arm = json.loads(text, object_pairs_hook=_reject_duplicates, parse_constant=_reject_constant,
-                         parse_float=lambda token: _reject_constant(token))
+                         parse_float=lambda token: _reject_constant(token), parse_int=_canonical_integer)
     except json.JSONDecodeError as error:
         raise ArmError(f"arm: not valid JSON ({error})") from error
     return validate(arm)

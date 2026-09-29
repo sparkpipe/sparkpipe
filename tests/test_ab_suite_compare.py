@@ -68,6 +68,17 @@ class SyntheticTest(unittest.TestCase):
             self.assertEqual(result["divergence"][0]["first_difference"], 1)
             regraded = json.loads((Path(directory) / "b" / "responses" / "000.json").read_text())
             self.assertFalse(regraded["grade"]["passed"])
+            self.assertAlmostEqual(result["paired_difference"], -6 / 17)
+            self.assertLess(result["paired_difference_ci95"][1], 0.0)
+
+    def test_status_only_difference_diverges_at_the_end(self):
+        case = {"passed": True, "tokens": [1, 2, 3], "status": 0, "extracted": "1", "expected": "1"}
+        stopped = dict(case, status=1)
+        longer = dict(case, tokens=[1, 2, 3, 4])
+        result = ab_suite_compare.compare({"a": case, "b": case, "c": case}, {"a": case, "b": stopped, "c": longer}, "S")
+        by_case = {item["case"]: item["first_difference"] for item in result["divergence"]}
+        self.assertEqual(by_case, {"a": -1, "b": 3, "c": 3})
+        self.assertEqual(result["identical"], 1)
 
 
 if __name__ == "__main__":

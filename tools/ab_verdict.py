@@ -21,6 +21,11 @@ K arms are judged on the absolute margins in every position bin. D arms are
 exact: zero token differences. A spine bridge is descriptive until the
 backstops are calibrated.
 
+Every comparison must be on its plan corpus (tokens SHA and document count),
+use the plan's position bins and thresholds, name the arm digests its plan
+compare_to and anchor arms have, and, for K arms, score rows in every bin.
+Documents of the on-policy stratum never enter a dNLL bound (design §3.4).
+
 usage:
   ab_verdict.py --plan PLAN.json --aa AA.json --comparison ARM_ID=COMPARISON.json ...
       [--suite ARM_ID=SUITE.json ...] [--exactness ARM_ID=EXACT.json ...] --out VERDICTS.json
@@ -39,6 +44,7 @@ import ab_plan
 import ab_stats
 
 FORMAT = "sparkpipe-ab-verdicts-v1"
+ON_POLICY_STRATA = ("on-policy",)
 EQUIVALENT, INFERIOR, INCONCLUSIVE = "EQUIVALENT", "INFERIOR", "INCONCLUSIVE"
 
 
@@ -71,11 +77,68 @@ def rel_pct(dnll, nll):
     return 100.0 * dnll.mean(axis=1) / nll.mean(axis=1)
 
 
+def on_policy_mask(comparison: dict) -> np.ndarray:
+    return np.array([stratum in ON_POLICY_STRATA for stratum in comparison["per_doc"]["stratum"]], dtype=bool)
+
+
+def bin_names(bins: list) -> list:
+    return [f"{low}-{high}" for low, high in zip(bins[:-1], bins[1:])]
+
+
+def check_comparison(plan: dict, arm: dict, comparison: dict) -> None:
+    corpus = plan["corpora"][arm["corpus"]]
+    if comparison["corpus_sha256"] != corpus["tokens_sha256"]:
+        raise VerdictError(f"{arm['arm_id']}: comparison corpus {comparison['corpus_sha256']} is not the plan corpus {arm['corpus']} ({corpus['tokens_sha256']})")
+    if comparison["docs"] != corpus["docs"] or len(comparison["per_doc"]["kl"]) != corpus["docs"]:
+        raise VerdictError(f"{arm['arm_id']}: comparison has {comparison['docs']} documents, the plan corpus {arm['corpus']} has {corpus['docs']}")
+    stats = plan["statistics"]
+    if comparison["bins"] != stats["position_bins"]:
+        raise VerdictError(f"{arm['arm_id']}: comparison position bins {comparison['bins']} are not the plan bins {stats['position_bins']}")
+    if comparison["near_tie_threshold"] != stats["near_tie_nats"] or comparison["decisive_threshold"] != stats["decisive_nats"]:
+        raise VerdictError(f"{arm['arm_id']}: comparison near-tie or decisive threshold differs from the plan")
+    if arm.get("axis") == "K":
+        missing = [name for name in bin_names(stats["position_bins"]) if name not in comparison["per_bin"]]
+        if missing:
+            raise VerdictError(f"{arm['arm_id']}: K margins apply in every position bin and bins {', '.join(missing)} have no scored rows")
+
+
+def check_arm_identities(plan: dict, comparisons: dict) -> None:
+    digests = {}
+    for arm in plan["arms"]:
+        if arm["role"] == "reference" or arm.get("axis") == "D":
+            continue
+        digest = comparisons[arm["arm_id"]]["arm_digest"]
+        if digest in digests.values():
+            raise VerdictError(f"{arm['arm_id']}: its comparison names the same arm digest as another plan arm")
+        digests[arm["arm_id"]] = digest
+    reference_digests = set()
+    for arm in plan["arms"]:
+        if arm["arm_id"] not in digests:
+            continue
+        comparison = comparisons[arm["arm_id"]]
+        target = arm["compare_to"]
+        if target in digests:
+            if comparison["reference_arm_digest"] != digests[target]:
+                raise VerdictError(f"{arm['arm_id']}: comparison reference is not the digest of its plan compare_to arm {target}")
+        else:
+            reference_digests.add(comparison["reference_arm_digest"])
+        if arm.get("anchor") is not None and comparison.get("anchor_arm_digest") != digests.get(arm["anchor"]):
+            raise VerdictError(f"{arm['arm_id']}: comparison anchor is not the digest of its plan anchor arm {arm['anchor']}")
+    if len(reference_digests) > 1:
+        raise VerdictError("comparisons against the plan reference name more than one reference arm digest")
+
+
 def metric_specs(axis: str, role: str, plan: dict, comparison: dict) -> list:
     margins = plan["margins"]
     backstops = plan["backstops"]
     table = comparison["per_doc"]
+    excluded = on_policy_mask(comparison)
     specs = []
+
+    def dnll(source):
+        values = column(source, "dnll")
+        values[excluded] = np.nan
+        return values
 
     def absolute(prefix, source, margin_set):
         specs.append({"name": f"{prefix}kl_mean", "statistic": ab_stats.mean_statistic,
@@ -83,7 +146,7 @@ def metric_specs(axis: str, role: str, plan: dict, comparison: dict) -> list:
         specs.append({"name": f"{prefix}top1_agree_pct", "statistic": pct_mean,
                       "columns": paired(column(source, "top1_agree")), "margin": margin_set["top1_agree_pct_lower"], "side": "lower"})
         specs.append({"name": f"{prefix}dnll_rel_pct", "statistic": rel_pct,
-                      "columns": paired(column(source, "dnll"), column(source, "nll_ref")), "margin": margin_set["dnll_rel_pct_abs"], "side": "abs"})
+                      "columns": paired(dnll(source), column(source, "nll_ref")), "margin": margin_set["dnll_rel_pct_abs"], "side": "abs"})
 
     if axis == "E" and role == "arm":
         specs.append({"name": "kl_ratio_vs_anchor", "statistic": ab_stats.ratio_statistic,
@@ -138,10 +201,22 @@ def suite_signal(suites: list, alpha: float) -> tuple:
     return regression, notes
 
 
+def binding(comparison: dict) -> dict:
+    return {"arm_digest": comparison["arm_digest"], "reference_arm_digest": comparison["reference_arm_digest"],
+            "arm_dump_sha256": comparison["arm_dump_sha256"], "dnll_excluded_docs": int(np.sum(on_policy_mask(comparison)))}
+
+
 def decide(plan: dict, comparisons: dict, suites: dict, exactness: dict) -> dict:
     stats = plan["statistics"]
     alpha, seed, replicates = stats["alpha"], stats["bootstrap"]["seed"], stats["bootstrap"]["replicates"]
     arms = {arm["arm_id"]: arm for arm in plan["arms"]}
+    for arm in plan["arms"]:
+        if arm["role"] == "reference" or arm.get("axis") == "D":
+            continue
+        if arm["arm_id"] not in comparisons:
+            raise VerdictError(f"no comparison for plan arm {arm['arm_id']}")
+        check_comparison(plan, arm, comparisons[arm["arm_id"]])
+    check_arm_identities(plan, comparisons)
     verdicts = {}
     for axis in ("E", "K", "spine"):
         members = [arm for arm in plan["arms"] if arm.get("axis") == axis and arm["role"] != "reference"]
@@ -149,8 +224,6 @@ def decide(plan: dict, comparisons: dict, suites: dict, exactness: dict) -> dict
             continue
         tested = []
         for arm in members:
-            if arm["arm_id"] not in comparisons:
-                raise VerdictError(f"no comparison for plan arm {arm['arm_id']}")
             specs = metric_specs(axis, arm["role"], plan, comparisons[arm["arm_id"]])
             if not specs:
                 continue
@@ -175,7 +248,8 @@ def decide(plan: dict, comparisons: dict, suites: dict, exactness: dict) -> dict
                 stopped = True
             verdicts[arm["arm_id"]] = {"axis": axis, "role": arm["role"], "compare_to": arm["compare_to"], "verdict": verdict,
                                        "holm_rank": position + 1, "holm_family": len(statistical), "level": level,
-                                       "p_arm": p_arm, "metrics": metrics, "suite_notes": notes}
+                                       "p_arm": p_arm, "metrics": metrics, "suite_notes": notes,
+                                       **binding(comparisons[arm["arm_id"]])}
         for arm, specs, p_arm in tested:
             if arm["role"] == "arm":
                 continue
@@ -184,7 +258,8 @@ def decide(plan: dict, comparisons: dict, suites: dict, exactness: dict) -> dict
             status = plan["backstops"]["status"]
             verdicts[arm["arm_id"]] = {"axis": axis, "role": arm["role"], "compare_to": arm["compare_to"],
                                        "verdict": f"{label} (backstops {status})", "level": alpha, "p_arm": p_arm,
-                                       "metrics": metrics, "suite_notes": suite_signal(suites.get(arm["arm_id"], []), alpha)[1]}
+                                       "metrics": metrics, "suite_notes": suite_signal(suites.get(arm["arm_id"], []), alpha)[1],
+                                       **binding(comparisons[arm["arm_id"]])}
     for arm in plan["arms"]:
         if arm.get("axis") != "D":
             continue

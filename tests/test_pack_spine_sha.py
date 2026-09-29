@@ -60,6 +60,16 @@ class SpineDigestTest(unittest.TestCase):
             self.assertEqual(base["spine_digest"], nvfp4_like["spine_digest"])
             self.assertEqual((base["spine_entries"], base["expert_entries"]), (3, 2))
 
+    def test_every_record_field_moves_the_spine_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = self.digest(directory, "a.sp", spine())["spine_digest"]
+            for position, value in ((1, 4), (2, 6), (3, 0), (4, (2, 8, 4))):
+                entries = spine()
+                entry = list(entries[1])
+                entry[position] = value
+                entries[1] = tuple(entry)
+                self.assertNotEqual(self.digest(directory, f"m{position}.sp", entries)["spine_digest"], base, position)
+
     def test_any_spine_change_moves_the_digest(self):
         with tempfile.TemporaryDirectory() as directory:
             base = self.digest(directory, "a.sp", spine() + experts(1))["spine_digest"]

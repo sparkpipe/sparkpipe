@@ -126,6 +126,11 @@ def block(campaign: str, spec: dict, plan: dict, aa: dict, verdicts: dict, base:
     comparison = json.loads((base / spec["comparison"]).read_text())
     reference = json.loads((base / spec["reference_receipt"]).read_text())
     arm = json.loads((base / spec["arm_receipt"]).read_text())
+    planned = {item["arm_id"]: item for item in plan["arms"]}.get(spec["arm_id"])
+    if planned is None or planned.get("axis") != spec["axis"] or planned.get("compare_to") != spec["reference_id"]:
+        raise ReportError(f"{spec['arm_id']}: not a plan arm with axis {spec['axis']} compared to {spec['reference_id']}")
+    if arm["arm"]["arm_id"] != spec["arm_id"] or reference["arm"]["arm_id"] != spec["reference_id"]:
+        raise ReportError(f"{spec['arm_id']}: the receipts describe {arm['arm']['arm_id']} vs {reference['arm']['arm_id']}")
     problems = ab_receipt.compare(reference, arm, spec["axis"], plan)
     if problems:
         raise ReportError(f"{spec['arm_id']}: not comparable: " + "; ".join(problems))
@@ -137,6 +142,8 @@ def block(campaign: str, spec: dict, plan: dict, aa: dict, verdicts: dict, base:
     verdict = verdicts["verdicts"].get(spec["arm_id"])
     if verdict is None:
         raise ReportError(f"{spec['arm_id']}: no verdict")
+    if verdict.get("arm_digest") != comparison["arm_digest"] or verdict.get("arm_dump_sha256") != comparison["arm_dump_sha256"]:
+        raise ReportError(f"{spec['arm_id']}: the verdict was computed on another comparison")
     spine = reference["arm"]["spine"]["spine_digest"]
     equal = sum(1 for a, b in zip(spine, arm["arm"]["spine"]["spine_digest"]) if a == b)
     topology = arm["topology"]

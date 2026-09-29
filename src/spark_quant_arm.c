@@ -376,7 +376,7 @@ static SparkStatus SparkQuantArmParseDocument(const SparkJsonDocument *document,
 		status = SparkQuantArmUnsigned(document,object,"kv_shard",&arm->kv_shard,error_buffer,error_buffer_bytes);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( arm->tensor_parallel == 0u || arm->pipeline_parallel == 0u || arm->tensor_parallel > SPARK_QUANT_ARM_MAX_RANKS || arm->tensor_parallel * arm->pipeline_parallel > SPARK_QUANT_ARM_MAX_RANKS )
+	if ( arm->tensor_parallel == 0u || arm->pipeline_parallel == 0u || arm->tensor_parallel > SPARK_QUANT_ARM_MAX_RANKS || arm->pipeline_parallel > SPARK_QUANT_ARM_MAX_RANKS || arm->tensor_parallel * arm->pipeline_parallel > SPARK_QUANT_ARM_MAX_RANKS )
 		return(SparkQuantArmRefuse(error_buffer,error_buffer_bytes,SPARK_STATUS_SCHEMA_ERROR,"arm: topology tp=%u pp=%u is outside 1..%u ranks",arm->tensor_parallel,arm->pipeline_parallel,SPARK_QUANT_ARM_MAX_RANKS));
 	arm->rank_count = arm->tensor_parallel * arm->pipeline_parallel;
 	status = SparkQuantArmObject(document,root,"spine",SparkQuantArmSpineMembers,SPARK_QUANT_ARM_COUNT(SparkQuantArmSpineMembers),&object,error_buffer,error_buffer_bytes);
