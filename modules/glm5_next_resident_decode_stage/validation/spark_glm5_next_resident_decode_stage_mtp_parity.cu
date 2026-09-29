@@ -14,6 +14,10 @@
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_head_screen.h"
 #include "spark_glm5_next_resident_decode_stage_internal.h"
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+#include <math.h>
+#include "sparkpipe/spark_kv_quant_sim.h"
+#endif
 
 #ifndef GLM5_NEXT_EXPERT_WEIGHT_CODEC
 #error "GLM5_NEXT_EXPERT_WEIGHT_CODEC must name the compiled archive's expert codec"
@@ -228,6 +232,12 @@ static int SparkGlm5NextMtpParityCuda(cudaError_t error,const char *check,const 
 	printf("FAIL %s: %s cuda=%s\n",check,detail,cudaGetErrorString(error));
 	return(1);
 }
+
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+#define SPARK_GLM5_NEXT_MTP_PARITY_KV_SIM_ARM \
+	(SPARK_KV_QUANT_SIM_MXFP4 | (SPARK_KV_QUANT_SIM_FP8_E4M3 << 3u) | (SPARK_KV_STATE_SIM_BF16 << 6u))
+static uint32_t spark_glm5_next_mtp_parity_kv_sim;
+#endif
 
 static uint32_t SparkGlm5NextMtpParityNext(uint64_t *state)
 {
@@ -741,6 +751,9 @@ static void SparkGlm5NextMtpParityBuildWave(
 	fixture->host_run_begin[1] = row_count;
 	fixture->host_run_state_index[0] = 0u;
 	memset(wave,0,sizeof(*wave));
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	wave->kv_sim = spark_glm5_next_mtp_parity_kv_sim;
+#endif
 	wave->stage_index = 0u;
 	wave->first_layer_index = 0u;
 	wave->layer_count = SPARK_GLM5_NEXT_MTP_PARITY_LAYERS;
@@ -812,6 +825,9 @@ static void SparkGlm5NextMtpParityBuildDraftWave(SparkGlm5NextMtpParityFixture *
 	SparkGlm5NextCudaWave *wave;
 	wave = &fixture->draft_wave;
 	memset(wave,0,sizeof(*wave));
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	wave->kv_sim = spark_glm5_next_mtp_parity_kv_sim;
+#endif
 	wave->tp_degree = 1u;
 	wave->tp_rank = 0u;
 	wave->owns_final_head = 1u;
@@ -1528,6 +1544,92 @@ static int SparkGlm5NextMtpParityRunReferencePhases(SparkGlm5NextMtpParityFixtur
 	return(0);
 }
 
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+static float SparkGlm5NextMtpParityKvSimValue(uint16_t bits)
+{
+	uint32_t word = (uint32_t)bits << 16u;
+	float value;
+	memcpy(&value,&word,sizeof(value));
+	return(value);
+}
+
+static float SparkGlm5NextMtpParityKvSimRound(float scaled,uint32_t codec)
+{
+	float magnitude = fabsf(scaled);
+	int exponent,quantum;
+	frexpf(magnitude,&exponent);
+	if ( codec == SPARK_KV_QUANT_SIM_MXFP4 )
+		quantum = magnitude >= 2.0f ? exponent - 2 : -1;
+	else
+		quantum = magnitude >= 0.015625f ? exponent - 4 : -9;
+	return(copysignf(ldexpf(rintf(ldexpf(magnitude,-quantum)),quantum),scaled));
+}
+
+static uint64_t SparkGlm5NextMtpParityKvSimOffGrid(const uint16_t *rows,uint64_t row_count,uint32_t stride,uint32_t width,uint32_t codec,uint32_t group,uint64_t *groups)
+{
+	uint64_t row,off = 0u;
+	uint32_t base,element;
+	float format_max = codec == SPARK_KV_QUANT_SIM_MXFP4 ? 6.0f : 448.0f,amax,mantissa,max_mantissa,value;
+	int amax_exponent,max_exponent,exponent;
+	for ( row = 0u; row < row_count; row++ )
+		for ( base = 0u; base < width; base += group )
+		{
+			const uint16_t *values = rows + row * stride + base;
+			amax = 0.0f;
+			for ( element = 0u; element < group; element++ )
+				amax = fmaxf(amax,fabsf(SparkGlm5NextMtpParityKvSimValue(values[element])));
+			if ( amax == 0.0f )
+				continue;
+			(*groups)++;
+			mantissa = frexpf(amax,&amax_exponent);
+			max_mantissa = frexpf(format_max,&max_exponent);
+			exponent = amax_exponent - max_exponent + (mantissa > max_mantissa ? 1 : 0);
+			exponent = exponent < SPARK_KV_QUANT_SIM_SCALE_EXPONENT_MIN ? SPARK_KV_QUANT_SIM_SCALE_EXPONENT_MIN : exponent;
+			for ( element = 0u; element < group; element++ )
+			{
+				value = SparkGlm5NextMtpParityKvSimValue(values[element]);
+				if ( ldexpf(SparkGlm5NextMtpParityKvSimRound(ldexpf(value,-exponent),codec),exponent) != value )
+					off++;
+			}
+		}
+	return(off);
+}
+
+static int SparkGlm5NextMtpParityKvSimCheck(SparkGlm5NextMtpParityFixture *fixture)
+{
+	static uint16_t kv[SPARK_GLM5_NEXT_MTP_PARITY_KV_BYTES / 2u];
+	static uint16_t index[SPARK_GLM5_NEXT_MTP_PARITY_INDEX_BYTES / 2u];
+	static uint16_t mtp_kv[SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES / 2u];
+	static uint16_t mtp_index[SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION];
+	const uint32_t latent = SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES / 2u,packed = SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION;
+	const uint32_t index_width = 2u * SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_DIMENSION;
+	uint64_t kv_groups = 0u,index_groups = 0u,mtp_kv_groups = 0u,mtp_index_groups = 0u,kv_off,index_off,mtp_kv_off,mtp_index_off;
+	SparkKvQuantSim sim;
+	if ( SparkKvQuantSimUnpack(spark_glm5_next_mtp_parity_kv_sim,&sim) != 0 || sim.latent_codec == SPARK_KV_QUANT_SIM_BF16 || sim.index_codec == SPARK_KV_QUANT_SIM_BF16 )
+		return(SparkGlm5NextMtpParityFail("kv_sim","the parity arm must quantize both the latent and the index stream"));
+	if ( SparkGlm5NextMtpParityCuda(cudaStreamSynchronize(fixture->stream),"kv_sim","sync") != 0 ||
+		SparkGlm5NextMtpParityCuda(cudaMemcpy(kv,fixture->kv_cache,sizeof(kv),cudaMemcpyDeviceToHost),"kv_sim","kv_cache") != 0 ||
+		SparkGlm5NextMtpParityCuda(cudaMemcpy(index,fixture->index_cache,sizeof(index),cudaMemcpyDeviceToHost),"kv_sim","index_cache") != 0 ||
+		SparkGlm5NextMtpParityCuda(cudaMemcpy(mtp_kv,fixture->slot.mtp_kv_pool,sizeof(mtp_kv),cudaMemcpyDeviceToHost),"kv_sim","mtp_kv_pool") != 0 ||
+		SparkGlm5NextMtpParityCuda(cudaMemcpy(mtp_index,fixture->slot.mtp_index_pool,sizeof(mtp_index),cudaMemcpyDeviceToHost),"kv_sim","mtp_index_pool") != 0 )
+		return(1);
+	kv_off = SparkGlm5NextMtpParityKvSimOffGrid(kv,sizeof(kv) / 2u / latent,latent,latent,sim.latent_codec,sim.latent_group,&kv_groups);
+	index_off = SparkGlm5NextMtpParityKvSimOffGrid(index,sizeof(index) / 2u / packed,packed,index_width,sim.index_codec,sim.index_group,&index_groups);
+	mtp_kv_off = SparkGlm5NextMtpParityKvSimOffGrid(mtp_kv,sizeof(mtp_kv) / 2u / latent,latent,latent,sim.latent_codec,sim.latent_group,&mtp_kv_groups);
+	mtp_index_off = SparkGlm5NextMtpParityKvSimOffGrid(mtp_index,sizeof(mtp_index) / 2u / packed,packed,index_width,sim.index_codec,sim.index_group,&mtp_index_groups);
+	printf("kv_sim arm %u: target latent cache %llu groups written, %llu values off the latent grid; target index cache %llu groups, %llu off the index grid; "
+		"MTP draft latent cache %llu groups, %llu values off the latent grid; MTP draft index cache %llu groups, %llu off the index grid\n",
+		spark_glm5_next_mtp_parity_kv_sim,(unsigned long long)kv_groups,(unsigned long long)kv_off,
+		(unsigned long long)index_groups,(unsigned long long)index_off,(unsigned long long)mtp_kv_groups,(unsigned long long)mtp_kv_off,
+		(unsigned long long)mtp_index_groups,(unsigned long long)mtp_index_off);
+	if ( kv_groups == 0u || index_groups == 0u || kv_off != 0u || index_off != 0u )
+		return(SparkGlm5NextMtpParityFail("kv_sim","the target KV and index caches must hold only simulated rows"));
+	if ( mtp_kv_groups == 0u || mtp_kv_off == 0u || (mtp_index_groups != 0u && mtp_index_off == 0u) )
+		return(SparkGlm5NextMtpParityFail("kv_sim","the MTP draft KV and index caches must stay BF16 in every K arm"));
+	return(0);
+}
+#endif
+
 int main(int argc,char **argv)
 {
 	static SparkGlm5NextMtpParityFixture fixture;
@@ -1537,12 +1639,26 @@ int main(int argc,char **argv)
 		return(2);
 	}
 	printf("glm5_next MTP parity: configuration %s\n",argv[1]);
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	{
+		SparkKvQuantSim sim;
+		char token[SPARK_KV_QUANT_SIM_TOKEN_BYTES];
+		spark_glm5_next_mtp_parity_kv_sim = SPARK_GLM5_NEXT_MTP_PARITY_KV_SIM_ARM;
+		if ( SparkKvQuantSimUnpack(spark_glm5_next_mtp_parity_kv_sim,&sim) != 0 || SparkKvQuantSimToken(&sim,token,sizeof(token)) != 0 )
+			return(SparkGlm5NextMtpParityFail("kv_sim","arm"));
+		printf("glm5_next MTP parity: KV sim experiment build, target arm %s, MTP draft KV must stay BF16\n",token);
+	}
+#endif
 	if ( SparkGlm5NextMtpParityFixtureBuild(&fixture) != 0 )
 		return(1);
 	if ( SparkGlm5NextMtpParityRunBaseline(&fixture) != 0 )
 		return(1);
 	if ( SparkGlm5NextMtpParityRunSpeculative(&fixture) != 0 )
 		return(1);
+#if defined(SPARK_KV_QUANT_SIM_EXPERIMENT)
+	if ( SparkGlm5NextMtpParityKvSimCheck(&fixture) != 0 )
+		return(1);
+#endif
 	if ( SparkGlm5NextMtpParityRunReferencePhases(&fixture) != 0 )
 		return(1);
 	if ( SparkGlm5NextMtpParityBuildCertifiedHead(&fixture,1u) != 0 ||

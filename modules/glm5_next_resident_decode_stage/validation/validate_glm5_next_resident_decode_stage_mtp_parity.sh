@@ -38,6 +38,9 @@ validation_nvcc_extra_args() {
         "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"" \
         "-DGLM5_NEXT_MODEL_REVISION=\"${model_revision}\"" \
         "-DGLM5_NEXT_CONTRACT_SHA256=\"${contract_sha256}\""
+    if [[ "${SPARK_KV_QUANT_SIM_EXPERIMENT:-0}" == 1 ]]; then
+        printf '%s\n' "-DSPARK_KV_QUANT_SIM_EXPERIMENT=1"
+    fi
 }
 
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
