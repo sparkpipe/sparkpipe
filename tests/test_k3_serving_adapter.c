@@ -35,6 +35,30 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	(void)runner;
 }
 
+static uint32_t test_reset_slots[8];
+static uint32_t test_reset_count;
+static uint32_t test_reset_calls;
+static SparkStatus test_reset_status = SPARK_STATUS_OK;
+static uint32_t test_completions;
+
+SparkStatus SparkK3StageRunnerResetSlots(SparkK3StageRunner *runner,
+	const uint32_t *slots, uint32_t count)
+{
+	(void)runner;
+	test_reset_calls++;
+	test_reset_count = count;
+	for ( uint32_t index = 0u; index < count && index < 8u; index++ )
+		test_reset_slots[index] = slots[index];
+	return(test_reset_status);
+}
+
+static void TestK3Completion(void *context, const SparkModelServingCompletion *completion)
+{
+	(void)context;
+	(void)completion;
+	test_completions++;
+}
+
 static int32_t TestK3Check(int32_t condition, const char *what)
 {
 	printf("%s: %s\n", condition ? "PASS" : "FAIL", what);
@@ -107,9 +131,59 @@ static int32_t TestK3Deployment(const char *path)
 	return(failures);
 }
 
+static int32_t TestK3Release(void)
+{
+	SparkK3ServingState state;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[3];
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	state.runner_config.max_active_sequence_count = 4u;
+	state.completion_function = TestK3Completion;
+	memset(&submission, 0, sizeof(submission));
+	memset(lanes, 0, sizeof(lanes));
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
+	submission.lanes = lanes;
+	submission.lane_count = 2u;
+	submission.active_sequence_count = 2u;
+	lanes[0].resident_sequence_slot = 3u;
+	lanes[1].resident_sequence_slot = 1u;
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK &&
+		K3ServingSubmit(&state, &submission) == SPARK_STATUS_OK &&
+		test_reset_calls == 1u && test_reset_count == 2u &&
+		test_reset_slots[0] == 3u && test_reset_slots[1] == 1u && test_completions == 1u,
+		"RELEASE resets every released slot's KDA state before it completes");
+	test_reset_status = SPARK_STATUS_IO_ERROR;
+	failures += TestK3Check(K3ServingSubmit(&state, &submission) == SPARK_STATUS_IO_ERROR &&
+		test_reset_calls == 2u && test_completions == 1u,
+		"a failed slot reset fails the RELEASE and completes nothing");
+	test_reset_status = SPARK_STATUS_OK;
+	lanes[1].resident_sequence_slot = 4u;
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
+		K3ServingSubmit(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
+		test_reset_calls == 2u && test_completions == 1u,
+		"a released slot outside the state pool is refused before any reset");
+	lanes[1].resident_sequence_slot = 3u;
+	failures += TestK3Check(K3ServingSubmit(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
+		test_reset_calls == 2u,
+		"a slot released twice in one RELEASE is refused");
+	lanes[1].resident_sequence_slot = 1u;
+	submission.lanes = 0;
+	failures += TestK3Check(K3ServingSubmit(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
+		test_reset_calls == 2u,
+		"a RELEASE naming sequences without lanes is refused");
+	submission.lanes = lanes;
+	submission.row_count = 1u;
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
+		K3ServingSubmit(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+		"a RELEASE with rows is refused");
+	return(failures);
+}
+
 int main(int argc, char **argv)
 {
 	int32_t failures = TestK3Descriptor();
+	failures += TestK3Release();
 	int index;
 	if ( argc == 1 )
 		failures += TestK3Deployment(TEST_K3_DEPLOYMENT);

@@ -115,10 +115,6 @@ def bf16(shape, rng, scale=0.05):
                            * scale)
 
 
-def f32(shape, rng, scale=0.05):
-    return rng.standard_normal(shape).astype(np.float32) * scale
-
-
 def nearest_codes(lut, values):
     finite = np.isfinite(lut)
     keep = np.flatnonzero(finite)
@@ -170,8 +166,8 @@ def build_tensors():
                 t[p + "linear_attn.in_proj_qkv.weight"] = \
                     bf16((CHANNELS, HIDDEN), rng)
             t[p + "linear_attn.conv1d.weight"] = bf16((CHANNELS, 1, CONV), rng)
-            t[p + "linear_attn.A_log"] = f32((GDN_V_HEADS,), rng, scale=0.1)
-            t[p + "linear_attn.dt_bias"] = f32((GDN_V_HEADS,), rng, scale=0.1)
+            t[p + "linear_attn.A_log"] = bf16((GDN_V_HEADS,), rng, scale=0.1)
+            t[p + "linear_attn.dt_bias"] = bf16((GDN_V_HEADS,), rng, scale=0.1)
             t[p + "linear_attn.in_proj_a.weight"] = bf16((GDN_V_HEADS, HIDDEN),
                                                          rng)
             t[p + "linear_attn.in_proj_b.weight"] = bf16((GDN_V_HEADS, HIDDEN),

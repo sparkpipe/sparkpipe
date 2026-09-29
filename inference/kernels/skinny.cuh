@@ -4,6 +4,7 @@
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/formats/fp8.cuh"
 #include "inference/kernels/formats/mxfp4.cuh"
+#include "inference/kernels/formats/nvfp4.cuh"
 #include "inference/kernels/scale.cuh"
 #include "runtime/launch.h"
 #include <cuda_runtime.h>
@@ -155,6 +156,42 @@ struct LmSkinnyFormat<LmMxfp4>
 };
 
 template<class Format>
+struct LmSkinnySplitScale
+{
+	static constexpr bool kSplit = false;
+};
+
+template<>
+struct LmSkinnyFormat<LmNvfp4>
+{
+	using Activation = LmSkinnyQuad;
+	static constexpr bool kSupported = true;
+	static constexpr uint32_t kElements = 32u;
+	static __device__ __forceinline__ Activation Load(const uint16_t *activation)
+	{
+		Activation value;
+		value.part[0] = __ldg((const uint4 *)activation);
+		value.part[1] = __ldg((const uint4 *)activation + 1);
+		value.part[2] = __ldg((const uint4 *)activation + 2);
+		value.part[3] = __ldg((const uint4 *)activation + 3);
+		return(value);
+	}
+	static __device__ __forceinline__ float2 Halves(uint4 weight, Activation activation)
+	{
+		float2 value;
+		value.x = LmSkinnyMxfp4Word(weight.y,activation.part[1],LmSkinnyMxfp4Word(weight.x,activation.part[0],0.0f));
+		value.y = LmSkinnyMxfp4Word(weight.w,activation.part[3],LmSkinnyMxfp4Word(weight.z,activation.part[2],0.0f));
+		return(value);
+	}
+};
+
+template<>
+struct LmSkinnySplitScale<LmNvfp4>
+{
+	static constexpr bool kSplit = true;
+};
+
+template<class Format>
 static __device__ __forceinline__ float LmSkinnyScale(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k)
 {
 	float value;
@@ -215,9 +252,23 @@ static __device__ __forceinline__ void LmSkinnyAccumulate(const LmSkinnyArgument
 			for ( n = 0u; n < NPG; n++ )
 			{
 				scale = base + u * LANES < chunks ? LmSkinnyScale<Format>(&args.scale,group,neuron + n < args.output_dimension ? neuron + n : neuron,(base + u * LANES) * elements) : 1.0f;
-				#pragma unroll
-				for ( r = 0u; r < ROWS; r++ )
-					accumulator[n][r] = fmaf(scale,LmSkinnyFormat<Format>::Chunk(weight[u][n],staged[u][r]),accumulator[n][r]);
+				if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+				{
+					float high = base + u * LANES < chunks ? LmSkinnyScale<Format>(&args.scale,group,neuron + n < args.output_dimension ? neuron + n : neuron,(base + u * LANES) * elements + Format::kScaleGroup) : 1.0f;
+					float2 part;
+					#pragma unroll
+					for ( r = 0u; r < ROWS; r++ )
+					{
+						part = LmSkinnyFormat<Format>::Halves(weight[u][n],staged[u][r]);
+						accumulator[n][r] = fmaf(high,part.y,fmaf(scale,part.x,accumulator[n][r]));
+					}
+				}
+				else
+				{
+					#pragma unroll
+					for ( r = 0u; r < ROWS; r++ )
+						accumulator[n][r] = fmaf(scale,LmSkinnyFormat<Format>::Chunk(weight[u][n],staged[u][r]),accumulator[n][r]);
+				}
 			}
 	}
 }

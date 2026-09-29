@@ -13,6 +13,8 @@ ADAPTER = MODULE / "source/spark_glm52_serving_adapter.c"
 FP8_REVISION = "935644c05e76fc198714f4cca449fd8b970ff6d7"
 FP8_CONTRACT = "6d9751b3983e6c5011caef109d2a81b62b13b8e02af4434266b1481100a0308a"
 S1_REVISION = "304b8051cfb2b260b61ce0cbe330e02a98e73639"
+S1_FP8_CONTRACT = "2ed1dad883ec799c736dc61c82404e73bd787dde3e0749e1db09a253be470bd7"
+RADIXARK = {"id": "RadixArk/GLM-5.3-NVFP4", "revision": "363e8f086905afd83db356a620f9aa401c23800a"}
 
 
 def tool(*arguments):
@@ -55,7 +57,30 @@ def main():
     if description["metadata"]["source_model"] != {"id": "zai-org/GLM-5.3-BF16", "revision": S1_REVISION} or \
             description["model"]["revision"] != S1_REVISION:
         failures.append(f"fp8_s1 source identity {description['metadata']['source_model']}")
-    for target, expected in (("fp8", "zai-org/GLM-5.3"), ("fp8_s1", "zai-org/GLM-5.3-BF16")):
+    if arm and arm[1] != S1_FP8_CONTRACT:
+        failures.append(f"fp8_s1 contract moved to {arm[1]}; the placed U2 packs carry {S1_FP8_CONTRACT}")
+    if "expert_source_model" in description["metadata"]:
+        failures.append("fp8_s1 description gained an expert source; its contract would move")
+    nvfp4 = tool("--print-build-identity", "nvfp4_s1", "--expert-codec", "nvfp4").stdout.split()
+    nvfp4_path = ROOT / "examples/model_descriptions/glm52_resident_decode_stage_nvfp4_s1_firmware.json"
+    nvfp4_description = json.loads(nvfp4_path.read_text())
+    if nvfp4 != [S1_REVISION, hashlib.sha256(nvfp4_path.read_bytes()).hexdigest()]:
+        failures.append(f"nvfp4_s1 build identity {nvfp4} is not the S1 revision and its description digest")
+    plain_nvfp4 = tool("--print-build-identity", "nvfp4").stdout.split()
+    if nvfp4 and (nvfp4[1] in (FP8_CONTRACT, S1_FP8_CONTRACT) or (plain_nvfp4 and nvfp4[1] == plain_nvfp4[1])):
+        failures.append("nvfp4_s1 shares another arm's contract; a pack of one arm would pass the other's gate")
+    nvfp4_precision = nvfp4_description["metadata"]["precision_contract"]
+    if (nvfp4_precision["expert_weight_codec"], nvfp4_precision["expert_weight_codec_id"],
+            nvfp4_precision["expert_scale_encoding"]) != ("nvfp4", 6, "ue4m3_f32_global"):
+        failures.append(f"nvfp4_s1 description serves {nvfp4_precision['expert_weight_codec']} experts")
+    if nvfp4_description["metadata"]["source_model"] != {"id": "zai-org/GLM-5.3-BF16", "revision": S1_REVISION}:
+        failures.append(f"nvfp4_s1 spine identity {nvfp4_description['metadata']['source_model']}")
+    if nvfp4_description["metadata"].get("expert_source_model") != RADIXARK:
+        failures.append(f"nvfp4_s1 expert identity {nvfp4_description['metadata'].get('expert_source_model')}")
+    if tool("--print-build-identity", "nvfp4_s1", "--expert-codec", "fp8").returncode == 0:
+        failures.append("the tool accepted nvfp4_s1 with fp8 experts")
+    for target, expected in (("fp8", "zai-org/GLM-5.3"), ("fp8_s1", "zai-org/GLM-5.3-BF16"),
+                             ("nvfp4_s1", "zai-org/GLM-5.3-BF16")):
         got = tool("--print-model-id", target).stdout.strip()
         if got != expected:
             failures.append(f"served model id of {target} is {got!r}, expected {expected}")
@@ -68,6 +93,12 @@ def main():
         code, output = make_adapter_flags(*assignments)
         if code != 0 or expected not in output:
             failures.append(f"make adapter {' '.join(assignments)} does not pass {expected}: rc={code}")
+    code, output = make_adapter_flags("EXPERT_CODEC=nvfp4", "MODEL_ARM=nvfp4_s1")
+    if code != 0 or 'GLM_MODEL_ID=\\"zai-org/GLM-5.3-BF16\\"' not in output:
+        failures.append(f"make adapter EXPERT_CODEC=nvfp4 MODEL_ARM=nvfp4_s1 does not pass the S1 model id: rc={code}")
+    code, output = make_adapter_flags("EXPERT_CODEC=fp8", "MODEL_ARM=nvfp4_s1")
+    if code == 0 or "names no served model id" not in output:
+        failures.append("make accepted the nvfp4_s1 arm with fp8 experts")
     code, output = make_adapter_flags("EXPERT_CODEC=bf16", "MODEL_ARM=fp8_s1")
     if code == 0 or "names no served model id" not in output:
         failures.append("make accepted the fp8_s1 arm with bf16 experts")
@@ -81,7 +112,8 @@ def main():
         for failure in failures:
             print(f"FAIL {failure}")
         return 1
-    print("PASS glm52 model identity: U0 contract pinned, fp8_s1 at the S1 revision, served model id from the build")
+    print("PASS glm52 model identity: U0 and U2 contracts pinned, fp8_s1 and nvfp4_s1 at the S1 revision, "
+          "nvfp4_s1 names its expert source, served model id from the build")
     return 0
 
 

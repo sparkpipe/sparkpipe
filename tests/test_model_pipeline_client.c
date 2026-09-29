@@ -18,6 +18,7 @@
 #include "runtime/model_batch_scheduler.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_pipeline_client.h"
+#include "fixtures/test_child_guard.h"
 
 #ifndef TEST_MODEL_RESIDENTD_PATH
 #define TEST_MODEL_RESIDENTD_PATH ""
@@ -399,7 +400,7 @@ static pid_t TestModelPipelineStartResident(
 	pid_t child;
 	char rank[16];
 	assert(snprintf(rank,sizeof(rank),"%u",rank_index) > 0);
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{
@@ -1491,7 +1492,7 @@ static void TestModelBatchProcess(
 	assert(file != 0);
 	assert(fputs("{\"schema_version\":1,\"connect_timeout_ms\":100,\"request_capacity\":2,\"max_context_tokens\":16,\"max_prefill_rows_per_submission\":4,\"maximum_messages_per_rank_per_progress\":8,\"maximum_new_submissions_per_progress\":4,\"stop_token_ids\":[],\"requests\":[{\"request_id\":3101,\"sequence_id\":4101,\"priority\":10,\"output_token_budget\":2,\"prompt_token_ids\":[11,12]},{\"request_id\":3102,\"sequence_id\":4102,\"priority\":10,\"output_token_budget\":1,\"prompt_token_ids\":[21]}]}\n",file) != EOF);
 	assert(fclose(file) == 0);
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{
@@ -1596,7 +1597,7 @@ static void TestModelBatchProcessOverCapacity(const char *deployment_path)
 	assert(file != 0);
 	assert(fputs("{\"schema_version\":1,\"connect_timeout_ms\":100,\"request_capacity\":2,\"max_context_tokens\":16,\"max_prefill_rows_per_submission\":4,\"maximum_messages_per_rank_per_progress\":8,\"maximum_new_submissions_per_progress\":4,\"stop_token_ids\":[],\"requests\":[{\"request_id\":3201,\"sequence_id\":4201,\"priority\":10,\"output_token_budget\":2,\"prompt_token_ids\":[11,12]},{\"request_id\":3202,\"sequence_id\":4202,\"priority\":10,\"output_token_budget\":1,\"prompt_token_ids\":[21]},{\"request_id\":3203,\"sequence_id\":4203,\"priority\":10,\"output_token_budget\":1,\"prompt_token_ids\":[31]}]}\n",file) != EOF);
 	assert(fclose(file) == 0);
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{

@@ -19,7 +19,13 @@ ceph_window, not the full pack. Run it rank-locally with a MemoryMax cap:
       --pack ~/sparkdata/glm53full.bf16.tp16/packs/glm53full.bf16.tp16-rank5.glm52sp \\
       --expert-codec bf16 --tp-degree 16 --tp-rank 5 --out ~/glm52-verify/rank5.json'
 
-Exit 0 = SPINE-SOURCE-VERIFY PASS; 1 = a spine entry differs or is missing; 2 = usage or unreadable input.
+--experts inverts the selection: routed-expert entries are compared and
+spine entries skipped. It proves a rank's expert entries before they are
+grafted onto another spine (U3': RadixArk NVFP4 rank 5 on spark5). A
+--layer-range subset bounds the source read: a column-sharded down_proj
+touches every page of its source tensor.
+
+Exit 0 = SPINE-SOURCE-VERIFY PASS; 1 = a selected entry differs or is missing; 2 = usage or unreadable input.
 """
 from __future__ import annotations
 
@@ -76,22 +82,27 @@ def compare_stream(handle, offset: int, count: int, chunks: Iterable[bytes]) -> 
     return produced, None, digest.hexdigest()
 
 
-def verify(plan: List, pack_path: Path, tp_degree: int, tp_rank: int) -> dict:
+def verify(plan: List, pack_path: Path, tp_degree: int, tp_rank: int, experts: bool = False) -> dict:
     header, entries = read_directory(pack_path)
     report = {"pack": str(pack_path), "header": header, "spine_entries": 0, "expert_entries_skipped": 0,
+              "expert_entries": 0, "spine_entries_skipped": 0, "selection": "experts" if experts else "spine",
               "failures": [], "entry_sha256": {}}
     if (header["tp_degree"], header["tp_rank"]) != (tp_degree, tp_rank):
         report["failures"].append(f"pack header is tp{header['tp_degree']} rank {header['tp_rank']}, "
                                   f"verifying tp{tp_degree} rank {tp_rank}")
     planned = {(item.entry.kind, item.entry.layer) for item in plan}
     for key in sorted(set(entries) - planned):
+        if experts and key[0] not in EXPERT_KINDS:
+            continue
+        if experts and not any(item.entry.kind in EXPERT_KINDS for item in plan if item.entry.layer == key[1]):
+            continue
         report["failures"].append(f"kind={key[0]} layer={key[1]:#x} is in the pack but not in the packer's plan")
     with pack_path.open("rb") as handle:
         for item in plan:
             key = (item.entry.kind, item.entry.layer)
             label = f"kind={key[0]} layer={key[1]:#x} ({','.join(item.sources[:2])})"
-            if key[0] in EXPERT_KINDS:
-                report["expert_entries_skipped"] += 1
+            if (key[0] in EXPERT_KINDS) != experts:
+                report["spine_entries_skipped" if experts else "expert_entries_skipped"] += 1
                 continue
             entry = entries.get(key)
             if entry is None:
@@ -116,7 +127,7 @@ def verify(plan: List, pack_path: Path, tp_degree: int, tp_rank: int) -> dict:
                     report["failures"].append(f"{label}: {plane} produced {produced} bytes, pack holds {count}")
                 digests.append(digest)
             report["entry_sha256"][f"{key[0]}:{key[1]}"] = digests
-            report["spine_entries"] += 1
+            report["expert_entries" if experts else "spine_entries"] += 1
     report["result"] = "PASS" if not report["failures"] else "FAIL"
     return report
 
@@ -129,6 +140,7 @@ def main() -> int:
     parser.add_argument("--tp-degree", type=int, required=True)
     parser.add_argument("--tp-rank", type=int, required=True)
     parser.add_argument("--layer-range", default="0-77")
+    parser.add_argument("--experts", action="store_true")
     parser.add_argument("--out")
     args = parser.parse_args()
     import glm52_resident_stagepack as packer_module
@@ -140,7 +152,7 @@ def main() -> int:
         source = packer_module.Fp8SourceReader(Path(args.source))
         packer = packer_module.Packer(source, contract, (first, last), True, True, args.tp_degree, args.tp_rank, codec)
         packer.build_plan()
-        report = verify(packer.plan, Path(args.pack), args.tp_degree, args.tp_rank)
+        report = verify(packer.plan, Path(args.pack), args.tp_degree, args.tp_rank, args.experts)
         source.close()
     except (OSError, ValueError, packer_module.PackFailure) as error:
         print(f"SPINE-SOURCE-VERIFY ERROR: {error}", file=sys.stderr)
@@ -153,9 +165,14 @@ def main() -> int:
     for failure in report["failures"][:20]:
         print(f"FAIL {failure}")
     header = report["header"]
+    if args.experts:
+        counts = (f"{report['expert_entries']} expert entries (layers {args.layer_range}) byte-exact against the "
+                  f"packer plan, {report['spine_entries_skipped']} spine entries skipped")
+    else:
+        counts = (f"{report['spine_entries']} spine entries byte-exact against the packer plan, "
+                  f"{report['expert_entries_skipped']} expert entries skipped")
     print(f"SPINE-SOURCE-VERIFY {report['result']} {args.pack} tp{args.tp_degree} rank {args.tp_rank}: "
-          f"{report['spine_entries']} spine entries byte-exact against the packer plan, "
-          f"{report['expert_entries_skipped']} expert entries skipped, {len(report['failures'])} failures; "
+          f"{counts}, {len(report['failures'])} failures; "
           f"header stage {header['stage_count']}/{header['stage_index']} revision {header['model_revision'][:8]} "
           f"contract {header['contract_sha256'][:8]}")
     return 0 if report["result"] == "PASS" else 1

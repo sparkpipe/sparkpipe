@@ -48,12 +48,13 @@ static int32_t Find(const char *entry,uint32_t from)
 }
 
 int32_t SparkGlm52T1Enabled(void) { return((int32_t)T1_ENABLED); }
+uint32_t SparkGlm52ExactWaveRows(void) { return(8u); }
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { Log("begin",wave->maximum_context); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split == 0u); Log("attn",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("project",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("core",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->route_host_copy == 0u); Log("mlp",layer); return(0); }
-int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave) { (void)wave; Log("head",0u); return(0); }
+int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave) { Log("head",wave->row_head_certified); return(0); }
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *tokens,uint32_t rows) { (void)stream; (void)maxloc; (void)tokens; Log("unpack",rows); return(cudaSuccess); }
 int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t layer) { (void)wave; (void)layer; assert(0); return(1); }
 int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t layer) { (void)wave; (void)layer; assert(0); return(1); }
@@ -378,6 +379,117 @@ static void TestGraphMultiWave(void)
 	assert(state.chain_gates[SPARK_GLM52_GRAPH_GATE_MULTI_WAVE] == 1u && COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK && atomic_load(&state.chain_busy) == 0u);
 }
 
+static void TestPrefillWaveRowsConfigure(void)
+{
+	SparkGlm52ModuleState probe;
+	memset(&probe,0,sizeof(probe));
+	probe.execution_row_capacity = 4u;
+	assert(unsetenv("SPARK_GLM52_PREFILL_WAVE_ROWS") == 0);
+	assert(SparkGlm52PrefillWaveRowsConfigure(&probe) == SPARK_STATUS_OK && probe.prefill_wave_rows == 0u);
+	assert(setenv("SPARK_GLM52_PREFILL_WAVE_ROWS","4",1) == 0);
+	assert(SparkGlm52PrefillWaveRowsConfigure(&probe) == SPARK_STATUS_OK && probe.prefill_wave_rows == 4u);
+	assert(setenv("SPARK_GLM52_PREFILL_WAVE_ROWS","0",1) == 0);
+	assert(SparkGlm52PrefillWaveRowsConfigure(&probe) == SPARK_STATUS_OK && probe.prefill_wave_rows == 0u);
+	assert(setenv("SPARK_GLM52_PREFILL_WAVE_ROWS","5",1) == 0);
+	assert(SparkGlm52PrefillWaveRowsConfigure(&probe) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(setenv("SPARK_GLM52_PREFILL_WAVE_ROWS","2x",1) == 0);
+	assert(SparkGlm52PrefillWaveRowsConfigure(&probe) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(unsetenv("SPARK_GLM52_PREFILL_WAVE_ROWS") == 0);
+}
+
+static SparkGlm52TpChain *NewPrefillChain(uint32_t first_position,uint32_t rows,uint32_t prefill,uint32_t cap)
+{
+	SparkGlm52TpChain *chain;
+	uint32_t row;
+	chain = NewChain(first_position);
+	for (row=0u; row<rows; row++)
+	{
+		host_slots[row] = 0u;
+		host_positions[row] = first_position + row;
+	}
+	batch.row_count = rows;
+	state.completions[0].row_count = rows;
+	state.prefill_wave_rows = cap;
+	chain->prefill = prefill;
+	chain->wave_rows = SparkGlm52WaveRows(chain,0u);
+	chain->next_wave_row = chain->wave_rows;
+	return(chain);
+}
+
+static SparkGlm52TpChain *NewDecodeChain(uint32_t first_position,uint32_t rows)
+{
+	SparkGlm52TpChain *chain;
+	uint32_t row;
+	chain = NewChain(first_position);
+	for (row=0u; row<rows; row++)
+	{
+		host_slots[row] = row;
+		host_positions[row] = first_position + row;
+		atomic_store(&state.lane_states[row],row + 1u);
+	}
+	batch.row_count = rows;
+	batch.active_sequence_count = rows;
+	state.completions[0].row_count = rows;
+	chain->prefill = 0u;
+	chain->wave_rows = SparkGlm52WaveRows(chain,0u);
+	chain->next_wave_row = chain->wave_rows;
+	return(chain);
+}
+
+static void FinishPrefill(void)
+{
+	uint32_t row;
+	for (row=0u; row<4u; row++)
+		atomic_store(&state.lane_states[row],0u);
+	batch.active_sequence_count = 1u;
+	batch.row_count = 1u;
+	state.prefill_wave_rows = 0u;
+}
+
+static void TestPrefillWaves(void)
+{
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	atomic_store(&state.lane_states[0],1u);
+	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,4u));
+	assert(Count("begin13") == 1u && Count("begin10") == 0u && Count("reduce-hidden4") == 2u && Count("reduce-attn4") == 1u && Count("unpack4") == 1u && Count("d2h16") == 1u && Count("head1") == 1u && Count("head0") == 0u);
+	assert(COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,2u));
+	assert(Count("begin11") == 1u && Count("begin13") == 1u && Count("unpack2") == 2u && Count("reduce-attn2") == 2u && Count("head1") == 2u);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,0u));
+	assert(Count("begin10") == 1u && Count("begin13") == 1u && Count("unpack1") == 4u && Count("head0") == 4u && Count("head1") == 0u);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(9u,4u,0u,4u));
+	assert(Count("unpack1") == 4u && Count("unpack4") == 0u && Count("head0") == 4u);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(2046u,4u,1u,4u));
+	assert(Count("begin2048") == 1u && Count("begin2050") == 1u && Count("unpack2") == 2u);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(61u,4u,1u,4u));
+	assert(Count("begin63") == 1u && Count("begin65") == 1u && Count("unpack2") == 2u);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(20u,1u,1u,4u));
+	assert(Count("begin21") == 1u && Count("unpack1") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
+	CAPTURES = 0u;
+	LAUNCHES = 0u;
+	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,4u));
+	assert(CAPTURES == 1u && LAUNCHES == 1u && Count("cap:reduce-hidden4") == 2u && Count("cap:unpack4") == 1u && Count("cap:head1") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewDecodeChain(9u,4u));
+	assert(CAPTURES == 2u && LAUNCHES == 2u && Count("cap:head0") == 1u && Count("cap:head1") == 0u && Count("cap:unpack4") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,4u));
+	assert(CAPTURES == 2u && LAUNCHES == 3u && Count("capture-begin0") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewDecodeChain(9u,4u));
+	assert(CAPTURES == 2u && LAUNCHES == 4u && Count("capture-begin0") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
+	FinishPrefill();
+}
+
 static void TestStreamFailure(void)
 {
 	uint32_t mode;
@@ -433,6 +545,8 @@ int main(void)
 	TestLinearWalkFailure();
 	TestGraph();
 	TestGraphMultiWave();
+	TestPrefillWaveRowsConfigure();
+	TestPrefillWaves();
 	TestStreamFailure();
 	TestWorkerRefusal();
 	TestSubmitFailureClearsBusy();
@@ -457,7 +571,7 @@ def main():
                         '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"', "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
                         str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate")
+    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph keyed by head path)")
 
 
 if __name__ == "__main__":

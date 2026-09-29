@@ -215,9 +215,9 @@ class Glm5NextEngine:
         slot = bf16_round_f32(rmsnorm(
             kv_raw, self.tensor(prefix + "self_attn.kv_a_layernorm.weight"),
             self.eps))
-        cache.append(slot)
+        cache.append(f32_to_bf16_u16(slot))
         kvb = self.st.raw(prefix + "self_attn.kv_b_proj.weight")
-        slots = np.stack([bf16_to_f32(row) for row in cache])
+        slots = bf16_to_f32(np.stack(cache))
         qh = q.reshape(self.heads, self.nope)
         attn = np.empty((self.heads, self.vdim), dtype=np.float32)
         for h in range(self.heads):

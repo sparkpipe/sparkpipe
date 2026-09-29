@@ -15,6 +15,7 @@ import glm53full_lane
 
 ADAPTER = ROOT / "modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c"
 CONTRACT = ROOT / "model_contracts/glm53_full_authoritative.json"
+CHAT_TEMPLATE = ROOT / "model-families/glm52/chat_template.json"
 SOCKET = "/tmp/spark_weightd.sock"
 
 
@@ -24,19 +25,22 @@ def adapter_members():
     return tuple(re.findall(r'"([a-z_0-9]+)"', block))
 
 
-def rendered(lane, codec="fp8", sequences=8, rows=16, positions=4096, inflight=1):
-    arguments = argparse.Namespace(lane=lane, codec=codec, socket=SOCKET, kv_backing_bytes=4 << 30,
+def rendered(lane, codec="fp8", sequences=8, rows=16, positions=4096, inflight=1, arm=None):
+    arguments = argparse.Namespace(lane=lane, codec=codec, arm=arm, socket=SOCKET, kv_backing_bytes=4 << 30,
                                    max_sequence_positions=positions, execution_row_capacity=rows,
                                    sequences=sequences, inflight=inflight)
     return {name: json.loads(text) for name, text in glm53full_lane.render(arguments).items()}
 
 
-def lane_problems(lane, codec, files, members, revision):
+def lane_problems(lane, codec, files, members, revision, arm=None):
+    arm = arm or codec
     failures = []
     ports = glm53full_lane.lane_ports(lane)
     contract = json.loads(CONTRACT.read_text())
     deployment = files["model_resident.json"]
     limits = deployment["runtime_limits"]
+    if deployment.get("chat_template") != json.loads(CHAT_TEMPLATE.read_text()):
+        failures.append("chat_template is not the declared glm52 template")
     if deployment["eos_token_ids"] != contract["geometry"]["eos_token_ids"]:
         failures.append("eos ids differ from the authoritative contract")
     if limits["kv_physical_page_capacity"] != limits["max_active_sequences"] * (limits["max_sequence_positions"] // 64):
@@ -54,7 +58,7 @@ def lane_problems(lane, codec, files, members, revision):
             failures.append(f"rank {rank}: control endpoint")
         if node["node_target"] != f"cuda.sm121.glm52.resident_decode_stage.bf16.expert_{codec}":
             failures.append(f"rank {rank}: node target")
-        if stage["stage_pack_path"] != f"packs/glm53full.{codec}.tp16-rank{rank}.glm52sp":
+        if stage["stage_pack_path"] != f"packs/glm53full.{arm}.tp16-rank{rank}.glm52sp" or stage["expert_weight_codec"] != codec:
             failures.append(f"rank {rank}: pack path")
         if stage["tp_rank"] != rank or stage["tp_degree"] != 16:
             failures.append(f"rank {rank}: tp")
@@ -111,11 +115,18 @@ def api_host_problems():
 def main():
     failures = []
     members = adapter_members()
-    for codec in ("fp8", "bf16"):
-        revision = subprocess.run([sys.executable, str(ROOT / "tools/glm52_model_contract.py"), "--print-build-identity", codec],
-                                  capture_output=True, text=True, check=True).stdout.split()[0]
+    for arm, codec in (("fp8", "fp8"), ("bf16", "bf16"), ("fp8_s1", "fp8")):
+        revision = subprocess.run([sys.executable, str(ROOT / "tools/glm52_model_contract.py"), "--print-build-identity", arm,
+                                   "--expert-codec", codec], capture_output=True, text=True, check=True).stdout.split()[0]
         for lane in range(16):
-            failures += [f"lane {lane} {codec}: {problem}" for problem in lane_problems(lane, codec, rendered(lane, codec), members, revision)]
+            failures += [f"lane {lane} {arm}: {problem}"
+                         for problem in lane_problems(lane, codec, rendered(lane, codec, arm=arm), members, revision, arm)]
+    for arm, codec in (("fp8_s1", "bf16"), ("bf16", "fp8"), ("nvfp4", "fp8")):
+        try:
+            rendered(6, codec, arm=arm)
+            failures.append(f"arm {arm} rendered with {codec} experts")
+        except SystemExit:
+            pass
     with tempfile.TemporaryDirectory() as directory:
         command = [sys.executable, str(ROOT / "tools/glm53full_lane.py"), "--lane", "6", "--codec", "fp8", "--socket", SOCKET,
                    "--kv-backing-bytes", str(4 << 30), "--max-sequence-positions", "4096", "--execution-row-capacity", "16",
