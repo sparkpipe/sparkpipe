@@ -8,16 +8,18 @@ case "$GLMFULL_CODEC" in
   fp8|bf16) ;;
   *) echo "glm53full build: GLMFULL_CODEC must be fp8 or bf16" >&2; exit 2 ;;
 esac
+GLMFULL_ARM="${GLMFULL_ARM:-$GLMFULL_CODEC}"
 CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
 MODULE="modules/glm52_resident_decode_stage"
-FIRMWARE="examples/model_descriptions/glm52_resident_decode_stage_${GLMFULL_CODEC}_firmware.json"
+FIRMWARE="examples/model_descriptions/glm52_resident_decode_stage_${GLMFULL_ARM}_firmware.json"
 PREFIX="spark.glm52.resident_decode_stage.bf16.expert_${GLMFULL_CODEC}.h6144.l78.e256.k8"
 DEFAULT_ID="$PREFIX.v2"
 BUCKETED_ID="$PREFIX.b$GLMFULL_BUCKET.v2"
-read -r REVISION CONTRACT_SHA256 < <(python3 "$CHECKOUT/tools/glm52_model_contract.py" --print-build-identity "$GLMFULL_CODEC")
+read -r REVISION CONTRACT_SHA256 < <(python3 "$CHECKOUT/tools/glm52_model_contract.py" --print-build-identity "$GLMFULL_ARM" --expert-codec "$GLMFULL_CODEC")
+: "${CONTRACT_SHA256:?glm53full build: no build identity for arm $GLMFULL_ARM with $GLMFULL_CODEC experts}"
 COMMIT="$(cat "$CHECKOUT/SOURCE_COMMIT")"
 export PATH="/usr/local/cuda/bin:$PATH"
-MAKE_IDENTITY=(CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a EXPERT_CODEC="$GLMFULL_CODEC" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$CONTRACT_SHA256" MODULE_BATCH_VARIANT_BUCKETS="$GLMFULL_BUCKET" STAGE_PACK_PATH="$GLMFULL_STAGE_PACK" EXECUTION_ROW_CAPACITY="$GLMFULL_BUCKET")
+MAKE_IDENTITY=(CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a EXPERT_CODEC="$GLMFULL_CODEC" MODEL_ARM="$GLMFULL_ARM" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$CONTRACT_SHA256" MODULE_BATCH_VARIANT_BUCKETS="$GLMFULL_BUCKET" STAGE_PACK_PATH="$GLMFULL_STAGE_PACK" EXECUTION_ROW_CAPACITY="$GLMFULL_BUCKET")
 make -C "$CHECKOUT" -j8 CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a \
   build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_model_compile \
   build/sparkpipe_module_publish build/sparkpipe_driver_inspect build/weightd_warm build/sparkpipe_model_batch \
