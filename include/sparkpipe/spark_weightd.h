@@ -27,6 +27,7 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX 8192u
 
 #define SPARK_WEIGHTD_ARENA_COUNT_MAX 16u
+#define SPARK_WEIGHTD_MANIFEST_DAEMON_BYTES_MAX (512ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_CONNECTION_COUNT_MAX 128u
 #define SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX 8u
 
@@ -68,6 +69,12 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT 32u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_MAP 33u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT 34u
+#define SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK 35u
+#define SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK_RESULT 36u
+#define SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED 37u
+#define SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED_RESULT 38u
+#define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
+#define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
 #define SPARK_WEIGHTD_MESH_MAX_LANES 16u
 #define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
@@ -319,8 +326,15 @@ typedef struct SparkWeightdIpcReclaimResult
     uint32_t status;
     uint32_t reclaimed_arena_count;
     uint32_t arena_count;
-    uint32_t reserved0;
+    uint32_t busy_arena_count;
 } SparkWeightdIpcReclaimResult;
+
+typedef struct SparkWeightdIpcReclaimPack
+{
+    SparkWeightdIpcHeader header;
+    char pack_sha256[SPARK_WEIGHTD_SHA256_HEX_BYTES];
+    char reserved[7];
+} SparkWeightdIpcReclaimPack;
 
 typedef struct SparkWeightdIpcExport
 {
@@ -562,6 +576,7 @@ _Static_assert(sizeof(SparkWeightdIpcAcquire) <= SPARK_WEIGHTD_IPC_MESSAGE_BYTES
 #define SPARK_WEIGHTD_IPC_DETACH_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcDetachResult))
 #define SPARK_WEIGHTD_IPC_RECLAIM_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaim))
 #define SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaimResult))
+#define SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaimPack))
 #define SPARK_WEIGHTD_IPC_EXPORT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExport))
 #define SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExportResult))
 #define SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES ((uint32_t)sizeof(SparkWeightdIpcAttachLazy))
@@ -646,6 +661,7 @@ typedef struct SparkWeightdReclaimResult
     uint64_t resident_bytes;
     uint32_t reclaimed_arena_count;
     uint32_t arena_count;
+    uint32_t busy_arena_count;
 } SparkWeightdReclaimResult;
 
 SparkStatus SparkWeightdManifestIdentity(const SparkWeightdManifest *manifest,uint8_t digest[32]);
@@ -801,6 +817,18 @@ SparkStatus SparkWeightdClientEvict(SparkWeightdClient *client,
     uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *client,
+    SparkWeightdReclaimResult *result,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
+    const SparkWeightdLazyAttachRequest *request,
+    SparkWeightdLazyAttachResult *result,
+    uint64_t timeout_nanoseconds);
+
+SparkStatus SparkWeightdShareModeFromEnvironment(uint32_t *read_only);
+
+SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *client,
+    const char *pack_sha256,
     SparkWeightdReclaimResult *result,
     uint64_t timeout_nanoseconds);
 

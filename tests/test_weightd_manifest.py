@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Exercise the shared v2 parser with real GLM cardinality and corrupt files."""
 import ctypes as C
+import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import tempfile
@@ -39,6 +41,49 @@ def record(layer, expert, kind, offset, size=32):
 
 def payload(records, version=2, reserved=0):
     return struct.pack("<4I", 0x58504557, version, len(records), reserved) + b"".join(records)
+
+
+def header_constant(name):
+    text = (ROOT / "include/sparkpipe/spark_weightd_manifest.h").read_text()
+    return int(re.search(r"#define %s (\d+)u" % name, text).group(1))
+
+
+def capture_stderr(call):
+    with tempfile.TemporaryFile() as sink:
+        saved = os.dup(2)
+        os.dup2(sink.fileno(), 2)
+        try:
+            status = call()
+        finally:
+            os.dup2(saved, 2)
+            os.close(saved)
+        sink.seek(0)
+        return status, sink.read().decode()
+
+
+def check_range_bound(lib, path, result):
+    maximum = header_constant("SPARK_WEIGHTD_RANGE_COUNT_MAX")
+    group_state = header_constant("SPARK_WEIGHTD_MANIFEST_GROUP_STATE_BYTES_MAX")
+    per_range = (C.sizeof(Range) + C.sizeof(Group) + C.sizeof(Span) + group_state)
+    assert maximum * per_range <= 32 * 1024 * 1024 < 2 * maximum * per_range
+    for layers, experts, kinds in [(92, 448, 4), (48, 768, 4), (1, maximum // 4, 4)]:
+        count = layers * experts * kinds
+        records = b"".join(struct.pack("<4I2Q16s", layer, expert, kind, 0,
+                                       ((layer * experts + expert) * kinds + kind) * 16, 16, bytes(16))
+                           for layer in range(layers) for expert in range(experts) for kind in range(kinds))
+        path.write_bytes(struct.pack("<4I", 0x58504557, 2, count, 0) + records)
+        assert lib.SparkWeightdManifestLoad(bytes(path), count * 16, C.byref(result)) == 0
+        assert result.range_count == count and result.group_count == layers * experts
+        assert result.spine_count == 0 and result.spine_bytes == 0
+        lib.SparkWeightdManifestDestroy(C.byref(result))
+    path.write_bytes(struct.pack("<4I", 0x58504557, 2, maximum + 1, 0))
+    status, message = capture_stderr(
+        lambda: lib.SparkWeightdManifestLoad(bytes(path), 1 << 40, C.byref(result)))
+    assert status != 0
+    assert not result.ranges and not result.groups and result.range_count == 0
+    assert "weightd manifest refused" in message
+    assert "%d ranges" % (maximum + 1) in message and "SPARK_WEIGHTD_RANGE_COUNT_MAX %d" % maximum in message
+    return maximum
 
 
 def main():
@@ -126,7 +171,7 @@ def main():
                      payload([record(3, 0, 0, 128)]),
                      payload([record(3, 0, 0, 0, 0)]),
                      payload([record(3, 0, 0, (1 << 64) - 1)]),
-                     struct.pack("<4I", 0x58504557, 2, 131073, 0)]
+                     struct.pack("<4I", 0x58504557, 2, header_constant("SPARK_WEIGHTD_RANGE_COUNT_MAX") + 1, 0)]
         for data in malformed:
             path.write_bytes(data)
             assert lib.SparkWeightdManifestLoad(bytes(path), 128, C.byref(result)) != 0
@@ -136,11 +181,12 @@ def main():
         assert not result.ranges and not result.groups
         path.unlink()
         assert lib.SparkWeightdManifestLoad(bytes(path), 128, C.byref(result)) != 0
-        import os
         os.mkfifo(path)
         assert lib.SparkWeightdManifestLoad(bytes(path), 128, C.byref(result)) != 0
         path.unlink()
-        print("PASS v2 expert manifest: 12096 groups, 48384 ranges, lookup and corruption gates")
+        maximum = check_range_bound(lib, path, result)
+        print("PASS v2 expert manifest: 12096 groups, 48384 ranges, lookup and corruption gates; "
+              "164864/147456/%d ranges load, %d refused loudly" % (maximum, maximum + 1))
 
 
 if __name__ == "__main__":

@@ -256,10 +256,38 @@ kind, zero, offset, bytes, 16-byte ck128 digest), as documented in
 (layer, expert), checks framing, bounds, overlap and unique kinds per expert,
 and never infers version 1. Range kinds are producer-defined; producer and
 consumer must agree on them, including separate scale ranges. Limits:
-`SPARK_WEIGHTD_RANGE_COUNT_MAX` (131072) ranges per manifest,
+`SPARK_WEIGHTD_RANGE_COUNT_MAX` (262144) ranges per manifest,
 `SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX` (16) per expert, and
 `SPARK_WEIGHTD_EXPERT_BYTES_MAX` (64 MiB) per range
-(`runtime/spark_weightd_manifest.c`). The GLM 5.3 Flash TP16 rank pack has
+(`runtime/spark_weightd_manifest.c`).
+
+#### Range count bound
+
+The range bound is derived from the host memory the manifest tables cost,
+not picked to fit one model. Each range costs at most 120 bytes of host
+tables in the daemon: the parsed range (48), its group slot (16, groups are
+allocated at the range count), its spine span (24, the spine is allocated at
+range count + 1) and at most 32 bytes of per-group daemon state (the expert
+entry, 24, plus the lease pin, 4;
+`SPARK_WEIGHTD_MANIFEST_GROUP_STATE_BYTES_MAX`).
+`SPARK_WEIGHTD_MANIFEST_TABLE_BYTES_MAX` gives one manifest 32 MiB of host
+tables. `SPARK_WEIGHTD_RANGE_COUNT_MAX` is the largest power of two that fits:
+262144 × 120 B = 30 MiB, while 524288 would need 60 MiB. With at most
+`SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas, the daemon's worst case is
+16 × 32 MiB = 512 MiB (`SPARK_WEIGHTD_MANIFEST_DAEMON_BYTES_MAX`), 2.5% of
+the 20 GiB per-node MemAvailable floor. Static assertions in
+`include/sparkpipe/spark_weightd_manifest.h` and `runtime/spark_weightd.c`
+fail the build if a struct grows or a constant is raised without the budget.
+The on-disk manifest at the bound is 16 + 262144 × 48 B = 12 MiB.
+
+A manifest above the bound is refused before any table is allocated. The
+loader prints the path, the range count, the bound and the budget to stderr
+and returns `SPARK_STATUS_CAPACITY_EXCEEDED`; nothing is clamped or truncated.
+The bound covers the known large ranks: Kimi K3 TP16 (164,864 ranges, 63% of
+the bound) and DSV4-Pro TP16 (147,456 ranges, 56%), both of which the old
+131072 cap refused. `tests/test_weightd_manifest.py` loads manifests of both
+shapes and one of exactly 262144 ranges, and checks that 262145 is refused
+with the message. The GLM 5.3 Flash TP16 rank pack has
 (45 − 3) × 288 = 12,096 routed experts and 12,096 × 4 = 48,384 ranges, two
 weights and two scales per expert (arithmetic from
 `model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h`).
@@ -412,6 +440,105 @@ pools the whole pack.
   one monotonic deadline; expiry returns `BUSY` and keeps the identifier for
   explicit cleanup. Calls are serialized on the creating CUDA context, and
   callers join every using stream before recording completion.
+
+### Pack-scoped reclaim
+
+`weightd_warm SOCKET --reclaim` (IPC `RECLAIM`) frees every cold arena on the
+node: refcount 0 and no leases, whichever lane loaded it. On 2026-09-28 the
+glmfull and K3 teardowns each freed the qwen lane's staged lane-3 arenas on
+spark0/1/2/5 this way (lanes/glmfull-w7.md, lanes/k3-w7.md).
+
+`RECLAIM_PACK` (IPC kinds 35/36) takes one lowercase pack SHA-256 and frees
+only the cold arenas whose identity carries it. Every identity with that SHA
+matches (model, revision and topology are not compared), because the bytes are
+the lane's own pack. Matching arenas that are still attached or leased are
+counted as `busy_arena_count` and left alone; the cold-arena rule does not
+change. Both reclaims log one line with their scope and counts
+(`weightd reclaim scope=<sha>|all-cold freed_arenas=… busy=…`). A malformed SHA
+returns `INVALID_ARGUMENT` and frees nothing.
+
+`weightd_warm SOCKET --reclaim-pack PACK|SHA256 [...]` resolves each PACK
+through its `PACK.sha256` sidecar before it connects and never hashes the pack.
+It exits 0 when everything matching was cold, 3 when a matching arena is still
+busy, 2 on an unresolvable argument and 1 on a daemon error. A weightd older
+than this change closes the connection on the unknown kind. The tool then
+reports that and exits 1; it never falls back to the node-global reclaim.
+
+A lane stops its units first and then runs `--reclaim-pack` over its own
+`packs/*.pack`. A lane that shares another lane's arena (below) must not name
+that pack. A cold shared arena would be freed, and the owner's next start
+would pay a full cold load.
+
+### Read-only arena sharing
+
+Arenas are keyed by the whole identity (model, revision, topology, geometry,
+pack SHA-256, arena bytes), so two lazy attaches with equal identities, equal
+manifests and equal `expert_pool_bytes` already map one arena. What a
+development root of the production model lacked:
+
+1. Nothing stopped a dev attach whose identity differed by one field (for
+   example the `-ws` revision) from loading a private copy of the rank pack.
+   The copy is the whole pack in pooled mode, 20.9 GiB per GLM Flash rank
+   (above).
+2. The pooled pool is imported read-write into every consumer
+   (`WD-MAP-POOL-BULK`), so a dev kernel writing out of bounds could corrupt
+   the weights production is serving from.
+3. A pool mismatch failed with a bare `INVALID_ARGUMENT` (lanes/jitkv.md).
+
+Opt-in per lane: `SPARK_WEIGHTD_SHARE=readonly` in the residentd environment.
+Unset or empty keeps today's private attach. Any other value is refused
+(`INVALID_ARGUMENT` and a stderr line); nothing guesses.
+
+- `SparkWeightdLazyPackCreate` sends `ATTACH_LAZY_SHARED` (kinds 37/38, same
+  body as `ATTACH_LAZY`). weightd attaches only to a resident arena with an
+  identical identity, the same manifest ranges and the same pool. It never
+  creates an arena for a shared attach: without a match it returns `NOT_FOUND`
+  and logs `weightd shared attach refused: no resident arena for model=…
+  revision=… pack_sha256=…`. A pool mismatch returns `INVALID_ARGUMENT` and
+  logs both sizes, for private and shared attaches alike.
+- The consumer maps the pooled pool `CU_MEM_ACCESS_FLAGS_PROT_READ`
+  (`SparkWeightdMapCreateAccess`, logged `access=read-only`). Per-chunk
+  (non-pooled) imports were already read-only for every consumer. The spine
+  copy from the pool is device-to-device and only reads the pool.
+- `SparkWeightdAttachPack`, the whole-arena resident path, refuses the variable
+  with `UNSUPPORTED` / reason `share_unsupported` instead of ignoring it.
+- The ABI version stays 8. Old clients never send kinds 35-38. A lane that
+  sets the variable against an old weightd fails at attach, because the old
+  daemon closes the connection on the unknown kind.
+
+What a sharer must match: the owner's `model_revision`, topology and pack (a
+symlink to the production rank pack with the same `.sha256` and `.experts` is
+enough, since the identity carries the SHA and not the path), and the owner's
+`SPARK_WEIGHTD_EXPERT_POOL_BYTES` (34359738368 in production).
+
+Memory: the sharer adds only its residentd (spine copy, KV, workspaces). A GLM
+Flash dev root is about 6-14 GiB per node (lanes/glmproofs-w6.md), not another
+20.9 GiB arena.
+
+What sharing does not isolate:
+
+- Leases. Each fully pinned GLM resident takes 24 of the arena's 256 leases,
+  so at most 10 pinned residents fit per arena, production included (above).
+- Eviction. A per-chunk (non-pooled) sharer's misses can evict the owner's
+  unpinned groups. Pooled arenas never evict, which is the production case.
+- GPU time. The perf-window rule is unchanged; sharing saves memory, not SMs.
+- Lifecycle. A sharer's reference keeps the arena. A production restart with
+  the same identity attaches warm to it, which is fine. A production release
+  that changes the pack needs the old arena gone first, so every sharer stops
+  before such a release, or the NO-2x budget refuses the new arena.
+
+Evidence: `build/test_weightd_working_set` `check_shared_attach` (CUDA stub).
+It checks refusal before the owner exists, the pool-mismatch refusal, one
+generation and refcount 2 once shared, a read-only consumer mapping that
+refuses a write probe while the owner's mapping accepts it, the lazy pack
+path with the variable, refusal of a bad value, and pack-scoped reclaim
+afterwards. On sparkf GB10 (2026-09-29), a private weightd on its own socket
+and latch port with a 128 MiB pooled pack showed: shared attach refused
+before the owner; owner mapping `cuMemGetAccess` = 3 (read-write); shared
+mapping = 1 (read-only); all 8 leased experts read back byte-exact through
+both mappings; `--reclaim-pack` freed exactly that arena. A deliberate write
+through the read-only mapping was not run on a node serving production,
+because it would raise a GPU fault on that node.
 
 ### Working-set recording
 

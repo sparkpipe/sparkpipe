@@ -772,6 +772,101 @@ static void check_pooled_attach(void)
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
 }
 
+static void check_shared_attach(void)
+{
+	char root[] = "/tmp/weightd-share-XXXXXX",path[256],manifest[272],socket_path[256],wset[272],receipt[280];
+	SparkWeightdServerConfig config = {0};
+	SparkWeightdLazyAttachRequest request = {0};
+	SparkWeightdLazyAttachResult owner_result,shared_result;
+	SparkWeightdReclaimResult reclaim;
+	SparkWeightdLazyPack *pack = 0;
+	SparkWeightdMap *owner_map = 0,*shared_map = 0;
+	TestServer state = {0};
+	pthread_t thread;
+	SparkWeightdClient *owner,*sharer;
+	void *owner_base,*shared_base;
+	uint8_t scribble[64];
+	assert(mkdtemp(root) != 0);
+	snprintf(path,sizeof(path),"%s/pack",root);
+	snprintf(manifest,sizeof(manifest),"%s.experts",path);
+	snprintf(wset,sizeof(wset),"%s.wset",path);
+	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
+	write_many(path,manifest);
+	memset(scribble,0x5a,sizeof(scribble));
+	config.socket_path = socket_path;
+	config.device_bytes_max = (66u * CHUNK);
+	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
+	assert(pthread_create(&thread,0,run_server,&state) == 0);
+	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+	request.identity.arena_bytes = (65u * CHUNK);
+	memcpy(request.identity.model,"shared-attach-test",19u);
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
+	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
+	request.expert_pool_bytes = (66u * CHUNK);
+
+	assert(SparkWeightdClientConnect(socket_path,&sharer,0) == SPARK_STATUS_OK);
+	memset(&shared_result,0,sizeof(shared_result));
+	assert(SparkWeightdClientAttachLazyShared(sharer,&request,&shared_result,TIMEOUT) == SPARK_STATUS_NOT_FOUND);
+	assert(shared_result.status == SPARK_STATUS_NOT_FOUND && shared_result.arena_count == 0u && shared_result.resident_bytes == 0u);
+
+	assert(SparkWeightdClientConnect(socket_path,&owner,0) == SPARK_STATUS_OK);
+	memset(&owner_result,0,sizeof(owner_result));
+	assert(SparkWeightdClientAttachLazy(owner,&request,&owner_result,TIMEOUT) == SPARK_STATUS_OK);
+	assert(owner_result.loaded_from_pack == 1u && owner_result.pool_fd >= 0);
+
+	request.expert_pool_bytes = (65u * CHUNK);
+	assert(SparkWeightdClientAttachLazyShared(sharer,&request,&shared_result,TIMEOUT) == SPARK_STATUS_INVALID_ARGUMENT);
+	request.expert_pool_bytes = (66u * CHUNK);
+	memset(&shared_result,0,sizeof(shared_result));
+	assert(SparkWeightdClientAttachLazyShared(sharer,&request,&shared_result,TIMEOUT) == SPARK_STATUS_OK);
+	assert(shared_result.arena_generation == owner_result.arena_generation);
+	assert(shared_result.loaded_from_pack == 0u && shared_result.refcount == 2u && shared_result.arena_count == 1u);
+	assert(shared_result.resident_bytes == owner_result.resident_bytes);
+	assert(shared_result.pool_fd >= 0);
+
+	assert(SparkWeightdMapCreate(owner,&owner_result,-1,owner_result.pool_fd,&owner_map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreateAccess(sharer,&shared_result,-1,shared_result.pool_fd,1u,&shared_map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapReadOnly(owner_map) == 0u && SparkWeightdMapReadOnly(shared_map) == 1u);
+	assert(SparkWeightdMapBase(owner_map,&owner_base) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapBase(shared_map,&shared_base) == SPARK_STATUS_OK);
+	assert(cuda_stub_vmm_probe_write((CUdeviceptr)(uintptr_t)shared_base,scribble,sizeof(scribble)) == CUDA_ERROR_INVALID_VALUE);
+	assert(cuda_stub_vmm_probe_write((CUdeviceptr)(uintptr_t)owner_base,scribble,sizeof(scribble)) == CUDA_SUCCESS);
+	assert(SparkWeightdMapDestroy(shared_map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapDestroy(owner_map) == SPARK_STATUS_OK);
+
+	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,"read-only",1) == 0);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(pack == 0);
+	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,SPARK_WEIGHTD_SHARE_READONLY,1) == 0);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
+	assert(pack != 0 && pack->read_only == 1u && SparkWeightdMapReadOnly(pack->map) == 1u);
+	assert(pack->attached.arena_generation == owner_result.arena_generation && pack->attached.loaded_from_pack == 0u);
+	assert(SparkWeightdMapBase(pack->map,&shared_base) == SPARK_STATUS_OK);
+	assert(cuda_stub_vmm_probe_write((CUdeviceptr)(uintptr_t)shared_base,scribble,sizeof(scribble)) == CUDA_ERROR_INVALID_VALUE);
+	assert(SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_OK);
+	assert(unsetenv(SPARK_WEIGHTD_SHARE_ENV) == 0);
+
+	SparkWeightdClientClose(owner);
+	SparkWeightdClientClose(sharer);
+	assert(SparkWeightdClientConnect(socket_path,&sharer,0) == SPARK_STATUS_OK);
+	assert(SparkWeightdClientReclaimPack(sharer,request.identity.pack_sha256,&reclaim,TIMEOUT) == SPARK_STATUS_OK);
+	assert(reclaim.status == SPARK_STATUS_OK && reclaim.arena_count == 0u);
+	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,SPARK_WEIGHTD_SHARE_READONLY,1) == 0);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_NOT_FOUND);
+	assert(pack == 0);
+	assert(unsetenv(SPARK_WEIGHTD_SHARE_ENV) == 0);
+	SparkWeightdClientClose(sharer);
+	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
+	assert(pthread_join(thread,0) == 0);
+	SparkWeightdServerDestroy(state.server);
+	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	(void)unlink(wset);
+	assert(snprintf(receipt,sizeof(receipt),"%s.verified",path) > 0);
+	(void)unlink(receipt);
+	assert(unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
+}
+
 static SparkStatus reject_manifest(const SparkWeightdManifest *manifest,void *context)
 {
 	uint32_t *calls = (uint32_t *)context;
@@ -1016,6 +1111,7 @@ int main(int argc,char **argv)
 	check_map_eviction();
 	check_many_exports();
 	check_pooled_attach();
-	puts("PASS working-set IPC: all ranges, leases, rollback, scoped imports, 65-chunk exports and pooled single-alloc attach");
+	check_shared_attach();
+	puts("PASS working-set IPC: all ranges, leases, rollback, scoped imports, 65-chunk exports, pooled single-alloc attach and read-only shared attach");
 	return(0);
 }

@@ -27,6 +27,7 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *c,const SparkWeight
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *c,uint64_t g,const SparkWeightdExpertKey *k,uint32_t n,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->lease_identifier=17;printf("ACQUIRE %u %u\n",k[0].layer,n);if(g!=9 || k[0].layer<3)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("acquire_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("acquire_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientRelease(SparkWeightdClient *c,uint64_t g,uint64_t l,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;printf("RELEASE %llu\n",(unsigned long long)l);if(g!=9 || l!=17)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("release_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("release_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *c,SparkWeightdReclaimResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->reclaimed_bytes=UINT64_C(8192);r->reclaimed_arena_count=2;r->resident_bytes=UINT64_C(4096);r->arena_count=3;if(mode("reclaim_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("reclaim_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
+SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *c,const char *sha,SparkWeightdReclaimResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));printf("RECLAIM_PACK %s\n",sha);r->reclaimed_bytes=UINT64_C(4096);r->reclaimed_arena_count=1;r->resident_bytes=UINT64_C(8192);r->arena_count=2;if(mode("reclaim_busy"))r->busy_arena_count=1;if(mode("reclaim_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("reclaim_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 void SparkWeightdClientClose(SparkWeightdClient *c) { if(c)puts("CLOSED"); }
 ''')
         cls.warmer = cls.directory / "warmer"
@@ -35,7 +36,8 @@ void SparkWeightdClientClose(SparkWeightdClient *c) { if(c)puts("CLOSED"); }
                         "-Imodel-families/dsv4/include",
                         "tools/weightd_warm.c", "runtime/spark_weightd_manifest.c",
                         "model-families/dsv4/src/spark_dsv4_parallel_shape.c",
-                        "src/spark_ck128.c",
+                        "src/spark_ck128.c", "src/spark_sha256.c",
+                        "runtime/spark_weightd_receipt.c",
                         str(faults), "-o", str(cls.warmer)], cwd=ROOT, check=True)
         probe = cls.directory / "latch.c"
         probe.write_text(r'''
@@ -204,6 +206,52 @@ int main(void) {
         self.assertEqual(result.returncode, 2)
         self.assertIn("weightd_warm SOCKET --reclaim", result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def reclaim_pack(self, *specs, mode=""):
+        env = dict(os.environ, WARM_FAILURE=mode)
+        env.pop("SPARK_WEIGHTD_EXPERT_POOL_BYTES", None)
+        return subprocess.run([str(self.warmer), "unused", "--reclaim-pack", *specs],
+                              env=env, capture_output=True, text=True)
+
+    def test_reclaim_pack_scopes_to_named_packs(self):
+        digest = "ab" * 32
+        pack = self.directory / "lane.rank00.pack"
+        pack.write_bytes(b"pack")
+        Path(str(pack) + ".sha256").write_text(digest + "  lane.rank00.pack\n")
+        upper = "CD" * 32
+        result = self.reclaim_pack(str(pack), upper)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(),
+                         ["RECLAIM_PACK " + digest, "RECLAIM_PACK " + "cd" * 32, "CLOSED"])
+        self.assertIn("RECLAIM-PACK sha=%s spec=%s freed=4096 arenas=1 busy=0" % (digest, pack), result.stderr)
+        self.assertNotIn("RECLAIM freed", result.stderr)
+
+    def test_reclaim_pack_reports_busy_arenas_with_exit_3(self):
+        result = self.reclaim_pack("ef" * 32, mode="reclaim_busy")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("still attached or leased; they were not freed", result.stderr)
+
+    def test_reclaim_pack_rejects_unresolvable_specs_before_connecting(self):
+        for spec in (str(self.directory / "missing.pack"), "ab" * 31, "zz" * 32):
+            with self.subTest(spec=spec):
+                result = self.reclaim_pack("ab" * 32, spec)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("nothing reclaimed", result.stderr)
+        result = self.reclaim_pack()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--reclaim-pack PACK|SHA256", result.stderr)
+
+    def test_reclaim_pack_failures_are_terminal_and_never_global(self):
+        for mode in ("connect_rpc", "reclaim_rpc", "reclaim_status"):
+            with self.subTest(mode=mode):
+                result = self.reclaim_pack("ab" * 32, "cd" * 32, mode=mode)
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn("RECLAIM freed", result.stderr)
+                self.assertEqual(result.stdout.count("RECLAIM_PACK"), mode != "connect_rpc")
+                self.assertEqual(result.stdout.count("CLOSED"), mode != "connect_rpc")
+        result = self.reclaim_pack("ab" * 32, mode="reclaim_rpc")
+        self.assertIn("never fall back to the node-global --reclaim", result.stderr)
 
     def test_latch_never_disturbs_existing_owner(self):
         result = subprocess.run([str(self.latch)], capture_output=True, text=True)

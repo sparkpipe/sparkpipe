@@ -431,6 +431,109 @@ static void SparkTestStopAttachStartNeverHoldsTwoArenas(void)
     printf("stop-attach-start update holds ONE arena peak green\n");
 }
 
+static void SparkTestReclaimPackFrees(SparkWeightdClient *client,
+    const char *pack_sha256, uint32_t freed, uint32_t busy, uint32_t remaining)
+{
+    SparkWeightdReclaimResult reclaim;
+    assert(SparkWeightdClientReclaimPack(client, pack_sha256, &reclaim,
+        SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(reclaim.status == SPARK_STATUS_OK);
+    assert(reclaim.reclaimed_arena_count == freed);
+    assert(reclaim.reclaimed_bytes == (uint64_t)freed * 65536ull);
+    assert(reclaim.busy_arena_count == busy);
+    assert(reclaim.arena_count == remaining);
+    assert(reclaim.resident_bytes == (uint64_t)remaining * 65536ull);
+}
+
+static void SparkTestReclaimPackIsScopedToOnePack(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_reclaim_pack.sock";
+    const char *pack_paths[3] = {"/tmp/spark_weightd_test_reclaim_a.spack",
+        "/tmp/spark_weightd_test_reclaim_b.spack",
+        "/tmp/spark_weightd_test_reclaim_c.spack"};
+    char digests[3][SPARK_SHA256_HEX_BYTES];
+    SparkWeightdIdentity identity;
+    SparkWeightdAttachRequest request;
+    SparkWeightdAttachResult result;
+    SparkWeightdDetachResult detach;
+    SparkWeightdReclaimResult reclaim;
+    SparkTestServerThread thread_context;
+    pthread_t thread_handle;
+    SparkWeightdClient *lane_x = 0;
+    SparkWeightdClient *lane_y = 0;
+    uint64_t generations[4];
+    uint32_t index;
+
+    spark_stub_cuda_reset_faults();
+    for (index = 0u; index < 3u; index++)
+        SparkTestWritePack(pack_paths[index], 500u + index, 65536ull, digests[index]);
+    SparkTestStartServer(&thread_context, &thread_handle, socket_path,
+        SPARK_TEST_CEILING_BYTES);
+    SparkTestConnect(&lane_x, socket_path, 0ull);
+    SparkTestConnect(&lane_y, socket_path, 0ull);
+    for (index = 0u; index < 4u; index++)
+    {
+        uint32_t pack = index < 3u ? index : 0u;
+        SparkTestMakeIdentity(&identity, index < 3u ? "lane-x" : "lane-y",
+            "rev", 4u, 0x51ull + index, digests[pack], 65536ull);
+        SparkTestMakeRequest(&request, &identity, pack_paths[pack]);
+        SparkTestAttach(index == 3u ? lane_y : lane_x, &request, &result);
+        assert(result.status == SPARK_STATUS_OK);
+        assert(result.loaded_from_pack == 1u);
+        assert(result.arena_count == index + 1u);
+        generations[index] = result.arena_generation;
+    }
+    for (index = 0u; index < 4u; index++)
+    {
+        if (index == 1u)
+            continue;
+        assert(SparkWeightdClientDetach(index == 3u ? lane_y : lane_x,
+            generations[index], &detach, SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+        assert(detach.status == SPARK_STATUS_OK);
+        assert(detach.refcount == 0u);
+    }
+    assert(detach.arena_count == 4u);
+
+    SparkTestReclaimPackFrees(lane_y, digests[2], 1u, 0u, 3u);
+    SparkTestReclaimPackFrees(lane_y, digests[1], 0u, 1u, 3u);
+    SparkTestReclaimPackFrees(lane_y, digests[2], 0u, 0u, 3u);
+    SparkTestReclaimPackFrees(lane_y,
+        "0000000000000000000000000000000000000000000000000000000000000000", 0u, 0u, 3u);
+    SparkTestReclaimPackFrees(lane_y, digests[0], 2u, 0u, 1u);
+
+    memset(&reclaim, 0xA5, sizeof(reclaim));
+    assert(SparkWeightdClientReclaimPack(lane_y, "ABCDEF", &reclaim,
+        SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(reclaim.reclaimed_arena_count == 0u && reclaim.busy_arena_count == 0u);
+    {
+        char upper[SPARK_SHA256_HEX_BYTES];
+        memcpy(upper, digests[1], sizeof(upper));
+        for (index = 0u; index < 64u; index++)
+            if (upper[index] >= 'a' && upper[index] <= 'f')
+                upper[index] = (char)(upper[index] - 'a' + 'A');
+        assert(SparkWeightdClientReclaimPack(lane_y, upper, &reclaim,
+            SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_INVALID_ARGUMENT);
+    }
+
+    assert(SparkWeightdClientReclaim(lane_y, &reclaim,
+        SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(reclaim.status == SPARK_STATUS_OK);
+    assert(reclaim.reclaimed_arena_count == 0u);
+    assert(reclaim.busy_arena_count == 1u);
+    assert(reclaim.arena_count == 1u);
+
+    assert(SparkWeightdClientDetach(lane_x, generations[1], &detach,
+        SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    SparkTestReclaimPackFrees(lane_x, digests[1], 1u, 0u, 0u);
+
+    SparkWeightdClientClose(lane_x);
+    SparkWeightdClientClose(lane_y);
+    SparkTestStopServer(&thread_context, thread_handle);
+    for (index = 0u; index < 3u; index++)
+        (void)remove(pack_paths[index]);
+    (void)remove(socket_path);
+    printf("pack-scoped reclaim frees only the named pack's cold arenas green\n");
+}
 
 static void SparkTestExpectConnectionClosed(const char *socket_path,
     const void *frame,
@@ -739,6 +842,7 @@ int main(void)
     SparkTestIdentityCanonicalization();
     SparkTestSharedRefcountAndConsumerDeath();
     SparkTestStopAttachStartNeverHoldsTwoArenas();
+    SparkTestReclaimPackIsScopedToOnePack();
     SparkTestFailClosedPaths();
     SparkTestDaemonProcessTermPath();
     printf("w2 weightd lane: identity arenas + NO-2x + TERM green\n");
