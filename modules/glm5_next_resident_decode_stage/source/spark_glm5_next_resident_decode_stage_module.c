@@ -350,6 +350,7 @@ struct SparkGlm5NextModuleState
 	uint32_t wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_REASONS];
 	uint32_t graph_path_requested;
 	uint32_t l2_prefetch;
+	uint64_t l2_prefetch_rounds;
 	uint32_t verify_rows_max;
 	uint32_t verify_drafter;
 	const char *verify_drafter_path;
@@ -873,16 +874,7 @@ static SparkStatus SparkGlm5NextAllocateSlotHost(SparkGlm5NextExecutionSlot *slo
 	cursor += rows;
 	slot->host_run_row_indices = cursor;
 	error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->route_ready_event,cudaEventDisableTiming);
-	if ( error != cudaSuccess )
-		return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"route_ready_event"));
-	error = cudaStreamCreateWithFlags((cudaStream_t *)&slot->l2_prefetch_stream,cudaStreamNonBlocking);
-	if ( error == cudaSuccess )
-		error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->l2_prefetch_fork,cudaEventDisableTiming);
-	if ( error == cudaSuccess )
-		error = cudaEventCreateWithFlags((cudaEvent_t *)&slot->l2_prefetch_join,cudaEventDisableTiming);
-	if ( error == cudaSuccess )
-		error = cudaMalloc((void **)&slot->l2_prefetch_sink,sizeof(uint32_t));
-	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"l2_prefetch"));
+	return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"route_ready_event"));
 }
 
 static void SparkGlm5NextGraphDestroyAll(SparkGlm5NextExecutionSlot *slot)
@@ -925,18 +917,6 @@ static void SparkGlm5NextReleaseSlotHost(SparkGlm5NextModuleState *state)
 		if ( state->slots[index].route_ready_event != 0 )
 			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].route_ready_event);
 		state->slots[index].route_ready_event = 0;
-		if ( state->slots[index].l2_prefetch_fork != 0 )
-			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].l2_prefetch_fork);
-		if ( state->slots[index].l2_prefetch_join != 0 )
-			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].l2_prefetch_join);
-		if ( state->slots[index].l2_prefetch_stream != 0 )
-			(void)cudaStreamDestroy((cudaStream_t)state->slots[index].l2_prefetch_stream);
-		if ( state->slots[index].l2_prefetch_sink != 0 )
-			(void)cudaFree(state->slots[index].l2_prefetch_sink);
-		state->slots[index].l2_prefetch_fork = 0;
-		state->slots[index].l2_prefetch_join = 0;
-		state->slots[index].l2_prefetch_stream = 0;
-		state->slots[index].l2_prefetch_sink = 0;
 		state->slots[index].route_recorded = 0u;
 		SparkGlm5NextGraphDestroyAll(&state->slots[index]);
 		if ( state->slots[index].miss_ring != 0 )
@@ -1088,10 +1068,6 @@ static void SparkGlm5NextShareSlotDevice(SparkGlm5NextExecutionSlot *slot,const 
 	*slot = *shared;
 	slot->stream = host.stream;
 	slot->route_ready_event = host.route_ready_event;
-	slot->l2_prefetch_stream = host.l2_prefetch_stream;
-	slot->l2_prefetch_fork = host.l2_prefetch_fork;
-	slot->l2_prefetch_join = host.l2_prefetch_join;
-	slot->l2_prefetch_sink = host.l2_prefetch_sink;
 	slot->route_recorded = 0u;
 	slot->host_staging = host.host_staging;
 	slot->host_row_sampling = host.host_row_sampling;
@@ -3368,14 +3344,17 @@ static SparkStatus SparkGlm5NextGraphReduceHead(SparkGlm5NextTpChain *chain)
 
 static uint32_t SparkGlm5NextWalkReduce(SparkGlm5NextTpChain *chain,void *device,uint32_t hc_wide,uint32_t layer,uint32_t site)
 {
+	SparkGlm5NextModuleState *state = chain->state;
 	SparkGlm5NextCudaWave *wave = &chain->wave;
-	uint32_t prefetch = chain->state->l2_prefetch != 0u && wave->tp_degree > 1u ? 1u : 0u;
-	if ( prefetch != 0u && SparkGlm5NextL2PrefetchMark(wave) != 0 )
-		return(20u + site);
+	uint32_t placed = 0u;
 	if ( SparkGlm5NextGraphReduce(chain,device,hc_wide) != SPARK_STATUS_OK )
 		return(1u);
-	if ( prefetch != 0u && SparkGlm5NextL2PrefetchJoin(wave,layer,site) != 0 )
-		return(23u + site);
+	if ( state->l2_prefetch != 0u && wave->tp_degree > 1u )
+	{
+		if ( SparkGlm5NextL2PrefetchAfterRound(wave,layer,site,&placed) != 0 )
+			return(20u + site);
+		state->l2_prefetch_rounds += placed;
+	}
 	return(0u);
 }
 
@@ -3742,6 +3721,7 @@ static SparkStatus SparkGlm5NextGraphCaptureRows(SparkGlm5NextTpChain *chain,uin
 		fprintf(stderr,"GRAPH-ARM-FAILED slot=%u rows=%u\n",chain->slot_index,index + 1u);
 		return(SPARK_STATUS_INTERNAL_ERROR);
 	}
+	state->l2_prefetch_rounds = 0u;
 	SparkGlm5NextGraphRecord(chain,&exec);
 	SparkGlm5NextGraphDisarm(state);
 	if ( exec == 0 )
@@ -3752,7 +3732,7 @@ static SparkStatus SparkGlm5NextGraphCaptureRows(SparkGlm5NextTpChain *chain,uin
 	}
 	slot->graph_exec_rows[regime][index] = exec;
 	slot->graph_bound_rows[regime][index] = bound;
-	fprintf(stderr,"GRAPH-CAPTURE-OK rows=%u regime=%u bound=%u\n",index + 1u,regime,bound);
+	fprintf(stderr,"GRAPH-CAPTURE-OK rows=%u regime=%u bound=%u l2_prefetch_rounds=%llu\n",index + 1u,regime,bound,(unsigned long long)state->l2_prefetch_rounds);
 	return(SPARK_STATUS_OK);
 }
 

@@ -90,10 +90,6 @@ typedef struct SparkGlm5NextLayerWeights
 typedef struct SparkGlm5NextExecutionSlot
 {
 	void *stream;
-	void *l2_prefetch_stream;
-	void *l2_prefetch_fork;
-	void *l2_prefetch_join;
-	uint32_t *l2_prefetch_sink;
 	void *route_ready_event;
 	uint32_t route_recorded;
 	void *graph_exec_a;
@@ -333,9 +329,7 @@ int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
-int32_t SparkGlm5NextLaunchCudaL2Prefetch(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,void *stream);
-int32_t SparkGlm5NextL2PrefetchMark(const SparkGlm5NextCudaWave *wave);
-int32_t SparkGlm5NextL2PrefetchJoin(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site);
+int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,uint32_t *placed);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,const uint32_t *miss,uint64_t *maxloc,uint32_t row_count);
