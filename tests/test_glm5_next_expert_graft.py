@@ -16,6 +16,7 @@ import glm5_next_resident_stagepack as pack
 import glm5_next_expert_graft as graft
 
 REVISION = "f12e0fe1" + "0" * 32
+SPINE_DIGEST_KNOWN_ANSWER = "5c26c6cc289e03b8e8aedb6d4f33fa56976a27c2aa00550cacb0cf02dcb71cb2"
 GLOBAL = pack.GLOBAL_LAYER
 
 
@@ -139,7 +140,37 @@ def check_graft(directory, spine, expert, codec_name, codec):
     return output, stored
 
 
+class PackerSource:
+    def __init__(self, dtype):
+        self.dtype = dtype
+        self.weight_map = {"model.language_model.layers.3.mlp.experts.0.up_proj.weight": "fixture"}
+
+    def meta(self, name):
+        return (self.dtype, (1, 1), "fixture")
+
+
+def check_expert_bytes_against_packer():
+    for degree in (4, 16):
+        with patch.multiple(pack, EXPERTS=3, HIDDEN=512, EXPERT_INTER=2048):
+            for dtype, codec in (("BF16", pack.CODEC_BF16), ("F8_E4M3", pack.CODEC_FP8),
+                                 ("U8", pack.CODEC_NVFP4)):
+                builder = pack.Packer(PackerSource(dtype), degree, degree - 1, 3, 1, False, False, False)
+                builder.add_experts(3)
+                assert [item.entry.kind for item in builder.plan] == list(graft.EXPERT_KINDS)
+                for item in builder.plan:
+                    e = item.entry
+                    got = graft.expected_expert_bytes(codec, e.group_count, e.rows, e.columns)
+                    assert got == (e.payload_bytes, e.scale_bytes, e.scale_encoding), (dtype, e.kind, got)
+    fp8 = graft.expected_expert_bytes(pack.CODEC_FP8, 288, 256, 4096)
+    assert fp8 == (288 * 256 * 4096, 288 * 256 * 32 * 4, pack.SCALE_F32)
+    nvfp4 = graft.expected_expert_bytes(pack.CODEC_NVFP4, 288, 4096, 128)
+    assert nvfp4 == (288 * 4096 * 64, 288 * 4 + 288 * 4096 * 8, pack.SCALE_UE4M3_F32_GLOBAL)
+    assert graft.expected_expert_bytes(pack.CODEC_BF16, 288, 4096, 128) == \
+        (288 * 4096 * 128 * 2, 0, pack.SCALE_NONE)
+
+
 def main():
+    check_expert_bytes_against_packer()
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
         spine = directory / "spine-bf16.sp"
@@ -160,6 +191,21 @@ def main():
         differing = [i for i in range(len(original)) if original[i] != rewritten[i]]
         assert differing and all(64 <= i < 68 or 96 <= i < 161 for i in differing), differing[:8]
         assert graft.pack_spine_digest(fp8) != f2_receipt["spine_digest"]
+        assert f1_receipt["spine_digest"] == SPINE_DIGEST_KNOWN_ANSWER, f1_receipt["spine_digest"]
+        assert f1_receipt["spine_digest_algorithm"] == "sparkpipe-spine-digest-v1"
+        records = []
+        for entry in graft.RankPack(spine).entries:
+            if entry["kind"] in graft.EXPERT_KINDS:
+                continue
+            data = spine.read_bytes()
+            payload = data[entry["payload_offset"]:entry["payload_offset"] + entry["payload_bytes"]]
+            scale = data[entry["scale_offset"]:entry["scale_offset"] + entry["scale_bytes"]]
+            records.append([entry["kind"], entry["layer"], entry["group_count"], entry["rows"],
+                            entry["columns"], entry["payload_type"], entry["weight_codec"],
+                            entry["scale_encoding"], hashlib.sha256(payload).hexdigest(),
+                            hashlib.sha256(scale).hexdigest()])
+        lines = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in sorted(records))
+        assert hashlib.sha256(lines.encode()).hexdigest() == SPINE_DIGEST_KNOWN_ANSWER
 
         other_spine = directory / "spine-other.sp"
         write_pack(other_spine, entries_for(pack.CODEC_BF16, (3, 4), spine_rows=5), 9)

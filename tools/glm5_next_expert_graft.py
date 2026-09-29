@@ -24,11 +24,12 @@ every region's SHA-256 must equal the source region's, the whole-file SHA-256
 is written to <output>.sha256, and a receipt with the spine digest goes to
 <output>.receipt.json.
 
-Spine digest (sparkpipe-spine-digest-v1): for every spine entry, the record
-struct.pack("<8I", kind, layer, payload_type, weight_codec, scale_encoding,
-group_count, rows, columns) + sha256(payload) + sha256(scale) (32 raw bytes
-each; sha256 of the empty string when a plane is empty); records sorted by
-(kind, layer); digest = sha256(b"sparkpipe-spine-digest-v1\\0" + records).
+Spine digest (sparkpipe-spine-digest-v1, the design's tools/pack_spine_sha.py
+contract): for every spine entry the record is the JSON array
+[kind, layer, group_count, rows, columns, payload_type, weight_codec,
+scale_encoding, sha256(payload) hex, sha256(scale) hex] (sha256 of the empty
+string when a plane is empty); the records are sorted, each is written as
+compact JSON plus a newline, and the digest is the SHA-256 of those lines.
 
 Usage (rank-local, CPU only):
   nice -n 19 ionice -c3 python3 tools/glm5_next_expert_graft.py \\
@@ -77,7 +78,7 @@ EXPERT_KINDS = (K_EXPERT_UP_GATE, K_EXPERT_DOWN)
 SPAN_FIELDS = ("flags", "tensor_count", "stage_count", "stage_index", "first_layer",
                "layer_count", "total_layers", "hidden", "vocab", "experts",
                "tp_degree", "tp_rank")
-SPINE_DIGEST_TAG = b"sparkpipe-spine-digest-v1\0"
+SPINE_DIGEST_FORMAT = "sparkpipe-spine-digest-v1"
 EMPTY_SHA256 = hashlib.sha256(b"").digest()
 SYNC_BYTES = 1 << 30
 
@@ -281,11 +282,12 @@ class Streamer:
 
 
 def spine_digest(records: List[Tuple[dict, bytes, bytes]]) -> str:
-    body = bytearray(SPINE_DIGEST_TAG)
-    for entry, payload_sha, scale_sha in sorted(records, key=lambda r: (r[0]["kind"], r[0]["layer"])):
-        body += struct.pack("<8I", *(entry[f] for f in ENTRY_FIELDS[:8]))
-        body += payload_sha + scale_sha
-    return hashlib.sha256(bytes(body)).hexdigest()
+    rows = sorted([entry["kind"], entry["layer"], entry["group_count"], entry["rows"],
+                   entry["columns"], entry["payload_type"], entry["weight_codec"],
+                   entry["scale_encoding"], payload_sha.hex(), scale_sha.hex()]
+                  for entry, payload_sha, scale_sha in records)
+    lines = "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)
+    return hashlib.sha256(lines.encode("ascii")).hexdigest()
 
 
 def expert_digest(records: List[Tuple[dict, bytes, bytes]]) -> str:
@@ -450,7 +452,7 @@ def graft(spine_path: Path, expert_path: Path, output: Path, tp_degree: int, tp_
         "expert_codec_id": codec,
         "model_revision": revision,
         "spine_digest": digest,
-        "spine_digest_algorithm": "sparkpipe-spine-digest-v1",
+        "spine_digest_algorithm": SPINE_DIGEST_FORMAT,
         "expert_digest": expert_digest(expert_records),
         "spine_source": {
             "path": str(spine_path), "bytes": spine.size,
@@ -495,7 +497,7 @@ def main() -> int:
     parser.add_argument("--drop-output-cache", action="store_true",
                         help="fdatasync and DONTNEED the output every GiB and after read-back")
     parser.add_argument("--spine-digest", metavar="PACK",
-                        help="print the sparkpipe-spine-digest-v1 of PACK and exit")
+                        help=f"print the {SPINE_DIGEST_FORMAT} of PACK and exit")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     try:

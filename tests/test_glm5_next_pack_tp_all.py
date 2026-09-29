@@ -17,10 +17,12 @@ class CountingSource(Source):
     def __init__(self, layer_dtypes):
         super().__init__(layer_dtypes)
         self.reads = 0
+        self.order = []
 
     def marked(self, name, r0, r1, c0, c1, blob):
         self.reads += 1
         rank = r0 // (r1 - r0) if ".down_proj." not in name else c0 // (c1 - c0)
+        self.order.append((".down_proj." in name, rank))
         return bytes([rank + 1]) * len(blob)
 
     def expert_payload(self, name, r0, r1, c0, c1):
@@ -51,7 +53,12 @@ def main():
                 pack.emit(builder, path, HEADER, REVISION)
                 single.append(path.read_bytes())
             paths = [directory / f"all-{dtype}-{rank}.sp" for rank in range(degree)]
-            sizes = pack.emit_ranks(packers(CountingSource({3: dtype}), degree), paths, HEADER, REVISION)
+            counting = CountingSource({3: dtype})
+            sizes = pack.emit_ranks(packers(counting, degree), paths, HEADER, REVISION)
+            assert counting.reads == degree * 3 * pack.EXPERTS, counting.reads
+            assert counting.order == sorted(counting.order), counting.order
+            assert [rank for down, rank in counting.order if down] == \
+                [rank for rank in range(degree) for _ in range(pack.EXPERTS)]
             for rank, path in enumerate(paths):
                 data = path.read_bytes()
                 assert data == single[rank], (dtype, rank)
@@ -99,7 +106,8 @@ def main():
         else:
             raise AssertionError("short region accepted")
         assert not any(path.name.startswith(("mixed", "broken")) for path in directory.iterdir())
-    print("PASS single-pass tp-all: every rank byte-identical to its own emit, revision and "
+    print("PASS single-pass tp-all: entry-major order (entry i of every rank before entry i+1), "
+          "every rank byte-identical to its own emit, revision and "
           "rank in the header, existing outputs kept, mismatched plans and short regions leave no file")
 
 
