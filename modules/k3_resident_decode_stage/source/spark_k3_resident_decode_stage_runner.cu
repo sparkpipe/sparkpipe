@@ -878,8 +878,8 @@ static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 	status = SparkK3RunnerReleaseLease(state);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	error = K3RunnerCopy(state->group_offset_host, buffers->group_row_offset,
-		(K3_EXPERTS + 1u) * sizeof(uint32_t), state->stream);
+	error = cudaMemcpy(state->group_offset_host, buffers->group_row_offset,
+		(K3_EXPERTS + 1u) * sizeof(uint32_t), cudaMemcpyDeviceToHost);
 	if ( error != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = SparkWeightdRouteKeys(layer, state->group_offset_host,
