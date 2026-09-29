@@ -42,6 +42,8 @@ PACK_TEMPLATE = os.environ.get(
     "GLM5_NEXT_PACK_TEMPLATE",
     "packs/" + ROOT_NAME + ".rank%x.sp")
 MODEL_REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
+PRODUCTION_ROOT_NAME = "glm53flash.fp8.tp16"
+SCORE_MEMBERS = ("score_dump_directory", "score_probe_path", "score_tier2_rows_path")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOKENIZER_ASSET = REPO_ROOT / "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json"
 TOKENIZER_RUNTIME_PATH = "tokenizer/tokenizer.json"
@@ -125,6 +127,26 @@ def stage_config(rank: int) -> dict:
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),
     }
+
+
+def score_members(values: dict, root_name: str, runtime_root: str, output: Path) -> dict:
+    members = {name: values[name] for name in SCORE_MEMBERS if values.get(name) is not None}
+    if not members:
+        return {}
+    empty = [name for name, value in members.items() if value == ""]
+    if empty:
+        raise SystemExit(f"score-dump members must not be empty: {', '.join(empty)}")
+    if "score_dump_directory" not in members:
+        raise SystemExit("score_probe_path and score_tier2_rows_path require score_dump_directory")
+    committed = (Path(__file__).resolve().parents[1] / "deployment/glm5_next_tp16").resolve()
+    if (root_name == PRODUCTION_ROOT_NAME or PRODUCTION_ROOT_NAME in runtime_root
+            or output.resolve() == committed):
+        raise SystemExit(f"score-dump members are experiment-only and refused for the production root "
+                         f"{PRODUCTION_ROOT_NAME} and the committed deployment tree")
+    for name, value in members.items():
+        if value.startswith("/") or value.endswith("/") or any(part in ("", ".", "..") for part in value.split("/")):
+            raise SystemExit(f"{name} must be a normalized path relative to the arm's runtime root: {value}")
+    return members
 
 
 def tokenizer_block(eos_token_ids: list) -> dict:
@@ -211,12 +233,15 @@ def render_stage(configuration: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
+    for name in SCORE_MEMBERS:
+        parser.add_argument("--" + name.replace("_", "-"), dest=name)
     args = parser.parse_args()
     root = Path(args.output)
+    score = score_members(vars(args), ROOT_NAME, RUNTIME_ROOT, root)
     (root / "config").mkdir(parents=True, exist_ok=True)
     for rank in range(TP):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
-            render_stage(stage_config(rank)))
+            render_stage(dict(stage_config(rank), **score)))
     (root / "model_resident.json").write_text(
         json.dumps(resident_deployment(), indent=1) + "\n")
     print(f"{root}: {TP} stage configs + model_resident.json "
