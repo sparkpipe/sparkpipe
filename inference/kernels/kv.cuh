@@ -133,7 +133,7 @@ static __host__ __device__ __forceinline__ int32_t LmKvViewIsConfigured(
 }
 
 template<class Geometry>
-static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
+static __device__ __forceinline__ uint32_t LmKvPhysicalPageRequired(
 	const LmKvView &view,
 	uint32_t sequence,
 	uint32_t position,
@@ -153,7 +153,7 @@ static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
 			sequence,
 			position,
 			0xffffffffu);
-		return(0);
+		return(LM_KV_PAGE_UNMAPPED);
 	}
 	if ( sequence >= view.sequence_count )
 	{
@@ -165,7 +165,7 @@ static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
 			sequence,
 			position,
 			0xffffffffu);
-		return(0);
+		return(LM_KV_PAGE_UNMAPPED);
 	}
 	logical_page = Geometry::PageOf(position);
 	if ( logical_page >= view.page_table_stride )
@@ -178,7 +178,7 @@ static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
 			sequence,
 			position,
 			logical_page);
-		return(0);
+		return(LM_KV_PAGE_UNMAPPED);
 	}
 	physical_page = view.page_table[
 		((uint64_t)sequence * view.page_table_stride) + logical_page];
@@ -192,7 +192,7 @@ static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
 			sequence,
 			position,
 			logical_page);
-		return(0);
+		return(LM_KV_PAGE_UNMAPPED);
 	}
 	if ( physical_page >= view.pool_page_count )
 	{
@@ -204,8 +204,24 @@ static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
 			sequence,
 			position,
 			physical_page);
-		return(0);
+		return(LM_KV_PAGE_UNMAPPED);
 	}
+	return(physical_page);
+}
+
+template<class Geometry>
+static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
+	const LmKvView &view,
+	uint32_t sequence,
+	uint32_t position,
+	uint32_t row,
+	LmKvAccessKind access_kind)
+{
+	uint32_t physical_page = LmKvPhysicalPageRequired<Geometry>(
+		view,sequence,position,row,access_kind);
+
+	if ( physical_page == LM_KV_PAGE_UNMAPPED )
+		return(0);
 	return(view.pool + ((uint64_t)physical_page * Geometry::kPageBytes)
 		+ ((uint64_t)Geometry::SlotInPage(position) * Geometry::kSlotBytes));
 }

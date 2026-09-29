@@ -42,6 +42,13 @@ BACKEND = os.environ.get("DSV41_FLASH_BACKEND", "hidden_transport")
 PACK_TEMPLATE = os.environ.get(
     "DSV41_FLASH_PACK_TEMPLATE", "packs/rank%x.spstage")
 MODEL_REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
+CONTRACT = json.loads((Path(__file__).resolve().parents[1] / "model_contracts"
+                       / "dsv41_flash_authoritative.json").read_text())
+TOKENIZER = {
+    "path": "tokenizer/tokenizer.json",
+    "sha256": CONTRACT["sources"]["pinned_files"]["tokenizer.json"]["sha256"],
+    "vocabulary_size": CONTRACT["model"]["vocabulary_size"],
+}
 NODE_TARGET = "cuda.sm121.dsv41_flash.resident_decode_stage.bf16.expert_mxfp4"
 EXPERT_CODEC = os.environ.get("DSV41_FLASH_EXPERT_CODEC", "mxfp4")
 WEIGHTD_SOCKET = os.environ.get("DSV41_FLASH_WEIGHTD_SOCKET",
@@ -143,7 +150,7 @@ def resident_deployment() -> dict:
         })
     return {
         "schema_version": 2,
-        "eos_token_ids": [1],
+        "eos_token_ids": [CONTRACT["tokenizer"]["eos"]["id"]],
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/model_serving_adapter.so"},
         "driver": {
@@ -171,6 +178,7 @@ def resident_deployment() -> dict:
             "kv_physical_page_capacity": page_capacity,
         },
         "nodes": nodes,
+        "tokenizer": dict(TOKENIZER),
     }
 
 

@@ -67,6 +67,7 @@ typedef struct SparkGlm52ExecutionSlot
 	uint16_t *attention_latent_bf16;
 	uint16_t *attention_value_bf16;
 	uint16_t *attention_out_bf16;
+	uint16_t *projection_gather_bf16;
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 	uint16_t *expert_out_bf16;
@@ -143,6 +144,9 @@ typedef struct SparkGlm52CudaWave
 	uint64_t attention_split_partial_blocks;
 	const uint8_t *expert_lease_base;
 	uint32_t expert_lease_local_layer;
+	uint32_t expert_lease_pinned;
+	uint32_t route_host_copy;
+	uint32_t projection_split;
 } SparkGlm52CudaWave;
 
 #ifdef __cplusplus
@@ -153,6 +157,8 @@ int32_t SparkGlm52T1Enabled(void);
 int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t local_layer);
