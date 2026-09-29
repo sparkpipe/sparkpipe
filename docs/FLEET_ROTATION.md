@@ -41,7 +41,7 @@ The timer runs `tick` every 5 minutes at :20 s. A slot changes at the top of the
    5. Floor check on every node again.
 8. **Failure** at any step (timeout, non-zero rc, ssh timeout, smoke mismatch, floor, or any unexpected error in the tool) triggers:
    - an `ERROR` line in `ALERT`;
-   - **fallback:** record `phase=recovering` first (so a fallback that is itself interrupted is redone by the next tick), then stop every non-production model (API, units, reclaim-pack), then start production (idempotent when it is already up: unhold, ready, g53-api, Paris smoke). The failed hour stays on production alone; the same slot is not retried within the hour.
+   - **fallback:** record `phase=recovering` first (so a fallback that is itself interrupted is redone by the next tick), then stop every non-production model (API, units, reclaim-pack), then start production (idempotent when it is already up: unhold, ready, g53-api, Paris smoke). The failed hour stays on production alone; the same slot is not retried within the hour. The failed hour is the hour the tick started in, even when the failure comes after the next hour began; the whole tick plans against the hour it started in.
    - If the fallback fails: `phase=degraded`, a `CRITICAL` alert, and an automatic `ROTATION_PAUSE`. The lead takes over.
 
 **Serving gaps.**
@@ -91,13 +91,15 @@ $T resume                   # the next tick adopts the fleet as found, then foll
 $T force <slot> [companion] # this hour runs <slot> (full|k3|flash_plus) [with that companion]
 $T skip                     # the rest of this hour: production alone
 $T schedule --hours 12      # predicted slots
-$T --dry-run [--at 2026-09-29T15:00:30Z] tick   # print every command of the tick, run none, write nothing
+$T --dry-run [--at 2026-09-29T15:00:30Z] tick   # print every command of the tick, run none, write nothing; while paused or preempted it reports the lock and plans as if resumed
 $T converge <model...>      # manual converge with the same stop/reclaim/start/smoke steps
 $T converge --rollback      # converge to rollback_models (production + Qwen)
 $T tick                     # what the timer runs
 ```
 
 `force`, `skip`, `pause` and `resume` only change the state; the next tick (within 5 min) acts. Run `tick` to act now; it takes the same state lock as the timer. `pause` does not take the state lock: it succeeds while a tick is running, and that tick stops at its next step (see Lock above). `force`, `skip`, `resume` and `converge` are refused while a tick holds the lock.
+
+A dry-run has no view of the fleet: it plans from the recorded `active` list, or from production alone when nothing is recorded (a fresh install). On the first supervised run the real tick also stops Qwen, which that dry-run does not show.
 
 ## Install and rollback (lead actions)
 
@@ -114,7 +116,7 @@ $T tick                     # what the timer runs
 - `rollback`:
   1. writes `ROTATION_PAUSE`, so a running tick stops at its next step;
   2. disables the timer;
-  3. waits for a running tick to exit (up to 60 min);
+  3. waits for a running tick to exit: it polls the unit's `ActiveState`, because `systemctl is-active` reports a running oneshot (`activating`) as not active (up to 105 min, above the unit's 100 min `TimeoutStartSec`);
   4. disables the responder;
   5. runs `converge --rollback`, which puts back production + Qwen TP4 (the fleet before the rotation). Qwen's API is `qwen27b-api`.
 
