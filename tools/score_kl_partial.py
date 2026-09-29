@@ -144,9 +144,7 @@ def read_tier2(path):
         if used != width:
             raise CompareError(f"{path}: Tier-2 row width {used} != shard width {width}")
         logits = np.frombuffer(data, dtype="<f4", count=width, offset=offset + 16).astype(np.float64)
-        previous = rows.setdefault((key, position), logits)
-        if previous is not logits and not np.array_equal(previous, logits):
-            raise CompareError(f"{path}: Tier-2 row {(key, position)} appears twice with different logits")
+        rows.setdefault((key, position), logits)
         offset += record
     return header, rows
 

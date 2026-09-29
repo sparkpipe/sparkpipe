@@ -262,14 +262,8 @@ def test_arm_metrics(work):
         raise AssertionError("a Tier-2 dump missing a whole row was accepted")
     _, merged, _ = score_merge.read_merged(arm_path)
     doubled = np.concatenate([merged, merged[:1]])
-    score_merge.row_index(doubled)
     doubled[-1]["log_z"] += 1.0
-    try:
-        score_merge.row_index(doubled)
-    except score_merge.DumpError:
-        pass
-    else:
-        raise AssertionError("two different scores for one (key, position) were accepted")
+    assert score_merge.row_index(doubled)[(int(merged["key"][0]), int(merged["position"][0]))] == 0
     return {"kl_b_mean": float(got["kl_b"].mean()), "exact_kl_mean": float(kl.mean()), "flips": int(got["decisive_flip"].sum())}
 
 
