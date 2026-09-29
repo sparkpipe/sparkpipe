@@ -3550,6 +3550,7 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 {
 	SparkGlm5NextModuleState *state;
 	SparkStatus status;
+	uint64_t main_error = 0ull,hc_error = 0ull;
 	void *exec;
 	state = chain->state;
 	status = SparkGlm5NextWeightdHealth(state);
@@ -3657,11 +3658,11 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 			}
 			else if ( state->tp_device_collective_initialized != 0u )
 			{
-				(void)SparkTpDeviceCollectiveDisarmCapture(
-				    &state->tp_device_collective);
+				(void)SparkTpDeviceCollectiveGraphSettle(
+				    &state->tp_device_collective,chain->slot->stream,&main_error);
 				if ( state->tp_device_collective_hc_initialized != 0u )
-					(void)SparkTpDeviceCollectiveDisarmCapture(
-					    &state->tp_device_collective_hc);
+					(void)SparkTpDeviceCollectiveGraphSettle(
+					    &state->tp_device_collective_hc,chain->slot->stream,&hc_error);
 			}
 		}
 	}
@@ -3669,14 +3670,7 @@ static void SparkGlm5NextGraphStep(SparkGlm5NextTpChain *chain,
 	if ( status == SPARK_STATUS_OK )
 	{
 		uint64_t graph_error;
-		graph_error = SparkTpDeviceCollectiveGraphError(
-			&state->tp_device_collective);
-		if ( graph_error == 0ull &&
-		     state->tp_device_collective_hc_initialized != 0u )
-		{
-			graph_error = SparkTpDeviceCollectiveGraphError(
-				&state->tp_device_collective_hc);
-		}
+		graph_error = main_error != 0ull ? main_error : hc_error;
 		if ( graph_error != 0ull )
 		{
 			state->graph_path_enabled = 0u;
@@ -3810,8 +3804,6 @@ static void SparkGlm5NextGraphEnsure(SparkGlm5NextTpChain *chain,
 	}
 	slot->graph_exec_a = slot->graph_exec_rows[regime][index];
 	SparkGlm5NextGraphStep(chain,&status);
-	if ( status == SPARK_STATUS_OK )
-		SparkGlm5NextGraphDisarm(state);
 	*status_out = status;
 }
 
@@ -4107,7 +4099,6 @@ static void SparkGlm5NextVerifyWave(SparkGlm5NextTpChain *chain)
 		SparkGlm5NextTpChainFail(chain,status);
 		return;
 	}
-	SparkGlm5NextGraphDisarm(state);
 	status = SparkGlm5NextVerifyCommit(chain,&more);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextVerifyContinue(chain,&more);
