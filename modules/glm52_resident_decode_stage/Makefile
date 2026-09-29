@@ -31,9 +31,15 @@ MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
 include ../../common/glm_resident_stage_wrapper.mk
 
 MODULE_POSIX_FLAGS := -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
-MODEL_DESCRIPTION ?= ../../examples/model_descriptions/glm52_resident_decode_stage_$(EXPERT_CODEC)_firmware.json
+MODEL_ARM ?= $(EXPERT_CODEC)
+MODEL_DESCRIPTION ?= ../../examples/model_descriptions/glm52_resident_decode_stage_$(MODEL_ARM)_firmware.json
+MODEL_ID := $(shell python3 ../../tools/glm52_model_contract.py --print-model-id $(MODEL_ARM) --expert-codec $(EXPERT_CODEC))
+ifeq ($(MODEL_ID),)
+$(error MODEL_ARM '$(MODEL_ARM)' names no served model id for EXPERT_CODEC '$(EXPERT_CODEC)')
+endif
 MODEL_DESCRIPTION_SHA256 ?= $(shell sha256sum "$(MODEL_DESCRIPTION)" | awk '{print $$1}')
 MODULE_COMPILE_FLAGS += -DGLM_MODEL_DESCRIPTION_SHA256=\"$(MODEL_DESCRIPTION_SHA256)\"
+MODULE_COMPILE_FLAGS += -DGLM_MODEL_ID=\"$(MODEL_ID)\"
 
 STAGE_PACK_PATH ?= $(REPOSITORY_ROOT)/build/stagepacks/glm52_stage.$(EXPERT_CODEC).glm52sp
 STAGE_INDEX ?= 0

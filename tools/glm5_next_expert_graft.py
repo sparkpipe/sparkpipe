@@ -80,6 +80,17 @@ EXPERT_KINDS = (K_EXPERT_UP_GATE, K_EXPERT_DOWN)
 SPAN_FIELDS = ("flags", "tensor_count", "stage_count", "stage_index", "first_layer",
                "layer_count", "total_layers", "hidden", "vocab", "experts",
                "tp_degree", "tp_rank")
+STAGE_FIELDS = ("stage_count", "stage_index")
+STAGE_OFFSET = 7 * 4
+CONTRACT_OFFSET = REVISION_OFFSET + REVISION_BYTES
+SHA256_BYTES = 32
+RECIPE_OFFSET = CONTRACT_OFFSET + 2 * SHA256_BYTES
+RECIPE_FORMAT = "sparkpipe-expert-graft-recipe-v1"
+GLM5_NEXT_LAYOUT = {
+    "name": "glm5_next", "magic": MAGIC, "format_version": FORMAT_VERSION,
+    "geometry": (HIDDEN, VOCAB, EXPERTS, LAYERS), "codecs": EXPERT_CODEC_NAMES,
+    "identity": False, "receipt_kind": "sparkpipe.glm5_next.expert-graft-receipt.v1",
+}
 SPINE_DIGEST_FORMAT = "sparkpipe-spine-digest-v1"
 EMPTY_SHA256 = hashlib.sha256(b"").digest()
 SYNC_BYTES = 1 << 30
@@ -105,7 +116,8 @@ def expected_expert_bytes(codec: int, groups: int, rows: int, columns: int) -> T
 
 
 class RankPack:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, layout: Optional[dict] = None):
+        self.layout = layout or GLM5_NEXT_LAYOUT
         self.path = path
         self.size = path.stat().st_size
         with path.open("rb") as file:
@@ -130,11 +142,12 @@ class RankPack:
 
     def check_header(self) -> None:
         h = self.header
-        if (h["magic"] != MAGIC or h["format_version"] != FORMAT_VERSION
+        layout = self.layout
+        if (h["magic"] != layout["magic"] or h["format_version"] != layout["format_version"]
                 or h["header_bytes"] != HEADER_BYTES or h["entry_bytes"] != ENTRY_BYTES
                 or h["codec_abi_version"] != CODEC_ABI_VERSION):
-            raise PackFailure(f"{self.path}: not a v1 glm5_next rank pack")
-        if (h["hidden"], h["vocab"], h["experts"], h["total_layers"]) != (HIDDEN, VOCAB, EXPERTS, LAYERS):
+            raise PackFailure(f"{self.path}: not a v{layout['format_version']} {layout['name']} rank pack")
+        if (h["hidden"], h["vocab"], h["experts"], h["total_layers"]) != layout["geometry"]:
             raise PackFailure(f"{self.path}: model geometry hidden={h['hidden']} vocab={h['vocab']} "
                               f"experts={h['experts']} layers={h['total_layers']} is not this model's")
         if h["linear_codec"] != CODEC_BF16 or h["kv_codec"] != CODEC_BF16:
@@ -162,12 +175,15 @@ class RankPack:
         return {(e["kind"], e["layer"]): e for e in self.entries if e["kind"] in EXPERT_KINDS}
 
 
-def check_pair(spine: RankPack, expert: RankPack, tp_degree: int, tp_rank: int, codec: int) -> None:
+def check_pair(spine: RankPack, expert: RankPack, tp_degree: int, tp_rank: int, codec: int,
+               restage: bool = False) -> None:
     for pack in (spine, expert):
         if pack.header["tp_degree"] != tp_degree or pack.header["tp_rank"] != tp_rank:
             raise PackFailure(f"{pack.path}: tp{pack.header['tp_degree']} rank "
                               f"{pack.header['tp_rank']} != requested tp{tp_degree} rank {tp_rank}")
     for field in SPAN_FIELDS:
+        if restage and field in STAGE_FIELDS:
+            continue
         if spine.header[field] != expert.header[field]:
             raise PackFailure(f"header {field}: spine pack {spine.header[field]} != "
                               f"expert pack {expert.header[field]}")
@@ -220,8 +236,15 @@ def plan_output(spine: RankPack, expert: RankPack) -> List[Tuple[dict, RankPack,
     return plan
 
 
-def output_header(spine: RankPack, codec: int, revision: str, file_bytes: int) -> bytes:
+def output_header(spine: RankPack, codec: int, revision: str, file_bytes: int,
+                  identity: Optional[Tuple[bytes, bytes]] = None,
+                  stage: Optional[Tuple[int, int]] = None) -> bytes:
     raw = bytearray(spine.header_raw)
+    if stage is not None:
+        struct.pack_into("<2I", raw, STAGE_OFFSET, *stage)
+    if identity is not None:
+        raw[CONTRACT_OFFSET:CONTRACT_OFFSET + SHA256_BYTES] = identity[0]
+        raw[RECIPE_OFFSET:RECIPE_OFFSET + SHA256_BYTES] = identity[1]
     struct.pack_into("<I", raw, EXPERT_CODEC_OFFSET, codec)
     struct.pack_into("<QQ", raw, DIRECTORY_OFFSET, align(HEADER_BYTES), file_bytes)
     encoded = revision.encode("ascii")
@@ -300,8 +323,8 @@ def expert_digest(records: List[Tuple[dict, bytes, bytes]]) -> str:
     return hashlib.sha256(bytes(body)).hexdigest()
 
 
-def pack_spine_digest(path: Path, chunk_bytes: int = 64 << 20) -> str:
-    pack = RankPack(path)
+def pack_spine_digest(path: Path, chunk_bytes: int = 64 << 20, layout: Optional[dict] = None) -> str:
+    pack = RankPack(path, layout)
     streamer = Streamer(chunk_bytes, {"spine": False, "expert": False, "output": False})
     records = []
     with path.open("rb") as handle:
@@ -371,11 +394,34 @@ def utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def graft_recipe(layout: dict, spine: RankPack, expert: RankPack, codec_name: str, revision: str,
+                 contract: str, restage: bool) -> bytes:
+    recipe = {"format": RECIPE_FORMAT, "layout": layout["name"], "expert_codec": codec_name,
+              "model_revision": revision, "contract_sha256": contract, "restage": restage,
+              "spine_header_sha256": hashlib.sha256(spine.header_raw).hexdigest(),
+              "spine_directory_sha256": hashlib.sha256(spine.directory_raw).hexdigest(),
+              "expert_header_sha256": hashlib.sha256(expert.header_raw).hexdigest(),
+              "expert_directory_sha256": hashlib.sha256(expert.directory_raw).hexdigest()}
+    return hashlib.sha256(json.dumps(recipe, sort_keys=True, separators=(",", ":")).encode("ascii")).digest()
+
+
 def graft(spine_path: Path, expert_path: Path, output: Path, tp_degree: int, tp_rank: int,
           codec_name: str, revision: str, chunk_bytes: int = 64 << 20,
-          drop: Optional[Dict[str, bool]] = None, arm: str = "", source_commit: str = "") -> dict:
+          drop: Optional[Dict[str, bool]] = None, arm: str = "", source_commit: str = "",
+          layout: Optional[dict] = None, contract_sha256: Optional[str] = None,
+          restage: bool = False) -> dict:
     started = utc_now()
-    codec = EXPERT_CODEC_NAMES[codec_name]
+    layout = layout or GLM5_NEXT_LAYOUT
+    if codec_name not in layout["codecs"]:
+        raise PackFailure(f"expert codec {codec_name} is not graftable in the {layout['name']} layout")
+    codec = layout["codecs"][codec_name]
+    if layout["identity"]:
+        if contract_sha256 is None or len(contract_sha256) != 2 * SHA256_BYTES or \
+                any(character not in "0123456789abcdef" for character in contract_sha256):
+            raise PackFailure(f"the {layout['name']} layout stamps the build contract: "
+                              "--contract-sha256 must be 64 lowercase hex digits")
+    elif contract_sha256 is not None or restage:
+        raise PackFailure(f"the {layout['name']} layout carries no contract stamp or restage")
     drop = dict(drop or {})
     drop = {"spine": drop.get("spine", False), "expert": drop.get("expert", False),
             "output": drop.get("output", False)}
@@ -391,13 +437,18 @@ def graft(spine_path: Path, expert_path: Path, output: Path, tp_degree: int, tp_
         if output_directory in source_directories:
             raise PackFailure(f"--output directory {output.parent} is the {role} pack's directory; "
                               "a graft writes into a new arm directory, never beside a source pack")
-    spine, expert = RankPack(spine_path), RankPack(expert_path)
-    check_pair(spine, expert, tp_degree, tp_rank, codec)
+    spine, expert = RankPack(spine_path, layout), RankPack(expert_path, layout)
+    check_pair(spine, expert, tp_degree, tp_rank, codec, restage)
     plan = plan_output(spine, expert)
     file_bytes = max(align(HEADER_BYTES) + len(plan) * ENTRY_BYTES,
                      max(max(e["payload_offset"] + e["payload_bytes"],
                              e["scale_offset"] + e["scale_bytes"]) for e, _, _ in plan))
-    header = output_header(spine, codec, revision, file_bytes)
+    identity = None
+    if layout["identity"]:
+        identity = (bytes.fromhex(contract_sha256),
+                    graft_recipe(layout, spine, expert, codec_name, revision, contract_sha256, restage))
+    stage = (expert.header["stage_count"], expert.header["stage_index"]) if restage else None
+    header = output_header(spine, codec, revision, file_bytes, identity, stage)
     directory = b"".join(struct.pack(ENTRY_FORMAT, *(e[f] for f in ENTRY_FIELDS)) for e, _, _ in plan)
     streamer = Streamer(chunk_bytes, drop)
     fd, temporary = tempfile.mkstemp(prefix=output.name + ".", suffix=".partial", dir=output.parent)
@@ -448,7 +499,7 @@ def graft(spine_path: Path, expert_path: Path, output: Path, tp_degree: int, tp_
 
     Path(str(output) + ".sha256").write_text(f"{output_sha}  {output.name}\n")
     receipt = {
-        "kind": "sparkpipe.glm5_next.expert-graft-receipt.v1",
+        "kind": layout["receipt_kind"],
         "arm": arm,
         "host": socket.gethostname(),
         "tp_degree": tp_degree,
@@ -482,6 +533,12 @@ def graft(spine_path: Path, expert_path: Path, output: Path, tp_degree: int, tp_
         "started_utc": started,
         "finished_utc": utc_now(),
     }
+    if stage is not None:
+        receipt["stage"] = {"count": stage[0], "index": stage[1],
+                            "spine_header": [spine.header["stage_count"], spine.header["stage_index"]]}
+    if identity is not None:
+        receipt["contract_sha256"] = contract_sha256
+        receipt["pack_recipe_sha256"] = identity[1].hex()
     Path(str(output) + ".receipt.json").write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n")
     return receipt
 

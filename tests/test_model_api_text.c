@@ -33,6 +33,23 @@
 
 #define TEST_RANK_COUNT 3u
 #define TEST_API_MAX_SEQUENCE_POSITIONS 64u
+#define TEST_API_TURN_END_TOKEN 4202u
+
+static const char TestApiChatTemplateJson[] =
+	"{\"prefix\":\"[gMASK]<sop>\",\"thinking_prefix\":\"\","
+	"\"system\":\"<|system|>\\n\",\"system_thinking\":\"<|system|>\\n\","
+	"\"user\":\"<|user|>\\n\",\"observation\":\"<|observation|>\\n\","
+	"\"assistant\":\"<|assistant|>\\n<think></think>\\n\","
+	"\"assistant_thinking\":\"<|assistant|>\\n<think>\",\"turn_suffix\":\"\","
+	"\"generation\":\"<|assistant|>\\n<think></think>\\n\","
+	"\"generation_thinking\":\"<|assistant|>\\n<think>\","
+	"\"stop_markers\":[\"<|user|>\",\"<|observation|>\",\"<|assistant|>\",\"<|turn_end|>\"]}";
+static const char TestApiChatTemplateNonSpecialStopJson[] =
+	"{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+	"\"user\":\"<|user|>\\n\",\"observation\":null,\"assistant\":\"<|assistant|>\\n\","
+	"\"assistant_thinking\":null,\"turn_suffix\":\"\",\"generation\":\"<|assistant|>\\n\","
+	"\"generation_thinking\":null,\"stop_markers\":[\"<think>\"]}";
+static const char *TestApiChatTemplate = TestApiChatTemplateJson;
 
 static const char *const TestApiTransportHosts[TEST_RANK_COUNT] =
 {
@@ -107,7 +124,8 @@ static void TestApiWriteTokenizerFixture(const char *path)
 		fprintf(file,"\": %u,\n",byte_value);
 	}
 	for (byte_value = 0u; byte_value < 199u; byte_value++)
-		fprintf(file,"      \"W%u\": %u,\n",4200u + byte_value,4200u + byte_value);
+		if ( 4200u + byte_value != TEST_API_TURN_END_TOKEN )
+			fprintf(file,"      \"W%u\": %u,\n",4200u + byte_value,4200u + byte_value);
 	fprintf(file,"      \"W4399\": 4399\n");
 	fprintf(file,
 		"    },\n"
@@ -128,7 +146,8 @@ static void TestApiWriteTokenizerFixture(const char *path)
 		"    {\"id\": 4404, \"content\": \"<|observation|>\", \"special\": true},\n"
 		"    {\"id\": 4405, \"content\": \"<|system|>\", \"special\": true},\n"
 		"    {\"id\": 4406, \"content\": \"<think>\", \"special\": false},\n"
-		"    {\"id\": 4407, \"content\": \"</think>\", \"special\": false}\n"
+		"    {\"id\": 4407, \"content\": \"</think>\", \"special\": false},\n"
+		"    {\"id\": 4202, \"content\": \"<|turn_end|>\", \"special\": true}\n"
 		"  ]\n"
 		"}\n",
 		"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}{1,3}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+");
@@ -225,6 +244,7 @@ static void TestApiWriteDeployment(const char *path,
 			fixture.tokenizer_asset_sha256 = missing_sha256;
 		}
 		SparkTokenizerSidecarUnload(&sidecar);
+		fixture.chat_template_json = TestApiChatTemplate;
 	}
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
@@ -576,11 +596,17 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 	for ( uint32_t index = 0u; index < token_count; index++ )
 		assert(tokens[index] != 4200u);
 
+	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":2}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"code\":\"chat_template_missing\""));
+
 	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
 	assert(TestApiBodyContains(response,"\"tokenizer\":false"));
 	printf("test_model_api_text: no-tokenizer contract OK (400 naming the "
-		"sidecar; token-id form intact)\n");
+		"sidecar; token-id form intact; messages without a declared chat_template is 400)\n");
 }
 
 static void TestApiWritePromptRequest(char *request,size_t capacity,uint32_t prompt_count,uint32_t max_tokens)
@@ -798,6 +824,17 @@ static void TestApiChatOptionRejected(TestApiStack *stack, const char *path,
 		"\"code\":\"invalid_option\""));
 }
 
+static void TestApiChatRequestRefused(TestApiStack *stack, const char *body,
+	const char *code)
+{
+	char response[65536];
+	char needle[128];
+	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",body,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	(void)snprintf(needle,sizeof(needle),"\"code\":\"%s\"",code);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),needle));
+}
+
 static void TestApiChatTemplateServing(TestApiStack *stack,
 	const SparkTokenizerSidecar *sidecar)
 {
@@ -857,6 +894,13 @@ static void TestApiChatTemplateServing(TestApiStack *stack,
 		"\"chat_template_kwargs\":true}");
 	TestApiChatOptionRejected(stack,"/v1/completions",
 		"{\"prompt\":\"hi\",\"chat_template_kwargs\":{\"enable_thinking\":true}}");
+	TestApiChatRequestRefused(stack,
+		"{\"messages\":[{\"role\":\"tool\",\"content\":\"42\"}],\"max_tokens\":2}",
+		"role_unsupported");
+	TestApiChatRequestRefused(stack,
+		"{\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\"max_tokens\":2}",
+		"invalid_messages");
+	TestApiChatRequestRefused(stack,"{\"messages\":[],\"max_tokens\":2}","invalid_messages");
 	log_data = TestApiReadFile(stack->api_stderr_path);
 	assert(log_data != 0 && TestApiMeasurementCount(log_data) == measurements_seen);
 	free(log_data);
@@ -865,7 +909,43 @@ static void TestApiChatTemplateServing(TestApiStack *stack,
 		"turns extend the prior prompt, malformed chat_template_kwargs is 400)\n");
 }
 
-static void TestApiMissingAssetIsFatal(void)
+static uint32_t TestApiTokensContain(const uint32_t *tokens, uint32_t token_count, uint32_t token)
+{
+	uint32_t index;
+	for ( index = 0u; index < token_count; index++ )
+		if ( tokens[index] == token )
+			return 1u;
+	return 0u;
+}
+
+static void TestApiChatDeclaredStops(TestApiStack *stack)
+{
+	char response[65536];
+	uint32_t tokens[64];
+	uint32_t token_count;
+	const char *body;
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":8,\"temperature\":1,\"seed\":1}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	token_count = TestApiScanTokenArray(body,tokens,64u);
+	assert(TestApiTokensContain(tokens,token_count,TEST_API_TURN_END_TOKEN) == 1u);
+	assert(TestApiBodyContains(body,"\"finish_reason\":\"length\""));
+	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8,\"temperature\":1,\"seed\":1}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	token_count = TestApiScanTokenArray(body,tokens,64u);
+	assert(token_count >= 1u && token_count < 8u);
+	assert(TestApiTokensContain(tokens,token_count,TEST_API_TURN_END_TOKEN) == 0u);
+	assert(TestApiBodyContains(body,"\"finish_reason\":\"stop\""));
+	printf("test_model_api_text: declared chat stop markers end a chat reply OK "
+		"(the same sampling without messages emits the marker token)\n");
+}
+
+static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)
 {
 	TestApiStack stack;
 	int32_t child_status;
@@ -873,7 +953,7 @@ static void TestApiMissingAssetIsFatal(void)
 	stack.api_port = TestApiProbeFreeTcpPort();
 	if ( stack.api_port == 0u )
 		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
-	TestApiStartStack(&stack,"build/definitely_missing_tokenizer_asset.json");
+	TestApiStartStack(&stack,tokenizer_asset_path);
 	stack.api_child = fork();
 	assert(stack.api_child >= 0);
 	if ( stack.api_child == 0 )
@@ -907,7 +987,7 @@ static void TestApiMissingAssetIsFatal(void)
 	}
 	stack.api_child = 0;
 	TestApiStopStack(&stack);
-	printf("test_model_api_text: missing tokenizer asset refuses startup OK\n");
+	printf("test_model_api_text: %s refuses startup OK\n",label);
 }
 
 static void TestApiIdleWake(TestApiStack *stack)
@@ -970,9 +1050,14 @@ int main(void)
 		TestApiChatTemplateServing(&stack,&sidecar);
 		SparkTokenizerSidecarUnload(&sidecar);
 	}
+	TestApiChatDeclaredStops(&stack);
 	TestApiStopStack(&stack);
 
-	TestApiMissingAssetIsFatal();
+	TestApiRefusedStartup("build/definitely_missing_tokenizer_asset.json","missing tokenizer asset");
+	TestApiChatTemplate = TestApiChatTemplateNonSpecialStopJson;
+	TestApiRefusedStartup("build/test_tokenizer_sidecar_api_hf.json",
+		"chat_template stop marker that is not a special token");
+	TestApiChatTemplate = TestApiChatTemplateJson;
 	printf("test_model_api_text: ALL OK\n");
 	return 0;
 }
