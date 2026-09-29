@@ -47,8 +47,9 @@ ranks, and the served token is still the certified head's argmax.
 - A score-dump root that points at the production pack (the F0 arm) shares production's weightd
   arena and crash domain. It runs only inside a lead-held window. Its stop path stops only its own
   unit and never runs a node-global weightd reclaim, which would evict other lanes' arenas.
-- Every wave the hook cannot score (speculative verify, graph replay) is counted in the end
-  record; a failed score wave fails the request instead of leaving a silent gap.
+- Every wave the hook does not score (speculative verify, graph replay, a wave the step verdict
+  rolls back) is counted in the end record. A failed score wave fails the request and the rank
+  file gets no end record, so the merge refuses it instead of leaving a silent gap.
 
 ## What a rank writes
 
@@ -64,7 +65,8 @@ an earlier dump. It holds:
   - local max, and the local sum of exp(logit − local max) in float64;
   - the local top-64 ids and logits, ordered by value descending, with ties broken by lowest id;
   - the (id, logit) pairs for every id in the row's probe entry that this rank owns.
-- An end record with counts: rows, waves, skipped waves (speculative verify or graph replay),
+- An end record with counts: rows, waves, skipped waves (speculative verify, graph replay or a
+  rolled-back wave),
   keyless rows, probed rows, Tier-2 rows and non-finite rows. A file without the end record is
   incomplete, and the merge refuses it.
 
