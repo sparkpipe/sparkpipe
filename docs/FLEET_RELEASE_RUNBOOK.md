@@ -475,6 +475,18 @@ tokenizer from the deployment's `tokenizer` block (`path`, `vocabulary_size`,
 (`runtime/model_resident_deployment.c:19-24`,
 `runtime/model_resident_deployment.c:390-413`).
 
+`deployment/glm5_next_tp16/model_resident.json` carries this block
+(`tools/glm5_next_gen_deployment.py` derives it from
+`qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json`: path
+`tokenizer/tokenizer.json`, the asset's sha256, vocabulary 154856). A GLM API
+started from it refuses to start when `runtime/tokenizer/tokenizer.json` is
+missing or differs. An API started from a deployment without the block starts,
+logs `no tokenizer in deployment`, reports `"tokenizer":false` on `/health` and
+answers every text prompt with HTTP 400 `tokenizer_unavailable`; COMPSEC-17
+and 8-stream benches send text prompts. `tools/compsec17.py` and
+`tools/glm5_next_api_bench.py conc` check `/health` first and exit 2 before
+sending any prompt when the endpoint has no tokenizer.
+
 The release root's API and adapter are aarch64 builds and cannot run on the
 hub. Every root release therefore needs an x86 build of the API and the
 adapter from the engines' `SOURCE_COMMIT`. The channel on 2026-09-28 was built

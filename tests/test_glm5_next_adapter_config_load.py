@@ -417,11 +417,59 @@ int main(int argc, char **argv)
     printf("rc=%d msp=%u erc=%u dsct=%u tpd=%u tpr=%u icp=%u kvs=%u\n",
         (int)rc, msp, erc, dsct, tpd, tpr, state.index_cp, state.kv_shard);
     printf("artifact=%s revision=%s\n", SparkGlm5NextServingDescriptor.artifact_sha256, SparkGlm5NextServingDescriptor.model_revision);
+#ifdef SPARK_SCORE_DUMP
+    printf("score=0x%x dir=%s probe=%s tier2=%s\n", state.score_present, state.score_paths[0], state.score_paths[1], state.score_paths[2]);
+#endif
     if ( argc != 5 || TestDeployment(argv[3],msp) != 0 || TestDeployment(argv[4],msp) != 0 )
         return(9);
     return rc == 0 ? 0 : 1;
 }
 """
+
+
+def run_harness(binary, config, deploy):
+    run = subprocess.run([str(binary), str(config), str(ROOT), str(deploy), str(deploy)], capture_output=True, text=True)
+    return run.stdout
+
+
+def loaded(output):
+    return re.search(r"(?m)^rc=0 ", output) is not None
+
+
+def check_score_members(tmpdir, cmd, production_binary, config):
+    base = json.load(open(config))
+    deploy = tmpdir / "deploy/model_resident.json"
+    variants = {
+        "plain": base,
+        "full": dict(base, score_dump_directory="score/run-a", score_probe_path="score/probe.bin",
+                     score_tier2_rows_path="score/tier2.bin"),
+        "probe_only": dict(base, score_probe_path="score/probe.bin"),
+        "absolute": dict(base, score_dump_directory="/tmp/score"),
+        "empty": dict(base, score_dump_directory=""),
+    }
+    paths = {}
+    for name, value in variants.items():
+        paths[name] = tmpdir / f"score_{name}.json"
+        paths[name].write_text(json.dumps(value))
+    production = run_harness(production_binary, paths["full"], deploy)
+    if loaded(production):
+        return "the production adapter accepted score-dump members: " + production[-300:]
+    score_binary = tmpdir / "harness_score"
+    build = subprocess.run([cmd[0], "-DSPARK_SCORE_DUMP=1", *cmd[1:-4], "-o", str(score_binary), "-ldl", "-lpthread"],
+                           capture_output=True, text=True)
+    if build.returncode != 0:
+        return "the SCORE_DUMP adapter harness did not compile: " + build.stderr[-400:]
+    plain = run_harness(score_binary, paths["plain"], deploy)
+    if not loaded(plain) or "score=0x0 " not in plain:
+        return "the SCORE_DUMP adapter changed the plain configuration: " + plain[-200:]
+    full = run_harness(score_binary, paths["full"], deploy)
+    want = f"score=0x7 dir={ROOT}/score/run-a probe={ROOT}/score/probe.bin tier2={ROOT}/score/tier2.bin"
+    if not loaded(full) or want not in full:
+        return "the SCORE_DUMP adapter did not resolve the score members under the runtime root: " + full[-300:]
+    for name in ("probe_only", "absolute", "empty"):
+        if loaded(run_harness(score_binary, paths[name], deploy)):
+            return f"the SCORE_DUMP adapter accepted the {name} score configuration"
+    return None
 
 
 def main() -> int:
@@ -494,6 +542,10 @@ def main() -> int:
             return 1
         if f"artifact={contract_sha} revision={revision}\n" not in run.stdout:
             print("FAIL the adapter does not report the contract digest and model revision it was built with")
+            return 1
+        failure = check_score_members(tmpdir, cmd, binary, config)
+        if failure:
+            print("FAIL " + failure)
             return 1
         print("PASS actual GLM B3 admission, deferred lifetime, release, K-token chains and concurrent reservation; "
               "adapter loads the generator's deployment config")

@@ -22,6 +22,7 @@ mechanically.
 Stdlib only; regenerates into a temp dir; touches nothing.
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -149,6 +150,53 @@ def main() -> int:
                               "SparkGlm5NextServingConfigurationList"))
         check_glm5_next_kv_shard(failures, glm5_gen)
         check_glm5_next_kv_shard(failures, glm5_tree)
+
+        for relative in ["config/stage_%02d.json" % i for i in range(16)]:
+            committed = json.loads((glm5_tree / relative).read_text())
+            leaked = sorted(k for k in committed if k.startswith("score_"))
+            if leaked:
+                failures.append(f"glm5_next: production {relative} carries score-dump members {leaked}")
+        score_source = (ROOT / "modules/glm5_next_resident_decode_stage/source/"
+                        "spark_glm5_next_serving_adapter.c").read_text(encoding="utf-8")
+        score_match = re.search(r"SparkGlm5NextServingScoreMembers\s*\[\s*\]\s*=\s*\{(.*?)\};", score_source, re.S)
+        adapter_score = re.findall(r'"([^"]+)"', score_match.group(1)) if score_match else []
+        refused = subprocess.run(
+            ["python3", "tools/glm5_next_gen_deployment.py", "--output", str(scratch / "glm5_score_prod"),
+             "--score-dump-directory", "score"], cwd=ROOT, capture_output=True, text=True)
+        if refused.returncode == 0:
+            failures.append("glm5_next: the generator accepted score-dump members for the production root")
+        dev = scratch / "glm5_score_dev"
+        dev_env = dict(os.environ, GLM5_NEXT_ROOT_NAME="glm53flash.arm-dev.tp16")
+        accepted = subprocess.run(
+            ["python3", "tools/glm5_next_gen_deployment.py", "--output", str(dev),
+             "--score-dump-directory", "score", "--score-probe-path", "score/probe.bin",
+             "--score-tier2-rows-path", "score/tier2.bin"], cwd=ROOT, capture_output=True, text=True, env=dev_env)
+        if accepted.returncode != 0:
+            failures.append(f"glm5_next: the generator refused score-dump members for a dev root: {accepted.stderr[-300:]}")
+        else:
+            dev_stage = json.loads((dev / "config/stage_00.json").read_text())
+            want = adapter_members("modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c",
+                                   "SparkGlm5NextServingConfigurationMembers") + adapter_score
+            if list(dev_stage.keys()) != want or len(adapter_score) != 3:
+                failures.append(f"glm5_next: dev score-dump stage members {list(dev_stage.keys())} != adapter "
+                                f"base + optional score members {want}")
+        refusals = {
+            "production empty directory": ({}, ["--score-dump-directory", ""]),
+            "dev empty directory": (dev_env, ["--score-dump-directory", ""]),
+            "dev empty probe": (dev_env, ["--score-dump-directory", "score", "--score-probe-path", ""]),
+            "dev probe without directory": (dev_env, ["--score-probe-path", "score/probe.bin"]),
+            "dev absolute": (dev_env, ["--score-dump-directory", "/tmp/score"]),
+            "dev parent": (dev_env, ["--score-dump-directory", "score/../packs"]),
+            "dev dot": (dev_env, ["--score-dump-directory", "./score"]),
+            "dev double slash": (dev_env, ["--score-dump-directory", "score//a"]),
+            "dev trailing slash": (dev_env, ["--score-dump-directory", "score/"]),
+        }
+        for label, (env, extra) in refusals.items():
+            target = scratch / ("glm5_score_refused_" + label.replace(" ", "_"))
+            outcome = subprocess.run(["python3", "tools/glm5_next_gen_deployment.py", "--output", str(target), *extra],
+                                     cwd=ROOT, capture_output=True, text=True, env=dict(os.environ, **env))
+            if outcome.returncode == 0 or (target / "config").exists():
+                failures.append(f"glm5_next: the generator accepted the {label} score-dump configuration")
 
         # --- glm52: no committed tree; the generator's output must still
         # satisfy the adapter's exact-member list (r3-flashdecode drift) ---

@@ -1861,10 +1861,11 @@ static_assert(GLM5_NEXT_HC_SLICE % (4u * LM_WARP_LANES) == 0u && GLM5_NEXT_HIDDE
 typedef struct Glm5NextHcShared
 {
 	float staged[GLM5_NEXT_HC_SLICE];
-	float partial[GLM5_NEXT_HC_MIX + 1u];
+	float partial[GLM5_NEXT_HC_CLUSTER][GLM5_NEXT_HC_MIX + 1u];
 	float mixes[GLM5_NEXT_HC_MIX + 1u];
 	float reduction[GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES];
 	float pre[GLM5_NEXT_HC];
+	float post[GLM5_NEXT_HC];
 }
 Glm5NextHcShared;
 
@@ -1958,7 +1959,7 @@ static __device__ float Glm5NextHcStage(Glm5NextHcShared *shared, const uint16_t
 	return(LmBlockSum<GLM5_NEXT_LAYER_THREADS>(total, shared->reduction));
 }
 
-static __device__ void Glm5NextHcDot(Glm5NextHcShared *shared, const float *fn, uint32_t offset)
+static __device__ void Glm5NextHcDot(Glm5NextHcShared *shared, const float *fn, uint32_t offset, uint32_t slice)
 {
 	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
 	uint32_t mix, vector, step;
@@ -1982,32 +1983,51 @@ static __device__ void Glm5NextHcDot(Glm5NextHcShared *shared, const float *fn, 
 		for (step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u)
 			accumulator += __shfl_xor_sync(0xffffffffu, accumulator, step);
 		if (lane == 0u)
-			shared->partial[mix] = accumulator;
+			shared->partial[slice][mix] = accumulator;
 	}
 }
 
-static __device__ void Glm5NextHcFinish(cooperative_groups::cluster_group &cluster, Glm5NextHcShared *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post)
+static __device__ void Glm5NextHcScatter(cooperative_groups::cluster_group &cluster, Glm5NextHcShared *shared, uint32_t slice)
+{
+	uint32_t index, rank, mix;
+	for (index = threadIdx.x; index < GLM5_NEXT_HC_CLUSTER * (GLM5_NEXT_HC_MIX + 1u); index += GLM5_NEXT_LAYER_THREADS)
+	{
+		rank = index / (GLM5_NEXT_HC_MIX + 1u);
+		mix = index % (GLM5_NEXT_HC_MIX + 1u);
+		if (rank != slice)
+			cluster.map_shared_rank(shared->partial[slice], rank)[mix] = shared->partial[slice][mix];
+	}
+}
+
+static __device__ void Glm5NextHcFinish(Glm5NextHcShared *shared, const float *scale3, const float *base, float *mixes, float *pre, float *post, uint32_t slice)
 {
 	uint32_t rank;
-	float total, inverse;
+	float total, inverse, value;
 	if (threadIdx.x <= GLM5_NEXT_HC_MIX)
 	{
 		total = 0.0f;
 		for (rank = 0u; rank < GLM5_NEXT_HC_CLUSTER; rank++)
-			total += cluster.map_shared_rank(shared->partial, rank)[threadIdx.x];
+			total += shared->partial[rank][threadIdx.x];
 		shared->mixes[threadIdx.x] = total;
 	}
 	__syncthreads();
-	if (threadIdx.x >= LM_WARP_LANES)
-		return;
-	inverse = rsqrtf(shared->mixes[GLM5_NEXT_HC_MIX] / (float)GLM5_NEXT_HC_FLAT + GLM5_NEXT_RMS_EPSILON);
-	if (threadIdx.x < GLM5_NEXT_HC_MIX)
-		mixes[threadIdx.x] = shared->mixes[threadIdx.x] = shared->mixes[threadIdx.x] * inverse;
-	__syncwarp();
-	Glm5NextHcGatesWarp(shared->mixes, scale3, base, shared->pre, post);
-	__syncwarp();
-	if (threadIdx.x < GLM5_NEXT_HC)
-		pre[threadIdx.x] = shared->pre[threadIdx.x];
+	if (threadIdx.x < LM_WARP_LANES)
+	{
+		inverse = rsqrtf(shared->mixes[GLM5_NEXT_HC_MIX] / (float)GLM5_NEXT_HC_FLAT + GLM5_NEXT_RMS_EPSILON);
+		if (threadIdx.x < GLM5_NEXT_HC_MIX)
+		{
+			value = shared->mixes[threadIdx.x] * inverse;
+			shared->mixes[threadIdx.x] = value;
+			if (slice == 0u)
+				mixes[threadIdx.x] = value;
+		}
+		__syncwarp();
+		Glm5NextHcGatesWarp(shared->mixes, scale3, base, shared->pre, slice == 0u ? post : shared->post);
+		__syncwarp();
+		if (slice == 0u && threadIdx.x < GLM5_NEXT_HC)
+			pre[threadIdx.x] = shared->pre[threadIdx.x];
+	}
+	__syncthreads();
 }
 
 static __device__ void Glm5NextHcCollapse(const float *pre, const uint16_t *streams, uint16_t *collapsed, uint16_t *snapshot, uint32_t first, uint32_t thread, uint32_t threads)
@@ -2039,21 +2059,20 @@ __global__ void __cluster_dims__(GLM5_NEXT_HC_CLUSTER, 1, 1) __launch_bounds__(G
 	const uint16_t *streams = streams_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT;
 	uint32_t mix;
 	float total;
+	asm volatile("barrier.cluster.arrive.relaxed.aligned;" ::: "memory");
 	if (threadIdx.x % LM_WARP_LANES == 0u)
 		for (mix = threadIdx.x / LM_WARP_LANES; mix < GLM5_NEXT_HC_MIX; mix += GLM5_NEXT_LAYER_THREADS / LM_WARP_LANES)
 			LmPrefetchL2(fn_f32 + (uint64_t)mix * GLM5_NEXT_HC_FLAT + slice * GLM5_NEXT_HC_SLICE, GLM5_NEXT_HC_SLICE * sizeof(float));
 	LmDependentWait();
 	total = Glm5NextHcStage(&shared, streams + slice * GLM5_NEXT_HC_SLICE);
-	Glm5NextHcDot(&shared, fn_f32, slice * GLM5_NEXT_HC_SLICE);
+	Glm5NextHcDot(&shared, fn_f32, slice * GLM5_NEXT_HC_SLICE, slice);
 	if (threadIdx.x == 0u)
-		shared.partial[GLM5_NEXT_HC_MIX] = total;
+		shared.partial[slice][GLM5_NEXT_HC_MIX] = total;
+	__syncthreads();
+	asm volatile("barrier.cluster.wait.aligned;" ::: "memory");
+	Glm5NextHcScatter(cluster, &shared, slice);
 	cluster.sync();
-	if (slice == 0u)
-		Glm5NextHcFinish(cluster, &shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)row * GLM5_NEXT_HC_MIX, pre_f32 + (uint64_t)row * GLM5_NEXT_HC, post_f32 + (uint64_t)row * GLM5_NEXT_HC);
-	cluster.sync();
-	if (slice != 0u && threadIdx.x < GLM5_NEXT_HC)
-		shared.pre[threadIdx.x] = cluster.map_shared_rank(shared.pre, 0u)[threadIdx.x];
-	cluster.sync();
+	Glm5NextHcFinish(&shared, scale3_f32, base_f32, mixes_f32 + (uint64_t)row * GLM5_NEXT_HC_MIX, pre_f32 + (uint64_t)row * GLM5_NEXT_HC, post_f32 + (uint64_t)row * GLM5_NEXT_HC, slice);
 	if (slice != 0u)
 		Glm5NextHcCollapse(shared.pre, streams, collapsed_bf16 + (uint64_t)row * GLM5_NEXT_HIDDEN, snapshot_bf16 + (uint64_t)row * GLM5_NEXT_HC_FLAT, slice * GLM5_NEXT_HC_PRE_SLICE, threadIdx.x, GLM5_NEXT_LAYER_THREADS);
 	else if (threadIdx.x >= LM_WARP_LANES)
@@ -2476,7 +2495,7 @@ static int32_t Glm5NextLayerMoeExperts(
     int32_t status = Glm5NextLayerMoeValidate<ExpertCodec>(buffers,rows,packed_rows);
     if (status != LM_LAUNCH_OK)
         return status;
-    if ( buffers->expert_w1_weight == 0 || buffers->expert_w1_scale == 0 || buffers->expert_w2_weight == 0 || buffers->expert_w2_scale == 0 )
+    if ( buffers->expert_w1_weight == 0 || buffers->expert_w2_weight == 0 || (LmWeightCodec<ExpertCodec>::kScaleEncoding != LM_SCALE_ENCODING_NONE && (buffers->expert_w1_scale == 0 || buffers->expert_w2_scale == 0)) )
         return(LM_LAUNCH_ERR_SHAPE);
     status = Glm5NextLayerMoeUp<ExpertCodec>(buffers, rows, packed_rows, multiprocessors, stream);
     if (status == LM_LAUNCH_OK)

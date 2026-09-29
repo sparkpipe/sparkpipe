@@ -130,7 +130,18 @@ static const char *const SparkGlm5NextServingConfigurationMembers[] =
 };
 
 #define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE (sizeof(SparkGlm5NextServingConfigurationMembers) / sizeof(SparkGlm5NextServingConfigurationMembers[0]))
+#ifdef SPARK_SCORE_DUMP
+static const char *const SparkGlm5NextServingScoreMembers[] =
+{
+	"score_dump_directory",
+	"score_probe_path",
+	"score_tier2_rows_path"
+};
+#define SPARK_GLM5_NEXT_SERVING_SCORE_MEMBER_COUNT (sizeof(SparkGlm5NextServingScoreMembers) / sizeof(SparkGlm5NextServingScoreMembers[0]))
+#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 4u + SPARK_GLM5_NEXT_SERVING_SCORE_MEMBER_COUNT)
+#else
 #define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 4u)
+#endif
 
 static uint32_t SparkGlm5NextServingConfigurationList(uint32_t bridge,uint32_t index_cp,uint32_t kv_shard,const char **list)
 {
@@ -218,6 +229,10 @@ typedef struct SparkGlm5NextServingState
 	uint32_t tp_collective_control_port_base;
 	SparkModelServingRuntimeLimits runtime_limits;
 	SparkGlm5NextServingPending pending[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+#ifdef SPARK_SCORE_DUMP
+	char score_paths[SPARK_GLM5_NEXT_SERVING_SCORE_MEMBER_COUNT][SPARK_INTERNAL_PATH_BYTES];
+	uint32_t score_present;
+#endif
 } SparkGlm5NextServingState;
 
 static _Thread_local SparkModelDriverCacheLane SparkGlm5NextServingCacheScratch[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -317,6 +332,47 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 	SPARK_RETURN(status);
 }
 
+#ifdef SPARK_SCORE_DUMP
+static uint32_t SparkGlm5NextServingScoreList(const SparkJsonDocument *document,int32_t root,uint32_t count,const char **list,uint32_t *present)
+{
+	uint32_t index;
+	*present = 0u;
+	for (index=0u; index<SPARK_GLM5_NEXT_SERVING_SCORE_MEMBER_COUNT; index++)
+		if ( SparkJsonFindObjectMember(document,root,SparkGlm5NextServingScoreMembers[index]) >= 0 )
+		{
+			list[count++] = SparkGlm5NextServingScoreMembers[index];
+			*present |= 1u << index;
+		}
+	return(count);
+}
+
+static SparkStatus SparkGlm5NextServingLoadScore(const SparkJsonDocument *document,int32_t root,const char *runtime_root,SparkGlm5NextServingState *state)
+{
+	char *relative;
+	uint32_t index;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( state->score_present != 0u && (state->score_present & 1u) == 0u )
+	{
+		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER score_probe_path and score_tier2_rows_path require score_dump_directory\n");
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	for (index=0u; status == SPARK_STATUS_OK && index<SPARK_GLM5_NEXT_SERVING_SCORE_MEMBER_COUNT; index++)
+	{
+		if ( (state->score_present & (1u << index)) == 0u )
+			continue;
+		relative = 0;
+		status = SparkJsonCopyString(document,SparkJsonFindObjectMember(document,root,SparkGlm5NextServingScoreMembers[index]),&relative);
+		if ( status == SPARK_STATUS_OK && (relative == 0 || relative[0] == '\0') )
+			status = SPARK_STATUS_SCHEMA_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkResolveRuntimePath(runtime_root,relative,state->score_paths[index],sizeof(state->score_paths[index]));
+		free(relative);
+	}
+	(void)fprintf(stderr,"GLM5_NEXT-ADAPTER score dump members=0x%x rc=%d\n",state->score_present,(int)status);
+	return(status);
+}
+#endif
+
 static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	const char *path,
 	const char *runtime_root,
@@ -349,8 +405,15 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER draft_bridge_host and draft_bridge_port must both be present or both absent\n");
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	}
+#ifdef SPARK_SCORE_DUMP
+	if ( status == SPARK_STATUS_OK )
+		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingScoreList(&document,root,SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,kv_shard_token >= 0 ? 1u : 0u,members),members,&state->score_present));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextServingLoadScore(&document,root,runtime_root,state);
+#else
 	if ( status == SPARK_STATUS_OK )
 		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,kv_shard_token >= 0 ? 1u : 0u,members));
+#endif
 	state->index_cp = 0u;
 	if ( status == SPARK_STATUS_OK && index_cp_token >= 0 )
 		status = SparkJsonGetUInt32(&document,index_cp_token,&state->index_cp);
@@ -714,6 +777,11 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->node_context.tp_collective_backend_module_path = state->tp_collective_backend_path;
 		state->node_context.kv_backing_directory = configuration->kv_backing_directory;
 		state->node_context.kv_backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
+#ifdef SPARK_SCORE_DUMP
+		state->node_context.score_dump_directory = (state->score_present & 1u) != 0u ? state->score_paths[0] : 0;
+		state->node_context.score_probe_path = (state->score_present & 2u) != 0u ? state->score_paths[1] : 0;
+		state->node_context.score_tier2_rows_path = (state->score_present & 4u) != 0u ? state->score_paths[2] : 0;
+#endif
 		status = SparkGlm5NextServingLoadDriver(state,configuration);
 	}
 	if ( status != SPARK_STATUS_OK )

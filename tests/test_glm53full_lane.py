@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -67,6 +68,46 @@ def lane_problems(lane, codec, files, members, revision):
     return failures
 
 
+def api_host_problems():
+    failures = []
+    settings = {"GLMFULL_LANE": "6", "GLMFULL_CODEC": "fp8", "GLMFULL_FIRMWARE": "/nonexistent", "GLMFULL_WEIGHTD_SOCKET": SOCKET,
+                "GLMFULL_EXPERT_POOL_BYTES": "1", "GLMFULL_SPINE_BUDGET_BYTES": "1", "GLMFULL_MEMORY_MAX": "1G",
+                "GLMFULL_SEQUENCES": "8", "GLMFULL_ROWS": "16", "GLMFULL_POSITIONS": "2048", "GLMFULL_INFLIGHT": "1",
+                "GLMFULL_API_PORT": "8446", "GLMFULL_API_BUILD": "/opt/api", "GLMFULL_API_TOKENIZER": "/opt/tokenizer.json"}
+    with tempfile.TemporaryDirectory() as directory:
+        fake = Path(directory)
+        log = fake / "remote.log"
+        for tool in ("ssh", "scp"):
+            (fake / tool).write_text(f'#!/bin/sh\nprintf \'{tool}\' >> "{log}"\nfor a in "$@"; do printf \' [%s]\' "$a" >> "{log}"; done\necho >> "{log}"\n')
+            (fake / tool).chmod(0o755)
+        path = f"{fake}:{Path(sys.executable).parent}:/usr/bin:/bin"
+
+        def lane(command, extra):
+            if log.exists():
+                log.unlink()
+            result = subprocess.run(["bash", str(ROOT / "tools/glm53full_lane.sh"), *command], capture_output=True, text=True,
+                                    env={"PATH": path, "HOME": directory, **settings, **extra})
+            return result, (log.read_text().splitlines() if log.exists() else [])
+
+        for command in (["api"], ["api-stop"], ["decode", "1,2", "3"]):
+            for host in ("sparkf", "spark0", "sparka"):
+                result, calls = lane(command, {"GLMFULL_API_HOST": host})
+                if result.returncode != 2 or "refused" not in result.stderr or calls:
+                    failures.append(f"{command[0]} with GLMFULL_API_HOST={host}: rc={result.returncode} remote calls={len(calls)}")
+            for extra in ({}, {"GLMFULL_API_HOST": "rtx5090"}):
+                result, calls = lane(command, extra)
+                hosts = set()
+                for call in calls:
+                    words = [w.strip("[]") for w in call.split(" ")[1:]]
+                    if call.startswith("ssh "):
+                        hosts.add([w for w in words if not w.startswith("-") and "=" not in w][0])
+                    else:
+                        hosts.update(w.split(":")[0] for w in words if ":" in w)
+                if result.returncode != 0 or not calls or hosts != {"rtx5090"}:
+                    failures.append(f"{command[0]} {extra}: rc={result.returncode} hosts={sorted(hosts)} stderr={result.stderr[-200:]}")
+    return failures
+
+
 def main():
     failures = []
     members = adapter_members()
@@ -90,6 +131,7 @@ def main():
                             env={"PATH": "/usr/bin:/bin"})
     if script.returncode == 0 or "GLMFULL_LANE" not in script.stderr:
         failures.append("glm53full_lane.sh runs without its settings")
+    failures += api_host_problems()
     for failure in failures:
         print(failure)
     print(f"glm53full lane: {'FAIL' if failures else 'PASS'}")
