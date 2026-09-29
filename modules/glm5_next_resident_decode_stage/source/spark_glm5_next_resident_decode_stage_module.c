@@ -354,6 +354,7 @@ struct SparkGlm5NextModuleState
 	uint32_t wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_REASONS];
 	uint32_t graph_path_requested;
 	uint32_t l2_prefetch;
+	SparkGlm5NextL2PrefetchShape l2_prefetch_shape;
 	uint64_t l2_prefetch_rounds;
 	uint32_t verify_rows_max;
 	uint32_t verify_drafter;
@@ -3532,7 +3533,7 @@ static uint32_t SparkGlm5NextWalkReduce(SparkGlm5NextTpChain *chain,void *device
 		return(1u);
 	if ( state->l2_prefetch != 0u && wave->tp_degree > 1u )
 	{
-		if ( SparkGlm5NextL2PrefetchAfterRound(wave,layer,site,&placed) != 0 )
+		if ( SparkGlm5NextL2PrefetchAfterRound(wave,layer,site,&state->l2_prefetch_shape,&placed) != 0 )
 			return(20u + site);
 		state->l2_prefetch_rounds += placed;
 	}
@@ -6533,6 +6534,62 @@ static SparkStatus SparkGlm5NextValidateSpeculation(const SparkGlm5NextModuleSta
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkGlm5NextEnvDecimal(const char *name,const char *text,uint32_t *value)
+{
+	char *end = 0;
+	unsigned long long parsed;
+	if ( text == 0 || text[0] < '0' || text[0] > '9' )
+	{
+		fprintf(stderr,"%s must be a decimal number, found '%s'\n",name,text != 0 ? text : "");
+		return(0u);
+	}
+	errno = 0;
+	parsed = strtoull(text,&end,10);
+	if ( errno != 0 || end == text || *end != '\0' || parsed > UINT32_MAX )
+	{
+		fprintf(stderr,"%s must be a decimal number below 2^32, found '%s'\n",name,text);
+		return(0u);
+	}
+	*value = (uint32_t)parsed;
+	return(1u);
+}
+
+static SparkStatus SparkGlm5NextConfigureL2Prefetch(SparkGlm5NextModuleState *state)
+{
+	const char *l2_env = getenv("SPARK_GLM5_NEXT_L2_PREFETCH");
+	const char *bytes_env = getenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES");
+	const char *blocks_env = getenv("SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS");
+	if ( l2_env != 0 && strcmp(l2_env,"0") != 0 && strcmp(l2_env,"1") != 0 )
+	{
+		fprintf(stderr,"SPARK_GLM5_NEXT_L2_PREFETCH must be 0 or 1\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	state->l2_prefetch = l2_env != 0 && strcmp(l2_env,"0") == 0 ? 0u : 1u;
+	if ( state->l2_prefetch == 0u && (bytes_env != 0 || blocks_env != 0) )
+	{
+		fprintf(stderr,"SPARK_GLM5_NEXT_L2_PREFETCH_BYTES and SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS shape the prefetch; they need SPARK_GLM5_NEXT_L2_PREFETCH=1 or unset\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	state->l2_prefetch_shape.bytes = SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_DEFAULT;
+	state->l2_prefetch_shape.blocks = SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_DEFAULT;
+	if ( bytes_env != 0 && SparkGlm5NextEnvDecimal("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES",bytes_env,&state->l2_prefetch_shape.bytes) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( blocks_env != 0 && SparkGlm5NextEnvDecimal("SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS",blocks_env,&state->l2_prefetch_shape.blocks) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkGlm5NextL2PrefetchShapeValid(&state->l2_prefetch_shape) == 0u )
+	{
+		fprintf(stderr,"SPARK_GLM5_NEXT_L2_PREFETCH_BYTES must be a multiple of %u from %u to %u and SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS from 1 to %u, found bytes=%u blocks=%u\n",
+			SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_STEP,SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_STEP,SPARK_GLM5_NEXT_L2_PREFETCH_BYTES_MAX,SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS_MAX,
+			state->l2_prefetch_shape.bytes,state->l2_prefetch_shape.blocks);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( state->l2_prefetch != 0u )
+		fprintf(stderr,"GLM l2 prefetch=on bytes=%u blocks=%u\n",state->l2_prefetch_shape.bytes,state->l2_prefetch_shape.blocks);
+	else
+		fprintf(stderr,"GLM l2 prefetch=off\n");
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *state)
 {
 	{
@@ -6544,14 +6601,9 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 		}
 	}
 	{
-		const char *l2_env = getenv("SPARK_GLM5_NEXT_L2_PREFETCH");
-		if ( l2_env != 0 && strcmp(l2_env,"0") != 0 && strcmp(l2_env,"1") != 0 )
-		{
-			fprintf(stderr,"SPARK_GLM5_NEXT_L2_PREFETCH must be 0 or 1\n");
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		}
-		state->l2_prefetch = l2_env != 0 && strcmp(l2_env,"0") == 0 ? 0u : 1u;
-		fprintf(stderr,"GLM l2 prefetch=%s\n",state->l2_prefetch != 0u ? "on" : "off");
+		SparkStatus l2_status = SparkGlm5NextConfigureL2Prefetch(state);
+		if ( l2_status != SPARK_STATUS_OK )
+			SPARK_RETURN(l2_status);
 	}
 	{
 		const char *graph_env = getenv("SPARK_GLM5_NEXT_GRAPH_PATH");
