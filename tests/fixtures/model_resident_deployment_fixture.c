@@ -144,6 +144,9 @@ static int32_t TestModelResidentWriteBody(
 		if ( status == 0 && fputc('}',stream) == EOF )
 			status = -10;
 	}
+	if ( status == 0 && fixture->chat_template_json != 0 &&
+		fprintf(stream,",\"chat_template\":%s",fixture->chat_template_json) < 0 )
+		status = -11;
 	if ( status == 0 && fputs("}",stream) == EOF )
 		status = -7;
 	return(status);

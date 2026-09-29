@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import importlib.util
 import subprocess
 import tempfile
@@ -106,6 +107,37 @@ def main() -> int:
         invalid = copy.deepcopy(specification)
         invalid["tokenizer"] = metadata
         expect_failure(module, invalid, f"invalid tokenizer accepted: {metadata!r}")
+    with tempfile.TemporaryDirectory(prefix="deployment-generator-chat-") as directory:
+        output = Path(directory) / "deployment.json"
+        for family in ("glm5_next", "gemma4"):
+            chat_template = json.loads(
+                (ROOT / "model-families" / family / "chat_template.json").read_text(encoding="utf-8"))
+            candidate = copy.deepcopy(specification)
+            candidate["tokenizer"] = tokenizer
+            candidate["chat_template"] = chat_template
+            generated = module.build_deployment(candidate)
+            assert generated["chat_template"] == chat_template
+            output.write_text(module.render_deployment(generated), encoding="utf-8")
+            parsed = subprocess.run(
+                [str(ROOT / "build/test_model_resident_deployment"), str(output)],
+                check=True, capture_output=True, text=True, cwd=ROOT, timeout=10)
+            assert parsed.stdout.endswith(
+                f"chat_template stop_markers={len(chat_template['stop_markers'])}\n")
+        base = json.loads(
+            (ROOT / "model-families" / "gemma4" / "chat_template.json").read_text(encoding="utf-8"))
+        for change in ({"stop_markers": []}, {"stop_markers": [""]},
+                       {"stop_markers": ["<x>"] * 9}, {"generation": ""},
+                       {"user": None}, {"prefix": None}, {"system": None},
+                       {"generation_thinking": None}, {"observation": 7},
+                       {"extra": ""}):
+            invalid = copy.deepcopy(specification)
+            invalid["chat_template"] = {**base, **change}
+            expect_failure(module, invalid, f"invalid chat_template accepted: {change!r}")
+        missing = copy.deepcopy(base)
+        del missing["turn_suffix"]
+        invalid = copy.deepcopy(specification)
+        invalid["chat_template"] = missing
+        expect_failure(module, invalid, "chat_template without turn_suffix accepted")
     source = TOOL.read_text(encoding="utf-8").lower()
     for forbidden in ("glm", "dsv", "codec", "int8", "fp8", "mxfp4"):
         assert forbidden not in source

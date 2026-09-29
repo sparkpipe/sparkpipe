@@ -616,6 +616,31 @@ static void TestDeferredVerify(SparkTpDeviceCollective *collective,SparkTpMeshRo
     control->error_word = 0u;
 }
 
+static void TestGraphSettle(SparkTpDeviceCollective *collective,SparkTpMeshRoundControl *control)
+{
+    SparkTpDeviceCollectiveSubmission submission;
+    uint16_t local[256] = {0},output[512] = {0};
+    uint64_t graph_error = 5u;
+    uint32_t syncs;
+    TestDeferredSubmission(&submission,local,output);
+    CHECK(SparkTpDeviceCollectiveGraphSettle(collective,(void *)1,0) == SPARK_STATUS_INVALID_ARGUMENT,"settle needs somewhere to put the error word");
+    CHECK(SparkTpDeviceCollectiveGraphSettle(collective,0,&graph_error) == SPARK_STATUS_INVALID_ARGUMENT && graph_error == 0u,"settle needs the replay stream");
+    CHECK(SparkTpDeviceCollectiveArmCapture(collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK,"a captured round before a graph step");
+    control->seq = 41u;
+    control->error_word = 0u;
+    syncs = cuda_stub_stream_sync_calls;
+    CHECK(SparkTpDeviceCollectiveGraphSettle(collective,(void *)1,&graph_error) == SPARK_STATUS_OK && graph_error == 0u && cuda_stub_stream_sync_calls == syncs + 1u,"one read-back settles both the capture state and the error word");
+    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs + 1u,"after settling, a stream-ordered round runs without a read-back");
+    control->rounds_done = 0u;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_IO_ERROR,"after settling, the round is deferred, not captured: verify expects its completion");
+    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK,"a second deferred round after settling");
+    control->rounds_done = 1u;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_OK,"the deferred round after settling verifies");
+    control->error_word = 9u;
+    CHECK(SparkTpDeviceCollectiveGraphSettle(collective,(void *)1,&graph_error) == SPARK_STATUS_OK && graph_error == 9u,"settle reports the device error word");
+    control->error_word = 0u;
+}
+
 static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
 {
     SparkTpDeviceCollective collective = {0};
@@ -656,6 +681,7 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
     CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 0u && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured round records its own counter reset while deferred rounds are pending");
     control->rounds_done = 1u;
     CHECK(SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK,"the pending deferred round still verifies");
+    TestGraphSettle(&collective,control);
     SparkTpDeviceCollectiveDestroy(&collective);
     unsetenv("SPARK_TP_WAIT_MODE");
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK,"spin fixture");

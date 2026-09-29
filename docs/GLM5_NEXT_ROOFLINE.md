@@ -444,6 +444,16 @@ round-control block once. A set `error_word` or a short `rounds_done` prints
 bands and fails the frame, which rolls back its cache lanes like any other
 failed frame.
 
+After a graph replay, `SparkTpDeviceCollectiveGraphSettle` reads each band's
+round-control block once (one 144-byte copy on the idle replay stream). That
+read ends the capture state as `SparkTpDeviceCollectiveDisarmCapture` did and
+returns the device error word as `SparkTpDeviceCollectiveGraphError` did. Before,
+each graph step made ten synchronous 8-byte copies: the disarm read two words
+per band, the graph error read one word per band, and `SparkGlm5NextGraphEnsure`
+disarmed a second time. Each such copy costs about 5 us on GB10
+(`qualification/glm5next/performance/glmflash_b1_20260929/ab/syncprobe_sparkf.txt`),
+so the step's host time drops by about 40 us.
+
 A chain runs the state machine instead when experts are not pinned, with MTP,
 speculative verify or the T1 trace, with `SPARK_GLM5_NEXT_GRAPH_RECORD_OPS`
 set, or when either collective lacks hardware-wait rounds
@@ -1561,8 +1571,18 @@ How it behaves:
 - `GRAPH-CAPTURE-OK` reports `l2_prefetch_rounds`.
 - Linear chains and rounds without a wait-value node get no load kernel.
 - `SPARK_GLM5_NEXT_L2_PREFETCH=0` turns it off; `1` or unset turns it on.
-  Any other value fails configuration. The module prints
-  `GLM l2 prefetch=on|off`.
+  Any other value fails configuration.
+- `SPARK_GLM5_NEXT_L2_PREFETCH_BYTES` caps the bytes one round loads: a
+  multiple of 65536 from 65536 to 12582912 (12 MiB, the default).
+  `SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS` sets the load kernel's CTAs, 1 to 192
+  (default 48, one per GB10 SM). Fewer bytes or CTAs leave DRAM bandwidth to
+  the round's own transport while the load runs. Any other value, or either
+  variable with `SPARK_GLM5_NEXT_L2_PREFETCH=0`, fails configuration.
+- The module prints `GLM l2 prefetch=on bytes=<cap> blocks=<ctas>` or
+  `GLM l2 prefetch=off`.
+- The bench takes the same shape as `--l2-prefetch-bytes N` and
+  `--l2-prefetch-blocks N`, and prints `l2_bytes=` and `l2_blocks=` on
+  `ROOFLINE-GRAPH`.
 - It only runs when `tp_degree > 1`.
 - The arithmetic is unchanged, so outputs are bit identical: `ROOFLINE-HASH`
   matches at B1 and B8.
@@ -1589,7 +1609,40 @@ after the first kernel ran. That is the shape of the hardware-wait round.
 On the fleet this predicts about 1.9-2.5 ms less per B1 token, if production
 rounds keep DRAM idle for 40-50 us. That prediction is for a fleet window to
 test.
+
 Results are in `qualification/glm5next/performance/glmflash_b1_20260929/`.
+
+Release a597ff0 (2026-09-29) measured it on the fleet: over the rows=1 graph
+chains, compute per step fell by 2.4-3.2 ms against a477cfa, but the
+device-measured peer wait rose by 1.66 ms (about 18 us per round), so the
+step gained only 0.3-1.2 ms. The load kernel only overlaps the round's peer
+wait. The source wait that it does not overlap stayed at 0.45 ms per step.
+That points at the load slowing the transport it overlaps. Each attention
+round loads 12 MiB, which takes about 53 us at 235 GB/s and so fills the
+whole wait, while weightd's CPU relay and the NIC work through the same
+LPDDR5X. The byte and CTA knobs let a fleet window find the shape that keeps
+the compute gain without the extra peer wait.
+
+Single-GPU bench, sparkf, B1, context 1024, 45 us host-released waits
+(`--round-spin-us 45 --round-wait 2`), median of 3 interleaved runs of 100
+replays. Production GLM and a K3 lane shared the GPU, so the spread is
+0.2-0.8 ms. `ROOFLINE-HASH` was identical for every shape.
+
+| shape (bytes x CTAs) | step ms |
+|---|---:|
+| off | 17.61 |
+| 12 MiB x 48 (default) | 14.97 |
+| 8 MiB x 48 | 15.12 |
+| 6 MiB x 48 | 15.51 |
+| 4 MiB x 48 | 16.05 |
+| 12 MiB x 24 | 15.63 |
+| 6 MiB x 16 | 15.62 |
+
+Roofline for this bench step: memory 70% at 14.97 ms and 60% at 17.61 ms
+(2.56 GB per step, 243 GB/s peak) | compute about 1-2% | transport not
+measured, because the waits are emulated. The bench has no NIC or relay on
+the wait path, so it only shows the compute side of each shape: 8 MiB keeps
+94% of the default's gain, 6 MiB 80%, 4 MiB 59%.
 
 ## Next steps
 

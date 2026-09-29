@@ -1,8 +1,11 @@
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "sparkpipe/spark_chat_template.h"
+#include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_tokenizer_sidecar.h"
@@ -172,6 +175,198 @@ static void TestGlm5NextDeploymentServesText(void)
 	SparkModelResidentDeploymentDestroy(&deployment);
 }
 
+static char *TestReadText(const char *path)
+{
+	FILE *file;
+	long size;
+	char *text;
+	file = fopen(path,"rb");
+	assert(file != 0);
+	assert(fseek(file,0,SEEK_END) == 0);
+	size = ftell(file);
+	assert(size > 0);
+	assert(fseek(file,0,SEEK_SET) == 0);
+	text = malloc((size_t)size + 1u);
+	assert(text != 0);
+	assert(fread(text,1u,(size_t)size,file) == (size_t)size);
+	text[size] = '\0';
+	assert(fclose(file) == 0);
+	return(text);
+}
+
+static SparkStatus TestLoadWithChatTemplate(const char *chat_template_json,
+	SparkModelResidentDeployment *deployment)
+{
+	char *base,path[256];
+	FILE *file;
+	SparkStatus status;
+	base = TestReadText("tests/fixtures/model_resident_deployment.json");
+	assert(base[0] == '{');
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-chat-template-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	if ( chat_template_json != 0 )
+		assert(fprintf(file,"{\"chat_template\":%s,%s",chat_template_json,base + 1) > 0);
+	else
+		assert(fputs(base,file) != EOF);
+	assert(fclose(file) == 0);
+	free(base);
+	SparkModelResidentDeploymentReset(deployment);
+	status = SparkModelResidentDeploymentLoad(path,deployment);
+	assert(unlink(path) == 0);
+	return(status);
+}
+
+static void TestRender(const SparkModelResidentDeployment *deployment, const char *body,
+	bool thinking, SparkChatTemplateOutcome expected, const char *expected_text)
+{
+	SparkJsonDocument document;
+	char *text = 0;
+	uint32_t text_bytes = 0u;
+	SparkChatTemplateOutcome outcome;
+	SparkJsonDocumentReset(&document);
+	assert(SparkJsonParseText(body,strlen(body),&document) == SPARK_STATUS_OK);
+	outcome = SparkChatTemplateRender(&deployment->chat_template,&document,
+		SparkJsonGetRootToken(&document),thinking,&text,&text_bytes);
+	if ( outcome != expected || (expected_text != 0 && (text == 0 || strcmp(text,expected_text) != 0)) )
+	{
+		fprintf(stderr,"chat template render: outcome %d (want %d) text [%s] want [%s]\n",
+			(int)outcome,(int)expected,text != 0 ? text : "",expected_text != 0 ? expected_text : "");
+		assert(0);
+	}
+	if ( expected_text != 0 )
+		assert(text_bytes == strlen(expected_text));
+	else
+		assert(text == 0 && text_bytes == 0u);
+	free(text);
+	SparkJsonDocumentDestroy(&document);
+}
+
+static void TestChatTemplateSchema(const char *chat_template_json, SparkStatus expected)
+{
+	SparkModelResidentDeployment deployment;
+	SparkStatus status = TestLoadWithChatTemplate(chat_template_json,&deployment);
+	if ( status != expected )
+		fprintf(stderr,"chat_template schema: status %d want %d for %s\n",(int)status,(int)expected,chat_template_json);
+	assert(status == expected);
+	if ( expected == SPARK_STATUS_OK )
+		SparkModelResidentDeploymentDestroy(&deployment);
+}
+
+static void TestChatTemplates(void)
+{
+	static const char user_hi[] = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+	static const char system_history[] =
+		"{\"messages\":[{\"role\":\"system\",\"content\":\"Be terse.\"},"
+		"{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"ok\"},"
+		"{\"role\":\"user\",\"content\":\"bye\"}]}";
+	static const char minimal[] =
+		"{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}";
+	SparkModelResidentDeployment deployment;
+	SparkTokenizerSpecialToken special[4];
+	uint32_t stop_ids[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
+	uint32_t stop_count = 0u;
+	const char *unresolved = 0;
+	char *glm = TestReadText("model-families/glm5_next/chat_template.json");
+	char *gemma = TestReadText("model-families/gemma4/chat_template.json");
+
+	assert(TestLoadWithChatTemplate(0,&deployment) == SPARK_STATUS_OK);
+	assert(deployment.chat_template.declared == 0u);
+	TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_MISSING,0);
+	TestRender(&deployment,"{\"prompt\":\"hi\"}",false,SPARK_CHAT_TEMPLATE_NOT_CHAT,0);
+	SparkModelResidentDeploymentDestroy(&deployment);
+
+	assert(TestLoadWithChatTemplate(glm,&deployment) == SPARK_STATUS_OK);
+	assert(deployment.chat_template.declared == 1u && deployment.chat_template.stop_marker_count == 3u);
+	TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
+		"[gMASK]<sop><|user|>\nhi<|assistant|>\n<think></think>\n");
+	TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+		"[gMASK]<sop><|user|>\nhi<|assistant|>\n<think>");
+	TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+		"[gMASK]<sop><|system|>\nBe terse.<|user|>\nhi<|assistant|>\n<think>ok<|user|>\nbye<|assistant|>\n<think>");
+	TestRender(&deployment,"{\"messages\":[{\"role\":\"observation\",\"content\":\"42\"}]}",false,
+		SPARK_CHAT_TEMPLATE_RENDERED,"[gMASK]<sop><|observation|>\n42<|assistant|>\n<think></think>\n");
+	TestRender(&deployment,"{\"messages\":[{\"role\":\"tool\",\"content\":\"42\"}]}",false,
+		SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED,0);
+	TestRender(&deployment,"{\"messages\":[{\"role\":\"user\"}]}",false,SPARK_CHAT_TEMPLATE_INVALID_MESSAGES,0);
+	TestRender(&deployment,"{\"messages\":[\"hi\"]}",false,SPARK_CHAT_TEMPLATE_INVALID_MESSAGES,0);
+	TestRender(&deployment,"{\"messages\":{}}",false,SPARK_CHAT_TEMPLATE_INVALID_MESSAGES,0);
+	TestRender(&deployment,"{\"messages\":[]}",false,SPARK_CHAT_TEMPLATE_INVALID_MESSAGES,0);
+	memset(special,0,sizeof(special));
+	special[0].text = (char *)"<|user|>"; special[0].text_bytes = 8u; special[0].token_id = 11u; special[0].is_special = 1u;
+	special[1].text = (char *)"<|assistant|>"; special[1].text_bytes = 13u; special[1].token_id = 13u; special[1].is_special = 1u;
+	special[2].text = (char *)"<|observation|>"; special[2].text_bytes = 15u; special[2].token_id = 17u; special[2].is_special = 1u;
+	special[3].text = (char *)"<think>"; special[3].text_bytes = 7u; special[3].token_id = 19u; special[3].is_special = 0u;
+	assert(SparkChatTemplateResolveStops(&deployment.chat_template,special,4u,stop_ids,&stop_count,&unresolved) == SPARK_STATUS_OK);
+	assert(stop_count == 3u && stop_ids[0] == 11u && stop_ids[1] == 17u && stop_ids[2] == 13u && unresolved == 0);
+	assert(SparkChatTemplateResolveStops(&deployment.chat_template,special,2u,stop_ids,&stop_count,&unresolved) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(unresolved != 0 && strcmp(unresolved,"<|observation|>") == 0 && stop_count == 0u);
+	special[2].text = (char *)"<|user|>"; special[2].text_bytes = 8u;
+	assert(SparkChatTemplateResolveStops(&deployment.chat_template,special,4u,stop_ids,&stop_count,&unresolved) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(unresolved != 0 && strcmp(unresolved,"<|user|>") == 0);
+	SparkModelResidentDeploymentDestroy(&deployment);
+
+	assert(TestLoadWithChatTemplate(gemma,&deployment) == SPARK_STATUS_OK);
+	assert(deployment.chat_template.declared == 1u && deployment.chat_template.stop_marker_count == 2u);
+	TestRender(&deployment,
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of France? Answer in one word.\"}]}",
+		false,SPARK_CHAT_TEMPLATE_RENDERED,
+		"<bos><|turn>user\nWhat is the capital of France? Answer in one word.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+	TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+		"<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n");
+	TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+		"<bos><|turn>system\n<|think|>\nBe terse.<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\nok<turn|>\n<|turn>user\nbye<turn|>\n<|turn>model\n");
+	TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+		"<bos><|turn>system\nBe terse.<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\nok<turn|>\n<|turn>user\nbye<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+	TestRender(&deployment,"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"system\",\"content\":\"s\"}]}",
+		true,SPARK_CHAT_TEMPLATE_RENDERED,
+		"<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nhi<turn|>\n<|turn>system\ns<turn|>\n<|turn>model\n");
+	TestRender(&deployment,"{\"messages\":[{\"role\":\"observation\",\"content\":\"42\"}]}",false,
+		SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED,0);
+	SparkModelResidentDeploymentDestroy(&deployment);
+
+	assert(TestLoadWithChatTemplate(minimal,&deployment) == SPARK_STATUS_OK);
+	TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,"UhiG");
+	TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_THINKING_UNSUPPORTED,0);
+	TestRender(&deployment,"{\"messages\":[{\"role\":\"system\",\"content\":\"s\"}]}",false,
+		SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED,0);
+	SparkModelResidentDeploymentDestroy(&deployment);
+
+	TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[]}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":\"S\","
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"T\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":\"AT\","
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"],\"tools\":\"\"}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("{\"prefix\":null,\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"\"]}",SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplateSchema("\"[gMASK]\"",SPARK_STATUS_SCHEMA_ERROR);
+	free(glm);
+	free(gemma);
+	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM and Gemma families render their publisher shapes, undeclared roles and thinking are refused, stop markers resolve to exactly one special token)\n");
+}
+
 int main(int argc,char **argv)
 {
 	SparkModelResidentDeployment deployment;
@@ -190,6 +385,8 @@ int main(int argc,char **argv)
 			else
 				printf("%s\n%u\n%s\n",deployment.tokenizer_asset_path,
 				    deployment.tokenizer_vocabulary_size,deployment.tokenizer_asset_sha256);
+			if ( deployment.chat_template.declared != 0u )
+				printf("chat_template stop_markers=%u\n",deployment.chat_template.stop_marker_count);
 		}
 		SparkModelResidentDeploymentDestroy(&deployment);
 		return(status == SPARK_STATUS_OK ? 0 : 1);
@@ -261,5 +458,6 @@ int main(int argc,char **argv)
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_path_only.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_bad_sha.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_zero_vocab.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	TestChatTemplates();
 	return(0);
 }

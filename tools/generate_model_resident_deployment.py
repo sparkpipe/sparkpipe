@@ -23,6 +23,15 @@ ROOT_KEYS = {
     "topology",
 }
 TOKENIZER_KEYS = {"path", "vocabulary_size", "sha256"}
+CHAT_TEMPLATE_TEXT_KEYS = {"prefix", "thinking_prefix", "turn_suffix"}
+CHAT_TEMPLATE_MARKER_KEYS = {"user", "assistant", "generation"}
+CHAT_TEMPLATE_NULLABLE_KEYS = {
+    "system", "system_thinking", "observation", "assistant_thinking",
+    "generation_thinking",
+}
+CHAT_TEMPLATE_KEYS = (CHAT_TEMPLATE_TEXT_KEYS | CHAT_TEMPLATE_MARKER_KEYS |
+                      CHAT_TEMPLATE_NULLABLE_KEYS | {"stop_markers"})
+CHAT_TEMPLATE_STOP_MARKERS_MAX = 8
 ADAPTER_KEYS = {"shared_object_path"}
 DRIVER_KEYS = {"shared_object_path", "program_name"}
 TRANSPORT_KEYS = {"shared_object_path", "mode", "control_port_base"}
@@ -232,7 +241,8 @@ def build_endpoint(template: dict[str, Any], host: str, rank: int,
 
 
 def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
-    exact_object(specification, ROOT_KEYS | (specification.keys() & {"tokenizer"}),
+    exact_object(specification, ROOT_KEYS | (specification.keys() &
+                                             {"tokenizer", "chat_template"}),
                  "deployment specification")
     if specification["schema_version"] != 2:
         raise DeploymentError("schema_version must be 2")
@@ -345,7 +355,37 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
                                              4294967295),
             "sha256": digest,
         }
+    if "chat_template" in specification:
+        deployment["chat_template"] = chat_template_value(
+            specification["chat_template"])
     return deployment
+
+
+def chat_template_value(value: Any) -> dict[str, Any]:
+    template = exact_object(value, CHAT_TEMPLATE_KEYS, "chat_template")
+    for key in CHAT_TEMPLATE_TEXT_KEYS:
+        if not isinstance(template[key], str):
+            raise DeploymentError(f"chat_template.{key} must be a string")
+    for key in CHAT_TEMPLATE_MARKER_KEYS:
+        text_value(template[key], f"chat_template.{key}")
+    for key in CHAT_TEMPLATE_NULLABLE_KEYS:
+        if template[key] is not None and not isinstance(template[key], str):
+            raise DeploymentError(f"chat_template.{key} must be a string or null")
+    if (template["system"] is None) != (template["system_thinking"] is None):
+        raise DeploymentError("chat_template.system and system_thinking are declared together")
+    if (template["assistant_thinking"] is None) != (template["generation_thinking"] is None):
+        raise DeploymentError(
+            "chat_template.assistant_thinking and generation_thinking are declared together")
+    if template["generation_thinking"] is None and template["thinking_prefix"] != "":
+        raise DeploymentError("chat_template.thinking_prefix needs generation_thinking")
+    markers = template["stop_markers"]
+    if (not isinstance(markers, list) or not markers or
+            len(markers) > CHAT_TEMPLATE_STOP_MARKERS_MAX):
+        raise DeploymentError(
+            f"chat_template.stop_markers must hold 1..{CHAT_TEMPLATE_STOP_MARKERS_MAX} strings")
+    for marker in markers:
+        text_value(marker, "chat_template.stop_markers[]")
+    return copy.deepcopy(template)
 
 
 def load_specification(path: Path) -> dict[str, Any]:
