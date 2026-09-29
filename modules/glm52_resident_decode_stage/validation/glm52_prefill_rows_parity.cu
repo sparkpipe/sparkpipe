@@ -425,8 +425,9 @@ int main(int argc,char **argv)
 				widths[index],split,waves,differing,first == UINT32_MAX ? -1 : (int)first,difference,
 				memcmp(rig->mode_kv,rig->reference_kv,rig->kv_bytes) == 0 ? "EQUAL" : "DIFFER",
 				memcmp(rig->mode_index,rig->reference_index,rig->index_bytes) == 0 ? "EQUAL" : "DIFFER",
-				differing == 0u ? "BIT-EXACT" : "DIFFER");
-			failures += split != 0u && exact_required != 0 && differing != 0u ? 1 : 0;
+				differing == 0u ? "BIT-EXACT" : (widths[index] > LM_SKINNY_ROWS || split == 0u ? "DIFFER-EXPECTED" : "DIFFER"));
+			failures += split != 0u && exact_required != 0 && widths[index] <= LM_SKINNY_ROWS && differing != 0u ? 1 : 0;
+			failures += split == 0u && widths[index] > 2u && differing == 0u ? 1 : 0;
 		}
 	for (index=0u; index<sizeof(anchors)/sizeof(anchors[0]); index++)
 	{

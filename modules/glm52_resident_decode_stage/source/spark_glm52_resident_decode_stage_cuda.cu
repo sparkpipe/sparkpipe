@@ -14,6 +14,11 @@
 
 #define SPARK_GLM_CUDA_THREADS 256u
 
+extern "C" uint32_t SparkGlm52ExactWaveRows(void)
+{
+	return(LM_SKINNY_ROWS);
+}
+
 extern "C" int32_t SparkGlm52T1Enabled(void)
 {
 	static int32_t t1_enabled = -1;

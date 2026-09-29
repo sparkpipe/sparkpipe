@@ -154,6 +154,7 @@ extern "C" {
 #endif
 
 int32_t SparkGlm52T1Enabled(void);
+uint32_t SparkGlm52ExactWaveRows(void);
 int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer);

@@ -48,6 +48,7 @@ static int32_t Find(const char *entry,uint32_t from)
 }
 
 int32_t SparkGlm52T1Enabled(void) { return((int32_t)T1_ENABLED); }
+uint32_t SparkGlm52ExactWaveRows(void) { return(8u); }
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { Log("begin",wave->maximum_context); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split == 0u); Log("attn",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("project",layer); return(0); }

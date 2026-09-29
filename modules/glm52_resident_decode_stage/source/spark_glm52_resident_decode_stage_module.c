@@ -1955,7 +1955,8 @@ static SparkStatus SparkGlm52PrefillWaveRowsConfigure(SparkGlm52ModuleState *sta
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	state->prefill_wave_rows = (uint32_t)value;
-	fprintf(stderr,"GLM52-PREFILL-WAVE-ROWS rows=%u rank=%u\n",state->prefill_wave_rows,state->tp_rank);
+	fprintf(stderr,"GLM52-PREFILL-WAVE-ROWS rows=%u exact_rows=%u exact=%s rank=%u\n",state->prefill_wave_rows,SparkGlm52ExactWaveRows(),
+		state->prefill_wave_rows <= SparkGlm52ExactWaveRows() ? "yes" : "no: waves above exact_rows use the GEMM path and are not bit-equal to one-row prefill",state->tp_rank);
 	return(SPARK_STATUS_OK);
 }
 
