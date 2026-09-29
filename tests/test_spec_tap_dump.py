@@ -110,15 +110,20 @@ def check_stale_reads():
     stale_rows = stream(9, [40, 41, 42, 43, 44, 45], 5, [11, 12, 13, 11, 12], 40)
     stale_token = [(fields[:3] + ((99,) if fields[1] == 3 else (fields[3],)) + fields[4:], rows) for fields, rows in stream(10, [50, 51, 52, 53, 54, 55], 4, [21, 22, 23, 24, 25], 50)]
     foreign = stream(11, [60, 11, 62], 1, [30, 2], 60)
+    predicted = [(fields[:3] + ((900 + fields[1],) if fields[1] < 2 else (fields[3],)) + fields[4:], rows) for fields, rows in stream(12, [70, 71, 72, 73, 74, 75], 3, [41, 42, 43, 44, 45], 70)]
+    prefill_tail = [(fields[:3] + ((999,) if fields[1] == 2 else (fields[3],)) + fields[4:], rows) for fields, rows in stream(13, [80, 81, 82, 83, 84], 3, [51, 52, 53, 54], 80)]
+    own_token = stream(14, [10, 12, 90], 1, [1, 2], 90)
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "stale.sptd"
-        path.write_bytes(sptd_bytes(clean + shared))
-        assert spec_tap_dump.summarize(str(path))["problems"] == [], "identical rows at the same position of sequences with a shared prefix are legitimate"
-        path.write_bytes(sptd_bytes(clean + shared + stale_rows + stale_token + foreign))
+        path.write_bytes(sptd_bytes(clean + shared + predicted))
+        assert spec_tap_dump.summarize(str(path))["problems"] == [], "prefill rows carry the model's prediction, and identical rows at the same position of sequences with a shared prefix are legitimate"
+        path.write_bytes(sptd_bytes(clean + shared + stale_rows + stale_token + foreign + predicted + prefill_tail + own_token))
         problems = spec_tap_dump.summarize(str(path))["problems"]
         assert problems == ["sequence 10: 1 next tokens differ from the following position's token (stale read)",
+                            "sequence 13: 1 next tokens differ from the following position's token (stale read)",
                             "sequence 9: 2 tap rows repeat another position's rows (stale read)",
-                            "sequence 11: 1 tap rows repeat another position's rows (stale read)"], problems
+                            "sequence 11: 1 tap rows repeat another position's rows (stale read)",
+                            "sequence 14: 1 tap rows repeat another position's rows (stale read)"], problems
         assert spec_tap_dump.main(["verify", str(path)]) == 1
 
 
