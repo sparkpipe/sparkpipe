@@ -394,3 +394,7 @@ extern "C" int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *w
 #include "sparkpipe/family/glm/spark_glm_cuda_wave.cuh"
 
 #include "sparkpipe/family/glm/spark_glm_layer_mlp_experts.cuh"
+
+#ifdef SPARK_SCORE_DUMP
+#include "spark_glm52_score_launch.cuh"
+#endif
