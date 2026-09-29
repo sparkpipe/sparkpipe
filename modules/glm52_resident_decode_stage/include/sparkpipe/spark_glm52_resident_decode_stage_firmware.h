@@ -83,6 +83,11 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
 	uint32_t decode_split_context_threshold;
+#ifdef SPARK_SCORE_DUMP
+	const char *score_dump_directory;
+	const char *score_probe_path;
+	const char *score_tier2_rows_path;
+#endif
 } SparkGlm52ResidentDecodeStageNodeContext;
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES \
