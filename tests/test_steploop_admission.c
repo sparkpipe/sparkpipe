@@ -18,6 +18,7 @@
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
+#include "fixtures/test_child_guard.h"
 
 #ifndef TEST_MODEL_RESIDENTD_PATH
 #define TEST_MODEL_RESIDENTD_PATH ""
@@ -87,7 +88,7 @@ static pid_t TestSteploopStartResident(
 	pid_t child;
 	char rank[16];
 	assert(snprintf(rank,sizeof(rank),"%u",rank_index) > 0);
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{
@@ -169,7 +170,24 @@ static uint32_t TestSteploopMaxOpsPerPass(
 	return(value);
 }
 
-static void TestSteploopWaitForSockets(char paths[][108])
+static uint32_t TestSteploopTcpPortOpen(uint32_t port)
+{
+	struct sockaddr_in address;
+	int32_t fd;
+	uint32_t open;
+	fd = socket(AF_INET,SOCK_STREAM,0);
+	if ( fd < 0 )
+		return(0u);
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(0x7f000001u);
+	address.sin_port = htons((uint16_t)port);
+	open = connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0 ? 1u : 0u;
+	close(fd);
+	return(open);
+}
+
+static void TestSteploopWaitForSockets(char paths[][108],uint32_t tcp_port)
 {
 	struct stat status;
 	struct timespec delay;
@@ -178,7 +196,7 @@ static void TestSteploopWaitForSockets(char paths[][108])
 	delay.tv_nsec = 10000000;
 	for (attempt=0u; attempt<500u; attempt++)
 	{
-		ready = 1u;
+		ready = TestSteploopTcpPortOpen(tcp_port);
 		for (rank=1u; rank<TEST_STEPLOOP_RANK_COUNT; rank++)
 			if ( lstat(paths[rank],&status) != 0 || !S_ISSOCK(status.st_mode) )
 				ready = 0u;
@@ -321,7 +339,7 @@ int main(void)
 		children[index] = TestSteploopStartResident(deployment_path,index,stderr_path);
 		assert(snprintf(stderr_paths[index],sizeof(stderr_paths[index]),"%s",stderr_path) > 0);
 	}
-	TestSteploopWaitForSockets(paths);
+	TestSteploopWaitForSockets(paths,tcp_port);
 
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;

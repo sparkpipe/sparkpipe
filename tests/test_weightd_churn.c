@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_sha256.h"
+#include "fixtures/test_child_guard.h"
 
 /* The vortex and the attach-slot leak, at the boundary where they live.
  *
@@ -184,7 +185,7 @@ static void check_midbake_death(const char *socket_path,const char *path)
 		char model[32];
 		int wstatus = 0;
 		snprintf(model,sizeof(model),"churn-vortex-%u",(unsigned)cycle);
-		pid = fork();
+		pid = TestChildGuardFork();
 		if ( pid == 0 )
 		{
 			SparkWeightdClient *child = 0;
@@ -302,6 +303,11 @@ int main(void)
 	SparkWeightdServerDestroy(state.server);
 	CHECK( spark_stub_cuda_outstanding_allocs() == 0u,
 		"no allocations leak across the whole churn run");
+	{
+		char verified[272];
+		assert(snprintf(verified,sizeof(verified),"%s.verified",path) > 0);
+		(void)unlink(verified);
+	}
 	assert(unlink(recording) == 0 && unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
 	fprintf(stderr,"test_weightd_churn: %s\n",
 		test_failures == 0u ? "PASS" : "FAILED");

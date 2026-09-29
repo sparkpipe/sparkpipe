@@ -227,7 +227,7 @@ def main() -> int:
     # -- MTP head
     e(P("eh_proj.weight"), "mtp_eh_proj_weight", "glm52", "mtp_layer",
       "replicated", "bf16",
-      transform="[4096, 8192] on concat(hidden, embed)")
+      transform="[4096, 8192] on concat(enorm(embed), hnorm(hidden)), embed first")
     e(P("enorm.weight"), "mtp_enorm_weight", "glm52", "mtp_layer")
     e(P("hnorm.weight"), "mtp_hnorm_weight", "glm52", "mtp_layer")
     e(P("shared_head.norm.weight"), "mtp_shared_norm_weight", "glm52",
