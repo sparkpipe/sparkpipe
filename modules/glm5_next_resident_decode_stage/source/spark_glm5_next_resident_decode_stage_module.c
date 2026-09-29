@@ -3776,13 +3776,13 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 	if ( SparkGlm5NextLayerKvShardActive(wave,layer) != 0u )
 	{
 		if ( SparkGlm5NextModuleKvShardExchange(chain,0u,0u) != SPARK_STATUS_OK )
-			return(20u);
+			return(24u);
 		if ( SparkGlm5NextLaunchCudaLayerAttentionShardPartial(wave,layer) != 0 )
-			return(21u);
+			return(25u);
 		if ( SparkGlm5NextModuleKvShardExchange(chain,1u,0u) != SPARK_STATUS_OK )
-			return(22u);
+			return(26u);
 		if ( SparkGlm5NextLaunchCudaLayerAttentionShardMerge(wave,layer) != 0 )
-			return(23u);
+			return(27u);
 	}
 	reduce = SparkGlm5NextWalkReduce(chain,wave->slot->attention_out_bf16,0u,layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE);
 	if ( reduce != 0u )
