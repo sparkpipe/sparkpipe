@@ -15,6 +15,25 @@ extern "C" {
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT \
 	SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES 4096u
+#define SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS 8u
+
+typedef struct SparkModelResidentChatTemplate
+{
+	uint32_t declared;
+	uint32_t stop_marker_count;
+	char *prefix;
+	char *thinking_prefix;
+	char *system;
+	char *system_thinking;
+	char *user;
+	char *observation;
+	char *assistant;
+	char *assistant_thinking;
+	char *turn_suffix;
+	char *generation;
+	char *generation_thinking;
+	char *stop_markers[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
+} SparkModelResidentChatTemplate;
 
 typedef struct SparkModelResidentDeploymentNode
 {
@@ -53,6 +72,7 @@ typedef struct SparkModelResidentDeployment
 	uint32_t max_sequence_positions;
 	uint32_t prefix_reuse_disabled;
 	uint32_t reserved[1];
+	SparkModelResidentChatTemplate chat_template;
 	SparkModelResidentDeploymentNode nodes[
 		SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
 } SparkModelResidentDeployment;
