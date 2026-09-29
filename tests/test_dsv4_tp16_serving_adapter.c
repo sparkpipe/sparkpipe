@@ -65,7 +65,8 @@ int main(void)
 	assert(unsetenv("SPARK_DSV4_DSPARK") == 0 && unsetenv("SPARK_DSV4_SPECULATORS") == 0);
 	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(
 		TEST_DSV4_TP16_ADAPTER_PATH,
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE,
 		&library) == SPARK_STATUS_OK);
 	assert(library.adapter_interface.descriptor->stage_count == 16u);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 16u);
