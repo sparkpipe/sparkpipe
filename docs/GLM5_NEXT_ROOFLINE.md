@@ -1201,21 +1201,35 @@ The estimate:
 
 Times are per rank per DSA layer.
 
+Two runs on the shared GPU, first under heavier load, second at review:
+
 | Case | KV per rank | Sharded partial + merge | Main's replicated heads kernel |
 | --- | ---: | ---: | ---: |
-| B1, 1k | 64 KiB of 1 MiB | 44.5 µs | 82.6 µs |
-| B1, 8k (selected list) | 0.5 of 8 MiB | 41.5 µs | 71.9 µs |
-| B8, 1k | 0.5 of 8 MiB | 211 µs | 198 µs |
-| B8, 8k | 4 of 64 MiB | 185 µs | 190 µs |
-| B64, 1k | 4 of 64 MiB | 664 µs | 525 µs |
-| B64, 8k | 32 of 512 MiB | 964 µs | 909 µs |
+| B1, 1k | 64 KiB of 1 MiB | 44.5 / 30.9 µs | 82.6 / 51.2 µs |
+| B1, 8k (selected list) | 0.5 of 8 MiB | 41.5 / 41.2 µs | 71.9 / 59.4 µs |
+| B8, 1k | 0.5 of 8 MiB | 211 / 78.6 µs | 198 / 137.8 µs |
+| B8, 8k | 4 of 64 MiB | 185 / 113.5 µs | 190 / 159.3 µs |
+| B64, 1k | 4 of 64 MiB | 664 / 563 µs | 525 / 419 µs |
+| B64, 8k | 32 of 512 MiB | 964 / 851 µs | 909 / 780 µs |
+
+At B1 both kernels are latency-bound: the sharded B1 8k partial reads about
+128 KiB per rank per layer, about 1% of GB10 memory bandwidth, and does
+about 1.5% of its fp32 compute.
 
 Correctness in the same runs:
 
-- Every case matches the replicated-storage oracle bit for bit.
-- Every owned slot holds the replicated bytes.
+- Every case matches the replicated-storage oracle bit for bit, at grain
+  1 (latent KV) and grain 4 (indexer-key ownership).
+- Every owned slot holds the replicated bytes (CPU-shim test).
+- Rows 0, B/2 and B-1 decoded alone have the same bits as inside the
+  batch, so the row law holds for the store, the partials and the merge.
+- `compute-sanitizer --tool memcheck --padding 256` reports no access
+  outside the 1/degree pools.
 - The all-to-all and all-gather receive layouts merge to the same bits.
-- Against an f64 reference the worst difference is 1.2-2.4e-4.
+- Against an f64 reference the worst difference is 1.2-2.4e-4 on the
+  device and up to 4.8e-4 on the CPU shim. Both tests require less than
+  2e-3. At the earlier bound of 1e-2, a merge that skipped the max rescale
+  or a partial that dropped one key per rank still passed some cases.
 - Against main's replicated kernel the difference is at most 4.9e-4.
 
 That last difference is a reassociation, so COMPSEC-17 and MTP parity
@@ -1253,6 +1267,13 @@ k3 shape) and at degrees 4 and 8 pass too. The CPU-shim variant is
   collective.
 - **Fleet check.** B1 and B64 tok/s and KV bytes per rank against
   production, in an assigned weightd lane.
+- **Large batches.** Without Phase 4 buffers, B64 pays 33 SCATTER rounds
+  per DSA layer: about 11 × 33 × 40 µs = 14.5 ms on a 68 ms step (+21%).
+  That cost needs its own budget before B ≥ 16 serves sharded.
+- **Indexer keys.** No sharded store or scoring kernel exists for them
+  yet. Only the grain-4 ownership rule is tested.
+- **Prefix reuse and JIT-KV restore.** Untested until the per-rank page
+  copy exists.
 
 ## Head and DSA attention at large batches
 
