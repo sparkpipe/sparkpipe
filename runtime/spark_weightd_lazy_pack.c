@@ -91,7 +91,9 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	status = SparkWeightdClientConnect(socket,&pack->client,0);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	status = SparkWeightdClientAttachLazy(pack->client,request,&pack->attached,timeout);
+	status = pack->read_only != 0u
+		? SparkWeightdClientAttachLazyShared(pack->client,request,&pack->attached,timeout)
+		: SparkWeightdClientAttachLazy(pack->client,request,&pack->attached,timeout);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	(void)snprintf(path,sizeof(path),"%s.experts",request->pack_path);
@@ -118,9 +120,9 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 		int epoch_fd = -1;
 		(void)SparkWeightdClientEpochExport(pack->client,
 		    pack->attached.arena_generation,&epoch_fd,timeout);
-		status = SparkWeightdMapCreate(pack->client,
+		status = SparkWeightdMapCreateAccess(pack->client,
 		    &pack->attached,epoch_fd,
-		    pack->attached.pool_fd,&pack->map);
+		    pack->attached.pool_fd,pack->read_only,&pack->map);
 	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -153,12 +155,16 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 	SparkStatus status;
 	struct stat info;
 	int32_t fd;
+	uint32_t read_only;
 	char absolute[4096];
 	if ( out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*out = 0;
 	if ( socket == 0 || request == 0 || request->expert_pool_bytes == 0u || request->pack_path[0] == 0 || memchr(request->pack_path,0,sizeof(request->pack_path)) == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkWeightdShareModeFromEnvironment(&read_only);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	if ( request->pack_path[0] != '/' )
 	{
 		if ( realpath(request->pack_path,absolute) == 0 )
@@ -186,6 +192,7 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 		(void)close(fd);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	pack->read_only = read_only;
 	status = lazy_pack_initialize(pack,fd,socket,request,spine_budget,timeout,check,context);
 	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;

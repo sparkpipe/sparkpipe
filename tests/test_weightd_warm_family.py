@@ -22,6 +22,7 @@ MODULE_TAGS = {
 }
 STUBS = """
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *c,uint64_t g,
     const SparkWeightdExpertKey *k,uint32_t n,
     SparkWeightdWorkingSetResult *r,uint64_t t)
@@ -42,6 +43,11 @@ SparkStatus SparkWeightdClientRelease(SparkWeightdClient *c,uint64_t g,
 SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *c,
     SparkWeightdReclaimResult *r,uint64_t t)
     { (void)c;(void)r;(void)t; return SPARK_STATUS_UNSUPPORTED; }
+SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *c,
+    const char *p,SparkWeightdReclaimResult *r,uint64_t t)
+    { (void)c;(void)p;(void)r;(void)t; return SPARK_STATUS_UNSUPPORTED; }
+SparkStatus SparkWeightdPackDigestRead(const char *p,char h[65])
+    { (void)p;(void)h; return SPARK_STATUS_UNSUPPORTED; }
 """
 REVISION = "dba1be0a40aa45a94ad051997016db3960a90277"
 DIGEST = "0123456789abcdef" * 4
