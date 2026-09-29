@@ -318,7 +318,11 @@ the 2048-token DSA selection width. With the variable set, a prefill wave runs
 the certified B1 head once per row (`row_head_certified`), so every row's
 token, including the one the prefill emits, comes from the same head
 arithmetic as a one-row wave. Decode waves of several sequences, and every
-wave with the variable unset, keep today's head choice.
+wave with the variable unset, keep today's head choice. In graph mode the
+captured graph is keyed by the head path as well as the attention regime and
+the row count (`GLM52-GRAPH-CAPTURE regime=2|3` for per-row certified heads),
+so a prefill wave never replays a decode wave's graph of the same shape, and
+the reverse.
 
 The startup line `GLM52-PREFILL-WAVE-ROWS rows=N exact_rows=8 exact=yes|no`
 names the bound. Up to 8 rows every linear takes the skinny path and each row

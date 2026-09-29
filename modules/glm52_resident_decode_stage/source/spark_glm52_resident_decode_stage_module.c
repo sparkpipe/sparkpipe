@@ -1774,7 +1774,8 @@ static SparkStatus SparkGlm52GraphWalk(SparkGlm52TpChain *chain,const SparkTpCha
 	uint32_t regime,bound,context;
 	SparkStatus status = SPARK_STATUS_OK;
 	context = chain->wave.maximum_context;
-	regime = SparkGlm52GraphRegime(context,state->decode_split_context_threshold,state->max_sequence_positions,&bound);
+	regime = SparkGlm52GraphRegime(context,state->decode_split_context_threshold,state->max_sequence_positions,&bound) +
+		(chain->wave.row_head_certified != 0u ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u);
 	entry = SparkTpChainGraphEntry(&state->graphs[chain->slot_index],regime,chain->wave_rows);
 	if ( entry == 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

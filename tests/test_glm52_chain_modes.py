@@ -416,9 +416,32 @@ static SparkGlm52TpChain *NewPrefillChain(uint32_t first_position,uint32_t rows,
 	return(chain);
 }
 
+static SparkGlm52TpChain *NewDecodeChain(uint32_t first_position,uint32_t rows)
+{
+	SparkGlm52TpChain *chain;
+	uint32_t row;
+	chain = NewChain(first_position);
+	for (row=0u; row<rows; row++)
+	{
+		host_slots[row] = row;
+		host_positions[row] = first_position + row;
+		atomic_store(&state.lane_states[row],row + 1u);
+	}
+	batch.row_count = rows;
+	batch.active_sequence_count = rows;
+	state.completions[0].row_count = rows;
+	chain->prefill = 0u;
+	chain->wave_rows = SparkGlm52WaveRows(chain,0u);
+	chain->next_wave_row = chain->wave_rows;
+	return(chain);
+}
+
 static void FinishPrefill(void)
 {
-	atomic_store(&state.lane_states[0],0u);
+	uint32_t row;
+	for (row=0u; row<4u; row++)
+		atomic_store(&state.lane_states[row],0u);
+	batch.active_sequence_count = 1u;
 	batch.row_count = 1u;
 	state.prefill_wave_rows = 0u;
 }
@@ -454,6 +477,15 @@ static void TestPrefillWaves(void)
 	LAUNCHES = 0u;
 	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,4u));
 	assert(CAPTURES == 1u && LAUNCHES == 1u && Count("cap:reduce-hidden4") == 2u && Count("cap:unpack4") == 1u && Count("cap:head1") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewDecodeChain(9u,4u));
+	assert(CAPTURES == 2u && LAUNCHES == 2u && Count("cap:head0") == 1u && Count("cap:head1") == 0u && Count("cap:unpack4") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,4u));
+	assert(CAPTURES == 2u && LAUNCHES == 3u && Count("capture-begin0") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewDecodeChain(9u,4u));
+	assert(CAPTURES == 2u && LAUNCHES == 4u && Count("capture-begin0") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	SparkTpChainGraphTableDestroy(&state.graphs[0]);
 	FinishPrefill();
 }
@@ -539,7 +571,7 @@ def main():
                         '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"', "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
                         str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph)")
+    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph keyed by head path)")
 
 
 if __name__ == "__main__":
