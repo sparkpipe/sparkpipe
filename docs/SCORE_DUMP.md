@@ -4,7 +4,9 @@ Experiment-only instrumentation for the quantization A/B campaign (design:
 `lanes/quant-ab-design.md` §3.2 and §5 H1). Every tensor-parallel rank writes
 statistics of its own lm_head vocabulary shard for every prompt row it scores.
 The rank files are merged offline in rank order. Nothing is exchanged between
-ranks, and the served token is still the certified head's argmax.
+ranks. The dump only reads the final-normed rows, so it never changes the served token, which
+still comes from the module's own head: the BF16 full-vocabulary head on multi-row waves and the
+certified FP8 head at B1.
 
 ## Build and enablement
 
@@ -25,7 +27,10 @@ ranks, and the served token is still the certified head's argmax.
   tree. `tests/test_deployment_config_drift.py` checks both.
 - Prefix reuse must be off: every request must report `cached_prompt_tokens == 0`. A row whose
   sequence history the module has not seen from position 0 is written without a key and counted
-  as keyless.
+  as keyless. With prefix reuse on, a reused resident slot can instead yield a key from that
+  slot's previous sequence. That key is either the correct one (same prefix) or matches no corpus
+  row, which the compare refuses, so a row is never silently misattributed; the runs still require
+  reuse off.
 
 ## Safety and production
 
