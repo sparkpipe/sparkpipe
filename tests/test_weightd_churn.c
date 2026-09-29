@@ -303,6 +303,11 @@ int main(void)
 	SparkWeightdServerDestroy(state.server);
 	CHECK( spark_stub_cuda_outstanding_allocs() == 0u,
 		"no allocations leak across the whole churn run");
+	{
+		char verified[272];
+		assert(snprintf(verified,sizeof(verified),"%s.verified",path) > 0);
+		(void)unlink(verified);
+	}
 	assert(unlink(recording) == 0 && unlink(manifest) == 0 && unlink(path) == 0 && rmdir(root) == 0);
 	fprintf(stderr,"test_weightd_churn: %s\n",
 		test_failures == 0u ? "PASS" : "FAILED");
