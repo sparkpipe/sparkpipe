@@ -1,0 +1,2 @@
++1374
+glm52 exact speculative verify: multi-step frames with k+1 verify rows and accepted-prefix commit, recorded/relay drafters, final-norm tap dump, multi-token adapter completions; GLM-5.3 Full MTP (layer 78) drafter and relay server for the rtx5090.

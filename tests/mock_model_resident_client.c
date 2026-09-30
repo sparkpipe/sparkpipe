@@ -76,6 +76,7 @@ struct SparkModelResidentClient
 static SparkModelResidentClient *mock_registry[MOCK_RESIDENT_MAX_RANKS];
 static uint32_t mock_registry_count;
 static uint32_t mock_auto_tokens;
+static uint32_t mock_auto_follow;
 static SparkModelServingLane mock_lane_log[256];
 static uint32_t mock_lane_log_count;
 static uint32_t mock_token_start = 11u;
@@ -295,6 +296,7 @@ void MockResidentClientReset(void)
 	mock_registry_count = 0u;
 	mock_lane_log_count = 0u;
 	mock_auto_tokens = 0u;
+	mock_auto_follow = 0u;
 	mock_token_start = 11u;
 	memset(mock_registry,0,sizeof(mock_registry));
 }
@@ -571,6 +573,13 @@ SparkStatus SparkModelResidentClientGetView(
 void MockResidentClientSetAutoTokens(uint32_t count)
 {
 	mock_auto_tokens = count;
+	mock_auto_follow = 0u;
+}
+
+void MockResidentClientSetAutoTokensFollowChain(void)
+{
+	mock_auto_tokens = 1u;
+	mock_auto_follow = 1u;
 }
 
 void MockResidentClientSetTokenStart(uint32_t first_token_id)
@@ -671,8 +680,8 @@ uint32_t MockResidentClientDeliverEvent(uint32_t stage_index, uint64_t submissio
 				if ( c->is_final_rank != 0u && mock_auto_tokens != 0u &&
 					saved.submission.work_kind < SPARK_MODEL_SERVING_WORK_KIND_RELEASE && status == SPARK_STATUS_OK )
 				{
-					completion.token_count = saved.submission.active_sequence_count * mock_auto_tokens;
-					completion.tokens_per_sequence = mock_auto_tokens;
+					completion.tokens_per_sequence = mock_auto_follow != 0u && saved.submission.tokens_per_sequence > 1u ? saved.submission.tokens_per_sequence : mock_auto_tokens;
+					completion.token_count = saved.submission.active_sequence_count * completion.tokens_per_sequence;
 					completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 					completion.accepted_token_count = completion.token_count;
 					for (t=0u; t<completion.token_count && t<(uint32_t)(sizeof(completion.token_ids)/sizeof(completion.token_ids[0])); t++)

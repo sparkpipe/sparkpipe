@@ -2129,7 +2129,7 @@ static void SparkModelBatchBuildDecodeRows(
 			chain_tokens = remaining;
 		block_remaining = engine->cache_block_token_count -
 			(position % engine->cache_block_token_count);
-		if ( block_remaining > 1u && SparkModelBatchDefersDecodePublication(engine) == 0u )
+		if ( block_remaining > 1u && (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
 			block_remaining--;
 		if ( block_remaining < chain_tokens )
 			chain_tokens = block_remaining;

@@ -26,6 +26,9 @@
 #ifndef TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH
 #define TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH ""
 #endif
+#ifndef TEST_MODEL_SERVING_CHAIN_INLINE_PATH
+#define TEST_MODEL_SERVING_CHAIN_INLINE_PATH ""
+#endif
 
 #define TEST_RANKS 3u
 #define TEST_MAX_REQUESTS 8u
@@ -568,6 +571,28 @@ static void TestScenarioSpeculativePublishAdapterDefers(const SparkModelResident
 	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 8u && memcmp(&lane.cache_prefix_identity,&published.cache_publish_identity,sizeof(lane.cache_prefix_identity)) == 0,"speculative deferred: the deferred checkpoint is reusable");
 	TestDriveUntilTerminal(engine,&state,2u,400u);
 	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 8u,"speculative deferred: the extending request reports the deferred checkpoint");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioChainWithoutPublishFramesStopsBeforeBlockEnd(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[5] = {11u,12u,13u,14u,15u};
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokensFollowChain();
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,640u,9u,prompt,5u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 9u,"chain inline: every chained token is emitted once");
+	CHECK(TestLaneLogFind(1u,5u,SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,&lane) != 0u && TestLaneLogFind(1u,6u,SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,&lane) == 0u,"chain inline: a chain inside a block runs as one frame");
+	CHECK(TestLaneLogFind(1u,7u,SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH,&lane) != 0u && lane.cache_publish_token_count == 8u,"chain inline: the block's last token decodes alone and publishes the full page inline");
+	CHECK(TestLaneLogFind(1u,8u,SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH,&lane) == 0u && TestLaneLogFind(1u,4u,SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH,&lane) == 0u,"chain inline: an adapter without publish frames never receives one");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -1233,6 +1258,10 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"speculative-deferred",TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH,path,sizeof(path),&deployment);
 	TestScenarioSpeculativePublishAdapterDefers(&deployment,runtime_root);
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
+	TestLoadVariantDeployment(runtime_root,"chain-inline",TEST_MODEL_SERVING_CHAIN_INLINE_PATH,path,sizeof(path),&deployment);
+	TestScenarioChainWithoutPublishFramesStopsBeforeBlockEnd(&deployment,runtime_root);
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);
 }
