@@ -1,5 +1,6 @@
 #pragma once
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/formats/fp8.cuh"
@@ -323,6 +324,20 @@ static __device__ __forceinline__ void LmSkinnyClear(float (*accumulator)[ROWS])
 			accumulator[n][r] = 0.0f;
 }
 
+template<class Format, uint32_t NPG>
+static __device__ __forceinline__ void LmSkinnyPrefetchDense(const LmSkinnyArguments &args, uint32_t live, uint32_t sub, uint32_t neuron, uint32_t chunks)
+{
+	const uint4 *rows[NPG];
+	uint32_t n;
+	if ( args.route_expert != 0 || live == 0u || sub != 0u )
+		return;
+	LmSkinnyWeightRows<Format,NPG>(args,0u,neuron,rows);
+	#pragma unroll
+	for ( n = 0u; n < NPG; n++ )
+		if ( neuron + n < args.output_dimension )
+			LmPrefetchL2(rows[n],chunks * LM_SKINNY_CHUNK_BYTES);
+}
+
 template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
 static __device__ __forceinline__ void LmSkinnyTask(const LmSkinnyArguments &args, uint32_t task)
 {
@@ -334,6 +349,8 @@ static __device__ __forceinline__ void LmSkinnyTask(const LmSkinnyArguments &arg
 	float accumulator[NPG][ROWS];
 	const uint4 *rows[NPG];
 	const uint16_t *activation[ROWS];
+	LmSkinnyPrefetchDense<Format,NPG>(args,live,sub,neuron,chunks);
+	LmDependentWait();
 	LmSkinnyResolve(args,pair,&group,&source,&target);
 	LmSkinnyWeightRows<Format,NPG>(args,group,neuron,rows);
 	LmSkinnyClear<NPG,ROWS>(accumulator);
@@ -387,11 +404,13 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyGroupedKernel(const
 {
 	const uint32_t sub = threadIdx.x % LANES, task = (blockIdx.x * LM_SKINNY_THREADS + threadIdx.x) / LANES, per_group = (args.output_dimension + NPG - 1u) / NPG;
 	const uint32_t live = task < args.groups * per_group ? 1u : 0u, group = live != 0u ? task / per_group : 0u, neuron = live != 0u ? (task % per_group) * NPG : 0u;
-	const uint32_t chunks = args.input_dimension / LmSkinnyFormat<Format>::kElements, end = live != 0u ? args.group_row_offset[group + 1u] : 0u;
-	uint32_t row, count;
+	const uint32_t chunks = args.input_dimension / LmSkinnyFormat<Format>::kElements;
+	uint32_t row, count, end;
 	float accumulator[NPG][ROWS];
 	const uint4 *weights[NPG];
 	const uint16_t *activation[ROWS];
+	LmDependentWait();
+	end = live != 0u ? args.group_row_offset[group + 1u] : 0u;
 	LmSkinnyWeightRows<Format,NPG>(args,group,neuron,weights);
 	for ( row = live != 0u ? args.group_row_offset[group] : 0u; row < end; row += ROWS )
 	{
@@ -407,7 +426,7 @@ template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
 static int32_t LmSkinnyLaunchShape(const LmSkinnyArguments *args, cudaStream_t stream)
 {
 	uint64_t tasks = (uint64_t)(args->route_expert != 0 ? args->pairs : 1u) * ((args->output_dimension + NPG - 1u) / NPG);
-	LM_LAUNCH((LmSkinnyKernel<Format,LANES,ROWS,NPG>),(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream,*args);
+	LM_LAUNCH_DEPENDENT((LmSkinnyKernel<Format,LANES,ROWS,NPG>),(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream,*args);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
@@ -418,7 +437,7 @@ static int32_t LmSkinnyGroupedShape(const LmSkinnyArguments *args, cudaStream_t 
 	uint64_t tasks = (uint64_t)args->groups * per_group;
 	if ( (per_group % (32u / LANES)) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
-	LM_LAUNCH((LmSkinnyGroupedKernel<Format,LANES,ROWS,NPG>),(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream,*args);
+	LM_LAUNCH_DEPENDENT((LmSkinnyGroupedKernel<Format,LANES,ROWS,NPG>),(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream,*args);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
@@ -439,7 +458,7 @@ static int32_t LmSkinnyMultiShape(LmSkinnyMultiArguments *multi, cudaStream_t st
 	multi->first_task[0] = 0u;
 	for ( part = 0u; part < multi->count; part++ )
 		multi->first_task[part + 1u] = multi->first_task[part] + ((multi->part[part].output_dimension + NPG - 1u) / NPG + (32u / LANES) - 1u) / (32u / LANES) * (32u / LANES);
-	LM_LAUNCH((LmSkinnyMultiKernel<Format,LANES,ROWS,NPG>),(uint32_t)(((uint64_t)multi->first_task[multi->count] * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream,*multi);
+	LM_LAUNCH_DEPENDENT((LmSkinnyMultiKernel<Format,LANES,ROWS,NPG>),(uint32_t)(((uint64_t)multi->first_task[multi->count] * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream,*multi);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 

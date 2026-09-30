@@ -5,6 +5,8 @@
 
 #include "runtime/gemm.cuh"
 #include "inference/kernels/attn.cuh"
+#include "inference/kernels/attn_rope_heads.cuh"
+#include "inference/kernels/project_chain.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/weight_codec.cuh"
 #include "inference/kernels/graph.cuh"

@@ -434,6 +434,13 @@ static int32_t GlmLayerAttentionProject(
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
+    if (buffers->projection_gather_bf16 != 0 &&
+        cudaMemsetAsync(buffers->projection_gather_bf16, 0,
+            (uint64_t)rows * buffers->projection_gather_stride *
+                sizeof(uint16_t), stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM_LAYER_THREADS, uint16_t>),
         rows,
@@ -458,11 +465,14 @@ static int32_t GlmLayerAttentionProject(
         &q_first, &q_count);
     GlmProjectionSlice(GLM_LATENT_ROW, buffers->tp_degree, buffers->tp_rank,
         &kv_first, &kv_count);
-    if (cudaMemsetAsync(buffers->projection_gather_bf16, 0,
-            (uint64_t)rows * buffers->projection_gather_stride *
-                sizeof(uint16_t), stream) != cudaSuccess)
+    if (q_count != 0u && kv_count != 0u)
     {
-        return LM_LAUNCH_ERR_LAUNCH;
+        const LmSkinnyDenseTarget targets[2] = {
+            {(const uint16_t *)buffers->q_a_weight + (uint64_t)q_first * GLM_HIDDEN, buffers->projection_gather_bf16, 0, q_count, buffers->projection_gather_stride, q_first},
+            {(const uint16_t *)buffers->kv_a_weight + (uint64_t)kv_first * GLM_HIDDEN, buffers->projection_gather_bf16, 0, kv_count, buffers->projection_gather_stride, GLM_QUERY_A_DIM + kv_first}};
+        status = LmSkinnyDenseMulti<LmBf16Format>(targets, 2u, buffers->normed_bf16, rows, GLM_HIDDEN, stream);
+        if (status != LM_LAUNCH_ERR_SHAPE)
+            return status;
     }
     status = LM_LAUNCH_OK;
     if (q_count != 0u)
@@ -684,7 +694,7 @@ static int32_t GlmLayerAttentionCore(
         GLM_LATENT,
         GLM_ROPE_DIM,
         GLM_ROPE_THETA);
-    if (LmPerHeadProjectRowsLaunch<
+    if (LmPerHeadProjectChainLaunch<
             GLM_LAYER_THREADS,
             GLM_QK_NOPE_DIM,
             GLM_LATENT,
@@ -711,7 +721,7 @@ static int32_t GlmLayerAttentionCore(
         buffers->positions,
         rows,
         GLM_LATENT_ROW);
-    if (LmLatentAttentionDecodeSplitLaunch<
+    if (LmLatentRopeHeadsSplitLaunch<
             GlmKv, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM, true>(
             buffers->query_latent_bf16,
             buffers->query_rope_bf16,
@@ -735,7 +745,7 @@ static int32_t GlmLayerAttentionCore(
         return LM_LAUNCH_ERR_LAUNCH;
     }
 
-    if (LmPerHeadProjectRowsLaunch<
+    if (LmPerHeadProjectChainLaunch<
             GLM_LAYER_THREADS,GLM_LATENT,GLM_VALUE_DIM>(
             buffers->attention_latent_bf16,
             (const uint16_t *)buffers->kv_b_value_weight,
@@ -1098,7 +1108,7 @@ static int32_t GlmLayerMoeExpertsGateUp(
         GLM_EXPERTS,
         buffers->expert_w1_rows,
         GLM_HIDDEN);
-    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM_TOP_K, 0u, GLM_HIDDEN, buffers->expert_w1_rows, stream);
+    status = rows == 1u ? LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM_TOP_K, 0u, GLM_HIDDEN, buffers->expert_w1_rows, stream) : LM_LAUNCH_ERR_SHAPE;
     if (status == LM_LAUNCH_ERR_SHAPE)
         status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM_EXPERTS, packed_rows, 0u, GLM_HIDDEN, buffers->expert_w1_rows, stream);
     if (status != LM_LAUNCH_ERR_SHAPE)
