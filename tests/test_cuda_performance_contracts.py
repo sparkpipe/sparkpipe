@@ -305,7 +305,7 @@ def validate_model_precision_contracts() -> None:
             f"LM_WEIGHT_CODEC(SPARK_WEIGHT_CODEC_{codec},",
             f"generic {codec} weight codec",
         )
-    require(glm, "LmGemmLaunch<\n        LmBf16Format,", "GLM BF16 non-expert execution")
+    require(glm, "LmStreamGemmDense<LmBf16Format>(", "GLM BF16 non-expert execution")
     forbid(glm, "LmQuantiseRowsKernel", "GLM BF16 activation path")
     forbid(glm, "LmGatherRowsKernel", "GLM materialized expert activation gather")
     glm_cuda = read(
