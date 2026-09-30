@@ -1590,11 +1590,15 @@ static uint32_t SparkModelBatchPrefillSpan(
 	const SparkModelBatchEngine *engine,
 	const SparkModelBatchRequestState *request)
 {
-	uint32_t block_remaining,remaining;
+	uint32_t block_remaining,remaining,span;
 	remaining = request->prompt_token_count - request->computed_prompt_token_count;
 	block_remaining = engine->cache_block_token_count -
 		(request->computed_prompt_token_count % engine->cache_block_token_count);
-	return(remaining < block_remaining ? remaining : block_remaining);
+	span = block_remaining;
+	if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL) != 0u &&
+		engine->max_prefill_rows > block_remaining )
+		span += (engine->max_prefill_rows - block_remaining) / engine->cache_block_token_count * engine->cache_block_token_count;
+	return(remaining < span ? remaining : span);
 }
 
 static uint32_t SparkModelBatchCanonicalPrefillSpan(const SparkModelBatchEngine *engine,const SparkModelBatchRequestState *request)

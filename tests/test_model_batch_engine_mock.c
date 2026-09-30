@@ -1213,6 +1213,40 @@ static void TestLoadVariantDeployment(const char *runtime_root,const char *name,
 	deployment->eos_token_ids[0] = 154820u;
 }
 
+static uint32_t TestLongestPrefillChunk(uint64_t request_id,uint32_t prompt_count)
+{
+	SparkModelServingLane lane;
+	uint32_t index,longest = 0u;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+		if ( lane.request_id == request_id && lane.context_token_count > lane.sequence_position && lane.context_token_count <= prompt_count &&
+			lane.context_token_count - lane.sequence_position > longest )
+			longest = lane.context_token_count - lane.sequence_position;
+	return(longest);
+}
+
+static void TestScenarioMultiBlockPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t multi_block)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	uint32_t prompt[18],index;
+	for (index=0u; index<18u; index++)
+		prompt[index] = 30u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,660u,1u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	CHECK(state.completed_events[1] == 1u,"multi-block prefill: the prompt completes");
+	if ( multi_block != 0u )
+		CHECK(TestPrefillChunksAreCanonical(1u,4u,18u) == 3u && TestLongestPrefillChunk(1u,18u) == 8u,"multi-block prefill: a lane spans whole cache blocks up to the row budget and still ends on a block boundary or the prompt end");
+	else
+		CHECK(TestPrefillChunksAreCanonical(1u,4u,18u) == 5u && TestLongestPrefillChunk(1u,18u) == 4u,"multi-block prefill: an adapter without the capability keeps one cache block per prefill lane");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioAdapterCacheModes(const char *runtime_root)
 {
 	SparkModelResidentDeployment deployment;
@@ -1233,6 +1267,14 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"speculative-deferred",TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH,path,sizeof(path),&deployment);
 	TestScenarioSpeculativePublishAdapterDefers(&deployment,runtime_root);
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
+	TestLoadVariantDeployment(runtime_root,"multi-block-prefill",TEST_MODEL_SERVING_MULTI_BLOCK_PREFILL_PATH,path,sizeof(path),&deployment);
+	TestScenarioMultiBlockPrefill(&deployment,runtime_root,1u);
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
+	TestLoadVariantDeployment(runtime_root,"one-block-prefill",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);
+	TestScenarioMultiBlockPrefill(&deployment,runtime_root,0u);
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);
 }

@@ -77,14 +77,14 @@ static double ProbeUlp(double value)
 	return(ldexp(1.0,exponent - 8));
 }
 
-static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t timing)
+static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t timing)
 {
-	const uint32_t context = prefix + rows,pages = (context + PROBE_PAGE - 1u) / PROBE_PAGE;
+	const uint32_t context = prefix + rows,sequence_pages = (context + PROBE_PAGE - 1u) / PROBE_PAGE,sequence_count = sequence + 2u,pages = sequence_pages * sequence_count;
 	const uint64_t query_count = (uint64_t)rows * PROBE_HEADS;
 	const uint32_t partial_blocks = rows * PROBE_HEADS * LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS;
 	const float scale = 1.0f / sqrtf((float)PROBE_WIDTH);
 	const uint32_t half = rows / 2u;
-	std::vector<uint32_t> table(pages),contexts(1u,context),row_position(rows),sequences(rows,0u),token_sequence(context,0u),token_position(context);
+	std::vector<uint32_t> table(pages),contexts(sequence_count,context),row_position(rows),sequences(rows,sequence),token_sequence((uint64_t)context * sequence_count),token_position((uint64_t)context * sequence_count);
 	std::vector<uint16_t> prefill(query_count * PROBE_LATENT),split(query_count * PROBE_LATENT),part((uint64_t)half * PROBE_HEADS * PROBE_LATENT);
 	uint32_t *table_device,*contexts_device,*positions_device,*sequences_device,*token_sequence_device,*token_position_device;
 	uint16_t *values_device,*latent_device,*rope_device,*out_device;
@@ -99,13 +99,16 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t timing)
 	int failed = probe_failures;
 	char label[96];
 
-	snprintf(label,sizeof(label),"rows%u prefix%u",rows,prefix);
+	snprintf(label,sizeof(label),"rows%u prefix%u sequence%u",rows,prefix,sequence);
 	PROBE_CUDA(cudaGetDeviceProperties(&properties,0));
 	multiprocessors = (uint32_t)properties.multiProcessorCount;
 	for (page=0u; page<pages; page++)
-		table[page] = (page * 7u) % pages;
-	for (index=0u; index<context; index++)
-		token_position[index] = index;
+		table[page] = pages - 1u - page;
+	for (index=0u; index<context * sequence_count; index++)
+	{
+		token_sequence[index] = index / context;
+		token_position[index] = index % context;
+	}
 	for (row=0u; row<rows; row++)
 		row_position[row] = prefix + row;
 	table_device = ProbeDevice(table);
@@ -114,7 +117,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t timing)
 	sequences_device = ProbeDevice(sequences);
 	token_sequence_device = ProbeDevice(token_sequence);
 	token_position_device = ProbeDevice(token_position);
-	PROBE_CUDA(cudaMalloc((void **)&values_device,(uint64_t)context * PROBE_WIDTH * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&values_device,(uint64_t)context * sequence_count * PROBE_WIDTH * 2u));
 	PROBE_CUDA(cudaMalloc((void **)&latent_device,query_count * PROBE_LATENT * 2u));
 	PROBE_CUDA(cudaMalloc((void **)&rope_device,query_count * PROBE_ROPE * 2u));
 	PROBE_CUDA(cudaMalloc((void **)&cache_device,(uint64_t)pages * ProbeKv::kPageBytes));
@@ -123,17 +126,17 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t timing)
 	PROBE_CUDA(cudaMalloc((void **)&error_device,sizeof(LmKvAccessError)));
 	LmKvAccessErrorReset(&error_host);
 	PROBE_CUDA(cudaMemcpy(error_device,&error_host,sizeof(error_host),cudaMemcpyHostToDevice));
-	ProbeFillKernel<<<1024,256>>>(values_device,(uint64_t)context * PROBE_WIDTH,0u);
+	ProbeFillKernel<<<1024,256>>>(values_device,(uint64_t)context * sequence_count * PROBE_WIDTH,0u);
 	ProbeFillKernel<<<256,256>>>(latent_device,query_count * PROBE_LATENT,1ull << 60u);
 	ProbeFillKernel<<<256,256>>>(rope_device,query_count * PROBE_ROPE,1ull << 61u);
 	PROBE_CUDA(cudaMemset(cache_device,0,(uint64_t)pages * ProbeKv::kPageBytes));
-	if ( LmKvViewInitialize(&view,cache_device,table_device,pages,1u,pages,error_device) != 0 )
+	if ( LmKvViewInitialize(&view,cache_device,table_device,sequence_pages,sequence_count,pages,error_device) != 0 )
 	{
 		printf("FAIL %s: view\n",label);
 		probe_failures++;
 		return;
 	}
-	LmKvStoreKernel<ProbeKv,256u><<<context,256>>>(view,values_device,token_sequence_device,token_position_device,context,PROBE_WIDTH);
+	LmKvStoreKernel<ProbeKv,256u><<<context * sequence_count,256>>>(view,values_device,token_sequence_device,token_position_device,context * sequence_count,PROBE_WIDTH);
 	PROBE_CUDA(cudaGetLastError());
 	PROBE_CUDA(cudaMemset(out_device,0xff,query_count * PROBE_LATENT * 2u));
 	PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0)));
@@ -177,7 +180,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t timing)
 			double top = -1.0e300,total = 0.0;
 			for (key=0u; key<keys; key++)
 			{
-				uint64_t k_base = (uint64_t)key * PROBE_WIDTH;
+				uint64_t k_base = ((uint64_t)sequence * context + key) * PROBE_WIDTH;
 				double dot = 0.0;
 				for (element=0u; element<PROBE_LATENT; element++)
 					dot += ProbeFloat(ProbeValue((q * PROBE_LATENT + element) ^ (1ull << 60u))) * ProbeFloat(ProbeValue(k_base + element));
@@ -191,7 +194,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t timing)
 				double weight = exp(scores[key] - top);
 				total += weight;
 				for (element=0u; element<PROBE_LATENT; element++)
-					result[element] += weight * ProbeFloat(ProbeValue((uint64_t)key * PROBE_WIDTH + element));
+					result[element] += weight * ProbeFloat(ProbeValue(((uint64_t)sequence * context + key) * PROBE_WIDTH + element));
 			}
 			for (element=0u; element<PROBE_LATENT; element++)
 			{
@@ -241,10 +244,10 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t timing)
 
 int main(int argc,char **argv)
 {
-	static const uint32_t cases[][2] = { { 9u, 0u }, { 16u, 5u }, { 64u, 0u }, { 128u, 700u }, { 256u, 0u }, { 1024u, 0u }, { 1024u, 1024u } };
+	static const uint32_t cases[][3] = { { 9u, 0u, 0u }, { 16u, 5u, 3u }, { 14u, 320u, 5u }, { 22u, 256u, 2u }, { 64u, 0u, 1u }, { 128u, 700u, 0u }, { 256u, 0u, 7u }, { 1024u, 0u, 0u }, { 1024u, 1024u, 2u } };
 	uint32_t index,timing = argc > 1 && strcmp(argv[1],"--time") == 0 ? 1u : 0u;
 	for (index=0u; index<sizeof(cases) / sizeof(cases[0]); index++)
-		ProbeCase(cases[index][0],cases[index][1],timing);
+		ProbeCase(cases[index][0],cases[index][1],cases[index][2],timing);
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL %d checks\n",probe_failures);
