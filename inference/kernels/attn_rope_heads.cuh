@@ -210,8 +210,7 @@ static inline cudaError_t LmLatentRopeHeadsSplitShape(const uint16_t *query_late
 	LM_LAUNCH((LmLatentRopeHeadsSplitKernel<Geometry, HEADS, LATENT, ROPE, ROW_INVARIANT>), dim3(rows, partitions), LM_ROPE_HEADS_THREADS, 0, stream, query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, split_partials, row_position);
 	if (cudaPeekAtLastError() != cudaSuccess)
 		return cudaPeekAtLastError();
-	if (LM_LAUNCH_DEPENDENT((LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>), dim3(rows, HEADS), THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions) != cudaSuccess)
-		return cudaPeekAtLastError() != cudaSuccess ? cudaPeekAtLastError() : cudaErrorLaunchFailure;
+	LM_LAUNCH_DEPENDENT((LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>), dim3(rows, HEADS), THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
 	return cudaPeekAtLastError();
 }
 

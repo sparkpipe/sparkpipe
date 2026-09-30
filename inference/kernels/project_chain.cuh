@@ -64,6 +64,6 @@ static inline cudaError_t LmPerHeadProjectChainLaunch(const uint16_t *input_bf16
 {
 	if (rows == 0u || rows > LM_PROJECT_CHAIN_ROWS)
 		return LmPerHeadProjectRowsLaunch<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>(input_bf16, weight_bf16, output_bf16, heads, rows, stream);
-	cudaError_t status = LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), LM_PROJECT_CHAIN_THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
-	return status != cudaSuccess ? status : cudaPeekAtLastError();
+	LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), LM_PROJECT_CHAIN_THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+	return cudaPeekAtLastError();
 }
