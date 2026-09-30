@@ -1978,6 +1978,49 @@ static void SparkTestKvPageCachePrefetchAndBeginAreTransactional(void)
 		SPARK_KV_CACHE_NO_BLOCK);
 }
 
+static void SparkTestKvPageCacheMultiBlockSpan(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane lane;
+	const SparkKvPageCacheEntry *entries;
+	SparkKvPageCacheSequence *sequence;
+	uint32_t pages[8u],count,first_page,mutation_flags,demand,terminal,parent;
+	SparkTestKvPageInitialize(&fixture);
+	entries = fixture.cache.entries;
+	sequence = &fixture.cache.sequences[0u];
+	SparkTestKvPageLane(&lane,1u,0u,0u,10u);
+	assert(SparkKvPageCacheGetLaneMutablePageDemand(&fixture.cache,&lane,&demand) == SPARK_STATUS_OK && demand == 3u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&first_page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(mutation_flags == (SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE | SPARK_KV_PAGE_CACHE_MUTATION_ALLOCATED_MUTABLE));
+	assert(sequence->mutable_page_count == 3u && sequence->mutable_logical_page_index == first_page);
+	assert(SparkKvPageCacheBuildLaneTable(&fixture.cache,0u,1u,pages,8u,&count) == SPARK_STATUS_OK && count == 3u && pages[0u] == first_page);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	terminal = sequence->terminal_entry_index;
+	assert(terminal != SPARK_KV_PAGE_CACHE_NO_INDEX && entries[terminal].token_count == 8u && (entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u);
+	parent = entries[terminal].parent_entry_index;
+	assert(parent != SPARK_KV_PAGE_CACHE_NO_INDEX && entries[parent].token_count == 4u && entries[parent].logical_page_index == first_page);
+	assert(sequence->mutable_page_count == 1u && sequence->mutable_first_token_index == 8u);
+	assert(SparkKvPageCacheBuildLaneTable(&fixture.cache,0u,1u,pages,8u,&count) == SPARK_STATUS_OK && count == 3u && pages[0u] == first_page);
+	SparkTestKvPageLane(&lane,1u,0u,10u,16u);
+	SparkTestKvPagePublish(&lane,16u,91u);
+	assert(SparkKvPageCacheGetLaneMutablePageDemand(&fixture.cache,&lane,&demand) == SPARK_STATUS_OK && demand == 1u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&first_page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(mutation_flags == SPARK_KV_PAGE_CACHE_MUTATION_EXTENDED_MUTABLE && sequence->mutable_page_count == 2u);
+	assert(SparkKvPageCacheRollbackLaneTransaction(&fixture.cache,&lane,mutation_flags) == SPARK_STATUS_OK);
+	assert(sequence->mutable_page_count == 1u && sequence->mutable_first_token_index == 8u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&first_page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	terminal = sequence->terminal_entry_index;
+	assert(entries[terminal].token_count == 16u && (entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) == 0u);
+	parent = entries[terminal].parent_entry_index;
+	assert(entries[parent].token_count == 12u && (entries[parent].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u);
+	assert(sequence->mutable_page_count == 0u && sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK);
+	assert(SparkKvPageCacheBuildLaneTable(&fixture.cache,0u,1u,pages,8u,&count) == SPARK_STATUS_OK && count == 4u);
+	SparkTestKvPageLane(&lane,2u,1u,0u,4u * SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES + 1u);
+	assert(SparkKvPageCacheGetLaneMutablePageDemand(&fixture.cache,&lane,&demand) == SPARK_STATUS_UNSUPPORTED);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) == SPARK_STATUS_OK);
+}
+
 static void SparkTestKvPageCacheReclaimsColdPrefixUnderPressure(void)
 {
 	SparkTestKvPageFixture fixture;
@@ -2279,6 +2322,7 @@ int main(void)
 	SparkTestKvPageCacheNonMutatingResolutionAndDemand();
 	SparkTestKvPageCachePrefetchAndBeginAreTransactional();
 	SparkTestKvPageCacheReclaimsColdPrefixUnderPressure();
+	SparkTestKvPageCacheMultiBlockSpan();
 	SparkTestKvPageCacheReclaimsLogicalPageWhenPoolIsFull();
 	return(0);
 }
