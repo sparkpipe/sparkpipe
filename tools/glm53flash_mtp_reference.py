@@ -35,6 +35,29 @@ def fixture_rows(path, final_layer):
     return tokens, streams, arrays
 
 
+def index_pool_scores(query, head_weight, keys, gates, ape, context, kpool):
+    heads, dim = query.shape
+    pools = context // kpool
+    pooled = pools * kpool
+    logits = gates[:pooled].reshape(pools, kpool, dim).astype(np.float32) + ape[None].astype(np.float32)
+    logits = logits - logits.max(axis=1, keepdims=True)
+    mix = np.exp(logits)
+    mix = mix / mix.sum(axis=1, keepdims=True)
+    pool_key = (mix * keys[:pooled].reshape(pools, kpool, dim)).sum(axis=1)
+    scores = np.maximum((query.astype(np.float32) @ pool_key.T) * np.float32(dim ** -0.5), 0.0)
+    return (scores * (head_weight.astype(np.float32) * np.float32(heads ** -0.5))[:, None]).sum(axis=0)
+
+
+def index_positions(query, head_weight, keys, gates, ape, context, topk, kpool):
+    if context <= topk:
+        return np.arange(context)
+    scores = index_pool_scores(query, head_weight, keys, gates, ape, context, kpool)
+    chosen = np.argsort(-scores, kind="stable")[:topk // kpool]
+    pooled = (context // kpool) * kpool
+    positions = (chosen[:, None] * kpool + np.arange(kpool)[None]).reshape(-1)
+    return np.sort(np.concatenate([positions, np.arange(pooled, context)]))
+
+
 class MtpReference:
     def __init__(self, engine, layer):
         self.engine = engine

@@ -10,6 +10,8 @@
 
 #define SPARK_KV_SHARD_MAX_DEGREE 16u
 #define SPARK_KV_SHARD_SLICE_ALIGN 16u
+#define SPARK_KV_SHARD_ROUND_NS 40000u
+#define SPARK_KV_SHARD_WIRE_BYTES_PER_US 25000u
 
 typedef struct SparkKvShard
 {
@@ -86,6 +88,63 @@ SPARK_KV_SHARD_FN uint32_t SparkKvShardLocalKeys(SparkKvShard shard,uint32_t key
 SPARK_KV_SHARD_FN uint32_t SparkKvShardLocalPosition(SparkKvShard shard,uint32_t local)
 {
 	return(((local / shard.grain) * shard.degree + shard.rank) * shard.grain + local % shard.grain);
+}
+
+SPARK_KV_SHARD_FN uint32_t SparkKvShardLocalIndex(SparkKvShard shard,uint32_t position)
+{
+	return((position / (shard.grain * shard.degree)) * shard.grain + position % shard.grain);
+}
+
+SPARK_KV_SHARD_FN uint32_t SparkKvShardGatherKeys(SparkKvShard shard,uint32_t keys)
+{
+	uint32_t span = shard.grain * shard.degree;
+	return(span == 0u ? 0u : (uint32_t)(((uint64_t)keys + span - 1u) / span) * shard.grain);
+}
+
+SPARK_KV_SHARD_FN uint32_t SparkKvShardGatherPlan(
+	SparkKvShard shard,
+	const uint32_t *row_sequence,
+	const uint32_t *row_position,
+	uint32_t rows,
+	uint32_t *list,
+	uint32_t *key_offset,
+	uint32_t *key_context,
+	uint64_t *total_keys,
+	uint32_t *most_keys)
+{
+	uint32_t row,other,context,keys,first,count = 0u,most = 0u;
+	uint64_t total = 0u;
+	for (row=0u; row<rows; row++)
+	{
+		first = 1u;
+		for (other=0u; other<row && first != 0u; other++)
+			if ( row_sequence[other] == row_sequence[row] )
+				first = 0u;
+		if ( first == 0u )
+			continue;
+		context = 0u;
+		for (other=row; other<rows; other++)
+			if ( row_sequence[other] == row_sequence[row] && row_position[other] + 1u > context )
+				context = row_position[other] + 1u;
+		keys = SparkKvShardGatherKeys(shard,context);
+		if ( list != 0 && key_offset != 0 && key_context != 0 )
+		{
+			list[count] = row_sequence[row];
+			key_offset[row_sequence[row]] = (uint32_t)total;
+			key_context[row_sequence[row]] = context;
+		}
+		total += keys;
+		most = keys > most ? keys : most;
+		count++;
+	}
+	*total_keys = total;
+	*most_keys = most;
+	return(count);
+}
+
+SPARK_KV_SHARD_FN uint64_t SparkKvShardExchangeCostNs(uint64_t rounds,uint64_t wire_bytes)
+{
+	return(rounds * SPARK_KV_SHARD_ROUND_NS + wire_bytes * 1000u / SPARK_KV_SHARD_WIRE_BYTES_PER_US);
 }
 
 SPARK_KV_SHARD_FN uint64_t SparkKvShardCeil(uint64_t value,uint64_t unit)

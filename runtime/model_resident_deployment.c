@@ -27,7 +27,7 @@ static const char *const SparkModelResidentDeploymentChatTemplateMembers[] =
 {
 	"prefix","thinking_prefix","system","system_thinking","user","observation",
 	"assistant","assistant_thinking","turn_suffix","generation",
-	"generation_thinking","stop_markers"
+	"generation_thinking","stop_markers","assistant_suffix","control_markers"
 };
 static const char *const SparkModelResidentDeploymentAdapterMembers[] =
 {
@@ -452,6 +452,53 @@ static SparkStatus SparkModelResidentDeploymentTextString(
 	return(SparkJsonCopyString(document,token,value));
 }
 
+static SparkStatus SparkModelResidentDeploymentValidateChatTemplateMembers(
+	const SparkJsonDocument *document,
+	int32_t object,
+	uint32_t *suffixed)
+{
+	static const char *const optional[] = { "assistant_suffix","control_markers" };
+	const char *members[sizeof(SparkModelResidentDeploymentChatTemplateMembers) / sizeof(SparkModelResidentDeploymentChatTemplateMembers[0])];
+	uint32_t count = 0u,index;
+	for ( index = 0u; index < sizeof(members) / sizeof(members[0]) - 2u; index++ )
+		members[count++] = SparkModelResidentDeploymentChatTemplateMembers[index];
+	for ( index = 0u; index < 2u; index++ )
+		if ( SparkModelResidentDeploymentMember(document,object,optional[index]) >= 0 )
+			members[count++] = optional[index];
+	*suffixed = SparkModelResidentDeploymentMember(document,object,"assistant_suffix") >= 0 ? 1u : 0u;
+	return(SparkJsonValidateObjectMembersExact(document,object,members,count));
+}
+
+static SparkStatus SparkModelResidentDeploymentParseControlMarkers(
+	const SparkJsonDocument *document,
+	int32_t object,
+	SparkModelResidentChatTemplate *chat)
+{
+	int32_t array = SparkModelResidentDeploymentMember(document,object,"control_markers");
+	int32_t element;
+	uint32_t index;
+	SparkStatus status;
+	if ( array < 0 )
+		return(SPARK_STATUS_OK);
+	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	chat->control_marker_count = SparkJsonGetArrayElementCount(document,array);
+	if ( chat->control_marker_count == 0u || chat->control_marker_count > SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	for (index=0u; index<chat->control_marker_count; index++)
+	{
+		element = SparkJsonGetArrayElement(document,array,index);
+		if ( !SparkJsonTokenIsType(document,element,SPARK_JSON_TOKEN_STRING) )
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+		status = SparkJsonCopyString(document,element,&chat->control_markers[index]);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+		if ( chat->control_markers[index][0] == '\0' )
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelResidentDeploymentParseChatTemplate(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -459,15 +506,16 @@ static SparkStatus SparkModelResidentDeploymentParseChatTemplate(
 {
 	SparkModelResidentChatTemplate *chat = &deployment->chat_template;
 	int32_t object,array,element;
-	uint32_t index;
+	uint32_t index,suffixed;
 	SparkStatus status;
 	object = SparkModelResidentDeploymentMember(document,root,"chat_template");
 	if ( object < 0 )
 		return(SPARK_STATUS_OK);
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentChatTemplateMembers,
-		sizeof(SparkModelResidentDeploymentChatTemplateMembers) / sizeof(SparkModelResidentDeploymentChatTemplateMembers[0]));
+	status = SparkModelResidentDeploymentValidateChatTemplateMembers(document,object,&suffixed);
+	if ( status == SPARK_STATUS_OK && suffixed != 0u )
+		status = SparkModelResidentDeploymentTextString(document,object,"assistant_suffix",&chat->assistant_suffix);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentTextString(document,object,"prefix",&chat->prefix);
 	if ( status == SPARK_STATUS_OK )
@@ -514,6 +562,9 @@ static SparkStatus SparkModelResidentDeploymentParseChatTemplate(
 		if ( chat->stop_markers[index][0] == '\0' )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
+	status = SparkModelResidentDeploymentParseControlMarkers(document,object,chat);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	chat->declared = 1u;
 	return(SPARK_STATUS_OK);
 }
@@ -666,6 +717,9 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->chat_template.observation);
 	free(deployment->chat_template.assistant);
 	free(deployment->chat_template.assistant_thinking);
+	free(deployment->chat_template.assistant_suffix);
+	for (uint32_t control = 0u; control < deployment->chat_template.control_marker_count; control++)
+		free(deployment->chat_template.control_markers[control]);
 	free(deployment->chat_template.turn_suffix);
 	free(deployment->chat_template.generation);
 	free(deployment->chat_template.generation_thinking);

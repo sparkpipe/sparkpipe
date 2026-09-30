@@ -5,16 +5,33 @@ set -euo pipefail
 : "${K3_WEIGHTD_SOCKET:?K3_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${K3_EXPERT_POOL_BYTES:?K3_EXPERT_POOL_BYTES is the per-rank routed expert pool}"
 : "${K3_MEMORY_MAX:?K3_MEMORY_MAX is the residentd unit MemoryMax, e.g. 10G}"
+: "${K3_STATE_BUDGET_BYTES:?K3_STATE_BUDGET_BYTES is the per-rank KDA state + windows + MLA KV + scratch budget the runner enforces}"
+K3_TOPOLOGY="${K3_TOPOLOGY:-tp4pp4}"
+case "$K3_TOPOLOGY" in tp4pp4|tp16) ;; *) echo "k3_lane: K3_TOPOLOGY $K3_TOPOLOGY is not tp4pp4 or tp16" >&2; exit 2 ;; esac
 [ "$K3_LANE" -ge 1 ] && [ "$K3_LANE" -le 15 ] || { echo "k3_lane: lane $K3_LANE outside 1..15" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECKOUT="$(cd "$HERE/.." && pwd)"
 HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-k3-rd$K3_LANE"
-PACK_DIR=sparkdata/k3.mxfp4.tp4pp4/packs
+PACK_DIR=sparkdata/k3.mxfp4.$K3_TOPOLOGY/packs
 host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/dev/shm/k3-lane$K3_LANE-$1/root"; }
-pack_of() { echo "/home/$(host_of "$1")/$PACK_DIR/k3.stage$(($1 / 4)).rank0$(($1 % 4)).pack"; }
+pack_of() {
+  if [ "$K3_TOPOLOGY" = tp16 ]; then
+    printf '/home/%s/%s/k3.stage0.rank%02d.pack\n' "$(host_of "$1")" "$PACK_DIR" "$1"
+  else
+    echo "/home/$(host_of "$1")/$PACK_DIR/k3.stage$(($1 / 4)).rank0$(($1 % 4)).pack"
+  fi
+}
+mesh_ranks_of() {
+  local stage=$(($1 / 4))
+  if [ "$K3_TOPOLOGY" = tp16 ]; then
+    echo 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+  else
+    echo $((stage * 4)),$((stage * 4 + 1)),$((stage * 4 + 2)),$((stage * 4 + 3))
+  fi
+}
 PIDS=()
 
 join_ranks() {
@@ -34,7 +51,7 @@ join_ranks() {
 render() {
   python3 "$HERE/k3_multidev_lane.py" --lane "$K3_LANE" \
     --sequences "${K3_SEQUENCES:-16}" --kv-pages "${K3_KV_PAGES:-64}" \
-    --collective "${K3_COLLECTIVE:-device}" \
+    --collective "${K3_COLLECTIVE:-device}" --topology "$K3_TOPOLOGY" \
     --pipeline-transport "${K3_PIPELINE_TRANSPORT:-host-rdma}" \
     --kv-backing-bytes "${K3_KV_BACKING_BYTES:-1073741824}" \
     --runtime-root "/dev/shm/k3-lane$K3_LANE-{host}/root" \
@@ -79,7 +96,7 @@ start() {
     stage=$((rank / 4))
     wrapper=""
     case " ${K3_WRAP_RANKS:-} " in *" $rank "*) wrapper="${K3_RANK_WRAPPER:-} " ;; esac
-    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$K3_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$K3_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$K3_LANE -E SPARK_TP_MESH_RANKS=$((stage * 4)),$((stage * 4 + 1)),$((stage * 4 + 2)),$((stage * 4 + 3)) -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$K3_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ${wrapper}./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > residentd.log 2>&1'" &
+    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$K3_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$K3_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$K3_LANE -E SPARK_TP_MESH_RANKS=$(mesh_ranks_of "$rank") -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$K3_EXPERT_POOL_BYTES -E SPARK_K3_STATE_BUDGET_BYTES=$K3_STATE_BUDGET_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=${K3_DEVICE_MAX_CONNECTIONS:-32} bash -c 'exec ${wrapper}./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > residentd.log 2>&1'" &
     PIDS[$rank]=$!
   done
   join_ranks start

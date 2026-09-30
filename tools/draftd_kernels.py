@@ -14,6 +14,7 @@ class DraftdKernels:
     def __init__(self, library):
         self.lib = ctypes.CDLL(library)
         self.lib.spark_draftd_gemv_bf16.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 3 + [ctypes.c_void_p]
+        self.lib.spark_draftd_gemm_rows_bf16.argtypes = [ctypes.c_void_p] * 3 + [ctypes.c_int] * 4 + [ctypes.c_void_p]
         self.lib.spark_draftd_gemv_fp8_block.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_int] * 5 + [ctypes.c_void_p]
         self.wide = int(os.environ.get("DRAFTD_ACCUMULATE", "f32") == "f64")
 
@@ -33,6 +34,20 @@ class DraftdKernels:
                                                  self._stream())
         if status:
             raise RuntimeError(f"spark_draftd_gemv_bf16 status {status}")
+
+    def gemm_rows_bf16(self, w, x, out):
+        if w.dtype != torch.bfloat16 or x.dtype != torch.float32 or out.dtype != torch.float32:
+            raise TypeError("gemm_rows_bf16 takes bf16 weights and f32 input/output")
+        if not (w.is_contiguous() and x.is_contiguous() and out.is_contiguous()) or x.dim() != 2 or out.dim() != 2:
+            raise ValueError("gemm_rows_bf16 needs contiguous [n, cols] input and [n, rows] output")
+        rows, cols = w.shape
+        count = x.shape[0]
+        if x.shape[1] != cols or tuple(out.shape) != (count, rows):
+            raise ValueError(f"gemm_rows_bf16 shape mismatch {tuple(w.shape)} x {tuple(x.shape)} -> {tuple(out.shape)}")
+        status = self.lib.spark_draftd_gemm_rows_bf16(w.data_ptr(), x.data_ptr(), out.data_ptr(), rows, cols, count,
+                                                      self.wide, self._stream())
+        if status:
+            raise RuntimeError(f"spark_draftd_gemm_rows_bf16 status {status}")
 
     def gemv_fp8_block(self, codes, scale, ids, x, out):
         if codes.dtype != torch.uint8 or scale.dtype != torch.float32 or ids.dtype != torch.int64:

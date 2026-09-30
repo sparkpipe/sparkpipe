@@ -22,6 +22,7 @@
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
 #include "sparkpipe/spark_speculation_reference_draft.h"
+#include "sparkpipe/spark_speculation_recorded_draft.h"
 #include "sparkpipe/spark_speculation_depth.h"
 #include "sparkpipe/spark_speculation_drafter_mix.h"
 #include "sparkpipe/spark_speculation_relay_link.h"
@@ -248,6 +249,7 @@ struct SparkGlm5NextModuleState
 	uint32_t mtp_enabled;
 	uint32_t index_cp;
 	uint32_t kv_shard;
+	uint32_t kv_shard_scatter_only;
 	char kv_layout_fingerprint[96];
 	uint16_t *mtp_lane_hidden_bf16;
 	uint8_t *mtp_lane_armed;
@@ -369,6 +371,8 @@ struct SparkGlm5NextModuleState
 	SparkSpeculationLookupDraft verify_lookup;
 	SparkSpeculationReferenceDraft verify_reference;
 	uint32_t *verify_reference_tokens;
+	SparkSpeculationRecordedDraft verify_recorded;
+	uint8_t *verify_recorded_bytes;
 	uint64_t verify_frames;
 	uint64_t verify_plain_frames;
 	uint64_t verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_CLASS_COUNT];
@@ -490,6 +494,17 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	{
 		fprintf(stderr,"GLM-KV-SHARD-REFUSED tp=%u rows=%u index_cp=%u: sharding needs index context parallel, a degree that divides the 64 heads and the 64-slot page at grain %u, and exchange payloads that fit the collectives\n",context->tp_degree,context->execution_row_capacity,state->index_cp,SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( state->kv_shard != 0u )
+	{
+		const char *exchange = getenv("SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE");
+		if ( exchange != 0 && strcmp(exchange,"auto") != 0 && strcmp(exchange,"scatter") != 0 )
+		{
+			fprintf(stderr,"SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE must be auto or scatter, found %s\n",exchange);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		state->kv_shard_scatter_only = exchange != 0 && strcmp(exchange,"scatter") == 0 ? 1u : 0u;
+		fprintf(stderr,"GLM kv_shard exchange=%s gather_sequences_max=%u\n",state->kv_shard_scatter_only != 0u ? "scatter" : "auto",SparkGlm5NextKvShardGatherCapacity(context->tp_degree,context->execution_row_capacity));
 	}
 	state->execution_stream = host_services->execution_stream;
 	(void)snprintf(state->model_revision,sizeof(state->model_revision),"%s",context->model_revision);
@@ -1233,6 +1248,7 @@ static SparkStatus SparkGlm5NextAllocateSlotMlp(
 	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,state->tp_degree,SparkGlm5NextKvShardQueryStride((uint32_t)rows,state->tp_degree),sizeof(uint16_t),(void **)&slot->kv_shard_query_gathered_bf16);
 	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,state->tp_degree,SparkGlm5NextKvShardPartialStrideCapacity(state->tp_degree,(uint32_t)rows),sizeof(float),(void **)&slot->kv_shard_partials_f32);
 	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,state->tp_degree,SparkGlm5NextKvShardPartialStrideCapacity(state->tp_degree,(uint32_t)rows),sizeof(float),(void **)&slot->kv_shard_partials_received_f32);
+	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u ) status = SparkGlm5NextAllocateBytes(state,rows + 2u * (uint64_t)state->resident_sequence_capacity,1u,sizeof(uint32_t),(void **)&slot->kv_shard_gather_u32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(rows,SPARK_GLM5_NEXT_MODEL_HEAD_COUNT / state->tp_degree),SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS,sizeof(float),(void **)&slot->attention_split_partials_f32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,rows,SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH,sizeof(uint32_t),(void **)&slot->selected_positions);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlm5NextAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_expert);
@@ -2505,6 +2521,10 @@ static SparkStatus SparkGlm5NextModuleGatherIndex(SparkGlm5NextTpChain *chain,ui
 	SPARK_RETURN(status);
 }
 
+#define SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_QUERY 0u
+#define SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_PARTIALS 1u
+#define SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_KEYS 2u
+
 static SparkStatus SparkGlm5NextModuleKvShardExchange(SparkGlm5NextTpChain *chain,uint32_t exchange,uint32_t chained)
 {
 	SparkGlm5NextModuleState *state;
@@ -2516,8 +2536,9 @@ static SparkStatus SparkGlm5NextModuleKvShardExchange(SparkGlm5NextTpChain *chai
 	state = chain->state;
 	if ( state->tp_collective_disabled != 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	wide = exchange != 0u ? SparkGlm5NextKvShardPartialWide(chain->wave_rows,state->tp_degree,state->execution_row_capacity) : 0u;
-	if ( state->kv_shard == 0u || state->tp_device_collective_initialized == 0u || (wide != 0u && state->tp_device_collective_hc_initialized == 0u) )
+	wide = exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_PARTIALS ? SparkGlm5NextKvShardPartialWide(chain->wave_rows,state->tp_degree,state->execution_row_capacity) : 0u;
+	if ( state->kv_shard == 0u || state->tp_device_collective_initialized == 0u || (wide != 0u && state->tp_device_collective_hc_initialized == 0u) ||
+		(exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_KEYS && (chain->wave.kv_shard_gather == 0u || chain->wave.kv_shard_gather_sequences == 0u)) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	collective = wide != 0u ? &state->tp_device_collective_hc : &state->tp_device_collective;
 	op_index = wide != 0u ? &chain->tp_hc_op_index : &chain->tp_op_index;
@@ -2528,17 +2549,20 @@ static SparkStatus SparkGlm5NextModuleKvShardExchange(SparkGlm5NextTpChain *chai
 	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission.descriptor_bytes = sizeof(submission);
 	submission.slot_index = chain->slot_index;
-	submission.active_sequence_count = exchange != 0u ? SparkGlm5NextKvShardPartialSequences(chain->wave_rows,state->tp_degree,state->execution_row_capacity) : SparkGlm5NextKvShardQuerySequences(chain->wave_rows,state->tp_degree);
+	submission.active_sequence_count = exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_PARTIALS ? SparkGlm5NextKvShardPartialSequences(chain->wave_rows,state->tp_degree,state->execution_row_capacity) :
+		exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_KEYS ? chain->wave.kv_shard_gather_sequences : SparkGlm5NextKvShardQuerySequences(chain->wave_rows,state->tp_degree);
 	submission.logical_sequence_count = chain->batch->active_sequence_count;
 	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission.ordinal = ordinal;
-	submission.local_device = exchange != 0u ? (void *)chain->slot->kv_shard_partials_f32 : (void *)chain->slot->query_latent_bf16;
-	submission.full_device = exchange != 0u ? (void *)chain->slot->kv_shard_partials_received_f32 : (void *)chain->slot->kv_shard_query_gathered_bf16;
+	submission.local_device = exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_PARTIALS ? (void *)chain->slot->kv_shard_partials_f32 :
+		exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_KEYS ? (void *)chain->slot->kv_shard_query_gathered_bf16 : (void *)chain->slot->query_latent_bf16;
+	submission.full_device = exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_PARTIALS ? (void *)chain->slot->kv_shard_partials_received_f32 :
+		exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_KEYS ? (void *)chain->slot->kv_shard_partials_f32 : (void *)chain->slot->kv_shard_query_gathered_bf16;
 	submission.cuda_stream = chain->slot->stream;
 	submission.completion_function = chained != 0u ? SparkGlm5NextModuleTpCompletion : 0;
 	submission.completion_context = chained != 0u ? chain : 0;
 	*op_index += 1u;
-	status = SparkTpDeviceCollectiveEnqueue(collective,&submission,exchange != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER);
+	status = SparkTpDeviceCollectiveEnqueue(collective,&submission,exchange == SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_PARTIALS ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER);
 	if ( status != SPARK_STATUS_OK )
 		*op_index -= 1u;
 	SPARK_RETURN(status);
@@ -4090,13 +4114,24 @@ static uint32_t SparkGlm5NextWalkLayer(SparkGlm5NextTpChain *chain,uint32_t laye
 		return(15u);
 	if ( gather_sequences == 0u && SparkGlm5NextLaunchCudaLayerAttention(wave,layer) != 0 )
 		return(4u);
-	if ( SparkGlm5NextLayerKvShardActive(wave,layer) != 0u )
+	if ( SparkGlm5NextLayerKvShardActive(wave,layer) != 0u && wave->kv_shard_gather != 0u )
 	{
-		if ( SparkGlm5NextModuleKvShardExchange(chain,0u,0u) != SPARK_STATUS_OK )
+		if ( SparkGlm5NextLaunchCudaLayerAttentionShardGatherPack(wave,layer) != 0 )
+			return(28u);
+		if ( SparkGlm5NextModuleKvShardExchange(chain,SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_KEYS,0u) != SPARK_STATUS_OK )
+			return(29u);
+		if ( SparkGlm5NextLaunchCudaLayerAttentionShardGatherPartial(wave,layer) != 0 )
+			return(30u);
+		if ( SparkGlm5NextLaunchCudaLayerAttentionShardMerge(wave,layer) != 0 )
+			return(27u);
+	}
+	else if ( SparkGlm5NextLayerKvShardActive(wave,layer) != 0u )
+	{
+		if ( SparkGlm5NextModuleKvShardExchange(chain,SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_QUERY,0u) != SPARK_STATUS_OK )
 			return(24u);
 		if ( SparkGlm5NextLaunchCudaLayerAttentionShardPartial(wave,layer) != 0 )
 			return(25u);
-		if ( SparkGlm5NextModuleKvShardExchange(chain,1u,0u) != SPARK_STATUS_OK )
+		if ( SparkGlm5NextModuleKvShardExchange(chain,SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_PARTIALS,0u) != SPARK_STATUS_OK )
 			return(26u);
 		if ( SparkGlm5NextLaunchCudaLayerAttentionShardMerge(wave,layer) != 0 )
 			return(27u);
@@ -4497,6 +4532,25 @@ static void SparkGlm5NextNoteWarm(SparkGlm5NextModuleState *state)
 	fprintf(stderr,"GRAPH-WARM experts resident after first eager chain\n");
 }
 
+static void SparkGlm5NextKvShardChooseExchange(SparkGlm5NextTpChain *chain)
+{
+	SparkGlm5NextModuleState *state = chain->state;
+	SparkGlm5NextCudaWave *wave = &chain->wave;
+	SparkGlm5NextKvShardRoundPlan plan;
+	uint64_t keys;
+	uint32_t count,most;
+	wave->kv_shard_gather = 0u;
+	if ( state->kv_shard == 0u || state->kv_shard_scatter_only != 0u )
+		return;
+	count = SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(state->tp_rank,state->tp_degree),wave->host_resident_slots,wave->host_positions,wave->row_count,0,0,0,&keys,&most);
+	if ( count == 0u || SparkGlm5NextKvShardPlanRounds(wave->row_count,state->tp_degree,state->execution_row_capacity,keys,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 0u || plan.gather == 0u )
+		return;
+	wave->kv_shard_gather = 1u;
+	wave->kv_shard_gather_sequences = plan.gather_sequences;
+	wave->kv_shard_gather_count = count;
+	wave->kv_shard_gather_most_keys = most;
+}
+
 static void SparkGlm5NextLinearChain(SparkGlm5NextTpChain *chain)
 {
 	SparkGlm5NextModuleState *state = chain->state;
@@ -4510,6 +4564,7 @@ static void SparkGlm5NextLinearChain(SparkGlm5NextTpChain *chain)
 		status = SparkGlm5NextGraphClaimExperts(chain);
 	if ( status == SPARK_STATUS_OK )
 	{
+		SparkGlm5NextKvShardChooseExchange(chain);
 		SparkGlm5NextStampLaunch(async);
 		async->linear = 1u;
 		walk_start = SparkGlm5NextNowNs();
@@ -5451,7 +5506,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		if ( SparkGlm5NextLayerKvShardActive(&chain->wave,chain->next_layer) != 0u )
 		{
 			chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_SHARD_QUERY;
-			launch_status = SparkGlm5NextModuleKvShardExchange(chain,0u,1u);
+			launch_status = SparkGlm5NextModuleKvShardExchange(chain,SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_QUERY,1u);
 			if ( launch_status != SPARK_STATUS_OK )
 				SparkGlm5NextTpChainFail(chain,launch_status);
 			return;
@@ -5468,7 +5523,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 			return;
 		}
 		chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_SHARD_EXCHANGE;
-		launch_status = SparkGlm5NextModuleKvShardExchange(chain,1u,1u);
+		launch_status = SparkGlm5NextModuleKvShardExchange(chain,SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_PARTIALS,1u);
 		if ( launch_status != SPARK_STATUS_OK )
 			SparkGlm5NextTpChainFail(chain,launch_status);
 		return;
@@ -5492,7 +5547,7 @@ static void SparkGlm5NextTpChainAdvance(void *chain_context,SparkStatus status)
 		if ( SparkGlm5NextLayerKvShardActive(&chain->wave,chain->next_layer) != 0u )
 		{
 			chain->stage = SPARK_GLM5_NEXT_CHAIN_STAGE_SHARD_QUERY;
-			launch_status = SparkGlm5NextModuleKvShardExchange(chain,0u,1u);
+			launch_status = SparkGlm5NextModuleKvShardExchange(chain,SPARK_GLM5_NEXT_KV_SHARD_EXCHANGE_QUERY,1u);
 			if ( launch_status != SPARK_STATUS_OK )
 				SparkGlm5NextTpChainFail(chain,launch_status);
 			return;
@@ -6868,7 +6923,7 @@ static SparkStatus SparkGlm5NextConfigureVerify(SparkGlm5NextModuleState *state)
 	}
 	if ( SparkGlm5NextVerifyDrafterParse(getenv(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV),state->verify_rows_max,&state->verify_drafter,&state->verify_drafter_path) != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"%s must be lookup, mtp, mtp+lookup, oracle:PATH or adversary:PATH when %s is nonzero, and absent when it is 0\n",SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_ENV);
+		fprintf(stderr,"%s must be lookup, mtp, mtp+lookup, oracle:PATH, adversary:PATH or recorded:PATH when %s is nonzero, and absent when it is 0\n",SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_ENV);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	state->verify_mtp = SparkGlm5NextVerifyDrafterUsesMtp(state->verify_drafter);
@@ -6905,6 +6960,38 @@ static SparkStatus SparkGlm5NextLoadReferenceTokens(SparkGlm5NextModuleState *st
 	fclose(file);
 	*count_out = count;
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextLoadRecordedDrafts(SparkGlm5NextModuleState *state)
+{
+	FILE *file;
+	long bytes;
+	SparkStatus status;
+	file = fopen(state->verify_drafter_path,"rb");
+	if ( file == 0 )
+	{
+		fprintf(stderr,"GLM verify recorded drafter cannot open %s\n",state->verify_drafter_path);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
+	bytes = fseek(file,0,SEEK_END) == 0 ? ftell(file) : -1;
+	if ( bytes < (long)SPARK_SPECULATION_RECORDED_HEADER_BYTES || fseek(file,0,SEEK_SET) != 0 )
+	{
+		fclose(file);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	state->verify_recorded_bytes = (uint8_t *)malloc((size_t)bytes);
+	if ( state->verify_recorded_bytes == 0 || fread(state->verify_recorded_bytes,1u,(size_t)bytes,file) != (size_t)bytes )
+	{
+		fclose(file);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	fclose(file);
+	status = SparkSpeculationRecordedDraftInitialize(&state->verify_recorded,state->verify_recorded_bytes,(uint64_t)bytes,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"GLM verify recorded drafter %s is not a draft table for vocabulary %u\n",state->verify_drafter_path,(unsigned)SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT);
+	else
+		fprintf(stderr,"GLM verify recorded drafter %s entries=%llu depth=%u\n",state->verify_drafter_path,(unsigned long long)state->verify_recorded.entry_count,state->verify_recorded.depth);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm5NextAllocateDrafter(SparkGlm5NextModuleState *state)
@@ -6946,6 +7033,12 @@ static SparkStatus SparkGlm5NextAllocateDrafter(SparkGlm5NextModuleState *state)
 		state->verify_draft_function = SparkSpeculationReferenceDraftTokens;
 		state->verify_draft_context = &state->verify_reference;
 	}
+	else if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED )
+	{
+		status = SparkGlm5NextLoadRecordedDrafts(state);
+		state->verify_draft_function = SparkSpeculationRecordedDraftTokens;
+		state->verify_draft_context = &state->verify_recorded;
+	}
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"GLM verify drafter %u failed to initialize: status=%d\n",state->verify_drafter,(int)status);
 	SPARK_RETURN(status);
@@ -6959,7 +7052,11 @@ static void SparkGlm5NextReleaseDrafter(SparkGlm5NextModuleState *state)
 	free(state->mtp_lane_next);
 	state->mtp_lane_sequence = 0;
 	state->mtp_lane_next = 0;
+	if ( state->verify_recorded_bytes != 0 )
+		fprintf(stderr,"VERIFY-RECORDED hits=%llu misses=%llu entries=%llu\n",(unsigned long long)state->verify_recorded.hits,(unsigned long long)state->verify_recorded.misses,(unsigned long long)state->verify_recorded.entry_count);
 	free(state->verify_reference_tokens);
+	free(state->verify_recorded_bytes);
+	state->verify_recorded_bytes = 0;
 	free(state->verify_depth_cap);
 	free(state->verify_depth_sequence);
 	state->verify_reference_tokens = 0;

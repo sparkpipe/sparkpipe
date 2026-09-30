@@ -24,19 +24,16 @@ static void touched_region(uint32_t pool, uint32_t layer, uint32_t slot,
 {
 	const uint64_t heads = SPARK_K3_MODEL_KDA_HEAD_COUNT / tp_degree;
 	const uint64_t kernel = SPARK_K3_MODEL_KDA_CONV_KERNEL;
-	uint64_t full_channels = pool == SPARK_K3_SLOT_POOL_V_WINDOW ?
-		SPARK_K3_MODEL_KDA_VALUE_DIMENSION : SPARK_K3_MODEL_KDA_QK_DIMENSION;
 	uint64_t channels = heads * (pool == SPARK_K3_SLOT_POOL_V_WINDOW ?
 		SPARK_K3_MODEL_KDA_HEAD_VALUE_DIMENSION : SPARK_K3_MODEL_KDA_HEAD_KEY_DIMENSION);
 	if ( pool == SPARK_K3_SLOT_POOL_STATE )
 	{
-		*offset = ((uint64_t)layer * RESET_SEQUENCES * SPARK_K3_MODEL_KDA_STATE_BYTES_PER_LAYER) +
-			((uint64_t)slot * SPARK_K3_MODEL_KDA_STATE_BYTES_PER_LAYER);
 		*bytes = heads * SPARK_K3_MODEL_KDA_HEAD_KEY_DIMENSION *
 			SPARK_K3_MODEL_KDA_HEAD_VALUE_DIMENSION * SPARK_K3_MODEL_KDA_STATE_ELEMENT_BYTES;
+		*offset = ((uint64_t)layer * RESET_SEQUENCES + slot) * *bytes;
 		return;
 	}
-	*offset = (((uint64_t)layer * RESET_SEQUENCES * full_channels * kernel) +
+	*offset = (((uint64_t)layer * RESET_SEQUENCES * channels * kernel) +
 		((uint64_t)slot * channels * kernel)) * 2u;
 	*bytes = channels * kernel * 2u;
 }
@@ -74,12 +71,12 @@ static int check_slot_reset(uint32_t tp_degree)
 	int failures = 0;
 	char what[160];
 	pools.bytes[SPARK_K3_SLOT_POOL_STATE] = (uint64_t)RESET_LAYERS * RESET_SEQUENCES *
-		SPARK_K3_MODEL_KDA_STATE_BYTES_PER_LAYER;
+		SPARK_K3_MODEL_KDA_STATE_BYTES_PER_LAYER / tp_degree;
 	pools.bytes[SPARK_K3_SLOT_POOL_Q_WINDOW] = (uint64_t)RESET_LAYERS * RESET_SEQUENCES *
-		SPARK_K3_MODEL_KDA_QK_DIMENSION * SPARK_K3_MODEL_KDA_CONV_KERNEL * 2u;
+		SPARK_K3_MODEL_KDA_QK_DIMENSION * SPARK_K3_MODEL_KDA_CONV_KERNEL * 2u / tp_degree;
 	pools.bytes[SPARK_K3_SLOT_POOL_K_WINDOW] = pools.bytes[SPARK_K3_SLOT_POOL_Q_WINDOW];
 	pools.bytes[SPARK_K3_SLOT_POOL_V_WINDOW] = (uint64_t)RESET_LAYERS * RESET_SEQUENCES *
-		SPARK_K3_MODEL_KDA_VALUE_DIMENSION * SPARK_K3_MODEL_KDA_CONV_KERNEL * 2u;
+		SPARK_K3_MODEL_KDA_VALUE_DIMENSION * SPARK_K3_MODEL_KDA_CONV_KERNEL * 2u / tp_degree;
 	for ( pool = 0u; pool < SPARK_K3_SLOT_POOLS; pool++ )
 	{
 		pools.pool[pool] = (uint8_t *)calloc(1u, pools.bytes[pool]);
@@ -106,6 +103,32 @@ static int check_slot_reset(uint32_t tp_degree)
 		region_is(&pools, 2u, tp_degree, 0x5au), what);
 	for ( pool = 0u; pool < SPARK_K3_SLOT_POOLS; pool++ )
 		free(pools.pool[pool]);
+	return(failures);
+}
+
+static int check_rank_state_bytes(void)
+{
+	SparkK3RankStateBytes tp1, tp4, tp16;
+	SparkK3KdaRankLayout layout;
+	int failures = 0;
+	failures += expect(SparkK3RankStateBytesFor(69u, 24u, 16u, 1u, 64u, 73728u, &tp1) == 1u &&
+		SparkK3RankStateBytesFor(69u, 24u, 16u, 4u, 64u, 73728u, &tp4) == 1u &&
+		SparkK3RankStateBytesFor(69u, 24u, 16u, 16u, 64u, 73728u, &tp16) == 1u,
+		"the rank state plan accepts TP1, TP4 and TP16");
+	failures += expect(tp1.kda_state == 69ull * 16u * SPARK_K3_MODEL_KDA_STATE_BYTES_PER_LAYER &&
+		tp16.kda_state == 69ull * 16u * 6u * 128u * 128u * 4u &&
+		tp4.kda_state * 4u == tp1.kda_state && tp16.kda_state * 16u == tp1.kda_state,
+		"a TP rank holds only its own heads' KDA state (6 of 96 at TP16: 434 MB for 16 sequences)");
+	failures += expect(tp1.kda_windows == 69ull * 16u * SPARK_K3_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER &&
+		tp16.kda_windows * 16u == tp1.kda_windows,
+		"a TP rank holds only its own heads' q/k/v conv windows");
+	failures += expect(tp16.mla_kv == 24ull * 16u * 64u * 73728u &&
+		tp16.total == tp16.kda_state + tp16.kda_windows + tp16.mla_kv,
+		"every resident sequence owns its KV pages and the total is counted");
+	failures += expect(SparkK3RankStateBytesFor(69u, 24u, 16u, 5u, 64u, 73728u, &tp1) == 0u &&
+		SparkK3RankStateBytesFor(69u, 24u, 0u, 4u, 64u, 73728u, &tp1) == 0u &&
+		SparkK3KdaRankLayoutFor(0u, &layout) == 0u,
+		"a TP degree that does not divide the heads, zero sequences and TP0 are refused");
 	return(failures);
 }
 
@@ -209,7 +232,9 @@ int main(void)
 	}
 	failures += check_slot_reset(1u);
 	failures += check_slot_reset(4u);
+	failures += check_slot_reset(16u);
 	failures += check_slot_reset_refusals();
+	failures += check_rank_state_bytes();
 	printf("test_k3_pool_sizing: %d failures\n", failures);
 	return(failures != 0 ? 1 : 0);
 }

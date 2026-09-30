@@ -62,7 +62,7 @@ def load_streams(path):
 def _reference_worker(arguments):
     checkpoint, header, cases = arguments
     import glm53flash_mtp_reference as reference
-    engine, config = reference.load_engine(checkpoint, header, True)
+    engine, config = reference.load_engine(checkpoint, header)
     memo = {}
     tensor = engine.tensor
 

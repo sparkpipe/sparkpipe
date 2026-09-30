@@ -268,6 +268,42 @@ static inline uint32_t LmLatentShardHeadsPerBlock(uint32_t heads_per_rank)
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentShardPartialHeadsLaunch(
+    Pages cache,
+    const uint16_t *query_bf16,
+    uint64_t query_rank_stride,
+    uint32_t heads_per_rank,
+    uint32_t total_heads,
+    const uint32_t *sequence_of_row,
+    const uint32_t *context_length,
+    const uint32_t *row_position,
+    const uint32_t *selected_positions,
+    uint32_t selected_count,
+    uint32_t dense_limit,
+    float qk_scale,
+    float *partials,
+    uint64_t partial_rank_stride,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    uint32_t per_block;
+    if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 ||
+        SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u ||
+        (selected_positions != 0 && selected_count > LM_LATENT_SHARD_LIST_CAPACITY) ||
+        query_rank_stride < (uint64_t)rows * heads_per_rank * (LATENT + ROPE) ||
+        partial_rank_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
+        return cudaErrorInvalidValue;
+    per_block = LmLatentShardHeadsPerBlock(heads_per_rank);
+    if (per_block == 4u)
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u>), dim3(rows, total_heads / 4u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride);
+    else if (per_block == 2u)
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u>), dim3(rows, total_heads / 2u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride);
+    else
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u>), dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride);
+    return cudaPeekAtLastError();
+}
+
+template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
 static inline cudaError_t LmLatentShardPartialLaunch(
     Pages cache,
     const uint16_t *query_bf16,
@@ -285,22 +321,26 @@ static inline cudaError_t LmLatentShardPartialLaunch(
     uint32_t rows,
     cudaStream_t stream)
 {
-    uint32_t total_heads, per_block;
-    if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 ||
-        SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u ||
-        (selected_positions != 0 && selected_count > LM_LATENT_SHARD_LIST_CAPACITY) ||
-        query_rank_stride < (uint64_t)rows * heads_per_rank * (LATENT + ROPE) ||
-        partial_rank_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
-        return cudaErrorInvalidValue;
-    total_heads = heads_per_rank * cache.shard.degree;
-    per_block = LmLatentShardHeadsPerBlock(heads_per_rank);
-    if (per_block == 4u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u>), dim3(rows, total_heads / 4u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride);
-    else if (per_block == 2u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u>), dim3(rows, total_heads / 2u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride);
-    else
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u>), dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride);
-    return cudaPeekAtLastError();
+    return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, rows, stream);
+}
+
+template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentShardPartialOwnHeadsLaunch(
+    Pages cache,
+    const uint16_t *query_bf16,
+    uint32_t heads_per_rank,
+    const uint32_t *sequence_of_row,
+    const uint32_t *context_length,
+    const uint32_t *row_position,
+    const uint32_t *selected_positions,
+    uint32_t selected_count,
+    uint32_t dense_limit,
+    float qk_scale,
+    float *partials,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, (uint64_t)rows * heads_per_rank * (LATENT + ROPE), heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT), rows, stream);
 }
 
 template<uint32_t LATENT>

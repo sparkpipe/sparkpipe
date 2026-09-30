@@ -148,6 +148,15 @@ int main(void)
 		return(1);
 	}
 	memset(&runner, 0, sizeof(runner));
+	unsetenv("SPARK_K3_STATE_BUDGET_BYTES");
+	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
+		SPARK_STATUS_INVALID_ARGUMENT && runner.private_state == 0,
+		"a runner without a rank state budget is refused");
+	setenv("SPARK_K3_STATE_BUDGET_BYTES", "1", 1);
+	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
+		SPARK_STATUS_CAPACITY_EXCEEDED && runner.private_state == 0,
+		"a rank state plan over the budget is refused before any allocation");
+	setenv("SPARK_K3_STATE_BUDGET_BYTES", "1073741824", 1);
 	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
 		SPARK_STATUS_BUSY,
 		"weightd absent fails closed with BUSY (no direct load)");

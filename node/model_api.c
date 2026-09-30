@@ -1622,7 +1622,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "model_api: chat_template declared but %s%s%s; refusing to start\n",
 				HaveSidecar ? "stop marker " : "the deployment has no tokenizer",
 				unresolved != 0 ? unresolved : "",
-				unresolved != 0 ? " is not exactly one special token of the tokenizer" : "");
+				unresolved != 0 ? " is not exactly one special token of the tokenizer, or a declared control marker" : "");
 			return 1;
 		}
 		ChatTemplate = &dep.chat_template;

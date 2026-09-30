@@ -54,6 +54,17 @@ static SparkChatTemplateOutcome SparkChatTemplateRoleHeader(
 	return(*header != 0 ? SPARK_CHAT_TEMPLATE_RENDERED : SPARK_CHAT_TEMPLATE_ROLE_UNSUPPORTED);
 }
 
+static const char *SparkChatTemplateRoleSuffix(
+	const SparkModelResidentChatTemplate *chat_template,
+	const SparkJsonDocument *document,
+	int32_t role)
+{
+	if ( chat_template->assistant_suffix != 0 && role >= 0 &&
+		SparkJsonStringEquals(document,role,"assistant") )
+		return(chat_template->assistant_suffix);
+	return("");
+}
+
 SparkChatTemplateOutcome SparkChatTemplateRender(
 	const SparkModelResidentChatTemplate *chat_template,
 	const SparkJsonDocument *document,
@@ -124,6 +135,8 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 			break;
 		}
 		if ( !SparkChatTemplateAppend(&rendered,header) || !SparkChatTemplateAppend(&rendered,piece) ||
+			!SparkChatTemplateAppend(&rendered,SparkChatTemplateRoleSuffix(chat_template,document,
+				SparkJsonFindObjectMember(document,entry,"role"))) ||
 			!SparkChatTemplateAppend(&rendered,chat_template->turn_suffix) )
 			outcome = SPARK_CHAT_TEMPLATE_OUT_OF_MEMORY;
 		free(piece);
@@ -177,6 +190,17 @@ const char *SparkChatTemplateOutcomeMessage(SparkChatTemplateOutcome outcome)
 	return("chat prompt rendered");
 }
 
+static uint32_t SparkChatTemplateIsControlMarker(
+	const SparkModelResidentChatTemplate *chat_template,
+	const char *marker)
+{
+	uint32_t index;
+	for ( index = 0u; index < chat_template->control_marker_count; index++ )
+		if ( strcmp(chat_template->control_markers[index],marker) == 0 )
+			return(1u);
+	return(0u);
+}
+
 SparkStatus SparkChatTemplateResolveStops(
 	const SparkModelResidentChatTemplate *chat_template,
 	const SparkTokenizerSpecialToken *special_tokens,
@@ -198,7 +222,9 @@ SparkStatus SparkChatTemplateResolveStops(
 		size_t marker_bytes = strlen(marker);
 		matches = 0u;
 		for ( token_index = 0u; special_tokens != 0 && token_index < special_token_count; token_index++ )
-			if ( special_tokens[token_index].is_special != 0u && special_tokens[token_index].text != 0 &&
+			if ( (special_tokens[token_index].is_special != 0u ||
+					SparkChatTemplateIsControlMarker(chat_template,marker) != 0u) &&
+				special_tokens[token_index].text != 0 &&
 				special_tokens[token_index].text_bytes == marker_bytes &&
 				memcmp(special_tokens[token_index].text,marker,marker_bytes) == 0 )
 			{

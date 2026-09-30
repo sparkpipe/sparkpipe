@@ -86,7 +86,7 @@ PYW
 echo "== warm receipt (rank $RANK, $PACK)"
 echo "== pool=$POOL chunk=$CHUNK runs=$RUNS"
 SPARK_WEIGHTD_EXPERT_POOL_BYTES="$POOL" \
-  build/weightd_warm "$SOCKET" "$PACK" "$SHA" x 16 \
+  build/weightd_warm "$SOCKET" "$PACK" "$SHA" x 4 \
     --family k3 --identity-print
 
 python3 - "$MANIFEST" "$LOCAL_WSET" "$CHUNK" <<'PYBASE'
@@ -151,7 +151,7 @@ while [ "$index" -le "$RUNS" ]; do
   echo "-- warm run $index/$RUNS"
   began_ns=$(date +%s%N)
   SPARK_WEIGHTD_EXPERT_POOL_BYTES="$POOL" \
-    build/weightd_warm "$SOCKET" "$PACK" "$SHA" x 16 \
+    build/weightd_warm "$SOCKET" "$PACK" "$SHA" x 4 \
     --family k3 --wset "$LOCAL_WSET" 300
   ended_ns=$(date +%s%N)
   printf 'RUN-WALL run=%s elapsed_ms=%s\n' "$index" \

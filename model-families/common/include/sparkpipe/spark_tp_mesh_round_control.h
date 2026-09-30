@@ -86,6 +86,7 @@ static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree
 }
 
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS 49152u
+#define SPARK_TP_MESH_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_MESH_OPERATION_SLICE_GATHER 7u
 #define SPARK_TP_MESH_OPERATION_ALL_TO_ALL 3u
 #define SPARK_TP_MESH_RSAG_MIN_DEGREE 4u

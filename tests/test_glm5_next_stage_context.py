@@ -18,6 +18,7 @@ HARNESS = r'''
 #include "src/spark_speculation_lookup_draft.c"
 #include "src/spark_speculation_drafter_mix.c"
 #include "src/spark_speculation_reference_draft.c"
+#include "src/spark_speculation_recorded_draft.c"
 #include "src/spark_speculation_relay_draft.c"
 #include "src/spark_speculation_relay_link.c"
 #include "src/spark_speculation_tap.c"
@@ -269,7 +270,7 @@ SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,uint32_t re
 }
 
 static char WALK_TRACE[256];
-static uint32_t WALK_LENGTH,WALK_GATHER_LAYER,WALK_FAIL_CODE,WALK_DELAY_NS,WALK_SHARD_MASK,SHARD_QUERY_SEQUENCES,SHARD_PARTIAL_SEQUENCES,SHARD_WIDE;
+static uint32_t WALK_LENGTH,WALK_GATHER_LAYER,WALK_FAIL_CODE,WALK_DELAY_NS,WALK_SHARD_MASK,SHARD_QUERY_SEQUENCES,SHARD_PARTIAL_SEQUENCES,SHARD_WIDE,SHARD_GATHER_SEQUENCES,SHARD_GATHER_COUNT,SHARD_GATHER_MOST;
 
 static int32_t walk_note(char code)
 {
@@ -288,7 +289,9 @@ int32_t SparkGlm5NextLaunchCudaLayerAttentionScore(const SparkGlm5NextCudaWave *
 int32_t SparkGlm5NextLaunchCudaLayerAttentionSelect(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('T')); }
 uint32_t SparkGlm5NextLayerIndexGatherSequences(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;return(layer == WALK_GATHER_LAYER ? 2u : 0u); }
 uint32_t SparkGlm5NextLayerKvShardActive(const SparkGlm5NextCudaWave *wave,uint32_t layer) { return(wave->kv_shard != 0u && layer < 32u && (WALK_SHARD_MASK & (1u << layer)) != 0u ? 1u : 0u); }
-int32_t SparkGlm5NextLaunchCudaLayerAttentionShardPartial(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(SparkGlm5NextLayerKvShardActive(wave,layer) != 0u);return(walk_note('V')); }
+int32_t SparkGlm5NextLaunchCudaLayerAttentionShardPartial(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(SparkGlm5NextLayerKvShardActive(wave,layer) != 0u && wave->kv_shard_gather == 0u);return(walk_note('V')); }
+int32_t SparkGlm5NextLaunchCudaLayerAttentionShardGatherPack(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(SparkGlm5NextLayerKvShardActive(wave,layer) != 0u && wave->kv_shard_gather != 0u);SHARD_GATHER_COUNT = wave->kv_shard_gather_count;SHARD_GATHER_MOST = wave->kv_shard_gather_most_keys;return(walk_note('Y')); }
+int32_t SparkGlm5NextLaunchCudaLayerAttentionShardGatherPartial(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(SparkGlm5NextLayerKvShardActive(wave,layer) != 0u && wave->kv_shard_gather != 0u);return(walk_note('Z')); }
 int32_t SparkGlm5NextLaunchCudaLayerAttentionShardMerge(const SparkGlm5NextCudaWave *wave,uint32_t layer) { assert(SparkGlm5NextLayerKvShardActive(wave,layer) != 0u);return(walk_note('W')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('M')); }
 int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t layer) { (void)wave;(void)layer;return(walk_note('O')); }
@@ -391,8 +394,15 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 {
 	assert((submission->flags & SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) != 0u);
 	uint32_t shard_query = operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->local_device != 0 && submission->local_device == state.slots[submission->slot_index].query_latent_bf16;
+	uint32_t shard_keys = operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->local_device != 0 && submission->local_device == state.slots[submission->slot_index].kv_shard_query_gathered_bf16;
 	assert(submission->cuda_stream == state.execution_stream && submission->logical_sequence_count == ENQUEUE_SEQUENCES);
-	assert(submission->active_sequence_count == (operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? SHARD_PARTIAL_SEQUENCES : shard_query != 0u ? SHARD_QUERY_SEQUENCES : ENQUEUE_ROWS));
+	assert(submission->active_sequence_count == (operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? SHARD_PARTIAL_SEQUENCES : shard_query != 0u ? SHARD_QUERY_SEQUENCES : shard_keys != 0u ? SHARD_GATHER_SEQUENCES : ENQUEUE_ROWS));
+	if ( shard_keys != 0u )
+	{
+		assert(collective == &state.tp_device_collective && submission->full_device == state.slots[submission->slot_index].kv_shard_partials_f32 && submission->completion_function == 0);
+		(void)walk_note('y');
+		return(SPARK_STATUS_OK);
+	}
 	if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
 		assert(collective == (SHARD_WIDE != 0u ? &state.tp_device_collective_hc : &state.tp_device_collective) && submission->local_device == state.slots[submission->slot_index].kv_shard_partials_f32 && submission->full_device == state.slots[submission->slot_index].kv_shard_partials_received_f32);
 	if ( shard_query != 0u )
@@ -1191,6 +1201,48 @@ static void check_tap_config(void)
 	printf("PASS tap configuration: every tap setting needs SPARK_GLM5_NEXT_TAPS, a consumer and explicit bounds; the relay is shadow-only; tap layers must be owned\n");
 }
 
+static uint8_t VERIFY_RECORDED_TABLE[SPARK_SPECULATION_RECORDED_HEADER_BYTES + VERIFY_CAPACITY * (SPARK_SPECULATION_RECORDED_ENTRY_FIXED_BYTES + 28u)];
+
+static void VerifyPut32(uint8_t *bytes,uint32_t value)
+{
+	uint32_t index;
+	for (index=0u; index<4u; index++)
+		bytes[index] = (uint8_t)(value >> (8u * index));
+}
+
+static void VerifyPut64(uint8_t *bytes,uint64_t value)
+{
+	VerifyPut32(bytes,(uint32_t)value);
+	VerifyPut32(bytes + 4,(uint32_t)(value >> 32));
+}
+
+static uint64_t VerifyRecordedTable(const uint32_t *expected,uint64_t sequence)
+{
+	uint32_t entry_bytes = SPARK_SPECULATION_RECORDED_ENTRY_FIXED_BYTES + 28u,anchor,count,index;
+	uint64_t entries = 0u;
+	uint8_t *entry;
+	memset(VERIFY_RECORDED_TABLE,0,sizeof(VERIFY_RECORDED_TABLE));
+	for (anchor=VERIFY_PROMPT - 1u; anchor + 1u < VERIFY_CAPACITY; anchor++)
+	{
+		if ( anchor % 5u == 3u )
+			continue;
+		entry = VERIFY_RECORDED_TABLE + SPARK_SPECULATION_RECORDED_HEADER_BYTES + entries * entry_bytes;
+		count = VERIFY_CAPACITY - 1u - anchor < 7u ? VERIFY_CAPACITY - 1u - anchor : 7u;
+		VerifyPut64(entry,sequence);
+		VerifyPut64(entry + 8,anchor);
+		VerifyPut32(entry + 16,count);
+		for (index=0u; index<count; index++)
+			VerifyPut32(entry + SPARK_SPECULATION_RECORDED_ENTRY_FIXED_BYTES + 4u * index,anchor % 3u == 1u && index == 2u ? (expected[anchor + 1u + index] + 1u) % SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT : expected[anchor + 1u + index]);
+		entries++;
+	}
+	VerifyPut32(VERIFY_RECORDED_TABLE,SPARK_SPECULATION_RECORDED_MAGIC);
+	VerifyPut32(VERIFY_RECORDED_TABLE + 4,SPARK_SPECULATION_RECORDED_VERSION);
+	VerifyPut32(VERIFY_RECORDED_TABLE + 8,7u);
+	VerifyPut32(VERIFY_RECORDED_TABLE + 12,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT);
+	VerifyPut64(VERIFY_RECORDED_TABLE + 16,entries);
+	return(SPARK_SPECULATION_RECORDED_HEADER_BYTES + entries * entry_bytes);
+}
+
 static void check_verify_rounds(uint32_t drafter)
 {
 	static uint32_t history[VERIFY_CAPACITY],expected[VERIFY_CAPACITY];
@@ -1263,6 +1315,12 @@ static void check_verify_rounds(uint32_t drafter)
 		state.verify_draft_function = SparkSpeculationLookupDraftTokens;
 		state.verify_draft_context = &state.verify_lookup;
 	}
+	else if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED )
+	{
+		assert(SparkSpeculationRecordedDraftInitialize(&state.verify_recorded,VERIFY_RECORDED_TABLE,VerifyRecordedTable(expected,row_sequence),SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT) == SPARK_STATUS_OK);
+		state.verify_draft_function = SparkSpeculationRecordedDraftTokens;
+		state.verify_draft_context = &state.verify_recorded;
+	}
 	else
 	{
 		assert(SparkSpeculationReferenceDraftInitialize(&state.verify_reference,drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE ? SPARK_SPECULATION_REFERENCE_ORACLE : SPARK_SPECULATION_REFERENCE_ADVERSARY,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT,0u,expected,VERIFY_CAPACITY) == SPARK_STATUS_OK);
@@ -1316,7 +1374,7 @@ static void check_verify_rounds(uint32_t drafter)
 		assert(SparkGlm5NextVerifyDriveDraft(&state,&frame,&batch,&state.slots[0],chain) == SPARK_STATUS_OK);
 		if ( chain->verify_budget == 0u )
 		{
-			assert(drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP && chain->steps == 8u && async->steps == 8u && chain->spec_verify == 0u);
+			assert((drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP || drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED) && chain->steps == 8u && async->steps == 8u && chain->spec_verify == 0u);
 			for (index=0u; index<8u; index++)
 				host_output[index] = expected[length + index];
 			async->burst_token_count = 8u;
@@ -1385,6 +1443,13 @@ static void check_verify_rounds(uint32_t drafter)
 		assert(state.verify_accepted == 0u && state.verify_accept_depth[0] == rounds && state.verify_proposed == 7u + rounds - 1u && state.verify_depth_cap[row_slot] == 1u);
 	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE )
 		assert(state.verify_proposed == 7u * rounds && state.verify_depth_cap[row_slot] == 7u);
+	if ( drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED )
+	{
+		assert(state.verify_recorded.hits != 0u && state.verify_recorded.misses != 0u && state.verify_accepted != 0u && state.verify_frames != 0u && state.verify_plain_frames != 0u);
+		assert(state.verify_accepted < state.verify_proposed);
+		printf("verify recorded: %u frames, %u rounds, proposed %llu accepted %llu, table hits %llu misses %llu, output exact\n",frames,rounds,
+			(unsigned long long)state.verify_proposed,(unsigned long long)state.verify_accepted,(unsigned long long)state.verify_recorded.hits,(unsigned long long)state.verify_recorded.misses);
+	}
 	accepted_sum = 0u;
 	for (index=0u; index<SPARK_GLM5_NEXT_VERIFY_ROWS_MAX - 1u; index++)
 	{
@@ -3374,6 +3439,7 @@ static void check_linear_chain(void)
 
 #define LINEAR_WALK "Bh" "ArPMrQ" "SgTrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HxU"
 #define SHARD_WALK "Bh" "AkVaWrPMrQ" "SgTkVaWrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HxU"
+#define SHARD_GATHER_WALK "Bh" "AYyZWrPMrQ" "SgTYyZWrPMrQ" "ArPMrQ" "ArPRErQ" "ArPRErQ" "HxU"
 
 static uint16_t SHARD_QUERY[8],SHARD_GATHERED[8];
 static float SHARD_PARTIALS[8],SHARD_RECEIVED[8];
@@ -3387,6 +3453,8 @@ static void kv_shard_slot_fixture(SparkGlm5NextExecutionSlot *slot)
 	SHARD_QUERY_SEQUENCES = SparkGlm5NextKvShardQuerySequences(2u,16u);
 	SHARD_WIDE = SparkGlm5NextKvShardPartialWide(2u,16u,state.execution_row_capacity);
 	SHARD_PARTIAL_SEQUENCES = SparkGlm5NextKvShardPartialSequences(2u,16u,state.execution_row_capacity);
+	SHARD_GATHER_SEQUENCES = 0u;
+	state.kv_shard_scatter_only = 1u;
 	assert(SHARD_QUERY_SEQUENCES == 1u && SHARD_PARTIAL_SEQUENCES == (SHARD_WIDE != 0u ? 1u : 3u));
 }
 
@@ -3446,6 +3514,78 @@ static void check_kv_shard_walk(void)
 	free(chain);
 	linear_chain_teardown();
 	puts("PASS kv shard chain: query gather, partials, all-to-all and merge run in order in the linear/graph walk and the eager stages");
+}
+
+static void check_kv_shard_gather_plan(void)
+{
+	uint32_t sequences[5] = {2u,0u,2u,1u,0u},positions[5] = {16u,40u,15u,3u,41u},list[5],offset[3],context[3],count,most;
+	uint64_t keys;
+	SparkGlm5NextKvShardRoundPlan plan;
+	memset(list,0xff,sizeof(list));
+	memset(offset,0xff,sizeof(offset));
+	memset(context,0xff,sizeof(context));
+	count = SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(5u,16u),sequences,positions,5u,list,offset,context,&keys,&most);
+	assert(count == 3u && keys == 6u && most == 3u && list[0] == 2u && list[1] == 0u && list[2] == 1u);
+	assert(offset[2] == 0u && offset[0] == 2u && offset[1] == 5u && context[2] == 17u && context[0] == 42u && context[1] == 4u);
+	assert(SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(0u,16u),sequences,positions,5u,0,0,0,&keys,&most) == 3u && keys == 6u && most == 3u);
+	assert(SparkGlm5NextKvShardPlanRounds(64u,16u,128u,2048u,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 0u && plan.gather_sequences > SparkGlm5NextKvShardGatherCapacity(16u,128u) &&
+		SparkKvShardExchangeCostNs(plan.gather_rounds,plan.gather_wire_bytes) < SparkKvShardExchangeCostNs(plan.scatter_rounds,plan.scatter_wire_bytes));
+	assert(SparkGlm5NextKvShardPlanRounds(128u,16u,128u,47u,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 1u && plan.gather_rounds == 1u && plan.scatter_rounds == 68u);
+}
+
+static void check_kv_shard_gather_walk(void)
+{
+	SparkGlm5NextTpChain *chain;
+	SparkGlm5NextAsyncCompletion *async;
+	SparkGlm5NextKvShardRoundPlan plan;
+	uint64_t keys;
+	uint32_t most,count;
+	chain = linear_chain_fixture();
+	async = &state.completions[0];
+	state.kv_shard = 1u;
+	kv_shard_slot_fixture(&state.slots[0]);
+	state.kv_shard_scatter_only = 0u;
+	count = SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(0u,16u),LINEAR_SLOTS,LINEAR_POSITIONS,2u,0,0,0,&keys,&most);
+	assert(count == 2u && keys == 2u && most == 1u);
+	assert(SparkGlm5NextKvShardPlanRounds(2u,16u,state.execution_row_capacity,keys,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 1u && plan.gather_rounds == 1u && plan.scatter_rounds == 3u);
+	SHARD_GATHER_SEQUENCES = plan.gather_sequences;
+	WALK_SHARD_MASK = 3u;
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	if ( strcmp(WALK_TRACE,SHARD_GATHER_WALK) != 0 )
+	{
+		fprintf(stderr,"gather shard trace %s\n",WALK_TRACE);
+		abort();
+	}
+	assert(async->linear == 1u && async->completion.status == SPARK_STATUS_OK && SHARD_GATHER_SEQUENCES == 1u && SHARD_GATHER_COUNT == 2u && SHARD_GATHER_MOST == 1u);
+	linear_chain_teardown();
+	chain = linear_chain_fixture();
+	async = &state.completions[0];
+	state.kv_shard = 1u;
+	kv_shard_slot_fixture(&state.slots[0]);
+	state.kv_shard_scatter_only = 0u;
+	SHARD_GATHER_SEQUENCES = plan.gather_sequences;
+	WALK_SHARD_MASK = 3u;
+	WALK_FAIL_CODE = 'Z';
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(strcmp(WALK_TRACE,"Bh" "AYyZ") == 0 && async->completion.status == SPARK_STATUS_INTERNAL_ERROR);
+	linear_chain_teardown();
+	chain = linear_chain_fixture();
+	async = &state.completions[0];
+	state.kv_shard = 1u;
+	kv_shard_slot_fixture(&state.slots[0]);
+	state.kv_shard_scatter_only = 0u;
+	LINEAR_POSITIONS[0] = 1023u;
+	LINEAR_POSITIONS[1] = 1023u;
+	count = SparkKvShardGatherPlan(SparkGlm5NextKvShardLatent(0u,16u),LINEAR_SLOTS,LINEAR_POSITIONS,2u,0,0,0,&keys,&most);
+	assert(SparkGlm5NextKvShardPlanRounds(2u,16u,state.execution_row_capacity,keys,SPARK_WEIGHTD_MESH_SLOT_BYTES,&plan) == 1u && plan.gather == 0u && plan.gather_sequences > SparkGlm5NextKvShardGatherCapacity(16u,state.execution_row_capacity) &&
+		SparkKvShardExchangeCostNs(plan.gather_rounds,plan.gather_wire_bytes) < SparkKvShardExchangeCostNs(plan.scatter_rounds,plan.scatter_wire_bytes));
+	WALK_SHARD_MASK = 3u;
+	SparkGlm5NextTpChainAdvance(chain,SPARK_STATUS_OK);
+	assert(strcmp(WALK_TRACE,SHARD_WALK) == 0 && async->completion.status == SPARK_STATUS_OK);
+	WALK_SHARD_MASK = 0u;
+	linear_chain_teardown();
+	check_kv_shard_gather_plan();
+	puts("PASS kv shard gather walk: the linear walk gathers keys in one all-gather when that costs fewer rounds, runs the own-heads partials and the same merge, and keeps the scatter exchange when the keys do not fit");
 }
 
 static void check_kv_shard_rank_state(void)
@@ -4564,6 +4704,7 @@ int32_t main(void)
 	check_linear_eligibility();
 	check_linear_chain();
 	check_kv_shard_walk();
+	check_kv_shard_gather_walk();
 	check_kv_shard_rank_state();
 	check_kv_shard_collective_init();
 	check_chain_steps();
@@ -4602,6 +4743,7 @@ int32_t main(void)
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ORACLE);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ADVERSARY);
 	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP);
+	check_verify_rounds(SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED);
 	check_tap_config();
 	static char tap_dump_path[96];
 	snprintf(tap_dump_path,sizeof(tap_dump_path),"/tmp/sparkpipe_glm5_next_tap_dump_%ld.sptd",(long)getpid());

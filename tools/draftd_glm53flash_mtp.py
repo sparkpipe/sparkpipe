@@ -50,12 +50,45 @@ class Checkpoint:
         return self.entries[name][2]["dtype"]
 
 
+TAPS = ("final_norm", "hc_mean")
+
+
 def bf16r(x):
     return x.to(torch.bfloat16).to(torch.float32)
 
 
+class MtpSequenceKv:
+    def __init__(self, drafter, capacity):
+        if capacity < 1:
+            raise ValueError("MtpSequenceKv needs capacity >= 1")
+        device = drafter.device
+        self.capacity = capacity
+        self.latent = torch.zeros((capacity, drafter.latent), dtype=torch.float32, device=device)
+        self.index_key = torch.zeros((capacity, drafter.index_dim), dtype=torch.float32, device=device)
+        self.index_gate = torch.zeros((capacity, drafter.index_dim), dtype=torch.float32, device=device)
+        self.length = 0
+        self.anchor_hidden = None
+        self.anchor_token = None
+
+    def write(self, position, latent, key, gate):
+        count = latent.shape[0] if latent.dim() == 2 else 1
+        if position < 0 or position + count > self.capacity:
+            raise IndexError(f"MTP KV rows {position}..{position + count - 1} outside capacity {self.capacity}")
+        self.latent[position:position + count] = latent
+        self.index_key[position:position + count] = key
+        self.index_gate[position:position + count] = gate
+
+    def truncate(self, length):
+        if length < 0 or length > self.length:
+            raise ValueError(f"truncate to {length} outside committed length {self.length}")
+        self.length = length
+        if length == 0:
+            self.anchor_hidden = None
+            self.anchor_token = None
+
+
 class Glm53FlashMtpDrafter:
-    def __init__(self, checkpoint_dir, device="cuda", max_chain=7, head_rows=None):
+    def __init__(self, checkpoint_dir, device="cuda", max_chain=7, head_rows=None, tap="final_norm"):
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         self.device = torch.device(device)
@@ -75,6 +108,18 @@ class Glm53FlashMtpDrafter:
         self.norm_topk = int(config["norm_topk_prob"])
         self.scaling = float(config["routed_scaling_factor"])
         self.limit = float(config["swiglu_limit"])
+        self.index_heads = int(config["index_n_heads"])
+        self.index_dim = int(config["index_head_dim"])
+        self.index_topk = int(config["index_topk"])
+        self.index_kpool = int(config["index_kpool"])
+        if not config.get("index_kpool_always_select_tail", False) or not config.get("index_kpool_compress", False):
+            raise ValueError("the MTP indexer needs index_kpool_compress with always_select_tail")
+        if self.index_topk % self.index_kpool:
+            raise ValueError("index_topk must be a multiple of index_kpool")
+        if tap not in TAPS:
+            raise ValueError(f"tap must be one of {TAPS}")
+        self.tap = tap
+        self.index_eps = 1e-6
         self.max_chain = max_chain
         self.lut = torch.from_numpy(e4m3_table()).to(self.device)
         self.k = kernels()
@@ -132,6 +177,15 @@ class Glm53FlashMtpDrafter:
         self.wk = kvb[:, :self.nope].contiguous()
         self.wv = kvb[:, self.nope:].contiguous()
         self.o_proj = self._spine(p + "self_attn.o_proj.weight")
+        i = p + "self_attn.indexer."
+        self.index_wq = self._spine(i + "wq_b.weight")
+        self.index_wk = self._spine(i + "wk.weight")
+        self.index_gate_w = self._spine(i + "index_kpool_compress_gate")
+        self.index_head_w = self._spine(i + "weights_proj.weight")
+        self.index_norm = self._vector(i + "k_norm.weight")
+        self.index_norm_bias = self._vector(i + "k_norm.bias")
+        self.index_ape = self._vector(i + "index_kpool_compress_ape").contiguous()
+        self.final_norm = self._vector("model.language_model.norm.weight")
         self.router = self._vector(p + "mlp.gate.weight").contiguous()
         self.router_bias = self._vector(p + "mlp.gate.e_score_correction_bias")
         self.shared_gate = self._spine(p + "mlp.shared_experts.gate_proj.weight")
@@ -161,15 +215,89 @@ class Glm53FlashMtpDrafter:
         self.k.gemv_bf16(weight, x.contiguous(), out)
         return bf16r(out)
 
+    def linear_rows(self, weight, x):
+        out = torch.empty((x.shape[0], weight.shape[0]), dtype=torch.float32, device=self.device)
+        self.k.gemm_rows_bf16(weight, x.contiguous(), out)
+        return bf16r(out)
+
     def rmsnorm(self, x, weight):
-        return x / torch.sqrt(torch.mean(x * x) + self.eps) * weight
+        return x / torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps) * weight
+
+    def layernorm(self, x, weight, bias):
+        mean = torch.mean(x, dim=-1, keepdim=True)
+        var = torch.mean((x - mean) * (x - mean), dim=-1, keepdim=True)
+        return (x - mean) / torch.sqrt(var + self.index_eps) * weight + bias
+
+    def tap_hidden(self, rows):
+        rows = rows.to(self.device, torch.float32)
+        if self.tap == "hc_mean":
+            return rows
+        return bf16r(self.rmsnorm(rows, self.final_norm))
+
+    def mtp_input_rows(self, hidden, tokens):
+        embed = self.embed[tokens.reshape(-1)].to(torch.float32)
+        e = bf16r(self.rmsnorm(embed, self.enorm))
+        h = bf16r(self.rmsnorm(hidden.reshape(e.shape[0], -1), self.hnorm))
+        return self.linear_rows(self.eh_proj, torch.cat([e, h], dim=1))
+
+    def kv_rows(self, normed):
+        latent = bf16r(self.rmsnorm(self.linear_rows(self.kv_a, normed)[:, :self.latent], self.kv_a_norm))
+        key = bf16r(self.layernorm(self.linear_rows(self.index_wk, normed), self.index_norm, self.index_norm_bias))
+        gate = self.linear_rows(self.index_gate_w, normed)
+        return latent, key, gate
+
+    def commit(self, kv, taps, next_tokens, start, chunk=512):
+        count = int(taps.shape[0])
+        if count == 0:
+            return
+        if start != kv.length:
+            raise ValueError(f"commit at {start} but the sequence holds {kv.length} rows; commits are contiguous")
+        if start + count > kv.capacity:
+            raise IndexError(f"commit of {count} rows at {start} exceeds capacity {kv.capacity}")
+        tokens = torch.as_tensor(next_tokens, dtype=torch.int64, device=self.device).reshape(-1)
+        if tokens.numel() != count:
+            raise ValueError("commit needs one next token per tap row")
+        hidden = self.tap_hidden(taps)
+        for first in range(0, count, chunk):
+            last = min(count, first + chunk)
+            x = self.mtp_input_rows(hidden[first:last], tokens[first:last])
+            normed = bf16r(self.rmsnorm(x, self.input_norm))
+            kv.write(start + first, *self.kv_rows(normed))
+        kv.length = start + count
+        kv.anchor_hidden = hidden[count - 1].clone()
+        kv.anchor_token = tokens[count - 1:count].clone()
+
+    def index_select(self, q_norm, x, kv, context):
+        query = self.linear_rows(self.index_wq, q_norm.reshape(1, -1)).view(self.index_heads, self.index_dim)
+        head = self.linear_rows(self.index_head_w, x.reshape(1, -1)).reshape(-1)
+        pools = context // self.index_kpool
+        pooled = pools * self.index_kpool
+        keys = kv.index_key[:pooled].view(pools, self.index_kpool, self.index_dim)
+        logits = kv.index_gate[:pooled].view(pools, self.index_kpool, self.index_dim) + self.index_ape
+        mix = torch.softmax(logits, dim=1)
+        pool_key = torch.sum(mix * keys, dim=1)
+        scores = torch.relu((query @ pool_key.T) * (self.index_dim ** -0.5))
+        total = torch.sum(scores * (head * (self.index_heads ** -0.5))[:, None], dim=0)
+        chosen = torch.topk(total, self.index_topk // self.index_kpool).indices
+        positions = (chosen[:, None] * self.index_kpool + torch.arange(self.index_kpool, device=self.device)).reshape(-1)
+        tail = torch.arange(pooled, context, device=self.device)
+        return torch.sort(torch.cat([positions, tail])).values
 
     def attention(self, x, cache, length):
         q_norm = bf16r(self.rmsnorm(self.linear(self.q_a, x), self.q_a_norm))
         q = self.linear(self.q_b, q_norm).view(self.heads, self.nope)
-        kv = self.linear(self.kv_a, x)
-        cache[length] = bf16r(self.rmsnorm(kv[:self.latent], self.kv_a_norm))
-        slots = cache[:length + 1]
+        if isinstance(cache, MtpSequenceKv):
+            if length >= cache.length:
+                cache.write(length, *[row[0] for row in self.kv_rows(x.reshape(1, -1))])
+            context = length + 1
+            if context <= self.index_topk:
+                slots = cache.latent[:context]
+            else:
+                slots = cache.latent[self.index_select(q_norm, x, cache, context)]
+        else:
+            kv = self.linear(self.kv_a, x)
+            cache[length] = bf16r(self.rmsnorm(kv[:self.latent], self.kv_a_norm))
+            slots = cache[:length + 1]
         ql = bf16r(torch.einsum("hn,hnl->hl", q, self.wk))
         scores = (ql @ slots.T) * (self.nope ** -0.5)
         weights = torch.softmax(scores, dim=1)
@@ -219,6 +347,21 @@ class Glm53FlashMtpDrafter:
         if self.head_ids is not None:
             best = self.head_ids[best]
         return x, head_in, best
+
+    def draft(self, kv, depth):
+        if kv.length == 0 or kv.anchor_hidden is None:
+            raise ValueError("draft needs at least one committed row")
+        position = kv.length - 1
+        if position + depth > kv.capacity:
+            raise IndexError(f"a depth-{depth} draft at {position} exceeds capacity {kv.capacity}")
+        h = kv.anchor_hidden
+        t = kv.anchor_token
+        drafts = []
+        for d in range(depth):
+            h, _, best = self.step(h, t, kv, position + d)
+            t = best.reshape(1)
+            drafts.append(best)
+        return torch.stack(drafts)
 
     def chain_eager(self, hidden, token, depth):
         cache = torch.zeros((self.max_chain, self.latent), dtype=torch.float32, device=self.device)

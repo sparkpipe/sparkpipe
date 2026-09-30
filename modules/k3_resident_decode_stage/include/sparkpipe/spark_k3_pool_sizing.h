@@ -100,40 +100,90 @@ typedef struct SparkK3SlotResetSpan
 	uint64_t bytes;
 } SparkK3SlotResetSpan;
 
+typedef struct SparkK3KdaRankLayout
+{
+	uint32_t heads;
+	uint64_t state_slot_bytes;
+	uint64_t qk_window_slot_bytes;
+	uint64_t v_window_slot_bytes;
+} SparkK3KdaRankLayout;
+
+static inline uint32_t SparkK3KdaRankLayoutFor(uint32_t tp_degree,
+	SparkK3KdaRankLayout *layout)
+{
+	const uint64_t kernel = SPARK_K3_MODEL_KDA_CONV_KERNEL;
+	const uint64_t scalar = SPARK_K3_KV_BYTES_PER_SCALAR;
+	if ( layout == 0 || tp_degree == 0u ||
+		SPARK_K3_MODEL_KDA_HEAD_COUNT % tp_degree != 0u )
+		return(0u);
+	layout->heads = SPARK_K3_MODEL_KDA_HEAD_COUNT / tp_degree;
+	layout->state_slot_bytes = (uint64_t)layout->heads *
+		SPARK_K3_MODEL_KDA_HEAD_KEY_DIMENSION *
+		SPARK_K3_MODEL_KDA_HEAD_VALUE_DIMENSION *
+		SPARK_K3_MODEL_KDA_STATE_ELEMENT_BYTES;
+	layout->qk_window_slot_bytes = (uint64_t)layout->heads *
+		SPARK_K3_MODEL_KDA_HEAD_KEY_DIMENSION * kernel * scalar;
+	layout->v_window_slot_bytes = (uint64_t)layout->heads *
+		SPARK_K3_MODEL_KDA_HEAD_VALUE_DIMENSION * kernel * scalar;
+	return(1u);
+}
+
+typedef struct SparkK3RankStateBytes
+{
+	uint64_t kda_state;
+	uint64_t kda_windows;
+	uint64_t mla_kv;
+	uint64_t total;
+} SparkK3RankStateBytes;
+
+static inline uint32_t SparkK3RankStateBytesFor(uint32_t kda_layer_count,
+	uint32_t mla_layer_count, uint32_t sequences, uint32_t tp_degree,
+	uint32_t kv_pages_per_view, uint64_t kv_page_bytes,
+	SparkK3RankStateBytes *bytes)
+{
+	SparkK3KdaRankLayout layout;
+	if ( bytes == 0 || sequences == 0u ||
+		SparkK3KdaRankLayoutFor(tp_degree, &layout) == 0u )
+		return(0u);
+	bytes->kda_state = (uint64_t)kda_layer_count * sequences *
+		layout.state_slot_bytes;
+	bytes->kda_windows = (uint64_t)kda_layer_count * sequences *
+		(2u * layout.qk_window_slot_bytes + layout.v_window_slot_bytes);
+	bytes->mla_kv = (uint64_t)mla_layer_count * sequences *
+		kv_pages_per_view * kv_page_bytes;
+	bytes->total = bytes->kda_state + bytes->kda_windows + bytes->mla_kv;
+	return(1u);
+}
+
 static inline uint32_t SparkK3SlotResetSpans(uint32_t kda_layer_count,
 	uint32_t sequences, uint32_t tp_degree, uint32_t slot,
 	SparkK3SlotResetSpan *spans, uint32_t capacity)
 {
-	const uint64_t state_slot = SPARK_K3_MODEL_KDA_STATE_BYTES_PER_LAYER;
-	const uint64_t kernel = SPARK_K3_MODEL_KDA_CONV_KERNEL;
-	const uint64_t scalar = SPARK_K3_KV_BYTES_PER_SCALAR;
-	uint64_t rank_qk, rank_v, qk_layer, v_layer;
+	SparkK3KdaRankLayout layout;
+	uint64_t state_layer, qk_layer, v_layer;
 	uint32_t count = 0u;
-	if ( spans == 0 || sequences == 0u || slot >= sequences || tp_degree == 0u ||
-		SPARK_K3_MODEL_KDA_HEAD_COUNT % tp_degree != 0u ||
+	if ( spans == 0 || sequences == 0u || slot >= sequences ||
+		SparkK3KdaRankLayoutFor(tp_degree, &layout) == 0u ||
 		kda_layer_count > SPARK_K3_MODEL_KDA_LAYER_COUNT ||
 		capacity < kda_layer_count * SPARK_K3_SLOT_POOLS )
 		return(0u);
-	rank_qk = (uint64_t)(SPARK_K3_MODEL_KDA_HEAD_COUNT / tp_degree) *
-		SPARK_K3_MODEL_KDA_HEAD_KEY_DIMENSION;
-	rank_v = (uint64_t)(SPARK_K3_MODEL_KDA_HEAD_COUNT / tp_degree) *
-		SPARK_K3_MODEL_KDA_HEAD_VALUE_DIMENSION;
-	qk_layer = (uint64_t)sequences * SPARK_K3_MODEL_KDA_QK_DIMENSION * kernel * scalar;
-	v_layer = (uint64_t)sequences * SPARK_K3_MODEL_KDA_VALUE_DIMENSION * kernel * scalar;
+	state_layer = (uint64_t)sequences * layout.state_slot_bytes;
+	qk_layer = (uint64_t)sequences * layout.qk_window_slot_bytes;
+	v_layer = (uint64_t)sequences * layout.v_window_slot_bytes;
 	for ( uint32_t layer = 0u; layer < kda_layer_count; layer++ )
 	{
 		spans[count].pool = SPARK_K3_SLOT_POOL_STATE;
-		spans[count].offset = ((uint64_t)layer * sequences + slot) * state_slot;
-		spans[count++].bytes = state_slot;
+		spans[count].offset = (uint64_t)layer * state_layer + (uint64_t)slot * layout.state_slot_bytes;
+		spans[count++].bytes = layout.state_slot_bytes;
 		spans[count].pool = SPARK_K3_SLOT_POOL_Q_WINDOW;
-		spans[count].offset = (uint64_t)layer * qk_layer + (uint64_t)slot * rank_qk * kernel * scalar;
-		spans[count++].bytes = rank_qk * kernel * scalar;
+		spans[count].offset = (uint64_t)layer * qk_layer + (uint64_t)slot * layout.qk_window_slot_bytes;
+		spans[count++].bytes = layout.qk_window_slot_bytes;
 		spans[count].pool = SPARK_K3_SLOT_POOL_K_WINDOW;
-		spans[count].offset = (uint64_t)layer * qk_layer + (uint64_t)slot * rank_qk * kernel * scalar;
-		spans[count++].bytes = rank_qk * kernel * scalar;
+		spans[count].offset = (uint64_t)layer * qk_layer + (uint64_t)slot * layout.qk_window_slot_bytes;
+		spans[count++].bytes = layout.qk_window_slot_bytes;
 		spans[count].pool = SPARK_K3_SLOT_POOL_V_WINDOW;
-		spans[count].offset = (uint64_t)layer * v_layer + (uint64_t)slot * rank_v * kernel * scalar;
-		spans[count++].bytes = rank_v * kernel * scalar;
+		spans[count].offset = (uint64_t)layer * v_layer + (uint64_t)slot * layout.v_window_slot_bytes;
+		spans[count++].bytes = layout.v_window_slot_bytes;
 	}
 	return(count);
 }
