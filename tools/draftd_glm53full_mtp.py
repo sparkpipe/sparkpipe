@@ -350,6 +350,7 @@ RELAY_DRAFT = 0x31445347
 RELAY_ANSWER = 0x31415347
 RELAY_HEADER = struct.Struct("<IIQII")
 RELAY_ROW = struct.Struct("<II")
+RELAY_SEQUENCES = 4
 
 
 class RelaySequence:
@@ -424,6 +425,9 @@ class Relay:
             return
         state = self.sequences.get(sequence)
         if first == 0 or state is None:
+            self.sequences.pop(sequence, None)
+            while len(self.sequences) >= RELAY_SEQUENCES:
+                self.sequences.pop(next(iter(self.sequences)))
             state = RelaySequence(self.model, self.capacity)
             self.sequences[sequence] = state
         if first != state.tapped:
