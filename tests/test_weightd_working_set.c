@@ -1023,43 +1023,14 @@ static void check_lazy_pack(const char *socket_path,const char *path,const char 
 	assert(SparkWeightdLazyPackSlice(pack,512u,1u,&pointer) == SPARK_STATUS_OK);
 	assert(*(const uint8_t *)pointer == 255u);
 	assert(SparkWeightdLazyPackSlice(pack,0u,64u,&pointer) == SPARK_STATUS_NOT_FOUND && pointer == 0);
-	/* Prong 2 (hill-climb): the D2D arena spine copy must assemble exactly
-	 * the bytes the proven file path produces for the same manifest - the
-	 * lazy pack above already built its spine through MapSpineCopy (the
-	 * pool is mapped in this flow), and this cross-check pins the two
-	 * sources byte-identical before any later file mutation. */
 	{
-		SparkWeightdManifest verify;
-		uint8_t *from_arena,*from_file;
-		uint64_t capacity;
-		int32_t verify_fd;
-		assert(SparkWeightdManifestLoad(manifest_path,PACK_BYTES,&verify) == SPARK_STATUS_OK);
-		capacity = verify.spine_allocation_bytes;
-		if ( capacity != 0u )
-		{
-			SparkStatus copied;
-			assert(posix_memalign((void **)&from_arena,256u,(size_t)capacity) == 0);
-			assert(posix_memalign((void **)&from_file,256u,(size_t)capacity) == 0);
-			memset(from_arena,0xa5,(size_t)capacity);
-			memset(from_file,0xa5,(size_t)capacity);
-			copied = SparkWeightdMapSpineCopy(pack->map,&verify,from_arena,capacity);
-			/* UNSUPPORTED = the pool is not mapped in this configuration and
-			 * the lazy pack took the proven file fallback; where the pool IS
-			 * mapped, the D2D result must be byte-identical to the file. */
-			if ( copied == SPARK_STATUS_OK )
-			{
-				verify_fd = open(path,O_RDONLY);
-				assert(verify_fd >= 0);
-				assert(SparkWeightdSpineLoad(path,verify_fd,&verify,PACK_BYTES,request.identity.pack_sha256,from_file,capacity) == SPARK_STATUS_OK);
-				assert(memcmp(from_arena,from_file,(size_t)capacity) == 0);
-				(void)close(verify_fd);
-			}
-			else
-				assert(copied == SPARK_STATUS_UNSUPPORTED);
-			free(from_arena);
-			free(from_file);
-		}
-		SparkWeightdManifestDestroy(&verify);
+		const void *pool = 0;
+		SparkStatus mapped = SparkWeightdMapPool(pack->map,&pool);
+		assert(SparkWeightdLazyPackSlice(pack,512u,1u,&pointer) == SPARK_STATUS_OK);
+		if ( mapped == SPARK_STATUS_OK )
+			assert(pack->spine_allocation == 0 && pack->spine_allocation_bytes == 0u && pointer == (const uint8_t *)pool + 512u);
+		else
+			assert(mapped == SPARK_STATUS_UNSUPPORTED && pool == 0 && pack->spine_allocation != 0);
 	}
 	assert(SparkWeightdMapAcquire(pack->map,&key,1u,&lease,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_BUSY);

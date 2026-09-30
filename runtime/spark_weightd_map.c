@@ -609,39 +609,15 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkWeightdMapSpineCopy(const SparkWeightdMap *map,
-	const SparkWeightdManifest *manifest,void *destination,uint64_t capacity)
+SparkStatus SparkWeightdMapPool(const SparkWeightdMap *map,const void **address)
 {
-	uint32_t index;
-	if ( map == 0 || manifest == 0 )
+	if ( address == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( map->pool_mapped == 0u )
+	*address = 0;
+	if ( map == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( map->pool_mapped == 0u || map->base == 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
-	if ( manifest->spine_allocation_bytes > capacity )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( manifest->spine_allocation_bytes != 0u &&
-		(destination == 0 || ((uintptr_t)destination & 255u) != 0u) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	/* Prong 2 (hill-climb): the pool import maps the daemon's WHOLE pack
-	 * image at map->base - the daemon-verified bytes at their file
-	 * offsets. Copy each compacted spine span device-to-device; the
-	 * caller quarantines the destination until success, so a faulting
-	 * copy followed by the file-path fallback rewrites the same bytes. */
-	for (index=0u; index<manifest->spine_count; index++)
-	{
-		const SparkWeightdSpan *span = &manifest->spine[index];
-		uint64_t span_offset = span->offset;
-		while ( span_offset < span->offset + span->bytes )
-		{
-			uint64_t remain = (span->offset + span->bytes) - span_offset;
-			size_t chunk = (size_t)(remain < UINT64_C(8388608) ? remain : UINT64_C(8388608));
-			CUdeviceptr source = map->base + span_offset;
-			CUdeviceptr target = (CUdeviceptr)(uintptr_t)destination +
-				span->compact_offset + (span_offset - span->offset);
-			if ( cuMemcpyDtoD(target,source,chunk) != CUDA_SUCCESS )
-				return(SPARK_STATUS_IO_ERROR);
-			span_offset += (uint64_t)chunk;
-		}
-	}
+	*address = (const void *)(uintptr_t)map->base;
 	return(SPARK_STATUS_OK);
 }

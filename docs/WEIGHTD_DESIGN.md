@@ -419,8 +419,10 @@ source offset's alignment modulo 256. `SparkWeightdSpineLoad`
 (`runtime/spark_weightd_spine.c`) copies only the spine spans when the pack
 has a valid verify-once receipt (below). Without one it streams the whole
 pack through a 1 MiB buffer, SHA-256 hashing all of it while copying only
-spine bytes, and records the receipt. Do not map complement spans at
-their pack VA: small padding gaps would pin nearly every expert chunk.
+spine bytes, and records the receipt. With a per-chunk (non-pooled) map, do
+not map complement spans at their pack VA: small padding gaps would pin
+nearly every expert chunk. A pooled map already covers the whole pack, so
+there the spine is read in place (below).
 
 ### Verify once
 
@@ -486,8 +488,14 @@ Every cold path reads the receipt:
 - The lazy attach (`SparkWeightdServerAttachLazy`) checks the receipt, or
   runs a hash-only pass once, before it preloads the spine. The preload
   reads the same descriptor, and the stat must be unchanged after it, so
-  the device-to-device spine copy in `SparkWeightdMapSpineCopy` comes from
-  verified bytes.
+  the spine that consumers read in the arena comes from verified bytes.
+- With the pool mapped, the client keeps no spine copy of its own.
+  `SparkWeightdLazyPackSlice` returns `map base + file offset`, a pointer
+  into the arena that every process of the same pack shares read-only.
+  The mapping is private to no process, so a second instance of a model on
+  the node adds no spine bytes (6.91 GiB per GLM-5.3 Full TP16 rank). Only
+  when the daemon stages no pool handle does the client allocate the
+  compacted spine and fill it through `SparkWeightdSpineLoad`.
 - The client spine load (`SparkWeightdSpineLoad`) records a receipt with
   both SHA-256 and ck128.
 
@@ -616,8 +624,8 @@ Unset or empty keeps today's private attach. Any other value is refused
   logs both sizes, for private and shared attaches alike.
 - The consumer maps the pooled pool `CU_MEM_ACCESS_FLAGS_PROT_READ`
   (`SparkWeightdMapCreateAccess`, logged `access=read-only`). Per-chunk
-  (non-pooled) imports were already read-only for every consumer. The spine
-  copy from the pool is device-to-device and only reads the pool.
+  (non-pooled) imports were already read-only for every consumer. Spine
+  slices point into the pool and are only read.
 - `SparkWeightdAttachPack`, the whole-arena resident path, refuses the variable
   with `UNSUPPORTED` / reason `share_unsupported` instead of ignoring it.
 - The ABI version stays 8. Old clients never send kinds 35-38. A lane that
@@ -629,7 +637,8 @@ symlink to the production rank pack with the same `.sha256` and `.experts` is
 enough, since the identity carries the SHA and not the path), and the owner's
 `SPARK_WEIGHTD_EXPERT_POOL_BYTES` (34359738368 in production).
 
-Memory: the sharer adds only its residentd (spine copy, KV, workspaces). A GLM
+Memory: the sharer adds only its residentd (KV, workspaces, CUDA context; no
+spine copy on a pooled arena). A GLM
 Flash dev root is about 6-14 GiB per node (lanes/glmproofs-w6.md), not another
 20.9 GiB arena.
 
