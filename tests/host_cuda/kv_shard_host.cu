@@ -67,8 +67,50 @@ static void HostCheck(int condition,const char *what)
 
 struct HostCase
 {
-	uint32_t rows,context,degree,heads_per_rank,grain;
+	uint32_t rows,context,degree,heads_per_rank,grain,shared;
 };
+
+template<class Geometry,uint32_t ROPE>
+static void HostGatherKeys(HostCase test,const std::vector<std::vector<uint8_t> > &shards,const std::vector<uint32_t> &table,uint32_t pages_per_sequence,uint32_t pages,
+	const std::vector<uint32_t> &sequences,const std::vector<uint32_t> &contexts,const std::vector<uint32_t> &row_position,const std::vector<uint32_t> &selected,
+	const std::vector<uint16_t> &query,uint64_t query_stride,float scale,const std::vector<float> &receive,uint64_t rank_stride,LmKvAccessError *error)
+{
+	const uint32_t sequence_count = test.shared != 0u ? 1u : test.rows;
+	std::vector<uint32_t> list(sequence_count),offset(test.rows,0u),context(test.rows,0u);
+	std::vector<float> gathered_receive(receive.size(),-1.0f);
+	std::vector<uint8_t> keys;
+	LmKvView pages_view;
+	SparkKvShard shard = {test.degree,0u,test.grain};
+	uint32_t index,rank,source,total = 0u,most = 0u;
+	for (index=0u; index<sequence_count; index++)
+	{
+		uint32_t count = SparkKvShardGatherKeys(shard,contexts[index]);
+		list[index] = index;
+		offset[index] = total;
+		context[index] = contexts[index];
+		total += count;
+		most = count > most ? count : most;
+	}
+	keys.assign((uint64_t)test.degree * total * Geometry::kSlotBytes,0xa5u);
+	HostCheck(LmKvViewInitialize(&pages_view,(uint8_t *)shards[0].data(),table.data(),pages_per_sequence,test.rows,pages,error) == 0,"gather pages view");
+	for (rank=0u; rank<test.degree; rank++)
+	{
+		LmKvShardView local;
+		shard.rank = rank;
+		HostCheck(LmKvShardViewInitialize<Geometry>(&local,(uint8_t *)shards[rank].data(),table.data(),pages_per_sequence,test.rows,pages,error,shard) == 0,"pack view");
+		HostCheck((LmKvShardGatherPackLaunch<Geometry,1u>(local,list.data(),offset.data(),context.data(),sequence_count,most,keys.data() + (uint64_t)rank * total * Geometry::kSlotBytes,0)) == cudaSuccess,"pack launch");
+	}
+	for (rank=0u; rank<test.degree; rank++)
+		for (source=0u; source<test.degree; source++)
+		{
+			LmKvShardGatherView view;
+			shard.rank = source;
+			HostCheck(LmKvShardGatherViewInitialize<Geometry>(&view,pages_view,shard,keys.data() + (uint64_t)source * total * Geometry::kSlotBytes,offset.data(),context.data()) == 0,"gather view");
+			HostCheck((LmLatentShardPartialOwnHeadsLaunch<Geometry,LmKvShardGatherView,HOST_LATENT,ROPE>(view,query.data() + (uint64_t)rank * query_stride,test.heads_per_rank,sequences.data(),contexts.data(),row_position.data(),selected.data(),HOST_SELECTED,HOST_DENSE_LIMIT,scale,gathered_receive.data() + ((uint64_t)rank * test.degree + source) * rank_stride,test.rows,0)) == cudaSuccess,"own-heads partial launch");
+		}
+	HostCheck(error->error_code == LM_FRAME_ERROR_NONE,"no KV access error in the gathered-key path");
+	HostCheck(memcmp(gathered_receive.data(),receive.data(),receive.size() * sizeof(float)) == 0,"partials over gathered keys equal the all-to-all partials bit for bit");
+}
 
 template<uint32_t ROPE>
 static void HostRunCase(HostCase test)
@@ -98,7 +140,7 @@ static void HostRunCase(HostCase test)
 	double worst = 0.0;
 	char label[160];
 
-	snprintf(label,sizeof(label),"B%u ctx%u degree%u heads%u grain%u rope%u",test.rows,test.context,test.degree,heads,test.grain,ROPE);
+	snprintf(label,sizeof(label),"B%u ctx%u degree%u heads%u grain%u rope%u%s",test.rows,test.context,test.degree,heads,test.grain,ROPE,test.shared != 0u ? " one-sequence" : "");
 	for (page=0u; page<pages; page++)
 		order[page] = page;
 	for (page=pages; page>1u; page--)
@@ -134,6 +176,16 @@ static void HostRunCase(HostCase test)
 				selected[(uint64_t)row * HOST_SELECTED + chosen * 4u + index] = pools * 4u + index;
 		}
 	}
+	if ( test.shared != 0u )
+		for (row=0u; row<test.rows; row++)
+		{
+			sequences[row] = 0u;
+			row_position[row] = test.context - test.rows + row;
+			if ( row != 0u )
+				contexts[row] = 0u;
+		}
+	if ( test.shared != 0u )
+		contexts[0] = test.context;
 	for (index=0u; index<values.size(); index++)
 		values[index] = HostBf16(HostSigned());
 	for (index=0u; index<query.size(); index++)
@@ -179,6 +231,13 @@ static void HostRunCase(HostCase test)
 		uint32_t source;
 		for (source=0u; source<test.degree; source++)
 			memcpy(receive.data() + ((uint64_t)rank * test.degree + source) * rank_stride,shard_send.data() + ((uint64_t)source * test.degree + rank) * rank_stride,rank_stride * sizeof(float));
+	}
+	HostGatherKeys<Geometry,ROPE>(test,shards,table,pages_per_sequence,pages,sequences,contexts,row_position,selected,query,query_stride,scale,receive,rank_stride,&error);
+	for (rank=0u; rank<test.degree; rank++)
+	{
+		uint32_t source;
+		for (source=0u; source<test.degree; source++)
+			memcpy(receive.data() + ((uint64_t)rank * test.degree + source) * rank_stride,shard_send.data() + ((uint64_t)source * test.degree + rank) * rank_stride,rank_stride * sizeof(float));
 		HostCheck(LmLatentShardMergeLaunch<HOST_LATENT>(receive.data() + (uint64_t)rank * test.degree * rank_stride,rank_stride,test.degree,test.heads_per_rank,shard_out.data() + (uint64_t)rank * test.rows * test.heads_per_rank * HOST_LATENT,test.rows,0) == cudaSuccess,"merge after all-to-all");
 		HostCheck(LmLatentShardMergeLaunch<HOST_LATENT>(shard_send.data() + (uint64_t)rank * rank_stride,(uint64_t)test.degree * rank_stride,test.degree,test.heads_per_rank,gather_out.data() + (uint64_t)rank * test.rows * test.heads_per_rank * HOST_LATENT,test.rows,0) == cudaSuccess,"merge after all-gather");
 		for (source=0u; source<test.degree; source++)
@@ -187,7 +246,7 @@ static void HostRunCase(HostCase test)
 	}
 	HostCheck(memcmp(oracle_out.data(),shard_out.data(),oracle_out.size() * 2u) == 0,"merged output equals the oracle bit for bit");
 	HostCheck(memcmp(gather_out.data(),shard_out.data(),oracle_out.size() * 2u) == 0,"all-gather and all-to-all layouts merge to the same bits");
-	for (row=0u; row<test.rows; row++)
+	for (row=0u; row<test.rows && test.shared == 0u; row++)
 	{
 		uint32_t head;
 		std::vector<uint32_t> keys;
@@ -313,26 +372,31 @@ int main(int argc,char **argv)
 	HostForeign<0u>();
 	if ( argc > 1 && strcmp(argv[1],"--full") == 0 )
 	{
-		HostRunCase<0u>({1u,1024u,16u,4u,1u});
-		HostRunCase<0u>({8u,1024u,16u,4u,1u});
-		HostRunCase<0u>({1u,8192u,16u,4u,1u});
-		HostRunCase<0u>({8u,8192u,16u,4u,1u});
-		HostRunCase<64u>({4u,1024u,16u,2u,1u});
-		HostRunCase<0u>({64u,1024u,16u,4u,1u});
+		HostRunCase<0u>({1u,1024u,16u,4u,1u,0u});
+		HostRunCase<0u>({8u,1024u,16u,4u,1u,0u});
+		HostRunCase<0u>({1u,8192u,16u,4u,1u,0u});
+		HostRunCase<0u>({8u,8192u,16u,4u,1u,0u});
+		HostRunCase<64u>({4u,1024u,16u,2u,1u,0u});
+		HostRunCase<0u>({64u,1024u,16u,4u,1u,0u});
+		HostRunCase<0u>({16u,742u,16u,4u,1u,1u});
+		HostRunCase<0u>({8u,2300u,16u,4u,1u,1u});
 	}
 	else
 	{
-		HostRunCase<0u>({1u,300u,16u,1u,1u});
-		HostRunCase<0u>({1u,2200u,16u,1u,1u});
-		HostRunCase<64u>({1u,200u,16u,1u,1u});
-		HostRunCase<0u>({2u,2100u,4u,1u,1u});
-		HostRunCase<0u>({1u,500u,2u,2u,4u});
+		HostRunCase<0u>({1u,300u,16u,1u,1u,0u});
+		HostRunCase<0u>({1u,2200u,16u,1u,1u,0u});
+		HostRunCase<64u>({1u,200u,16u,1u,1u,0u});
+		HostRunCase<0u>({2u,2100u,4u,1u,1u,0u});
+		HostRunCase<0u>({1u,500u,2u,2u,4u,0u});
+		HostRunCase<0u>({4u,300u,16u,1u,1u,1u});
+		HostRunCase<0u>({3u,2100u,4u,1u,1u,1u});
+		HostRunCase<0u>({3u,300u,4u,2u,2u,0u});
 	}
 	if ( host_failures != 0 )
 	{
 		printf("FAIL %d checks\n",host_failures);
 		return 1;
 	}
-	printf("PASS latent KV shard: per-rank bytes are total / degree, sharded store and attention equal the replicated oracle bit for bit, merged output matches f64\n");
+	printf("PASS latent KV shard: per-rank bytes are total / degree, sharded store and attention equal the replicated oracle bit for bit, partials over gathered keys equal the all-to-all partials bit for bit, merged output matches f64\n");
 	return 0;
 }

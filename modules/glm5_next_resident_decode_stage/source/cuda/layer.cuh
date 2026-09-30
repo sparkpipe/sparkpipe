@@ -402,9 +402,18 @@ struct Glm5NextLayerBuffers
     const uint16_t *shard_query_gathered_bf16;
     uint64_t shard_query_stride;
     float *shard_partials_f32;
-    const float *shard_partials_received_f32;
+    float *shard_partials_received_f32;
     uint64_t shard_partial_stride;
     uint32_t shard_row_capacity;
+    uint32_t shard_gather;
+    uint8_t *shard_gather_send;
+    const uint8_t *shard_gather_keys;
+    uint64_t shard_gather_stride;
+    const uint32_t *shard_gather_list;
+    const uint32_t *shard_gather_offset;
+    const uint32_t *shard_gather_context;
+    uint32_t shard_gather_count;
+    uint32_t shard_gather_most_keys;
     const uint32_t *sequence_of_row;
     const uint32_t *context_length;
     const uint32_t *positions;
@@ -1210,6 +1219,68 @@ static int32_t Glm5NextLayerAttentionShardPartial(
         buffers->shard_partial_stride,
         rows,
         stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextLayerAttentionShardGatherPack(
+    const Glm5NextLayerBuffers *buffers,
+    cudaStream_t stream)
+{
+    if (buffers == 0 || buffers->kv_shard_active == 0u || buffers->shard_gather == 0u ||
+        Glm5NextKvShardBound(buffers) == 0u || buffers->shard_gather_send == 0)
+        return LM_LAUNCH_ERR_SHAPE;
+    return LmKvShardGatherPackLaunch<Glm5NextKv, GLM5_NEXT_LAYER_THREADS>(
+        Glm5NextShardView(buffers->cache, buffers->kv_shard),
+        buffers->shard_gather_list,
+        buffers->shard_gather_offset,
+        buffers->shard_gather_context,
+        buffers->shard_gather_count,
+        buffers->shard_gather_most_keys,
+        buffers->shard_gather_send,
+        stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t Glm5NextLayerAttentionShardGatherPartial(
+    const Glm5NextLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    cudaStream_t stream)
+{
+    uint32_t listed = context > GLM5_NEXT_DSA_SELECTED ? 1u : 0u, source;
+    SparkKvShard shard;
+    LmKvShardGatherView view;
+    if (buffers == 0 || rows == 0u || buffers->kv_shard_active == 0u || buffers->shard_gather == 0u ||
+        Glm5NextKvShardBound(buffers) == 0u ||
+        buffers->attn_heads != SparkGlm5NextKvShardHeads(buffers->kv_shard.degree) ||
+        buffers->shard_gather_keys == 0 || buffers->shard_partials_received_f32 == 0 || buffers->query_latent_bf16 == 0 ||
+        buffers->shard_partial_stride != SparkGlm5NextKvShardPartialStride(rows, buffers->kv_shard.degree, buffers->shard_row_capacity) ||
+        (listed != 0u && (buffers->selected_positions == 0 ||
+            buffers->selected_position_count != SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH)))
+        return LM_LAUNCH_ERR_SHAPE;
+    for (source = 0u; source < buffers->kv_shard.degree; ++source)
+    {
+        shard = buffers->kv_shard;
+        shard.rank = source;
+        if (LmKvShardGatherViewInitialize<Glm5NextKv>(&view, buffers->cache, shard,
+                buffers->shard_gather_keys + (uint64_t)source * buffers->shard_gather_stride,
+                buffers->shard_gather_offset, buffers->shard_gather_context) != 0)
+            return LM_LAUNCH_ERR_SHAPE;
+        if (LmLatentShardPartialOwnHeadsLaunch<Glm5NextKv, LmKvShardGatherView, GLM5_NEXT_LATENT, GLM5_NEXT_ROPE_DIM>(
+                view,
+                buffers->query_latent_bf16,
+                buffers->attn_heads,
+                buffers->sequence_of_row,
+                buffers->context_length,
+                buffers->row_positions,
+                listed != 0u ? buffers->selected_positions : 0,
+                listed != 0u ? buffers->selected_position_count : 0u,
+                GLM5_NEXT_DSA_SELECTED,
+                buffers->qk_scale,
+                buffers->shard_partials_received_f32 + (uint64_t)source * buffers->shard_partial_stride,
+                rows,
+                stream) != cudaSuccess)
+            return LM_LAUNCH_ERR_LAUNCH;
+    }
+    return LM_LAUNCH_OK;
 }
 
 static int32_t Glm5NextLayerAttentionShardMergeLatent(
