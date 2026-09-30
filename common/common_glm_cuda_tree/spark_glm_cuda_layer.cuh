@@ -684,7 +684,7 @@ static int32_t GlmLayerAttentionCore(
         GLM_LATENT,
         GLM_ROPE_DIM,
         GLM_ROPE_THETA);
-    if (LmPerHeadProjectRowsLaunch<
+    if (LmPerHeadProjectChainLaunch<
             GLM_LAYER_THREADS,
             GLM_QK_NOPE_DIM,
             GLM_LATENT,
@@ -735,7 +735,7 @@ static int32_t GlmLayerAttentionCore(
         return LM_LAUNCH_ERR_LAUNCH;
     }
 
-    if (LmPerHeadProjectRowsLaunch<
+    if (LmPerHeadProjectChainLaunch<
             GLM_LAYER_THREADS,GLM_LATENT,GLM_VALUE_DIM>(
             buffers->attention_latent_bf16,
             (const uint16_t *)buffers->kv_b_value_weight,

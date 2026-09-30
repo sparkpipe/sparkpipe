@@ -57,6 +57,7 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 	uint64_t base = (uint64_t)blockIdx.x * row_stride;
 	uint32_t index;
 	float total = 0.0f,scale;
+	#pragma unroll 8
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		float value = LmBf16ToFloat(input_bf16[base + index]);
@@ -64,14 +65,17 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 			value += LmBf16ToFloat(residual_bf16[base + index]);
 		row[index] = value;
 		total += value * value;
-		if ( residual_out_bf16 != 0 )
-			residual_out_bf16[base + index] = LmFloatToBf16(value);
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
 	scale = rsqrtf((total / (float)dimension) + epsilon);
+	#pragma unroll 8
 	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		if ( residual_out_bf16 != 0 )
+			residual_out_bf16[base + index] = LmFloatToBf16(row[index]);
 		output_bf16[base + index] =
 			LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
+	}
 }
 
 #define LM_RMS_NORM_STAGED 16u
