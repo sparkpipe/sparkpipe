@@ -217,10 +217,67 @@
    }
   },
   "k3": {
-   "title": "Kimi K3 TP16 full residency (1/16 KV)",
-   "runnable": false,
+   "title": "Kimi K3 mxfp4 TP16 full residency (weightd lane 8, 1/16 KV per rank, k3-api8)",
+   "runnable": true,
    "validated": false,
-   "not_runnable": "lane k3-serve is building the TP16 full-residency serving path, x86 API and WINDOW PLAN (lanes/k3-serve.md); fill nodes/engine/packs/api/smoke from that plan and set runnable. Needs the fleet: TP16 rank pack 99.6 GB (spine 9.2 + experts 90.4)."
+   "nodes": [
+    "spark0",
+    "spark1",
+    "spark2",
+    "spark3",
+    "spark4",
+    "spark5",
+    "spark6",
+    "spark7",
+    "spark8",
+    "spark9",
+    "sparka",
+    "sparkb",
+    "sparkc",
+    "sparkd",
+    "sparke",
+    "sparkf"
+   ],
+   "mem_gib": 96,
+   "floor_gib": 8,
+   "abort_gib": 6,
+   "engine": {
+    "precheck": "cd $HOME/k3-lane8/root && grep -qx source_commit=8b19662c24fe104bc2d29009503faf977fb6a97d RELEASE && sha256sum -c --quiet MANIFEST && test -S /tmp/spark_weightd.sock && ! systemctl --user is-active -q sp-k3-rd8 && ! systemctl --user is-active -q sp-k3-rd12",
+    "start": "cd $HOME/k3-lane8/root && mv -f residentd.log residentd.prev.log 2>/dev/null; find $HOME/sparkdata -mindepth 3 -maxdepth 3 -path '*/packs/*' -type f -print0 | xargs -0 -r python3 bin/pack_cache_trim.py > /dev/null && python3 bin/pack_cache_trim.py packs/rank.pack packs/rank.pack.experts && systemctl --user reset-failed sp-k3-rd8 sp-k3-cache8 2>/dev/null; systemd-run --user --unit=sp-k3-cache8 -p Nice=19 -p MemoryMax=256M --working-directory=$HOME/k3-lane8/root python3 bin/pack_cache_trim.py --every 20 packs/rank.pack packs/rank.pack.experts && systemd-run --user --unit=sp-k3-rd8 -p MemoryMax=16G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/k3-lane8/root -E LD_LIBRARY_PATH=$HOME/k3-lane8/root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=8 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=90596966400 -E SPARK_K3_STATE_BUDGET_BYTES=1610612736 -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=8 bash -c 'SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$(cat spine_budget) exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index @rank@ > residentd.log 2>&1'",
+    "stop": "systemctl --user stop sp-k3-rd8 sp-k3-cache8 2>/dev/null; systemctl --user reset-failed sp-k3-rd8 sp-k3-cache8 2>/dev/null; python3 $HOME/k3-lane8/root/bin/pack_cache_trim.py $HOME/k3-lane8/root/packs/rank.pack $HOME/k3-lane8/root/packs/rank.pack.experts >/dev/null 2>&1; true",
+    "up": "systemctl --user is-active -q sp-k3-rd8",
+    "ready": "cd $HOME/k3-lane8/root && grep -q 'model_residentd ready' residentd.log && grep -q 'rank state planned=' residentd.log && systemctl --user is-active -q sp-k3-rd8",
+    "grace_s": 90,
+    "ready_timeout_s": 600,
+    "stop_timeout_s": 180
+   },
+   "packs": [
+    "$HOME/k3-lane8/root/packs/pack.sha256"
+   ],
+   "api": {
+    "precheck": "cd $HOME/k3-lane8-api && grep -qx 8b19662c24fe104bc2d29009503faf977fb6a97d SOURCE_COMMIT && sha256sum -c --quiet SHA256SUMS && ! systemctl --user is-active -q k3-api8 && ! ss -ltn | grep -q ':8448 '",
+    "start": "cd $HOME/k3-lane8-api && systemctl --user reset-failed k3-api8 2>/dev/null; systemd-run --user --unit=k3-api8 -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/k3-lane8-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/k3-lane8-api/runtime --port 8448 >> api.log 2>&1'",
+    "stop": "systemctl --user stop k3-api8 2>/dev/null; systemctl --user reset-failed k3-api8 2>/dev/null; true",
+    "up": "systemctl --user is-active -q k3-api8",
+    "health": "curl -s --max-time 5 http://127.0.0.1:8448/health | grep -q '\"tokenizer\": *true'",
+    "port": 8448,
+    "timeout_s": 180
+   },
+   "smoke": {
+    "path": "/v1/chat/completions",
+    "body": {
+     "messages": [
+      {
+       "role": "user",
+       "content": "What is the capital of France? Answer in one word."
+      }
+     ],
+     "max_tokens": 16,
+     "temperature": 0
+    },
+    "expect": "Paris",
+    "timeout_s": 900
+   }
   },
   "qwen": {
    "title": "Qwen3.8-27B TP4 no-spec (spark0/1/2/5, weightd lane 3, qwen27b-api)",
