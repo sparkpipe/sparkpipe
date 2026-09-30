@@ -156,7 +156,7 @@ static void ProbeConnect(struct ibv_qp *qp,const ProbeEndpoint *remote,uint32_t 
 	attributes.min_rnr_timer = 12;
 	attributes.ah_attr.is_global = 1;
 	attributes.ah_attr.port_num = 1;
-	memcpy(attributes.ah_attr.grh.dgid.raw,remote->gid,16);
+	memcpy(attributes.ah_attr.grh.dgid.raw,remote->gid,sizeof(remote->gid));
 	attributes.ah_attr.grh.sgid_index = (uint8_t)gid_index;
 	attributes.ah_attr.grh.hop_limit = 1;
 	if ( ibv_modify_qp(qp,&attributes,IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) != 0 )
@@ -290,7 +290,7 @@ int main(int argc,char **argv)
 		table[options.rank * options.ranks + rank].qpn = qps[rank]->qp_num;
 		table[options.rank * options.ranks + rank].rkey = mr->rkey;
 		table[options.rank * options.ranks + rank].address = (uint64_t)(uintptr_t)region;
-		memcpy(table[options.rank * options.ranks + rank].gid,gid.raw,16);
+		memcpy(table[options.rank * options.ranks + rank].gid,gid.raw,sizeof(gid.raw));
 	}
 	ProbeExchange(&options,clients,&server_fd,table);
 	for (rank=0u; rank<options.ranks; rank++)

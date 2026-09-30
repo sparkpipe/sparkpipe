@@ -88,7 +88,7 @@
 11 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMemcpy uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
-4 node/weightd_mesh.c: memcpy uses a direct size/count literal
+1 node/weightd_mesh.c: memcpy uses a direct size/count literal
 1 node/weightd_spawn.c: fread uses a direct size/count literal
 2 ring/transport/fixed_ring.c: memcpy uses a direct size/count literal
 1 runtime/spark_weightd.c: fread uses a direct size/count literal

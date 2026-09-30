@@ -208,10 +208,10 @@ static void SparkWeightdMeshFillRecord(SparkWeightdMeshRecord *record)
     record->rkey = weightd_mesh.recv_mr != 0 ? weightd_mesh.recv_mr->rkey : 0u;
     record->recv_addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
     record->lid = weightd_mesh.lid;
-    memcpy(record->gid,weightd_mesh.gid,16);
+    memcpy(record->gid,weightd_mesh.gid,sizeof(record->gid));
     record->pair_rkey = weightd_mesh.pair_recv_mr != 0 ? weightd_mesh.pair_recv_mr->rkey : 0u;
     record->pair_lid = weightd_mesh.pair_lid;
-    memcpy(record->pair_gid,weightd_mesh.pair_gid,16);
+    memcpy(record->pair_gid,weightd_mesh.pair_gid,sizeof(record->pair_gid));
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         record->send_qpn[peer] = weightd_mesh.send_qps[peer] != 0 ? weightd_mesh.send_qps[peer]->qp_num : 0u;
@@ -911,7 +911,7 @@ static SparkStatus SparkWeightdMeshOpenDevice(const char *interface_name,uint32_
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     *lid = (uint16_t)port_attr.lid;
-    memcpy(gid_raw,gid.raw,16);
+    memcpy(gid_raw,gid.raw,sizeof(gid.raw));
     return SPARK_STATUS_OK;
 }
 
