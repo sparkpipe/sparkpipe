@@ -8,7 +8,11 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import glm53full_lane
 import roofline
+
+BLOCK_TOKENS = 64
 
 
 def build_batch(session, rows):
@@ -38,6 +42,53 @@ def read_capacity(root):
             key, value = line.split("=", 1)
             values[key] = value
     return {"sequences": int(values["sequences"]), "rows": int(values["rows"]), "positions": int(values["positions"])}
+
+
+def relane(source, out, lane, node_root, sequences=None, positions=None):
+    source, out = Path(source), Path(out)
+    ports = glm53full_lane.lane_ports(lane)
+    deployment = json.loads((source / "model_resident.json").read_text())
+    limits = deployment["runtime_limits"]
+    sequences = sequences or limits["max_active_sequences"]
+    positions = positions or limits["max_sequence_positions"]
+    rows = min(limits["max_input_rows"], sequences)
+    pages = sequences * ((positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS)
+    limits.update({"max_active_sequences": sequences, "resident_sequence_capacity": sequences, "max_input_rows": rows,
+                   "kv_logical_page_capacity": pages, "kv_physical_page_capacity": pages, "max_sequence_positions": positions})
+    deployment["transport"]["control_port_base"] = ports["transport"]
+    for node in deployment["nodes"]:
+        host = node["transport_host"]
+        if host != glm53full_lane.HOSTS[node["rank_index"]]:
+            raise SystemExit(f"rank {node['rank_index']} runs on {host}, expected {glm53full_lane.HOSTS[node['rank_index']]}")
+        node["runtime_root"] = glm53full_lane.runtime_root(host, lane, node_root)
+        node["kv_backing_directory"] = node["runtime_root"] + "/kvcache"
+        node["control_endpoint"]["port"] = ports["control"] + node["rank_index"]
+    (out / "config").mkdir(parents=True, exist_ok=True)
+    (out / "model_resident.json").write_text(json.dumps(deployment, indent=1) + "\n")
+    for rank in range(glm53full_lane.WORLD):
+        stage = json.loads((source / "config" / f"stage_{rank:02d}.json").read_text())
+        if stage["tp_rank"] != rank or stage["tp_degree"] != glm53full_lane.WORLD:
+            raise SystemExit(f"stage_{rank:02d}.json is tp_rank {stage['tp_rank']} of {stage['tp_degree']}")
+        collective = stage["tp_collective"]
+        collective["collective_identifier"] = glm53full_lane.collective_identifier(lane)
+        collective["listen_port"] = ports["collective"] + rank
+        collective["peer_ports"] = [ports["collective"] + peer for peer in range(glm53full_lane.WORLD)]
+        collective["session_ports"] = glm53full_lane.session_matrix(ports["session"])
+        collective["session_ports_hc"] = glm53full_lane.session_matrix(ports["session"] + 16)
+        stage["max_sequence_positions"] = positions
+        (out / "config" / f"stage_{rank:02d}.json").write_text(json.dumps(stage, indent=1) + "\n")
+    release = {}
+    for line in (source / "RELEASE").read_text().splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            release[key] = value
+    release.update({"lane": str(lane), "sequences": str(sequences), "rows": str(rows), "positions": str(positions),
+                    "runtime_root": node_root, "source_root_release": release.get("release", "")})
+    (out / "RELEASE").write_text("".join(f"{k}={v}\n" for k, v in release.items()))
+    kv_bytes = sequences * positions * (roofline.DEFAULTS["kv_latent_bytes_per_token"] + roofline.DEFAULTS["kv_index_bytes_per_token"])
+    print(json.dumps({"lane": lane, "node_root": node_root, "sequences": sequences, "rows": rows, "positions": positions,
+                      "kv_gib_per_node": round(kv_bytes / 2**30, 2), "ports": ports}))
+    return 0
 
 
 def summarize_case(c, ids, ts, accepted, t0):
@@ -179,7 +230,8 @@ def decode_metrics(record, params):
             text, ev = roofline.decode_line(1, step, mean_context(cases), p=params)
             out.append({"metric": f"B1 decode {name}", "rows": 1, "tok_s": 1e3 / step, "step_ms": step,
                         "cases_ms": [round(c["inter_token_median_ms"], 2) for c in cases], "roofline": text, "binding": ev["binding"],
-                        "percent": ev["percent"], "ceiling_overlapped_tok_s": ev["ceiling_overlapped_tok_s"]})
+                        "percent": ev["percent"], "ceiling_overlapped_tok_s": ev["ceiling_overlapped_tok_s"],
+                        "memory_ceiling_tok_s": ev["memory_ceiling_tok_s"]})
         return out
     rows = len(record["per_request"])
     step = statistics.median(c["inter_token_median_ms"] for c in per)
@@ -187,7 +239,7 @@ def decode_metrics(record, params):
     return [{"metric": f"B{rows} decode", "rows": rows, "tok_s": rows * 1e3 / step, "step_ms": step,
              "steady_tok_s_after_last_first_token": record.get("tok_s_after_last_first_token"),
              "wall_tok_s": record.get("aggregate_tok_s"), "roofline": text, "binding": ev["binding"], "percent": ev["percent"],
-             "ceiling_overlapped_tok_s": ev["ceiling_overlapped_tok_s"]}]
+             "ceiling_overlapped_tok_s": ev["ceiling_overlapped_tok_s"], "memory_ceiling_tok_s": ev["memory_ceiling_tok_s"]}]
 
 
 def prefill_metrics(record, params):
@@ -243,7 +295,8 @@ def summary(results_path, out_dir, title, params=None):
     Path(out_dir, "summary.json").write_text(json.dumps(data, indent=1))
     lines = [f"# {title}", "", f"Generated {data['generated_utc']} from `{results_path}`.", "",
              "Speculative and non-speculative arms are separate tags; B1 is split per content class when the session labels one.", "",
-             "| arm | session | metric | result | binding |", "|---|---|---|---|---|"]
+             "| arm | session | metric | result | memory (ceiling) | compute | transport bw | transport latency | binding |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         if "tok_s" in r:
             result = f"{r['tok_s']:.1f} tok/s ({r['step_ms']:.2f} ms/step)"
@@ -251,7 +304,10 @@ def summary(results_path, out_dir, title, params=None):
                 result += f", steady {r['steady_tok_s_after_last_first_token']:.1f} tok/s"
         else:
             result = f"TTFT {r['ttft_s']:.2f} s, {r['prefill_tok_s']:.0f} prompt tok/s"
-        lines.append(f"| {r['tag']} | {r['session']} | {r['metric']} | {result} | {r['binding']} |")
+        pct, ceiling = r["percent"], r.get("memory_ceiling_tok_s")
+        lines.append(f"| {r['tag']} | {r['session']} | {r['metric']} | {result} | {pct['memory']:.0f}%"
+                     f"{f' ({ceiling:.0f} tok/s)' if ceiling else ''} | {pct['compute']:.1f}% | {pct['transport bandwidth']:.1f}% | "
+                     f"{pct['transport latency']:.0f}% | {r['binding']} |")
     lines += ["", "## Roofline lines", ""]
     lines += [f"- {r['tag']} {r['metric']}: {r['roofline']}" for r in rows]
     lines += ["", "## Gates", ""]
@@ -275,6 +331,9 @@ if __name__ == "__main__":
         sys.exit(run_session(*sys.argv[2:7]))
     if sys.argv[1] == "compare":
         sys.exit(compare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5].split(",")))
+    if sys.argv[1] == "relane":
+        extra = [int(x) for x in sys.argv[6:8]] if len(sys.argv) > 7 else []
+        sys.exit(relane(sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], *extra))
     if sys.argv[1] == "summary":
         sys.exit(summary(sys.argv[2], sys.argv[3], sys.argv[4]))
     sys.exit("usage: runner.py run SESSION OUT_DIR FW ROOT TAG | compare RESULTS REF_TAG CAND_TAG SESSIONS | summary RESULTS OUT_DIR TITLE")

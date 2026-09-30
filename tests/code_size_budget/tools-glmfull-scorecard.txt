@@ -1,2 +1,2 @@
-+959
-GLM Full scorecard lane: the standard GLM-5.3 Full window harness (tools/glm53full_scorecard: window.sh arm runner on the rotation tool's own start/ready/converge commands, runner.py sessions + SUMMARY.md/summary.json receipts, roofline.py four-roofline model for glm52 per batch and prefill, gen_sessions.py session generator). Every lane of the GLM Full SOTA program runs its arms through it in lead windows.
++924
+GLM Full scorecard lane: tools/glm53full_scorecard perf.sh (one command: stage any GLM Full root as a lane-N copy that attaches the resident arena read-only, start it with the live start command, run B1/B8..B256/TTFT/prefill-under-load/spec sessions plus the T1 and COMPSEC-17 gates, stop it), runner.py (relane, sessions, SUMMARY with the four-roofline columns per row), roofline.py (glm52 bytes/FLOPs/rounds per batch and prefill), gen_sessions.py.

@@ -114,34 +114,69 @@ def check_runner():
     return failures
 
 
-def check_window_script():
+def live_like_root(path, lane):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import glm53full_lane
+    args = type("A", (), {"lane": lane, "codec": "fp8", "arm": "fp8", "socket": "/tmp/spark_weightd.sock",
+                          "kv_backing_bytes": 4294967296, "max_sequence_positions": 2048, "execution_row_capacity": 16,
+                          "sequences": 16, "inflight": 1, "node_root": None})()
+    for name, text in glm53full_lane.render(args).items():
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_text(text)
+    (path / "RELEASE").write_text("release=dfa12a5\nlane=6\nsequences=16\nrows=16\npositions=2048\nunit=sp-glmfull-rd6\n")
+    return glm53full_lane
+
+
+def check_relane():
     failures = []
-    script = ROOT / "tools" / "glm53full_scorecard" / "window.sh"
-    if subprocess.run(["bash", "-n", str(script)]).returncode != 0:
-        failures.append("window.sh does not parse")
-    body = script.read_text()
-    for forbidden in ("--reclaim ", "weightd_warm --reclaim\n", "declare -A"):
-        if forbidden in body:
-            failures.append(f"window.sh must not contain '{forbidden.strip()}'")
-    if "converge glmfull" not in body:
-        failures.append("restore must use the rotation tool's converge glmfull")
     with tempfile.TemporaryDirectory() as tmp:
-        bad = Path(tmp) / "arms"
-        bad.write_text("X|/home/x/root|||\n")
-        r = subprocess.run(["bash", str(script), "passive", str(bad)], capture_output=True, text=True,
-                           env={"PATH": "/usr/bin:/bin", "SCORECARD_KIT": tmp, "WINDOW_SSH": "false"})
-        if r.returncode != 2 or "root must be" not in r.stderr:
-            failures.append(f"an arm outside ~/glmfull-lane6/arm.* must be refused: {r.returncode} {r.stderr}")
-        bad.write_text("X|arm.x|LD_PRELOAD=/tmp/x.so||\n")
-        r = subprocess.run(["bash", str(script), "passive", str(bad)], capture_output=True, text=True,
-                           env={"PATH": "/usr/bin:/bin", "SCORECARD_KIT": tmp, "WINDOW_SSH": "false"})
-        if r.returncode != 2 or "bad env" not in r.stderr:
-            failures.append(f"a non-SPARK env must be refused: {r.returncode} {r.stderr}")
+        source, out = Path(tmp) / "src", Path(tmp) / "out"
+        lane = live_like_root(source, 6)
+        runner.relane(source, out, 14, "glmfull-dev/perf")
+        expected = Path(tmp) / "expected"
+        args = type("A", (), {"lane": 14, "codec": "fp8", "arm": "fp8", "socket": "/tmp/spark_weightd.sock",
+                              "kv_backing_bytes": 4294967296, "max_sequence_positions": 2048, "execution_row_capacity": 16,
+                              "sequences": 16, "inflight": 1, "node_root": "glmfull-dev/perf"})()
+        for name, text in lane.render(args).items():
+            if json.loads((out / name).read_text()) != json.loads(text):
+                failures.append(f"relane of the lane-6 root to lane 14 must equal a lane-14 render: {name}")
+        release = dict(line.split("=", 1) for line in (out / "RELEASE").read_text().splitlines())
+        if (release["lane"], release["sequences"], release["positions"], release["runtime_root"]) != ("14", "16", "2048", "glmfull-dev/perf"):
+            failures.append(f"relaned RELEASE wrong: {release}")
+        small = Path(tmp) / "small"
+        runner.relane(source, small, 14, "glmfull-dev/perf", 4, 8192)
+        limits = json.loads((small / "model_resident.json").read_text())["runtime_limits"]
+        if (limits["max_active_sequences"], limits["max_input_rows"], limits["kv_physical_page_capacity"], limits["max_sequence_positions"]) != (4, 4, 512, 8192):
+            failures.append(f"--kv 4:8192 must size 4 sequences x 128 pages and cap rows at 4: {limits}")
+        if json.loads((small / "config" / "stage_03.json").read_text())["max_sequence_positions"] != 8192:
+            failures.append("--kv must set the stage max_sequence_positions")
+    return failures
+
+
+def check_perf_script():
+    failures = []
+    script = ROOT / "tools" / "glm53full_scorecard" / "perf.sh"
+    if subprocess.run(["bash", "-n", str(script)]).returncode != 0:
+        failures.append("perf.sh does not parse")
+    body = script.read_text()
+    for forbidden in ("--reclaim", "converge", "systemctl --user stop sp-glmfull-rd6", "restart sparkpipe_weightd"):
+        if forbidden in body:
+            failures.append(f"perf.sh must never touch the live release or weightd: '{forbidden}'")
+    if "SPARK_WEIGHTD_SHARE=readonly" not in body or "access=read-only" not in body:
+        failures.append("perf.sh must attach the resident arena read-only and prove it in the ready check")
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {"PATH": "/usr/bin:/bin", "PERF_OUT": tmp, "PERF_SSH": "false"}
+        for argv, message in ((["run", "--root", "glmfull-lane6/root", "--lane", "6", "--name", "x"], "not the live lane"),
+                              (["run", "--root", "glmfull-lane6/root", "--lane", "14", "--name", "x", "--env", "LD_PRELOAD=/x.so"], "bad env"),
+                              (["run", "--root", "/abs/root", "--lane", "14", "--name", "x"], "usage")):
+            r = subprocess.run(["bash", str(script), *argv], capture_output=True, text=True, env=env)
+            if r.returncode != 2 or message not in r.stderr:
+                failures.append(f"perf.sh {' '.join(argv)} must be refused with '{message}': {r.returncode} {r.stderr}")
     return failures
 
 
 def main():
-    failures = check_model() + check_runner() + check_window_script()
+    failures = check_model() + check_runner() + check_relane() + check_perf_script()
     for f in failures:
         print(f"FAIL {f}")
     print("glm53full scorecard:", "FAIL" if failures else "PASS")

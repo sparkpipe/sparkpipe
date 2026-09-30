@@ -66,7 +66,7 @@ def main():
         s["kind"] = kind
         sessions[name] = s
     compsec = sessions["compsec17"]["cases"]
-    for rows in (16, 32, 64, 128):
+    for rows in (16, 32, 64, 128, 256):
         cases = [strip_expect(compsec[i % len(compsec)], 128, f"b{rows}-{i:03d}-{compsec[i % len(compsec)]['label']}") for i in range(rows)]
         sessions[f"b{rows}"] = {"label": f"b{rows}", "kind": "decode", "sequential": False, "cases": cases}
     classes = []
