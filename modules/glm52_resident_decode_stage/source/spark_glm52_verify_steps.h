@@ -4,6 +4,92 @@ static void SparkGlm52RunChain(SparkGlm52TpChain *chain);
 
 static const char *const SparkGlm52VerifyDrafterNames[5] = {"none","lookup","oracle","adversary","recorded"};
 
+static SparkStatus SparkGlm52TapConfigure(SparkGlm52ModuleState *state)
+{
+	const char *path = getenv(SPARK_GLM52_TAP_DUMP_ENV);
+	if ( path == 0 || path[0] == '\0' || state->tp_rank != 0u )
+		return(SPARK_STATUS_OK);
+	if ( state->owns_final_head == 0u )
+	{
+		fprintf(stderr,"GLM52-TAP-REFUSED %s needs the final head on rank 0\n",SPARK_GLM52_TAP_DUMP_ENV);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	state->tap_file = fopen(path,"wb");
+	if ( state->tap_file == 0 )
+	{
+		fprintf(stderr,"GLM52-TAP %s cannot be opened\n",path);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	fprintf(stderr,"GLM52-TAP dump=%s rank=%u row_bytes=%u\n",path,state->tp_rank,(unsigned)(SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t)));
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm52TapClose(SparkGlm52ModuleState *state,const char *reason)
+{
+	if ( state->tap_file != 0 )
+	{
+		fprintf(stderr,"GLM52-TAP closed records=%llu reason=%s\n",(unsigned long long)state->tap_records,reason);
+		fclose(state->tap_file);
+	}
+	state->tap_file = 0;
+	free(state->tap_rows);
+	state->tap_rows = 0;
+	state->tap_capacity = 0u;
+}
+
+static void SparkGlm52TapWave(SparkGlm52TpChain *chain)
+{
+	SparkGlm52ModuleState *state = chain->state;
+	uint32_t rows = chain->first_row + chain->wave_rows;
+	uint16_t *grown;
+	if ( state->tap_file == 0 || chain->steps_budget != 0u )
+		return;
+	if ( rows > state->tap_capacity )
+	{
+		grown = (uint16_t *)realloc(state->tap_rows,(size_t)rows * SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
+		if ( grown == 0 )
+		{
+			SparkGlm52TapClose(state,"allocation");
+			return;
+		}
+		state->tap_rows = grown;
+		state->tap_capacity = rows;
+	}
+	if ( cudaMemcpyAsync(state->tap_rows + (size_t)chain->first_row * SPARK_GLM52_MODEL_HIDDEN_DIMENSION,chain->slot->normed_bf16,
+		(size_t)chain->wave_rows * SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream) != cudaSuccess )
+		SparkGlm52TapClose(state,"copy");
+}
+
+static void SparkGlm52TapWrite(SparkGlm52TpChain *chain,SparkStatus status)
+{
+	SparkGlm52ModuleState *state = chain->state;
+	SparkGlm52ExecutionSlot *slot = chain->slot;
+	uint32_t row,header[5],rows = chain->batch->row_count;
+	if ( state->tap_file == 0 || chain->steps_budget != 0u )
+		return;
+	if ( status != SPARK_STATUS_OK || rows > state->tap_capacity )
+	{
+		SparkGlm52TapClose(state,"chain");
+		return;
+	}
+	for (row=0u; row<rows; row++)
+	{
+		header[0] = SPARK_GLM52_TAP_RECORD_MAGIC;
+		header[1] = slot->host_resident_slots[row];
+		header[2] = slot->host_positions[row];
+		header[3] = slot->host_token_ids[row];
+		header[4] = slot->host_output_token_ids[row];
+		if ( fwrite(header,sizeof(header),1u,state->tap_file) != 1u ||
+			fwrite(state->tap_rows + (size_t)row * SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),1u,state->tap_file) != 1u )
+		{
+			SparkGlm52TapClose(state,"write");
+			return;
+		}
+		state->tap_records++;
+	}
+	fflush(state->tap_file);
+}
+
 static SparkStatus SparkGlm52VerifyReadFile(const char *path,uint8_t **bytes_out,uint64_t *count_out)
 {
 	FILE *file;
@@ -92,8 +178,9 @@ static SparkStatus SparkGlm52VerifyConfigure(SparkGlm52ModuleState *state)
 		fprintf(stderr,"%s must be lookup, oracle:PATH, adversary:PATH or recorded:PATH when %s is nonzero, and absent when it is 0 or unset\n",SPARK_GLM52_VERIFY_DRAFTER_ENV,SPARK_GLM52_VERIFY_ROWS_ENV);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	if ( state->verify_rows_max == 0u )
-		return(SPARK_STATUS_OK);
+	status = SparkGlm52TapConfigure(state);
+	if ( status != SPARK_STATUS_OK || state->verify_rows_max == 0u )
+		SPARK_RETURN(status);
 	if ( state->chain_mode == SPARK_TP_CHAIN_MODE_EAGER )
 		reason = "needs the linear or graph chain (SPARK_GLM52_CHAIN_MODE)";
 	else if ( state->owns_embedding == 0u || state->owns_final_head == 0u )
@@ -117,6 +204,7 @@ static SparkStatus SparkGlm52VerifyConfigure(SparkGlm52ModuleState *state)
 
 static void SparkGlm52VerifyRelease(SparkGlm52ModuleState *state)
 {
+	SparkGlm52TapClose(state,"release");
 	if ( state->verify_drafter == SPARK_SPECULATION_VERIFY_DRAFTER_LOOKUP )
 		SparkSpeculationLookupDraftDestroy(&state->verify_lookup);
 	free(state->verify_drafter_bytes);

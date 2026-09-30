@@ -190,6 +190,10 @@ struct SparkGlm52ModuleState
 	uint64_t verify_tokens;
 	uint64_t verify_position_reached[SPARK_GLM52_VERIFY_ROWS_LIMIT - 1u];
 	uint64_t verify_position_accepted[SPARK_GLM52_VERIFY_ROWS_LIMIT - 1u];
+	FILE *tap_file;
+	uint16_t *tap_rows;
+	uint32_t tap_capacity;
+	uint64_t tap_records;
 };
 
 typedef enum SparkGlm52ChainStage
@@ -2121,6 +2125,8 @@ static SparkStatus SparkGlm52GraphWalk(SparkGlm52TpChain *chain,const SparkTpCha
 	return(status);
 }
 
+static void SparkGlm52TapWave(SparkGlm52TpChain *chain);
+
 static SparkStatus SparkGlm52LinearWalk(SparkGlm52TpChain *chain,uint32_t *site)
 {
 	for (;;)
@@ -2129,6 +2135,7 @@ static SparkStatus SparkGlm52LinearWalk(SparkGlm52TpChain *chain,uint32_t *site)
 		*site = SparkGlm52WalkWave(chain);
 		if ( *site != 0u )
 			return(SPARK_STATUS_INTERNAL_ERROR);
+		SparkGlm52TapWave(chain);
 #ifdef SPARK_SCORE_DUMP
 		{
 			SparkStatus score_status = SparkGlm52ScoreWave(chain);
@@ -2203,6 +2210,7 @@ static void SparkGlm52ChainSettle(void *context)
 	status = SparkTpChainSettle(&collectives,chain->slot->stream,chain->graph);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"GLM52-CHAIN-SETTLE-FAIL mode=%s slot=%u status=%s\n",chain->graph != 0u ? "graph" : "linear",chain->slot_index,SparkStatusToString(status));
+	SparkGlm52TapWrite(chain,status);
 	if ( SparkGlm52StepsContinue(chain,&status) != 0u )
 		return;
 	if ( status != SPARK_STATUS_OK && chain->steps_budget != 0u )
@@ -2230,6 +2238,8 @@ static void SparkGlm52RunChain(SparkGlm52TpChain *chain)
 	{
 		chain->waves = 1u;
 		status = SparkGlm52GraphWalk(chain,&collectives,&site);
+		if ( status == SPARK_STATUS_OK )
+			SparkGlm52TapWave(chain);
 	}
 	else
 		status = SparkGlm52LinearWalk(chain,&site);
