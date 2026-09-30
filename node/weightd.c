@@ -17,7 +17,7 @@
 
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask,
-    const char *pair_interface_name, uint32_t pair_sgid_index);
+    const char *pair_interface_name, uint32_t pair_sgid_index, uint32_t traffic_class);
 uint32_t SparkWeightdMeshReady(void);
 void SparkWeightdMeshDoorbellLoop(int32_t doorbell_cpu);
 
@@ -31,6 +31,8 @@ typedef struct SparkWeightdMeshLaunch
     const char *pair_interface_name;
     uint32_t pair_sgid_index;
     uint32_t pair_fields;
+    uint32_t traffic_class;
+    uint32_t traffic_class_set;
     int32_t doorbell_cpu;
 } SparkWeightdMeshLaunch;
 
@@ -68,6 +70,7 @@ static void SparkWeightdUsage(const char *program)
         "  --mesh-interface <name>  verbs device name to bind\n"
         "  --mesh-sgid-index <n>    source GID index 0..255\n"
         "  --mesh-pair-interface <name> --mesh-pair-sgid-index <n>  verbs device and GID of the point-to-point link to partner rank (rank ^ 1); traffic to the partner uses it\n"
+        "  --mesh-traffic-class <n> RoCE traffic class 0..255 of every mesh QP (DSCP << 2 plus ECN bits); selects the switch and NIC priority\n"
         "  --mesh-dir <path>        record exchange dir (env SPARK_WEIGHTD_MESH_DIR, default /tmp/weightd-mesh; use a per-deployment dir when two weightd-line daemons share the host)\n",
         program,
         (unsigned long long)SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,
@@ -262,6 +265,25 @@ int main(int argument_count, char **arguments)
             weightd_mesh_launch.pair_fields |= 2u;
             index++;
         }
+        else if (strcmp(arguments[index], "--mesh-traffic-class") == 0 &&
+            index + 1 < argument_count)
+        {
+            char *parse_end = 0;
+            unsigned long parsed = strtoul(arguments[index + 1],
+                &parse_end, 10);
+            if (parse_end == arguments[index + 1] || *parse_end != '\0' ||
+                parsed > 255ul)
+            {
+                fprintf(stderr,
+                    "weightd: bad --mesh-traffic-class '%s' (need 0..255)\n",
+                    arguments[index + 1]);
+                SparkWeightdUsage(arguments[0]);
+                return 2;
+            }
+            weightd_mesh_launch.traffic_class = (uint32_t)parsed;
+            weightd_mesh_launch.traffic_class_set = 1u;
+            index++;
+        }
         else if (strcmp(arguments[index], "--mesh-dir") == 0 &&
             index + 1 < argument_count)
         {
@@ -406,13 +428,20 @@ int main(int argument_count, char **arguments)
         SparkWeightdUsage(arguments[0]);
         return 2;
     }
+    if (weightd_mesh_launch.traffic_class_set != 0u && mesh_fields != 15u)
+    {
+        fprintf(stderr,"weightd: --mesh-traffic-class needs the mesh flags\n");
+        SparkWeightdUsage(arguments[0]);
+        return 2;
+    }
     if (mesh_fields == 15u)
     {
         static pthread_t mesh_thread;
         status = SparkWeightdMeshInit(weightd_mesh_launch.rank,
             weightd_mesh_launch.interface_name,weightd_mesh_launch.sgid_index,
             weightd_mesh_launch.mesh_dir,weightd_mesh_launch.rank_mask,
-            weightd_mesh_launch.pair_interface_name,weightd_mesh_launch.pair_sgid_index);
+            weightd_mesh_launch.pair_interface_name,weightd_mesh_launch.pair_sgid_index,
+            weightd_mesh_launch.traffic_class);
         if ( status != SPARK_STATUS_BUSY && status != SPARK_STATUS_OK )
         {
             fprintf(stderr,"weightd-mesh init=%s; startup failed\n",SparkStatusToString(status));
