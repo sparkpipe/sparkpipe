@@ -113,6 +113,10 @@ def validate_model(cfg, name, model):
         require(isinstance(api.get("port"), int), f"model {name}: api.port missing")
         require(isinstance(api.get("timeout_s"), (int, float)), f"model {name}: api.timeout_s missing")
         validate_smoke(name, model.get("smoke"))
+    if "floor_gib" in model or "abort_gib" in model:
+        floor, abort = model.get("floor_gib"), model.get("abort_gib")
+        require(isinstance(floor, (int, float)) and isinstance(abort, (int, float)), f"model {name}: floor_gib and abort_gib come together")
+        require(0 < abort < floor <= cfg["floor_gib"], f"model {name}: needs 0 < abort_gib < floor_gib <= floor_gib of the config")
 
 
 def validate(cfg):
@@ -144,6 +148,12 @@ def validate(cfg):
             require(companion in models, f"slot {name}: companion {companion} unknown")
             require(companion not in bases, f"slot {name}: companion {companion} is a slot base or the fallback")
     require(fb in models and models[fb].get("runnable"), "fallback model must exist and be runnable")
+    shared = set(cfg["rollback_models"] + [fb]) | {c for slot in slots.values() for c in slot.get("companions", [])}
+    for name, model in models.items():
+        if "floor_gib" in model:
+            own = [slot for slot in slots.values() if slot.get("base") == name]
+            require(own and not any(slot.get("companions") for slot in own) and name not in shared, f"model {name}: floor_gib is only for the base of slots without companions that is never the fallback, a companion or a rollback model")
+            require(set(model["nodes"]) == set(cfg["fleet"]), f"model {name}: a model with its own floor_gib owns the whole fleet")
     require(set(models[fb]["nodes"]) == set(cfg["fleet"]), "fallback model must span the whole fleet")
     require(models[fb].get("api") is not None, "fallback model needs an api")
     for name in cfg["rollback_models"]:
@@ -380,7 +390,7 @@ class Rotation:
         return {h: min(v + self.gib(stopped, h), self.cfg["node_free_gib"]) - self.gib(started, h) for h, v in view["live"].items()}
 
     def shortfall(self, view, target):
-        floor = self.cfg["floor_gib"]
+        floor = self.floor_of(target)
         return [f"{h}:{v}<{floor}" for h, v in sorted(self.after(view, target).items()) if v < floor]
 
     def pack(self, view, primary, candidates, runs, order):
@@ -528,14 +538,22 @@ class Rotation:
             out[host] = int(match.group(0))
         return out
 
-    def floor_check(self, when, hosts=None):
+    def floor_of(self, models):
+        return min([self.cfg["floor_gib"]] + [self.models[m]["floor_gib"] for m in models if "floor_gib" in self.models[m]])
+
+    def floor_check(self, when, models=(), hosts=None):
+        floor = self.floor_of(models)
         avail = self.mem(hosts or self.cfg["fleet"])
-        low = {h: v for h, v in avail.items() if v is not None and v < self.cfg["floor_gib"]}
+        low = {h: v for h, v in avail.items() if v is not None and v < floor}
         known = [v for v in avail.values() if v is not None]
-        self.log("FLOOR", when=when, min_gib=min(known) if known else "dry", floor=self.cfg["floor_gib"])
+        self.log("FLOOR", when=when, min_gib=min(known) if known else "dry", floor=floor)
         if low:
-            raise Failure(f"MemAvailable below {self.cfg['floor_gib']} GiB {when}: " + " ".join(f"{h}={v}" for h, v in sorted(low.items())))
+            raise Failure(f"MemAvailable below {floor} GiB {when}: " + " ".join(f"{h}={v}" for h, v in sorted(low.items())))
         return avail
+
+    def below_abort(self, models):
+        limits = [(self.models[m]["abort_gib"], self.models[m]["nodes"]) for m in models if "abort_gib" in self.models[m]]
+        return " ".join(f"{h}={v}<{a}" for a, nodes in limits for h, v in sorted(self.mem(nodes).items()) if v is not None and v < a)
 
     def precheck(self, model):
         m = self.models[model]
@@ -556,6 +574,9 @@ class Rotation:
         pending = self.node_cmds(model, key, {"stamp": self.stamp})
         while True:
             self.checkpoint()
+            low = self.below_abort([model])
+            if low:
+                raise Failure(f"{model}: MemAvailable below the abort level while waiting for {key}: {low}")
             results = self.run.each(pending)
             pending = {h: pending[h] for h, (rc, _) in results.items() if rc != 0}
             if not pending:
@@ -630,9 +651,10 @@ class Rotation:
         up = self.run.each(self.node_cmds(model, "up"))
         cold = [h for h, (rc, _) in up.items() if rc != 0 or self.dry]
         avail = self.mem(cold)
-        short = {h: v for h, v in avail.items() if v is not None and v < m["mem_gib"] + self.cfg["floor_gib"]}
+        floor = self.floor_of([model])
+        short = {h: v for h, v in avail.items() if v is not None and v < m["mem_gib"] + floor}
         if short:
-            raise Refused(f"{model}: needs {m['mem_gib']}+{self.cfg['floor_gib']} GiB, short on " + " ".join(f"{h}={v}" for h, v in sorted(short.items())), short)
+            raise Refused(f"{model}: needs {m['mem_gib']}+{floor} GiB, short on " + " ".join(f"{h}={v}" for h, v in sorted(short.items())), short)
         results = self.run.each({h: c for h, c in self.node_cmds(model, "start", {"stamp": self.stamp}).items()}, timeout=self.cfg["ssh_timeout_s"])
         bad = sorted(f"{h}:rc{rc}" for h, (rc, _) in results.items() if rc != 0)
         if bad:
@@ -709,7 +731,7 @@ class Rotation:
     def start_companion(self, model):
         try:
             self.start_model(model)
-            self.floor_check(f"after-{model}", self.models[model]["nodes"])
+            self.floor_check(f"after-{model}", hosts=self.models[model]["nodes"])
         except (Preempted, Stuck):
             raise
         except Exception as e:
@@ -768,7 +790,7 @@ class Rotation:
         failed = []
         yielded = []
         try:
-            self.floor_check("before")
+            self.floor_check("before", current)
             for model in outgoing:
                 self.stop_model(model)
             kept = [m for m in current if m in target and m not in outgoing and self.is_companion(m)]
@@ -783,7 +805,7 @@ class Rotation:
                 if problem:
                     failed.append(model)
                     self.drop_companion(st, model, problem, started, model in yielded)
-            self.floor_check("after")
+            self.floor_check("after", target)
         except Preempted:
             raise
         except Stuck as e:
@@ -818,7 +840,7 @@ class Rotation:
                     stuck.append(self.why(e))
             self.reclaim_idle(st, self.observe(), [])
             self.start_model(self.fb)
-            self.floor_check("after-fallback")
+            self.floor_check("after-fallback", [self.fb])
         except Preempted:
             raise
         except Exception as e:
@@ -930,14 +952,15 @@ class Rotation:
         except Failure as e:
             self.alert(st, "WARN", f"steady floor check skipped: {e}")
             return False
-        low = sorted(h for h, v in avail.items() if v is not None and v < self.cfg["floor_gib"])
+        floor = self.floor_of(current)
+        low = sorted(h for h, v in avail.items() if v is not None and v < floor)
         if not low:
             return False
         victims = [m for m in reversed(current) if self.is_companion(m) and set(self.models[m]["nodes"]) & set(low)]
         if not victims:
-            self.alert(st, "WARN", f"MemAvailable below {self.cfg['floor_gib']} GiB on {' '.join(low)} with no companion there to shed; primary left serving")
+            self.alert(st, "WARN", f"MemAvailable below {floor} GiB on {' '.join(low)} with no companion there to shed; primary left serving")
             return False
-        self.shed(st, current, victims[:1], f"MemAvailable below {self.cfg['floor_gib']} GiB on " + " ".join(f"{h}={avail[h]}" for h in low))
+        self.shed(st, current, victims[:1], f"MemAvailable below {floor} GiB on " + " ".join(f"{h}={avail[h]}" for h in low))
         return True
 
     def step(self, st):
@@ -999,6 +1022,12 @@ class Rotation:
                 return 1
             if sick:
                 self.alert(st, "WARN", f"{self.fb} api health failed; leaving production to its owners")
+            low = self.below_abort(current)
+            if low:
+                self.alert(st, "ERROR", f"MemAvailable below the abort level: {low}; falling back to {self.fb}")
+                self.fallback(st, "memory abort " + low)
+                self.finish(st)
+                return 1
             if self.floor_guard(st, current):
                 self.finish(st)
                 return 1
