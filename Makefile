@@ -636,6 +636,7 @@ PYTHON_TESTS := \
 	tests/test_rms_norm_cuda.py \
 	tests/test_skinny_dependent_cuda.py \
 	tests/test_stream_gemm_cuda.py \
+	tests/test_attn_prefill_cuda.py \
 	tests/test_score_merge.py \
 	tests/test_score_export.py \
 	tests/test_score_dump_cuda.py \

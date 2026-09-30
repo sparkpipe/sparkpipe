@@ -3,6 +3,7 @@
 #include "runtime/gemm.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/stream_gemm.cuh"
+#include "inference/kernels/attn_prefill.cuh"
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
@@ -161,6 +162,7 @@ struct GlmLayerBuffers
     float *attention_split_partials;
     uint64_t attention_split_partial_blocks;
     uint32_t decode_split_context_threshold;
+    uint32_t single_sequence_rows;
     uint16_t *projection_gather_bf16;
     uint32_t projection_gather_stride;
 };
@@ -674,7 +676,24 @@ static int32_t GlmLayerAttentionCore(
         buffers->positions,
         rows,
         GLM_LATENT_ROW);
-    if (LmLatentRopeHeadsSplitLaunch<
+    if (buffers->single_sequence_rows != 0u && rows > LM_SKINNY_ROWS && selected_positions == 0)
+    {
+        if (LmLatentAttentionPrefillLaunch<GlmKv, GLM_LATENT, GLM_ROPE_DIM>(
+                buffers->query_latent_bf16,
+                buffers->query_rope_bf16,
+                buffers->cache,
+                buffers->sequence_of_row,
+                buffers->row_positions,
+                buffers->attn_heads,
+                buffers->qk_scale,
+                buffers->attention_latent_bf16,
+                rows,
+                stream) != cudaSuccess)
+        {
+            return LM_LAUNCH_ERR_LAUNCH;
+        }
+    }
+    else if (LmLatentRopeHeadsSplitLaunch<
             GlmKv, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM, true>(
             buffers->query_latent_bf16,
             buffers->query_rope_bf16,

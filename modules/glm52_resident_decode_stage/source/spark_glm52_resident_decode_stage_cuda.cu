@@ -273,6 +273,7 @@ static void SparkGlm52BindLayer(
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
 	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
+	buffers->single_sequence_rows = wave->single_sequence_rows;
 	buffers->projection_gather_bf16 = wave->projection_split != 0u ? slot->projection_gather_bf16 : 0;
 	buffers->projection_gather_stride = wave->projection_split != 0u ? GLM_HIDDEN : 0u;
 	SparkGlm52BuildKvView(&buffers->cache,wave->kv_cache + ((uint64_t)local_layer * wave->kv_layer_stride_bytes),wave);
