@@ -127,6 +127,20 @@ def main():
             failures.append(f"arm {arm} rendered with {codec} experts")
         except SystemExit:
             pass
+    for sequences in (64, 256):
+        big = rendered(6, "fp8", sequences=sequences, rows=sequences, positions=2048)
+        limits = big["model_resident.json"]["runtime_limits"]
+        if (limits["max_active_sequences"], limits["resident_sequence_capacity"], limits["max_input_rows"],
+                limits["kv_physical_page_capacity"]) != (sequences, sequences, sequences, sequences * 32):
+            failures.append(f"{sequences} sequences: limits {limits}")
+        if any(big[f"config/stage_{rank:02d}.json"]["execution_row_capacity"] != sequences for rank in range(16)):
+            failures.append(f"{sequences} sequences: stage execution_row_capacity")
+    for sequences in (0, 257):
+        try:
+            rendered(6, "fp8", sequences=sequences, rows=1, positions=2048)
+            failures.append(f"{sequences} sequences rendered")
+        except SystemExit:
+            pass
     score = {"score_dump_directory": "score/u3", "score_probe_path": "score/probe2.bin", "score_tier2_rows_path": None}
     stages = rendered(6, "nvfp4", arm="nvfp4_s1", **score)
     for rank in range(16):

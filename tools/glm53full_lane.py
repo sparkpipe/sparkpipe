@@ -98,6 +98,9 @@ def stage_config(rank, lane, arm, max_sequence_positions, execution_row_capacity
     }
 
 
+MAX_SEQUENCES = 256
+
+
 def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight, root=None):
     ports = lane_ports(lane)
     pages = sequences * ((max_sequence_positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS)
@@ -162,8 +165,8 @@ def render(arguments):
         raise SystemExit("weightd socket must be an absolute .sock path")
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv backing must be a finite positive byte count")
-    if not 1 <= arguments.sequences <= 16 or not 1 <= arguments.inflight <= 4:
-        raise SystemExit("sequences must be 1..16 and inflight 1..4")
+    if not 1 <= arguments.sequences <= MAX_SEQUENCES or not 1 <= arguments.inflight <= 4:
+        raise SystemExit(f"sequences must be 1..{MAX_SEQUENCES} (the largest built batch bucket) and inflight 1..4")
     files = {"model_resident.json": deployment(arguments.lane, arm, arguments.socket, arguments.kv_backing_bytes,
                                                arguments.max_sequence_positions, arguments.sequences,
                                                arguments.execution_row_capacity, arguments.inflight,

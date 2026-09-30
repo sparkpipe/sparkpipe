@@ -7,7 +7,7 @@ set -euo pipefail
 : "${GLMFULL_EXPERT_POOL_BYTES:?GLMFULL_EXPERT_POOL_BYTES is the per-node routed expert pool}"
 : "${GLMFULL_SPINE_BUDGET_BYTES:?GLMFULL_SPINE_BUDGET_BYTES is the per-node non-expert spine budget}"
 : "${GLMFULL_MEMORY_MAX:?GLMFULL_MEMORY_MAX is the residentd unit MemoryMax, e.g. 16G}"
-: "${GLMFULL_SEQUENCES:?GLMFULL_SEQUENCES is the resident sequence capacity (1..16)}"
+: "${GLMFULL_SEQUENCES:?GLMFULL_SEQUENCES is the resident sequence capacity (1..256, at most the firmware batch bucket)}"
 : "${GLMFULL_ROWS:?GLMFULL_ROWS is the execution row capacity, equal to the firmware bucket}"
 : "${GLMFULL_POSITIONS:?GLMFULL_POSITIONS is max_sequence_positions}"
 : "${GLMFULL_INFLIGHT:?GLMFULL_INFLIGHT is max_inflight_submissions (1..4)}"
