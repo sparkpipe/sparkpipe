@@ -230,6 +230,7 @@ static void DbBuild(DbRig *rig)
 	wave->host_positions = rig->pinned_words + 2u * DB_MAX_ROWS;
 	wave->row_count = rig->rows;
 	wave->resident_sequence_capacity = DB_MAX_ROWS;
+	wave->execution_row_capacity = DB_MAX_ROWS;
 	wave->pages_per_sequence = DB_PAGES;
 	wave->kv_cache = fx->kv_cache;
 	wave->index_cache = fx->index_cache;

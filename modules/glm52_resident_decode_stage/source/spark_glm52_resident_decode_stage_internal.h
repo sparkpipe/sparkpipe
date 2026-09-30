@@ -108,6 +108,7 @@ typedef struct SparkGlm52CudaWave
 	uint32_t row_count;
 	uint32_t maximum_context;
 	uint32_t resident_sequence_capacity;
+	uint32_t execution_row_capacity;
 	uint32_t max_sequence_positions;
 	uint32_t pages_per_sequence;
 	uint32_t owns_embedding;
