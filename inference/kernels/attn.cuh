@@ -517,6 +517,8 @@ void LmLatentAttentionDecodeSplitCombineKernel(
     float global_max;
     float denominator;
 
+    LmDependentRelease();
+    LmDependentWait();
     block_base = ((uint64_t)row * heads + head) * partitions *
                  (LATENT + 2u);
     if (threadIdx.x == 0u)

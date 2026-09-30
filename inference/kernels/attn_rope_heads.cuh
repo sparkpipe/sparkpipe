@@ -148,6 +148,7 @@ void LmLatentRopeHeadsSplitKernel(
 	uint32_t words[LM_ROPE_HEADS_UNROLL][Shape::kWords];
 	const uint8_t *slot[LM_ROPE_HEADS_UNROLL];
 	uint32_t head, element, index, position_count, span, first, last, step, unroll, position, failed = 0u;
+	LmDependentRelease();
 	if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
 	{
 		LmKvReportRequiredAccessFailure(cache, !LmKvViewIsConfigured(cache) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0xffffffffu, 0xffffffffu);
@@ -209,7 +210,8 @@ static inline cudaError_t LmLatentRopeHeadsSplitShape(const uint16_t *query_late
 	LM_LAUNCH((LmLatentRopeHeadsSplitKernel<Geometry, HEADS, LATENT, ROPE, ROW_INVARIANT>), dim3(rows, partitions), LM_ROPE_HEADS_THREADS, 0, stream, query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, split_partials, row_position);
 	if (cudaPeekAtLastError() != cudaSuccess)
 		return cudaPeekAtLastError();
-	LM_LAUNCH((LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>), dim3(rows, HEADS), THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
+	if (LM_LAUNCH_DEPENDENT((LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>), dim3(rows, HEADS), THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions) != cudaSuccess)
+		return cudaPeekAtLastError() != cudaSuccess ? cudaPeekAtLastError() : cudaErrorLaunchFailure;
 	return cudaPeekAtLastError();
 }
 

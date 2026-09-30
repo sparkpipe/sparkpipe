@@ -34,6 +34,7 @@ void LmPerHeadProjectChainKernel(const uint16_t *__restrict__ input_bf16, const 
 			weight_tile[output][k + word * 2u + 1u] = __uint_as_float(bits[word] & 0xffff0000u);
 		}
 	}
+	LmDependentWait();
 	for (index = threadIdx.x; index < rows * IN_DIM / 8u; index += LM_PROJECT_CHAIN_THREADS)
 	{
 		row = (index * 8u) / IN_DIM;
@@ -63,6 +64,6 @@ static inline cudaError_t LmPerHeadProjectChainLaunch(const uint16_t *input_bf16
 {
 	if (rows == 0u || rows > LM_PROJECT_CHAIN_ROWS)
 		return LmPerHeadProjectRowsLaunch<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>(input_bf16, weight_bf16, output_bf16, heads, rows, stream);
-	LM_LAUNCH((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), LM_PROJECT_CHAIN_THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
-	return cudaPeekAtLastError();
+	cudaError_t status = LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), LM_PROJECT_CHAIN_THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+	return status != cudaSuccess ? status : cudaPeekAtLastError();
 }
