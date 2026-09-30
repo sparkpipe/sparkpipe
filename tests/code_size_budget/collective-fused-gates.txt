@@ -1,0 +1,2 @@
++44
+Collective gate fusion: the publish kernel applies the ship guard and issues the peers request (device helpers for the gate request and guard, a publish-slot helper, a stream-wait helper), removing two of the six kernels per hardware mesh exchange.
