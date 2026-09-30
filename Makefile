@@ -1108,7 +1108,11 @@ build/spark_pmtu_characterize: tools/hardware/spark_pmtu_characterize.c tools/ha
 	@mkdir -p build
 	$(CC) -Itools/hardware $(CFLAGS) $< $(LDFLAGS) -o $@
 
-hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize
+build/rdma_alltoall_probe: tools/hardware/rdma_alltoall_probe.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< $(LDFLAGS) -libverbs -o $@
+
+hardware_tools: build/spark_model_kernel_characterize build/spark_transport_characterize build/spark_topology_characterize build/spark_pmtu_characterize build/rdma_alltoall_probe
 
 hardware_cuda_tools:
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
