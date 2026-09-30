@@ -200,7 +200,7 @@ static SparkStatus SparkModelResidentClientAllocate(
 	SparkModelResidentClient *client;
 	uint32_t input_bytes,output_bytes;
 	SparkStatus status;
-	status = SparkModelResidentIpcCalculateSubmitBytes(configuration->runtime_limits.max_active_sequence_count,configuration->runtime_limits.max_input_row_count,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&output_bytes);
+	status = SparkModelResidentIpcCalculateSubmitBytes(configuration->runtime_limits.max_active_sequence_count,configuration->runtime_limits.max_input_row_count,configuration->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? configuration->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&output_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcCalculateCompletionBytes(configuration->adapter_descriptor->max_output_token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&input_bytes);
 	if ( status != SPARK_STATUS_OK )
@@ -720,7 +720,8 @@ SparkStatus SparkModelResidentClientCanQueueContinuation(
 		client->pending_count >= client->queue_capacity )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	status = SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,
-		submission->row_count,submission->model_extension_bytes,&message_bytes);
+		submission->row_count,submission->cache_block_identity_count,
+		submission->model_extension_bytes,&message_bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	return(message_bytes <= client->output_message_capacity ? SPARK_STATUS_OK :

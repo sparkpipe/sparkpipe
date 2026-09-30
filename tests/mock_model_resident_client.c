@@ -78,6 +78,8 @@ static uint32_t mock_registry_count;
 static uint32_t mock_auto_tokens;
 static SparkModelServingLane mock_lane_log[256];
 static uint32_t mock_lane_log_count;
+static SparkModelServingCacheIdentity mock_identity_log[256];
+static uint32_t mock_identity_log_count;
 static uint32_t mock_token_start = 11u;
 
 static int MockTraceEnabled(void)
@@ -118,6 +120,14 @@ uint64_t MockResidentClientGeneration(uint32_t stage_index)
 {
 	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
 	return( c != 0 ? c->client_generation : 0u );
+}
+
+uint32_t MockResidentClientIdentityLog(uint32_t index,SparkModelServingCacheIdentity *identity)
+{
+	if ( index >= mock_identity_log_count || identity == 0 )
+		return(0u);
+	*identity = mock_identity_log[index];
+	return(1u);
 }
 
 uint32_t MockResidentClientLaneLog(uint32_t index,SparkModelServingLane *lane)
@@ -294,6 +304,7 @@ void MockResidentClientReset(void)
 			free(mock_registry[i]);
 	mock_registry_count = 0u;
 	mock_lane_log_count = 0u;
+	mock_identity_log_count = 0u;
 	mock_auto_tokens = 0u;
 	mock_token_start = 11u;
 	memset(mock_registry,0,sizeof(mock_registry));
@@ -408,7 +419,14 @@ static SparkStatus MockResidentClientEnqueue(
 	if ( submission->lane_count != 0u && submission->lanes != 0 )
 		client->last_lane = submission->lanes[0];
 	for (lane=0u; client->stage_index == 0u && submission->lanes != 0 && lane<submission->lane_count && mock_lane_log_count<256u; lane++)
-		mock_lane_log[mock_lane_log_count++] = submission->lanes[lane];
+	{
+		uint32_t identity;
+		mock_lane_log[mock_lane_log_count] = submission->lanes[lane];
+		mock_lane_log[mock_lane_log_count].cache_block_identity_first = mock_identity_log_count;
+		for (identity=0u; identity<submission->lanes[lane].cache_block_identity_count && mock_identity_log_count<256u; identity++)
+			mock_identity_log[mock_identity_log_count++] = submission->cache_block_identities[submission->lanes[lane].cache_block_identity_first + identity];
+		mock_lane_log_count++;
+	}
 	for (lane=0u; submission->lanes != 0 && lane<submission->lane_count; lane++)
 	{
 		slot->carries_prefix |= (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u ? 1u : 0u;

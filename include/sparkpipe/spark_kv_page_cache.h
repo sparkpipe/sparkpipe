@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 7u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 8u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS UINT32_C(0x00000002)
@@ -58,6 +58,8 @@ typedef struct SparkKvPageCacheSequence
 	uint32_t mutable_first_token_index;
 	uint32_t mutable_page_count;
 	uint32_t mutable_following_pages[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u];
+	uint32_t mutable_block_identity_count;
+	SparkModelDriverCacheIdentity mutable_block_identities[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u];
 }
 SparkKvPageCacheSequence;
 
