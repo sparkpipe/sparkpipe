@@ -303,7 +303,14 @@ static void TestGraphTableKeysAndDestroy(void)
 	CHECK(SparkTpChainGraphEntry(&table,SPARK_TP_CHAIN_GRAPH_MAX_REGIMES,1u) == 0);
 	CHECK(SparkTpChainGraphEntry(&table,0u,SPARK_TP_CHAIN_GRAPH_MAX_ROWS + 1u) == 0);
 	CHECK(SparkTpChainGraphEntry(&table,1u,3u) != SparkTpChainGraphEntry(&table,0u,3u));
-	CHECK(SparkTpChainGraphEntry(&table,1u,3u) != SparkTpChainGraphEntry(&table,1u,4u));
+	CHECK(SparkTpChainGraphEntry(&table,1u,3u) == SparkTpChainGraphEntry(&table,1u,4u));
+	CHECK(SparkTpChainGraphEntry(&table,1u,4u) != SparkTpChainGraphEntry(&table,1u,5u));
+	CHECK(SparkTpChainGraphEntry(&table,1u,9u) == SparkTpChainGraphEntry(&table,1u,16u));
+	CHECK(SparkTpChainGraphEntry(&table,1u,129u) == SparkTpChainGraphEntry(&table,1u,SPARK_TP_CHAIN_GRAPH_MAX_ROWS));
+	CHECK(SparkTpChainGraphBucketRows(0u) == 0u && SparkTpChainGraphBucketRows(SPARK_TP_CHAIN_GRAPH_MAX_ROWS + 1u) == 0u);
+	CHECK(SparkTpChainGraphBucketRows(1u) == 1u && SparkTpChainGraphBucketRows(3u) == 4u && SparkTpChainGraphBucketRows(9u) == 16u);
+	CHECK(SparkTpChainGraphBucketRows(SPARK_TP_CHAIN_GRAPH_MAX_ROWS) == SPARK_TP_CHAIN_GRAPH_MAX_ROWS);
+	CHECK((1u << (SPARK_TP_CHAIN_GRAPH_BUCKETS - 1u)) == SPARK_TP_CHAIN_GRAPH_MAX_ROWS);
 	entry = SparkTpChainGraphEntry(&table,1u,SPARK_TP_CHAIN_GRAPH_MAX_ROWS);
 	CHECK(entry != 0);
 	EXECS_LIVE = 1u;

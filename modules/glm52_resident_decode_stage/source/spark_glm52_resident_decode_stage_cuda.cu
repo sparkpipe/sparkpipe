@@ -5,6 +5,7 @@
 
 #include "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
+#include "sparkpipe/spark_row_bucket.cuh"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #define SPARK_FAMILY_CAMEL Glm52
 #define SPARK_FAMILY_UPPER GLM52
@@ -91,6 +92,32 @@ __global__ static void SparkGlm52EmbeddingKernel(
 
 #include "sparkpipe/family/glm/spark_glm_wave_metadata_rows.cuh"
 
+static cudaError_t SparkGlm52CopyWaveInputs(const SparkGlm52CudaWave *wave,uint32_t rows)
+{
+	SparkGlm52ExecutionSlot *slot = wave->slot;
+	cudaStream_t stream = (cudaStream_t)slot->stream;
+	cudaError_t error;
+	error = cudaMemcpyAsync(slot->resident_slots,wave->host_resident_slots,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->positions,wave->host_positions,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && wave->owns_embedding != 0u )
+		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	return(error);
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaStageWaveInputs(const SparkGlm52CudaWave *wave,uint32_t rows,uint32_t bucket)
+{
+	SparkGlm52ExecutionSlot *slot;
+	cudaError_t error;
+	if ( wave == 0 || wave->slot == 0 || rows == 0u || bucket < rows )
+		return(LM_LAUNCH_ERR_SHAPE);
+	slot = wave->slot;
+	error = SparkGlm52CopyWaveInputs(wave,rows);
+	if ( error == cudaSuccess )
+		error = SparkRowBucketPad((cudaStream_t)slot->stream,slot->resident_slots,slot->positions,wave->owns_embedding != 0u ? slot->token_ids : 0,rows,bucket);
+	return(SparkGlm52CudaStatus(error));
+}
+
 static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 {
 	SparkGlm52ExecutionSlot *slot;
@@ -98,11 +125,9 @@ static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 	cudaError_t error;
 	slot = wave->slot;
 	stream = (cudaStream_t)slot->stream;
-	error = cudaMemcpyAsync(slot->resident_slots,wave->host_resident_slots,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-	if ( error == cudaSuccess )
-		error = cudaMemcpyAsync(slot->positions,wave->host_positions,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-	if ( error == cudaSuccess && wave->owns_embedding != 0u )
-		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	error = cudaSuccess;
+	if ( wave->inputs_staged == 0u )
+		error = SparkGlm52CopyWaveInputs(wave,wave->row_count);
 	if ( error == cudaSuccess )
 	{
 		SparkGlm52WaveMetadataKernel<<<1u,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);

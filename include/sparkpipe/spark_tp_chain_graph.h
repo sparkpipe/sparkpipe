@@ -14,7 +14,8 @@
 #define SPARK_TP_CHAIN_MODE_COUNT 3u
 #define SPARK_TP_CHAIN_MAX_COLLECTIVES 2u
 #define SPARK_TP_CHAIN_GRAPH_MAX_REGIMES 4u
-#define SPARK_TP_CHAIN_GRAPH_MAX_ROWS 64u
+#define SPARK_TP_CHAIN_GRAPH_MAX_ROWS 256u
+#define SPARK_TP_CHAIN_GRAPH_BUCKETS 9u
 
 typedef uint32_t (*SparkTpChainWalkFunction)(void *context);
 
@@ -26,7 +27,7 @@ typedef struct SparkTpChainCollectives
 
 typedef struct SparkTpChainGraphTable
 {
-	void *exec[SPARK_TP_CHAIN_GRAPH_MAX_REGIMES][SPARK_TP_CHAIN_GRAPH_MAX_ROWS];
+	void *exec[SPARK_TP_CHAIN_GRAPH_MAX_REGIMES][SPARK_TP_CHAIN_GRAPH_BUCKETS];
 	uint32_t captures;
 	uint32_t failed;
 } SparkTpChainGraphTable;
@@ -131,24 +132,39 @@ static inline SparkStatus SparkTpChainSettle(const SparkTpChainCollectives *coll
 	return(status);
 }
 
+static inline uint32_t SparkTpChainGraphBucketIndex(uint32_t rows)
+{
+	uint32_t index = 0u;
+	while ( index + 1u < SPARK_TP_CHAIN_GRAPH_BUCKETS && (1u << index) < rows )
+		index++;
+	return(index);
+}
+
+static inline uint32_t SparkTpChainGraphBucketRows(uint32_t rows)
+{
+	if ( rows == 0u || rows > SPARK_TP_CHAIN_GRAPH_MAX_ROWS )
+		return(0u);
+	return(1u << SparkTpChainGraphBucketIndex(rows));
+}
+
 static inline void **SparkTpChainGraphEntry(SparkTpChainGraphTable *table,uint32_t regime,uint32_t rows)
 {
 	if ( table == 0 || regime >= SPARK_TP_CHAIN_GRAPH_MAX_REGIMES || rows == 0u || rows > SPARK_TP_CHAIN_GRAPH_MAX_ROWS )
 		return(0);
-	return(&table->exec[regime][rows - 1u]);
+	return(&table->exec[regime][SparkTpChainGraphBucketIndex(rows)]);
 }
 
 static inline void SparkTpChainGraphTableDestroy(SparkTpChainGraphTable *table)
 {
-	uint32_t regime,row;
+	uint32_t regime,bucket;
 	if ( table == 0 )
 		return;
 	for (regime=0u; regime<SPARK_TP_CHAIN_GRAPH_MAX_REGIMES; regime++)
-		for (row=0u; row<SPARK_TP_CHAIN_GRAPH_MAX_ROWS; row++)
-			if ( table->exec[regime][row] != 0 )
+		for (bucket=0u; bucket<SPARK_TP_CHAIN_GRAPH_BUCKETS; bucket++)
+			if ( table->exec[regime][bucket] != 0 )
 			{
-				(void)cudaGraphExecDestroy((cudaGraphExec_t)table->exec[regime][row]);
-				table->exec[regime][row] = 0;
+				(void)cudaGraphExecDestroy((cudaGraphExec_t)table->exec[regime][bucket]);
+				table->exec[regime][bucket] = 0;
 			}
 }
 
