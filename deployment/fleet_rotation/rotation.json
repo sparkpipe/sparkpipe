@@ -232,7 +232,7 @@
     "spark2",
     "spark5"
    ],
-   "mem_gib": 15,
+   "mem_gib": 26,
    "engine": {
     "precheck": "test -S /tmp/spark_weightd.sock && test -s $HOME/sparkdata/qwen27b.mx2.tp4/config/model_resident.nospec.json && test -x $HOME/sparkdata/qwen27b.mx2.tp4/bin/sparkpipe_model_residentd && ! systemctl --user is-active -q sp-qwen4-rd",
     "start": "cd $HOME/sparkdata/qwen27b.mx2.tp4 && python3 -c 'import os, sys; [os.posix_fadvise(os.open(p, os.O_RDONLY), 0, 0, os.POSIX_FADV_DONTNEED) for p in sys.argv[1:]]' packs/qwen27b.mx2.tp4.rank@rank@.qwen36sp && log=$HOME/sparkdata/qwen27b.mx2.tp4/logs/residentd-nospec-$(date -u +%Y%m%dT%H%M%SZ).log && ln -sfn $log $HOME/sparkdata/qwen27b.mx2.tp4/logs/current.log && echo nospec > $HOME/sparkdata/qwen27b.mx2.tp4/logs/current.mode && systemctl --user reset-failed sp-qwen4-rd 2>/dev/null; systemd-run --user --collect --unit=sp-qwen4-rd --same-dir -p MemoryMax=24G -p MemorySwapMax=0 -p StandardOutput=file:$log -p StandardError=file:$log -E LD_LIBRARY_PATH=$HOME/sparkdata/qwen27b.mx2.tp4/lib -E SPARK_WEIGHTD_LANE=3 -E SPARK_TP_MESH_RANKS=0,1,2,5 -E SPARK_QWEN38_27B_TP_STANDALONE=0 -E SPARK_TP_WAIT_MODE=hardware -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 -E SPARK_QWEN38_27B_SPECULATORS=0 $HOME/sparkdata/qwen27b.mx2.tp4/bin/sparkpipe_model_residentd --deployment $HOME/sparkdata/qwen27b.mx2.tp4/config/model_resident.nospec.json --rank-index @rank@ > /dev/null",
