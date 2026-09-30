@@ -1,0 +1,2 @@
++476
+Collective on the lossy switch fabric: tools/hardware/rdma_alltoall_probe.c (RDMA all-to-all phase time and loss under a destination schedule) and the weightd pair link (traffic to rank ^ 1 over the point-to-point RDMA port: second device context/PD/CQ/MRs, MESH0006 records, wiring and posting).
