@@ -2,6 +2,7 @@
 
 #include "runtime/gemm.cuh"
 #include "inference/kernels/skinny.cuh"
+#include "inference/kernels/stream_gemm.cuh"
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
@@ -42,6 +43,7 @@ using GlmIndexKv = LmKvLatent<
 #define GLM_LAYER_TILE_N SPARK_LLM_TILE_N
 #define GLM_LAYER_STAGES SPARK_LLM_TILE_STAGES
 #define GLM_LAYER_WARPS SPARK_LLM_TILE_WARPS
+#define GLM_LAYER_STREAM_EXPERT_ROWS 256u
 #define GLM_HEAD_TILE SPARK_LLM_HEAD_TILE
 
 static_assert(
@@ -192,8 +194,6 @@ static int32_t GlmLaunchBf16Linear(
     const uint16_t *activation_bf16,
     const void *weight_bf16,
     uint16_t *output_bf16,
-    const uint32_t *row_offset,
-    uint32_t *tile_prefix,
     uint32_t rows,
     uint32_t input_dimension,
     uint32_t output_dimension,
@@ -202,46 +202,15 @@ static int32_t GlmLaunchBf16Linear(
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    LmGemmArguments gemm;
-    int32_t status;
-
     if (activation_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 ||
-        row_offset == 0 || tile_prefix == 0 || rows == 0u ||
-        input_dimension == 0u || output_dimension == 0u ||
+        rows == 0u || input_dimension == 0u || output_dimension == 0u ||
         multiprocessors == 0u)
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
-
-    status = LmSkinnyDense<LmBf16Format>(weight_bf16, activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, stream);
-    if (status != LM_LAUNCH_ERR_SHAPE)
-        return status;
-    memset(&gemm, 0, sizeof(gemm));
-    gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmScaleTensorNone();
-    gemm.group_row_offset = row_offset;
-    gemm.group_tile_prefix = tile_prefix;
-    gemm.output_bf16 = output_bf16;
-    gemm.output_row_stride = output_row_stride;
-    gemm.output_column_offset = output_column_offset;
-    return LmGemmLaunch<
-        LmBf16Format,
-        GLM_LAYER_TILE_N,
-        LmBf16Format::kTileK,
-        GLM_LAYER_STAGES,
-        GLM_LAYER_WARPS>(
-            &gemm,
-            activation_bf16,
-            weight_bf16,
-            rows,
-            rows,
-            1u,
-            1u,
-            input_dimension,
-            output_dimension,
-            multiprocessors,
-            false,
-            stream);
+    if (rows <= LM_SKINNY_ROWS)
+        return LmSkinnyDense<LmBf16Format>(weight_bf16, activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, stream);
+    return LmStreamGemmDense<LmBf16Format>(weight_bf16, LmScaleTensorNone(), activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, multiprocessors, stream);
 }
 
 static int32_t GlmLayerIndexer(
@@ -274,8 +243,6 @@ static int32_t GlmLayerIndexer(
         buffers->normed_bf16,
         buffers->index_k_weight,
         buffers->index_key_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM_HIDDEN,
         GLM_DSA_INDEX_DIM,
@@ -338,8 +305,6 @@ static int32_t GlmLayerIndexer(
         buffers->q_compressed_bf16,
         buffers->index_q_weight,
         buffers->index_query_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM_QUERY_A_DIM,
         GLM_DSA_QUERY_DIM,
@@ -355,8 +320,6 @@ static int32_t GlmLayerIndexer(
         buffers->normed_bf16,
         buffers->index_head_weight,
         buffers->index_head_weight_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM_HIDDEN,
         GLM_DSA_INDEX_HEADS,
@@ -481,8 +444,6 @@ static int32_t GlmLayerAttentionProject(
             buffers->normed_bf16,
             (const uint16_t *)buffers->q_a_weight + (uint64_t)q_first * GLM_HIDDEN,
             buffers->projection_gather_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM_HIDDEN,
             q_count,
@@ -497,8 +458,6 @@ static int32_t GlmLayerAttentionProject(
             buffers->normed_bf16,
             (const uint16_t *)buffers->kv_a_weight + (uint64_t)kv_first * GLM_HIDDEN,
             buffers->projection_gather_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM_HIDDEN,
             kv_count,
@@ -576,8 +535,6 @@ static int32_t GlmLayerAttentionCore(
             buffers->normed_bf16,
             buffers->q_a_weight,
             buffers->q_compressed_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM_HIDDEN,
             GLM_QUERY_A_DIM,
@@ -619,8 +576,6 @@ static int32_t GlmLayerAttentionCore(
         buffers->q_compressed_bf16,
         buffers->q_b_weight,
         buffers->q_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM_QUERY_A_DIM,
         buffers->q_b_rows,
@@ -638,8 +593,6 @@ static int32_t GlmLayerAttentionCore(
             buffers->normed_bf16,
             buffers->kv_a_weight,
             buffers->kv_slot_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM_HIDDEN,
             GLM_LATENT_ROW,
@@ -761,8 +714,6 @@ static int32_t GlmLayerAttentionCore(
         buffers->attention_value_bf16,
         buffers->output_weight,
         buffers->attention_out_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         buffers->attn_output_columns,
         GLM_HIDDEN,
@@ -834,8 +785,6 @@ static int32_t GlmLayerDenseMlp(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
             buffers->gate_up_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM_HIDDEN,
             buffers->dense_gate_up_rows,
@@ -854,8 +803,6 @@ static int32_t GlmLayerDenseMlp(
             buffers->normed_bf16,
             buffers->dense_gate_weight,
             buffers->gate_up_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM_HIDDEN,
             buffers->dense_intermediate,
@@ -871,8 +818,6 @@ static int32_t GlmLayerDenseMlp(
             buffers->normed_bf16,
             buffers->dense_up_weight,
             buffers->gate_up_bf16,
-            buffers->dense_row_offset,
-            buffers->dense_tile_prefix,
             rows,
             GLM_HIDDEN,
             buffers->dense_intermediate,
@@ -901,8 +846,6 @@ static int32_t GlmLayerDenseMlp(
         buffers->intermediate_bf16,
         buffers->dense_down_weight,
         buffers->hidden_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         buffers->dense_intermediate,
         GLM_HIDDEN,
@@ -964,41 +907,13 @@ static int32_t GlmLayerMoeRouterLogits(
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    LmGemmArguments gemm;
     int32_t status;
 
-    status = LmSkinnyDense<LmBf16Format>(buffers->router_weight, buffers->normed_bf16, 0, buffers->router_logits, rows, GLM_HIDDEN, GLM_EXPERTS, 0u, 0u, stream);
-    if (status != LM_LAUNCH_ERR_SHAPE)
-        return status == LM_LAUNCH_OK && cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : status == LM_LAUNCH_OK ? LM_LAUNCH_ERR_LAUNCH : status;
-    memset(&gemm, 0, sizeof(gemm));
-    gemm.scale_a = LmScaleTensorNone();
-    gemm.scale_b = LmScaleTensorNone();
-    gemm.group_row_offset = buffers->dense_row_offset;
-    gemm.group_tile_prefix = buffers->dense_tile_prefix;
-    gemm.output_f32 = buffers->router_logits;
-    status = LmGemmLaunch<
-        LmBf16Format,
-        GLM_LAYER_TILE_N,
-        LmBf16Format::kTileK,
-        GLM_LAYER_STAGES,
-        GLM_LAYER_WARPS>(
-            &gemm,
-            buffers->normed_bf16,
-            buffers->router_weight,
-            rows,
-            rows,
-            1u,
-            1u,
-            GLM_HIDDEN,
-            GLM_EXPERTS,
-            multiprocessors,
-            false,
-            stream);
+    status = rows <= LM_SKINNY_ROWS
+        ? LmSkinnyDense<LmBf16Format>(buffers->router_weight, buffers->normed_bf16, 0, buffers->router_logits, rows, GLM_HIDDEN, GLM_EXPERTS, 0u, 0u, stream)
+        : LmStreamGemmDense<LmBf16Format>(buffers->router_weight, LmScaleTensorNone(), buffers->normed_bf16, 0, buffers->router_logits, rows, GLM_HIDDEN, GLM_EXPERTS, 0u, 0u, multiprocessors, stream);
     if (status != LM_LAUNCH_OK)
-    {
         return status;
-    }
-
     return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
@@ -1108,6 +1023,14 @@ static int32_t GlmLayerMoeExpertsGateUp(
         GLM_EXPERTS,
         buffers->expert_w1_rows,
         GLM_HIDDEN);
+    if constexpr ( LmStreamWeight<ExpertFormat>::kSupported )
+    {
+        if (rows >= GLM_LAYER_STREAM_EXPERT_ROWS)
+        {
+            status = LmStreamGemmGrouped<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM_EXPERTS, packed_rows, GLM_HIDDEN, buffers->expert_w1_rows, multiprocessors, stream);
+            return status == LM_LAUNCH_OK && cudaPeekAtLastError() != cudaSuccess ? LM_LAUNCH_ERR_LAUNCH : status;
+        }
+    }
     status = rows == 1u ? LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM_TOP_K, 0u, GLM_HIDDEN, buffers->expert_w1_rows, stream) : LM_LAUNCH_ERR_SHAPE;
     if (status == LM_LAUNCH_ERR_SHAPE)
         status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM_EXPERTS, packed_rows, 0u, GLM_HIDDEN, buffers->expert_w1_rows, stream);
@@ -1161,6 +1084,14 @@ static int32_t GlmLayerMoeExpertsDown(
         GLM_EXPERTS,
         GLM_HIDDEN,
         buffers->expert_intermediate);
+    if constexpr ( LmStreamWeight<ExpertFormat>::kSupported )
+    {
+        if (rows >= GLM_LAYER_STREAM_EXPERT_ROWS)
+        {
+            status = LmStreamGemmGrouped<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, 0, GLM_EXPERTS, packed_rows, buffers->expert_intermediate, GLM_HIDDEN, multiprocessors, stream);
+            return status == LM_LAUNCH_OK && cudaPeekAtLastError() != cudaSuccess ? LM_LAUNCH_ERR_LAUNCH : status;
+        }
+    }
     status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM_TOP_K, 1u, buffers->expert_intermediate, GLM_HIDDEN, stream);
     if (status == LM_LAUNCH_ERR_SHAPE)
         status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, buffers->route_source_token, GLM_EXPERTS, packed_rows, 1u, buffers->expert_intermediate, GLM_HIDDEN, stream);
@@ -1254,8 +1185,6 @@ static int32_t GlmLayerMoeSharedCombine(
         buffers->normed_bf16,
         buffers->shared_gate_up_weight,
         buffers->gate_up_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         GLM_HIDDEN,
         buffers->shared_gate_up_rows,
@@ -1295,8 +1224,6 @@ static int32_t GlmLayerMoeSharedExperts(
         buffers->intermediate_bf16,
         buffers->shared_down_weight,
         buffers->shared_out_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
         rows,
         buffers->shared_intermediate,
         GLM_HIDDEN,
