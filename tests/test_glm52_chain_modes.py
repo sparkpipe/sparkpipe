@@ -49,10 +49,15 @@ static int32_t Find(const char *entry,uint32_t from)
 
 int32_t SparkGlm52T1Enabled(void) { return((int32_t)T1_ENABLED); }
 uint32_t SparkGlm52ExactWaveRows(void) { return(8u); }
-int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { Log("begin",wave->maximum_context); return(0); }
+int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { Log(wave->rows_staged != 0u ? "begin-staged" : "begin",wave->maximum_context); return(0); }
+int32_t SparkGlm52LaunchCudaWaveRows(const SparkGlm52CudaWave *wave,uint32_t rows) { assert(rows <= wave->row_count && CAPTURING == 0u); Log("stage",rows); Log("bucket",wave->row_count); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split == 0u); Log("attn",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("project",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("core",layer); return(0); }
+int32_t SparkGlm52LaunchCudaLayerAttentionShardQuery(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->kv_shard != 0u); Log("shard-q",layer); return(0); }
+int32_t SparkGlm52LaunchCudaLayerAttentionShardPartial(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->kv_shard != 0u); Log("shard-p",layer); return(0); }
+int32_t SparkGlm52LaunchCudaLayerAttentionShardMerge(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->kv_shard != 0u); Log("shard-m",layer); return(0); }
+uint32_t SparkTpDeviceCollectiveAllToAllSupported(const SparkTpDeviceCollective *collective) { (void)collective; return(1u); }
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->route_host_copy == 0u); Log("mlp",layer); return(0); }
 int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave) { Log("head",wave->row_head_certified); return(0); }
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *tokens,uint32_t rows) { (void)stream; (void)maxloc; (void)tokens; Log("unpack",rows); return(cudaSuccess); }
@@ -94,6 +99,10 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 		Log("reduce-attn",submission->active_sequence_count);
 	else if ( submission->local_device == slot->projection_gather_bf16 )
 		Log("reduce-gather",submission->active_sequence_count);
+	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER )
+		Log("gather",submission->active_sequence_count);
+	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+		Log("all-to-all",submission->active_sequence_count);
 	else
 		Log("reduce-unknown",0u);
 	return(SPARK_STATUS_OK);
@@ -336,7 +345,8 @@ static void TestGraph(void)
 	LAUNCHES = 0u;
 	SparkGlm52RunChain(NewChain(9u));
 	assert(CAPTURES == 1u && LAUNCHES == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
-	assert(Find("arm0",0u) < Find("capture-begin0",0u) && Find("capture-begin0",0u) < Find("cap:begin63",0u));
+	assert(Find("stage1",0u) < Find("arm0",0u) && Find("arm0",0u) < Find("capture-begin0",0u) && Find("capture-begin0",0u) < Find("cap:begin-staged63",0u));
+	assert(Count("cap:d2h4") == 0u && Find("graph-launch257",0u) < Find("d2h4",0u) && Find("d2h4",0u) < Find("d2h24",0u));
 	assert(Count("cap:reduce-hidden1") == 3u && Count("cap:reduce-attn1") == 2u && Count("cap:reduce-max1") == 1u && Count("reduce-hidden1") == 0u);
 	assert(Find("capture-end0",0u) < Find("disarm0",0u) && Find("disarm0",0u) < Find("prelaunch0",0u) && Find("prelaunch0",0u) < Find("seed0",0u) && Find("seed0",0u) < Find("graph-launch257",0u));
 	assert(Find("graph-launch257",0u) < Find("d2h24",0u) && Find("graph-error0",0u) > Find("worker0",0u) && Count("disarm0") == 2u && Count("verify0") == 0u);
@@ -345,14 +355,14 @@ static void TestGraph(void)
 	assert(CAPTURES == 1u && LAUNCHES == 2u && Count("capture-begin0") == 0u && Count("graph-launch257") == 1u && Count("begin41") == 0u);
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	SparkGlm52RunChain(NewChain(64u));
-	assert(CAPTURES == 2u && Count("cap:begin2048") == 1u && Count("graph-launch258") == 1u);
+	assert(CAPTURES == 2u && Count("cap:begin-staged2048") == 1u && Count("graph-launch258") == 1u);
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	SparkGlm52RunChain(NewChain(1500u));
 	assert(CAPTURES == 2u && Count("graph-launch258") == 1u);
 	captures = CAPTURES;
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	SparkGlm52RunChain(NewChain(2048u));
-	assert(CAPTURES == captures && LAUNCHES == 4u && Count("begin2049") == 1u && Count("verify0") == 1u && state.chain_gates[SPARK_GLM52_GRAPH_GATE_SELECTED_CONTEXT] == 1u);
+	assert(CAPTURES == captures && LAUNCHES == 4u && Count("begin2049") == 1u && Count("stage1") == 0u && Count("verify0") == 1u && state.chain_gates[SPARK_GLM52_GRAPH_GATE_SELECTED_CONTEXT] == 1u);
 	assert(COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	GRAPH_ERROR = 3u;
@@ -372,11 +382,18 @@ static void TestGraphMultiWave(void)
 	host_positions[1] = 10u;
 	atomic_store(&state.lane_states[0],1u);
 	SparkGlm52RunChain(NewChain(9u));
+	assert(CAPTURES == 1u && LAUNCHES == 2u && Count("capture-begin0") == 1u && Count("stage1") == 2u && Count("bucket1") == 2u);
+	assert(Find("cap:begin-staged63",0u) >= 0 && Count("begin10") == 0u && Count("cap:unpack1") == 1u && Count("d2h4") == 2u && Count("graph-error0") == 1u && Count("verify0") == 0u);
+	assert(state.chain_gates[SPARK_GLM52_GRAPH_GATE_BOUNDARY] == 0u && COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK && atomic_load(&state.chain_busy) == 0u);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	state.owns_final_head = 0u;
+	SparkGlm52RunChain(NewChain(9u));
+	state.owns_final_head = 1u;
+	assert(CAPTURES == 1u && LAUNCHES == 2u && Count("stage1") == 0u && Find("begin10",0u) >= 0 && Find("begin11",0u) > Find("begin10",0u) && Count("unpack1") == 2u && Count("verify0") == 1u);
+	assert(state.chain_gates[SPARK_GLM52_GRAPH_GATE_BOUNDARY] == 1u && COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	atomic_store(&state.lane_states[0],0u);
 	batch.row_count = 1u;
-	assert(CAPTURES == 0u && LAUNCHES == 0u && Count("capture-begin0") == 0u);
-	assert(Find("begin10",0u) >= 0 && Find("begin11",0u) > Find("begin10",0u) && Count("unpack1") == 2u && Count("verify0") == 1u);
-	assert(state.chain_gates[SPARK_GLM52_GRAPH_GATE_MULTI_WAVE] == 1u && COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK && atomic_load(&state.chain_busy) == 0u);
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
 }
 
 static void TestPrefillWaveRowsConfigure(void)
@@ -486,6 +503,31 @@ static void TestPrefillWaves(void)
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
 	SparkGlm52RunChain(NewDecodeChain(9u,4u));
 	assert(CAPTURES == 2u && LAUNCHES == 4u && Count("capture-begin0") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewDecodeChain(9u,3u));
+	assert(CAPTURES == 2u && LAUNCHES == 5u && Count("capture-begin0") == 0u && Count("stage3") == 1u && Count("bucket4") == 1u && Count("d2h12") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewPrefillChain(9u,4u,1u,2u));
+	assert(CAPTURES == 3u && LAUNCHES == 7u && Count("capture-begin0") == 1u && Count("stage2") == 2u && Count("bucket2") == 2u && Count("cap:unpack2") == 1u && Count("d2h8") == 2u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
+	FinishPrefill();
+}
+
+static void TestGraphKvShard(void)
+{
+	char gather[40],exchange[40];
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
+	CAPTURES = 0u;
+	LAUNCHES = 0u;
+	state.kv_shard = 1u;
+	SparkGlm52RunChain(NewDecodeChain(9u,3u));
+	state.kv_shard = 0u;
+	assert(CAPTURES == 1u && LAUNCHES == 1u && Count("stage3") == 1u && Count("bucket4") == 1u);
+	(void)snprintf(gather,sizeof(gather),"cap:gather%u",SparkGlm52KvShardQuerySequences(4u,16u));
+	(void)snprintf(exchange,sizeof(exchange),"cap:all-to-all%u",SparkGlm52KvShardPartialSequences(4u,16u));
+	assert(Find("cap:shard-q0",0u) >= 0 && Find("cap:shard-q0",0u) < Find(gather,0u) && Find(gather,0u) < Find("cap:shard-p0",0u) && Find("cap:shard-p0",0u) < Find(exchange,0u) && Find(exchange,0u) < Find("cap:shard-m0",0u));
+	assert(Count("cap:reduce-attn4") == 1u && Count("cap:unpack4") == 1u && Count("d2h12") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	SparkTpChainGraphTableDestroy(&state.graphs[0]);
 	FinishPrefill();
 }
@@ -547,6 +589,7 @@ int main(void)
 	TestGraphMultiWave();
 	TestPrefillWaveRowsConfigure();
 	TestPrefillWaves();
+	TestGraphKvShard();
 	TestStreamFailure();
 	TestWorkerRefusal();
 	TestSubmitFailureClearsBusy();

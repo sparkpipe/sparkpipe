@@ -303,13 +303,34 @@ static void TestGraphTableKeysAndDestroy(void)
 	CHECK(SparkTpChainGraphEntry(&table,SPARK_TP_CHAIN_GRAPH_MAX_REGIMES,1u) == 0);
 	CHECK(SparkTpChainGraphEntry(&table,0u,SPARK_TP_CHAIN_GRAPH_MAX_ROWS + 1u) == 0);
 	CHECK(SparkTpChainGraphEntry(&table,1u,3u) != SparkTpChainGraphEntry(&table,0u,3u));
-	CHECK(SparkTpChainGraphEntry(&table,1u,3u) != SparkTpChainGraphEntry(&table,1u,4u));
+	CHECK(SparkTpChainGraphEntry(&table,1u,3u) == SparkTpChainGraphEntry(&table,1u,4u));
+	CHECK(SparkTpChainGraphEntry(&table,1u,4u) != SparkTpChainGraphEntry(&table,1u,5u));
+	CHECK(SparkTpChainGraphEntry(&table,1u,129u) == SparkTpChainGraphEntry(&table,1u,SPARK_TP_CHAIN_GRAPH_MAX_ROWS));
+	CHECK(SparkTpChainGraphEntry(&table,1u,SPARK_TP_CHAIN_GRAPH_MAX_ROWS) == &table.exec[1][SPARK_TP_CHAIN_GRAPH_BUCKETS - 1u]);
+	CHECK(sizeof(table.exec) == SPARK_TP_CHAIN_GRAPH_MAX_REGIMES * SPARK_TP_CHAIN_GRAPH_BUCKETS * sizeof(void *));
 	entry = SparkTpChainGraphEntry(&table,1u,SPARK_TP_CHAIN_GRAPH_MAX_ROWS);
 	CHECK(entry != 0);
 	EXECS_LIVE = 1u;
 	*entry = (void *)0x2000;
 	SparkTpChainGraphTableDestroy(&table);
 	CHECK(*entry == 0 && EXECS_LIVE == 0u);
+}
+
+static void TestGraphBucketRows(void)
+{
+	CHECK(SparkTpChainGraphBucketRows(0u,256u) == 0u);
+	CHECK(SparkTpChainGraphBucketRows(1u,256u) == 1u);
+	CHECK(SparkTpChainGraphBucketRows(2u,256u) == 2u);
+	CHECK(SparkTpChainGraphBucketRows(3u,256u) == 4u);
+	CHECK(SparkTpChainGraphBucketRows(9u,256u) == 16u);
+	CHECK(SparkTpChainGraphBucketRows(17u,256u) == 32u);
+	CHECK(SparkTpChainGraphBucketRows(129u,256u) == 256u);
+	CHECK(SparkTpChainGraphBucketRows(256u,256u) == 256u);
+	CHECK(SparkTpChainGraphBucketRows(257u,512u) == 0u);
+	CHECK(SparkTpChainGraphBucketRows(17u,17u) == 17u);
+	CHECK(SparkTpChainGraphBucketRows(9u,12u) == 12u);
+	CHECK(SparkTpChainGraphBucketRows(13u,12u) == 0u);
+	CHECK((1u << (SPARK_TP_CHAIN_GRAPH_BUCKETS - 1u)) == SPARK_TP_CHAIN_GRAPH_MAX_ROWS);
 }
 
 int main(void)
@@ -325,6 +346,7 @@ int main(void)
 	TestLinearSettleVerifiesAndCancelsOnFailure();
 	TestGraphSettleChecksErrorsAndDisarms();
 	TestGraphTableKeysAndDestroy();
+	TestGraphBucketRows();
 	if ( FAILURES != 0 )
 	{
 		fprintf(stderr,"test_tp_chain_graph: %d failures\n",FAILURES);

@@ -209,6 +209,7 @@ typedef struct SparkGlm52TpChain
 	uint32_t retired_recorded;
 	SparkStatus retained_status;
 	uint32_t graph;
+	uint32_t graph_body;
 	uint32_t captured;
 	uint32_t waves;
 	uint64_t start_ns;
@@ -1083,7 +1084,7 @@ static void SparkGlm52ChainSubmission(SparkGlm52TpChain *chain,void *device,uint
 	submission->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission->descriptor_bytes = sizeof(*submission);
 	submission->slot_index = chain->slot_index;
-	submission->active_sequence_count = chain->wave_rows;
+	submission->active_sequence_count = chain->wave.row_count;
 	submission->logical_sequence_count = chain->batch->active_sequence_count;
 	submission->flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission->ordinal = atomic_fetch_add_explicit(&chain->state->tp_next_ordinal,1u,memory_order_relaxed);
@@ -1970,12 +1971,12 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 
 #define SPARK_GLM52_CHAIN_SETTLE_TIMEOUT_NS UINT64_C(35000000000)
 #define SPARK_GLM52_GRAPH_GATE_NONE UINT32_MAX
-#define SPARK_GLM52_GRAPH_GATE_MULTI_WAVE 0u
+#define SPARK_GLM52_GRAPH_GATE_BOUNDARY 0u
 #define SPARK_GLM52_GRAPH_GATE_SELECTED_CONTEXT 1u
 #define SPARK_GLM52_GRAPH_GATE_ROWS 2u
 #define SPARK_GLM52_GRAPH_GATE_REPORTED 4u
 
-static const char *const SparkGlm52GraphGateNames[3] = {"multi-wave","selected-context","rows"};
+static const char *const SparkGlm52GraphGateNames[3] = {"boundary-rows","selected-context","rows"};
 
 static uint64_t SparkGlm52NowNs(void)
 {
@@ -2084,55 +2085,120 @@ static uint32_t SparkGlm52WalkWave(void *context)
 		return(7u);
 	if ( SparkGlm52WalkReduce(chain,slot->head_maxloc_u64,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) != SPARK_STATUS_OK )
 		return(8u);
-	if ( SparkGlm52LaunchHeadMaxlocUnpack(stream,slot->head_maxloc_u64,slot->output_token,chain->wave_rows) != cudaSuccess )
+	if ( SparkGlm52LaunchHeadMaxlocUnpack(stream,slot->head_maxloc_u64,slot->output_token,wave->row_count) != cudaSuccess )
 		return(9u);
-	if ( chain->state->owns_final_head != 0u && cudaMemcpyAsync(slot->host_output_token_ids + chain->first_row,slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream) != cudaSuccess )
+	if ( chain->graph_body == 0u && chain->state->owns_final_head != 0u && cudaMemcpyAsync(slot->host_output_token_ids + chain->first_row,slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream) != cudaSuccess )
 		return(10u);
 	return(0u);
 }
 
+static uint32_t SparkGlm52GraphRelocatable(const SparkGlm52ModuleState *state)
+{
+	return(state->owns_embedding != 0u && state->owns_final_head != 0u &&
+		SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index) == 0u &&
+		SparkGlm52ResidentDecodeStageRequiresSidebandOutput(state->stage_index) == 0u ? 1u : 0u);
+}
+
+static uint32_t SparkGlm52GraphBucketCapacity(const SparkGlm52ModuleState *state)
+{
+	return(state->execution_row_capacity < state->resident_sequence_capacity ? state->execution_row_capacity : state->resident_sequence_capacity);
+}
+
+static uint32_t SparkGlm52BatchMaximumContext(const SparkGlm52TpChain *chain)
+{
+	uint32_t row,context = 0u;
+	for (row=0u; row<chain->batch->row_count; row++)
+		if ( chain->slot->host_positions[row] + 1u > context )
+			context = chain->slot->host_positions[row] + 1u;
+	return(context);
+}
+
 static uint32_t SparkGlm52GraphGate(const SparkGlm52TpChain *chain)
 {
-	if ( chain->wave_rows != chain->batch->row_count )
-		return(SPARK_GLM52_GRAPH_GATE_MULTI_WAVE);
-	if ( SparkGlm52GraphReplayable(chain->wave.maximum_context) == 0u )
+	if ( SparkGlm52GraphRelocatable(chain->state) == 0u &&
+		(chain->wave_rows != chain->batch->row_count || SparkTpChainGraphBucketRows(chain->wave_rows,SPARK_TP_CHAIN_GRAPH_MAX_ROWS) != chain->wave_rows) )
+		return(SPARK_GLM52_GRAPH_GATE_BOUNDARY);
+	if ( SparkGlm52GraphReplayable(SparkGlm52BatchMaximumContext(chain)) == 0u )
 		return(SPARK_GLM52_GRAPH_GATE_SELECTED_CONTEXT);
 	if ( chain->wave_rows > SPARK_TP_CHAIN_GRAPH_MAX_ROWS )
 		return(SPARK_GLM52_GRAPH_GATE_ROWS);
 	return(SPARK_GLM52_GRAPH_GATE_NONE);
 }
 
-static SparkStatus SparkGlm52GraphWalk(SparkGlm52TpChain *chain,const SparkTpChainCollectives *collectives,uint32_t *site)
+static SparkStatus SparkGlm52GraphWave(SparkGlm52TpChain *chain,const SparkTpChainCollectives *collectives,uint32_t *site)
 {
 	SparkGlm52ModuleState *state = chain->state;
+	SparkGlm52CudaWave *wave = &chain->wave;
+	SparkGlm52ExecutionSlot *slot = chain->slot;
 	void **entry;
-	uint32_t regime,bound,context;
+	uint32_t regime,bound,context,bucket,relocatable;
 	SparkStatus status = SPARK_STATUS_OK;
-	context = chain->wave.maximum_context;
+	relocatable = SparkGlm52GraphRelocatable(state);
+	bucket = relocatable != 0u ? SparkTpChainGraphBucketRows(chain->wave_rows,SparkGlm52GraphBucketCapacity(state)) : chain->wave_rows;
+	if ( bucket == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	context = wave->maximum_context;
 	regime = SparkGlm52GraphRegime(context,state->decode_split_context_threshold,state->max_sequence_positions,&bound) +
-		(chain->wave.row_head_certified != 0u ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u);
-	entry = SparkTpChainGraphEntry(&state->graphs[chain->slot_index],regime,chain->wave_rows);
+		(wave->row_head_certified != 0u ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u);
+	entry = SparkTpChainGraphEntry(&state->graphs[chain->slot_index],regime,bucket);
 	if ( entry == 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( relocatable != 0u )
+	{
+		wave->row_count = bucket;
+		wave->rows_staged = 1u;
+		if ( SparkGlm52LaunchCudaWaveRows(wave,chain->wave_rows) != 0 )
+		{
+			*site = 21u;
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+	}
+	chain->graph_body = relocatable;
 	if ( *entry == 0 )
 	{
-		chain->wave.maximum_context = bound;
-		status = SparkTpChainGraphRecord(collectives,chain->slot->stream,SparkGlm52WalkWave,chain,entry,site);
-		chain->wave.maximum_context = context;
-		chain->captured = 1u;
+		wave->maximum_context = bound;
+		status = SparkTpChainGraphRecord(collectives,slot->stream,SparkGlm52WalkWave,chain,entry,site);
+		wave->maximum_context = context;
+		chain->captured++;
 		state->graphs[chain->slot_index].captures++;
-		fprintf(stderr,"GLM52-GRAPH-CAPTURE slot=%u rows=%u regime=%u bound=%u context=%u status=%s site=%u\n",chain->slot_index,chain->wave_rows,regime,bound,context,SparkStatusToString(status),*site);
+		fprintf(stderr,"GLM52-GRAPH-CAPTURE slot=%u rows=%u bucket=%u regime=%u bound=%u context=%u status=%s site=%u\n",chain->slot_index,chain->wave_rows,bucket,regime,bound,context,SparkStatusToString(status),*site);
 		if ( status != SPARK_STATUS_OK )
 		{
 			state->graphs[chain->slot_index].failed++;
 			return(status);
 		}
 	}
-	status = SparkTpChainGraphPreLaunch(collectives,chain->slot->stream);
-	if ( status == SPARK_STATUS_OK && cudaGraphLaunch((cudaGraphExec_t)*entry,(cudaStream_t)chain->slot->stream) != cudaSuccess )
+	status = SparkTpChainGraphPreLaunch(collectives,slot->stream);
+	if ( status == SPARK_STATUS_OK && cudaGraphLaunch((cudaGraphExec_t)*entry,(cudaStream_t)slot->stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
 	chain->graph = 1u;
+	if ( status == SPARK_STATUS_OK && relocatable != 0u && state->owns_final_head != 0u &&
+		cudaMemcpyAsync(slot->host_output_token_ids + chain->first_row,slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)slot->stream) != cudaSuccess )
+	{
+		*site = 22u;
+		status = SPARK_STATUS_IO_ERROR;
+	}
 	return(status);
+}
+
+static SparkStatus SparkGlm52GraphWalk(SparkGlm52TpChain *chain,const SparkTpChainCollectives *collectives,uint32_t *site)
+{
+	SparkStatus status;
+	for (;;)
+	{
+		chain->waves++;
+		status = SparkGlm52GraphWave(chain,collectives,site);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		if ( chain->next_wave_row >= chain->batch->row_count )
+			return(SPARK_STATUS_OK);
+		chain->first_row = chain->next_wave_row;
+		chain->wave_rows = SparkGlm52WaveRows(chain,chain->next_wave_row);
+		if ( chain->wave_rows == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		chain->next_wave_row += chain->wave_rows;
+		SparkGlm52BuildWave(chain);
+	}
 }
 
 static SparkStatus SparkGlm52LinearWalk(SparkGlm52TpChain *chain,uint32_t *site)
@@ -2235,10 +2301,7 @@ static void SparkGlm52RunChain(SparkGlm52TpChain *chain)
 			fprintf(stderr,"GLM52-GRAPH-GATE reason=%s rows=%u batch_rows=%u context=%u: this chain runs linear\n",SparkGlm52GraphGateNames[gate],chain->wave_rows,chain->batch->row_count,chain->wave.maximum_context);
 	}
 	if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && gate == SPARK_GLM52_GRAPH_GATE_NONE )
-	{
-		chain->waves = 1u;
 		status = SparkGlm52GraphWalk(chain,&collectives,&site);
-	}
 	else
 		status = SparkGlm52LinearWalk(chain,&site);
 	if ( status == SPARK_STATUS_OK )

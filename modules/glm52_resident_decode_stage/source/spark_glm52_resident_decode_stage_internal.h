@@ -153,6 +153,7 @@ typedef struct SparkGlm52CudaWave
 	uint32_t projection_split;
 	uint32_t row_head_certified;
 	uint32_t kv_shard;
+	uint32_t rows_staged;
 } SparkGlm52CudaWave;
 
 #ifdef __cplusplus
@@ -163,6 +164,7 @@ int32_t SparkGlm52T1Enabled(void);
 uint32_t SparkGlm52ExactWaveRows(void);
 int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave);
+int32_t SparkGlm52LaunchCudaWaveRows(const SparkGlm52CudaWave *wave,uint32_t rows);
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t local_layer);
