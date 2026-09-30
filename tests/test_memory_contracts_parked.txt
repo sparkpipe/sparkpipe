@@ -43,8 +43,6 @@
 33 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: cudaMalloc uses a raw byte-width multiplier
 55 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
 12 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: memcpy uses a raw byte-width multiplier
-13 modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu: SparkGlm52ValAllocZeroed uses a raw byte-width multiplier
-9 modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c: memcpy uses a direct size/count literal
 29 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu: SparkGlm5NextValAllocZeroed uses a raw byte-width multiplier
 1 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
