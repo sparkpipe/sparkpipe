@@ -1,3 +1,3 @@
-+606
++640
 glm52 latent KV sharded 1/16 per rank at TP16 (SPARK_GLM52_KV_SHARD=1): shard store, 64-head partials, query all-gather, partial all-to-all, merge; b64/b256 resident sequences.
-CUDA graphs for every glm52 batch shape: power-of-two row buckets (padded rows) instead of exact rows, per-wave replay of one exec for multi-wave batches, row staging outside the graph.
+CUDA graphs for every glm52 batch shape: power-of-two row buckets (padded rows) instead of exact rows, per-wave replay of one exec for multi-wave batches, row staging outside the graph, graph launch timing in the chain log.
