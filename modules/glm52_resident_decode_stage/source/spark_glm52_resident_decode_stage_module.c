@@ -1697,8 +1697,17 @@ static SparkStatus SparkGlm52ScorePlan(SparkGlm52Score *score,const SparkGlm52Ex
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkGlm52ScoreWrite(SparkGlm52Score *score,const SparkGlm52ExecutionSlot *slot,uint32_t first,uint32_t rows)
+static uint32_t SparkGlm52ScoreServedToken(const SparkGlm52TpChain *chain,uint32_t row)
 {
+	uint32_t index = chain->first_row + row;
+	if ( chain->wave.row_head_certified != 0u && row + 1u != chain->wave_rows )
+		return(SPARK_SCORE_DUMP_NO_TOKEN);
+	return(chain->slot->host_output_token_ids[chain->row_ordered != 0u ? chain->row_order[index] : index]);
+}
+
+static SparkStatus SparkGlm52ScoreWrite(SparkGlm52Score *score,const SparkGlm52TpChain *chain,uint32_t first,uint32_t rows)
+{
+	const SparkGlm52ExecutionSlot *slot = chain->slot;
 	SparkScoreDumpRowRecord record;
 	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t row;
@@ -1712,7 +1721,7 @@ static SparkStatus SparkGlm52ScoreWrite(SparkGlm52Score *score,const SparkGlm52E
 		record.position = slot->host_positions[first + row];
 		record.row_in_wave = row;
 		record.input_token = slot->host_token_ids[first + row];
-		record.served_token = slot->host_output_token_ids[first + row];
+		record.served_token = SparkGlm52ScoreServedToken(chain,row);
 		record.probe_count = score->host_offsets[row + 1u] - score->host_offsets[row];
 		record.local_max = score->host_stats[row].local_max;
 		record.local_sum_exp = score->host_stats[row].local_sum_exp;
@@ -1758,7 +1767,7 @@ static SparkStatus SparkGlm52ScoreWaveLocked(SparkGlm52TpChain *chain)
 		error = cudaStreamSynchronize(stream);
 	status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"score_dump_launch");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52ScoreWrite(score,slot,first,rows);
+		status = SparkGlm52ScoreWrite(score,chain,first,rows);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	SparkScoreDumpNoteWave(&score->writer,0u);

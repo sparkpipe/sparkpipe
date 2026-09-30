@@ -352,6 +352,12 @@ static int32_t SparkGlm52RunLayerMlpExperts(const SparkGlm52CudaWave *wave,uint3
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_launch.cuh"
 
+#ifdef SPARK_SCORE_DUMP
+#define SPARK_GLM52_SCORE_EVERY_ROW 1u
+#else
+#define SPARK_GLM52_SCORE_EVERY_ROW 0u
+#endif
+
 static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 {
 	SparkGlm52ExecutionSlot *slot;
@@ -372,7 +378,7 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 			SparkGlm52T1Enabled() == 0 )
 		{
 			status = LM_LAUNCH_OK;
-			for (row=wave->row_head_certified != 0u ? wave->row_count - 1u : 0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
+			for (row=wave->row_head_certified != 0u && SPARK_GLM52_SCORE_EVERY_ROW == 0u ? wave->row_count - 1u : 0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
 			{
 				row_buffers = buffers;
 				row_buffers.hidden_bf16 = buffers.hidden_bf16 + (uint64_t)row * GLM_HIDDEN;
