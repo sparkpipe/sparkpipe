@@ -50,6 +50,7 @@ static int32_t Find(const char *entry,uint32_t from)
 int32_t SparkGlm52T1Enabled(void) { return((int32_t)T1_ENABLED); }
 uint32_t SparkGlm52ExactWaveRows(void) { return(8u); }
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { Log("begin",wave->maximum_context); return(0); }
+int32_t SparkGlm52LaunchCudaStageWaveInputs(const SparkGlm52CudaWave *wave,uint32_t rows,uint32_t bucket) { assert(wave->inputs_staged == 0u || wave->row_count >= rows); Log("stage",rows * 100u + bucket); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split == 0u); Log("attn",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("project",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("core",layer); return(0); }
@@ -232,9 +233,25 @@ static void TestConfigure(void)
 	probe.lazy_pack = &lazy;
 	probe.experts_pinned = 1u;
 	probe.execution_stream = (void *)(uintptr_t)0x50;
+	probe.owns_embedding = 1u;
+	probe.owns_final_head = 1u;
+	probe.max_sequence_positions = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT;
+	probe.execution_row_capacity = SPARK_TP_CHAIN_GRAPH_MAX_ROWS;
 	assert(setenv("SPARK_GLM52_CHAIN_MODE","graph",1) == 0);
 	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_OK && probe.chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && probe.chain_wait_initialized == 1u);
 	probe.chain_wait_initialized = 0u;
+	probe.max_sequence_positions = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT + 1u;
+	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
+	probe.max_sequence_positions = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT;
+	probe.owns_embedding = 0u;
+	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
+	probe.owns_embedding = 1u;
+	probe.owns_final_head = 0u;
+	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
+	probe.owns_final_head = 1u;
+	probe.execution_row_capacity = SPARK_TP_CHAIN_GRAPH_MAX_ROWS + 1u;
+	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
+	probe.execution_row_capacity = SPARK_TP_CHAIN_GRAPH_MAX_ROWS;
 	probe.experts_pinned = 0u;
 	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
 	probe.experts_pinned = 1u;
@@ -352,8 +369,8 @@ static void TestGraph(void)
 	captures = CAPTURES;
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	SparkGlm52RunChain(NewChain(2048u));
-	assert(CAPTURES == captures && LAUNCHES == 4u && Count("begin2049") == 1u && Count("verify0") == 1u && state.chain_gates[SPARK_GLM52_GRAPH_GATE_SELECTED_CONTEXT] == 1u);
-	assert(COMPLETED_STATUS == SPARK_STATUS_OK);
+	assert(CAPTURES == captures && LAUNCHES == 4u && Count("begin2049") == 0u && Count("stage101") == 0u);
+	assert(COMPLETED_STATUS == SPARK_STATUS_UNSUPPORTED);
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	GRAPH_ERROR = 3u;
 	SparkGlm52RunChain(NewChain(20u));
@@ -374,9 +391,9 @@ static void TestGraphMultiWave(void)
 	SparkGlm52RunChain(NewChain(9u));
 	atomic_store(&state.lane_states[0],0u);
 	batch.row_count = 1u;
-	assert(CAPTURES == 0u && LAUNCHES == 0u && Count("capture-begin0") == 0u);
-	assert(Find("begin10",0u) >= 0 && Find("begin11",0u) > Find("begin10",0u) && Count("unpack1") == 2u && Count("verify0") == 1u);
-	assert(state.chain_gates[SPARK_GLM52_GRAPH_GATE_MULTI_WAVE] == 1u && COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK && atomic_load(&state.chain_busy) == 0u);
+	assert(CAPTURES == 1u && LAUNCHES == 2u && Count("capture-begin0") == 1u && Count("stage101") == 2u && Count("d2h4") == 2u);
+	assert(Find("stage101",0u) < Find("capture-begin0",0u) && Find("graph-launch257",0u) < Find("stage101",(uint32_t)Find("graph-launch257",0u)));
+	assert(COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK && atomic_load(&state.chain_busy) == 0u);
 }
 
 static void TestPrefillWaveRowsConfigure(void)
