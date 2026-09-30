@@ -215,6 +215,7 @@ typedef struct SparkGlm52TpChain
 	uint64_t start_ns;
 	uint64_t walk_ns;
 	uint64_t launch_ns;
+	uint64_t prelaunch_ns;
 } SparkGlm52TpChain;
 
 #define SPARK_GLM_STAGE_STATE SparkGlm52ModuleState
@@ -2172,6 +2173,7 @@ static SparkStatus SparkGlm52GraphWave(SparkGlm52TpChain *chain,const SparkTpCha
 	}
 	launch_ns = SparkGlm52NowNs();
 	status = SparkTpChainGraphPreLaunch(collectives,slot->stream);
+	chain->prelaunch_ns += SparkGlm52NowNs() - launch_ns;
 	if ( status == SPARK_STATUS_OK && cudaGraphLaunch((cudaGraphExec_t)*entry,(cudaStream_t)slot->stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
 	chain->launch_ns += SparkGlm52NowNs() - launch_ns;
@@ -2239,9 +2241,9 @@ static void SparkGlm52ChainFinish(SparkGlm52TpChain *chain,SparkStatus status)
 	SparkGlm52ModuleState *state = chain->state;
 	SparkGlm52AsyncCompletion *async = &state->completions[chain->slot_index];
 	uint64_t total_ns = SparkGlm52NowNs() - chain->start_ns;
-	fprintf(stderr,"GLM52-CHAIN-TIME mode=%s slot=%u rows=%u waves=%u captured=%u walk_us=%.1f launch_us=%.1f total_us=%.1f gates=%llu/%llu/%llu status=%s\n",
+	fprintf(stderr,"GLM52-CHAIN-TIME mode=%s slot=%u rows=%u waves=%u captured=%u walk_us=%.1f prelaunch_us=%.1f launch_us=%.1f total_us=%.1f gates=%llu/%llu/%llu status=%s\n",
 		chain->graph != 0u ? "graph" : "linear",chain->slot_index,async->row_count,chain->waves,chain->captured,
-		(double)chain->walk_ns / 1000.0,(double)chain->launch_ns / 1000.0,(double)total_ns / 1000.0,
+		(double)chain->walk_ns / 1000.0,(double)chain->prelaunch_ns / 1000.0,(double)chain->launch_ns / 1000.0,(double)total_ns / 1000.0,
 		(unsigned long long)state->chain_gates[0],(unsigned long long)state->chain_gates[1],(unsigned long long)state->chain_gates[2],SparkStatusToString(status));
 	if ( status != SPARK_STATUS_OK )
 		async->completion.status = status;
