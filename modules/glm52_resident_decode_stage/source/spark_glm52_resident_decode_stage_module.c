@@ -190,6 +190,9 @@ struct SparkGlm52ModuleState
 	uint64_t verify_tokens;
 	uint64_t verify_position_reached[SPARK_GLM52_VERIFY_ROWS_LIMIT - 1u];
 	uint64_t verify_position_accepted[SPARK_GLM52_VERIFY_ROWS_LIMIT - 1u];
+	uint64_t verify_round_ns[SPARK_GLM52_VERIFY_ROWS_LIMIT];
+	uint64_t verify_round_count[SPARK_GLM52_VERIFY_ROWS_LIMIT];
+	uint64_t verify_draft_ns;
 	FILE *tap_file;
 	uint16_t *tap_rows;
 	uint32_t tap_capacity;

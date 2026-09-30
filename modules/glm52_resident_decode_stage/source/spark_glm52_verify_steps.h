@@ -427,6 +427,7 @@ static SparkStatus SparkGlm52StepsDraft(SparkGlm52TpChain *chain,uint32_t *count
 	SparkSpeculationPolicyDraftRequest request;
 	SparkSpeculationPolicyDraftResult result;
 	SparkStatus status;
+	uint64_t begin;
 	uint32_t depth,row;
 	*count_out = 0u;
 	if ( chain->steps_lanes != 1u || state->verify_draft_function == 0 )
@@ -444,7 +445,9 @@ static SparkStatus SparkGlm52StepsDraft(SparkGlm52TpChain *chain,uint32_t *count
 	request.sequence_id = chain->steps_sequence_ids[0];
 	request.sequence_position = slot->host_positions[0];
 	state->relay_anchor = slot->host_token_ids[0];
+	begin = SparkGlm52NowNs();
 	status = state->verify_draft_function(state->verify_draft_context,&request,&result);
+	state->verify_draft_ns += SparkGlm52NowNs() - begin;
 	if ( status == SPARK_STATUS_NOT_FOUND )
 		return(SPARK_STATUS_OK);
 	if ( status != SPARK_STATUS_OK )
@@ -534,6 +537,12 @@ static SparkStatus SparkGlm52StepsFinish(SparkGlm52TpChain *chain)
 		length += snprintf(positions + length,sizeof(positions) - (size_t)length," p%u=%llu/%llu",index + 1u,
 			(unsigned long long)state->verify_position_accepted[index],(unsigned long long)state->verify_position_reached[index]);
 	fprintf(stderr,"%s\n",positions);
+	length = snprintf(positions,sizeof(positions),"VERIFY-TIME draft_us_mean=%.1f",state->verify_rounds + state->verify_plain_rounds != 0u ? (double)state->verify_draft_ns / 1e3 / (double)(state->verify_rounds + state->verify_plain_rounds) : 0.0);
+	for (index=0u; index<SPARK_GLM52_VERIFY_ROWS_LIMIT && length > 0 && (size_t)length < sizeof(positions); index++)
+		if ( state->verify_round_count[index] != 0u )
+			length += snprintf(positions + length,sizeof(positions) - (size_t)length," rows%u=%llu/%.1f",index + 1u,(unsigned long long)state->verify_round_count[index],
+				(double)state->verify_round_ns[index] / 1e3 / (double)state->verify_round_count[index]);
+	fprintf(stderr,"%s\n",positions);
 	return(SPARK_STATUS_OK);
 }
 
@@ -547,6 +556,9 @@ static SparkStatus SparkGlm52StepsAdvance(SparkGlm52TpChain *chain,uint32_t *mor
 	*more_out = 0u;
 	if ( slot->host_kv_access_error[0] != 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	index = chain->batch_copy.row_count - 1u < SPARK_GLM52_VERIFY_ROWS_LIMIT ? chain->batch_copy.row_count - 1u : SPARK_GLM52_VERIFY_ROWS_LIMIT - 1u;
+	state->verify_round_ns[index] += SparkGlm52NowNs() - chain->start_ns;
+	state->verify_round_count[index]++;
 	if ( chain->verify_draft_count != 0u )
 	{
 		status = SparkSpeculationPolicyResolveVerifierTokens(chain->verify_draft,chain->verify_draft_count,slot->host_output_token_ids,chain->verify_draft_count + 1u,SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT,&result);
