@@ -92,6 +92,25 @@ int main(void)
 		CHECK(spans[row] <= 7u,"no wave exceeds the cap");
 	}
 	CHECK(sum == 40u,"waves cover every row exactly once");
+	{
+		static const uint32_t round_major[9] = { 5u, 3u, 7u, 5u, 3u, 7u, 5u, 3u, 5u };
+		static const uint32_t expected[9] = { 0u, 3u, 6u, 8u, 1u, 4u, 7u, 2u, 5u };
+		uint32_t order[9],grouped[9],grouped_positions[9];
+		TestRegime regime;
+		CHECK(SparkRowLayoutLaneMajorOrder(9u,round_major,order) == SPARK_STATUS_OK && memcmp(order,expected,sizeof(order)) == 0,"lane-major order groups each lane's rows by first appearance and keeps their order");
+		CHECK(SparkRowLayoutLaneMajorOrder(0u,round_major,order) == SPARK_STATUS_INVALID_ARGUMENT,"an empty batch has no order");
+		for (row=0u; row<9u; row++)
+		{
+			grouped[row] = round_major[order[row]];
+			grouped_positions[row] = row < 4u ? 2045u + row : row;
+		}
+		regime.positions = grouped_positions;
+		regime.boundary = 2048u;
+		CHECK(SparkRowLayoutLaneSpanWaveRowCount(0u,9u,grouped,0,0,16u) == 4u,"a lane-span wave stops at the next lane");
+		CHECK(SparkRowLayoutLaneSpanWaveRowCount(0u,9u,grouped,0,0,3u) == 3u,"a lane-span wave stops at the cap");
+		CHECK(SparkRowLayoutLaneSpanWaveRowCount(0u,9u,grouped,TestRowRegime,&regime,16u) == 3u,"a lane-span wave stops at a regime change");
+		CHECK(SparkRowLayoutLaneSpanWaveRowCount(7u,9u,grouped,0,0,16u) == 2u && SparkRowLayoutLaneSpanWaveRowCount(9u,9u,grouped,0,0,16u) == 0u,"the last lane spans to the end and nothing follows it");
+	}
 	if ( failures != 0u )
 	{
 		fprintf(stderr,"FAIL test_row_layout_round_span failures=%u\n",failures);

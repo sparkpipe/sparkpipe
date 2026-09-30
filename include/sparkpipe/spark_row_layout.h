@@ -175,6 +175,49 @@ static inline uint32_t SparkRowLayoutRoundSpanWaveRowCount(
 	return(count);
 }
 
+static inline SparkStatus SparkRowLayoutLaneMajorOrder(
+	uint32_t row_count,
+	const uint32_t *row_lane_ids,
+	uint32_t *order)
+{
+	uint32_t first,row,count,lane;
+	if ( row_count == 0u || row_lane_ids == 0 || order == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	count = 0u;
+	for (first=0u; first<row_count; first++)
+	{
+		lane = row_lane_ids[first];
+		for (row=0u; row<first && row_lane_ids[row] != lane; row++)
+			;
+		if ( row != first )
+			continue;
+		for (row=first; row<row_count; row++)
+			if ( row_lane_ids[row] == lane )
+				order[count++] = row;
+	}
+	return(count == row_count ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR);
+}
+
+static inline uint32_t SparkRowLayoutLaneSpanWaveRowCount(
+	uint32_t first_row,
+	uint32_t row_count,
+	const uint32_t *row_lane_ids,
+	SparkRowLayoutRowRegimeFunction regime_function,
+	void *regime_context,
+	uint32_t maximum_rows)
+{
+	uint32_t count,regime;
+	if ( first_row >= row_count || row_lane_ids == 0 || maximum_rows == 0u )
+		return(0u);
+	regime = regime_function != 0 ? regime_function(regime_context,first_row) : 0u;
+	count = 1u;
+	while ( first_row + count < row_count && count < maximum_rows &&
+		row_lane_ids[first_row + count] == row_lane_ids[first_row] &&
+		(regime_function == 0 || regime_function(regime_context,first_row + count) == regime) )
+		count++;
+	return(count);
+}
+
 static inline SparkStatus SparkRowLayoutGroupRows(
 	uint32_t row_count,
 	uint32_t lane_count,

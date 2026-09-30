@@ -24,7 +24,7 @@ __global__ static void SPARK_FAMILY(WaveMetadataKernel)(
 
 static int32_t SPARK_FAMILY(ValidateWaveShape)(const SPARK_FAMILY(CudaWave) *wave)
 {
-	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || wave->row_count > wave->resident_sequence_capacity || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
+	if ( wave == 0 || wave->slot == 0 || wave->slot->stream == 0 || wave->layers == 0 || wave->row_count == 0u || wave->row_count > wave->execution_row_capacity || wave->maximum_context == 0u || wave->maximum_context > wave->max_sequence_positions || wave->multiprocessor_count == 0u || wave->tp_degree == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(LM_LAUNCH_OK);
 }

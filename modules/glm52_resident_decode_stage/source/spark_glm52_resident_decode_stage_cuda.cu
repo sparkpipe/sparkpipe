@@ -273,6 +273,7 @@ static void SparkGlm52BindLayer(
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
 	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
+	buffers->single_sequence_rows = wave->single_sequence_rows;
 	buffers->projection_gather_bf16 = wave->projection_split != 0u ? slot->projection_gather_bf16 : 0;
 	buffers->projection_gather_stride = wave->projection_split != 0u ? GLM_HIDDEN : 0u;
 	SparkGlm52BuildKvView(&buffers->cache,wave->kv_cache + ((uint64_t)local_layer * wave->kv_layer_stride_bytes),wave);
@@ -351,6 +352,12 @@ static int32_t SparkGlm52RunLayerMlpExperts(const SparkGlm52CudaWave *wave,uint3
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_launch.cuh"
 
+#ifdef SPARK_SCORE_DUMP
+#define SPARK_GLM52_SCORE_EVERY_ROW 1u
+#else
+#define SPARK_GLM52_SCORE_EVERY_ROW 0u
+#endif
+
 static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 {
 	SparkGlm52ExecutionSlot *slot;
@@ -371,7 +378,7 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 			SparkGlm52T1Enabled() == 0 )
 		{
 			status = LM_LAUNCH_OK;
-			for (row=0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
+			for (row=wave->row_head_certified != 0u && SPARK_GLM52_SCORE_EVERY_ROW == 0u ? wave->row_count - 1u : 0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
 			{
 				row_buffers = buffers;
 				row_buffers.hidden_bf16 = buffers.hidden_bf16 + (uint64_t)row * GLM_HIDDEN;

@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_speculation_seam.h"
+#include "sparkpipe/spark_weightd.h"
 #define SPARK_FAMILY_CAMEL Glm52
 #define SPARK_FAMILY_UPPER GLM52
 #define SPARK_FAMILY_LOWER glm52
@@ -180,6 +181,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTempl
 		GLM_CONTRACT_SHA256),
 	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL |
 		SPARK_GLM52_SERVING_TOPOLOGY_FLAG),
 	.stage_count = 0u,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
@@ -629,7 +631,7 @@ static SparkStatus SparkGlm52ServingInitialize(
 	atomic_init(&state->reset_active,0u);
 	atomic_init(&state->reset_generation,0u);
 	status = SparkGlm52ServingLoadConfiguration(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions,&execution_row_capacity,&decode_split_context_threshold,&tp_degree,&tp_rank);
-	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > state->resident_sequence_capacity || decode_split_context_threshold > max_sequence_positions) )
+	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS || execution_row_capacity == 0u || execution_row_capacity > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT || execution_row_capacity > SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS || decode_split_context_threshold > max_sequence_positions) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK && (tp_rank != configuration->stage_index || tp_degree != SparkGlm52ServingDescriptor.stage_count) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
