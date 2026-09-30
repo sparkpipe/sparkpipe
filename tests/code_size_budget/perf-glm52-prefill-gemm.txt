@@ -1,0 +1,2 @@
++1041
+GLM Full compute-bound prefill: the row-invariant stream GEMM for grouped FP8 experts and dense BF16 projections, tiled causal latent attention for one-sequence waves, lane-major prefill waves up to 1024 rows, multi-block KV page transactions and MULTI_BLOCK_PREFILL engine spans.
