@@ -9,6 +9,22 @@
 
 static void SparkGlm52RunChain(SparkGlm52TpChain *chain);
 
+typedef struct SparkGlm52RelayHeader
+{
+	uint32_t magic;
+	uint32_t rank;
+	uint64_t sequence_id;
+	uint32_t position;
+	uint32_t count;
+} SparkGlm52RelayHeader;
+
+typedef struct SparkGlm52RelayDraftHeader
+{
+	SparkGlm52RelayHeader common;
+	uint32_t anchor;
+	uint32_t reserved;
+} SparkGlm52RelayDraftHeader;
+
 static const char *const SparkGlm52VerifyDrafterNames[6] = {"none","lookup","oracle","adversary","recorded","relay"};
 
 static SparkStatus SparkGlm52RelayIo(SparkGlm52ModuleState *state,void *bytes,size_t count,uint32_t sending)
@@ -74,17 +90,12 @@ static SparkStatus SparkGlm52RelayConnect(SparkGlm52ModuleState *state,const cha
 
 static SparkStatus SparkGlm52RelayCommit(SparkGlm52ModuleState *state,uint64_t sequence_id,uint32_t position,uint32_t input_token,uint32_t output_token,const uint16_t *hidden)
 {
-	uint8_t header[24];
-	uint32_t words[2] = {input_token,output_token},magic = SPARK_GLM52_RELAY_COMMIT_MAGIC,count = 1u;
+	SparkGlm52RelayHeader header = {SPARK_GLM52_RELAY_COMMIT_MAGIC,state->tp_rank,sequence_id,position,1u};
+	uint32_t words[2] = {input_token,output_token};
 	SparkStatus status;
 	if ( state->relay_connected == 0u )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	memcpy(header,&magic,4u);
-	memcpy(header + 4u,&state->tp_rank,4u);
-	memcpy(header + 8u,&sequence_id,8u);
-	memcpy(header + 16u,&position,4u);
-	memcpy(header + 20u,&count,4u);
-	status = SparkGlm52RelayIo(state,header,sizeof(header),1u);
+	status = SparkGlm52RelayIo(state,&header,sizeof(header),1u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52RelayIo(state,words,sizeof(words),1u);
 	if ( status == SPARK_STATUS_OK )
@@ -97,20 +108,13 @@ static SparkStatus SparkGlm52RelayCommit(SparkGlm52ModuleState *state,uint64_t s
 static SparkStatus SparkGlm52RelayDraftTokens(void *context,const SparkSpeculationPolicyDraftRequest *request,SparkSpeculationPolicyDraftResult *result)
 {
 	SparkGlm52ModuleState *state = (SparkGlm52ModuleState *)context;
-	uint8_t header[32];
-	uint32_t magic = SPARK_GLM52_RELAY_DRAFT_MAGIC,position = (uint32_t)request->sequence_position,count = request->requested_token_count,zero = 0u,answer[2];
+	uint32_t count = request->requested_token_count,answer[2];
+	SparkGlm52RelayDraftHeader header = {{SPARK_GLM52_RELAY_DRAFT_MAGIC,state->tp_rank,request->sequence_id,(uint32_t)request->sequence_position,count},state->relay_anchor,0u};
 	uint64_t begin = SparkGlm52NowNs();
 	SparkStatus status;
 	if ( state->relay_connected == 0u )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	memcpy(header,&magic,4u);
-	memcpy(header + 4u,&state->tp_rank,4u);
-	memcpy(header + 8u,&request->sequence_id,8u);
-	memcpy(header + 16u,&position,4u);
-	memcpy(header + 20u,&count,4u);
-	memcpy(header + 24u,&state->relay_anchor,4u);
-	memcpy(header + 28u,&zero,4u);
-	status = SparkGlm52RelayIo(state,header,sizeof(header),1u);
+	status = SparkGlm52RelayIo(state,&header,sizeof(header),1u);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52RelayIo(state,answer,sizeof(answer),0u);
 	if ( status == SPARK_STATUS_OK && (answer[0] != SPARK_GLM52_RELAY_ANSWER_MAGIC || answer[1] > count) )

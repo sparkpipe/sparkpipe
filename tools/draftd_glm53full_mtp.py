@@ -9,7 +9,8 @@ import time
 import numpy as np
 import torch
 
-HIDDEN = 6144
+HIDDEN = 0
+VOCAB = 0
 HEADS = 64
 NOPE = 192
 ROPE = 64
@@ -25,6 +26,12 @@ LAYER = "model.layers.78."
 TAP_MAGIC = 0x31505447
 TAP_HEADER = struct.Struct("<5I")
 DTYPES = {"BF16": np.uint16, "F32": np.float32, "F8_E4M3": np.uint8}
+
+
+def configure(root):
+    global HIDDEN, VOCAB
+    config = json.load(open(os.path.join(root, "config.json")))
+    HIDDEN, VOCAB = int(config["hidden_size"]), int(config["vocab_size"])
 
 
 class Checkpoint:
@@ -76,6 +83,7 @@ def rope_pairs(x, positions):
 
 class GlmFullMtp:
     def __init__(self, root, device="cuda"):
+        configure(root)
         self.device = device
         ckpt = Checkpoint(root)
         self.ckpt = ckpt
@@ -519,7 +527,8 @@ def serve(args):
         from spec_recorded_drafts import read_table
         table = read_table(args.table)["entries"]
         log(f"RELAY-TABLE {args.table} entries={len(table)}")
-    model = GlmFullMtp(args.checkpoint) if args.checkpoint else None
+    configure(args.checkpoint)
+    model = GlmFullMtp(args.checkpoint)
     relay = Relay(model, args.capacity, log, table, args.max_depth, args.control)
     relay.reload()
 
@@ -547,7 +556,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         serving = argparse.ArgumentParser(description="GLM-5.3 Full MTP draft relay for the glm52 verify (every rank asks, rank 0 commits taps)")
         serving.add_argument("serve")
-        serving.add_argument("--checkpoint", default="")
+        serving.add_argument("--checkpoint", required=True, help="the MTP checkpoint; its config.json also gives the hidden width of the committed taps")
         serving.add_argument("--table", default="", help="answer from a recorded draft table instead of the MTP layer")
         serving.add_argument("--max-depth", type=int, default=7, help="longest chain returned; 0 answers no drafts (plain decode through the same frames)")
         serving.add_argument("--control", default="", help="json {table, max_depth, min_conf, lookup_depth} re-read when a sequence starts; switches arms without dropping the fleet connections; min_conf ends a chain at the first MTP token whose probability is below it; lookup_depth > 0 answers with the continuation of the latest earlier occurrence of the last three tokens when its first token equals the MTP draft")
@@ -623,7 +632,7 @@ def main():
     for klass, agg in report["classes"].items():
         report["classes"][klass] = {k: {"rounds": r, "tokens": t, "tokens_per_round": t / r if r else 0.0} for k, (r, t) in agg.items()}
         print(json.dumps({"class": klass, "tokens_per_round": {k: round(v["tokens_per_round"], 3) for k, v in report["classes"][klass].items()}}))
-    count = write_table(args.table, entries, args.depth, 154880)
+    count = write_table(args.table, entries, args.depth, VOCAB)
     report["table"] = {"path": args.table, "entries": count, "depth": args.depth}
     json.dump(report, open(args.report, "w"), indent=1)
     print(f"MTP-TABLE {args.table} entries={count} depth={args.depth}")
