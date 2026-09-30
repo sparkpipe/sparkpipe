@@ -22,7 +22,7 @@
     (SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u)
 #define SPARK_WEIGHTD_MESH_CQ_ENTRIES 16384u
 #define SPARK_WEIGHTD_MESH_SEND_CAPACITY 64u
-#define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303035)
+#define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303036)
 #define SPARK_WEIGHTD_MESH_DORMANT_AFTER_NS UINT64_C(20000000)
 #define SPARK_WEIGHTD_MESH_DORMANT_POLL_NS 200000L
 #define SPARK_WEIGHTD_MESH_FULL_SCAN_NS UINT64_C(1000000)
@@ -65,6 +65,9 @@ typedef struct SparkWeightdMeshRecord
     uint8_t gid[16];
     uint32_t rank_mask;
     uint64_t boot_ns;
+    uint32_t pair_rkey;
+    uint16_t pair_lid;
+    uint8_t pair_gid[16];
 } SparkWeightdMeshRecord;
 
 #define SPARK_WEIGHTD_MESH_TRANSFER_ID (UINT64_C(1) << 63u)
@@ -169,10 +172,52 @@ typedef struct SparkWeightdMesh
     uint32_t local_rank;
     uint32_t rank_mask;
     uint32_t sgid_index;
+    struct ibv_context *pair_context;
+    struct ibv_pd *pair_protection_domain;
+    struct ibv_mr *pair_recv_mr;
+    struct ibv_mr *pair_staging_mr;
+    struct ibv_mr *pair_seq_mr;
+    struct ibv_cq *pair_cq;
+    uint32_t pair_peer;
+    uint32_t pair_sgid_index;
+    uint16_t pair_lid;
+    uint8_t pair_gid[16];
 } SparkWeightdMesh;
 
 static SparkWeightdMesh weightd_mesh;
 static uint64_t SparkWeightdMeshNextTransferGeneration;
+
+static uint32_t SparkWeightdMeshIsPairPeer(uint32_t peer)
+{
+    return weightd_mesh.pair_protection_domain != 0 && peer == weightd_mesh.pair_peer ? 1u : 0u;
+}
+
+static struct ibv_mr *SparkWeightdMeshPeerMr(uint32_t peer,struct ibv_mr *switch_mr,struct ibv_mr *pair_mr)
+{
+    return SparkWeightdMeshIsPairPeer(peer) != 0u ? pair_mr : switch_mr;
+}
+
+static void SparkWeightdMeshFillRecord(SparkWeightdMeshRecord *record)
+{
+    uint32_t peer;
+    memset(record,0,sizeof(*record));
+    record->magic = SPARK_WEIGHTD_MESH_MAGIC;
+    record->rank = weightd_mesh.local_rank;
+    record->rank_mask = weightd_mesh.rank_mask;
+    record->boot_ns = weightd_mesh.boot_ns;
+    record->rkey = weightd_mesh.recv_mr != 0 ? weightd_mesh.recv_mr->rkey : 0u;
+    record->recv_addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
+    record->lid = weightd_mesh.lid;
+    memcpy(record->gid,weightd_mesh.gid,16);
+    record->pair_rkey = weightd_mesh.pair_recv_mr != 0 ? weightd_mesh.pair_recv_mr->rkey : 0u;
+    record->pair_lid = weightd_mesh.pair_lid;
+    memcpy(record->pair_gid,weightd_mesh.pair_gid,16);
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        record->send_qpn[peer] = weightd_mesh.send_qps[peer] != 0 ? weightd_mesh.send_qps[peer]->qp_num : 0u;
+        record->recv_qpn[peer] = weightd_mesh.recv_qps[peer] != 0 ? weightd_mesh.recv_qps[peer]->qp_num : 0u;
+    }
+}
 
 
 static uint64_t SparkWeightdMeshRealtimeNs(void)
@@ -298,7 +343,8 @@ static SparkStatus SparkWeightdMeshTransitionQp(
     struct ibv_qp *qp,
     uint32_t remote_qpn,
     uint16_t dlid,
-    const uint8_t *dgid)
+    const uint8_t *dgid,
+    uint32_t sgid_index)
 {
     struct ibv_qp_attr attributes;
     int flags;
@@ -332,7 +378,7 @@ static SparkStatus SparkWeightdMeshTransitionQp(
     attributes.ah_attr.dlid = dlid;
     attributes.ah_attr.port_num = 1;
     memcpy(attributes.ah_attr.grh.dgid.raw,dgid,16);
-    attributes.ah_attr.grh.sgid_index = (uint8_t)weightd_mesh.sgid_index;
+    attributes.ah_attr.grh.sgid_index = (uint8_t)sgid_index;
     attributes.ah_attr.grh.hop_limit = 1;
     flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
         IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
@@ -761,14 +807,23 @@ static uint32_t SparkWeightdMeshWirePeerLocked(const SparkWeightdMeshWirePlan *p
     uint32_t peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
     uint32_t mine = weightd_mesh.local_rank < peer_rank ? weightd_mesh.local_rank : weightd_mesh.local_rank - 1u;
     const SparkWeightdMeshRecord *record = &plan->records[peer];
-    if ( SparkWeightdMeshTransitionQp(weightd_mesh.send_qps[peer],record->recv_qpn[mine],record->lid,record->gid) != SPARK_STATUS_OK ||
-         SparkWeightdMeshTransitionQp(weightd_mesh.recv_qps[peer],record->send_qpn[mine],record->lid,record->gid) != SPARK_STATUS_OK )
+    uint32_t pair = SparkWeightdMeshIsPairPeer(peer) != 0u ? 1u : 0u;
+    uint32_t sgid = pair != 0u ? weightd_mesh.pair_sgid_index : weightd_mesh.sgid_index;
+    uint16_t lid = pair != 0u ? record->pair_lid : record->lid;
+    const uint8_t *gid = pair != 0u ? record->pair_gid : record->gid;
+    if ( pair != 0u && record->pair_rkey == 0u )
+    {
+        fprintf(stderr,"WD-WIRE-FAIL rank=%u peer=%u: partner record has no pair link\n",weightd_mesh.local_rank,peer);
+        return 0u;
+    }
+    if ( SparkWeightdMeshTransitionQp(weightd_mesh.send_qps[peer],record->recv_qpn[mine],lid,gid,sgid) != SPARK_STATUS_OK ||
+         SparkWeightdMeshTransitionQp(weightd_mesh.recv_qps[peer],record->send_qpn[mine],lid,gid,sgid) != SPARK_STATUS_OK )
     {
         fprintf(stderr,"WD-WIRE-FAIL rank=%u peer=%u errno=%d target_qpn=%u\n",weightd_mesh.local_rank,peer,errno,record->recv_qpn[mine]);
         return 0u;
     }
     weightd_mesh.qp_info[peer].remote_qpn = record->recv_qpn[mine];
-    weightd_mesh.qp_info[peer].rkey = record->rkey;
+    weightd_mesh.qp_info[peer].rkey = pair != 0u ? record->pair_rkey : record->rkey;
     weightd_mesh.qp_info[peer].remote_addr = record->recv_addr;
     weightd_mesh.wired_boot_ns[peer] = record->boot_ns;
     weightd_mesh.stat_rewires++;
@@ -820,14 +875,89 @@ static void SparkWeightdMeshTryWire(void)
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
 }
 
-SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
-    uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask)
+static SparkStatus SparkWeightdMeshOpenDevice(const char *interface_name,uint32_t sgid_index,struct ibv_context **context,uint16_t *lid,uint8_t *gid_raw)
 {
     struct ibv_device **devices;
     struct ibv_port_attr port_attr;
+    union ibv_gid gid;
+    int device_count,device_index;
+    *context = 0;
+    devices = ibv_get_device_list(&device_count);
+    if (devices == 0 || device_count == 0)
+    {
+        fprintf(stderr,"weightd-mesh: no RDMA devices\n");
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    for (device_index = 0; device_index < device_count && *context == 0; device_index++)
+    {
+        const char *name = ibv_get_device_name(devices[device_index]);
+        if (name != 0 && strcmp(name,interface_name) == 0)
+            *context = ibv_open_device(devices[device_index]);
+    }
+    ibv_free_device_list(devices);
+    if (*context == 0)
+    {
+        fprintf(stderr,"weightd-mesh: %s not found\n",interface_name);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    if (ibv_query_port(*context,1,&port_attr) != 0 || port_attr.state != IBV_PORT_ACTIVE)
+    {
+        fprintf(stderr,"weightd-mesh: %s port 1 not active\n",interface_name);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    if (ibv_query_gid(*context,1,(int)sgid_index,&gid) != 0)
+    {
+        fprintf(stderr,"weightd-mesh: %s gid %u query failed\n",interface_name,sgid_index);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    *lid = (uint16_t)port_attr.lid;
+    memcpy(gid_raw,gid.raw,16);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkWeightdMeshOpenPair(const char *pair_interface_name,uint32_t pair_sgid_index)
+{
+    uint32_t partner = weightd_mesh.local_rank ^ 1u;
+    SparkStatus status;
+    if ((weightd_mesh.rank_mask & (1u << partner)) == 0u || pair_sgid_index > 255u)
+    {
+        fprintf(stderr,"weightd-mesh: pair %s needs partner rank %u in the mesh\n",pair_interface_name,partner);
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkWeightdMeshOpenDevice(pair_interface_name,pair_sgid_index,&weightd_mesh.pair_context,&weightd_mesh.pair_lid,weightd_mesh.pair_gid);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    weightd_mesh.pair_sgid_index = pair_sgid_index;
+    weightd_mesh.pair_protection_domain = ibv_alloc_pd(weightd_mesh.pair_context);
+    weightd_mesh.pair_cq = weightd_mesh.pair_protection_domain != 0 ?
+        ibv_create_cq(weightd_mesh.pair_context,SPARK_WEIGHTD_MESH_CQ_ENTRIES,0,0,0) : 0;
+    if (weightd_mesh.pair_cq != 0)
+    {
+        weightd_mesh.pair_recv_mr = ibv_reg_mr(weightd_mesh.pair_protection_domain,weightd_mesh.recv_buffer,
+            SPARK_WEIGHTD_MESH_REGION_BYTES,IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        weightd_mesh.pair_staging_mr = ibv_reg_mr(weightd_mesh.pair_protection_domain,weightd_mesh.staging_buffer,
+            SPARK_WEIGHTD_MESH_STAGING_BYTES,IBV_ACCESS_LOCAL_WRITE);
+        weightd_mesh.pair_seq_mr = ibv_reg_mr(weightd_mesh.pair_protection_domain,&weightd_mesh.seq_storage,
+            sizeof(weightd_mesh.seq_storage),IBV_ACCESS_LOCAL_WRITE);
+    }
+    if (weightd_mesh.pair_recv_mr == 0 || weightd_mesh.pair_staging_mr == 0 || weightd_mesh.pair_seq_mr == 0)
+    {
+        fprintf(stderr,"weightd-mesh: pair %s pd/cq/mr failed errno=%d\n",pair_interface_name,errno);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    weightd_mesh.pair_peer = partner < weightd_mesh.local_rank ? partner : partner - 1u;
+    printf("weightd-mesh: pair link %s sgid=%u partner=%u peer=%u\n",pair_interface_name,pair_sgid_index,partner,weightd_mesh.pair_peer);
+    fflush(stdout);
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
+    uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask,
+    const char *pair_interface_name, uint32_t pair_sgid_index)
+{
     struct ibv_qp_init_attr qp_attributes;
     SparkWeightdMeshRecord own_record;
-    int device_count;
+    SparkStatus status;
     uint32_t peer;
 
     if ( mesh_dir != 0 && mesh_dir[0] != '\0' )
@@ -846,6 +976,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     weightd_mesh.local_rank = rank;
     weightd_mesh.rank_mask = rank_mask;
     weightd_mesh.sgid_index = sgid_index;
+    weightd_mesh.pair_peer = SPARK_WEIGHTD_MESH_PEERS;
     weightd_mesh.boot_ns = SparkWeightdMeshRealtimeNs();
     weightd_mesh_boot_phase_ns = weightd_mesh.boot_ns;
     SparkWeightdMeshPhase("init-begin");
@@ -854,50 +985,9 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
         SparkWeightdMeshReadyPath(ready_path,sizeof(ready_path));
         (void)unlink(ready_path);
     }
-
-    devices = ibv_get_device_list(&device_count);
-    if (devices == 0 || device_count == 0)
-    {
-        fprintf(stderr,"weightd-mesh: no RDMA devices\n");
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
-    }
-    {
-        int device_index;
-        int found = 0;
-        for (device_index = 0; device_index < device_count; device_index++)
-        {
-            const char *name = ibv_get_device_name(devices[device_index]);
-            if (name != 0 && strcmp(name,interface_name) == 0)
-            {
-                weightd_mesh.context = ibv_open_device(devices[device_index]);
-                found = 1;
-                break;
-            }
-        }
-        if (found == 0)
-        {
-            fprintf(stderr,"weightd-mesh: %s not found\n",interface_name);
-            ibv_free_device_list(devices);
-            return SPARK_STATUS_DRIVER_LOAD_ERROR;
-        }
-    }
-    ibv_free_device_list(devices);
-    if (ibv_query_port(weightd_mesh.context,1,&port_attr) != 0)
-    {
-        fprintf(stderr,"weightd-mesh: port query failed\n");
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
-    }
-    if (port_attr.state != IBV_PORT_ACTIVE)
-    {
-        fprintf(stderr,"weightd-mesh: switch port not active (state=%d)\n",
-            port_attr.state);
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
-    }
-    if (ibv_query_port(weightd_mesh.context,1,&port_attr) != 0)
-    {
-        fprintf(stderr,"weightd-mesh: port query failed\n");
-        return SPARK_STATUS_DRIVER_LOAD_ERROR;
-    }
+    status = SparkWeightdMeshOpenDevice(interface_name,sgid_index,&weightd_mesh.context,&weightd_mesh.lid,weightd_mesh.gid);
+    if (status != SPARK_STATUS_OK)
+        return status;
     weightd_mesh.protection_domain = ibv_alloc_pd(weightd_mesh.context);
     if (weightd_mesh.protection_domain == 0)
     {
@@ -1000,6 +1090,12 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
         fprintf(stderr,"weightd-mesh: seq mr failed errno=%d\n",errno);
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
+    if (pair_interface_name != 0 && pair_interface_name[0] != '\0')
+    {
+        status = SparkWeightdMeshOpenPair(pair_interface_name,pair_sgid_index);
+        if (status != SPARK_STATUS_OK)
+            return status;
+    }
     memset(&qp_attributes,0,sizeof(qp_attributes));
     qp_attributes.send_cq = weightd_mesh.cq;
     qp_attributes.recv_cq = weightd_mesh.cq;
@@ -1012,11 +1108,12 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         uint32_t peer_rank = peer < rank ? peer : peer + 1u;
+        struct ibv_pd *domain = SparkWeightdMeshIsPairPeer(peer) != 0u ? weightd_mesh.pair_protection_domain : weightd_mesh.protection_domain;
         if ( (rank_mask & (1u << peer_rank)) == 0u ) continue;
-        weightd_mesh.send_qps[peer] =
-            ibv_create_qp(weightd_mesh.protection_domain,&qp_attributes);
-        weightd_mesh.recv_qps[peer] =
-            ibv_create_qp(weightd_mesh.protection_domain,&qp_attributes);
+        qp_attributes.send_cq = SparkWeightdMeshIsPairPeer(peer) != 0u ? weightd_mesh.pair_cq : weightd_mesh.cq;
+        qp_attributes.recv_cq = qp_attributes.send_cq;
+        weightd_mesh.send_qps[peer] = ibv_create_qp(domain,&qp_attributes);
+        weightd_mesh.recv_qps[peer] = ibv_create_qp(domain,&qp_attributes);
         if (weightd_mesh.send_qps[peer] == 0 ||
             weightd_mesh.recv_qps[peer] == 0)
         {
@@ -1024,30 +1121,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         }
     }
-    memset(&own_record,0,sizeof(own_record));
-    own_record.magic = SPARK_WEIGHTD_MESH_MAGIC;
-    own_record.rank = weightd_mesh.local_rank;
-    own_record.rank_mask = weightd_mesh.rank_mask;
-    own_record.boot_ns = weightd_mesh.boot_ns;
-    own_record.rkey = weightd_mesh.recv_mr->rkey;
-    own_record.recv_addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
-    own_record.lid = (uint16_t)port_attr.lid;
-    weightd_mesh.lid = (uint16_t)port_attr.lid;
-    {
-        union ibv_gid gid;
-        if (ibv_query_gid(weightd_mesh.context,1,(uint8_t)sgid_index,&gid) != 0)
-        {
-            fprintf(stderr,"weightd-mesh: gid query failed\n");
-            return SPARK_STATUS_DRIVER_LOAD_ERROR;
-        }
-        memcpy(own_record.gid,gid.raw,16);
-        memcpy(weightd_mesh.gid,gid.raw,16);
-    }
-    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
-    {
-        own_record.send_qpn[peer] = weightd_mesh.send_qps[peer] != 0 ? weightd_mesh.send_qps[peer]->qp_num : 0u;
-        own_record.recv_qpn[peer] = weightd_mesh.recv_qps[peer] != 0 ? weightd_mesh.recv_qps[peer]->qp_num : 0u;
-    }
+    SparkWeightdMeshFillRecord(&own_record);
     printf("weightd-mesh: rank=%u publishing %u QPs\n",
         weightd_mesh.local_rank,2u * ((uint32_t)__builtin_popcount(rank_mask) - 1u));
     fflush(stdout);
@@ -1199,7 +1273,7 @@ static SparkStatus SparkWeightdMeshPostTransfer(uint32_t index, uint32_t peer,
     uint32_t kind, uint64_t source_offset, uint32_t length)
 {
     return SparkWeightdMeshPostTransferFrom(index,peer,kind,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer + source_offset,
-        weightd_mesh.recv_mr->lkey,source_offset,length);
+        SparkWeightdMeshPeerMr(peer,weightd_mesh.recv_mr,weightd_mesh.pair_recv_mr)->lkey,source_offset,length);
 }
 
 static uint32_t SparkWeightdMeshPhysicalMask(const SparkWeightdMeshTopology *topology,uint32_t peer_rank_mask,uint8_t *logical)
@@ -1241,7 +1315,7 @@ static void SparkWeightdMeshPostRoute(uint32_t index,uint32_t band,uint64_t slot
             status = SPARK_STATUS_OK;
         else if ( route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER )
             status = SparkWeightdMeshPostTransferFrom(index,peer,2u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,logical[peer_rank]),
-                weightd_mesh.staging_mr->lkey,slot_base,(uint32_t)length);
+                SparkWeightdMeshPeerMr(peer,weightd_mesh.staging_mr,weightd_mesh.pair_staging_mr)->lkey,slot_base,(uint32_t)length);
         else
             status = SparkWeightdMeshPostTransfer(index,peer,2u,slot_base + offset,(uint32_t)length);
         if ( status == SPARK_STATUS_OK )
@@ -1296,6 +1370,8 @@ static void SparkWeightdMeshDrainCq(void)
     for (;;)
     {
         completed = ibv_poll_cq(weightd_mesh.cq,64,completions);
+        if (completed <= 0 && weightd_mesh.pair_cq != 0)
+            completed = ibv_poll_cq(weightd_mesh.pair_cq,64,completions);
         if (completed <= 0)
             break;
         for (index = 0; index < completed; index++)
@@ -1420,7 +1496,6 @@ void SparkWeightdMeshPoll(void)
         struct stat artifact_st;
         char artifact_path[256];
         SparkWeightdMeshRecord own_record;
-        uint32_t peer;
         weightd_mesh.artifact_check_ns = SparkWeightdMeshRealtimeNs();
         {
             char ready_path[256];
@@ -1455,20 +1530,7 @@ void SparkWeightdMeshPoll(void)
         }
         if (1u)
         {
-            memset(&own_record,0,sizeof(own_record));
-            own_record.magic = SPARK_WEIGHTD_MESH_MAGIC;
-            own_record.rank = weightd_mesh.local_rank;
-            own_record.rank_mask = weightd_mesh.rank_mask;
-            own_record.boot_ns = weightd_mesh.boot_ns;
-            own_record.rkey = weightd_mesh.recv_mr != 0 ? weightd_mesh.recv_mr->rkey : 0u;
-            own_record.recv_addr = (uint64_t)(uintptr_t)weightd_mesh.recv_buffer;
-            own_record.lid = weightd_mesh.lid;
-            memcpy(own_record.gid,weightd_mesh.gid,16);
-            for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
-            {
-                own_record.send_qpn[peer] = weightd_mesh.send_qps[peer] != 0 ? weightd_mesh.send_qps[peer]->qp_num : 0u;
-                own_record.recv_qpn[peer] = weightd_mesh.recv_qps[peer] != 0 ? weightd_mesh.recv_qps[peer]->qp_num : 0u;
-            }
+            SparkWeightdMeshFillRecord(&own_record);
             (void)SparkWeightdMeshWriteRecord(&own_record);
         }
 artifact_current:;
@@ -1739,6 +1801,7 @@ uint32_t SparkWeightdMeshBroadcast(
         peer = SparkWeightdMeshPeerIndexFromRank(rank);
         if (peer < 0)
             continue;
+        scatter[0].lkey = SparkWeightdMeshPeerMr((uint32_t)peer,weightd_mesh.recv_mr,weightd_mesh.pair_recv_mr)->lkey;
         memset(&work_request,0,sizeof(work_request));
         work_request.wr_id = (uint64_t)(uint32_t)peer;
         work_request.sg_list = &scatter[0];
@@ -1799,6 +1862,15 @@ SparkStatus SparkWeightdMeshPostWrite(
     peer = SparkWeightdMeshPeerIndexFromRank(peer_rank);
     if (peer < 0)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    if (SparkWeightdMeshIsPairPeer((uint32_t)peer) != 0u)
+    {
+        if (lkey == weightd_mesh.recv_mr->lkey)
+            lkey = weightd_mesh.pair_recv_mr->lkey;
+        else if (lkey == weightd_mesh.staging_mr->lkey)
+            lkey = weightd_mesh.pair_staging_mr->lkey;
+        else
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
     memset(&scatter,0,sizeof(scatter));
     scatter.addr = local_addr;
     scatter.length = length;
