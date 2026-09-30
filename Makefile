@@ -585,6 +585,7 @@ PYTHON_TESTS := \
 	tests/test_ling_lane.py \
 	tests/test_glm53full_lane.py \
 	tests/test_glm53full_compsec17.py \
+	tests/test_glm53full_scorecard.py \
 	tests/test_ling_stagepack_resume.py \
 	tests/test_mimo26_emit_order.py \
 	tests/test_ling_smoke_experts.py \
