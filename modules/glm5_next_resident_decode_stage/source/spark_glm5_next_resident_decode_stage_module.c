@@ -22,6 +22,7 @@
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
 #include "sparkpipe/spark_speculation_reference_draft.h"
+#include "sparkpipe/spark_speculation_recorded_draft.h"
 #include "sparkpipe/spark_speculation_depth.h"
 #include "sparkpipe/spark_speculation_drafter_mix.h"
 #include "sparkpipe/spark_speculation_relay_link.h"
@@ -370,6 +371,8 @@ struct SparkGlm5NextModuleState
 	SparkSpeculationLookupDraft verify_lookup;
 	SparkSpeculationReferenceDraft verify_reference;
 	uint32_t *verify_reference_tokens;
+	SparkSpeculationRecordedDraft verify_recorded;
+	uint8_t *verify_recorded_bytes;
 	uint64_t verify_frames;
 	uint64_t verify_plain_frames;
 	uint64_t verify_frame_class[SPARK_GLM5_NEXT_VERIFY_FRAME_CLASS_COUNT];
@@ -6920,7 +6923,7 @@ static SparkStatus SparkGlm5NextConfigureVerify(SparkGlm5NextModuleState *state)
 	}
 	if ( SparkGlm5NextVerifyDrafterParse(getenv(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV),state->verify_rows_max,&state->verify_drafter,&state->verify_drafter_path) != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"%s must be lookup, mtp, mtp+lookup, oracle:PATH or adversary:PATH when %s is nonzero, and absent when it is 0\n",SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_ENV);
+		fprintf(stderr,"%s must be lookup, mtp, mtp+lookup, oracle:PATH, adversary:PATH or recorded:PATH when %s is nonzero, and absent when it is 0\n",SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_ENV);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	state->verify_mtp = SparkGlm5NextVerifyDrafterUsesMtp(state->verify_drafter);
@@ -6957,6 +6960,38 @@ static SparkStatus SparkGlm5NextLoadReferenceTokens(SparkGlm5NextModuleState *st
 	fclose(file);
 	*count_out = count;
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm5NextLoadRecordedDrafts(SparkGlm5NextModuleState *state)
+{
+	FILE *file;
+	long bytes;
+	SparkStatus status;
+	file = fopen(state->verify_drafter_path,"rb");
+	if ( file == 0 )
+	{
+		fprintf(stderr,"GLM verify recorded drafter cannot open %s\n",state->verify_drafter_path);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
+	bytes = fseek(file,0,SEEK_END) == 0 ? ftell(file) : -1;
+	if ( bytes < (long)SPARK_SPECULATION_RECORDED_HEADER_BYTES || fseek(file,0,SEEK_SET) != 0 )
+	{
+		fclose(file);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	state->verify_recorded_bytes = (uint8_t *)malloc((size_t)bytes);
+	if ( state->verify_recorded_bytes == 0 || fread(state->verify_recorded_bytes,1u,(size_t)bytes,file) != (size_t)bytes )
+	{
+		fclose(file);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	fclose(file);
+	status = SparkSpeculationRecordedDraftInitialize(&state->verify_recorded,state->verify_recorded_bytes,(uint64_t)bytes,SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"GLM verify recorded drafter %s is not a draft table for vocabulary %u\n",state->verify_drafter_path,(unsigned)SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT);
+	else
+		fprintf(stderr,"GLM verify recorded drafter %s entries=%llu depth=%u\n",state->verify_drafter_path,(unsigned long long)state->verify_recorded.entry_count,state->verify_recorded.depth);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkGlm5NextAllocateDrafter(SparkGlm5NextModuleState *state)
@@ -6998,6 +7033,12 @@ static SparkStatus SparkGlm5NextAllocateDrafter(SparkGlm5NextModuleState *state)
 		state->verify_draft_function = SparkSpeculationReferenceDraftTokens;
 		state->verify_draft_context = &state->verify_reference;
 	}
+	else if ( state->verify_drafter == SPARK_GLM5_NEXT_VERIFY_DRAFTER_RECORDED )
+	{
+		status = SparkGlm5NextLoadRecordedDrafts(state);
+		state->verify_draft_function = SparkSpeculationRecordedDraftTokens;
+		state->verify_draft_context = &state->verify_recorded;
+	}
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"GLM verify drafter %u failed to initialize: status=%d\n",state->verify_drafter,(int)status);
 	SPARK_RETURN(status);
@@ -7011,7 +7052,11 @@ static void SparkGlm5NextReleaseDrafter(SparkGlm5NextModuleState *state)
 	free(state->mtp_lane_next);
 	state->mtp_lane_sequence = 0;
 	state->mtp_lane_next = 0;
+	if ( state->verify_recorded_bytes != 0 )
+		fprintf(stderr,"VERIFY-RECORDED hits=%llu misses=%llu entries=%llu\n",(unsigned long long)state->verify_recorded.hits,(unsigned long long)state->verify_recorded.misses,(unsigned long long)state->verify_recorded.entry_count);
 	free(state->verify_reference_tokens);
+	free(state->verify_recorded_bytes);
+	state->verify_recorded_bytes = 0;
 	free(state->verify_depth_cap);
 	free(state->verify_depth_sequence);
 	state->verify_reference_tokens = 0;
