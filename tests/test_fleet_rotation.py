@@ -583,6 +583,142 @@ def test_config_validation():
         check("config: a runnable model needs every engine command", rc == 2 and "engine.ready" in out, out)
 
 
+def exclusive_fleet(tmp, floor=True, arena=95):
+    cfg = config(Path(tmp))
+    cfg["models"]["k"] = model(HOSTS, 95, port=9005)
+    if floor:
+        cfg["models"]["k"].update({"floor_gib": 8, "abort_gib": 6})
+    f = Fleet(tmp, cfg)
+    w = f.world()
+    w["arena"]["k"] = arena
+    f.save(w)
+    return f
+
+
+def test_exclusive_floor_and_abort():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp)
+        rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
+        st = f.state()
+        check("exclusive floor: a model that fits only under its own floor takes its slot", rc == 0 and st.get("active") == ["k"] and f.up_on("k") == HOSTS and f.up_on("prod") == [], out[-600:])
+        log = (f.state_dir / "rotation.log").read_text()
+        check("exclusive floor: before is checked at the global floor, after at the model's floor", re.search(r"FLOOR when=before .*floor=20", log) and re.search(r"FLOOR when=after .*floor=8", log), log[-600:])
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T16:05:30Z")
+        check("exclusive floor: a steady tick probes memory for the abort level and changes nothing", rc == 0 and f.state().get("active") == ["k"] and any(" mem" in l for l in f.call_lines()) and not any(" stop " in l for l in f.call_lines()), out[-400:])
+        check("exclusive floor: the steady floor guard reads the model's own floor (15 GiB free raises no shed warning)", "no companion there to shed" not in f.alerts() and f.state().get("phase") == "steady", f.alerts())
+        rc, out = f.tool("plan", at="2026-09-29T16:07:30Z")
+        check("exclusive floor: plan keeps the exclusive model and predicts at its own floor", rc == 0 and "target=k " in out and "demoted" not in f.alerts(), out[-400:])
+        w = f.world()
+        w["nodes"]["n2"]["mem"] = 5
+        f.save(w)
+        rc, out = f.tool("tick", at="2026-09-29T16:10:30Z")
+        st = f.state()
+        check("abort: MemAvailable under abort_gib in steady state falls back to production", rc == 1 and st.get("active") == ["prod"] and f.up_on("k") == [] and f.up_on("prod") == HOSTS, out[-600:])
+        check("abort: alerted with the node and level", "abort level" in f.alerts() and "n2=5<6" in f.alerts(), f.alerts())
+        log = (f.state_dir / "rotation.log").read_text()
+        check("abort: the fallback's own floor check is the global floor", re.search(r"FLOOR when=after-fallback .*floor=20", log), log[-600:])
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        check("abort: the next hour follows the schedule again", f.state().get("active") == ["prod", "c1"], out[-300:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp)
+        f.tool("tick", at="2026-09-29T16:00:30Z")
+        (f.state_dir / "rotation.log").write_text("")
+        rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+        log = (f.state_dir / "rotation.log").read_text()
+        check("exclusive floor: leaving the exclusive hour checks before at the model's floor and after at the global floor", rc == 0 and f.state().get("active") == ["prod", "c1"] and f.up_on("k") == [] and re.search(r"FLOOR when=before .*floor=8", log) and re.search(r"FLOOR when=after .*floor=20", log) and "FALLBACK" not in log, out[-600:] + log[-600:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp, floor=False)
+        rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
+        check("exclusive floor: without floor_gib the same model is demoted at the global floor", f.state().get("active") == ["prod", "c1"] and "demoted" in f.alerts() and not any("start k" in l for l in f.call_lines()), out[-500:])
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp, arena=106)
+        rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
+        st = f.state()
+        check("abort: memory under abort_gib while waiting for ready fails the start and restores production", rc == 1 and st.get("active") == ["prod"] and f.up_on("k") == [] and "abort level while waiting" in f.alerts(), out[-600:] + f.alerts())
+    with tempfile.TemporaryDirectory() as tmp:
+        f = exclusive_fleet(tmp)
+        w = f.world()
+        w["nodes"]["n1"]["mem"] = 64
+        f.save(w)
+        rc, out = f.tool("tick", at="2026-09-29T16:00:30Z")
+        check("exclusive floor: a node short even for the model's own floor demotes the slot", f.state().get("active") == ["prod", "c1"] and "demoted" in f.alerts() and f.up_on("prod") == HOSTS, out[-500:])
+
+
+def test_exclusive_floor_validation():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Fleet(tmp)
+        cases = (
+            ("companion", lambda c: c["models"]["c1"].update({"floor_gib": 8, "abort_gib": 6}), "floor_gib is only"),
+            ("fallback", lambda c: c["models"]["prod"].update({"floor_gib": 8, "abort_gib": 6}), "floor_gib is only"),
+            ("base of a slot with companions", lambda c: (c["models"].update({"k": dict(model(HOSTS, 95, port=9005), floor_gib=8, abort_gib=6)}), c["slots"]["k3"].update({"companions": ["c1"]})), "floor_gib is only"),
+            ("partial fleet", lambda c: c["models"].update({"k": dict(model(["n0", "n1"], 95, port=9005), floor_gib=8, abort_gib=6)}), "whole fleet"),
+            ("abort above floor", lambda c: c["models"].update({"k": dict(model(HOSTS, 95, port=9005), floor_gib=8, abort_gib=9)}), "abort_gib"),
+            ("floor above the global floor", lambda c: c["models"].update({"k": dict(model(HOSTS, 95, port=9005), floor_gib=30, abort_gib=6)}), "abort_gib"),
+            ("floor without abort", lambda c: c["models"].update({"k": dict(model(HOSTS, 95, port=9005), floor_gib=8)}), "come together"),
+        )
+        for label, mutate, want in cases:
+            bad = config(Path(tmp))
+            mutate(bad)
+            f.cfg_path.write_text(json.dumps(bad))
+            rc, out = f.tool("check-config", at=None)
+            check(f"config: exclusive floor refused ({label})", rc == 2 and want in out, out)
+        good = config(Path(tmp))
+        good["models"]["k"] = dict(model(HOSTS, 95, port=9005), floor_gib=8, abort_gib=6)
+        f.cfg_path.write_text(json.dumps(good))
+        rc, out = f.tool("check-config", at=None)
+        check("config: exclusive floor accepted on a whole-fleet slot base", rc == 0, out)
+
+
+def test_pack_cache_trim():
+    trim = REPOSITORY / "tools" / "pack_cache_trim.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        p = subprocess.run([sys.executable, str(trim), str(Path(tmp) / "absent.pack")], capture_output=True, text=True)
+        check("cache trim: a missing pack is refused", p.returncode == 2 and "not a file: " in p.stderr and "absent.pack" in p.stderr, p.stdout + p.stderr)
+        p = subprocess.run([sys.executable, str(trim), "--every", "-1", str(trim)], capture_output=True, text=True)
+        check("cache trim: a negative period is refused", p.returncode == 2, p.stdout + p.stderr)
+        source = trim.read_text()
+        check("cache trim: pack-scoped only, never a node-global drop", "drop_caches" not in source and "POSIX_FADV_DONTNEED" in source)
+        if not hasattr(os, "posix_fadvise"):
+            print("SKIP cache trim: posix_fadvise is Linux-only; the page-cache check runs on the Linux host-tests")
+            return
+        pack = Path(tmp) / "a.pack"
+        pack.write_bytes(os.urandom(8 << 20))
+        with open(pack, "rb") as f:
+            os.fsync(f.fileno())
+            f.read()
+        before = cached_bytes(pack)
+        locked = Path(tmp) / "locked.pack"
+        locked.write_bytes(b"x")
+        locked.chmod(0)
+        p = subprocess.run([sys.executable, str(trim), str(locked), str(pack)], capture_output=True, text=True)
+        after = cached_bytes(pack)
+        unreadable = os.getuid() != 0
+        check("cache trim: the pack's page cache is dropped and an unreadable pack is skipped", p.returncode == 0 and (f"{2 - unreadable} of 2 files" in p.stdout) and before > 0 and after < before, f"{before} -> {after} {p.stdout}{p.stderr}")
+
+
+def cached_bytes(path):
+    import ctypes
+    import mmap
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    size = os.path.getsize(path)
+    page = os.sysconf("SC_PAGE_SIZE")
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        address = libc.mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
+        pages = (size + page - 1) // page
+        vector = (ctypes.c_ubyte * pages)()
+        rc = libc.mincore(address, size, vector)
+        libc.munmap(address, size)
+    finally:
+        os.close(fd)
+    return sum(v & 1 for v in vector) * page if rc == 0 else -1
+
+
 def test_dry_run_while_paused_shows_the_plan():
     with tempfile.TemporaryDirectory() as tmp:
         f = Fleet(tmp)
@@ -1113,6 +1249,128 @@ def test_steady_floor_guard_sheds_a_companion():
         check("steady floor: with no companion on the low node the primary is left serving and alerted", rc == 0 and f.state().get("active") == ["prod", "ta", "tc"] and not any(" stop " in l for l in f.call_lines()) and "no companion there to shed" in f.alerts(), f.alerts())
 
 
+def real_footprints(f, base, real):
+    w = f.world()
+    for h in HOSTS:
+        w["nodes"][h]["mem"] = base - real["prod"]
+        w["nodes"][h]["arena"]["prod"] = real["prod"]
+    w["arena"].update(real)
+    f.save(w)
+
+
+def incident_config(tmp, small_gib):
+    cfg = config(Path(tmp))
+    cfg["node_free_gib"] = 106
+    cfg["slots"]["full"]["companions"] = ["q", "g", "m"]
+    cfg["slots"]["flash_plus"]["companions"] = ["q", "g", "m"]
+    cfg["rollback_models"] = ["prod", "q"]
+    for name in ("c1", "c2", "c3", "dflt"):
+        del cfg["models"][name]
+    cfg["models"].update({"q": model(["n0"], small_gib, port=9020), "m": model(["n1"], 46, port=9021), "g": model(["n2"], 36, port=9022)})
+    return cfg
+
+
+def incident_fleet(tmp, small_gib, prod_real=27):
+    f = Fleet(tmp, incident_config(tmp, small_gib))
+    real_footprints(f, 109, {"prod": prod_real, "big": 64, "q": 26, "m": 42, "g": 36})
+    return f
+
+
+H00 = hour_key("2026-09-30T00:00:00Z")
+
+
+def test_incident_full_hour_serves_the_primary():
+    for small_gib, how in ((15, "stopped after its re-add breaks the floor"), (26, "skipped by the start gate")):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = incident_fleet(tmp, small_gib)
+            rc, out = f.tool("tick", at="2026-09-29T23:50:20Z")
+            check(f"incident {small_gib}: the flash_plus hour packs every companion", f.state().get("active") == ["prod", "q", "g", "m"], out[-600:])
+            f.clear_calls()
+            rc, out = f.tool("tick", at="2026-09-30T00:00:21Z")
+            st = f.state()
+            lines = f.call_lines()
+            log = (f.state_dir / "rotation.log").read_text()
+            check(f"incident {small_gib}: the full hour packs the running companion beside the primary, as at 00:00Z", st["picks"][H00]["companions"] == ["q"] and "n1:" in st["picks"][H00]["waiting"]["m"], json.dumps(st["picks"].get(H00)))
+            check(f"incident {small_gib}: the primary's gate is short only where the kept companion holds memory", "goes first: its start gate is short on n0 " in f.alerts() and "short on n0=83" in log, f.alerts())
+            order = [first_index(lines, p) for p in (r"n0 stop prod", r"n0 stop q", r"n0 reclaim q --reclaim-pack", r"n\d start big", r"fakehub smoke big")]
+            check(f"incident {small_gib}: the companion is stopped and reclaimed by pack, then the primary starts", all(i >= 0 for i in order) and order == sorted(order), str(order))
+            check(f"incident {small_gib}: the primary serves the hour with no fallback", st.get("active") == ["big"] and f.up_on("big") == HOSTS and f.world()["apis"].get("big") and st.get("phase") == "steady"
+                  and st.get("failed_instance") is None and "FALLBACK" not in log and not (f.state_dir / "ROTATION_PAUSE").exists(), out[-900:])
+            check(f"incident {small_gib}: the companion is {how}", f.up_on("q") == [] and f.world()["nodes"]["n0"]["arena"].get("q") == 0 and "q" in st["dropped"][H00]
+                  and ("below 20 GiB after-q" in f.alerts() if small_gib == 15 else "yielded to the primary" in f.alerts() and not any("n0 start q" in l for l in lines)), f.alerts())
+            check(f"incident {small_gib}: every node keeps the floor", min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20, json.dumps(f.world()["nodes"]))
+
+
+def test_primary_first_order_and_readd():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = config(Path(tmp))
+        cfg["slots"]["full"]["companions"] = ["s1", "s2", "s3"]
+        cfg["slots"]["flash_plus"]["companions"] = ["s1", "s2", "s3"]
+        cfg["rollback_models"] = ["prod", "s1"]
+        for name in ("c1", "c2", "c3", "dflt"):
+            del cfg["models"][name]
+        cfg["models"].update({"s1": model(["n0"], 10, port=9030), "s2": model(["n0"], 10, port=9031), "s3": model(["n1"], 10, port=9032)})
+        f = Fleet(tmp, cfg)
+        real_footprints(f, 110, {"prod": 27, "big": 68, "s1": 12, "s2": 12, "s3": 12})
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        check("primary first: the small companions run beside production", f.state().get("active") == ["prod", "s1", "s2", "s3"], json.dumps(f.state().get("active")))
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T18:00:30Z")
+        lines = f.call_lines()
+        st = f.state()
+        order = [first_index(lines, p) for p in (r"n0 stop prod", r"n0 stop s2", r"n0 reclaim s2 --reclaim-pack", r"n0 stop s1", r"n0 reclaim s1 --reclaim-pack", r"n0 start big", r"n0 start s1", r"n0 start s2")]
+        check("primary first: kept companions stop in reverse start order, each reclaimed by pack, before the primary starts; re-added after it", all(i >= 0 for i in order) and order == sorted(order), f"{order}\n" + "\n".join(lines))
+        check("primary first: a kept companion off the short nodes is never stopped", st.get("active") == ["big", "s1", "s3"] and f.up_on("s3") == ["n1"] and not any(" stop s3" in l or "reclaim s3" in l for l in lines), "\n".join(lines))
+        check("primary first: the companion that still fits is back, the one that does not is stopped and skipped", "s1" in st.get("active", []) and f.up_on("s1") == ["n0"] and f.up_on("s2") == [] and "s2" in st["dropped"][hour_key("2026-09-29T18:00:00Z")], out[-800:])
+        check("primary first: no fallback, the floor holds", st.get("phase") == "steady" and "FALLBACK" not in (f.state_dir / "rotation.log").read_text() and min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20, out[-400:])
+
+
+def test_measured_capacity_packing():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = incident_fleet(tmp, 15, prod_real=38)
+        f.tool("tick", at="2026-09-29T23:50:20Z")
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-30T00:00:21Z")
+        st = f.state()
+        lines = f.call_lines()
+        check("measured: a running companion is charged what it really holds, not its config", st["picks"][H00]["companions"] == [] and st["picks"][H00]["waiting"]["q"] == "n0:15<20", json.dumps(st["picks"].get(H00)))
+        check("measured: it stops with the outgoing models, before the primary, and the gate never refuses", 0 <= first_index(lines, r"n0 stop q") < first_index(lines, r"n\d start big") and "goes first" not in f.alerts() and st.get("active") == ["big"], out[-600:])
+        check("measured: the pick records the predicted MemAvailable per node", st["picks"][H00]["after_gib"] == {"n0": 30, "n1": 38, "n2": 38, "n3": 38}, json.dumps(st["picks"][H00].get("after_gib")))
+    for mem, gib, admitted, label in ((109 - 27, 50, True, "admits a companion beside what production really holds"), (160, 90, False, "never counts more than node_free_gib")):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = incident_config(tmp, 15)
+            cfg["slots"]["flash_plus"]["companions"].append("fat")
+            cfg["models"]["fat"] = model(["n3"], gib, port=9023)
+            f = Fleet(tmp, cfg)
+            real_footprints(f, 109, {"prod": 27, "big": 64, "q": 26, "m": 42, "g": 36, "fat": gib})
+            w = f.world()
+            w["nodes"]["n3"]["mem"] = mem
+            f.save(w)
+            rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+            st = f.state()
+            waiting = st["picks"][hour_key("2026-09-29T17:00:00Z")]["waiting"]
+            ok = "fat" in st.get("active", []) and min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20 if admitted else "fat" not in st.get("active", []) and waiting.get("fat") == "n3:16<20"
+            check(f"measured: {label}", ok, json.dumps(st.get("picks")) + out[-400:])
+
+
+def test_failed_primary_after_yield_and_force_retry():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = incident_fleet(tmp, 15)
+        f.tool("tick", at="2026-09-29T23:50:20Z")
+        f.behave(never_ready=["big"])
+        rc, out = f.tool("tick", at="2026-09-30T00:00:21Z")
+        st = f.state()
+        check("failure path: a primary that fails after the companions yielded falls back to production, never to nothing", st.get("active") == ["prod"] and f.up_on("prod") == HOSTS and f.world()["apis"].get("prod")
+              and st.get("phase") == "fallback" and not (f.state_dir / "ROTATION_PAUSE").exists() and f.up_on("big") == [] and f.up_on("q") == [], out[-800:])
+        check("failure path: the hour is fenced", st.get("failed_instance") == int(H00), json.dumps(st)[:300])
+        rc, out = f.tool("force", "full", at="2026-09-30T00:05:00Z")
+        st = f.state()
+        check("force: clears the failed hour and logs it", rc == 0 and "failed_instance" not in st and "cleared=failed_instance@2026-09-30T00:00:00Z" in (f.state_dir / "rotation.log").read_text(), out)
+        f.behave(never_ready=[])
+        rc, out = f.tool("tick", at="2026-09-30T00:05:21Z")
+        check("force: the failed slot is retried without editing state", f.state().get("active") == ["big"] and f.up_on("big") == HOSTS and f.state().get("phase") == "steady", out[-600:])
+
+
 def test_production_config():
     cfg = json.loads(PRODUCTION.read_text())
     p = subprocess.run([sys.executable, str(TOOL), "--config", str(PRODUCTION), "check-config"], capture_output=True, text=True)
@@ -1131,6 +1389,7 @@ def main():
                  test_pause_resume_and_foreign_change, test_floor_and_prediction, test_steady_health_and_manual,
                  test_stuck_stop_and_reclaim_guard, test_interrupted_transition_recovers, test_pause_during_running_tick,
                  test_unexpected_error_falls_back, test_failed_health_fallback_reports_degraded, test_mixed_production_is_not_held, test_dry_run_executes_nothing, test_schedule_document_and_sync, test_config_validation,
+                 test_exclusive_floor_and_abort, test_exclusive_floor_validation, test_pack_cache_trim,
                  test_dry_run_while_paused_shows_the_plan, test_failure_after_the_hour_boundary_marks_the_starting_hour, test_install_rollback_waits_for_a_running_tick, test_install_upgrade_and_revert,
                  test_packing_fills_the_nodes, test_packing_per_node_floor, test_partial_companion_failure, test_steady_companion_loss_and_health,
                  test_rotation_fairness_across_cycles, test_full_slot_with_companion, test_packing_schedule_document_and_force, test_plan_is_read_only,
@@ -1138,7 +1397,8 @@ def main():
                  test_dry_run_of_a_running_rotation_shows_the_plan,
                  test_resident_arenas_of_a_stopped_model_are_reclaimed, test_api_down_with_engines_up_restarts_the_api,
                  test_fallback_tries_production_past_a_stuck_model, test_steady_floor_guard_sheds_a_companion,
-                 test_production_config):
+                 test_incident_full_hour_serves_the_primary, test_primary_first_order_and_readd, test_measured_capacity_packing,
+                 test_failed_primary_after_yield_and_force_retry, test_production_config):
         test()
     if failures:
         print(f"\n{len(failures)} FAILED: {', '.join(failures)}")

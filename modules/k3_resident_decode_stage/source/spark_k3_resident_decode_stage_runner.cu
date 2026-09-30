@@ -940,7 +940,7 @@ static void SparkK3RunnerLazyRelease(void *context, uint32_t layer)
 	if ( state == 0 )
 		return;
 	status = SparkK3RunnerReleaseLease(state);
-	if ( status != SPARK_STATUS_OK )
+	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
 		fprintf(stderr,"sparkpipe_k3: lease release failed status=%d (retained for recovery)\n",(int)status);
 }
 

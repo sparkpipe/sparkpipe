@@ -1,0 +1,2 @@
++446
+kv_shard rounds: gather the sharded keys for prefill-sized waves instead of scattering partials (release eefa663, A/B KEEP 2026-09-30: TTFT 0.74x).

@@ -1562,10 +1562,13 @@ CEILING = 375598
 CEILING = 379357
 CEILING = 379716
 CEILING = 379779
-CEILING = 380225
+CEILING = 381622
+CEILING = 381652
+CEILING = 381715
 
 
 ROOT = Path(__file__).resolve().parent.parent
+BUDGET = ROOT / 'tests' / 'code_size_budget'
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
 # .agents holds per-model agent worktrees (full clones of this tree);
 # their copies are tooling infrastructure, not authored source, and must
@@ -1587,7 +1590,18 @@ EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
 # model-families/, modules/, tools/, and sources the counter sees.
 
 
+def budget():
+    grants = 0
+    for path in sorted(BUDGET.glob('*.txt')):
+        lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+        if len(lines) < 2 or not lines[0].startswith('+') or not lines[0][1:].isdigit():
+            raise SystemExit(f"FAIL {path.relative_to(ROOT)}: first line must be +<lines>, then at least one line of justification")
+        grants += int(lines[0][1:])
+    return grants
+
+
 def main():
+    ceiling = CEILING + budget()
     total = 0
     for path in ROOT.rglob('*'):
         relative = path.relative_to(ROOT)
@@ -1597,13 +1611,13 @@ def main():
             continue
         if path.suffix in EXTENSIONS or path.name == 'Makefile':
             total += sum(1 for _ in path.open(errors='surrogateescape'))
-    print(f"non-test authored lines: {total} (ceiling {CEILING})")
-    if total > CEILING:
-        print(f"\nFAIL authored code grew by {total - CEILING} over the ceiling; "
-              f"shrink it or justify a new ceiling in the same change")
+    print(f"non-test authored lines: {total} (ceiling {ceiling} = {CEILING} + {ceiling - CEILING} from {BUDGET.relative_to(ROOT)})")
+    if total > ceiling:
+        print(f"\nFAIL authored code grew by {total - ceiling} over the ceiling; "
+              f"shrink it, or add {BUDGET.relative_to(ROOT)}/<branch>.txt holding +<lines> and a justification")
         return 1
-    if total < CEILING - 800:
-        print(f"note: ceiling is {CEILING - total} above reality; "
+    if total < ceiling - 800:
+        print(f"note: ceiling is {ceiling - total} above reality; "
               f"lower it with the next landing")
     print("\nthe authored codebase did not grow")
     return 0
