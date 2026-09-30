@@ -23,6 +23,22 @@ static void *PENDING_CONTEXT;
 static SparkStatus COMPLETED_STATUS;
 static uint32_t COMPLETED_COUNT;
 static SparkGlm52ModuleState *STATE;
+static const SparkGlm52CudaWave *CURRENT_WAVE;
+static uint32_t LAST_WAVE_ROWS,CAPTURE_ROWS[64];
+
+static uint32_t ModelNext(uint32_t position,uint32_t token)
+{
+	return((token * 31u + position * 7u + 3u) % 1000u);
+}
+
+static void ModelRows(const uint32_t *positions,const uint32_t *tokens,uint32_t *outputs,uint32_t rows)
+{
+	uint32_t row;
+	for (row=0u; row<rows; row++)
+	{
+		outputs[row] = ModelNext(positions[row],tokens[row]);
+	}
+}
 
 static void Log(const char *entry,uint32_t value)
 {
@@ -49,19 +65,21 @@ static int32_t Find(const char *entry,uint32_t from)
 
 int32_t SparkGlm52T1Enabled(void) { return((int32_t)T1_ENABLED); }
 uint32_t SparkGlm52ExactWaveRows(void) { return(8u); }
-int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { Log("begin",wave->maximum_context); return(0); }
+int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { CURRENT_WAVE = wave; LAST_WAVE_ROWS = wave->row_count; Log("begin",wave->maximum_context); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split == 0u); Log("attn",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("project",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("core",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->route_host_copy == 0u); Log("mlp",layer); return(0); }
 int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave) { Log("head",wave->row_head_certified); return(0); }
-cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *tokens,uint32_t rows) { (void)stream; (void)maxloc; (void)tokens; Log("unpack",rows); return(cudaSuccess); }
+cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *tokens,uint32_t rows) { (void)stream; (void)maxloc; if ( CAPTURING == 0u && CURRENT_WAVE != 0 && tokens != 0 ) ModelRows(CURRENT_WAVE->host_positions,CURRENT_WAVE->host_token_ids,tokens,rows); Log("unpack",rows); return(cudaSuccess); }
 int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t layer) { (void)wave; (void)layer; assert(0); return(1); }
 int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t layer) { (void)wave; (void)layer; assert(0); return(1); }
 
 cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,enum cudaMemcpyKind kind,cudaStream_t stream)
 {
-	(void)destination; (void)source; (void)stream;
+	(void)stream;
+	if ( CAPTURING == 0u && kind == cudaMemcpyDeviceToHost && source != 0 && source == STATE->slots[0].output_token )
+		memcpy(destination,source,bytes);
 	Log(kind == cudaMemcpyDeviceToHost ? "d2h" : "copy",(uint32_t)bytes);
 	return(cudaSuccess);
 }
@@ -72,9 +90,9 @@ const char *cudaGetErrorString(cudaError_t error) { (void)error; return("stub");
 cudaError_t cudaLaunchHostFunc(cudaStream_t stream,cudaHostFn_t function,void *context) { (void)stream; function(context); return(cudaSuccess); }
 cudaError_t cudaStreamBeginCapture(cudaStream_t stream,cudaStreamCaptureMode mode) { (void)stream; (void)mode; Log("capture-begin",0u); CAPTURING = 1u; return(cudaSuccess); }
 cudaError_t cudaStreamEndCapture(cudaStream_t stream,cudaGraph_t *graph) { (void)stream; CAPTURING = 0u; Log("capture-end",0u); *graph = (cudaGraph_t)(uintptr_t)0x10; return(cudaSuccess); }
-cudaError_t cudaGraphInstantiate(cudaGraphExec_t *exec,cudaGraph_t graph,...) { (void)graph; CAPTURES++; *exec = (cudaGraphExec_t)(uintptr_t)(0x100u + CAPTURES); return(cudaSuccess); }
+cudaError_t cudaGraphInstantiate(cudaGraphExec_t *exec,cudaGraph_t graph,...) { (void)graph; CAPTURES++; CAPTURE_ROWS[CAPTURES % 64u] = LAST_WAVE_ROWS; *exec = (cudaGraphExec_t)(uintptr_t)(0x100u + CAPTURES); return(cudaSuccess); }
 cudaError_t cudaGraphUpload(cudaGraphExec_t exec,cudaStream_t stream) { (void)exec; (void)stream; return(cudaSuccess); }
-cudaError_t cudaGraphLaunch(cudaGraphExec_t exec,cudaStream_t stream) { (void)stream; LAUNCHES++; Log("graph-launch",(uint32_t)(uintptr_t)exec); return(cudaSuccess); }
+cudaError_t cudaGraphLaunch(cudaGraphExec_t exec,cudaStream_t stream) { SparkGlm52ExecutionSlot *slot = &STATE->slots[0]; (void)stream; LAUNCHES++; if ( slot->host_token_ids != 0 ) ModelRows(slot->host_positions,slot->host_token_ids,slot->host_output_token_ids,CAPTURE_ROWS[((uint32_t)(uintptr_t)exec - 0x100u) % 64u]); Log("graph-launch",(uint32_t)(uintptr_t)exec); return(cudaSuccess); }
 cudaError_t cudaGraphDestroy(cudaGraph_t graph) { (void)graph; return(cudaSuccess); }
 cudaError_t cudaGraphExecDestroy(cudaGraphExec_t exec) { (void)exec; return(cudaSuccess); }
 
@@ -123,7 +141,7 @@ SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWork
 }
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t lease,uint64_t timeout) { (void)map; (void)lease; (void)timeout; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t lease,cudaStream_t stream) { (void)map; (void)lease; (void)stream; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
-SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective,uint64_t request_id) { (void)collective; (void)request_id; Log("chain-key",0u); return(CHAIN_KEY_STATUS); }
+SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective,uint64_t request_id) { (void)collective; Log("chain-key",(uint32_t)request_id); return(CHAIN_KEY_STATUS); }
 cudaError_t cudaEventSynchronize(cudaEvent_t event) { (void)event; assert(0); return(cudaErrorUnknown); }
 cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,enum cudaMemcpyKind kind) { (void)destination; (void)source; (void)bytes; (void)kind; assert(0); return(cudaErrorUnknown); }
 cudaError_t cudaMemsetAsync(void *destination,int value,size_t bytes,cudaStream_t stream) { (void)destination; (void)value; (void)bytes; (void)stream; assert(0); return(cudaErrorUnknown); }
@@ -139,7 +157,10 @@ static void Completed(void *context,const SparkModelDriverCompletion *completion
 
 static SparkGlm52ModuleState state;
 static SparkWeightdLazyPack lazy;
-static uint32_t host_tokens[4],host_slots[4],host_positions[4],host_output[4],host_error[8];
+static uint32_t host_tokens[8],host_slots[8],host_positions[8],host_output[8],host_error[8],dev_tokens[8];
+static uint32_t OUT[64];
+static SparkModelDriverCacheLane cache_lanes[4];
+static uint64_t sequence_ids[4];
 static uint16_t dev_hidden[8],dev_attn[8],dev_gather[8];
 static uint64_t dev_maxloc[4];
 static SparkGlm52ResidentDecodeStageBatchView batch;
@@ -215,6 +236,8 @@ static void Setup(void)
 	slot->attention_out_bf16 = dev_attn;
 	slot->projection_gather_bf16 = dev_gather;
 	slot->head_maxloc_u64 = dev_maxloc;
+	slot->output_token = dev_tokens;
+	state.kv_lane_cache_lanes = cache_lanes;
 	assert(SparkStageModuleCudaWaitInitialize(&state.chain_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	batch.row_count = 1u;
 	batch.active_sequence_count = 1u;
@@ -521,7 +544,7 @@ static void TestSubmitFailureClearsBusy(void)
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	atomic_store(&state.chain_busy,0u);
 	assert(SparkGlm52ExecuteChain(&state,&frame,&context) == CHAIN_KEY_STATUS);
-	assert(Count("chain-key0") == 1u && atomic_load(&state.chain_busy) == 0u && COMPLETED_COUNT == 0u);
+	assert(Count("chain-key7") == 1u && atomic_load(&state.chain_busy) == 0u && COMPLETED_COUNT == 0u);
 }
 
 static void TestBusy(void)
@@ -534,6 +557,231 @@ static void TestBusy(void)
 	PENDING_WORK(PENDING_CONTEXT);
 	assert(COMPLETED_COUNT == 1u && atomic_load(&state.chain_busy) == 0u);
 	WORKER_INLINE = 1u;
+}
+
+static uint32_t REFERENCE[64];
+
+static void BuildReference(uint32_t first_token)
+{
+	uint32_t position;
+	REFERENCE[0] = first_token;
+	for (position=0u; position+1u<64u; position++)
+		REFERENCE[position + 1u] = ModelNext(position,REFERENCE[position]);
+}
+
+static SparkGlm52TpChain *NewStepsChain(uint32_t position,uint32_t lanes,uint32_t steps)
+{
+	SparkGlm52TpChain *chain = NewChain(position);
+	SparkGlm52AsyncCompletion *async = &state.completions[0];
+	uint32_t lane;
+	memset(OUT,0,sizeof(OUT));
+	for (lane=0u; lane<lanes; lane++)
+	{
+		host_slots[lane] = lane;
+		host_positions[lane] = position + lane;
+		host_tokens[lane] = REFERENCE[position + lane];
+		sequence_ids[lane] = 40u + lane;
+		atomic_store(&state.lane_states[lane],lane + 1u);
+		async->lane_indices[lane] = lane;
+		async->lane_next_positions[lane] = position + lane + 1u;
+		cache_lanes[lane].context_token_count = position + lane + 1u;
+	}
+	async->lane_count = lanes;
+	async->row_count = lanes;
+	async->output_token_destination = OUT;
+	batch.row_count = lanes;
+	batch.active_sequence_count = lanes;
+	batch.row_sequence_ids = sequence_ids;
+	frame.tokens_per_sequence = steps;
+	chain->wave_rows = lanes;
+	chain->next_wave_row = lanes;
+	chain->batch_copy = batch;
+	chain->batch = &chain->batch_copy;
+	assert(SparkGlm52StepsBegin(chain,&batch) == SPARK_STATUS_OK);
+	return(chain);
+}
+
+static void FinishSteps(void)
+{
+	uint32_t lane;
+	for (lane=0u; lane<4u; lane++)
+		atomic_store(&state.lane_states[lane],0u);
+	batch.row_count = 1u;
+	batch.active_sequence_count = 1u;
+	frame.tokens_per_sequence = 0u;
+	memset(&state.completions[0],0,sizeof(state.completions[0]));
+}
+
+static void UseReference(uint32_t mode,const uint32_t *tokens)
+{
+	assert(SparkSpeculationReferenceDraftInitialize(&state.verify_reference,(SparkSpeculationReferenceMode)mode,SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT,0u,tokens,64u) == SPARK_STATUS_OK);
+	state.verify_rows_max = 4u;
+	state.verify_drafter = mode == SPARK_SPECULATION_REFERENCE_ORACLE ? SPARK_SPECULATION_VERIFY_DRAFTER_ORACLE : SPARK_SPECULATION_VERIFY_DRAFTER_ADVERSARY;
+	state.verify_draft_function = SparkSpeculationReferenceDraftTokens;
+	state.verify_draft_context = &state.verify_reference;
+	state.verify_rounds = state.verify_proposed = state.verify_accepted = state.verify_plain_rounds = 0u;
+}
+
+static void CheckExact(uint32_t position,uint32_t lanes,uint32_t steps)
+{
+	uint32_t lane,step,token,at;
+	assert(COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK && atomic_load(&state.chain_busy) == 0u);
+	for (lane=0u; lane<lanes; lane++)
+	{
+		at = position + lane;
+		token = REFERENCE[at];
+		for (step=0u; step<steps; step++)
+		{
+			token = ModelNext(at + step,token);
+			assert(OUT[lane * steps + step] == token);
+		}
+		assert(state.completions[0].lane_next_positions[lane] == position + lane + steps);
+		assert(cache_lanes[lane].context_token_count == position + lane + steps);
+	}
+}
+
+static void TestVerifyOracle(void)
+{
+	CHAIN_KEY_STATUS = SPARK_STATUS_OK;
+	BuildReference(5u);
+	UseReference(SPARK_SPECULATION_REFERENCE_ORACLE,REFERENCE);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewStepsChain(9u,1u,8u));
+	CheckExact(9u,1u,8u);
+	assert(state.verify_rounds == 2u && state.verify_proposed == 6u && state.verify_accepted == 6u && state.verify_plain_rounds == 0u);
+	assert(Count("chain-key7") == 1u && Count("unpack4") == 2u && Count("head1") == 2u && Count("head0") == 0u && Count("begin13") == 1u && Count("begin17") == 1u);
+	FinishSteps();
+}
+
+static void TestVerifyAdversary(void)
+{
+	BuildReference(5u);
+	UseReference(SPARK_SPECULATION_REFERENCE_ADVERSARY,REFERENCE);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewStepsChain(9u,1u,8u));
+	CheckExact(9u,1u,8u);
+	assert(state.verify_rounds == 7u && state.verify_accepted == 0u && state.verify_plain_rounds == 1u && Count("chain-key7") == 7u);
+	assert(Count("unpack4") == 5u && Count("unpack3") == 1u && Count("unpack2") == 1u && Count("unpack1") == 1u && Count("head0") == 1u);
+	FinishSteps();
+}
+
+static void TestVerifyPartial(void)
+{
+	static uint32_t corrupted[64];
+	BuildReference(5u);
+	memcpy(corrupted,REFERENCE,sizeof(corrupted));
+	corrupted[12] = (corrupted[12] + 1u) % 1000u;
+	UseReference(SPARK_SPECULATION_REFERENCE_ORACLE,corrupted);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewStepsChain(9u,1u,8u));
+	CheckExact(9u,1u,8u);
+	assert(state.verify_rounds == 2u && state.verify_proposed == 6u && state.verify_accepted == 5u && state.verify_plain_rounds == 1u);
+	assert(state.verify_position_reached[2] != 0u && Count("begin13") == 1u && Count("begin16") == 1u && Count("begin17") == 1u);
+	FinishSteps();
+	UseReference(SPARK_SPECULATION_REFERENCE_ORACLE,REFERENCE);
+}
+
+static void TestVerifyGraph(void)
+{
+	uint32_t captures;
+	BuildReference(5u);
+	UseReference(SPARK_SPECULATION_REFERENCE_ORACLE,REFERENCE);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
+	CAPTURES = 0u;
+	LAUNCHES = 0u;
+	SparkGlm52RunChain(NewStepsChain(9u,1u,8u));
+	CheckExact(9u,1u,8u);
+	assert(CAPTURES == 1u && LAUNCHES == 2u && Count("cap:head1") == 1u && Count("chain-key7") == 1u && Count("disarm0") == 3u);
+	captures = CAPTURES;
+	FinishSteps();
+	UseReference(SPARK_SPECULATION_REFERENCE_ADVERSARY,REFERENCE);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkGlm52RunChain(NewStepsChain(9u,1u,8u));
+	CheckExact(9u,1u,8u);
+	assert(CAPTURES == captures + 3u && LAUNCHES == 10u && Count("cap:head0") == 1u);
+	FinishSteps();
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
+}
+
+static void TestPlainSteps(void)
+{
+	BuildReference(5u);
+	UseReference(SPARK_SPECULATION_REFERENCE_ORACLE,REFERENCE);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewStepsChain(9u,2u,4u));
+	CheckExact(9u,2u,4u);
+	assert(state.verify_rounds == 0u && state.verify_plain_rounds == 4u && Count("unpack2") == 4u && Count("head0") == 4u && Count("chain-key7") == 3u);
+	FinishSteps();
+}
+
+static void TestStepsCheck(void)
+{
+	SparkModelDriverBuffer buffer;
+	uint32_t tokens[1] = {3u};
+	batch.token_ids = tokens;
+	batch.row_count = 1u;
+	batch.active_sequence_count = 1u;
+	memset(&buffer,0,sizeof(buffer));
+	buffer.bytes = 8u * sizeof(uint32_t);
+	frame.buffers = &buffer;
+	frame.buffer_count = 1u;
+	frame.tokens_per_sequence = 1u;
+	state.verify_rows_max = 0u;
+	assert(SparkGlm52StepsCheck(&state,&frame,&batch) == SPARK_STATUS_OK);
+	frame.tokens_per_sequence = 8u;
+	assert(SparkGlm52StepsCheck(&state,&frame,&batch) == SPARK_STATUS_UNSUPPORTED);
+	state.verify_rows_max = 4u;
+	assert(SparkGlm52StepsCheck(&state,&frame,&batch) == SPARK_STATUS_OK);
+	buffer.bytes = 7u * sizeof(uint32_t);
+	assert(SparkGlm52StepsCheck(&state,&frame,&batch) == SPARK_STATUS_UNSUPPORTED);
+	buffer.bytes = 8u * sizeof(uint32_t);
+	frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	assert(SparkGlm52StepsCheck(&state,&frame,&batch) == SPARK_STATUS_UNSUPPORTED);
+	frame.flags = 0u;
+	frame.tokens_per_sequence = SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE + 1u;
+	assert(SparkGlm52StepsCheck(&state,&frame,&batch) == SPARK_STATUS_UNSUPPORTED);
+	frame.tokens_per_sequence = 0u;
+	frame.buffers = 0;
+	frame.buffer_count = 0u;
+	batch.token_ids = 0;
+}
+
+static void TestVerifyConfigure(void)
+{
+	SparkGlm52ModuleState probe;
+	uint8_t shadow = 1u;
+	memset(&probe,0,sizeof(probe));
+	probe.execution_row_capacity = 16u;
+	probe.resident_sequence_capacity = 4u;
+	probe.max_sequence_positions = 4096u;
+	probe.chain_mode = SPARK_TP_CHAIN_MODE_GRAPH;
+	probe.owns_embedding = 1u;
+	probe.owns_final_head = 1u;
+	probe.head_certified_fp8_payload = &shadow;
+	assert(unsetenv("SPARK_GLM52_VERIFY_ROWS") == 0 && unsetenv("SPARK_GLM52_VERIFY_DRAFTER") == 0);
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_OK && probe.verify_rows_max == 0u && probe.verify_draft_function == 0);
+	assert(setenv("SPARK_GLM52_VERIFY_DRAFTER","lookup",1) == 0);
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(setenv("SPARK_GLM52_VERIFY_ROWS","4",1) == 0);
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_OK && probe.verify_rows_max == 4u && probe.verify_draft_function == SparkSpeculationLookupDraftTokens);
+	SparkGlm52VerifyRelease(&probe);
+	assert(setenv("SPARK_GLM52_VERIFY_ROWS","9",1) == 0);
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_INVALID_ARGUMENT);
+	probe.execution_row_capacity = 2u;
+	assert(setenv("SPARK_GLM52_VERIFY_ROWS","4",1) == 0);
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_INVALID_ARGUMENT);
+	probe.execution_row_capacity = 16u;
+	probe.chain_mode = SPARK_TP_CHAIN_MODE_EAGER;
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
+	probe.chain_mode = SPARK_TP_CHAIN_MODE_GRAPH;
+	probe.head_certified_fp8_payload = 0;
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
+	probe.head_certified_fp8_payload = &shadow;
+	assert(setenv("SPARK_GLM52_VERIFY_DRAFTER","recorded:/nonexistent/table.sprd",1) == 0);
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_NOT_FOUND);
+	SparkGlm52VerifyRelease(&probe);
+	assert(unsetenv("SPARK_GLM52_VERIFY_ROWS") == 0 && unsetenv("SPARK_GLM52_VERIFY_DRAFTER") == 0);
 }
 
 int main(void)
@@ -551,6 +799,13 @@ int main(void)
 	TestWorkerRefusal();
 	TestSubmitFailureClearsBusy();
 	TestBusy();
+	TestVerifyConfigure();
+	TestStepsCheck();
+	TestVerifyOracle();
+	TestVerifyAdversary();
+	TestVerifyPartial();
+	TestVerifyGraph();
+	TestPlainSteps();
 	printf("glm52 chain modes: ok\n");
 	return(0);
 }
@@ -569,9 +824,10 @@ def main():
                         *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=16u", "-DGLM_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM_EXPERT_CODEC_NAME="fp8"', f'-DGLM_MODEL_REVISION="{identity[0]}"', f'-DGLM_CONTRACT_SHA256="{identity[1]}"',
                         '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"', "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
-                        str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"], cwd=ROOT, check=True)
+                        str(source), "runtime/stage_module_common.c", "src/spark_status.c", "src/spark_speculation_policy.c",
+                        "src/spark_speculation_lookup_draft.c", "src/spark_speculation_reference_draft.c", "src/spark_speculation_recorded_draft.c", "-o", str(binary), "-pthread"], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph keyed by head path)")
+    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph keyed by head path), multi-step frames: exact speculative verify (oracle, adversary, partial acceptance, graph rows), plain multi-lane steps, verify configuration and frame checks")
 
 
 if __name__ == "__main__":

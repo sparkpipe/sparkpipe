@@ -9,6 +9,7 @@
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm52_serving_adapter.h"
+#include "sparkpipe/spark_glm52_verify_config.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
@@ -232,6 +233,8 @@ static void SparkGlm52ServingDescriptorConfigure(void)
 	SparkGlm52ServingDescriptor = SparkGlm52ServingDescriptorTemplate;
 	SparkGlm52ServingDescriptor.adapter_id = SparkGlm52ServingAdapterId;
 	SparkGlm52ServingDescriptor.stage_count = flat_ranks;
+	if ( SparkGlm52VerifyChainRequested() != 0u )
+		SparkGlm52ServingDescriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE;
 	for (index=0u; index<flat_ranks; index++)
 		SparkGlm52ServingDescriptor.stage_layer_counts[index] = SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYERS_PER_STAGE;
 }
@@ -487,7 +490,7 @@ static void SparkGlm52ServingDriverCompletion(
 	SparkGlm52ServingPending *pending;
 	SparkGlm52ServingState *state;
 	SparkModelServingCompletion completion;
-	uint32_t index,matches;
+	uint32_t index,matches,burst;
 	pending = (SparkGlm52ServingPending *)completion_context;
 	state = pending != 0 ? pending->owner : 0;
 	if ( state == 0 || pending->common.active == 0u || driver_completion == 0 )
@@ -518,11 +521,17 @@ static void SparkGlm52ServingDriverCompletion(
 
 	if ( state->stage_index + 1u == SparkGlm52ServingDescriptor.stage_count && completion.status == SPARK_STATUS_OK && SparkModelServingWorkKindUsesRows(pending->common.work_kind) != 0u )
 	{
-		completion.tokens_per_sequence = 1u;
-		completion.token_count = pending->common.active_sequence_count;
-		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+		burst = driver_completion->tokens_per_sequence > 1u ? driver_completion->tokens_per_sequence : 1u;
+		if ( burst > 1u && (burst != pending->common.tokens_per_sequence || pending->common.row_count != pending->common.active_sequence_count) )
+		{
+			completion.status = SPARK_STATUS_SCHEMA_ERROR;
+			burst = 0u;
+		}
+		completion.tokens_per_sequence = burst;
+		completion.token_count = pending->common.active_sequence_count * burst;
+		completion.completion_flags = burst != 0u ? SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS : 0u;
 		for (index=0u; index<completion.token_count; index++)
-			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
+			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index / burst] * burst + index % burst];
 	}
 	pending->common.active = 0u;
 	state->completion_function(state->completion_context,&completion);
@@ -737,7 +746,7 @@ static void SparkGlm52ServingBuildFrame(
 	memset(buffer,0,sizeof(*buffer));
 	buffer->flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 	buffer->address = pending->output_token_ids;
-	buffer->bytes = (uint64_t)submission->row_count * sizeof(uint32_t);
+	buffer->bytes = (uint64_t)submission->row_count * (submission->tokens_per_sequence > 1u ? submission->tokens_per_sequence : 1u) * sizeof(uint32_t);
 	memset(frame,0,sizeof(*frame));
 	frame->request_id = submission->request_id;
 	frame->sequence_id = submission->sequence_id;

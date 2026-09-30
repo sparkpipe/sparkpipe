@@ -25,6 +25,11 @@
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "sparkpipe/spark_tp_chain_graph.h"
 #include "sparkpipe/spark_glm52_graph_regime.h"
+#include "sparkpipe/spark_glm52_verify_config.h"
+#include "sparkpipe/spark_speculation_policy.h"
+#include "sparkpipe/spark_speculation_lookup_draft.h"
+#include "sparkpipe/spark_speculation_reference_draft.h"
+#include "sparkpipe/spark_speculation_recorded_draft.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
 #ifdef SPARK_SCORE_DUMP
@@ -72,6 +77,9 @@ typedef struct SparkGlm52AsyncCompletion
 	uint64_t lane_sequence_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t *output_token_destination;
+	uint32_t steps_token_count;
+	uint32_t steps_extra_tokens;
+	uint32_t steps_tokens[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE];
 	SparkModelDriverCompletion completion;
 } SparkGlm52AsyncCompletion;
 
@@ -165,6 +173,23 @@ struct SparkGlm52ModuleState
 	atomic_uint chain_busy;
 	uint64_t chain_gates[4];
 	SparkTpChainGraphTable graphs[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	uint32_t verify_rows_max;
+	uint32_t verify_drafter;
+	const char *verify_drafter_path;
+	uint8_t *verify_drafter_bytes;
+	SparkSpeculationDraftFunction verify_draft_function;
+	void *verify_draft_context;
+	SparkSpeculationLookupDraft verify_lookup;
+	SparkSpeculationReferenceDraft verify_reference;
+	SparkSpeculationRecordedDraft verify_recorded;
+	uint64_t verify_frames;
+	uint64_t verify_rounds;
+	uint64_t verify_proposed;
+	uint64_t verify_accepted;
+	uint64_t verify_plain_rounds;
+	uint64_t verify_tokens;
+	uint64_t verify_position_reached[SPARK_GLM52_VERIFY_ROWS_LIMIT - 1u];
+	uint64_t verify_position_accepted[SPARK_GLM52_VERIFY_ROWS_LIMIT - 1u];
 };
 
 typedef enum SparkGlm52ChainStage
@@ -211,6 +236,20 @@ typedef struct SparkGlm52TpChain
 	uint32_t waves;
 	uint64_t start_ns;
 	uint64_t walk_ns;
+	uint32_t steps_budget;
+	uint32_t steps_produced;
+	uint32_t steps_lanes;
+	uint32_t verify_wave;
+	uint32_t verify_draft_count;
+	uint32_t verify_rounds;
+	uint32_t verify_accepted;
+	uint32_t verify_plain;
+	uint32_t verify_draft[SPARK_GLM52_VERIFY_ROWS_LIMIT];
+	uint32_t steps_anchor_tokens[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t steps_lane_slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t steps_positions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint64_t steps_sequence_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t steps_tokens[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MODEL_DRIVER_MAX_TOKENS_PER_SEQUENCE];
 } SparkGlm52TpChain;
 
 #define SPARK_GLM_STAGE_STATE SparkGlm52ModuleState
@@ -1006,7 +1045,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->expert_lease_pinned = state->experts_pinned;
 	wave->route_host_copy = state->lazy_pack != 0 && state->experts_pinned == 0u ? 1u : 0u;
 	wave->projection_split = state->projection_split;
-	wave->row_head_certified = chain->prefill != 0u && state->prefill_wave_rows != 0u ? 1u : 0u;
+	wave->row_head_certified = (chain->prefill != 0u && state->prefill_wave_rows != 0u) || chain->verify_wave != 0u ? 1u : 0u;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
 	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
 	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
@@ -1046,6 +1085,8 @@ static uint32_t SparkGlm52WaveRows(const SparkGlm52TpChain *chain,uint32_t first
 	SparkGlm52ModuleState *state = chain->state;
 	SparkStageModuleClaimedLaneContext lanes;
 	SparkGlm52WaveRegimeContext regime;
+	if ( chain->verify_wave != 0u )
+		return(chain->batch->row_count - first_row);
 	if ( chain->prefill == 0u || state->prefill_wave_rows == 0u )
 		return(SparkGlmStageRoundMajorWaveRows(state,chain->batch,first_row));
 	lanes.index_states = state->lane_states;
@@ -1927,10 +1968,11 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )
-			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)async->row_count * sizeof(uint32_t));
+			memcpy(async->output_token_destination,async->steps_token_count != 0u ? async->steps_tokens : slot->host_output_token_ids,(uint64_t)(async->steps_token_count != 0u ? async->steps_token_count : async->row_count) * sizeof(uint32_t));
 		for (lane=0u; lane<async->lane_count; lane++)
 		{
 			resident = async->lane_indices[lane];
+			state->kv_lane_cache_lanes[resident].context_token_count += async->steps_extra_tokens;
 			atomic_store_explicit(&state->lane_bound[resident],async->lane_bound[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
@@ -2108,6 +2150,8 @@ static SparkStatus SparkGlm52LinearWalk(SparkGlm52TpChain *chain,uint32_t *site)
 	}
 }
 
+#include "spark_glm52_verify_steps.h"
+
 static void SparkGlm52ChainFinish(SparkGlm52TpChain *chain,SparkStatus status)
 {
 	SparkGlm52ModuleState *state = chain->state;
@@ -2159,6 +2203,10 @@ static void SparkGlm52ChainSettle(void *context)
 	status = SparkTpChainSettle(&collectives,chain->slot->stream,chain->graph);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"GLM52-CHAIN-SETTLE-FAIL mode=%s slot=%u status=%s\n",chain->graph != 0u ? "graph" : "linear",chain->slot_index,SparkStatusToString(status));
+	if ( SparkGlm52StepsContinue(chain,&status) != 0u )
+		return;
+	if ( status != SPARK_STATUS_OK && chain->steps_budget != 0u )
+		fprintf(stderr,"GLM52-VERIFY-STEP-FAIL slot=%u produced=%u budget=%u status=%s\n",chain->slot_index,chain->steps_produced,chain->steps_budget,SparkStatusToString(status));
 	SparkGlm52ChainFinish(chain,status);
 }
 
@@ -2317,6 +2365,9 @@ static SparkStatus SparkGlm52ExecuteBatch(
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}
+	status = SparkGlm52VerifyObserveRows(state,batch);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count,SparkGlm52PrepareClaimedContinuity,&continuity);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -2377,6 +2428,16 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	chain->next_wave_row = chain->wave_rows;
 	chain->stage = SPARK_GLM52_CHAIN_STAGE_BEGIN;
 	chain->active = 1u;
+	if ( frame->tokens_per_sequence > 1u )
+	{
+		status = SparkGlm52StepsBegin(chain,batch);
+		if ( status != SPARK_STATUS_OK )
+		{
+			atomic_store_explicit(&state->chain_busy,0u,memory_order_release);
+			SparkGlm52TpChainFail(chain,status);
+			return(SPARK_STATUS_OK);
+		}
+	}
 	if ( state->chain_mode != SPARK_TP_CHAIN_MODE_EAGER )
 		SparkGlm52RunChain(chain);
 	else
@@ -2410,6 +2471,8 @@ static SparkStatus SparkGlm52ModuleExecuteFrame(
 	state = (SparkGlm52ModuleState *)module_state;
 	context = 0;
 	status = SparkGlmStageValidateFrame(state,frame,&context);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52StepsCheck(state,frame,context->batch);
 	if ( status != SPARK_STATUS_OK )
 	{
 		if ( state != 0 )
@@ -2540,6 +2603,7 @@ static SparkStatus SparkGlm52ModuleStateTeardown(void *module_state)
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	SparkGlm52ReleaseSlotHost(state);
+	SparkGlm52VerifyRelease(state);
 	free(state->kv_blocks);
 	free(state->kv_resident_slot_logical_block_indices);
 	free(state->kv_entries);
@@ -2589,6 +2653,8 @@ static SparkStatus SparkGlm52ModulePrepare(
 		status = SparkGlmStageBuildHeadShadow(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ChainModeConfigure(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52VerifyConfigure(state);
 #ifdef SPARK_SCORE_DUMP
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52ScoreOpen(state,(const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context);

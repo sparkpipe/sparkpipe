@@ -407,6 +407,7 @@ TEST_NAMES := \
     test_speculation_tap \
     test_speculation_relay_link \
     test_speculation_depth \
+    test_speculation_verify_plan \
     test_driver_compiler \
     test_orchestrator \
 	test_dsv4_lane_continuity \
@@ -1930,6 +1931,9 @@ build/test_speculation_reference_draft: tests/test_speculation_reference_draft.c
 
 build/test_speculation_recorded_draft: tests/test_speculation_recorded_draft.c include/sparkpipe/spark_speculation_recorded_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_recorded_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_speculation_verify_plan: tests/test_speculation_verify_plan.c include/sparkpipe/spark_speculation_verify_plan.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_verify_plan.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_speculation_lookup_draft: tests/test_speculation_lookup_draft.c include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_lookup_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

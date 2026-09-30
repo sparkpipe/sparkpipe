@@ -23,6 +23,10 @@ MODULE_ENTRY_PREFIX := SparkGlm52ResidentDecodeStage
 MODULE_HOST_SOURCE := source/spark_glm52_resident_decode_stage_module.c
 MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../runtime/stage_module_lifecycle.c \
+	../../src/spark_speculation_policy.c \
+	../../src/spark_speculation_lookup_draft.c \
+	../../src/spark_speculation_reference_draft.c \
+	../../src/spark_speculation_recorded_draft.c \
 	../../src/spark_status.c \
 	../../src/spark_sha256.c \
 	../../src/spark_ck128.c \
