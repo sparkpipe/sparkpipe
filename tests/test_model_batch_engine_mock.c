@@ -9,6 +9,7 @@
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "mock_model_resident_client.h"
 #include "sparkpipe/spark_model_batch_engine.h"
+#include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
 #ifndef TEST_MODEL_SERVING_ADAPTER_PATH
@@ -1224,6 +1225,34 @@ static uint32_t TestLongestPrefillChunk(uint64_t request_id,uint32_t prompt_coun
 	return(longest);
 }
 
+static uint32_t TestPrefillBlockIdentities(uint64_t request_id,const uint32_t *prompt,uint32_t block,uint32_t prompt_count)
+{
+	SparkModelServingLane lane;
+	SparkModelServingCacheIdentity logged;
+	SparkSha256Context context;
+	uint8_t expected[32];
+	uint32_t index,identity,boundary,checked;
+	checked = 0u;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		if ( lane.request_id != request_id || lane.context_token_count <= lane.sequence_position || lane.context_token_count > prompt_count )
+			continue;
+		if ( lane.cache_block_identity_count != (lane.context_token_count - 1u) / block - (uint32_t)lane.sequence_position / block )
+			return(UINT32_MAX);
+		for (identity=0u; identity<lane.cache_block_identity_count; identity++)
+		{
+			boundary = ((uint32_t)lane.sequence_position / block + 1u + identity) * block;
+			SparkSha256Initialize(&context);
+			SparkSha256Update(&context,prompt,(size_t)boundary * sizeof(prompt[0]));
+			SparkSha256Finalize(&context,expected);
+			if ( MockResidentClientIdentityLog(lane.cache_block_identity_first + identity,&logged) == 0u || memcmp(logged.sha256,expected,sizeof(expected)) != 0 )
+				return(UINT32_MAX);
+			checked++;
+		}
+	}
+	return(checked);
+}
+
 static void TestScenarioMultiBlockPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t multi_block)
 {
 	TestBatchState state = {0};
@@ -1241,9 +1270,15 @@ static void TestScenarioMultiBlockPrefill(const SparkModelResidentDeployment *de
 	TestDriveUntilTerminal(engine,&state,1u,800u);
 	CHECK(state.completed_events[1] == 1u,"multi-block prefill: the prompt completes");
 	if ( multi_block != 0u )
+	{
 		CHECK(TestPrefillChunksAreCanonical(1u,4u,18u) == 3u && TestLongestPrefillChunk(1u,18u) == 8u,"multi-block prefill: a lane spans whole cache blocks up to the row budget and still ends on a block boundary or the prompt end");
+		CHECK(TestPrefillBlockIdentities(1u,prompt,4u,18u) == 2u,"multi-block prefill: each block boundary inside a span carries the identity of the prompt prefix it closes");
+	}
 	else
+	{
 		CHECK(TestPrefillChunksAreCanonical(1u,4u,18u) == 5u && TestLongestPrefillChunk(1u,18u) == 4u,"multi-block prefill: an adapter without the capability keeps one cache block per prefill lane");
+		CHECK(TestPrefillBlockIdentities(1u,prompt,4u,18u) == 0u,"multi-block prefill: one-block lanes carry no block identities");
+	}
 	SparkModelBatchEngineDestroy(engine);
 }
 

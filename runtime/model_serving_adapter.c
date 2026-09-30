@@ -282,6 +282,16 @@ SparkStatus SparkModelServingAdapterValidateInterface(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkModelServingAdapterLaneBlockIdentities(
+	const SparkModelServingLane *lane,
+	uint32_t cache_block_token_count)
+{
+	if ( (lane->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u || cache_block_token_count == 0u ||
+		lane->context_token_count <= lane->sequence_position )
+		return(0u);
+	return((lane->context_token_count - 1u) / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count));
+}
+
 static SparkStatus SparkModelServingAdapterValidateRows(
 	const SparkModelServingSubmission *submission,
 	uint32_t require_live_rows,
@@ -290,8 +300,9 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 {
 	uint8_t seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint8_t seen_slots[SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT];
-	uint32_t lane,row,slot;
+	uint32_t lane,row,slot,identities;
 	uint32_t prefix_identity_present,publish_identity_present;
+	identities = 0u;
 	memset(seen,0,sizeof(seen));
 	memset(seen_slots,0,sizeof(seen_slots));
 	for (lane=0u; lane<submission->lane_count; lane++)
@@ -304,7 +315,7 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 		{
 			SparkModelServingCacheIdentity zero_identity;
 			memset(&zero_identity,0,sizeof(zero_identity));
-			if ( submission->lanes[lane].request_id != 0u || submission->lanes[lane].request_generation != 0u || submission->lanes[lane].step_generation != 0u || submission->lanes[lane].sequence_id != 0u || submission->lanes[lane].sequence_position != 0u || submission->lanes[lane].resident_sequence_slot != SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT || submission->lanes[lane].context_token_count != 0u || submission->lanes[lane].input_token_id != 0u || submission->lanes[lane].flags != 0u || submission->lanes[lane].cache_prefix_token_count != 0u || submission->lanes[lane].cache_publish_token_count != 0u || memcmp(&submission->lanes[lane].cache_prefix_identity,&zero_identity,sizeof(zero_identity)) != 0 || memcmp(&submission->lanes[lane].cache_publish_identity,&zero_identity,sizeof(zero_identity)) != 0 )
+			if ( submission->lanes[lane].request_id != 0u || submission->lanes[lane].request_generation != 0u || submission->lanes[lane].step_generation != 0u || submission->lanes[lane].sequence_id != 0u || submission->lanes[lane].sequence_position != 0u || submission->lanes[lane].resident_sequence_slot != SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT || submission->lanes[lane].context_token_count != 0u || submission->lanes[lane].input_token_id != 0u || submission->lanes[lane].flags != 0u || submission->lanes[lane].cache_prefix_token_count != 0u || submission->lanes[lane].cache_publish_token_count != 0u || submission->lanes[lane].cache_block_identity_first != 0u || submission->lanes[lane].cache_block_identity_count != 0u || memcmp(&submission->lanes[lane].cache_prefix_identity,&zero_identity,sizeof(zero_identity)) != 0 || memcmp(&submission->lanes[lane].cache_publish_identity,&zero_identity,sizeof(zero_identity)) != 0 )
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 			continue;
 		}
@@ -330,8 +341,14 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 			 submission->lanes[lane].cache_publish_token_count != submission->lanes[lane].context_token_count ||
 			 submission->lanes[lane].sequence_position != submission->lanes[lane].context_token_count) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( submission->lanes[lane].cache_block_identity_first != identities ||
+			submission->lanes[lane].cache_block_identity_count != SparkModelServingAdapterLaneBlockIdentities(&submission->lanes[lane],cache_block_token_count) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		identities += submission->lanes[lane].cache_block_identity_count;
 		seen_slots[slot] = 1u;
 	}
+	if ( identities != submission->cache_block_identity_count || (identities != 0u) != (submission->cache_block_identities != 0) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (row=0u; row<submission->row_count; row++)
 	{
 		lane = submission->row_lane_indices[row];
@@ -633,6 +650,9 @@ SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
 			destination->publish_token_count = source->cache_publish_token_count;
 			memcpy(&destination->prefix_identity,&source->cache_prefix_identity,sizeof(destination->prefix_identity));
 			memcpy(&destination->publish_identity,&source->cache_publish_identity,sizeof(destination->publish_identity));
+			destination->block_identity_count = source->cache_block_identity_count;
+			destination->block_identities = source->cache_block_identity_count != 0u ?
+				(const SparkModelDriverCacheIdentity *)(const void *)(submission->cache_block_identities + source->cache_block_identity_first) : 0;
 			if ( (source->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u )
 				destination->flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
 			if ( (source->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )

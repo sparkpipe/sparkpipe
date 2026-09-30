@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 23u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 24u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -27,6 +27,7 @@ extern "C" {
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT 64u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT 16384u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_TOKEN_COUNT 256u
+#define SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT 4096u
 #define SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT UINT32_MAX
 
 #define SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN UINT32_C(0x00000001)
@@ -168,6 +169,8 @@ typedef struct SparkModelServingLane
 	uint32_t flags;
 	uint32_t cache_prefix_token_count;
 	uint32_t cache_publish_token_count;
+	uint32_t cache_block_identity_first;
+	uint32_t cache_block_identity_count;
 	SparkModelServingCacheIdentity cache_prefix_identity;
 	SparkModelServingCacheIdentity cache_publish_identity;
 	SparkRowSampling sampling;
@@ -198,12 +201,15 @@ typedef struct SparkModelServingSubmission
 	uint32_t tokens_per_sequence;
 	uint32_t model_extension_kind;
 	uint32_t model_extension_bytes;
+	uint32_t cache_block_identity_count;
+	uint32_t reserved;
 	const SparkModelServingLane *lanes;
 	const uint32_t *token_ids;
 	const uint32_t *row_lane_indices;
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
 	const void *model_extension;
+	const SparkModelServingCacheIdentity *cache_block_identities;
 	const void *hidden_input_address;
 	uint64_t hidden_input_bytes;
 	const void *boundary_sideband_input_address;
