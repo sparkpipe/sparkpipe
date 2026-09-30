@@ -711,7 +711,7 @@ static int32_t GlmLayerAttentionCore(
         buffers->positions,
         rows,
         GLM_LATENT_ROW);
-    if (LmLatentAttentionDecodeSplitLaunch<
+    if (LmLatentRopeHeadsSplitLaunch<
             GlmKv, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM, true>(
             buffers->query_latent_bf16,
             buffers->query_rope_bf16,
