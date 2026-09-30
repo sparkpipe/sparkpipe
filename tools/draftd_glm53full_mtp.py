@@ -1,4 +1,5 @@
 import argparse
+import collections
 import json
 import math
 import os
@@ -358,7 +359,7 @@ RELAY_DRAFT = 0x31445347
 RELAY_ANSWER = 0x31415347
 RELAY_HEADER = struct.Struct("<IIQII")
 RELAY_ROW = struct.Struct("<II")
-RELAY_SEQUENCES = 4
+RELAY_SEQUENCES = 32
 
 
 class RelaySequence:
@@ -395,7 +396,7 @@ class Relay:
         self.control_mtime = None
         self.model = model
         self.capacity = capacity
-        self.sequences = {}
+        self.sequences = collections.OrderedDict()
         self.changed = None
         self.log = log
         self.stats = {"commits": 0, "rows": 0, "drafts": 0, "draft_ms": 0.0, "extend_ms": 0.0, "tokens": 0, "lookups": 0, "waits": 0}
@@ -432,6 +433,8 @@ class Relay:
         if self.model is None:
             return
         state = self.sequences.get(sequence)
+        if state is not None:
+            self.sequences.move_to_end(sequence)
         if first == 0 or state is None:
             self.sequences.pop(sequence, None)
             while len(self.sequences) >= RELAY_SEQUENCES:
