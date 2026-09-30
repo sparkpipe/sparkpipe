@@ -162,6 +162,13 @@ SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,void **mapping,
     return SPARK_STATUS_UNSUPPORTED;
 }
 
+SparkStatus SparkWeightdClientMeshStagingMap(SparkWeightdClient *client,void **mapping,uint64_t timeout)
+{
+    (void)client; (void)timeout;
+    *mapping = 0;
+    return SPARK_STATUS_UNSUPPORTED;
+}
+
 uint32_t SparkWeightdClientAlive(const SparkWeightdClient *client)
 {
     return((g_dead_rank_mask & (1u << *(const uint32_t *)client)) == 0u);

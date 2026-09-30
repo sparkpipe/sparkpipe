@@ -37,6 +37,7 @@ extern uint32_t SparkWeightdMeshReady(void);
 extern uint64_t SparkWeightdMeshBufferAddress(void);
 extern uint32_t SparkWeightdMeshBufferLkey(void);
 extern int SparkWeightdMeshBufferFd(void);
+extern int SparkWeightdMeshStagingFd(void);
 extern void SparkWeightdMeshPoll(void);
 extern SparkStatus SparkWeightdMeshPostWrite(uint32_t peer,
     uint64_t local_addr, uint32_t lkey, uint32_t length,
@@ -49,6 +50,7 @@ __attribute__((weak)) uint32_t SparkWeightdMeshReady(void) { return 0u; }
 __attribute__((weak)) uint64_t SparkWeightdMeshBufferAddress(void) { return 0ull; }
 __attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
 __attribute__((weak)) int SparkWeightdMeshBufferFd(void) { return -1; }
+__attribute__((weak)) int SparkWeightdMeshStagingFd(void) { return -1; }
 
 extern void SparkWeightdMeshDeviceProbe(const char *tag,void *device_pointer,
     uint64_t bytes);
@@ -179,6 +181,7 @@ typedef struct SparkWeightdConnection
     uint32_t request_bytes;
     uint32_t request_ready;
     uint32_t attach_count;
+    uint32_t abi_version;
     _Alignas(SparkWeightdIpcHeader) uint8_t request[SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX];
     _Alignas(SparkWeightdIpcHeader) uint8_t response[SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX];
     uint32_t response_bytes;
@@ -319,6 +322,11 @@ SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
+    if (identity->abi_version >= SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN &&
+        identity->abi_version <= SPARK_WEIGHTD_IPC_ABI_VERSION)
+    {
+        identity->abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    }
     if (SparkWeightdStringBounded(identity->model, SPARK_WEIGHTD_ID_BYTES) !=
         SPARK_STATUS_OK)
     {
@@ -367,9 +375,12 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
     switch (kind)
     {
         case SPARK_WEIGHTD_IPC_KIND_MESH_MAP:
+        case SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP:
             return 0u;
         case SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT:
             return sizeof(SparkWeightdIpcMeshMapResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP_RESULT:
+            return sizeof(SparkWeightdIpcMeshStagingMapResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return sizeof(SparkWeightdIpcMeshActivity) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT:
@@ -475,6 +486,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_EXPORT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_MAP:
             return SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP:
+            return SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_WRITE:
@@ -504,9 +517,23 @@ static void SparkWeightdBuildHeader(uint8_t *response,
     header->request_id = request_id;
 }
 
+uint32_t SparkWeightdIpcAbiServed(uint32_t abi_version,uint32_t kind)
+{
+    return abi_version <= SPARK_WEIGHTD_IPC_ABI_VERSION &&
+        abi_version >= SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ? 1u : 0u;
+}
+
 SparkStatus SparkWeightdIpcValidateHeader(const SparkWeightdIpcHeader *header,
     uint32_t message_bytes,
     uint32_t expected_kind)
+{
+    return SparkWeightdIpcValidateHeaderVersion(header,message_bytes,expected_kind,SPARK_WEIGHTD_IPC_ABI_VERSION);
+}
+
+SparkStatus SparkWeightdIpcValidateHeaderVersion(const SparkWeightdIpcHeader *header,
+    uint32_t message_bytes,
+    uint32_t expected_kind,
+    uint32_t abi_version)
 {
     if (header == 0)
     {
@@ -520,7 +547,8 @@ SparkStatus SparkWeightdIpcValidateHeader(const SparkWeightdIpcHeader *header,
     {
         SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
     }
-    if (header->abi_version != SPARK_WEIGHTD_IPC_ABI_VERSION)
+    if (header->abi_version != abi_version ||
+        SparkWeightdIpcAbiServed(abi_version,expected_kind) == 0u)
     {
         SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
@@ -2755,6 +2783,29 @@ static uint32_t SparkWeightdServerOnMeshMap(SparkWeightdConnection *connection, 
     return sizeof(*result);
 }
 
+static uint32_t SparkWeightdServerOnMeshStagingMap(SparkWeightdConnection *connection, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+{
+    SparkWeightdIpcMeshStagingMapResult *result = (SparkWeightdIpcMeshStagingMapResult *)response;
+    int fd;
+    memset(result,0,sizeof(*result));
+    SparkWeightdBuildHeader(response,result_kind,request_id);
+    if (connection->lane_mask == 0u)
+        result->status = SPARK_STATUS_INVALID_ARGUMENT;
+    else if (SparkWeightdMeshReady() == 0u)
+        result->status = SPARK_STATUS_BUSY;
+    else if ((fd = SparkWeightdMeshStagingFd()) < 0)
+        result->status = SPARK_STATUS_UNSUPPORTED;
+    else
+    {
+        connection->response_fds[connection->response_fd_count++] = fd;
+        result->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+        result->bytes = SPARK_WEIGHTD_MESH_STAGING_BYTES;
+        result->slot_bytes = SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES;
+        result->band_bytes = SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES;
+    }
+    return sizeof(*result);
+}
+
 static uint32_t SparkWeightdServerOnLaneAcquire(SparkWeightdServer *server, SparkWeightdConnection *connection, uint8_t *response, const SparkWeightdIpcHeader *request_header, uint32_t result_kind, uint64_t request_id)
 {
     SparkWeightdIpcLaneAcquireResult *result =
@@ -2943,7 +2994,7 @@ static uint32_t SparkWeightdServerOnReclaimPack(SparkWeightdServer *server, cons
     return(SparkWeightdServerReclaimMatching(server,response,result_kind,request_id,pack_sha256));
 }
 
-static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeightdConnection *connection, const uint8_t *request, uint8_t *response)
+static uint32_t SparkWeightdServerDispatchKind(SparkWeightdServer *server, SparkWeightdConnection *connection, const uint8_t *request, uint8_t *response)
 {
     const SparkWeightdIpcHeader *request_header = (const SparkWeightdIpcHeader *)request;
     uint32_t result_kind = SparkWeightdKindResultKind(request_header->kind);
@@ -2978,6 +3029,8 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeig
             return(SparkWeightdServerOnDetach(server,connection,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_MESH_MAP:
             return(SparkWeightdServerOnMeshMap(connection,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP:
+            return(SparkWeightdServerOnMeshStagingMap(connection,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_LANE_ACQUIRE:
             return(SparkWeightdServerOnLaneAcquire(server,connection,response,request_header,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_EVICT:
@@ -2991,6 +3044,14 @@ static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeig
         default:
             return(0u);
     }
+}
+
+static uint32_t SparkWeightdServerDispatch(SparkWeightdServer *server, SparkWeightdConnection *connection, const uint8_t *request, uint8_t *response)
+{
+    uint32_t bytes = SparkWeightdServerDispatchKind(server,connection,request,response);
+    if (bytes >= SPARK_WEIGHTD_IPC_HEADER_BYTES)
+        ((SparkWeightdIpcHeader *)response)->abi_version = connection->abi_version;
+    return bytes;
 }
 
 static void SparkWeightdServerDispatchWork(void *context)
@@ -3079,6 +3140,7 @@ static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
     connection->fd = -1;
     connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
     connection->hello_done = 0u;
+    connection->abi_version = 0u;
     connection->request_bytes = 0u;
     connection->request_ready = 0u;
     connection->response_bytes = 0u;
@@ -3212,7 +3274,8 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
                 (const SparkWeightdIpcHeader *)connection->request;
             uint32_t expected_bytes;
             if (header->magic != SPARK_WEIGHTD_IPC_MAGIC ||
-                header->abi_version != SPARK_WEIGHTD_IPC_ABI_VERSION ||
+                SparkWeightdIpcAbiServed(header->abi_version,header->kind) == 0u ||
+                (connection->abi_version != 0u && connection->abi_version != header->abi_version) ||
                 SparkWeightdKindResultKind(header->kind) == 0u ||
                 header->body_bytes >
                     SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX -
@@ -3228,12 +3291,13 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
                 continue;
             }
             /* wire-shape check against the exact frame size for the kind */
-            if (SparkWeightdIpcValidateHeader(header, expected_bytes,
-                    header->kind) != SPARK_STATUS_OK)
+            if (SparkWeightdIpcValidateHeaderVersion(header, expected_bytes,
+                    header->kind, header->abi_version) != SPARK_STATUS_OK)
             {
                 connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
                 return;
             }
+            connection->abi_version = header->abi_version;
             if (header->kind != SPARK_WEIGHTD_IPC_KIND_HELLO &&
                 header->kind != SPARK_WEIGHTD_IPC_KIND_MESH_WRITE &&
                 header->kind != SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST &&
@@ -3329,6 +3393,7 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
                     connection->fd = fd;
                     connection->state = SPARK_WEIGHTD_CONNECTION_OPEN;
                     connection->hello_done = 0u;
+                    connection->abi_version = 0u;
                     connection->request_bytes = 0u;
                     connection->request_ready = 0u;
                     connection->response_bytes = 0u;
@@ -3866,7 +3931,7 @@ static SparkStatus SparkWeightdClientReadFrameWithFds(SparkWeightdClient *client
     uint32_t fds_capacity,
     uint32_t *fds_received);
 
-static SparkStatus SparkWeightdMapMeshFd(int fd,uint64_t bytes,void **out)
+static SparkStatus SparkWeightdMapSharedFd(int fd,uint64_t bytes,uint64_t expected_bytes,void **out)
 {
     const size_t alignment = SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES;
     struct stat info;
@@ -3875,7 +3940,7 @@ static SparkStatus SparkWeightdMapMeshFd(int fd,uint64_t bytes,void **out)
     size_t reserved,prefix,suffix;
     uintptr_t aligned;
     *out = 0;
-    if (bytes != SPARK_WEIGHTD_MESH_REGION_BYTES || bytes > SIZE_MAX - alignment ||
+    if (bytes != expected_bytes || bytes > SIZE_MAX - alignment ||
         fstat(fd,&info) != 0 || info.st_size < 0 || (uint64_t)info.st_size < bytes)
         return SPARK_STATUS_SCHEMA_ERROR;
     reserved = (size_t)bytes + alignment;
@@ -3893,6 +3958,11 @@ static SparkStatus SparkWeightdMapMeshFd(int fd,uint64_t bytes,void **out)
     { (void)munmap(mapped,(size_t)bytes + suffix); return SPARK_STATUS_IO_ERROR; }
     *out = mapped;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkWeightdMapMeshFd(int fd,uint64_t bytes,void **out)
+{
+    return SparkWeightdMapSharedFd(fd,bytes,SPARK_WEIGHTD_MESH_REGION_BYTES,out);
 }
 
 static SparkStatus SparkWeightdClientAttachLazyKind(SparkWeightdClient *client,
@@ -4493,6 +4563,35 @@ SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,
         status = SPARK_STATUS_SCHEMA_ERROR;
     if (status == SPARK_STATUS_OK) status = SparkWeightdStatusFromWire(response.status);
     if (status == SPARK_STATUS_OK) status = SparkWeightdMapMeshFd(fds[0],response.bytes,mapping);
+    while (received != 0u) (void)close(fds[--received]);
+    return status;
+}
+
+SparkStatus SparkWeightdClientMeshStagingMap(SparkWeightdClient *client,
+    void **mapping,uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcHeader request;
+    SparkWeightdIpcMeshStagingMapResult response;
+    int fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+    uint32_t received = 0u;
+    SparkStatus status;
+    if (client == 0 || mapping == 0) return SPARK_STATUS_INVALID_ARGUMENT;
+    *mapping = 0;
+    if (client->next_request_id == UINT64_MAX) return SPARK_STATUS_CAPACITY_EXCEEDED;
+    memset(&response,0,sizeof(response));
+    SparkWeightdBuildHeader((uint8_t *)&request,SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP,++client->next_request_id);
+    status = SparkWeightdClientExportExchange(client,&request,sizeof(request),&response,sizeof(response),fds,&received,timeout_nanoseconds);
+    if (status != SPARK_STATUS_OK) return status;
+    status = SparkWeightdIpcValidateHeader(&response.header,sizeof(response),SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP_RESULT);
+    if (status == SPARK_STATUS_OK && (response.header.request_id != request.request_id ||
+        received != (response.status == SPARK_STATUS_OK ? 1u : 0u)))
+        status = SPARK_STATUS_SCHEMA_ERROR;
+    if (status == SPARK_STATUS_OK) status = SparkWeightdStatusFromWire(response.status);
+    if (status == SPARK_STATUS_OK && ((response.capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES) == 0u ||
+        response.slot_bytes != SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES ||
+        response.band_bytes != SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES))
+        status = SPARK_STATUS_SCHEMA_ERROR;
+    if (status == SPARK_STATUS_OK) status = SparkWeightdMapSharedFd(fds[0],response.bytes,SPARK_WEIGHTD_MESH_STAGING_BYTES,mapping);
     while (received != 0u) (void)close(fds[--received]);
     return status;
 }

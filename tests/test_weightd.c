@@ -205,6 +205,15 @@ static void SparkTestIdentityCanonicalization(void)
     assert(SparkWeightdIdentityEqual(&left, &right));
     assert(memcmp(&left, &right, sizeof(left)) == 0);
 
+    SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
+    broken.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN;
+    assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_OK);
+    assert(broken.abi_version == SPARK_WEIGHTD_IPC_ABI_VERSION);
+    assert(SparkWeightdIdentityEqual(&left, &broken));
+    SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
+    broken.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN - 1u;
+    assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_OK);
+    assert(!SparkWeightdIdentityEqual(&left, &broken));
     SparkTestMakeIdentity(&broken, "model", "rev1", 16u, 0xAull, digest,
         4096ull);
     assert(!SparkWeightdIdentityEqual(&left, &broken));
@@ -561,6 +570,110 @@ static void SparkTestExpectConnectionClosed(const char *socket_path,
     (void)close(fd);
 }
 
+static int SparkTestRawConnect(const char *socket_path)
+{
+    struct sockaddr_un address;
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(fd >= 0);
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    SparkTestCopyBounded(address.sun_path, sizeof(address.sun_path), socket_path);
+    assert(connect(fd, (const struct sockaddr *)&address, sizeof(address)) == 0);
+    return fd;
+}
+
+static void SparkTestRawFrame(SparkWeightdIpcHeader *header, uint32_t abi_version,
+    uint32_t kind, uint64_t request_id)
+{
+    memset(header, 0, sizeof(*header));
+    header->magic = SPARK_WEIGHTD_IPC_MAGIC;
+    header->abi_version = abi_version;
+    header->kind = kind;
+    header->request_id = request_id;
+}
+
+static ssize_t SparkTestRawExchange(int fd, const SparkWeightdIpcHeader *request,
+    void *response, size_t response_bytes)
+{
+    struct pollfd poll_fd;
+    size_t filled = 0u;
+    assert(write(fd, request, sizeof(*request)) == (ssize_t)sizeof(*request));
+    while (filled < response_bytes)
+    {
+        ssize_t got;
+        poll_fd.fd = fd;
+        poll_fd.events = POLLIN;
+        poll_fd.revents = 0;
+        assert(poll(&poll_fd, 1u, 5000) > 0);
+        got = read(fd, (uint8_t *)response + filled, response_bytes - filled);
+        if (got <= 0)
+            return got;
+        filled += (size_t)got;
+    }
+    return (ssize_t)filled;
+}
+
+static void SparkTestServedAbiVersions(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_abi.sock";
+    SparkTestServerThread thread_context;
+    pthread_t thread_handle;
+    SparkWeightdIpcHeader request;
+    SparkWeightdIpcHelloAck ack;
+    SparkWeightdIpcMeshStagingMapResult staging;
+    SparkWeightdIpcMeshMapResult map;
+    SparkWeightdClient *client = 0;
+    void *mapping = (void *)&thread_context;
+    uint32_t version;
+    int fd;
+    (void)remove(socket_path);
+    SparkTestStartServer(&thread_context, &thread_handle, socket_path,
+        SPARK_TEST_CEILING_BYTES);
+    assert(SparkWeightdIpcAbiServed(8u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
+    assert(SparkWeightdIpcAbiServed(9u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
+    assert(SparkWeightdIpcAbiServed(7u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 0u);
+    assert(SparkWeightdIpcAbiServed(10u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 0u);
+    assert(SparkWeightdIpcAbiServed(8u, SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP) == 0u);
+    assert(SparkWeightdIpcAbiServed(9u, SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP) == 1u);
+    for (version = SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN; version <= SPARK_WEIGHTD_IPC_ABI_VERSION; version++)
+    {
+        fd = SparkTestRawConnect(socket_path);
+        SparkTestRawFrame(&request, version, SPARK_WEIGHTD_IPC_KIND_HELLO, 7u);
+        memset(&ack, 0, sizeof(ack));
+        assert(SparkTestRawExchange(fd, &request, &ack, sizeof(ack)) == (ssize_t)sizeof(ack));
+        assert(ack.header.abi_version == version && ack.header.kind == SPARK_WEIGHTD_IPC_KIND_HELLO_ACK &&
+            ack.header.request_id == 7u && ack.status == SPARK_STATUS_OK);
+        assert(SparkWeightdIpcValidateHeaderVersion(&ack.header, sizeof(ack),
+            SPARK_WEIGHTD_IPC_KIND_HELLO_ACK, version) == SPARK_STATUS_OK);
+        SparkTestRawFrame(&request, version, SPARK_WEIGHTD_IPC_KIND_MESH_MAP, 8u);
+        memset(&map, 0, sizeof(map));
+        assert(SparkTestRawExchange(fd, &request, &map, sizeof(map)) == (ssize_t)sizeof(map));
+        assert(map.header.abi_version == version && map.header.kind == SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT &&
+            map.status == SPARK_STATUS_INVALID_ARGUMENT);
+        SparkTestRawFrame(&request, version == 8u ? 9u : 8u, SPARK_WEIGHTD_IPC_KIND_MESH_MAP, 9u);
+        assert(SparkTestRawExchange(fd, &request, &map, sizeof(map)) == 0);
+        (void)close(fd);
+    }
+    fd = SparkTestRawConnect(socket_path);
+    SparkTestRawFrame(&request, 8u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    assert(SparkTestRawExchange(fd, &request, &ack, sizeof(ack)) == (ssize_t)sizeof(ack));
+    SparkTestRawFrame(&request, 8u, SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP, 2u);
+    assert(SparkTestRawExchange(fd, &request, &staging, sizeof(staging)) == 0);
+    (void)close(fd);
+    SparkTestRawFrame(&request, 7u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
+    SparkTestRawFrame(&request, 10u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
+    SparkTestConnect(&client, socket_path, 0ull);
+    assert(SparkWeightdClientMeshStagingMap(client, &mapping, SPARK_TEST_TIMEOUT_NS) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    assert(mapping == 0);
+    SparkWeightdClientClose(client);
+    SparkTestStopServer(&thread_context, thread_handle);
+    (void)remove(socket_path);
+    printf("served ABI 8 and 9 green (replies echo the client ABI; staging map is ABI 9 only)\n");
+}
+
 static void SparkTestFailClosedPaths(void)
 {
     const char *socket_path = "/tmp/spark_weightd_test_closed.sock";
@@ -843,6 +956,7 @@ int main(void)
     SparkTestSharedRefcountAndConsumerDeath();
     SparkTestStopAttachStartNeverHoldsTwoArenas();
     SparkTestReclaimPackIsScopedToOnePack();
+    SparkTestServedAbiVersions();
     SparkTestFailClosedPaths();
     SparkTestDaemonProcessTermPath();
     printf("w2 weightd lane: identity arenas + NO-2x + TERM green\n");

@@ -116,6 +116,26 @@ static inline uint64_t SparkTpMeshAllToAllChunks(uint64_t per_peer_elements,uint
     return slice == 0u || per_peer_elements == 0u ? 0u : (per_peer_elements - 1u) / slice + 1u;
 }
 
+#define SPARK_TP_MESH_ROUTES_SLICE 1u
+#define SPARK_TP_MESH_ROUTES_PEER 2u
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshAllToAllPeerChunks(uint64_t per_peer_elements,uint64_t staging_slot_bytes)
+{
+    uint64_t slice = staging_slot_bytes / 2u;
+    return slice == 0u || per_peer_elements == 0u ? 0u : (per_peer_elements - 1u) / slice + 1u;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshDirectPeerCapacity(uint32_t degree,uint64_t staging_slot_bytes)
+{
+    return (uint64_t)degree * ((staging_slot_bytes / 2u) & ~UINT64_C(3));
+}
+
 #if defined(__CUDACC__)
 __host__ __device__
 #endif

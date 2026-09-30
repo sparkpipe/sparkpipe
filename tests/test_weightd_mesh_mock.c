@@ -537,9 +537,98 @@ static void test_slice_routes(uint32_t local_rank)
         "an empty gather slice still delivers the tail");
     test_complete_range(first,last);
     CHECK(test_shipped(8u,local_rank) == seq + 1u,"gather releases after its tails complete");
-    route.fields.mode = 3u;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
     CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
-        "unknown route modes are rejected");
+        "a peer route must carry exactly its per-peer length");
+    route.fields.reserved = 1u;
+    route.fields.slice_bytes = 1000u;
+    CHECK(test_post_route(8u,local_rank,seq + 2u,bytes,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "reserved route bits are rejected");
+}
+
+static uint64_t test_peer_route_bytes(uint32_t rows)
+{
+    uint64_t bytes = (uint64_t)rows * 4112u * sizeof(uint16_t);
+    return bytes < SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES ? bytes : SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES;
+}
+
+static void test_peer_routes(uint32_t local_rank)
+{
+    static const uint32_t rows[] = {1u,8u,128u,129u,512u,1024u};
+    uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
+    uint64_t seq = (UINT64_C(10) << 32u) | 1u, slot_base, staging = (uint64_t)(uintptr_t)weightd_mesh.staging_buffer;
+    uint32_t case_index, first, last, i, peer, peer_rank, data, tails;
+    SparkWeightdMeshRoute route = {0};
+    const SparkWeightdMeshWaitRequest *request = (const SparkWeightdMeshWaitRequest *)(
+        (const uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_WAIT_ENTRY(8u,local_rank));
+    int fd = SparkWeightdMeshStagingFd();
+    struct stat info;
+    CHECK((request->capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES) != 0u &&
+        (request->capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES) != 0u,
+        "configured lane advertises peer routes next to slice routes");
+    CHECK(fd >= 0 && fstat(fd,&info) == 0 && (uint64_t)info.st_size == SPARK_WEIGHTD_MESH_STAGING_BYTES,
+        "the staging export is one fd of exactly the staging bytes");
+    if ( fd >= 0 ) (void)close(fd);
+    CHECK(SPARK_WEIGHTD_MESH_STAGING_BYTES == UINT64_C(134217728) &&
+        SPARK_WEIGHTD_MESH_REGION_BYTES == UINT64_C(268500992) + SPARK_WEIGHTD_MESH_DOORBELL_BYTES,
+        "per-peer staging is 128 MiB and the ABI 8 region layout is unchanged");
+    route.fields.peer_mask = all_peers;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+    route.fields.slice_bytes = SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES + 8u;
+    CHECK(test_post_route(8u,local_rank,seq,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES + 8u,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a peer route never exceeds one staging slot");
+    route.fields.slice_bytes = 12u;
+    CHECK(test_post_route(8u,local_rank,seq,12u,route) == SPARK_STATUS_INVALID_ARGUMENT,
+        "peer routes keep 8-byte alignment");
+    for ( case_index = 0u; case_index < sizeof(rows) / sizeof(rows[0]); case_index++ )
+    {
+        uint64_t bytes = test_peer_route_bytes(rows[case_index]);
+        CHECK(rows[case_index] <= SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS,"the mesh row cap admits every tested exchange height up to 1024 rows");
+        uint64_t slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        slot_base = (8u * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+        route.fields.slice_bytes = bytes;
+        first = spark_stub_ibv_posted_count();
+        CHECK(test_post_route(8u,local_rank,seq,bytes,route) == SPARK_STATUS_OK,"peer route posts");
+        last = spark_stub_ibv_posted_count();
+        CHECK(last - first == TEST_MESH_PEERS * 2u,"peer route posts one staged payload and one tail per peer");
+        data = tails = 0u;
+        for ( i = first; i < last; i++ )
+        {
+            SparkStubIbvPostedWork work;
+            CHECK(spark_stub_ibv_posted(i,&work) == 0,"peer route work is recorded");
+            for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+                if ( weightd_mesh.send_qps[peer]->qp_num == work.qp_number ) break;
+            peer_rank = test_peer_rank(peer,local_rank);
+            CHECK(work.remote - weightd_mesh.qp_info[peer].remote_addr == slot_base + ((work.wr_id & 3u) == 3u ? SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u : 0u),
+                "peer route lands at the start of this rank's receive slot and its tail at the slot end");
+            if ( (work.wr_id & 3u) == 3u )
+            {
+                tails++;
+                CHECK(work.lkey == weightd_mesh.recv_mr->lkey && work.length == 8u &&
+                    work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
+                    "the tail still ships from the sender's own slot");
+                continue;
+            }
+            data++;
+            CHECK(work.lkey == weightd_mesh.staging_mr->lkey && work.length == bytes &&
+                work.source == staging + SPARK_WEIGHTD_MESH_STAGING_OFFSET(8u,peer_rank),
+                "each peer receives its own full staging slot");
+        }
+        CHECK(data == TEST_MESH_PEERS && tails == TEST_MESH_PEERS,"every peer gets one payload and one tail");
+        CHECK(test_shipped(8u,local_rank) != seq,"the peer route is not shipped before its completions");
+        test_complete_range(first,last);
+        CHECK(test_shipped(8u,local_rank) == seq,"peer route releases after every payload and tail completes");
+        seq++;
+    }
+    route.fields.peer_mask = all_peers & (all_peers - 1u);
+    route.fields.slice_bytes = 4096u;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_route(8u,local_rank,seq,4096u,route) == SPARK_STATUS_OK,"partial peer masks post");
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == (TEST_MESH_PEERS - 1u) * 2u,"a peer route skips peers outside its mask");
+    test_complete_range(first,last);
+    CHECK(test_shipped(8u,local_rank) == seq,"partial peer route releases");
 }
 
 typedef struct TestMeshActivityThread
@@ -674,12 +763,12 @@ static void test_mesh_hardware_wait(void)
     uint64_t *peer2 = test_peer_tail(band,2u,tag);
     uint64_t id,old_error,old_diag;
     uint32_t first,last,invalid;
-    CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 8u &&
+    CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 9u && SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN == 8u &&
         SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == 22528u &&
         (uint8_t *)test_wait_request(SPARK_WEIGHTD_MESH_BANDS - 1u,SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u) + sizeof(*request) <=
             (uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_REGION_BYTES &&
         sizeof(*request) == 128u && offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
-        "ABI8 gate geometry has separate producer and terminal cache lines within registered region");
+        "the ABI 8 gate geometry served under ABI 9 has separate producer and terminal cache lines within the registered region");
     CHECK(SparkWeightdMeshSetActivity(band / 2u,1u) == SPARK_STATUS_OK,
         "hardware wait producer begins before publishing any GPU request");
     id = test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,0u);
@@ -1536,6 +1625,7 @@ int main(void)
     test_all_transfer_identities();
     test_slot_lifetimes(local_rank);
     test_slice_routes(local_rank);
+    test_peer_routes(local_rank);
     test_mesh_topology();
 
     /* case 6: a second daemon instance with its own record dir must not
