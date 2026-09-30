@@ -359,11 +359,27 @@ class RelaySequence:
         self.taps = torch.zeros((capacity, HIDDEN), dtype=torch.bfloat16, device=model.device)
         self.tapped = 0
         self.drafts = {}
+        self.grams = {}
+        self.indexed = 2
+
+    def lookup(self, position, depth):
+        inputs = self.inputs
+        for end in range(self.indexed, position):
+            gram = (inputs.get(end - 2), inputs.get(end - 1), inputs.get(end))
+            if None in gram:
+                return []
+            self.grams[gram] = end
+        self.indexed = max(self.indexed, position)
+        end = self.grams.get((inputs.get(position - 2), inputs.get(position - 1), inputs.get(position)))
+        if end is None:
+            return []
+        return [inputs[index] for index in range(end + 1, min(end + 1 + depth, position + 1))]
 
 
 class Relay:
     def __init__(self, model, capacity, log, table=None, max_depth=7, control=""):
         self.min_conf = 0.0
+        self.lookup_depth = 0
         self.table = table
         self.max_depth = max_depth
         self.control = control
@@ -373,7 +389,7 @@ class Relay:
         self.sequences = {}
         self.changed = None
         self.log = log
-        self.stats = {"commits": 0, "rows": 0, "drafts": 0, "draft_ms": 0.0, "extend_ms": 0.0, "tokens": 0, "waits": 0}
+        self.stats = {"commits": 0, "rows": 0, "drafts": 0, "draft_ms": 0.0, "extend_ms": 0.0, "tokens": 0, "lookups": 0, "waits": 0}
 
     def advance(self, state):
         start = state.cache["length"]
@@ -396,7 +412,8 @@ class Relay:
         self.table = read_table(setting["table"])["entries"] if setting.get("table") else None
         self.max_depth = int(setting.get("max_depth", 7))
         self.min_conf = float(setting.get("min_conf", 0.0))
-        self.log(f"RELAY-MODE {'table ' + setting['table'] if self.table is not None else 'mtp'} max_depth={self.max_depth} min_conf={self.min_conf}")
+        self.lookup_depth = int(setting.get("lookup_depth", 0))
+        self.log(f"RELAY-MODE {'table ' + setting['table'] if self.table is not None else 'mtp'} max_depth={self.max_depth} min_conf={self.min_conf} lookup_depth={self.lookup_depth}")
 
     def commit(self, sequence, first, rows):
         self.stats["commits"] += 1
@@ -423,13 +440,13 @@ class Relay:
         state = self.sequences.get(sequence)
         return state is not None and state.tapped >= position
 
-    def draft(self, sequence, position, anchor, depth):
-        depth = min(depth, self.max_depth)
+    def draft(self, sequence, position, anchor, requested):
+        depth = min(requested, self.max_depth)
         if self.table is not None:
             self.stats["drafts"] += 1
             return self.table.get((sequence, position), [])[:depth]
         state = self.sequences[sequence]
-        key = (position, depth)
+        key = (position, requested)
         if key not in state.drafts:
             known = state.inputs.get(position)
             if known is not None and known != anchor:
@@ -439,7 +456,12 @@ class Relay:
             self.advance(state)
             torch.cuda.synchronize()
             self.stats["extend_ms"] += (time.perf_counter() - t0) * 1000.0
-            state.drafts[key] = self.model.chain(state.cache, [position], depth, self.min_conf)[0]
+            found = state.lookup(position, min(requested, self.lookup_depth)) if self.lookup_depth > 0 and position > 0 else []
+            if found and found[0] == int(state.cache["pred"][position - 1]):
+                self.stats["lookups"] += 1
+                state.drafts[key] = found
+            else:
+                state.drafts[key] = self.model.chain(state.cache, [position], depth, self.min_conf)[0]
             torch.cuda.synchronize()
             self.stats["tokens"] += len(state.drafts[key])
             self.stats["drafts"] += 1
@@ -508,7 +530,7 @@ def serve(args):
             while True:
                 await asyncio.sleep(30)
                 st = relay.stats
-                log(f"RELAY-STATS commits={st['commits']} rows={st['rows']} drafts={st['drafts']} waits={st['waits']} draft_ms_mean={st['draft_ms'] / max(1, st['drafts']):.2f} extend_ms_mean={st['extend_ms'] / max(1, st['drafts']):.2f} tokens_mean={st['tokens'] / max(1, st['drafts']):.2f}")
+                log(f"RELAY-STATS commits={st['commits']} rows={st['rows']} drafts={st['drafts']} waits={st['waits']} draft_ms_mean={st['draft_ms'] / max(1, st['drafts']):.2f} extend_ms_mean={st['extend_ms'] / max(1, st['drafts']):.2f} tokens_mean={st['tokens'] / max(1, st['drafts']):.2f} lookups={st['lookups']}")
 
         asyncio.ensure_future(report())
         async with server:
@@ -524,7 +546,7 @@ def main():
         serving.add_argument("--checkpoint", default="")
         serving.add_argument("--table", default="", help="answer from a recorded draft table instead of the MTP layer")
         serving.add_argument("--max-depth", type=int, default=7, help="longest chain returned; 0 answers no drafts (plain decode through the same frames)")
-        serving.add_argument("--control", default="", help="json {table, max_depth, min_conf} re-read when a sequence starts; switches arms without dropping the fleet connections; min_conf ends a chain at the first MTP token whose probability is below it")
+        serving.add_argument("--control", default="", help="json {table, max_depth, min_conf, lookup_depth} re-read when a sequence starts; switches arms without dropping the fleet connections; min_conf ends a chain at the first MTP token whose probability is below it; lookup_depth > 0 answers with the continuation of the latest earlier occurrence of the last three tokens when its first token equals the MTP draft")
         serving.add_argument("--host", default="0.0.0.0")
         serving.add_argument("--port", type=int, required=True)
         serving.add_argument("--capacity", type=int, default=DENSE_CONTEXT)
