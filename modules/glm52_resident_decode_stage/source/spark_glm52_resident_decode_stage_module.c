@@ -677,7 +677,9 @@ static SparkStatus SparkGlm52AllocateSlotHidden(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_LATENT_DIMENSION,(void **)&slot->attention_latent_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION,(void **)&slot->attention_value_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->attention_out_bf16);
-	if ( status == SPARK_STATUS_OK && state->projection_split != 0u ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->projection_gather_bf16);
+	if ( status == SPARK_STATUS_OK && state->projection_split != 0u ) status = SparkGlmStageAllocateRows(state,rows,SparkGlm52ProjectionSlotWidth(state->tp_degree),(void **)&slot->projection_local_bf16);
+	if ( status == SPARK_STATUS_OK && state->projection_split != 0u && state->tp_degree > 1u ) status = SparkGlmStageAllocateRows(state,rows * state->tp_degree,SparkGlm52ProjectionSlotWidth(state->tp_degree),(void **)&slot->projection_gather_bf16);
+	if ( status == SPARK_STATUS_OK && state->projection_split != 0u && state->tp_degree == 1u ) slot->projection_gather_bf16 = slot->projection_local_bf16;
 	SPARK_RETURN(status);
 }
 
@@ -1094,6 +1096,25 @@ static SparkStatus SparkGlm52ModuleReduce(SparkGlm52TpChain *chain,void *device,
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	SparkGlm52ChainSubmission(chain,device,1u,&submission);
 	return(SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,operation));
+}
+
+static SparkStatus SparkGlm52ModuleGatherProjection(SparkGlm52TpChain *chain,uint32_t host_completion)
+{
+	SparkGlm52ModuleState *state;
+	SparkTpDeviceCollectiveSubmission submission;
+	state = chain->state;
+	if ( state->tp_degree == 1u || state->tp_collective_disabled != 0u )
+	{
+		if ( host_completion != 0u )
+			SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
+	}
+	if ( state->tp_device_collective_initialized == 0u )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	SparkGlm52ChainSubmission(chain,chain->slot->projection_gather_bf16,host_completion,&submission);
+	submission.local_device = chain->slot->projection_local_bf16;
+	submission.element_width = SparkGlm52ProjectionSlotWidth(state->tp_degree);
+	return(SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER));
 }
 
 static SparkStatus SparkGlm52ModuleReduceHidden(SparkGlm52TpChain *chain,void *device_bf16)
@@ -1781,7 +1802,7 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 				return;
 			}
 			chain->stage = SPARK_GLM52_CHAIN_STAGE_REDUCE_PROJECTION;
-			launch_status = SparkGlm52ModuleReduceHidden(chain,chain->slot->projection_gather_bf16);
+			launch_status = SparkGlm52ModuleGatherProjection(chain,1u);
 			if ( launch_status != SPARK_STATUS_OK )
 				SparkGlm52TpChainFail(chain,launch_status);
 			return;
@@ -2010,7 +2031,7 @@ static uint32_t SparkGlm52WalkWave(void *context)
 		{
 			if ( SparkGlm52LaunchCudaLayerAttentionProject(wave,layer) != 0 )
 				return(11u);
-			if ( SparkGlm52WalkReduce(chain,slot->projection_gather_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+			if ( SparkGlm52ModuleGatherProjection(chain,0u) != SPARK_STATUS_OK )
 				return(12u);
 			if ( SparkGlm52LaunchCudaLayerAttentionCore(wave,layer) != 0 )
 				return(13u);

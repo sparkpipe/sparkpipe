@@ -48,6 +48,7 @@ struct Probe
     uint8_t *host=nullptr,*device=nullptr;
     Rank ranks[SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     uint32_t degree=0u,operation=0u,rows=0u,rounds=0u,routes=1u;
+    bool poll=false;
     uint64_t elements=0u,launch_count=0u,epoch=100u,cancel=0u,timeout=UINT64_C(2000000000);
     uint64_t shipped[16]={},pending[16]={},pending_at[16]={},enqueue_ns[16]={};
     std::atomic<bool> stop{false},hold{false};
@@ -214,7 +215,9 @@ struct Probe
             SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             device+SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(rank,rank),device+SPARK_WEIGHTD_MESH_WAIT_ENTRY(rank,rank),
             ranks[rank].control,rank,degree,ranks[rank].input,ranks[rank].output,ranks[rank].scratch,
-            elements,operation,rounds,rows,routes,timeout));
+            elements,operation,rounds,rows,routes,timeout,
+            poll ? device+SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(rank,rank) : nullptr,
+            poll ? reinterpret_cast<uint8_t *>(Cancel(rank))-host+device : nullptr,poll ? 1u : 0u));
     }
     double Capture()
     {
@@ -318,7 +321,7 @@ struct Probe
         if (graph)
             for (uint32_t replay=0u;replay<2u;replay++) { Data(replay+2u);begin=Now();Launch(true);elapsed=Wait(begin);Verify(); }
         EndWorker();completed_cases++;
-        std::printf("PASS numerical tp=%u rows=%u operation=%u elements=%llu graph=%u rsag=%u construct_ms=%.3f last_ms=%.3f transfers=%llu\n",n,b,op,static_cast<unsigned long long>(count),graph,b==1u && SparkTpMeshDirectPhasesPerChunk(count,n,op,routes)==2u,construction,elapsed,static_cast<unsigned long long>(transfers.load()));
+        std::printf("PASS numerical wait=%s tp=%u rows=%u operation=%u elements=%llu graph=%u rsag=%u construct_ms=%.3f last_ms=%.3f transfers=%llu\n",poll ? "device" : "hardware",n,b,op,static_cast<unsigned long long>(count),graph,b==1u && SparkTpMeshDirectPhasesPerChunk(count,n,op,routes)==2u,construction,elapsed,static_cast<unsigned long long>(transfers.load()));
     }
     void Faults()
     {
@@ -353,6 +356,28 @@ struct Probe
         Setup(4u,1u,2u,513u,2u,true);Data(13u);StartWorker();begin=Now();Launch(true);Wait(begin);Verify();EndWorker();
         completed_cases++;std::puts("PASS missing peer times out with output untouched, drains and recovers same executable");
     }
+    void PollFaults()
+    {
+        Setup(4u,1u,1u,513u,2u);Data(30u);Capture();hold.store(true);StartWorker();uint64_t begin=Now();Launch(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));REQUIRE(!Done());
+        hold.store(false);Wait(begin);Verify();EndWorker();
+        completed_cases++;std::puts("PASS device wait: held transfers block graph replay until exact completion");
+        Setup(4u,1u,1u,513u,2u,true);Data(31u);hold.store(true);StartWorker();begin=Now();Launch(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));REQUIRE(!Done());cancel++;
+        for (uint32_t rank=0u;rank<degree;rank++) Store(Cancel(rank),cancel);
+        Wait(begin);Verify(true);EndWorker();
+        for (uint32_t rank=0u;rank<degree;rank++)
+        {
+            SparkTpMeshRoundControl control={};CUDA(cudaMemcpy(&control,ranks[rank].control,sizeof(control),cudaMemcpyDeviceToHost));
+            REQUIRE((control.error_word&SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED)==SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED);
+        }
+        Setup(4u,1u,1u,513u,2u,true);Data(32u);StartWorker();begin=Now();Launch(true);Wait(begin);Verify();EndWorker();
+        completed_cases++;std::puts("PASS device wait: cancel drains pending graph work with the weightd cancel code, reset chain replays the same executable");
+        Setup(4u,1u,1u,513u,2u,true);Data(33u);hold.store(true);StartWorker();begin=Now();Launch(true);
+        Wait(begin);Verify(true,true);EndWorker();
+        Setup(4u,1u,1u,513u,2u,true);Data(34u);StartWorker();begin=Now();Launch(true);Wait(begin);Verify();EndWorker();
+        completed_cases++;std::puts("PASS device wait: missing peer times out with the round tag, output untouched, recovers same executable");
+    }
     void Timings()
     {
         Setup(16u,1u,1u,257u,91u);Data(20u);double construction=Capture();StartWorker();
@@ -374,7 +399,7 @@ struct Probe
             if (i>=2u) { samples.push_back(elapsed);waits.push_back(maximum_wait/1e6);sources.push_back(maximum_source/1e6);peers.push_back(maximum_peer/1e6);copies.push_back(maximum_copy/1e6);math.push_back(maximum_math/1e6); }
         }
         EndWorker();std::sort(samples.begin(),samples.end());std::sort(waits.begin(),waits.end());std::sort(sources.begin(),sources.end());std::sort(peers.begin(),peers.end());std::sort(copies.begin(),copies.end());std::sort(math.begin(),math.end());
-        std::printf("TIMING tp=16 rows=1 rounds=91 graph_construct_ms=%.3f warmups=2 samples=%zu min_ms=%.3f median_ms=%.3f max_ms=%.3f transport=cpu-copy actual_daemon_gate=1\n",construction,samples.size(),samples.front(),samples[samples.size()/2u],samples.back());
+        std::printf("TIMING wait=%s tp=16 rows=1 rounds=91 graph_construct_ms=%.3f warmups=2 samples=%zu min_ms=%.3f median_ms=%.3f max_ms=%.3f transport=cpu-copy actual_daemon_gate=1\n",poll ? "device" : "hardware",construction,samples.size(),samples.front(),samples[samples.size()/2u],samples.back());
         std::printf("PHASE_TIMING median_max_rank_wait_ms=%.3f source_wait_ms=%.3f peer_wait_ms=%.3f copy_ms=%.3f combine_ms=%.3f samples=%zu\n",waits[waits.size()/2u],sources[sources.size()/2u],peers[peers.size()/2u],copies[copies.size()/2u],math[math.size()/2u],samples.size());
         completed_cases++;
     }
@@ -382,9 +407,9 @@ struct Probe
 
 int main(int argc,char **argv)
 {
-    if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0))
+    if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0 && std::strcmp(argv[1],"--device")!=0 && std::strcmp(argv[1],"--timing")!=0))
     {
-        std::fprintf(stderr,"usage: %s --run | --all-to-all\n",argv[0]);return 2;
+        std::fprintf(stderr,"usage: %s --run | --all-to-all | --device | --timing\n",argv[0]);return 2;
     }
     REQUIRE(std::setvbuf(stdout,nullptr,_IOLBF,0)==0);
     CUDA(cudaSetDeviceFlags(cudaDeviceMapHost));CUDA(cudaSetDevice(0));
@@ -405,6 +430,13 @@ int main(int argc,char **argv)
         std::printf("PASS tp_mesh_hardware_probe all-to-all cases=%u\n",probe.completed_cases);
         return 0;
     }
+    if (std::strcmp(argv[1],"--timing")==0)
+    {
+        probe.Timings();probe.poll=true;probe.Timings();
+        return 0;
+    }
+    if (std::strcmp(argv[1],"--device")!=0)
+    {
     for (uint32_t degree:{2u,3u,4u,8u,16u})
         for (uint32_t operation:{0u,1u,2u})
             for (uint32_t rows:{1u,2u})
@@ -428,6 +460,20 @@ int main(int argc,char **argv)
     probe.AllToAll();
     probe.routes=0u;probe.Case(16u,1u,1u,65536u,true);probe.routes=1u;
     probe.Faults();probe.Timings();
+    }
+    probe.poll=true;
+    for (uint32_t degree:{2u,3u,4u,8u,16u})
+        for (uint32_t operation:{0u,1u,2u})
+        {
+            uint64_t elements=operation==0u ? degree*257u : 513u;
+            probe.Case(degree,operation,1u,elements,false);probe.Case(degree,operation,1u,elements,true);
+        }
+    for (uint32_t degree:{4u,16u})
+        for (uint64_t elements:{UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u})
+        {
+            probe.Case(degree,1u,1u,elements,false);probe.Case(degree,1u,1u,elements,true);
+        }
+    probe.AllToAll();probe.PollFaults();probe.Timings();probe.poll=false;
     std::printf("PASS tp_mesh_hardware_probe cases=%u GPU_math=actual GPU_wait=actual daemon_gate=actual transport=cpu-copy\n",probe.completed_cases);
     return 0;
 }

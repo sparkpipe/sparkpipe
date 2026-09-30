@@ -48,8 +48,20 @@ static SparkStatus SPARK_FAMILY(ModuleCombineU64Max)(void *combine_context, uint
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_max_u64"));
 }
 
+static SparkStatus SPARK_FAMILY(ModuleCombineGatherBf16)(void *combine_context, void *destination_device, const void *const *source_devices, uint32_t source_count, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
+{
+	uint64_t bytes = (uint64_t)active_sequence_count * hidden_dimension * sizeof(uint16_t);
+	uint32_t source;
+	cudaError_t error = cudaSuccess;
+	(void)combine_context;
+	for (source=0u; source<source_count && error == cudaSuccess; source++)
+		error = cudaMemcpyAsync((uint8_t *)destination_device + (uint64_t)source * bytes,source_devices[source],(size_t)bytes,cudaMemcpyDeviceToDevice,(cudaStream_t)cuda_stream);
+	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_gather"));
+}
+
 static inline void SPARK_FAMILY(ModuleRegisterCombines)(SparkTpDeviceCollectiveConfig *configuration)
 {
+	configuration->combine_gather_bf16_function = SPARK_FAMILY(ModuleCombineGatherBf16);
 	configuration->combine_fused_bf16_function = SPARK_FAMILY(ModuleCombineFusedBf16);
 	configuration->combine_f32_seed_function = SPARK_FAMILY(ModuleCombineF32Seed);
 	configuration->combine_f32_add_function = SPARK_FAMILY(ModuleCombineF32Add);

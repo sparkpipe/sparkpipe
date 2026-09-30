@@ -47,6 +47,9 @@ extern uint64_t cuda_stub_mesh_hardware_elements;
 extern uint32_t cuda_stub_mesh_hardware_operation;
 extern uint32_t cuda_stub_mesh_hardware_logical_rows;
 extern uint32_t cuda_stub_mesh_hardware_slice_routes;
+extern const volatile void *cuda_stub_mesh_hardware_shipped;
+extern const volatile void *cuda_stub_mesh_hardware_cancel;
+extern uint32_t cuda_stub_mesh_hardware_reset_done;
 extern uint32_t cuda_stub_stream_sync_calls;
 
 static uint64_t mock_client_alive = 1u;
@@ -407,6 +410,21 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         }
     }
     submission.logical_sequence_count = 1u;
+    submission.element_width = 24u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_operation == 0u && cuda_stub_mesh_hardware_elements == 96u,
+        "a submission element width sizes the all-gather: 2 rows x 24 per rank x 2 ranks, not the configured 64");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_operation == 1u && cuda_stub_mesh_hardware_elements == 48u,
+        "a submission element width sizes the all-reduce: 2 rows x 24");
+    submission.element_width = 65u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u) == SPARK_STATUS_INVALID_ARGUMENT,
+        "an element width above the configured width is refused (buffers and scratch are sized by it)");
+    submission.element_width = 64u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_elements == 256u,
+        "an element width equal to the configured width matches the zero default");
+    submission.element_width = 0u;
     submission.active_sequence_count = 4096u;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
         cuda_stub_mesh_hardware_logical_rows == 1u && cuda_stub_mesh_hardware_elements == 262144u,
@@ -468,7 +486,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshAllToAllChunks(0u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u,
         "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/5/33 rounds");
     submission.active_sequence_count = 2u;
-    CHECK(cuda_stub_mesh_hardware_calls == 9u && cuda_stub_mesh_publish_calls == old_publish,
+    CHECK(cuda_stub_mesh_hardware_calls == 12u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
     CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"hardware disarm capture");
     cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;
@@ -540,6 +558,70 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(cuda_stub_mesh_publish_calls == old_publish,
         "missing legacy callbacks never publish data");
     SparkTpDeviceCollectiveDestroy(&collective);
+}
+
+static void TestDeviceWaitDispatch(SparkTpDeviceCollectiveConfig config,void *mesh)
+{
+    static const char *const modes[2] = {"hardware","device"};
+    uint16_t local[256] = {0},output[512] = {0};
+    uint32_t mode,operation;
+    config.combine_bf16_function = 0;
+    config.combine_u64_max_function = 0;
+    config.combine_gather_bf16_function = 0;
+    cuda_stub_mesh_hardware_alias = (uint8_t *)mesh + 64u;
+    cuda_stub_mesh_hardware_launch_result = 0;
+    memset((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u),0,sizeof(SparkWeightdMeshWaitRequest));
+    for ( mode = 0u; mode < 2u; mode++ )
+    {
+        SparkTpDeviceCollective collective = {0};
+        SparkTpDeviceCollectiveSubmission submission = {0};
+        setenv("SPARK_TP_WAIT_MODE",modes[mode],1);
+        CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainKey(&collective,901u + mode) == SPARK_STATUS_OK,
+            "hardware and device wait modes both create on the weightd mesh");
+        submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+        submission.descriptor_bytes = sizeof(submission);
+        submission.active_sequence_count = 2u;
+        submission.logical_sequence_count = 1u;
+        submission.local_device = local;
+        submission.full_device = output;
+        submission.cuda_stream = (void *)1;
+        submission.completion_function = TestComplete;
+        CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK,"wait mode arm capture");
+        for ( operation = 0u; operation < 3u; operation++ )
+        {
+            SparkTpMeshRoundControl *control = cuda_stub_mesh_hardware_control;
+            if ( control != 0 )
+                control->rounds_done = 7u;
+            CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation) == SPARK_STATUS_OK &&
+                cuda_stub_mesh_hardware_operation == operation &&
+                cuda_stub_mesh_hardware_elements == (operation == 2u ? 2u : operation == 0u ? 256u : 128u),
+                "device wait keeps the hardware algorithm and payload geometry, so results are bit-identical");
+            control = cuda_stub_mesh_hardware_control;
+            if ( mode == 0u )
+                CHECK(cuda_stub_mesh_hardware_shipped == 0 && cuda_stub_mesh_hardware_cancel == 0 &&
+                    cuda_stub_mesh_hardware_reset_done == 0u && control != 0 && control->rounds_done == 0u,
+                    "hardware wait keeps weightd-served waits and the host reset of rounds_done");
+            else
+                CHECK(cuda_stub_mesh_hardware_shipped == (const uint8_t *)cuda_stub_mesh_hardware_alias + SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(0u,0u) &&
+                    cuda_stub_mesh_hardware_cancel == (const uint8_t *)cuda_stub_mesh_hardware_alias + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+                        SPARK_WEIGHTD_MESH_DOORBELL_CELL_CANCEL * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES &&
+                    cuda_stub_mesh_hardware_reset_done == 1u && control != 0 && control->rounds_done == 7u,
+                    "device wait polls this rank's shipped cell and its band's cancel cell through the device alias and resets rounds_done in the publish kernel instead of a memset node");
+        }
+        CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"wait mode disarm");
+        SparkTpDeviceCollectiveDestroy(&collective);
+    }
+    setenv("SPARK_TP_WAIT_MODE","poll",1);
+    {
+        SparkTpDeviceCollective collective = {0};
+        CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_INVALID_ARGUMENT,
+            "an unknown wait mode is refused");
+    }
+    unsetenv("SPARK_TP_WAIT_MODE");
+    cuda_stub_mesh_hardware_alias = 0;
 }
 
 static void TestSpinSingleSequenceWave(SparkTpDeviceCollectiveConfig config,void *mesh)
@@ -908,6 +990,7 @@ int main(void)
 
 	SparkTpDeviceCollectiveDestroy(&collective);
 	TestHardwareDispatch(config,mesh_buffer);
+	TestDeviceWaitDispatch(config,mesh_buffer);
 	TestSpinSingleSequenceWave(config,mesh_buffer);
 	TestDeferredRounds(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);

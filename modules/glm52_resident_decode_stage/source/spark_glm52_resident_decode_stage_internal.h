@@ -67,6 +67,7 @@ typedef struct SparkGlm52ExecutionSlot
 	uint16_t *attention_latent_bf16;
 	uint16_t *attention_value_bf16;
 	uint16_t *attention_out_bf16;
+	uint16_t *projection_local_bf16;
 	uint16_t *projection_gather_bf16;
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
@@ -173,6 +174,7 @@ struct SparkScoreDumpStats;
 cudaError_t SparkGlm52LaunchHeadScore(cudaStream_t stream,const uint16_t *normed_bf16,const void *head_bf16,float *logits,uint32_t rows,uint32_t width,uint32_t id_base,const uint32_t *probe_offsets,const uint32_t *probe_local,float *probe_logits,struct SparkScoreDumpStats *stats);
 #endif
 int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
+uint32_t SparkGlm52ProjectionSlotWidth(uint32_t tp_degree);
 
 #ifdef __cplusplus
 }

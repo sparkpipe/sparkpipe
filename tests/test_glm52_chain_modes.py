@@ -48,6 +48,7 @@ static int32_t Find(const char *entry,uint32_t from)
 }
 
 int32_t SparkGlm52T1Enabled(void) { return((int32_t)T1_ENABLED); }
+uint32_t SparkGlm52ProjectionSlotWidth(uint32_t tp_degree) { assert(tp_degree == 16u); return(168u); }
 uint32_t SparkGlm52ExactWaveRows(void) { return(8u); }
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { Log("begin",wave->maximum_context); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split == 0u); Log("attn",layer); return(0); }
@@ -86,14 +87,22 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 	assert((submission->flags & SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) != 0u);
 	if ( ENQUEUE_COUNT++ == ENQUEUE_FAIL_AT )
 		return(ENQUEUE_STATUS);
+	assert(submission->element_width == 0u || submission->local_device == slot->projection_local_bf16);
+	assert(operation != SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER || submission->local_device == slot->projection_local_bf16);
 	if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
 		Log("reduce-max",submission->local_device == slot->head_maxloc_u64 ? 1u : 0u);
 	else if ( submission->local_device == slot->hidden_bf16 )
 		Log("reduce-hidden",submission->active_sequence_count);
 	else if ( submission->local_device == slot->attention_out_bf16 )
 		Log("reduce-attn",submission->active_sequence_count);
-	else if ( submission->local_device == slot->projection_gather_bf16 )
-		Log("reduce-gather",submission->active_sequence_count);
+	else if ( submission->local_device == slot->projection_local_bf16 )
+	{
+		assert(operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER);
+		assert(submission->full_device == slot->projection_gather_bf16 && submission->full_device != submission->local_device);
+		assert(submission->element_width == 168u);
+		Log("gather",submission->active_sequence_count);
+		return(SPARK_STATUS_OK);
+	}
 	else
 		Log("reduce-unknown",0u);
 	return(SPARK_STATUS_OK);
@@ -140,7 +149,7 @@ static void Completed(void *context,const SparkModelDriverCompletion *completion
 static SparkGlm52ModuleState state;
 static SparkWeightdLazyPack lazy;
 static uint32_t host_tokens[4],host_slots[4],host_positions[4],host_output[4],host_error[8];
-static uint16_t dev_hidden[8],dev_attn[8],dev_gather[8];
+static uint16_t dev_hidden[8],dev_attn[8],dev_gather[8],dev_local[8];
 static uint64_t dev_maxloc[4];
 static SparkGlm52ResidentDecodeStageBatchView batch;
 static SparkGlm52ResidentDecodeStageFrameContext context;
@@ -214,6 +223,7 @@ static void Setup(void)
 	slot->hidden_bf16 = dev_hidden;
 	slot->attention_out_bf16 = dev_attn;
 	slot->projection_gather_bf16 = dev_gather;
+	slot->projection_local_bf16 = dev_local;
 	slot->head_maxloc_u64 = dev_maxloc;
 	assert(SparkStageModuleCudaWaitInitialize(&state.chain_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	batch.row_count = 1u;
@@ -275,7 +285,7 @@ static void CheckLinearOrder(uint32_t layers,uint32_t split)
 		if ( split != 0u )
 		{
 			(void)snprintf(entry,sizeof(entry),"project%u",layer); at = Find(entry,(uint32_t)at); assert(at >= 0);
-			at = Find("reduce-gather1",(uint32_t)at); assert(at >= 0);
+			at = Find("gather1",(uint32_t)at); assert(at >= 0);
 			(void)snprintf(entry,sizeof(entry),"core%u",layer); at = Find(entry,(uint32_t)at); assert(at >= 0);
 		}
 		else
@@ -294,7 +304,7 @@ static void CheckLinearOrder(uint32_t layers,uint32_t split)
 	at = Find("worker0",(uint32_t)at); assert(at >= 0);
 	at = Find("verify0",(uint32_t)at); assert(at >= 0);
 	assert(Count("reduce-hidden1") == layers + 1u && Count("reduce-attn1") == layers && Count("reduce-max1") == 1u);
-	assert(Count("reduce-gather1") == (split != 0u ? layers : 0u));
+	assert(Count("gather1") == (split != 0u ? layers : 0u));
 }
 
 static void TestLinear(void)
