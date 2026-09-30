@@ -1,5 +1,6 @@
 #pragma once
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/project.cuh"
 #include <stdint.h>
 
@@ -20,6 +21,7 @@ void LmPerHeadProjectChainKernel(const uint16_t *__restrict__ input_bf16, const 
 	uint32_t bits[4];
 	uint4 packed;
 	float total;
+	LmDependentRelease();
 	for (index = threadIdx.x; index < LM_PROJECT_CHAIN_OUTPUTS * IN_DIM / 8u; index += LM_PROJECT_CHAIN_THREADS)
 	{
 		packed = __ldg(weight + index);

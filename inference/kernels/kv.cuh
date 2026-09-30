@@ -49,6 +49,7 @@ typedef enum LmKvAccessKind
 LmKvAccessKind;
 
 #include "inference/kernels/frame_error.cuh"
+#include "inference/kernels/dependent_launch.cuh"
 
 typedef LmFrameError LmKvAccessError;
 typedef LmFrameErrorCode LmKvAccessErrorCode;
@@ -280,6 +281,7 @@ void LmKvStoreKernel(LmKvView view, const uint16_t *__restrict__ rows_bf16, cons
 {
 	uint32_t row = blockIdx.x,index;
 	uint8_t *slot;
+	LmDependentRelease();
 	if ( row >= row_count )
 		return;
 	slot = LmKvSlotMutableRequired<Geometry>(

@@ -395,9 +395,9 @@ static int DbRun(DbRig *rig,uint32_t graph_mode)
 	mean_distinct /= routed_layers;
 	ideal = DbIdealBytes(rig,&experts,&kv);
 	step_ms = DbMedian(gpu,DB_REPLAYS);
-	printf("glm52_decode_bench tp=%u rows=%u position=%u experts=%s distinct_mean=%.1f rounds=%s collectives=%u mode=%s nodes=%zu launch_us=%.1f gpu_ms=%.3f\n",
+	printf("glm52_decode_bench tp=%u rows=%u position=%u experts=%s distinct_mean=%.1f rounds=%s collectives=%u mode=%s nodes=%zu launch_us=%.1f gpu_ms=%.3f gpu_min_ms=%.3f\n",
 		DB_TP,rig->rows,rig->position,rig->wide_experts != 0u ? "wide256" : "fixed8",mean_distinct,rig->emulate_rounds != 0u ? "emulated" : "none",
-		rig->rounds_per_step,graph_mode != 0u ? "graph" : "linear",nodes,DbMedian(launch,DB_REPLAYS),step_ms);
+		rig->rounds_per_step,graph_mode != 0u ? "graph" : "linear",nodes,DbMedian(launch,DB_REPLAYS),step_ms,gpu[0]);
 	printf("glm52_decode_bench roofline @B=%u (single-GPU bench step, rank-local TP16, head excluded): memory %.1f%% (ideal %.3f GB = spine %.3f + experts %.3f + kv %.4f; floor %.2f ms at %.0f GB/s; ceiling %.1f tok/s vs measured %.1f tok/s)\n",
 		rig->rows,100.0 * ideal / (step_ms * 1e-3) / (DB_PEAK_GBPS * 1e9),ideal / 1e9,(ideal - experts - kv) / 1e9,experts / 1e9,kv / 1e9,
 		ideal / (DB_PEAK_GBPS * 1e9) * 1e3,DB_PEAK_GBPS,rig->rows * DB_PEAK_GBPS * 1e9 / ideal,rig->rows * 1e3 / step_ms);

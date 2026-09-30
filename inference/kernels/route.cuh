@@ -3,6 +3,7 @@
 
 
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/mma.cuh"
 #include "runtime/launch.h"
 #include <stdint.h>
@@ -96,6 +97,7 @@ void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t rout
 {
 	__shared__ uint32_t count[EXPERTS];
 	uint32_t index,expert,packed;
+	LmDependentRelease();
 	for (index = threadIdx.x; index < EXPERTS; index += THREADS)
 		count[index] = 0u;
 	__syncthreads();
