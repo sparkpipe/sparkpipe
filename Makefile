@@ -371,6 +371,7 @@ TEST_NAMES := \
     test_serving_tp_config \
     test_rope_plan \
     test_glm52_stagepack \
+    test_glm52_kv_shard_plan \
     test_tokenizer \
     test_model_description \
     test_stage_module_common \
@@ -1736,6 +1737,9 @@ build/mesh_lane_ladder: tools/mesh_lane_ladder.cu $(GLM5_NEXT_CUDA_SOURCE) $(MES
 
 build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_kv_shard_plan: tests/test_glm52_kv_shard_plan.c model-families/glm52/include/sparkpipe/spark_glm52_kv_shard.h include/sparkpipe/spark_kv_shard.h modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h | build
+	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source $(CFLAGS) $< -o $@
 
 build/test_glm52_stagepack: tests/test_glm52_stagepack.c modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h
 	$(CC) $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/source \

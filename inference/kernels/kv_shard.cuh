@@ -29,6 +29,13 @@ struct LmKvShardGatherView
 };
 
 template<class Geometry>
+static __host__ __device__ __forceinline__ uint64_t LmKvShardPageStride(SparkKvShard shard)
+{
+	static_assert(Geometry::kPageBytes % ((uint64_t)Geometry::kPageSlots * Geometry::kSlotBytes) == 0u, "a page holds whole layer blocks of page-slot rows");
+	return((uint64_t)Geometry::kPageBytes / shard.degree);
+}
+
+template<class Geometry>
 static __host__ __forceinline__ int32_t LmKvShardViewInitialize(
 	LmKvShardView *view,
 	uint8_t *pool,
@@ -117,7 +124,7 @@ static __device__ __forceinline__ const uint8_t *LmKvShardSlotRequired(
 	if ( physical_page == LM_KV_PAGE_UNMAPPED )
 		return(0);
 	return(view.pages.pool
-		+ (uint64_t)physical_page * SparkKvShardPageBytes(view.shard,Geometry::kPageSlots,Geometry::kSlotBytes)
+		+ (uint64_t)physical_page * LmKvShardPageStride<Geometry>(view.shard)
 		+ (uint64_t)SparkKvShardSlotInPage(view.shard,Geometry::kPageSlots,position) * Geometry::kSlotBytes);
 }
 
