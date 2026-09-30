@@ -1,0 +1,2 @@
++281
+GLM Full transport: the q_a/kv_a projection gather as a true all-gather (per-rank slot width, rank-major unpack, submission element width in the device collective) and the device wait mode for direct mesh rounds (GPU-polled shipped cells and peer tails, fused publish and combine, separate poll kernel for wide combines), with the hardware probe cases for the new mode.
