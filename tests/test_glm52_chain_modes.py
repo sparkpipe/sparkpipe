@@ -768,6 +768,11 @@ static void TestVerifyConfigure(void)
 	SparkGlm52VerifyRelease(&probe);
 	assert(setenv("SPARK_GLM52_VERIFY_ROWS","9",1) == 0);
 	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(setenv("SPARK_GLM52_VERIFY_ROWS","8",1) == 0);
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(setenv("SPARK_GLM52_VERIFY_ROWS","7",1) == 0);
+	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_OK && probe.verify_rows_max == 7u);
+	SparkGlm52VerifyRelease(&probe);
 	probe.execution_row_capacity = 2u;
 	assert(setenv("SPARK_GLM52_VERIFY_ROWS","4",1) == 0);
 	assert(SparkGlm52VerifyConfigure(&probe) == SPARK_STATUS_INVALID_ARGUMENT);
