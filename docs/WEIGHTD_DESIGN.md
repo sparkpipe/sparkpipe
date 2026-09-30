@@ -207,6 +207,124 @@ is wired it creates `<mesh-dir>/.ready`, and the agent starts a multi-rank
 residentd only after that file exists. `WD-MESH-STATS` logs the wiring, rewire
 and repair counters every 10 seconds.
 
+## ABI 9: per-peer routes, served ABI range, row cap
+
+ABI 9 is one bump that adds capacity without moving anything an ABI 8 engine
+depends on.
+
+**Served range.** The daemon accepts connections that speak ABI 8 or ABI 9
+(`SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN` to `SPARK_WEIGHTD_IPC_ABI_VERSION`).
+- A connection's first frame fixes its version. A later frame with another
+  version closes the connection.
+- Every reply carries the connection's version, so an ABI 8 client validates
+  it exactly as before.
+- Kinds added in ABI 9 (`MESH_STAGING_MAP`, 39/40) close an ABI 8 connection.
+- ABI 7 and ABI 10 frames close the connection.
+- An ABI 9 client against an ABI 8 daemon (921360ca) fails at connect: the old
+  daemon closes the socket, and the client reports `status=4`. It never falls
+  back.
+
+**Arena identity.** `SparkWeightdIdentityPrepare` rewrites any served client
+ABI to the daemon ABI. An ABI 9 engine therefore attaches, or read-only
+shares, the arena an ABI 8 engine loaded, and the reverse also holds. An
+engine upgrade reuses the warm arena instead of loading a second copy. Leases,
+manifests, receipts and the pack bytes are the same under both ABIs.
+
+**Unchanged from ABI 8:**
+- the mesh region (`SPARK_WEIGHTD_MESH_REGION_BYTES`, 268,632,064 bytes);
+- the slot geometry, doorbells, shipped cells and wait requests;
+- the rendezvous record;
+- the FULL, SCATTER and GATHER routes.
+
+Daemons of both ABIs therefore wire to each other during a per-node roll.
+
+**PEER route (mode 3).**
+- Staging:
+  - Each daemon owns a staging area of `SPARK_WEIGHTD_MESH_STAGING_BYTES` =
+    32 bands x 16 peers x 256 KiB = 128 MiB.
+  - It is a second memfd, registered as a second MR with local access only.
+  - The slot for band `b` and logical peer `p` is at
+    `SPARK_WEIGHTD_MESH_STAGING_OFFSET(b,p)`.
+- Doorbell:
+  - The route's `slice_bytes` is the per-peer length: 8-byte aligned, at most
+    256 KiB.
+  - The doorbell's `bytes` must equal it (`SparkWeightdMeshRouteFits`).
+- Posting: for each peer in the mask, weightd writes `staging[b][p]` to offset
+  0 of this rank's receive slot at the peer. The tail tag still ships from the
+  sender's own slot.
+- Capacity: each peer receives a full 256 KiB per round, where the SCATTER
+  route gives it a 16 KiB slice at TP16.
+- One parity is enough. A driver publishes the next round on a band only after
+  that band's shipped cell reports the previous round, so weightd has finished
+  reading the staging slot before the driver rewrites it.
+- Discovery:
+  - The lane's wait cells advertise `SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES`
+    (bit 1, next to SLICE_ROUTES).
+  - `SparkWeightdClientMeshStagingMap` returns the staging fd. The client
+    checks the capability and the geometry, and maps exactly the staging
+    bytes.
+  - A driver that needs PEER routes must refuse to start when the capability
+    is absent. It must not fall back to SCATTER.
+
+**Row cap.** `SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS` is 1,024 (was 128). The cap
+is compile-time in the engine, so it applies only to engines built against
+ABI 9. A deployment still chooses its own `execution_row_capacity`.
+
+**Drivers on PEER routes.** When the lane advertises PEER_ROUTES, the
+hardware-wait device collective maps the staging export once, through the
+lane owner's client. Two operations then use PEER:
+
+- **kv_shard all-to-all.** Each peer receives up to 131,072 BF16 values per
+  round. The rank's own share goes straight to its own slot.
+- **Large BF16 sums: reduce-scatter + all-gather.**
+  - One chunk carries degree x 131,072 values: 2,097,152 at TP16, against
+    131,096 for the slot chunk.
+  - Reduce-scatter: every owner's slice leaves from its staging slot, and the
+    owner sums the degree contributions from offset 0 of each peer's slot. The
+    per-element order (peers 0..degree-1, fp32 accumulation, the same BF16
+    truncation) is the same as the slot path, so the result bits are the same.
+  - All-gather: a FULL route of the owner's reduced slice from offset 0 of its
+    own slot.
+- **Failure.** If the lane advertises PEER_ROUTES but the staging export fails,
+  preparation stops. It does not fall back.
+- **Direct rounds.** Single-row direct rounds (below 49,152 values or below
+  degree 4) keep their slot path.
+
+**Round counts (TP16, arithmetic).**
+
+kv_shard partial all-to-all, per DSA layer, one direction. Payload is 4,112
+bf16 values per row per peer.
+
+| rows | SCATTER (16 KiB per peer per round) | PEER (256 KiB per peer per round) |
+|---:|---:|---:|
+| 1 | 1 | 1 |
+| 8 | 5 | 1 |
+| 128 | 65 | 5 |
+| 129 | 65 | 5 |
+| 512 | 257 | 17 |
+| 1,024 | 514 | 33 |
+
+Hidden all-reduce at 4,096 wide (hardware wait mode, reduce-scatter +
+all-gather, 2 rounds per chunk):
+
+| rows | values | slot chunks (131,096) | rounds | PEER chunks (2,097,152) | rounds |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 65,536 | 1 | 2 | 1 | 2 |
+| 128 | 524,288 | 4 | 8 | 1 | 2 |
+| 256 | 1,048,576 | 8 | 16 | 1 | 2 |
+| 1,024 | 4,194,304 | 32 | 64 | 2 | 4 |
+
+**Memory.** +128 MiB of pinned host memory per node, for the staging area.
+
+**Host tests:**
+- `test_weightd_mesh_mock` checks PEER routes at 1, 8, 128, 129, 512 and
+  1,024 rows: the source slot per logical peer, the staging lkey, the landing
+  offset, tails, shipped release and partial masks.
+- `test_weightd` checks the served range, the version echo, closing on mixed
+  versions, and identity canonicalization.
+- `weightd_peer_route_probe` drives PEER and SCATTER exchanges between two
+  real daemons and checks every byte that lands.
+
 ## Shared mesh topology profiles
 
 Weightd IPC ABI 8 carries the logical-to-physical rank map with the existing

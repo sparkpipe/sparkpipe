@@ -1,0 +1,2 @@
++659
+weightd ABI 9: PEER routes with per-peer staging, larger reduce-scatter/all-gather chunks, mesh row cap 1,024, ABI 8 still served (rolled to the fleet 2026-09-30 04:43Z).
