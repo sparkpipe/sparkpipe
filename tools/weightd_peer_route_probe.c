@@ -33,10 +33,30 @@ static uint64_t probe_now_ns(void)
     return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
 }
 
-static uint8_t probe_byte(uint64_t tag,uint32_t source,uint32_t target,uint64_t offset)
+static uint64_t probe_word(uint64_t tag,uint32_t source,uint32_t target,uint64_t word)
 {
-    uint64_t value = tag * UINT64_C(0x9E3779B97F4A7C15) ^ ((uint64_t)source << 40u) ^ ((uint64_t)target << 32u) ^ offset * UINT64_C(0xBF58476D1CE4E5B9);
-    return (uint8_t)(value >> 29u);
+    return tag * UINT64_C(0x9E3779B97F4A7C15) ^ ((uint64_t)source << 56u) ^ ((uint64_t)target << 48u) ^ word * UINT64_C(0xBF58476D1CE4E5B9);
+}
+
+static void probe_fill(uint8_t *destination,uint64_t tag,uint32_t source,uint32_t target,uint64_t bytes)
+{
+    uint64_t word,value;
+    for (word=0u; word<bytes / 8u; word++)
+    {
+        value = probe_word(tag,source,target,word);
+        memcpy(destination + word * 8u,&value,8u);
+    }
+}
+
+static uint64_t probe_check(const uint8_t *source_bytes,uint64_t tag,uint32_t source,uint32_t target,uint64_t bytes)
+{
+    uint64_t word,value,mismatches = 0u;
+    for (word=0u; word<bytes / 8u; word++)
+    {
+        memcpy(&value,source_bytes + word * 8u,8u);
+        mismatches += value != probe_word(tag,source,target,word) ? 1u : 0u;
+    }
+    return mismatches;
 }
 
 static volatile uint64_t *probe_slot_tail(const ProbeMesh *mesh,uint32_t rank,uint64_t sequence)
@@ -72,15 +92,14 @@ static int probe_round(ProbeMesh *mesh,uint64_t chunk_bytes,uint64_t *mismatches
     volatile uint64_t *entry = (volatile uint64_t *)(mesh->region + SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(mesh->band,mesh->local));
     SparkWeightdMeshRoute route = {0};
     uint32_t peer;
-    uint64_t offset,bytes;
+    uint64_t bytes;
     route.fields.peer_mask = ((1u << mesh->degree) - 1u) & ~(1u << mesh->local);
     if ( mesh->peer_route != 0u )
     {
         route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
         route.fields.slice_bytes = chunk_bytes;
         for (peer=0u; peer<mesh->degree; peer++)
-            for (offset=0u; offset<chunk_bytes; offset++)
-                mesh->staging[SPARK_WEIGHTD_MESH_STAGING_OFFSET(mesh->band,peer) + offset] = probe_byte(tag,mesh->local,peer,offset);
+            probe_fill(mesh->staging + SPARK_WEIGHTD_MESH_STAGING_OFFSET(mesh->band,peer),tag,mesh->local,peer,chunk_bytes);
         bytes = chunk_bytes;
     }
     else
@@ -88,8 +107,7 @@ static int probe_round(ProbeMesh *mesh,uint64_t chunk_bytes,uint64_t *mismatches
         route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_SCATTER;
         route.fields.slice_bytes = slice;
         for (peer=0u; peer<mesh->degree; peer++)
-            for (offset=0u; offset<chunk_bytes; offset++)
-                own[peer * slice + offset] = probe_byte(tag,mesh->local,peer,offset);
+            probe_fill(own + peer * slice,tag,mesh->local,peer,chunk_bytes);
         bytes = slice * mesh->degree;
     }
     entry[1] = bytes;
@@ -105,8 +123,7 @@ static int probe_round(ProbeMesh *mesh,uint64_t chunk_bytes,uint64_t *mismatches
         if ( peer == mesh->local ) continue;
         if ( probe_wait(probe_slot_tail(mesh,peer,sequence),tag,"peer-tail") != 0 ) return -1;
         slot = probe_slot(mesh,peer,sequence) + (mesh->peer_route != 0u ? 0u : (uint64_t)mesh->local * slice);
-        for (offset=0u; offset<chunk_bytes; offset++)
-            if ( slot[offset] != probe_byte(tag,peer,mesh->local,offset) ) (*mismatches)++;
+        *mismatches += probe_check(slot,tag,peer,mesh->local,chunk_bytes);
     }
     return probe_wait((volatile uint64_t *)(mesh->region + SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(mesh->band,mesh->local)),tag,"shipped");
 }
