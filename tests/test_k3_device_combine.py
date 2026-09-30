@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""K3 device collective reduces every rank's bf16 partial in fp32, in rank order, once.
+"""K3 device collective reduces every rank's bf16 partial in fp32, in rank order, converting once.
 
 The device collective's host round uses a registered fused combine when there is
 one and otherwise adds the peers into a zeroed bf16 buffer one at a time, rounding
 after every add (fifteen roundings at TP16). Both K3 collectives (the hidden one
 and the wide gate_up one) must register the fused combine, and that combine must
-be the shared fixed-order fp32 rank sum, so every rank rounds the same fp32 total
-once and all ranks hold identical bits.
+be the shared fixed-order fp32 rank sum, so every rank converts the same fp32 total
+to bf16 once and all ranks hold identical bits.
 """
 import re
 import sys
@@ -44,7 +44,7 @@ def main():
         print("FAIL " + failure)
     if failures:
         return 1
-    print("PASS K3 hidden and wide device collectives reduce in fp32 in rank order, rounding once")
+    print("PASS K3 hidden and wide device collectives reduce in fp32 in rank order, converting once")
     return 0
 
 
