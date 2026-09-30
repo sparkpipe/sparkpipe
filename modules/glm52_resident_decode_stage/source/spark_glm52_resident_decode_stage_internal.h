@@ -68,6 +68,10 @@ typedef struct SparkGlm52ExecutionSlot
 	uint16_t *attention_value_bf16;
 	uint16_t *attention_out_bf16;
 	uint16_t *projection_gather_bf16;
+	uint16_t *kv_shard_query_bf16;
+	uint16_t *kv_shard_query_gathered_bf16;
+	float *kv_shard_partials_f32;
+	float *kv_shard_partials_received_f32;
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 	uint16_t *expert_out_bf16;
@@ -148,6 +152,7 @@ typedef struct SparkGlm52CudaWave
 	uint32_t route_host_copy;
 	uint32_t projection_split;
 	uint32_t row_head_certified;
+	uint32_t kv_shard;
 } SparkGlm52CudaWave;
 
 #ifdef __cplusplus
@@ -161,6 +166,9 @@ int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerAttentionShardQuery(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerAttentionShardPartial(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerAttentionShardMerge(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t local_layer);

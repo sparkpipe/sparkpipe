@@ -14,7 +14,7 @@
 #define SPARK_TP_CHAIN_MODE_COUNT 3u
 #define SPARK_TP_CHAIN_MAX_COLLECTIVES 2u
 #define SPARK_TP_CHAIN_GRAPH_MAX_REGIMES 4u
-#define SPARK_TP_CHAIN_GRAPH_MAX_ROWS 64u
+#define SPARK_TP_CHAIN_GRAPH_MAX_ROWS 256u
 
 typedef uint32_t (*SparkTpChainWalkFunction)(void *context);
 

@@ -72,6 +72,16 @@ SPARK_GLM52_KV_SHARD_FN uint32_t SparkGlm52KvShardFits(uint32_t degree,uint32_t 
 	return(SparkGlm52KvShardQuerySequences(rows,degree) <= rows && SparkGlm52KvShardPartialSequences(rows,degree) <= rows ? 1u : 0u);
 }
 
+SPARK_GLM52_KV_SHARD_FN uint64_t SparkGlm52KvShardLayerBlockBytes(uint32_t degree)
+{
+	return(degree == 0u ? 0u : (uint64_t)(SPARK_GLM52_KV_SHARD_PAGE_SLOTS / degree) * SPARK_GLM52_KV_SHARD_QUERY_WIDTH * 2u);
+}
+
+SPARK_GLM52_KV_SHARD_FN uint64_t SparkGlm52KvShardPageBytes(uint32_t degree)
+{
+	return(SparkGlm52KvShardLayerBlockBytes(degree) * SPARK_GLM52_MODEL_LAYER_COUNT);
+}
+
 SPARK_GLM52_KV_SHARD_FN uint32_t SparkGlm52KvShardIndexLayers(void)
 {
 	return(SPARK_GLM52_KV_SHARD_INDEX_FIRST_LAYERS + (SPARK_GLM52_MODEL_LAYER_COUNT - SPARK_GLM52_KV_SHARD_INDEX_GROUP_LAYER - 1u) / SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT + 1u);

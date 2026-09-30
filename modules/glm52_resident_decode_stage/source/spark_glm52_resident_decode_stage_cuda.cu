@@ -6,6 +6,7 @@
 #include "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "spark_glm52_resident_decode_stage_internal.h"
+#include "sparkpipe/spark_glm52_kv_shard.h"
 #define SPARK_FAMILY_CAMEL Glm52
 #define SPARK_FAMILY_UPPER GLM52
 #define SPARK_FAMILY_LOWER glm52
@@ -251,6 +252,17 @@ static void SparkGlm52BindLayer(
 	buffers->projection_gather_bf16 = wave->projection_split != 0u ? slot->projection_gather_bf16 : 0;
 	buffers->projection_gather_stride = wave->projection_split != 0u ? GLM_HIDDEN : 0u;
 	SparkGlm52BuildKvView(&buffers->cache,wave->kv_cache + ((uint64_t)local_layer * wave->kv_layer_stride_bytes),wave);
+	if ( wave->kv_shard != 0u )
+	{
+		buffers->kv_shard_active = 1u;
+		buffers->kv_shard = SparkGlm52KvShardLatent(wave->tp_rank,wave->tp_degree);
+		buffers->shard_query_bf16 = slot->kv_shard_query_bf16;
+		buffers->shard_query_gathered_bf16 = slot->kv_shard_query_gathered_bf16;
+		buffers->shard_query_stride = (uint64_t)SparkGlm52KvShardQuerySequences(wave->row_count,wave->tp_degree) * SPARK_GLM52_KV_SHARD_UNIT;
+		buffers->shard_partials_f32 = slot->kv_shard_partials_f32;
+		buffers->shard_partials_received_f32 = slot->kv_shard_partials_received_f32;
+		buffers->shard_partial_stride = (uint64_t)SparkGlm52KvShardPartialSequences(wave->row_count,wave->tp_degree) * (SPARK_GLM52_KV_SHARD_UNIT / 2u);
+	}
 	index_ordinal = wave->index_ordinal_by_local_layer[local_layer];
 	if ( index_ordinal != UINT32_MAX )
 		SparkGlm52BuildKvView(&buffers->index_cache,wave->index_cache + ((uint64_t)index_ordinal * wave->index_layer_stride_bytes),wave);
@@ -283,6 +295,47 @@ extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWa
 		return(LM_LAUNCH_ERR_SHAPE);
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
 	return(GlmLayerAttentionCore(&buffers,wave->row_count,wave->maximum_context,wave->first_layer_index + local_layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+}
+
+static int32_t SparkGlm52ShardLayer(const SparkGlm52CudaWave *wave,uint32_t local_layer,GlmLayerBuffers *buffers)
+{
+	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || local_layer >= wave->layer_count || wave->kv_shard == 0u ||
+		wave->slot->kv_shard_query_bf16 == 0 || SparkGlm52KvShardFits(wave->tp_degree,wave->row_count) == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	SparkGlm52BindLayer(wave,local_layer,buffers);
+	return(LM_LAUNCH_OK);
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionShardQuery(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	GlmLayerBuffers buffers;
+	int32_t status;
+	status = SparkGlm52ShardLayer(wave,local_layer,&buffers);
+	if ( status == LM_LAUNCH_OK && wave->projection_split == 0u )
+		status = GlmLayerAttentionProject(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(GlmLayerAttentionShardQuery(&buffers,wave->row_count,wave->maximum_context,wave->first_layer_index + local_layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionShardPartial(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	GlmLayerBuffers buffers;
+	int32_t status;
+	status = SparkGlm52ShardLayer(wave,local_layer,&buffers);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(GlmLayerAttentionShardPartial(&buffers,wave->row_count,wave->maximum_context,(cudaStream_t)wave->slot->stream));
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionShardMerge(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	GlmLayerBuffers buffers;
+	int32_t status;
+	status = SparkGlm52ShardLayer(wave,local_layer,&buffers);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(GlmLayerAttentionShardMerge(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
 }
 
 static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer)

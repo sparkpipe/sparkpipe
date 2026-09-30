@@ -631,6 +631,7 @@ PYTHON_TESTS := \
 	tests/test_skinny_mxfp4_cuda.py \
 	tests/test_kv_shard_host.py \
 	tests/test_kv_shard_cuda.py \
+	tests/test_glm52_kv_shard_cuda.py \
 	tests/test_score_merge.py \
 	tests/test_score_export.py \
 	tests/test_score_dump_cuda.py \

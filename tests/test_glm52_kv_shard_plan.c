@@ -58,6 +58,8 @@ int main(void)
 	assert(index_layers == 21u);
 	assert(SparkGlm52KvShardHeads(TEST_DEGREE) == 4u && SparkGlm52KvShardHeads(3u) == 0u);
 	assert(SparkGlm52KvShardTokenBytes(1u) == 95232u);
+	assert(SparkGlm52KvShardPageBytes(1u) == 64u * 89856u && SparkGlm52KvShardPageBytes(TEST_DEGREE) * TEST_DEGREE == SparkGlm52KvShardPageBytes(1u));
+	assert(SparkGlm52KvShardLayerBlockBytes(TEST_DEGREE) == 4u * 1152u);
 	assert(SparkGlm52KvShardTokenBytes(TEST_DEGREE) == 5616u + 5376u);
 	assert(SparkGlm52KvShardFits(1u,16u) == 0u && SparkGlm52KvShardFits(3u,16u) == 0u && SparkGlm52KvShardFits(TEST_DEGREE,0u) == 0u);
 	for (rows=1u; rows<=1024u; rows++)

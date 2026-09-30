@@ -25,6 +25,7 @@
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "sparkpipe/spark_tp_chain_graph.h"
 #include "sparkpipe/spark_glm52_graph_regime.h"
+#include "sparkpipe/spark_glm52_kv_shard.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
 #ifdef SPARK_SCORE_DUMP
@@ -159,6 +160,7 @@ struct SparkGlm52ModuleState
 	struct SparkGlm52Score *score;
 #endif
 	uint32_t projection_split;
+	uint32_t kv_shard;
 	uint32_t prefill_wave_rows;
 	uint32_t chain_wait_initialized;
 	SparkStageModuleCudaWait chain_wait;
@@ -678,6 +680,15 @@ static SparkStatus SparkGlm52AllocateSlotHidden(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HEAD_COUNT * SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION,(void **)&slot->attention_value_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->attention_out_bf16);
 	if ( status == SPARK_STATUS_OK && state->projection_split != 0u ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->projection_gather_bf16);
+	if ( status == SPARK_STATUS_OK && state->kv_shard != 0u )
+	{
+		uint64_t query = (uint64_t)SparkGlm52KvShardQuerySequences((uint32_t)rows,state->tp_degree) * SPARK_GLM52_KV_SHARD_UNIT;
+		uint64_t partial = (uint64_t)SparkGlm52KvShardPartialSequences((uint32_t)rows,state->tp_degree) * (SPARK_GLM52_KV_SHARD_UNIT / 2u);
+		status = SparkGlmStageAllocateRows(state,1u,query,(void **)&slot->kv_shard_query_bf16);
+		if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,state->tp_degree,query,(void **)&slot->kv_shard_query_gathered_bf16);
+		if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,state->tp_degree,partial,sizeof(float),(void **)&slot->kv_shard_partials_f32);
+		if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,state->tp_degree,partial,sizeof(float),(void **)&slot->kv_shard_partials_received_f32);
+	}
 	SPARK_RETURN(status);
 }
 
@@ -758,9 +769,11 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 	SparkKvModelTable table;
 	uint64_t block_bytes;
 	uint64_t lane_page_entries;
+	uint32_t head_dim;
 	SparkStatus status;
+	head_dim = SPARK_GLM_KV_ARENA_HEAD_DIMENSION / (state->kv_shard != 0u ? state->tp_degree : 1u);
 	block_bytes = (uint64_t)SPARK_GLM_KV_BLOCK_TOKEN_COUNT *
-		(uint64_t)state->layer_count * SPARK_GLM_KV_ARENA_HEAD_DIMENSION *
+		(uint64_t)state->layer_count * head_dim *
 		SPARK_GLM_KV_BYTES_PER_SCALAR;
 	lane_page_entries = (uint64_t)state->resident_sequence_capacity *
 		state->pages_per_sequence;
@@ -791,7 +804,7 @@ static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
 	table.arena_configuration.resident_block_capacity = state->page_count;
 	table.arena_configuration.layer_count = state->layer_count;
 	table.arena_configuration.kv_head_count = SPARK_GLM_KV_ARENA_KV_HEAD_COUNT;
-	table.arena_configuration.head_dim = SPARK_GLM_KV_ARENA_HEAD_DIMENSION;
+	table.arena_configuration.head_dim = head_dim;
 	table.arena_configuration.bytes_per_scalar = SPARK_GLM_KV_BYTES_PER_SCALAR;
 	table.arena_configuration.key_device_base = state->kv_cache;
 	table.arena_configuration.blocks = state->kv_blocks;
@@ -849,7 +862,7 @@ static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 			state->index_ordinal_by_local_layer[local] = state->index_layer_count++;
 	}
 	status = SparkGlm52BuildPageTable(state);
-	main_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
+	main_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t) / (state->kv_shard != 0u ? state->tp_degree : 1u);
 	index_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
 	state->kv_layer_stride_bytes = main_page_bytes;
 	state->index_layer_stride_bytes = (uint64_t)state->page_count * index_page_bytes;
@@ -1006,6 +1019,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->expert_lease_pinned = state->experts_pinned;
 	wave->route_host_copy = state->lazy_pack != 0 && state->experts_pinned == 0u ? 1u : 0u;
 	wave->projection_split = state->projection_split;
+	wave->kv_shard = state->kv_shard;
 	wave->row_head_certified = chain->prefill != 0u && state->prefill_wave_rows != 0u ? 1u : 0u;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
 	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
@@ -1992,13 +2006,49 @@ static SparkStatus SparkGlm52WalkReduce(SparkGlm52TpChain *chain,void *device,ui
 	return(SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,operation));
 }
 
+static SparkStatus SparkGlm52WalkExchange(SparkGlm52TpChain *chain,void *local,void *full,uint32_t sequences,uint32_t operation)
+{
+	SparkGlm52ModuleState *state = chain->state;
+	SparkTpDeviceCollectiveSubmission submission;
+	if ( state->tp_device_collective_initialized == 0u || state->tp_collective_disabled != 0u || sequences == 0u )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	SparkGlm52ChainSubmission(chain,local,0u,&submission);
+	submission.full_device = full;
+	submission.active_sequence_count = sequences;
+	return(SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,operation));
+}
+
+static uint32_t SparkGlm52WalkShardAttention(SparkGlm52TpChain *chain,uint32_t layer)
+{
+	SparkGlm52CudaWave *wave = &chain->wave;
+	SparkGlm52ExecutionSlot *slot = chain->slot;
+	if ( chain->state->projection_split != 0u )
+	{
+		if ( SparkGlm52LaunchCudaLayerAttentionProject(wave,layer) != 0 )
+			return(11u);
+		if ( SparkGlm52WalkReduce(chain,slot->projection_gather_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+			return(12u);
+	}
+	if ( SparkGlm52LaunchCudaLayerAttentionShardQuery(wave,layer) != 0 )
+		return(14u);
+	if ( SparkGlm52WalkExchange(chain,slot->kv_shard_query_bf16,slot->kv_shard_query_gathered_bf16,SparkGlm52KvShardQuerySequences(wave->row_count,wave->tp_degree),SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER) != SPARK_STATUS_OK )
+		return(15u);
+	if ( SparkGlm52LaunchCudaLayerAttentionShardPartial(wave,layer) != 0 )
+		return(16u);
+	if ( SparkGlm52WalkExchange(chain,slot->kv_shard_partials_f32,slot->kv_shard_partials_received_f32,SparkGlm52KvShardPartialSequences(wave->row_count,wave->tp_degree),SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) != SPARK_STATUS_OK )
+		return(17u);
+	if ( SparkGlm52LaunchCudaLayerAttentionShardMerge(wave,layer) != 0 )
+		return(18u);
+	return(0u);
+}
+
 static uint32_t SparkGlm52WalkWave(void *context)
 {
 	SparkGlm52TpChain *chain = (SparkGlm52TpChain *)context;
 	SparkGlm52CudaWave *wave = &chain->wave;
 	SparkGlm52ExecutionSlot *slot = chain->slot;
 	cudaStream_t stream = (cudaStream_t)slot->stream;
-	uint32_t layer;
+	uint32_t layer,site;
 	if ( SparkGlm52LaunchCudaWaveBegin(wave) != 0 )
 		return(1u);
 	if ( SparkGlm52WalkReduce(chain,slot->hidden_bf16,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
@@ -2006,7 +2056,13 @@ static uint32_t SparkGlm52WalkWave(void *context)
 	for (layer=0u; layer<wave->layer_count; layer++)
 	{
 		chain->next_layer = layer;
-		if ( chain->state->projection_split != 0u )
+		if ( chain->state->kv_shard != 0u )
+		{
+			site = SparkGlm52WalkShardAttention(chain,layer);
+			if ( site != 0u )
+				return(site);
+		}
+		else if ( chain->state->projection_split != 0u )
 		{
 			if ( SparkGlm52LaunchCudaLayerAttentionProject(wave,layer) != 0 )
 				return(11u);
@@ -2231,6 +2287,31 @@ static SparkStatus SparkGlm52ProjectionSplitConfigure(SparkGlm52ModuleState *sta
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm52KvShardConfigure(SparkGlm52ModuleState *state)
+{
+	const char *text = getenv("SPARK_GLM52_KV_SHARD");
+	if ( text == 0 || strcmp(text,"0") == 0 )
+		state->kv_shard = 0u;
+	else if ( strcmp(text,"1") == 0 )
+		state->kv_shard = 1u;
+	else
+	{
+		fprintf(stderr,"SPARK_GLM52_KV_SHARD must be 0 or 1\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( state->kv_shard == 0u )
+		return(SPARK_STATUS_OK);
+	if ( state->tp_degree < 2u || state->tp_collective_disabled != 0u || SPARK_GLM_KV_ARENA_HEAD_DIMENSION % state->tp_degree != 0u ||
+		SparkGlm52KvShardFits(state->tp_degree,state->execution_row_capacity) == 0u )
+	{
+		fprintf(stderr,"GLM52-KV-SHARD-REFUSED tp=%u rows=%u reason=needs the TP collective, a degree that divides the heads, the 64-slot page and the cache row, and exchanges that fit the collective rows\n",state->tp_degree,state->execution_row_capacity);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	fprintf(stderr,"GLM52-KV-SHARD rank=%u degree=%u token_bytes=%llu replicated_token_bytes=%llu\n",state->tp_rank,state->tp_degree,
+		(unsigned long long)SparkGlm52KvShardTokenBytes(state->tp_degree),(unsigned long long)SparkGlm52KvShardTokenBytes(1u));
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm52PrefillWaveRowsConfigure(SparkGlm52ModuleState *state)
 {
 	const char *text = getenv("SPARK_GLM52_PREFILL_WAVE_ROWS");
@@ -2262,6 +2343,11 @@ static SparkStatus SparkGlm52ChainModeConfigure(SparkGlm52ModuleState *state)
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	atomic_init(&state->chain_busy,0u);
+	if ( state->chain_mode == SPARK_TP_CHAIN_MODE_EAGER && state->kv_shard != 0u )
+	{
+		fprintf(stderr,"GLM52-CHAIN-MODE-REFUSED mode=eager reason=the sharded KV exchange runs only in the linear or graph chain\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
 	if ( state->chain_mode == SPARK_TP_CHAIN_MODE_EAGER )
 		return(SPARK_STATUS_OK);
 	SparkGlm52ChainCollectives(state,&collectives);
@@ -2275,6 +2361,8 @@ static SparkStatus SparkGlm52ChainModeConfigure(SparkGlm52ModuleState *state)
 		reason = "needs the TP device collective";
 	else if ( SparkTpChainStreamOrdered(&collectives) == 0u )
 		reason = "needs stream-ordered collectives (SPARK_TP_WAIT_MODE=hardware)";
+	else if ( state->kv_shard != 0u && SparkTpDeviceCollectiveAllToAllSupported(&state->tp_device_collective) == 0u )
+		reason = "the sharded KV exchange needs all-to-all (hardware waits and a weightd that advertises slice routes)";
 	if ( reason != 0 )
 	{
 		fprintf(stderr,"GLM52-CHAIN-MODE-REFUSED mode=%s reason=%s\n",SparkTpChainModeName(state->chain_mode),reason);
@@ -2579,6 +2667,8 @@ static SparkStatus SparkGlm52ModulePrepare(
 		status = SparkGlm52ProjectionSplitConfigure(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52PrefillWaveRowsConfigure(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52KvShardConfigure(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52AllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )
