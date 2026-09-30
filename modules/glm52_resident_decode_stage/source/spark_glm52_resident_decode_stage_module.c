@@ -194,6 +194,12 @@ struct SparkGlm52ModuleState
 	uint16_t *tap_rows;
 	uint32_t tap_capacity;
 	uint64_t tap_records;
+	int relay_socket;
+	uint32_t relay_connected;
+	uint32_t relay_anchor;
+	uint64_t relay_drafts;
+	uint64_t relay_rows;
+	uint64_t relay_wait_ns;
 };
 
 typedef enum SparkGlm52ChainStage

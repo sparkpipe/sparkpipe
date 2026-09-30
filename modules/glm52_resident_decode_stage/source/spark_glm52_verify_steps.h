@@ -1,8 +1,144 @@
 #pragma once
 
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+
 static void SparkGlm52RunChain(SparkGlm52TpChain *chain);
 
-static const char *const SparkGlm52VerifyDrafterNames[5] = {"none","lookup","oracle","adversary","recorded"};
+static const char *const SparkGlm52VerifyDrafterNames[6] = {"none","lookup","oracle","adversary","recorded","relay"};
+
+static SparkStatus SparkGlm52RelayIo(SparkGlm52ModuleState *state,void *bytes,size_t count,uint32_t sending)
+{
+	uint8_t *cursor = (uint8_t *)bytes;
+	ssize_t moved;
+	while ( count != 0u )
+	{
+		moved = sending != 0u ? send(state->relay_socket,cursor,count,MSG_NOSIGNAL) : recv(state->relay_socket,cursor,count,0);
+		if ( moved <= 0 )
+		{
+			fprintf(stderr,"GLM52-RELAY %s failed rank=%u; the relay drafter is closed\n",sending != 0u ? "send" : "receive",state->tp_rank);
+			close(state->relay_socket);
+			state->relay_connected = 0u;
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+		cursor += moved;
+		count -= (size_t)moved;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm52RelayConnect(SparkGlm52ModuleState *state,const char *endpoint)
+{
+	char host[SPARK_GLM52_RELAY_ENDPOINT_BYTES];
+	const char *colon = strrchr(endpoint,':');
+	struct addrinfo hints,*found = 0;
+	struct timeval timeout;
+	int fd,flag = 1;
+	if ( colon == 0 || colon == endpoint || (size_t)(colon - endpoint) >= sizeof(host) || colon[1] == '\0' )
+	{
+		fprintf(stderr,"GLM52-RELAY endpoint %s must be HOST:PORT\n",endpoint);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	memcpy(host,endpoint,(size_t)(colon - endpoint));
+	host[colon - endpoint] = '\0';
+	memset(&hints,0,sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+	if ( getaddrinfo(host,colon + 1,&hints,&found) != 0 || found == 0 )
+	{
+		fprintf(stderr,"GLM52-RELAY cannot resolve %s\n",endpoint);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
+	fd = socket(found->ai_family,found->ai_socktype,found->ai_protocol);
+	timeout.tv_sec = SPARK_GLM52_RELAY_TIMEOUT_SECONDS;
+	timeout.tv_usec = 0;
+	if ( fd < 0 || setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)) != 0 || setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout)) != 0 ||
+		setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&flag,sizeof(flag)) != 0 || connect(fd,found->ai_addr,found->ai_addrlen) != 0 )
+	{
+		fprintf(stderr,"GLM52-RELAY cannot connect to %s rank=%u\n",endpoint,state->tp_rank);
+		if ( fd >= 0 )
+			close(fd);
+		freeaddrinfo(found);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	freeaddrinfo(found);
+	state->relay_socket = fd;
+	state->relay_connected = 1u;
+	fprintf(stderr,"GLM52-RELAY connected %s rank=%u\n",endpoint,state->tp_rank);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm52RelayCommit(SparkGlm52ModuleState *state,uint64_t sequence_id,uint32_t position,uint32_t input_token,uint32_t output_token,const uint16_t *hidden)
+{
+	uint8_t header[24];
+	uint32_t words[2] = {input_token,output_token},magic = SPARK_GLM52_RELAY_COMMIT_MAGIC,count = 1u;
+	SparkStatus status;
+	if ( state->relay_connected == 0u )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	memcpy(header,&magic,4u);
+	memcpy(header + 4u,&state->tp_rank,4u);
+	memcpy(header + 8u,&sequence_id,8u);
+	memcpy(header + 16u,&position,4u);
+	memcpy(header + 20u,&count,4u);
+	status = SparkGlm52RelayIo(state,header,sizeof(header),1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52RelayIo(state,words,sizeof(words),1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52RelayIo(state,(void *)hidden,SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),1u);
+	if ( status == SPARK_STATUS_OK )
+		state->relay_rows++;
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkGlm52RelayDraftTokens(void *context,const SparkSpeculationPolicyDraftRequest *request,SparkSpeculationPolicyDraftResult *result)
+{
+	SparkGlm52ModuleState *state = (SparkGlm52ModuleState *)context;
+	uint8_t header[32];
+	uint32_t magic = SPARK_GLM52_RELAY_DRAFT_MAGIC,position = (uint32_t)request->sequence_position,count = request->requested_token_count,zero = 0u,answer[2];
+	uint64_t begin = SparkGlm52NowNs();
+	SparkStatus status;
+	if ( state->relay_connected == 0u )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	memcpy(header,&magic,4u);
+	memcpy(header + 4u,&state->tp_rank,4u);
+	memcpy(header + 8u,&request->sequence_id,8u);
+	memcpy(header + 16u,&position,4u);
+	memcpy(header + 20u,&count,4u);
+	memcpy(header + 24u,&state->relay_anchor,4u);
+	memcpy(header + 28u,&zero,4u);
+	status = SparkGlm52RelayIo(state,header,sizeof(header),1u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52RelayIo(state,answer,sizeof(answer),0u);
+	if ( status == SPARK_STATUS_OK && (answer[0] != SPARK_GLM52_RELAY_ANSWER_MAGIC || answer[1] > count) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK && answer[1] != 0u )
+		status = SparkGlm52RelayIo(state,result->token_ids,(size_t)answer[1] * sizeof(uint32_t),0u);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	result->token_count = answer[1];
+	state->relay_drafts++;
+	state->relay_wait_ns += SparkGlm52NowNs() - begin;
+	return(answer[1] != 0u ? SPARK_STATUS_OK : SPARK_STATUS_NOT_FOUND);
+}
+
+static uint32_t SparkGlm52TapActive(const SparkGlm52ModuleState *state)
+{
+	return(state->tap_file != 0 || (state->relay_connected != 0u && state->tp_rank == 0u) ? 1u : 0u);
+}
+
+static uint64_t SparkGlm52TapSequence(const SparkGlm52ModuleState *state,uint32_t slot_index,uint32_t resident)
+{
+	const SparkGlm52AsyncCompletion *async = &state->completions[slot_index];
+	uint32_t lane;
+	for (lane=0u; lane<async->lane_count; lane++)
+		if ( async->lane_indices[lane] == resident )
+			return(async->lane_sequence_ids[lane]);
+	return(0u);
+}
 
 static SparkStatus SparkGlm52TapConfigure(SparkGlm52ModuleState *state)
 {
@@ -42,7 +178,7 @@ static void SparkGlm52TapWave(SparkGlm52TpChain *chain)
 	SparkGlm52ModuleState *state = chain->state;
 	uint32_t rows = chain->first_row + chain->wave_rows;
 	uint16_t *grown;
-	if ( state->tap_file == 0 || chain->steps_budget != 0u )
+	if ( SparkGlm52TapActive(state) == 0u )
 		return;
 	if ( rows > state->tap_capacity )
 	{
@@ -60,34 +196,44 @@ static void SparkGlm52TapWave(SparkGlm52TpChain *chain)
 		SparkGlm52TapClose(state,"copy");
 }
 
-static void SparkGlm52TapWrite(SparkGlm52TpChain *chain,SparkStatus status)
+static SparkStatus SparkGlm52TapEmit(SparkGlm52TpChain *chain,uint64_t sequence_id,uint32_t row)
 {
 	SparkGlm52ModuleState *state = chain->state;
 	SparkGlm52ExecutionSlot *slot = chain->slot;
-	uint32_t row,header[5],rows = chain->batch->row_count;
-	if ( state->tap_file == 0 || chain->steps_budget != 0u )
-		return;
-	if ( status != SPARK_STATUS_OK || rows > state->tap_capacity )
-	{
-		SparkGlm52TapClose(state,"chain");
-		return;
-	}
-	for (row=0u; row<rows; row++)
+	const uint16_t *hidden = state->tap_rows + (size_t)row * SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
+	uint32_t header[5];
+	if ( row >= state->tap_capacity )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( state->tap_file != 0 )
 	{
 		header[0] = SPARK_GLM52_TAP_RECORD_MAGIC;
 		header[1] = slot->host_resident_slots[row];
 		header[2] = slot->host_positions[row];
 		header[3] = slot->host_token_ids[row];
 		header[4] = slot->host_output_token_ids[row];
-		if ( fwrite(header,sizeof(header),1u,state->tap_file) != 1u ||
-			fwrite(state->tap_rows + (size_t)row * SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),1u,state->tap_file) != 1u )
+		if ( fwrite(header,sizeof(header),1u,state->tap_file) != 1u || fwrite(hidden,SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t),1u,state->tap_file) != 1u )
 		{
 			SparkGlm52TapClose(state,"write");
-			return;
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
 		state->tap_records++;
 	}
-	fflush(state->tap_file);
+	if ( state->relay_connected != 0u && state->tp_rank == 0u )
+		return(SparkGlm52RelayCommit(state,sequence_id,slot->host_positions[row],slot->host_token_ids[row],slot->host_output_token_ids[row],hidden));
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkGlm52TapWrite(SparkGlm52TpChain *chain,SparkStatus status)
+{
+	SparkGlm52ModuleState *state = chain->state;
+	uint32_t row,rows = chain->batch->row_count;
+	if ( SparkGlm52TapActive(state) == 0u || chain->steps_budget != 0u || status != SPARK_STATUS_OK )
+		return;
+	for (row=0u; row<rows; row++)
+		if ( SparkGlm52TapEmit(chain,SparkGlm52TapSequence(state,chain->slot_index,chain->slot->host_resident_slots[row]),row) != SPARK_STATUS_OK )
+			return;
+	if ( state->tap_file != 0 )
+		fflush(state->tap_file);
 }
 
 static SparkStatus SparkGlm52VerifyReadFile(const char *path,uint8_t **bytes_out,uint64_t *count_out)
@@ -132,6 +278,13 @@ static SparkStatus SparkGlm52VerifyAllocateDrafter(SparkGlm52ModuleState *state)
 		status = SparkSpeculationLookupDraftInitialize(&state->verify_lookup,state->resident_sequence_capacity,state->max_sequence_positions,SPARK_GLM52_VERIFY_LOOKUP_MIN_MATCH,SPARK_GLM52_VERIFY_LOOKUP_MAX_MATCH);
 		state->verify_draft_function = SparkSpeculationLookupDraftTokens;
 		state->verify_draft_context = &state->verify_lookup;
+		SPARK_RETURN(status);
+	}
+	if ( state->verify_drafter == SPARK_SPECULATION_VERIFY_DRAFTER_RELAY )
+	{
+		status = SparkGlm52RelayConnect(state,state->verify_drafter_path);
+		state->verify_draft_function = SparkGlm52RelayDraftTokens;
+		state->verify_draft_context = state;
 		SPARK_RETURN(status);
 	}
 	status = SparkGlm52VerifyReadFile(state->verify_drafter_path,&state->verify_drafter_bytes,&bytes);
@@ -205,6 +358,13 @@ static SparkStatus SparkGlm52VerifyConfigure(SparkGlm52ModuleState *state)
 static void SparkGlm52VerifyRelease(SparkGlm52ModuleState *state)
 {
 	SparkGlm52TapClose(state,"release");
+	if ( state->relay_connected != 0u )
+	{
+		fprintf(stderr,"GLM52-RELAY closed rank=%u drafts=%llu rows=%llu wait_ms_mean=%.3f\n",state->tp_rank,(unsigned long long)state->relay_drafts,(unsigned long long)state->relay_rows,
+			state->relay_drafts != 0u ? (double)state->relay_wait_ns / 1e6 / (double)state->relay_drafts : 0.0);
+		close(state->relay_socket);
+		state->relay_connected = 0u;
+	}
 	if ( state->verify_drafter == SPARK_SPECULATION_VERIFY_DRAFTER_LOOKUP )
 		SparkSpeculationLookupDraftDestroy(&state->verify_lookup);
 	free(state->verify_drafter_bytes);
@@ -283,6 +443,7 @@ static SparkStatus SparkGlm52StepsDraft(SparkGlm52TpChain *chain,uint32_t *count
 	request.request_id = chain->frame->request_id;
 	request.sequence_id = chain->steps_sequence_ids[0];
 	request.sequence_position = slot->host_positions[0];
+	state->relay_anchor = slot->host_token_ids[0];
 	status = state->verify_draft_function(state->verify_draft_context,&request,&result);
 	if ( status == SPARK_STATUS_NOT_FOUND )
 		return(SPARK_STATUS_OK);
@@ -406,12 +567,23 @@ static SparkStatus SparkGlm52StepsAdvance(SparkGlm52TpChain *chain,uint32_t *mor
 		}
 		chain->verify_rounds++;
 		chain->verify_accepted += result.accepted_draft_token_count;
+		for (index=0u; index<committed && SparkGlm52TapActive(state) != 0u; index++)
+		{
+			status = SparkGlm52TapEmit(chain,chain->steps_sequence_ids[0],index);
+			if ( status != SPARK_STATUS_OK )
+				SPARK_RETURN(status);
+		}
 	}
 	else
 	{
 		committed = 1u;
 		for (lane=0u; lane<chain->steps_lanes; lane++)
+		{
 			chain->steps_tokens[lane * budget + produced] = slot->host_output_token_ids[lane];
+			status = SparkGlm52TapActive(state) != 0u ? SparkGlm52TapEmit(chain,chain->steps_sequence_ids[lane],lane) : SPARK_STATUS_OK;
+			if ( status != SPARK_STATUS_OK )
+				SPARK_RETURN(status);
+		}
 		state->verify_plain_rounds++;
 		chain->verify_plain++;
 	}

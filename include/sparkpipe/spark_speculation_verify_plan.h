@@ -11,9 +11,11 @@
 #define SPARK_SPECULATION_VERIFY_DRAFTER_ORACLE 2u
 #define SPARK_SPECULATION_VERIFY_DRAFTER_ADVERSARY 3u
 #define SPARK_SPECULATION_VERIFY_DRAFTER_RECORDED 4u
+#define SPARK_SPECULATION_VERIFY_DRAFTER_RELAY 5u
 #define SPARK_SPECULATION_VERIFY_ORACLE_PREFIX "oracle:"
 #define SPARK_SPECULATION_VERIFY_ADVERSARY_PREFIX "adversary:"
 #define SPARK_SPECULATION_VERIFY_RECORDED_PREFIX "recorded:"
+#define SPARK_SPECULATION_VERIFY_RELAY_PREFIX "relay:"
 
 static inline SparkStatus SparkSpeculationVerifyRowsParse(const char *text,uint32_t rows_limit,uint32_t *rows_out)
 {
@@ -55,6 +57,8 @@ static inline SparkStatus SparkSpeculationVerifyDrafterParse(const char *text,ui
 		*kind_out = SPARK_SPECULATION_VERIFY_DRAFTER_ADVERSARY;
 	else if ( SparkSpeculationVerifyPrefixed(text,SPARK_SPECULATION_VERIFY_RECORDED_PREFIX,path_out) != 0u )
 		*kind_out = SPARK_SPECULATION_VERIFY_DRAFTER_RECORDED;
+	else if ( SparkSpeculationVerifyPrefixed(text,SPARK_SPECULATION_VERIFY_RELAY_PREFIX,path_out) != 0u )
+		*kind_out = SPARK_SPECULATION_VERIFY_DRAFTER_RELAY;
 	else
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
