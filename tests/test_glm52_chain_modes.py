@@ -60,13 +60,13 @@ cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t 
 int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t layer) { (void)wave; (void)layer; assert(0); return(1); }
 int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t layer) { (void)wave; (void)layer; assert(0); return(1); }
 
-static uint32_t host_tokens[4],host_slots[4],host_positions[4],host_output[4],host_error[8];
+static uint32_t host_tokens[16],host_slots[16],host_positions[16],host_output[16],host_error[8];
 
 cudaError_t cudaMemcpyAsync(void *destination,const void *source,size_t bytes,enum cudaMemcpyKind kind,cudaStream_t stream)
 {
 	(void)source; (void)stream;
 	Log(kind == cudaMemcpyDeviceToHost ? "d2h" : "copy",(uint32_t)bytes);
-	if ( kind == cudaMemcpyDeviceToHost && (const uint32_t *)destination >= host_output && (const uint32_t *)destination < host_output + 4 )
+	if ( kind == cudaMemcpyDeviceToHost && (const uint32_t *)destination >= host_output && (const uint32_t *)destination < host_output + 16 )
 		Log("d2h-at",(uint32_t)((const uint32_t *)destination - host_output));
 	return(cudaSuccess);
 }
@@ -169,7 +169,7 @@ static void Reset(uint32_t mode,uint32_t split,uint32_t layers)
 
 static SparkGlm52TpChain *NewChain(uint32_t position)
 {
-	SparkGlm52TpChain *chain = (SparkGlm52TpChain *)calloc(1u,sizeof(*chain) + 8u * sizeof(uint32_t));
+	SparkGlm52TpChain *chain = (SparkGlm52TpChain *)calloc(1u,sizeof(*chain) + 32u * sizeof(uint32_t));
 	SparkGlm52AsyncCompletion *async = &state.completions[0];
 	host_positions[0] = position;
 	memset(async,0,sizeof(*async));
@@ -502,6 +502,35 @@ static void TestOrderedPrefill(void)
 	state.prefill_wave_rows = 0u;
 }
 
+static uint32_t OrderedWaveRows(uint32_t first_position,uint32_t rows)
+{
+	SparkGlm52TpChain *chain;
+	uint32_t row,wave;
+	chain = NewChain(first_position);
+	for (row=0u; row<rows; row++)
+	{
+		host_slots[row] = 0u;
+		host_positions[row] = first_position + row;
+		host_tokens[row] = 100u + row;
+	}
+	batch.row_count = rows;
+	state.prefill_wave_rows = 16u;
+	chain->prefill = 1u;
+	assert(SparkGlm52OrderPrefillRows(chain) == SPARK_STATUS_OK);
+	wave = SparkGlm52WaveRows(chain,0u);
+	free(chain);
+	batch.row_count = 1u;
+	state.prefill_wave_rows = 0u;
+	return(wave);
+}
+
+static void TestOrderedPrefillRegimes(void)
+{
+	assert(OrderedWaveRows(58u,12u) == 12u);
+	assert(OrderedWaveRows(60u,6u) == 3u);
+	assert(OrderedWaveRows(2040u,12u) == 8u);
+}
+
 static void TestPrefillWaves(void)
 {
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
@@ -604,6 +633,7 @@ int main(void)
 	TestPrefillWaveRowsConfigure();
 	TestPrefillWaves();
 	TestOrderedPrefill();
+	TestOrderedPrefillRegimes();
 	TestStreamFailure();
 	TestWorkerRefusal();
 	TestSubmitFailureClearsBusy();

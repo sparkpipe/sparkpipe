@@ -1044,6 +1044,12 @@ static uint32_t SparkGlm52RowRegime(void *context,uint32_t row)
 		(tokens > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u));
 }
 
+static uint32_t SparkGlm52RowSelectionRegime(void *context,uint32_t row)
+{
+	const SparkGlm52WaveRegimeContext *regime = (const SparkGlm52WaveRegimeContext *)context;
+	return(regime->positions[row] + 1u > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT ? 1u : 0u);
+}
+
 static uint32_t SparkGlm52WaveRows(const SparkGlm52TpChain *chain,uint32_t first_row)
 {
 	SparkGlm52ModuleState *state = chain->state;
@@ -1057,7 +1063,12 @@ static uint32_t SparkGlm52WaveRows(const SparkGlm52TpChain *chain,uint32_t first
 	regime.split_threshold = state->decode_split_context_threshold;
 	regime.max_positions = state->max_sequence_positions;
 	if ( chain->row_ordered != 0u )
+	{
+		uint32_t rows = SparkRowLayoutLaneSpanWaveRowCount(first_row,chain->batch->row_count,chain->slot->host_resident_slots,SparkGlm52RowSelectionRegime,&regime,state->prefill_wave_rows);
+		if ( rows > SparkGlm52ExactWaveRows() )
+			return(rows);
 		return(SparkRowLayoutLaneSpanWaveRowCount(first_row,chain->batch->row_count,chain->slot->host_resident_slots,SparkGlm52RowRegime,&regime,state->prefill_wave_rows));
+	}
 	return(SparkRowLayoutRoundSpanWaveRowCount(first_row,chain->batch->row_count,chain->batch->row_resident_slots,SparkStageModuleClaimedLaneOrdinal,&lanes,SparkGlm52RowRegime,&regime,state->prefill_wave_rows));
 }
 
