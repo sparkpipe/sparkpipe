@@ -2022,6 +2022,30 @@ static void SparkTestKvPageCacheMultiBlockSpan(void)
 	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) == SPARK_STATUS_OK);
 }
 
+static void SparkTestKvPageCacheSpanKeepsLivePagesResident(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane live,span;
+	uint32_t page,live_page,mutation_flags;
+	uint64_t resident;
+	SparkTestKvPageInitialize(&fixture);
+	SparkTestKvPageLane(&live,1u,0u,0u,1u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&live,&live_page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&live) == SPARK_STATUS_OK);
+	resident = fixture.cache.kv_cache_arena->resident_block_count;
+	SparkTestKvPageLane(&span,2u,1u,0u,8u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&span,&page,&mutation_flags) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(fixture.cache.kv_cache_arena->resident_block_count == resident);
+	assert((fixture.cache.kv_cache_arena->blocks[live_page].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+	assert(fixture.cache.sequences[0u].mutable_logical_page_index == live_page);
+	assert(fixture.cache.sequences[1u].sequence_id == 0u && fixture.cache.sequences[1u].mutable_page_count == 0u);
+	SparkTestKvPageLane(&span,2u,1u,0u,4u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&span,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert((fixture.cache.kv_cache_arena->blocks[live_page].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,1u,2u) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) == SPARK_STATUS_OK);
+}
+
 static void SparkTestKvPageCacheReclaimsColdPrefixUnderPressure(void)
 {
 	SparkTestKvPageFixture fixture;
@@ -2324,6 +2348,7 @@ int main(void)
 	SparkTestKvPageCachePrefetchAndBeginAreTransactional();
 	SparkTestKvPageCacheReclaimsColdPrefixUnderPressure();
 	SparkTestKvPageCacheMultiBlockSpan();
+	SparkTestKvPageCacheSpanKeepsLivePagesResident();
 	SparkTestKvPageCacheReclaimsLogicalPageWhenPoolIsFull();
 	return(0);
 }

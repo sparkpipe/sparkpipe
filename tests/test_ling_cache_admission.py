@@ -95,7 +95,7 @@ static void check_failed_commit_rolls_back_whole_frame(void)
 	SparkTestKvPageLane(&lanes[1],6u,1u,0u,SPARK_TEST_BLOCK_TOKENS + 1u);
 	SparkTestKvPageLane(&lanes[2],9u,2u,1u,2u);
 	assert(admit(lanes,3u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
-	assert(admit(lanes,3u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_UNSUPPORTED);
+	assert(admit(lanes,3u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(state.kv_page_cache.sequences[0].sequence_id == 0u && state.kv_page_cache.sequences[1].sequence_id == 0u);
 	assert(state.kv_page_cache.sequences[0].mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK);
 	assert(state.kv_page_cache.kv_cache_arena->resident_block_count == resident_blocks);

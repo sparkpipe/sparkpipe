@@ -908,6 +908,35 @@ static SparkStatus SparkKvPageCacheMarkPageResident(SparkKvPageCache *cache,uint
 	return(SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,logical_page_index));
 }
 
+static uint32_t SparkKvPageCacheResidentLivePages(const SparkKvPageCache *cache)
+{
+	const SparkKvCacheArena *arena = cache->kv_cache_arena;
+	uint32_t slot,page,count = 0u;
+	for (slot=0u; slot<arena->resident_block_capacity; slot++)
+	{
+		page = arena->resident_slot_logical_block_indices[slot];
+		if ( page != SPARK_KV_CACHE_NO_BLOCK && (page >= arena->logical_block_count ||
+			cache->entry_indices_by_logical_page[page] == SPARK_KV_PAGE_CACHE_NO_INDEX) )
+			count++;
+	}
+	return(count);
+}
+
+static SparkStatus SparkKvPageCacheSpanRoom(SparkKvPageCache *cache,const SparkKvPageCacheSequence *sequence,uint32_t pages)
+{
+	SparkKvCacheArena *arena = cache->kv_cache_arena;
+	uint64_t fixed = (uint64_t)arena->reserved_block_count + atomic_load(&arena->unassigned_resident_block_count) + pages;
+	uint32_t held[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES],index;
+	if ( fixed + SparkKvPageCacheResidentLivePages(cache) > arena->resident_block_capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( fixed + arena->resident_block_count <= arena->resident_block_capacity )
+		return(SPARK_STATUS_OK);
+	for (index=0u; index<sequence->mutable_page_count; index++)
+		held[index] = SparkKvPageCacheMutablePage(sequence,index);
+	return(SparkKvCacheArenaTrimResidentBlocks(arena,held,sequence->mutable_page_count,
+		(uint32_t)(arena->resident_block_capacity - fixed),0));
+}
+
 static SparkStatus SparkKvPageCacheAllocateMutable(SparkKvPageCache *cache,SparkKvPageCacheSequence *sequence,uint32_t first_token_index)
 {
 	uint32_t logical_page_index;
@@ -1021,7 +1050,9 @@ static SparkStatus SparkKvPageCacheBeginLaneInternal(
 	held = sequence->mutable_page_count;
 	if ( blocks > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES || held > blocks )
 		status = blocks > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES ? SPARK_STATUS_UNSUPPORTED : SPARK_STATUS_INVALID_ARGUMENT;
-	else if ( sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK )
+	else if ( blocks > 1u && held < blocks )
+		status = SparkKvPageCacheSpanRoom(cache,sequence,blocks - held);
+	if ( status == SPARK_STATUS_OK && sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK )
 	{
 		status = lane->sequence_position == first_token ?
 			SparkKvPageCacheAllocateMutable(cache,sequence,first_token) :
