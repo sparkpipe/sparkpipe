@@ -1,0 +1,62 @@
+{
+ "converge_logs": {
+  "log": "residentd.log",
+  "gates": [
+   {"kind": "count", "name": "kv shard refusals", "pattern": "GLM-KV-SHARD-REFUSED|GLM-KV-SHARD-REQUIRED|TP-ALL-TO-ALL-UNSUPPORTED", "max": 0},
+   {"kind": "report", "name": "kv bytes", "pattern": "tp=[0-9]+ shard=[0-9]+ physical_pages=[0-9]+ latent_bytes=[0-9]+ index_bytes=[0-9]+"},
+   {"kind": "report", "name": "l2 prefetch", "pattern": "GLM l2 prefetch=.*"}
+  ]
+ },
+ "smoke_logs": {
+  "log": "residentd.log",
+  "gates": [
+   {"kind": "last", "name": "execution mode", "pattern": "GLM execution mode=[a-z]+", "equals": "GLM execution mode=graph"},
+   {"kind": "count", "name": "graph failures", "pattern": "GRAPH-RECORD-FAIL|GRAPH-INSTANTIATE-FAIL|GRAPH-FAILED|MESH-DEFERRED-ROUNDS-FAILED", "max": 0},
+   {"kind": "count", "name": "rows=1 graph captures", "pattern": "GRAPH-CAPTURE-OK rows=1 ", "min": 1}
+  ],
+  "errsite": {
+   "pattern": "ERRSITE [^ ]* status=[0-9]+",
+   "allow": ["kv_page_store\\.c:805 status=15$", "model_continuation_lease\\.c:67 status=6$"]
+  }
+ },
+ "perf_logs": {
+  "log": "residentd.log",
+  "gates": [
+   {"kind": "count", "name": "l2 prefetch default shape", "pattern": "GLM l2 prefetch=on bytes=12582912 blocks=48$", "min": 1},
+   {"kind": "count", "name": "rows=1 graph captures", "pattern": "GRAPH-CAPTURE-OK rows=1 ", "min": 1},
+   {"kind": "count", "name": "rows=1 captures without 90 prefetch rounds", "pattern": "GRAPH-CAPTURE-OK rows=1 .* l2_prefetch_rounds=([0-9]|[1-8][0-9]|9[1-9]|[1-9][0-9]{2,})$", "max": 0},
+   {"kind": "count", "name": "graph failures", "pattern": "GRAPH-RECORD-FAIL|GRAPH-INSTANTIATE-FAIL|GRAPH-FAILED|MESH-DEFERRED-ROUNDS-FAILED", "max": 0},
+   {"kind": "report", "name": "kv bytes", "pattern": "tp=[0-9]+ shard=[0-9]+ physical_pages=[0-9]+ latent_bytes=[0-9]+ index_bytes=[0-9]+"}
+  ],
+  "errsite": {
+   "pattern": "ERRSITE [^ ]* status=[0-9]+",
+   "allow": ["kv_page_store\\.c:805 status=15$", "model_continuation_lease\\.c:67 status=6$"]
+  }
+ },
+ "api_errsite_allow": ["runtime/json\\.c:737 status=1$", "runtime/model_continuation_lease\\.c:67 status=6$", "runtime/model_batch_engine\\.c:(1515|1489) status=18$"],
+ "smoke": {
+  "requests": [
+   {"name": "health", "path": "/health", "timeout_s": 10, "json_equals": {"tokenizer": true}},
+   {"name": "warmup ids", "path": "/v1/completions", "body": {"prompt_token_ids": [1, 2, 3, 4, 5, 6, 7, 8], "max_tokens": 4, "temperature": 0}, "text_path": "choices.0.text"},
+   {"name": "chat Paris", "path": "/v1/chat/completions", "body": {"messages": [{"role": "user", "content": "What is the capital of France?"}], "max_tokens": 32, "temperature": 0}, "text_path": "choices.0.message.content", "contains": ["Paris"], "not_contains": ["<think>"], "json_equals": {"usage.prompt_tokens": 16}},
+   {"name": "chat 17*23", "path": "/v1/chat/completions", "body": {"messages": [{"role": "user", "content": "What is 17*23?"}], "max_tokens": 32, "temperature": 0}, "text_path": "choices.0.message.content", "contains": ["391"], "not_contains": ["<think>"], "json_equals": {"usage.prompt_tokens": 16}},
+   {"name": "system+user", "path": "/v1/chat/completions", "body": {"messages": [{"role": "system", "content": "Answer with one word."}, {"role": "user", "content": "What is the capital of Japan?"}], "max_tokens": 16, "temperature": 0}, "text_path": "choices.0.message.content", "contains": ["Tokyo"], "not_contains": ["<think>"]},
+   {"name": "role tool refused", "path": "/v1/chat/completions", "body": {"messages": [{"role": "tool", "content": "x"}], "max_tokens": 4, "temperature": 0}, "status": 400, "body_contains": ["role_unsupported"]},
+   {"name": "text completion", "path": "/v1/completions", "body": {"prompt": "The capital of France is", "max_tokens": 8, "temperature": 0}, "text_path": "choices.0.text", "contains": ["Paris"]}
+  ]
+ },
+ "perf": {
+  "windows": [
+   {"label": "b1", "minutes": 10, "command": "cd @build@ && python3 tools/glm5_next_api_bench.py b1 --out @results@/results/b1.json && python3 tools/glm5_next_api_bench.py ttft --out @results@/results/ttft.json"},
+   {"label": "conc-cold", "minutes": 10, "command": "cd @build@ && python3 tools/glm5_next_api_bench.py conc --streams 8 16 --out @results@/results/conc.json"},
+   {"label": "conc-warm", "minutes": 10, "command": "cd @build@ && python3 tools/glm5_next_api_bench.py conc --warm --streams 8 16 --out @results@/results/conc_warm.json"},
+   {"label": "compsec", "minutes": 15, "command": "cd @build@ && for r in seq1 seq2; do python3 tools/glm5_next_compsec17.py --endpoint http://127.0.0.1:@port@ --thinking off --fixture qualification/ds4_eval/quality-fixtures-glm5.3-flash.json --tokenizer @channel@/runtime/tokenizer/tokenizer.json --out @results@/compsec-$r || exit 1; done; for r in 1 2; do python3 tools/glm5_next_compsec17.py --endpoint http://127.0.0.1:@port@ --thinking off --fixture qualification/ds4_eval/quality-fixtures-glm5.3-flash.json --tokenizer @channel@/runtime/tokenizer/tokenizer.json --concurrency 17 --out @results@/compsec-c17-$r || exit 1; done"}
+  ],
+  "gates": [
+   {"name": "compsec-scores", "command": "cd @results@ && bad=0; for r in seq1 seq2 c17-1 c17-2; do python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); f=[x[\"id\"][-3:] for x in d[\"results\"] if not x[\"passed\"]]; print(sys.argv[2], str(d[\"passed\"])+\"/\"+str(d[\"completed\"]), \"failing\", \",\".join(f)); sys.exit(0 if d[\"completed\"] == 17 and d[\"passed\"] >= 14 else 1)' compsec-$r/summary.json $r || bad=1; done; exit $bad"},
+   {"name": "compsec-sequential-identity", "command": "cd @build@ && python3 tools/glm5_next_compsec17.py --compare @results@/compsec-seq1 @results@/compsec-seq2 | tail -n 1 | tee /dev/stderr | grep -q 'identical=17/17'"},
+   {"name": "compsec-identity-report", "command": "cd @build@ && for r in c17-1 c17-2; do echo seq1-vs-$r $(python3 tools/glm5_next_compsec17.py --compare @results@/compsec-seq1 @results@/compsec-$r | tail -n 1); done; true"}
+  ],
+  "fetch": ["b1.json", "ttft.json", "conc.json", "conc_warm.json"]
+ }
+}
