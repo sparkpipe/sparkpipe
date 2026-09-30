@@ -139,6 +139,7 @@ struct K3LayerBuffers
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 	const uint32_t *sequence_row_begin;
+	const uint32_t *sequence_row_indices;
 	uint16_t *replay_conv_q;
 	uint16_t *replay_conv_k;
 	uint16_t *replay_conv_v;
@@ -327,8 +328,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( head_base + rank_heads > K3_KDA_HEADS )
 		return(LM_LAUNCH_ERR_SHAPE);
-	state_slot_bytes = b->kda_state_bf16 != 0u
-		? K3_KDA_STATE_SLOT_BYTES_BF16 : K3_KDA_STATE_SLOT_BYTES;
+	state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_qkv_beta_weight,0,
@@ -360,11 +360,11 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 			b->value_bf16,b->replay_conv_v,rows,rank_v);
 	}
 	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_q_window,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->kda_q_conv_weight,b->query_bf16,rank_qk,sequences,commit);
+		b->kda_q_window,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->kda_q_conv_weight,b->query_bf16,rank_qk,sequences,commit,b->sequence_row_indices);
 	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_k_window,b->kda_state_index,b->sequence_row_begin,0,b->key_bf16,b->kda_k_conv_weight,b->key_bf16,rank_qk,sequences,commit);
+		b->kda_k_window,b->kda_state_index,b->sequence_row_begin,0,b->key_bf16,b->kda_k_conv_weight,b->key_bf16,rank_qk,sequences,commit,b->sequence_row_indices);
 	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(rank_v + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_v_window,b->kda_state_index,b->sequence_row_begin,0,b->value_bf16,b->kda_v_conv_weight,b->value_bf16,rank_v,sequences,commit);
+		b->kda_v_window,b->kda_state_index,b->sequence_row_begin,0,b->value_bf16,b->kda_v_conv_weight,b->value_bf16,rank_v,sequences,commit,b->sequence_row_indices);
 	LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,rank_heads), K3_LAYER_THREADS, 0, stream,
 		b->query_bf16,rank_heads,rows,K3_RMS_EPSILON);
 	LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,rank_heads), K3_LAYER_THREADS, 0, stream,
@@ -386,7 +386,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS)), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)), stream,
-		b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit);
+		b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,float>), dim3(rows * K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS)), K3_LAYER_THREADS, (K3_KDA_VALUE_DIM + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,0,b->kda_out_norm_weight,0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
@@ -702,6 +702,26 @@ static int32_t K3HeadMaxlocUnpack(const uint64_t *maxloc,
 		return LM_LAUNCH_OK;
 	LM_LAUNCH((K3HeadMaxlocUnpackKernel), dim3(1u,rows), K3_LAYER_THREADS, 0,
 		stream, maxloc,tokens,scores,rows);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+__global__ static void K3HeadRankTokenKernel(uint32_t *tokens,
+	uint32_t rows, uint32_t rank_offset)
+{
+	const uint32_t row = blockIdx.y;
+	if ( row < rows && threadIdx.x == 0u && tokens[row] != 0xFFFFFFFFu )
+		tokens[row] += rank_offset;
+}
+
+static int32_t K3HeadRankSlice(const K3LayerBuffers *b, const void *head_norm_weight,
+	const void *head_weight, uint32_t rank_offset, uint32_t vocabulary,
+	uint32_t rows, cudaStream_t stream)
+{
+	int32_t status = K3Head(b,head_norm_weight,head_weight,0,vocabulary,rows,stream);
+	if ( status != LM_LAUNCH_OK || rank_offset == 0u || rows == 0u )
+		return(status);
+	LM_LAUNCH((K3HeadRankTokenKernel), dim3(1u,rows), K3_LAYER_THREADS, 0,
+		stream, b->output_token,rows,rank_offset);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 

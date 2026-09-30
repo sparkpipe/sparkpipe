@@ -137,12 +137,21 @@ static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
 
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
-	uint64_t kv_page_bytes, int device)
+	uint64_t kv_page_bytes, uint32_t tp_degree, int device)
 {
+	SparkK3KdaRankLayout layout;
+	SparkK3RankStateBytes state_plan;
 	if ( d == 0 || sizing == 0 || sequences == 0u || max_rows == 0u ||
-		sizing->layer_count == 0u )
+		sizing->layer_count == 0u ||
+		SparkK3KdaRankLayoutFor(tp_degree, &layout) == 0u ||
+		SparkK3RankStateBytesFor(sizing->kda_layer_count,
+			sizing->mla_layer_count, sequences, tp_degree,
+			kv_pages_per_view, kv_page_bytes, &state_plan) == 0u )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	memset(d, 0, sizeof(*d));
+	d->tp_degree = tp_degree;
+	d->kda_rank_heads = layout.heads;
+	d->state_bytes = state_plan;
 	cudaSetDevice(device);
 	d->first_layer = sizing->first_layer;
 	d->layer_count = sizing->layer_count;
@@ -155,11 +164,12 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->kv_page_bytes = kv_page_bytes;
 	d->device = device;
 
-	const uint64_t qk_window = (uint64_t)K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL;
-	const uint64_t v_window = (uint64_t)K3_KDA_V_DIM * K3_KDA_CONV_KERNEL;
-	const uint64_t state_bytes = (uint64_t)d->kda_count * sequences * K3_KDA_STATE_SLOT_BYTES;
-	const uint64_t qk_bytes = (uint64_t)d->kda_count * sequences * qk_window * 2u;
-	const uint64_t v_bytes = (uint64_t)d->kda_count * sequences * v_window * 2u;
+	const uint64_t state_bytes = (uint64_t)d->kda_count * sequences * layout.state_slot_bytes;
+	const uint64_t qk_bytes = (uint64_t)d->kda_count * sequences * layout.qk_window_slot_bytes;
+	const uint64_t v_bytes = (uint64_t)d->kda_count * sequences * layout.v_window_slot_bytes;
+	if ( state_bytes + 2u * qk_bytes + v_bytes !=
+		state_plan.kda_state + state_plan.kda_windows )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	if ( cudaMalloc(&d->kda_state_pool, state_bytes) != cudaSuccess ||
 		cudaMalloc(&d->kda_q_window_pool, qk_bytes) != cudaSuccess ||
 		cudaMalloc(&d->kda_k_window_pool, qk_bytes) != cudaSuccess ||
@@ -170,22 +180,35 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	cudaMemset(d->kda_k_window_pool, 0, qk_bytes);
 	cudaMemset(d->kda_v_window_pool, 0, v_bytes);
 
-	uint64_t kv_total = (uint64_t)d->mla_count * kv_pages_per_view * kv_page_bytes;
+	const uint64_t view_pages = (uint64_t)sequences * kv_pages_per_view;
+	const uint64_t kv_total = (uint64_t)d->mla_count * view_pages * kv_page_bytes;
+	if ( kv_total != state_plan.mla_kv )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	if ( cudaMalloc(&d->kv_pool, kv_total) != cudaSuccess ||
-		cudaMalloc(&d->page_table, (size_t)d->mla_count * kv_pages_per_view * 4u) != cudaSuccess ||
+		cudaMalloc(&d->page_table, (size_t)d->mla_count * view_pages * sizeof(uint32_t)) != cudaSuccess ||
 		cudaMalloc(&d->access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 	cudaMemset(d->kv_pool, 0, kv_total);
 	cudaMemset(d->access_error, 0, (size_t)d->mla_count * sizeof(LmKvAccessError));
+	{
+		uint32_t *identity = new uint32_t[view_pages];
+		for ( uint64_t page = 0u; page < view_pages; ++page )
+			identity[page] = (uint32_t)page;
+		for ( uint32_t i = 0u; i < d->mla_count; ++i )
+			if ( cudaMemcpy(d->page_table + (size_t)i * view_pages, identity,
+					view_pages * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess )
+				{ delete[] identity; SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
+		delete[] identity;
+	}
 	d->mla_cache = new LmKvView[d->mla_count];
 	for ( uint32_t i = 0u; i < d->mla_count; ++i )
 	{
 		memset(&d->mla_cache[i], 0, sizeof(d->mla_cache[i]));
-		d->mla_cache[i].pool = d->kv_pool + (size_t)i * kv_pages_per_view * kv_page_bytes;
-		d->mla_cache[i].page_table = d->page_table + (size_t)i * kv_pages_per_view;
-		d->mla_cache[i].page_table_stride = 1u;
+		d->mla_cache[i].pool = d->kv_pool + (size_t)i * view_pages * kv_page_bytes;
+		d->mla_cache[i].page_table = d->page_table + (size_t)i * view_pages;
+		d->mla_cache[i].page_table_stride = kv_pages_per_view;
 		d->mla_cache[i].sequence_count = sequences;
-		d->mla_cache[i].pool_page_count = kv_pages_per_view;
+		d->mla_cache[i].pool_page_count = (uint32_t)view_pages;
 		d->mla_cache[i].access_error = d->access_error + i;
 	}
 
@@ -204,6 +227,7 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	st->kda_v_window = d->kda_v_window_pool;
 	st->mla_cache = d->mla_cache;
 	st->sequences = sequences;
+	st->kda_rank_heads = layout.heads;
 	st->kda_state_bf16 = 0u;
 	st->first_mla_index = d->first_layer / 4u;
 	st->first_kda_index = d->first_layer - (d->first_layer / 4u);
@@ -426,6 +450,16 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		}
 		if ( d->buffers->kda_qkvb_rows != 0u )
 			d->buffers->kda_heads_rank = d->buffers->kda_qkvb_rows / 385u;
+		if ( (d->buffers->kda_qkvb_rows != 0u ?
+				d->buffers->kda_heads_rank : (uint32_t)K3_KDA_HEADS) !=
+			d->kda_rank_heads )
+		{
+			fprintf(stderr, "sparkpipe_k3: pack KDA heads per rank %u != "
+				"state pool heads per rank %u (tp_degree %u)\n",
+				d->buffers->kda_heads_rank, d->kda_rank_heads, d->tp_degree);
+			delete[] host;
+			return SPARK_K3_DISPATCH_ERR_BIND;
+		}
 		if ( d->buffers->mla_gate_rows != 0u )
 			d->buffers->mla_heads_rank = d->buffers->mla_gate_rows / K3_V_HEAD_DIM;
 #undef K3_FILL_RANK
@@ -466,6 +500,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->context_length = in->context_length;
 	b->sequence_of_row = in->sequence_of_row;
 	b->sequence_row_begin = in->sequence_row_begin;
+	b->sequence_row_indices = in->sequence_row_indices;
 	b->kda_state_index = in->kda_state_index;
 	b->route_expert = in->route_expert;
 	b->route_packed_row = in->route_packed_row;

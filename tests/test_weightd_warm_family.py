@@ -121,6 +121,38 @@ class WeightdWarmFamilyIdentity(unittest.TestCase):
                     "pack_sha256": DIGEST,
                 })
 
+    def warm_topology(self, topology, *extra):
+        environment = {key: value for key, value in os.environ.items()
+                       if key != "SPARK_WEIGHTD_EXPERT_POOL_BYTES"}
+        return subprocess.run(
+            [str(self.binary), "/nonexistent/weightd.sock", str(self.pack),
+             DIGEST, "x", topology, "--identity-print", *extra],
+            env=environment, capture_output=True, text=True)
+
+    def test_k3_family_takes_the_runner_tp_degree_as_topology(self):
+        for topology in ("4", "16"):
+            with self.subTest(topology=topology):
+                run = self.warm_topology(topology, "--family", "k3")
+                self.assertEqual(run.returncode, 0, run.stderr)
+                fields = dict(word.split("=", 1)
+                              for word in run.stdout.split()[1:])
+                self.assertEqual(fields, {
+                    "model": "kimi-k3",
+                    "revision": "mxfp4",
+                    "topology": topology,
+                    "geometry": "0",
+                    "arena_bytes": str(PACK_BYTES),
+                    "pack_sha256": DIGEST,
+                })
+
+    def test_k3_family_refuses_a_topology_the_runner_never_attaches(self):
+        for topology in ("1", "8", "13", "404"):
+            with self.subTest(topology=topology):
+                run = self.warm_topology(topology, "--family", "k3")
+                self.assertEqual(run.returncode, 2, run.stdout)
+                self.assertEqual(run.stdout, "")
+                self.assertIn("tp_degree", run.stderr)
+
     def test_family_argument_position_does_not_change_identity(self):
         before = subprocess.run(
             [str(self.binary), "--family", "dsv41_flash", "--identity-print",

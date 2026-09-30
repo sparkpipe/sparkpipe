@@ -362,7 +362,19 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
 
 
 def chat_template_value(value: Any) -> dict[str, Any]:
-    template = exact_object(value, CHAT_TEMPLATE_KEYS, "chat_template")
+    keys = CHAT_TEMPLATE_KEYS | ({key for key in ("assistant_suffix", "control_markers") if key in value}
+                                 if isinstance(value, dict) else set())
+    template = exact_object(value, keys, "chat_template")
+    if "assistant_suffix" in template and not isinstance(template["assistant_suffix"], str):
+        raise DeploymentError("chat_template.assistant_suffix must be a string")
+    if "control_markers" in template:
+        controls = template["control_markers"]
+        if (not isinstance(controls, list) or not controls or
+                len(controls) > CHAT_TEMPLATE_STOP_MARKERS_MAX):
+            raise DeploymentError(
+                f"chat_template.control_markers must hold 1..{CHAT_TEMPLATE_STOP_MARKERS_MAX} strings")
+        for marker in controls:
+            text_value(marker, "chat_template.control_markers[]")
     for key in CHAT_TEMPLATE_TEXT_KEYS:
         if not isinstance(template[key], str):
             raise DeploymentError(f"chat_template.{key} must be a string")

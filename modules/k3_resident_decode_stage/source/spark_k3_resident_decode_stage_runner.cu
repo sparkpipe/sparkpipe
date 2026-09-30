@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_weightd_include.h"
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_tp_mesh_register.h"
 #include "inference/llms/kimi_k3/layer.cuh"
 
 typedef struct SparkK3RunnerState SparkK3RunnerState;
@@ -156,6 +157,22 @@ static SparkStatus K3RunnerCombineGatherBf16(void *combine_context,
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
+static SparkStatus K3RunnerCombineSumRanksF32(void *combine_context,
+	void *destination_device,const void *const *source_devices,
+	uint32_t source_count,uint32_t active_sequence_count,
+	uint32_t hidden_dimension,void *cuda_stream)
+{
+	uint64_t elements = (uint64_t)active_sequence_count * hidden_dimension;
+	(void)combine_context;
+	if ( destination_device == 0 || source_devices == 0 || source_count == 0u ||
+		source_count > K3_RUNNER_GATHER_SOURCES_MAX || elements == 0u ||
+		elements > UINT32_MAX )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SparkTpLaunchSumRanksF32((cudaStream_t)cuda_stream,
+		destination_device,source_devices,source_count,(uint32_t)elements) ==
+		cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
 static SparkStatus K3RunnerCombineBf16(void *combine_context,
 	void *destination_device,const void *source_device,
 	uint32_t active_sequence_count,uint32_t hidden_dimension,void *cuda_stream)
@@ -239,6 +256,7 @@ typedef struct SparkK3RunnerState
 	uint32_t *group_offset_host;
 	uint64_t layer_w1_offset[K3_LAYERS];
 	uint64_t layer_w2_offset[K3_LAYERS];
+	uint32_t lease_tensor_base;
 	uint32_t tp_rank;
 	uint16_t *fused_device;
 	uint32_t fused_rows;
@@ -877,6 +895,20 @@ static SparkStatus SparkK3RunnerReleaseLease(SparkK3RunnerState *state)
 	return(status);
 }
 
+static SparkStatus K3RunnerLeaseTensorBase(SparkK3RunnerState *state,
+	uint32_t layer, SparkWeightdExpertKey *keys, uint32_t *count)
+{
+	if ( state->lease_tensor_base == 0u || (*count != 0u && keys[0].expert == 0u) )
+		return SPARK_STATUS_OK;
+	if ( *count >= SPARK_WEIGHTD_LEASE_GROUPS_MAX )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memmove(&keys[1], &keys[0], (size_t)*count * sizeof(keys[0]));
+	keys[0].layer = layer;
+	keys[0].expert = 0u;
+	(*count)++;
+	return SPARK_STATUS_OK;
+}
+
 static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 	void *buffers_void)
 {
@@ -906,6 +938,9 @@ static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 	status = SparkWeightdRouteKeys(layer, state->group_offset_host,
 		K3_EXPERTS, state->rows * K3_TOP_K, keys,
 		SPARK_WEIGHTD_LEASE_GROUPS_MAX, &count);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = K3RunnerLeaseTensorBase(state, layer, keys, &count);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	SparkK3RunnerStrayAccount(state, keys, count);
@@ -965,6 +1000,64 @@ static SparkStatus K3RunnerEnvUnsigned64(const char *name, uint64_t minimum,
 	if ( (uint64_t)parsed < minimum || (uint64_t)parsed > maximum )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	*value = (uint64_t)parsed;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3RunnerCreateDispatch(SparkK3RunnerState *state,
+	const SparkK3StageRunnerConfiguration *configuration)
+{
+	uint64_t budget = 0u, planned;
+	SparkK3RankStateBytes state_plan;
+	memset(&state_plan, 0, sizeof(state_plan));
+	if ( K3RunnerEnvUnsigned64("SPARK_K3_STATE_BUDGET_BYTES", 1u, UINT64_MAX,
+		&budget) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: SPARK_K3_STATE_BUDGET_BYTES is required"
+			" (per-rank KDA state + windows + MLA KV + dispatch scratch)\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( SparkK3RankStateBytesFor(state->module.sizing.kda_layer_count,
+			state->module.sizing.mla_layer_count,
+			configuration->max_active_sequence_count, configuration->tp_degree,
+			configuration->kv_pages_per_sequence, state->kv_page_bytes,
+			&state_plan) == 0u || state_plan.total > budget )
+	{
+		fprintf(stderr, "sparkpipe_k3: rank state %llu exceeds"
+			" SPARK_K3_STATE_BUDGET_BYTES %llu or tp_degree %u is invalid"
+			" (refused before allocation)\n",
+			(unsigned long long)state_plan.total, (unsigned long long)budget,
+			configuration->tp_degree);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	if ( SparkK3DispatchCreate(&state->dispatch, &state->module.sizing,
+		configuration->max_active_sequence_count,
+		configuration->max_input_row_count,
+		configuration->kv_pages_per_sequence,
+		state->kv_page_bytes, configuration->tp_degree, 0) != SPARK_K3_DISPATCH_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: dispatch create failed tp_degree=%u\n",
+			configuration->tp_degree);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	planned = state->dispatch.state_bytes.total + state->dispatch.scratch_bytes;
+	fprintf(stderr, "sparkpipe_k3: rank state planned=%llu budget=%llu"
+		" kda_state=%llu kda_windows=%llu mla_kv=%llu scratch=%llu"
+		" sequences=%u kda_heads_per_rank=%u\n",
+		(unsigned long long)planned, (unsigned long long)budget,
+		(unsigned long long)state->dispatch.state_bytes.kda_state,
+		(unsigned long long)state->dispatch.state_bytes.kda_windows,
+		(unsigned long long)state->dispatch.state_bytes.mla_kv,
+		(unsigned long long)state->dispatch.scratch_bytes,
+		configuration->max_active_sequence_count,
+		state->dispatch.kda_rank_heads);
+	if ( planned > budget )
+	{
+		fprintf(stderr, "sparkpipe_k3: rank state %llu exceeds"
+			" SPARK_K3_STATE_BUDGET_BYTES %llu (fail-closed)\n",
+			(unsigned long long)planned, (unsigned long long)budget);
+		SparkK3DispatchDestroy(&state->dispatch);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -1054,12 +1147,9 @@ SparkStatus SparkK3StageRunnerInitialize(
 	}
 	if ( status != SPARK_STATUS_OK )
 		{ runner->private_state = 0; delete state; return status; }
-	if ( SparkK3DispatchCreate(&state->dispatch,&state->module.sizing,
-		configuration->max_active_sequence_count,
-		configuration->max_input_row_count,
-		configuration->kv_pages_per_sequence,
-		state->kv_page_bytes, 0) != SPARK_K3_DISPATCH_OK )
-		{ fprintf(stderr, "sparkpipe_k3: dispatch create failed\n"); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
+	status = K3RunnerCreateDispatch(state, configuration);
+	if ( status != SPARK_STATUS_OK )
+		{ SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
 	status = SparkWeightdAttachRequested();
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1136,9 +1226,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->module.bound,state->module.bound_count,
 			state->lazy_pack) != SPARK_K3_DISPATCH_OK )
 		{ fprintf(stderr, "sparkpipe_k3: weight bind failed\n"); SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INTERNAL_ERROR; }
-	cudaMemset(state->dispatch.page_table, 0,
-		(uint64_t)state->module.sizing.mla_layer_count *
-		configuration->kv_pages_per_sequence * 4u);
 	state->vocab = state->module.pack.config.vocab;
 	{
 		uint32_t routed;
@@ -1227,6 +1314,8 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->vocab_slice_rows = (uint32_t)embed_rows;
 	}
 	state->dispatch.buffers->tp_sharded = configuration->tp_degree > 1u ? 1u : 0u;
+	state->lease_tensor_base = (uint32_t)(state->dispatch.buffers->routed_down_rows %
+		K3_LAYER_TILE_N != 0u);
 	state->dispatch.buffers->tp_rank = configuration->tp_rank;
 	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 	state->dispatch.slice_state->collective_context = state;
@@ -1287,6 +1376,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 			device_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
 			device_config.combine_u64_max_function = K3RunnerCombineU64Max;
 			device_config.combine_gather_bf16_function = K3RunnerCombineGatherBf16;
+			device_config.combine_fused_bf16_function = K3RunnerCombineSumRanksF32;
 			device_config.combine_context = state;
 		}
 		status = SparkTpDeviceCollectiveCreate(&device_config,
@@ -1323,6 +1413,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 			wide_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
 			wide_config.combine_u64_max_function = K3RunnerCombineU64Max;
 			wide_config.combine_gather_bf16_function = K3RunnerCombineGatherBf16;
+			wide_config.combine_fused_bf16_function = K3RunnerCombineSumRanksF32;
 			wide_config.combine_context = state;
 		}
 		status = SparkTpDeviceCollectiveCreate(&wide_config,
@@ -1577,6 +1668,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.context_length = dispatch->context_length;
 	in.sequence_of_row = dispatch->sequence_of_row;
 	in.sequence_row_begin = dispatch->sequence_row_begin;
+	in.sequence_row_indices = dispatch->sequence_row_indices;
 	in.kda_state_index = dispatch->kda_state_index;
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
@@ -1601,8 +1693,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 		if ( rows == 1u && state->head_certified_fp8_payload != 0 )
 			status = K3HeadCertifiedB1(b, state->head_norm_weight, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32, state->head_certified_fp8_norm_f32, state->head_certified_scratch, state->head_certified_candidates, state->head_screened_count, state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
 		else
-			status = K3Head(b, state->head_norm_weight, state->head_weight, 0,
-				state->vocab_slice_rows, rows, stream);
+			status = K3HeadRankSlice(b, state->head_norm_weight, state->head_weight,
+				state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, rows, stream);
 		if ( status != LM_LAUNCH_OK )
 			{ fprintf(stderr, "sparkpipe_k3: final head launch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
 		if ( state->device_collective_created != 0 )
@@ -1878,6 +1970,7 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	b->route_source_token = state->route_source_token;
 	b->route_weight = state->route_weight;
 	b->sequence_row_begin = 0;
+	b->sequence_row_indices = 0;
 	b->positions = state->positions;
 	b->context_length = state->context_length;
 	b->sequence_of_row = state->sequence_of_row;
