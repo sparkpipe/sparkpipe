@@ -986,7 +986,7 @@ static SparkStatus SparkKvPageCacheBeginLaneInternal(
 	uint32_t *mutation_flags_out)
 {
 	SparkKvPageCacheSequence *sequence;
-	uint32_t first_token,mutation_flags,newly_bound,prefix_entry_index,blocks,held;
+	uint32_t first_token,mutation_flags,newly_bound,prefix_entry_index,blocks,held,index;
 	SparkStatus status;
 	if ( mutable_logical_page_index_out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1034,6 +1034,9 @@ static SparkStatus SparkKvPageCacheBeginLaneInternal(
 		status = SPARK_STATUS_INVALID_ARGUMENT;
 	while ( status == SPARK_STATUS_OK && sequence->mutable_page_count < blocks )
 		status = SparkKvPageCacheAllocateMutable(cache,sequence,first_token);
+	for (index=0u; status == SPARK_STATUS_OK && index<sequence->mutable_page_count; index++)
+		if ( (cache->kv_cache_arena->blocks[SparkKvPageCacheMutablePage(sequence,index)].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK && held != 0u && sequence->mutable_page_count > held )
 		mutation_flags |= SPARK_KV_PAGE_CACHE_MUTATION_EXTENDED_MUTABLE;
 	if ( status != SPARK_STATUS_OK )
