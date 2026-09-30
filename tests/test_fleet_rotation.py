@@ -1249,6 +1249,128 @@ def test_steady_floor_guard_sheds_a_companion():
         check("steady floor: with no companion on the low node the primary is left serving and alerted", rc == 0 and f.state().get("active") == ["prod", "ta", "tc"] and not any(" stop " in l for l in f.call_lines()) and "no companion there to shed" in f.alerts(), f.alerts())
 
 
+def real_footprints(f, base, real):
+    w = f.world()
+    for h in HOSTS:
+        w["nodes"][h]["mem"] = base - real["prod"]
+        w["nodes"][h]["arena"]["prod"] = real["prod"]
+    w["arena"].update(real)
+    f.save(w)
+
+
+def incident_config(tmp, small_gib):
+    cfg = config(Path(tmp))
+    cfg["node_free_gib"] = 106
+    cfg["slots"]["full"]["companions"] = ["q", "g", "m"]
+    cfg["slots"]["flash_plus"]["companions"] = ["q", "g", "m"]
+    cfg["rollback_models"] = ["prod", "q"]
+    for name in ("c1", "c2", "c3", "dflt"):
+        del cfg["models"][name]
+    cfg["models"].update({"q": model(["n0"], small_gib, port=9020), "m": model(["n1"], 46, port=9021), "g": model(["n2"], 36, port=9022)})
+    return cfg
+
+
+def incident_fleet(tmp, small_gib, prod_real=27):
+    f = Fleet(tmp, incident_config(tmp, small_gib))
+    real_footprints(f, 109, {"prod": prod_real, "big": 64, "q": 26, "m": 42, "g": 36})
+    return f
+
+
+H00 = hour_key("2026-09-30T00:00:00Z")
+
+
+def test_incident_full_hour_serves_the_primary():
+    for small_gib, how in ((15, "stopped after its re-add breaks the floor"), (26, "skipped by the start gate")):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = incident_fleet(tmp, small_gib)
+            rc, out = f.tool("tick", at="2026-09-29T23:50:20Z")
+            check(f"incident {small_gib}: the flash_plus hour packs every companion", f.state().get("active") == ["prod", "q", "g", "m"], out[-600:])
+            f.clear_calls()
+            rc, out = f.tool("tick", at="2026-09-30T00:00:21Z")
+            st = f.state()
+            lines = f.call_lines()
+            log = (f.state_dir / "rotation.log").read_text()
+            check(f"incident {small_gib}: the full hour packs the running companion beside the primary, as at 00:00Z", st["picks"][H00]["companions"] == ["q"] and "n1:" in st["picks"][H00]["waiting"]["m"], json.dumps(st["picks"].get(H00)))
+            check(f"incident {small_gib}: the primary's gate is short only where the kept companion holds memory", "goes first: its start gate is short on n0 " in f.alerts() and "short on n0=83" in log, f.alerts())
+            order = [first_index(lines, p) for p in (r"n0 stop prod", r"n0 stop q", r"n0 reclaim q --reclaim-pack", r"n\d start big", r"fakehub smoke big")]
+            check(f"incident {small_gib}: the companion is stopped and reclaimed by pack, then the primary starts", all(i >= 0 for i in order) and order == sorted(order), str(order))
+            check(f"incident {small_gib}: the primary serves the hour with no fallback", st.get("active") == ["big"] and f.up_on("big") == HOSTS and f.world()["apis"].get("big") and st.get("phase") == "steady"
+                  and st.get("failed_instance") is None and "FALLBACK" not in log and not (f.state_dir / "ROTATION_PAUSE").exists(), out[-900:])
+            check(f"incident {small_gib}: the companion is {how}", f.up_on("q") == [] and f.world()["nodes"]["n0"]["arena"].get("q") == 0 and "q" in st["dropped"][H00]
+                  and ("below 20 GiB after-q" in f.alerts() if small_gib == 15 else "yielded to the primary" in f.alerts() and not any("n0 start q" in l for l in lines)), f.alerts())
+            check(f"incident {small_gib}: every node keeps the floor", min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20, json.dumps(f.world()["nodes"]))
+
+
+def test_primary_first_order_and_readd():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = config(Path(tmp))
+        cfg["slots"]["full"]["companions"] = ["s1", "s2", "s3"]
+        cfg["slots"]["flash_plus"]["companions"] = ["s1", "s2", "s3"]
+        cfg["rollback_models"] = ["prod", "s1"]
+        for name in ("c1", "c2", "c3", "dflt"):
+            del cfg["models"][name]
+        cfg["models"].update({"s1": model(["n0"], 10, port=9030), "s2": model(["n0"], 10, port=9031), "s3": model(["n1"], 10, port=9032)})
+        f = Fleet(tmp, cfg)
+        real_footprints(f, 110, {"prod": 27, "big": 68, "s1": 12, "s2": 12, "s3": 12})
+        f.tool("tick", at="2026-09-29T17:00:30Z")
+        check("primary first: the small companions run beside production", f.state().get("active") == ["prod", "s1", "s2", "s3"], json.dumps(f.state().get("active")))
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-29T18:00:30Z")
+        lines = f.call_lines()
+        st = f.state()
+        order = [first_index(lines, p) for p in (r"n0 stop prod", r"n0 stop s2", r"n0 reclaim s2 --reclaim-pack", r"n0 stop s1", r"n0 reclaim s1 --reclaim-pack", r"n0 start big", r"n0 start s1", r"n0 start s2")]
+        check("primary first: kept companions stop in reverse start order, each reclaimed by pack, before the primary starts; re-added after it", all(i >= 0 for i in order) and order == sorted(order), f"{order}\n" + "\n".join(lines))
+        check("primary first: a kept companion off the short nodes is never stopped", st.get("active") == ["big", "s1", "s3"] and f.up_on("s3") == ["n1"] and not any(" stop s3" in l or "reclaim s3" in l for l in lines), "\n".join(lines))
+        check("primary first: the companion that still fits is back, the one that does not is stopped and skipped", "s1" in st.get("active", []) and f.up_on("s1") == ["n0"] and f.up_on("s2") == [] and "s2" in st["dropped"][hour_key("2026-09-29T18:00:00Z")], out[-800:])
+        check("primary first: no fallback, the floor holds", st.get("phase") == "steady" and "FALLBACK" not in (f.state_dir / "rotation.log").read_text() and min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20, out[-400:])
+
+
+def test_measured_capacity_packing():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = incident_fleet(tmp, 15, prod_real=38)
+        f.tool("tick", at="2026-09-29T23:50:20Z")
+        f.clear_calls()
+        rc, out = f.tool("tick", at="2026-09-30T00:00:21Z")
+        st = f.state()
+        lines = f.call_lines()
+        check("measured: a running companion is charged what it really holds, not its config", st["picks"][H00]["companions"] == [] and st["picks"][H00]["waiting"]["q"] == "n0:15<20", json.dumps(st["picks"].get(H00)))
+        check("measured: it stops with the outgoing models, before the primary, and the gate never refuses", 0 <= first_index(lines, r"n0 stop q") < first_index(lines, r"n\d start big") and "goes first" not in f.alerts() and st.get("active") == ["big"], out[-600:])
+        check("measured: the pick records the predicted MemAvailable per node", st["picks"][H00]["after_gib"] == {"n0": 30, "n1": 38, "n2": 38, "n3": 38}, json.dumps(st["picks"][H00].get("after_gib")))
+    for mem, gib, admitted, label in ((109 - 27, 50, True, "admits a companion beside what production really holds"), (160, 90, False, "never counts more than node_free_gib")):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = incident_config(tmp, 15)
+            cfg["slots"]["flash_plus"]["companions"].append("fat")
+            cfg["models"]["fat"] = model(["n3"], gib, port=9023)
+            f = Fleet(tmp, cfg)
+            real_footprints(f, 109, {"prod": 27, "big": 64, "q": 26, "m": 42, "g": 36, "fat": gib})
+            w = f.world()
+            w["nodes"]["n3"]["mem"] = mem
+            f.save(w)
+            rc, out = f.tool("tick", at="2026-09-29T17:00:30Z")
+            st = f.state()
+            waiting = st["picks"][hour_key("2026-09-29T17:00:00Z")]["waiting"]
+            ok = "fat" in st.get("active", []) and min(f.world()["nodes"][h]["mem"] for h in HOSTS) >= 20 if admitted else "fat" not in st.get("active", []) and waiting.get("fat") == "n3:16<20"
+            check(f"measured: {label}", ok, json.dumps(st.get("picks")) + out[-400:])
+
+
+def test_failed_primary_after_yield_and_force_retry():
+    with tempfile.TemporaryDirectory() as tmp:
+        f = incident_fleet(tmp, 15)
+        f.tool("tick", at="2026-09-29T23:50:20Z")
+        f.behave(never_ready=["big"])
+        rc, out = f.tool("tick", at="2026-09-30T00:00:21Z")
+        st = f.state()
+        check("failure path: a primary that fails after the companions yielded falls back to production, never to nothing", st.get("active") == ["prod"] and f.up_on("prod") == HOSTS and f.world()["apis"].get("prod")
+              and st.get("phase") == "fallback" and not (f.state_dir / "ROTATION_PAUSE").exists() and f.up_on("big") == [] and f.up_on("q") == [], out[-800:])
+        check("failure path: the hour is fenced", st.get("failed_instance") == int(H00), json.dumps(st)[:300])
+        rc, out = f.tool("force", "full", at="2026-09-30T00:05:00Z")
+        st = f.state()
+        check("force: clears the failed hour and logs it", rc == 0 and "failed_instance" not in st and "cleared=failed_instance@2026-09-30T00:00:00Z" in (f.state_dir / "rotation.log").read_text(), out)
+        f.behave(never_ready=[])
+        rc, out = f.tool("tick", at="2026-09-30T00:05:21Z")
+        check("force: the failed slot is retried without editing state", f.state().get("active") == ["big"] and f.up_on("big") == HOSTS and f.state().get("phase") == "steady", out[-600:])
+
+
 def test_production_config():
     cfg = json.loads(PRODUCTION.read_text())
     p = subprocess.run([sys.executable, str(TOOL), "--config", str(PRODUCTION), "check-config"], capture_output=True, text=True)
@@ -1275,7 +1397,8 @@ def main():
                  test_dry_run_of_a_running_rotation_shows_the_plan,
                  test_resident_arenas_of_a_stopped_model_are_reclaimed, test_api_down_with_engines_up_restarts_the_api,
                  test_fallback_tries_production_past_a_stuck_model, test_steady_floor_guard_sheds_a_companion,
-                 test_production_config):
+                 test_incident_full_hour_serves_the_primary, test_primary_first_order_and_readd, test_measured_capacity_packing,
+                 test_failed_primary_after_yield_and_force_retry, test_production_config):
         test()
     if failures:
         print(f"\n{len(failures)} FAILED: {', '.join(failures)}")

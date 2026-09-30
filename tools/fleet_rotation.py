@@ -34,7 +34,9 @@ class Preempted(Exception):
 
 
 class Refused(Failure):
-    pass
+    def __init__(self, message, short=None):
+        super().__init__(message)
+        self.short = short or {}
 
 
 class Stuck(Exception):
@@ -217,6 +219,7 @@ class Rotation:
         self.write = not runner.dry
         self.bases = {slot["base"] for slot in cfg["slots"].values()} | {cfg["fallback"]}
         self.instance = self.slot_at(self.now())[0]
+        self.view = None
 
     def now(self):
         return self.clock if self.clock is not None else time.time()
@@ -363,44 +366,46 @@ class Rotation:
         recorded = st.get("base_gib") or {}
         return {h: recorded.get(h, self.cfg["node_free_gib"]) for h in self.cfg["fleet"]}
 
-    def measured_base(self, avail, resident):
-        base = {}
-        for host, value in avail.items():
-            if value is None:
-                return None
-            held = sum(self.models[m]["mem_gib"] for m in resident if host in self.models[m]["nodes"])
-            base[host] = min(value + held, self.cfg["node_free_gib"])
-        return base
+    def gib(self, models, host):
+        return sum(self.models[m]["mem_gib"] for m in models if host in self.models[m]["nodes"])
 
-    def room(self, base, models):
-        out = {}
-        for host, value in base.items():
-            need = sum(self.models[m]["mem_gib"] for m in models if host in self.models[m]["nodes"])
-            out[host] = None if value is None else value - self.floor_of(models) - need
-        return out
+    def nominal_view(self, st):
+        return {"live": self.nominal_base(st), "resident": [], "restart": [], "measured": False}
 
-    def shortfall(self, room, extra, floor=None):
-        floor = self.cfg["floor_gib"] if floor is None else floor
-        short = []
-        for host, value in sorted(room.items()):
-            need = sum(self.models[m]["mem_gib"] for m in extra if host in self.models[m]["nodes"])
-            if value is not None and value - need < 0:
-                short.append(f"{host}:{value + floor}-{need}<{floor}")
-        return short
+    def measure(self, st, current, dirty):
+        resident = list(dict.fromkeys(current + dirty))
+        live = self.mem(self.cfg["fleet"])
+        measured = all(v is not None for v in live.values())
+        if measured:
+            st["base_gib"] = {h: min(v + self.gib(resident, h), self.cfg["node_free_gib"]) for h, v in live.items()}
+        else:
+            nominal = self.nominal_base(st)
+            live = {h: nominal[h] - self.gib(resident, h) for h in self.cfg["fleet"]}
+        self.view = {"live": live, "resident": resident, "restart": [m for m in dirty if m != self.fb], "measured": measured}
+        return self.view
 
-    def pack(self, room, candidates, runs, order):
+    def after(self, view, target):
+        stopped = [m for m in view["resident"] if m not in target or m in view["restart"]]
+        started = [m for m in target if m not in view["resident"] or m in view["restart"]]
+        return {h: min(v + self.gib(stopped, h), self.cfg["node_free_gib"]) - self.gib(started, h) for h, v in view["live"].items()}
+
+    def shortfall(self, view, target):
+        floor = self.floor_of(target)
+        return [f"{h}:{v}<{floor}" for h, v in sorted(self.after(view, target).items()) if v < floor]
+
+    def pack(self, view, primary, candidates, runs, order):
         rank = sorted(candidates, key=lambda c: (runs.get(c, -1), order.index(c) if c in order else len(order)))
-        anchor = next((c for c in rank if not self.shortfall(room, [c])), None)
+        anchor = next((c for c in rank if not self.shortfall(view, [primary, c])), None)
         chosen = []
         if anchor is not None:
             rest = [c for c in rank if c != anchor]
             chosen = [anchor]
             for size in range(len(rest), 0, -1):
-                hit = next((group for group in itertools.combinations(rest, size) if not self.shortfall(room, [anchor, *group])), None)
+                hit = next((group for group in itertools.combinations(rest, size) if not self.shortfall(view, [primary, anchor, *group])), None)
                 if hit:
                     chosen = [anchor, *hit]
                     break
-        waiting = {c: " ".join(self.shortfall(room, chosen + [c])) or "fits alone" for c in rank if c not in chosen}
+        waiting = {c: " ".join(self.shortfall(view, [primary, *chosen, c])) or "fits alone" for c in rank if c not in chosen}
         return chosen, waiting
 
     def candidates(self, st, instance, slot, primary, forced):
@@ -416,8 +421,7 @@ class Rotation:
         if pick is not None:
             chosen = pick["companions"]
         else:
-            room = self.room(self.nominal_base(st), [primary])
-            chosen, _ = self.pack(room, self.candidates(st, instance, slot, primary, forced), self.ranking(st, instance), self.pool(slot, forced))
+            chosen, _ = self.pack(self.nominal_view(st), primary, self.candidates(st, instance, slot, primary, forced), self.ranking(st, instance), self.pool(slot, forced))
         dropped = self.dropped(st, instance)
         return instance, slot, [primary] + [c for c in chosen if c not in dropped]
 
@@ -650,7 +654,7 @@ class Rotation:
         floor = self.floor_of([model])
         short = {h: v for h, v in avail.items() if v is not None and v < m["mem_gib"] + floor}
         if short:
-            raise Refused(f"{model}: needs {m['mem_gib']}+{floor} GiB, short on " + " ".join(f"{h}={v}" for h, v in sorted(short.items())))
+            raise Refused(f"{model}: needs {m['mem_gib']}+{floor} GiB, short on " + " ".join(f"{h}={v}" for h, v in sorted(short.items())), short)
         results = self.run.each({h: c for h, c in self.node_cmds(model, "start", {"stamp": self.stamp}).items()}, timeout=self.cfg["ssh_timeout_s"])
         bad = sorted(f"{h}:rc{rc}" for h, (rc, _) in results.items() if rc != 0)
         if bad:
@@ -734,11 +738,29 @@ class Rotation:
             return self.why(e), not isinstance(e, Refused)
         return None, True
 
-    def drop_companion(self, st, model, why, started=True):
+    def start_primary(self, st, model, kept):
+        try:
+            self.start_model(model)
+            return []
+        except Refused as e:
+            blockers = [m for m in kept if set(self.models[m]["nodes"]) & set(e.short)]
+            if not blockers:
+                raise
+            self.alert(st, "WARN", f"{model} goes first: its start gate is short on {' '.join(sorted(e.short))} where companions {','.join(blockers)} hold memory; stopping them, starting {model}, then re-adding those that still fit")
+            self.log("PRIMARY-FIRST", primary=model, stop=",".join(reversed(blockers)), why=json.dumps(str(e)))
+        for companion in reversed(blockers):
+            self.stop_model(companion)
+        self.start_model(model)
+        return blockers
+
+    def drop_companion(self, st, model, why, started=True, yielded=False):
         dropped = st.setdefault("dropped", {}).setdefault(str(self.instance), [])
         if model not in dropped:
             dropped.append(model)
-        self.alert(st, "ERROR", f"companion {model} failed and is skipped for this hour: {why}")
+        if yielded and not started:
+            self.alert(st, "WARN", f"companion {model} yielded to the primary and does not fit beside it; skipped for this hour: {why}")
+        else:
+            self.alert(st, "ERROR", f"companion {model} failed and is skipped for this hour: {why}")
         if not started:
             return
         try:
@@ -766,18 +788,23 @@ class Rotation:
         self.save_state(st)
         self.log("TRANSITION-BEGIN", frm=",".join(current) or "-", to=",".join(target), reason=json.dumps(reason))
         failed = []
+        yielded = []
         try:
             self.floor_check("before", current)
             for model in outgoing:
                 self.stop_model(model)
-            for model in incoming:
+            kept = [m for m in current if m in target and m not in outgoing and self.is_companion(m)]
+            queue = list(incoming)
+            while queue:
+                model = queue.pop(0)
                 if not self.is_companion(model):
-                    self.start_model(model)
+                    yielded = self.start_primary(st, model, kept)
+                    queue = sorted(dict.fromkeys(queue + yielded), key=lambda m: (self.is_companion(m), target.index(m)))
                     continue
                 problem, started = self.start_companion(model)
                 if problem:
                     failed.append(model)
-                    self.drop_companion(st, model, problem, started)
+                    self.drop_companion(st, model, problem, started, model in yielded)
             self.floor_check("after", target)
         except Preempted:
             raise
@@ -828,17 +855,16 @@ class Rotation:
         self.save_state(st)
         return False
 
-    def choose(self, st, instance, slot, primary, forced, current, dirty, base):
+    def choose(self, st, instance, slot, primary, forced, current, dirty, view):
         key = str(instance)
         dropped = st.setdefault("dropped", {}).setdefault(key, [])
-        room = self.room(base, [primary])
         pick = self.pick_of(st, instance, slot, primary)
         if pick is not None:
             chosen = [c for c in pick["companions"] if c not in dropped]
-            while chosen and self.shortfall(room, chosen):
+            while chosen and self.shortfall(view, [primary, *chosen]):
                 late = chosen.pop()
                 dropped.append(late)
-                self.alert(st, "WARN", f"companion {late} skipped this hour: " + " ".join(self.shortfall(room, chosen + [late])))
+                self.alert(st, "WARN", f"companion {late} skipped this hour: " + " ".join(self.shortfall(view, [primary, *chosen, late])))
             for c in list(chosen):
                 problem = self.precheck(c) if c not in current or c in dirty else None
                 if problem:
@@ -855,9 +881,10 @@ class Rotation:
             else:
                 candidates.append(c)
         runs = self.last_runs(st)
-        chosen, waiting = self.pack(room, candidates, self.ranking(st, instance), self.pool(slot, forced))
+        chosen, waiting = self.pack(view, primary, candidates, self.ranking(st, instance), self.pool(slot, forced))
+        after = self.after(view, [primary, *chosen])
         picks = st.setdefault("picks", {})
-        picks[key] = {"slot": slot, "primary": primary, "companions": chosen, "waiting": waiting}
+        picks[key] = {"slot": slot, "primary": primary, "companions": chosen, "waiting": waiting, "after_gib": after}
         for record in (picks, st["dropped"], st.get("demoted") or {}):
             for old in sorted(record, key=int)[:-24]:
                 del record[old]
@@ -865,27 +892,23 @@ class Rotation:
         st["last_run"] = runs
         st.pop("companions", None)
         st.pop("last_companion", None)
-        self.log("PACK", slot=slot, primary=primary, companions=",".join(chosen) or "-", waiting=json.dumps(waiting))
+        self.log("PACK", slot=slot, primary=primary, companions=",".join(chosen) or "-", waiting=json.dumps(waiting),
+                 after=json.dumps(" ".join(f"{h}={v}" for h, v in sorted(after.items())) + ("" if view["measured"] else " (config)")))
         return chosen
 
     def plan(self, st, instance, current, dirty):
-        resident = list(dict.fromkeys(current + dirty))
-        base = self.measured_base(self.mem(self.cfg["fleet"]), resident)
-        if base is None:
-            base = self.nominal_base(st)
-        else:
-            st["base_gib"] = base
+        view = self.measure(st, current, dirty)
         for _ in range(len(self.cfg["slots"]) + 2):
             slot, primary, forced = self.slot_for(st, instance)
             if primary is None:
                 return slot, [self.fb]
             problem = self.precheck(primary) if primary not in current or primary in dirty else None
             if not problem:
-                short = self.shortfall(self.room(base, [primary]), [], self.floor_of([primary]))
+                short = self.shortfall(view, [primary])
                 if short:
                     problem = "predicted MemAvailable below floor: " + " ".join(short)
             if not problem:
-                return slot, [primary] + self.choose(st, instance, slot, primary, forced, current, dirty, base)
+                return slot, [primary] + self.choose(st, instance, slot, primary, forced, current, dirty, view)
             if primary == self.fb:
                 raise Failure(f"cannot plan slot {slot}: {problem}")
             st.setdefault("demoted", {}).setdefault(str(instance), []).append(slot)
@@ -1127,11 +1150,12 @@ def cmd_plan(rot):
         print(f"PLAN failed: {e}")
         return 1
     outgoing, incoming = rot.moves(current, target, dirty)
-    base = st.get("base_gib") or rot.nominal_base(st)
-    after = {h: v + rot.floor_of(target) for h, v in rot.room(base, target).items()}
+    view = rot.view
     print(f"PLAN {iso(rot.instance * HOUR)} slot={slot} observed={','.join(up) or '-'} mixed={','.join(dirty) or '-'} current={','.join(current) or '-'}")
     print(f"  target={','.join(target)} stop={','.join(outgoing) or '-'} start={','.join(incoming) or '-'}")
-    print("  predicted MemAvailable after (GiB, from config mem_gib): " + " ".join(f"{h}={v}" for h, v in sorted(after.items())))
+    print("  MemAvailable now (GiB): " + " ".join(f"{h}={v}" for h, v in sorted(view["live"].items())))
+    print(f"  predicted MemAvailable after (GiB; now + mem_gib of stopped models, at most node_free_gib {rot.cfg['node_free_gib']}, - mem_gib of started models): "
+          + " ".join(f"{h}={v}" for h, v in sorted(rot.after(view, target).items())))
     return 0
 
 
@@ -1269,9 +1293,14 @@ def main(argv=None):
                     print(f"not a runnable companion: {' '.join(wrong)}", file=sys.stderr)
                     return 2
                 st["override"] = {"instance": instance, "slot": args.slot, "companions": list(args.companions) or None}
-                for key in ("picks", "dropped"):
-                    st.get(key, {}).pop(str(instance), None)
-                rot.log("FORCE", slot=args.slot, companions=",".join(args.companions) or "packed", until=iso((instance + 1) * HOUR))
+                cleared = [key for key in ("failed_instance", "skip") if st.get(key) == instance]
+                for key in cleared:
+                    del st[key]
+                for key in ("picks", "dropped", "demoted"):
+                    if st.get(key, {}).pop(str(instance), None) and key != "picks":
+                        cleared.append(key)
+                rot.log("FORCE", slot=args.slot, companions=",".join(args.companions) or "packed", until=iso((instance + 1) * HOUR),
+                        cleared=",".join(f"{key}@{iso(instance * HOUR)}" for key in cleared) or "-")
             elif args.command == "skip":
                 st["skip"] = instance
                 rot.log("SKIP", instance=iso(instance * HOUR))
