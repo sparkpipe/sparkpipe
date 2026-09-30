@@ -111,6 +111,7 @@ class GlmFullMtp:
         self.kv_a = linear(attn + "kv_a_proj_with_mqa")
         self.kv_a_ln = norm(attn + "kv_a_layernorm.weight")
         self.kv_b = linear(attn + "kv_b_proj").view(HEADS, NOPE + VDIM, KV_LORA)
+        self.kv_b_f32 = self.kv_b.float()
         self.o_proj = linear(attn + "o_proj")
         mlp = LAYER + "mlp."
         self.router = f32(mlp + "gate.weight") if ckpt.dtype(mlp + "gate.weight") == "F32" else bf16(mlp + "gate.weight").float()
@@ -146,7 +147,7 @@ class GlmFullMtp:
         return q_nope, q_pe, latent, k_pe
 
     def keys(self, latent):
-        kv = torch.einsum("pc,hdc->phd", latent.float(), self.kv_b.float()).to(torch.bfloat16)
+        kv = torch.einsum("pc,hdc->phd", latent.float(), self.kv_b_f32).to(torch.bfloat16)
         return kv[..., :NOPE], kv[..., NOPE:]
 
     def attend(self, q_nope, q_pe, k_nope, k_pe, v, mask):
@@ -193,6 +194,11 @@ class GlmFullMtp:
     def logits_argmax(self, hidden):
         return torch.argmax((rmsnorm(hidden, self.head_norm) @ self.head.t()).float(), dim=-1)
 
+    def logits_top(self, hidden):
+        probs = torch.softmax((rmsnorm(hidden, self.head_norm) @ self.head.t()).float(), dim=-1)
+        conf, token = torch.max(probs, dim=-1)
+        return token, conf
+
     def main_head_argmax(self, normed):
         return torch.argmax((normed @ self.head.t()).float(), dim=-1)
 
@@ -202,7 +208,8 @@ class GlmFullMtp:
                 "k_pe": torch.zeros((capacity, ROPE), dtype=torch.bfloat16, device=dev),
                 "v": torch.zeros((capacity, HEADS, VDIM), dtype=torch.bfloat16, device=dev),
                 "out": torch.zeros((capacity, HIDDEN), dtype=torch.bfloat16, device=dev),
-                "pred": torch.zeros((capacity,), dtype=torch.int64, device=dev), "length": 0}
+                "pred": torch.zeros((capacity,), dtype=torch.int64, device=dev),
+                "conf": torch.zeros((capacity,), dtype=torch.float32, device=dev), "length": 0}
 
     @torch.no_grad()
     def extend(self, cache, next_tokens, taps):
@@ -222,23 +229,29 @@ class GlmFullMtp:
         h = x + self.attend(q_nope, q_pe, cache["k_nope"][:total], cache["k_pe"][:total], cache["v"][:total], mask)
         out = self.moe(h)
         cache["out"][start:total] = out
-        cache["pred"][start:total] = self.logits_argmax(out)
+        cache["pred"][start:total], cache["conf"][start:total] = self.logits_top(out)
         cache["length"] = total
 
     @torch.no_grad()
-    def chain(self, cache, anchors, depth):
+    def chain(self, cache, anchors, depth, min_conf=0.0):
         rows = torch.tensor([p - 1 for p in anchors], device=self.device)
+        if depth <= 0:
+            return [[] for _ in anchors]
         if int(rows.max()) >= cache["length"] or int(rows.min()) < 0:
             raise IndexError("an anchor needs its MTP row p-1 in the cache")
         total = cache["length"]
         keys = torch.arange(total, device=self.device)
         k_nope, k_pe, v = cache["k_nope"][:total], cache["k_pe"][:total], cache["v"][:total]
         chain_tokens = [cache["pred"][rows]]
+        alive = cache["conf"][rows] >= min_conf
+        lengths = alive.long()
         hidden = cache["out"][rows]
         chain_pos = rows.clone()
         own_nope, own_pe, own_v = [], [], []
         base_mask = keys[None, :] <= rows[:, None]
         for step in range(1, depth):
+            if min_conf > 0.0 and not bool(alive.any()):
+                break
             chain_pos = chain_pos + 1
             xs = self.join(chain_tokens[-1], hidden)
             qn, qp, lat, kp = self.project(xs, chain_pos)
@@ -254,8 +267,14 @@ class GlmFullMtp:
             att = torch.einsum("rhk,khd->rhd", probs[..., :total], v.float()) + torch.einsum("rhs,rshd->rhd", probs[..., total:], ov.float())
             att = att.to(torch.bfloat16).reshape(att.shape[0], HEADS * VDIM) @ self.o_proj.t()
             hidden = self.moe(xs + att)
-            chain_tokens.append(self.logits_argmax(hidden))
-        return torch.stack(chain_tokens, dim=1).tolist()
+            token, conf = self.logits_top(hidden)
+            chain_tokens.append(token)
+            alive = alive & (conf >= min_conf)
+            lengths = lengths + alive.long()
+        chains = torch.stack(chain_tokens, dim=1).tolist()
+        if min_conf <= 0.0:
+            return chains
+        return [chain[:n] for chain, n in zip(chains, lengths.tolist())]
 
     @torch.no_grad()
     def sequence(self, tokens, taps, depth, anchors):
@@ -344,6 +363,7 @@ class RelaySequence:
 
 class Relay:
     def __init__(self, model, capacity, log, table=None, max_depth=7, control=""):
+        self.min_conf = 0.0
         self.table = table
         self.max_depth = max_depth
         self.control = control
@@ -353,7 +373,7 @@ class Relay:
         self.sequences = {}
         self.changed = None
         self.log = log
-        self.stats = {"commits": 0, "rows": 0, "drafts": 0, "draft_ms": 0.0, "waits": 0}
+        self.stats = {"commits": 0, "rows": 0, "drafts": 0, "draft_ms": 0.0, "extend_ms": 0.0, "tokens": 0, "waits": 0}
 
     def advance(self, state):
         start = state.cache["length"]
@@ -375,7 +395,8 @@ class Relay:
         from spec_recorded_drafts import read_table
         self.table = read_table(setting["table"])["entries"] if setting.get("table") else None
         self.max_depth = int(setting.get("max_depth", 7))
-        self.log(f"RELAY-MODE {'table ' + setting['table'] if self.table is not None else 'mtp'} max_depth={self.max_depth}")
+        self.min_conf = float(setting.get("min_conf", 0.0))
+        self.log(f"RELAY-MODE {'table ' + setting['table'] if self.table is not None else 'mtp'} max_depth={self.max_depth} min_conf={self.min_conf}")
 
     def commit(self, sequence, first, rows):
         self.stats["commits"] += 1
@@ -395,7 +416,6 @@ class Relay:
         block = torch.frombuffer(bytearray(b"".join(h for _, h in rows)), dtype=torch.bfloat16).view(len(rows), HIDDEN)
         state.taps[first:first + len(rows)] = block.to(self.model.device)
         state.tapped = first + len(rows)
-        self.advance(state)
 
     def ready(self, sequence, position):
         if self.model is None or self.table is not None:
@@ -417,8 +437,11 @@ class Relay:
             state.inputs[position] = anchor
             t0 = time.perf_counter()
             self.advance(state)
-            state.drafts[key] = self.model.chain(state.cache, [position], depth)[0] if depth > 0 else []
             torch.cuda.synchronize()
+            self.stats["extend_ms"] += (time.perf_counter() - t0) * 1000.0
+            state.drafts[key] = self.model.chain(state.cache, [position], depth, self.min_conf)[0]
+            torch.cuda.synchronize()
+            self.stats["tokens"] += len(state.drafts[key])
             self.stats["drafts"] += 1
             self.stats["draft_ms"] += (time.perf_counter() - t0) * 1000.0
         return state.drafts[key]
@@ -485,7 +508,7 @@ def serve(args):
             while True:
                 await asyncio.sleep(30)
                 st = relay.stats
-                log(f"RELAY-STATS commits={st['commits']} rows={st['rows']} drafts={st['drafts']} waits={st['waits']} draft_ms_mean={st['draft_ms'] / max(1, st['drafts']):.2f}")
+                log(f"RELAY-STATS commits={st['commits']} rows={st['rows']} drafts={st['drafts']} waits={st['waits']} draft_ms_mean={st['draft_ms'] / max(1, st['drafts']):.2f} extend_ms_mean={st['extend_ms'] / max(1, st['drafts']):.2f} tokens_mean={st['tokens'] / max(1, st['drafts']):.2f}")
 
         asyncio.ensure_future(report())
         async with server:
@@ -501,7 +524,7 @@ def main():
         serving.add_argument("--checkpoint", default="")
         serving.add_argument("--table", default="", help="answer from a recorded draft table instead of the MTP layer")
         serving.add_argument("--max-depth", type=int, default=7, help="longest chain returned; 0 answers no drafts (plain decode through the same frames)")
-        serving.add_argument("--control", default="", help="json {table, max_depth} re-read when a sequence starts; switches arms without dropping the fleet connections")
+        serving.add_argument("--control", default="", help="json {table, max_depth, min_conf} re-read when a sequence starts; switches arms without dropping the fleet connections; min_conf ends a chain at the first MTP token whose probability is below it")
         serving.add_argument("--host", default="0.0.0.0")
         serving.add_argument("--port", type=int, required=True)
         serving.add_argument("--capacity", type=int, default=DENSE_CONTEXT)
