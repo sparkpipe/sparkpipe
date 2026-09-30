@@ -11,7 +11,7 @@
 #include "common/common_glm_cuda_tree/spark_glm_cuda_config.h"
 
 #define DB_LAYERS SPARK_GLM52_MODEL_LAYER_COUNT
-#define DB_MAX_ROWS 8u
+#define DB_MAX_ROWS SPARK_GLM52_VAL_MAX_ROWS
 #define DB_SPLIT_THRESHOLD 64u
 #define DB_WARM 3u
 #define DB_REPLAYS 25u
@@ -194,8 +194,8 @@ static int DbReset(DbRig *rig)
 		bias[expert] = rig->wide_experts != 0u ? 0.0f : expert < SPARK_GLM52_VALIDATION_EXPERT_SLOTS ? 4.0f : -4.0f;
 	if ( cudaMemcpy(fx->correction_bias,bias,sizeof(bias),cudaMemcpyHostToDevice) != cudaSuccess ||
 		cudaMemset(fx->kv_cache,0,(uint64_t)DB_MAX_ROWS * DB_PAGES * SPARK_GLM52_VKV_PAGE_BYTES) != cudaSuccess ||
-		cudaMemset(fx->hidden,0,(uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fx->residual,0,(uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t)) != cudaSuccess )
+		cudaMemset(fx->hidden,0,(uint64_t)SPARK_GLM52_VHIDDEN * DB_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fx->residual,0,(uint64_t)SPARK_GLM52_VHIDDEN * DB_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess )
 		return(1);
 	return(0);
 }
@@ -413,7 +413,7 @@ int main(int argc,char **argv)
 	cudaDeviceProp properties;
 	if ( argc != 6 )
 	{
-		fprintf(stderr,"usage: glm52_decode_bench <rows 1..8> <position 1..2047> <rounds 0|1> <graph 0|1> <experts 0=fixed8|1=wide256>\n");
+		fprintf(stderr,"usage: glm52_decode_bench <rows 1..16> <position 1..2047> <rounds 0|1> <graph 0|1> <experts 0=fixed8|1=wide256>\n");
 		return(2);
 	}
 	rig = (DbRig *)calloc(1u,sizeof(*rig));
