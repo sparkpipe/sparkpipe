@@ -1,0 +1,2 @@
++280
+glm52 prefill: a latent split-attention kernel that runs one warp per row over all rank heads and reproduces the row-invariant split kernel bit for bit (9-16x faster for prefill waves), prefill waves decoupled from the resident sequence count up to the mesh row cap, and the certified head only on rows whose token is used.

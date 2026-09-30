@@ -5,6 +5,7 @@
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
+#include "inference/kernels/attn_rows.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/route.cuh"
@@ -711,8 +712,8 @@ static int32_t GlmLayerAttentionCore(
         buffers->positions,
         rows,
         GLM_LATENT_ROW);
-    if (LmLatentAttentionDecodeSplitLaunch<
-            GlmKv, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM, true>(
+    if (LmLatentAttentionRowsSplitLaunch<
+            GlmKv, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM>(
             buffers->query_latent_bf16,
             buffers->query_rope_bf16,
             buffers->cache,

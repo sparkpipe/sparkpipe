@@ -204,6 +204,7 @@ static void RowsWave(RowsRig *rig,uint32_t first_position,uint32_t rows,const ui
 	wave->row_count = rows;
 	wave->maximum_context = first_position + rows;
 	wave->resident_sequence_capacity = ROWS_MAX;
+	wave->execution_row_capacity = ROWS_MAX;
 	wave->max_sequence_positions = rig->positions_total;
 	wave->pages_per_sequence = pages;
 	wave->host_token_ids = rig->host_tokens;

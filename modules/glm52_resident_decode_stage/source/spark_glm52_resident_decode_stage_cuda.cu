@@ -348,6 +348,8 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 			status = LM_LAUNCH_OK;
 			for (row=0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
 			{
+				if ( wave->host_head_rows != 0 && wave->host_head_rows[row] == 0u )
+					continue;
 				row_buffers = buffers;
 				row_buffers.hidden_bf16 = buffers.hidden_bf16 + (uint64_t)row * GLM_HIDDEN;
 				row_buffers.residual_bf16 = buffers.residual_bf16 + (uint64_t)row * GLM_HIDDEN;

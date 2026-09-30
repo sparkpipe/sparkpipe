@@ -886,6 +886,7 @@ static void SparkGlm52ValBuildWave(SparkGlm52ValFixture *fixture,uint32_t first_
 	wave->row_count = 1u;
 	wave->maximum_context = position + 1u;
 	wave->resident_sequence_capacity = SPARK_GLM52_VALIDATION_LANES;
+	wave->execution_row_capacity = SPARK_GLM52_VALIDATION_LANES;
 	wave->max_sequence_positions = SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
 	wave->pages_per_sequence = SPARK_GLM52_VALIDATION_PAGES;
 	wave->owns_embedding = 1u;
