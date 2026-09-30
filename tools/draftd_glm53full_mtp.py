@@ -123,6 +123,10 @@ class GlmFullMtp:
             self.expert_codes.append(torch.from_numpy(np.stack(codes)).to(dev))
             self.expert_scales.append(torch.from_numpy(np.stack(scales)).to(dev).float())
         self.scale = (NOPE + ROPE) ** -0.5
+        self.kernels = None
+        if os.environ.get("DRAFTD_GLM53FULL_TORCH_EXPERTS") is None:
+            from draftd_kernels import kernels
+            self.kernels = kernels()
 
     def expert(self, part, index):
         return fp8_dequant(self.expert_codes[part][index], self.expert_scales[part][index])
@@ -160,6 +164,21 @@ class GlmFullMtp:
         chosen = torch.topk(scores + self.router_bias, TOP_K, dim=-1).indices
         weights = torch.gather(scores, 1, chosen)
         weights = weights / weights.sum(-1, keepdim=True) * ROUTED_SCALE
+        if self.kernels is not None:
+            n = x.shape[0]
+            ids = chosen.reshape(-1).contiguous()
+            xin = m.float().repeat_interleave(TOP_K, dim=0).contiguous()
+            g = torch.empty(n * TOP_K * 2048, dtype=torch.float32, device=x.device)
+            u = torch.empty_like(g)
+            self.kernels.gemv_fp8_block(self.expert_codes[0], self.expert_scales[0], ids, xin, g)
+            self.kernels.gemv_fp8_block(self.expert_codes[1], self.expert_scales[1], ids, xin, u)
+            act = (torch.nn.functional.silu(g) * u).view(n * TOP_K, 2048).contiguous()
+            y = torch.empty(n * TOP_K * HIDDEN, dtype=torch.float32, device=x.device)
+            self.kernels.gemv_fp8_block(self.expert_codes[2], self.expert_scales[2], ids, act, y)
+            out = (y.view(n, TOP_K, HIDDEN) * weights[..., None]).sum(1)
+            g_, u_, d_ = self.shared
+            shared = (torch.nn.functional.silu((m @ g_.t()).float()) * (m @ u_.t()).float()).to(torch.bfloat16) @ d_.t()
+            return (x.float() + out + shared.float()).to(torch.bfloat16)
         out = torch.zeros(x.shape[0], HIDDEN, dtype=torch.float32, device=x.device)
         for e in torch.unique(chosen).tolist():
             rows, slot = torch.nonzero(chosen == e, as_tuple=True)
@@ -324,7 +343,11 @@ class RelaySequence:
 
 
 class Relay:
-    def __init__(self, model, capacity, log):
+    def __init__(self, model, capacity, log, table=None, max_depth=7, control=""):
+        self.table = table
+        self.max_depth = max_depth
+        self.control = control
+        self.control_mtime = None
         self.model = model
         self.capacity = capacity
         self.sequences = {}
@@ -341,7 +364,26 @@ class Relay:
             next_tokens = torch.tensor([state.inputs[r + 1] for r in range(start, end)], device=self.model.device)
             self.model.extend(state.cache, next_tokens, state.taps[start:end])
 
+    def reload(self):
+        if not self.control or not os.path.exists(self.control):
+            return
+        mtime = os.path.getmtime(self.control)
+        if mtime == self.control_mtime:
+            return
+        self.control_mtime = mtime
+        setting = json.load(open(self.control))
+        from spec_recorded_drafts import read_table
+        self.table = read_table(setting["table"])["entries"] if setting.get("table") else None
+        self.max_depth = int(setting.get("max_depth", 7))
+        self.log(f"RELAY-MODE {'table ' + setting['table'] if self.table is not None else 'mtp'} max_depth={self.max_depth}")
+
     def commit(self, sequence, first, rows):
+        self.stats["commits"] += 1
+        self.stats["rows"] += len(rows)
+        if first == 0:
+            self.reload()
+        if self.model is None:
+            return
         state = self.sequences.get(sequence)
         if first == 0 or state is None:
             state = RelaySequence(self.model, self.capacity)
@@ -353,15 +395,19 @@ class Relay:
         block = torch.frombuffer(bytearray(b"".join(h for _, h in rows)), dtype=torch.bfloat16).view(len(rows), HIDDEN)
         state.taps[first:first + len(rows)] = block.to(self.model.device)
         state.tapped = first + len(rows)
-        self.stats["commits"] += 1
-        self.stats["rows"] += len(rows)
         self.advance(state)
 
     def ready(self, sequence, position):
+        if self.model is None or self.table is not None:
+            return True
         state = self.sequences.get(sequence)
         return state is not None and state.tapped >= position
 
     def draft(self, sequence, position, anchor, depth):
+        depth = min(depth, self.max_depth)
+        if self.table is not None:
+            self.stats["drafts"] += 1
+            return self.table.get((sequence, position), [])[:depth]
         state = self.sequences[sequence]
         key = (position, depth)
         if key not in state.drafts:
@@ -414,19 +460,26 @@ async def relay_connection(relay, reader, writer):
 
 def serve(args):
     import asyncio
-    model = GlmFullMtp(args.checkpoint)
 
     def log(text):
         print(time.strftime("%H:%M:%SZ", time.gmtime()), text, flush=True)
 
-    relay = Relay(model, args.capacity, log)
+    table = None
+    if args.table:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from spec_recorded_drafts import read_table
+        table = read_table(args.table)["entries"]
+        log(f"RELAY-TABLE {args.table} entries={len(table)}")
+    model = GlmFullMtp(args.checkpoint) if args.checkpoint else None
+    relay = Relay(model, args.capacity, log, table, args.max_depth, args.control)
+    relay.reload()
 
     async def run():
         relay.changed = asyncio.Condition()
         server = await asyncio.start_server(lambda r, w: relay_connection(relay, r, w), args.host, args.port)
         for sock in server.sockets:
             sock.setsockopt(__import__("socket").IPPROTO_TCP, __import__("socket").TCP_NODELAY, 1)
-        log(f"RELAY-READY {args.host}:{args.port} capacity={args.capacity}")
+        log(f"RELAY-READY {args.host}:{args.port} capacity={args.capacity} mode={'table' if table is not None else 'mtp'} max_depth={args.max_depth}")
 
         async def report():
             while True:
@@ -445,7 +498,10 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         serving = argparse.ArgumentParser(description="GLM-5.3 Full MTP draft relay for the glm52 verify (every rank asks, rank 0 commits taps)")
         serving.add_argument("serve")
-        serving.add_argument("--checkpoint", required=True)
+        serving.add_argument("--checkpoint", default="")
+        serving.add_argument("--table", default="", help="answer from a recorded draft table instead of the MTP layer")
+        serving.add_argument("--max-depth", type=int, default=7, help="longest chain returned; 0 answers no drafts (plain decode through the same frames)")
+        serving.add_argument("--control", default="", help="json {table, max_depth} re-read when a sequence starts; switches arms without dropping the fleet connections")
         serving.add_argument("--host", default="0.0.0.0")
         serving.add_argument("--port", type=int, required=True)
         serving.add_argument("--capacity", type=int, default=DENSE_CONTEXT)

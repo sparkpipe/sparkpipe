@@ -2129,6 +2129,8 @@ static void SparkModelBatchBuildDecodeRows(
 			chain_tokens = remaining;
 		block_remaining = engine->cache_block_token_count -
 			(position % engine->cache_block_token_count);
+		if ( block_remaining > 1u && SparkModelBatchDefersDecodePublication(engine) == 0u )
+			block_remaining--;
 		if ( block_remaining < chain_tokens )
 			chain_tokens = block_remaining;
 		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,position,position + 1u,tokens[position],SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN,SPARK_MODEL_SERVING_WORK_KIND_DECODE);
