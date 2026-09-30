@@ -6,9 +6,9 @@ The owner's ruling of 2026-09-29: GLM Full and Kimi K3 each get dedicated fleet 
 
 ## Schedule
 
-The cycle is three UTC hours, anchored at `cycle.anchor_hour` (0). Hour `h` runs slot `cycle.slots[(h - anchor) % 3]`:
+The cycle is `len(cycle.slots)` UTC hours, anchored at `cycle.anchor_hour`. Hour `h` (hours since the Unix epoch) runs slot `cycle.slots[(h - anchor) % len(cycle.slots)]`. Since 2026-09-30 the cycle is four hours, `[full, full, k3, flash_plus]` with anchor 2, so GLM Full owns two of every four hours (owner, 2026-09-30: concentrate on GLM Full); 2026-09-30 04:00Z is `k3`, 05:00Z `flash_plus`, 06:00Z and 07:00Z `full`. The table below lists each slot once:
 
-| hour mod 3 | slot | primary | companion pool (config `slots.<slot>.companions`) | if its primary cannot run |
+| slot index | slot | primary | companion pool (config `slots.<slot>.companions`) | if its primary cannot run |
 |---|---|---|---|---|
 | 0 | `full` | GLM-5.3 Full (lane 6, pinned fp8, ~68 GiB/node, API rtx5090:8446) | the TP4 drivers (Qwen, Gemma, MiMo). No TP16 companion, so the GLM Full hour never shares every GPU. With the config figures none starts fresh beside it (room 106 - 20 - 68 = 18 GiB; Qwen needs 26); a companion still running from the previous hour stays when the measured capacity has room, and yields to GLM Full at its start gate otherwise (see "Primary first") | `flash_plus` |
 | 1 | `k3` | Kimi K3 (TP16 lane 8, full residency ~96 GiB/node, own floor 8 GiB, abort 6 GiB, API rtx5090:8448) | none: K3 owns the fleet | `flash_plus` (when K3's precheck or memory prediction fails; lead experiment windows take this hour through the lead lock) |

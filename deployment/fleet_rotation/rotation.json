@@ -35,8 +35,9 @@
   "sparkf"
  ],
  "cycle": {
-  "anchor_hour": 0,
+  "anchor_hour": 2,
   "slots": [
+   "full",
    "full",
    "k3",
    "flash_plus"
