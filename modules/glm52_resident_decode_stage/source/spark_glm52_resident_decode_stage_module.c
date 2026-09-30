@@ -1068,7 +1068,7 @@ static void SparkGlm52ChainSubmission(SparkGlm52TpChain *chain,void *device,uint
 	submission->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	submission->descriptor_bytes = sizeof(*submission);
 	submission->slot_index = chain->slot_index;
-	submission->active_sequence_count = chain->wave_rows;
+	submission->active_sequence_count = chain->wave.row_count;
 	submission->logical_sequence_count = chain->batch->active_sequence_count;
 	submission->flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
 	submission->ordinal = atomic_fetch_add_explicit(&chain->state->tp_next_ordinal,1u,memory_order_relaxed);
