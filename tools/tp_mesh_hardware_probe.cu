@@ -395,6 +395,7 @@ struct Probe
     {
         uint32_t saved=routes;
         bands=2u;routes=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER|SPARK_TP_MESH_ROUTES_PAIR;
+        if (std::getenv("PROBE_TIMEOUT_NS")) timeout=std::strtoull(std::getenv("PROBE_TIMEOUT_NS"),nullptr,10);
         for (uint32_t n:{4u,8u,16u})
             for (uint64_t count:{UINT64_C(49152),UINT64_C(98304)+12u,UINT64_C(1048576)+4099u,UINT64_C(6291456)})
             {
