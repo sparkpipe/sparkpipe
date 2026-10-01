@@ -280,6 +280,7 @@ static int ladder_mesh_run(const char *socket_path,uint32_t rank,
     config.operation_timeout_milli = 60000u;
     config.mesh_lane_client = owner;
     config.mesh_band_index = 0u;
+    config.mesh_band_count = getenv("SPARK_LADDER_MESH_BANDS") != 0 && strcmp(getenv("SPARK_LADDER_MESH_BANDS"),"2") == 0 ? 2u : 1u;
     config.collective_identifier = 2u * (uint64_t)lane;
     SparkMeshLadderModuleRegisterCombines(&config);
     ladder_status(SparkTpDeviceCollectiveCreate(&config,&collective),"collective-create");
