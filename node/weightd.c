@@ -120,6 +120,21 @@ static int SparkWeightdLatchAcquire(uint16_t port)
     return(1);
 }
 
+static int SparkWeightdParseByte(const char *program, const char *flag,
+    const char *text, uint32_t *value)
+{
+    char *parse_end = 0;
+    unsigned long parsed = strtoul(text, &parse_end, 10);
+    if (parse_end == text || *parse_end != '\0' || parsed > 255ul)
+    {
+        fprintf(stderr, "weightd: bad %s '%s' (need 0..255)\n", flag, text);
+        SparkWeightdUsage(program);
+        return 0;
+    }
+    *value = (uint32_t)parsed;
+    return 1;
+}
+
 int main(int argument_count, char **arguments)
 {
     const char *socket_path = "/tmp/spark_weightd.sock";
@@ -224,19 +239,8 @@ int main(int argument_count, char **arguments)
         else if (strcmp(arguments[index], "--mesh-sgid-index") == 0 &&
             index + 1 < argument_count)
         {
-            char *parse_end = 0;
-            unsigned long parsed = strtoul(arguments[index + 1],
-                &parse_end, 10);
-            if (parse_end == arguments[index + 1] || *parse_end != '\0' ||
-                parsed > 255ul)
-            {
-                fprintf(stderr,
-                    "weightd: bad --mesh-sgid-index '%s' (need 0..255)\n",
-                    arguments[index + 1]);
-                SparkWeightdUsage(arguments[0]);
+            if (SparkWeightdParseByte(arguments[0], arguments[index], arguments[index + 1], &weightd_mesh_launch.sgid_index) == 0)
                 return 2;
-            }
-            weightd_mesh_launch.sgid_index = (uint32_t)parsed;
             mesh_fields |= 4u;
             index++;
         }
@@ -249,38 +253,16 @@ int main(int argument_count, char **arguments)
         else if (strcmp(arguments[index], "--mesh-pair-sgid-index") == 0 &&
             index + 1 < argument_count)
         {
-            char *parse_end = 0;
-            unsigned long parsed = strtoul(arguments[index + 1],
-                &parse_end, 10);
-            if (parse_end == arguments[index + 1] || *parse_end != '\0' ||
-                parsed > 255ul)
-            {
-                fprintf(stderr,
-                    "weightd: bad --mesh-pair-sgid-index '%s' (need 0..255)\n",
-                    arguments[index + 1]);
-                SparkWeightdUsage(arguments[0]);
+            if (SparkWeightdParseByte(arguments[0], arguments[index], arguments[index + 1], &weightd_mesh_launch.pair_sgid_index) == 0)
                 return 2;
-            }
-            weightd_mesh_launch.pair_sgid_index = (uint32_t)parsed;
             weightd_mesh_launch.pair_fields |= 2u;
             index++;
         }
         else if (strcmp(arguments[index], "--mesh-traffic-class") == 0 &&
             index + 1 < argument_count)
         {
-            char *parse_end = 0;
-            unsigned long parsed = strtoul(arguments[index + 1],
-                &parse_end, 10);
-            if (parse_end == arguments[index + 1] || *parse_end != '\0' ||
-                parsed > 255ul)
-            {
-                fprintf(stderr,
-                    "weightd: bad --mesh-traffic-class '%s' (need 0..255)\n",
-                    arguments[index + 1]);
-                SparkWeightdUsage(arguments[0]);
+            if (SparkWeightdParseByte(arguments[0], arguments[index], arguments[index + 1], &weightd_mesh_launch.traffic_class) == 0)
                 return 2;
-            }
-            weightd_mesh_launch.traffic_class = (uint32_t)parsed;
             weightd_mesh_launch.traffic_class_set = 1u;
             index++;
         }

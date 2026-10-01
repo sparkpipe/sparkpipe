@@ -1,2 +1,2 @@
-+53
++35
 Lossless fabric: weightd --mesh-traffic-class (parse, validate, apply at RTR); the fleet agent passes DSCP 26 (106) and refuses to start weightd without the NIC QoS unit; tools/fabric NIC QoS boot script (DSCP trust, PFC priority 3, lossless buffer); rdma_alltoall_probe --traffic-class.
