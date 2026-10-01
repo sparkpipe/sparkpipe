@@ -1,2 +1,2 @@
-+181
++192
 Packed prefill waves: whole sequences share a prefill wave (up to 8 per wave), so each wave streams the expert pool once instead of once per sequence. Shared pieces: the packed lane-span wave count, a per-wave block table for the tiled prefill attention plus its builder kernel (also emits segment ends); glm52: slot buffers, the per-segment certified head (gather, head, scatter) and the token copy per segment.

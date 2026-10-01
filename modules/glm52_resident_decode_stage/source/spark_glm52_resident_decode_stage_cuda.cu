@@ -118,6 +118,8 @@ extern "C" int32_t SparkGlm52LaunchCudaStageWaveInputs(const SparkGlm52CudaWave 
 	return(SparkGlm52CudaStatus(error));
 }
 
+static void SparkGlm52BindLayer(const SparkGlm52CudaWave *wave,uint32_t local_layer,GlmLayerBuffers *buffers);
+
 static __global__ void SparkGlm52HeadGatherKernel(const uint32_t *head_rows,const uint16_t *hidden_bf16,const uint16_t *residual_bf16,uint16_t *head_hidden_bf16,uint16_t *head_residual_bf16)
 {
 	uint64_t source = (uint64_t)head_rows[blockIdx.x] * GLM_HIDDEN,target = (uint64_t)blockIdx.x * GLM_HIDDEN;
@@ -153,8 +155,12 @@ static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 		error = cudaPeekAtLastError();
 	}
 	if ( error == cudaSuccess && wave->prefill_block_table != 0 )
-		error = LmPrefillBlockTableLaunch<SPARK_GLM52_PREFILL_BLOCK_ROWS>(slot->resident_slots,wave->row_count,wave->prefill_block_table,SPARK_GLM52_PREFILL_TABLE_BLOCKS(wave->row_count),
+	{
+		GlmLayerBuffers buffers;
+		SparkGlm52BindLayer(wave,0u,&buffers);
+		error = LmPrefillBlockTableLaunch<SPARK_GLM52_PREFILL_BLOCK_ROWS>(buffers.cache,slot->resident_slots,wave->row_count,wave->prefill_block_table,SPARK_GLM52_PREFILL_TABLE_BLOCKS(wave->row_count),
 			wave->row_head_certified != 0u ? slot->head_rows : 0,SPARK_GLM52_PREFILL_WAVE_SPANS,stream);
+	}
 	return(SparkGlm52CudaStatus(error));
 }
 

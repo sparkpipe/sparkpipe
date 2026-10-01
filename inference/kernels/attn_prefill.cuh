@@ -271,6 +271,7 @@ void LmLatentAttentionPrefillKernel(
 
 template<uint32_t ROWS_PER_BLOCK>
 __global__ void LmPrefillBlockTableKernel(
+	LmKvView cache,
 	const uint32_t *__restrict__ sequence_of_row,
 	uint32_t rows,
 	uint32_t *__restrict__ block_table,
@@ -292,12 +293,15 @@ __global__ void LmPrefillBlockTableKernel(
 		if (segment_ends != 0 && (row == rows || sequence_of_row[row] != sequence))
 		{
 			if (segments == segment_capacity)
-				__trap();
+			{
+				LmKvReportRequiredAccessFailure(cache, LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row - 1u, sequence, 0xffffffffu, 0xffffffffu);
+				break;
+			}
 			segment_ends[segments++] = row - 1u;
 		}
 	}
 	if (row < rows)
-		__trap();
+		LmKvReportRequiredAccessFailure(cache, LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence_of_row[row], 0xffffffffu, 0xffffffffu);
 	for (; count < table_blocks; count++)
 		block_table[count] = LM_PREFILL_ATTN_EMPTY_BLOCK;
 	for (; segment_ends != 0 && segments < segment_capacity; segments++)
@@ -306,6 +310,7 @@ __global__ void LmPrefillBlockTableKernel(
 
 template<uint32_t HEADS>
 static inline cudaError_t LmPrefillBlockTableLaunch(
+	LmKvView cache,
 	const uint32_t *sequence_of_row,
 	uint32_t rows,
 	uint32_t *block_table,
@@ -319,7 +324,7 @@ static inline cudaError_t LmPrefillBlockTableLaunch(
 		return cudaErrorInvalidValue;
 	if (segment_ends != 0 && segment_capacity == 0u)
 		return cudaErrorInvalidValue;
-	LmPrefillBlockTableKernel<ROWS_PER_BLOCK><<<1, 32, 0, stream>>>(sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
+	LmPrefillBlockTableKernel<ROWS_PER_BLOCK><<<1, 32, 0, stream>>>(cache, sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
 	return cudaPeekAtLastError();
 }
 
