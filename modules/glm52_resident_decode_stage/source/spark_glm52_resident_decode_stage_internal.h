@@ -49,6 +49,13 @@ typedef struct SparkGlm52ExecutionSlot
 	uint32_t *host_kv_access_error;
 	uint32_t *token_ids;
 	uint32_t *resident_slots;
+	uint32_t *prefill_block_table;
+	uint32_t *head_rows;
+	uint16_t *head_hidden_bf16;
+	uint16_t *head_residual_bf16;
+	uint16_t *head_normed_bf16;
+	uint32_t *head_token;
+	float *head_score;
 	uint32_t *positions;
 	uint32_t *context_lengths;
 	uint32_t *dense_row_offset;
@@ -151,8 +158,14 @@ typedef struct SparkGlm52CudaWave
 	uint32_t projection_split;
 	uint32_t row_head_certified;
 	uint32_t single_sequence_rows;
+	uint32_t *prefill_block_table;
 	uint32_t inputs_staged;
 } SparkGlm52CudaWave;
+
+#define SPARK_GLM52_PREFILL_WAVE_SPANS 8u
+#define SPARK_GLM52_PREFILL_BLOCK_ROWS 4u
+#define SPARK_GLM52_PREFILL_TABLE_BLOCKS(rows) \
+	(((rows) + SPARK_GLM52_PREFILL_BLOCK_ROWS - 1u) / SPARK_GLM52_PREFILL_BLOCK_ROWS + SPARK_GLM52_PREFILL_WAVE_SPANS)
 
 #ifdef __cplusplus
 extern "C" {

@@ -164,6 +164,8 @@ struct GlmLayerBuffers
     uint64_t attention_split_partial_blocks;
     uint32_t decode_split_context_threshold;
     uint32_t single_sequence_rows;
+    const uint32_t *prefill_block_table;
+    uint32_t prefill_table_blocks;
     uint16_t *projection_gather_bf16;
     uint16_t *projection_local_bf16;
 };
@@ -744,7 +746,7 @@ static int32_t GlmLayerAttentionCore(
         buffers->positions,
         rows,
         GLM_LATENT_ROW);
-    if (buffers->single_sequence_rows != 0u && rows > LM_SKINNY_ROWS && selected_positions == 0)
+    if ((buffers->single_sequence_rows != 0u || buffers->prefill_block_table != 0) && rows > LM_SKINNY_ROWS && selected_positions == 0)
     {
         if (LmLatentAttentionPrefillLaunch<GlmKv, GLM_LATENT, GLM_ROPE_DIM>(
                 buffers->query_latent_bf16,
@@ -756,6 +758,8 @@ static int32_t GlmLayerAttentionCore(
                 buffers->qk_scale,
                 buffers->attention_latent_bf16,
                 rows,
+                buffers->prefill_block_table,
+                buffers->prefill_table_blocks,
                 stream) != cudaSuccess)
         {
             return LM_LAUNCH_ERR_LAUNCH;

@@ -649,6 +649,13 @@ static SparkStatus SparkGlm52AllocateSlotMetadata(
 	SparkStatus status;
 	status = SparkGlmStageAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->token_ids);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->resident_slots);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_PREFILL_TABLE_BLOCKS(state->execution_row_capacity),1u,sizeof(uint32_t),(void **)&slot->prefill_block_table);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_PREFILL_WAVE_SPANS,1u,sizeof(uint32_t),(void **)&slot->head_rows);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,SPARK_GLM52_PREFILL_WAVE_SPANS,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->head_hidden_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,SPARK_GLM52_PREFILL_WAVE_SPANS,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->head_residual_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,SPARK_GLM52_PREFILL_WAVE_SPANS,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->head_normed_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_PREFILL_WAVE_SPANS,1u,sizeof(uint32_t),(void **)&slot->head_token);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_PREFILL_WAVE_SPANS,1u,sizeof(float),(void **)&slot->head_score);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->positions);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,state->resident_sequence_capacity,1u,sizeof(uint32_t),(void **)&slot->context_lengths);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,2u,1u,sizeof(uint32_t),(void **)&slot->dense_row_offset);
@@ -961,6 +968,11 @@ static SparkStatus SparkGlmStageEnqueueAsyncCompletion(
 	SparkGlm52ExecutionSlot *slot,
 	uint32_t slot_index);
 
+static uint32_t SparkGlm52PackedPrefill(const SparkGlm52ModuleState *state,const SparkGlm52ExecutionSlot *slot)
+{
+	return(SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree == SPARK_GLM52_PREFILL_BLOCK_ROWS && slot->prefill_block_table != 0 ? 1u : 0u);
+}
+
 static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 {
 	SparkGlm52ModuleState *state;
@@ -1011,6 +1023,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->projection_split = state->projection_split;
 	wave->row_head_certified = chain->prefill != 0u && state->prefill_wave_rows != 0u ? 1u : 0u;
 	wave->single_sequence_rows = chain->row_ordered;
+	wave->prefill_block_table = chain->row_ordered != 0u && SparkGlm52PackedPrefill(state,slot) != 0u ? slot->prefill_block_table : 0;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
 	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
 	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
@@ -1065,10 +1078,11 @@ static uint32_t SparkGlm52WaveRows(const SparkGlm52TpChain *chain,uint32_t first
 	regime.max_positions = state->max_sequence_positions;
 	if ( chain->row_ordered != 0u )
 	{
-		uint32_t rows = SparkRowLayoutLaneSpanWaveRowCount(first_row,chain->batch->row_count,chain->slot->host_resident_slots,SparkGlm52RowSelectionRegime,&regime,state->prefill_wave_rows);
+		uint32_t spans = SparkGlm52PackedPrefill(state,chain->slot) != 0u ? SPARK_GLM52_PREFILL_WAVE_SPANS : 1u;
+		uint32_t rows = SparkRowLayoutPackedSpanWaveRowCount(first_row,chain->batch->row_count,chain->slot->host_resident_slots,SparkGlm52RowSelectionRegime,&regime,state->prefill_wave_rows,spans);
 		if ( rows > SparkGlm52ExactWaveRows() )
 			return(rows);
-		return(SparkRowLayoutLaneSpanWaveRowCount(first_row,chain->batch->row_count,chain->slot->host_resident_slots,SparkGlm52RowRegime,&regime,state->prefill_wave_rows));
+		return(SparkRowLayoutPackedSpanWaveRowCount(first_row,chain->batch->row_count,chain->slot->host_resident_slots,SparkGlm52RowRegime,&regime,state->prefill_wave_rows,spans));
 	}
 	return(SparkRowLayoutRoundSpanWaveRowCount(first_row,chain->batch->row_count,chain->batch->row_resident_slots,SparkStageModuleClaimedLaneOrdinal,&lanes,SparkGlm52RowRegime,&regime,state->prefill_wave_rows));
 }
@@ -1096,13 +1110,30 @@ static SparkStatus SparkGlm52OrderPrefillRows(SparkGlm52TpChain *chain)
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkGlm52WaveSegmentEnd(const SparkGlm52TpChain *chain,uint32_t row)
+{
+	return(row + 1u == chain->wave_rows || chain->slot->host_resident_slots[chain->first_row + row] != chain->slot->host_resident_slots[chain->first_row + row + 1u] ? 1u : 0u);
+}
+
 static cudaError_t SparkGlm52CopyWaveTokens(const SparkGlm52TpChain *chain,cudaStream_t stream)
 {
-	uint32_t last;
+	uint32_t last,row,index;
+	cudaError_t error;
 	if ( chain->state->owns_final_head == 0u )
 		return(cudaSuccess);
 	if ( chain->wave.row_head_certified == 0u )
 		return(cudaMemcpyAsync(chain->slot->host_output_token_ids + chain->first_row,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream));
+	for (row=0u; chain->wave.prefill_block_table != 0 && row<chain->wave_rows; row++)
+	{
+		if ( SparkGlm52WaveSegmentEnd(chain,row) == 0u )
+			continue;
+		index = chain->first_row + row;
+		error = cudaMemcpyAsync(chain->slot->host_output_token_ids + (chain->row_ordered != 0u ? chain->row_order[index] : index),chain->slot->output_token + (row + 1u == chain->wave_rows ? chain->wave.row_count - 1u : row),sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+		if ( error != cudaSuccess )
+			return(error);
+	}
+	if ( chain->wave.prefill_block_table != 0 )
+		return(cudaSuccess);
 	last = chain->first_row + chain->wave_rows - 1u;
 	return(cudaMemcpyAsync(chain->slot->host_output_token_ids + (chain->row_ordered != 0u ? chain->row_order[last] : last),chain->slot->output_token + chain->wave.row_count - 1u,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream));
 }
@@ -1710,7 +1741,7 @@ static SparkStatus SparkGlm52ScorePlan(SparkGlm52Score *score,const SparkGlm52Ex
 static uint32_t SparkGlm52ScoreServedToken(const SparkGlm52TpChain *chain,uint32_t row)
 {
 	uint32_t index = chain->first_row + row;
-	if ( chain->wave.row_head_certified != 0u && row + 1u != chain->wave_rows )
+	if ( chain->wave.row_head_certified != 0u && (chain->wave.prefill_block_table != 0 ? SparkGlm52WaveSegmentEnd(chain,row) == 0u : row + 1u != chain->wave_rows) )
 		return(SPARK_SCORE_DUMP_NO_TOKEN);
 	return(chain->slot->host_output_token_ids[chain->row_ordered != 0u ? chain->row_order[index] : index]);
 }

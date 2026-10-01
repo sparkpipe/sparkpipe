@@ -12,6 +12,9 @@
 #define LM_PREFILL_ATTN_SCORE_STRIDE (LM_PREFILL_ATTN_TILE + 1u)
 #define LM_PREFILL_ATTN_WEIGHT_STRIDE (LM_PREFILL_ATTN_TILE + 8u)
 #define LM_PREFILL_ATTN_SHARED_LIMIT 101376u
+#define LM_PREFILL_ATTN_COUNT_SHIFT 24u
+#define LM_PREFILL_ATTN_ROW_MASK ((1u << LM_PREFILL_ATTN_COUNT_SHIFT) - 1u)
+#define LM_PREFILL_ATTN_EMPTY_BLOCK 0xffffffffu
 
 template<uint32_t DIM>
 static __host__ __device__ constexpr uint32_t LmPrefillAttnSharedBytes(void)
@@ -62,7 +65,8 @@ void LmLatentAttentionPrefillKernel(
 	const uint32_t *__restrict__ row_position,
 	float qk_scale,
 	uint16_t *__restrict__ output_bf16,
-	uint32_t rows)
+	uint32_t rows,
+	const uint32_t *__restrict__ block_table)
 {
 	constexpr uint32_t DIM = LATENT + ROPE;
 	constexpr uint32_t ROW_BYTES = DIM * 2u;
@@ -88,15 +92,19 @@ void LmLatentAttentionPrefillKernel(
 	float *rescale = running_sum + LM_PREFILL_ATTN_QUERIES;
 	const uint8_t **slots = (const uint8_t **)(rescale + LM_PREFILL_ATTN_QUERIES);
 	const uint32_t warp = threadIdx.x >> 5u,lane = threadIdx.x & 31u;
-	const uint32_t first_row = (gridDim.x - 1u - blockIdx.x) * ROWS_PER_BLOCK;
+	const uint32_t entry = block_table != 0 ? block_table[gridDim.x - 1u - blockIdx.x] : 0u;
+	const uint32_t first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : (gridDim.x - 1u - blockIdx.x) * ROWS_PER_BLOCK;
+	const uint32_t row_end = block_table != 0 ? min(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : min(rows, first_row + ROWS_PER_BLOCK);
 	const uint32_t query_base = (uint32_t)__cvta_generic_to_shared(query);
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys);
 	float output[COLUMN_FRAGS][4];
 	uint32_t sequence,last_position,tiles,tile,row,index,chunk,column,step,frag,q;
 
+	if (block_table != 0 && entry == LM_PREFILL_ATTN_EMPTY_BLOCK)
+		return;
 	sequence = sequence_of_row[first_row];
 	last_position = 0u;
-	for (row = first_row; row < first_row + ROWS_PER_BLOCK && row < rows; row++)
+	for (row = first_row; row < row_end; row++)
 	{
 		if (sequence_of_row[row] != sequence)
 		{
@@ -119,10 +127,10 @@ void LmLatentAttentionPrefillKernel(
 		q = index / CHUNKS;
 		chunk = index % CHUNKS;
 		row = first_row + q / HEADS;
-		const uint16_t *source = row >= rows ? query_latent_bf16
+		const uint16_t *source = row >= row_end ? query_latent_bf16
 			: chunk * 8u < LATENT ? query_latent_bf16 + ((uint64_t)row * HEADS + q % HEADS) * LATENT + chunk * 8u
 			: query_rope_bf16 + ((uint64_t)row * HEADS + q % HEADS) * ROPE + (chunk * 8u - LATENT);
-		LmPrefillCopy(query_base + q * ROW_BYTES + LmPrefillSwizzle(q,chunk) * 16u, source, row >= rows ? 0u : 16u);
+		LmPrefillCopy(query_base + q * ROW_BYTES + LmPrefillSwizzle(q,chunk) * 16u, source, row >= row_end ? 0u : 16u);
 	}
 	if (threadIdx.x < LM_PREFILL_ATTN_QUERIES)
 	{
@@ -187,7 +195,7 @@ void LmLatentAttentionPrefillKernel(
 		{
 			const uint32_t position = tile * LM_PREFILL_ATTN_TILE + lane;
 			const uint32_t query_row = first_row + q / HEADS;
-			const uint32_t limit = query_row < rows ? row_position[query_row] : 0u;
+			const uint32_t limit = query_row < row_end ? row_position[query_row] : 0u;
 			float value = (score_parts[q * LM_PREFILL_ATTN_SCORE_STRIDE + lane] + score_parts[(LM_PREFILL_ATTN_QUERIES + q) * LM_PREFILL_ATTN_SCORE_STRIDE + lane]) * qk_scale;
 			float tile_max,previous_max,next_max,weight,total,scale;
 			uint16_t high;
@@ -252,13 +260,72 @@ void LmLatentAttentionPrefillKernel(
 		{
 			q = (lane >> 2u) + (index >> 1u) * 8u;
 			row = first_row + q / HEADS;
-			if (row >= rows)
+			if (row >= row_end)
 				continue;
 			column = warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u;
 			const float inverse = 1.0f / running_sum[q];
 			*(uint32_t *)(output_bf16 + ((uint64_t)row * HEADS + q % HEADS) * LATENT + column) =
 				(uint32_t)LmFloatToBf16(output[frag][index] * inverse) | ((uint32_t)LmFloatToBf16(output[frag][index + 1u] * inverse) << 16u);
 		}
+}
+
+template<uint32_t ROWS_PER_BLOCK>
+__global__ void LmPrefillBlockTableKernel(
+	LmKvView cache,
+	const uint32_t *__restrict__ sequence_of_row,
+	uint32_t rows,
+	uint32_t *__restrict__ block_table,
+	uint32_t table_blocks,
+	uint32_t *__restrict__ segment_ends,
+	uint32_t segment_capacity)
+{
+	uint32_t count = 0u,row = 0u,taken,sequence,segments = 0u;
+	if (threadIdx.x != 0u || blockIdx.x != 0u)
+		return;
+	while (row < rows && count < table_blocks)
+	{
+		sequence = sequence_of_row[row];
+		for (taken = 1u; row + taken < rows && taken < ROWS_PER_BLOCK && sequence_of_row[row + taken] == sequence; taken++)
+		{
+		}
+		block_table[count++] = row | (taken << LM_PREFILL_ATTN_COUNT_SHIFT);
+		row += taken;
+		if (segment_ends != 0 && (row == rows || sequence_of_row[row] != sequence))
+		{
+			if (segments == segment_capacity)
+			{
+				LmKvReportRequiredAccessFailure(cache, LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row - 1u, sequence, 0xffffffffu, 0xffffffffu);
+				break;
+			}
+			segment_ends[segments++] = row - 1u;
+		}
+	}
+	if (row < rows)
+		LmKvReportRequiredAccessFailure(cache, LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence_of_row[row], 0xffffffffu, 0xffffffffu);
+	for (; count < table_blocks; count++)
+		block_table[count] = LM_PREFILL_ATTN_EMPTY_BLOCK;
+	for (; segment_ends != 0 && segments < segment_capacity; segments++)
+		segment_ends[segments] = rows - 1u;
+}
+
+template<uint32_t HEADS>
+static inline cudaError_t LmPrefillBlockTableLaunch(
+	LmKvView cache,
+	const uint32_t *sequence_of_row,
+	uint32_t rows,
+	uint32_t *block_table,
+	uint32_t table_blocks,
+	uint32_t *segment_ends,
+	uint32_t segment_capacity,
+	cudaStream_t stream)
+{
+	constexpr uint32_t ROWS_PER_BLOCK = LM_PREFILL_ATTN_QUERIES / HEADS;
+	if (rows == 0u || sequence_of_row == 0 || block_table == 0 || table_blocks < (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK)
+		return cudaErrorInvalidValue;
+	if (segment_ends != 0 && segment_capacity == 0u)
+		return cudaErrorInvalidValue;
+	LmPrefillBlockTableKernel<ROWS_PER_BLOCK><<<1, 32, 0, stream>>>(cache, sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
+	return cudaPeekAtLastError();
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE>
@@ -272,10 +339,13 @@ static inline cudaError_t LmLatentAttentionPrefillLaunch(
 	float qk_scale,
 	uint16_t *output_bf16,
 	uint32_t rows,
+	const uint32_t *block_table,
+	uint32_t table_blocks,
 	cudaStream_t stream)
 {
 	constexpr uint32_t shared = LmPrefillAttnSharedBytes<LATENT + ROPE>();
-	if (rows == 0u || query_latent_bf16 == 0 || query_rope_bf16 == 0 || sequence_of_row == 0 || row_position == 0 || output_bf16 == 0)
+	if (rows == 0u || query_latent_bf16 == 0 || query_rope_bf16 == 0 || sequence_of_row == 0 || row_position == 0 || output_bf16 == 0 ||
+		(block_table != 0 && table_blocks == 0u))
 		return cudaErrorInvalidValue;
 	if (heads == 4u)
 	{
@@ -287,8 +357,8 @@ static inline cudaError_t LmLatentAttentionPrefillLaunch(
 				return error;
 			granted = true;
 		}
-		LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE><<<(rows + LM_PREFILL_ATTN_QUERIES / 4u - 1u) / (LM_PREFILL_ATTN_QUERIES / 4u), LM_PREFILL_ATTN_THREADS, shared, stream>>>(
-			query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows);
+		LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE><<<block_table != 0 ? table_blocks : (rows + LM_PREFILL_ATTN_QUERIES / 4u - 1u) / (LM_PREFILL_ATTN_QUERIES / 4u), LM_PREFILL_ATTN_THREADS, shared, stream>>>(
+			query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table);
 		return cudaPeekAtLastError();
 	}
 	return cudaErrorInvalidValue;
