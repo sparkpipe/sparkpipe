@@ -14,6 +14,7 @@
 
 #define LM_SKINNY_ROWS 8u
 #define LM_SKINNY_ROWS_MID 4u
+#define LM_SKINNY_ROWS_WIDE 16u
 #define LM_SKINNY_THREADS 256u
 #define LM_SKINNY_CHUNK_BYTES 16u
 #define LM_SKINNY_GROUPED_MAX_MEAN_ROWS 16u
@@ -466,6 +467,8 @@ template<class Format, uint32_t LANES>
 static int32_t LmSkinnyMultiGroup(LmSkinnyMultiArguments *multi, uint32_t rows, uint32_t chunks, cudaStream_t stream)
 {
 	uint32_t per_lane = (chunks + LANES - 1u) / LANES;
+	if ( rows > LM_SKINNY_ROWS )
+		return(LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_WIDE,1u>(multi,stream));
 	if ( rows > LM_SKINNY_ROWS_MID )
 		return(LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS,1u>(multi,stream));
 	if ( rows != 1u )
@@ -483,6 +486,8 @@ template<class Format, uint32_t LANES>
 static int32_t LmSkinnyLaunchGroup(const LmSkinnyArguments *args, uint32_t chunks, cudaStream_t stream)
 {
 	uint32_t per_lane = (chunks + LANES - 1u) / LANES;
+	if ( args->rows > LM_SKINNY_ROWS )
+		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_WIDE,1u>(args,stream));
 	if ( args->rows > LM_SKINNY_ROWS_MID )
 		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,1u>(args,stream));
 	if ( args->rows != 1u )
@@ -530,7 +535,7 @@ static int32_t LmSkinnyValidate(const LmSkinnyArguments *args)
 	uint32_t grouped = args->route_expert != 0 ? 1u : 0u;
 	if ( LmSkinnyValidateOperands<Format>(args) != LM_LAUNCH_OK )
 		return(LM_LAUNCH_ERR_SHAPE);
-	if ( args->rows == 0u || args->rows > LM_SKINNY_ROWS || (grouped != 0u && (args->rows != 1u || args->pairs == 0u || args->top_k == 0u || args->pairs > LM_SKINNY_ROWS * args->top_k)) )
+	if ( args->rows == 0u || args->rows > LM_SKINNY_ROWS_WIDE || (grouped != 0u && (args->rows != 1u || args->pairs == 0u || args->top_k == 0u || args->pairs > LM_SKINNY_ROWS * args->top_k)) )
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( args->output_column_offset > args->output_row_stride || args->output_dimension > args->output_row_stride - args->output_column_offset )
 		return(LM_LAUNCH_ERR_OUTPUT);

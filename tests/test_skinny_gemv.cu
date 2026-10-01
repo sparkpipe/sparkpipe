@@ -106,6 +106,16 @@ static void DenseCase(const DenseShape *shape,uint32_t rows,cudaStream_t stream)
             }
             Check(shape->f32 ? out32[(uint64_t)row*shape->output+neuron] : Bf16Value(out16[(uint64_t)row*shape->output+neuron]),total,magnitude,shape->name,row,neuron);
         }
+    std::vector<uint16_t> one16(shape->output);
+    std::vector<float> one32(shape->output);
+    for (uint32_t row=0u; row<rows && rows>1u; row++)
+    {
+        REQUIRE(LmSkinnyDense<LmBf16Format>(device_weight,device_activation+(uint64_t)row*shape->input,shape->f32 ? 0 : device_out16,shape->f32 ? device_out32 : 0,1u,shape->input,shape->output,0u,0u,stream) == LM_LAUNCH_OK);
+        CUDA(cudaStreamSynchronize(stream));
+        CUDA(cudaMemcpy(one16.data(),device_out16,one16.size()*2u,cudaMemcpyDeviceToHost));
+        CUDA(cudaMemcpy(one32.data(),device_out32,one32.size()*4u,cudaMemcpyDeviceToHost));
+        REQUIRE(shape->f32 ? std::memcmp(one32.data(),out32.data()+(uint64_t)row*shape->output,one32.size()*4u)==0 : std::memcmp(one16.data(),out16.data()+(uint64_t)row*shape->output,one16.size()*2u)==0);
+    }
     CUDA(cudaFree(device_weight)); CUDA(cudaFree(device_activation)); CUDA(cudaFree(device_out16)); CUDA(cudaFree(device_out32));
 }
 
@@ -519,9 +529,9 @@ int main(int argc,char **argv)
     }
     CUDA(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
     for (const DenseShape &shape : dense_shapes)
-        for (uint32_t rows : {1u,2u,3u,4u,5u,8u})
+        for (uint32_t rows : {1u,2u,3u,4u,5u,8u,9u,12u,16u})
             DenseCase(&shape,rows,stream);
-    puts("PASS skinny dense bf16 shapes=19 rows=1,2,3,4,5,8 reference=f64");
+    puts("PASS skinny dense bf16 shapes=19 rows=1,2,3,4,5,8,9,12,16 reference=f64");
     for (uint32_t tokens : {1u,2u,8u})
     {
         ExpertCase(4096u,256u,tokens,0u,stream);
@@ -549,10 +559,10 @@ int main(int argc,char **argv)
     REQUIRE(LmSkinnyGroupedExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,288u,288u*16u+1u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyGroupedExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,0,288u,64u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
     puts("PASS per-expert skinny declines more than 16 rows per expert on average and a missing token map");
-    REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,9u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
+    REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)16,(const uint16_t *)16,(uint16_t *)16,0,LM_SKINNY_ROWS_WIDE + 1u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,1u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,9u*8u,8u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
-    puts("PASS skinny declines rows>8, more than eight routed tokens and misaligned weights so callers fall back to the tensor-core GEMM");
+    puts("PASS skinny declines rows>16, more than eight routed tokens and misaligned weights so callers fall back to the tensor-core GEMM");
     for (const DenseShape &shape : dense_shapes)
         if ((shape.input % LmBf16Format::kTileK) == 0u)
             TimeShape(&shape,stream);
