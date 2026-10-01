@@ -305,6 +305,11 @@ struct Probe
                     (unsigned long long)control.seq,(unsigned long long)control.round_seq,(unsigned long long)control.error_word,(unsigned long long)control.diag_word,(unsigned long long)control.rounds_done,failed,
                     (unsigned long long)Load(&gate->request_id),(unsigned long long)Load(&gate->kind),(unsigned long long)Load(&gate->tag),(unsigned long long)Load(&gate->peer_mask),(unsigned long long)Load(&gate->ready),(unsigned long long)Load(&gate->error),
                     (unsigned long long)Load(reinterpret_cast<uint64_t *>(host+SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(rank,rank))),(unsigned long long)transfers.load());
+                SparkWeightdMeshWaitRequest *second_gate=reinterpret_cast<SparkWeightdMeshWaitRequest *>(host+SPARK_WEIGHTD_MESH_WAIT_ENTRY(rank+second_band,rank));
+                std::fprintf(stderr,"SECOND rank=%u seq=%llu round_seq=%llx gate_id=%llu kind=%llu tag=%llx mask=%llx ready=%llu error=%llx entry=%llx bytes=%llu slot=%llu route=%llx\n",rank,
+                    (unsigned long long)control.second_seq,(unsigned long long)control.second_round_seq,(unsigned long long)Load(&second_gate->request_id),(unsigned long long)Load(&second_gate->kind),
+                    (unsigned long long)Load(&second_gate->tag),(unsigned long long)Load(&second_gate->peer_mask),(unsigned long long)Load(&second_gate->ready),(unsigned long long)Load(&second_gate->error),
+                    (unsigned long long)Load(Entry(rank,1u)),(unsigned long long)Load(Entry(rank,1u)+1),(unsigned long long)Load(Entry(rank,1u)+2),(unsigned long long)Load(Entry(rank,1u)+3));
             }
             REQUIRE((control.error_word!=0u)==failed);
             REQUIRE(control.rounds_done==(failed ? 0u : rounds));
