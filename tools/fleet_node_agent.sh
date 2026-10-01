@@ -10,6 +10,7 @@ MESH_INTERFACE="rocep1s0f1"
 MESH_SGID_INDEX=3
 MESH_PAIR_INTERFACE="rocep1s0f0"
 MESH_PAIR_SGID_INDEX=3
+MESH_TRAFFIC_CLASS=106
 RANK=""
 _idx=0
 for _host in $FLEET_HOSTS; do
@@ -727,6 +728,7 @@ ensure_weightd() {
         --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE" \
         --mesh-sgid-index "$MESH_SGID_INDEX" \
         --mesh-pair-interface "$MESH_PAIR_INTERFACE" --mesh-pair-sgid-index "$MESH_PAIR_SGID_INDEX" \
+        --mesh-traffic-class "$MESH_TRAFFIC_CLASS" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
     rm -f /tmp/weightd-mesh/.shipped_sha 2>/dev/null
     ( sleep 2; sync_rendezvous "glm53flash.fp8.tp16" ) >/dev/null 2>&1 &

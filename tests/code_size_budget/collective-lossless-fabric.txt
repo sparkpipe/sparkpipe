@@ -1,0 +1,2 @@
++37
+Lossless fabric: weightd --mesh-traffic-class (parse, validate, apply at RTR), the fleet agent passes DSCP 26 (106), and rdma_alltoall_probe --traffic-class for lossless-class tests.

@@ -260,7 +260,7 @@ int main(void) {
     def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True):
         script = r'''
 set -u
-RANK=0 MESH_INTERFACE=test MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=test-pair MESH_PAIR_SGID_INDEX=3
+RANK=0 MESH_INTERFACE=test MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=test-pair MESH_PAIR_SGID_INDEX=3 MESH_TRAFFIC_CLASS=106
 BACKOFF=(1)
 weightd=0
 pgrep() { case "$*" in *sparkpipe_weightd*) [ "$TEST_OWNER" != absent ] && echo 4242;; *sparkpipe_model_residentd*) echo 4243;; *) return 1;; esac; }
