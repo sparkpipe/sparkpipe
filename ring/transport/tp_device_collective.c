@@ -912,13 +912,29 @@ static uint64_t SparkTpDeviceCollectiveCapabilities(const SparkTpDeviceCollectiv
     return(__atomic_load_n(&request->capabilities,__ATOMIC_ACQUIRE));
 }
 
+static uint32_t SparkTpDeviceCollectivePhysicalPairs(const SparkTpDeviceCollectiveImplementation *implementation)
+{
+    uint32_t rank;
+    if ( (implementation->tp_degree & 1u) != 0u || implementation->tp_degree < 4u )
+        return(0u);
+    for (rank=0u; rank<implementation->tp_degree; rank+=2u)
+        if ( (implementation->mesh_topology.physical_ranks[rank] ^ 1u) != implementation->mesh_topology.physical_ranks[rank + 1u] )
+            return(0u);
+    return(1u);
+}
+
 static uint32_t SparkTpDeviceCollectiveSliceRoutes(const SparkTpDeviceCollectiveImplementation *implementation)
 {
     uint64_t capabilities = SparkTpDeviceCollectiveCapabilities(implementation);
+    uint32_t routes;
     if ( (capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES) == 0u )
         return(0u);
-    return((capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES) != 0u && implementation->staging_device != 0 ?
-        SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER : SPARK_TP_MESH_ROUTES_SLICE);
+    routes = (capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES) != 0u && implementation->staging_device != 0 ?
+        SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER : SPARK_TP_MESH_ROUTES_SLICE;
+    if ( (routes & SPARK_TP_MESH_ROUTES_PEER) != 0u && (capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_BULK_ROUTES) != 0u &&
+         implementation->mesh_band_count == 2u && SparkTpDeviceCollectivePhysicalPairs(implementation) != 0u )
+        routes |= SPARK_TP_MESH_ROUTES_PAIR;
+    return(routes);
 }
 
 static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveImplementation *implementation,uint32_t operation,uint64_t elements,uint32_t rounds,uint32_t slice_routes,uint64_t *phases_out)

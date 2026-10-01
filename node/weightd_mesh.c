@@ -1316,6 +1316,13 @@ static void SparkWeightdMeshPostRoute(uint32_t index,uint32_t band,uint64_t slot
         offset = SparkWeightdMeshRouteSpan(route,logical[peer_rank],local,bytes,&length);
         if ( length == 0u )
             status = SPARK_STATUS_OK;
+        else if ( SparkWeightdMeshRouteBulk(route) != 0u )
+        {
+            uint64_t ring = (slot_base / SPARK_WEIGHTD_MESH_SLOT_BYTES) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u);
+            uint64_t band_base = (uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+            status = SparkWeightdMeshPostTransferFrom(index,peer,2u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,0u) + ring * SPARK_WEIGHTD_MESH_BULK_BYTES,
+                SparkWeightdMeshPeerMr(peer,weightd_mesh.staging_mr,weightd_mesh.pair_staging_mr)->lkey,band_base + SPARK_WEIGHTD_MESH_BULK_LANDING_OFFSET(local,ring),(uint32_t)length);
+        }
         else if ( route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER )
             status = SparkWeightdMeshPostTransferFrom(index,peer,2u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,logical[peer_rank]),
                 SparkWeightdMeshPeerMr(peer,weightd_mesh.staging_mr,weightd_mesh.pair_staging_mr)->lkey,slot_base,(uint32_t)length);
@@ -1336,6 +1343,8 @@ static SparkStatus SparkWeightdMeshPostSlot(uint32_t band,uint32_t rank,uint64_t
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ( route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER && weightd_mesh.staging_mr == 0 )
         return SPARK_STATUS_UNSUPPORTED;
+    if ( SparkWeightdMeshRouteBulk(route) != 0u && ((rank < SPARK_WEIGHTD_MESH_BULK_HALF_RANKS) != ((uint32_t)__builtin_ctz(peer_rank_mask) < SPARK_WEIGHTD_MESH_BULK_HALF_RANKS)) )
+        return SPARK_STATUS_INVALID_ARGUMENT;
     topology = &weightd_mesh.lane_topology[band / 2u];
     if ( topology->rank_count == 0u || rank != topology->local_rank || (peer_rank_mask & ~((1u << topology->rank_count) - 1u)) != 0u || (peer_rank_mask & (1u << rank)) != 0u )
         return SPARK_STATUS_INVALID_ARGUMENT;

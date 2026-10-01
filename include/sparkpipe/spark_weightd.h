@@ -155,8 +155,9 @@ typedef struct SparkWeightdMeshWaitRequest
 
 #define SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES 1u
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES 2u
+#define SPARK_WEIGHTD_MESH_CAPABILITY_BULK_ROUTES 4u
 #define SPARK_WEIGHTD_MESH_CAPABILITIES \
-    (SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES)
+    (SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_BULK_ROUTES)
 #define SPARK_WEIGHTD_MESH_ROUTE_FULL 0u
 #define SPARK_WEIGHTD_MESH_ROUTE_SCATTER 1u
 #define SPARK_WEIGHTD_MESH_ROUTE_GATHER 2u
@@ -168,6 +169,12 @@ typedef struct SparkWeightdMeshWaitRequest
     (SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES * SPARK_WEIGHTD_MESH_RANKS_PER_BAND)
 #define SPARK_WEIGHTD_MESH_STAGING_BYTES \
     (SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES * SPARK_WEIGHTD_MESH_BANDS)
+#define SPARK_WEIGHTD_MESH_ROUTE_FLAG_BULK 1u
+#define SPARK_WEIGHTD_MESH_BULK_BYTES (SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES / SPARK_WEIGHTD_MESH_SLOTS_PER_RANK)
+#define SPARK_WEIGHTD_MESH_BULK_HALF_RANKS (SPARK_WEIGHTD_MESH_RANKS_PER_BAND / 2u)
+#define SPARK_WEIGHTD_MESH_BULK_LANDING_OFFSET(sender,ring) \
+    ((uint64_t)((sender) < SPARK_WEIGHTD_MESH_BULK_HALF_RANKS ? SPARK_WEIGHTD_MESH_BULK_HALF_RANKS * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK : 0u) * \
+     SPARK_WEIGHTD_MESH_SLOT_BYTES + (uint64_t)(ring) * SPARK_WEIGHTD_MESH_BULK_BYTES)
 #define SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,peer) \
     ((uint64_t)(band) * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + \
      (uint64_t)(peer) * SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)
@@ -186,8 +193,17 @@ typedef union SparkWeightdMeshRoute
     SparkWeightdMeshRouteFields fields;
 } SparkWeightdMeshRoute;
 
+static inline uint32_t SparkWeightdMeshRouteBulk(SparkWeightdMeshRoute route)
+{
+    return (route.fields.reserved & SPARK_WEIGHTD_MESH_ROUTE_FLAG_BULK) != 0u ? 1u : 0u;
+}
+
 static inline uint32_t SparkWeightdMeshRouteValid(SparkWeightdMeshRoute route)
 {
+    if ( SparkWeightdMeshRouteBulk(route) != 0u )
+        return route.fields.reserved == SPARK_WEIGHTD_MESH_ROUTE_FLAG_BULK && route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER &&
+            route.fields.slice_bytes != 0u && (route.fields.slice_bytes & 7u) == 0u && route.fields.slice_bytes <= SPARK_WEIGHTD_MESH_BULK_BYTES &&
+            route.fields.peer_mask != 0u && (route.fields.peer_mask & (route.fields.peer_mask - 1u)) == 0u;
     return route.fields.reserved == 0u && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? route.fields.slice_bytes == 0u : route.fields.slice_bytes != 0u && (route.fields.slice_bytes & 7u) == 0u && (route.fields.mode != SPARK_WEIGHTD_MESH_ROUTE_PEER || route.fields.slice_bytes <= SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES));
 }
 
@@ -214,6 +230,9 @@ _Static_assert(sizeof(SparkWeightdMeshWaitRequest) == SPARK_WEIGHTD_MESH_WAIT_EN
     offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
     "mesh wait request and ready occupy distinct cache lines");
 _Static_assert(sizeof(SparkWeightdMeshRoute) == sizeof(uint64_t),"mesh route is one doorbell word");
+_Static_assert((uint64_t)SPARK_WEIGHTD_MESH_SLOTS_PER_RANK * SPARK_WEIGHTD_MESH_BULK_BYTES <=
+    (uint64_t)SPARK_WEIGHTD_MESH_BULK_HALF_RANKS * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK * SPARK_WEIGHTD_MESH_SLOT_BYTES,
+    "both bulk rings land inside the half of the band that holds no sender slot of the same half");
 _Static_assert(SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES <= SPARK_WEIGHTD_MESH_SLOT_BYTES - SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES &&
     SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES < (UINT64_C(1) << 24u),"a peer route fills at most one receive slot payload");
 _Static_assert(SPARK_WEIGHTD_MESH_STAGING_BYTES <= UINT64_C(128) * 1024u * 1024u,"per-peer staging stays inside its node memory budget");
