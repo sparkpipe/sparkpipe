@@ -720,6 +720,10 @@ ensure_weightd() {
         echo "weightd: missing executable $home/sparkpipe_weightd; dependent startup blocked" >&2
         return 1
     }
+    systemctl is-active -q sparkpipe-roce-qos || {
+        echo "weightd: sparkpipe-roce-qos is not active; traffic class $MESH_TRAFFIC_CLASS needs DSCP trust and PFC on $MESH_INTERFACE; dependent startup blocked" >&2
+        return 1
+    }
     restart_ok weightd || return 1
     rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
     echo "$(date +%T) weightd: starting (backoff ${BACKOFF[weightd]:-1}s)"

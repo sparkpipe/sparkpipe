@@ -1,0 +1,12 @@
+[Unit]
+Description=SparkPipe lossless RoCE QoS on enp1s0f1np1 (DSCP trust, PFC priority 3)
+BindsTo=sys-subsystem-net-devices-enp1s0f1np1.device
+After=sys-subsystem-net-devices-enp1s0f1np1.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sparkpipe_roce_qos.sh
+
+[Install]
+WantedBy=sys-subsystem-net-devices-enp1s0f1np1.device
