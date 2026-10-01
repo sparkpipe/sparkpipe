@@ -97,7 +97,6 @@ typedef struct SparkModelBatchSubmissionState
 struct SparkModelBatchEngine
 {
 	SparkModelPipelineClient *pipeline;
-	uint32_t prefix_reuse_disabled;
 	const SparkModelServingAdapterDescriptor *adapter_descriptor;
 	SparkModelBatchEventFunction event_function;
 	void *event_context;
@@ -1300,18 +1299,13 @@ static uint32_t SparkModelBatchDefersDecodePublication(const SparkModelBatchEngi
 
 static void SparkModelBatchLogCacheMode(const SparkModelBatchEngine *engine)
 {
-	const char *decode_mode,*prefix_mode;
-	prefix_mode = "off";
-	if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) != 0u )
-		prefix_mode = engine->prefix_reuse_disabled != 0u ? "deployment-off" : "on";
+	const char *decode_mode;
 	decode_mode = "inline";
 	if ( SparkModelBatchDefersDecodePublication(engine) != 0u )
 		decode_mode = "deferred";
-	else if ( engine->adapter_descriptor->max_speculative_token_count != 0u )
-		decode_mode = "inline-until-speculative";
-	fprintf(stderr,"batch engine adapter=%s prefix_reuse=%s decode_checkpoints=%s\n",
+	fprintf(stderr,"batch engine adapter=%s decode_checkpoints=%s\n",
 		engine->adapter_descriptor->adapter_id != 0 ? engine->adapter_descriptor->adapter_id : "unnamed",
-		prefix_mode,decode_mode);
+		decode_mode);
 }
 
 static SparkStatus SparkModelBatchInitialize(
@@ -1336,7 +1330,6 @@ static SparkStatus SparkModelBatchInitialize(
 	memcpy(engine->stop_token_ids,configuration->stop_token_ids,engine->stop_token_count * sizeof(uint32_t));
 	memcpy(engine->stop_token_ids + engine->stop_token_count,configuration->deployment->eos_token_ids,configuration->deployment->eos_token_count * sizeof(uint32_t));
 	engine->stop_token_count += configuration->deployment->eos_token_count;
-	engine->prefix_reuse_disabled = configuration->deployment->prefix_reuse_disabled;
 	engine->event_function = configuration->event_function;
 	engine->event_context = configuration->event_context;
 	engine->admission_open = 1u;
@@ -1566,18 +1559,8 @@ static void SparkModelBatchRefreshQueuedPrefix(
 	if ( request->computed_prompt_token_count != 0u ||
 		request->cache_lookup_epoch == engine->cache_publication_epoch )
 		return;
-	if ( engine->prefix_reuse_disabled != 0u )
-	{
-		request->cache_lookup_epoch = engine->cache_publication_epoch;
-		return;
-	}
 	slot = (uint32_t)(request - engine->requests);
 	memset(&lookup,0,sizeof(lookup));
-	if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) == 0u )
-	{
-		SparkModelBatchApplyPrefixLookup(engine,request,SparkModelBatchRequestTokens(engine,slot),&lookup);
-		return;
-	}
 	status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
 		request->sequence_id,SparkModelBatchRequestTokens(engine,slot),
 		request->prompt_token_count,&lookup);
@@ -1593,7 +1576,7 @@ static void SparkModelBatchRefreshQueuedPrefix(
 			SparkModelBatchRequestTokens(engine,slot),&lookup);
 	}
 	else
-		request->cache_lookup_epoch = engine->cache_publication_epoch;
+		SparkModelBatchFailRequest(engine,request,status);
 }
 
 static uint32_t SparkModelBatchPrefillSpan(

@@ -255,26 +255,47 @@ removed rather than retained as a progress diary.
 
 ## Prefix reuse (I23)
 
-Adapters without `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE` get no
-cached prefixes and log `prefix_reuse=off` at engine connect
-([`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md), Prefix reuse
-capability). Each is an open I23 gap:
+Prefix reuse is required and non-compliant adapters are refused at load
+([`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md), Prefix reuse is
+required). From 2026-09-28 to 2026-10-01 two opt-outs (the
+`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE` skip in the batch engine
+and the deployment `prefix_reuse` field) let these adapters serve while
+silently recomputing every prompt; GLM-5.3 Full ran that way. Each refused
+adapter needs real restore plus an I27 proof before it loads again:
 
+- glm52 (GLM-5.3 Full) attends through a fixed identity page table, so the
+  pages `SparkKvPageCachePrepareLane` resolves are never used; its DSA index
+  keys are outside the cached page payload (I24); its continuity check rejects
+  a lane restored mid-sequence on a fresh slot.
 - qwen38_27b has a GDN snapshot borrow for prompt checkpoints
-  (`SparkQwen38_27bServingPrefixBorrow`) but cannot declare the capability:
-  a borrow miss logs `recomputing` and prefills over unrestored KV blocks and
-  GDN state; decode-lane checkpoints are never snapshotted (only prefill frames
-  call `SparkQwen38_27bServingPrefixPublish`), so indexed generated blocks
-  would always miss; a publish that finds no free entry or more than 64 blocks
-  returns OK without storing; the eight snapshot entries evict independently
-  of the engine's index; a borrowed partial last block is shared without
-  copy-on-write.
+  (`SparkQwen38_27bServingPrefixBorrow`), but a borrow miss logs `recomputing`
+  and prefills over unrestored KV blocks and GDN state; decode-lane
+  checkpoints are never snapshotted; a publish that finds no free entry or
+  more than 64 blocks returns OK without storing; the eight snapshot entries
+  evict independently of the engine's index; a borrowed partial last block is
+  shared without copy-on-write.
+- dsv4 restores paged KV, index and compressor state but speculates without
+  the cache-publish work kind, so generated blocks after a multi-token step
+  were never published.
+- ling attends through an identity page table and keeps no KDA state per
+  cached prefix.
+- laguna has a real page table and transactions but no I27 proof, no state
+  capture hook and logical = physical page capacity.
 - gemma4 keeps a per-slot block allocator and has no borrow path.
-- glm52 and ling resolve prefix pages through `SparkKvPageCachePrepareLane`
-  but attend through an identity page table; laguna shares glm5_next's page
-  table upload. Each needs a restored-versus-uninterrupted proof (I27) before
-  it declares the capability.
 - k3, minimax, muse_glimmer, qwen38_max and qwen4_flash have no borrow path.
+
+Related common-code debt:
+
+- residentd relies on the adapter to refuse a submission whose position
+  skips ahead in a resident sequence; with an adapter that does not check,
+  the slot claim answers `BUSY`. Continuity belongs in common code (I02).
+- `include/sparkpipe/family/module/spark_module_glm5_next_laguna.h` holds the
+  generic page-table upload and is named after models; `tests/test_dry_law.py`
+  does not match `glm5_next` or `laguna`.
+- `build/libdsv4_pro_tp4_pp4_serving_adapter*` do not compile
+  (`SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` undeclared), and
+  `build/libdsv4_tp4_pp4_serving_adapter.so` cannot be opened on GPU hosts
+  (undefined `SparkTpLaunchMeshHardware`).
 
 ## Dynamic batching
 
@@ -667,9 +688,8 @@ capability). Each is an open I23 gap:
 - The ling TP chain advances from host callbacks and keys the single
   device collective per chain, so a ling lane runs one submission in
   flight (`tools/ling_lane.py` renders `max_inflight_submissions` 1).
-- Ling keeps no KDA state per cached prefix, so its deployment sets
-  `prefix_reuse` false. Prefix reuse for ling needs KDA state capture at
-  block boundaries, as the GLM JIT KV work does.
+- Ling keeps no KDA state per cached prefix, so it is refused at load
+  until it captures KDA state at block boundaries (Prefix reuse (I23)).
 - laguna's TP chain has the shape ling had before 2026-09-28: it keeps the
   adapter's stack-allocated batch view and frame context across
   asynchronous collectives and takes no collective chain key, so a TP>1

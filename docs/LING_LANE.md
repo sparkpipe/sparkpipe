@@ -85,9 +85,10 @@ API on the rtx5090. Receipts are in
   run-to-run spread, so this is a tie, not a driver defect.
 - The driver applies the publisher serving SwiGLU limits on layers 34-41
   (`spark_ling_swiglu_limits.h`, both contracts carry the lists).
-- The deployment sets `prefix_reuse` false (the driver keeps no KDA state
-  per cached prefix) and one submission in flight (the TP chain keys the
-  single device collective per chain).
+- The adapter is refused at load: the driver keeps no KDA state per cached
+  prefix, and prefix reuse is required (I23). The deployment keeps one
+  submission in flight (the TP chain keys the single device collective per
+  chain).
 - Memory per node is about 22 GiB: the weightd arena holds the whole
   15.7 GiB rank pack, and the residentd holds about 6.7 GiB of GPU memory.
   `LING_EXPERT_POOL_BYTES` is passed through but ling does not attach

@@ -105,8 +105,8 @@ static int32_t TestK3Descriptor(void)
 	failures += TestK3Check(adapter != 0 && adapter->descriptor == descriptor,
 		"the adapter interface exports the K3 descriptor");
 	failures += TestK3Check(SparkModelServingAdapterValidateInterface(adapter,
-		descriptor->capability_flags) == SPARK_STATUS_OK,
-		"the common validator accepts the interface and descriptor");
+		0u) == SPARK_STATUS_UNSUPPORTED,
+		"the common validator refuses the K3 adapter: it cannot restore cached prompt prefixes (I23)");
 	failures += TestK3Check(descriptor->cache_block_token_count == SPARK_K3_KV_PAGE_SLOTS &&
 		descriptor->cache_block_token_count == K3_KV_PAGE_SLOTS,
 		"the cache block is one KV page of the kernel's slot count");
@@ -161,8 +161,8 @@ static int32_t TestK3Deployment(const char *path)
 		"residentd's loader parses the deployment") != 0 )
 		return(1);
 	failures += TestK3Check(SparkModelResidentDeploymentValidateForAdapter(&deployment,
-		&K3ServingDescriptor) == SPARK_STATUS_OK,
-		"residentd's adapter validation accepts the deployment");
+		&K3ServingDescriptor) == SPARK_STATUS_UNSUPPORTED,
+		"residentd refuses to serve the K3 deployment until the adapter restores cached prefixes (I23)");
 	failures += TestK3Check(deployment.eos_token_count == 1u &&
 		deployment.eos_token_ids[0] == K3_EOS_TOKEN,
 		"the model EOS is the authoritative contract's end_of_text");
