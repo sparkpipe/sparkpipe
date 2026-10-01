@@ -1,0 +1,2 @@
++17
+Decode-after-prefill barrier in the generic batch engine (engine flag, one-shot scheduler hold, refusal past resident capacity) and its batch-client switch, so decode throughput is measured on the KV the real prefill wrote with no prefill interleaved.

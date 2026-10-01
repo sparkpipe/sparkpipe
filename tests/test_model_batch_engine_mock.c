@@ -53,6 +53,9 @@ typedef struct TestBatchState
 	uint64_t accepted_ns[TEST_MAX_REQUESTS + 1u];
 	uint64_t first_dispatch_ns[TEST_MAX_REQUESTS + 1u];
 	uint64_t first_token_ns[TEST_MAX_REQUESTS + 1u];
+	uint32_t token_event_order;
+	uint32_t first_token_order[TEST_MAX_REQUESTS + 1u];
+	uint32_t second_token_order[TEST_MAX_REQUESTS + 1u];
 } TestBatchState;
 
 static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
@@ -65,6 +68,11 @@ static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
 		s->accepted_ns[id] = event->monotonic_ns;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
 	{
+		s->token_event_order++;
+		if ( s->token_events[id] == 0u )
+			s->first_token_order[id] = s->token_event_order;
+		if ( s->token_events[id] == 1u )
+			s->second_token_order[id] = s->token_event_order;
 		if ( s->token_events[id]++ == 0u )
 			s->first_token_ns[id] = event->monotonic_ns;
 		s->cached_tokens[id] = event->cached_prompt_token_count;
@@ -133,28 +141,39 @@ static void TestWriteDeployment(const char *path, const char *runtime_root, cons
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
 
-static SparkModelBatchEngine *TestConnectRows(const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,uint32_t prefill_rows)
+static void TestConfigure(SparkModelBatchEngineConfiguration *configuration,const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,uint32_t prefill_rows,uint32_t request_capacity,uint32_t flags)
+{
+	memset(configuration,0,sizeof(*configuration));
+	configuration->abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	configuration->descriptor_bytes = sizeof(*configuration);
+	configuration->flags = flags;
+	configuration->connect_timeout_ms = 1000u;
+	configuration->request_capacity = request_capacity;
+	configuration->max_context_tokens = 256u;
+	configuration->max_prefill_rows_per_submission = prefill_rows;
+	configuration->maximum_messages_per_rank_per_progress = 8u;
+	configuration->inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
+	configuration->deployment = deployment;
+	configuration->runtime_root = runtime_root;
+	configuration->event_function = TestBatchEvent;
+	configuration->event_context = state;
+}
+
+static SparkModelBatchEngine *TestConnectFlags(const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,uint32_t prefill_rows,uint32_t request_capacity,uint32_t flags)
 {
 	SparkModelBatchEngineConfiguration configuration;
 	SparkModelBatchEngine *engine;
 	SparkStatus status;
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
-	configuration.descriptor_bytes = sizeof(configuration);
-	configuration.connect_timeout_ms = 1000u;
-	configuration.request_capacity = 8u;
-	configuration.max_context_tokens = 256u;
-	configuration.max_prefill_rows_per_submission = prefill_rows;
-	configuration.maximum_messages_per_rank_per_progress = 8u;
-	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
-	configuration.deployment = deployment;
-	configuration.runtime_root = runtime_root;
-	configuration.event_function = TestBatchEvent;
-	configuration.event_context = state;
+	TestConfigure(&configuration,deployment,state,runtime_root,prefill_rows,request_capacity,flags);
 	engine = 0;
 	status = SparkModelBatchEngineConnect(&configuration,&engine);
 	CHECK(status == SPARK_STATUS_OK, "batch engine connect");
 	return(engine);
+}
+
+static SparkModelBatchEngine *TestConnectRows(const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,uint32_t prefill_rows)
+{
+	return(TestConnectFlags(deployment,state,runtime_root,prefill_rows,8u,0u));
 }
 
 static SparkModelBatchEngine *TestConnect(const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root)
@@ -1314,6 +1333,49 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	(void)unlink(path);
 }
 
+static void TestScenarioDecodeAfterPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchEngine *engine;
+	uint32_t prompt[16] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u,24u,25u,26u};
+	uint32_t index,last_first,first_second;
+	MockResidentClientReset();
+	engine = TestConnectFlags(deployment,&state,runtime_root,4u,8u,SPARK_MODEL_BATCH_ENGINE_FLAG_DECODE_AFTER_PREFILL);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,701u,3u,prompt,4u);
+	for (index=2u; index<=6u; index++)
+		TestSubmitPrompt(engine,index,700u + index,3u,prompt,16u);
+	TestDriveUntilTerminal(engine,&state,6u,4000u);
+	last_first = 0u;
+	first_second = UINT32_MAX;
+	for (index=1u; index<=6u; index++)
+	{
+		CHECK(state.completed_events[index] == 1u && state.token_events[index] == 3u,"decode after prefill: every request completes its budget");
+		last_first = state.first_token_order[index] > last_first ? state.first_token_order[index] : last_first;
+		first_second = state.second_token_order[index] < first_second ? state.second_token_order[index] : first_second;
+	}
+	CHECK(last_first != 0u && last_first < first_second,"decode after prefill: no request decodes before every prompt has its first token");
+	SparkModelBatchEngineDestroy(engine);
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnectFlags(deployment,&state,runtime_root,4u,40u,SPARK_MODEL_BATCH_ENGINE_FLAG_DECODE_AFTER_PREFILL);
+	if ( engine == 0 )
+		return;
+	for (index=1u; index<=32u; index++)
+		CHECK(TestSubmitPromptStatus(engine,index,800u + index,3u,prompt,8u) == SPARK_STATUS_OK,"decode after prefill: requests up to the resident capacity are admitted");
+	CHECK(TestSubmitPromptStatus(engine,33u,833u,3u,prompt,8u) == SPARK_STATUS_CAPACITY_EXCEEDED,"decode after prefill: a request past the resident capacity is refused before it can deadlock the barrier");
+	SparkModelBatchEngineDestroy(engine);
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = 0;
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,8u,UINT32_C(0x00000002));
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_INVALID_ARGUMENT && engine == 0,"decode after prefill: an unknown engine flag is refused");
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
@@ -1345,6 +1407,7 @@ int main(void)
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);
 	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
+	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);
 	TestScenarioMeasurements(&deployment,runtime_root);

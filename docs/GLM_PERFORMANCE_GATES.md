@@ -143,6 +143,18 @@ and for independent timing analysis. The first-token boundary includes
 scheduling, prefill and first-token work, so it does not measure prefill
 compute alone.
 
+Without help, that window still mixes decode steps with the prefill waves of
+later sequences. Set `SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL=1` on the client
+to measure decode alone. The batch engine then holds every decode wave until
+all submitted prompts have finished prefill. After that it schedules normally.
+Decode runs on the KV cache that the real prefill wrote; nothing is copied or
+replayed. Wave composition differs from an unbarriered run, so compare tokens
+against a barriered reference. The window from the last
+first token to the earliest last token holds decode waves only, at the full
+batch. The engine refuses (`CAPACITY_EXCEEDED`) a request beyond the resident
+sequence capacity while the barrier is closed: an unbound prompt could never
+prefill, so the barrier would never open.
+
 `decode_tokens_per_second` counts all output tokens after the first global
 token and divides by the interval from first to last arrival. Tokens stay in
 arrival order; request-local indices never reorder different requests. TTFT
