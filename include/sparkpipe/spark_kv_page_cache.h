@@ -232,11 +232,9 @@ typedef struct SparkKvLaneTransaction
 	uint32_t phase;
 	uint32_t page_count;
 	uint32_t mutation_flags;
+	SparkModelDriverCacheIdentity block_identities[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u];
 } SparkKvLaneTransaction;
 
-/* Startup-owned storage; zero-initialize records and epoch. Caller serializes
- * every operation with admission/completion, and drains device work before
- * Finish. Tables have sequence_capacity * page_capacity elements. */
 typedef struct SparkKvLaneTransactions
 {
 	SparkKvPageCache *cache;

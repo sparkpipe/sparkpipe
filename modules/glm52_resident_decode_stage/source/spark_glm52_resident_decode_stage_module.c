@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_glm52_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_head_screen.h"
@@ -90,8 +91,8 @@ struct SparkGlm52ModuleState
 	uint32_t max_sequence_positions;
 	uint32_t execution_row_capacity;
 	uint32_t decode_split_context_threshold;
-	uint32_t pages_per_sequence;
-	uint32_t page_count;
+	uint32_t kv_logical_page_capacity;
+	uint32_t kv_physical_page_capacity;
 	uint32_t index_layer_count;
 	uint32_t multiprocessor_count;
 	uint32_t owns_embedding;
@@ -108,29 +109,9 @@ struct SparkGlm52ModuleState
 	uint8_t *head_certified_fp8_payload;
 	float *head_certified_fp8_scale_f32;
 	float *head_certified_fp8_norm_f32;
-	uint8_t *kv_cache;
-	uint64_t kv_layer_stride_bytes;
-	uint8_t *index_cache;
-	uint64_t index_layer_stride_bytes;
-	uint32_t *page_table;
-	SparkKvCacheArena kv_arena;
-	SparkKvPageCache kv_page_cache;
-	SparkKvPageStore kv_page_store;
-	SparkKvCacheBlock *kv_blocks;
-	uint32_t *kv_resident_slot_logical_block_indices;
-	SparkKvPageCacheEntry *kv_entries;
-	SparkKvPageCacheSequence *kv_sequences;
-	uint32_t *kv_hash_bucket_heads;
-	uint32_t *kv_entry_indices_by_logical_page;
-	uint8_t *kv_page_staging;
-	uint32_t *kv_lane_logical_pages;
-	uint32_t *kv_lane_page_count;
-	uint32_t *kv_lane_mutable_page;
-	uint32_t *kv_lane_mutation_flags;
-	SparkModelDriverCacheLane *kv_lane_cache_lanes;
+	SparkStageKvBinding kv;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
-	char kv_backing_default[256];
 	SparkWeightdLazyPack *lazy_pack;
 	uint64_t expert_pin_leases[64];
 	uint32_t expert_pin_lease_count;
@@ -142,9 +123,6 @@ struct SparkGlm52ModuleState
 	SparkGlm52TpChain *lazy_retained[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint lane_states[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	atomic_uchar lane_bound[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	atomic_ullong lane_sequence_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
-	atomic_ullong lane_next_positions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	atomic_ullong submitted_count;
 	atomic_ullong completed_count;
 	atomic_ullong rejected_count;
@@ -326,7 +304,8 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	const char **pack_path)
 {
 	const SparkGlm52ResidentDecodeStageNodeContext *context;
-	if ( state == 0 || configuration == 0 || host_services == 0 || pack_path == 0 || host_services->node_context == 0 || host_services->execution_stream == 0 )
+	if ( state == 0 || configuration == 0 || host_services == 0 || pack_path == 0 || host_services->node_context == 0 || host_services->execution_stream == 0 ||
+		host_services->kv_logical_page_capacity == 0u || host_services->kv_physical_page_capacity == 0u || host_services->kv_physical_page_capacity > host_services->kv_logical_page_capacity )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	context = (const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context;
 	if ( context->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES )
@@ -347,6 +326,8 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
+	state->kv_logical_page_capacity = host_services->kv_logical_page_capacity;
+	state->kv_physical_page_capacity = host_services->kv_physical_page_capacity;
 	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
@@ -734,122 +715,10 @@ static SparkStatus SparkGlm52AllocateSlotMlp(
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkGlm52BuildPageTable(SparkGlm52ModuleState *state)
-{
-	uint32_t *host_table;
-	uint64_t entries,index;
-	SparkStatus status;
-	cudaError_t error;
-	state->pages_per_sequence = SparkCeilDivU32(state->max_sequence_positions,64u);
-	if ( state->pages_per_sequence == 0u || state->resident_sequence_capacity > UINT32_MAX / state->pages_per_sequence )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	state->page_count = state->resident_sequence_capacity * state->pages_per_sequence;
-	entries = state->page_count;
-	host_table = (uint32_t *)malloc(entries * sizeof(uint32_t));
-	if ( host_table == 0 )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (index=0u; index<entries; index++)
-		host_table[index] = (uint32_t)index;
-	status = SparkGlmStageAllocateBytes(state,entries,1u,sizeof(uint32_t),(void **)&state->page_table);
-	if ( status == SPARK_STATUS_OK )
-	{
-		error = cudaMemcpy(state->page_table,host_table,entries * sizeof(uint32_t),cudaMemcpyHostToDevice);
-		status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"page_table");
-	}
-	free(host_table);
-	SPARK_RETURN(status);
-}
-
-#include "sparkpipe/family/module/spark_module_page_copy.h"
-
-static SparkStatus SparkGlm52KvInitialize(SparkGlm52ModuleState *state)
-{
-	SparkKvModelTable table;
-	uint64_t block_bytes;
-	uint64_t lane_page_entries;
-	SparkStatus status;
-	block_bytes = (uint64_t)SPARK_GLM_KV_BLOCK_TOKEN_COUNT *
-		(uint64_t)state->layer_count * SPARK_GLM_KV_ARENA_HEAD_DIMENSION *
-		SPARK_GLM_KV_BYTES_PER_SCALAR;
-	lane_page_entries = (uint64_t)state->resident_sequence_capacity *
-		state->pages_per_sequence;
-	state->kv_blocks = (SparkKvCacheBlock *)calloc(state->page_count,sizeof(*state->kv_blocks));
-	state->kv_resident_slot_logical_block_indices = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_resident_slot_logical_block_indices));
-	state->kv_entries = (SparkKvPageCacheEntry *)calloc(state->page_count,sizeof(*state->kv_entries));
-	state->kv_sequences = (SparkKvPageCacheSequence *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_sequences));
-	state->kv_hash_bucket_heads = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_hash_bucket_heads));
-	state->kv_entry_indices_by_logical_page = (uint32_t *)calloc(state->page_count,sizeof(*state->kv_entry_indices_by_logical_page));
-	state->kv_page_staging = (uint8_t *)malloc((size_t)block_bytes);
-	state->kv_lane_logical_pages = (uint32_t *)calloc((size_t)lane_page_entries,sizeof(*state->kv_lane_logical_pages));
-	state->kv_lane_page_count = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_page_count));
-	state->kv_lane_mutable_page = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutable_page));
-	state->kv_lane_mutation_flags = (uint32_t *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_mutation_flags));
-	state->kv_lane_cache_lanes = (SparkModelDriverCacheLane *)calloc(state->resident_sequence_capacity,sizeof(*state->kv_lane_cache_lanes));
-	if ( state->kv_blocks == 0 || state->kv_resident_slot_logical_block_indices == 0 || state->kv_entries == 0 || state->kv_sequences == 0 || state->kv_hash_bucket_heads == 0 || state->kv_entry_indices_by_logical_page == 0 || state->kv_page_staging == 0 || state->kv_lane_logical_pages == 0 || state->kv_lane_page_count == 0 || state->kv_lane_mutable_page == 0 || state->kv_lane_mutation_flags == 0 || state->kv_lane_cache_lanes == 0 )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-
-	memset(&table,0,sizeof(table));
-	table.abi_version = SPARK_KV_MODEL_TABLE_ABI_VERSION;
-	table.descriptor_bytes = SPARK_KV_MODEL_TABLE_BYTES;
-	SparkGlmKvFillCapacityRequest(&table.capacity_request);
-
-	table.arena_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
-	table.arena_configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
-	table.arena_configuration.logical_block_count = state->page_count;
-	table.arena_configuration.block_token_count = SPARK_GLM_KV_BLOCK_TOKEN_COUNT;
-	table.arena_configuration.resident_block_capacity = state->page_count;
-	table.arena_configuration.layer_count = state->layer_count;
-	table.arena_configuration.kv_head_count = SPARK_GLM_KV_ARENA_KV_HEAD_COUNT;
-	table.arena_configuration.head_dim = SPARK_GLM_KV_ARENA_HEAD_DIMENSION;
-	table.arena_configuration.bytes_per_scalar = SPARK_GLM_KV_BYTES_PER_SCALAR;
-	table.arena_configuration.key_device_base = state->kv_cache;
-	table.arena_configuration.blocks = state->kv_blocks;
-	table.arena_configuration.resident_slot_logical_block_indices = state->kv_resident_slot_logical_block_indices;
-
-	table.page_store_config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
-	table.page_store_config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
-	table.page_store_config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
-	table.page_store_config.logical_page_capacity = state->page_count;
-	table.page_store_config.transfer_capacity = 2u;
-	table.page_store_config.page_bytes = block_bytes;
-	if ( state->kv_backing_directory != 0 && state->kv_backing_directory[0] != '\0' )
-		table.page_store_config.backing_path = state->kv_backing_directory;
-	else
-	{
-		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
-			"/tmp/sparkpipe_glm52_kv_%s",state->model_revision);
-		table.page_store_config.backing_path = state->kv_backing_default;
-	}
-	table.page_store_config.maximum_backing_bytes =
-		state->kv_backing_maximum_bytes >= block_bytes
-			? state->kv_backing_maximum_bytes
-			: block_bytes;
-	table.page_store_config.staging_address = state->kv_page_staging;
-	table.page_store_config.staging_bytes = block_bytes;
-	table.page_store_config.copy_function = SparkGlm52PageCopy;
-	table.page_store_config.copy_context = state;
-
-	table.sequence_capacity = state->resident_sequence_capacity;
-	table.entry_capacity = state->page_count;
-	table.hash_bucket_count = state->page_count;
-	table.entries = state->kv_entries;
-	table.sequences = state->kv_sequences;
-	table.hash_bucket_heads = state->kv_hash_bucket_heads;
-	table.entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
-	table.model_id = "glm52";
-	table.model_revision = state->model_revision;
-	table.cache_layout_fingerprint = "compressed-key-value-bf16-block-major";
-
-	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
-	SPARK_RETURN(status);
-}
-
 static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 {
-	uint64_t main_page_bytes,index_page_bytes;
-	uint64_t main_total,index_total;
+	SparkStageKvConfiguration configuration;
 	uint32_t local;
-	SparkStatus status;
 	state->index_layer_count = 0u;
 	for (local=0u; local<state->layer_count; local++)
 	{
@@ -857,25 +726,36 @@ static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 		if ( SparkGlm52StagePackLayerHasFullIndexer(state->first_layer_index + local) != 0u )
 			state->index_ordinal_by_local_layer[local] = state->index_layer_count++;
 	}
-	status = SparkGlm52BuildPageTable(state);
-	main_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
-	index_page_bytes = 64u * (uint64_t)SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
-	state->kv_layer_stride_bytes = main_page_bytes;
-	state->index_layer_stride_bytes = (uint64_t)state->page_count * index_page_bytes;
-	if ( status != SPARK_STATUS_OK || state->kv_layer_stride_bytes == 0u || state->page_count > UINT64_MAX / (main_page_bytes * state->layer_count) )
-		return(status == SPARK_STATUS_OK ? SPARK_STATUS_CAPACITY_EXCEEDED : status);
-	main_total = (uint64_t)state->page_count * main_page_bytes * state->layer_count;
-	status = SparkStageModuleDeviceAllocate(&state->ledger,main_total,(void **)&state->kv_cache);
-	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u )
-	{
-		if ( state->index_layer_stride_bytes > UINT64_MAX / state->index_layer_count )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		index_total = state->index_layer_stride_bytes * state->index_layer_count;
-		status = SparkStageModuleDeviceAllocate(&state->ledger,index_total,(void **)&state->index_cache);
-	}
-	if ( status == SPARK_STATUS_OK )
-		status = SparkGlm52KvInitialize(state);
-	SPARK_RETURN(status);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.ledger = &state->ledger;
+	configuration.module_tag = SPARK_GLM52_MODULE_TAG;
+	configuration.block_token_count = SPARK_GLM_KV_BLOCK_TOKEN_COUNT;
+	configuration.region_count = state->index_layer_count != 0u ? 2u : 1u;
+	configuration.regions[0].layout = SPARK_STAGE_KV_REGION_PAGE_MAJOR;
+	configuration.regions[0].layer_count = state->layer_count;
+	configuration.regions[0].layer_page_bytes = (uint64_t)SPARK_GLM_KV_BLOCK_TOKEN_COUNT * SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
+	configuration.regions[1].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
+	configuration.regions[1].layer_count = state->index_layer_count;
+	configuration.regions[1].layer_page_bytes = (uint64_t)SPARK_GLM_KV_BLOCK_TOKEN_COUNT * SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
+	configuration.arena_kv_head_count = SPARK_GLM_KV_ARENA_KV_HEAD_COUNT;
+	configuration.arena_head_dim = SPARK_GLM_KV_ARENA_HEAD_DIMENSION;
+	configuration.arena_bytes_per_scalar = SPARK_GLM_KV_BYTES_PER_SCALAR;
+	SparkGlmKvFillCapacityRequest(&configuration.capacity_request);
+	configuration.capacity_request.index_key_layer_count = state->index_layer_count;
+	configuration.capacity_request.index_key_dimension = SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION;
+	configuration.capacity_request.index_key_bytes_per_scalar = 2u;
+	configuration.model_id = "glm52";
+	configuration.model_revision = state->model_revision;
+	configuration.layout_fingerprint = "latent-bf16-page-major-index-bf16-layer-major-v1";
+	configuration.resident_sequence_capacity = state->resident_sequence_capacity;
+	configuration.max_sequence_positions = state->max_sequence_positions;
+	configuration.max_input_row_count = state->execution_row_capacity;
+	configuration.logical_page_count = state->kv_logical_page_capacity;
+	configuration.physical_page_count = state->kv_physical_page_capacity;
+	configuration.pipeline_slot_count = state->pipeline_slot_count;
+	configuration.backing_directory = state->kv_backing_directory;
+	configuration.backing_maximum_bytes = state->kv_backing_maximum_bytes;
+	return(SparkStageKvBindingInitialize(&state->kv,&configuration));
 }
 
 static SparkStatus SparkGlm52AdmissionPredicate(
@@ -883,74 +763,16 @@ static SparkStatus SparkGlm52AdmissionPredicate(
 	const SparkModelDriverAdmissionRequest *request,
 	SparkModelDriverAdmissionDecision *decision)
 {
-	SparkGlm52ModuleState *state;
-	const SparkModelDriverCacheLane *lane;
-	uint32_t lane_index;
-	uint32_t mutation_flags;
-	SparkStatus status;
-	state = (SparkGlm52ModuleState *)context;
+	SparkGlm52ModuleState *state = (SparkGlm52ModuleState *)context;
 	if ( state == 0 || request == 0 || decision == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-	{
-		lane = &request->cache_lanes[lane_index];
-		if ( lane->resident_sequence_slot < state->resident_sequence_capacity )
-			state->kv_lane_cache_lanes[lane->resident_sequence_slot] = *lane;
-	}
-	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
-	{
-		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-		{
-			lane = &request->cache_lanes[lane_index];
-			status = SparkKvPageCacheReleaseLane(&state->kv_page_cache,lane->resident_sequence_slot,lane->sequence_id);
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-		}
-		decision->accepted = 1u;
-		decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
-		return(SPARK_STATUS_OK);
-	}
-	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) != 0u )
-	{
-		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-		{
-			lane = &request->cache_lanes[lane_index];
-			status = SparkKvPageCachePrepareLane(&state->kv_page_cache,lane,state->kv_lane_logical_pages + (uint64_t)lane->resident_sequence_slot * state->pages_per_sequence,state->pages_per_sequence,&state->kv_lane_page_count[lane->resident_sequence_slot]);
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-		}
-	}
-	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) != 0u )
-	{
-		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-		{
-			lane = &request->cache_lanes[lane_index];
-			status = SparkKvPageCacheBeginLaneTransaction(&state->kv_page_cache,lane,&state->kv_lane_mutable_page[lane->resident_sequence_slot],&mutation_flags);
-			state->kv_lane_mutation_flags[lane->resident_sequence_slot] = mutation_flags;
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-		}
-	}
-	if ( (request->admission_flags & SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) != 0u )
-	{
-		for (lane_index=0u; lane_index<request->cache_lane_count; lane_index++)
-		{
-			lane = &request->cache_lanes[lane_index];
-			status = SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,lane,state->kv_lane_mutation_flags[lane->resident_sequence_slot]);
-			if ( status != SPARK_STATUS_OK )
-				SPARK_RETURN(status);
-		}
-	}
-	decision->accepted = 1u;
-	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
-	return(SPARK_STATUS_OK);
+	return(SparkStageKvBindingAdmit(&state->kv,request,decision));
 }
 
-#include "sparkpipe/family/module/spark_module_validate_sequence_continuity.h"
 
 typedef struct SparkGlm52ClaimedContinuityContext
 {
-	const SparkGlm52ModuleState *state;
+	SparkGlm52ModuleState *state;
 	const SparkGlm52ResidentDecodeStageBatchView *batch;
 	uint8_t *bound;
 	uint64_t *sequence_ids;
@@ -999,7 +821,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->resident_sequence_capacity = state->resident_sequence_capacity;
 	wave->execution_row_capacity = state->execution_row_capacity;
 	wave->max_sequence_positions = state->max_sequence_positions;
-	wave->pages_per_sequence = state->pages_per_sequence;
+	wave->pages_per_sequence = state->kv.pages_per_sequence;
 	wave->owns_embedding = state->owns_embedding;
 	wave->owns_final_head = state->owns_final_head;
 	wave->sideband_input = SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index);
@@ -1029,12 +851,12 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
 	wave->layers = state->layers;
 	wave->slot = slot;
-	wave->kv_cache = state->kv_cache;
-	wave->kv_layer_stride_bytes = state->kv_layer_stride_bytes;
-	wave->index_cache = state->index_cache;
-	wave->index_layer_stride_bytes = state->index_layer_stride_bytes;
+	wave->kv_cache = state->kv.region_base[0];
+	wave->kv_layer_stride_bytes = state->kv.region_layer_stride_bytes[0];
+	wave->index_cache = state->kv.region_count > 1u ? state->kv.region_base[1] : 0;
+	wave->index_layer_stride_bytes = state->kv.region_count > 1u ? state->kv.region_layer_stride_bytes[1] : 0u;
 	wave->index_ordinal_by_local_layer = state->index_ordinal_by_local_layer;
-	wave->page_table = state->page_table;
+	wave->page_table = state->kv.page_table;
 	wave->multiprocessor_count = state->multiprocessor_count;
 	wave->decode_split_context_threshold = state->decode_split_context_threshold;
 	wave->attention_split_partials_f32 = slot->attention_split_partials_f32;
@@ -2024,32 +1846,15 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 	slot = &state->slots[async->slot_index];
 	if ( slot->host_kv_access_error[0] != 0u )
 		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+	async->completion.status = SparkStageKvBindingFinish(&state->kv,async->lane_indices,async->lane_count,async->completion.status,0u,async->lane_bound,async->lane_sequence_ids,async->lane_next_positions);
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )
 			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)async->row_count * sizeof(uint32_t));
-		for (lane=0u; lane<async->lane_count; lane++)
-		{
-			resident = async->lane_indices[lane];
-			atomic_store_explicit(&state->lane_bound[resident],async->lane_bound[lane],memory_order_release);
-			atomic_store_explicit(&state->lane_sequence_ids[resident],async->lane_sequence_ids[lane],memory_order_release);
-			atomic_store_explicit(&state->lane_next_positions[resident],async->lane_next_positions[lane],memory_order_release);
-			if ( SparkKvPageCacheCompleteLane(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident]) != SPARK_STATUS_OK )
-				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-		}
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
 	}
 	else
-	{
-		for (lane=0u; lane<async->lane_count; lane++)
-		{
-			resident = async->lane_indices[lane];
-			if ( SparkKvPageCacheRollbackLaneTransaction(&state->kv_page_cache,&state->kv_lane_cache_lanes[resident],state->kv_lane_mutation_flags[resident]) != SPARK_STATUS_OK )
-				async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-			atomic_store_explicit(&state->lane_bound[resident],0u,memory_order_release);
-		}
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
-	}
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
 }
@@ -2411,7 +2216,13 @@ static SparkStatus SparkGlm52ChainModeConfigure(SparkGlm52ModuleState *state)
 	return(SPARK_STATUS_OK);
 }
 
-#include "sparkpipe/family/module/spark_module_prepare_claimed_continuity.h"
+static SparkStatus SparkGlm52PrepareClaimedContinuity(void *prepare_context)
+{
+	SparkGlm52ClaimedContinuityContext *context = (SparkGlm52ClaimedContinuityContext *)prepare_context;
+	const SparkGlm52ResidentDecodeStageBatchView *batch = context->batch;
+	return(SparkStageKvBindingContinuity(&context->state->kv,context->state->lane_states,batch->row_count,batch->active_sequence_count,batch->row_resident_slots,batch->row_sequence_ids,batch->row_positions,context->bound,context->sequence_ids,context->next_positions));
+}
+
 
 static SparkStatus SparkGlm52ExecuteBatch(
 	SparkGlm52ModuleState *state,
@@ -2459,10 +2270,21 @@ static SparkStatus SparkGlm52ExecuteBatch(
 		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
 		SPARK_RETURN(status);
 	}
+	status = SparkStageKvBindingClaim(&state->kv,frame,batch->active_sequence_count,batch->row_resident_slots,batch->row_sequence_ids,batch->row_positions,simulated_next);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkStageModuleSlotRelease(state->slot_states,slot_index);
+		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
+		SPARK_RETURN(status);
+	}
 	SparkGlmStagePrepareAsyncCompletion(state,frame,batch,simulated_bound,simulated_sequence,simulated_next,slot_index);
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
-	status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"kv_access_reset");
+	status = SparkStageKvBindingUploadPageTables(&state->kv,batch->row_resident_slots,batch->active_sequence_count,slot->stream);
+	if ( status == SPARK_STATUS_OK )
+	{
+		error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
+		status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"kv_access_reset");
+	}
 	wave_rows = status == SPARK_STATUS_OK ? SparkGlmStageRoundMajorWaveRows(state,batch,0u) : 0u;
 	if ( status == SPARK_STATUS_OK && wave_rows == 0u )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
@@ -2475,11 +2297,9 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	if ( status != SPARK_STATUS_OK )
 	{
 		(void)cudaStreamSynchronize((cudaStream_t)slot->stream);
-		SparkGlm52InvalidateClaimedLanes(state,batch->row_resident_slots,batch->active_sequence_count);
-		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
-		SparkStageModuleSlotRelease(state->slot_states,slot_index);
-		SparkStageModuleIndexSetRelease(state->lane_states,state->resident_sequence_capacity,batch->row_resident_slots,batch->active_sequence_count);
-		SPARK_RETURN(status);
+		state->completions[slot_index].completion.status = status;
+		SparkGlm52CompleteAsync(&state->completions[slot_index]);
+		return(SPARK_STATUS_OK);
 	}
 	chain->state = state;
 	chain->slot = slot;
@@ -2554,7 +2374,6 @@ static SparkStatus SparkGlm52ModuleExecuteFrame(
 	SPARK_RETURN(status);
 }
 
-#include "sparkpipe/family/module/spark_module_reset_page_cache.h"
 
 static SparkStatus SparkGlm52ModuleAdmit(
 	void *module_state,
@@ -2569,7 +2388,7 @@ static SparkStatus SparkGlm52ModuleAdmit(
 	if ( state == 0 || request == 0 || decision == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
-		return(SparkGlm52ResetPageCache(state,request,decision));
+		return(SparkStageKvBindingAdmitReset(&state->kv,request,decision,state->slot_states,state->lane_states,state->execution_stream));
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
 	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 	{
@@ -2607,9 +2426,7 @@ static void SparkGlm52ModuleSnapshotExtend(
 	uint32_t index,resident_count;
 	state = (SparkGlm52ModuleState *)module_state;
 	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
-	resident_count = 0u;
-	for (index=0u; index<state->resident_sequence_capacity; index++)
-		resident_count += atomic_load_explicit(&state->lane_bound[index],memory_order_acquire) != 0u ? 1u : 0u;
+	resident_count = SparkStageKvBindingResidentCount(&state->kv);
 	snapshot->resident_sequence_count = resident_count;
 	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
 }
@@ -2669,21 +2486,8 @@ static SparkStatus SparkGlm52ModuleStateTeardown(void *module_state)
 			return(status);
 		state->lazy_pack = 0;
 	}
-	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
-		SparkKvPageStoreDestroy(&state->kv_page_store);
+	SparkStageKvBindingDestroy(&state->kv);
 	SparkGlm52ReleaseSlotHost(state);
-	free(state->kv_blocks);
-	free(state->kv_resident_slot_logical_block_indices);
-	free(state->kv_entries);
-	free(state->kv_sequences);
-	free(state->kv_hash_bucket_heads);
-	free(state->kv_entry_indices_by_logical_page);
-	free(state->kv_page_staging);
-	free(state->kv_lane_logical_pages);
-	free(state->kv_lane_page_count);
-	free(state->kv_lane_mutable_page);
-	free(state->kv_lane_mutation_flags);
-	free(state->kv_lane_cache_lanes);
 	return(SPARK_STATUS_OK);
 }
 
@@ -2729,12 +2533,6 @@ static SparkStatus SparkGlm52ModulePrepare(
 		SPARK_RETURN(status);
 	SparkStageModuleAtomicStateArrayInitialize(state->slot_states,state->pipeline_slot_count);
 	SparkStageModuleAtomicStateArrayInitialize(state->lane_states,state->resident_sequence_capacity);
-	for (lane=0u; lane<state->resident_sequence_capacity; lane++)
-	{
-		atomic_init(&state->lane_bound[lane],0u);
-		atomic_init(&state->lane_sequence_ids[lane],0u);
-		atomic_init(&state->lane_next_positions[lane],0u);
-	}
 	atomic_init(&state->host_callback_completion_count,0u);
 	atomic_init(&state->tp_next_ordinal,0u);
 	return(SPARK_STATUS_OK);

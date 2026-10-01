@@ -21,6 +21,7 @@ EOS_TOKEN_IDS = [154820, 154827, 154829]
 TOKENIZER_SHA256 = "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
 TOKENIZER_TOKEN_COUNT = 154856
 BLOCK_TOKENS = 64
+KV_PAGE_BYTES = BLOCK_TOKENS * (78 * 576 + 21 * 128) * 2
 MAX_LANES = 16
 
 
@@ -101,6 +102,7 @@ def stage_config(rank, lane, arm, max_sequence_positions, execution_row_capacity
 def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight, root=None):
     ports = lane_ports(lane)
     pages = sequences * ((max_sequence_positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS)
+    spill_pages = kv_backing_bytes // KV_PAGE_BYTES
     nodes = []
     for rank, host in enumerate(HOSTS):
         root_path = runtime_root(host, lane, root)
@@ -128,7 +130,7 @@ def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions,
             "max_active_sequences": sequences,
             "max_input_rows": row_capacity,
             "resident_sequence_capacity": sequences,
-            "kv_logical_page_capacity": pages,
+            "kv_logical_page_capacity": pages + spill_pages,
             "kv_physical_page_capacity": pages,
             "max_sequence_positions": max_sequence_positions,
         },

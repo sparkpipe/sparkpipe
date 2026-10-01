@@ -182,6 +182,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTempl
 	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
 		SPARK_GLM52_SERVING_TOPOLOGY_FLAG),
 	.stage_count = 0u,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
@@ -783,6 +784,8 @@ static SparkStatus SparkGlm52ServingAdmit(
 
 #include "sparkpipe/family/serving/spark_serving_prefetch_scratch.h"
 
+#include "sparkpipe/family/serving/spark_serving_abort_unexecuted.h"
+
 static SparkStatus SparkGlm52ServingSubmit(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission)
@@ -840,7 +843,7 @@ static SparkStatus SparkGlm52ServingSubmit(
 		status = state->program->submit(state->driver_instance,&frame);
 	if ( status != SPARK_STATUS_OK )
 		pending->common.active = 0u;
-	SPARK_RETURN(status);
+	SPARK_RETURN(SparkGlm52ServingAbortUnexecuted(state,submission,status));
 }
 
 #include "sparkpipe/family/serving/spark_serving_quiesce.h"
