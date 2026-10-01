@@ -29,6 +29,7 @@ typedef struct ProbeOptions
 	uint32_t phases;
 	uint32_t window;
 	uint32_t gid_index;
+	uint32_t traffic_class;
 	uint32_t port;
 	uint32_t free_running;
 	const char *device;
@@ -139,7 +140,7 @@ static void ProbeBarrier(const ProbeOptions *options,const int *clients,int serv
 	ProbeReceiveAll(server_fd,&token,1u);
 }
 
-static void ProbeConnect(struct ibv_qp *qp,const ProbeEndpoint *remote,uint32_t gid_index)
+static void ProbeConnect(struct ibv_qp *qp,const ProbeEndpoint *remote,uint32_t gid_index,uint32_t traffic_class)
 {
 	struct ibv_qp_attr attributes;
 	memset(&attributes,0,sizeof(attributes));
@@ -159,6 +160,7 @@ static void ProbeConnect(struct ibv_qp *qp,const ProbeEndpoint *remote,uint32_t 
 	memcpy(attributes.ah_attr.grh.dgid.raw,remote->gid,sizeof(remote->gid));
 	attributes.ah_attr.grh.sgid_index = (uint8_t)gid_index;
 	attributes.ah_attr.grh.hop_limit = 1;
+	attributes.ah_attr.grh.traffic_class = (uint8_t)traffic_class;
 	if ( ibv_modify_qp(qp,&attributes,IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) != 0 )
 		ProbeFail("qp rtr");
 	memset(&attributes,0,sizeof(attributes));
@@ -216,7 +218,7 @@ static uint64_t ProbeCounter(const char *device,const char *name)
 int main(int argc,char **argv)
 {
 	static const char *counters[] = { "out_of_sequence","packet_seq_err","roce_adp_retrans","local_ack_timeout_err" };
-	ProbeOptions options = { 0u,16u,262144u,200u,0u,3u,47100u,0u,"rocep1s0f1","10.10.100.10" };
+	ProbeOptions options = { 0u,16u,262144u,200u,0u,3u,0u,47100u,0u,"rocep1s0f1","10.10.100.10" };
 	ProbeEndpoint table[PROBE_MAX_RANKS * PROBE_MAX_RANKS];
 	struct ibv_qp *qps[PROBE_MAX_RANKS];
 	struct ibv_device **devices;
@@ -238,17 +240,18 @@ int main(int argc,char **argv)
 		else if ( strcmp(argv[index],"--phases") == 0 ) options.phases = (uint32_t)atoi(argv[index + 1]);
 		else if ( strcmp(argv[index],"--window") == 0 ) options.window = (uint32_t)atoi(argv[index + 1]);
 		else if ( strcmp(argv[index],"--gid-index") == 0 ) options.gid_index = (uint32_t)atoi(argv[index + 1]);
+		else if ( strcmp(argv[index],"--traffic-class") == 0 ) options.traffic_class = (uint32_t)atoi(argv[index + 1]);
 		else if ( strcmp(argv[index],"--port") == 0 ) options.port = (uint32_t)atoi(argv[index + 1]);
 		else if ( strcmp(argv[index],"--free-running") == 0 ) options.free_running = (uint32_t)atoi(argv[index + 1]);
 		else if ( strcmp(argv[index],"--device") == 0 ) options.device = argv[index + 1];
 		else if ( strcmp(argv[index],"--coordinator") == 0 ) options.coordinator = argv[index + 1];
 		else
 		{
-			fprintf(stderr,"usage: %s --rank R [--ranks N] [--bytes B] [--phases P] [--window W (0 = post every peer at once)] [--free-running 0|1] [--device D] [--gid-index G] [--coordinator IP] [--port P]\n",argv[0]);
+			fprintf(stderr,"usage: %s --rank R [--ranks N] [--bytes B] [--phases P] [--window W (0 = post every peer at once)] [--free-running 0|1] [--device D] [--gid-index G] [--traffic-class T (DSCP << 2 | ECN)] [--coordinator IP] [--port P]\n",argv[0]);
 			return 2;
 		}
 	}
-	if ( options.ranks < 2u || options.ranks > PROBE_MAX_RANKS || options.rank >= options.ranks || options.bytes == 0u || options.phases == 0u )
+	if ( options.ranks < 2u || options.ranks > PROBE_MAX_RANKS || options.rank >= options.ranks || options.bytes == 0u || options.phases == 0u || options.traffic_class > 255u )
 		return 2;
 	devices = ibv_get_device_list(0);
 	for (index=0; devices != 0 && devices[index] != 0; index++)
@@ -295,7 +298,7 @@ int main(int argc,char **argv)
 	ProbeExchange(&options,clients,&server_fd,table);
 	for (rank=0u; rank<options.ranks; rank++)
 		if ( rank != options.rank )
-			ProbeConnect(qps[rank],&table[rank * options.ranks + options.rank],options.gid_index);
+			ProbeConnect(qps[rank],&table[rank * options.ranks + options.rank],options.gid_index,options.traffic_class);
 	samples = (uint64_t *)calloc(options.phases,sizeof(uint64_t));
 	for (index=0; index<4; index++)
 		before[index] = ProbeCounter(options.device,counters[index]);
@@ -348,8 +351,8 @@ int main(int argc,char **argv)
 	ProbeBarrier(&options,clients,server_fd);
 	total_ns = ProbeNowNs() - total_ns;
 	qsort(samples,options.phases,sizeof(uint64_t),ProbeCompare);
-	printf("PROBE rank=%u ranks=%u bytes=%u window=%u phases=%u free_running=%u total_ms=%.1f p50_us=%.1f p90_us=%.1f p99_us=%.1f max_us=%.1f gbps_p50=%.2f",
-	    options.rank,options.ranks,options.bytes,options.window,options.phases,options.free_running,total_ns / 1e6,
+	printf("PROBE traffic_class=%u rank=%u ranks=%u bytes=%u window=%u phases=%u free_running=%u total_ms=%.1f p50_us=%.1f p90_us=%.1f p99_us=%.1f max_us=%.1f gbps_p50=%.2f",
+	    options.traffic_class,options.rank,options.ranks,options.bytes,options.window,options.phases,options.free_running,total_ns / 1e6,
 	    samples[options.phases / 2u] / 1e3,samples[(options.phases * 9u) / 10u] / 1e3,samples[(options.phases * 99u) / 100u] / 1e3,samples[options.phases - 1u] / 1e3,
 	    (double)(options.ranks - 1u) * options.bytes * 8.0 / (double)samples[options.phases / 2u]);
 	for (index=0; index<4; index++)
