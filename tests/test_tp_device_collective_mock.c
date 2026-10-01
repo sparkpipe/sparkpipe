@@ -794,7 +794,7 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
     CHECK(SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs,"captured rounds are not deferred rounds");
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK,"a deferred round is pending");
     control->rounds_done = 5u;
-    CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 0u && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured round records its own counter reset while deferred rounds are pending");
+    CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 5u && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured hardware round records no counter reset: graph replays are checked through the error word");
     control->rounds_done = 1u;
     CHECK(SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK,"the pending deferred round still verifies");
     TestGraphSettle(&collective,control);
