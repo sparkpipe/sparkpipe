@@ -28,7 +28,9 @@ extern "C" SparkStatus SparkStageModuleCudaStatus(const char *module_tag, cudaEr
 #define SPARK_MESH_LADDER_MODULE_TAG "mesh_lane_ladder"
 #include "sparkpipe/family/module/spark_module_combine.h"
 
+#ifndef LADDER_HIDDEN
 #define LADDER_HIDDEN 4096u
+#endif
 #define LADDER_MAX_TIMED 8192u
 #define LADDER_SHM_BYTES SPARK_WEIGHTD_MESH_REGION_BYTES
 #define LADDER_WAIT_NS UINT64_C(60000000000)
