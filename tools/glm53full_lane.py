@@ -162,8 +162,8 @@ def render(arguments):
         raise SystemExit("weightd socket must be an absolute .sock path")
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv backing must be a finite positive byte count")
-    if not 1 <= arguments.sequences <= 16 or not 1 <= arguments.inflight <= 4:
-        raise SystemExit("sequences must be 1..16 and inflight 1..4")
+    if not 1 <= arguments.sequences <= 1024 or not 1 <= arguments.inflight <= 4:
+        raise SystemExit("sequences must be 1..1024 (the serving adapter's active-sequence ceiling) and inflight 1..4")
     files = {"model_resident.json": deployment(arguments.lane, arm, arguments.socket, arguments.kv_backing_bytes,
                                                arguments.max_sequence_positions, arguments.sequences,
                                                arguments.execution_row_capacity, arguments.inflight,
