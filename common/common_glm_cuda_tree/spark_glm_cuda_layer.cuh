@@ -46,6 +46,7 @@ using GlmIndexKv = LmKvLatent<
 #define GLM_LAYER_WARPS SPARK_LLM_TILE_WARPS
 #define GLM_LAYER_STREAM_EXPERT_ROWS 256u
 #define GLM_HEAD_TILE SPARK_LLM_HEAD_TILE
+#define GLM_HEAD_ROWS 16u
 
 static_assert(
     GLM_HIDDEN % LmBf16Format::kTileK == 0u,
@@ -1404,20 +1405,36 @@ static int32_t GlmHead(
         GLM_HIDDEN,
         GLM_HIDDEN,
         GLM_RMS_EPSILON);
-    LM_LAUNCH(
-        (LmHeadCandidateKernel<GLM_LAYER_THREADS, GLM_HEAD_TILE>),
-        dim3(tiles, rows),
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->normed_bf16,
-        (const uint16_t *)head_weight,
-        token_ids,
-        buffers->head_candidate_score,
-        buffers->head_candidate_token,
-        rows,
-        GLM_HIDDEN,
-        vocabulary);
+    if (rows > 1u)
+        LM_LAUNCH(
+            (LmHeadCandidateRowsKernel<GLM_LAYER_THREADS, GLM_HEAD_TILE, GLM_HEAD_ROWS>),
+            dim3(tiles, (rows + GLM_HEAD_ROWS - 1u) / GLM_HEAD_ROWS),
+            GLM_LAYER_THREADS,
+            0,
+            stream,
+            buffers->normed_bf16,
+            (const uint16_t *)head_weight,
+            token_ids,
+            buffers->head_candidate_score,
+            buffers->head_candidate_token,
+            rows,
+            GLM_HIDDEN,
+            vocabulary);
+    else
+        LM_LAUNCH(
+            (LmHeadCandidateKernel<GLM_LAYER_THREADS, GLM_HEAD_TILE>),
+            dim3(tiles, rows),
+            GLM_LAYER_THREADS,
+            0,
+            stream,
+            buffers->normed_bf16,
+            (const uint16_t *)head_weight,
+            token_ids,
+            buffers->head_candidate_score,
+            buffers->head_candidate_token,
+            rows,
+            GLM_HIDDEN,
+            vocabulary);
     LM_LAUNCH(
         (LmHeadCommitKernel<GLM_LAYER_THREADS>),
         rows,

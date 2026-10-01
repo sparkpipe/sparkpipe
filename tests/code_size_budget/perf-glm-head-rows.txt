@@ -1,0 +1,2 @@
++17
+GLM LM head: rows above one run LmHeadCandidateRowsKernel (16 rows share each vocab tile) instead of re-reading the 119 MB vocab shard once per row; the B1 per-row launch stays.
