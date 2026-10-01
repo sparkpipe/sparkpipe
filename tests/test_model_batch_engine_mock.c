@@ -1340,6 +1340,13 @@ static void TestScenarioDecodeAfterPrefill(const SparkModelResidentDeployment *d
 	SparkModelBatchEngine *engine;
 	uint32_t prompt[16] = {11u,12u,13u,14u,15u,16u,17u,18u,19u,20u,21u,22u,23u,24u,25u,26u};
 	uint32_t index,last_first,first_second;
+#ifndef DEBUG
+	MockResidentClientReset();
+	engine = 0;
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,8u,SPARK_MODEL_BATCH_ENGINE_FLAG_DECODE_AFTER_PREFILL);
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_INVALID_ARGUMENT && engine == 0,"decode after prefill: a release engine refuses the DEBUG measurement barrier");
+	return;
+#endif
 	MockResidentClientReset();
 	engine = TestConnectFlags(deployment,&state,runtime_root,4u,8u,SPARK_MODEL_BATCH_ENGINE_FLAG_DECODE_AFTER_PREFILL);
 	if ( engine == 0 )

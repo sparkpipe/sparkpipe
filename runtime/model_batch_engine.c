@@ -1341,6 +1341,8 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->event_context = configuration->event_context;
 	engine->admission_open = 1u;
 	engine->decode_barrier_closed = (configuration->flags & SPARK_MODEL_BATCH_ENGINE_FLAG_DECODE_AFTER_PREFILL) != 0u ? 1u : 0u;
+	if ( engine->decode_barrier_closed != 0u )
+		fprintf(stderr,"batch engine DEBUG decode-after-prefill barrier armed: decode waits until every submitted prompt has finished prefill\n");
 	engine->next_work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
 	engine->cache_publication_epoch = 1u;
 	if ( engine->max_prefill_rows > limits->max_input_row_count )
@@ -2372,7 +2374,10 @@ static uint32_t SparkModelBatchChooseWorkKind(
 			available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH]++;
 	}
 	if ( engine->decode_barrier_closed != 0u && pending_prefill == 0u && available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] != 0u )
+	{
 		engine->decode_barrier_closed = 0u;
+		fprintf(stderr,"batch engine DEBUG decode-after-prefill barrier open: ready_decode=%u monotonic_ns=%llu\n",available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE],(unsigned long long)SparkModelBatchNowNs());
+	}
 	if ( engine->decode_barrier_closed != 0u )
 		available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
 	memset(minimum_by_kind,0,sizeof(minimum_by_kind));

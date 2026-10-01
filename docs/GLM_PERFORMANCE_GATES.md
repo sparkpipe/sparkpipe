@@ -144,14 +144,20 @@ scheduling, prefill and first-token work, so it does not measure prefill
 compute alone.
 
 Without help, that window still mixes decode steps with the prefill waves of
-later sequences. Set `SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL=1` on the client
-to measure decode alone. The batch engine then holds every decode wave until
-all submitted prompts have finished prefill. After that it schedules normally.
+later sequences. To measure decode alone, run the DEBUG client
+`build/debug/sparkpipe_model_batch` (the GLM Full lane build installs it as
+`sparkpipe_model_batch_debug`) with `SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL=1`.
+The barrier changes execution shape, so it exists only in DEBUG builds (I22): a
+release client refuses the variable and a release engine refuses the flag. The
+engine logs when the barrier is armed and when it opens. It holds every decode
+wave until all submitted prompts have finished prefill, then schedules
+normally.
 Decode runs on the KV cache that the real prefill wrote; nothing is copied or
 replayed. Wave composition differs from an unbarriered run, so compare tokens
 against a barriered reference. The window from the last
-first token to the earliest last token holds decode waves only, at the full
-batch. The engine refuses (`CAPACITY_EXCEEDED`) a request beyond the resident
+first token to the earliest last token of a sequence that ran its whole budget
+holds decode waves only. Sequences that stop early on EOS leave the batch, so
+report the median rows per step with the rate. The engine refuses (`CAPACITY_EXCEEDED`) a request beyond the resident
 sequence capacity while the barrier is closed: an unbound prompt could never
 prefill, so the barrier would never open.
 
