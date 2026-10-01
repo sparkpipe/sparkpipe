@@ -8,7 +8,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include <stdio.h>
 #include "sparkpipe/spark_tp_mesh_round_control.h"
-#define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V12-FUSED-GATES"
+#define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V13-POLLED-GATES"
 #define SPARK_TP_MESH_ERROR_PARITY_MISMATCH 0xFFFFFFFFFF000000ull
 #define SPARK_TP_MESH_ERROR_CANCELLED 0xFFFFFFFFFE000000ull
 #if defined(__CUDACC__)
@@ -891,6 +891,7 @@ extern "C" cudaError_t SparkTpLaunchMeshWait(cudaStream_t stream,
 
 #define SPARK_TP_MESH_PUBLISH_GUARD 1u
 #define SPARK_TP_MESH_PUBLISH_REQUEST 2u
+#define SPARK_TP_MESH_PUBLISH_SHIP 4u
 
 static __device__ void SparkTpMeshGateRequest(
     volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,
@@ -919,12 +920,22 @@ static __device__ void SparkTpMeshGateRequest(
     __threadfence_system();
 }
 
-static __global__ void SparkTpMeshHardwareRequestKernel(
-    volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,
-    uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns)
+static __device__ void SparkTpMeshGateAwait(
+    const volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control)
 {
-    if ( threadIdx.x != 0u || blockIdx.x != 0u ) return;
-    SparkTpMeshGateRequest(gate,control,kind,peer_mask,phase_offset,timeout_ns);
+    uint64_t started = SparkTpGlobalTimerNs(),limit = SparkTpLdcvU64(&gate->timeout_ns);
+    limit = limit > UINT64_MAX / 2u ? UINT64_MAX : 2u * limit;
+    while ( SparkTpLdcvU64(&gate->ready) != 1u )
+        if ( SparkTpGlobalTimerNs() - started > limit )
+        {
+            if ( control->error_word == 0u )
+            {
+                control->error_word = UINT64_MAX;
+                control->diag_word = SparkTpLdcvU64(&gate->request_id);
+            }
+            return;
+        }
+    __threadfence_system();
 }
 
 static __device__ void SparkTpMeshGateGuard(
@@ -951,6 +962,17 @@ static __global__ void SparkTpMeshHardwareGuardKernel(
     const volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control)
 {
     if ( threadIdx.x != 0u || blockIdx.x != 0u ) return;
+    SparkTpMeshGateAwait(gate,control);
+    SparkTpMeshGateGuard(gate,control);
+}
+
+static __global__ void SparkTpMeshHardwareWaitKernel(
+    volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,
+    uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns)
+{
+    if ( threadIdx.x != 0u || blockIdx.x != 0u ) return;
+    SparkTpMeshGateRequest(gate,control,kind,peer_mask,phase_offset,timeout_ns);
+    SparkTpMeshGateAwait(gate,control);
     SparkTpMeshGateGuard(gate,control);
 }
 
@@ -997,6 +1019,11 @@ static __global__ void SparkTpMeshHardwarePublishKernel(
     __shared__ uint64_t failed;
     if ( threadIdx.x == 0u )
     {
+        if ( (mode & SPARK_TP_MESH_PUBLISH_SHIP) != 0u )
+        {
+            SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
+            SparkTpMeshGateAwait(gate,control);
+        }
         if ( (mode & SPARK_TP_MESH_PUBLISH_GUARD) != 0u ) SparkTpMeshGateGuard(gate,control);
         started = SparkTpGlobalTimerNs();
         if ( control->seq > UINT32_MAX - phase_offset ) control->error_word = UINT64_MAX;
@@ -1227,18 +1254,9 @@ extern "C" cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device_out)
 {
     if ( host == 0 || device_out == 0 ) return cudaErrorInvalidValue;
     *device_out = 0;
-    int ordinal = 0,supported = 0;
-    cudaError_t status = cudaGetDevice(&ordinal);
-    if ( status != cudaSuccess ) return status;
-    CUdevice device;
-    status = SparkTpMeshDriverStatus(cuDeviceGet(&device,ordinal),"device");
-    if ( status != cudaSuccess ) return status;
-    status = SparkTpMeshDriverStatus(cuDeviceGetAttribute(&supported,
-        CU_DEVICE_ATTRIBUTE_CAN_USE_64_BIT_STREAM_MEM_OPS,device),"memop-capability");
-    if ( status != cudaSuccess ) return status;
-    if ( supported == 0 ) return cudaErrorNotSupported;
+    cudaError_t status;
     const void *kernels[] = {
-        (const void *)SparkTpMeshHardwareRequestKernel,
+        (const void *)SparkTpMeshHardwareWaitKernel,
         (const void *)SparkTpMeshHardwareGuardKernel,
         (const void *)SparkTpMeshHardwarePublishKernel,
         (const void *)SparkTpMeshHardwareDirectKernel,
@@ -1276,49 +1294,8 @@ extern "C" cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device_out)
     return cudaSuccess;
 }
 
-static cudaError_t SparkTpMeshHardwareStreamWait(cudaStream_t stream,SparkWeightdMeshWaitRequest *gate)
-{
-    cudaStreamCaptureStatus capture;
-    cudaError_t status = cudaStreamIsCapturing(stream,&capture);
-    if ( status != cudaSuccess ) return status;
-    if ( capture == cudaStreamCaptureStatusNone )
-        status = SparkTpMeshDriverStatus(cuStreamWaitValue64((CUstream)stream,
-            (CUdeviceptr)&gate->ready,1u,CU_STREAM_WAIT_VALUE_EQ),"stream-wait");
-    else if ( capture == cudaStreamCaptureStatusActive )
-    {
-        CUstreamCaptureStatus driver_capture;
-        cuuint64_t id;
-        CUgraph graph;
-        const CUgraphNode *dependencies;
-        size_t dependency_count;
-        status = SparkTpMeshDriverStatus(cuStreamGetCaptureInfo((CUstream)stream,
-            &driver_capture,&id,&graph,&dependencies,0,&dependency_count),"capture-info");
-        if ( status != cudaSuccess ) return status;
-        CUstreamBatchMemOpParams operation = {};
-        operation.operation = CU_STREAM_MEM_OP_WAIT_VALUE_64;
-        operation.waitValue.address = (CUdeviceptr)&gate->ready;
-        operation.waitValue.value64 = 1u;
-        operation.waitValue.flags = CU_STREAM_WAIT_VALUE_EQ;
-        CUDA_BATCH_MEM_OP_NODE_PARAMS params = {};
-        status = SparkTpMeshDriverStatus(cuCtxGetCurrent(&params.ctx),"capture-context");
-        if ( status != cudaSuccess ) return status;
-        params.count = 1u;
-        params.paramArray = &operation;
-        CUgraphNode wait;
-        status = SparkTpMeshDriverStatus(cuGraphAddBatchMemOpNode(&wait,graph,
-            dependencies,dependency_count,&params),"capture-wait");
-        if ( status != cudaSuccess ) return status;
-        status = SparkTpMeshDriverStatus(cuStreamUpdateCaptureDependencies((CUstream)stream,
-            &wait,0,1u,CU_STREAM_SET_CAPTURE_DEPENDENCIES),"capture-dependency");
-    }
-    else return cudaErrorStreamCaptureInvalidated;
-    return status;
-}
-
 static cudaError_t SparkTpMeshHardwarePeerGuard(cudaStream_t stream,SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control)
 {
-    cudaError_t status = SparkTpMeshHardwareStreamWait(stream,gate);
-    if ( status != cudaSuccess ) return status;
     SparkTpMeshHardwareGuardKernel<<<1,1,0u,stream>>>(gate,control);
     return cudaPeekAtLastError();
 }
@@ -1327,23 +1304,16 @@ static cudaError_t SparkTpMeshHardwareWait(cudaStream_t stream,
     SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,
     uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns)
 {
-    SparkTpMeshHardwareRequestKernel<<<1,1,0u,stream>>>(
+    SparkTpMeshHardwareWaitKernel<<<1,1,0u,stream>>>(
         gate,control,kind,peer_mask,phase_offset,timeout_ns);
-    cudaError_t status = cudaPeekAtLastError();
-    return status == cudaSuccess ? SparkTpMeshHardwarePeerGuard(stream,gate,control) : status;
+    return cudaPeekAtLastError();
 }
 
 static cudaError_t SparkTpMeshHardwareExchange(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,const uint8_t *source,uint64_t bytes,uint64_t offset,uint64_t doorbell_bytes,SparkWeightdMeshRoute route,uint64_t timeout_ns)
 {
     cudaError_t status;
-    SparkTpMeshHardwareRequestKernel<<<1,1,0u,stream>>>(request,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
-    status = cudaPeekAtLastError();
-    if ( status == cudaSuccess )
-        status = SparkTpMeshHardwareStreamWait(stream,request);
-    if ( status != cudaSuccess )
-        return status;
     SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,entry,control,rank,source,bytes,offset,doorbell_bytes,route.word,1u,1u,
-        request,SPARK_TP_MESH_PUBLISH_GUARD | SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns);
+        request,SPARK_TP_MESH_PUBLISH_SHIP | SPARK_TP_MESH_PUBLISH_GUARD | SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns);
     status = cudaPeekAtLastError();
     return status == cudaSuccess ? SparkTpMeshHardwarePeerGuard(stream,request,control) : status;
 }

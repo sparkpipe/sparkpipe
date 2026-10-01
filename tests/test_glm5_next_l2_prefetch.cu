@@ -24,15 +24,15 @@ typedef struct PrefetchFixture
     SparkGlm5NextCudaWave wave;
     uint8_t *weights;
     uint32_t *marks;
-    uint64_t *flag_host;
-    CUdeviceptr flag_device;
+    SparkWeightdMeshWaitRequest *gate;
+    SparkTpMeshRoundControl *control;
     cudaStream_t stream;
 }
 PrefetchFixture;
 
 typedef struct RoundNodes
 {
-    cudaGraphNode_t publish,request,wait,guard,combine;
+    cudaGraphNode_t publish,guard,combine;
 }
 RoundNodes;
 
@@ -66,9 +66,12 @@ static void FixtureCreate(PrefetchFixture *fixture)
     CUDA(cudaMemset(fixture->weights,0,weight_bytes + 4096u));
     CUDA(cudaMalloc((void **)&fixture->marks,64u * sizeof(uint32_t)));
     CUDA(cudaMemset(fixture->marks,0,64u * sizeof(uint32_t)));
-    CUDA(cudaHostAlloc((void **)&fixture->flag_host,sizeof(uint64_t),cudaHostAllocMapped));
-    *fixture->flag_host = 1ull;
-    CUDA(cudaHostGetDevicePointer((void **)&fixture->flag_device,fixture->flag_host,0u));
+    CUDA(cudaHostAlloc((void **)&fixture->gate,sizeof(*fixture->gate),cudaHostAllocMapped));
+    memset(fixture->gate,0,sizeof(*fixture->gate));
+    fixture->gate->ready = 1u;
+    fixture->gate->timeout_ns = 1000000000u;
+    CUDA(cudaMalloc((void **)&fixture->control,sizeof(*fixture->control)));
+    CUDA(cudaMemset(fixture->control,0,sizeof(*fixture->control)));
     CUDA(cudaStreamCreateWithFlags(&fixture->stream,cudaStreamNonBlocking));
     for (layer=0u; layer<test_layers; layer++)
     {
@@ -104,39 +107,19 @@ static cudaGraphNode_t Mark(PrefetchFixture *fixture,uint32_t index)
     return(CaptureTail(fixture->stream));
 }
 
-static cudaGraphNode_t WaitValue(PrefetchFixture *fixture)
+static cudaGraphNode_t Guard(PrefetchFixture *fixture)
 {
-    CUstreamCaptureStatus capture;
-    CUstreamBatchMemOpParams operation;
-    CUDA_BATCH_MEM_OP_NODE_PARAMS params;
-    const CUgraphNode *dependencies;
-    size_t count;
-    cuuint64_t id;
-    CUgraph graph;
-    CUgraphNode wait;
-    memset(&operation,0,sizeof(operation));
-    memset(&params,0,sizeof(params));
-    operation.operation = CU_STREAM_MEM_OP_WAIT_VALUE_64;
-    operation.waitValue.address = fixture->flag_device;
-    operation.waitValue.value64 = 1u;
-    operation.waitValue.flags = CU_STREAM_WAIT_VALUE_EQ;
-    REQUIRE(cuStreamGetCaptureInfo((CUstream)fixture->stream,&capture,&id,&graph,&dependencies,0,&count) == CUDA_SUCCESS);
-    REQUIRE(cuCtxGetCurrent(&params.ctx) == CUDA_SUCCESS);
-    params.count = 1u;
-    params.paramArray = &operation;
-    REQUIRE(cuGraphAddBatchMemOpNode(&wait,graph,dependencies,count,&params) == CUDA_SUCCESS);
-    REQUIRE(cuStreamUpdateCaptureDependencies((CUstream)fixture->stream,&wait,0,1u,CU_STREAM_SET_CAPTURE_DEPENDENCIES) == CUDA_SUCCESS);
-    return((cudaGraphNode_t)wait);
+    SparkTpMeshHardwareGuardKernel<<<1,1,0,fixture->stream>>>(fixture->gate,fixture->control);
+    CUDA(cudaPeekAtLastError());
+    return(CaptureTail(fixture->stream));
 }
 
 static RoundNodes HardwareRound(PrefetchFixture *fixture,uint32_t first_mark)
 {
     RoundNodes round;
     round.publish = Mark(fixture,first_mark);
-    round.request = Mark(fixture,first_mark + 1u);
-    round.wait = WaitValue(fixture);
-    round.guard = Mark(fixture,first_mark + 2u);
-    round.combine = Mark(fixture,first_mark + 3u);
+    round.guard = Guard(fixture);
+    round.combine = Mark(fixture,first_mark + 1u);
     return(round);
 }
 
@@ -232,7 +215,7 @@ static void TestPlacement(PrefetchFixture *fixture,const SparkGlm5NextL2Prefetch
     (void)Mark(fixture,0u);
     round = HardwareRound(fixture,1u);
     REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,routed_dsa_layer,SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE,shape,&placed) == LM_LAUNCH_OK && placed == 1u);
-    TestMarkKernel<<<1,1,0,fixture->stream>>>(fixture->marks,5u);
+    TestMarkKernel<<<1,1,0,fixture->stream>>>(fixture->marks,3u);
     CUDA(cudaPeekAtLastError());
     {
         cudaStreamCaptureStatus capture;
@@ -245,10 +228,8 @@ static void TestPlacement(PrefetchFixture *fixture,const SparkGlm5NextL2Prefetch
     CUDA(cudaStreamEndCapture(fixture->stream,&graph));
     REQUIRE(PrefetchNodes(graph,shape,&total,&prefetch) == 1u && total == want_total);
     count = Dependencies(prefetch,dependencies,4u);
-    REQUIRE(count == 1u && dependencies[0] == (CUgraphNode)round.request);
-    count = Dependencies(round.wait,dependencies,4u);
-    REQUIRE(count == 1u && dependencies[0] == (CUgraphNode)round.request);
-    count = Dependencies(round.request,dependencies,4u);
+    REQUIRE(count == 1u && dependencies[0] == (CUgraphNode)round.publish);
+    count = Dependencies(round.guard,dependencies,4u);
     REQUIRE(count == 1u && dependencies[0] == (CUgraphNode)round.publish);
     count = Dependencies(next,dependencies,4u);
     REQUIRE(count == 2u);
@@ -258,7 +239,7 @@ static void TestPlacement(PrefetchFixture *fixture,const SparkGlm5NextL2Prefetch
     CUDA(cudaGraphLaunch(exec,fixture->stream));
     CUDA(cudaStreamSynchronize(fixture->stream));
     CUDA(cudaMemcpy(marks,fixture->marks,sizeof(marks),cudaMemcpyDeviceToHost));
-    REQUIRE(marks[0] == 1u && marks[1] == 1u && marks[2] == 1u && marks[3] == 1u && marks[4] == 1u && marks[5] == 1u);
+    REQUIRE(marks[0] == 1u && marks[1] == 1u && marks[2] == 1u && marks[3] == 1u && marks[4] == 0u);
     CUDA(cudaGraphExecDestroy(exec));
     CUDA(cudaGraphDestroy(graph));
     CUDA(cudaMemset(fixture->marks,0,64u * sizeof(uint32_t)));
@@ -286,7 +267,7 @@ static void TestNoPlacement(PrefetchFixture *fixture)
     }
     placed = 7u;
     REQUIRE(SparkGlm5NextL2PrefetchAfterRound(&fixture->wave,test_layers - 1u,SPARK_GLM5_NEXT_L2_SITE_MLP_REDUCE,&default_shape,&placed) == LM_LAUNCH_OK && placed == 0u);
-    (void)WaitValue(fixture);
+    (void)Guard(fixture);
     for (mark=10u; mark<10u + GLM5_NEXT_L2_PREFETCH_SEARCH; mark++)
         (void)Mark(fixture,mark);
     placed = 7u;
@@ -313,9 +294,10 @@ int main(int argc,char **argv)
     TestPlacement(&fixture,&narrow_shape,narrow_shape.bytes);
     TestNoPlacement(&fixture);
     CUDA(cudaStreamDestroy(fixture.stream));
-    CUDA(cudaFreeHost(fixture.flag_host));
+    CUDA(cudaFreeHost(fixture.gate));
+    CUDA(cudaFree(fixture.control));
     CUDA(cudaFree(fixture.marks));
     CUDA(cudaFree(fixture.weights));
-    puts("PASS glm5_next l2 prefetch plans, byte cap and block count from the shape, invalid shapes refused, placement after the pre-wait request node, join into the next node, no placement without a peer wait");
+    puts("PASS glm5_next l2 prefetch plans, byte cap and block count from the shape, invalid shapes refused, placement before the polled peer-wait guard, join into the next node, no placement without a peer wait");
     return(0);
 }
