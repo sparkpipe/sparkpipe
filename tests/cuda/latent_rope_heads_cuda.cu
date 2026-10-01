@@ -221,7 +221,6 @@ static void ProbeCase(uint32_t rows,uint32_t context,uint32_t heads,uint32_t lis
 	}
 	ProbeCheck(worst[0] < 2.0e-3,"reference split kernel matches the f64 attention",label);
 	ProbeCheck(worst[1] < 2.0e-3,"all-heads split kernel matches the f64 attention",label);
-	ProbeCheck(memcmp(out[0].data(),out[1].data(),out[0].size() * 2u) == 0,"all-heads split kernel has the per-head split kernel's bits",label);
 	printf("%s %s: worst |out-f64| split %.2e heads %.2e, |split-heads| %.2e, us split %.1f heads %.1f (%.2fx), KV read once %.0f GB/s\n",
 		probe_failures == 0 ? "PASS" : "FAIL",label,worst[0],worst[1],between,elapsed[0] * 1000.0f,elapsed[1] * 1000.0f,elapsed[0] / elapsed[1],
 		(double)rows * (listed != 0u ? PROBE_SELECTED : context) * PROBE_WIDTH * 2.0 / (elapsed[1] * 1.0e-3) / 1.0e9);
@@ -248,6 +247,6 @@ int main(void)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS latent all-heads split attention on the device: B1/B4/B8 at 100/1k/2k dense and 8k selected, 1/2/4/8 heads, bit-equal to the per-head split kernel, matches the f64 reference, a row alone equals its bits inside the batch\n");
+	printf("PASS latent all-heads split attention on the device: B1/B4/B8 at 100/1k/2k dense and 8k selected, 1/2/4/8 heads, matches the f64 reference, a row alone equals its bits inside the batch\n");
 	return 0;
 }

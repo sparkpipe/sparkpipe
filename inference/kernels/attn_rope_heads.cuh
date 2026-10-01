@@ -4,11 +4,25 @@
 #include <stdint.h>
 
 #define LM_ROPE_HEADS_THREADS 256u
-#define LM_ROPE_HEADS_MIN_ROWS 4u
+#define LM_LATENT_WARP_MIN_SPAN 32u
+#define LM_LATENT_WARP_SPAN(count) ((count) <= 16u * LM_LATENT_WARP_MIN_SPAN ? LM_LATENT_WARP_MIN_SPAN : (count) <= 32u * LM_LATENT_WARP_MIN_SPAN ? 2u * LM_LATENT_WARP_MIN_SPAN : 4u * LM_LATENT_WARP_MIN_SPAN)
+#define LM_LATENT_WARP_WARPS 4u
+#define LM_LATENT_WARP_THREADS (LM_LATENT_WARP_WARPS * LM_WARP_LANES)
 
-template<class Geometry, uint32_t THREADS, uint32_t HEADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT>
-__global__ __launch_bounds__(THREADS, 1)
-void LmLatentRopeHeadsSplitKernel(
+static __device__ __forceinline__ void LmLatentWarpUnpack(uint4 word, float *out)
+{
+	const uint32_t parts[4] = {word.x, word.y, word.z, word.w};
+	#pragma unroll
+	for (uint32_t i = 0u; i < 4u; ++i)
+	{
+		out[2u * i] = __uint_as_float(parts[i] << 16u);
+		out[2u * i + 1u] = __uint_as_float(parts[i] & 0xffff0000u);
+	}
+}
+
+template<class Geometry, uint32_t HEADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT>
+__global__ __launch_bounds__(LM_LATENT_WARP_THREADS)
+void LmLatentWarpSplitKernel(
 	const uint16_t *__restrict__ query_latent_bf16,
 	const uint16_t *__restrict__ query_rope_bf16,
 	LmKvView cache,
@@ -21,140 +35,127 @@ void LmLatentRopeHeadsSplitKernel(
 	float *__restrict__ partials,
 	const uint32_t *__restrict__ row_position)
 {
-	constexpr uint32_t VALUES = LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS);
-	static_assert(LATENT <= 8u * THREADS, "the latent must fit the per-thread accumulator");
-	__shared__ float group_reduction[LM_LATENT_ATTN_SPLIT_GROUP][THREADS / LM_WARP_LANES];
-	__shared__ float group_total[LM_LATENT_ATTN_SPLIT_GROUP];
-	__shared__ float shared_query[HEADS][LATENT + ROPE];
+	static_assert(LATENT == 16u * LM_WARP_LANES && ROPE == 64u, "one warp covers the latent with two 16-byte loads per lane and the rope with eight lanes");
+	__shared__ float warp_max[LM_LATENT_WARP_WARPS][HEADS];
+	__shared__ float warp_sum[LM_LATENT_WARP_WARPS][HEADS];
+	__shared__ float warp_acc[LM_LATENT_WARP_WARPS][HEADS][LATENT];
 	const uint32_t row = blockIdx.x, partition = blockIdx.y, sequence = sequence_of_row[row];
-	float accumulator[HEADS][8], running_max[HEADS], running_sum[HEADS], scores[LM_LATENT_ATTN_SPLIT_GROUP];
-	uint32_t head, index, element, step, position_count, first_position, last_position, partition_span;
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES, warp = threadIdx.x / LM_WARP_LANES;
+	float q_latent[HEADS][16], q_rope[HEADS][8], acc[HEADS][16], run_max[HEADS], run_sum[HEADS];
+	uint32_t head, i, position_count, first_position, last_position, step;
 	uint64_t partial_base;
 	LmDependentRelease();
 	if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
 	{
-		LmKvReportRequiredAccessFailure(cache, !LmKvViewIsConfigured(cache) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0xffffffffu, 0xffffffffu);
+		if (threadIdx.x == 0u)
+			LmKvReportRequiredAccessFailure(cache, !LmKvViewIsConfigured(cache) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0xffffffffu, 0xffffffffu);
 		return;
 	}
 	#pragma unroll
 	for (head = 0u; head < HEADS; ++head)
 	{
-		running_max[head] = -INFINITY;
-		running_sum[head] = 0.0f;
+		const uint16_t *ql = query_latent_bf16 + ((uint64_t)row * HEADS + head) * LATENT + lane * 16u;
+		const uint16_t *qr = query_rope_bf16 + ((uint64_t)row * HEADS + head) * ROPE + (lane % 8u) * 8u;
+		LmLatentWarpUnpack(*(const uint4 *)ql, q_latent[head]);
+		LmLatentWarpUnpack(*(const uint4 *)(ql + 8u), q_latent[head] + 8u);
+		LmLatentWarpUnpack(*(const uint4 *)qr, q_rope[head]);
+		run_max[head] = -INFINITY;
+		run_sum[head] = 0.0f;
 		#pragma unroll
-		for (index = 0u; index < 8u; ++index)
-			accumulator[head][index] = 0.0f;
+		for (i = 0u; i < 16u; ++i)
+			acc[head][i] = 0.0f;
 	}
-	for (index = threadIdx.x; index < HEADS * (LATENT + ROPE); index += THREADS)
-	{
-		head = index / (LATENT + ROPE);
-		element = index % (LATENT + ROPE);
-		shared_query[head][element] = element < LATENT
-			? LmBf16ToFloat(query_latent_bf16[((uint64_t)row * HEADS + head) * LATENT + element])
-			: LmBf16ToFloat(query_rope_bf16[((uint64_t)row * HEADS + head) * ROPE + element - LATENT]);
-	}
-	__syncthreads();
 	position_count = selected_positions != 0 ? selected_count : context_length[sequence];
 	if (ROW_INVARIANT && selected_positions == 0 && row_position != 0 && row_position[row] + 1u < position_count)
 		position_count = row_position[row] + 1u;
-	partition_span = (position_count + partitions - 1u) / partitions;
-	first_position = partition * partition_span;
-	last_position = first_position + partition_span < position_count ? first_position + partition_span : position_count;
-	step = first_position;
-	while (step < last_position)
+	first_position = partition * LM_LATENT_WARP_SPAN(position_count);
+	last_position = first_position + LM_LATENT_WARP_SPAN(position_count) < position_count ? first_position + LM_LATENT_WARP_SPAN(position_count) : position_count;
+	for (step = first_position + warp; step < last_position; step += LM_LATENT_WARP_WARPS)
 	{
-		const uint8_t *slots[LM_LATENT_ATTN_SPLIT_GROUP];
-		uint16_t values[LM_LATENT_ATTN_SPLIT_GROUP][VALUES];
-		uint32_t count = 0u, missing = 0u, group, value;
-		while (count < LM_LATENT_ATTN_SPLIT_GROUP && step < last_position)
-		{
-			uint32_t position = selected_positions != 0 ? selected_positions[(row * selected_count) + step] : step;
-			const uint8_t *slot;
-			++step;
-			if (row_position != 0 && position > row_position[row])
-				continue;
-			slot = LmKvSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
-			if (slot == 0)
-			{
-				missing = 1u;
-				break;
-			}
-			slots[count++] = slot;
-		}
-		#pragma unroll
-		for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
-			#pragma unroll
-			for (value = 0u; value < VALUES; ++value)
-			{
-				index = threadIdx.x + value * THREADS;
-				values[group][value] = group < count && index < LATENT + ROPE ? ((const uint16_t *)slots[group])[index] : (uint16_t)0u;
-			}
+		uint32_t position = selected_positions != 0 ? selected_positions[(row * selected_count) + step] : step;
+		const uint8_t *slot;
+		float key[16], rope[8], score[HEADS];
+		if (row_position != 0 && position > row_position[row])
+			continue;
+		slot = LmKvSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
+		if (slot == 0)
+			break;
+		LmLatentWarpUnpack(((const uint4 *)slot)[2u * lane], key);
+		LmLatentWarpUnpack(((const uint4 *)slot)[2u * lane + 1u], key + 8u);
+		LmLatentWarpUnpack(((const uint4 *)(slot + LATENT * sizeof(uint16_t)))[lane % 8u], rope);
 		#pragma unroll
 		for (head = 0u; head < HEADS; ++head)
 		{
+			float partial = 0.0f;
 			#pragma unroll
-			for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
+			for (i = 0u; i < 16u; ++i)
+				partial += q_latent[head][i] * key[i];
+			if (lane < 8u)
 			{
-				scores[group] = 0.0f;
 				#pragma unroll
-				for (value = 0u; value < VALUES; ++value)
-				{
-					index = threadIdx.x + value * THREADS;
-					if (index < LATENT + ROPE)
-						scores[group] += shared_query[head][index] * LmBf16ToFloat(values[group][value]);
-				}
+				for (i = 0u; i < 8u; ++i)
+					partial += q_rope[head][i] * rope[i];
 			}
-			LmBlockSumGroup<THREADS, LM_LATENT_ATTN_SPLIT_GROUP>(scores, group_reduction, group_total);
 			#pragma unroll
-			for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
-			{
-				float score, scaled_previous, scaled_current, previous_max;
-				if (group >= count)
-					continue;
-				score = scores[group] * qk_scale;
-				previous_max = running_max[head];
-				running_max[head] = fmaxf(running_max[head], score);
-				scaled_previous = __expf(previous_max - running_max[head]);
-				scaled_current = __expf(score - running_max[head]);
-				running_sum[head] = (running_sum[head] * scaled_previous) + scaled_current;
-				#pragma unroll
-				for (index = 0u; index < 8u; ++index)
-				{
-					element = (index * THREADS) + threadIdx.x;
-					if (index < VALUES && element < LATENT)
-						accumulator[head][index] = (accumulator[head][index] * scaled_previous) + (scaled_current * LmBf16ToFloat(values[group][index]));
-				}
-			}
+			for (i = LM_WARP_LANES / 2u; i > 0u; i /= 2u)
+				partial += __shfl_xor_sync(0xffffffffu, partial, i);
+			score[head] = partial * qk_scale;
 		}
-		if (missing != 0u)
-			break;
+		#pragma unroll
+		for (head = 0u; head < HEADS; ++head)
+		{
+			float previous = run_max[head], scaled_previous, weight;
+			run_max[head] = fmaxf(previous, score[head]);
+			scaled_previous = __expf(previous - run_max[head]);
+			weight = __expf(score[head] - run_max[head]);
+			run_sum[head] = run_sum[head] * scaled_previous + weight;
+			#pragma unroll
+			for (i = 0u; i < 16u; ++i)
+				acc[head][i] = acc[head][i] * scaled_previous + weight * key[i];
+		}
 	}
 	#pragma unroll
 	for (head = 0u; head < HEADS; ++head)
 	{
-		partial_base = (((uint64_t)row * HEADS + head) * partitions + partition) * (LATENT + 2u);
-		if (threadIdx.x == 0u)
-		{
-			partials[partial_base] = running_max[head];
-			partials[partial_base + 1u] = running_sum[head];
-		}
+		warp_max[warp][head] = run_max[head];
+		warp_sum[warp][head] = run_sum[head];
 		#pragma unroll
-		for (index = 0u; index < 8u; ++index)
+		for (i = 0u; i < 16u; ++i)
+			warp_acc[warp][head][lane * 16u + i] = acc[head][i];
+	}
+	__syncthreads();
+	for (i = threadIdx.x; i < HEADS * (LATENT + 2u); i += LM_LATENT_WARP_THREADS)
+	{
+		uint32_t w, element;
+		float global_max = -INFINITY, value = 0.0f;
+		head = i / (LATENT + 2u);
+		element = i % (LATENT + 2u);
+		#pragma unroll
+		for (w = 0u; w < LM_LATENT_WARP_WARPS; ++w)
+			global_max = fmaxf(global_max, warp_max[w][head]);
+		if (element == 0u)
+			value = global_max;
+		else
 		{
-			element = (index * THREADS) + threadIdx.x;
-			if (element < LATENT)
-				partials[partial_base + 2u + element] = accumulator[head][index];
+			#pragma unroll
+			for (w = 0u; w < LM_LATENT_WARP_WARPS; ++w)
+			{
+				float scale = warp_max[w][head] == -INFINITY ? 0.0f : __expf(warp_max[w][head] - global_max);
+				value += scale * (element == 1u ? warp_sum[w][head] : warp_acc[w][head][element - 2u]);
+			}
 		}
+		partial_base = (((uint64_t)row * HEADS + head) * partitions + partition) * (LATENT + 2u);
+		partials[partial_base + element] = value;
 	}
 }
 
-template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT, uint32_t HEADS>
-static inline cudaError_t LmLatentRopeHeadsSplitShape(const uint16_t *query_latent_bf16, const uint16_t *query_rope_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
+template<class Geometry, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT, uint32_t HEADS>
+static inline cudaError_t LmLatentWarpSplitShape(const uint16_t *query_latent_bf16, const uint16_t *query_rope_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
 {
-	LM_LAUNCH((LmLatentRopeHeadsSplitKernel<Geometry, THREADS, HEADS, LATENT, ROPE, ROW_INVARIANT>), dim3(rows, partitions), THREADS, 0, stream, query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, split_partials, row_position);
+	LM_LAUNCH((LmLatentWarpSplitKernel<Geometry, HEADS, LATENT, ROPE, ROW_INVARIANT>), dim3(rows, partitions), LM_LATENT_WARP_THREADS, 0, stream, query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, split_partials, row_position);
 	if (cudaPeekAtLastError() != cudaSuccess)
 		return cudaPeekAtLastError();
-	LM_LAUNCH_DEPENDENT((LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>), dim3(rows, HEADS), THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
+	LM_LAUNCH_DEPENDENT((LmLatentAttentionDecodeSplitCombineKernel<LM_ROPE_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_ROPE_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
 	return cudaPeekAtLastError();
 }
 
@@ -179,16 +180,13 @@ static inline cudaError_t LmLatentRopeHeadsSplitLaunch(
 	uint32_t multiprocessor_count,
 	cudaStream_t stream)
 {
-	uint32_t blocks = rows * heads, wanted, partitions;
-	wanted = multiprocessor_count == 0u || blocks == 0u ? 1u : (multiprocessor_count * LM_LATENT_ATTN_SPLIT_CTAS_PER_SM + (ROW_INVARIANT ? heads : blocks) - 1u) / (ROW_INVARIANT ? heads : blocks);
-	partitions = wanted > LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ? LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS : wanted < 1u ? 1u : wanted;
-	if (LmLatentAttentionContextSplits(position_bound, split_context_threshold) == 0u || split_partials == 0 || partitions < 2u || blocks == 0u || (uint64_t)blocks * partitions > split_partial_blocks || THREADS != LM_ROPE_HEADS_THREADS || rows < LM_ROPE_HEADS_MIN_ROWS)
-		return LmLatentAttentionDecodeSplitLaunch<Geometry, THREADS, LATENT, ROPE, ROW_INVARIANT>(query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, heads, qk_scale, output_bf16, row_position, rows, position_bound, split_context_threshold, split_partials, split_partial_blocks, multiprocessor_count, stream);
-	if (heads == 4u)
-		return LmLatentRopeHeadsSplitShape<Geometry, THREADS, LATENT, ROPE, ROW_INVARIANT, 4u>(query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-	if (heads == 2u)
-		return LmLatentRopeHeadsSplitShape<Geometry, THREADS, LATENT, ROPE, ROW_INVARIANT, 2u>(query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-	if (heads == 1u)
-		return LmLatentRopeHeadsSplitShape<Geometry, THREADS, LATENT, ROPE, ROW_INVARIANT, 1u>(query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
+	uint32_t blocks = rows * heads, bound = selected_positions != 0 ? selected_count : position_bound, partitions;
+	partitions = bound == 0u ? 1u : (bound + LM_LATENT_WARP_MIN_SPAN - 1u) / LM_LATENT_WARP_MIN_SPAN;
+	partitions = partitions > LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS ? LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS : partitions;
+	if (ROW_INVARIANT && LATENT == 16u * LM_WARP_LANES && ROPE == 64u && split_partials != 0 && bound <= 64u * LM_LATENT_WARP_MIN_SPAN && (uint64_t)blocks * partitions <= split_partial_blocks)
+	{
+		if (heads == 4u || heads == 2u || heads == 1u)
+			return heads == 4u ? LmLatentWarpSplitShape<Geometry, LATENT, ROPE, ROW_INVARIANT, 4u>(query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream) : heads == 2u ? LmLatentWarpSplitShape<Geometry, LATENT, ROPE, ROW_INVARIANT, 2u>(query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream) : LmLatentWarpSplitShape<Geometry, LATENT, ROPE, ROW_INVARIANT, 1u>(query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
+	}
 	return LmLatentAttentionDecodeSplitLaunch<Geometry, THREADS, LATENT, ROPE, ROW_INVARIANT>(query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, heads, qk_scale, output_bf16, row_position, rows, position_bound, split_context_threshold, split_partials, split_partial_blocks, multiprocessor_count, stream);
 }
