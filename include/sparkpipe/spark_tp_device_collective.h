@@ -113,7 +113,7 @@ typedef struct SparkTpDeviceCollectiveSubmission
     uint32_t active_sequence_count;
     uint32_t flags;
     uint32_t logical_sequence_count;
-    uint32_t reserved0;
+    uint32_t row_elements;
     uint64_t ordinal;
     const void *local_device;
     void *full_device;

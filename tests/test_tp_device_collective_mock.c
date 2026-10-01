@@ -424,6 +424,19 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         }
     }
     submission.logical_sequence_count = 1u;
+    submission.row_elements = 24u;
+    for ( operation = 0u; operation < 3u; operation++ )
+    {
+        uint64_t expected_elements = operation == 2u ? 2u : operation == 0u ? 96u : 48u;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation) == SPARK_STATUS_OK &&
+            cuda_stub_mesh_hardware_operation == operation &&
+            cuda_stub_mesh_hardware_elements == expected_elements,
+            "a submission row width narrower than the collective's carries rows times that width per rank");
+    }
+    submission.row_elements = 65u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a submission row width wider than the collective's is refused");
+    submission.row_elements = 0u;
     submission.active_sequence_count = 4096u;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
         cuda_stub_mesh_hardware_logical_rows == 1u && cuda_stub_mesh_hardware_elements == 262144u,
@@ -485,7 +498,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshAllToAllChunks(0u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u,
         "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/5/33 rounds");
     submission.active_sequence_count = 2u;
-    CHECK(cuda_stub_mesh_hardware_calls == 9u && cuda_stub_mesh_publish_calls == old_publish,
+    CHECK(cuda_stub_mesh_hardware_calls == 12u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
     CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"hardware disarm capture");
     cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;
