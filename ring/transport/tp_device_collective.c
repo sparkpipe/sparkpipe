@@ -924,6 +924,13 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkTpDeviceCollectiveRowElements(
+    const SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveSubmission *submission)
+{
+    return submission->row_elements != 0u ? submission->row_elements : implementation->local_hidden_dimension;
+}
+
 static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     SparkTpDeviceCollectiveImplementation *implementation,
     const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation,
@@ -934,7 +941,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     uint64_t phases;
     SparkStatus status;
     uint32_t band = SparkTpDeviceCollectiveBandIndex(implementation),slice_routes = SparkTpDeviceCollectiveSliceRoutes(implementation);
-    if ( operation != 2u ) elements *= implementation->local_hidden_dimension;
+    if ( operation != 2u ) elements *= SparkTpDeviceCollectiveRowElements(implementation,submission);
     if ( operation == 0u )
     {
         if ( elements > UINT64_MAX / implementation->tp_degree ||
@@ -1023,7 +1030,7 @@ static uint64_t SparkTpDeviceCollectiveRoundBytes(const SparkTpDeviceCollectiveI
 {
     if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
         return (uint64_t)submission->active_sequence_count * 8u;
-    return (uint64_t)submission->active_sequence_count * implementation->local_hidden_dimension * 2u;
+    return (uint64_t)submission->active_sequence_count * SparkTpDeviceCollectiveRowElements(implementation,submission) * 2u;
 }
 
 static uint32_t SparkTpDeviceCollectiveHostRound(const SparkTpDeviceCollectiveImplementation *implementation,const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation_kind)
@@ -1337,7 +1344,7 @@ static SparkStatus SparkTpDeviceCollectiveCombineSerial(SparkTpDeviceCollectiveI
         if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
             status = implementation->combine_u64_max(implementation->combine_context,(uint64_t *)submission->full_device,(const uint64_t *)source,submission->active_sequence_count,submission->cuda_stream);
         else
-            status = implementation->combine_bf16(implementation->combine_context,submission->full_device,source,submission->active_sequence_count,implementation->local_hidden_dimension,submission->cuda_stream);
+            status = implementation->combine_bf16(implementation->combine_context,submission->full_device,source,submission->active_sequence_count,SparkTpDeviceCollectiveRowElements(implementation,submission),submission->cuda_stream);
         if ( status != SPARK_STATUS_OK )
             return status;
     }
@@ -1350,9 +1357,9 @@ static SparkStatus SparkTpDeviceCollectiveRoundCombine(SparkTpDeviceCollectiveIm
     uint32_t reduce = operation_kind != SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64;
     SparkTpDeviceCollectivePeerSlots(implementation,parity,source_devices);
     if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER )
-        return implementation->combine_gather_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,implementation->local_hidden_dimension,submission->cuda_stream);
+        return implementation->combine_gather_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,SparkTpDeviceCollectiveRowElements(implementation,submission),submission->cuda_stream);
     if ( reduce != 0u && implementation->combine_fused_bf16 != 0 )
-        return implementation->combine_fused_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,implementation->local_hidden_dimension,submission->cuda_stream);
+        return implementation->combine_fused_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,SparkTpDeviceCollectiveRowElements(implementation,submission),submission->cuda_stream);
     if ( reduce != 0u && implementation->combine_f32_seed != 0 && implementation->combine_f32_add != 0 && implementation->round_f32 != 0 )
         return SparkTpDeviceCollectiveCombineF32(implementation,submission,bytes,parity);
     return SparkTpDeviceCollectiveCombineSerial(implementation,submission,operation_kind,bytes,parity);
@@ -1564,7 +1571,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateSubmission(
          submission->logical_sequence_count == 0u ||
          submission->active_sequence_count >
              collective->max_active_sequence_count ||
-         submission->reserved0 != 0u ||
+         submission->row_elements > collective->local_hidden_dimension ||
          (submission->flags &
              ~SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_KNOWN_FLAGS) != 0u ||
          submission->ordinal == UINT64_MAX )
@@ -1711,7 +1718,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
         return status;
     }
     bytes = (uint64_t)submission->active_sequence_count *
-        implementation->local_hidden_dimension * 2u;
+        SparkTpDeviceCollectiveRowElements(implementation,submission) * 2u;
     if ( (bytes & 3ull) != 0ull )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     if ( implementation->mesh_buffer == 0 )

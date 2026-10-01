@@ -1194,7 +1194,7 @@ static void FuzzRejections(void)
             case 6u: bad.ordinal = UINT64_MAX; break;
             case 7u: bad.completion_function = 0; break;
             case 8u: bad.flags = UINT32_MAX; break;
-            case 9u: bad.reserved0 = 1u; break;
+            case 9u: bad.row_elements = task->rank->collective.local_hidden_dimension + 1u; break;
             case 10u: bad.abi_version--; expected = SPARK_STATUS_ABI_MISMATCH; break;
             case 11u: bad.descriptor_bytes--; expected = SPARK_STATUS_ABI_MISMATCH; break;
         }

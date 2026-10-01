@@ -27,7 +27,7 @@ typedef struct ParityRig
 	uint32_t *host_position;
 	uint16_t *boundary;
 	uint16_t *gather;
-	uint16_t *gather_sum;
+	uint16_t *local;
 	uint16_t *residual_saved;
 	uint16_t *outputs[PARITY_MODE_COUNT];
 	uint32_t tp_degree;
@@ -85,47 +85,32 @@ static int ParityWalk(ParityRig *rig,uint32_t staged)
 	return(0);
 }
 
-__global__ static void ParityAccumulateBf16(uint16_t *sum,const uint16_t *part,uint32_t count)
-{
-	uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
-	uint32_t a,b,rounded;
-	float total;
-	if ( index >= count )
-		return;
-	a = (uint32_t)sum[index] << 16u;
-	b = (uint32_t)part[index] << 16u;
-	total = __uint_as_float(a) + __uint_as_float(b);
-	rounded = __float_as_uint(total);
-	rounded += 0x7fffu + ((rounded >> 16u) & 1u);
-	sum[index] = (uint16_t)(rounded >> 16u);
-}
-
 static int ParitySplitWalk(ParityRig *rig,uint32_t ranks)
 {
 	SparkGlm52CudaWave *wave = &rig->fixture.wave;
 	cudaStream_t stream = rig->fixture.stream;
 	uint64_t gather_bytes = (uint64_t)SPARK_GLM52_VHIDDEN * sizeof(uint16_t);
-	uint32_t layer,rank;
+	uint32_t layer,rank,width = SparkGlm52ProjectionSliceWidth(wave->tp_degree);
 	wave->projection_split = 1u;
 	rig->fixture.slot.projection_gather_bf16 = rig->gather;
+	rig->fixture.slot.projection_local_bf16 = rig->local;
 	if ( SparkGlm52LaunchCudaWaveBegin(wave) != 0 || cudaStreamSynchronize(stream) != cudaSuccess )
 		return(1);
 	for (layer=0u; layer<PARITY_LAYERS; layer++)
 	{
 		if ( cudaMemcpyAsync(rig->residual_saved,rig->fixture.residual,gather_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess ||
-			cudaMemsetAsync(rig->gather_sum,0,gather_bytes,stream) != cudaSuccess )
+			cudaMemsetAsync(rig->gather,0,gather_bytes,stream) != cudaSuccess )
 			return(5);
 		for (rank=0u; rank<ranks; rank++)
 		{
 			wave->tp_rank = rank;
 			if ( cudaMemcpyAsync(rig->fixture.residual,rig->residual_saved,gather_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess ||
-				SparkGlm52LaunchCudaLayerAttentionProject(wave,layer) != 0 )
+				SparkGlm52LaunchCudaLayerAttentionProject(wave,layer) != 0 ||
+				cudaMemcpyAsync(rig->gather + (uint64_t)rank * width,rig->local,(uint64_t)width * sizeof(uint16_t),cudaMemcpyDeviceToDevice,stream) != cudaSuccess )
 				return(6);
-			ParityAccumulateBf16<<<(SPARK_GLM52_VHIDDEN + 255u) / 256u,256u,0,stream>>>(rig->gather_sum,rig->gather,SPARK_GLM52_VHIDDEN);
 		}
 		wave->tp_rank = 0u;
-		if ( cudaMemcpyAsync(rig->gather,rig->gather_sum,gather_bytes,cudaMemcpyDeviceToDevice,stream) != cudaSuccess ||
-			cudaStreamSynchronize(stream) != cudaSuccess )
+		if ( cudaStreamSynchronize(stream) != cudaSuccess )
 			return(7);
 		if ( SparkGlm52LaunchCudaLayerAttentionCore(wave,layer) != 0 || cudaStreamSynchronize(stream) != cudaSuccess )
 			return(8);
@@ -283,7 +268,7 @@ int main(void)
 	if ( cudaHostAlloc((void **)&rig->host_token,3u * sizeof(uint32_t),cudaHostAllocPortable) != cudaSuccess ||
 		cudaMalloc((void **)&rig->boundary,PARITY_BOUNDARY * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->gather,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc((void **)&rig->gather_sum,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc((void **)&rig->local,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->residual_saved,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess )
 		return(1);
 	rig->host_slot = rig->host_token + 1u;

@@ -1,0 +1,2 @@
++85
+True all-gather for the GLM projection split: the per-submission row width in the device collective (and its mock cases), the compact q/kv slice width helpers and the rank-major unpack kernel that replaces the attention core two 2-D copies. At TP16 a rank ships 168 columns per row instead of a zero-padded 6144.

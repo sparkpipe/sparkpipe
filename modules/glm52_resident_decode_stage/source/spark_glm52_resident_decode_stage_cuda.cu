@@ -274,8 +274,8 @@ static void SparkGlm52BindLayer(
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
 	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
 	buffers->single_sequence_rows = wave->single_sequence_rows;
-	buffers->projection_gather_bf16 = wave->projection_split != 0u ? slot->projection_gather_bf16 : 0;
-	buffers->projection_gather_stride = wave->projection_split != 0u ? GLM_HIDDEN : 0u;
+	buffers->projection_local_bf16 = wave->projection_split != 0u ? slot->projection_local_bf16 : 0;
+	buffers->projection_gather_bf16 = wave->projection_split == 0u ? 0 : buffers->tp_degree > 1u ? slot->projection_gather_bf16 : slot->projection_local_bf16;
 	SparkGlm52BuildKvView(&buffers->cache,wave->kv_cache + ((uint64_t)local_layer * wave->kv_layer_stride_bytes),wave);
 	index_ordinal = wave->index_ordinal_by_local_layer[local_layer];
 	if ( index_ordinal != UINT32_MAX )
@@ -293,10 +293,15 @@ static int32_t SparkGlm52RunLayerAttention(const SparkGlm52CudaWave *wave,uint32
 	return(status);
 }
 
+extern "C" uint32_t SparkGlm52ProjectionSliceWidth(uint32_t tp_degree)
+{
+	return(tp_degree != 0u ? GlmProjectionSliceWidth(tp_degree) : 0u);
+}
+
 extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t local_layer)
 {
 	GlmLayerBuffers buffers;
-	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || local_layer >= wave->layer_count || wave->projection_split == 0u || wave->slot->projection_gather_bf16 == 0 )
+	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || local_layer >= wave->layer_count || wave->projection_split == 0u || wave->slot->projection_local_bf16 == 0 || wave->slot->projection_gather_bf16 == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
 	return(GlmLayerAttentionProject(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
@@ -305,7 +310,7 @@ extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52Cud
 extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t local_layer)
 {
 	GlmLayerBuffers buffers;
-	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || local_layer >= wave->layer_count || wave->projection_split == 0u || wave->slot->projection_gather_bf16 == 0 )
+	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || local_layer >= wave->layer_count || wave->projection_split == 0u || wave->slot->projection_local_bf16 == 0 || wave->slot->projection_gather_bf16 == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
 	return(GlmLayerAttentionCore(&buffers,wave->row_count,wave->maximum_context,wave->first_layer_index + local_layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));

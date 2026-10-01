@@ -33,7 +33,7 @@ typedef struct DbRig
 	uint32_t host_positions[DB_MAX_ROWS];
 	uint32_t host_page_table[DB_MAX_ROWS * DB_PAGES];
 	uint32_t *pinned_words;
-	uint16_t *boundary,*gather,*peer_slots,*combined;
+	uint16_t *boundary,*gather,*local,*peer_slots,*combined;
 	uint64_t *request_word,*ready_word;
 	uint8_t *wide_w1,*wide_w2;
 	uint32_t rows,position,emulate_rounds,wide_experts,rounds_per_step;
@@ -166,6 +166,7 @@ static int DbSetup(DbRig *rig)
 		cudaHostAlloc((void **)&rig->pinned_words,4u * DB_MAX_ROWS * sizeof(uint32_t),cudaHostAllocPortable) != cudaSuccess ||
 		cudaMalloc((void **)&rig->boundary,2u * DB_MAX_ROWS * SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->gather,DB_MAX_ROWS * SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc((void **)&rig->local,DB_MAX_ROWS * SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->peer_slots,(uint64_t)DB_PEERS * DB_MAX_ROWS * SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->combined,DB_MAX_ROWS * SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->request_word,sizeof(uint64_t)) != cudaSuccess ||
@@ -247,6 +248,7 @@ static void DbBuild(DbRig *rig)
 	wave->maximum_context = rig->position + 1u;
 	wave->projection_split = 1u;
 	fx->slot.projection_gather_bf16 = rig->gather;
+	fx->slot.projection_local_bf16 = rig->local;
 }
 
 static int DbWalk(DbRig *rig,uint32_t count_experts)

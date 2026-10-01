@@ -52,6 +52,7 @@ uint32_t SparkGlm52ExactWaveRows(void) { return(8u); }
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave) { Log("begin",wave->maximum_context); return(0); }
 int32_t SparkGlm52LaunchCudaStageWaveInputs(const SparkGlm52CudaWave *wave,uint32_t rows,uint32_t bucket) { assert(wave->inputs_staged == 0u || wave->row_count >= rows); Log("stage",rows * 100u + bucket); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split == 0u); Log("attn",layer); return(0); }
+uint32_t SparkGlm52ProjectionSliceWidth(uint32_t tp_degree) { return(1000u + tp_degree); }
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("project",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->projection_split != 0u); Log("core",layer); return(0); }
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->route_host_copy == 0u); Log("mlp",layer); return(0); }
@@ -97,7 +98,9 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 		Log("reduce-hidden",submission->active_sequence_count);
 	else if ( submission->local_device == slot->attention_out_bf16 )
 		Log("reduce-attn",submission->active_sequence_count);
-	else if ( submission->local_device == slot->projection_gather_bf16 )
+	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER &&
+		submission->local_device == slot->projection_local_bf16 && submission->full_device == slot->projection_gather_bf16 &&
+		submission->row_elements == SparkGlm52ProjectionSliceWidth(STATE->tp_degree) )
 		Log("reduce-gather",submission->active_sequence_count);
 	else
 		Log("reduce-unknown",0u);
@@ -144,7 +147,7 @@ static void Completed(void *context,const SparkModelDriverCompletion *completion
 
 static SparkGlm52ModuleState state;
 static SparkWeightdLazyPack lazy;
-static uint16_t dev_hidden[8],dev_attn[8],dev_gather[8];
+static uint16_t dev_hidden[8],dev_attn[8],dev_gather[8],dev_local[8];
 static uint64_t dev_maxloc[4];
 static SparkGlm52ResidentDecodeStageBatchView batch;
 static SparkGlm52ResidentDecodeStageFrameContext context;
@@ -218,6 +221,7 @@ static void Setup(void)
 	slot->hidden_bf16 = dev_hidden;
 	slot->attention_out_bf16 = dev_attn;
 	slot->projection_gather_bf16 = dev_gather;
+	slot->projection_local_bf16 = dev_local;
 	slot->head_maxloc_u64 = dev_maxloc;
 	assert(SparkStageModuleCudaWaitInitialize(&state.chain_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	batch.row_count = 1u;

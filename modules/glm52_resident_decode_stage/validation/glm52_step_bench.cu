@@ -24,6 +24,7 @@ typedef struct BenchRig
 	uint32_t *host_words;
 	uint16_t *boundary;
 	uint16_t *gather;
+	uint16_t *local;
 	uint16_t *peer_slots;
 	uint16_t *combined;
 	uint64_t *request_word;
@@ -149,6 +150,7 @@ static void BenchBuild(BenchRig *rig,uint32_t split)
 	wave->max_sequence_positions = SPARK_GLM52_VALIDATION_DSA_CONTEXT;
 	wave->projection_split = split;
 	rig->fixture.slot.projection_gather_bf16 = split != 0u ? rig->gather : 0;
+	rig->fixture.slot.projection_local_bf16 = split != 0u ? rig->local : 0;
 }
 
 static int BenchWalk(BenchRig *rig,uint32_t split)
@@ -279,6 +281,7 @@ int main(int argc,char **argv)
 		cudaHostAlloc((void **)&rig->host_words,4u * sizeof(uint32_t),cudaHostAllocPortable) != cudaSuccess ||
 		cudaMalloc((void **)&rig->boundary,2u * SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->gather,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc((void **)&rig->local,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->peer_slots,(uint64_t)BENCH_PEERS * SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->combined,SPARK_GLM52_VHIDDEN * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&rig->request_word,sizeof(uint64_t)) != cudaSuccess ||
