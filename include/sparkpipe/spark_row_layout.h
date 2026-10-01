@@ -218,6 +218,34 @@ static inline uint32_t SparkRowLayoutLaneSpanWaveRowCount(
 	return(count);
 }
 
+static inline uint32_t SparkRowLayoutPackedSpanWaveRowCount(
+	uint32_t first_row,
+	uint32_t row_count,
+	const uint32_t *row_lane_ids,
+	SparkRowLayoutRowRegimeFunction regime_function,
+	void *regime_context,
+	uint32_t maximum_rows,
+	uint32_t maximum_spans)
+{
+	uint32_t count,span,spans,regime,next;
+	count = SparkRowLayoutLaneSpanWaveRowCount(first_row,row_count,row_lane_ids,regime_function,regime_context,maximum_rows);
+	if ( count == 0u || maximum_spans == 0u )
+		return(count);
+	regime = regime_function != 0 ? regime_function(regime_context,first_row) : 0u;
+	for (spans=1u; spans<maximum_spans && count<maximum_rows; spans++)
+	{
+		next = first_row + count;
+		if ( next >= row_count || row_lane_ids[next] == row_lane_ids[next - 1u] ||
+			(regime_function != 0 && regime_function(regime_context,next) != regime) )
+			break;
+		span = SparkRowLayoutLaneSpanWaveRowCount(next,row_count,row_lane_ids,regime_function,regime_context,maximum_rows - count);
+		if ( next + span < row_count && row_lane_ids[next + span] == row_lane_ids[next] )
+			break;
+		count += span;
+	}
+	return(count);
+}
+
 static inline SparkStatus SparkRowLayoutGroupRows(
 	uint32_t row_count,
 	uint32_t lane_count,

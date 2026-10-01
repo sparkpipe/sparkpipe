@@ -110,6 +110,12 @@ int main(void)
 		CHECK(SparkRowLayoutLaneSpanWaveRowCount(0u,9u,grouped,0,0,3u) == 3u,"a lane-span wave stops at the cap");
 		CHECK(SparkRowLayoutLaneSpanWaveRowCount(0u,9u,grouped,TestRowRegime,&regime,16u) == 3u,"a lane-span wave stops at a regime change");
 		CHECK(SparkRowLayoutLaneSpanWaveRowCount(7u,9u,grouped,0,0,16u) == 2u && SparkRowLayoutLaneSpanWaveRowCount(9u,9u,grouped,0,0,16u) == 0u,"the last lane spans to the end and nothing follows it");
+		CHECK(SparkRowLayoutPackedSpanWaveRowCount(0u,9u,grouped,0,0,16u,8u) == 9u,"a packed wave takes whole lane spans up to the row cap");
+		CHECK(SparkRowLayoutPackedSpanWaveRowCount(0u,9u,grouped,0,0,8u,8u) == 7u,"a packed wave never cuts a following lane span");
+		CHECK(SparkRowLayoutPackedSpanWaveRowCount(0u,9u,grouped,0,0,16u,2u) == 7u,"a packed wave stops at the span cap");
+		CHECK(SparkRowLayoutPackedSpanWaveRowCount(0u,9u,grouped,0,0,3u,8u) == 3u,"a lane span longer than the cap splits as before");
+		CHECK(SparkRowLayoutPackedSpanWaveRowCount(0u,9u,grouped,TestRowRegime,&regime,16u,8u) == 3u,"a packed wave stops at a regime change");
+		CHECK(SparkRowLayoutPackedSpanWaveRowCount(4u,9u,grouped,0,0,16u,8u) == 5u && SparkRowLayoutPackedSpanWaveRowCount(9u,9u,grouped,0,0,16u,8u) == 0u,"a packed wave starts at any lane and nothing follows the last");
 	}
 	if ( failures != 0u )
 	{

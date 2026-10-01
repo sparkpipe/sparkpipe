@@ -139,7 +139,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 	LmKvStoreKernel<ProbeKv,256u><<<context * sequence_count,256>>>(view,values_device,token_sequence_device,token_position_device,context * sequence_count,PROBE_WIDTH);
 	PROBE_CUDA(cudaGetLastError());
 	PROBE_CUDA(cudaMemset(out_device,0xff,query_count * PROBE_LATENT * 2u));
-	PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0)));
+	PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0,0u,0)));
 	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(prefill.data(),out_device,prefill.size() * 2u,cudaMemcpyDeviceToHost));
 	PROBE_CUDA((LmLatentRopeHeadsSplitLaunch<ProbeKv,256u,PROBE_LATENT,PROBE_ROPE,true>(latent_device,rope_device,view,sequences_device,contexts_device,0,0u,PROBE_HEADS,scale,out_device,positions_device,rows,context,PROBE_THRESHOLD,split_device,partial_blocks,multiprocessors,0)));
@@ -148,7 +148,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 	if ( half != 0u )
 	{
 		const uint32_t first = rows - half - 1u;
-		PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device + (uint64_t)first * PROBE_HEADS * PROBE_LATENT,rope_device + (uint64_t)first * PROBE_HEADS * PROBE_ROPE,view,sequences_device,positions_device + first,PROBE_HEADS,scale,out_device,half,0)));
+		PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device + (uint64_t)first * PROBE_HEADS * PROBE_LATENT,rope_device + (uint64_t)first * PROBE_HEADS * PROBE_ROPE,view,sequences_device,positions_device + first,PROBE_HEADS,scale,out_device,half,0,0u,0)));
 		PROBE_CUDA(cudaDeviceSynchronize());
 		PROBE_CUDA(cudaMemcpy(part.data(),out_device,part.size() * 2u,cudaMemcpyDeviceToHost));
 		if ( memcmp(part.data(),prefill.data() + (uint64_t)first * PROBE_HEADS * PROBE_LATENT,part.size() * 2u) != 0 )
@@ -218,7 +218,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 		PROBE_CUDA(cudaEventCreate(&end));
 		PROBE_CUDA(cudaEventRecord(begin));
 		for (index=0u; index<PROBE_REPEATS; index++)
-			PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0)));
+			PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0,0u,0)));
 		PROBE_CUDA(cudaEventRecord(end));
 		PROBE_CUDA(cudaEventSynchronize(end));
 		PROBE_CUDA(cudaEventElapsedTime(&elapsed[0],begin,end));
