@@ -30,8 +30,13 @@ make -C "$CHECKOUT" -j8 CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a \
   build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_model_compile \
   build/sparkpipe_module_publish build/sparkpipe_driver_inspect build/weightd_warm build/sparkpipe_model_batch \
   hidden_transport_spark_host_rdma_verbs
-make -C "$CHECKOUT/$MODULE" -j8 "${MAKE_IDENTITY[@]}" variants
-make -C "$CHECKOUT/$MODULE" -j1 "${MAKE_IDENTITY[@]}" publish_variants
+if [ "$GLMFULL_BUCKET" = 1024 ]; then
+  BUCKETED_ID="$PREFIX.$SUFFIX"
+  make -C "$CHECKOUT/$MODULE" -j8 "${MAKE_IDENTITY[@]}" publish
+else
+  make -C "$CHECKOUT/$MODULE" -j8 "${MAKE_IDENTITY[@]}" variants
+  make -C "$CHECKOUT/$MODULE" -j1 "${MAKE_IDENTITY[@]}" publish_variants
+fi
 LANE_FIRMWARE="$CHECKOUT/build/glm53full-firmware-b$GLMFULL_BUCKET.json"
 python3 - "$CHECKOUT/$FIRMWARE" "$LANE_FIRMWARE" "$DEFAULT_ID" "$BUCKETED_ID" <<'PYFW'
 import json, sys

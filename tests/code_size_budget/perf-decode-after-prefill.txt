@@ -1,2 +1,3 @@
-+17
++22
 Decode-after-prefill barrier in the generic batch engine (engine flag, one-shot scheduler hold, refusal past resident capacity) and its batch-client switch, so decode throughput is measured on the KV the real prefill wrote with no prefill interleaved.
+The GLM Full lane build publishes bucket 1024 under the unbucketed module identity (publish_variants skips 1024 by design), so a 1024-row lane can be built for B1024 decode measurement.
