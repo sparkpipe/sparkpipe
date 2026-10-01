@@ -164,7 +164,7 @@ struct GlmLayerBuffers
     uint32_t decode_split_context_threshold;
     uint32_t single_sequence_rows;
     uint16_t *projection_gather_bf16;
-    uint32_t projection_gather_stride;
+    uint16_t *projection_local_bf16;
 };
 
 static inline void GlmProjectionSlice(
@@ -184,6 +184,76 @@ static inline void GlmProjectionSlice(
     *count = GLM_PROJECTION_GRANULE * (base + (tp_rank < extra ? 1u : 0u));
     *first = GLM_PROJECTION_GRANULE *
         (tp_rank * base + (tp_rank < extra ? tp_rank : extra));
+}
+
+static inline uint32_t GlmProjectionSliceMax(uint32_t total, uint32_t tp_degree)
+{
+    return GLM_PROJECTION_GRANULE *
+        ((total / GLM_PROJECTION_GRANULE + tp_degree - 1u) / tp_degree);
+}
+
+static inline uint32_t GlmProjectionSliceWidth(uint32_t tp_degree)
+{
+    return GlmProjectionSliceMax(GLM_QUERY_A_DIM, tp_degree) +
+        GlmProjectionSliceMax(GLM_LATENT_ROW, tp_degree);
+}
+
+static __device__ __forceinline__ void GlmProjectionSource(
+    uint32_t column,
+    uint32_t total,
+    uint32_t tp_degree,
+    uint32_t *rank,
+    uint32_t *offset)
+{
+    uint32_t granules = total / GLM_PROJECTION_GRANULE;
+    uint32_t base = granules / tp_degree;
+    uint32_t extra = granules % tp_degree;
+    uint32_t granule = column / GLM_PROJECTION_GRANULE;
+    uint32_t boundary = extra * (base + 1u);
+    uint32_t local;
+
+    if (granule < boundary)
+    {
+        *rank = granule / (base + 1u);
+        local = granule % (base + 1u);
+    }
+    else
+    {
+        *rank = extra + (granule - boundary) / base;
+        local = (granule - boundary) % base;
+    }
+    *offset = local * GLM_PROJECTION_GRANULE + column % GLM_PROJECTION_GRANULE;
+}
+
+static __global__ void GlmProjectionUnpackKernel(
+    const uint16_t *gathered,
+    uint16_t *query_out,
+    uint16_t *latent_out,
+    uint32_t rows,
+    uint32_t tp_degree,
+    uint32_t width,
+    uint32_t query_max)
+{
+    uint32_t row = blockIdx.x;
+    uint32_t rank;
+    uint32_t offset;
+
+    for (uint32_t column = threadIdx.x; column < GLM_PROJECTION_GATHER_WIDTH;
+         column += blockDim.x)
+    {
+        if (column < GLM_QUERY_A_DIM)
+        {
+            GlmProjectionSource(column, GLM_QUERY_A_DIM, tp_degree, &rank, &offset);
+            query_out[(uint64_t)row * GLM_QUERY_A_DIM + column] =
+                gathered[((uint64_t)rank * rows + row) * width + offset];
+        }
+        else
+        {
+            GlmProjectionSource(column - GLM_QUERY_A_DIM, GLM_LATENT_ROW, tp_degree, &rank, &offset);
+            latent_out[(uint64_t)row * GLM_LATENT_ROW + column - GLM_QUERY_A_DIM] =
+                gathered[((uint64_t)rank * rows + row) * width + query_max + offset];
+        }
+    }
 }
 
 static_assert(
@@ -387,24 +457,18 @@ static int32_t GlmLayerAttentionProject(
     uint32_t q_count;
     uint32_t kv_first;
     uint32_t kv_count;
+    uint32_t width;
+    uint32_t query_max;
     int32_t status;
 
     if (buffers == 0 || rows == 0u || buffers->hidden_bf16 == 0 ||
         buffers->residual_bf16 == 0 || buffers->normed_bf16 == 0 ||
         buffers->attn_norm_weight == 0 ||
-        (buffers->projection_gather_bf16 != 0 &&
+        (buffers->projection_local_bf16 != 0 &&
          (buffers->tp_degree == 0u || buffers->tp_rank >= buffers->tp_degree ||
-          buffers->projection_gather_stride < GLM_PROJECTION_GATHER_WIDTH ||
           buffers->q_a_weight == 0 || buffers->kv_a_weight == 0)))
     {
         return LM_LAUNCH_ERR_SHAPE;
-    }
-    if (buffers->projection_gather_bf16 != 0 &&
-        cudaMemsetAsync(buffers->projection_gather_bf16, 0,
-            (uint64_t)rows * buffers->projection_gather_stride *
-                sizeof(uint16_t), stream) != cudaSuccess)
-    {
-        return LM_LAUNCH_ERR_LAUNCH;
     }
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM_LAYER_THREADS, uint16_t>),
@@ -420,7 +484,7 @@ static int32_t GlmLayerAttentionProject(
         GLM_HIDDEN,
         GLM_HIDDEN,
         GLM_RMS_EPSILON);
-    if (buffers->projection_gather_bf16 == 0)
+    if (buffers->projection_local_bf16 == 0)
     {
         return cudaPeekAtLastError() == cudaSuccess
             ? LM_LAUNCH_OK
@@ -430,11 +494,13 @@ static int32_t GlmLayerAttentionProject(
         &q_first, &q_count);
     GlmProjectionSlice(GLM_LATENT_ROW, buffers->tp_degree, buffers->tp_rank,
         &kv_first, &kv_count);
+    width = GlmProjectionSliceWidth(buffers->tp_degree);
+    query_max = GlmProjectionSliceMax(GLM_QUERY_A_DIM, buffers->tp_degree);
     if (q_count != 0u && kv_count != 0u)
     {
         const LmSkinnyDenseTarget targets[2] = {
-            {(const uint16_t *)buffers->q_a_weight + (uint64_t)q_first * GLM_HIDDEN, buffers->projection_gather_bf16, 0, q_count, buffers->projection_gather_stride, q_first},
-            {(const uint16_t *)buffers->kv_a_weight + (uint64_t)kv_first * GLM_HIDDEN, buffers->projection_gather_bf16, 0, kv_count, buffers->projection_gather_stride, GLM_QUERY_A_DIM + kv_first}};
+            {(const uint16_t *)buffers->q_a_weight + (uint64_t)q_first * GLM_HIDDEN, buffers->projection_local_bf16, 0, q_count, width, 0u},
+            {(const uint16_t *)buffers->kv_a_weight + (uint64_t)kv_first * GLM_HIDDEN, buffers->projection_local_bf16, 0, kv_count, width, query_max}};
         status = LmSkinnyDenseMulti<LmBf16Format>(targets, 2u, buffers->normed_bf16, rows, GLM_HIDDEN, stream);
         if (status != LM_LAUNCH_ERR_SHAPE)
             return status;
@@ -445,12 +511,12 @@ static int32_t GlmLayerAttentionProject(
         status = GlmLaunchBf16Linear(
             buffers->normed_bf16,
             (const uint16_t *)buffers->q_a_weight + (uint64_t)q_first * GLM_HIDDEN,
-            buffers->projection_gather_bf16,
+            buffers->projection_local_bf16,
             rows,
             GLM_HIDDEN,
             q_count,
-            buffers->projection_gather_stride,
-            q_first,
+            width,
+            0u,
             multiprocessors,
             stream);
     }
@@ -459,12 +525,12 @@ static int32_t GlmLayerAttentionProject(
         status = GlmLaunchBf16Linear(
             buffers->normed_bf16,
             (const uint16_t *)buffers->kv_a_weight + (uint64_t)kv_first * GLM_HIDDEN,
-            buffers->projection_gather_bf16,
+            buffers->projection_local_bf16,
             rows,
             GLM_HIDDEN,
             kv_count,
-            buffers->projection_gather_stride,
-            GLM_QUERY_A_DIM + kv_first,
+            width,
+            query_max,
             multiprocessors,
             stream);
     }
@@ -515,18 +581,19 @@ static int32_t GlmLayerAttentionCore(
 
     if (gathered != 0u)
     {
-        if (cudaMemcpy2DAsync(buffers->q_compressed_bf16,
-                GLM_QUERY_A_DIM * sizeof(uint16_t),
-                buffers->projection_gather_bf16,
-                (uint64_t)buffers->projection_gather_stride * sizeof(uint16_t),
-                GLM_QUERY_A_DIM * sizeof(uint16_t), rows,
-                cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
-            cudaMemcpy2DAsync(buffers->kv_slot_bf16,
-                GLM_LATENT_ROW * sizeof(uint16_t),
-                buffers->projection_gather_bf16 + GLM_QUERY_A_DIM,
-                (uint64_t)buffers->projection_gather_stride * sizeof(uint16_t),
-                GLM_LATENT_ROW * sizeof(uint16_t), rows,
-                cudaMemcpyDeviceToDevice, stream) != cudaSuccess)
+        if (buffers->tp_degree == 0u)
+        {
+            return LM_LAUNCH_ERR_SHAPE;
+        }
+        GlmProjectionUnpackKernel<<<rows, GLM_LAYER_THREADS, 0, stream>>>(
+            buffers->projection_gather_bf16,
+            buffers->q_compressed_bf16,
+            buffers->kv_slot_bf16,
+            rows,
+            buffers->tp_degree,
+            GlmProjectionSliceWidth(buffers->tp_degree),
+            GlmProjectionSliceMax(GLM_QUERY_A_DIM, buffers->tp_degree));
+        if (cudaPeekAtLastError() != cudaSuccess)
         {
             return LM_LAUNCH_ERR_LAUNCH;
         }
