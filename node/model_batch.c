@@ -825,6 +825,16 @@ int main(int argc,char **argv)
 	}
 	if ( status == SPARK_STATUS_OK && continuous == 0u && getenv("SPARK_MODEL_BATCH_SEQUENTIAL") != 0 )
 		file.sequential_submissions = 1u;
+#ifdef DEBUG
+	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL") != 0 )
+		file.engine.flags |= SPARK_MODEL_BATCH_ENGINE_FLAG_DECODE_AFTER_PREFILL;
+#else
+	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL") != 0 )
+	{
+		fprintf(stderr,"sparkpipe_model_batch refused: SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL is a DEBUG measurement switch; use build/debug/sparkpipe_model_batch\n");
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	}
+#endif
 	if ( status == SPARK_STATUS_OK && profile_stages != 0u )
 		status = SparkModelBatchInitializeStageProfile(&file,deployment.node_count,&output);
 	if ( status == SPARK_STATUS_OK )

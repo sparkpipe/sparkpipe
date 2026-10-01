@@ -140,6 +140,7 @@ struct SparkModelBatchEngine
 	uint32_t free_resident_slot_count;
 	uint32_t next_request_scan;
 	uint32_t admission_open;
+	uint32_t decode_barrier_closed;
 	uint64_t next_progress_ns;
 	uint32_t live_request_count;
 	uint32_t inflight_submission_count;
@@ -1158,7 +1159,7 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->abi_version != SPARK_MODEL_BATCH_ENGINE_ABI_VERSION || configuration->descriptor_bytes != SPARK_MODEL_BATCH_ENGINE_CONFIGURATION_BYTES )
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
-	if ( configuration->flags != 0u || configuration->connect_timeout_ms == 0u || configuration->request_capacity == 0u || configuration->max_context_tokens < 2u || configuration->max_prefill_rows_per_submission == 0u || configuration->maximum_messages_per_rank_per_progress == 0u || configuration->inflight_budget_ns < SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS || configuration->stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT || configuration->deployment == 0 || configuration->runtime_root == 0 || configuration->event_function == 0 )
+	if ( (configuration->flags & ~SPARK_MODEL_BATCH_ENGINE_KNOWN_FLAGS) != 0u || configuration->connect_timeout_ms == 0u || configuration->request_capacity == 0u || configuration->max_context_tokens < 2u || configuration->max_prefill_rows_per_submission == 0u || configuration->maximum_messages_per_rank_per_progress == 0u || configuration->inflight_budget_ns < SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS || configuration->stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT || configuration->deployment == 0 || configuration->runtime_root == 0 || configuration->event_function == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (left=0u; left<configuration->stop_token_count; left++)
 		for (right=left + 1u; right<configuration->stop_token_count; right++)
@@ -1339,6 +1340,9 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->event_function = configuration->event_function;
 	engine->event_context = configuration->event_context;
 	engine->admission_open = 1u;
+	engine->decode_barrier_closed = (configuration->flags & SPARK_MODEL_BATCH_ENGINE_FLAG_DECODE_AFTER_PREFILL) != 0u ? 1u : 0u;
+	if ( engine->decode_barrier_closed != 0u )
+		fprintf(stderr,"batch engine DEBUG decode-after-prefill barrier armed: decode waits until every submitted prompt has finished prefill\n");
 	engine->next_work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
 	engine->cache_publication_epoch = 1u;
 	if ( engine->max_prefill_rows > limits->max_input_row_count )
@@ -1480,6 +1484,8 @@ SparkStatus SparkModelBatchEngineSubmit(
 	status = SparkModelBatchValidateSubmit(engine,request);
 	if ( status != SPARK_STATUS_OK || engine->admission_open == 0u || engine->failed_status != SPARK_STATUS_OK || engine->free_request_head == SPARK_MODEL_BATCH_NO_SLOT )
 		return(status != SPARK_STATUS_OK ? status : engine->failed_status != SPARK_STATUS_OK ? (SparkStatus)engine->failed_status : SPARK_STATUS_BUSY);
+	if ( engine->decode_barrier_closed != 0u && engine->live_request_count >= engine->resident_sequence_capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	slot = engine->free_request_head;
 	state = &engine->requests[slot];
 	engine->free_request_head = state->next_free_slot;
@@ -2340,12 +2346,15 @@ static uint32_t SparkModelBatchChooseWorkKind(
 	SparkModelBatchEngine *engine)
 {
 	SparkModelBatchRequestState *request;
-	uint32_t available_by_kind[5],available_unbound_prefill,index,inflight_by_kind[5],kind,maximum_by_kind[5],minimum_by_kind[5],queued_by_kind[5],remaining_prompt;
+	uint32_t available_by_kind[5],available_unbound_prefill,index,inflight_by_kind[5],kind,maximum_by_kind[5],minimum_by_kind[5],pending_prefill,queued_by_kind[5],remaining_prompt;
 	memset(available_by_kind,0,sizeof(available_by_kind));
 	available_unbound_prefill = engine->free_resident_slot_count;
+	pending_prefill = 0u;
 	for (index=0u; index<engine->request_capacity; index++)
 	{
 		request = &engine->requests[index];
+		if ( request->state == SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL || request->state == SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT )
+			pending_prefill++;
 		if ( request->state == SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL )
 		{
 			if ( request->resident_sequence_slot == SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT )
@@ -2364,6 +2373,13 @@ static uint32_t SparkModelBatchChooseWorkKind(
 		else if ( request->state == SPARK_MODEL_BATCH_REQUEST_QUEUED_PUBLISH )
 			available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH]++;
 	}
+	if ( engine->decode_barrier_closed != 0u && pending_prefill == 0u && available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] != 0u )
+	{
+		engine->decode_barrier_closed = 0u;
+		fprintf(stderr,"batch engine DEBUG decode-after-prefill barrier open: ready_decode=%u monotonic_ns=%llu\n",available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE],(unsigned long long)SparkModelBatchNowNs());
+	}
+	if ( engine->decode_barrier_closed != 0u )
+		available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
 	memset(minimum_by_kind,0,sizeof(minimum_by_kind));
 	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 1u;
 	minimum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 1u;

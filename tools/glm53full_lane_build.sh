@@ -28,10 +28,15 @@ export PATH="/usr/local/cuda/bin:$PATH"
 MAKE_IDENTITY=(CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a EXPERT_CODEC="$GLMFULL_CODEC" MODEL_ARM="$GLMFULL_ARM" MODEL_REVISION="$REVISION" CONTRACT_SHA256="$CONTRACT_SHA256" MODULE_BATCH_VARIANT_BUCKETS="$GLMFULL_BUCKET" STAGE_PACK_PATH="$GLMFULL_STAGE_PACK" EXECUTION_ROW_CAPACITY="$GLMFULL_BUCKET" SCORE_DUMP="$GLMFULL_SCORE_DUMP")
 make -C "$CHECKOUT" -j8 CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a \
   build/sparkpipe_model_residentd build/sparkpipe_model_api build/sparkpipe_model_compile \
-  build/sparkpipe_module_publish build/sparkpipe_driver_inspect build/weightd_warm build/sparkpipe_model_batch \
+  build/sparkpipe_module_publish build/sparkpipe_driver_inspect build/weightd_warm build/sparkpipe_model_batch build/debug/sparkpipe_model_batch \
   hidden_transport_spark_host_rdma_verbs
-make -C "$CHECKOUT/$MODULE" -j8 "${MAKE_IDENTITY[@]}" variants
-make -C "$CHECKOUT/$MODULE" -j1 "${MAKE_IDENTITY[@]}" publish_variants
+if [ "$GLMFULL_BUCKET" = 1024 ]; then
+  BUCKETED_ID="$PREFIX.$SUFFIX"
+  make -C "$CHECKOUT/$MODULE" -j8 "${MAKE_IDENTITY[@]}" publish
+else
+  make -C "$CHECKOUT/$MODULE" -j8 "${MAKE_IDENTITY[@]}" variants
+  make -C "$CHECKOUT/$MODULE" -j1 "${MAKE_IDENTITY[@]}" publish_variants
+fi
 LANE_FIRMWARE="$CHECKOUT/build/glm53full-firmware-b$GLMFULL_BUCKET.json"
 python3 - "$CHECKOUT/$FIRMWARE" "$LANE_FIRMWARE" "$DEFAULT_ID" "$BUCKETED_ID" <<'PYFW'
 import json, sys
@@ -65,12 +70,13 @@ STAGE="$GLMFULL_FIRMWARE_ROOT.new"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 install -m 0755 "$CHECKOUT/build/sparkpipe_model_residentd" "$CHECKOUT/build/sparkpipe_model_api" "$CHECKOUT/build/sparkpipe_model_batch" "$CHECKOUT/build/weightd_warm" "$STAGE/"
+install -m 0755 "$CHECKOUT/build/debug/sparkpipe_model_batch" "$STAGE/sparkpipe_model_batch_debug"
 install -m 0644 "$ADAPTER" "$STAGE/model_serving_adapter.so"
 install -m 0644 "$DRIVER/stages/stage_000/model_driver.so" "$STAGE/model_driver.so"
 install -m 0644 "$CHECKOUT/build/libhidden_transport_spark_host_rdma_verbs.so" "$STAGE/hidden_transport.so"
 printf '%s\n' "$COMMIT" > "$STAGE/SOURCE_COMMIT"
 printf 'module=%s\nbucket=%s\nrevision=%s\ncontract=%s\narm=%s\nscore_dump=%s\n' "$BUCKETED_ID" "$GLMFULL_BUCKET" "$REVISION" "$CONTRACT_SHA256" "$GLMFULL_ARM" "$GLMFULL_SCORE_DUMP" > "$STAGE/MODULE_IDENTITY"
-( cd "$STAGE" && sha256sum sparkpipe_model_residentd sparkpipe_model_api sparkpipe_model_batch weightd_warm model_serving_adapter.so model_driver.so hidden_transport.so > SHA256SUMS )
+( cd "$STAGE" && sha256sum sparkpipe_model_residentd sparkpipe_model_api sparkpipe_model_batch sparkpipe_model_batch_debug weightd_warm model_serving_adapter.so model_driver.so hidden_transport.so > SHA256SUMS )
 rm -rf "$GLMFULL_FIRMWARE_ROOT.old"
 if [ -d "$GLMFULL_FIRMWARE_ROOT" ]; then mv "$GLMFULL_FIRMWARE_ROOT" "$GLMFULL_FIRMWARE_ROOT.old"; fi
 mv "$STAGE" "$GLMFULL_FIRMWARE_ROOT"
