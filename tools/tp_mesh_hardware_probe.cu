@@ -297,6 +297,9 @@ struct Probe
                     std::fprintf(stderr,"PEER rank=%u seq=%llu error=%llx diag=%llx rounds=%llu entry=%llx bytes=%llu slot=%llu mask=%llx enqueue_ms=%.3f\n",peer,
                         (unsigned long long)other.seq,(unsigned long long)other.error_word,(unsigned long long)other.diag_word,(unsigned long long)other.rounds_done,
                         (unsigned long long)Load(Entry(peer)),(unsigned long long)Load(Entry(peer)+1),(unsigned long long)Load(Entry(peer)+2),(unsigned long long)Load(Entry(peer)+3),enqueue_ns[peer]/1e6);
+                    std::fprintf(stderr,"PEER2 rank=%u second_seq=%llu second_round=%llx entry=%llx bytes=%llu slot=%llu route=%llx shipped=%llx pending=%llx\n",peer,(unsigned long long)other.second_seq,(unsigned long long)other.second_round_seq,
+                        (unsigned long long)Load(Entry(peer,1u)),(unsigned long long)Load(Entry(peer,1u)+1),(unsigned long long)Load(Entry(peer,1u)+2),(unsigned long long)Load(Entry(peer,1u)+3),
+                        (unsigned long long)shipped[peer+second_band],(unsigned long long)pending[peer+second_band]);
                     for (uint32_t slot=0u;slot<degree*2u;slot++) std::fprintf(stderr,"TAIL rank=%u slot=%u value=%llx\n",peer,slot,
                         (unsigned long long)Load(reinterpret_cast<uint64_t *>(host+peer*band_bytes+(slot+1u)*SPARK_WEIGHTD_MESH_SLOT_BYTES-8u)));
                 }
