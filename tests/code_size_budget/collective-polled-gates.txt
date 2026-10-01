@@ -1,0 +1,2 @@
++1100
+Two GB10 hardware probes that decide the collective transport design: spark_gpu_doorbell_probe.cu (an SM cannot ring the CX-7 doorbell; GPU-written WQEs with a CPU ring land) and spark_gpu_mesh_probe.cu (16-rank exchange floor: CPU relay vs GPU-built WQEs within 1 us; cuStreamWaitValue64 waits cost 4-8 us over in-kernel polls). The mesh header shrinks by 30 lines with the polled gates.

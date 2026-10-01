@@ -1227,6 +1227,7 @@ static cudaGraphNode_t Glm5NextL2PrefetchForkNode(cudaGraphNode_t node)
 {
 	CUgraphNodeType type;
 	CUgraphNode previous;
+	cudaKernelNodeParams params;
 	size_t count;
 	uint32_t step;
 	for (step=0u; step<GLM5_NEXT_L2_PREFETCH_SEARCH; step++)
@@ -1235,7 +1236,8 @@ static cudaGraphNode_t Glm5NextL2PrefetchForkNode(cudaGraphNode_t node)
 		if ( cuGraphNodeGetType((CUgraphNode)node,&type) != CUDA_SUCCESS || cuGraphNodeGetDependencies((CUgraphNode)node,0,0,&count) != CUDA_SUCCESS || count != 1u ||
 		     cuGraphNodeGetDependencies((CUgraphNode)node,&previous,0,&count) != CUDA_SUCCESS )
 			return(0);
-		if ( type == CU_GRAPH_NODE_TYPE_BATCH_MEM_OP )
+		if ( type == CU_GRAPH_NODE_TYPE_KERNEL && cudaGraphKernelNodeGetParams(node,&params) == cudaSuccess &&
+		     params.func == (void *)SparkTpMeshHardwareGuardKernel )
 			return((cudaGraphNode_t)previous);
 		node = (cudaGraphNode_t)previous;
 	}
