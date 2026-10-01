@@ -1838,7 +1838,6 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 	SparkGlm52AsyncCompletion *async;
 	SparkGlm52ModuleState *state;
 	SparkGlm52ExecutionSlot *slot;
-	uint32_t lane,resident;
 	async = (SparkGlm52AsyncCompletion *)context;
 	state = async != 0 ? async->state : 0;
 	if ( state == 0 || async->slot_index >= state->pipeline_slot_count )
@@ -2423,7 +2422,7 @@ static void SparkGlm52ModuleSnapshotExtend(
 	SparkModelDriverRuntimeSnapshot *snapshot)
 {
 	SparkGlm52ModuleState *state;
-	uint32_t index,resident_count;
+	uint32_t resident_count;
 	state = (SparkGlm52ModuleState *)module_state;
 	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
 	resident_count = SparkStageKvBindingResidentCount(&state->kv);
@@ -2499,7 +2498,6 @@ static SparkStatus SparkGlm52ModulePrepare(
 	SparkGlm52ModuleState *state;
 	const char *pack_path;
 	SparkStatus status;
-	uint32_t lane;
 	state = (SparkGlm52ModuleState *)module_state;
 	status = SparkGlm52ModuleConfigure(state,configuration,host_services,&pack_path);
 	if ( status == SPARK_STATUS_OK && SparkGlm52ConfigureCudaModule(&state->multiprocessor_count) != 0 )
