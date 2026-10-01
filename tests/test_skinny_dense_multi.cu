@@ -97,7 +97,7 @@ int main(int argc,char **argv)
 		return 2;
 	}
 	CUDA(cudaStreamCreate(&stream));
-	for (rows=1u; rows<=8u; rows++)
+	for (rows=1u; rows<=LM_SKINNY_ROWS_WIDE; rows++)
 	{
 		Case(4096u,rows,kda,2u,stream);
 		Case(4096u,rows,mixed,4u,stream);
@@ -109,7 +109,7 @@ int main(int argc,char **argv)
 	REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(bad,0u,(const uint16_t *)16,1u,4096u,stream) == LM_LAUNCH_ERR_SHAPE);
 	REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(bad,LM_SKINNY_MULTI_MAX + 1u,(const uint16_t *)16,1u,4096u,stream) == LM_LAUNCH_ERR_SHAPE);
 	bad[0].weight=(const void *)16; bad[0].output_bf16=(uint16_t *)16; bad[0].output_dimension=16u;
-	REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(bad,1u,(const uint16_t *)16,9u,4096u,stream) == LM_LAUNCH_ERR_SHAPE);
+	REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(bad,1u,(const uint16_t *)16,LM_SKINNY_ROWS_WIDE + 1u,4096u,stream) == LM_LAUNCH_ERR_SHAPE);
 	printf("test_skinny_dense_multi PASS\n");
 	return 0;
 }

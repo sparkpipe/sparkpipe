@@ -210,7 +210,7 @@ static int32_t GlmLaunchBf16Linear(
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
-    if (rows <= LM_SKINNY_ROWS)
+    if (rows <= LM_SKINNY_ROWS_WIDE)
         return LmSkinnyDense<LmBf16Format>(weight_bf16, activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, stream);
     return LmStreamGemmDense<LmBf16Format>(weight_bf16, LmScaleTensorNone(), activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, multiprocessors, stream);
 }
@@ -928,7 +928,7 @@ static int32_t GlmLayerMoeRouterLogits(
 {
     int32_t status;
 
-    status = rows <= LM_SKINNY_ROWS
+    status = rows <= LM_SKINNY_ROWS_WIDE
         ? LmSkinnyDense<LmBf16Format>(buffers->router_weight, buffers->normed_bf16, 0, buffers->router_logits, rows, GLM_HIDDEN, GLM_EXPERTS, 0u, 0u, stream)
         : LmStreamGemmDense<LmBf16Format>(buffers->router_weight, LmScaleTensorNone(), buffers->normed_bf16, 0, buffers->router_logits, rows, GLM_HIDDEN, GLM_EXPERTS, 0u, 0u, multiprocessors, stream);
     if (status != LM_LAUNCH_OK)
