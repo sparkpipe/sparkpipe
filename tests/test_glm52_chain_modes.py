@@ -148,6 +148,7 @@ static void Completed(void *context,const SparkModelDriverCompletion *completion
 static SparkGlm52ModuleState state;
 static SparkWeightdLazyPack lazy;
 static uint16_t dev_hidden[8],dev_attn[8],dev_gather[8],dev_local[8];
+static uint32_t dev_table[16];
 static uint64_t dev_maxloc[4];
 static SparkGlm52ResidentDecodeStageBatchView batch;
 static SparkGlm52ResidentDecodeStageFrameContext context;
@@ -222,6 +223,7 @@ static void Setup(void)
 	slot->attention_out_bf16 = dev_attn;
 	slot->projection_gather_bf16 = dev_gather;
 	slot->projection_local_bf16 = dev_local;
+	slot->prefill_block_table = dev_table;
 	slot->head_maxloc_u64 = dev_maxloc;
 	assert(SparkStageModuleCudaWaitInitialize(&state.chain_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	batch.row_count = 1u;

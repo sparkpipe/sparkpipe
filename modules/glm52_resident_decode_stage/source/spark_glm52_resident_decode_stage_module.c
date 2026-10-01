@@ -968,6 +968,11 @@ static SparkStatus SparkGlmStageEnqueueAsyncCompletion(
 	SparkGlm52ExecutionSlot *slot,
 	uint32_t slot_index);
 
+static uint32_t SparkGlm52PackedPrefill(const SparkGlm52ModuleState *state,const SparkGlm52ExecutionSlot *slot)
+{
+	return(SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree == SPARK_GLM52_PREFILL_BLOCK_ROWS && slot->prefill_block_table != 0 ? 1u : 0u);
+}
+
 static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 {
 	SparkGlm52ModuleState *state;
@@ -1018,7 +1023,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->projection_split = state->projection_split;
 	wave->row_head_certified = chain->prefill != 0u && state->prefill_wave_rows != 0u ? 1u : 0u;
 	wave->single_sequence_rows = chain->row_ordered;
-	wave->prefill_block_table = chain->row_ordered != 0u && SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree == SPARK_GLM52_PREFILL_BLOCK_ROWS ? slot->prefill_block_table : 0;
+	wave->prefill_block_table = chain->row_ordered != 0u && SparkGlm52PackedPrefill(state,slot) != 0u ? slot->prefill_block_table : 0;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
 	wave->head_certified_fp8_scale_f32 = state->head_certified_fp8_scale_f32;
 	wave->head_certified_fp8_norm_f32 = state->head_certified_fp8_norm_f32;
@@ -1073,7 +1078,7 @@ static uint32_t SparkGlm52WaveRows(const SparkGlm52TpChain *chain,uint32_t first
 	regime.max_positions = state->max_sequence_positions;
 	if ( chain->row_ordered != 0u )
 	{
-		uint32_t spans = SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree == SPARK_GLM52_PREFILL_BLOCK_ROWS ? SPARK_GLM52_PREFILL_WAVE_SPANS : 1u;
+		uint32_t spans = SparkGlm52PackedPrefill(state,chain->slot) != 0u ? SPARK_GLM52_PREFILL_WAVE_SPANS : 1u;
 		uint32_t rows = SparkRowLayoutPackedSpanWaveRowCount(first_row,chain->batch->row_count,chain->slot->host_resident_slots,SparkGlm52RowSelectionRegime,&regime,state->prefill_wave_rows,spans);
 		if ( rows > SparkGlm52ExactWaveRows() )
 			return(rows);
