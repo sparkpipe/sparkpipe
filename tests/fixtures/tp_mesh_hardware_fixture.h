@@ -3,7 +3,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-void SparkTestMeshWaitInitialize(void *region,uint32_t degree);
+void SparkTestMeshWaitInitialize(void *region,uint32_t degree,uint32_t bands);
 void SparkTestMeshWaitPoll(uint64_t now_ns);
 #ifdef __cplusplus
 }

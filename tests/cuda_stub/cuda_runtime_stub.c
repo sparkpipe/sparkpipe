@@ -1700,9 +1700,10 @@ cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,void *band,
     uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,void *gate,
     void *round_control,uint32_t rank,uint32_t degree,const void *local,
     void *output,void *scratch,uint64_t elements,uint32_t operation,
-    uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,uint64_t timeout_ns)
+    uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,
+    const SparkTpMeshSecondBand *second,uint64_t timeout_ns)
 {
-    (void)stream;(void)slot_bytes;(void)slots_per_rank;(void)entry;
+    (void)stream;(void)slot_bytes;(void)slots_per_rank;(void)entry;(void)second;
     cuda_stub_mesh_hardware_staging = staging;
     cuda_stub_mesh_hardware_slice_routes = slice_routes;
     (void)round_control;(void)rank;(void)degree;(void)local;(void)output;

@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 18u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 20u
 #define SPARK_TP_MESH_ROUND_CONTROL_BYTES \
     (SPARK_TP_MESH_ROUND_CONTROL_WORDS * sizeof(uint64_t))
 
@@ -24,6 +24,8 @@
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_MATH_STARTED_NS 15u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_MATH_FINISHED_NS 16u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_MATH_BLOCKS_DONE 17u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_SECOND_SEQ 18u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_SECOND_ROUND_SEQ 19u
 
 typedef struct SparkTpMeshRoundControl
 {
@@ -45,7 +47,17 @@ typedef struct SparkTpMeshRoundControl
     uint64_t math_started_ns;
     uint64_t math_finished_ns;
     uint64_t math_blocks_done;
+    uint64_t second_seq;
+    uint64_t second_round_seq;
 } SparkTpMeshRoundControl;
+
+typedef struct SparkTpMeshSecondBand
+{
+    void *band;
+    volatile void *entry;
+    void *gate;
+    void *staging;
+} SparkTpMeshSecondBand;
 
 #define SPARK_TP_MESH_ROUND_LOOP_DECISION_GO 0u
 #define SPARK_TP_MESH_ROUND_LOOP_DECISION_CANCEL 1u
@@ -90,6 +102,7 @@ static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree
 #define SPARK_TP_MESH_OPERATION_SLICE_GATHER 7u
 #define SPARK_TP_MESH_OPERATION_ALL_TO_ALL 3u
 #define SPARK_TP_MESH_RSAG_MIN_DEGREE 4u
+#define SPARK_TP_MESH_PIPELINE_MIN_ELEMENTS (4u * SPARK_TP_MESH_RSAG_MIN_ELEMENTS)
 
 #if defined(__CUDACC__)
 __host__ __device__
@@ -134,6 +147,16 @@ __host__ __device__
 static inline uint64_t SparkTpMeshDirectPeerCapacity(uint32_t degree,uint64_t staging_slot_bytes)
 {
     return (uint64_t)degree * ((staging_slot_bytes / 2u) & ~UINT64_C(3));
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshPipelineChunkElements(uint64_t local_elements,uint32_t degree,uint64_t staging_slot_bytes)
+{
+    uint64_t chunks = (local_elements - 1u) / SparkTpMeshDirectPeerCapacity(degree,staging_slot_bytes) + 1u;
+    chunks = chunks < 2u ? 2u : chunks;
+    return ((local_elements + chunks - 1u) / chunks + 3u) & ~UINT64_C(3);
 }
 
 #if defined(__CUDACC__)

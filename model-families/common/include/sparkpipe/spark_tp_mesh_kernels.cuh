@@ -902,19 +902,30 @@ extern "C" cudaError_t SparkTpLaunchMeshWait(cudaStream_t stream,
 #define SPARK_TP_MESH_PUBLISH_REQUEST 2u
 #define SPARK_TP_MESH_PUBLISH_SHIP 4u
 
+static __device__ __forceinline__ uint64_t *SparkTpMeshPipeSeq(SparkTpMeshRoundControl *control,uint32_t pipe)
+{
+    return pipe != 0u ? &control->second_seq : &control->seq;
+}
+
+static __device__ __forceinline__ uint64_t *SparkTpMeshPipeRoundSeq(SparkTpMeshRoundControl *control,uint32_t pipe)
+{
+    return pipe != 0u ? &control->second_round_seq : &control->round_seq;
+}
+
 static __device__ void SparkTpMeshGateRequest(
     volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,
-    uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns)
+    uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns,uint32_t pipe)
 {
     uint64_t previous = SparkTpLdcvU64(&gate->request_id);
+    uint64_t seq = *SparkTpMeshPipeSeq(control,pipe);
     if ( previous == UINT64_MAX )
     {
         control->error_word = UINT64_MAX;
         return;
     }
-    if ( control->seq > UINT32_MAX - phase_offset ) control->error_word = UINT64_MAX;
-    uint64_t tag = kind == SPARK_WEIGHTD_MESH_WAIT_SHIPPED ? control->round_seq :
-        (control->epoch << 32u) | ((control->seq + phase_offset) & UINT32_MAX);
+    if ( seq > UINT32_MAX - phase_offset ) control->error_word = UINT64_MAX;
+    uint64_t tag = kind == SPARK_WEIGHTD_MESH_WAIT_SHIPPED ? *SparkTpMeshPipeRoundSeq(control,pipe) :
+        (control->epoch << 32u) | ((seq + phase_offset) & UINT32_MAX);
     control->wait_started_ns = SparkTpGlobalTimerNs();
     gate->ready = 0u;
     gate->kind = kind;
@@ -976,10 +987,10 @@ static __global__ void SparkTpMeshHardwareGuardKernel(
 
 static __global__ void SparkTpMeshHardwareWaitKernel(
     volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,
-    uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns)
+    uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns,uint32_t pipe)
 {
     if ( threadIdx.x != 0u || blockIdx.x != 0u ) return;
-    SparkTpMeshGateRequest(gate,control,kind,peer_mask,phase_offset,timeout_ns);
+    SparkTpMeshGateRequest(gate,control,kind,peer_mask,phase_offset,timeout_ns,pipe);
     SparkTpMeshGateAwait(gate,control);
     SparkTpMeshGateGuard(gate,control);
 }
@@ -988,9 +999,9 @@ static __device__ void SparkTpMeshPublishSlot(
     uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
     volatile uint64_t *entry,SparkTpMeshRoundControl *control,uint32_t rank,
     const void *source,uint64_t bytes,uint64_t offset,uint64_t doorbell_bytes,uint64_t route,uint32_t phase_offset,
-    uint32_t advance,uint64_t started)
+    uint32_t advance,uint64_t started,uint32_t pipe)
 {
-    uint64_t sequence = control->seq + phase_offset;
+    uint64_t sequence = *SparkTpMeshPipeSeq(control,pipe) + phase_offset;
     uint64_t tag = (control->epoch << 32u) | sequence;
     uint64_t slot = (uint64_t)rank * slots_per_rank + ((sequence - 1u) & (slots_per_rank - 1u));
     volatile uint8_t *destination = band + slot * slot_bytes;
@@ -1007,8 +1018,8 @@ static __device__ void SparkTpMeshPublishSlot(
         entry[1] = doorbell_bytes;
         entry[2] = slot;
         entry[3] = route;
-        control->round_seq = tag;
-        control->seq += advance;
+        *SparkTpMeshPipeRoundSeq(control,pipe) = tag;
+        *SparkTpMeshPipeSeq(control,pipe) += advance;
         __threadfence_system();
         *(volatile uint64_t *)(destination + slot_bytes - 8u) = tag;
         __threadfence_system();
@@ -1021,7 +1032,7 @@ static __global__ void SparkTpMeshHardwarePublishKernel(
     uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
     volatile uint64_t *entry,SparkTpMeshRoundControl *control,uint32_t rank,
     const void *source,uint64_t bytes,uint64_t offset,uint64_t doorbell_bytes,uint64_t route,uint32_t phase_offset,
-    uint32_t advance,volatile SparkWeightdMeshWaitRequest *gate,uint32_t mode,uint64_t peer_mask,uint64_t timeout_ns)
+    uint32_t advance,volatile SparkWeightdMeshWaitRequest *gate,uint32_t mode,uint64_t peer_mask,uint64_t timeout_ns,uint32_t pipe)
 {
     __shared__ uint64_t started;
     __shared__ uint64_t failed;
@@ -1029,19 +1040,19 @@ static __global__ void SparkTpMeshHardwarePublishKernel(
     {
         if ( (mode & SPARK_TP_MESH_PUBLISH_SHIP) != 0u )
         {
-            SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
+            SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns,pipe);
             SparkTpMeshGateAwait(gate,control);
         }
         if ( (mode & SPARK_TP_MESH_PUBLISH_GUARD) != 0u ) SparkTpMeshGateGuard(gate,control);
         started = SparkTpGlobalTimerNs();
-        if ( control->seq > UINT32_MAX - phase_offset ) control->error_word = UINT64_MAX;
+        if ( *SparkTpMeshPipeSeq(control,pipe) > UINT32_MAX - phase_offset ) control->error_word = UINT64_MAX;
         failed = control->error_word;
     }
     __syncthreads();
     if ( failed == 0u )
-        SparkTpMeshPublishSlot(band,slot_bytes,slots_per_rank,entry,control,rank,source,bytes,offset,doorbell_bytes,route,phase_offset,advance,started);
+        SparkTpMeshPublishSlot(band,slot_bytes,slots_per_rank,entry,control,rank,source,bytes,offset,doorbell_bytes,route,phase_offset,advance,started,pipe);
     if ( threadIdx.x == 0u && (mode & SPARK_TP_MESH_PUBLISH_REQUEST) != 0u )
-        SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_PEERS,peer_mask,0u,timeout_ns);
+        SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_PEERS,peer_mask,0u,timeout_ns,pipe);
 }
 
 static __device__ void SparkTpMeshHardwareDirectElement(
@@ -1082,13 +1093,13 @@ static __device__ void SparkTpMeshHardwareDirectElement(
 static __global__ void SparkTpMeshHardwareDirectKernel(
     const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
     SparkTpMeshRoundControl *control,uint32_t degree,void *output,
-    uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first)
+    uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first,uint32_t pipe)
 {
     uint64_t ring,i;
     if ( control->error_word != 0u ) return;
     if ( threadIdx.x == 0u )
         (void)atomicMin((unsigned long long *)&control->math_started_ns,SparkTpGlobalTimerNs());
-    ring = (control->round_seq - 1u) & (slots_per_rank - 1u);
+    ring = (*SparkTpMeshPipeRoundSeq(control,pipe) - 1u) & (slots_per_rank - 1u);
     for ( i = first + (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; i < first + span; i += (uint64_t)blockDim.x * gridDim.x )
         SparkTpMeshHardwareDirectElement(band,slot_bytes,slots_per_rank,ring,degree,output,local_elements,begin,count,operation,i,packed_first);
     __syncthreads();
@@ -1144,12 +1155,12 @@ static __global__ void SparkTpMeshAllToAllStageKernel(
 static __global__ void SparkTpMeshRsagStageKernel(
     uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,const SparkTpMeshRoundControl *control,
     uint16_t *staging,uint64_t staging_slot_elements,const uint16_t *local,uint32_t degree,uint32_t rank,
-    uint64_t count,uint64_t slice)
+    uint64_t count,uint64_t slice,uint32_t pipe)
 {
     uint64_t i,peer,j;
     uint16_t *self;
     if ( control->error_word != 0u ) return;
-    self = (uint16_t *)(band + ((uint64_t)rank * slots_per_rank + (control->seq & (slots_per_rank - 1u))) * slot_bytes);
+    self = (uint16_t *)(band + ((uint64_t)rank * slots_per_rank + ((pipe != 0u ? control->second_seq : control->seq) & (slots_per_rank - 1u))) * slot_bytes);
     for ( i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; i < count; i += (uint64_t)blockDim.x * gridDim.x )
     {
         peer = i / slice;
@@ -1310,10 +1321,10 @@ static cudaError_t SparkTpMeshHardwarePeerGuard(cudaStream_t stream,SparkWeightd
 
 static cudaError_t SparkTpMeshHardwareWait(cudaStream_t stream,
     SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,
-    uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns)
+    uint64_t kind,uint64_t peer_mask,uint64_t phase_offset,uint64_t timeout_ns,uint32_t pipe)
 {
     SparkTpMeshHardwareWaitKernel<<<1,1,0u,stream>>>(
-        gate,control,kind,peer_mask,phase_offset,timeout_ns);
+        gate,control,kind,peer_mask,phase_offset,timeout_ns,pipe);
     return cudaPeekAtLastError();
 }
 
@@ -1321,16 +1332,16 @@ static cudaError_t SparkTpMeshHardwareExchange(cudaStream_t stream,uint8_t *band
 {
     cudaError_t status;
     SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,entry,control,rank,source,bytes,offset,doorbell_bytes,route.word,1u,1u,
-        request,SPARK_TP_MESH_PUBLISH_SHIP | SPARK_TP_MESH_PUBLISH_GUARD | SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns);
+        request,SPARK_TP_MESH_PUBLISH_SHIP | SPARK_TP_MESH_PUBLISH_GUARD | SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns,0u);
     status = cudaPeekAtLastError();
     return status == cudaSuccess ? SparkTpMeshHardwarePeerGuard(stream,request,control) : status;
 }
 
-static cudaError_t SparkTpMeshHardwareCombinePacked(cudaStream_t stream,const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t degree,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first)
+static cudaError_t SparkTpMeshHardwareCombinePacked(cudaStream_t stream,const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t degree,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first,uint32_t pipe)
 {
     uint32_t blocks;
     blocks = (uint32_t)((span + SPARK_TP_MESH_THREADS - 1u) / SPARK_TP_MESH_THREADS);
-    SparkTpMeshHardwareDirectKernel<<<blocks != 0u ? blocks : 1u,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first);
+    SparkTpMeshHardwareDirectKernel<<<blocks != 0u ? blocks : 1u,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,pipe);
     return cudaPeekAtLastError();
 }
 
@@ -1338,7 +1349,7 @@ static cudaError_t SparkTpMeshHardwareCombine(cudaStream_t stream,const uint8_t 
 {
     uint32_t blocks;
     blocks = (uint32_t)((span + SPARK_TP_MESH_THREADS - 1u) / SPARK_TP_MESH_THREADS);
-    SparkTpMeshHardwareDirectKernel<<<blocks != 0u ? blocks : 1u,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,UINT64_MAX);
+    SparkTpMeshHardwareDirectKernel<<<blocks != 0u ? blocks : 1u,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,UINT64_MAX,0u);
     return cudaPeekAtLastError();
 }
 
@@ -1377,61 +1388,149 @@ static cudaError_t SparkTpMeshHardwareRsagChunk(cudaStream_t stream,uint8_t *ban
     return SparkTpMeshHardwareCombine(stream,band,slot_bytes,slots_per_rank,control,degree,output,slice,begin,count,SPARK_TP_MESH_OPERATION_SLICE_GATHER,0u,count,begin + count == local_elements);
 }
 
-static cudaError_t SparkTpMeshHardwarePeerRsagChunk(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint8_t *staging,uint64_t local_elements,uint64_t begin,uint64_t count,uint64_t timeout_ns)
+typedef struct SparkTpMeshPipeBand
+{
+    uint8_t *band;
+    volatile uint64_t *entry;
+    SparkWeightdMeshWaitRequest *gate;
+    uint8_t *staging;
+    uint32_t pipe;
+} SparkTpMeshPipeBand;
+
+static uint64_t SparkTpMeshPeerRsagFirst(uint64_t count,uint32_t rank,uint32_t degree,uint64_t *span)
+{
+    uint64_t slice = SparkTpMeshRsagSlice(count,degree),first;
+    first = (uint64_t)rank * slice < count ? (uint64_t)rank * slice : count;
+    *span = count - first < slice ? count - first : slice;
+    return(first);
+}
+
+static SparkWeightdMeshRoute SparkTpMeshPeerRsagRoute(uint32_t rank,uint32_t degree,uint32_t mode,uint64_t slice_bytes)
 {
     SparkWeightdMeshRoute route = {0};
-    uint64_t slice,first,span,staging_slot_elements = SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / sizeof(uint16_t),gather_bytes;
+    route.fields.peer_mask = ((1u << degree) - 1u) & ~(1u << rank);
+    route.fields.mode = mode;
+    route.fields.slice_bytes = slice_bytes;
+    return(route);
+}
+
+static cudaError_t SparkTpMeshHardwarePeerRsagIssue(cudaStream_t stream,const SparkTpMeshPipeBand *view,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,uint64_t begin,uint64_t count,uint64_t timeout_ns)
+{
+    uint64_t slice = SparkTpMeshRsagSlice(count,degree),staging_slot_elements = SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / sizeof(uint16_t);
+    SparkWeightdMeshRoute route = SparkTpMeshPeerRsagRoute(rank,degree,SPARK_WEIGHTD_MESH_ROUTE_PEER,slice * sizeof(uint16_t));
     uint32_t blocks;
     cudaError_t status;
-    slice = SparkTpMeshRsagSlice(count,degree);
-    if ( staging == 0 || slice > staging_slot_elements )
+    if ( view->staging == 0 || slice > staging_slot_elements )
         return cudaErrorInvalidValue;
-    first = (uint64_t)rank * slice < count ? (uint64_t)rank * slice : count;
-    span = count - first < slice ? count - first : slice;
-    route.fields.peer_mask = ((1u << degree) - 1u) & ~(1u << rank);
-    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
-    route.fields.slice_bytes = slice * sizeof(uint16_t);
-    status = SparkTpMeshHardwareWait(stream,request,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
+    status = SparkTpMeshHardwareWait(stream,view->gate,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns,view->pipe);
     if ( status != cudaSuccess )
         return status;
     blocks = (uint32_t)((count + SPARK_TP_MESH_THREADS - 1u) / SPARK_TP_MESH_THREADS);
-    SparkTpMeshRsagStageKernel<<<blocks != 0u ? blocks : 1u,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,(uint16_t *)staging,staging_slot_elements,(const uint16_t *)local + begin,degree,rank,count,slice);
+    SparkTpMeshRsagStageKernel<<<blocks != 0u ? blocks : 1u,SPARK_TP_MESH_THREADS,0u,stream>>>(view->band,slot_bytes,slots_per_rank,control,(uint16_t *)view->staging,staging_slot_elements,(const uint16_t *)local + begin,degree,rank,count,slice,view->pipe);
     status = cudaPeekAtLastError();
     if ( status != cudaSuccess )
         return status;
-    SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,entry,control,rank,local,0u,0u,route.fields.slice_bytes,route.word,1u,1u,
-        request,SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns);
-    status = cudaPeekAtLastError();
-    if ( status == cudaSuccess )
-        status = SparkTpMeshHardwarePeerGuard(stream,request,control);
-    if ( status == cudaSuccess )
-        status = SparkTpMeshHardwareCombinePacked(stream,band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,1u,first,span,0u,first);
-    if ( status != cudaSuccess )
-        return status;
-    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
-    route.fields.slice_bytes = 0u;
-    gather_bytes = (span * sizeof(uint16_t) + 7u) & ~UINT64_C(7);
-    status = SparkTpMeshHardwareExchange(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,(const uint8_t *)output + (begin + first) * sizeof(uint16_t),span * sizeof(uint16_t),0u,gather_bytes != 0u ? gather_bytes : 8u,route,timeout_ns);
-    if ( status != cudaSuccess )
-        return status;
-    return SparkTpMeshHardwareCombinePacked(stream,band,slot_bytes,slots_per_rank,control,degree,output,slice,begin,count,SPARK_TP_MESH_OPERATION_SLICE_GATHER,0u,count,begin + count == local_elements,0u);
+    SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(view->band,slot_bytes,slots_per_rank,view->entry,control,rank,local,0u,0u,route.fields.slice_bytes,route.word,1u,1u,
+        view->gate,SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns,view->pipe);
+    return cudaPeekAtLastError();
 }
 
-static cudaError_t SparkTpMeshHardwareDirectRound(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t elements,uint32_t operation,uint32_t slice_routes,uint8_t *staging,uint64_t timeout_ns)
+static cudaError_t SparkTpMeshHardwarePeerRsagReduce(cudaStream_t stream,const SparkTpMeshPipeBand *view,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint64_t timeout_ns)
+{
+    SparkWeightdMeshRoute route = SparkTpMeshPeerRsagRoute(rank,degree,SPARK_WEIGHTD_MESH_ROUTE_FULL,0u);
+    uint64_t span,first = SparkTpMeshPeerRsagFirst(count,rank,degree,&span),gather_bytes;
+    cudaError_t status = SparkTpMeshHardwarePeerGuard(stream,view->gate,control);
+    if ( status == cudaSuccess )
+        status = SparkTpMeshHardwareCombinePacked(stream,view->band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,1u,first,span,0u,first,view->pipe);
+    if ( status != cudaSuccess )
+        return status;
+    gather_bytes = (span * sizeof(uint16_t) + 7u) & ~UINT64_C(7);
+    SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(view->band,slot_bytes,slots_per_rank,view->entry,control,rank,(const uint8_t *)output + (begin + first) * sizeof(uint16_t),span * sizeof(uint16_t),0u,gather_bytes != 0u ? gather_bytes : 8u,route.word,1u,1u,
+        view->gate,SPARK_TP_MESH_PUBLISH_SHIP | SPARK_TP_MESH_PUBLISH_GUARD | SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns,view->pipe);
+    return cudaPeekAtLastError();
+}
+
+static cudaError_t SparkTpMeshHardwarePeerRsagGather(cudaStream_t stream,const SparkTpMeshPipeBand *view,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t degree,void *output,uint64_t local_elements,uint64_t begin,uint64_t count)
+{
+    cudaError_t status = SparkTpMeshHardwarePeerGuard(stream,view->gate,control);
+    if ( status != cudaSuccess )
+        return status;
+    return SparkTpMeshHardwareCombinePacked(stream,view->band,slot_bytes,slots_per_rank,control,degree,output,SparkTpMeshRsagSlice(count,degree),begin,count,SPARK_TP_MESH_OPERATION_SLICE_GATHER,0u,count,begin + count == local_elements,0u,view->pipe);
+}
+
+static cudaError_t SparkTpMeshHardwarePeerRsagChunk(cudaStream_t stream,const SparkTpMeshPipeBand *view,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint64_t timeout_ns)
+{
+    cudaError_t status = SparkTpMeshHardwarePeerRsagIssue(stream,view,slot_bytes,slots_per_rank,control,rank,degree,local,begin,count,timeout_ns);
+    if ( status == cudaSuccess )
+        status = SparkTpMeshHardwarePeerRsagReduce(stream,view,slot_bytes,slots_per_rank,control,rank,degree,output,local_elements,begin,count,timeout_ns);
+    if ( status != cudaSuccess )
+        return status;
+    return SparkTpMeshHardwarePeerRsagGather(stream,view,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count);
+}
+
+static cudaError_t SparkTpMeshHardwarePipelinedRsagRound(cudaStream_t stream,const SparkTpMeshPipeBand *views,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t local_elements,uint64_t timeout_ns)
+{
+    uint64_t per = SparkTpMeshPipelineChunkElements(local_elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
+    uint64_t chunks = (local_elements + per - 1u) / per,chunk[2],count;
+    uint32_t reduced[2],live[2],pipe;
+    cudaError_t status = cudaSuccess;
+    for (pipe=0u; pipe<2u; pipe++)
+    {
+        chunk[pipe] = pipe;
+        reduced[pipe] = 0u;
+        live[pipe] = pipe < chunks;
+        count = local_elements - pipe * per < per ? local_elements - pipe * per : per;
+        if ( live[pipe] != 0u && status == cudaSuccess )
+            status = SparkTpMeshHardwarePeerRsagIssue(stream,&views[pipe],slot_bytes,slots_per_rank,control,rank,degree,local,pipe * per,count,timeout_ns);
+    }
+    while ( status == cudaSuccess && (live[0] != 0u || live[1] != 0u) )
+        for (pipe=0u; pipe<2u && status==cudaSuccess; pipe++)
+        {
+            uint64_t begin = chunk[pipe] * per;
+            if ( live[pipe] == 0u )
+                continue;
+            count = local_elements - begin < per ? local_elements - begin : per;
+            if ( reduced[pipe] == 0u )
+            {
+                status = SparkTpMeshHardwarePeerRsagReduce(stream,&views[pipe],slot_bytes,slots_per_rank,control,rank,degree,output,local_elements,begin,count,timeout_ns);
+                reduced[pipe] = 1u;
+                continue;
+            }
+            status = SparkTpMeshHardwarePeerRsagGather(stream,&views[pipe],slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count);
+            reduced[pipe] = 0u;
+            chunk[pipe] += 2u;
+            live[pipe] = chunk[pipe] < chunks;
+            if ( live[pipe] != 0u && status == cudaSuccess )
+            {
+                begin = chunk[pipe] * per;
+                count = local_elements - begin < per ? local_elements - begin : per;
+                status = SparkTpMeshHardwarePeerRsagIssue(stream,&views[pipe],slot_bytes,slots_per_rank,control,rank,degree,local,begin,count,timeout_ns);
+            }
+        }
+    return status;
+}
+
+static cudaError_t SparkTpMeshHardwareDirectRound(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t elements,uint32_t operation,uint32_t slice_routes,uint8_t *staging,const SparkTpMeshSecondBand *second,uint64_t timeout_ns)
 {
     uint64_t local_elements,capacity,begin,count;
     uint32_t rsag,peer;
     cudaError_t status = cudaSuccess;
+    SparkTpMeshPipeBand views[2] = {
+        {band,entry,request,staging,0u},
+        {second != 0 ? (uint8_t *)second->band : 0,second != 0 ? (volatile uint64_t *)second->entry : 0,
+         second != 0 ? (SparkWeightdMeshWaitRequest *)second->gate : 0,second != 0 ? (uint8_t *)second->staging : 0,1u}};
     local_elements = SparkTpMeshDirectLocalElements(elements,degree,operation);
     rsag = SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,slice_routes) == 2u;
     peer = rsag != 0u && (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u;
+    if ( peer != 0u && second != 0 && local_elements >= SPARK_TP_MESH_PIPELINE_MIN_ELEMENTS )
+        return SparkTpMeshHardwarePipelinedRsagRound(stream,views,slot_bytes,slots_per_rank,control,rank,degree,local,output,local_elements,timeout_ns);
     capacity = peer != 0u ? SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshDirectCapacity(slot_bytes,operation);
     for (begin=0u; begin<local_elements && status==cudaSuccess; begin+=count)
     {
         count = local_elements - begin < capacity ? local_elements - begin : capacity;
         if ( peer != 0u )
         {
-            status = SparkTpMeshHardwarePeerRsagChunk(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,output,staging,local_elements,begin,count,timeout_ns);
+            status = SparkTpMeshHardwarePeerRsagChunk(stream,&views[0],slot_bytes,slots_per_rank,control,rank,degree,local,output,local_elements,begin,count,timeout_ns);
             continue;
         }
         status = rsag != 0u ? SparkTpMeshHardwareRsagChunk(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,output,local_elements,begin,count,timeout_ns) : SparkTpMeshHardwareDirectChunk(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,output,local_elements,begin,count,operation,timeout_ns);
@@ -1453,7 +1552,7 @@ static cudaError_t SparkTpMeshHardwarePeerAllToAllRound(cudaStream_t stream,uint
     {
         count = per_peer_elements - begin < slice ? per_peer_elements - begin : slice;
         route.fields.slice_bytes = ((count * sizeof(uint16_t) + 7u) & ~UINT64_C(7));
-        status = SparkTpMeshHardwareWait(stream,request,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
+        status = SparkTpMeshHardwareWait(stream,request,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns,0u);
         if ( status != cudaSuccess )
             return status;
         blocks = (uint32_t)(((uint64_t)degree * count + SPARK_TP_MESH_THREADS - 1u) / SPARK_TP_MESH_THREADS);
@@ -1462,7 +1561,7 @@ static cudaError_t SparkTpMeshHardwarePeerAllToAllRound(cudaStream_t stream,uint
         if ( status != cudaSuccess )
             return status;
         SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,entry,control,rank,local,0u,0u,route.fields.slice_bytes,route.word,1u,1u,
-            request,SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns);
+            request,SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns,0u);
         status = cudaPeekAtLastError();
         if ( status == cudaSuccess )
             status = SparkTpMeshHardwarePeerGuard(stream,request,control);
@@ -1509,7 +1608,8 @@ extern "C" cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,
     void *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,
     void *gate,void *round_control,uint32_t rank,uint32_t degree,
     const void *local,void *output,void *scratch,uint64_t elements,
-    uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,uint64_t timeout_ns)
+    uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,
+    const SparkTpMeshSecondBand *second,uint64_t timeout_ns)
 {
     if ( band == 0 || entry == 0 || gate == 0 || round_control == 0 || local == 0 ||
          output == 0 || scratch == 0 || elements == 0u || rounds == 0u || logical_rows == 0u ||
@@ -1517,7 +1617,9 @@ extern "C" cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,
          slot_bytes <= 16u || slots_per_rank != 2u || timeout_ns == 0u ||
          (operation == 0u && (elements % degree != 0u || local == output)) ||
          (operation == SPARK_TP_MESH_OPERATION_ALL_TO_ALL && (local == output || slice_routes == 0u)) ||
-         ((slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u && staging == 0) )
+         ((slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u && staging == 0) ||
+         (second != 0 && (second->band == 0 || second->entry == 0 || second->gate == 0 || second->band == band ||
+             ((slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u && second->staging == 0))) )
         return cudaErrorInvalidValue;
     if ( operation == SPARK_TP_MESH_OPERATION_ALL_TO_ALL )
     {
@@ -1542,7 +1644,7 @@ extern "C" cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,
         cudaError_t status;
         if ( logical_rows == 1u )
         {
-            status = SparkTpMeshHardwareDirectRound(stream,(uint8_t *)band,slot_bytes,slots_per_rank,(volatile uint64_t *)entry,request,control,rank,degree,(const uint8_t *)local,output,elements,operation,slice_routes,(uint8_t *)staging,timeout_ns);
+            status = SparkTpMeshHardwareDirectRound(stream,(uint8_t *)band,slot_bytes,slots_per_rank,(volatile uint64_t *)entry,request,control,rank,degree,(const uint8_t *)local,output,elements,operation,slice_routes,(uint8_t *)staging,second,timeout_ns);
             if ( status != cudaSuccess ) return status;
             continue;
         }
@@ -1560,16 +1662,16 @@ extern "C" cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,
                 if ( send != 0u )
                 {
                     status = SparkTpMeshHardwareWait(stream,request,control,
-                        SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
+                        SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns,0u);
                     if ( status != cudaSuccess ) return status;
                     SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(
                         (uint8_t *)band,slot_bytes,slots_per_rank,(volatile uint64_t *)entry,control,
-                        rank,scratch,count * width,0u,count * width,1u << (send - 1u),phase + 1u,0u,0,0u,0u,0u);
+                        rank,scratch,count * width,0u,count * width,1u << (send - 1u),phase + 1u,0u,0,0u,0u,0u,0u);
                 }
                 else if ( receive != 0u )
                 {
                     status = SparkTpMeshHardwareWait(stream,request,control,
-                        SPARK_WEIGHTD_MESH_WAIT_PEERS,1u << (receive - 1u),phase + 1u,timeout_ns);
+                        SPARK_WEIGHTD_MESH_WAIT_PEERS,1u << (receive - 1u),phase + 1u,timeout_ns,0u);
                     if ( status != cudaSuccess ) return status;
                     SparkTpMeshHardwareFoldKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(
                         (const uint8_t *)band,slot_bytes,slots_per_rank,control,scratch,count,

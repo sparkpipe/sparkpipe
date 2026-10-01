@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 15u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 30u
@@ -259,6 +259,7 @@ typedef struct SparkTpDeviceCollectiveConfig
     uint64_t collective_identifier;
     struct SparkWeightdClient *mesh_lane_client;
     uint32_t mesh_band_index;
+    uint32_t mesh_band_count;
 	const char *backend_module_path;
     const char *local_host;
     const char *rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];

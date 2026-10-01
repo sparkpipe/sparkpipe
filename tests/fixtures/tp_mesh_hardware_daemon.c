@@ -2,7 +2,9 @@
 #include "node/weightd_mesh.c"
 #include <assert.h>
 
-void SparkTestMeshWaitInitialize(void *region,uint32_t degree)
+static uint32_t SparkTestMeshBands;
+
+void SparkTestMeshWaitInitialize(void *region,uint32_t degree,uint32_t bands)
 {
     uint32_t lane,rank;
     assert(degree >= 2u && degree <= SPARK_WEIGHTD_MESH_RANKS_PER_BAND && region != 0);
@@ -18,15 +20,18 @@ void SparkTestMeshWaitInitialize(void *region,uint32_t degree)
             weightd_mesh.lane_topology[lane].physical_ranks[rank] = rank;
     }
     weightd_mesh.mesh_ready = 1u;
+    SparkTestMeshBands = bands;
 }
 
 void SparkTestMeshWaitPoll(uint64_t now_ns)
 {
-    uint32_t rank;
-    for (rank=0u; rank<weightd_mesh.lane_topology[0].rank_count; rank++)
-    {
-        uint32_t index = rank * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank;
-        weightd_mesh.lane_topology[rank / 2u].local_rank = rank;
-        SparkWeightdMeshWaitRequestsPollRange(now_ns,index,index + 1u);
-    }
+    uint32_t rank,pipe;
+    for (pipe=0u; pipe<SparkTestMeshBands; pipe++)
+        for (rank=0u; rank<weightd_mesh.lane_topology[0].rank_count; rank++)
+        {
+            uint32_t band = rank + pipe * SPARK_WEIGHTD_MESH_RANKS_PER_BAND;
+            uint32_t index = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank;
+            weightd_mesh.lane_topology[band / 2u].local_rank = rank;
+            SparkWeightdMeshWaitRequestsPollRange(now_ns,index,index + 1u);
+        }
 }

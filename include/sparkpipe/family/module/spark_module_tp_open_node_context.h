@@ -21,6 +21,7 @@ static SparkStatus SPARK_FAMILY(ModuleInitializeTpCollective)(
 	configuration.local_hidden_dimension = SPARK_FAMILY_CONST(MODEL_HIDDEN_DIMENSION);
 	configuration.max_active_sequence_count = SPARK_FAMILY_CONST(MODULE_TP_ROW_CAPACITY)(state);
 	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
+	configuration.mesh_band_count = 2u;
 	SPARK_FAMILY(ModuleRegisterCombines)(&configuration);
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status == SPARK_STATUS_OK )
