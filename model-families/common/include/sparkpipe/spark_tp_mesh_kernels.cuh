@@ -1522,7 +1522,7 @@ static cudaError_t SparkTpMeshHardwareDirectRound(cudaStream_t stream,uint8_t *b
     local_elements = SparkTpMeshDirectLocalElements(elements,degree,operation);
     rsag = SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,slice_routes) == 2u;
     peer = rsag != 0u && (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u;
-    if ( peer != 0u && second != 0 && local_elements >= SPARK_TP_MESH_PIPELINE_MIN_ELEMENTS )
+    if ( peer != 0u && second != 0 && local_elements > SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) )
         return SparkTpMeshHardwarePipelinedRsagRound(stream,views,slot_bytes,slots_per_rank,control,rank,degree,local,output,local_elements,timeout_ns);
     capacity = peer != 0u ? SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshDirectCapacity(slot_bytes,operation);
     for (begin=0u; begin<local_elements && status==cudaSuccess; begin+=count)

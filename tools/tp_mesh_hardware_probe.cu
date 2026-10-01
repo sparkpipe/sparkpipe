@@ -308,7 +308,7 @@ struct Probe
                 uint32_t width=operation==2u ? 8u : operation==1u ? 4u : 2u;
                 uint64_t chunks=(elements-1u)/((SPARK_WEIGHTD_MESH_SLOT_BYTES-16u)/width)+1u;
                 uint64_t advances=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
-                if (bands==2u && rows==1u && operation==1u && (routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u && elements>=SPARK_TP_MESH_PIPELINE_MIN_ELEMENTS)
+                if (bands==2u && rows==1u && operation==1u && (routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u && elements>SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES))
                 {
                     uint64_t per=SparkTpMeshPipelineChunkElements(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES),pieces=(elements+per-1u)/per;
                     REQUIRE(control.seq==launch_count*rounds*((pieces+1u)/2u)*2u && control.second_seq==launch_count*rounds*(pieces/2u)*2u);
@@ -366,7 +366,7 @@ struct Probe
                 Case(n,1u,1u,count,false);Case(n,1u,1u,count,true);
                 uint64_t per=SparkTpMeshPipelineChunkElements(count,n,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
                 std::printf("PIPELINED-ALL-REDUCE degree=%u elements=%llu chunks=%llu pipelined=%u PASS\n",n,(unsigned long long)count,
-                    (unsigned long long)((count+per-1u)/per),count>=SPARK_TP_MESH_PIPELINE_MIN_ELEMENTS);
+                    (unsigned long long)((count+per-1u)/per),count>SparkTpMeshDirectPeerCapacity(n,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES));
             }
         bands=1u;routes=saved;
     }

@@ -102,7 +102,6 @@ static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree
 #define SPARK_TP_MESH_OPERATION_SLICE_GATHER 7u
 #define SPARK_TP_MESH_OPERATION_ALL_TO_ALL 3u
 #define SPARK_TP_MESH_RSAG_MIN_DEGREE 4u
-#define SPARK_TP_MESH_PIPELINE_MIN_ELEMENTS (4u * SPARK_TP_MESH_RSAG_MIN_ELEMENTS)
 
 #if defined(__CUDACC__)
 __host__ __device__
@@ -155,7 +154,6 @@ __host__ __device__
 static inline uint64_t SparkTpMeshPipelineChunkElements(uint64_t local_elements,uint32_t degree,uint64_t staging_slot_bytes)
 {
     uint64_t chunks = (local_elements - 1u) / SparkTpMeshDirectPeerCapacity(degree,staging_slot_bytes) + 1u;
-    chunks = chunks < 2u ? 2u : chunks;
     return ((local_elements + chunks - 1u) / chunks + 3u) & ~UINT64_C(3);
 }
 
