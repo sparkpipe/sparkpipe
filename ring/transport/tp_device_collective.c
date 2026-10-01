@@ -964,7 +964,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
         implementation->f32_scratch = scratch;
         implementation->f32_scratch_bytes = implementation->slot_bytes;
     }
-    if ( (SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u || implementation->deferred_rounds == 0u) &&
+    if ( (implementation->capture_armed == 0u || implementation->hardware_wait == 0u) && (SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u || implementation->deferred_rounds == 0u) &&
          cudaMemsetAsync((uint8_t *)implementation->round_control +
             SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUNDS_DONE * sizeof(uint64_t),0,
             sizeof(uint64_t),submission->cuda_stream) != 0 )
