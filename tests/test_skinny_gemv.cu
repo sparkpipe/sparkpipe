@@ -562,7 +562,7 @@ int main(int argc,char **argv)
     REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)16,(const uint16_t *)16,(uint16_t *)16,0,LM_SKINNY_ROWS_WIDE + 1u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyDense<LmBf16Format>((const void *)8,(const uint16_t *)16,(uint16_t *)16,0,1u,4096u,16u,0u,0u,stream) == LM_LAUNCH_ERR_SHAPE);
     REQUIRE(LmSkinnyExperts<LmFp8>((const void *)16,LmScaleTensorNone(),(const uint16_t *)16,(uint16_t *)16,(const uint32_t *)16,(const uint32_t *)16,9u*8u,8u,0u,4096u,256u,stream) == LM_LAUNCH_ERR_SHAPE);
-    puts("PASS skinny declines rows>8, more than eight routed tokens and misaligned weights so callers fall back to the tensor-core GEMM");
+    puts("PASS skinny declines rows>16, more than eight routed tokens and misaligned weights so callers fall back to the tensor-core GEMM");
     for (const DenseShape &shape : dense_shapes)
         if ((shape.input % LmBf16Format::kTileK) == 0u)
             TimeShape(&shape,stream);
