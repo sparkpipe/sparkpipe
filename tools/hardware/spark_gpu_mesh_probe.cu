@@ -624,7 +624,7 @@ static void MeshUsage(const char *program)
 int main(int argc,char **argv)
 {
     static const char *counters[] = { "out_of_sequence","packet_seq_err","roce_adp_retrans","local_ack_timeout_err" };
-    MeshOptions o = { 0u,16u,12288u,20000u,1000u,4u,MESH_MODE_PROXY,MESH_RING_EACH,0u,3u,106u,47600u,17,"rocep1s0f1","10.10.100.10" };
+    MeshOptions o = { 0u,16u,4096u,20000u,1000u,4u,MESH_MODE_PROXY,MESH_RING_EACH,0u,3u,106u,47600u,17,"rocep1s0f1","10.10.100.10" };
     for ( int i = 1; i < argc; i += 2 )
     {
         if ( i + 1 >= argc ) MeshUsage(argv[0]);

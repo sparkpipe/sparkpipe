@@ -102,8 +102,8 @@ static int ProbeCpuExchange(const ProbeQueue &host,uint8_t *source,volatile uint
         uint32_t *wqe = (uint32_t *)(sq_cpu + (index & (host.wqe_count - 1u)) * host.stride);
         uint64_t remote = __builtin_bswap64(host.destination),local = __builtin_bswap64(host.source);
         wqe[0] = control0; wqe[1] = control1; wqe[2] = 0x08000000u; wqe[3] = 0u;
-        std::memcpy(&wqe[4],&remote,8); wqe[6] = ProbeHostBe32(host.rkey); wqe[7] = 0u;
-        wqe[8] = ProbeHostBe32(host.bytes); wqe[9] = ProbeHostBe32(host.lkey); std::memcpy(&wqe[10],&local,8);
+        std::memcpy(&wqe[4],&remote,sizeof(remote)); wqe[6] = ProbeHostBe32(host.rkey); wqe[7] = 0u;
+        wqe[8] = ProbeHostBe32(host.bytes); wqe[9] = ProbeHostBe32(host.lkey); std::memcpy(&wqe[10],&local,sizeof(local));
         __sync_synchronize();
         dbrec_cpu[1] = ProbeHostBe32((uint32_t)((index + 1u) & 0xffffu));
     }
