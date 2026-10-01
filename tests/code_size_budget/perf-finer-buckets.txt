@@ -1,0 +1,2 @@
++11
+Graph buckets in 64-row steps above 256 rows (320, 384, ..., 1024) instead of powers of two, so waves of 257-1023 rows pad to at most 63 extra rows instead of up to 255.

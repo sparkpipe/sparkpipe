@@ -15,7 +15,12 @@
 #define SPARK_TP_CHAIN_MAX_COLLECTIVES 2u
 #define SPARK_TP_CHAIN_GRAPH_MAX_REGIMES 4u
 #define SPARK_TP_CHAIN_GRAPH_MAX_ROWS 1024u
-#define SPARK_TP_CHAIN_GRAPH_BUCKETS 11u
+#define SPARK_TP_CHAIN_GRAPH_POW2_ROWS 256u
+#define SPARK_TP_CHAIN_GRAPH_POW2_BUCKETS 9u
+#define SPARK_TP_CHAIN_GRAPH_WIDE_STEP 64u
+#define SPARK_TP_CHAIN_GRAPH_BUCKETS \
+	(SPARK_TP_CHAIN_GRAPH_POW2_BUCKETS + \
+	 (SPARK_TP_CHAIN_GRAPH_MAX_ROWS - SPARK_TP_CHAIN_GRAPH_POW2_ROWS) / SPARK_TP_CHAIN_GRAPH_WIDE_STEP)
 
 typedef uint32_t (*SparkTpChainWalkFunction)(void *context);
 
@@ -135,16 +140,22 @@ static inline SparkStatus SparkTpChainSettle(const SparkTpChainCollectives *coll
 static inline uint32_t SparkTpChainGraphBucketIndex(uint32_t rows)
 {
 	uint32_t index = 0u;
-	while ( index + 1u < SPARK_TP_CHAIN_GRAPH_BUCKETS && (1u << index) < rows )
+	if ( rows > SPARK_TP_CHAIN_GRAPH_POW2_ROWS )
+		return(SPARK_TP_CHAIN_GRAPH_POW2_BUCKETS - 1u +
+			(rows - SPARK_TP_CHAIN_GRAPH_POW2_ROWS + SPARK_TP_CHAIN_GRAPH_WIDE_STEP - 1u) / SPARK_TP_CHAIN_GRAPH_WIDE_STEP);
+	while ( (1u << index) < rows )
 		index++;
 	return(index);
 }
 
 static inline uint32_t SparkTpChainGraphBucketRows(uint32_t rows)
 {
+	uint32_t index;
 	if ( rows == 0u || rows > SPARK_TP_CHAIN_GRAPH_MAX_ROWS )
 		return(0u);
-	return(1u << SparkTpChainGraphBucketIndex(rows));
+	index = SparkTpChainGraphBucketIndex(rows);
+	return(index < SPARK_TP_CHAIN_GRAPH_POW2_BUCKETS ? 1u << index :
+		SPARK_TP_CHAIN_GRAPH_POW2_ROWS + (index + 1u - SPARK_TP_CHAIN_GRAPH_POW2_BUCKETS) * SPARK_TP_CHAIN_GRAPH_WIDE_STEP);
 }
 
 static inline void **SparkTpChainGraphEntry(SparkTpChainGraphTable *table,uint32_t regime,uint32_t rows)
