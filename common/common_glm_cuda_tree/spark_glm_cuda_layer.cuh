@@ -1369,6 +1369,32 @@ static int32_t GlmLayerMoe(
     return GlmLayerMoeExperts<ExpertCodec>(buffers,rows,packed_rows,multiprocessors,stream);
 }
 
+template <uint32_t ROWS>
+static void GlmHeadCandidateRows(
+    const GlmLayerBuffers *buffers,
+    const void *head_weight,
+    const uint32_t *token_ids,
+    uint32_t vocabulary,
+    uint32_t rows,
+    uint32_t tiles,
+    cudaStream_t stream)
+{
+    LM_LAUNCH(
+        (LmHeadCandidateRowsKernel<GLM_LAYER_THREADS, GLM_HEAD_TILE, ROWS>),
+        dim3(tiles, (rows + ROWS - 1u) / ROWS),
+        GLM_LAYER_THREADS,
+        0,
+        stream,
+        buffers->normed_bf16,
+        (const uint16_t *)head_weight,
+        token_ids,
+        buffers->head_candidate_score,
+        buffers->head_candidate_token,
+        rows,
+        GLM_HIDDEN,
+        vocabulary);
+}
+
 static int32_t GlmHead(
     const GlmLayerBuffers *buffers,
     const void *head_norm_weight,
@@ -1405,21 +1431,12 @@ static int32_t GlmHead(
         GLM_HIDDEN,
         GLM_HIDDEN,
         GLM_RMS_EPSILON);
-    if (rows > 1u)
-        LM_LAUNCH(
-            (LmHeadCandidateRowsKernel<GLM_LAYER_THREADS, GLM_HEAD_TILE, GLM_HEAD_ROWS>),
-            dim3(tiles, (rows + GLM_HEAD_ROWS - 1u) / GLM_HEAD_ROWS),
-            GLM_LAYER_THREADS,
-            0,
-            stream,
-            buffers->normed_bf16,
-            (const uint16_t *)head_weight,
-            token_ids,
-            buffers->head_candidate_score,
-            buffers->head_candidate_token,
-            rows,
-            GLM_HIDDEN,
-            vocabulary);
+    if (rows > 2u * GLM_HEAD_ROWS)
+        GlmHeadCandidateRows<GLM_HEAD_ROWS>(buffers, head_weight, token_ids, vocabulary, rows, tiles, stream);
+    else if (rows > GLM_HEAD_ROWS)
+        GlmHeadCandidateRows<GLM_HEAD_ROWS / 2u>(buffers, head_weight, token_ids, vocabulary, rows, tiles, stream);
+    else if (rows > 1u)
+        GlmHeadCandidateRows<GLM_HEAD_ROWS / 4u>(buffers, head_weight, token_ids, vocabulary, rows, tiles, stream);
     else
         LM_LAUNCH(
             (LmHeadCandidateKernel<GLM_LAYER_THREADS, GLM_HEAD_TILE>),
