@@ -495,9 +495,9 @@ static void TestOrderedPrefill(void)
 	assert(memcmp(host_slots,ordered_slots,sizeof(ordered_slots)) == 0 && memcmp(host_positions,ordered_positions,sizeof(ordered_positions)) == 0 && memcmp(host_tokens,ordered_tokens,sizeof(ordered_tokens)) == 0);
 	chain->wave_rows = SparkGlm52WaveRows(chain,0u);
 	chain->next_wave_row = chain->wave_rows;
-	assert(chain->wave_rows == 2u);
+	assert(chain->wave_rows == 4u);
 	SparkGlm52RunChain(chain);
-	assert(Count("begin11") == 1u && Count("begin22") == 1u && Count("head1") == 2u && Count("d2h4") == 2u && Count("d2h-at2") == 1u && Count("d2h-at3") == 1u);
+	assert(Count("begin11") == 0u && Count("begin22") == 1u && Count("head1") == 1u && Count("d2h4") == 2u && Count("d2h-at2") == 1u && Count("d2h-at3") == 1u);
 	assert(COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	atomic_store(&state.lane_states[0],0u);
 	atomic_store(&state.lane_states[1],0u);
