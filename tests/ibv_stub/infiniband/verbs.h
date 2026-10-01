@@ -51,8 +51,10 @@ struct ibv_qp_init_attr
 struct ibv_global_route
 {
     union ibv_gid dgid;
+    uint32_t flow_label;
     uint8_t sgid_index;
     uint8_t hop_limit;
+    uint8_t traffic_class;
 };
 
 struct ibv_ah_attr
@@ -211,6 +213,8 @@ int ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *request,
 
 void spark_stub_ibv_reset(void);
 uint64_t spark_stub_ibv_modify_qp_calls(void);
+void spark_stub_ibv_rtr_traffic_class_clear(void);
+uint32_t spark_stub_ibv_rtr_traffic_class(void);
 uint64_t spark_stub_ibv_modify_qp_failures(void);
 uint64_t spark_stub_ibv_post_send_calls(void);
 void spark_stub_ibv_fail_modify_qp_for_qpn(uint32_t remote_qpn);

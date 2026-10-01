@@ -35,6 +35,7 @@ static uint32_t spark_stub_ibv_devices_ready;
 static SparkStubIbvQp spark_stub_ibv_qps[SPARK_STUB_IBV_QPS_MAX];
 static uint32_t spark_stub_ibv_qp_count;
 static uint32_t spark_stub_ibv_next_key = 0x3100u;
+static uint32_t spark_stub_ibv_rtr_class = UINT32_MAX - 1u;
 static SparkStubIbvCompletion
     spark_stub_ibv_completions[SPARK_STUB_IBV_COMPLETIONS_MAX];
 static uint32_t spark_stub_ibv_completion_head;
@@ -270,6 +271,10 @@ int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attributes,
         }
         if ((mask & IBV_QP_DEST_QPN) != 0)
             stub_qp->remote_qpn = attributes->dest_qp_num;
+        if ((mask & IBV_QP_AV) != 0)
+            spark_stub_ibv_rtr_class = spark_stub_ibv_rtr_class == UINT32_MAX - 1u ||
+                spark_stub_ibv_rtr_class == attributes->ah_attr.grh.traffic_class ?
+                attributes->ah_attr.grh.traffic_class : UINT32_MAX;
         stub_qp->state = IBV_QPS_RTR;
         return 0;
     }
@@ -472,6 +477,16 @@ void spark_stub_ibv_reset(void)
 uint64_t spark_stub_ibv_modify_qp_calls(void)
 {
     return spark_stub_ibv_modify_calls;
+}
+
+void spark_stub_ibv_rtr_traffic_class_clear(void)
+{
+    spark_stub_ibv_rtr_class = UINT32_MAX - 1u;
+}
+
+uint32_t spark_stub_ibv_rtr_traffic_class(void)
+{
+    return spark_stub_ibv_rtr_class;
 }
 
 uint64_t spark_stub_ibv_modify_qp_failures(void)

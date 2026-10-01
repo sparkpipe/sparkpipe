@@ -48,7 +48,7 @@ static uint32_t test_rank_mask = 0xffffu;
 
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask,
-    const char *pair_interface_name, uint32_t pair_sgid_index);
+    const char *pair_interface_name, uint32_t pair_sgid_index, uint32_t traffic_class);
 uint32_t SparkWeightdMeshReady(void);
 void SparkWeightdMeshPoll(void);
 uint32_t SparkWeightdMeshBroadcast(uint32_t peer_rank_mask,
@@ -1454,16 +1454,22 @@ static void test_mesh_pair_link(uint32_t local_rank)
         if (rank != local_rank)
             CHECK(test_write_record(rank,9u) == 0,"pair case writes peer records");
     CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,
-        test_rank_mask & ~(1u << partner),"rocep1s0f0",3u) == SPARK_STATUS_INVALID_ARGUMENT,
+        test_rank_mask & ~(1u << partner),"rocep1s0f0",3u,104u) == SPARK_STATUS_INVALID_ARGUMENT,
         "a pair link needs its partner rank in the mesh");
     CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,
-        test_rank_mask,"rocep1s0f0",3u) == SPARK_STATUS_BUSY,"pair init publishes");
+        test_rank_mask,"rocep1s0f0",3u,256u) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a traffic class above 255 rejects");
+    CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,
+        test_rank_mask,"rocep1s0f0",3u,104u) == SPARK_STATUS_BUSY,"pair init publishes");
     CHECK(weightd_mesh.pair_recv_mr != 0 && weightd_mesh.pair_recv_mr->lkey != weightd_mesh.recv_mr->lkey,
         "the pair link registers the mesh region on its own protection domain");
     CHECK(test_read_record(local_rank,&own_record) == 0 && own_record.pair_rkey == weightd_mesh.pair_recv_mr->rkey,
         "own record publishes the pair link's rkey");
+    spark_stub_ibv_rtr_traffic_class_clear();
     SparkWeightdMeshPoll();
     CHECK(SparkWeightdMeshReady() == 1u,"pair mesh wires");
+    CHECK(spark_stub_ibv_rtr_traffic_class() == 104u,
+        "every switch and pair QP moves to RTR with the configured traffic class");
     CHECK(test_read_record(partner,&partner_record) == 0 && test_read_record(other,&other_record) == 0 &&
         weightd_mesh.qp_info[partner_peer].rkey == partner_record.pair_rkey &&
         weightd_mesh.qp_info[other_peer].rkey == other_record.rkey,
@@ -1527,7 +1533,7 @@ int main(void)
             continue;
         CHECK(test_write_record(rank,1u) == 0,"case1 write peer record");
     }
-    status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u);
+    status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u);
     CHECK(status == SPARK_STATUS_BUSY,"case1 init publishes and defers");
     CHECK(test_read_record(local_rank,&own_record) == 0,
         "case1 own record published");
@@ -1594,7 +1600,7 @@ int main(void)
         "case3 unchanged records are a wiring no-op");
     CHECK(SparkWeightdMeshReady() == 1u,"case3 stays ready");
 
-    status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u);
+    status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u);
     CHECK(status == SPARK_STATUS_BUSY,"case4 init republishes");
     CHECK(test_read_record(local_rank,&own_record) == 0,
         "case4 own record republished");
@@ -1684,7 +1690,7 @@ int main(void)
         uint64_t dir1_boot = own_record.boot_ns;
         (void)snprintf(dir2,sizeof(dir2),"%s-second",SPARK_WEIGHTD_MESH_DIR);
         (void)mkdir(dir2,0755);
-        status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,dir2,test_rank_mask,0,0u);
+        status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,dir2,test_rank_mask,0,0u,0u);
         CHECK(status == SPARK_STATUS_BUSY,"case6 second init publishes");
         {
             (void)snprintf(path,sizeof(path),"%s/mesh-%x.rec",dir2,local_rank);
@@ -1704,11 +1710,11 @@ int main(void)
 
     test_clean_dir();
     test_rank_mask = 0xfu;
-    CHECK(SparkWeightdMeshInit(0u,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,0u,0,0u) ==
+    CHECK(SparkWeightdMeshInit(0u,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,0u,0,0u,0u) ==
         SPARK_STATUS_INVALID_ARGUMENT,"empty participant mask rejects");
-    CHECK(SparkWeightdMeshInit(4u,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u) ==
+    CHECK(SparkWeightdMeshInit(4u,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u) ==
         SPARK_STATUS_INVALID_ARGUMENT,"rank outside participant mask rejects");
-    CHECK(SparkWeightdMeshInit(0u,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u) ==
+    CHECK(SparkWeightdMeshInit(0u,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u) ==
         SPARK_STATUS_BUSY,"TP4 explicit group initializes");
     for ( rank = 1u; rank < 4u; rank++ )
         CHECK(test_write_record(rank,9u) == 0,"TP4 required record published");

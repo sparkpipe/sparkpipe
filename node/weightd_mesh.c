@@ -172,6 +172,7 @@ typedef struct SparkWeightdMesh
     uint32_t local_rank;
     uint32_t rank_mask;
     uint32_t sgid_index;
+    uint32_t traffic_class;
     struct ibv_context *pair_context;
     struct ibv_pd *pair_protection_domain;
     struct ibv_mr *pair_recv_mr;
@@ -380,6 +381,7 @@ static SparkStatus SparkWeightdMeshTransitionQp(
     memcpy(attributes.ah_attr.grh.dgid.raw,dgid,16);
     attributes.ah_attr.grh.sgid_index = (uint8_t)sgid_index;
     attributes.ah_attr.grh.hop_limit = 1;
+    attributes.ah_attr.grh.traffic_class = (uint8_t)weightd_mesh.traffic_class;
     flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
         IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
     if (ibv_modify_qp(qp,&attributes,flags) != 0)
@@ -953,7 +955,7 @@ static SparkStatus SparkWeightdMeshOpenPair(const char *pair_interface_name,uint
 
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask,
-    const char *pair_interface_name, uint32_t pair_sgid_index)
+    const char *pair_interface_name, uint32_t pair_sgid_index, uint32_t traffic_class)
 {
     struct ibv_qp_init_attr qp_attributes;
     SparkWeightdMeshRecord own_record;
@@ -963,19 +965,20 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     if ( mesh_dir != 0 && mesh_dir[0] != '\0' )
         weightd_mesh_dir = mesh_dir;
     if (rank >= SPARK_WEIGHTD_MESH_RANKS || interface_name == 0 ||
-        interface_name[0] == '\0' || sgid_index > 255u ||
+        interface_name[0] == '\0' || sgid_index > 255u || traffic_class > 255u ||
         (rank_mask & (1u << rank)) == 0u ||
         (rank_mask >> SPARK_WEIGHTD_MESH_RANKS) != 0u ||
         __builtin_popcount(rank_mask) < 2)
     {
-        fprintf(stderr,"weightd-mesh: bad init rank=%u interface=%s sgid=%u\n",
-            rank,interface_name != 0 ? interface_name : "(null)",sgid_index);
+        fprintf(stderr,"weightd-mesh: bad init rank=%u interface=%s sgid=%u traffic_class=%u\n",
+            rank,interface_name != 0 ? interface_name : "(null)",sgid_index,traffic_class);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(&weightd_mesh,0,sizeof(weightd_mesh));
     weightd_mesh.local_rank = rank;
     weightd_mesh.rank_mask = rank_mask;
     weightd_mesh.sgid_index = sgid_index;
+    weightd_mesh.traffic_class = traffic_class;
     weightd_mesh.pair_peer = SPARK_WEIGHTD_MESH_PEERS;
     weightd_mesh.boot_ns = SparkWeightdMeshRealtimeNs();
     weightd_mesh_boot_phase_ns = weightd_mesh.boot_ns;
@@ -1122,8 +1125,8 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
         }
     }
     SparkWeightdMeshFillRecord(&own_record);
-    printf("weightd-mesh: rank=%u publishing %u QPs\n",
-        weightd_mesh.local_rank,2u * ((uint32_t)__builtin_popcount(rank_mask) - 1u));
+    printf("weightd-mesh: rank=%u publishing %u QPs traffic_class=%u\n",
+        weightd_mesh.local_rank,2u * ((uint32_t)__builtin_popcount(rank_mask) - 1u),weightd_mesh.traffic_class);
     fflush(stdout);
     if (SparkWeightdMeshWriteRecord(&own_record) != SPARK_STATUS_OK)
         return SPARK_STATUS_IO_ERROR;
