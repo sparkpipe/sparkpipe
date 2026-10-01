@@ -34,6 +34,15 @@ static __device__ __forceinline__ unsigned long long SparkTpLdcvU64(
 	return(value);
 }
 
+static __device__ __forceinline__ unsigned long long SparkTpLdAcquireU64(
+    const volatile void *address)
+{
+	unsigned long long value;
+	asm volatile("ld.acquire.sys.global.u64 %0,[%1];"
+	    : "=l"(value) : "l"(address) : "memory");
+	return(value);
+}
+
 static __device__ __forceinline__ unsigned long long SparkTpGlobalTimerNs(void)
 {
 	unsigned long long ns;
@@ -925,7 +934,7 @@ static __device__ void SparkTpMeshGateAwait(
 {
     uint64_t started = SparkTpGlobalTimerNs(),limit = SparkTpLdcvU64(&gate->timeout_ns);
     limit = limit > UINT64_MAX / 2u ? UINT64_MAX : 2u * limit;
-    while ( SparkTpLdcvU64(&gate->ready) != 1u )
+    while ( SparkTpLdAcquireU64(&gate->ready) != 1u )
         if ( SparkTpGlobalTimerNs() - started > limit )
         {
             if ( control->error_word == 0u )
@@ -935,7 +944,6 @@ static __device__ void SparkTpMeshGateAwait(
             }
             return;
         }
-    __threadfence_system();
 }
 
 static __device__ void SparkTpMeshGateGuard(
