@@ -1,0 +1,2 @@
++5
+Skinny GEMV 16-row shape (LM_SKINNY_ROWS_WIDE) and its dispatch: GLM dense projections, the q_a/kv_a multi projection and the router read each weight once for 9-16 rows instead of running the tensor-core stream GEMM.
