@@ -153,10 +153,9 @@ static inline uint64_t SparkTpMeshDirectPeerCapacity(uint32_t degree,uint64_t st
 #if defined(__CUDACC__)
 __host__ __device__
 #endif
-static inline uint64_t SparkTpMeshPipelineChunkElements(uint64_t local_elements,uint32_t degree,uint64_t staging_slot_bytes)
+static inline uint32_t SparkTpMeshPairFirst(uint64_t local_elements,uint32_t degree)
 {
-    uint64_t chunks = (local_elements - 1u) / SparkTpMeshDirectPeerCapacity(degree,staging_slot_bytes) + 1u;
-    return ((local_elements + chunks - 1u) / chunks + 3u) & ~UINT64_C(3);
+    return (degree & 1u) == 0u && degree >= 4u && local_elements > (uint64_t)degree * SPARK_TP_MESH_PAIR_SLICE_ELEMENTS_MAX ? 1u : 0u;
 }
 
 #if defined(__CUDACC__)

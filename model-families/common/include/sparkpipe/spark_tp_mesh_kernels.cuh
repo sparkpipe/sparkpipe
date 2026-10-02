@@ -1485,48 +1485,6 @@ static cudaError_t SparkTpMeshHardwarePeerRsagChunk(cudaStream_t stream,const Sp
     return SparkTpMeshHardwarePeerRsagGather(stream,view,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count);
 }
 
-static cudaError_t SparkTpMeshHardwarePipelinedRsagRound(cudaStream_t stream,const SparkTpMeshPipeBand *views,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint64_t local_elements,uint64_t timeout_ns)
-{
-    uint64_t per = SparkTpMeshPipelineChunkElements(local_elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
-    uint64_t chunks = (local_elements + per - 1u) / per,chunk[2],count;
-    uint32_t reduced[2],live[2],pipe;
-    cudaError_t status = cudaSuccess;
-    for (pipe=0u; pipe<2u; pipe++)
-    {
-        chunk[pipe] = pipe;
-        reduced[pipe] = 0u;
-        live[pipe] = pipe < chunks;
-        count = local_elements - pipe * per < per ? local_elements - pipe * per : per;
-        if ( live[pipe] != 0u && status == cudaSuccess )
-            status = SparkTpMeshHardwarePeerRsagIssue(stream,&views[pipe],slot_bytes,slots_per_rank,control,rank,degree,local,pipe * per,count,timeout_ns);
-    }
-    while ( status == cudaSuccess && (live[0] != 0u || live[1] != 0u) )
-        for (pipe=0u; pipe<2u && status==cudaSuccess; pipe++)
-        {
-            uint64_t begin = chunk[pipe] * per;
-            if ( live[pipe] == 0u )
-                continue;
-            count = local_elements - begin < per ? local_elements - begin : per;
-            if ( reduced[pipe] == 0u )
-            {
-                status = SparkTpMeshHardwarePeerRsagReduce(stream,&views[pipe],slot_bytes,slots_per_rank,control,rank,degree,output,local_elements,begin,count,timeout_ns);
-                reduced[pipe] = 1u;
-                continue;
-            }
-            status = SparkTpMeshHardwarePeerRsagGather(stream,&views[pipe],slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count);
-            reduced[pipe] = 0u;
-            chunk[pipe] += 2u;
-            live[pipe] = chunk[pipe] < chunks;
-            if ( live[pipe] != 0u && status == cudaSuccess )
-            {
-                begin = chunk[pipe] * per;
-                count = local_elements - begin < per ? local_elements - begin : per;
-                status = SparkTpMeshHardwarePeerRsagIssue(stream,&views[pipe],slot_bytes,slots_per_rank,control,rank,degree,local,begin,count,timeout_ns);
-            }
-        }
-    return status;
-}
-
 static __device__ __forceinline__ uint64_t SparkTpMeshPairSpan(uint64_t count,uint64_t slice,uint32_t index,uint64_t *first)
 {
     uint64_t begin = (uint64_t)index * slice < count ? (uint64_t)index * slice : count;
@@ -1797,10 +1755,8 @@ static cudaError_t SparkTpMeshHardwareDirectRound(cudaStream_t stream,uint8_t *b
     local_elements = SparkTpMeshDirectLocalElements(elements,degree,operation);
     rsag = SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,slice_routes) == 2u;
     peer = rsag != 0u && (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u;
-    if ( peer != 0u && second != 0 && (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) != 0u && (degree & 1u) == 0u && degree >= 4u )
+    if ( peer != 0u && second != 0 && (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) != 0u && SparkTpMeshPairFirst(local_elements,degree) != 0u )
         return SparkTpMeshHardwarePairRound(stream,views,slot_bytes,slots_per_rank,control,rank,degree,local,output,local_elements,timeout_ns);
-    if ( peer != 0u && second != 0 && local_elements > SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) )
-        return SparkTpMeshHardwarePipelinedRsagRound(stream,views,slot_bytes,slots_per_rank,control,rank,degree,local,output,local_elements,timeout_ns);
     capacity = peer != 0u ? SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshDirectCapacity(slot_bytes,operation);
     for (begin=0u; begin<local_elements && status==cudaSuccess; begin+=count)
     {
