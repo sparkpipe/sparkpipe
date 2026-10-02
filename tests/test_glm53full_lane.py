@@ -25,10 +25,12 @@ def adapter_members():
     return tuple(re.findall(r'"([a-z_0-9]+)"', block))
 
 
-def rendered(lane, codec="fp8", sequences=8, rows=16, positions=4096, inflight=1, arm=None, node_root=None, **score):
-    arguments = argparse.Namespace(lane=lane, codec=codec, arm=arm, socket=SOCKET, kv_backing_bytes=4 << 30,
-                                   max_sequence_positions=positions, execution_row_capacity=rows,
-                                   sequences=sequences, inflight=inflight, node_root=node_root, **score)
+def rendered(lane, codec="fp8", sequences=8, rows=16, positions=4096, inflight=1, arm=None, node_root=None,
+             kv_backing_bytes=4 << 30, kv_physical_bytes=None, **score):
+    arguments = argparse.Namespace(lane=lane, codec=codec, arm=arm, socket=SOCKET, kv_backing_bytes=kv_backing_bytes,
+                                   kv_physical_bytes=kv_physical_bytes, max_sequence_positions=positions,
+                                   execution_row_capacity=rows, sequences=sequences, inflight=inflight,
+                                   node_root=node_root, **score)
     return {name: json.loads(text) for name, text in glm53full_lane.render(arguments).items()}
 
 
@@ -155,6 +157,19 @@ def main():
         try:
             rendered(6, "nvfp4", arm="nvfp4_s1", **values)
             failures.append(f"score members {bad} rendered")
+        except SystemExit:
+            pass
+    page = glm53full_lane.KV_PAGE_BYTES
+    spill = (4 << 30) // page
+    for budget, physical in ((100 * page, 100), (64 * page, 64), (10000 * page, 8 * 64)):
+        limits = rendered(6, kv_physical_bytes=budget)["model_resident.json"]["runtime_limits"]
+        if limits["kv_physical_page_capacity"] != physical or limits["kv_logical_page_capacity"] != physical + spill:
+            failures.append(f"kv physical budget {budget // page} pages rendered {limits['kv_physical_page_capacity']} physical, "
+                            f"{limits['kv_logical_page_capacity']} logical")
+    for budget, backing in ((63 * page, 4 << 30), (100 * page, 411 * page)):
+        try:
+            rendered(6, kv_physical_bytes=budget, kv_backing_bytes=backing)
+            failures.append(f"kv physical {budget // page} pages with {backing // page} backing pages rendered")
         except SystemExit:
             pass
     with tempfile.TemporaryDirectory() as directory:
