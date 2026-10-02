@@ -326,7 +326,7 @@ struct Probe
                 uint64_t advances=operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
                 if (bands==2u && rows==1u && operation==1u && (routes&SPARK_TP_MESH_ROUTES_PAIR)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u)
                 {
-                    uint64_t per=SparkTpMeshPairChunkElements(elements,degree),pieces=(elements+per-1u)/per;
+                    uint64_t per=SparkTpMeshPairChunkElements(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES),pieces=(elements+per-1u)/per;
                     REQUIRE(control.seq==launch_count*rounds*pieces*2u && control.second_seq==launch_count*rounds*pieces*2u);
                 }
                 else if (bands==2u && rows==1u && operation==1u && (routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u && elements>SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES))
@@ -399,9 +399,9 @@ struct Probe
         for (uint32_t n:{4u,8u,16u})
             for (uint64_t count:{UINT64_C(49152),UINT64_C(98304)+12u,UINT64_C(1048576)+4099u,UINT64_C(6291456)})
             {
-                if (count*2u>tensor_bytes || (count+SparkTpMeshPairChunkElements(count,n)-1u)/SparkTpMeshPairChunkElements(count,n)>8u) continue;
+                if (count*2u>tensor_bytes || (count+SparkTpMeshPairChunkElements(count,n,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)-1u)/SparkTpMeshPairChunkElements(count,n,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)>8u) continue;
                 Case(n,1u,1u,count,false);Case(n,1u,1u,count,true);
-                uint64_t per=SparkTpMeshPairChunkElements(count,n);
+                uint64_t per=SparkTpMeshPairChunkElements(count,n,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
                 std::printf("PAIR-ALL-REDUCE degree=%u elements=%llu chunks=%llu PASS\n",n,(unsigned long long)count,(unsigned long long)((count+per-1u)/per));
             }
         bands=1u;routes=saved;
