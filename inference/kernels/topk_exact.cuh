@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/topk.cuh"
+#include "inference/kernels/topk_exact_plan.h"
 
 #define LM_TOPK_RADIX_BITS 8u
 #define LM_TOPK_BUCKETS (1u << LM_TOPK_RADIX_BITS)
@@ -89,16 +90,9 @@ static __device__ __forceinline__ void LmTopkExactEmit(const float *scores, uint
 }
 
 template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void LmTopkExactKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices)
+static __device__ __forceinline__ void LmTopkExactSelect(const float *row_scores, uint32_t n, uint32_t k, uint32_t *out, uint32_t *histogram, uint32_t *scan, uint32_t *state)
 {
-	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
-	__shared__ uint32_t scan[THREADS];
-	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
-	const float *row_scores = scores + (uint64_t)blockIdx.x * n;
-	uint32_t *out = out_indices + (uint64_t)blockIdx.x * k;
 	uint32_t index,pass;
-	static_assert(THREADS < 65536u, "the packed scan counts one tile in 16 bits");
 	if ( n <= k )
 	{
 		for (index = threadIdx.x; index < k; index += THREADS)
@@ -117,4 +111,81 @@ void LmTopkExactKernel(const float *__restrict__ scores, uint32_t n, uint32_t k,
 	for (pass = 0u; pass < LM_TOPK_EXACT_PASSES; ++pass)
 		LmTopkExactPass<THREADS>(row_scores,n,32u - LM_TOPK_RADIX_BITS * (pass + 1u),histogram,state);
 	LmTopkExactEmit<THREADS>(row_scores,n,state[LM_TOPK_EXACT_PREFIX],out,scan,state);
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmTopkExactKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices)
+{
+	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
+	__shared__ uint32_t scan[THREADS];
+	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
+	LmTopkExactSelect<THREADS>(scores + (uint64_t)blockIdx.x * n,n,k,out_indices + (uint64_t)blockIdx.x * k,histogram,scan,state);
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmTopkExactChunkKernel(const float *__restrict__ values, const uint32_t *__restrict__ positions, uint32_t n, uint32_t k, uint32_t chunk, float *__restrict__ out_values, uint32_t *__restrict__ out_positions)
+{
+	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
+	__shared__ uint32_t scan[THREADS];
+	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
+	const uint32_t first = blockIdx.x * chunk,chunks = gridDim.x;
+	const uint32_t length = n - first < chunk ? n - first : chunk;
+	const float *row_values = values + (uint64_t)blockIdx.y * n;
+	const uint32_t *row_positions = positions != 0 ? positions + (uint64_t)blockIdx.y * n : 0;
+	const uint64_t base = ((uint64_t)blockIdx.y * chunks + blockIdx.x) * k;
+	uint32_t index,local;
+	LmTopkExactSelect<THREADS>(row_values + first,length,k,out_positions + base,histogram,scan,state);
+	__syncthreads();
+	for (index = threadIdx.x; index < k; index += THREADS)
+	{
+		local = out_positions[base + index];
+		out_values[base + index] = local != 0xffffffffu ? row_values[first + local] : -INFINITY;
+		out_positions[base + index] = local == 0xffffffffu ? 0xffffffffu : row_positions != 0 ? row_positions[first + local] : first + local;
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmTopkExactGatherKernel(const float *__restrict__ values, const uint32_t *__restrict__ positions, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices)
+{
+	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
+	__shared__ uint32_t scan[THREADS];
+	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
+	uint32_t *out = out_indices + (uint64_t)blockIdx.x * k;
+	const uint32_t *row_positions = positions + (uint64_t)blockIdx.x * n;
+	uint32_t index;
+	LmTopkExactSelect<THREADS>(values + (uint64_t)blockIdx.x * n,n,k,out,histogram,scan,state);
+	__syncthreads();
+	for (index = threadIdx.x; index < k; index += THREADS)
+		out[index] = out[index] != 0xffffffffu ? row_positions[out[index]] : 0xffffffffu;
+}
+
+template<uint32_t THREADS>
+static inline cudaError_t LmTopkExactLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t chunk, uint32_t chunked_rows, float *scratch_values, uint32_t *scratch_positions, uint64_t scratch_entries, uint32_t *out_indices, cudaStream_t stream)
+{
+	const float *values = scores;
+	const uint32_t *positions = 0;
+	uint32_t length = n,half = 0u;
+	uint64_t level;
+	if ( rows > chunked_rows || LmTopkExactCandidateEntries(n,k,chunk) == 0u )
+	{
+		LM_LAUNCH((LmTopkExactKernel<THREADS>),rows,THREADS,0,stream,scores,n,k,out_indices);
+		return(cudaPeekAtLastError());
+	}
+	if ( scratch_values == 0 || scratch_positions == 0 || (uint64_t)rows * LmTopkExactCandidateEntries(n,k,chunk) * 2u > scratch_entries )
+		return(cudaErrorInvalidValue);
+	while ( (level = LmTopkExactCandidateEntries(length,k,chunk)) != 0u )
+	{
+		float *next_values = scratch_values + (uint64_t)half * (scratch_entries / 2u);
+		uint32_t *next_positions = scratch_positions + (uint64_t)half * (scratch_entries / 2u);
+		LM_LAUNCH((LmTopkExactChunkKernel<THREADS>),dim3((length + chunk - 1u) / chunk,rows),THREADS,0,stream,values,positions,length,k,chunk,next_values,next_positions);
+		values = next_values;
+		positions = next_positions;
+		length = (uint32_t)level;
+		half ^= 1u;
+	}
+	LM_LAUNCH((LmTopkExactGatherKernel<THREADS>),rows,THREADS,0,stream,values,positions,length,k,out_indices);
+	return(cudaPeekAtLastError());
 }

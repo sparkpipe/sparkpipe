@@ -329,30 +329,38 @@ citations refer to that commit.
   tracking.
 - dsv4: island chaining, RA joins and an event diet (rock R6). Do this only
   while DSV4 stays in the driver order.
-- The exact DSA top-k (`LmTopkExactKernel`) runs four radix passes over a
-  row's scores in one CTA per row; its emit now compacts with warp ballots.
-  On one GB10, for the 78 GLM Full layers, it takes 10.2 ms of a B1 step at
-  64K context and 0.48 s of a 1,024-row prefill wave at 64K (index score
-  kernel: 2.2 ms and 1.19 s). It is the largest long-context decode cost.
-  Split a row across CTAs, or select from the per-tile maxima first.
+- The exact DSA top-k selects rows of waves of 64 rows or fewer through
+  16,384-score chunks (`LmTopkExactLaunch`): at 1M context a B1 step takes
+  10.7 ms of top-k for 78 layers on one GB10 (was 147 ms). Prefill waves keep
+  one CTA per row, which fills the GPU; their selection is 0.48 s of a
+  1,024-row wave at 64K for 78 layers.
 - The DSA indexer runs on every TP rank over the whole replicated index
   cache. B16 decode at 16K context reads 5.2 GB of bf16 index keys per step.
   With the context split, each rank scores its own 1/tp of the context and
   the ranks merge their top-k candidates.
 - Left out on purpose (2026-10-02): glm52 graph regimes key long contexts on
-  4,096-token buckets in the fixed `SPARK_TP_CHAIN_GRAPH_MAX_REGIMES` (72)
-  table, so a graph deployment serves at most 139,264 positions per sequence
-  and initialization refuses more
-  (`model-families/glm52/include/sparkpipe/spark_glm52_graph_regime.h`).
-  Captured graphs are never evicted: a long prompt captures one graph per
-  (context bucket, row bucket) it crosses. Relocatable graphs (lane R) close
-  both. Fleet record (2026-10-02, de944ae, TP16, 4 x 65,536 positions): T1
-  exact; B1 30.7 tok/s; TTFT 24.2 s at 16,308 prompt tokens, 50.4 s at 32,610
-  and 89.0 s at 59,983; pass keys retrieved at 8K, 16K, 32K and 60K. Graph
-  and linear chains agree on the first two tokens of the 16K prompt and then
-  differ: prefill waves padded to a row bucket run different GEMM shapes
-  (`GLM52-PREFILL-WAVE-ROWS ... exact=no`), so long-context output is judged
-  by the accuracy gate, not token equality.
+  4,096-token buckets to 16K and four buckets per octave above, in the fixed
+  72-regime table (`spark_glm52_graph_regime.h`): a 1,048,576-position
+  deployment uses 60. Captured graphs are never evicted: a long prompt
+  captures one graph per (context bucket, row bucket) it crosses.
+  Relocatable graphs (lane R) close it. Fleet record (2026-10-02, 04256ca,
+  TP16, 2 x 131,072 positions, replicated KV): T1 exact; B1 30.9 tok/s;
+  TTFT 1.06 s at 994 tokens, 24.3 s at 16,308; pass keys retrieved at 8K,
+  16K, 32K, 60K, 100K and 130K (key at position 110,464 of 129,991, TTFT
+  243 s); B1 decode at those contexts about 20 tok/s. Graph and linear
+  chains differ after the first two tokens of a 16K prompt because prefill
+  waves padded to a row bucket run different GEMM shapes, so long-context
+  output is judged by the accuracy gate, not token equality.
+- Prefill rows past the 2,048 DSA selected-token count attend through the
+  per-row decode kernel (`LmLatentRopeHeadsSplitLaunch` with selected
+  positions), not the tensor-core prefill kernel: a rank-15 profile of a
+  1,024-row wave at about 3K context spends 448 ms there against 16 ms for a
+  wave below 2,048 (2026-10-02). Add selected positions to the prefill
+  attention kernel.
+- A 1,024-row TP16 prefill wave spends about 440 ms of its ~1.0 s waiting in
+  collective rounds (`SparkTpMeshHardwareGuardKernel`) and about 400 ms in
+  compute, serially (rank-15 profile, 2026-10-02). Split waves into halves
+  whose collectives overlap the other half's compute.
 
 ## Placement beyond TP16
 

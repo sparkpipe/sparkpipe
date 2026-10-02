@@ -84,6 +84,10 @@ typedef struct SparkGlm52ExecutionSlot
 	float *selection_scores_f32;
 	float *attention_split_partials_f32;
 	uint32_t *selected_positions;
+	uint32_t selection_rows;
+	float *topk_scratch_values_f32;
+	uint32_t *topk_scratch_positions;
+	uint64_t topk_scratch_entries;
 	uint32_t *route_expert;
 	float *route_weight;
 	uint32_t *route_source_token;

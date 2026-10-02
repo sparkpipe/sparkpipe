@@ -161,6 +161,10 @@ struct GlmLayerBuffers
     const uint32_t *row_positions;
     uint32_t *selected_positions;
     uint32_t selected_position_count;
+    uint32_t selection_rows;
+    float *topk_scratch_values;
+    uint32_t *topk_scratch_positions;
+    uint64_t topk_scratch_entries;
     float *attention_split_partials;
     uint64_t attention_split_partial_blocks;
     uint32_t decode_split_context_threshold;
@@ -420,32 +424,52 @@ static int32_t GlmLayerIndexer(
         0u,
         GLM_ROPE_DIM,
         GLM_ROPE_THETA);
-    if (LmWeightedSparseScoreLaunch<
-            GlmIndexKv,GLM_DSA_INDEX_HEADS,GLM_DSA_INDEX_DIM>(
-            buffers->index_query_bf16,
-            buffers->index_head_weight_bf16,
-            buffers->index_cache,
-            buffers->sequence_of_row,
-            buffers->context_length,
-            buffers->row_positions,
-            rows,
-            context,
-            GLM_DSA_INDEX_SCALE / sqrtf((float)GLM_DSA_INDEX_HEADS),
-            buffers->selection_scores,
-            stream) != cudaSuccess)
     {
-        return LM_LAUNCH_ERR_LAUNCH;
+        const uint32_t chunk_rows =
+            buffers->selection_rows != 0u && buffers->selection_rows < rows
+                ? buffers->selection_rows : rows;
+        uint32_t first;
+        for (first = 0u; first < rows; first += chunk_rows)
+        {
+            const uint32_t count =
+                rows - first < chunk_rows ? rows - first : chunk_rows;
+            if (LmWeightedSparseScoreLaunch<
+                    GlmIndexKv,GLM_DSA_INDEX_HEADS,GLM_DSA_INDEX_DIM>(
+                    buffers->index_query_bf16 +
+                        (uint64_t)first * GLM_DSA_INDEX_HEADS * GLM_DSA_INDEX_DIM,
+                    buffers->index_head_weight_bf16 +
+                        (uint64_t)first * GLM_DSA_INDEX_HEADS,
+                    buffers->index_cache,
+                    buffers->sequence_of_row + first,
+                    buffers->context_length,
+                    buffers->row_positions != 0
+                        ? buffers->row_positions + first : 0,
+                    count,
+                    context,
+                    GLM_DSA_INDEX_SCALE / sqrtf((float)GLM_DSA_INDEX_HEADS),
+                    buffers->selection_scores,
+                    stream) != cudaSuccess)
+            {
+                return LM_LAUNCH_ERR_LAUNCH;
+            }
+            if (LmTopkExactLaunch<GLM_LAYER_THREADS>(
+                    buffers->selection_scores,
+                    count,
+                    context,
+                    GLM_DSA_SELECTED,
+                    LM_TOPK_EXACT_CHUNK,
+                    LM_TOPK_EXACT_CHUNKED_ROWS,
+                    buffers->topk_scratch_values,
+                    buffers->topk_scratch_positions,
+                    buffers->topk_scratch_entries,
+                    buffers->selected_positions +
+                        (uint64_t)first * GLM_DSA_SELECTED,
+                    stream) != cudaSuccess)
+            {
+                return LM_LAUNCH_ERR_LAUNCH;
+            }
+        }
     }
-    LM_LAUNCH(
-        (LmTopkExactKernel<GLM_LAYER_THREADS>),
-        rows,
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->selection_scores,
-        context,
-        GLM_DSA_SELECTED,
-        buffers->selected_positions);
     return cudaPeekAtLastError() == cudaSuccess
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;

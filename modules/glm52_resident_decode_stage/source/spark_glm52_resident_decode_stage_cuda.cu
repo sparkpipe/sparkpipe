@@ -282,6 +282,10 @@ static void SparkGlm52BindLayer(
 	buffers->router_logits = slot->router_logits_f32;
 	buffers->selection_scores = slot->selection_scores_f32;
 	buffers->selected_positions = slot->selected_positions;
+	buffers->selection_rows = slot->selection_rows;
+	buffers->topk_scratch_values = slot->topk_scratch_values_f32;
+	buffers->topk_scratch_positions = slot->topk_scratch_positions;
+	buffers->topk_scratch_entries = slot->topk_scratch_entries;
 	buffers->selected_position_count = GLM_DSA_SELECTED;
 	buffers->route_expert = slot->route_expert;
 	buffers->route_weight = slot->route_weight;
