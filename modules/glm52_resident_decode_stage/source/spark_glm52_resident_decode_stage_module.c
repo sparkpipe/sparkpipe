@@ -2507,6 +2507,8 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	if ( state->tp_degree > 1u && state->tp_collective_disabled == 0u && state->tp_device_collective_initialized != 0u )
 	{
 		status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective,frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
+		if ( status == SPARK_STATUS_OK && state->overlap != 0u && (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u && batch->row_count > SPARK_GLM52_OVERLAP_MIN_ROWS )
+			status = SparkTpDeviceCollectiveChainKey(&state->tp_device_collective_half,frame->request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}
