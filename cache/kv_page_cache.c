@@ -901,7 +901,7 @@ static SparkStatus SparkKvPageCacheMarkPageResident(SparkKvPageCache *cache,uint
 	uint32_t victim;
 	SparkStatus status;
 	status = SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,logical_page_index);
-	if ( status != SPARK_STATUS_CAPACITY_EXCEEDED && status != SPARK_STATUS_BUSY )
+	if ( status != SPARK_STATUS_CAPACITY_EXCEEDED )
 		return(status);
 	victim = SparkKvPageCacheResidentVictim(cache);
 	if ( victim == SPARK_KV_PAGE_CACHE_NO_INDEX || SparkKvPageCacheEvictEntry(cache,victim) != SPARK_STATUS_OK )
@@ -1882,6 +1882,18 @@ SparkStatus SparkKvPageCacheRestorePrefix(SparkKvPageCache *cache,const SparkMod
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkKvLaneContentEqual(const SparkModelDriverCacheLane *left,const SparkModelDriverCacheLane *right)
+{
+	if ( left->sequence_id != right->sequence_id || left->sequence_position != right->sequence_position || left->request_generation != right->request_generation || left->step_generation != right->step_generation )
+		return(0u);
+	if ( left->resident_sequence_slot != right->resident_sequence_slot || left->context_token_count != right->context_token_count || left->prefix_token_count != right->prefix_token_count || left->publish_token_count != right->publish_token_count || left->flags != right->flags || left->block_identity_count != right->block_identity_count )
+		return(0u);
+	if ( memcmp(&left->prefix_identity,&right->prefix_identity,sizeof(left->prefix_identity)) != 0 || memcmp(&left->publish_identity,&right->publish_identity,sizeof(left->publish_identity)) != 0 )
+		return(0u);
+	return(left->block_identity_count == 0u || (left->block_identities != 0 && right->block_identities != 0 &&
+		memcmp(left->block_identities,right->block_identities,(size_t)left->block_identity_count * sizeof(*left->block_identities)) == 0) ? 1u : 0u);
+}
+
 static uint32_t SparkKvLaneTransactionMatches(const SparkKvLaneTransaction *owner,const SparkModelDriverAdmissionRequest *request,const SparkModelDriverCacheLane *lane)
 {
 	const SparkModelDriverAdmissionRequest *saved = &owner->request;
@@ -1891,7 +1903,7 @@ static uint32_t SparkKvLaneTransactionMatches(const SparkKvLaneTransaction *owne
 		return(0u);
 	if ( saved->deadline_time_ns != request->deadline_time_ns || saved->active_slot_count != request->active_slot_count || saved->new_token_count != request->new_token_count || saved->priority != request->priority || saved->frame_flags != request->frame_flags || saved->cache_lane_count != request->cache_lane_count )
 		return(0u);
-	return(memcmp(&saved->residency,&request->residency,sizeof(saved->residency)) == 0 && memcmp(&owner->lane,lane,sizeof(*lane)) == 0);
+	return(memcmp(&saved->residency,&request->residency,sizeof(saved->residency)) == 0 && SparkKvLaneContentEqual(&owner->lane,lane) != 0u);
 }
 
 static void SparkKvLaneTransactionsNextEpoch(SparkKvLaneTransactions *transactions)
@@ -1949,6 +1961,7 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 		owner = &transactions->lanes[request->cache_lanes[index].resident_sequence_slot];
 		if ( owner->phase != phase )
 		{
+#ifdef DEBUG
 			fprintf(stderr,"ADMIT9-KVPHASE slot=%u owner_phase=%u want_phase=%u owner_req=%llu owner_seq=%llu req=%llu seq=%llu pos=%u\n",
 				(unsigned)request->cache_lanes[index].resident_sequence_slot,
 				(unsigned)owner->phase,(unsigned)phase,
@@ -1957,10 +1970,12 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 				(unsigned long long)request->request_id,
 				(unsigned long long)request->sequence_id,
 				(unsigned)request->cache_lanes[index].sequence_position);
+#endif
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 		}
 		if ( SparkKvLaneTransactionMatches(owner,request,&request->cache_lanes[index]) == 0u )
 		{
+#ifdef DEBUG
 			fprintf(stderr,"ADMIT9-KVMATCH slot=%u owner_req=%llu owner_sub=%llu owner_seq=%llu req=%llu sub=%llu seq=%llu phase=%u\n",
 				(unsigned)request->cache_lanes[index].resident_sequence_slot,
 				(unsigned long long)owner->request.request_id,
@@ -1970,6 +1985,7 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 				(unsigned long long)request->submission_id,
 				(unsigned long long)request->sequence_id,
 				(unsigned)owner->phase);
+#endif
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		}
 	}
@@ -2001,12 +2017,20 @@ static SparkStatus SparkKvLaneTransactionsPrepare(SparkKvLaneTransactions *trans
 		lane = &request->cache_lanes[index];
 		owner = &transactions->lanes[lane->resident_sequence_slot];
 		offset = ((uint64_t)lane->resident_sequence_slot * transactions->page_capacity);
+		if ( lane->block_identity_count > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u || (lane->block_identity_count != 0u && lane->block_identities == 0) )
+		{
+			status = SPARK_STATUS_INVALID_ARGUMENT;
+			break;
+		}
 		status = SparkKvPageCacheBeginPinnedLaneTransaction(transactions->cache,lane,transactions->logical_pages + offset,transactions->physical_pages + offset,transactions->page_capacity,&owner->page_count,&owner->mutation_flags);
 		if ( status != SPARK_STATUS_OK )
 			break;
 		owner->request = *request;
 		owner->request.cache_lanes = 0;
 		owner->lane = *lane;
+		if ( lane->block_identity_count != 0u )
+			memcpy(owner->block_identities,lane->block_identities,(size_t)lane->block_identity_count * sizeof(*lane->block_identities));
+		owner->lane.block_identities = lane->block_identity_count != 0u ? owner->block_identities : 0;
 		owner->phase = SPARK_KV_LANE_TRANSACTION_PREPARED;
 		{
 			struct timespec prepared_ts;
@@ -2161,8 +2185,6 @@ static SparkStatus SparkKvLaneTransactionFinish(SparkKvLaneTransactions *transac
 	}
 	if ( status != SPARK_STATUS_OK )
 	{
-		// Failed GPU execution may have overwritten existing mutable state;
-		// metadata rollback cannot make that sequence safe to continue.
 		release_status = SparkKvPageCacheReleaseLane(transactions->cache,resident_slot,lane.sequence_id);
 		if ( release_status != SPARK_STATUS_OK )
 			return(release_status);

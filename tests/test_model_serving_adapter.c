@@ -110,7 +110,7 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	memset(descriptor,0,sizeof(*descriptor));
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 	descriptor->cache_block_token_count = 4u;
 	descriptor->stage_count = 13u;
 	descriptor->layer_count = 43u;
@@ -265,7 +265,7 @@ static void TestInterfaceValidation(void)
 	SparkModelServingAdapterDescriptor descriptor;
 	SparkModelServingAdapterInterface adapter_interface,missing;
 	TestBuildDescriptor(&descriptor);
-	descriptor.capability_flags = 0u;
+	descriptor.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE;
 	memset(&adapter_interface,0,sizeof(adapter_interface));
 	adapter_interface.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	adapter_interface.interface_bytes = SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES;
@@ -280,7 +280,20 @@ static void TestInterfaceValidation(void)
 	adapter_interface.quiesce = TestQuiesce;
 	adapter_interface.snapshot = TestSnapshot;
 	adapter_interface.reset = TestReset;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_OK);
+	descriptor.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags = 0u;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE;
+	descriptor.max_output_token_count = 2u;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
+	assert(SparkModelServingAdapterValidateInterface(&adapter_interface,0u) == SPARK_STATUS_OK);
+	descriptor.max_output_token_count = 1u;
+	descriptor.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 #define TEST_MISSING_OPERATION(member) \
 	missing = adapter_interface; \
 	missing.member = 0; \
@@ -403,7 +416,9 @@ static void TestSubmissionValidation(void)
 	lane.cache_prefix_identity.sha256[0] = 1u;
 	lane.cache_publish_identity.sha256[0] = 2u;
 	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	descriptor.capability_flags &= ~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE;
 	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
 	lane.cache_prefix_token_count = 0u;
 	memset(&lane.cache_prefix_identity,0,sizeof(lane.cache_prefix_identity));
@@ -411,7 +426,6 @@ static void TestSubmissionValidation(void)
 	lane.cache_prefix_token_count = 63u;
 	lane.cache_prefix_identity.sha256[0] = 1u;
 	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
-	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
 	lane.sequence_position = row_position = 64u;
 	lane.context_token_count = lane.cache_publish_token_count = 65u;
@@ -464,6 +478,7 @@ static void TestSubmissionValidation(void)
 	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
 	lane.sequence_position = lane.context_token_count = lane.cache_publish_token_count = 65u;
 	lane.cache_publish_identity.sha256[0] = 9u;
+	descriptor.capability_flags &= ~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);

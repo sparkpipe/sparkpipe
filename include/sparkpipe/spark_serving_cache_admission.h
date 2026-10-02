@@ -27,8 +27,6 @@ static inline SparkStatus SparkServingCacheBuildRequest(const SparkServingCacheA
 	return(SparkAdmissionRequestFromSubmission(cache->program_id,submission,cache->lanes,flags,request));
 }
 
-// Prepare warms pages without acquiring execution ownership. Commit/abort act
-// on one submission; the driver owns the corresponding lane transaction.
 static inline SparkStatus SparkServingCacheAdmissionRun(const SparkServingCacheAdmission *cache,const SparkModelServingSubmission *submissions,uint32_t count,uint32_t flags)
 {
 	SparkModelDriverAdmissionRequest request;

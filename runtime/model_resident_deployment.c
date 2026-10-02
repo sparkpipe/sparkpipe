@@ -12,7 +12,7 @@
 static const char *const SparkModelResidentDeploymentRootMembers[] =
 {
 	"schema_version","coordinator_rank_index","adapter","driver","transport",
-	"runtime_limits","nodes","tokenizer","weightd","eos_token_ids","prefix_reuse",
+	"runtime_limits","nodes","tokenizer","weightd","eos_token_ids",
 	"chat_template"
 };
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT 7u
@@ -393,23 +393,6 @@ static SparkStatus SparkModelResidentDeploymentParseEos(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkModelResidentDeploymentParsePrefixReuse(
-	const SparkJsonDocument *document,
-	int32_t root,
-	SparkModelResidentDeployment *deployment)
-{
-	int32_t member;
-	bool enabled;
-	deployment->prefix_reuse_disabled = 0u;
-	member = SparkModelResidentDeploymentMember(document,root,"prefix_reuse");
-	if ( member < 0 )
-		return(SPARK_STATUS_OK);
-	if ( SparkJsonGetBoolean(document,member,&enabled) != SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	deployment->prefix_reuse_disabled = enabled ? 0u : 1u;
-	return(SPARK_STATUS_OK);
-}
-
 static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	const SparkJsonDocument *document,
 	int32_t root,
@@ -771,8 +754,6 @@ SparkStatus SparkModelResidentDeploymentLoad(
 		status = SparkModelResidentDeploymentParseTokenizer(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseEos(&document,root,deployment);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentDeploymentParsePrefixReuse(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseWeightd(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )

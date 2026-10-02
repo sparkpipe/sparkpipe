@@ -87,6 +87,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     text/tokenizer.c \
     text/tokenizer_sidecar.c \
     runtime/stage_module_common.c \
+    runtime/stage_kv_binding.c \
     runtime/serving_adapter_template.c \
     runtime/memory_buffer.c \
     runtime/speculation_provider.c \

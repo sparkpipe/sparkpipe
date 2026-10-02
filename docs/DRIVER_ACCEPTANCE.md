@@ -131,30 +131,47 @@ into its model's byte layout; it does not set or enforce the budgets.
   (`SparkNvmeTierPin`, `ReserveWrite`, `CommitWrite`, `AbortWrite`,
   `OffsetOf`, `PlanLookahead`).
 
-## Prefix reuse capability
+## Prefix reuse is required
 
-An adapter declares `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE`
-only when it restores every identity it was asked to publish (I24-I27): the
-whole state at that position, bound to the new slot, and a failed submission
-rather than a silent recompute over unrestored state when it no longer holds
-the identity. The batch engine looks up cached prefixes, and so sends
-`SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX` lanes, only to adapters that
-declare it; adapter validation rejects a prefix lane for any other adapter
-with `UNSUPPORTED`. At connect the engine logs one line per adapter:
+Prefix reuse and decode-checkpoint publication are required (I23). The common
+descriptor check refuses, at load and at every validation, an adapter that:
+
+- does not declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE`, or
+- completes several tokens per step (speculation or a resident decode chain)
+  without `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH`.
+
+Both refusals return `UNSUPPORTED` and print the adapter id and the missing
+behaviour. There is no deployment field, environment variable or descriptor
+bit that turns reuse off, and a prefix lookup error fails the request instead
+of recomputing the prompt.
+
+The declaration is not evidence (I01). An adapter declares
+`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE` only when it restores
+every identity it was asked to publish (I24-I27): the whole state at that
+position, bound to the new slot, and a failed submission rather than a silent
+recompute over unrestored state when it no longer holds the identity. It needs
+a restored-versus-uninterrupted proof on real model state before it declares
+it.
+
+Status on 2026-10-01:
+
+- glm5_next declares it, with the rank-local I27 probe
+  `tools/glm5_next_driver_probe.c` (`tests/test_glm5_next_driver_probe.c`). It
+  is the only adapter that loads.
+- dsv4 declares prefix reuse but speculates without the cache-publish work
+  kind, so it is refused.
+- glm52 (GLM-5.3 Full), qwen38_27b, gemma4, ling, laguna, k3, minimax,
+  muse_glimmer, qwen38_max and qwen4_flash do not restore cached prefixes and
+  are refused. `tests/test_required_cache_refusal.c` loads every refused
+  adapter the host build produces and checks the refusal. Their adapter tests
+  are out of the run list until the driver implements restore with an I27
+  proof.
+
+At connect the engine logs one line per adapter:
 
 ```
-batch engine adapter=<id> prefix_reuse=on|off|deployment-off decode_checkpoints=inline|deferred|inline-until-speculative
+batch engine adapter=<id> decode_checkpoints=inline|deferred
 ```
-
-`prefix_reuse=off` is an I23 gap owned by that adapter, not an engine choice.
-`prefix_reuse=deployment-off` means the adapter declares the capability but
-the deployment sets `prefix_reuse` false, so the engine looks up no cached
-prefixes either.
-The adapters that declare the capability are glm5_next (paged KV plus KDA
-state from the recurrent store) and dsv4 (paged KV, index and compressor state
-resolved through per-lane page tables). qwen38_27b, gemma4, glm52, ling,
-laguna, k3, minimax, muse_glimmer, qwen38_max and qwen4_flash do not declare
-it yet.
 
 Decode checkpoints depend on how the adapter speculates:
 
@@ -165,13 +182,6 @@ Decode checkpoints depend on how the adapter speculates:
   The decode lane carries no checkpoint; the engine sends a
   `SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH` frame after the tokens are
   accepted, so the state is captured at the boundary exactly.
-- `inline-until-speculative`: speculation without the cache-publish work
-  kind. Checkpoints are named inline. A completion that returns one token per
-  sequence is indexed as usual, so a run with speculation off keeps publishing
-  its generated blocks. A completion that returns more than one token per
-  sequence may have captured state past the boundary, so the engine does not
-  index that checkpoint and names no further decode checkpoints for that
-  request. Its prompt checkpoints stay indexed.
 
 ## Driver identity
 

@@ -890,6 +890,7 @@ static void SparkGlm52ValBuildWave(SparkGlm52ValFixture *fixture,uint32_t first_
 	wave->execution_row_capacity = SPARK_GLM52_VAL_MAX_ROWS;
 	wave->max_sequence_positions = SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
 	wave->pages_per_sequence = SPARK_GLM52_VALIDATION_PAGES;
+	wave->physical_page_count = SPARK_GLM52_VALIDATION_LANES * SPARK_GLM52_VALIDATION_PAGES;
 	wave->owns_embedding = 1u;
 	wave->owns_final_head = 0u;
 	wave->sideband_input = 0u;

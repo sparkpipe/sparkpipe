@@ -12,7 +12,6 @@
 #include <unistd.h>
 
 #include "fixtures/model_resident_deployment_fixture.h"
-#include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_model_resident_client.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "fixtures/test_child_guard.h"
@@ -20,26 +19,19 @@
 #ifndef TEST_MODEL_RESIDENTD_PATH
 #define TEST_MODEL_RESIDENTD_PATH ""
 #endif
-#ifndef TEST_DSV4_SERVING_ADAPTER_PATH
-#define TEST_DSV4_SERVING_ADAPTER_PATH ""
-#endif
-#ifndef TEST_DSV4_SERVING_DRIVER_PATH
-#define TEST_DSV4_SERVING_DRIVER_PATH ""
-#endif
-#ifndef TEST_DSV4_SERVING_CONFIG_PATH
-#define TEST_DSV4_SERVING_CONFIG_PATH ""
+#ifndef TEST_MODEL_SERVING_ADAPTER_PATH
+#define TEST_MODEL_SERVING_ADAPTER_PATH ""
 #endif
 #ifndef TEST_MODEL_RESIDENT_TRANSPORT_PATH
 #define TEST_MODEL_RESIDENT_TRANSPORT_PATH ""
 #endif
 
-#define TEST_MODEL_RESIDENT_RANK_COUNT 13u
+#define TEST_MODEL_RESIDENT_RANK_COUNT 3u
 
 static const char *const TestModelResidentTransportHosts[
 	TEST_MODEL_RESIDENT_RANK_COUNT] =
 {
-	"spark0","spark1","spark2","spark3","spark4","spark5","spark6",
-	"spark7","spark8","spark9","sparka","sparkb","sparkc"
+	"spark0","spark1","spark2"
 };
 
 typedef struct TestModelResidentState
@@ -311,13 +303,13 @@ static void TestModelResidentWriteDeployment(
 	for (rank=0u; rank<TEST_MODEL_RESIDENT_RANK_COUNT; rank++)
 		runtime_roots[rank] = runtime_root;
 	memset(&fixture,0,sizeof(fixture));
-	fixture.adapter_shared_object_path = TEST_DSV4_SERVING_ADAPTER_PATH;
-	fixture.driver_shared_object_path = TEST_DSV4_SERVING_DRIVER_PATH;
+	fixture.adapter_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
+	fixture.driver_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
 	fixture.driver_program_name = "resident_decode";
 	fixture.transport_shared_object_path = TEST_MODEL_RESIDENT_TRANSPORT_PATH;
 	fixture.transport_mode = "host-rdma";
-	fixture.node_target = SPARK_DSV4_MODEL_MODULE_TARGET;
-	fixture.adapter_configuration_path = TEST_DSV4_SERVING_CONFIG_PATH;
+	fixture.node_target = "test.model.serving.target";
+	fixture.adapter_configuration_path = "tests/fixtures/model_serving_adapter_config.json";
 	fixture.runtime_roots = runtime_roots;
 	fixture.transport_hosts = TestModelResidentTransportHosts;
 	fixture.control_endpoints = endpoints;
@@ -378,7 +370,7 @@ static void TestModelResidentRunCase(
 	assert(node != 0);
 	child = TestModelResidentStart(deployment_path,rank_index);
 	TestModelResidentWaitForSocket(socket_paths[rank_index]);
-	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&adapter) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_MODEL_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&adapter) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;
@@ -441,17 +433,6 @@ static void TestModelResidentRunCase(
 	assert(state.completion.token_count == (expect_tokens != 0u ? 1u : 0u));
 	if ( expect_tokens != 0u )
 		assert(state.completion.token_ids[0] == 4203u);
-	submission.submission_id = 504u;
-	submission.transaction_id = 1504u;
-	submission.dispatch_generation = 2504u;
-	submission.step_generation = 3504u;
-	positions[1] = 3u;
-	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_OK);
-	TestModelResidentWaitForResult(client,&state,4u);
-	assert(state.result_submission_id == 504u);
-	assert(state.result_status == SPARK_STATUS_INVALID_ARGUMENT);
-	assert(state.completion_count == 2u);
-	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	release_request_ids[0] = 900u;
 	release_request_ids[1] = 901u;
 	release_sequence_ids[0] = 100u;
@@ -464,7 +445,7 @@ static void TestModelResidentRunCase(
 		release_sequence_ids,release_positions,release_slots,2u,505u);
 	assert(SparkModelResidentClientContinue(client,&submission) ==
 		SPARK_STATUS_OK);
-	TestModelResidentWaitForResult(client,&state,5u);
+	TestModelResidentWaitForResult(client,&state,4u);
 	TestModelResidentWaitForCompletion(client,&state,3u);
 	release_request_ids[0] = 902u;
 	release_sequence_ids[0] = 200u;
@@ -474,7 +455,7 @@ static void TestModelResidentRunCase(
 		release_sequence_ids,release_positions,release_slots,1u,506u);
 	assert(SparkModelResidentClientContinue(client,&submission) ==
 		SPARK_STATUS_OK);
-	TestModelResidentWaitForResult(client,&state,6u);
+	TestModelResidentWaitForResult(client,&state,5u);
 	TestModelResidentWaitForCompletion(client,&state,4u);
 	assert(SparkModelResidentClientGetView(client,&view) == SPARK_STATUS_OK);
 	assert(view.connected == 1u);
@@ -485,9 +466,9 @@ static void TestModelResidentRunCase(
 	assert(view.resident_sequence_capacity == 8u);
 	assert(view.kv_logical_page_capacity == 16u);
 	assert(view.kv_physical_page_capacity == 8u);
-	assert(view.submitted_count == 6u);
+	assert(view.submitted_count == 5u);
 	assert(view.admitted_count == 4u);
-	assert(view.rejected_count == 2u);
+	assert(view.rejected_count == 1u);
 	assert(view.continued_count == 2u);
 	assert(view.completed_count == 4u);
 	SparkModelResidentClientDestroy(client);
@@ -505,7 +486,7 @@ static void TestModelResidentRunCase(
 int main(void)
 {
 	TestModelResidentRunCase(0u,0u);
-	TestModelResidentRunCase(12u,1u);
-	TestModelResidentRunCase(6u,0u);
+	TestModelResidentRunCase(2u,1u);
+	TestModelResidentRunCase(1u,0u);
 	return(0);
 }

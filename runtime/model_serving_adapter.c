@@ -189,6 +189,22 @@ static SparkStatus SparkDescriptorCheckStageLayerTotals(
 	SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static SparkStatus SparkDescriptorCheckRequiredCacheOperations(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) == 0u )
+	{
+		fprintf(stderr,"serving adapter %s refused: it does not restore cached prompt prefixes; prefix reuse is required (I23)\n",descriptor->adapter_id);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
+	{
+		fprintf(stderr,"serving adapter %s refused: it cannot serve publish-only frames, so decode checkpoints and the final partial block of a reply are never published; cache publication is required (I23)\n",descriptor->adapter_id);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static const SparkModelServingAdapterDescriptorCheck SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_CHECKS[] = {
 	SparkDescriptorCheckAbi,
 	SparkDescriptorCheckCapabilityAndCountFields,
@@ -200,6 +216,7 @@ static const SparkModelServingAdapterDescriptorCheck SPARK_MODEL_SERVING_ADAPTER
 	SparkDescriptorCheckCacheBlockFields,
 	SparkDescriptorCheckIdentityFields,
 	SparkDescriptorCheckStageLayerTotals,
+	SparkDescriptorCheckRequiredCacheOperations,
 };
 
 SparkStatus SparkModelServingAdapterValidateDescriptor(
@@ -460,19 +477,6 @@ static SparkStatus SparkModelServingAdapterValidateSampling(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkModelServingAdapterValidatePrefixReuse(
-	const SparkModelServingAdapterDescriptor *descriptor,
-	const SparkModelServingSubmission *submission)
-{
-	uint32_t lane;
-	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) != 0u )
-		return(SPARK_STATUS_OK);
-	for (lane=0u; lane<submission->lane_count; lane++)
-		if ( (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	return(SPARK_STATUS_OK);
-}
-
 SparkStatus SparkModelServingAdapterValidateSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingSubmission *submission)
@@ -494,9 +498,6 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelServingAdapterValidateSampling(descriptor,submission);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	status = SparkModelServingAdapterValidatePrefixReuse(descriptor,submission);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )

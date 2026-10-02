@@ -25,12 +25,12 @@ certified FP8 head at B1.
   SCHEMA_ERROR, and `tests/test_glm5_next_adapter_config_load.py` gates this.
 - `tools/glm5_next_gen_deployment.py` refuses them for the production root and for the committed
   tree. `tests/test_deployment_config_drift.py` checks both.
-- Prefix reuse must be off: every request must report `cached_prompt_tokens == 0`. A row whose
+- Every request must report `cached_prompt_tokens == 0`. Prefix reuse is always on, so the corpus
+  itself prevents hits: no cache block may repeat across documents
+  (`qualification/ab/README.md`, corpus rules), and `tools/ab_receipt.py` and
+  `tools/score_export.py` refuse a run in which any request reports cached tokens. A row whose
   sequence history the module has not seen from position 0 is written without a key and counted
-  as keyless. With prefix reuse on, a reused resident slot can instead yield a key from that
-  slot's previous sequence. That key is either the correct one (same prefix) or matches no corpus
-  row, which the compare refuses, so a row is never silently misattributed; the runs still require
-  reuse off.
+  as keyless.
 
 ## Safety and production
 

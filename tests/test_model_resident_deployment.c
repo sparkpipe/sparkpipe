@@ -16,7 +16,7 @@ static void TestBuildDescriptor(
 	memset(descriptor,0,sizeof(*descriptor));
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 	descriptor->stage_count = 3u;
 	descriptor->layer_count = 6u;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
@@ -70,7 +70,7 @@ static void TestEosMetadata(const char *members,SparkStatus expected)
 	assert(unlink(path) == 0);
 }
 
-static void TestPrefixReuse(const char *members,SparkStatus expected,uint32_t disabled)
+static void TestPrefixReuseKey(const char *members,SparkStatus expected)
 {
 	SparkModelResidentDeployment deployment;
 	char buffer[8192],path[256];
@@ -89,8 +89,6 @@ static void TestPrefixReuse(const char *members,SparkStatus expected,uint32_t di
 	assert(fclose(file) == 0);
 	SparkModelResidentDeploymentReset(&deployment);
 	assert(SparkModelResidentDeploymentLoad(path,&deployment) == expected);
-	if ( expected == SPARK_STATUS_OK )
-		assert(deployment.prefix_reuse_disabled == disabled);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(unlink(path) == 0);
 }
@@ -451,10 +449,9 @@ int main(int argc,char **argv)
 	TestEosMetadata("\"eos_token_ids\":[1,1],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[1],\"eos_token_ids\":[2],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],",SPARK_STATUS_SCHEMA_ERROR);
-	TestPrefixReuse("",SPARK_STATUS_OK,0u);
-	TestPrefixReuse("\"prefix_reuse\":true,",SPARK_STATUS_OK,0u);
-	TestPrefixReuse("\"prefix_reuse\":false,",SPARK_STATUS_OK,1u);
-	TestPrefixReuse("\"prefix_reuse\":0,",SPARK_STATUS_SCHEMA_ERROR,0u);
+	TestPrefixReuseKey("",SPARK_STATUS_OK);
+	TestPrefixReuseKey("\"prefix_reuse\":true,",SPARK_STATUS_SCHEMA_ERROR);
+	TestPrefixReuseKey("\"prefix_reuse\":false,",SPARK_STATUS_SCHEMA_ERROR);
 	TestSequencePositions();
 	TestGlm5NextDeploymentServesText();
 	SparkModelResidentDeploymentReset(&deployment);

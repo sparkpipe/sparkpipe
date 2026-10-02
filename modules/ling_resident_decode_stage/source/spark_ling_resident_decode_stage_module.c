@@ -1048,6 +1048,7 @@ static void SparkLingBuildWave(SparkLingTpChain *chain)
 	wave->resident_sequence_capacity = state->resident_sequence_capacity;
 	wave->max_sequence_positions = state->max_sequence_positions;
 	wave->pages_per_sequence = state->pages_per_sequence;
+	wave->physical_page_count = state->page_count;
 	wave->owns_embedding = state->owns_embedding;
 	wave->owns_final_head = state->owns_final_head;
 	wave->boundary_row_offset = chain->first_row;

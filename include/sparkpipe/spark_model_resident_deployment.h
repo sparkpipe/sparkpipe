@@ -73,8 +73,7 @@ typedef struct SparkModelResidentDeployment
 	uint32_t eos_token_count;
 	uint32_t eos_token_ids[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT];
 	uint32_t max_sequence_positions;
-	uint32_t prefix_reuse_disabled;
-	uint32_t reserved[1];
+	uint32_t reserved[2];
 	SparkModelResidentChatTemplate chat_template;
 	SparkModelResidentDeploymentNode nodes[
 		SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
