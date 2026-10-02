@@ -108,10 +108,11 @@ static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,cons
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	owned = configuration->owner_count <= 1u ? configuration->resident_sequence_capacity :
 		(configuration->resident_sequence_capacity + configuration->owner_count - 1u) / configuration->owner_count;
-	if ( configuration->physical_page_count < owned * binding->pages_per_sequence || configuration->logical_page_count < configuration->physical_page_count )
+	if ( configuration->physical_page_count < binding->pages_per_sequence || configuration->logical_page_count < owned * binding->pages_per_sequence ||
+		configuration->logical_page_count < configuration->physical_page_count )
 	{
-		fprintf(stderr,"%s kv binding refused: physical pages %u must cover %u owned lanes x %u pages and logical pages %u must be >= physical\n",
-			configuration->module_tag,configuration->physical_page_count,owned,binding->pages_per_sequence,configuration->logical_page_count);
+		fprintf(stderr,"%s kv binding refused: physical pages %u must hold one lane's %u pages and logical pages %u must cover %u owned lanes x %u pages and be >= physical\n",
+			configuration->module_tag,configuration->physical_page_count,binding->pages_per_sequence,configuration->logical_page_count,owned,binding->pages_per_sequence);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	if ( configuration->max_input_row_count > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES * configuration->block_token_count )

@@ -110,10 +110,21 @@ def stage_config(rank, lane, arm, max_sequence_positions, execution_row_capacity
     }
 
 
-def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight, root=None):
+def kv_pages(sequences, max_sequence_positions, kv_backing_bytes, kv_physical_bytes):
+    lane_pages = (max_sequence_positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS
+    covered = sequences * lane_pages
+    physical = covered if kv_physical_bytes is None else min(covered, kv_physical_bytes // KV_PAGE_BYTES)
+    if physical < lane_pages:
+        raise SystemExit(f"kv physical budget holds {physical} pages; one lane needs {lane_pages}")
+    spill = kv_backing_bytes // KV_PAGE_BYTES
+    if spill < covered - physical:
+        raise SystemExit(f"kv backing holds {spill} pages; lanes beyond the physical pool need {covered - physical}")
+    return physical, physical + spill
+
+
+def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight, root=None, kv_physical_bytes=None):
     ports = lane_ports(lane)
-    pages = sequences * ((max_sequence_positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS)
-    spill_pages = kv_backing_bytes // KV_PAGE_BYTES
+    pages, logical_pages = kv_pages(sequences, max_sequence_positions, kv_backing_bytes, kv_physical_bytes)
     nodes = []
     for rank, host in enumerate(HOSTS):
         root_path = runtime_root(host, lane, root)
@@ -141,7 +152,7 @@ def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions,
             "max_active_sequences": sequences,
             "max_input_rows": row_capacity,
             "resident_sequence_capacity": sequences,
-            "kv_logical_page_capacity": pages + spill_pages,
+            "kv_logical_page_capacity": logical_pages,
             "kv_physical_page_capacity": pages,
             "max_sequence_positions": max_sequence_positions,
         },
@@ -179,7 +190,7 @@ def render(arguments):
     files = {"model_resident.json": deployment(arguments.lane, arm, arguments.socket, arguments.kv_backing_bytes,
                                                arguments.max_sequence_positions, arguments.sequences,
                                                arguments.execution_row_capacity, arguments.inflight,
-                                               getattr(arguments, "node_root", None))}
+                                               getattr(arguments, "node_root", None), arguments.kv_physical_bytes)}
     score = score_members(arguments)
     for rank in range(WORLD):
         files[f"config/stage_{rank:02d}.json"] = dict(stage_config(rank, arguments.lane, arm,
@@ -195,6 +206,7 @@ def main():
     parser.add_argument("--arm", choices=tuple(REVISIONS))
     parser.add_argument("--socket", required=True)
     parser.add_argument("--kv-backing-bytes", type=int, required=True)
+    parser.add_argument("--kv-physical-bytes", type=int)
     parser.add_argument("--max-sequence-positions", type=int, required=True)
     parser.add_argument("--execution-row-capacity", type=int, required=True)
     parser.add_argument("--sequences", type=int, required=True)
