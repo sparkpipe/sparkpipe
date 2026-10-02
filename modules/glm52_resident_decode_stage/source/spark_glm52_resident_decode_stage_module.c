@@ -2362,6 +2362,12 @@ static SparkStatus SparkGlm52ModuleExecuteFrame(
 	SparkStatus status;
 	state = (SparkGlm52ModuleState *)module_state;
 	context = 0;
+	if ( state != 0 && frame != 0 && (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH) != 0u )
+	{
+		status = frame->execution_stream == state->execution_stream ? SparkStageKvBindingPublishFrame(&state->kv,frame,state->lane_states) : SPARK_STATUS_INVALID_ARGUMENT;
+		atomic_fetch_add_explicit(status == SPARK_STATUS_OK ? &state->completed_count : &state->rejected_count,1u,memory_order_relaxed);
+		SPARK_RETURN(status);
+	}
 	status = SparkGlmStageValidateFrame(state,frame,&context);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -2391,7 +2397,7 @@ static SparkStatus SparkGlm52ModuleAdmit(
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
 		return(SparkStageKvBindingAdmitReset(&state->kv,request,decision,state->slot_states,state->lane_states,state->execution_stream));
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
-	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
+	if ( (request->frame_flags & (SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE | SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH)) != 0u )
 	{
 		if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u || request->new_token_count != 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);

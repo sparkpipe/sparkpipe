@@ -197,10 +197,9 @@ static SparkStatus SparkDescriptorCheckRequiredCacheOperations(
 		fprintf(stderr,"serving adapter %s refused: it does not restore cached prompt prefixes; prefix reuse is required (I23)\n",descriptor->adapter_id);
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
-	if ( (descriptor->capability_flags & (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN)) != 0u &&
-		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
+	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
 	{
-		fprintf(stderr,"serving adapter %s refused: it completes several tokens per step but cannot publish decode checkpoints; checkpoint publication is required (I23)\n",descriptor->adapter_id);
+		fprintf(stderr,"serving adapter %s refused: it cannot serve publish-only frames, so decode checkpoints and the final partial block of a reply are never published; cache publication is required (I23)\n",descriptor->adapter_id);
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	return(SPARK_STATUS_OK);

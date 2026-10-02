@@ -11,7 +11,7 @@ static void TestBuildDescriptor(SparkModelServingAdapterDescriptor *descriptor)
 	descriptor->cache_block_token_count = 4u;
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 	descriptor->stage_count = 13u;
 	descriptor->layer_count = 43u;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
@@ -63,7 +63,7 @@ static void TestBuildFanoutDescriptor(SparkModelServingAdapterDescriptor *descri
 {
 	uint32_t index;
 	TestBuildDescriptor(descriptor);
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 	descriptor->stage_count = 16u;
 	memset(descriptor->stage_layer_counts,0,sizeof(descriptor->stage_layer_counts));
 	for (index=0u; index<13u; index++)

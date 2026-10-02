@@ -79,7 +79,7 @@ static void TestInitialize(TestSession *test)
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
 	descriptor->cache_block_token_count = 4u;
-	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH;
 	descriptor->stage_count = 1u;
 	descriptor->layer_count = 1u;
 	descriptor->stage_layer_counts[0] = 1u;

@@ -183,6 +183,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTempl
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
 		SPARK_GLM52_SERVING_TOPOLOGY_FLAG),
 	.stage_count = 0u,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
@@ -750,7 +751,7 @@ static void SparkGlm52ServingBuildFrame(
 	frame->new_token_count = submission->row_count;
 	frame->tokens_per_sequence = submission->tokens_per_sequence;
 	frame->priority = submission->priority;
-	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : 0u;
+	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH : 0u;
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->program_id = state->program->program_id;
 	frame->execution_stream = state->execution_stream;

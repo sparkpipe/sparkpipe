@@ -1032,6 +1032,9 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 			(engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u &&
 			request->prompt_token_count + request->generated_token_count - 1u > request->cache_published_token_count )
 			request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PUBLISH;
+		if ( request->state == SPARK_MODEL_BATCH_REQUEST_QUEUED_RELEASE && request->terminal_event_kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED &&
+			request->prompt_token_count + request->generated_token_count - 1u > request->cache_published_token_count )
+			request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PUBLISH;
 	}
 	return(SPARK_STATUS_OK);
 }

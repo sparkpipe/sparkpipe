@@ -678,7 +678,7 @@ static uint32_t TestCoordinatorFrames(void)
 	return(MockResidentClientCalls(0u,MOCK_CALL_SUBMIT) + MockResidentClientCalls(0u,MOCK_CALL_PREPARE) + MockResidentClientCalls(0u,MOCK_CALL_CONTINUE));
 }
 
-static void TestScenarioSingleTokenEosSkipsPublish(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+static void TestScenarioSingleTokenEosPublishesTail(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
@@ -697,7 +697,7 @@ static void TestScenarioSingleTokenEosSkipsPublish(const SparkModelResidentDeplo
 	MockResidentClientSetTokenStart(154820u);
 	TestDriveUntilTerminal(engine,&state,1u,400u);
 	TestDrive(engine,8u);
-	CHECK(state.completed_events[1] == 1u && state.token_events[1] == 2u && TestCoordinatorFrames() == frames + 1u,"single EOS: a one-token completion that stops on EOS releases without a publish frame");
+	CHECK(state.completed_events[1] == 1u && state.token_events[1] == 2u && TestCoordinatorFrames() == frames + 2u,"single EOS: a reply that stops on EOS mid-block publishes its partial block before the release");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -721,10 +721,10 @@ static void TestScenarioChainEosCheckpoint(const SparkModelResidentDeployment *d
 		"chain EOS: early output stop completes without pretending to rewind resident state");
 	MockResidentClientSetAutoTokens(1u);
 	TestSubmitPrompt(engine,2u,611u,1u,prompt,8u);
-	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 4u,
-		"chain EOS: truncated emitted token count is never indexed as a checkpoint");
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 6u,
+		"chain EOS: the reply up to the stop token is published and found by the next request");
 	TestDriveUntilTerminal(engine,&state,2u,400u);
-	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"chain EOS: subsequent request uses valid prefill checkpoint");
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 6u,"chain EOS: the next request reuses the whole published reply");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -1351,7 +1351,7 @@ int main(void)
 	TestScenarioPartialPrefixAppend(&deployment,runtime_root);
 	TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
 	TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
-	TestScenarioSingleTokenEosSkipsPublish(&deployment,runtime_root);
+	TestScenarioSingleTokenEosPublishesTail(&deployment,runtime_root);
 	TestScenarioChainEosCheckpoint(&deployment,runtime_root);
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,1u);
 	TestScenarioGeneratedCheckpointIdentity(&deployment,runtime_root,3u);

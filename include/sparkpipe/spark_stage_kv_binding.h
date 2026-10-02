@@ -103,6 +103,7 @@ SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const ato
 SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *next_positions);
 SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
 SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkStatus status,uint32_t extra_tokens,const uint8_t *bound,const uint64_t *sequence_ids,const uint64_t *next_positions);
+SparkStatus SparkStageKvBindingPublishFrame(SparkStageKvBinding *binding,SparkModelDriverFrame *frame,atomic_uint *lane_states);
 uint32_t SparkStageKvBindingResidentCount(const SparkStageKvBinding *binding);
 
 static inline uint32_t SparkStageKvBindingOwns(const SparkStageKvBinding *binding,uint32_t resident_slot)
