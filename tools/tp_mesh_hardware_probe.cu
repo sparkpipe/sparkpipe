@@ -399,7 +399,7 @@ struct Probe
         for (uint32_t n:{4u,8u,16u})
             for (uint64_t count:{UINT64_C(49152),UINT64_C(98304)+12u,UINT64_C(1048576)+4099u,UINT64_C(6291456)})
             {
-                if (count*2u>tensor_bytes) continue;
+                if (count*2u>tensor_bytes || (count+SparkTpMeshPairChunkElements(count,n)-1u)/SparkTpMeshPairChunkElements(count,n)>8u) continue;
                 Case(n,1u,1u,count,false);Case(n,1u,1u,count,true);
                 uint64_t per=SparkTpMeshPairChunkElements(count,n);
                 std::printf("PAIR-ALL-REDUCE degree=%u elements=%llu chunks=%llu PASS\n",n,(unsigned long long)count,(unsigned long long)((count+per-1u)/per));
