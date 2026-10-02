@@ -11,6 +11,7 @@ The rescue kernel command line masks only:
 
 - `ds4-switched-fabric.service`
 - `ds4-direct-pair-fabric.service`
+- `ds4-direct-pair-fabric-p2.service`
 
 Management networking is acquired with DHCP on `enP7s7`. The installed root is
 mounted from `/dev/nvme0n1p2`, matching the commissioned Spark layout. The PXE
