@@ -127,7 +127,7 @@ static void probe_frame(probe_state_t *state,uint32_t step,uint32_t restored)
 		state->outputs[lane] = UINT32_MAX;
 		state->lanes[lane] = (SparkModelDriverCacheLane){.sequence_id=state->sequences[lane],.sequence_position=step,.request_generation=1u,.step_generation=step + 1u,
 			.resident_sequence_slot=state->slots[lane],.context_token_count=step + 1u};
-		if ( restored == 0u && (step + 1u == PROBE_PREFIX || step + 1u == 64u) )
+		if ( (restored == 0u && step + 1u == PROBE_PREFIX) || step + 1u == 64u )
 		{
 			state->lanes[lane].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;
 			state->lanes[lane].publish_token_count = step + 1u;
