@@ -131,6 +131,7 @@ static inline uint64_t SparkTpMeshAllToAllChunks(uint64_t per_peer_elements,uint
 #define SPARK_TP_MESH_ROUTES_SLICE 1u
 #define SPARK_TP_MESH_ROUTES_PEER 2u
 #define SPARK_TP_MESH_ROUTES_PAIR 4u
+#define SPARK_TP_MESH_PAIR_SLICE_ELEMENTS_MAX 65536u
 
 #if defined(__CUDACC__)
 __host__ __device__
@@ -161,9 +162,9 @@ static inline uint64_t SparkTpMeshPipelineChunkElements(uint64_t local_elements,
 #if defined(__CUDACC__)
 __host__ __device__
 #endif
-static inline uint64_t SparkTpMeshPairChunkElements(uint64_t local_elements,uint32_t degree,uint64_t staging_slot_bytes)
+static inline uint64_t SparkTpMeshPairChunkElements(uint64_t local_elements,uint32_t degree)
 {
-    uint64_t capacity = (uint64_t)degree * ((staging_slot_bytes / 4u) & ~UINT64_C(3));
+    uint64_t capacity = (uint64_t)degree * SPARK_TP_MESH_PAIR_SLICE_ELEMENTS_MAX;
     uint64_t chunks = (local_elements - 1u) / capacity + 1u;
     uint64_t per = (local_elements + chunks - 1u) / chunks;
     return per - per % ((uint64_t)degree * 4u) + (per % ((uint64_t)degree * 4u) != 0u ? (uint64_t)degree * 4u : 0u);

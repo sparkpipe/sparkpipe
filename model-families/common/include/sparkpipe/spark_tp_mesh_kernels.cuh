@@ -1737,7 +1737,7 @@ static cudaError_t SparkTpMeshHardwarePairRound(cudaStream_t stream,const SparkT
 {
     const uint16_t *input = (const uint16_t *)local;
     uint16_t *result = (uint16_t *)output;
-    uint64_t per = SparkTpMeshPairChunkElements(local_elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES),chunks = (local_elements + per - 1u) / per,chunk,begin,count,slice,next_begin,next_count,next_slice;
+    uint64_t per = SparkTpMeshPairChunkElements(local_elements,degree),chunks = (local_elements + per - 1u) / per,chunk,begin,count,slice,next_begin,next_count,next_slice;
     uint32_t blocks;
     cudaError_t status;
     if ( views[1].band == 0 || views[1].staging == 0 || (degree & 1u) != 0u || degree < 4u )
