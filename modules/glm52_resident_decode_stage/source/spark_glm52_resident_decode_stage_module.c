@@ -876,10 +876,7 @@ typedef struct SparkGlm52WaveRegimeContext
 static uint32_t SparkGlm52RowRegime(void *context,uint32_t row)
 {
 	const SparkGlm52WaveRegimeContext *regime = (const SparkGlm52WaveRegimeContext *)context;
-	uint32_t bound,tokens;
-	tokens = regime->positions[row] + 1u;
-	return(SparkGlm52GraphRegime(tokens,regime->split_threshold,regime->max_positions,&bound) +
-		(tokens > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u));
+	return(SparkGlm52GraphRowClass(regime->positions[row] + 1u,regime->split_threshold,regime->max_positions));
 }
 
 static uint32_t SparkGlm52RowSelectionRegime(void *context,uint32_t row)
@@ -1946,7 +1943,7 @@ static SparkStatus SparkGlm52GraphWave(SparkGlm52TpChain *chain,const SparkTpCha
 	if ( bucket > state->execution_row_capacity )
 		bucket = state->execution_row_capacity;
 	context = chain->wave.maximum_context;
-	if ( bucket == 0u || bucket < rows || SparkGlm52GraphReplayable(context) == 0u )
+	if ( bucket == 0u || bucket < rows || SparkGlm52GraphReplayable(context,state->max_sequence_positions) == 0u )
 	{
 		fprintf(stderr,"GLM52-GRAPH-REFUSED slot=%u rows=%u bucket=%u context=%u capacity=%u\n",chain->slot_index,rows,bucket,context,state->execution_row_capacity);
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -1959,7 +1956,7 @@ static SparkStatus SparkGlm52GraphWave(SparkGlm52TpChain *chain,const SparkTpCha
 	chain->wave.row_count = bucket;
 	chain->wave.inputs_staged = 1u;
 	regime = SparkGlm52GraphRegime(context,state->decode_split_context_threshold,state->max_sequence_positions,&bound) +
-		(chain->wave.row_head_certified != 0u ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u);
+		(chain->wave.row_head_certified != 0u ? SparkGlm52GraphRegimeCount(state->max_sequence_positions) : 0u);
 	entry = SparkTpChainGraphEntry(&state->graphs[chain->slot_index],regime,bucket);
 	if ( entry == 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -2197,8 +2194,8 @@ static SparkStatus SparkGlm52ChainModeConfigure(SparkGlm52ModuleState *state)
 		reason = "needs the TP device collective";
 	else if ( SparkTpChainStreamOrdered(&collectives) == 0u )
 		reason = "needs stream-ordered collectives (SPARK_TP_WAIT_MODE=hardware)";
-	else if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && state->max_sequence_positions > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT )
-		reason = "graph chains cover contexts up to the DSA selected token count; longer contexts need context-bucketed graphs";
+	else if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && 2u * SparkGlm52GraphRegimeCount(state->max_sequence_positions) > SPARK_TP_CHAIN_GRAPH_MAX_REGIMES )
+		reason = "max_sequence_positions needs more context-bucketed graph regimes than the graph table holds";
 	else if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && (state->owns_embedding == 0u || state->owns_final_head == 0u) )
 		reason = "graph chains stage token inputs and outputs outside the graph; a pipeline stage boundary is not staged";
 	else if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && state->execution_row_capacity > SPARK_TP_CHAIN_GRAPH_MAX_ROWS )

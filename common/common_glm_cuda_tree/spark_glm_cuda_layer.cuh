@@ -7,6 +7,7 @@
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
+#include "inference/kernels/index_score.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/route.cuh"
@@ -419,22 +420,22 @@ static int32_t GlmLayerIndexer(
         0u,
         GLM_ROPE_DIM,
         GLM_ROPE_THETA);
-    LM_LAUNCH(
-        (LmWeightedSparseScoreKernel<
-            GlmIndexKv,GLM_LAYER_THREADS,GLM_DSA_INDEX_DIM>),
-        dim3(context,rows),
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->index_query_bf16,
-        buffers->index_head_weight_bf16,
-        buffers->index_cache,
-        buffers->sequence_of_row,
-        buffers->context_length,
-        buffers->row_positions,
-        GLM_DSA_INDEX_HEADS,
-        GLM_DSA_INDEX_SCALE / sqrtf((float)GLM_DSA_INDEX_HEADS),
-        buffers->selection_scores);
+    if (LmWeightedSparseScoreLaunch<
+            GlmIndexKv,GLM_DSA_INDEX_HEADS,GLM_DSA_INDEX_DIM>(
+            buffers->index_query_bf16,
+            buffers->index_head_weight_bf16,
+            buffers->index_cache,
+            buffers->sequence_of_row,
+            buffers->context_length,
+            buffers->row_positions,
+            rows,
+            context,
+            GLM_DSA_INDEX_SCALE / sqrtf((float)GLM_DSA_INDEX_HEADS),
+            buffers->selection_scores,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
     LM_LAUNCH(
         (LmTopkExactKernel<GLM_LAYER_THREADS>),
         rows,

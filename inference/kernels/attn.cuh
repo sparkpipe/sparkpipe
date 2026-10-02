@@ -937,60 +937,6 @@ void LmSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView
 		scores[((uint64_t)row * gridDim.y) + position] = total;
 }
 
-template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>
-__global__ __launch_bounds__(THREADS, 1)
-void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight_bf16, LmKvView index_cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t index_heads, float qk_scale, float *__restrict__ scores)
-{
-	__shared__ float reduction[THREADS / LM_WARP_LANES];
-	uint32_t position = blockIdx.x,row = blockIdx.y,sequence,head,index;
-	const uint8_t *slot;
-	float total = 0.0f,partial;
-	if ( scores == 0 )
-		return;
-	if ( threadIdx.x == 0u )
-		scores[((uint64_t)row * gridDim.x) + position] = -INFINITY;
-	if ( sequence_of_row == 0 || context_length == 0 || index_query_bf16 == 0
-		|| head_weight_bf16 == 0 || !LmKvViewIsConfigured(index_cache) )
-	{
-		LmKvReportRequiredAccessFailure(
-			index_cache,
-			LM_KV_ACCESS_ERROR_INVALID_VIEW,
-			LM_KV_ACCESS_READ,
-			row,
-			0xffffffffu,
-			position,
-			0xffffffffu);
-		return;
-	}
-	sequence = sequence_of_row[row];
-	if ( sequence >= index_cache.sequence_count )
-	{
-		LmKvReportRequiredAccessFailure(
-			index_cache,
-			LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-			LM_KV_ACCESS_READ,
-			row,
-			sequence,
-			position,
-			0xffffffffu);
-		return;
-	}
-	if ( position >= context_length[sequence] || (row_position != 0 && position > row_position[row]) )
-		return;
-	slot = LmKvSlotRequired<Geometry>(index_cache,sequence,position,row,LM_KV_ACCESS_READ);
-	if ( slot == 0 )
-		return;
-	for (head = 0u; head < index_heads; head++)
-	{
-		partial = 0.0f;
-		for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
-			partial += LmBf16ToFloat(index_query_bf16[(((uint64_t)row * index_heads) + head) * INDEX_DIM + index]) * LmBf16ToFloat(((const uint16_t *)slot)[index]);
-		total += LmBlockSum<THREADS>(partial,reduction) * LmBf16ToFloat(head_weight_bf16[((uint64_t)row * index_heads) + head]);
-	}
-	if ( threadIdx.x == 0u )
-		scores[((uint64_t)row * gridDim.x) + position] = total * qk_scale;
-}
-
 static __device__ __forceinline__ float LmYarnFrequency(uint32_t index, uint32_t rope_dimension, float theta, float scale_factor, float original_positions, float low_band, float high_band)
 {
 	float exponent = 2.0f * (float)index / (float)rope_dimension;

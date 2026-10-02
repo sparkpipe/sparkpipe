@@ -276,10 +276,7 @@ static int RowsReset(RowsRig *rig)
 static uint32_t RowsRegime(void *context,uint32_t row)
 {
 	const RowsRegimeContext *regime = (const RowsRegimeContext *)context;
-	uint32_t bound,tokens;
-	tokens = regime->positions[row] + 1u;
-	return(SparkGlm52GraphRegime(tokens,ROWS_SPLIT_THRESHOLD,SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS,&bound) +
-		(tokens > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT ? SPARK_GLM52_GRAPH_REGIME_COUNT : 0u));
+	return(SparkGlm52GraphRowClass(regime->positions[row] + 1u,ROWS_SPLIT_THRESHOLD,SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS));
 }
 
 static int RowsRun(RowsRig *rig,uint32_t maximum_rows,uint32_t regime_split,uint16_t *boundary_out,uint8_t *kv_out,uint8_t *index_out,uint32_t *waves_out)

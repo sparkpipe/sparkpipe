@@ -1,0 +1,2 @@
++88
+GLM-5.3 Full serves contexts past 2,048 tokens on graph chains: context-bucketed graph regimes, and a tensor-core index score kernel (inference/kernels/index_score.cuh) replacing the one-CTA-per-position kernel that made 16K prompts take 184 s and timed out waves at 28K.

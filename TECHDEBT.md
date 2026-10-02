@@ -329,24 +329,30 @@ citations refer to that commit.
   tracking.
 - dsv4: island chaining, RA joins and an event diet (rock R6). Do this only
   while DSV4 stays in the driver order.
-- glm5_next: the exact DSA top-k (`LmTopkExactKernel`) runs four radix passes
-  and a block-scan compaction in one CTA per row. At 32K context a row has
-  8,192 pools, and the kernel's time there is unmeasured. If it shows in
-  `run_us` at long context, compact with warp ballots instead of the
-  Hillis-Steele scan.
-- Left out on purpose (2026-10-02): glm52 graph chains refuse any deployment
-  whose `max_sequence_positions` exceeds the DSA selected-token count of 2,048
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:2200-2201`;
-  `model-families/glm52/include/sparkpipe/spark_glm52_model.h:22`). They also
-  refuse any graph wave whose context passes 2,048
-  (`spark_glm52_graph_regime.h:12-15`, checked at `module.c:1949-1953`). On
-  the graph path, GLM-5.3 Full therefore serves at most 2,048 positions per
-  sequence, against a model context of 1,048,576 (`spark_glm52_model.h:7`).
-  `tools/glm52_gen_deployment.py:58` renders 4,096 positions, which graph mode
-  refuses at initialization. The fix is context-bucketed graphs and removal of
-  the refusal. It is closed by a graph-mode TP16 fleet lane rendered at 32,768
-  positions that serves a 16K-token prompt with tokens equal to the linear
-  chain's, with T1 exact and B1/B16 timings recorded.
+- The exact DSA top-k (`LmTopkExactKernel`) runs four radix passes over a
+  row's scores in one CTA per row; its emit now compacts with warp ballots.
+  On one GB10, for the 78 GLM Full layers, it takes 10.2 ms of a B1 step at
+  64K context and 0.48 s of a 1,024-row prefill wave at 64K (index score
+  kernel: 2.2 ms and 1.19 s). It is the largest long-context decode cost.
+  Split a row across CTAs, or select from the per-tile maxima first.
+- The DSA indexer runs on every TP rank over the whole replicated index
+  cache. B16 decode at 16K context reads 5.2 GB of bf16 index keys per step.
+  With the context split, each rank scores its own 1/tp of the context and
+  the ranks merge their top-k candidates.
+- Left out on purpose (2026-10-02): glm52 graph regimes key long contexts on
+  4,096-token buckets in the fixed `SPARK_TP_CHAIN_GRAPH_MAX_REGIMES` (72)
+  table, so a graph deployment serves at most 139,264 positions per sequence
+  and initialization refuses more
+  (`model-families/glm52/include/sparkpipe/spark_glm52_graph_regime.h`).
+  Captured graphs are never evicted: a long prompt captures one graph per
+  (context bucket, row bucket) it crosses. Relocatable graphs (lane R) close
+  both. Fleet record (2026-10-02, de944ae, TP16, 4 x 65,536 positions): T1
+  exact; B1 30.7 tok/s; TTFT 24.2 s at 16,308 prompt tokens, 50.4 s at 32,610
+  and 89.0 s at 59,983; pass keys retrieved at 8K, 16K, 32K and 60K. Graph
+  and linear chains agree on the first two tokens of the 16K prompt and then
+  differ: prefill waves padded to a row bucket run different GEMM shapes
+  (`GLM52-PREFILL-WAVE-ROWS ... exact=no`), so long-context output is judged
+  by the accuracy gate, not token equality.
 
 ## Placement beyond TP16
 

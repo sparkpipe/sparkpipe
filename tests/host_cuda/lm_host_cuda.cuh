@@ -94,7 +94,8 @@ static inline unsigned short __half_as_ushort(__half h) { return h.raw; }
 static inline float __shfl_down_sync(unsigned, float, unsigned, int = 32) { return 0.0f; }
 static inline float __shfl_sync(unsigned, float value, int, int = 32) { return value; }
 static inline float __shfl_xor_sync(unsigned, float value, int, int = 32) { return value; }
-static inline unsigned __ballot_sync(unsigned, int) { return 0u; }
+static inline unsigned __ballot_sync(unsigned, int predicate) { return predicate != 0 ? 1u : 0u; }
+static inline int __popc(unsigned value) { return __builtin_popcount(value); }
 static inline void __threadfence_block(void) {}
 
 static inline unsigned long long __cvta_generic_to_shared(const void *p) { return (unsigned long long)p; }

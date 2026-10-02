@@ -11,25 +11,7 @@
 #define LM_TOPK_EXACT_EMITTED 3u
 #define LM_TOPK_EXACT_SEEN 4u
 #define LM_TOPK_EXACT_STATE 5u
-
-template<uint32_t THREADS>
-static __device__ __forceinline__ uint32_t LmTopkBlockExclusiveScan(uint32_t *scan, uint32_t flag, uint32_t *total)
-{
-	uint32_t offset,value,inclusive;
-	scan[threadIdx.x] = flag;
-	__syncthreads();
-	for (offset = 1u; offset < THREADS; offset <<= 1u)
-	{
-		value = threadIdx.x >= offset ? scan[threadIdx.x - offset] : 0u;
-		__syncthreads();
-		scan[threadIdx.x] += value;
-		__syncthreads();
-	}
-	inclusive = scan[threadIdx.x];
-	*total = scan[THREADS - 1u];
-	__syncthreads();
-	return(inclusive - flag);
-}
+#define LM_TOPK_WARP_LANES 32u
 
 template<uint32_t THREADS>
 static __device__ __forceinline__ void LmTopkExactPass(const float *scores, uint32_t n, uint32_t shift, uint32_t *histogram, uint32_t *state)
@@ -60,23 +42,47 @@ static __device__ __forceinline__ void LmTopkExactPass(const float *scores, uint
 template<uint32_t THREADS>
 static __device__ __forceinline__ void LmTopkExactEmit(const float *scores, uint32_t n, uint32_t threshold, uint32_t *out, uint32_t *scan, uint32_t *state)
 {
-	uint32_t start,index,key,greater,equal,before,total,remaining,equal_before;
+	const uint32_t warps = (THREADS + LM_TOPK_WARP_LANES - 1u) / LM_TOPK_WARP_LANES;
+	const uint32_t lane = threadIdx.x % LM_TOPK_WARP_LANES,warp = threadIdx.x / LM_TOPK_WARP_LANES;
+	const uint32_t below = lane != 0u ? 0xffffffffu >> (LM_TOPK_WARP_LANES - lane) : 0u;
+	uint32_t start,index,key,greater,equal,greater_mask,equal_mask,greater_before,equal_before,greater_total,equal_total,remaining,other;
+	static_assert(THREADS <= LM_TOPK_WARP_LANES * LM_TOPK_WARP_LANES, "one scan slot pair per warp");
 	for (start = 0u; start < n; start += THREADS)
 	{
 		index = start + threadIdx.x;
 		key = index < n ? LmTopkKey(scores[index]) : 0u;
 		greater = index < n && key > threshold ? 1u : 0u;
 		equal = index < n && key == threshold ? 1u : 0u;
-		before = LmTopkBlockExclusiveScan<THREADS>(scan,(equal << 16u) | greater,&total);
+		greater_mask = __ballot_sync(0xffffffffu,greater != 0u);
+		equal_mask = __ballot_sync(0xffffffffu,equal != 0u);
+		if ( lane == 0u )
+		{
+			scan[warp] = (uint32_t)__popc(greater_mask);
+			scan[warps + warp] = (uint32_t)__popc(equal_mask);
+		}
+		__syncthreads();
+		greater_before = (uint32_t)__popc(greater_mask & below);
+		equal_before = (uint32_t)__popc(equal_mask & below);
+		greater_total = 0u;
+		equal_total = 0u;
+		for (other = 0u; other < warps; other++)
+		{
+			if ( other < warp )
+			{
+				greater_before += scan[other];
+				equal_before += scan[warps + other];
+			}
+			greater_total += scan[other];
+			equal_total += scan[warps + other];
+		}
 		remaining = state[LM_TOPK_EXACT_NEED] > state[LM_TOPK_EXACT_SEEN] ? state[LM_TOPK_EXACT_NEED] - state[LM_TOPK_EXACT_SEEN] : 0u;
-		equal_before = before >> 16u;
 		if ( greater != 0u || (equal != 0u && equal_before < remaining) )
-			out[state[LM_TOPK_EXACT_EMITTED] + (before & 0xffffu) + (equal_before < remaining ? equal_before : remaining)] = index;
+			out[state[LM_TOPK_EXACT_EMITTED] + greater_before + (equal_before < remaining ? equal_before : remaining)] = index;
 		__syncthreads();
 		if ( threadIdx.x == 0u )
 		{
-			state[LM_TOPK_EXACT_EMITTED] += (total & 0xffffu) + ((total >> 16u) < remaining ? (total >> 16u) : remaining);
-			state[LM_TOPK_EXACT_SEEN] += total >> 16u;
+			state[LM_TOPK_EXACT_EMITTED] += greater_total + (equal_total < remaining ? equal_total : remaining);
+			state[LM_TOPK_EXACT_SEEN] += equal_total;
 		}
 		__syncthreads();
 	}

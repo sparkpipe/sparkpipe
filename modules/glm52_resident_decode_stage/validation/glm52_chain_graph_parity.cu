@@ -143,7 +143,7 @@ static int ParityCapture(ParityRig *rig,uint32_t bound,cudaGraphExec_t *exec)
 
 static int ParityRun(ParityRig *rig,uint32_t mode)
 {
-	cudaGraphExec_t graphs[SPARK_GLM52_GRAPH_REGIME_COUNT] = {0,0};
+	cudaGraphExec_t graphs[SPARK_GLM52_GRAPH_REGIME_SELECTED] = {0,0};
 	uint32_t step,regime,bound;
 	int status = 0;
 	if ( SparkGlm52ValResetStreams(&rig->fixture) != 0 || cudaMemset(rig->boundary,0,PARITY_BOUNDARY * sizeof(uint16_t)) != cudaSuccess )
@@ -160,7 +160,7 @@ static int ParityRun(ParityRig *rig,uint32_t mode)
 			regime = SparkGlm52GraphRegime(rig->fixture.wave.maximum_context,PARITY_SPLIT_THRESHOLD,rig->fixture.wave.max_sequence_positions,&bound);
 			if ( mode == PARITY_MODE_GRAPH_WRONG_REGIME )
 				regime = SparkGlm52GraphRegime(regime == SPARK_GLM52_GRAPH_REGIME_SPLIT ? 1u : PARITY_SPLIT_THRESHOLD,PARITY_SPLIT_THRESHOLD,rig->fixture.wave.max_sequence_positions,&bound);
-			else if ( bound < rig->fixture.wave.maximum_context || SparkGlm52GraphReplayable(rig->fixture.wave.maximum_context) == 0u )
+			else if ( bound < rig->fixture.wave.maximum_context || SparkGlm52GraphReplayable(rig->fixture.wave.maximum_context,rig->fixture.wave.max_sequence_positions) == 0u )
 				status = 40;
 			if ( status == 0 && graphs[regime] == 0 )
 			{
@@ -178,7 +178,7 @@ static int ParityRun(ParityRig *rig,uint32_t mode)
 		if ( status == 0 && SparkGlm52ValCheckAccessError(&rig->fixture) != 0 )
 			status = 44;
 	}
-	for (regime=0u; regime<SPARK_GLM52_GRAPH_REGIME_COUNT; regime++)
+	for (regime=0u; regime<SPARK_GLM52_GRAPH_REGIME_SELECTED; regime++)
 		if ( graphs[regime] != 0 )
 			(void)cudaGraphExecDestroy(graphs[regime]);
 	if ( status != 0 )
@@ -233,7 +233,7 @@ static int ParityRunDegree(ParityRig *rig,uint32_t tp_degree)
 			tp_degree,PARITY_MODE_NAMES[mode],PARITY_STEPS,differ,first == UINT32_MAX ? -1 : (int)first,rig->captures[mode],rig->replays[mode],differ == 0u ? "BIT-EXACT" : "FAIL");
 		failures += differ != 0u ? 1 : 0;
 	}
-	if ( rig->captures[PARITY_MODE_GRAPH] != SPARK_GLM52_GRAPH_REGIME_COUNT )
+	if ( rig->captures[PARITY_MODE_GRAPH] != SPARK_GLM52_GRAPH_REGIME_SELECTED )
 	{
 		fprintf(stderr,"glm52_chain_graph_parity tp=%u FAIL expected one capture per regime, saw %u\n",tp_degree,rig->captures[PARITY_MODE_GRAPH]);
 		failures++;
