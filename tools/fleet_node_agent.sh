@@ -6,10 +6,10 @@ HUB="${2:-sparkf}"
 [ "$HUB" = "sparkf" ] && HUB="spec@100.123.97.61"
 HOST=$(hostname)
 FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
-MESH_INTERFACE="rocep1s0f1"
-MESH_SGID_INDEX=3
-MESH_PAIR_INTERFACE="rocep1s0f0"
-MESH_PAIR_SGID_INDEX=3
+MESH_INTERFACE="${SPARK_MESH_INTERFACE:-rocep1s0f1}"
+MESH_SGID_INDEX="${SPARK_MESH_SGID_INDEX:-3}"
+MESH_PAIR_INTERFACE="${SPARK_MESH_PAIR_INTERFACE:-rocep1s0f0}"
+MESH_PAIR_SGID_INDEX="${SPARK_MESH_PAIR_SGID_INDEX:-3}"
 MESH_TRAFFIC_CLASS=106
 RANK=""
 _idx=0
@@ -47,6 +47,7 @@ sha16() {
 }
 
 START_SHA=$(sha16 "$0")
+AGENT_STARTED=$(date +%s)
 AGENT_BLOCKED=""
 mkdir -p "$VIEW"
 
@@ -386,7 +387,7 @@ unload_root() {
     return 1
 }
 
-declare -A BACKOFF NEXT_OK
+declare -A BACKOFF NEXT_OK DOCTOR_SINCE DOCTOR_NEXT
 LAST_ANY_RESTART=0
 
 restart_ok() {
@@ -642,20 +643,40 @@ self_update() {
     exec bash "$new" "$ROOTS" "$HUB"
 }
 
-node_doctor() {
-    local state netdev
-    state=$(ibv_devinfo "$MESH_INTERFACE" 2>/dev/null | awk '/^[[:space:]]*state:/ {print $2; exit}')
-    case "$state" in
-        PORT_ACTIVE) ;;
-        *)
-            netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $NF; exit}')
-            [ -n "$netdev" ] || return 0
-            echo "$(date +%T) doctor: $MESH_INTERFACE state=${state:-missing}; flapping $netdev" >&2
-            sudo -n ip link set "$netdev" down 2>/dev/null
-            sleep 2
-            sudo -n ip link set "$netdev" up 2>/dev/null
-            ;;
+doctor_port() {
+    local dev="$1" now state netdev flags carrier
+    now=$(date +%s)
+    state=$(ibv_devinfo -d "$dev" -i 1 2>/dev/null | awk '/^[[:space:]]*state:/ {print $2; exit}')
+    if [ "$state" = PORT_ACTIVE ]; then
+        DOCTOR_SINCE[$dev]=""
+        return 0
+    fi
+    netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$dev" '$1==d {print $5; exit}')
+    [ -n "$netdev" ] || return 0
+    flags=$(ip -o link show dev "$netdev" 2>/dev/null)
+    carrier=$(cat "/sys/class/net/$netdev/carrier" 2>/dev/null || echo 0)
+    case "$flags" in
+        *"<"*",UP"*">"*|*"<UP"*">"*) ;;
+        *) DOCTOR_SINCE[$dev]=""; return 0 ;;
     esac
+    if [ "$carrier" = 1 ]; then
+        DOCTOR_SINCE[$dev]=""
+        return 0
+    fi
+    [ -n "${DOCTOR_SINCE[$dev]:-}" ] || DOCTOR_SINCE[$dev]=$now
+    [ $(( now - DOCTOR_SINCE[$dev] )) -ge 60 ] || return 0
+    [ $(( now - AGENT_STARTED )) -ge 300 ] || return 0
+    [ "$now" -ge "${DOCTOR_NEXT[$dev]:-0}" ] || return 0
+    DOCTOR_NEXT[$dev]=$(( now + 300 ))
+    echo "$(date +%T) doctor: $dev state=${state:-missing} netdev=$netdev admin-up no-carrier for $(( now - DOCTOR_SINCE[$dev] ))s; flapping $netdev" >&2
+    sudo -n ip link set "$netdev" down 2>/dev/null
+    sleep 2
+    sudo -n ip link set "$netdev" up 2>/dev/null
+}
+
+node_doctor() {
+    doctor_port "$MESH_INTERFACE"
+    doctor_port "$MESH_PAIR_INTERFACE"
 }
 
 janitor() {
@@ -722,6 +743,12 @@ ensure_weightd() {
     }
     systemctl is-active -q sparkpipe-roce-qos || {
         echo "weightd: sparkpipe-roce-qos is not active; traffic class $MESH_TRAFFIC_CLASS needs DSCP trust and PFC on $MESH_INTERFACE; dependent startup blocked" >&2
+        return 1
+    }
+    local mesh_netdev
+    mesh_netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $5; exit}')
+    mlnx_qos -i "$mesh_netdev" 2>/dev/null | grep -q 'Priority trust state: dscp' || {
+        echo "weightd: $MESH_INTERFACE (${mesh_netdev:-no netdev}) does not trust DSCP; traffic class $MESH_TRAFFIC_CLASS would be lossy; dependent startup blocked" >&2
         return 1
     }
     restart_ok weightd || return 1

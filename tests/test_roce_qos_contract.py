@@ -35,7 +35,7 @@ class RoceQosContract(unittest.TestCase):
         self.assertIn('ethtool -A "$interface" rx off tx off', SCRIPT)
         self.assertIn("set -eu", SCRIPT)
         interface = re.search(r"^interface=(\S+)$", SCRIPT, re.M).group(1)
-        self.assertEqual(interface, re.search(r'^MESH_INTERFACE="rocep1s0f1"$', AGENT, re.M) and "enp1s0f1np1")
+        self.assertEqual(interface, re.search(r'^MESH_INTERFACE="\$\{SPARK_MESH_INTERFACE:-rocep1s0f1\}"$', AGENT, re.M) and "enp1s0f1np1")
 
     def test_unit_runs_the_script_once_per_link(self):
         self.assertIn("ExecStart=/usr/local/sbin/sparkpipe_roce_qos.sh", UNIT)
