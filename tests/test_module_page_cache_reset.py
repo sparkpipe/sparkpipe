@@ -15,6 +15,8 @@ static SparkStatus RELEASE_ALL_STATUS;
 static cudaError_t SYNC_STATUS = cudaSuccess;
 
 SparkStatus SparkKvPageCacheReleaseAll(SparkKvPageCache *cache) { (void)cache; RELEASE_ALL_CALLS++; return(RELEASE_ALL_STATUS); }
+SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions) { (void)transactions; RELEASE_ALL_CALLS++; return(RELEASE_ALL_STATUS); }
+SparkStatus SparkKvLaneTransactionsAdmit(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request) { (void)transactions; (void)request; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 SparkStatus SparkKvPageCacheReleaseLane(SparkKvPageCache *cache,uint32_t slot,uint64_t sequence) { (void)cache; (void)slot; (void)sequence; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 SparkStatus SparkKvPageCachePrepareLane(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane,uint32_t *pages,uint32_t capacity,uint32_t *count) { (void)cache; (void)lane; (void)pages; (void)capacity; (void)count; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 SparkStatus SparkKvPageCacheBeginLaneTransaction(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane,uint32_t *page,uint32_t *flags) { (void)cache; (void)lane; (void)page; (void)flags; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
@@ -25,15 +27,16 @@ const char *cudaGetErrorString(cudaError_t error) { (void)error; return("stub");
 const char *cudaGetErrorName(cudaError_t error) { (void)error; return("stub"); }
 
 static MODULE_STATE state;
+#define LANES MODULE_LANES(state)
 
 static void Bind(void)
 {
 	uint32_t lane;
 	for (lane=0u; lane<state.resident_sequence_capacity; lane++)
 	{
-		atomic_store(&state.lane_bound[lane],1u);
-		atomic_store(&state.lane_sequence_ids[lane],100u + lane);
-		atomic_store(&state.lane_next_positions[lane],7u + lane);
+		atomic_store(&LANES.lane_bound[lane],1u);
+		atomic_store(&LANES.lane_sequence_ids[lane],100u + lane);
+		atomic_store(&LANES.lane_next_positions[lane],7u + lane);
 	}
 	RELEASE_ALL_CALLS = 0u;
 	SYNC_CALLS = 0u;
@@ -41,11 +44,28 @@ static void Bind(void)
 	SYNC_STATUS = cudaSuccess;
 }
 
+#ifdef SPARK_STAGE_KV_REGION_PAGE_MAJOR
+static void BindingSetup(void)
+{
+	state.kv.module_tag = MODULE_NAME;
+	state.kv.resident_sequence_capacity = state.resident_sequence_capacity;
+	state.kv.pipeline_slot_count = state.pipeline_slot_count;
+	state.kv.pages_per_sequence = 1u;
+	state.kv.lane_bound = (atomic_uchar *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_bound));
+	state.kv.lane_sequence_ids = (atomic_ullong *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_sequence_ids));
+	state.kv.lane_next_positions = (atomic_ullong *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_next_positions));
+	state.kv.page_table_shadow = (uint32_t *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.page_table_shadow));
+	assert(state.kv.lane_bound != 0 && state.kv.lane_sequence_ids != 0 && state.kv.lane_next_positions != 0 && state.kv.page_table_shadow != 0);
+	assert(pthread_mutex_init(&state.kv.mutex,0) == 0);
+	state.kv.mutex_initialized = 1u;
+}
+#endif
+
 static uint32_t Bound(void)
 {
 	uint32_t lane,count = 0u;
 	for (lane=0u; lane<state.resident_sequence_capacity; lane++)
-		count += atomic_load(&state.lane_bound[lane]) != 0u || atomic_load(&state.lane_sequence_ids[lane]) != 0u || atomic_load(&state.lane_next_positions[lane]) != 0u ? 1u : 0u;
+		count += atomic_load(&LANES.lane_bound[lane]) != 0u || atomic_load(&LANES.lane_sequence_ids[lane]) != 0u || atomic_load(&LANES.lane_next_positions[lane]) != 0u ? 1u : 0u;
 	return(count);
 }
 
@@ -138,6 +158,7 @@ int main(void)
 	state.max_sequence_positions = 2048u;
 	SparkStageModuleAtomicStateArrayInitialize(state.slot_states,state.pipeline_slot_count);
 	SparkStageModuleAtomicStateArrayInitialize(state.lane_states,state.resident_sequence_capacity);
+	MODULE_SETUP();
 	TestResetClearsEveryLane();
 	TestResetWaitsForInflightSlot();
 	TestResetFailures();
@@ -155,6 +176,9 @@ MODULES = {
         "defines": ["-DGLM_EXPERT_WEIGHT_CODEC=5", '-DGLM_EXPERT_CODEC_NAME="fp8"', '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"',
                     "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h"],
         "identity": ("GLM_MODEL_REVISION", "GLM_CONTRACT_SHA256", ["tools/glm52_model_contract.py", "--print-build-identity", "fp8"]),
+        "lanes": "(s).kv",
+        "setup": "BindingSetup()",
+        "sources": ["runtime/stage_kv_binding.c"],
     },
     "ling": {
         "source": "modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c",
@@ -162,6 +186,9 @@ MODULES = {
         "includes": ["model-families/ling/include", "modules/ling_resident_decode_stage/include", "modules/ling_resident_decode_stage/source"],
         "defines": ["-DLING_EXPERT_WEIGHT_CODEC=1u", '-DLING_EXPERT_CODEC_NAME="bf16"', '-DLING_MODEL_REVISION="fixture"', '-DLING_CONTRACT_SHA256="fixture"'],
         "identity": None,
+        "lanes": "(s)",
+        "setup": "(void)0",
+        "sources": [],
     },
 }
 
@@ -179,7 +206,8 @@ def run_module(name, module, directory):
                     "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                     *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=16u", *defines,
                     f'-DMODULE_SOURCE="{module["source"]}"', f'-DMODULE_STATE={module["state"]}', f'-DMODULE_ADMIT={module["admit"]}',
-                    f'-DMODULE_NAME="{name}"', str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"],
+                    f'-DMODULE_NAME="{name}"', f'-DMODULE_LANES(s)={module["lanes"]}', f'-DMODULE_SETUP()={module["setup"]}',
+                    str(source), "runtime/stage_module_common.c", *module["sources"], "src/spark_status.c", "-o", str(binary), "-pthread"],
                    cwd=ROOT, check=True)
     subprocess.run([str(binary)], check=True)
 

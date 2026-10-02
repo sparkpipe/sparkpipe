@@ -137,6 +137,26 @@ cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,enum cu
 cudaError_t cudaMemsetAsync(void *destination,int value,size_t bytes,cudaStream_t stream) { (void)destination; (void)value; (void)bytes; (void)stream; assert(0); return(cudaErrorUnknown); }
 SparkStatus SparkKvPageCacheCompleteLane(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane) { (void)cache; (void)lane; return(SPARK_STATUS_OK); }
 SparkStatus SparkKvPageCacheRollbackLaneTransaction(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane,uint32_t flags) { (void)cache; (void)lane; (void)flags; return(SPARK_STATUS_OK); }
+SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,const SparkModelDriverFrame *frame,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+{
+	uint32_t row,lane;
+	(void)binding; (void)lane_states; (void)frame; (void)row_resident_slots;
+	for (lane=0u; lane<active_count; lane++)
+	{
+		bound[lane] = 1u;
+		sequence_ids[lane] = row_sequence_ids[lane];
+		next_positions[lane] = row_positions[lane] + 1u;
+	}
+	for (row=active_count; row<row_count; row++)
+	{
+		lane = row % active_count;
+		next_positions[lane] = row_positions[row] + 1u;
+	}
+	return(SPARK_STATUS_OK);
+}
+SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *next_positions) { (void)binding; (void)frame; (void)active_count; (void)row_resident_slots; (void)row_sequence_ids; (void)row_positions; (void)next_positions; return(SPARK_STATUS_OK); }
+SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream) { (void)binding; (void)resident_slots; (void)lane_count; (void)stream; return(SPARK_STATUS_OK); }
+SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkStatus status,uint32_t extra_tokens,const uint8_t *bound,const uint64_t *sequence_ids,const uint64_t *next_positions) { (void)binding; (void)resident_slots; (void)lane_count; (void)extra_tokens; (void)bound; (void)sequence_ids; (void)next_positions; return(status); }
 
 static void Completed(void *context,const SparkModelDriverCompletion *completion)
 {

@@ -21,7 +21,18 @@ EOS_TOKEN_IDS = [154820, 154827, 154829]
 TOKENIZER_SHA256 = "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d"
 TOKENIZER_TOKEN_COUNT = 154856
 BLOCK_TOKENS = 64
-KV_PAGE_BYTES = BLOCK_TOKENS * (78 * 576 + 21 * 128) * 2
+CONTRACT_PATH = Path(__file__).resolve().parents[1] / "model_contracts/glm53_full_authoritative.json"
+
+
+def contract_kv_page_bytes():
+    contract = json.loads(CONTRACT_PATH.read_text())
+    geometry = contract["geometry"]
+    index_layers = contract["structural_census"]["indexer_full_layers_0_77"]
+    latent = geometry["latent_dimension"] + geometry["rope_dimension"]
+    return BLOCK_TOKENS * (geometry["layer_count"] * latent + len(index_layers) * geometry["dsa_index_head_dimension"]) * 2
+
+
+KV_PAGE_BYTES = contract_kv_page_bytes()
 MAX_LANES = 16
 
 

@@ -250,20 +250,19 @@ citations refer to that commit.
   failure state on a successful rewire, proven by killing one rank's weightd
   mid-collective on the fleet and seeing every peer complete or fail its
   rounds and rewire without a restart.
-- Left out on purpose (2026-10-02): a platform SMMU stall turns into silent
-  disk corruption. On spark8 (2026-10-01 16:00:49Z) a PCIe completion timeout
-  on CX-7 function 0000:01:00.1 was followed within about 85 ms by a stalled
-  SMMU0 command queue (`CMD_SYNC timeout`); the kernel kept running, recycled
-  IOVAs while lazy (DMA-FQ) translations were stale, and the NVMe wrote other
+- Recorded incident (2026-10-02; owner: treat as a one-off and act only if it
+  recurs): on spark8 at 2026-10-01 16:00:49Z a PCIe completion timeout on CX-7
+  function 0000:01:00.1 was followed within about 85 ms by a stalled SMMU0
+  command queue (`CMD_SYNC timeout`). The kernel kept running, recycled IOVAs
+  while lazy (DMA-FQ) translations were stale, and the NVMe wrote other
   processes' pages over the root superblock and GDT blocks before a hung-task
-  panic. SMMU0 serves the NVMe, every CX-7 function, the management NIC and
-  the Ceph USB disk on each Spark. Nothing on the fleet stops a node on the
-  first stall. Close it with an owner-approved, runtime-only kmsg guard that
-  panics a node on its first SMMU `CMD_SYNC timeout` or uncorrectable CX-7 AER
-  (never enabled at boot without approval), a decision on `iommu.strict` for
-  the NVMe and CX-7 groups (a boot-path change), and a report to NVIDIA and
-  Canonical; proven by the guarded pair reproduction in the incident plan
-  halting a node with its root filesystem intact.
+  panic. It was recovered via PXE rescue and e2fsck from the backup
+  superblock. No other node shows AER, SMMU, NVMe or ext4 errors. If it
+  recurs, the prepared responses are a runtime kmsg guard that panics on the
+  first SMMU `CMD_SYNC timeout` or uncorrectable CX-7 AER, `iommu.strict` for
+  the NVMe and CX-7 groups (a boot-path change for the owner), the guarded
+  pair reproduction, and a report to NVIDIA and Canonical (investigation
+  workflow wf_2545220b-a65).
 - Left out on purpose (2026-10-02): no log records which collective path a
   chain ran (single-band, pipelined, pair-first, host round, tree), and each
   lane run overwrites `~/glmfull-dev/<lane>/residentd.log` on every rank,
@@ -974,26 +973,22 @@ citations refer to that commit.
   completion path takes; the fleet proof is B16 per-step decode time with
   prefix admissions arriving during decode, equal to the same run without
   admissions.
-- Left out on purpose (2026-10-02): A spill write that fails fails the request
-  instead of dropping the cache entry that cannot be written. Every page-cache
-  page holds one arena reference for its whole life
-  (`cache/kv_page_cache.c:950`, `:323`, `:347`), and the arena's write-back
-  degrade applies only to unreferenced blocks (`cache/kv_cache.c:1201-1211`),
-  so for GLM Full a failed write-back makes the eviction return the error
-  (`kv_cache.c:1214`). An `IO_ERROR` reaches the prepare through
-  `SparkKvPageCacheMarkPageResident` (`cache/kv_page_cache.c:903-905`) or
-  `SparkKvPageCacheSpanRoom` (`:937`), a full backing quota
-  (`cache/kv_page_store.c:792`) returns `CAPACITY_EXCEEDED` through `SpanRoom`
-  without evicting any cached entry, and the batch engine fails the request on
-  either while every rank is connected (`runtime/model_batch_engine.c:882`,
-  `:901-902`). The store then forgets the failure (`kv_page_store.c:736`,
-  `:746`), so a persistent disk error fails every admission that has to spill
-  while the entry that cannot be written stays valid and resident. Close it by
-  evicting the victim's page-cache entry and its descendants when its
-  write-back fails or the backing quota is full, so the admission proceeds and
-  a later lookup is a clean `NOT_FOUND`; the fleet proof is a run with a small
-  backing quota and injected write errors in which every request completes
-  with tokens identical to an uninterrupted run.
+- Left out on purpose (2026-10-02): a block whose spill write-back fails is
+  degraded (`cache/kv_cache.c`, `SparkKvCacheArenaEvictResidentBlock`): its
+  contents are dropped, its backing is marked invalid, and a later restore of
+  it answers NOT_FOUND so the engine recomputes, never a wedge. The page-cache
+  entry that owns the block stays VALID, so every later request whose chain
+  matches it reaches the same missing page and recomputes again, and a
+  persistent disk error turns every spill into a recompute with no signal
+  beyond `write_back_degraded_block_count`, which nothing reports. (From
+  2026-10-01 to 2026-10-02 the degrade was limited to unreferenced blocks,
+  which made a failed write-back fail the request instead; that broke the B1
+  drop-and-recompute contract tested by `tests/test_jit_kv_wire.c` scenario 5
+  and was reverted.) Close it by evicting the owning page-cache entry and its
+  descendants when a write-back fails, and reporting the degraded count,
+  proven by a fleet run with injected write errors in which the first affected
+  request recomputes, later requests miss cleanly without touching the bad
+  page, and tokens match an uninterrupted run.
 - Left out on purpose (2026-10-02): The rule for a missing, corrupt or
   unreadable KV page is not written down (JIT KV plan owner decision 5), and
   the spill store GLM Full uses cannot detect corruption. A missing prefix
@@ -1167,17 +1162,23 @@ adapter below lacks real restore, an I27 proof, or both:
 Related common-code debt:
 
 - Left out on purpose (2026-10-02): the publish of a reply's final partial
-  block has no fleet proof. Since 48d7b5a39 (branch `kv/sequence-shard`) a
-  completed request with an unpublished tail queues `CACHE_PUBLISH` before its
-  release (`runtime/model_batch_engine.c`,
+  block has no fleet proof, and multi-token chains that stop early never
+  publish their tail. A completed request with an unpublished tail queues
+  `CACHE_PUBLISH` before its release when its last step's tokens were all
+  accepted (`runtime/model_batch_engine.c`,
   `SparkModelBatchHandleDecodeCompletion`), the common binding serves the
   publish-only frame (`SparkStageKvBindingPublishFrame`,
   `runtime/stage_kv_binding.c`), glm52 declares `CACHE_PUBLISH`, and every
   adapter must declare it (`runtime/model_serving_adapter.c`,
-  `SparkDescriptorCheckRequiredCacheOperations`). Only host tests cover it.
-  Close it with a fleet I27 case on the TP16 GLM-5.3 Full lane whose second
-  turn extends a reply that ended on EOS mid-block, with `cached_tokens`
-  covering the whole first reply and tokens identical to an uncached run.
+  `SparkDescriptorCheckRequiredCacheOperations`). When a multi-token chain
+  (glm5_next) stops on EOS mid-chain, the lane has already advanced past the
+  tail and its KDA recurrent state belongs to that later position, so
+  publishing the tail would store mismatched state; the tail stays unpublished
+  and a follow-up turn recomputes it. Close the chain case by capturing or
+  rolling back recurrent state to the tail through the common recurrent-state
+  hook (I-05), and prove both cases with fleet I27 sessions whose second turn
+  extends a reply that ended on EOS mid-block, with `cached_tokens` covering
+  the whole first reply and tokens identical to an uncached run.
 - Left out on purpose (2026-10-02): residentd's slot claim checks slot
   ownership and the lane's request id, generation and sequence id
   (`node/model_residentd.c:714-783`), not position continuity. Continuity is
@@ -1534,6 +1535,31 @@ Related common-code debt:
   it; they are gone too, so a DFlash2 request is refused as unavailable.
   Restore the capture inside the graph engine, with the ring and gate from
   `e60f690b`, when a GLM 5.3 Flash DFlash2 drafter is to be qualified.
+- Left out on purpose (2026-10-02): there is no context-lookup drafter, so a
+  reply that re-emits text already in the request pays full decode cost for
+  every token. Prompt-lookup (n-gram) speculation is a proven technique. Its
+  target case is code and document edits, where the reply repeats most of the
+  input with small changes and drafts are accepted for long stretches. A
+  common, model-neutral draft source in the engine
+  (`runtime/model_batch_engine.c`) matches the longest suffix of the request's
+  own token history (prompt plus generated) and proposes the tokens that
+  followed it last time, with no drafter model and no GPU cost. The draft
+  length adapts: it grows while drafts are accepted and drops to none after a
+  miss. All k drafted tokens are verified in one multi-row wave, not serially.
+  The wave commits the longest prefix whose greedy tokens equal the draft,
+  plus the model's own token at the first mismatch, and rejected positions are
+  rolled back (free for attention KV; KDA and GDN state need the common
+  recurrent-state hook, I-05). It is built for the core drivers first (glm52,
+  glm5_next, k3) and shares the common speculation seam and the multi-row
+  verify head with the built-in MTP drafters. The verify math on closed PR
+  #1398 (k+1 certified rows, accepted-prefix commit) is the starting point.
+  Multi-row verify numerics differ from a 1-row decode step by the reordering
+  floor, so speculative output is judged against the floor like batched
+  output. Close it with a fleet session on GLM-5.3 Full of edit-style requests
+  (a long file re-emitted with small changes), reporting the acceptance-length
+  distribution, verify-wave cost and tok/s against plain decode, the accuracy
+  gate as excess over the floor, and plain prompts with no matches showing no
+  slowdown beyond noise.
 
 ## Packaging and provenance
 
