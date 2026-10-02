@@ -237,6 +237,7 @@ static int ladder_mesh_run(const char *socket_path,uint32_t rank,
     const uint32_t operations[3] = {1u,2u,0u};
     uint32_t completed = 0u;
     uint32_t callback_count = 0u;
+    uint32_t burst = getenv("SPARK_LADDER_BURST") != 0 ? (uint32_t)strtoul(getenv("SPARK_LADDER_BURST"),0,10) : 1u;
     alarm(180u);
     ladder_require(input != 0 && actual != 0 && input_after != 0,"host-allocation");
     ladder_require(setenv("SPARK_WEIGHTD_SOCKET",socket_path,1) == 0 &&
@@ -338,10 +339,21 @@ static int ladder_mesh_run(const char *socket_path,uint32_t rank,
                 ladder_status(SparkTpDeviceCollectiveGraphCancelSeed(&collective,stream),"graph-cancel-seed");
                 ladder_status(SparkTpDeviceCollectiveGraphPreLaunch(&collective,stream),"graph-prelaunch");
                 ladder_require(cudaGraphLaunch(executables[op_index],stream) == cudaSuccess,"graph-launch");
+                if (burst > 1u)
+                {
+                    ladder_wait_stream(stream);
+                    started = ladder_now_ns();
+                    for (uint32_t repeat = 0u; repeat < burst; repeat++)
+                    {
+                        ladder_status(SparkTpDeviceCollectiveGraphCancelSeed(&collective,stream),"graph-cancel-seed");
+                        ladder_status(SparkTpDeviceCollectiveGraphPreLaunch(&collective,stream),"graph-prelaunch");
+                        ladder_require(cudaGraphLaunch(executables[op_index],stream) == cudaSuccess,"graph-launch");
+                    }
+                }
             }
             ladder_wait_stream(stream);
             ladder_require(SparkTpDeviceCollectiveGraphError(&collective) == 0u,"collective-error");
-            double elapsed = (double)(ladder_now_ns() - started) / 1000.0;
+            double elapsed = (double)(ladder_now_ns() - started) / 1000.0 / (ordinal != 0u && burst > 1u ? (double)burst : 1.0);
             ladder_require(cudaMemcpy(actual,output,capacity + 256u,cudaMemcpyDeviceToHost) == cudaSuccess &&
                 cudaMemcpy(input_after,local,local_bytes,cudaMemcpyDeviceToHost) == cudaSuccess,"readback");
             ladder_require(memcmp(input,input_after,local_bytes) == 0,"input-preserved");
