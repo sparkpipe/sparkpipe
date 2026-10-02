@@ -123,7 +123,7 @@ static void probe_frame(probe_state_t *state,uint32_t step,uint32_t restored)
 		state->tokens[lane] = 1u + lane * 1000u + step;
 		state->slots[lane] = restored != 0u ? PROBE_LANES + lane : lane;
 		state->positions[lane] = step;
-		state->sequences[lane] = restored != 0u ? PROBE_LANES + lane + 1u : lane + 1u;
+		state->sequences[lane] = restored != 0u ? restored * PROBE_LANES + lane + 1u : lane + 1u;
 		state->outputs[lane] = UINT32_MAX;
 		state->lanes[lane] = (SparkModelDriverCacheLane){.sequence_id=state->sequences[lane],.sequence_position=step,.request_generation=1u,.step_generation=step + 1u,
 			.resident_sequence_slot=state->slots[lane],.context_token_count=step + 1u};
@@ -138,7 +138,7 @@ static void probe_frame(probe_state_t *state,uint32_t step,uint32_t restored)
 		{
 			state->lanes[lane].flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
 			state->lanes[lane].prefix_token_count = PROBE_PREFIX;
-			state->lanes[lane].prefix_identity.sha256[0] = (uint8_t)(lane + 1u);
+			state->lanes[lane].prefix_identity.sha256[0] = (uint8_t)((restored == 2u ? lane ^ 1u : lane) + 1u);
 			state->lanes[lane].prefix_identity.sha256[1] = PROBE_PREFIX;
 		}
 	}
@@ -294,6 +294,19 @@ static int32_t probe_run(probe_state_t *state)
 	}
 	if ( result == 0 )
 		result = probe_release(state,1u,PROBE_PREFIX + PROBE_CONTINUATION);
+	if ( result == 0 )
+	{
+		uint32_t differ = 0u;
+		result = probe_step(state,PROBE_PREFIX,2u);
+		for (lane=0u; result == 0 && lane<PROBE_LANES; lane++)
+		{
+			printf("SWAPPED position=%u lane=%u uninterrupted=%u with-other-lane-prefix=%u\n",PROBE_PREFIX,lane,expected[0][lane],state->outputs[lane]);
+			differ += expected[0][lane] != state->outputs[lane] ? 1u : 0u;
+		}
+		printf("SENSITIVITY swapped-prefix lanes-changed=%u of %u\n",differ,PROBE_LANES);
+		if ( result == 0 )
+			result = probe_release(state,2u,PROBE_PREFIX + 1u);
+	}
 	if ( result == 0 )
 		result = probe_reset(state);
 	if ( result != 0 )
