@@ -1,25 +1,55 @@
 # LiteLLM front end — one door for the SparkPipe fleet
 
-Status, 2026-09-28: `config/litellm-config.yaml` routes `glm-5.3-flash` to
-the GLM API on the rtx5090 hub. From the controller Mac that upstream answers
-`GET /health` with `"tokenizer":true` and `GET /v1/models`. No completion
-through the proxy against it has a receipt yet, and no proxy on the
-controller Mac runs the committed config (the one LiteLLM process there
-listens on `127.0.0.1:4000` with a different config file). The browser checks
-below used a mock upstream.
+Status, 2026-10-02: GLM-5.3 Full (TP16, 65,536 positions per sequence) serves
+through this stack on the rtx5090 hub:
 
-## What this is
+| Port | Process | Protocol |
+| --- | --- | --- |
+| 4000 | LiteLLM proxy (`config/litellm-config.yaml`, user unit `sparkpipe-litellm`) | OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`; any model name routes to `glm-5.3` |
+| 8433 | chat layer (`serving/chat_frontend.py`, user unit `sparkpipe-chat`) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
+| 8446 | `sparkpipe_model_api` (user unit `glmfull-api6`) | the engine endpoint: `prompt_token_ids` in, token ids, usage and `cached_tokens` out |
 
-- A standard open-source LiteLLM proxy on the controller Mac: one
-  OpenAI-compatible door at `http://<mac>:4000` with bearer-key auth,
-  model-name routing and access logging.
-- Its upstreams are per-deployment `model_api` instances. GLM 5.3 Flash's is
-  `sparkpipe_model_api` in the systemd user unit `g53-api` on the rtx5090,
-  port 8433, an x86 build of the engines' source commit
-  ([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md) §6; the COMPSEC-17
-  receipt below lists the build). No Spark serves an API: `tools/fleet_node_agent.sh`
-  has not started one since #1261.
-- Nothing changes on the Sparks or the hub to add the door.
+Smoke receipts (2026-10-02, build de944ae): chat answered "Paris" with the
+reasoning returned separately; a two-turn tool call (`get_weather`) returned
+standard `tool_calls`, then answered from the tool result with 192 of 225
+prompt tokens served from the prefix cache; LiteLLM `/v1/messages` returned a
+`thinking` block and a `tool_use` block with `stop_reason: tool_use`, and
+streamed `thinking_delta` events; `https://sparkpipe.ai/health/liveliness`
+and `/v1/models` answered through the tunnel.
+
+## The chat layer
+
+`serving/chat_frontend.py` is what vLLM is behind LiteLLM elsewhere, and
+nothing more:
+
+- it renders the model's own `chat_template.jinja` with jinja2 in the same
+  sandboxed environment and filters Hugging Face uses (`trim_blocks`,
+  `lstrip_blocks`, `loopcontrols`, `tojson`), so tools, tool results and
+  reasoning render exactly as the model was trained;
+- it tokenizes with the model's `tokenizer.json` through Hugging Face
+  `tokenizers` and sends `prompt_token_ids` to the engine endpoint;
+- it decodes the returned token ids incrementally and splits the model's
+  reasoning and tool-call markup into standard `reasoning_content` and
+  `tool_calls` (tool arguments typed from the tool's JSON schema);
+- it keeps no state; prefix reuse happens in the engine.
+
+The layer is model-neutral. A model family supplies its configuration
+(`model-families/glm52/serving/chat_frontend.json`): the model directory
+(`chat_template.jinja`, `tokenizer.json`, `tokenizer_config.json`), the
+engine URL, the served context, stop tokens, the reasoning and tool-call
+markers, the accepted `chat_template_kwargs` and the mapping of OpenAI
+`reasoning_effort` onto the template's own variable.
+
+Known limits:
+
+- GLM-5.3 Full decodes greedily: the glm52 adapter has no sampled head, so
+  `temperature` and `top_p` do not change the output.
+- `n`, `logprobs`, `logit_bias` and a `response_format` other than text
+  answer 400.
+- Prompts past `context_tokens` answer 400 `context_length_exceeded`; a
+  client must compact before 65,536 tokens.
+- A 60K-token prompt takes about 90 s to prefill the first time; later turns
+  that share its prefix reuse it.
 
 ## The model_api contract (read first)
 
@@ -138,16 +168,21 @@ seed, the finish reason and
 every output token with its timestamp. That is enough to replay a
 completion off-node and compare it bit for bit.
 
-## Calling GLM 5.3 Flash through the door
+## Calling GLM-5.3 Full through the door
 
-Chat, thinking on (the default path for clients):
+OpenAI clients (tools, streaming, `reasoning_effort` low, medium or high):
 
 ```sh
-curl http://<mac>:4000/v1/chat/completions \
-  -H "Authorization: Bearer $SPARK_LITELLM_MASTER_KEY" \
+curl http://100.123.97.61:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"Hello"}],"max_tokens":256}'
+  -d '{"model":"glm-5.3","messages":[{"role":"user","content":"Hello"}],"max_tokens":2048}'
 ```
+
+Anthropic clients such as Claude Code: `ANTHROPIC_BASE_URL=http://100.123.97.61:4000`,
+any `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL=glm-5.3`. The proxy maps any
+model name to `glm-5.3`, so the client's small-model calls land there too.
+
+The sections below describe the earlier GLM 5.3 Flash door.
 
 Thinking off, or any exact prompt: send the templated text as `prompt` to
 `/v1/completions`. The API's tokenizer maps the markers to their special
@@ -239,7 +274,7 @@ Routing table (`model_api` HTTP ports, not residentd control ports):
 
 | model_name | Upstream | Evidence |
 | --- | --- | --- |
-| `glm-5.3-flash` | `g53-api` on the rtx5090, `http://100.123.97.61:8433` (tailscale; `10.10.250.2` from the Sparks) | `GET /health` from the controller Mac on 2026-09-28; `docs/FLEET_RELEASE_RUNBOOK.md` §6 |
+| `glm-5.3` and `*` | the chat layer on the rtx5090, `http://127.0.0.1:8433/v1` (LiteLLM runs on the hub) | smoke receipts above, 2026-10-02 |
 
 Qwen 3.8 27B has no route: all 16 Sparks run the `glm53flash.fp8.tp16` root
 (`docs/FLEET_RELEASE_RUNBOOK.md` §2.1, COMPSEC-17 receipt).
