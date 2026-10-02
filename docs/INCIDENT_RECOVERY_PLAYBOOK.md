@@ -91,6 +91,15 @@ loader, GRUB configuration, kernel, and initrd. A DHCP line containing the Linux
 hostname but no TFTP transfer means the installed OS booted instead; it is not a
 PXE success.
 
+When the installed OS hangs even with the fabric units masked, deploy with
+`--hold bottom`. The rescue initramfs then stops after mounting the installed
+root at `/root` and before handing over to it, with its network and the
+initramfs SSH server on port 22 still up (root, fleet recovery key, at the
+node's DHCP address in the PXE server log). Read the hung boots' journals with
+`journalctl -D /root/var/log/journal --list-boots` copied to a working host,
+repair the root, then kill the `(initramfs)` console shell to continue the
+boot. Redeploy with the default `--hold none` afterwards.
+
 After PXE, test both SSH paths. The rescue initrd places the fleet public key at
 the beginning of `/root/.ssh/authorized_keys`, so port 2222 should work even if
 the previous file contained malformed or concatenated records.

@@ -16,7 +16,8 @@ SPEC.loader.exec_module(MODULE)
 
 class ParallelPxeRescueTest(unittest.TestCase):
     CONFIG = {
-        "format":"ds4-parallel-pxe-rescue-v2",
+        "format":"ds4-parallel-pxe-rescue-v3",
+        "hold":"none",
         "interface":"enP7s7",
         "recovery_public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA test",
         "root_device":"/dev/nvme0n1p2",
@@ -43,6 +44,15 @@ class ParallelPxeRescueTest(unittest.TestCase):
         self.assertIn("systemd.mask=ds4-direct-pair-fabric-p2.service",result)
         self.assertNotIn("ds4_spark_brickproof",result)
         self.assertNotIn("10.20.0.",result)
+        self.assertNotIn("break=",result)
+
+    def test_hold_stops_after_root_mount_before_handover(self) -> None:
+        result = MODULE.grub_config({**self.CONFIG,"hold":"bottom"})
+        self.assertIn("ip=:::::enP7s7:dhcp break=bottom",result)
+        with self.assertRaises(MODULE.PxeRescueError):
+            MODULE.validated_config({**self.CONFIG,"hold":"premount"})
+        with self.assertRaises(MODULE.PxeRescueError):
+            MODULE.validated_config({key:value for key,value in self.CONFIG.items() if key != "hold"})
 
     def test_grub_config_covers_the_embedded_network_prefix(self) -> None:
         self.assertEqual(MODULE.GRUB_CONFIG_NAMES,("grub.cfg","grub/grub.cfg"))
