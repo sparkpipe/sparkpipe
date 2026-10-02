@@ -257,12 +257,22 @@ int main(void) {
         result = subprocess.run([str(self.latch)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def units(self):
+        path = self.directory / "units"
+        text = path.read_text() if path.exists() else ""
+        path.unlink(missing_ok=True)
+        return text
+
     def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True, qos="active", trust="dscp",
-              address="10.10.100.10 10.10.200.0", published="", engines="running", kill="forbidden"):
+              address="10.10.100.10 10.10.200.0", published="", engines="running", kill="forbidden",
+              unit_status="0", extra_env=None, age="10"):
         script = r'''
 set -u
 RANK=0 MESH_INTERFACE=test MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=test-pair MESH_PAIR_SGID_INDEX=3 MESH_TRAFFIC_CLASS=106
+WEIGHTD_UNIT=sparkpipe-weightd WEIGHTD_LEGACY_NOTED=
 BACKOFF=(1)
+ps() { [ "$*" = "-o etimes= -p 4242" ] && echo "   $TEST_AGE"; }
+restart_healthy() { echo "HEALTHY $1"; }
 weightd=0
 pgrep() { case "$*" in *sparkpipe_weightd*) [ "$TEST_OWNER" != absent ] && echo 4242;; *sparkpipe_model_residentd*) [ "$TEST_ENGINES" = running ] && echo 4243;; *) return 1;; esac; }
 readlink() { case "$TEST_OWNER" in owned) printf '%s/sparkdata/weightd/sparkpipe_weightd\n' "$TEST_AGENT_HOME";; unknown) echo /other/sparkpipe_weightd;; deleted) echo '/other/sparkpipe_weightd (deleted)';; shell) echo /bin/bash;; esac; }
@@ -271,7 +281,8 @@ python3() { return "$TEST_PROBE_STATUS"; }
 kill() { echo "KILL $*"; [ "$TEST_KILL" = allowed ] || echo FORBIDDEN_KILL; return 0; }
 rm() { echo "UNLINK $*"; }
 restart_ok() { return "$TEST_RESTART_STATUS"; }
-setsid() { echo SPAWN; }
+setsid() { echo FORBIDDEN_SETSID; }
+systemd-run() { echo "UNIT $*" >> "$TEST_AGENT_HOME/units"; [ "$TEST_UNIT_STATUS" = 0 ] || { echo "Unit sparkpipe-weightd.service was already loaded" >&2; return 1; }; }
 sleep() { return 0; }
 sync_rendezvous() { return 0; }
 systemctl() { [ "$TEST_QOS" = active ]; }
@@ -286,7 +297,9 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
                    TEST_BINARY_STATUS="0" if binary else "1",
                    TEST_RESTART_STATUS="0" if restart else "1", TEST_QOS=qos, TEST_TRUST=trust,
                    TEST_ADDRESS=address, TEST_PUBLISHED=published, TEST_ENGINES=engines, TEST_KILL=kill,
-                   TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh))
+                   TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh), TEST_UNIT_STATUS=unit_status, TEST_AGE=age)
+        env.update(extra_env or {})
+        (self.directory / "units").unlink(missing_ok=True)
         return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
     def test_busy_process_is_preserved(self):
@@ -377,7 +390,31 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
         self.assertEqual(len(lines), 2, result.stdout)
         self.assertEqual(lines[0], "UNLINK -f %s/mesh-0.rec %s/mesh-15.rec %s/.ready" % ((self.mesh,) * 3))
         self.assertRegex(lines[1], r"^\d\d:\d\d:\d\d weightd: starting on 10\.10\.100\.10 10\.10\.200\.0 \(backoff 1s\)$")
-        self.assertEqual((self.directory / "weightd.log").read_text(), "SPAWN\n")
+        home = str(self.directory)
+        self.assertEqual(self.units(), "UNIT --user --quiet --collect --unit=sparkpipe-weightd --working-directory=%s/sparkdata/weightd"
+                         " -p LimitCORE=infinity -p StandardOutput=append:%s/weightd.log -p StandardError=append:%s/weightd.log"
+                         " %s/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock --mesh-rank 0"
+                         " --mesh-rank-mask 0xffff --mesh-interface test --mesh-sgid-index 3 --mesh-pair-interface test-pair"
+                         " --mesh-pair-sgid-index 3 --mesh-traffic-class 106\n" % ((home,) * 4))
+
+    def test_weightd_runs_in_its_own_unit_with_its_environment(self):
+        result = self.agent(owner="shell", extra_env={"SPARK_WEIGHTD_DEVICE_BYTES_MAX": "123", "G5_WARMUP": "0"})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        unit = self.units()
+        self.assertIn(" --setenv=SPARK_WEIGHTD_DEVICE_BYTES_MAX=123 /", unit)
+        self.assertNotIn("G5_WARMUP", unit)
+        self.assertNotIn("FORBIDDEN_SETSID", result.stdout)
+
+    def test_backoff_resets_only_after_two_healthy_minutes(self):
+        self.assertNotIn("HEALTHY", self.agent(ready=True, age="60").stdout)
+        self.assertIn("HEALTHY weightd", self.agent(ready=True, age="121").stdout)
+        self.assertNotIn("HEALTHY", self.agent(age="500").stdout)
+
+    def test_a_failed_unit_start_blocks_dependents_loudly(self):
+        result = self.agent(owner="shell", unit_status="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("weightd: systemd-run sparkpipe-weightd failed: Unit sparkpipe-weightd.service was already loaded; dependent startup blocked",
+                      result.stderr)
 
     def test_main_loop_gates_every_dependent_action(self):
         script = r'''
@@ -418,6 +455,7 @@ ssh() { echo FORBIDDEN_SSH >&3; echo 0; }
 root_state() { echo WARMUP_PROBE >&3; echo down; }
 pgrep() { return 1; }
 setsid() { echo FORBIDDEN_SPAWN >&3; }
+systemd-run() { echo FORBIDDEN_SPAWN >&3; }
 curl() { echo FORBIDDEN_CURL >&3; }
 [() { case "$1" in -x) return 0;; esac; builtin [ "$@"; }
 ''' + function + function.split("(", 1)[0] + '\nstatus=$?\nwait\nexit "$status"\n'
