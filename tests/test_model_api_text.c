@@ -470,7 +470,15 @@ typedef struct TestApiStack
 	const char *api_stderr_path;
 } TestApiStack;
 
-static void TestApiStartStack(TestApiStack *stack,const char *tokenizer_asset_path)
+static void TestApiStartResidents(TestApiStack *stack)
+{
+	uint32_t rank;
+	for (rank=0u; rank<TEST_RANK_COUNT; rank++)
+		stack->residents[rank] = TestApiStartResident(stack->deployment_path,rank);
+	TestApiWaitForSockets(stack->paths);
+}
+
+static void TestApiWriteStack(TestApiStack *stack,const char *tokenizer_asset_path)
 {
 	SparkModelResidentEndpoint endpoints[TEST_RANK_COUNT];
 	uint32_t tcp_port,rank;
@@ -495,12 +503,15 @@ static void TestApiStartStack(TestApiStack *stack,const char *tokenizer_asset_pa
 		"/tmp/sparkpipe-api-text-%ld.json",(long)getpid()) > 0);
 	unlink(stack->deployment_path);
 	TestApiWriteDeployment(stack->deployment_path,endpoints,tcp_port,tokenizer_asset_path);
-	for (rank=0u; rank<TEST_RANK_COUNT; rank++)
-		stack->residents[rank] = TestApiStartResident(stack->deployment_path,rank);
-	TestApiWaitForSockets(stack->paths);
 }
 
-static void TestApiStartApi(TestApiStack *stack)
+static void TestApiStartStack(TestApiStack *stack,const char *tokenizer_asset_path)
+{
+	TestApiWriteStack(stack,tokenizer_asset_path);
+	TestApiStartResidents(stack);
+}
+
+static void TestApiLaunchApi(TestApiStack *stack)
 {
 	struct timespec delay;
 	uint32_t attempt;
@@ -535,7 +546,31 @@ static void TestApiStartApi(TestApiStack *stack)
 			return;
 		nanosleep(&delay,0);
 	}
-	assert(0 && "model_api did not become ready");
+	assert(0 && "model_api did not listen");
+}
+
+static int TestApiWaitHealthy(TestApiStack *stack,uint32_t seconds)
+{
+	char response[4096];
+	struct timespec delay;
+	uint32_t attempt;
+	delay.tv_sec = 0;
+	delay.tv_nsec = 100000000;
+	for (attempt=0u; attempt<seconds * 10u; attempt++)
+	{
+		TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+		if ( TestApiResponseStatus(response) == 200 )
+			return 1;
+		assert(TestApiResponseStatus(response) == 503);
+		nanosleep(&delay,0);
+	}
+	return 0;
+}
+
+static void TestApiStartApi(TestApiStack *stack)
+{
+	TestApiLaunchApi(stack);
+	assert(TestApiWaitHealthy(stack,60u) && "model_api did not become ready");
 }
 
 static void TestApiStopApi(TestApiStack *stack)
@@ -557,6 +592,43 @@ static void TestApiStopStack(TestApiStack *stack)
 	unlink(stack->deployment_path);
 }
 
+
+static void TestApiStartsBeforeEngines(void)
+{
+	TestApiStack stack;
+	char response[65536];
+	memset(&stack,0,sizeof(stack));
+	stack.api_port = TestApiProbeFreeTcpPort();
+	if ( stack.api_port == 0u )
+		stack.api_port = 40000u + ((uint32_t)getpid() % 20000u);
+	TestApiWriteStack(&stack,0);
+	TestApiLaunchApi(&stack);
+	TestApiHttpCall(stack.api_port,"GET","/health",0,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 503);
+	assert(TestApiBodyContains(response,"\"status\":\"starting\""));
+	assert(TestApiBodyContains(response,"\"phase\":\"connecting\""));
+	TestApiHttpCall(stack.api_port,"GET","/health/live",0,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(TestApiBodyContains(response,"\"ready\":false"));
+	TestApiHttpCall(stack.api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 503);
+	assert(strstr(response,"Retry-After: 5\r\n") != 0);
+	sleep(3);
+	TestApiHttpCall(stack.api_port,"GET","/health",0,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 503);
+	assert(!TestApiBodyContains(response,"\"last_status\":\"none\""));
+	TestApiStartResidents(&stack);
+	assert(TestApiWaitHealthy(&stack,60u));
+	TestApiHttpCall(stack.api_port,"GET","/health/live",0,response,sizeof(response));
+	assert(TestApiBodyContains(response,"\"ready\":true"));
+	TestApiHttpCall(stack.api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"object\":\"text_completion\""));
+	TestApiStopStack(&stack);
+	printf("test_model_api_text: started before its engines, answered 503 with Retry-After, served once they came up OK\n");
+}
 
 static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 {
@@ -1054,6 +1126,7 @@ int main(void)
 	TestApiChatDeclaredStops(&stack);
 	TestApiStopStack(&stack);
 
+	TestApiStartsBeforeEngines();
 	TestApiRefusedStartup("build/definitely_missing_tokenizer_asset.json","missing tokenizer asset");
 	TestApiChatTemplate = TestApiChatTemplateNonSpecialStopJson;
 	TestApiRefusedStartup("build/test_tokenizer_sidecar_api_hf.json",
