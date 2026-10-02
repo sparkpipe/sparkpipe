@@ -286,6 +286,22 @@ adapter needs real restore plus an I27 proof before it loads again:
 
 Related common-code debt:
 
+- Left out on purpose (2026-10-02, branch `kv/sequence-shard`): a reply that
+  ends on EOS or a stop token before its output budget never publishes its
+  last partial block. The engine publishes a lane only at a block boundary,
+  at the prefill prompt end or at the decode budget end
+  (`runtime/model_batch_engine.c:2052-2055`), and the stop path at
+  `model_batch_engine.c:717` releases the request without a
+  `CACHE_PUBLISH` work item. A follow-up turn recomputes up to
+  `block_token_count - 1` tokens (63 for GLM-5.3 Full) of the previous
+  reply. The fix: the stop path queues `QUEUED_PUBLISH` for the unpublished
+  tail before release, and every adapter declaring prefix reuse serves a
+  publish-only `CACHE_PUBLISH` frame with no decode step. Only glm5_next
+  implements `CACHE_PUBLISH` today; glm52
+  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c`)
+  has no publish-only frame path. Close it with an I27 case whose second
+  turn extends a reply that ended on EOS mid-block and asserts the cached
+  token count covers that reply.
 - residentd relies on the adapter to refuse a submission whose position
   skips ahead in a resident sequence; with an adapter that does not check,
   the slot claim answers `BUSY`. Continuity belongs in common code (I02).
