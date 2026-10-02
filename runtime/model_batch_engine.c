@@ -42,6 +42,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t busy_retry_backoff_ms;
 	uint64_t busy_retry_not_before_ns;
 	uint32_t resident_sequence_slot;
+	uint32_t reserved_kv_page_count;
 	uint32_t terminal_event_kind;
 	uint32_t terminal_status;
 	uint32_t scheduling_bypass_count;
@@ -157,6 +158,7 @@ struct SparkModelBatchEngine
 	uint32_t cache_demand_entry_capacity;
 	uint32_t cache_demand_epoch;
 	uint32_t inflight_kv_page_count;
+	uint32_t reserved_kv_page_count;
 	uint32_t selected_kv_page_count;
 	uint64_t cache_publication_epoch;
 	uint64_t next_submission_id;
@@ -225,25 +227,33 @@ uint32_t SparkModelBatchSchedulerCacheDemandFits(
 		1u : 0u);
 }
 
-uint32_t SparkModelBatchSchedulerRequestFitsPageCapacity(
+uint32_t SparkModelBatchSchedulerRequestPageCount(
 	uint32_t block_token_count,
-	uint32_t physical_page_capacity,
 	uint32_t prompt_token_count,
 	uint32_t output_token_budget)
 {
 	uint32_t processed_token_count,required_page_count;
-	if ( block_token_count == 0u || physical_page_capacity == 0u )
-		return(1u);
-	if ( prompt_token_count == 0u || output_token_budget == 0u ||
+	if ( block_token_count == 0u || prompt_token_count == 0u || output_token_budget == 0u ||
 		output_token_budget - 1u > UINT32_MAX - prompt_token_count )
-		return(0u);
+		return(UINT32_MAX);
 	processed_token_count = prompt_token_count + output_token_budget - 1u;
 	required_page_count = (processed_token_count / block_token_count) +
 		(processed_token_count % block_token_count != 0u ? 1u : 0u);
 	if ( output_token_budget > 1u && prompt_token_count % block_token_count != 0u &&
 		required_page_count < prompt_token_count / block_token_count + 2u )
 		required_page_count = prompt_token_count / block_token_count + 2u;
-	return(required_page_count <= physical_page_capacity ? 1u : 0u);
+	return(required_page_count);
+}
+
+uint32_t SparkModelBatchSchedulerRequestFitsPageCapacity(
+	uint32_t block_token_count,
+	uint32_t physical_page_capacity,
+	uint32_t prompt_token_count,
+	uint32_t output_token_budget)
+{
+	if ( block_token_count == 0u || physical_page_capacity == 0u )
+		return(1u);
+	return(SparkModelBatchSchedulerRequestPageCount(block_token_count,prompt_token_count,output_token_budget) <= physical_page_capacity ? 1u : 0u);
 }
 
 uint32_t SparkModelBatchSchedulerPlanMixedLaneCount(
@@ -574,11 +584,19 @@ static uint32_t SparkModelBatchBindResidentSlot(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request)
 {
-	uint32_t slot;
+	uint32_t slot,pages = 0u;
 	if ( request->resident_sequence_slot != SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT )
 		return(1u);
 	if ( engine->free_resident_slot_head == SPARK_MODEL_BATCH_NO_SLOT )
 		return(0u);
+	if ( engine->kv_physical_page_capacity != 0u )
+	{
+		pages = SparkModelBatchSchedulerRequestPageCount(engine->cache_block_token_count,request->prompt_token_count,request->output_token_budget);
+		if ( pages > engine->kv_physical_page_capacity || engine->reserved_kv_page_count > engine->kv_physical_page_capacity - pages )
+			return(0u);
+		engine->reserved_kv_page_count += pages;
+	}
+	request->reserved_kv_page_count = pages;
 	slot = engine->free_resident_slot_head;
 	engine->free_resident_slot_head = engine->resident_slot_next[slot];
 	engine->resident_slot_next[slot] = SPARK_MODEL_BATCH_NO_SLOT;
@@ -595,6 +613,8 @@ static void SparkModelBatchReleaseResidentSlot(
 	slot = request->resident_sequence_slot;
 	if ( slot == SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT )
 		return;
+	engine->reserved_kv_page_count -= request->reserved_kv_page_count;
+	request->reserved_kv_page_count = 0u;
 	engine->resident_slot_next[slot] = engine->free_resident_slot_head;
 	engine->free_resident_slot_head = slot;
 	engine->free_resident_slot_count++;
@@ -1273,6 +1293,7 @@ static void SparkModelBatchInitializeFreeList(
 	}
 	engine->free_resident_slot_head = 0u;
 	engine->free_resident_slot_count = engine->resident_sequence_capacity;
+	engine->reserved_kv_page_count = 0u;
 	for (index=0u; index<engine->resident_sequence_capacity; index++)
 		engine->resident_slot_next[index] = index + 1u < engine->resident_sequence_capacity ? index + 1u : SPARK_MODEL_BATCH_NO_SLOT;
 }

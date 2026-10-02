@@ -848,7 +848,7 @@ static void TestModelPipelineWriteDeployment(
 	fixture.runtime_limits.max_input_row_count = 32u;
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 128u;
-	fixture.runtime_limits.kv_physical_page_capacity = 32u;
+	fixture.runtime_limits.kv_physical_page_capacity = 64u;
 	fixture.control_port_base = TestModelPipelineProbeFreeTcpPort();
 	if ( fixture.control_port_base == 0u || fixture.control_port_base > UINT16_MAX - (TEST_MODEL_PIPELINE_RANK_COUNT - 1u) )
 		fixture.control_port_base = 59000u;

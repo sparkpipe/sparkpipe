@@ -345,9 +345,9 @@ citations refer to that commit.
   concurrent 124,997-token prompts each retrieved their pass key (TTFT
   450 s for both); pass keys retrieved at 8K to 60K; B1 30.3 tok/s. Parking
   copies synchronously under the binding mutex (see the JIT KV plan, G6),
-  so a pool overcommitted by active lanes thrashes instead of queueing;
-  the engine admits waves only by the pages of in-flight submissions, not
-  by each request's full prompt and output budget.
+  but the engine reserves each request's full prompt and output pages when
+  it binds a lane, so active lanes never overcommit the pool; a request that
+  does not fit waits in the queue.
 - Left out on purpose (2026-10-02): glm52 graph regimes key long contexts on
   4,096-token buckets to 16K and four buckets per octave above, in the fixed
   72-regime table (`spark_glm52_graph_regime.h`): a 1,048,576-position
