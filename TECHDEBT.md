@@ -1163,17 +1163,23 @@ adapter below lacks real restore, an I27 proof, or both:
 Related common-code debt:
 
 - Left out on purpose (2026-10-02): the publish of a reply's final partial
-  block has no fleet proof. Since 48d7b5a39 (branch `kv/sequence-shard`) a
-  completed request with an unpublished tail queues `CACHE_PUBLISH` before its
-  release (`runtime/model_batch_engine.c`,
+  block has no fleet proof, and multi-token chains that stop early never
+  publish their tail. A completed request with an unpublished tail queues
+  `CACHE_PUBLISH` before its release when its last step's tokens were all
+  accepted (`runtime/model_batch_engine.c`,
   `SparkModelBatchHandleDecodeCompletion`), the common binding serves the
   publish-only frame (`SparkStageKvBindingPublishFrame`,
   `runtime/stage_kv_binding.c`), glm52 declares `CACHE_PUBLISH`, and every
   adapter must declare it (`runtime/model_serving_adapter.c`,
-  `SparkDescriptorCheckRequiredCacheOperations`). Only host tests cover it.
-  Close it with a fleet I27 case on the TP16 GLM-5.3 Full lane whose second
-  turn extends a reply that ended on EOS mid-block, with `cached_tokens`
-  covering the whole first reply and tokens identical to an uncached run.
+  `SparkDescriptorCheckRequiredCacheOperations`). When a multi-token chain
+  (glm5_next) stops on EOS mid-chain, the lane has already advanced past the
+  tail and its KDA recurrent state belongs to that later position, so
+  publishing the tail would store mismatched state; the tail stays unpublished
+  and a follow-up turn recomputes it. Close the chain case by capturing or
+  rolling back recurrent state to the tail through the common recurrent-state
+  hook (I-05), and prove both cases with fleet I27 sessions whose second turn
+  extends a reply that ended on EOS mid-block, with `cached_tokens` covering
+  the whole first reply and tokens identical to an uncached run.
 - Left out on purpose (2026-10-02): residentd's slot claim checks slot
   ownership and the lane's request id, generation and sequence id
   (`node/model_residentd.c:714-783`), not position continuity. Continuity is
