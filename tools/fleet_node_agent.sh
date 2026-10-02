@@ -53,6 +53,11 @@ sha16() {
 START_SHA=$(sha16 "$0")
 AGENT_STARTED=$(date +%s)
 AGENT_BLOCKED=""
+BOOT_SHORT_SECONDS=1200
+BOOT_LOOP_WINDOW_SECONDS=21600
+BOOT_SETTLE_SECONDS=300
+SAFE_MODE=""
+SAFE_CLEAR_FILE="$HOME/.fleet_agent_safe_clear"
 mkdir -p "$VIEW"
 
 load_roots() {
@@ -212,6 +217,37 @@ mem_available_gib() {
     awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo
 }
 
+boot_durations() {
+    journalctl --list-boots --no-pager -o json 2>/dev/null | python3 -c '
+import json, sys, time
+boots = sorted((b for b in json.load(sys.stdin) if b["index"] < 0), key=lambda b: -b["index"])[:3]
+recent = [b for b in boots if time.time() - b["last_entry"] / 1e6 < int(sys.argv[1])]
+print(" ".join(str((b["last_entry"] - b["first_entry"]) // 1000000) for b in recent))' "$BOOT_LOOP_WINDOW_SECONDS"
+}
+
+check_boot_loop() {
+    local durations seconds short=0
+    durations=$(boot_durations) || {
+        echo "agent: boot history unreadable (journalctl --list-boots); the boot-loop breaker cannot judge this boot" >&2
+        return 0
+    }
+    for seconds in $durations; do
+        [ "$seconds" -lt "$BOOT_SHORT_SECONDS" ] && short=$((short + 1))
+    done
+    [ "$short" -ge 2 ] || return 0
+    SAFE_MODE="$short of the last 3 boots lasted under $((BOOT_SHORT_SECONDS / 60)) min and ended within $((BOOT_LOOP_WINDOW_SECONDS / 3600)) h (${durations// /, } s)"
+    safe_mode_active || return 0
+    echo "agent: SAFE MODE: $SAFE_MODE; no engine start, link repair or warmup on this boot; clear with: cat /proc/sys/kernel/random/boot_id > $SAFE_CLEAR_FILE" >&2
+}
+
+safe_mode_active() {
+    [ -n "$SAFE_MODE" ] || return 1
+    [ "$(cat "$SAFE_CLEAR_FILE" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id)" ] || return 0
+    echo "$(date +%T) agent: safe mode cleared for this boot by $SAFE_CLEAR_FILE ($SAFE_MODE)"
+    SAFE_MODE=""
+    return 1
+}
+
 node_uptime_s() {
     awk '{printf "%d", $1}' /proc/uptime
 }
@@ -295,9 +331,9 @@ report() {
     {
         printf '{"host":"%s","time":"%s","epoch":%d,"load":"%s","mem_avail_gb":%s,"headroom_gib":%s' \
             "$HOST" "$(date -Is)" "$now" "$load" "${mem:-0}" "$HEADROOM_GIB"
-        printf ',"weightd":"%s","agent":"%s"' \
+        printf ',"weightd":"%s","agent":"%s","safe_mode":"%s"' \
             "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)" \
-            "$(sha16 "$0" 2>/dev/null)"
+            "$(sha16 "$0" 2>/dev/null)" "$(json_text "$SAFE_MODE")"
         for r in $ROOT_LIST; do
             states="$states$r=$(root_state "$r");"
             printf '%s' "$sep"
@@ -719,6 +755,7 @@ doctor_port() {
 }
 
 node_doctor() {
+    safe_mode_active && return 0
     doctor_port "$MESH_INTERFACE"
     doctor_port "$MESH_PAIR_INTERFACE"
 }
@@ -914,9 +951,13 @@ ensure_root() {
         [ -n "$start_s" ] && [ $(( up_s - start_s / 100 )) -gt 120 ] && restart_healthy "engine-$name"
         return 0
     }
+    if safe_mode_active; then
+        note_root "$name" safe-mode "$SAFE_MODE"
+        return 0
+    fi
     up=$(node_uptime_s)
-    [ "$up" -ge 900 ] || {
-        [ -n "$AGENT_BLOCKED" ] || { echo "$(date +%T) $name: node up ${up}s (<15min); autospawn blocked"; AGENT_BLOCKED=1; }
+    [ "$up" -ge "$BOOT_SETTLE_SECONDS" ] || {
+        [ -n "$AGENT_BLOCKED" ] || { echo "$(date +%T) $name: node up ${up}s (<${BOOT_SETTLE_SECONDS}s); autospawn waits"; AGENT_BLOCKED=1; }
         return 0
     }
     [ "$p" != 0 ] || root_gate "$name" || return 0
@@ -928,6 +969,7 @@ ensure_root() {
 LAST_WARM_GEN=""
 LAST_WARM_TS=0
 warmup_hook() {
+    safe_mode_active && return 0
     [ "${RANK:-1}" = "0" ] || return 0
     [ "${G5_WARMUP:-1}" = "1" ] || return 0
     local gen now
@@ -961,6 +1003,7 @@ warmup_hook() {
 
 echo "$$" > "$PID_FILE"
 echo "agent: rank=$RANK roots=$ROOT_LIST roots_file=$ROOTS_FILE headroom=${HEADROOM_GIB}GiB hub=$HUB http=$RELEASE_HTTP self=$(sha16 "$0")"
+check_boot_loop
 report
 start_mesh_exchange
 

@@ -176,7 +176,11 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
    A self-update stops the loop before `exec`; the new agent starts its own.
 8. `ensure_root` starts a down root. It also recycles an engine whose binary or
    driver changed since boot (`:482-523`). The guards:
-   - a node up less than 900 s does not start engines (`:516`);
+   - a node up less than 300 s does not start engines (`BOOT_SETTLE_SECONDS`);
+   - a node in boot-loop safe mode does not start engines: 2 of the last 3
+     boots lasted under 20 min and ended within 6 h (`check_boot_loop`). The
+     heartbeat's `safe_mode` field gives the reason. Clear it for the current
+     boot with `cat /proc/sys/kernel/random/boot_id > ~/.fleet_agent_safe_clear`;
    - a per-class backoff doubles up to 60 s (`:164-175`);
    - `MemAvailable` must reach the packs' `du -sBG` plus 8 GB (`:150-158`).
      `du -sBG` rounds small files up, so the threshold reads high;
@@ -757,7 +761,7 @@ To bootstrap one node:
    1. it syncs core and installs the announced weightd;
    2. it starts weightd and syncs the root;
    3. it waits for the mesh and starts the engine once the node has been up
-      for 15 minutes.
+      for 5 minutes, unless the boot-loop breaker holds it in safe mode.
 
 ## 8. Triage
 
@@ -765,8 +769,8 @@ To bootstrap one node:
   Failures print `ERRSITE file:line status=N count=M`
   (`include/sparkpipe/spark_error_site.h:22`).
 - **Root shows `down`.** Run `journalctl --user -u fleet-agent` on the node. It
-  shows the reason: backoff, the memory gate, `autospawn blocked`, or
-  `waiting for weightd mesh`.
+  shows the reason: backoff, the memory gate, `autospawn waits`, `safe-mode`,
+  or `waiting for weightd mesh`.
 - **`weightd: unknown owner`.** A weightd from another path is running, and the
   node's loop stays frozen until it exits. Hand-started trees such as
   `~/sparkpipe/glm-serving-*` and `station-core-*` were retired on 09-28.
@@ -786,7 +790,7 @@ To bootstrap one node:
     `fuser -v /dev/nvidia*`.
   - A fresh boot that then fails in-kernel (`kgrctxA` OOM) had an exhausted
     driver pool. Killing the holders did not clear it; an operator-authorized
-    reboot did. After a reboot the agent blocks engine starts for 15 minutes.
+    reboot did. After a reboot the agent holds engine starts for 5 minutes.
   - For CUDA startup failures that depend on cache state, see the
     cache-flush workaround in
     [SERVING_RELEASE_RECOVERY_20260924.md](SERVING_RELEASE_RECOVERY_20260924.md).

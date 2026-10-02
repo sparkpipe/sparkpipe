@@ -1,0 +1,2 @@
++44
+Fleet agent boot-loop breaker: when 2 of the last 3 boots (journal first/last entry) lasted under 20 min, the agent enters safe mode for this boot (no engine start, link repair or warmup; reported in the heartbeat) until an operator writes the boot id to the clear file; the engine autospawn hold after boot drops from 15 to 5 min because the breaker now covers reboot loops.
