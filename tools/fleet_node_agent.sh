@@ -6,10 +6,10 @@ HUB="${2:-sparkf}"
 [ "$HUB" = "sparkf" ] && HUB="spec@100.123.97.61"
 HOST=$(hostname)
 FLEET_HOSTS="spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"
-MESH_INTERFACE="rocep1s0f1"
-MESH_SGID_INDEX=3
-MESH_PAIR_INTERFACE="rocep1s0f0"
-MESH_PAIR_SGID_INDEX=3
+MESH_INTERFACE="${SPARK_MESH_INTERFACE:-rocep1s0f1}"
+MESH_SGID_INDEX="${SPARK_MESH_SGID_INDEX:-3}"
+MESH_PAIR_INTERFACE="${SPARK_MESH_PAIR_INTERFACE:-rocep1s0f0}"
+MESH_PAIR_SGID_INDEX="${SPARK_MESH_PAIR_SGID_INDEX:-3}"
 MESH_TRAFFIC_CLASS=106
 RANK=""
 _idx=0
@@ -648,7 +648,7 @@ node_doctor() {
     case "$state" in
         PORT_ACTIVE) ;;
         *)
-            netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $NF; exit}')
+            netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $5; exit}')
             [ -n "$netdev" ] || return 0
             echo "$(date +%T) doctor: $MESH_INTERFACE state=${state:-missing}; flapping $netdev" >&2
             sudo -n ip link set "$netdev" down 2>/dev/null
@@ -722,6 +722,12 @@ ensure_weightd() {
     }
     systemctl is-active -q sparkpipe-roce-qos || {
         echo "weightd: sparkpipe-roce-qos is not active; traffic class $MESH_TRAFFIC_CLASS needs DSCP trust and PFC on $MESH_INTERFACE; dependent startup blocked" >&2
+        return 1
+    }
+    local mesh_netdev
+    mesh_netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $5; exit}')
+    mlnx_qos -i "$mesh_netdev" 2>/dev/null | grep -q 'Priority trust state: dscp' || {
+        echo "weightd: $MESH_INTERFACE (${mesh_netdev:-no netdev}) does not trust DSCP; traffic class $MESH_TRAFFIC_CLASS would be lossy; dependent startup blocked" >&2
         return 1
     }
     restart_ok weightd || return 1
