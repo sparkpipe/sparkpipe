@@ -164,9 +164,6 @@ __host__ __device__
 static inline uint64_t SparkTpMeshPairChunkElements(uint64_t local_elements,uint32_t degree,uint64_t staging_slot_bytes)
 {
     uint64_t capacity = (uint64_t)degree * ((staging_slot_bytes / 4u) & ~UINT64_C(3));
-#ifdef SPARK_TP_MESH_PAIR_CHUNK_TARGET
-    capacity = capacity < (uint64_t)SPARK_TP_MESH_PAIR_CHUNK_TARGET ? capacity : (uint64_t)SPARK_TP_MESH_PAIR_CHUNK_TARGET;
-#endif
     uint64_t chunks = (local_elements - 1u) / capacity + 1u;
     uint64_t per = (local_elements + chunks - 1u) / chunks;
     return per - per % ((uint64_t)degree * 4u) + (per % ((uint64_t)degree * 4u) != 0u ? (uint64_t)degree * 4u : 0u);
