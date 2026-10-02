@@ -2073,6 +2073,13 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
     return SparkTpDeviceCollectivePrepareHardware(implementation);
 }
 
+struct SparkWeightdClient *SparkTpDeviceCollectiveMeshLaneOwner(const SparkTpDeviceCollective *collective)
+{
+    if ( collective == 0 || collective->implementation == 0 )
+        return 0;
+    return ((const SparkTpDeviceCollectiveImplementation *)collective->implementation)->lane_client;
+}
+
 SparkStatus SparkTpDeviceCollectiveAttach(SparkTpDeviceCollective *collective,void *mesh_region)
 {
     if ( mesh_region != 0 )

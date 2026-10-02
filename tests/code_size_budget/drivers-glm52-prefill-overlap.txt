@@ -1,0 +1,2 @@
++315
+Prefill waves above 512 rows run as two half-waves on two streams with their own TP collective on the second mesh band, so each half's all-reduces run while the other half computes; the second half waits for the first half's attention of the same layer before reading its KV.

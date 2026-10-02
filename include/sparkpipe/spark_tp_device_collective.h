@@ -474,6 +474,7 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     void *cuda_stream);
 
 SparkStatus SparkTpDeviceCollectiveAttachMesh(SparkTpDeviceCollective *collective);
+struct SparkWeightdClient *SparkTpDeviceCollectiveMeshLaneOwner(const SparkTpDeviceCollective *collective);
 SparkStatus SparkTpDeviceCollectiveAttach(SparkTpDeviceCollective *collective,void *mesh_region);
 
 SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(

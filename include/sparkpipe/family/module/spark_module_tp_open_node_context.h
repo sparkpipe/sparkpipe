@@ -2,6 +2,45 @@
 
 #include "sparkpipe/family/module/spark_module_combine.h"
 
+static void SPARK_FAMILY(ModuleTpCollectiveConfigure)(
+	SPARK_FAMILY(ModuleState) *state,
+	const SPARK_FAMILY(ResidentDecodeStageNodeContext) *context,
+	SparkTpDeviceCollectiveConfig *configuration)
+{
+	memset(configuration,0,sizeof(*configuration));
+	configuration->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	configuration->backend_kind = context->tp_collective_backend_kind;
+	configuration->tp_degree = state->tp_degree;
+	configuration->tp_rank = state->tp_rank;
+	configuration->operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+	configuration->local_hidden_dimension = SPARK_FAMILY_CONST(MODEL_HIDDEN_DIMENSION);
+	configuration->max_active_sequence_count = SPARK_FAMILY_CONST(MODULE_TP_ROW_CAPACITY)(state);
+	configuration->operation_timeout_milli = context->tp_operation_timeout_milli;
+	SPARK_FAMILY(ModuleRegisterCombines)(configuration);
+}
+
+static inline SparkStatus SPARK_FAMILY(ModuleInitializeTpCollectiveBand)(
+	SPARK_FAMILY(ModuleState) *state,
+	const SPARK_FAMILY(ResidentDecodeStageNodeContext) *context,
+	const SparkTpDeviceCollective *owner,
+	uint32_t band,
+	SparkTpDeviceCollective *collective)
+{
+	SparkTpDeviceCollectiveConfig configuration;
+	SparkStatus status;
+	if ( state == 0 || context == 0 || owner == 0 || collective == 0 || band == 0u || SparkTpDeviceCollectiveMeshLaneOwner(owner) == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	SPARK_FAMILY(ModuleTpCollectiveConfigure)(state,context,&configuration);
+	configuration.mesh_lane_client = SparkTpDeviceCollectiveMeshLaneOwner(owner);
+	configuration.mesh_band_index = band;
+	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveCreate(&configuration,collective);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveAttach(collective,SPARK_FAMILY_CONST(MODULE_TP_MESH_REGION)(state));
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SPARK_FAMILY(ModuleInitializeTpCollective)(
 	SPARK_FAMILY(ModuleState) *state,
 	const SPARK_FAMILY(ResidentDecodeStageNodeContext) *context)
@@ -12,16 +51,7 @@ static SparkStatus SPARK_FAMILY(ModuleInitializeTpCollective)(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->tp_degree == 1u || SPARK_FAMILY_CONST(MODULE_TP_DISABLED)(state) )
 		return(SPARK_STATUS_OK);
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	configuration.backend_kind = context->tp_collective_backend_kind;
-	configuration.tp_degree = state->tp_degree;
-	configuration.tp_rank = state->tp_rank;
-	configuration.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	configuration.local_hidden_dimension = SPARK_FAMILY_CONST(MODEL_HIDDEN_DIMENSION);
-	configuration.max_active_sequence_count = SPARK_FAMILY_CONST(MODULE_TP_ROW_CAPACITY)(state);
-	configuration.operation_timeout_milli = context->tp_operation_timeout_milli;
-	SPARK_FAMILY(ModuleRegisterCombines)(&configuration);
+	SPARK_FAMILY(ModuleTpCollectiveConfigure)(state,context,&configuration);
 	status = SparkTpDeviceCollectiveApplyTopology(&context->tp_collective_topology,&configuration);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
