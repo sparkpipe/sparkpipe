@@ -1962,6 +1962,7 @@ static void SparkLingValBuildWave(SparkLingValFixture *fixture,
 	wave->resident_sequence_capacity = SPARK_LING_VAL_SEQUENCES;
 	wave->max_sequence_positions = SPARK_LING_VAL_PAGES * SPARK_LING_VAL_PAGE_SLOTS;
 	wave->pages_per_sequence = SPARK_LING_VAL_PAGES;
+	wave->physical_page_count = SPARK_LING_VAL_PAGES;
 	wave->owns_embedding = 0u;
 	wave->owns_final_head = 0u;
 	wave->boundary_row_offset = 0u;
