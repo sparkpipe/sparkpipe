@@ -1,12 +1,18 @@
 model_list:
-- model_name: glm-5.3-flash
+- model_name: glm-5.3
   litellm_params:
-    model: openai/glm-5.3-flash
-    api_base: http://100.123.97.61:8433/v1
-    api_key: os.environ/SPARK_API_KEY
+    model: hosted_vllm/glm-5.3
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 65536
+    max_output_tokens: 65536
+- model_name: "*"
+  litellm_params:
+    model: hosted_vllm/glm-5.3
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
 litellm_settings:
   drop_params: true
-  num_retries: 1
-  request_timeout: 600
-general_settings:
-  master_key: os.environ/SPARK_LITELLM_MASTER_KEY
+  num_retries: 0
+  request_timeout: 3600
