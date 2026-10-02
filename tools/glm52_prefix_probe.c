@@ -100,6 +100,7 @@ static int32_t probe_open(probe_state_t *state,const char *driver,const char *pa
 	node->stage_pack_path = pack;
 	node->model_revision = state->driver.interface->descriptor->model_revision;
 	node->tp_collective_identifier = 0u;
+	node->kv_backing_directory = "/tmp/prefixprobe/kv";
 	SparkModelDriverInitializeCreateRequest(&request);
 	request.node_id = "glm52-local-prefix-probe";
 	request.node_target = PROBE_TARGET;

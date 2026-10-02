@@ -177,14 +177,7 @@ static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const Spar
 	table->page_store_config.logical_page_capacity = binding->logical_page_count;
 	table->page_store_config.transfer_capacity = binding->logical_page_count < 2u ? binding->logical_page_count : 2u;
 	table->page_store_config.page_bytes = binding->page_bytes;
-	if ( configuration->backing_directory != 0 && configuration->backing_directory[0] != '\0' )
-		table->page_store_config.backing_path = configuration->backing_directory;
-	else
-	{
-		(void)snprintf(binding->backing_default,sizeof(binding->backing_default),"/tmp/sparkpipe_%s_kv_%s",configuration->model_id,configuration->model_revision);
-		(void)mkdir(binding->backing_default,0700);
-		table->page_store_config.backing_path = binding->backing_default;
-	}
+	table->page_store_config.backing_path = configuration->backing_directory;
 	table->page_store_config.maximum_backing_bytes = configuration->backing_maximum_bytes > binding->page_bytes ? configuration->backing_maximum_bytes : binding->page_bytes;
 	table->page_store_config.staging_address = binding->staging;
 	table->page_store_config.staging_bytes = binding->page_bytes;
@@ -213,6 +206,11 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 		configuration->region_count > SPARK_STAGE_KV_MAX_REGIONS || configuration->resident_sequence_capacity == 0u || configuration->max_sequence_positions == 0u || configuration->pipeline_slot_count == 0u ||
 		configuration->model_id == 0 || configuration->model_revision == 0 || configuration->layout_fingerprint == 0 || configuration->physical_page_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( configuration->backing_directory == 0 || configuration->backing_directory[0] == '\0' )
+	{
+		fprintf(stderr,"%s kv binding refused: the deployment names no kv_backing_directory\n",configuration->module_tag);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	memset(binding,0,sizeof(*binding));
 	binding->module_tag = configuration->module_tag;
 	binding->block_token_count = configuration->block_token_count;

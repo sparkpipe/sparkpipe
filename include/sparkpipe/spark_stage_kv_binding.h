@@ -92,7 +92,6 @@ typedef struct SparkStageKvBinding
 	uint32_t mutex_initialized;
 	uint64_t control_generation;
 	uint64_t reset_generation;
-	char backing_default[256];
 } SparkStageKvBinding;
 
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration);
