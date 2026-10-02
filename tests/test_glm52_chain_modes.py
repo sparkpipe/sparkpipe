@@ -135,6 +135,8 @@ SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective,
 cudaError_t cudaEventSynchronize(cudaEvent_t event) { (void)event; assert(0); return(cudaErrorUnknown); }
 cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,enum cudaMemcpyKind kind) { (void)destination; (void)source; (void)bytes; (void)kind; assert(0); return(cudaErrorUnknown); }
 cudaError_t cudaMemsetAsync(void *destination,int value,size_t bytes,cudaStream_t stream) { (void)destination; (void)value; (void)bytes; (void)stream; assert(0); return(cudaErrorUnknown); }
+cudaError_t cudaEventRecord(cudaEvent_t event,cudaStream_t stream) { (void)event; (void)stream; assert(0); return(cudaErrorUnknown); }
+cudaError_t cudaStreamWaitEvent(cudaStream_t stream,cudaEvent_t event,unsigned int flags) { (void)stream; (void)event; (void)flags; assert(0); return(cudaErrorUnknown); }
 SparkStatus SparkKvPageCacheCompleteLane(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane) { (void)cache; (void)lane; return(SPARK_STATUS_OK); }
 SparkStatus SparkKvPageCacheRollbackLaneTransaction(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane,uint32_t flags) { (void)cache; (void)lane; (void)flags; return(SPARK_STATUS_OK); }
 SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,const SparkModelDriverFrame *frame,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
@@ -269,7 +271,11 @@ static void TestConfigure(void)
 	assert(setenv("SPARK_GLM52_CHAIN_MODE","graph",1) == 0);
 	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_OK && probe.chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && probe.chain_wait_initialized == 1u);
 	probe.chain_wait_initialized = 0u;
-	probe.max_sequence_positions = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT + 1u;
+	assert(SparkStageModuleCudaWaitDestroy(&probe.chain_wait) == SPARK_STATUS_OK);
+	probe.max_sequence_positions = 1u << 20;
+	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_OK && probe.chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && probe.chain_wait_initialized == 1u);
+	probe.chain_wait_initialized = 0u;
+	probe.max_sequence_positions = 1u << 23;
 	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
 	probe.max_sequence_positions = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT;
 	probe.owns_embedding = 0u;
@@ -398,7 +404,11 @@ static void TestGraph(void)
 	captures = CAPTURES;
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	SparkGlm52RunChain(NewChain(2048u));
-	assert(CAPTURES == captures && LAUNCHES == 4u && Count("begin2049") == 0u && Count("stage101") == 0u);
+	assert(CAPTURES == captures + 1u && LAUNCHES == 5u && Count("cap:begin4096") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	captures = CAPTURES;
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
+	SparkGlm52RunChain(NewChain(4096u));
+	assert(CAPTURES == captures && LAUNCHES == 5u && Count("begin4097") == 0u && Count("stage101") == 0u);
 	assert(COMPLETED_STATUS == SPARK_STATUS_UNSUPPORTED);
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	GRAPH_ERROR = 3u;
