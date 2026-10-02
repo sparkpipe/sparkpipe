@@ -26,6 +26,7 @@
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "sparkpipe/spark_tp_chain_graph.h"
 #include "sparkpipe/spark_glm52_graph_regime.h"
+#include "inference/kernels/topk_exact_plan.h"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #include "spark_glm52_stagepack_format.h"
 #ifdef SPARK_SCORE_DUMP
@@ -684,9 +685,13 @@ static SparkStatus SparkGlm52AllocateSlotMlp(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,packed_rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->expert_out_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->shared_out_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,rows,SPARK_GLM52_MODEL_MOE_EXPERT_COUNT,sizeof(float),(void **)&slot->router_logits_f32);
-	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,rows,state->max_sequence_positions,sizeof(float),(void **)&slot->selection_scores_f32);
+	slot->selection_rows = LmTopkExactSelectionRows((uint32_t)rows,state->max_sequence_positions);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,slot->selection_rows,state->max_sequence_positions,sizeof(float),(void **)&slot->selection_scores_f32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_BLOCKS(rows,SPARK_GLM52_MODEL_HEAD_COUNT / state->tp_degree),SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTN_SPLIT_PARTIAL_FLOATS,sizeof(float),(void **)&slot->attention_split_partials_f32);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,rows,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,sizeof(uint32_t),(void **)&slot->selected_positions);
+	slot->topk_scratch_entries = LmTopkExactScratchEntries(slot->selection_rows,state->max_sequence_positions,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT);
+	if ( status == SPARK_STATUS_OK && slot->topk_scratch_entries != 0u ) status = SparkGlmStageAllocateBytes(state,1u,slot->topk_scratch_entries,sizeof(float),(void **)&slot->topk_scratch_values_f32);
+	if ( status == SPARK_STATUS_OK && slot->topk_scratch_entries != 0u ) status = SparkGlmStageAllocateBytes(state,1u,slot->topk_scratch_entries,sizeof(uint32_t),(void **)&slot->topk_scratch_positions);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_expert);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,packed_rows,1u,sizeof(float),(void **)&slot->route_weight);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,packed_rows,1u,sizeof(uint32_t),(void **)&slot->route_source_token);

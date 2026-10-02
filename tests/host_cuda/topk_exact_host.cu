@@ -81,7 +81,19 @@ static void HostCheck(const char *name, const float *scores, uint32_t rows, uint
 				exit(1);
 			}
 	}
-	printf("PASS %s rows=%u n=%u k=%u\n",name,rows,n,k);
+	{
+		static float scratch_values[HOST_MAX_ROWS * (HOST_MAX_N + HOST_MAX_K) * 2u];
+		static uint32_t scratch_positions[HOST_MAX_ROWS * (HOST_MAX_N + HOST_MAX_K) * 2u];
+		const uint32_t chunk = 2u * k + 8u;
+		memset(got,0xab,sizeof(got));
+		if ( LmTopkExactLaunch<HOST_THREADS>(scores,rows,n,k,chunk,HOST_MAX_ROWS,scratch_values,scratch_positions,(uint64_t)HOST_MAX_ROWS * (HOST_MAX_N + HOST_MAX_K) * 2u,got,0) != cudaSuccess ||
+			memcmp(first,got,(size_t)rows * k * sizeof(uint32_t)) != 0 )
+		{
+			fprintf(stderr,"FAIL %s: the chunked selection (chunk %u, %llu candidates per row) differs from the one-CTA selection\n",name,chunk,(unsigned long long)LmTopkExactCandidateEntries(n,k,chunk));
+			exit(1);
+		}
+	}
+	printf("PASS %s rows=%u n=%u k=%u (chunked levels equal)\n",name,rows,n,k);
 }
 
 static void HostHighBucketLast(void)
@@ -127,6 +139,16 @@ static void HostLongContext(void)
 	HostCheck("32K-token context of 4-token pools",scores,1u,HOST_MAX_N,512u);
 }
 
+static void HostChunkedContextTail(void)
+{
+	static float scores[HOST_MAX_ROWS * 4000u];
+	uint32_t row,index;
+	for (row = 0u; row < HOST_MAX_ROWS; ++row)
+		for (index = 0u; index < 4000u; ++index)
+			scores[row * 4000u + index] = index < 150u + 40u * row ? floorf(HostUniform() * 8.0f) : -INFINITY;
+	HostCheck("rows shorter than k inside a long wave keep their lowest padding positions across chunks",scores,HOST_MAX_ROWS,4000u,200u);
+}
+
 int main(void)
 {
 	HostHighBucketLast();
@@ -134,5 +156,6 @@ int main(void)
 	HostPoolsBeyondContext();
 	HostShortRow();
 	HostLongContext();
+	HostChunkedContextTail();
 	return 0;
 }
