@@ -85,6 +85,10 @@ typedef struct SparkGlm52ExecutionSlot
 	float *attention_split_partials_f32;
 	uint32_t *selected_positions;
 	uint32_t selection_rows;
+	uint32_t *prefill_union_positions;
+	uint8_t *prefill_union_masks;
+	uint32_t *prefill_union_counts;
+	uint64_t prefill_union_entries;
 	float *topk_scratch_values_f32;
 	uint32_t *topk_scratch_positions;
 	uint64_t topk_scratch_entries;

@@ -351,12 +351,12 @@ citations refer to that commit.
   chains differ after the first two tokens of a 16K prompt because prefill
   waves padded to a row bucket run different GEMM shapes, so long-context
   output is judged by the accuracy gate, not token equality.
-- Prefill rows past the 2,048 DSA selected-token count attend through the
-  per-row decode kernel (`LmLatentRopeHeadsSplitLaunch` with selected
-  positions), not the tensor-core prefill kernel: a rank-15 profile of a
-  1,024-row wave at about 3K context spends 448 ms there against 16 ms for a
-  wave below 2,048 (2026-10-02). Add selected positions to the prefill
-  attention kernel.
+- Prefill waves past the 2,048 DSA selected-token count attend through the
+  tensor-core prefill kernel over the union of each 4-row block's selected
+  positions with a per-row membership mask (`LmPrefillSparseUnionKernel`):
+  on one GB10 a 1,024-row layer at 16K takes 1.45 ms (was 5.96 ms through
+  the per-row decode kernel), with outputs equal to bf16 rounding. Waves of
+  64 rows or fewer stay on the per-row kernel, where the two are equal.
 - A 1,024-row TP16 prefill wave spends about 440 ms of its ~1.0 s waiting in
   collective rounds (`SparkTpMeshHardwareGuardKernel`) and about 400 ms in
   compute, serially (rank-15 profile, 2026-10-02). Split waves into halves

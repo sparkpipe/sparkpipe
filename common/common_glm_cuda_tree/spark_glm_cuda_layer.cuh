@@ -162,6 +162,10 @@ struct GlmLayerBuffers
     uint32_t *selected_positions;
     uint32_t selected_position_count;
     uint32_t selection_rows;
+    uint32_t *prefill_union_positions;
+    uint8_t *prefill_union_masks;
+    uint32_t *prefill_union_counts;
+    uint64_t prefill_union_entries;
     float *topk_scratch_values;
     uint32_t *topk_scratch_positions;
     uint64_t topk_scratch_entries;
@@ -785,6 +789,32 @@ static int32_t GlmLayerAttentionCore(
                 rows,
                 buffers->prefill_block_table,
                 buffers->prefill_table_blocks,
+                stream) != cudaSuccess)
+        {
+            return LM_LAUNCH_ERR_LAUNCH;
+        }
+    }
+    else if ((buffers->single_sequence_rows != 0u || buffers->prefill_block_table != 0) && rows > LM_SKINNY_ROWS &&
+        selected_positions != 0 && buffers->prefill_union_positions != 0)
+    {
+        if (LmLatentAttentionSparsePrefillLaunch<GlmKv, GLM_LATENT, GLM_ROPE_DIM, GLM_DSA_SELECTED>(
+                buffers->query_latent_bf16,
+                buffers->query_rope_bf16,
+                buffers->cache,
+                buffers->sequence_of_row,
+                buffers->row_positions,
+                buffers->attn_heads,
+                buffers->qk_scale,
+                buffers->attention_latent_bf16,
+                rows,
+                buffers->prefill_block_table,
+                buffers->prefill_table_blocks,
+                selected_positions,
+                selected_position_count,
+                buffers->prefill_union_positions,
+                buffers->prefill_union_masks,
+                buffers->prefill_union_counts,
+                buffers->prefill_union_entries,
                 stream) != cudaSuccess)
         {
             return LM_LAUNCH_ERR_LAUNCH;

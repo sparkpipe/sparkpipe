@@ -55,7 +55,113 @@ static __device__ __forceinline__ void LmPrefillCopy(uint32_t destination, const
 	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
 }
 
-template<class Geometry, uint32_t HEADS, uint32_t LATENT, uint32_t ROPE>
+#define LM_PREFILL_UNION_THREADS 256u
+
+static __device__ __forceinline__ uint32_t LmPrefillCountBelow(const uint32_t *__restrict__ list, uint32_t length, uint32_t value, uint32_t inclusive)
+{
+	uint32_t low = 0u,high = length,middle;
+	while (low < high)
+	{
+		middle = (low + high) >> 1u;
+		if (list[middle] < value || (inclusive != 0u && list[middle] == value))
+			low = middle + 1u;
+		else
+			high = middle;
+	}
+	return(low);
+}
+
+template<uint32_t ROWS_PER_BLOCK, uint32_t SELECTED>
+__global__ __launch_bounds__(LM_PREFILL_UNION_THREADS)
+void LmPrefillSparseUnionKernel(
+	const uint32_t *__restrict__ selected,
+	const uint32_t *__restrict__ row_position,
+	uint32_t rows,
+	const uint32_t *__restrict__ block_table,
+	uint32_t union_capacity,
+	uint32_t *__restrict__ union_positions,
+	uint8_t *__restrict__ union_masks,
+	uint32_t *__restrict__ union_counts)
+{
+	constexpr uint32_t MERGED = ROWS_PER_BLOCK * SELECTED;
+	constexpr uint32_t PER_THREAD = (MERGED + LM_PREFILL_UNION_THREADS - 1u) / LM_PREFILL_UNION_THREADS;
+	static_assert(ROWS_PER_BLOCK <= 8u, "one membership bit per row of a block");
+	__shared__ uint32_t merged[MERGED];
+	__shared__ uint8_t source[MERGED];
+	__shared__ uint32_t length[ROWS_PER_BLOCK];
+	__shared__ uint32_t scan[LM_PREFILL_UNION_THREADS];
+	const uint32_t table = blockIdx.x;
+	const uint32_t entry = block_table != 0 ? block_table[table] : 0u;
+	uint32_t first_row,row_end,rows_here,row,index,other,slot,total,flags[PER_THREAD],run,inclusive,base,count,mask;
+	if (block_table != 0 && entry == LM_PREFILL_ATTN_EMPTY_BLOCK)
+	{
+		if (threadIdx.x == 0u)
+			union_counts[table] = 0u;
+		return;
+	}
+	first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : table * ROWS_PER_BLOCK;
+	row_end = block_table != 0 ? min(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : min(rows, first_row + ROWS_PER_BLOCK);
+	rows_here = row_end > first_row ? row_end - first_row : 0u;
+	if (threadIdx.x < ROWS_PER_BLOCK)
+		length[threadIdx.x] = threadIdx.x < rows_here
+			? LmPrefillCountBelow(selected + (uint64_t)(first_row + threadIdx.x) * SELECTED, SELECTED, row_position[first_row + threadIdx.x], 1u) : 0u;
+	__syncthreads();
+	total = 0u;
+	for (row = 0u; row < ROWS_PER_BLOCK; row++)
+		total += length[row];
+	for (index = threadIdx.x; index < MERGED; index += LM_PREFILL_UNION_THREADS)
+	{
+		row = index / SELECTED;
+		other = index % SELECTED;
+		if (row >= rows_here || other >= length[row])
+			continue;
+		const uint32_t value = selected[(uint64_t)(first_row + row) * SELECTED + other];
+		slot = other;
+		for (uint32_t list = 0u; list < rows_here; list++)
+			if (list != row)
+				slot += LmPrefillCountBelow(selected + (uint64_t)(first_row + list) * SELECTED, length[list], value, list < row ? 1u : 0u);
+		merged[slot] = value;
+		source[slot] = (uint8_t)row;
+	}
+	__syncthreads();
+	run = 0u;
+	for (index = 0u; index < PER_THREAD; index++)
+	{
+		slot = threadIdx.x * PER_THREAD + index;
+		flags[index] = slot < total && (slot == 0u || merged[slot] != merged[slot - 1u]) ? 1u : 0u;
+		run += flags[index];
+	}
+	scan[threadIdx.x] = run;
+	__syncthreads();
+	for (other = 1u; other < LM_PREFILL_UNION_THREADS; other <<= 1u)
+	{
+		inclusive = threadIdx.x >= other ? scan[threadIdx.x - other] : 0u;
+		__syncthreads();
+		scan[threadIdx.x] += inclusive;
+		__syncthreads();
+	}
+	base = scan[threadIdx.x] - run;
+	count = scan[LM_PREFILL_UNION_THREADS - 1u];
+	for (index = 0u; index < PER_THREAD; index++)
+	{
+		slot = threadIdx.x * PER_THREAD + index;
+		if (flags[index] == 0u)
+			continue;
+		mask = 0u;
+		for (other = slot; other < total && merged[other] == merged[slot]; other++)
+			mask |= 1u << source[other];
+		if (base < union_capacity)
+		{
+			union_positions[(uint64_t)table * union_capacity + base] = merged[slot];
+			union_masks[(uint64_t)table * union_capacity + base] = (uint8_t)mask;
+		}
+		base++;
+	}
+	if (threadIdx.x == 0u)
+		union_counts[table] = count < union_capacity ? count : union_capacity;
+}
+
+template<class Geometry, uint32_t HEADS, uint32_t LATENT, uint32_t ROPE, bool SPARSE>
 __global__ __launch_bounds__(LM_PREFILL_ATTN_THREADS, 1)
 void LmLatentAttentionPrefillKernel(
 	const uint16_t *__restrict__ query_latent_bf16,
@@ -66,7 +172,11 @@ void LmLatentAttentionPrefillKernel(
 	float qk_scale,
 	uint16_t *__restrict__ output_bf16,
 	uint32_t rows,
-	const uint32_t *__restrict__ block_table)
+	const uint32_t *__restrict__ block_table,
+	const uint32_t *__restrict__ union_positions,
+	const uint8_t *__restrict__ union_masks,
+	const uint32_t *__restrict__ union_counts,
+	uint32_t union_capacity)
 {
 	constexpr uint32_t DIM = LATENT + ROPE;
 	constexpr uint32_t ROW_BYTES = DIM * 2u;
@@ -92,7 +202,10 @@ void LmLatentAttentionPrefillKernel(
 	float *rescale = running_sum + LM_PREFILL_ATTN_QUERIES;
 	const uint8_t **slots = (const uint8_t **)(rescale + LM_PREFILL_ATTN_QUERIES);
 	const uint32_t warp = threadIdx.x >> 5u,lane = threadIdx.x & 31u;
-	const uint32_t entry = block_table != 0 ? block_table[gridDim.x - 1u - blockIdx.x] : 0u;
+	const uint32_t table = gridDim.x - 1u - blockIdx.x;
+	const uint32_t entry = block_table != 0 ? block_table[table] : 0u;
+	const uint32_t *tile_positions = SPARSE ? union_positions + (uint64_t)table * union_capacity : 0;
+	const uint8_t *tile_masks = SPARSE ? union_masks + (uint64_t)table * union_capacity : 0;
 	const uint32_t first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : (gridDim.x - 1u - blockIdx.x) * ROWS_PER_BLOCK;
 	const uint32_t row_end = block_table != 0 ? min(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : min(rows, first_row + ROWS_PER_BLOCK);
 	const uint32_t query_base = (uint32_t)__cvta_generic_to_shared(query);
@@ -120,7 +233,7 @@ void LmLatentAttentionPrefillKernel(
 			LmKvReportRequiredAccessFailure(cache, !LmKvViewIsConfigured(cache) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, first_row, sequence, 0xffffffffu, 0xffffffffu);
 		return;
 	}
-	tiles = last_position / LM_PREFILL_ATTN_TILE + 1u;
+	tiles = SPARSE ? (union_counts[table] + LM_PREFILL_ATTN_TILE - 1u) / LM_PREFILL_ATTN_TILE : last_position / LM_PREFILL_ATTN_TILE + 1u;
 
 	for (index = threadIdx.x; index < LM_PREFILL_ATTN_QUERIES * CHUNKS; index += LM_PREFILL_ATTN_THREADS)
 	{
@@ -146,6 +259,8 @@ void LmLatentAttentionPrefillKernel(
 		if (threadIdx.x < LM_PREFILL_ATTN_TILE)
 		{
 			position = which * LM_PREFILL_ATTN_TILE + threadIdx.x;
+			if (SPARSE)
+				position = position < union_counts[table] ? tile_positions[position] : 0xffffffffu;
 			slots[buffer * LM_PREFILL_ATTN_TILE + threadIdx.x] = position <= last_position
 				? LmKvSlotRequired<Geometry>(cache, sequence, position, first_row, LM_KV_ACCESS_READ) : 0;
 		}
@@ -193,13 +308,15 @@ void LmLatentAttentionPrefillKernel(
 		__syncthreads();
 		for (q = warp * 2u; q < warp * 2u + 2u; q++)
 		{
-			const uint32_t position = tile * LM_PREFILL_ATTN_TILE + lane;
+			const uint32_t listed = tile * LM_PREFILL_ATTN_TILE + lane;
 			const uint32_t query_row = first_row + q / HEADS;
+			const uint32_t member = !SPARSE || (listed < union_counts[table] && ((tile_masks[listed] >> (q / HEADS)) & 1u) != 0u);
+			const uint32_t position = SPARSE ? (member != 0u ? tile_positions[listed] : 0xffffffffu) : listed;
 			const uint32_t limit = query_row < row_end ? row_position[query_row] : 0u;
 			float value = (score_parts[q * LM_PREFILL_ATTN_SCORE_STRIDE + lane] + score_parts[(LM_PREFILL_ATTN_QUERIES + q) * LM_PREFILL_ATTN_SCORE_STRIDE + lane]) * qk_scale;
 			float tile_max,previous_max,next_max,weight,total,scale;
 			uint16_t high;
-			value = position <= limit ? value : -INFINITY;
+			value = member != 0u && position <= limit ? value : -INFINITY;
 			tile_max = value;
 			for (index = 16u; index > 0u; index >>= 1u)
 				tile_max = fmaxf(tile_max, __shfl_xor_sync(0xffffffffu, tile_max, index));
@@ -352,14 +469,66 @@ static inline cudaError_t LmLatentAttentionPrefillLaunch(
 		static bool granted = false;
 		if (!granted)
 		{
-			cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
+			cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
 			if (error != cudaSuccess)
 				return error;
 			granted = true;
 		}
-		LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE><<<block_table != 0 ? table_blocks : (rows + LM_PREFILL_ATTN_QUERIES / 4u - 1u) / (LM_PREFILL_ATTN_QUERIES / 4u), LM_PREFILL_ATTN_THREADS, shared, stream>>>(
-			query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table);
+		LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false><<<block_table != 0 ? table_blocks : (rows + LM_PREFILL_ATTN_QUERIES / 4u - 1u) / (LM_PREFILL_ATTN_QUERIES / 4u), LM_PREFILL_ATTN_THREADS, shared, stream>>>(
+			query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, 0, 0, 0, 0u);
 		return cudaPeekAtLastError();
 	}
 	return cudaErrorInvalidValue;
+}
+
+static __host__ __device__ __forceinline__ uint64_t LmPrefillSparseUnionEntries(uint32_t table_blocks, uint32_t heads, uint32_t selected_count)
+{
+	return(heads == 0u || heads > LM_PREFILL_ATTN_QUERIES ? 0u : (uint64_t)table_blocks * (LM_PREFILL_ATTN_QUERIES / heads) * selected_count);
+}
+
+template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t SELECTED>
+static inline cudaError_t LmLatentAttentionSparsePrefillLaunch(
+	const uint16_t *query_latent_bf16,
+	const uint16_t *query_rope_bf16,
+	LmKvView cache,
+	const uint32_t *sequence_of_row,
+	const uint32_t *row_position,
+	uint32_t heads,
+	float qk_scale,
+	uint16_t *output_bf16,
+	uint32_t rows,
+	const uint32_t *block_table,
+	uint32_t table_blocks,
+	const uint32_t *selected_positions,
+	uint32_t selected_count,
+	uint32_t *union_positions,
+	uint8_t *union_masks,
+	uint32_t *union_counts,
+	uint64_t union_entries,
+	cudaStream_t stream)
+{
+	constexpr uint32_t shared = LmPrefillAttnSharedBytes<LATENT + ROPE>();
+	const uint32_t blocks = block_table != 0 ? table_blocks : (rows + LM_PREFILL_ATTN_QUERIES / 4u - 1u) / (LM_PREFILL_ATTN_QUERIES / 4u);
+	const uint32_t capacity = (LM_PREFILL_ATTN_QUERIES / 4u) * selected_count;
+	if (heads != 4u || rows == 0u || query_latent_bf16 == 0 || query_rope_bf16 == 0 || sequence_of_row == 0 || row_position == 0 || output_bf16 == 0 ||
+		selected_positions == 0 || selected_count == 0u || union_positions == 0 || union_masks == 0 || union_counts == 0 ||
+		(block_table != 0 && table_blocks == 0u) || (uint64_t)blocks * capacity > union_entries)
+		return cudaErrorInvalidValue;
+	{
+		static bool granted = false;
+		if (!granted)
+		{
+			cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
+			if (error != cudaSuccess)
+				return error;
+			granted = true;
+		}
+	}
+	if (selected_count != SELECTED)
+		return cudaErrorInvalidValue;
+	LmPrefillSparseUnionKernel<LM_PREFILL_ATTN_QUERIES / 4u, SELECTED><<<blocks, LM_PREFILL_UNION_THREADS, 0, stream>>>(
+		selected_positions, row_position, rows, block_table, capacity, union_positions, union_masks, union_counts);
+	LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true><<<blocks, LM_PREFILL_ATTN_THREADS, shared, stream>>>(
+		query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, union_positions, union_masks, union_counts, capacity);
+	return cudaPeekAtLastError();
 }

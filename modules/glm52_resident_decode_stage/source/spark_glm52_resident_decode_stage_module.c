@@ -632,6 +632,11 @@ static SparkStatus SparkGlm52AllocateSlotMetadata(
 	status = SparkGlmStageAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->token_ids);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,state->execution_row_capacity,1u,sizeof(uint32_t),(void **)&slot->resident_slots);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_PREFILL_TABLE_BLOCKS(state->execution_row_capacity),1u,sizeof(uint32_t),(void **)&slot->prefill_block_table);
+	slot->prefill_union_entries = state->max_sequence_positions > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT ?
+		(uint64_t)SPARK_GLM52_PREFILL_TABLE_BLOCKS(state->execution_row_capacity) * SPARK_GLM52_PREFILL_BLOCK_ROWS * SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT : 0u;
+	if ( status == SPARK_STATUS_OK && slot->prefill_union_entries != 0u ) status = SparkGlmStageAllocateBytes(state,1u,slot->prefill_union_entries,sizeof(uint32_t),(void **)&slot->prefill_union_positions);
+	if ( status == SPARK_STATUS_OK && slot->prefill_union_entries != 0u ) status = SparkGlmStageAllocateBytes(state,1u,slot->prefill_union_entries,sizeof(uint8_t),(void **)&slot->prefill_union_masks);
+	if ( status == SPARK_STATUS_OK && slot->prefill_union_entries != 0u ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_PREFILL_TABLE_BLOCKS(state->execution_row_capacity),1u,sizeof(uint32_t),(void **)&slot->prefill_union_counts);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_PREFILL_WAVE_SPANS,1u,sizeof(uint32_t),(void **)&slot->head_rows);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,SPARK_GLM52_PREFILL_WAVE_SPANS,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->head_hidden_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,SPARK_GLM52_PREFILL_WAVE_SPANS,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->head_residual_bf16);
