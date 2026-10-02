@@ -257,17 +257,18 @@ int main(void) {
         result = subprocess.run([str(self.latch)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True, qos="active", trust="dscp"):
+    def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True, qos="active", trust="dscp",
+              address="10.10.100.10 10.10.200.0", published="", engines="running", kill="forbidden"):
         script = r'''
 set -u
 RANK=0 MESH_INTERFACE=test MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=test-pair MESH_PAIR_SGID_INDEX=3 MESH_TRAFFIC_CLASS=106
 BACKOFF=(1)
 weightd=0
-pgrep() { case "$*" in *sparkpipe_weightd*) [ "$TEST_OWNER" != absent ] && echo 4242;; *sparkpipe_model_residentd*) echo 4243;; *) return 1;; esac; }
+pgrep() { case "$*" in *sparkpipe_weightd*) [ "$TEST_OWNER" != absent ] && echo 4242;; *sparkpipe_model_residentd*) [ "$TEST_ENGINES" = running ] && echo 4243;; *) return 1;; esac; }
 readlink() { case "$TEST_OWNER" in owned) printf '%s/sparkdata/weightd/sparkpipe_weightd\n' "$TEST_AGENT_HOME";; unknown) echo /other/sparkpipe_weightd;; deleted) echo '/other/sparkpipe_weightd (deleted)';; shell) echo /bin/bash;; esac; }
 sha16() { case "$1" in /proc/*) echo running;; *) echo "${TEST_DISK_SHA}";; esac; }
 python3() { return "$TEST_PROBE_STATUS"; }
-kill() { echo FORBIDDEN_KILL; return 1; }
+kill() { echo "KILL $*"; [ "$TEST_KILL" = allowed ] || echo FORBIDDEN_KILL; return 0; }
 rm() { echo "UNLINK $*"; }
 restart_ok() { return "$TEST_RESTART_STATUS"; }
 setsid() { echo SPAWN; }
@@ -275,6 +276,8 @@ sleep() { return 0; }
 sync_rendezvous() { return 0; }
 systemctl() { [ "$TEST_QOS" = active ]; }
 ibdev2netdev() { echo "test port 1 ==> test-netdev (Up)"; }
+mesh_addresses() { if [ -n "$TEST_ADDRESS" ]; then echo "$TEST_ADDRESS"; else echo "test gid 3 is 0000:0000:0000:0000:0000:0000:0000:0000, not an IPv4 RoCE address" >&2; return 1; fi; }
+WEIGHTD_ADDRESSES="$TEST_PUBLISHED"
 mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TRUST"; }
 [() { case "$1" in -S) return 0;; -x) return "$TEST_BINARY_STATUS";; -s) return 1;; esac; builtin [ "$@"; }
 ''' + self.ensure + '\nensure_weightd\nstatus=$?\nwait\nexit "$status"\n'
@@ -282,6 +285,7 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
                    TEST_PROBE_STATUS="0" if ready else "1", TEST_OWNER=owner,
                    TEST_BINARY_STATUS="0" if binary else "1",
                    TEST_RESTART_STATUS="0" if restart else "1", TEST_QOS=qos, TEST_TRUST=trust,
+                   TEST_ADDRESS=address, TEST_PUBLISHED=published, TEST_ENGINES=engines, TEST_KILL=kill,
                    TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh))
         return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
@@ -341,13 +345,38 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
         self.assertNotIn("UNLINK", result.stdout)
         self.assertFalse((self.directory / "weightd.log").exists())
 
+    def test_weightd_waits_for_fabric_addresses(self):
+        result = self.agent(owner="shell", address="")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("waiting for fabric addresses: test gid 3 is", result.stderr)
+        self.assertNotIn("starting", result.stdout)
+        self.assertNotIn("UNLINK", result.stdout)
+        self.assertNotIn("SPAWN", result.stdout)
+
+    def test_changed_fabric_address_restarts_an_idle_weightd(self):
+        result = self.agent(ready=True, published="10.10.100.99 10.10.200.0", engines="absent", kill="allowed")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("fabric addresses changed 10.10.100.99 10.10.200.0 -> 10.10.100.10 10.10.200.0", result.stdout)
+        self.assertIn("KILL -TERM 4242", result.stdout)
+
+    def test_changed_fabric_address_waits_for_engines(self):
+        result = self.agent(ready=True, published="10.10.100.99 10.10.200.0")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("restart waits for dependent engines to drain", result.stderr)
+        self.assertNotIn("KILL", result.stdout)
+
+    def test_unchanged_fabric_address_keeps_weightd(self):
+        result = self.agent(ready=True, published="10.10.100.10 10.10.200.0", engines="absent", kill="allowed")
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("KILL", result.stdout)
+
     def test_new_spawn_requires_a_later_readiness_probe(self):
         result = self.agent(owner="shell")
         self.assertEqual(result.returncode, 1, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 3, result.stdout)
         self.assertEqual(lines[0], "UNLINK -f %s/mesh-0.rec %s/mesh-15.rec %s/.ready" % ((self.mesh,) * 3))
-        self.assertRegex(lines[1], r"^\d\d:\d\d:\d\d weightd: starting \(backoff 1s\)$")
+        self.assertRegex(lines[1], r"^\d\d:\d\d:\d\d weightd: starting on 10\.10\.100\.10 10\.10\.200\.0 \(backoff 1s\)$")
         self.assertEqual(lines[2], "UNLINK -f %s/.shipped_sha" % self.mesh)
         self.assertEqual((self.directory / "weightd.log").read_text(), "SPAWN\n")
 
