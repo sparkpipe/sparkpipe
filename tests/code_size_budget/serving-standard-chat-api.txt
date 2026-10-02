@@ -1,2 +1,2 @@
 +484
-serving/standard-chat-api: the model-neutral chat layer (serving/chat_frontend.py) that renders a model's own chat template with jinja2, tokenizes with Hugging Face tokenizers, and returns standard tool_calls and reasoning_content, so LiteLLM and ordinary OpenAI and Anthropic clients can use SparkPipe; plus the GLM-5.3 Full configuration for it.
+serving/standard-chat-api: the model-neutral chat layer (tools/serving/chat_frontend.py) that renders a model's own chat template with jinja2, tokenizes with Hugging Face tokenizers, and returns standard tool_calls and reasoning_content, so LiteLLM and ordinary OpenAI and Anthropic clients can use SparkPipe; plus the GLM-5.3 Full configuration for it.
