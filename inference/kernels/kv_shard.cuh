@@ -79,6 +79,12 @@ static __host__ __forceinline__ int32_t LmKvShardGatherViewInitialize(
 }
 
 template<class Geometry>
+static __host__ __device__ __forceinline__ uint64_t LmKvShardPageStride(SparkKvShard shard)
+{
+	return((uint64_t)Geometry::kPageBytes / shard.degree);
+}
+
+template<class Geometry>
 static __device__ __forceinline__ uint32_t LmKvShardReportForeign(
 	const LmKvView &pages,
 	SparkKvShard shard,
@@ -117,7 +123,7 @@ static __device__ __forceinline__ const uint8_t *LmKvShardSlotRequired(
 	if ( physical_page == LM_KV_PAGE_UNMAPPED )
 		return(0);
 	return(view.pages.pool
-		+ (uint64_t)physical_page * SparkKvShardPageBytes(view.shard,Geometry::kPageSlots,Geometry::kSlotBytes)
+		+ (uint64_t)physical_page * LmKvShardPageStride<Geometry>(view.shard)
 		+ (uint64_t)SparkKvShardSlotInPage(view.shard,Geometry::kPageSlots,position) * Geometry::kSlotBytes);
 }
 

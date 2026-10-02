@@ -1,0 +1,2 @@
++19
+KV pages are just in time: the binding requires physical pages for one full lane instead of every lane, and the GLM Full lane tool takes a physical-page byte budget and checks the backing store covers the lanes beyond it.
