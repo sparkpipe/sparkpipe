@@ -40,6 +40,7 @@ class ParallelPxeRescueTest(unittest.TestCase):
         self.assertIn("root=/dev/nvme0n1p2 rw",result)
         self.assertIn("systemd.mask=ds4-switched-fabric.service",result)
         self.assertIn("systemd.mask=ds4-direct-pair-fabric.service",result)
+        self.assertIn("systemd.mask=ds4-direct-pair-fabric-p2.service",result)
         self.assertNotIn("ds4_spark_brickproof",result)
         self.assertNotIn("10.20.0.",result)
 

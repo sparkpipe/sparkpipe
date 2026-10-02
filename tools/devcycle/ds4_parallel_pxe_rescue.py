@@ -28,6 +28,11 @@ DEFAULT_SERVER = "spark0"
 DEFAULT_INTERFACE = "enP7s7"
 DEFAULT_SERVER_IP = "192.168.50.128"
 DEFAULT_ROOT_DEVICE = "/dev/nvme0n1p2"
+RESCUE_MASKED_UNITS = (
+    "ds4-switched-fabric.service",
+    "ds4-direct-pair-fabric.service",
+    "ds4-direct-pair-fabric-p2.service",
+)
 DEFAULT_RECOVERY_IDENTITY = Path.home() / ".ssh" / "sparkpipe_fleet_root"
 DEFAULT_PROBE_NODES = ("spark0","spark2","spark3","spark4","spark5","spark6","spark7")
 REMOTE_STAGE = "/tmp/ds4_parallel_pxe_rescue.py"
@@ -246,11 +251,12 @@ tftp-root={STATE_DIR}
 def grub_config(config: dict[str,str]) -> str:
     interface = config["interface"]
     root_device = config["root_device"]
+    masks = " ".join(f"systemd.mask={unit}" for unit in RESCUE_MASKED_UNITS)
     return(f"""set timeout=0
 set default=0
 
 menuentry 'DS4 Spark login rescue' {{
-    linux /vmlinuz root={root_device} rw fsck.mode=skip fsck.repair=no systemd.mask=ds4-switched-fabric.service systemd.mask=ds4-direct-pair-fabric.service systemd.unit=multi-user.target console=tty0 console=ttyS0,921600 ip=:::::{interface}:dhcp
+    linux /vmlinuz root={root_device} rw fsck.mode=skip fsck.repair=no {masks} systemd.unit=multi-user.target console=tty0 console=ttyS0,921600 ip=:::::{interface}:dhcp
     initrd /initrd.img
 }}
 """)
@@ -553,8 +559,7 @@ def remote_status(require_active: bool = False) -> dict[str,object]:
             failures.append(f"initrd:{name}")
     for token in (
         f"root={config['root_device']}",
-        "systemd.mask=ds4-switched-fabric.service",
-        "systemd.mask=ds4-direct-pair-fabric.service",
+        *(f"systemd.mask={unit}" for unit in RESCUE_MASKED_UNITS),
         f"ip=:::::{config['interface']}:dhcp",
     ):
         if token not in grub:
