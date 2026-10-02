@@ -11,6 +11,8 @@ MESH_SGID_INDEX="${SPARK_MESH_SGID_INDEX:-3}"
 MESH_PAIR_INTERFACE="${SPARK_MESH_PAIR_INTERFACE:-rocep1s0f0}"
 MESH_PAIR_SGID_INDEX="${SPARK_MESH_PAIR_SGID_INDEX:-3}"
 MESH_TRAFFIC_CLASS=106
+MESH_FABRIC_PREFIX="${SPARK_MESH_FABRIC_PREFIX:-10.10.}"
+WEIGHTD_ADDRESSES=""
 RANK=""
 _idx=0
 for _host in $FLEET_HOSTS; do
@@ -698,8 +700,40 @@ janitor() {
     done
 }
 
+mesh_address() {
+    local dev="$1" index="$2" gid hex ip netdev
+    gid=$(cat "/sys/class/infiniband/$dev/ports/1/gids/$index" 2>/dev/null)
+    case "$gid" in
+        0000:0000:0000:0000:0000:ffff:????:????) ;;
+        *) echo "$dev gid $index is ${gid:-missing}, not an IPv4 RoCE address" >&2; return 1 ;;
+    esac
+    [ "$(cat "/sys/class/infiniband/$dev/ports/1/gid_attrs/types/$index" 2>/dev/null)" = "RoCE v2" ] || {
+        echo "$dev gid $index is not RoCE v2" >&2
+        return 1
+    }
+    hex=${gid#0000:0000:0000:0000:0000:ffff:}
+    ip=$(printf '%d.%d.%d.%d' "0x${hex:0:2}" "0x${hex:2:2}" "0x${hex:5:2}" "0x${hex:7:2}")
+    case "$ip" in
+        "$MESH_FABRIC_PREFIX"*) ;;
+        *) echo "$dev gid $index carries $ip, outside the fabric $MESH_FABRIC_PREFIX*" >&2; return 1 ;;
+    esac
+    netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$dev" '$1==d {print $5; exit}')
+    ip -4 -o addr show dev "$netdev" 2>/dev/null | grep -q " $ip/" || {
+        echo "$dev gid $index carries $ip, which ${netdev:-no netdev} no longer holds" >&2
+        return 1
+    }
+    echo "$ip"
+}
+
+mesh_addresses() {
+    local switch pair
+    switch=$(mesh_address "$MESH_INTERFACE" "$MESH_SGID_INDEX") || return 1
+    pair=$(mesh_address "$MESH_PAIR_INTERFACE" "$MESH_PAIR_SGID_INDEX") || return 1
+    echo "$switch $pair"
+}
+
 ensure_weightd() {
-    local wdd="$HOME/sparkdata/weightd" q owner="" executable exe_sha disk_sha
+    local wdd="$HOME/sparkdata/weightd" q owner="" executable exe_sha disk_sha addresses reason
     for q in $(pgrep -f "sparkpipe_weightd"); do
         executable=$(readlink "/proc/$q/exe" 2>/dev/null) || continue
         case "$executable" in
@@ -731,6 +765,18 @@ ensure_weightd() {
             return 1
         fi
         if [ -S /tmp/spark_weightd.sock ] && python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect("/tmp/spark_weightd.sock"); s.close()' 2>/dev/null; then
+            addresses=$(mesh_addresses 2>/dev/null) || return 0
+            if [ -z "$WEIGHTD_ADDRESSES" ]; then
+                WEIGHTD_ADDRESSES=$addresses
+            elif [ "$addresses" != "$WEIGHTD_ADDRESSES" ]; then
+                if pgrep -f "bin/sparkpipe_model_residentd" >/dev/null; then
+                    echo "weightd: published $WEIGHTD_ADDRESSES but the fabric now holds $addresses; restart waits for dependent engines to drain" >&2
+                elif restart_ok weightd-address; then
+                    echo "$(date +%T) weightd: fabric addresses changed $WEIGHTD_ADDRESSES -> $addresses; restarting owned pid $owner so peers re-wire"
+                    kill -TERM "$owner" 2>/dev/null
+                    return 1
+                fi
+            fi
             return 0
         fi
         echo "weightd: owned pid $owner alive, control socket not ready; process and mappings retained" >&2
@@ -751,9 +797,15 @@ ensure_weightd() {
         echo "weightd: $MESH_INTERFACE (${mesh_netdev:-no netdev}) does not trust DSCP; traffic class $MESH_TRAFFIC_CLASS would be lossy; dependent startup blocked" >&2
         return 1
     }
+    addresses=$(mesh_addresses 2>&1) || {
+        reason=$addresses
+        echo "weightd: waiting for fabric addresses: $reason; dependent startup blocked" >&2
+        return 1
+    }
     restart_ok weightd || return 1
     rm -f /tmp/weightd-mesh/mesh-*.rec /tmp/weightd-mesh/.ready 2>/dev/null
-    echo "$(date +%T) weightd: starting (backoff ${BACKOFF[weightd]:-1}s)"
+    WEIGHTD_ADDRESSES=$addresses
+    echo "$(date +%T) weightd: starting on $addresses (backoff ${BACKOFF[weightd]:-1}s)"
     [ -s "$HOME/weightd.log" ] && mv "$HOME/weightd.log" "$HOME/weightd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
         --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE" \

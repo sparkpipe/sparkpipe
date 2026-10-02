@@ -1,0 +1,2 @@
++52
+Fleet agent: weightd starts only when every RDMA device it uses carries an IPv4 RoCE v2 fabric address that its netdev really holds, and an idle weightd whose fabric address changed is restarted so peers re-wire. weightd captures its GID once at start, so starting it before the fabric address existed published a DHCP or empty GID that peers could never reach.
