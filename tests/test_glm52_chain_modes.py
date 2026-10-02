@@ -269,7 +269,11 @@ static void TestConfigure(void)
 	assert(setenv("SPARK_GLM52_CHAIN_MODE","graph",1) == 0);
 	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_OK && probe.chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && probe.chain_wait_initialized == 1u);
 	probe.chain_wait_initialized = 0u;
-	probe.max_sequence_positions = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT + 1u;
+	assert(SparkStageModuleCudaWaitDestroy(&probe.chain_wait) == SPARK_STATUS_OK);
+	probe.max_sequence_positions = 1u << 20;
+	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_OK && probe.chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && probe.chain_wait_initialized == 1u);
+	probe.chain_wait_initialized = 0u;
+	probe.max_sequence_positions = 1u << 23;
 	assert(SparkGlm52ChainModeConfigure(&probe) == SPARK_STATUS_UNSUPPORTED);
 	probe.max_sequence_positions = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT;
 	probe.owns_embedding = 0u;
@@ -398,7 +402,11 @@ static void TestGraph(void)
 	captures = CAPTURES;
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	SparkGlm52RunChain(NewChain(2048u));
-	assert(CAPTURES == captures && LAUNCHES == 4u && Count("begin2049") == 0u && Count("stage101") == 0u);
+	assert(CAPTURES == captures + 1u && LAUNCHES == 5u && Count("cap:begin4096") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	captures = CAPTURES;
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
+	SparkGlm52RunChain(NewChain(4096u));
+	assert(CAPTURES == captures && LAUNCHES == 5u && Count("begin4097") == 0u && Count("stage101") == 0u);
 	assert(COMPLETED_STATUS == SPARK_STATUS_UNSUPPORTED);
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,2u);
 	GRAPH_ERROR = 3u;
