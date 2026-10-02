@@ -235,7 +235,7 @@ _Static_assert((uint64_t)SPARK_WEIGHTD_MESH_SLOTS_PER_RANK * SPARK_WEIGHTD_MESH_
     "both bulk rings land inside the half of the band that holds no sender slot of the same half");
 _Static_assert(SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES <= SPARK_WEIGHTD_MESH_SLOT_BYTES - SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES &&
     SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES < (UINT64_C(1) << 24u),"a peer route fills at most one receive slot payload");
-_Static_assert(SPARK_WEIGHTD_MESH_STAGING_BYTES <= UINT64_C(512) * 1024u * 1024u,"per-peer staging stays inside its node memory budget");
+_Static_assert(SPARK_WEIGHTD_MESH_STAGING_BYTES <= UINT64_C(128) * 1024u * 1024u,"per-peer staging stays inside its node memory budget");
 _Static_assert(SPARK_WEIGHTD_MESH_WAIT_OFFSET % SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES == 0u &&
     SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
     (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES <=
