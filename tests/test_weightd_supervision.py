@@ -257,7 +257,7 @@ int main(void) {
         result = subprocess.run([str(self.latch)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True, qos="active"):
+    def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True, qos="active", trust="dscp"):
         script = r'''
 set -u
 RANK=0 MESH_INTERFACE=test MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=test-pair MESH_PAIR_SGID_INDEX=3 MESH_TRAFFIC_CLASS=106
@@ -274,12 +274,14 @@ setsid() { echo SPAWN; }
 sleep() { return 0; }
 sync_rendezvous() { return 0; }
 systemctl() { [ "$TEST_QOS" = active ]; }
+ibdev2netdev() { echo "test port 1 ==> test-netdev (Up)"; }
+mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TRUST"; }
 [() { case "$1" in -S) return 0;; -x) return "$TEST_BINARY_STATUS";; -s) return 1;; esac; builtin [ "$@"; }
 ''' + self.ensure + '\nensure_weightd\nstatus=$?\nwait\nexit "$status"\n'
         env = dict(os.environ, TEST_DISK_SHA="changed" if changed else "running",
                    TEST_PROBE_STATUS="0" if ready else "1", TEST_OWNER=owner,
                    TEST_BINARY_STATUS="0" if binary else "1",
-                   TEST_RESTART_STATUS="0" if restart else "1", TEST_QOS=qos,
+                   TEST_RESTART_STATUS="0" if restart else "1", TEST_QOS=qos, TEST_TRUST=trust,
                    TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh))
         return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
@@ -327,6 +329,14 @@ systemctl() { [ "$TEST_QOS" = active ]; }
         result = self.agent(owner="shell", qos="inactive")
         self.assertEqual(result.returncode, 1)
         self.assertIn("sparkpipe-roce-qos is not active", result.stderr)
+        self.assertNotIn("starting", result.stdout)
+        self.assertNotIn("UNLINK", result.stdout)
+        self.assertFalse((self.directory / "weightd.log").exists())
+
+    def test_lossless_class_requires_dscp_trust_on_the_mesh_door(self):
+        result = self.agent(owner="shell", trust="pcp")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("test (test-netdev) does not trust DSCP", result.stderr)
         self.assertNotIn("starting", result.stdout)
         self.assertNotIn("UNLINK", result.stdout)
         self.assertFalse((self.directory / "weightd.log").exists())
