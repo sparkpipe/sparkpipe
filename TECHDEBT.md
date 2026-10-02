@@ -227,6 +227,51 @@ citations refer to that commit.
   them from `include/sparkpipe/spark_tp_device_collective.h` and the
   transport, and prove the deletion with `tools/cuda13_sm121a_compile_gate.sh`
   building every module and tool.
+- Left out on purpose (2026-10-02): weightd does not range-check the
+  client-supplied `source_offset`, `length`, `remote_offset` or `lkey` of
+  `MESH_WRITE` and `MESH_BROADCAST` requests (`runtime/spark_weightd.c`, the
+  `SPARK_WEIGHTD_IPC_KIND_MESH_WRITE` and `MESH_BROADCAST` handlers;
+  `node/weightd_mesh.c` post paths). A client bug or a stale request can
+  overwrite another lane's cells inside a peer's registered mesh region,
+  silently corrupting another engine's collective. Found by the spark8
+  incident investigation (2026-10-02); it cannot reach memory outside the
+  registration. Close it by validating every offset and length against the
+  requesting lane's band and the registered region and refusing the request
+  with a named error, proven by a weightd fault-injection run on two Sparks
+  whose out-of-range requests are refused while in-range rounds stay
+  bit-exact.
+- Left out on purpose (2026-10-02): weightd's QP repair moves an error-state
+  queue pair through RESET to RTS with PSN 0 (`node/weightd_mesh.c`, the
+  repair path around `IBV_QPS_RESET`), which can drop pending sends without
+  completions, and a sticky `transfers[].failed` then blocks `LaneConfigure`;
+  spark9 logged endless WD-STUCK after the 2026-10-01 incident. Close it by
+  draining or failing every outstanding transfer with a completion before
+  repair, resynchronizing PSNs with the peer, and clearing per-transfer
+  failure state on a successful rewire, proven by killing one rank's weightd
+  mid-collective on the fleet and seeing every peer complete or fail its
+  rounds and rewire without a restart.
+- Left out on purpose (2026-10-02): a platform SMMU stall turns into silent
+  disk corruption. On spark8 (2026-10-01 16:00:49Z) a PCIe completion timeout
+  on CX-7 function 0000:01:00.1 was followed within about 85 ms by a stalled
+  SMMU0 command queue (`CMD_SYNC timeout`); the kernel kept running, recycled
+  IOVAs while lazy (DMA-FQ) translations were stale, and the NVMe wrote other
+  processes' pages over the root superblock and GDT blocks before a hung-task
+  panic. SMMU0 serves the NVMe, every CX-7 function, the management NIC and
+  the Ceph USB disk on each Spark. Nothing on the fleet stops a node on the
+  first stall. Close it with an owner-approved, runtime-only kmsg guard that
+  panics a node on its first SMMU `CMD_SYNC timeout` or uncorrectable CX-7 AER
+  (never enabled at boot without approval), a decision on `iommu.strict` for
+  the NVMe and CX-7 groups (a boot-path change), and a report to NVIDIA and
+  Canonical; proven by the guarded pair reproduction in the incident plan
+  halting a node with its root filesystem intact.
+- Left out on purpose (2026-10-02): no log records which collective path a
+  chain ran (single-band, pipelined, pair-first, host round, tree), and each
+  lane run overwrites `~/glmfull-dev/<lane>/residentd.log` on every rank,
+  which destroyed the incident run's rank logs on 2026-10-02. Close it by
+  logging the selected path and phase count per chain capture and per regime
+  change, and by keeping one rank log per run (named by run id) until the run
+  is archived, proven by a fleet run whose rank logs name the path of every
+  chain and survive a second run on the same lane.
 
 ## Steady-state decode hot path
 
