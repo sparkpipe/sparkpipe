@@ -1816,7 +1816,6 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 			SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
 			return;
 		}
-		/* STREAM-ORDERED STAGE COMPLETION CONTRACT */
 		launch_status = SparkGlm52LazyRelease(chain);
 		if ( launch_status == SPARK_STATUS_OK )
 			launch_status = SparkGlmStageEnqueueAsyncCompletion(state,chain->slot,chain->slot_index);

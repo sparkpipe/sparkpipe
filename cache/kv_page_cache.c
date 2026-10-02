@@ -2185,8 +2185,6 @@ static SparkStatus SparkKvLaneTransactionFinish(SparkKvLaneTransactions *transac
 	}
 	if ( status != SPARK_STATUS_OK )
 	{
-		// Failed GPU execution may have overwritten existing mutable state;
-		// metadata rollback cannot make that sequence safe to continue.
 		release_status = SparkKvPageCacheReleaseLane(transactions->cache,resident_slot,lane.sequence_id);
 		if ( release_status != SPARK_STATUS_OK )
 			return(release_status);

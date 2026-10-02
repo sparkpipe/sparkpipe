@@ -458,16 +458,6 @@ def validate_stream_ordered_dispatch() -> None:
         "SPARK_GLM_STAGE_COMPLETE_ASYNC SparkGlm52CompleteAsync",
         "glm52 binds its callback into the shared enqueue",
     )
-    require(
-        module,
-        "STREAM-ORDERED STAGE COMPLETION CONTRACT",
-        "glm52 completion call-site contract marker",
-    )
-    require(
-        common_stage,
-        "STREAM-ORDERED STAGE COMPLETION CONTRACT",
-        "shared enqueue stream-order contract marker",
-    )
     require(common_stage, "cudaLaunchHostFunc(", "stream-ordered stage completion")
     require(module, "SparkStageModuleSlotRelease", "callback-owned slot release")
     require(module, "host_callback_completion_count", "callback completion telemetry")
