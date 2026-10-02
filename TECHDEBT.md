@@ -67,13 +67,40 @@ citations refer to that commit.
   section that feeds them predate the mesh. Remove them together with a
   fleet stage-config migration. k3's relay and TP4 combine callbacks serve
   the same pre-mesh algorithms.
-- The weightd mesh is wired on one interface (the switched rail). Build the
-  pair-link hierarchical all-reduce (pair sum over `rank XOR 1`, 8-way
-  switched exchange, pair return) designed in
-  `docs/GLM5_NEXT_ROOFLINE.md` and select it for prefill and large batches.
-- Overlap communication with compute: two micro-batches in flight per
-  engine, one computing while the other's collectives complete. Measure the
-  extra weight reads that splitting costs against the exposed wait it hides.
+- Left out on purpose (2026-10-02): the TP all-reduce does not use the
+  pairwise links for bandwidth. weightd wires a pair QP to `rank XOR 1` since
+  #1404, but the production collective sends every exchange over the one
+  switched 100G port, so a large all-reduce (6.3M elements = B1024 or a
+  prefill wave, 12 MB) takes about 3 ms, bound by that port, and the pair link
+  carries only the partner's 1/15 share. The pair-first hierarchy designed in
+  `docs/GLM5_NEXT_ROOFLINE.md` (pair reduce-scatter, 8-group reduce-scatter
+  and all-gather, pair all-gather; rank-order fp32 sum, bit-exact) is built on
+  the unmerged branch `perf/pair-first-allreduce` with a weightd bulk route:
+  on 14 ranks with the pair link on its own PCIe x4 it measured 3030 to 2355
+  us at 512 rows (-22%), 750 to 715 us at 128 rows, and was slower (142 to 185
+  us) at 16 rows and when the pair link shared the switch NIC's x4. The branch
+  is quarantined: spark8's root superblock was overwritten with a page of
+  process memory during that branch's two-band test on 2026-10-01 16:01Z
+  (cause under investigation), and the second x4 pair address is runtime-only
+  (no boot unit). Close it by finding that root cause, then merging the
+  pair-first all-reduce for payloads of two or more 1M-element chunks, proven
+  by a 16-rank fleet ladder and GLM-5.3 Full T1, accuracy gate, B16, B256+ and
+  TTFT A/B against the switch-only collective with root-filesystem checksums
+  unchanged on every node.
+- Left out on purpose (2026-10-02): communication is never overlapped with
+  compute. Every decode step and prefill wave is one serial chain (compute,
+  all-reduce, compute), so every collective wait is exposed: at B1 a GLM-5.3
+  Full token takes 36.7 ms, of which 12.8 ms (35%) are peer waits over 236
+  exchanges (p50 52 us, p99 262 us) and 25.5 ms kernels against a 19.4 ms
+  memory floor; at B16 the waits are 21% of the step; at large batch the 3 ms
+  bandwidth-bound all-reduces sit on the critical path. Every all-reduce is
+  also a barrier, so one rank's hiccup stalls all sixteen. The design keeps
+  two micro-batches in flight per engine, one computing while the other's
+  collectives run on the NIC. Close it by splitting each wave into two
+  micro-batches whose chains interleave on separate streams, proven by B1, B16
+  and B256 fleet A/B with peer-wait time on the critical path reported per
+  step, tokens identical, and the extra weight reads of the split measured
+  against the hidden wait.
 - Left out on purpose (2026-10-02): weightd has 16 mesh lanes (`4f0e339`).
   Since `5814bf2` (PR #1135), when `cudaHostRegister` refuses the weightd mesh
   region with `cudaErrorInvalidValue`,
@@ -1035,7 +1062,19 @@ citations refer to that commit.
 
 Prefix reuse is required and non-compliant adapters are refused at load
 ([`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md), Prefix reuse is
-required). From 2026-09-28 to 2026-10-01 two opt-outs (the
+required).
+
+Left out on purpose (2026-10-02): the GLM-5.3 Full builds that have run on the
+fleet recompute every prompt from position 0. The deployed lanes predate the
+restore code: they ran with the `prefix_reuse` opt-out until 2026-10-01, and
+the glm52 restore (real page tables, index keys in the payload, prefix-aware
+continuity, the kernel view bound by the physical pool, the
+final-partial-block publish) exists only on the unmerged branches
+`fix/prefix-reuse-required` (#1416) and `kv/sequence-shard`. Every repeated
+system prompt and every follow-up turn is prefilled in full. Close it by
+passing the TP16 fleet I27 gate on those branches (below), merging them and
+deploying that build, proven by `usage.prompt_tokens_details.cached_tokens` >
+0 on repeated prompts in production logs with T1 exact. From 2026-09-28 to 2026-10-01 two opt-outs (the
 `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE` skip in the batch engine
 and the deployment `prefix_reuse` field) let these adapters serve while
 silently recomputing every prompt; GLM-5.3 Full ran that way. The load
