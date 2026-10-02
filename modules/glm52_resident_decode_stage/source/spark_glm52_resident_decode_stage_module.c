@@ -982,7 +982,7 @@ static cudaError_t SparkGlm52CopyRowTokens(const SparkGlm52TpChain *chain,const 
 	for (row=0u; wave->prefill_block_table != 0 && row<rows; row++)
 	{
 		index = first_row + row;
-		if ( index + 1u != chain_end && chain->slot->host_resident_slots[index] == chain->slot->host_resident_slots[index + 1u] )
+		if ( SparkGlm52WaveSegmentEnd(chain,index - chain->first_row) == 0u )
 			continue;
 		error = cudaMemcpyAsync(chain->slot->host_output_token_ids + (chain->row_ordered != 0u ? chain->row_order[index] : index),output + (row + 1u == rows ? wave->row_count - 1u : row),sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 		if ( error != cudaSuccess )
