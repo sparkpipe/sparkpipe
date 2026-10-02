@@ -601,6 +601,10 @@ static void SparkModelBatchReleaseResidentSlot(
 	request->resident_sequence_slot = SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT;
 }
 
+static void SparkModelBatchSetFailed(
+	SparkModelBatchEngine *engine,
+	SparkStatus status);
+
 static void SparkModelBatchFreeRequest(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request)
@@ -610,7 +614,12 @@ static void SparkModelBatchFreeRequest(
 	slot = (uint32_t)(request - engine->requests);
 	generation = request->generation;
 	status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
-	(void)status;
+	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
+	{
+		fprintf(stderr,"batch engine prefix index release failed sequence=%llu status=%d: the index no longer matches the driver caches\n",
+			(unsigned long long)request->sequence_id,(int)status);
+		SparkModelBatchSetFailed(engine,status);
+	}
 	SparkModelBatchReleaseResidentSlot(engine,request);
 	memset(request,0,sizeof(*request));
 	request->generation = generation;
