@@ -283,6 +283,10 @@ static void SparkGlm52BindLayer(
 	buffers->selection_scores = slot->selection_scores_f32;
 	buffers->selected_positions = slot->selected_positions;
 	buffers->selection_rows = slot->selection_rows;
+	buffers->prefill_union_positions = slot->prefill_union_positions;
+	buffers->prefill_union_masks = slot->prefill_union_masks;
+	buffers->prefill_union_counts = slot->prefill_union_counts;
+	buffers->prefill_union_entries = slot->prefill_union_entries;
 	buffers->topk_scratch_values = slot->topk_scratch_values_f32;
 	buffers->topk_scratch_positions = slot->topk_scratch_positions;
 	buffers->topk_scratch_entries = slot->topk_scratch_entries;
