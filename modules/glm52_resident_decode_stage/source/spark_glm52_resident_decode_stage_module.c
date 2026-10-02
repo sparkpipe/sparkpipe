@@ -823,6 +823,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->execution_row_capacity = state->execution_row_capacity;
 	wave->max_sequence_positions = state->max_sequence_positions;
 	wave->pages_per_sequence = state->kv.pages_per_sequence;
+	wave->physical_page_count = state->kv.physical_page_count;
 	wave->owns_embedding = state->owns_embedding;
 	wave->owns_final_head = state->owns_final_head;
 	wave->sideband_input = SparkGlm52ResidentDecodeStageRequiresSidebandInput(state->stage_index);

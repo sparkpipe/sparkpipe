@@ -233,6 +233,7 @@ static void DbBuild(DbRig *rig)
 	wave->resident_sequence_capacity = DB_MAX_ROWS;
 	wave->execution_row_capacity = DB_MAX_ROWS;
 	wave->pages_per_sequence = DB_PAGES;
+	wave->physical_page_count = DB_MAX_ROWS * DB_PAGES;
 	wave->kv_cache = fx->kv_cache;
 	wave->index_cache = fx->index_cache;
 	wave->page_table = fx->page_table;
