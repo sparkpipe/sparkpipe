@@ -5,6 +5,7 @@ import argparse
 import ctypes
 import datetime
 import errno
+import fcntl
 import json
 import os
 import re
@@ -28,6 +29,7 @@ NIC_VENDOR = "0x15b3"
 KERNEL_FACILITY = 0
 UNCLEAN_BOOT_LIMIT = 3
 LOOP_WINDOW_SECONDS = 6 * 3600
+FOLLOW_UP_SECONDS = 0.03
 STATE_PATH = Path("/var/lib/spark-dma-guard/boots.json")
 BINARY_PATH = Path("/usr/local/sbin/spark-dma-guard")
 SERVICE_PATH = Path("/etc/systemd/system/spark-dma-guard.service")
@@ -136,6 +138,30 @@ def parse_target(text: str | None) -> tuple[str, int] | None:
     return socket.getaddrinfo(host, int(port), socket.AF_INET, socket.SOCK_DGRAM)[0][4]
 
 
+def follow_up(descriptor: int, seconds: float) -> list[str]:
+    lines = []
+    deadline = time.monotonic() + seconds
+    flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    fcntl.fcntl(descriptor, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    try:
+        while time.monotonic() < deadline and len(lines) < 24:
+            try:
+                record = os.read(descriptor, 8192)
+            except BlockingIOError:
+                time.sleep(0.002)
+                continue
+            except OSError as error:
+                if error.errno == errno.EPIPE:
+                    continue
+                break
+            parsed = parse_record(record)
+            if parsed is not None and parsed[0] == KERNEL_FACILITY:
+                lines.append(parsed[2])
+    finally:
+        fcntl.fcntl(descriptor, fcntl.F_SETFL, flags)
+    return lines
+
+
 def lock_memory() -> int:
     libc = ctypes.CDLL(None, use_errno=True)
     return 0 if libc.mlockall(3) == 0 else ctypes.get_errno()
@@ -192,6 +218,8 @@ def run(arguments: argparse.Namespace) -> int:
             continue
         message = f"SPARK-DMA-GUARD host={host} boot={boot_id} event=trigger reason={reason} mode={mode} line={text[:400]}"
         notify(target, message)
+        for detail in follow_up(descriptor, FOLLOW_UP_SECONDS):
+            notify(target, f"SPARK-DMA-GUARD host={host} boot={boot_id} event=detail line={detail[:400]}")
         if mode == "armed":
             time.sleep(0.1)
             os.write(sysrq, b"b")
