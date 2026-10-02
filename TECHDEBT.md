@@ -371,6 +371,13 @@ citations refer to that commit.
   collective rounds (`SparkTpMeshHardwareGuardKernel`) and about 400 ms in
   compute, serially (rank-15 profile, 2026-10-02). Split waves into halves
   whose collectives overlap the other half's compute.
+  - Tried on 2026-10-02 (`drivers/glm52-prefill-overlap`, cd9786e):
+    - Design: waves above 512 rows run as two half-waves on two streams, with a second TP collective on mesh band 1 of the lane. The second half waits for the first half's attention before its own attention core.
+    - Fleet results:
+      - correct: T1 exact; pass keys retrieved at 8K, 16K and 32K;
+      - no faster: 1,024-row waves took 1.06–1.21 s against 1.03–1.26 s on 0b5371e, and 16K TTFT was 20.8 s against 19.1 s.
+    - During the 60K pass key, spark8 hung hard. It was the second spark8 failure during a test that used a lane's second mesh band (the first was the 10-01 superblock corruption). The band-1 defects that investigation found still apply, so the lane is parked off the fleet.
+  - Close this by first profiling several ranks together, to show whether the exposed wait is transfer time or the slowest rank's compute, before building any overlap. The second band stays off until its defects are fixed and a guarded single-node reproduction has run.
 
 ## Placement beyond TP16
 
