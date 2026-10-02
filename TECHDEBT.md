@@ -974,26 +974,22 @@ citations refer to that commit.
   completion path takes; the fleet proof is B16 per-step decode time with
   prefix admissions arriving during decode, equal to the same run without
   admissions.
-- Left out on purpose (2026-10-02): A spill write that fails fails the request
-  instead of dropping the cache entry that cannot be written. Every page-cache
-  page holds one arena reference for its whole life
-  (`cache/kv_page_cache.c:950`, `:323`, `:347`), and the arena's write-back
-  degrade applies only to unreferenced blocks (`cache/kv_cache.c:1201-1211`),
-  so for GLM Full a failed write-back makes the eviction return the error
-  (`kv_cache.c:1214`). An `IO_ERROR` reaches the prepare through
-  `SparkKvPageCacheMarkPageResident` (`cache/kv_page_cache.c:903-905`) or
-  `SparkKvPageCacheSpanRoom` (`:937`), a full backing quota
-  (`cache/kv_page_store.c:792`) returns `CAPACITY_EXCEEDED` through `SpanRoom`
-  without evicting any cached entry, and the batch engine fails the request on
-  either while every rank is connected (`runtime/model_batch_engine.c:882`,
-  `:901-902`). The store then forgets the failure (`kv_page_store.c:736`,
-  `:746`), so a persistent disk error fails every admission that has to spill
-  while the entry that cannot be written stays valid and resident. Close it by
-  evicting the victim's page-cache entry and its descendants when its
-  write-back fails or the backing quota is full, so the admission proceeds and
-  a later lookup is a clean `NOT_FOUND`; the fleet proof is a run with a small
-  backing quota and injected write errors in which every request completes
-  with tokens identical to an uninterrupted run.
+- Left out on purpose (2026-10-02): a block whose spill write-back fails is
+  degraded (`cache/kv_cache.c`, `SparkKvCacheArenaEvictResidentBlock`): its
+  contents are dropped, its backing is marked invalid, and a later restore of
+  it answers NOT_FOUND so the engine recomputes, never a wedge. The page-cache
+  entry that owns the block stays VALID, so every later request whose chain
+  matches it reaches the same missing page and recomputes again, and a
+  persistent disk error turns every spill into a recompute with no signal
+  beyond `write_back_degraded_block_count`, which nothing reports. (From
+  2026-10-01 to 2026-10-02 the degrade was limited to unreferenced blocks,
+  which made a failed write-back fail the request instead; that broke the B1
+  drop-and-recompute contract tested by `tests/test_jit_kv_wire.c` scenario 5
+  and was reverted.) Close it by evicting the owning page-cache entry and its
+  descendants when a write-back fails, and reporting the degraded count,
+  proven by a fleet run with injected write errors in which the first affected
+  request recomputes, later requests miss cleanly without touching the bad
+  page, and tokens match an uninterrupted run.
 - Left out on purpose (2026-10-02): The rule for a missing, corrupt or
   unreadable KV page is not written down (JIT KV plan owner decision 5), and
   the spill store GLM Full uses cannot detect corruption. A missing prefix

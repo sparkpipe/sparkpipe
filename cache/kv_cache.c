@@ -1198,9 +1198,8 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
             arena->value_block_stride_bytes);
         if (status != SPARK_STATUS_OK)
         {
-            if ((status == SPARK_STATUS_IO_ERROR ||
-                 status == SPARK_STATUS_CAPACITY_EXCEEDED) &&
-                block->reference_count == 0u)
+            if (status == SPARK_STATUS_IO_ERROR ||
+                status == SPARK_STATUS_CAPACITY_EXCEEDED)
             {
                 if (arena->write_back_degraded_block_count != UINT32_MAX)
                 {
