@@ -40,8 +40,8 @@ These rules follow from that code:
 
 - `ensure_weightd` returns early while any other `*/sparkpipe_weightd`
   executable runs ("unknown owner … refusing automatic startup"). The main loop
-  then skips root sync, rendezvous, engine recovery and the API until that
-  process exits. A private daemon started by `tools/inference_smoke.py`,
+  then skips root sync, engine recovery and the API until that process exits.
+  The mesh record exchange runs in its own loop and continues. A private daemon started by `tools/inference_smoke.py`,
   `tools/weightd_execute_receipt.py`, `tools/multi_dev_orchestrate.py` or a
   `WEIGHTD_MODE=private` family job therefore freezes fleet management on that
   Spark for the whole run. Do not run them on a serving Spark.
@@ -197,10 +197,11 @@ Rendezvous goes through files. weightd writes its record `mesh-<rank hex>.rec`
 (per-peer send and receive QPNs, rkey, receive address, GID, rank mask, boot
 time) into `--mesh-dir` (env `SPARK_WEIGHTD_MESH_DIR`, default
 `/tmp/weightd-mesh`) and reads peer records from the same directory. weightd
-has no network client for records. On the fleet, `sync_rendezvous` in the agent
-copies the node's own record to the hub's `release/qpn/<host>/mesh/` over scp
-and fetches each peer's record from the hub's release HTTP server. Until every
-peer in its rank mask is wired, weightd retries on every poll. After that it
+has no network client for records. On the fleet, the agent's background
+`mesh_exchange_loop` publishes the node's own record to the hub's
+`release/qpn/<host>/mesh/` (written to a temporary name, then renamed) and
+fetches each peer's record from the hub's release HTTP server every second with
+a conditional GET. Until every peer in its rank mask is wired, weightd retries on every poll. After that it
 rechecks records once per second, rewires a peer whose record boot time
 changed, and re-transitions a QP that left RTS (`WD-QP-REPAIR`). When every peer
 is wired it creates `<mesh-dir>/.ready`, and the agent starts a multi-rank
