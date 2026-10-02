@@ -48,6 +48,8 @@ static uint64_t spark_stub_ibv_next_wr_id = 1ull;
 static SparkStubIbvPostedWork spark_stub_ibv_posted_work[16384];
 static uint32_t spark_stub_ibv_posted_work_count;
 static uint64_t spark_stub_ibv_fail_post_at;
+static uint32_t spark_stub_ibv_empty_gid_queries;
+static uint64_t spark_stub_ibv_gid_queries;
 
 static void spark_stub_ibv_init_devices(void)
 {
@@ -149,15 +151,25 @@ int ibv_query_port(struct ibv_context *context, uint8_t port,
 int ibv_query_gid(struct ibv_context *context, uint8_t port, int index,
     union ibv_gid *gid)
 {
-    uint32_t byte;
     (void)context;
     if (port != 1u || gid == 0)
     {
         errno = EINVAL;
         return -1;
     }
-    for (byte = 0u; byte < 16u; byte++)
-        gid->raw[byte] = (uint8_t)(0xa0u + (uint8_t)index * 16u + byte);
+    spark_stub_ibv_gid_queries++;
+    memset(gid->raw,0,sizeof(gid->raw));
+    if (spark_stub_ibv_empty_gid_queries != 0u)
+    {
+        spark_stub_ibv_empty_gid_queries--;
+        return 0;
+    }
+    gid->raw[10] = 0xffu;
+    gid->raw[11] = 0xffu;
+    gid->raw[12] = 10u;
+    gid->raw[13] = (uint8_t)(100 + index);
+    gid->raw[14] = 0u;
+    gid->raw[15] = 1u;
     return 0;
 }
 
@@ -472,6 +484,17 @@ void spark_stub_ibv_reset(void)
     spark_stub_ibv_fail_qpn = 0u;
     spark_stub_ibv_fail_post_at = 0u;
     spark_stub_ibv_posted_work_count = 0u;
+    spark_stub_ibv_empty_gid_queries = 0u;
+}
+
+void spark_stub_ibv_empty_gids(uint32_t queries)
+{
+    spark_stub_ibv_empty_gid_queries = queries;
+}
+
+uint64_t spark_stub_ibv_gid_query_count(void)
+{
+    return spark_stub_ibv_gid_queries;
 }
 
 uint64_t spark_stub_ibv_modify_qp_calls(void)

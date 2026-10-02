@@ -212,6 +212,8 @@ int ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *request,
     struct ibv_send_wr **bad_request);
 
 void spark_stub_ibv_reset(void);
+void spark_stub_ibv_empty_gids(uint32_t queries);
+uint64_t spark_stub_ibv_gid_query_count(void);
 uint64_t spark_stub_ibv_modify_qp_calls(void);
 void spark_stub_ibv_rtr_traffic_class_clear(void);
 uint32_t spark_stub_ibv_rtr_traffic_class(void);

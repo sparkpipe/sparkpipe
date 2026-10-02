@@ -115,12 +115,17 @@ static void test_fill_record(TestMeshRecord *record, uint32_t rank,
     record->recv_addr = UINT64_C(0x7f0000000000) +
         generation * UINT64_C(0x1000000) + rank * UINT64_C(0x10000);
     record->lid = (uint16_t)(0x2000u + rank);
-    for (index = 0u; index < 16u; index++)
-        record->gid[index] = (uint8_t)(rank * 16u + index);
+    record->gid[10] = 0xffu;
+    record->gid[11] = 0xffu;
+    record->gid[12] = 10u;
+    record->gid[13] = 10u;
+    record->gid[14] = 100u;
+    record->gid[15] = (uint8_t)(10u + rank);
     record->pair_rkey = 0xa000u + generation * 0x100u + rank;
     record->pair_lid = (uint16_t)(0x3000u + rank);
-    for (index = 0u; index < 16u; index++)
-        record->pair_gid[index] = (uint8_t)(0x80u + rank * 16u + index);
+    memcpy(record->pair_gid,record->gid,sizeof(record->pair_gid));
+    record->pair_gid[14] = 200u;
+    record->pair_gid[15] = (uint8_t)rank;
     record->boot_ns = UINT64_C(0xb000000000000000) +
         generation * UINT64_C(0x100000) + rank;
 }
@@ -138,6 +143,21 @@ static int test_write_fully(int fd, const void *buffer, size_t bytes)
         remaining -= (size_t)written;
     }
     return 0;
+}
+
+static int test_write_record_raw(const TestMeshRecord *record)
+{
+    char path[256];
+    int fd;
+    int result;
+    test_record_path(record->rank,path,sizeof(path));
+    fd = open(path,O_WRONLY | O_CREAT | O_TRUNC,0644);
+    if (fd < 0)
+        return -1;
+    result = test_write_fully(fd,record,sizeof(*record));
+    if (close(fd) != 0)
+        result = -1;
+    return result;
 }
 
 static int test_write_record(uint32_t rank, uint32_t generation)
@@ -258,6 +278,26 @@ static int test_file_contains(const char *path, const char *token)
     buffer[got] = '\0';
     found = strstr(buffer,token) != 0;
     return found;
+}
+
+static uint32_t test_file_count(const char *path, const char *token)
+{
+    char buffer[65536];
+    const char *cursor;
+    uint32_t count = 0u;
+    int fd;
+    ssize_t got;
+    fd = open(path,O_RDONLY);
+    if (fd < 0)
+        return 0u;
+    got = read(fd,buffer,sizeof(buffer) - 1u);
+    (void)close(fd);
+    if (got < 0)
+        return 0u;
+    buffer[got] = '\0';
+    for (cursor = strstr(buffer,token); cursor != 0; cursor = strstr(cursor + 1,token))
+        count++;
+    return count;
 }
 
 static void test_ready_path(char *path, size_t path_bytes)
@@ -1486,6 +1526,96 @@ static void test_mesh_pair_link(uint32_t local_rank)
     (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
 }
 
+static void test_mesh_record_addresses(uint32_t local_rank)
+{
+    TestMeshRecord record,own;
+    char log_path[320];
+    uint64_t modify_before,started;
+    uint32_t rank = test_peer_rank(0u,local_rank),my_index = test_my_index(rank,local_rank);
+    SparkStatus status;
+
+    uint32_t peer_rank;
+    CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u) ==
+        SPARK_STATUS_BUSY,"address fixtures start a fresh mesh");
+    for (peer_rank = 0u; peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer_rank++)
+        if (peer_rank != local_rank)
+            CHECK(test_write_record(peer_rank,19u) == 0,"address fixtures publish every peer");
+    SparkWeightdMeshTryWire();
+    CHECK(SparkWeightdMeshReady() == 1u,"address fixtures start ready");
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-record-invalid.log",SPARK_WEIGHTD_MESH_DIR);
+    test_fill_record(&record,rank,20u);
+    memset(record.gid,0,sizeof(record.gid));
+    CHECK(test_write_record_raw(&record) == 0,"a peer publishes an empty switch gid");
+    modify_before = spark_stub_ibv_modify_qp_calls();
+    test_capture_begin(log_path);
+    SparkWeightdMeshTryWire();
+    SparkWeightdMeshTryWire();
+    test_capture_end();
+    CHECK(SparkWeightdMeshReady() == 0u,"an empty peer gid keeps the mesh unready");
+    CHECK(spark_stub_ibv_modify_qp_calls() == modify_before,"an empty peer gid is never dialled");
+    CHECK(test_file_count(log_path,"WD-MESH-RECORD-INVALID") == 1u,"an invalid record is reported once per generation");
+    CHECK(test_file_contains(log_path,"link=switch gid=00000000000000000000000000000000"),"the report names the published gid");
+
+    test_fill_record(&record,rank,21u);
+    record.gid[10] = 0u;
+    CHECK(test_write_record_raw(&record) == 0,"a peer publishes a non IPv4 gid");
+    test_capture_begin(log_path);
+    SparkWeightdMeshTryWire();
+    test_capture_end();
+    CHECK(SparkWeightdMeshReady() == 0u && test_file_count(log_path,"WD-MESH-RECORD-INVALID") == 1u,
+        "a new generation with another bad gid is reported again");
+
+    CHECK(test_write_record(rank,22u) == 0,"the peer republishes a valid record");
+    SparkWeightdMeshTryWire();
+    CHECK(SparkWeightdMeshReady() == 1u,"a valid record restores readiness without a local restart");
+    test_fill_record(&record,rank,22u);
+    CHECK(spark_stub_ibv_qp_remote_qpn(weightd_mesh.send_qps[0]->qp_num) == (int)record.recv_qpn[my_index],
+        "the peer is wired to its new generation");
+
+    test_fill_record(&record,rank,23u);
+    spark_stub_ibv_fail_modify_qp_for_qpn(record.recv_qpn[my_index]);
+    CHECK(test_write_record(rank,23u) == 0,"the peer republishes a record the driver rejects");
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-wire-repeat.log",SPARK_WEIGHTD_MESH_DIR);
+    test_capture_begin(log_path);
+    SparkWeightdMeshTryWire();
+    SparkWeightdMeshTryWire();
+    SparkWeightdMeshTryWire();
+    test_capture_end();
+    CHECK(SparkWeightdMeshReady() == 0u,"a rejected transition keeps the mesh unready");
+    CHECK(test_file_count(log_path,"WD-WIRE-FAIL") == 1u,"repeated wire failures on one generation log once");
+    CHECK(test_file_contains(log_path,"qp=send transition=RTR errno=22"),"the wire failure names the qp, transition and errno");
+    CHECK(test_file_contains(log_path,"gid=10.10.100."),"the wire failure names the dialled address");
+    spark_stub_ibv_fail_modify_qp_for_qpn(0u);
+    SparkWeightdMeshTryWire();
+    CHECK(SparkWeightdMeshReady() == 1u,"the same generation wires once the driver accepts it");
+
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-address-wait.log",SPARK_WEIGHTD_MESH_DIR);
+    spark_stub_ibv_empty_gids(3u);
+    started = SparkWeightdMeshMonotonicNs();
+    test_capture_begin(log_path);
+    status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u);
+    test_capture_end();
+    CHECK(status == SPARK_STATUS_BUSY,"init waits for its own address and then publishes");
+    CHECK(SparkWeightdMeshMonotonicNs() - started >= 3ull * (uint64_t)SPARK_WEIGHTD_MESH_ADDRESS_POLL_NS,
+        "init polls the gid table instead of publishing an empty gid");
+    CHECK(test_file_count(log_path,"WD-MESH-WAIT-ADDRESS") == 1u,"the address wait is reported once");
+    CHECK(test_file_contains(log_path,"WD-MESH-ADDRESS interface=rocep1s0f1 sgid=3 address=10.103.0.1"),
+        "the published address is reported");
+    CHECK(test_read_record(local_rank,&own) == 0 && own.gid[10] == 0xffu && own.gid[13] == 103u,
+        "the published record carries the IPv4 RoCE gid");
+
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-address-deadline.log",SPARK_WEIGHTD_MESH_DIR);
+    spark_stub_ibv_empty_gids(1000u);
+    weightd_mesh_address_wait_ns = UINT64_C(1000000000);
+    test_capture_begin(log_path);
+    status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u);
+    test_capture_end();
+    spark_stub_ibv_empty_gids(0u);
+    weightd_mesh_address_wait_ns = UINT64_C(120000000000);
+    CHECK(status == SPARK_STATUS_DRIVER_LOAD_ERROR,"init fails loudly when the address never appears");
+    CHECK(test_file_contains(log_path,"WD-MESH-ADDRESS-DEADLINE interface=rocep1s0f1 sgid=3"),"the deadline names the interface");
+}
+
 int main(void)
 {
     alarm(30);
@@ -1707,6 +1837,8 @@ int main(void)
         CHECK(unlink(path) == 0,"case6 remove second instance record");
         CHECK(rmdir(dir2) == 0,"case6 remove second instance directory");
     }
+
+    test_mesh_record_addresses(local_rank);
 
     test_clean_dir();
     test_rank_mask = 0xfu;
