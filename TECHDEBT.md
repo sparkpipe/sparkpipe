@@ -250,20 +250,19 @@ citations refer to that commit.
   failure state on a successful rewire, proven by killing one rank's weightd
   mid-collective on the fleet and seeing every peer complete or fail its
   rounds and rewire without a restart.
-- Left out on purpose (2026-10-02): a platform SMMU stall turns into silent
-  disk corruption. On spark8 (2026-10-01 16:00:49Z) a PCIe completion timeout
-  on CX-7 function 0000:01:00.1 was followed within about 85 ms by a stalled
-  SMMU0 command queue (`CMD_SYNC timeout`); the kernel kept running, recycled
-  IOVAs while lazy (DMA-FQ) translations were stale, and the NVMe wrote other
+- Recorded incident (2026-10-02; owner: treat as a one-off and act only if it
+  recurs): on spark8 at 2026-10-01 16:00:49Z a PCIe completion timeout on CX-7
+  function 0000:01:00.1 was followed within about 85 ms by a stalled SMMU0
+  command queue (`CMD_SYNC timeout`). The kernel kept running, recycled IOVAs
+  while lazy (DMA-FQ) translations were stale, and the NVMe wrote other
   processes' pages over the root superblock and GDT blocks before a hung-task
-  panic. SMMU0 serves the NVMe, every CX-7 function, the management NIC and
-  the Ceph USB disk on each Spark. Nothing on the fleet stops a node on the
-  first stall. Close it with an owner-approved, runtime-only kmsg guard that
-  panics a node on its first SMMU `CMD_SYNC timeout` or uncorrectable CX-7 AER
-  (never enabled at boot without approval), a decision on `iommu.strict` for
-  the NVMe and CX-7 groups (a boot-path change), and a report to NVIDIA and
-  Canonical; proven by the guarded pair reproduction in the incident plan
-  halting a node with its root filesystem intact.
+  panic. It was recovered via PXE rescue and e2fsck from the backup
+  superblock. No other node shows AER, SMMU, NVMe or ext4 errors. If it
+  recurs, the prepared responses are a runtime kmsg guard that panics on the
+  first SMMU `CMD_SYNC timeout` or uncorrectable CX-7 AER, `iommu.strict` for
+  the NVMe and CX-7 groups (a boot-path change for the owner), the guarded
+  pair reproduction, and a report to NVIDIA and Canonical (investigation
+  workflow wf_2545220b-a65).
 - Left out on purpose (2026-10-02): no log records which collective path a
   chain ran (single-band, pipelined, pair-first, host round, tree), and each
   lane run overwrites `~/glmfull-dev/<lane>/residentd.log` on every rank,
