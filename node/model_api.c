@@ -853,7 +853,8 @@ static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
 
 static void api_usage_json(char *buffer, size_t capacity, const ApiRequest *req)
 {
-	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u}",req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count);
+	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u}}",
+		req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count,req->cached_prompt_token_count);
 }
 
 static uint32_t api_client_gone(int fd)
