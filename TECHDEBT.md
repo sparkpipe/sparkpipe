@@ -1082,22 +1082,18 @@ adapter below lacks real restore, an I27 proof, or both:
 
 Related common-code debt:
 
-- Left out on purpose (2026-10-02, branch `kv/sequence-shard`): a reply that
-  ends on EOS or a stop token before its output budget never publishes its
-  last partial block. The engine publishes a lane only at a block boundary,
-  at the prefill prompt end or at the decode budget end
-  (`runtime/model_batch_engine.c:2052-2055`), and the stop path at
-  `model_batch_engine.c:717` releases the request without a
-  `CACHE_PUBLISH` work item. A follow-up turn recomputes up to
-  `block_token_count - 1` tokens (63 for GLM-5.3 Full) of the previous
-  reply. The fix: the stop path queues `QUEUED_PUBLISH` for the unpublished
-  tail before release, and every adapter declaring prefix reuse serves a
-  publish-only `CACHE_PUBLISH` frame with no decode step. Only glm5_next
-  implements `CACHE_PUBLISH` today; glm52
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c`)
-  has no publish-only frame path. Close it with an I27 case whose second
-  turn extends a reply that ended on EOS mid-block and asserts the cached
-  token count covers that reply.
+- Left out on purpose (2026-10-02): the publish of a reply's final partial
+  block has no fleet proof. Since 48d7b5a39 (branch `kv/sequence-shard`) a
+  completed request with an unpublished tail queues `CACHE_PUBLISH` before its
+  release (`runtime/model_batch_engine.c`,
+  `SparkModelBatchHandleDecodeCompletion`), the common binding serves the
+  publish-only frame (`SparkStageKvBindingPublishFrame`,
+  `runtime/stage_kv_binding.c`), glm52 declares `CACHE_PUBLISH`, and every
+  adapter must declare it (`runtime/model_serving_adapter.c`,
+  `SparkDescriptorCheckRequiredCacheOperations`). Only host tests cover it.
+  Close it with a fleet I27 case on the TP16 GLM-5.3 Full lane whose second
+  turn extends a reply that ended on EOS mid-block, with `cached_tokens`
+  covering the whole first reply and tokens identical to an uncached run.
 - Left out on purpose (2026-10-02): residentd's slot claim checks slot
   ownership and the lane's request id, generation and sequence id
   (`node/model_residentd.c:714-783`), not position continuity. Continuity is
