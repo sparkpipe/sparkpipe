@@ -721,10 +721,10 @@ static void TestScenarioChainEosCheckpoint(const SparkModelResidentDeployment *d
 		"chain EOS: early output stop completes without pretending to rewind resident state");
 	MockResidentClientSetAutoTokens(1u);
 	TestSubmitPrompt(engine,2u,611u,1u,prompt,8u);
-	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 6u,
-		"chain EOS: the reply up to the stop token is published and found by the next request");
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 4u,
+		"chain EOS: truncated emitted token count is never indexed as a checkpoint");
 	TestDriveUntilTerminal(engine,&state,2u,400u);
-	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 6u,"chain EOS: the next request reuses the whole published reply");
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"chain EOS: subsequent request uses valid prefill checkpoint");
 	SparkModelBatchEngineDestroy(engine);
 }
 

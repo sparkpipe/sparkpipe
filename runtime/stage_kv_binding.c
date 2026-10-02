@@ -614,7 +614,7 @@ static SparkStatus SparkStageKvBindingPublishLanes(SparkStageKvBinding *binding,
 			cache_lane->sequence_position != cache_lane->publish_token_count || cache_lane->context_token_count != cache_lane->publish_token_count ||
 			atomic_load_explicit(&binding->lane_bound[resident],memory_order_acquire) == 0u ||
 			atomic_load_explicit(&binding->lane_sequence_ids[resident],memory_order_acquire) != cache_lane->sequence_id ||
-			atomic_load_explicit(&binding->lane_next_positions[resident],memory_order_acquire) < cache_lane->sequence_position )
+			atomic_load_explicit(&binding->lane_next_positions[resident],memory_order_acquire) != cache_lane->sequence_position )
 			status = SPARK_STATUS_VALIDATION_FAILED;
 	}
 	if ( status == SPARK_STATUS_OK )
