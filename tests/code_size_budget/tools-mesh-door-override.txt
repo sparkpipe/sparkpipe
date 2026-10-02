@@ -1,2 +1,2 @@
-+6
-Fleet agent: the RDMA doors can be overridden per node for the CX-7 second-PCIe-link experiments, and weightd startup checks that the door carrying switch RDMA trusts DSCP so traffic class 106 stays lossless.
++28
+Fleet agent: the RDMA doors can be overridden per node for the CX-7 second-PCIe-link experiments; weightd startup checks that the door carrying switch RDMA trusts DSCP; and node_doctor checks each RDMA port by device, flapping only an admin-up port without carrier for 60 s, at most once per 5 minutes and not in the agent's first 5 minutes, so a pair-partner reboot can no longer flap the healthy switch port.

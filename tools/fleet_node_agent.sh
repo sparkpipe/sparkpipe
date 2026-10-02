@@ -47,6 +47,7 @@ sha16() {
 }
 
 START_SHA=$(sha16 "$0")
+AGENT_STARTED=$(date +%s)
 AGENT_BLOCKED=""
 mkdir -p "$VIEW"
 
@@ -386,7 +387,7 @@ unload_root() {
     return 1
 }
 
-declare -A BACKOFF NEXT_OK
+declare -A BACKOFF NEXT_OK DOCTOR_SINCE DOCTOR_NEXT
 LAST_ANY_RESTART=0
 
 restart_ok() {
@@ -642,20 +643,40 @@ self_update() {
     exec bash "$new" "$ROOTS" "$HUB"
 }
 
-node_doctor() {
-    local state netdev
-    state=$(ibv_devinfo "$MESH_INTERFACE" 2>/dev/null | awk '/^[[:space:]]*state:/ {print $2; exit}')
-    case "$state" in
-        PORT_ACTIVE) ;;
-        *)
-            netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $5; exit}')
-            [ -n "$netdev" ] || return 0
-            echo "$(date +%T) doctor: $MESH_INTERFACE state=${state:-missing}; flapping $netdev" >&2
-            sudo -n ip link set "$netdev" down 2>/dev/null
-            sleep 2
-            sudo -n ip link set "$netdev" up 2>/dev/null
-            ;;
+doctor_port() {
+    local dev="$1" now state netdev flags carrier
+    now=$(date +%s)
+    state=$(ibv_devinfo -d "$dev" -i 1 2>/dev/null | awk '/^[[:space:]]*state:/ {print $2; exit}')
+    if [ "$state" = PORT_ACTIVE ]; then
+        DOCTOR_SINCE[$dev]=""
+        return 0
+    fi
+    netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$dev" '$1==d {print $5; exit}')
+    [ -n "$netdev" ] || return 0
+    flags=$(ip -o link show dev "$netdev" 2>/dev/null)
+    carrier=$(cat "/sys/class/net/$netdev/carrier" 2>/dev/null || echo 0)
+    case "$flags" in
+        *"<"*",UP"*">"*|*"<UP"*">"*) ;;
+        *) DOCTOR_SINCE[$dev]=""; return 0 ;;
     esac
+    if [ "$carrier" = 1 ]; then
+        DOCTOR_SINCE[$dev]=""
+        return 0
+    fi
+    [ -n "${DOCTOR_SINCE[$dev]:-}" ] || DOCTOR_SINCE[$dev]=$now
+    [ $(( now - DOCTOR_SINCE[$dev] )) -ge 60 ] || return 0
+    [ $(( now - AGENT_STARTED )) -ge 300 ] || return 0
+    [ "$now" -ge "${DOCTOR_NEXT[$dev]:-0}" ] || return 0
+    DOCTOR_NEXT[$dev]=$(( now + 300 ))
+    echo "$(date +%T) doctor: $dev state=${state:-missing} netdev=$netdev admin-up no-carrier for $(( now - DOCTOR_SINCE[$dev] ))s; flapping $netdev" >&2
+    sudo -n ip link set "$netdev" down 2>/dev/null
+    sleep 2
+    sudo -n ip link set "$netdev" up 2>/dev/null
+}
+
+node_doctor() {
+    doctor_port "$MESH_INTERFACE"
+    doctor_port "$MESH_PAIR_INTERFACE"
 }
 
 janitor() {
