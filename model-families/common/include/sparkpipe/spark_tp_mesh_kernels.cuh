@@ -1269,6 +1269,18 @@ static cudaError_t SparkTpMeshDriverStatus(CUresult status,const char *phase)
     return status == CUDA_ERROR_NOT_SUPPORTED ? cudaErrorNotSupported : cudaErrorUnknown;
 }
 
+static __global__ void SparkTpMeshPairPackKernel(const SparkTpMeshRoundControl *control,const uint16_t *source,uint8_t *staging,
+    uint64_t begin,uint64_t count,uint64_t slice,uint32_t parity,uint32_t degree);
+static __global__ void SparkTpMeshPairStageKernel(uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,const SparkTpMeshRoundControl *control,
+    uint16_t *staging,uint64_t staging_slot_elements,const uint16_t *local,uint8_t *pair_band,uint64_t begin,uint64_t count,uint64_t slice,
+    uint32_t rank,uint32_t degree);
+static __global__ void SparkTpMeshPairCombineKernel(const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,const SparkTpMeshRoundControl *control,
+    uint16_t *output,uint64_t begin,uint64_t count,uint64_t slice,uint32_t rank,uint32_t degree);
+static __global__ void SparkTpMeshPairGroupGatherKernel(const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,const SparkTpMeshRoundControl *control,
+    uint16_t *output,uint64_t begin,uint64_t count,uint64_t slice,uint32_t rank,uint32_t degree);
+static __global__ void SparkTpMeshPairFinishKernel(uint8_t *pair_band,uint64_t slot_bytes,SparkTpMeshRoundControl *control,
+    uint16_t *output,uint64_t begin,uint64_t count,uint64_t slice,uint32_t rank,uint32_t degree,uint32_t last);
+
 extern "C" cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device_out)
 {
     if ( host == 0 || device_out == 0 ) return cudaErrorInvalidValue;
@@ -1285,7 +1297,12 @@ extern "C" cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device_out)
         (const void *)SparkTpMeshAllToAllPackKernel,
         (const void *)SparkTpMeshAllToAllStageKernel,
         (const void *)SparkTpMeshRsagStageKernel,
-        (const void *)SparkTpMeshHardwareAllToAllKernel
+        (const void *)SparkTpMeshHardwareAllToAllKernel,
+        (const void *)SparkTpMeshPairPackKernel,
+        (const void *)SparkTpMeshPairStageKernel,
+        (const void *)SparkTpMeshPairCombineKernel,
+        (const void *)SparkTpMeshPairGroupGatherKernel,
+        (const void *)SparkTpMeshPairFinishKernel
     };
     cudaFuncAttributes attributes;
     for ( uint32_t i = 0u; i < sizeof(kernels) / sizeof(kernels[0]); i++ )
