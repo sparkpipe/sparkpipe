@@ -6,7 +6,7 @@ through this stack on the rtx5090 hub:
 | Port | Process | Protocol |
 | --- | --- | --- |
 | 4000 | LiteLLM proxy (`config/litellm-config.yaml`, user unit `sparkpipe-litellm`) | OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`; any model name routes to `glm-5.3` |
-| 8433 | chat layer (`serving/chat_frontend.py`, user unit `sparkpipe-chat`) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
+| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
 | 8446 | `sparkpipe_model_api` (user unit `glmfull-api6`) | the engine endpoint: `prompt_token_ids` in, token ids, usage and `cached_tokens` out |
 
 Smoke receipts (2026-10-02, build de944ae): chat answered "Paris" with the
@@ -19,7 +19,7 @@ and `/v1/models` answered through the tunnel.
 
 ## The chat layer
 
-`serving/chat_frontend.py` is what vLLM is behind LiteLLM elsewhere, and
+`tools/serving/chat_frontend.py` is what vLLM is behind LiteLLM elsewhere, and
 nothing more:
 
 - it renders the model's own `chat_template.jinja` with jinja2 in the same
