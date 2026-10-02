@@ -1,0 +1,2 @@
++6
+Fleet agent: the RDMA doors can be overridden per node for the CX-7 second-PCIe-link experiments, and weightd startup checks that the door carrying switch RDMA trusts DSCP so traffic class 106 stays lossless.
