@@ -338,6 +338,16 @@ citations refer to that commit.
   cache. B16 decode at 16K context reads 5.2 GB of bf16 index keys per step.
   With the context split, each rank scores its own 1/tp of the context and
   the ranks merge their top-k candidates.
+- KV pages are just in time: physical pages must hold one full lane and
+  logical pages every lane, so lanes share one resident pool and pages past
+  it park in the backing store. Fleet record (2026-10-02, 0b5371e, TP16, 2 x
+  262,144 positions on a 32 GiB pool = 5,637 pages, 20 GiB backing): two
+  concurrent 124,997-token prompts each retrieved their pass key (TTFT
+  450 s for both); pass keys retrieved at 8K to 60K; B1 30.3 tok/s. Parking
+  copies synchronously under the binding mutex (see the JIT KV plan, G6),
+  so a pool overcommitted by active lanes thrashes instead of queueing;
+  the engine admits waves only by the pages of in-flight submissions, not
+  by each request's full prompt and output budget.
 - Left out on purpose (2026-10-02): glm52 graph regimes key long contexts on
   4,096-token buckets to 16K and four buckets per octave above, in the fixed
   72-regime table (`spark_glm52_graph_regime.h`): a 1,048,576-position
