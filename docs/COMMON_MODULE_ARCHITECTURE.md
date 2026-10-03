@@ -114,6 +114,28 @@ Every TP driver except k3 uses them. The private copies they replaced summed
 rank by rank in BF16. The common combines sum all ranks in FP32 and round
 once (82217a1).
 
+##### Build marker
+
+In CUDA units, `spark_tp_mesh_kernels.cuh` defines
+`SPARK_TP_MESH_KERNELS_MARKER`, a version string, and emits it twice:
+
+- as the `__constant__` array `SparkTpMeshKernelsBuildMarker`;
+- as the host array `SparkTpMeshKernelsBuildMarkerHost`. This copy is marked
+  `__attribute__((used))`, so the host compiler keeps it even though nothing
+  references it.
+
+`modules/resident_decode_stage_rules.mk` reads the marker value from the
+header with `sed` into `MODULE_MESH_KERNELS_MARKER`. Its `publish` target
+fails with `MESH-KERNELS-MARKER-MISSING` when that value is empty or when
+`strings` does not find it as a whole line in the module archive.
+
+The host copy guarantees that a plain copy of the string sits in the
+archive's host object, so the check does not rely on the `__constant__`
+copy. Both copies come from the same macro in the common header, so the
+check passes only when the archive carries the current header's marker. An
+archive built from a stale copy with an older marker, or without the
+header, fails.
+
 #### M-1 `common_gdn_stage_kernels.cu`: qwen decode kernel suite
 
 `common/common_gdn_stage_kernels.cu` holds the GDN, attention, MoE and head kernels with their `LmGdnStageLaunch*` launchers, declared in `common_gdn_stage_kernels.h`. qwen38_max and qwen4_flash include it into their CUDA unit, and each family's `llm_defines.h` supplies the `SPARK_LLM_*` geometry. qwen38_27b still carries its own copies.
@@ -237,6 +259,69 @@ Every `*_resident_decode_stage` Makefile includes
 `modules/resident_decode_stage_rules.mk`. That is 13 modules. k3 and
 mimo26 have no module Makefile.
 
+#### `spark_pack_load_common.h`: region hook
+
+`spark_pack_load_common.h` is in `model-families/common/include/sparkpipe/`.
+For each directory entry, its `LoadEntry` validates the entry through the
+family's `ValidateEntry`, rejects a duplicate and marks coverage. Unless the
+family marks the entry validate-only (`SPARK_PACK_LOAD_ENTRY_IS_VALIDATE_ONLY`),
+it then obtains device pointers for the entry's payload and scale planes in
+two steps.
+
+1. If the family defines `SPARK_PACK_LOAD_REGION_HOOK`, `LoadEntry` calls
+   the hook with the state, the entry, the pack file and two pointer
+   outputs.
+   - A return of 1 means the hook supplied the pointers, which may be null.
+   - Any other value means the hook did not consume the entry.
+   - The hook returns an `int`, not a `SparkStatus`, so it cannot report an
+     error.
+2. If there is no hook, or the hook did not consume the entry, `LoadEntry`
+   calls `SparkStageModuleLoadDeviceRegion` for the payload. It calls it for
+   the scale too when `scale_bytes != 0`. That function does not copy the
+   region:
+   - With weightd configured, it attaches each pack file once per ledger
+     through `SparkWeightdAttachMappedPack` and returns a pointer into that
+     whole-pack mapping.
+   - Without weightd, `SparkWeightdAttachRequested` returns `BUSY`, and the
+     function logs a refusal and fails with `UNSUPPORTED`.
+
+Three families define the hook: laguna (`SparkLagunaModuleRegionHook`),
+qwen38_max (`SparkQwen38MaxModuleRegionHook`) and qwen4_flash
+(`SparkQwen4FlashModuleRegionHook`). Each hook serves entries from the
+module's `SparkWeightdLazyPack`:
+
+- **Routed expert slabs** (`MOE_W1`, `MOE_W3` and `MOE_DOWN`; laguna's
+  `EXPERT_GATE_UP` and `EXPERT_DOWN`): the hook returns 1 with null
+  pointers, so nothing is mapped at load time. At execute time the module
+  leases the routed experts through the lazy pack's `SparkWeightdMap`
+  (`SparkWeightdMapAcquire`).
+- **Every other entry**: the hook calls `SparkWeightdLazyPackSlice` into the
+  resident spine for the payload, and for the scale when `scale_bytes != 0`,
+  and returns 1 if every slice succeeds.
+- **Return 0**: when the module has no lazy pack, when the lazy pack is not
+  `ready` (checked by qwen38_max and qwen4_flash), or when a slice fails.
+
+**Open debt.** A hook that returns 0 sends the entry down the
+`SparkStageModuleLoadDeviceRegion` path. Neither the hook nor `LoadEntry`
+logs why:
+
+- **Without weightd.** The family's lazy open treats `BUSY` as success and
+  leaves `lazy_pack` null. The lazy opens are the shared `LazyOpen` in
+  `spark_module_lazy_open.h` for laguna, `SparkQwen38MaxModuleLazyOpen` and
+  `SparkQwen4FlashModuleLazyOpen`. The load then fails with `UNSUPPORTED`
+  at the first loaded entry, inside `SparkStageModuleLoadDeviceRegion`,
+  instead of in the lazy open.
+- **With weightd, when a slice fails.** The entry switches from the lazy
+  spine slice to the whole-pack mapping. Only the generic `ERRSITE` line of
+  the failed slice reaches stderr; the hook cannot say why it declined.
+
+This second load path is a fallback, which the firmware contract forbids
+(`sparkpipe_invariants.md`, preamble and I03). Mapping "weightd not
+configured" to `BUSY` also conflicts with I17. The fix is for the hook to
+return a status and for the loader to fail on any error. `TECHDEBT.md`
+tracks the `BUSY` mapping and the deployments that omit weightd under "Model
+residency and storage".
+
 ### Planned (no code yet)
 
 - **M-4, common serving frame.** A shared deployment-config handler
@@ -289,6 +374,30 @@ them against ling's `llm_defines.h`, with negative controls.
   `llm_defines.h`.
 - Until these headers become shims, a value edited in one copy is not
   checked against the other.
+
+### Generated headers
+
+These headers are rendered from contract JSON files. Each generator's
+`--check` compares the rendered text with the tracked file byte for byte, so
+a hand edit fails the check. For the first three rows, edit the generator or
+the contract, never the header.
+
+| Header | Generator | Source | Who runs `--check` |
+| --- | --- | --- | --- |
+| `inference/llms/kimi_k3/generated_config.h` | `tools/generate_k3_contract.py`, which also writes `model_contracts/k3.json` and the k3 model description | `model_contracts/k3_authoritative.json` | `tests/test_k3_checkpoint_contract.py` (in `make test`) and `.github/workflows/cuda13-sm121a-compile.yml` |
+| `model-families/dsv4/include/sparkpipe/spark_dsv4_model.h` and `spark_dsv4_pro_model.h` | `tools/generate_dsv4_contracts.py`, which also writes `model_contracts/dsv4_flash.json`, `dsv4_pro.json` and the flash model descriptions | `model_contracts/dsv4_flash_authoritative.json` and `dsv4_pro_authoritative.json` | `tests/test_dsv4_contracts.py` (in `make test`), `tools/cuda13_sm121a_compile_gate.sh` and the workflow |
+| `model-families/glm52/include/sparkpipe/spark_glm52_model.h` | `tools/glm52_model_contract.py`, which also writes the glm52 model descriptions | `model_contracts/glm52.json` | `tests/test_glm52_model_identity.py` (in `make test`) and `tools/cuda13_sm121a_compile_gate.sh` |
+| `spark_qwen38_27b_model.h`, `spark_qwen38_27b_serving_constants.h` (`--emit-adapter-constants`), `spark_glm5_next_model.h` and `spark_qwen4_flash_model.h`, each under `model-families/<family>/include/sparkpipe/` | `tools/gen_geometry_header.py --family <family>` | `model_contracts/qwen38_27b_authoritative.json`, `glm53_flash_authoritative.json` and `qwen4_flash_authoritative.json` | nothing |
+
+No gate runs `tools/gen_geometry_header.py --check`:
+
+- **qwen38_27b** (model header and serving constants): apart from comments,
+  the generated text matches the tracked files.
+- **glm5_next**: the generator omits `SPARK_GLM5_NEXT_REPLAY_ROWS_MAX` and
+  the `SPARK_GLM5_NEXT_MODEL_MISS_*` ring macros, which the tracked header
+  defines.
+- **qwen4_flash**: the tracked header is a shim over `llm_defines.h`, but
+  the generator emits literal values.
 
 ## 5. Mesh-kernel adoption status
 

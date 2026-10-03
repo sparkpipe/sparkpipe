@@ -61,6 +61,35 @@ Matching argmax tokens are weaker evidence than matching logits, hidden states
 or KV and recurrent state. Distributed numerical qualification still needs the
 real TP16 or TP4xPP4 collectives.
 
+### Node context and cache identities
+
+**The node context.** `probe_node` builds a TP16 rank-0 node context with
+`tp_collective_identifier` set to 0. That means no collective transport:
+every reduce would return rank 0's partial sums. The glm5_next module
+refuses this context when the driver is created:
+
+- In a release build, `SparkModuleTpCollectiveIdentifier` fails with
+  `TP-COLLECTIVE-IDENTIFIER-REQUIRED`.
+- In any build, the module requires the `KV_SHARD` node flag at TP16. The
+  probe does not set it (`GLM-KV-SHARD-REQUIRED`), and the flag would be
+  refused anyway without a collective (`GLM-KV-SHARD-REFUSED`).
+
+So driver creation fails, and the checks in this section do not run on a
+real driver. `TECHDEBT.md` tracks the fix under "Production qualification".
+
+**Cache identities.** The inputs are fixed: in `probe_batch`, row r at step
+s feeds token 1 + 4r + s. A row's prompt is therefore determined by its row
+and its length, so `probe_checkpoint_frame` uses a synthetic cache identity
+instead of a digest:
+
+- byte 0 of the `sha256` field is row + 1;
+- byte 1 is the token count;
+- the remaining bytes are zero.
+
+In prefix mode, each lane publishes (`SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH`)
+at 63 and at 64 tokens. The restore pass then requests the 63-token prefix
+(`SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX`) under the same identity.
+
 ## The compare tool is broken
 
 `tools/glm5_next_driver_compare.py` runs resident B1, B3 and B5 baselines

@@ -202,3 +202,110 @@ bind a cover, so they capture none of them and keep their node count.
   restores the recurrent-state snapshot, grows the set and replays the step
   (`docs/WORKING_SET_GRAPHS.md`). A graph step no longer
   reports a miss as BUSY, and a failed capture arm is an internal error.
+
+## Implementation notes
+
+### DSA index state at stage boundaries
+
+Every DSA layer runs its own indexer, so no index state crosses a stage
+boundary. `SparkGlm5NextResidentDecodeStageBoundaryCarriesDsa` returns 0 for
+every stage, and therefore `SparkGlm5NextResidentDecodeStageRequiresSidebandInput`
+and `SparkGlm5NextResidentDecodeStageRequiresSidebandOutput` are 0 as well.
+
+### Index KV geometry (`Glm5NextIndexKv`)
+
+- One index slot holds `SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION`
+  (2 x 128 + 1 = 257) BF16 values, 514 bytes. `LmKvGeometry` static-asserts
+  that a slot is a multiple of 16 bytes so a cache read is a vector load, so
+  the index slot cannot be an `LmKvGeometry` instantiation. `Glm5NextIndexKv`
+  provides the same members (`kSlotBytes`, `kPageSlots`, `kPageBytes`,
+  `kGrows`, `PageOf`, `SlotInPage`, `PagesForTokens`, `PoolBytes`) without
+  that assertion. The shared accessors and store kernels (`LmKvSlotRequired`,
+  `LmKvShardSlotRequired`, `LmKvStoreKernel`, `LmKvShardStoreKernel`) still
+  do the page-table mapping.
+- `kPageBytes` covers one layer. `SparkGlm5NextBindLayer` builds the index
+  cache view with its pool already advanced to that layer's slab
+  (`index_cache + dsa_ordinal * index_layer_stride_bytes`), so physical page
+  offsets stride within one layer, not across the DSA layer count.
+
+### Split MLP path: route, then experts
+
+- `SparkGlm5NextLaunchCudaLayerMlpRoute` runs the layer's FFN
+  hyper-connection site (`Glm5NextHcSite` with the `hc_ffn_*` weights) and
+  then either the whole dense MLP (layers below
+  `SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER`) or the MoE routing. For a routed
+  layer it also queues an asynchronous copy of `group_row_offset` (expert
+  count + 1 entries) into the slot's `host_group_row_offset` array at
+  `layer * (expert count + 1)`. In both cases it records `route_ready_event`
+  on the slot stream.
+- The caller must wait for that event before reading the host offsets or
+  calling `SparkWeightdRouteKeys`; `SparkGlm5NextLazyExperts` calls
+  `cudaEventSynchronize` on it.
+- `SparkGlm5NextPollCudaLayerMlpRoute` returns `cudaSuccess` when the routing
+  readback is complete, `cudaErrorNotReady` while it is pending, and
+  `cudaErrorInvalidValue` when no successful route is recorded on the slot.
+  `SparkGlm5NextLaunchCudaLayerMlpRoute` clears `route_recorded` once the
+  wave shape and the event pass validation, and sets it only when the launch
+  succeeds. `SparkGlm5NextLaunchCudaLayerMlpRouteResident` also clears it.
+- `SparkGlm5NextLaunchCudaLayerMlpExperts` returns without work for dense
+  layers. For routed layers it must run on the same slot and stream, after
+  route readiness and working-set acquisition. For a routed layer the
+  resident path issues `SparkGlm5NextLaunchCudaLayerMlpRouteResident` and
+  `SparkGlm5NextLaunchCudaLayerMlpExperts` back to back in that order, with
+  no readback. The lazy path acquires the routed working set
+  (`SparkWeightdMapAcquire`, `SparkWeightdMapBeginUse`) between the two calls
+  on the same stream.
+- In a lazy wave (`lazy_experts` set), `SparkGlm5NextBindLayer` takes the
+  expert weight pointers from the current lease: `expert_lease_base` plus the
+  layer's offsets, and only when `expert_lease_base` is non-null and either
+  `expert_lease_all` is set or `expert_lease_local_layer` is the layer being
+  bound. Otherwise the pointers are null and `Glm5NextLayerMoeExperts` fails
+  with `LM_LAUNCH_ERR_SHAPE`. A lazy wave must therefore bind the current
+  layer's lease before it submits experts.
+
+### Recurrent (KDA) state transfer
+
+- `SparkGlm5NextRecurrentCopy` moves one resident slot's recurrent state
+  between the device and a host buffer. The host layout is the KDA recurrent
+  state for all KDA layers, then the Q, K and V convolution windows, each for
+  all KDA layers. The buffer size must equal that total exactly. The function
+  takes no lock on the slot; the caller must own the resident slot for the
+  whole transfer.
+- `SparkGlm5NextRecurrentInitialize` allocates `recurrent_staging` as two
+  pages of `recurrent_page_bytes`. The first half is the module's own
+  gather/scatter buffer: it is filled or drained by
+  `SparkGlm5NextRecurrentCopy` and passed to `SparkKvPageStoreWriteback` and
+  `SparkKvPageStoreReadback`. The second half is the page store's own worker
+  staging (`staging_address`).
+- `SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER` counts all three
+  (Q, K, V) windows. Each of the three window pools holds one rank-local
+  window, so `kda_window_layer_stride_bytes` uses that constant divided by 3
+  and by the TP degree per resident sequence.
+
+### KV page copies (`SparkGlm5NextPageCopy`)
+
+The KV arena names a block by a packed address,
+`device_base + page * (layer_page_bytes * layer_count)`, and the page store
+passes that address to its copy function, `SparkGlm5NextPageCopy`. The device
+allocation is layer-major (one slab per layer). `SparkGlm5NextPageCopy` turns
+the packed address back into a page index, rejects addresses outside the
+allocation or not on a packed page boundary, and copies through
+`SparkKvPageStoreCopyLayered` before any device copy dereferences the address.
+Addresses inside the index cache use the index cache layout; all others use
+the main KV cache layout.
+
+### Completion and reset
+
+- `SparkGlm5NextCompleteOnWorker` copies the completion record, completion
+  function and context out of the async slot before it releases the lanes and
+  the slot. Once the slot is released, a submission started from the
+  completion callback can reuse the slot and overwrite the async record.
+- After validating the request and before claiming slots and lanes,
+  `SparkGlm5NextReset` calls `SparkTpDeviceCollectiveBroadcastCancel` on the
+  device collective, and on the HC collective when it is initialized. A reset
+  discards this rank's in-flight chains while peers may still be waiting on
+  this rank's cells for them. The cancel advances the cancel cell and
+  broadcasts it, so a peer's cell wait returns `SPARK_STATUS_BUSY` (logged as
+  `CKEY-CANCEL`) instead of spinning until
+  `SparkTpDeviceCollectiveSpinBudgetNs` expires (the smaller of the
+  collective's `round_timeout_ns` and 120 s).
