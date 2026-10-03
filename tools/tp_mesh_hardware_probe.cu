@@ -334,7 +334,7 @@ struct Probe
         uint32_t saved=routes;
         for (uint32_t route_set:{SPARK_TP_MESH_ROUTES_SLICE,SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER})
             for (uint32_t n:{4u,5u,16u})
-                for (uint64_t count:{UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u,UINT64_C(524288),SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+4099u})
+                for (uint64_t count:{UINT64_C(18432),UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u,UINT64_C(524288),SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+4099u})
                 {
                     if (count*2u>tensor_bytes) continue;
                     routes=route_set;
@@ -460,7 +460,7 @@ int main(int argc,char **argv)
         probe.Case(16u,operation,2u,elements,false);probe.Case(16u,operation,2u,elements,true);
     }
     for (uint32_t degree:{3u,4u,5u,16u})
-        for (uint64_t elements:{UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u})
+        for (uint64_t elements:{UINT64_C(18432),UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u})
         {
             probe.Case(degree,1u,1u,elements,false);probe.Case(degree,1u,1u,elements,true);
         }

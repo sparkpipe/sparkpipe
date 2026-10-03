@@ -885,10 +885,20 @@ The launcher picks RS/AG only if all of the following hold:
 
 - the operation is a BF16 sum;
 - the degree is at least 4;
-- the payload is at least 49152 elements (12 rows of 4096);
+- the payload is at least 18432 elements at degree 16 or more (3 rows of
+  6144), or 49152 elements (12 rows of 4096) at degree 4 to 15;
 - the local weightd advertises `SLICE_ROUTES` in the lane's wait entries.
 
 The host phase accounting uses the same predicate.
+
+The threshold depends on degree because the direct path's wire cost grows
+with degree and RS/AG's does not. Direct rounds send each rank's payload to
+every peer, (degree − 1)× the payload; RS/AG sends about 2× the payload but
+pays one extra round of roughly 36 µs. At degree 16, RS/AG wins once the
+payload is past about 27 KB, so 3 GLM rows already take it. At degree 4 the
+break-even is about 95 KB, so the 12-row threshold stays. Decode steps of 3
+to 11 rows at TP16 are the ones that change. Their fleet timing (B3–B7) is
+pending a full-fleet window.
 
 **Compatibility.** The mesh record magic is bumped to `MESH0005`, so a
 fleet with mixed weightd versions refuses to wire (`WD-MESH-ABI-MISMATCH`)
