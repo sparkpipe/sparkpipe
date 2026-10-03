@@ -558,23 +558,23 @@ citations refer to that commit.
   math, and the index selection and prefill attention are bit-identical
   (`tests/cuda/index_shard_cuda.cu`, `tests/host_cuda/index_shard_host.cu`).
   Prefill waves (gather mode) carry one sequence, so packed multi-span
-  prefill is off under the split. They exchange only the context before
-  the wave (latent and index keys in separate balanced sections, index keys
-  only on full-indexer layers past 2,048 positions); the wave's own rows
-  are read from each rank's local copy, and a row digest folded into one
-  4-word MAX all-reduce per wave fails the request loudly if any rank's
-  local rows differ. Latent keys are read in place through a per-position
-  remap. Index keys are unpacked into position-ordered pages first: read
-  through the remap, the scorer ran 8% slower at 16K and 25-28% slower at
-  175-260K on one GB10 (64 rows), while the unpack costs one copy of the
-  section. Graph mode sizes the exchange by the regime bound, so it ships
-  up to the bound rather than the real old context. The transient buffers
-  per pipeline slot are two packs, two receive sections, a latent tail, the
-  paged index copy and one remap table (about half of the previous
-  gathered pages at 262,144 positions). Still open: exact sharded DSA
-  selection for gather waves (each rank scores its own positions, which
-  removes the index-key exchange), and fetching only the selected union's
-  latents once its size is measured. Scatter waves are capped at 64 rows.
+  prefill is off under the split. They exchange only the latent keys of
+  the context before the wave, in balanced chunks, and read them in place
+  through a per-position remap; the wave's own rows come from each rank's
+  local copy, and a row digest folded into one 2-word MAX all-reduce per
+  wave fails the request loudly if any rank's local rows differ. DSA
+  selection on full-indexer layers past 2,048 positions is sharded: each
+  rank scores every row only against the keys it owns, keeps its exact
+  top-k, sends the candidates to the rank that owns the row (one
+  all-to-all), that rank merges them into the exact replicated top-k, and
+  one all-gather returns every row's selection to every rank. On one GB10
+  this cut per-layer selection from 20.5 ms to 2.0 ms at 64K and from
+  112 ms to 5.7 ms at 256K for 1024 rows (the replicated layout repeats the
+  same selection on all 16 ranks). Graph mode sizes the latent exchange and
+  the selection keep from the regime bound. Execution rows must be a
+  multiple of the context-split degree (refused at allocation otherwise).
+  Still open: fetching only the selected union's latents, once its size is
+  measured on the fleet. Scatter waves are capped at 64 rows.
 - Left out on purpose (2026-10-02): KV memory is owned by each engine, not by
   the node. `SparkStageKvBindingInitialize` allocates the KV regions and the
   page table with `cudaMalloc` through the module's own ledger

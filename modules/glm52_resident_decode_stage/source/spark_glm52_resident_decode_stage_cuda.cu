@@ -249,11 +249,11 @@ static void SparkGlm52BindLayerShard(
 	if ( wave->kv_gather != 0u )
 	{
 		buffers->kv_gather_latent_pack = slot->kv_gather_latent_pack;
-		buffers->kv_gather_index_pack = slot->kv_gather_index_pack;
 		buffers->kv_gather_latent_tail = slot->kv_gather_latent_pool + wave->kv_gather_latent_tail_slot * GLM_KV_SLOT_BYTES;
-		buffers->kv_gather_index_received = slot->kv_gather_index_pool;
-		buffers->kv_gather_index_chunk_bytes = wave->kv_gather_index.chunk_bytes;
-		buffers->kv_gather_old_most = wave->kv_gather_old_bound;
+		buffers->kv_select_local = slot->kv_select_local;
+		buffers->kv_select_candidates = (uint2 *)slot->kv_select_candidates;
+		buffers->kv_select_keep = wave->kv_select_keep;
+		buffers->kv_select_rows = wave->kv_select_rows;
 		buffers->kv_gather_sequences = slot->kv_gather_plan;
 		buffers->kv_gather_offset = slot->kv_gather_plan + capacity;
 		buffers->kv_gather_old_bound = slot->kv_gather_plan + 2u * capacity;
@@ -267,13 +267,6 @@ static void SparkGlm52BindLayerShard(
 		buffers->cache_gathered.sequence_count = 1u;
 		buffers->cache_gathered.pool_page_count = (uint32_t)(wave->kv_gather_latent_tail_slot + wave->execution_row_capacity);
 		buffers->cache_gathered.access_error = (LmKvAccessError *)slot->kv_access_error;
-		buffers->index_gathered = buffers->cache_gathered;
-		buffers->index_gathered.pool = slot->kv_gathered_index;
-		buffers->index_gathered.page_table = slot->kv_gathered_table;
-		buffers->index_gathered.page_table_stride = wave->pages_per_sequence;
-		buffers->index_gathered.pool_page_count = wave->pages_per_sequence;
-		if ( slot->kv_gathered_index == 0 )
-			memset(&buffers->index_gathered,0,sizeof(buffers->index_gathered));
 		return;
 	}
 	buffers->shard_send_bf16 = slot->shard_send_bf16;
@@ -475,7 +468,8 @@ int32_t SparkGlm52LaunchCudaLayerShard(const SparkGlm52CudaWave *wave,uint32_t l
 	uint32_t layer;
 	int32_t status;
 	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || local_layer >= wave->layer_count || wave->kv_shard.degree < 2u ||
-		(wave->kv_gather != 0u) != (phase == SPARK_GLM52_SHARD_PHASE_GATHER_PRE || phase == SPARK_GLM52_SHARD_PHASE_GATHER_POST) )
+		(wave->kv_gather != 0u) != (phase == SPARK_GLM52_SHARD_PHASE_GATHER_PRE || phase == SPARK_GLM52_SHARD_PHASE_GATHER_POST ||
+			phase == SPARK_GLM52_SHARD_PHASE_GATHER_MERGE) )
 		return(LM_LAUNCH_ERR_SHAPE);
 	SparkGlm52BindLayer(wave,local_layer,&buffers);
 	stream = (cudaStream_t)wave->slot->stream;
@@ -493,6 +487,15 @@ int32_t SparkGlm52LaunchCudaLayerShard(const SparkGlm52CudaWave *wave,uint32_t l
 	case SPARK_GLM52_SHARD_PHASE_SCATTER_POST: return(GlmLayerShardScatterPost(&buffers,wave->row_count,wave->multiprocessor_count,stream));
 	case SPARK_GLM52_SHARD_PHASE_GATHER_PRE: return(GlmLayerShardGatherPre(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream));
 	case SPARK_GLM52_SHARD_PHASE_GATHER_POST: return(GlmLayerShardGatherPost(&buffers,wave->row_count,wave->maximum_context,layer,wave->multiprocessor_count,stream));
+	case SPARK_GLM52_SHARD_PHASE_GATHER_MERGE:
+		if ( wave->slot->kv_select_received == 0 || wave->slot->kv_select_merged == 0 || wave->kv_select_slice == 0u ||
+			LmIndexShardCandidateScatterLaunch<GLM_LAYER_THREADS>((const uint2 *)wave->slot->kv_select_received,(uint64_t)wave->kv_select_slice * wave->kv_select_keep,
+				wave->kv_shard.degree,wave->kv_select_keep,wave->kv_select_slice,wave->maximum_context,buffers.selection_scores,stream) != cudaSuccess ||
+			LmTopkExactLaunch<GLM_LAYER_THREADS>(buffers.selection_scores,wave->kv_select_slice,wave->maximum_context,GLM_DSA_SELECTED,
+				LM_TOPK_EXACT_CHUNK,LM_TOPK_EXACT_CHUNKED_ROWS,buffers.topk_scratch_values,buffers.topk_scratch_positions,buffers.topk_scratch_entries,
+				wave->slot->kv_select_merged,stream) != cudaSuccess )
+			return(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
 	default: return(LM_LAUNCH_ERR_SHAPE);
 	}
 }

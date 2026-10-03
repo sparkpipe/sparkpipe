@@ -23,7 +23,7 @@ static void *PENDING_CONTEXT;
 static SparkStatus COMPLETED_STATUS;
 static uint32_t COMPLETED_COUNT;
 static SparkGlm52ModuleState *STATE;
-static uint32_t EAGER,KV_LATENT,KV_INDEX;
+static uint32_t EAGER,KV_LATENT;
 static SparkTpDeviceCollectiveCompletionFunction PENDING_COMPLETION;
 static void *PENDING_COMPLETION_CONTEXT;
 
@@ -63,8 +63,8 @@ int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave) { Log("head
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *tokens,uint32_t rows) { (void)stream; (void)maxloc; (void)tokens; Log("unpack",rows); return(cudaSuccess); }
 int32_t SparkGlm52LaunchCudaLayerShard(const SparkGlm52CudaWave *wave,uint32_t layer,uint32_t phase)
 {
-	static const char *const names[5] = { "spre", "smid", "spost", "gpre", "gpost" };
-	assert(phase < 5u && wave->kv_shard.degree > 1u && (wave->kv_gather != 0u) == (phase >= SPARK_GLM52_SHARD_PHASE_GATHER_PRE));
+	static const char *const names[6] = { "spre", "smid", "spost", "gpre", "gpost", "gmerge" };
+	assert(phase < 6u && wave->kv_shard.degree > 1u && (wave->kv_gather != 0u) == (phase >= SPARK_GLM52_SHARD_PHASE_GATHER_PRE));
 	Log(names[phase],layer);
 	return(0);
 }
@@ -143,9 +143,13 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->row_elements == 0u &&
 		KvOp(slot->kv_gather_latent_pack,slot->kv_gather_latent_pool,&KV_LATENT,submission) != 0u )
 		Log("x-kvL",submission->active_sequence_count);
-	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->row_elements == 0u &&
-		KvOp(slot->kv_gather_index_pack,slot->kv_gather_index_pool,&KV_INDEX,submission) != 0u )
-		Log("x-kvI",submission->active_sequence_count);
+	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL && submission->local_device == slot->kv_select_candidates &&
+		submission->full_device == slot->kv_select_received && submission->row_elements != 0u && submission->row_elements % 2u == 0u &&
+		submission->row_elements <= 2u * SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT )
+		Log("x-select",submission->active_sequence_count);
+	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->local_device == slot->kv_select_merged &&
+		submission->full_device == slot->selected_positions && submission->row_elements == 2u * SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT )
+		Log("x-selected",submission->active_sequence_count);
 	else
 		Log("reduce-unknown",0u);
 	return(SPARK_STATUS_OK);
@@ -213,7 +217,9 @@ static SparkGlm52ModuleState state;
 static SparkWeightdLazyPack lazy;
 static uint16_t dev_hidden[8],dev_attn[8],dev_gather[8],dev_local[8],dev_shard_send[8],dev_shard_received[8];
 static float dev_partials[8],dev_partials_received[8];
-static uint8_t dev_kv_latent_pack[8],dev_kv_latent_pool[8],dev_kv_index_pack[8],dev_kv_index_pool[8];
+static uint8_t dev_kv_latent_pack[8],dev_kv_latent_pool[8];
+static uint32_t dev_select_local[8],dev_select_merged[8],dev_selected[8];
+static uint64_t dev_select_candidates[8],dev_select_received[8];
 static unsigned long long dev_kv_digest[SPARK_GLM52_SHARD_DIGEST_WORDS];
 static uint32_t dev_table[16];
 static uint64_t dev_maxloc[4];
@@ -226,7 +232,6 @@ static void Reset(uint32_t mode,uint32_t split,uint32_t layers)
 	LOG_COUNT = 0u;
 	ENQUEUE_COUNT = 0u;
 	KV_LATENT = 0u;
-	KV_INDEX = 0u;
 	ENQUEUE_FAIL_AT = UINT32_MAX;
 	VERIFY_STATUS = SPARK_STATUS_OK;
 	GRAPH_ERROR = 0u;
@@ -300,8 +305,11 @@ static void Setup(void)
 	slot->shard_partials_received_f32 = dev_partials_received;
 	slot->kv_gather_latent_pack = dev_kv_latent_pack;
 	slot->kv_gather_latent_pool = dev_kv_latent_pool;
-	slot->kv_gather_index_pack = dev_kv_index_pack;
-	slot->kv_gather_index_pool = dev_kv_index_pool;
+	slot->kv_select_local = dev_select_local;
+	slot->kv_select_candidates = dev_select_candidates;
+	slot->kv_select_received = dev_select_received;
+	slot->kv_select_merged = dev_select_merged;
+	slot->selected_positions = dev_selected;
 	slot->kv_gather_digest = dev_kv_digest;
 	assert(SparkStageModuleCudaWaitInitialize(&state.chain_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	batch.row_count = 1u;
@@ -746,7 +754,7 @@ static void TestShardDecode(void)
 	SparkGlm52RunChain(NewChain(9u));
 	at = ExpectScatterLayer(0u,1u,1u,0,"");
 	at = ExpectScatterLayer(1u,1u,1u,at,"");
-	assert(Count("attn0") == 0u && Count("attn1") == 0u && Count("core0") == 0u && Count("x-gather1") == 2u && Count("x-partials1") == 2u && Count("x-kvL3") == 0u && Count("x-digest4") == 0u);
+	assert(Count("attn0") == 0u && Count("attn1") == 0u && Count("core0") == 0u && Count("x-gather1") == 2u && Count("x-partials1") == 2u && Count("x-kvL3") == 0u && Count("x-digest2") == 0u);
 	assert(COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,2u);
 	SparkGlm52RunChain(NewChain(4000u));
@@ -799,7 +807,7 @@ static int32_t ExpectDigest(int32_t at,const char *prefix)
 {
 	char entry[40];
 	(void)snprintf(entry,sizeof(entry),"%sdigest0",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
-	(void)snprintf(entry,sizeof(entry),"%sx-digest4",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sx-digest2",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
 	(void)snprintf(entry,sizeof(entry),"%sdigest1",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
 	(void)snprintf(entry,sizeof(entry),"%shead1",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
 	return(at);
@@ -809,7 +817,7 @@ static void TestShardPrefillGather(void)
 {
 	int32_t at;
 	uint32_t bound,op;
-	SparkKvShardSectionLayout latent,index;
+	SparkKvShardSectionLayout latent;
 	char entry[40];
 	Shard(1u);
 	state.execution_row_capacity = 16u;
@@ -820,37 +828,38 @@ static void TestShardPrefillGather(void)
 	at = Find("gpost0",(uint32_t)at); assert(at >= 0);
 	at = Find("reduce-attn12",(uint32_t)at); assert(at >= 0);
 	(void)ExpectDigest(at,"");
-	assert(Count("x-kvL3") == 1u && Count("x-kvI4") == 0u && Count("spre0") == 0u && Count("x-gather1") == 0u && Count("x-digest4") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	assert(Count("x-kvL3") == 1u && Count("x-select2") == 0u && Count("gmerge0") == 0u && Count("spre0") == 0u && Count("x-gather1") == 0u && Count("x-digest2") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	SparkGlm52RunChain(NewOrderedChain(3000u,12u));
 	at = Find("gpre0",0u); assert(at >= 0);
-	at = Find("x-kvI4",(uint32_t)at); assert(at >= 0);
+	at = Find("x-select2",(uint32_t)at); assert(at >= 0);
+	at = Find("gmerge0",(uint32_t)at); assert(at >= 0);
+	at = Find("x-selected1",(uint32_t)at); assert(at >= 0);
 	at = Find("x-kvL9",(uint32_t)at); assert(at >= 0);
 	at = Find("x-kvL9",(uint32_t)at + 1u); assert(at >= 0);
 	at = Find("gpost0",(uint32_t)at); assert(at >= 0);
 	(void)ExpectDigest(at,"");
-	assert(Count("x-kvI4") == 1u && Count("x-kvL9") == 2u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	assert(Count("x-select2") == 1u && Count("x-selected1") == 1u && Count("x-kvL9") == 2u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	SparkGlm52RunChain(NewOrderedChain(0u,12u));
 	at = Find("gpre0",0u); assert(at >= 0);
 	at = Find("gpost0",(uint32_t)at); assert(at >= 0);
 	(void)ExpectDigest(at,"");
-	assert(Count("x-kvL3") == 0u && Count("x-kvL9") == 0u && Count("x-kvI4") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	assert(Count("x-kvL3") == 0u && Count("x-kvL9") == 0u && Count("x-select2") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	SparkGlm52RunChain(NewOrderedChain(9u,6u));
-	assert(Count("gpre0") == 0u && Count("spre0") == 1u && Count("x-digest4") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	assert(Count("gpre0") == 0u && Count("spre0") == 1u && Count("x-digest2") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
 	SparkTpChainGraphTableDestroy(&state.graphs[0]);
 	CAPTURES = 0u;
 	(void)SparkGlm52GraphRegime(3012u,state.decode_split_context_threshold,state.max_sequence_positions,&bound);
-	SparkGlm52ShardGatherSizes(&state,bound,&latent,&index);
-	assert(latent.chunks != 0u && index.chunks != 0u);
+	SparkGlm52ShardGatherSizes(&state,bound,&latent);
+	assert(latent.chunks != 0u);
 	SparkGlm52RunChain(NewOrderedChain(3000u,12u));
 	at = Find("cap:gpre0",0u); assert(at >= 0);
-	for (op=0u; op<index.chunks; op++)
-	{
-		(void)snprintf(entry,sizeof(entry),"cap:x-kvI%u",index.chunk_units); at = Find(entry,(uint32_t)at + 1u); assert(at >= 0);
-	}
+	at = Find("cap:x-select2",(uint32_t)at); assert(at >= 0);
+	at = Find("cap:gmerge0",(uint32_t)at); assert(at >= 0);
+	at = Find("cap:x-selected1",(uint32_t)at); assert(at >= 0);
 	for (op=0u; op<latent.chunks; op++)
 	{
 		(void)snprintf(entry,sizeof(entry),"cap:x-kvL%u",latent.chunk_units); at = Find(entry,(uint32_t)at + 1u); assert(at >= 0);
@@ -917,7 +926,9 @@ static void TestShardEager(void)
 	Reset(SPARK_TP_CHAIN_MODE_EAGER,0u,1u);
 	EagerRun(NewOrderedChain(3000u,12u),"reduce-attn12");
 	at = Find("gpre0",0u); assert(at >= 0);
-	at = Find("x-kvI4",(uint32_t)at); assert(at >= 0);
+	at = Find("x-select2",(uint32_t)at); assert(at >= 0);
+	at = Find("gmerge0",(uint32_t)at); assert(at >= 0);
+	at = Find("x-selected1",(uint32_t)at); assert(at >= 0);
 	at = Find("x-kvL9",(uint32_t)at); assert(at >= 0);
 	at = Find("x-kvL9",(uint32_t)at + 1u); assert(at >= 0);
 	at = Find("gpost0",(uint32_t)at); assert(at >= 0);
@@ -968,7 +979,7 @@ def main():
                         '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"', "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
                         str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph keyed by head path), KV context split (scatter exchanges per layer in decode with candidates only on indexed layers, chunked key gather for single-sequence prefill waves, graph capture of the exchanges, eager stages, scatter row cap)")
+    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph keyed by head path), KV context split (scatter exchanges per layer in decode with candidates only on indexed layers, old-context key gather and row-owner DSA selection for single-sequence prefill waves, graph capture of the exchanges, eager stages, scatter row cap)")
 
 
 if __name__ == "__main__":

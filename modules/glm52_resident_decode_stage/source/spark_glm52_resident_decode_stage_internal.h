@@ -119,12 +119,12 @@ typedef struct SparkGlm52ExecutionSlot
 	float *shard_partials_received_f32;
 	uint32_t *index_local_selected;
 	uint8_t *kv_gather_latent_pack;
-	uint8_t *kv_gather_index_pack;
 	uint8_t *kv_gather_latent_pool;
-	uint8_t *kv_gather_index_pool;
 	uint32_t *kv_gather_latent_remap;
-	uint8_t *kv_gathered_index;
-	uint32_t *kv_gathered_table;
+	uint32_t *kv_select_local;
+	uint64_t *kv_select_candidates;
+	uint64_t *kv_select_received;
+	uint32_t *kv_select_merged;
 	uint32_t *kv_gather_rows_zero;
 	uint32_t *kv_gather_plan;
 	unsigned long long *kv_gather_digest;
@@ -192,7 +192,9 @@ typedef struct SparkGlm52CudaWave
 	uint32_t kv_gather_capacity;
 	uint64_t kv_gather_latent_tail_slot;
 	SparkKvShardSectionLayout kv_gather_latent;
-	SparkKvShardSectionLayout kv_gather_index;
+	uint32_t kv_select_keep;
+	uint32_t kv_select_slice;
+	uint32_t kv_select_rows;
 	uint32_t shard_query_units;
 	uint32_t shard_indexing_units;
 	uint32_t shard_partial_units;
@@ -209,9 +211,10 @@ typedef struct SparkGlm52CudaWave
 #define SPARK_GLM52_SHARD_PHASE_SCATTER_POST 2u
 #define SPARK_GLM52_SHARD_PHASE_GATHER_PRE 3u
 #define SPARK_GLM52_SHARD_PHASE_GATHER_POST 4u
+#define SPARK_GLM52_SHARD_PHASE_GATHER_MERGE 5u
 #define SPARK_GLM52_SHARD_PLAN_ARRAYS 3u
 #define SPARK_GLM52_SHARD_PLAN_WORDS 2u
-#define SPARK_GLM52_SHARD_DIGESTS 2u
+#define SPARK_GLM52_SHARD_DIGESTS 1u
 #define SPARK_GLM52_SHARD_DIGEST_WORDS (3u * SPARK_GLM52_SHARD_DIGESTS)
 
 #define SPARK_GLM52_PREFILL_WAVE_SPANS 8u

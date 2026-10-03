@@ -161,7 +161,9 @@ typedef enum SparkGlm52ChainStage
 	SPARK_GLM52_CHAIN_STAGE_SHARD_EXCHANGE,
 	SPARK_GLM52_CHAIN_STAGE_SHARD_PARTIALS,
 	SPARK_GLM52_CHAIN_STAGE_KV_GATHER,
-	SPARK_GLM52_CHAIN_STAGE_KV_DIGEST
+	SPARK_GLM52_CHAIN_STAGE_KV_DIGEST,
+	SPARK_GLM52_CHAIN_STAGE_KV_SELECT,
+	SPARK_GLM52_CHAIN_STAGE_KV_SELECTED
 } SparkGlm52ChainStage;
 
 typedef struct SparkGlm52TpChain
@@ -722,14 +724,21 @@ static void SparkGlm52ShardScatterSizes(SparkKvShard shard,uint32_t rows,uint32_
 	*partial_units = (uint32_t)SparkGlm52ShardUnits((uint64_t)rows * heads * SPARK_GLM52_SHARD_PARTIAL_FLOATS * sizeof(float));
 }
 
-static void SparkGlm52ShardGatherSizes(const SparkGlm52ModuleState *state,uint32_t old_bound,SparkKvShardSectionLayout *latent,SparkKvShardSectionLayout *index)
+static void SparkGlm52ShardGatherSizes(const SparkGlm52ModuleState *state,uint32_t old_bound,SparkKvShardSectionLayout *latent)
 {
-	uint64_t keys = SparkKvShardGatherKeys(state->kv_shard,old_bound);
-	uint32_t capacity = SparkGlm52ShardChunkCapacity(state);
-	SparkKvShardSectionLayout none = {0u,0u,0u,0u,0u};
-	*latent = SparkKvShardSectionLayoutBuild(keys,SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t),SPARK_GLM52_SHARD_UNIT_BYTES,SPARK_GLM52_SHARD_SLOT_ALIGN,capacity);
-	*index = state->index_layer_count != 0u ?
-		SparkKvShardSectionLayoutBuild(keys,SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t),SPARK_GLM52_SHARD_UNIT_BYTES,1u,capacity) : none;
+	*latent = SparkKvShardSectionLayoutBuild(SparkKvShardGatherKeys(state->kv_shard,old_bound),SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t),
+		SPARK_GLM52_SHARD_UNIT_BYTES,SPARK_GLM52_SHARD_SLOT_ALIGN,SparkGlm52ShardChunkCapacity(state));
+}
+
+static uint32_t SparkGlm52ShardSelectKeep(SparkKvShard shard,uint32_t context)
+{
+	uint32_t keys = SparkKvShardGatherKeys(shard,context);
+	return(keys < SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT ? keys : SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT);
+}
+
+static uint32_t SparkGlm52ShardSelectSlice(SparkKvShard shard,uint32_t rows)
+{
+	return((rows + shard.degree - 1u) / shard.degree);
 }
 
 static SparkStatus SparkGlm52AllocateSlotShard(
@@ -737,17 +746,19 @@ static SparkStatus SparkGlm52AllocateSlotShard(
 	SparkGlm52ExecutionSlot *slot)
 {
 	uint32_t query_units,indexing_units,partial_units,degree = state->kv_shard.degree,rows = state->execution_row_capacity;
-	uint64_t candidate_offset,latent_bytes,index_bytes;
-	SparkKvShardSectionLayout latent,index;
+	uint64_t candidate_offset,latent_bytes,select_rows = (uint64_t)SparkGlm52ShardSelectSlice(state->kv_shard,rows) * degree;
+	SparkKvShardSectionLayout latent;
 	SparkStatus status;
-	if ( SparkGlm52ShardChunkCapacity(state) == 0u )
+	if ( SparkGlm52ShardChunkCapacity(state) == 0u || rows % degree != 0u )
+	{
+		fprintf(stderr,"GLM52-KV-SHARD-REFUSED rank=%u: %u execution rows must be a non-zero multiple of the %u context-split ranks\n",state->kv_shard.rank,rows,degree);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	SparkGlm52ShardScatterSizes(state->kv_shard,SparkGlm52ShardScatterRows(state),&query_units,&indexing_units,&partial_units,&candidate_offset);
-	SparkGlm52ShardGatherSizes(state,state->max_sequence_positions,&latent,&index);
-	if ( latent.chunks == 0u || (state->index_layer_count != 0u && index.chunks == 0u) )
+	SparkGlm52ShardGatherSizes(state,state->max_sequence_positions,&latent);
+	if ( latent.chunks == 0u )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	latent_bytes = (uint64_t)latent.chunks * latent.chunk_bytes;
-	index_bytes = (uint64_t)index.chunks * index.chunk_bytes;
 	state->kv_gather_latent_tail_slot = degree * latent_bytes / latent.slot_bytes;
 	status = SparkGlmStageAllocateBytes(state,indexing_units,SPARK_GLM52_SHARD_UNIT_BYTES,1u,(void **)&slot->shard_send_bf16);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,(uint64_t)degree * indexing_units,SPARK_GLM52_SHARD_UNIT_BYTES,1u,(void **)&slot->shard_received_bf16);
@@ -757,30 +768,20 @@ static SparkStatus SparkGlm52AllocateSlotShard(
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,latent_bytes,1u,1u,(void **)&slot->kv_gather_latent_pack);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,(uint64_t)degree * latent_bytes + (uint64_t)rows * latent.slot_bytes,1u,1u,(void **)&slot->kv_gather_latent_pool);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,state->max_sequence_positions,1u,sizeof(uint32_t),(void **)&slot->kv_gather_latent_remap);
-	if ( status == SPARK_STATUS_OK && index.chunks != 0u ) status = SparkGlmStageAllocateBytes(state,index_bytes,1u,1u,(void **)&slot->kv_gather_index_pack);
-	if ( status == SPARK_STATUS_OK && index.chunks != 0u ) status = SparkGlmStageAllocateBytes(state,(uint64_t)degree * index_bytes,1u,1u,(void **)&slot->kv_gather_index_pool);
-	if ( status == SPARK_STATUS_OK && index.chunks != 0u ) status = SparkGlmStageAllocateBytes(state,(uint64_t)state->kv.pages_per_sequence * SPARK_GLM_KV_BLOCK_TOKEN_COUNT,index.slot_bytes,1u,(void **)&slot->kv_gathered_index);
-	if ( status == SPARK_STATUS_OK && index.chunks != 0u ) status = SparkGlmStageAllocateBytes(state,state->kv.pages_per_sequence,1u,sizeof(uint32_t),(void **)&slot->kv_gathered_table);
-	if ( status == SPARK_STATUS_OK && index.chunks != 0u )
-	{
-		uint32_t *identity = (uint32_t *)malloc((size_t)state->kv.pages_per_sequence * sizeof(uint32_t)),page;
-		if ( identity == 0 )
-			status = SPARK_STATUS_CAPACITY_EXCEEDED;
-		for (page=0u; identity != 0 && page<state->kv.pages_per_sequence; page++)
-			identity[page] = page;
-		if ( identity != 0 && cudaMemcpy(slot->kv_gathered_table,identity,(size_t)state->kv.pages_per_sequence * sizeof(uint32_t),cudaMemcpyHostToDevice) != cudaSuccess )
-			status = SPARK_STATUS_IO_ERROR;
-		free(identity);
-	}
+	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u ) status = SparkGlmStageAllocateBytes(state,select_rows,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,sizeof(uint32_t),(void **)&slot->kv_select_local);
+	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u ) status = SparkGlmStageAllocateBytes(state,select_rows,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,sizeof(uint64_t),(void **)&slot->kv_select_candidates);
+	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u ) status = SparkGlmStageAllocateBytes(state,select_rows,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,sizeof(uint64_t),(void **)&slot->kv_select_received);
+	if ( status == SPARK_STATUS_OK && state->index_layer_count != 0u ) status = SparkGlmStageAllocateBytes(state,select_rows / degree,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,sizeof(uint32_t),(void **)&slot->kv_select_merged);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,rows,1u,sizeof(uint32_t),(void **)&slot->kv_gather_rows_zero);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,(uint64_t)SPARK_GLM52_SHARD_PLAN_ARRAYS * state->resident_sequence_capacity + SPARK_GLM52_SHARD_PLAN_WORDS,1u,sizeof(uint32_t),(void **)&slot->kv_gather_plan);
 	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,SPARK_GLM52_SHARD_DIGEST_WORDS,1u,sizeof(unsigned long long),(void **)&slot->kv_gather_digest);
 	if ( status == SPARK_STATUS_OK && cudaMemset(slot->kv_gather_rows_zero,0,(size_t)rows * sizeof(uint32_t)) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
-		fprintf(stderr,"GLM52-KV-SHARD rank=%u degree=%u scatter_rows=%u query_units=%u indexing_units=%u partial_units=%u gather_latent=%u x %u units gather_index=%u x %u units transient_bytes=%llu\n",
-			state->kv_shard.rank,degree,SparkGlm52ShardScatterRows(state),query_units,indexing_units,partial_units,latent.chunks,latent.chunk_units,index.chunks,index.chunk_units,
-			(unsigned long long)((degree + 1u) * (latent_bytes + index_bytes) + (uint64_t)rows * latent.slot_bytes + (uint64_t)state->max_sequence_positions * (sizeof(uint32_t) + (index.chunks != 0u ? index.slot_bytes : 0u))));
+		fprintf(stderr,"GLM52-KV-SHARD rank=%u degree=%u scatter_rows=%u query_units=%u indexing_units=%u partial_units=%u gather_latent=%u x %u units select_slice=%u transient_bytes=%llu\n",
+			state->kv_shard.rank,degree,SparkGlm52ShardScatterRows(state),query_units,indexing_units,partial_units,latent.chunks,latent.chunk_units,(uint32_t)(select_rows / degree),
+			(unsigned long long)((degree + 1u) * latent_bytes + (uint64_t)rows * latent.slot_bytes + (uint64_t)state->max_sequence_positions * sizeof(uint32_t) +
+				(state->index_layer_count != 0u ? select_rows * SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT * (2u * sizeof(uint64_t) + sizeof(uint32_t)) + select_rows / degree * SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT * sizeof(uint32_t) : 0u)));
 	SPARK_RETURN(status);
 }
 
@@ -940,8 +941,11 @@ static void SparkGlm52WaveShardSizes(const SparkGlm52ModuleState *state,SparkGlm
 		wave->kv_gather_old_bound = old_bound;
 		wave->kv_gather_capacity = state->max_sequence_positions;
 		wave->kv_gather_latent_tail_slot = state->kv_gather_latent_tail_slot;
-		SparkGlm52ShardGatherSizes(state,old_bound,&wave->kv_gather_latent,&wave->kv_gather_index);
+		SparkGlm52ShardGatherSizes(state,old_bound,&wave->kv_gather_latent);
 		wave->kv_gather_old_keys = (uint32_t)wave->kv_gather_latent.keys;
+		wave->kv_select_keep = SparkGlm52ShardSelectKeep(state->kv_shard,wave->maximum_context);
+		wave->kv_select_slice = SparkGlm52ShardSelectSlice(state->kv_shard,wave->row_count);
+		wave->kv_select_rows = wave->kv_select_slice * state->kv_shard.degree;
 		return;
 	}
 	SparkGlm52ShardScatterSizes(state->kv_shard,wave->row_count,&wave->shard_query_units,&wave->shard_indexing_units,&wave->shard_partial_units,&wave->shard_candidate_offset);
@@ -949,7 +953,8 @@ static void SparkGlm52WaveShardSizes(const SparkGlm52ModuleState *state,SparkGlm
 
 static uint32_t SparkGlm52KvGatherOps(const SparkGlm52CudaWave *wave,uint32_t layer)
 {
-	return(wave->kv_gather_latent.chunks + (SparkGlm52LayerShardIndexing(wave,layer) != 0u ? wave->kv_gather_index.chunks : 0u));
+	(void)layer;
+	return(wave->kv_gather_latent.chunks);
 }
 
 static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
@@ -1187,6 +1192,8 @@ static SparkStatus SparkGlm52ModuleReduceHeadMax(SparkGlm52TpChain *chain)
 #define SPARK_GLM52_EXCHANGE_PARTIALS 1u
 #define SPARK_GLM52_EXCHANGE_KV_GATHER 2u
 #define SPARK_GLM52_EXCHANGE_KV_DIGEST 3u
+#define SPARK_GLM52_EXCHANGE_KV_SELECT 4u
+#define SPARK_GLM52_EXCHANGE_KV_SELECTED 5u
 
 static SparkStatus SparkGlm52ShardExchange(SparkGlm52TpChain *chain,uint32_t exchange,uint32_t chunk,uint32_t host_completion)
 {
@@ -1213,18 +1220,26 @@ static SparkStatus SparkGlm52ShardExchange(SparkGlm52TpChain *chain,uint32_t exc
 		operation = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL;
 		break;
 	case SPARK_GLM52_EXCHANGE_KV_GATHER:
-	{
-		const uint32_t index_ops = SparkGlm52LayerShardIndexing(wave,chain->next_layer) != 0u ? wave->kv_gather_index.chunks : 0u;
-		const SparkKvShardSectionLayout *layout = chunk < index_ops ? &wave->kv_gather_index : &wave->kv_gather_latent;
-		const uint32_t part = chunk < index_ops ? chunk : chunk - index_ops;
-		if ( part >= layout->chunks )
+		if ( chunk >= wave->kv_gather_latent.chunks )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		chunk_bytes = layout->chunk_bytes;
-		submission.active_sequence_count = layout->chunk_units;
-		submission.local_device = (chunk < index_ops ? slot->kv_gather_index_pack : slot->kv_gather_latent_pack) + (uint64_t)part * chunk_bytes;
-		submission.full_device = (chunk < index_ops ? slot->kv_gather_index_pool : slot->kv_gather_latent_pool) + (uint64_t)part * wave->kv_shard.degree * chunk_bytes;
+		chunk_bytes = wave->kv_gather_latent.chunk_bytes;
+		submission.active_sequence_count = wave->kv_gather_latent.chunk_units;
+		submission.local_device = slot->kv_gather_latent_pack + (uint64_t)chunk * chunk_bytes;
+		submission.full_device = slot->kv_gather_latent_pool + (uint64_t)chunk * wave->kv_shard.degree * chunk_bytes;
 		break;
-	}
+	case SPARK_GLM52_EXCHANGE_KV_SELECT:
+		submission.active_sequence_count = 2u * wave->kv_select_slice;
+		submission.row_elements = 2u * wave->kv_select_keep;
+		submission.local_device = slot->kv_select_candidates;
+		submission.full_device = slot->kv_select_received;
+		operation = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL;
+		break;
+	case SPARK_GLM52_EXCHANGE_KV_SELECTED:
+		submission.active_sequence_count = wave->kv_select_slice;
+		submission.row_elements = 2u * SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT;
+		submission.local_device = slot->kv_select_merged;
+		submission.full_device = slot->selected_positions;
+		break;
 	case SPARK_GLM52_EXCHANGE_KV_DIGEST:
 		submission.active_sequence_count = 2u * SPARK_GLM52_SHARD_DIGESTS;
 		submission.local_device = slot->kv_gather_digest + SPARK_GLM52_SHARD_DIGESTS;
@@ -1877,6 +1892,21 @@ static SparkStatus SparkGlm52ScoreWave(SparkGlm52TpChain *chain)
 
 static void SparkGlm52EagerShardFinish(SparkGlm52TpChain *chain,uint32_t phase);
 
+static void SparkGlm52EagerKvLatent(SparkGlm52TpChain *chain)
+{
+	SparkStatus status;
+	chain->shard_chunk = 0u;
+	if ( SparkGlm52KvGatherOps(&chain->wave,chain->next_layer) == 0u )
+	{
+		SparkGlm52EagerShardFinish(chain,SPARK_GLM52_SHARD_PHASE_GATHER_POST);
+		return;
+	}
+	chain->stage = SPARK_GLM52_CHAIN_STAGE_KV_GATHER;
+	status = SparkGlm52ShardExchange(chain,SPARK_GLM52_EXCHANGE_KV_GATHER,0u,1u);
+	if ( status != SPARK_STATUS_OK )
+		SparkGlm52TpChainFail(chain,status);
+}
+
 static void SparkGlm52EagerShardBegin(SparkGlm52TpChain *chain)
 {
 	SparkGlm52CudaWave *wave = &chain->wave;
@@ -1887,6 +1917,19 @@ static void SparkGlm52EagerShardBegin(SparkGlm52TpChain *chain)
 		return;
 	}
 	chain->shard_chunk = 0u;
+	if ( wave->kv_gather != 0u && SparkGlm52LayerShardIndexing(wave,chain->next_layer) != 0u )
+	{
+		chain->stage = SPARK_GLM52_CHAIN_STAGE_KV_SELECT;
+		status = SparkGlm52ShardExchange(chain,SPARK_GLM52_EXCHANGE_KV_SELECT,0u,1u);
+		if ( status != SPARK_STATUS_OK )
+			SparkGlm52TpChainFail(chain,status);
+		return;
+	}
+	if ( wave->kv_gather != 0u )
+	{
+		SparkGlm52EagerKvLatent(chain);
+		return;
+	}
 	if ( wave->kv_gather != 0u && SparkGlm52KvGatherOps(wave,chain->next_layer) == 0u )
 	{
 		SparkGlm52EagerShardFinish(chain,SPARK_GLM52_SHARD_PHASE_GATHER_POST);
@@ -1991,6 +2034,20 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		return;
 	case SPARK_GLM52_CHAIN_STAGE_SHARD_PARTIALS:
 		SparkGlm52EagerShardFinish(chain,SPARK_GLM52_SHARD_PHASE_SCATTER_POST);
+		return;
+	case SPARK_GLM52_CHAIN_STAGE_KV_SELECT:
+		if ( SparkGlm52LaunchCudaLayerShard(&chain->wave,chain->next_layer,SPARK_GLM52_SHARD_PHASE_GATHER_MERGE) != 0 )
+		{
+			SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+			return;
+		}
+		chain->stage = SPARK_GLM52_CHAIN_STAGE_KV_SELECTED;
+		launch_status = SparkGlm52ShardExchange(chain,SPARK_GLM52_EXCHANGE_KV_SELECTED,0u,1u);
+		if ( launch_status != SPARK_STATUS_OK )
+			SparkGlm52TpChainFail(chain,launch_status);
+		return;
+	case SPARK_GLM52_CHAIN_STAGE_KV_SELECTED:
+		SparkGlm52EagerKvLatent(chain);
 		return;
 	case SPARK_GLM52_CHAIN_STAGE_KV_GATHER:
 		chain->shard_chunk++;
@@ -2208,6 +2265,15 @@ static uint32_t SparkGlm52WalkShard(SparkGlm52TpChain *chain,uint32_t layer)
 	{
 		if ( SparkGlm52LaunchCudaLayerShard(wave,layer,SPARK_GLM52_SHARD_PHASE_GATHER_PRE) != 0 )
 			return(15u);
+		if ( SparkGlm52LayerShardIndexing(wave,layer) != 0u )
+		{
+			if ( SparkGlm52ShardExchange(chain,SPARK_GLM52_EXCHANGE_KV_SELECT,0u,0u) != SPARK_STATUS_OK )
+				return(26u);
+			if ( SparkGlm52LaunchCudaLayerShard(wave,layer,SPARK_GLM52_SHARD_PHASE_GATHER_MERGE) != 0 )
+				return(27u);
+			if ( SparkGlm52ShardExchange(chain,SPARK_GLM52_EXCHANGE_KV_SELECTED,0u,0u) != SPARK_STATUS_OK )
+				return(28u);
+		}
 		for (op=0u; op<SparkGlm52KvGatherOps(wave,layer); op++)
 			if ( SparkGlm52ShardExchange(chain,SPARK_GLM52_EXCHANGE_KV_GATHER,op,0u) != SPARK_STATUS_OK )
 				return(16u);
