@@ -105,6 +105,11 @@ typedef struct ApiState
 	const char *runtime_root;
 	uint64_t seq_saved_ms;
 	uint32_t context_limit;
+	volatile int ready;
+	volatile uint32_t bringup_status;
+	volatile uint32_t bringup_attempts;
+	const char *volatile bringup_phase;
+	uint64_t bringup_started_ms;
 } ApiState;
 
 static ApiState S;
@@ -581,14 +586,29 @@ static int api_fit_context(uint32_t prompt_len, uint32_t *max_tokens)
 
 static void send_response(int fd, int code, const char *body)
 {
-	char hdr[192];
+	char hdr[224];
 	int n = snprintf(hdr, sizeof(hdr),
 		"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
-		"Content-Length: %zu\r\nConnection: close\r\n\r\n",
-		code, code == 200 ? "OK" : "Error", strlen(body));
+		"Content-Length: %zu\r\n%sConnection: close\r\n\r\n",
+		code, code == 200 ? "OK" : code == 503 ? "Service Unavailable" : "Error", strlen(body),
+		code == 503 ? "Retry-After: 5\r\n" : "");
 	if (n > 0)
 		send_all(fd, hdr, (size_t)n);
 	send_all(fd, body, strlen(body));
+}
+
+static int api_engines_ready(void)
+{
+	return __atomic_load_n(&S.ready, __ATOMIC_ACQUIRE);
+}
+
+static void api_bringup_json(char *buffer, size_t bytes)
+{
+	(void)snprintf(buffer, bytes,
+		"{\"status\":\"starting\",\"phase\":\"%s\",\"attempts\":%u,\"last_status\":\"%s\",\"elapsed_ms\":%llu,\"tokenizer\":%s}",
+		S.bringup_phase != 0 ? S.bringup_phase : "starting", S.bringup_attempts,
+		S.bringup_status != 0u ? SparkStatusToString((SparkStatus)S.bringup_status) : "none",
+		(unsigned long long)(api_now_ms() - S.bringup_started_ms), HaveSidecar ? "true" : "false");
 }
 
 static int read_http_request(int fd, char *method, size_t method_sz,
@@ -1428,7 +1448,15 @@ static void *api_connection(void *arg)
 			return 0;
 		}
 	}
-	if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
+	if (strcmp(method, "GET") == 0 && strcmp(path, "/health/live") == 0)
+		send_response(fd, 200, api_engines_ready() ? "{\"status\":\"live\",\"ready\":true}" : "{\"status\":\"live\",\"ready\":false}");
+	else if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0 && api_engines_ready() == 0)
+	{
+		char b[256];
+		api_bringup_json(b, sizeof(b));
+		send_response(fd, 503, b);
+	}
+	else if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
 		char b[128];
 		(void)snprintf(b, sizeof(b),
@@ -1451,6 +1479,14 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "POST") == 0 &&
 		(strcmp(path, "/v1/completions") == 0 ||
+		 strcmp(path, "/v1/chat/completions") == 0) && api_engines_ready() == 0)
+	{
+		char b[256];
+		api_bringup_json(b, sizeof(b));
+		send_response(fd, 503, b);
+	}
+	else if (strcmp(method, "POST") == 0 &&
+		(strcmp(path, "/v1/completions") == 0 ||
 		 strcmp(path, "/v1/chat/completions") == 0))
 		handle_completion(fd, body, body_len,
 			strcmp(path, "/v1/chat/completions") == 0);
@@ -1461,12 +1497,103 @@ static void *api_connection(void *arg)
 	return 0;
 }
 
+static SparkModelBatchEngineConfiguration ApiEngineConfiguration;
+static pthread_t ApiWorker;
+
+static void api_seed_submission_ids(void)
+{
+	char seq_path[1024];
+	uint64_t session = SparkModelBatchEngineSessionFingerprint(S.engine);
+	uint64_t saved_session = 0u;
+	uint64_t saved_id = 0u;
+	uint64_t seeded = 1000000u;
+	(void)snprintf(seq_path,sizeof(seq_path),"%s/api_submission.seq",S.runtime_root);
+	{
+		FILE *seq_in = fopen(seq_path,"r");
+		if ( seq_in != 0 )
+		{
+			unsigned long long fs = 0ull,fi = 0ull;
+			if ( fscanf(seq_in,"%llu %llu",&fs,&fi) == 2 ||
+			     fscanf(seq_in,"%llu",&fi) == 1 )
+			{
+				saved_session = (uint64_t)fs;
+				saved_id = (uint64_t)fi;
+			}
+			(void)fclose(seq_in);
+		}
+	}
+	if ( saved_session == session && saved_id >= 1000000u &&
+	     saved_id < SparkTpChainIdCapacity(4u,6946816u) - 10001u )
+		seeded = saved_id + 10001u;
+	SparkModelBatchEngineSeedSubmissionId(S.engine,seeded);
+	{
+		FILE *seq_out = fopen(seq_path,"w");
+		if ( seq_out != 0 )
+		{
+			(void)fprintf(seq_out,"%llu %llu\n",
+			    (unsigned long long)session,
+			    (unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
+			(void)fclose(seq_out);
+		}
+	}
+	api_logf("submission_id_seeded next=%llu session=%llu (%s)",
+	    (unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine),
+	    (unsigned long long)session,
+	    seeded != 1000000u ? "continued within engine session, crash window skipped" :
+	        "rebased — new engine session");
+}
+
+static void *api_bringup(void *argument)
+{
+	unsigned attempt = 0u, waited = 0u, pause_s = 1u;
+	SparkStatus status;
+	(void)argument;
+	for (;;)
+	{
+		attempt++;
+		S.bringup_attempts = attempt;
+		S.bringup_phase = "connecting";
+		status = SparkModelBatchEngineConnect(&ApiEngineConfiguration, &S.engine);
+		if (status == SPARK_STATUS_OK)
+			break;
+		S.bringup_status = (uint32_t)status;
+		if (attempt <= 10u || attempt % 30u == 0u)
+			api_logf("engine_connect_failed attempt=%u status=%s elapsed_ms=%llu; retrying in %us", attempt,
+				SparkStatusToString(status), (unsigned long long)(api_now_ms() - S.bringup_started_ms), pause_s);
+		sleep(pause_s);
+		if (pause_s < 8u)
+			pause_s *= 2u;
+	}
+	S.bringup_phase = "waiting_ranks";
+	while (SparkModelBatchEngineAllRanksReady(S.engine) == 0u)
+	{
+		if ((waited % 10u) == 0u)
+			api_logf("engine_ranks_waiting elapsed_ms=%llu: not every rank is connected and helloed on one generation yet",
+				(unsigned long long)(api_now_ms() - S.bringup_started_ms));
+		waited++;
+		sleep(1);
+	}
+	api_logf("engine_connected attempts=%u elapsed_ms=%llu all_ranks_ready=1", attempt,
+		(unsigned long long)(api_now_ms() - S.bringup_started_ms));
+	api_seed_submission_ids();
+	S.running = 1;
+	if (pthread_create(&ApiWorker, 0, api_worker, 0) != 0)
+	{
+		api_logf("api_exit reason=worker_create_failed");
+		_exit(1);
+	}
+	S.bringup_phase = "ready";
+	__atomic_store_n(&S.ready, 1, __ATOMIC_RELEASE);
+	api_logf("model_api ready boot_pid=%d sessions=queued-on-engine (single session, worker-driven)", (int)getpid());
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	const char *dep_path = 0, *root = 0, *port_s = "8080", *quant_arm_path = 0;
 	SparkModelResidentDeployment dep;
 	SparkModelBatchEngineConfiguration cfg;
-	pthread_t worker;
+	pthread_t bringup;
 	int srv, i;
 	for (i = 1; i < argc; i++)
 	{
@@ -1632,92 +1759,6 @@ int main(int argc, char **argv)
 	else
 		fprintf(stderr, "model_api: no chat_template in deployment; messages requests "
 			"will be rejected (prompt and prompt_token_ids accepted)\n");
-	{
-		uint64_t connect_started_ms = api_now_ms();
-		uint64_t connect_deadline_ms = 120000u;
-		const char *deadline_env = getenv("SPARK_MODEL_API_CONNECT_DEADLINE_MS");
-		unsigned connect_attempt = 0;
-		SparkStatus connect_status;
-		if (deadline_env != 0 && deadline_env[0] != '\0')
-			connect_deadline_ms = (uint64_t)strtoull(deadline_env, 0, 10);
-		for (;;)
-		{
-			connect_attempt++;
-			api_logf("engine_connect attempt=%u elapsed_ms=%llu", connect_attempt,
-				(unsigned long long)(api_now_ms() - connect_started_ms));
-			connect_status = SparkModelBatchEngineConnect(&cfg, &S.engine);
-			if (connect_status == SPARK_STATUS_OK)
-				break;
-			api_logf("engine_connect_failed attempt=%u status=%u", connect_attempt,
-				(unsigned)connect_status);
-			if (api_now_ms() - connect_started_ms >= connect_deadline_ms)
-			{
-				api_logf("api_exit reason=engine_connect_deadline attempts=%u", connect_attempt);
-				return 1;
-			}
-			sleep(1);
-		}
-		{
-			unsigned ready_attempt = 0;
-			for (;;)
-			{
-				if ( SparkModelBatchEngineAllRanksReady(S.engine) != 0u )
-					break;
-				if ( (ready_attempt % 10u) == 0u )
-					api_logf("engine_ranks_waiting — not every rank is connected+helloed on one generation yet");
-				if ( api_now_ms() - connect_started_ms >= connect_deadline_ms )
-				{
-					api_logf("api_exit reason=engine_ranks_not_ready_deadline");
-					return 1;
-				}
-				ready_attempt++;
-				sleep(1);
-			}
-		}
-		api_logf("engine_connected attempts=%u elapsed_ms=%llu all_ranks_ready=1", connect_attempt,
-			(unsigned long long)(api_now_ms() - connect_started_ms));
-	}
-	{
-		char seq_path[1024];
-		uint64_t session = SparkModelBatchEngineSessionFingerprint(S.engine);
-		uint64_t saved_session = 0u;
-		uint64_t saved_id = 0u;
-		uint64_t seeded = 1000000u;
-		(void)snprintf(seq_path,sizeof(seq_path),"%s/api_submission.seq",root);
-		{
-			FILE *seq_in = fopen(seq_path,"r");
-			if ( seq_in != 0 )
-			{
-				unsigned long long fs = 0ull,fi = 0ull;
-				if ( fscanf(seq_in,"%llu %llu",&fs,&fi) == 2 ||
-				     fscanf(seq_in,"%llu",&fi) == 1 )
-				{
-					saved_session = (uint64_t)fs;
-					saved_id = (uint64_t)fi;
-				}
-				(void)fclose(seq_in);
-			}
-		}
-		if ( saved_session == session && saved_id >= 1000000u &&
-		     saved_id < SparkTpChainIdCapacity(4u,6946816u) - 10001u )
-			seeded = saved_id + 10001u;
-		SparkModelBatchEngineSeedSubmissionId(S.engine,seeded);
-		{
-			FILE *seq_out = fopen(seq_path,"w");
-			if ( seq_out != 0 )
-			{
-				(void)fprintf(seq_out,"%llu %llu\n",
-				    (unsigned long long)session,
-				    (unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine));
-				(void)fclose(seq_out);
-			}
-		}
-		api_logf("submission_id_seeded next=%llu session=%llu (%s)",
-		    (unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine),
-		    (unsigned long long)session,
-		    seeded != 1000000u ? "continued within engine session, crash window skipped" :
-		        "rebased — new engine session");
-	}
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGTERM, api_term_signal);
 	signal(SIGINT, api_term_signal);
@@ -1729,12 +1770,6 @@ int main(int argc, char **argv)
 	     fcntl(S.wake_fds[1],F_SETFD,FD_CLOEXEC) < 0 )
 	{
 		api_logf("worker wake pipe failed errno=%d",errno);
-		return 1;
-	}
-	S.running = 1;
-	if ( pthread_create(&worker,0,api_worker,0) != 0 )
-	{
-		api_logf("worker create failed");
 		return 1;
 	}
 	{
@@ -1753,8 +1788,15 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
-	api_logf("model_api ready port=%s boot_pid=%d sessions=%s (single session, worker-driven)",
-		port_s, (int)getpid(), "queued-on-engine");
+	api_logf("model_api listening port=%s boot_pid=%d; engines come up in the background, /health answers 503 until every rank is ready",
+		port_s, (int)getpid());
+	ApiEngineConfiguration = cfg;
+	S.bringup_started_ms = api_now_ms();
+	if ( pthread_create(&bringup,0,api_bringup,0) != 0 )
+	{
+		api_logf("engine bringup thread create failed");
+		return 1;
+	}
 	for (;;)
 	{
 		int cfd = accept(srv, 0, 0);
