@@ -1,0 +1,2 @@
++20
+Host codegen diff on aarch64: keep immediates (only // and x86 "# " comments are dropped), resolve section-relative string and constant references to their content, and drop trailing alignment padding, so the identity proof can fail on a Spark.
