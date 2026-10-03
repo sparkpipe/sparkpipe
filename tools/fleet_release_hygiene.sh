@@ -13,7 +13,7 @@ done
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
        spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
-HUB="${FLEET_HUB:-sparkf}"
+HUB="${FLEET_HUB:-rtx5090}"
 
 collect_subscribed() {
     local h roots sub
