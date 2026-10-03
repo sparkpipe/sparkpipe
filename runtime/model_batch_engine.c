@@ -279,10 +279,12 @@ uint32_t SparkModelBatchSchedulerPlanMixedLaneCount(
 
 uint32_t SparkModelBatchSchedulerPipelineDepth(uint32_t capability_flags,uint32_t stage_count,uint32_t parallel_group_size)
 {
-	if ( (capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u || stage_count == 0u )
+	if ( stage_count == 0u )
 		return(1u);
 	if ( (capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u && parallel_group_size != 0u )
 		return(stage_count / parallel_group_size != 0u ? stage_count / parallel_group_size : 1u);
+	if ( (capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT) != 0u )
+		return(1u);
 	return(stage_count);
 }
 

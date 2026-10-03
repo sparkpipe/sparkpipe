@@ -1,0 +1,2 @@
++2
+Hybrid TP x PP pipeline depth: the hybrid capability is checked before the fanout capability, so a TP4xPP4 adapter pipelines its four stage groups.
