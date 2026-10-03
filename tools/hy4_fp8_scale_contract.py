@@ -3,10 +3,9 @@
 
 Validates every F8_E4M3 payload + U8 E8M0 scale pair of a hy4-fp8-tp16-v1
 rank pack against the scale-row-offset contract and emits the per-plane
-table. Own math from the pinned publisher reference (llama.cpp hyv4.cpp
-of the AngelSlim hy4-preview patch, vendored at
-tools/hy4_dequant/vendor/hyv4_reference.cpp) and the checkpoint config;
-no driver imports. Mirrors modules/hy4_resident_decode_stage/source/
+table. Own math from the publisher reference (src/models/hyv4.cpp of
+AngelSlim's hy4-preview patch 0001 at AngelSlim/Hy4-preview-GGUF@779242ed,
+not vendored) and the checkpoint config; no driver imports. Mirrors modules/hy4_resident_decode_stage/source/
 spark_hy4_fp8_scale_contract.h rule for rule.
 
   python3 tools/hy4_fp8_scale_contract.py --header HEADER.json --tsv OUT.tsv
@@ -15,20 +14,16 @@ spark_hy4_fp8_scale_contract.h rule for rule.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import struct
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-REFERENCE = ROOT / "tools" / "hy4_dequant" / "vendor" / "hyv4_reference.cpp"
-REFERENCE_SHA256 = (
-    "514ef62ae147171d5675229de59e8e6d3b8e1f84f20680056df8708601fe52fd")
-REFERENCE_COMMIT = "0cea36222"
 CHECKPOINT = "tencent/Hy4-preview-FP8"
 CHECKPOINT_REVISION = "4215ec29de873a998e849cee902654490c7ff4d1"
+REFERENCE_REPOSITORY = "AngelSlim/Hy4-preview-GGUF"
+REFERENCE_REVISION = "779242edccdedc2109a0b36b164263a88f015bfa"
+REFERENCE_FILE = "hy4-preview-patch/0001-hyv4-architecture.patch"
 
 GROUP = 32
 HIDDEN = 6144
@@ -104,13 +99,6 @@ def load_header(args):
         return json.loads(f.read(n))
 
 
-def pin_reference():
-    if not REFERENCE.exists():
-        return "reference-absent"
-    digest = hashlib.sha256(REFERENCE.read_bytes()).hexdigest()
-    return "pinned" if digest == REFERENCE_SHA256 else "REFERENCE-SHA-DRIFT"
-
-
 def walk(header, rank, ranks):
     rows_out = []
     failures = 0
@@ -182,10 +170,9 @@ def main():
     for row in table:
         key = (row[3], row[2])
         by_rule[key] = by_rule.get(key, 0) + 1
-    print("reference %s %s@%s sha256 %s (%s); checkpoint %s@%s" % (
-        REFERENCE.relative_to(ROOT), "hyv4.cpp", REFERENCE_COMMIT,
-        REFERENCE_SHA256[:16], pin_reference(), CHECKPOINT,
-        CHECKPOINT_REVISION[:12]))
+    print("reference %s@%s %s (not vendored); checkpoint %s@%s" % (
+        REFERENCE_REPOSITORY, REFERENCE_REVISION[:12], REFERENCE_FILE,
+        CHECKPOINT, CHECKPOINT_REVISION[:12]))
     print("rank %d of %d: %d FP8 planes, %d contract failures" % (
         rank, ranks, len(table), failures))
     for (rule, klass), n in sorted(by_rule.items()):
