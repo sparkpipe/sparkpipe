@@ -224,7 +224,15 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
 - An injected trigger in a test instance (`--accept-user`) reached the hub in 19 ms and reset the node. The next boot's first journal entry came 94 s after the trigger; every real guarded crash since took 89-95 s.
 - The killed boot's journal stops before the trigger.
 
-**After any single node reboots**
+**After any node reboots**
+- Nothing SparkPipe-specific runs at boot (owner decision 2026-10-03). From the hub or the workstation, run `tools/fleet_post_reboot.sh HOST [HOST...]`. It checks, read-only:
+  - the root superblock and kernel error lines since boot;
+  - that the DMA guard is armed and linger is on;
+  - the fleet agent and the weightd owner process;
+  - mesh readiness on all 16 nodes (`sparkpipe_mesh_status` where installed, else `.ready` and the last `WD-MESH-STATS` line);
+  - that every peer is wired to the rebooted node's new mesh boot identity;
+  - the node's Ceph OSDs.
+- It ends with `READY` (exit 0) or `NOT READY` (exit 1) and one line per failed check. After a USB enclosure re-enumeration, `--fix-ceph` runs `lvchange --refresh` on the node's ceph LVs and restarts its failed OSD units.
 - The other nodes' weightd keep wiring to its old queue pair: `WD-WIRE-FAIL ... RTR failed errno=22`. Engines then fail with BUSY at collective attach.
 - Fix: stop the engines, then run `systemctl --user restart sparkpipe-weightd` on the surviving nodes (restarting `fleet-agent` no longer restarts weightd; it runs in its own unit). On every node, wait until `~/sparkdata/core/bin/sparkpipe_mesh_status --socket /tmp/spark_weightd.sock --wait-lane-peers 0xffff --timeout 300` exits 0, then start the engines. Exit 3 lists the ranks still missing.
 
