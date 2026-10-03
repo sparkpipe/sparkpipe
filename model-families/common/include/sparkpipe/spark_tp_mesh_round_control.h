@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 18u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 20u
 #define SPARK_TP_MESH_ROUND_CONTROL_BYTES \
     (SPARK_TP_MESH_ROUND_CONTROL_WORDS * sizeof(uint64_t))
 
@@ -24,6 +24,8 @@
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_MATH_STARTED_NS 15u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_MATH_FINISHED_NS 16u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_MATH_BLOCKS_DONE 17u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_PUBLISH_BLOCKS_DONE 18u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_PUBLISH_STARTED_NS 19u
 
 typedef struct SparkTpMeshRoundControl
 {
@@ -45,6 +47,8 @@ typedef struct SparkTpMeshRoundControl
     uint64_t math_started_ns;
     uint64_t math_finished_ns;
     uint64_t math_blocks_done;
+    uint64_t publish_blocks_done;
+    uint64_t publish_started_ns;
 } SparkTpMeshRoundControl;
 
 #define SPARK_TP_MESH_ROUND_LOOP_DECISION_GO 0u
@@ -86,6 +90,8 @@ static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree
 }
 
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS 49152u
+#define SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE 18432u
+#define SPARK_TP_MESH_RSAG_WIDE_DEGREE 16u
 #define SPARK_TP_MESH_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_MESH_OPERATION_SLICE_GATHER 7u
 #define SPARK_TP_MESH_OPERATION_ALL_TO_ALL 3u
@@ -96,7 +102,8 @@ __host__ __device__
 #endif
 static inline uint32_t SparkTpMeshDirectPhasesPerChunk(uint64_t elements,uint32_t degree,uint32_t operation,uint32_t slice_routes)
 {
-    return slice_routes != 0u && operation == 1u && degree >= SPARK_TP_MESH_RSAG_MIN_DEGREE && elements >= SPARK_TP_MESH_RSAG_MIN_ELEMENTS ? 2u : 1u;
+    return slice_routes != 0u && operation == 1u && degree >= SPARK_TP_MESH_RSAG_MIN_DEGREE &&
+        elements >= (degree >= SPARK_TP_MESH_RSAG_WIDE_DEGREE ? SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE : SPARK_TP_MESH_RSAG_MIN_ELEMENTS) ? 2u : 1u;
 }
 
 #if defined(__CUDACC__)
