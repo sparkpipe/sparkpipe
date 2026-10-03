@@ -8,6 +8,7 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/index_score.cuh"
 #include "inference/kernels/topk_exact.cuh"
+#include "inference/kernels/topk_exact_plan.h"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv_shard.cuh"
 
@@ -274,6 +275,112 @@ static void ProbeRemapCase(uint32_t context,uint32_t rows,uint32_t timing)
 	cudaFree(d_keys); cudaFree(d_query); cudaFree(d_weight); cudaFree(d_full); cudaFree(d_pack); cudaFree(d_received); cudaFree(d_remap); cudaFree(d_dense); cudaFree(d_remapped); cudaFree(error);
 }
 
+static void ProbeStage2Case(uint32_t context)
+{
+	const uint32_t rows = 1024u,degree = 16u,slice = rows / degree,chunk_rows = 256u,pages = (context + PROBE_PAGE - 1u) / PROBE_PAGE;
+	const float scale = 0.0883883f;
+	std::vector<uint32_t> table(pages),sequence(rows,0u),position(rows),token_sequence(context,0u),token_position(context),context_length(1,context);
+	std::vector<uint16_t> keys((uint64_t)context * PROBE_DIM),query((uint64_t)rows * PROBE_HEADS * PROBE_DIM),weight((uint64_t)rows * PROBE_HEADS);
+	uint32_t index,row,rank,first;
+	LmKvAccessError *error = 0;
+	LmKvView full;
+	SparkKvShard shard = {degree,0u,1u};
+	const uint32_t local = SparkKvShardGatherKeys(shard,context);
+	const uint32_t keep = ((local + 7u) / 8u * 8u) < PROBE_SELECTED ? (local + 7u) / 8u * 8u : PROBE_SELECTED;
+	cudaEvent_t begin,end;
+	float replicated_ms = 0.0f,local_ms = 0.0f,merge_ms = 0.0f;
+	for (index=0u; index<pages; index++)
+		table[index] = index;
+	for (index=0u; index<context; index++)
+		token_position[index] = index;
+	for (index=0u; index<keys.size(); index++)
+		keys[index] = ProbeBf16((float)((int32_t)(ProbeNext() >> 20u) - 2048) / 2048.0f);
+	for (index=0u; index<query.size(); index++)
+		query[index] = ProbeBf16((float)((int32_t)(ProbeNext() >> 20u) - 2048) / 2048.0f);
+	for (index=0u; index<weight.size(); index++)
+		weight[index] = ProbeBf16((float)(ProbeNext() >> 24u) / 256.0f);
+	for (row=0u; row<rows; row++)
+		position[row] = context - rows + row;
+	PROBE_CUDA(cudaMallocManaged((void **)&error,sizeof(*error)));
+	LmKvAccessErrorReset(error);
+	uint32_t *d_table = ProbeUpload(table),*d_sequence = ProbeUpload(sequence),*d_position = ProbeUpload(position),*d_token_sequence = ProbeUpload(token_sequence),*d_token_position = ProbeUpload(token_position),*d_context = ProbeUpload(context_length);
+	uint16_t *d_keys = ProbeUpload(keys),*d_query = ProbeUpload(query),*d_weight = ProbeUpload(weight);
+	uint8_t *d_full = 0;
+	float *d_scores = 0,*d_scratch_values = 0;
+	uint32_t *d_reference = 0,*d_local_selected = 0,*d_merged = 0,*d_scratch_positions = 0;
+	uint2 *d_candidates = 0;
+	const uint64_t scratch = LmTopkExactScratchEntries(slice,context,PROBE_SELECTED) > LmTopkExactScratchEntries(chunk_rows,local,keep) ?
+		LmTopkExactScratchEntries(slice,context,PROBE_SELECTED) : LmTopkExactScratchEntries(chunk_rows,local,keep);
+	PROBE_CUDA(cudaMalloc((void **)&d_full,(uint64_t)pages * ProbeIndexKv::kPageBytes));
+	PROBE_CUDA(cudaMalloc((void **)&d_scores,(uint64_t)chunk_rows * context * sizeof(float)));
+	PROBE_CUDA(cudaMalloc((void **)&d_scratch_values,(scratch != 0u ? scratch : 1u) * sizeof(float)));
+	PROBE_CUDA(cudaMalloc((void **)&d_scratch_positions,(scratch != 0u ? scratch : 1u) * sizeof(uint32_t)));
+	PROBE_CUDA(cudaMalloc((void **)&d_reference,(uint64_t)rows * PROBE_SELECTED * sizeof(uint32_t)));
+	PROBE_CUDA(cudaMalloc((void **)&d_local_selected,(uint64_t)rows * keep * sizeof(uint32_t)));
+	PROBE_CUDA(cudaMalloc((void **)&d_merged,(uint64_t)slice * PROBE_SELECTED * sizeof(uint32_t)));
+	PROBE_CUDA(cudaMalloc((void **)&d_candidates,(uint64_t)degree * slice * keep * sizeof(uint2)));
+	ProbeCheck(LmKvViewInitialize(&full,d_full,d_table,pages,1u,pages,error) == 0,"stage2 full view");
+	LmKvStoreKernel<ProbeIndexKv,128u><<<context,128u>>>(full,d_keys,d_token_sequence,d_token_position,context,PROBE_DIM);
+	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_CUDA(cudaEventCreate(&begin));
+	PROBE_CUDA(cudaEventCreate(&end));
+	PROBE_CUDA(cudaEventRecord(begin));
+	for (first=0u; first<rows; first+=chunk_rows)
+	{
+		PROBE_CUDA((LmWeightedSparseScoreLaunch<ProbeIndexKv,PROBE_HEADS,PROBE_DIM>(d_query + (uint64_t)first * PROBE_HEADS * PROBE_DIM,d_weight + (uint64_t)first * PROBE_HEADS,full,d_sequence,d_context,d_position + first,chunk_rows,context,scale,d_scores,0)));
+		PROBE_CUDA((LmTopkExactLaunch<PROBE_THREADS>(d_scores,chunk_rows,context,PROBE_SELECTED,LM_TOPK_EXACT_CHUNK,LM_TOPK_EXACT_CHUNKED_ROWS,d_scratch_values,d_scratch_positions,scratch,d_reference + (uint64_t)first * PROBE_SELECTED,0)));
+	}
+	PROBE_CUDA(cudaEventRecord(end));
+	PROBE_CUDA(cudaEventSynchronize(end));
+	PROBE_CUDA(cudaEventElapsedTime(&replicated_ms,begin,end));
+	for (rank=0u; rank<degree; rank++)
+	{
+		uint8_t *d_pool = 0;
+		LmKvShardView shard_view;
+		shard.rank = rank;
+		PROBE_CUDA(cudaMalloc((void **)&d_pool,SparkKvShardPoolBytes(shard,PROBE_PAGE,ProbeIndexKv::kSlotBytes,pages)));
+		ProbeCheck(LmKvShardViewInitialize<ProbeIndexKv>(&shard_view,d_pool,d_table,pages,1u,pages,error,shard) == 0,"stage2 shard view");
+		LmKvShardStoreKernel<ProbeIndexKv,128u><<<context,128u>>>(shard_view,d_keys,d_token_sequence,d_token_position,context,PROBE_DIM);
+		PROBE_CUDA(cudaDeviceSynchronize());
+		if ( rank == 0u )
+			PROBE_CUDA(cudaEventRecord(begin));
+		for (first=0u; first<(rank == 0u ? rows : slice); first+=chunk_rows)
+		{
+			const uint32_t count = (rank == 0u ? rows : slice) - first < chunk_rows ? (rank == 0u ? rows : slice) - first : chunk_rows;
+			PROBE_CUDA((LmWeightedSparseScoreLaunch<ProbeIndexKv,PROBE_HEADS,PROBE_DIM>(d_query + (uint64_t)first * PROBE_HEADS * PROBE_DIM,d_weight + (uint64_t)first * PROBE_HEADS,shard_view,d_sequence,d_context,d_position + first,count,local,scale,d_scores,0)));
+			PROBE_CUDA((LmTopkExactLaunch<PROBE_THREADS>(d_scores,count,local,keep,LM_TOPK_EXACT_CHUNK,LM_TOPK_EXACT_CHUNKED_ROWS,d_scratch_values,d_scratch_positions,scratch,d_local_selected + (uint64_t)first * keep,0)));
+			if ( first == 0u )
+				PROBE_CUDA((LmIndexShardCandidatePackLaunch<PROBE_THREADS>(shard,d_scores,local,d_local_selected,keep,slice,d_candidates + (uint64_t)rank * slice * keep,0)));
+		}
+		if ( rank == 0u )
+		{
+			PROBE_CUDA(cudaEventRecord(end));
+			PROBE_CUDA(cudaEventSynchronize(end));
+			PROBE_CUDA(cudaEventElapsedTime(&local_ms,begin,end));
+		}
+		PROBE_CUDA(cudaDeviceSynchronize());
+		cudaFree(d_pool);
+	}
+	PROBE_CUDA(cudaEventRecord(begin));
+	PROBE_CUDA((LmIndexShardCandidateScatterLaunch<PROBE_THREADS>(d_candidates,(uint64_t)slice * keep,degree,keep,slice,context,d_scores,0)));
+	PROBE_CUDA((LmTopkExactLaunch<PROBE_THREADS>(d_scores,slice,context,PROBE_SELECTED,LM_TOPK_EXACT_CHUNK,LM_TOPK_EXACT_CHUNKED_ROWS,d_scratch_values,d_scratch_positions,scratch,d_merged,0)));
+	PROBE_CUDA(cudaEventRecord(end));
+	PROBE_CUDA(cudaEventSynchronize(end));
+	PROBE_CUDA(cudaEventElapsedTime(&merge_ms,begin,end));
+	{
+		std::vector<uint32_t> reference = ProbeDownload(d_reference,(uint64_t)slice * PROBE_SELECTED),merged = ProbeDownload(d_merged,(uint64_t)slice * PROBE_SELECTED);
+		ProbeCheck(reference == merged,"stage 2: the row owner's merge of 16 ranks' candidates selects exactly the replicated top-k");
+	}
+	ProbeCheck(error->error_code == LM_FRAME_ERROR_NONE,"no KV access error in the stage 2 probe");
+	printf("%s stage2 ctx%u rows%u: replicated score+topk %.2f ms; per rank shard score+topk %.2f ms + merge of %u rows %.2f ms = %.2f ms (%.1fx)\n",
+		probe_failures == 0 ? "PASS" : "FAIL",context,rows,replicated_ms,local_ms,slice,merge_ms,local_ms + merge_ms,replicated_ms / (local_ms + merge_ms));
+	cudaEventDestroy(begin);
+	cudaEventDestroy(end);
+	cudaFree(d_table); cudaFree(d_sequence); cudaFree(d_position); cudaFree(d_token_sequence); cudaFree(d_token_position); cudaFree(d_context);
+	cudaFree(d_keys); cudaFree(d_query); cudaFree(d_weight); cudaFree(d_full); cudaFree(d_scores); cudaFree(d_scratch_values); cudaFree(d_scratch_positions);
+	cudaFree(d_reference); cudaFree(d_local_selected); cudaFree(d_merged); cudaFree(d_candidates); cudaFree(error);
+}
+
 int main(int argc,char **argv)
 {
 	const uint32_t timing = argc > 1 && strcmp(argv[1],"--time") == 0 ? 1u : 0u;
@@ -287,6 +394,12 @@ int main(int argc,char **argv)
 	ProbeRemapCase(65536u,64u,timing);
 	ProbeRemapCase(175000u,64u,timing);
 	ProbeRemapCase(260000u,64u,timing);
+	ProbeStage2Case(4096u);
+	if ( timing != 0u )
+	{
+		ProbeStage2Case(65536u);
+		ProbeStage2Case(262144u);
+	}
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL index shard cuda: %d failure(s)\n",probe_failures);
