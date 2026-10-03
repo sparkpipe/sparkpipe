@@ -252,6 +252,10 @@ static SparkStatus SparkSpeculationSeamExtractChain(
         token_count = SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT;
     }
     walk_index = best_index;
+    for (chain_index = token_count; chain_index < nodes[best_index].depth; ++chain_index)
+    {
+        walk_index = nodes[walk_index].parent_index;
+    }
     for (chain_index = 0u; chain_index < token_count; ++chain_index)
     {
         chain_node_indices[chain_index] = walk_index;

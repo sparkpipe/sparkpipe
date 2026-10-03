@@ -843,6 +843,53 @@ static uint32_t TestSeamDraftAcceptRejectedBumpsGeneration(void)
     return 0u;
 }
 
+static uint32_t TestSeamOversizedPathKeepsPrefix(void)
+{
+    static const uint32_t modes[] = { SPARK_TEST_SEAM_MODE_DEEP_TREE };
+    static const uint32_t committed[3u] = { 11u, 22u, 33u };
+    SparkSpeculationSeamConfiguration configuration;
+    SparkSpeculationSeam *seam;
+    TestSeamStub stub;
+    uint32_t draft_ids[SPARK_TEST_SEAM_DRAFT_CAPACITY];
+    uint32_t draft_count;
+
+    SPARK_TEST_SEAM_CHECK(TestSeamStubStart(&stub, modes, 1u) == 0u);
+    TestSeamWriteConfiguration(
+        &configuration,
+        SPARK_SPECULATION_SEAM_SOURCE_NGRAM |
+            SPARK_SPECULATION_SEAM_SOURCE_SUFFIX,
+        stub.port,
+        0u,
+        0u);
+    seam = 0;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamInitialize(&configuration, &seam) ==
+        SPARK_STATUS_OK);
+    draft_count = 0u;
+    SPARK_TEST_SEAM_CHECK(
+        SparkSpeculationSeamDraftRemoteChain(
+            seam,
+            21u,
+            SPARK_TEST_SEAM_SEQUENCE_ID,
+            2u,
+            33u,
+            committed,
+            3u,
+            0,
+            0u,
+            2u,
+            draft_ids,
+            SPARK_TEST_SEAM_DRAFT_CAPACITY,
+            &draft_count) == SPARK_STATUS_OK);
+    SPARK_TEST_SEAM_CHECK(draft_count == 2u);
+    SPARK_TEST_SEAM_CHECK(draft_ids[0] == 901u);
+    SPARK_TEST_SEAM_CHECK(draft_ids[1] == 902u);
+    SparkSpeculationSeamDestroy(seam);
+    TestSeamStubStop(&stub);
+    SPARK_TEST_SEAM_CHECK(stub.failed == 0u);
+    return 0u;
+}
+
 static uint32_t TestSeamFullAcceptKeepsGeneration(void)
 {
     static const uint32_t modes[] =
@@ -1776,6 +1823,9 @@ int main(void)
     failures += TestSeamRunCase(
         "full_accept_keeps_generation",
         TestSeamFullAcceptKeepsGeneration);
+    failures += TestSeamRunCase(
+        "oversized_path_keeps_prefix",
+        TestSeamOversizedPathKeepsPrefix);
     failures += TestSeamRunCase(
         "repeat_draft_reuses_staged_chain",
         TestSeamRepeatDraftReusesStagedChain);
