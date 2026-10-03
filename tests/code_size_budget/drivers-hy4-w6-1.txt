@@ -1,2 +1,2 @@
-+69
++71
 hy4 contract generator: checks the authoritative contract field by field against the pinned publisher MXFP8 config, emits the 78-bit DSA indexer layer mask and the one shipped MTP layer, keeps the UD-IQ1_M GGUF in its own contract and generates the example model description that --check covers.
