@@ -34,7 +34,7 @@ HOST="$(hostname)"
 EXEC_ROOT="${SPARK_EXEC_ROOT:?set SPARK_EXEC_ROOT to one verified release directory}"
 (cd "$EXEC_ROOT" && sha256sum --quiet --strict --check SHA256SUMS)
 FAMILY_ROOT="${SPARK_FAMILY_ROOT:-/home/$HOST/sparkdata/glm53flash.fp8.tp16}"
-SHARED_SOCKET="${SPARK_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}"
+SHARED_SOCKET="${SPARK_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}"
 LANE=0
 CHECKOUT="$(pwd)"                      # synced lane checkout (repo-owned command)
 WSET="$CHECKOUT/model-families/glm5_next/glm53flash.fp8.tp16.smoke.wset"
@@ -133,7 +133,7 @@ if len(deployment["nodes"]) != 16:
     fail("deployment is not TP16")
 value = json.loads(json.dumps(deployment))
 value["transport"]["control_port_base"] = transport_base
-value["weightd"] = {"socket_path": "/run/sparkpipe-weightd-shared/weightd.sock"}
+value["weightd"] = {"socket_path": "/tmp/spark_weightd.sock"}
 value["runtime_limits"] = {
     "max_inflight_submissions": 1, "max_active_sequences": 1, "max_input_rows": 1,
     "resident_sequence_capacity": 1, "kv_logical_page_capacity": 128,

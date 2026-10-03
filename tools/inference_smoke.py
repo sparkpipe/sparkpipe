@@ -138,7 +138,7 @@ def replica_plans(spec):
     for plan in plans:
         lane, base = plan["lane"], plan["port_base"]
         require(type(base) is int and 1024 <= base <= 65535 - 3 * len(spec["hosts"]), "invalid resident port range")
-        require(lane is None and len(plans) == 1 or type(lane) is int and 0 <= lane < 8, "invalid explicit collective lane")
+        require(lane is None and len(plans) == 1 or type(lane) is int and 0 <= lane < 16, "invalid explicit collective lane")
         require(lane not in lanes, "residents share a collective lane")
         lanes.add(lane)
         ports = set(range(base, base + 2 * len(spec["hosts"]))) | set(plan["port_map"].values())
