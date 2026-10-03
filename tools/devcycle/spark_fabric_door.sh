@@ -34,18 +34,46 @@ status() {
     done
 }
 
+current_rings() {
+    ethtool -g "$1" 2>/dev/null | awk -v want="$2" '/^Current/{c=1} c && $1==want":" {print $2; exit}'
+}
+
+set_rings() {
+    [ "$(current_rings "$1" RX)" = "$2" ] && [ "$(current_rings "$1" TX)" = "$2" ] && return 0
+    ethtool -G "$1" rx "$2" tx "$2"
+}
+
+set_mtu() {
+    [ "$(cat /sys/class/net/$1/mtu)" = "$2" ] || ip link set dev "$1" mtu "$2"
+}
+
+set_trust() {
+    mlnx_qos -i "$1" | grep -q "Priority trust state: $2" || mlnx_qos -i "$1" --trust "$2" > /dev/null
+}
+
+set_only_address() {
+    local current
+    current=$(ip -4 -o addr show dev "$1" scope global | awk '{print $4}')
+    if [ -n "$2" ] && [ "$current" = "$2" ]; then
+        return 0
+    fi
+    [ -z "$current" ] || ip -4 addr flush dev "$1" scope global
+    [ -z "$2" ] || ip address replace "$2" dev "$1"
+}
+
 up_switch_b() {
     need_root
-    local n address rdma gid
+    local n address rdma gid rings
+    rings="${1:-8192}"
+    case "$rings" in ''|*[!0-9]*) echo "ring count must be a number: $rings" >&2; exit 2 ;; esac
     n=$((10 + $(rank)))
     address="$SWITCH_B_PREFIX.$n/24"
-    ethtool -G "$SWITCH_B" rx 8192 tx 8192
-    ethtool -K "$SWITCH_B" tx-tcp-mangleid-segmentation off
-    ip link set dev "$SWITCH_B" mtu 9000
+    set_rings "$SWITCH_B" "$rings"
+    ethtool -k "$SWITCH_B" | grep -q '^tx-tcp-mangleid-segmentation: off' || ethtool -K "$SWITCH_B" tx-tcp-mangleid-segmentation off
+    set_mtu "$SWITCH_B" 9000
     ip link set dev "$SWITCH_B" up
-    mlnx_qos -i "$SWITCH_B" --trust dscp > /dev/null
-    ip -4 addr flush dev "$SWITCH_B" scope global
-    ip address replace "$address" dev "$SWITCH_B"
+    set_trust "$SWITCH_B" dscp
+    set_only_address "$SWITCH_B" "$address"
     sysctl -q -w "net.ipv4.conf.$SWITCH_B.rp_filter=0"
     for _ in $(seq 1 30); do
         rdma=$(rdma_of "$SWITCH_B")
@@ -56,22 +84,23 @@ up_switch_b() {
     mlnx_qos -i "$SWITCH_B" | grep -q 'Priority trust state: dscp' || { echo "trust not dscp on $SWITCH_B" >&2; exit 1; }
     [ "$(cat /sys/class/infiniband/$rdma/ports/1/state | cut -d: -f1)" = 4 ] || { echo "$rdma not ACTIVE" >&2; exit 1; }
     [ "${gid#0000:0000:0000:0000:0000:ffff:}" != "$gid" ] || { echo "$rdma gid 3 is not IPv4 RoCE: $gid" >&2; exit 1; }
-    echo "switch door B up: $SWITCH_B $address rdma=$rdma gid3=$gid type=$(cat /sys/class/infiniband/$rdma/ports/1/gid_attrs/types/3)"
+    [ "$(current_rings "$SWITCH_B" RX)" = "$rings" ] || { echo "$SWITCH_B rx rings are not $rings" >&2; exit 1; }
+    echo "switch door B up: $SWITCH_B $address rings=$rings rdma=$rdma gid3=$gid type=$(cat /sys/class/infiniband/$rdma/ports/1/gid_attrs/types/3)"
 }
 
 down_switch_b() {
     need_root
-    ip -4 addr flush dev "$SWITCH_B" scope global
-    mlnx_qos -i "$SWITCH_B" --trust pcp > /dev/null
+    set_only_address "$SWITCH_B" ""
+    set_trust "$SWITCH_B" pcp
     ip link set dev "$SWITCH_B" down
-    ip link set dev "$SWITCH_B" mtu 1500
-    ethtool -G "$SWITCH_B" rx 1024 tx 1024
+    set_mtu "$SWITCH_B" 1500
+    set_rings "$SWITCH_B" 1024
     echo "switch door B down: $SWITCH_B"
 }
 
 case "${1:-status}" in
     status) status ;;
-    up-switch-b) up_switch_b ;;
+    up-switch-b) up_switch_b "${2:-}" ;;
     down-switch-b) down_switch_b ;;
-    *) echo "usage: $0 status|up-switch-b|down-switch-b" >&2; exit 2 ;;
+    *) echo "usage: $0 status|up-switch-b [rings]|down-switch-b" >&2; exit 2 ;;
 esac
