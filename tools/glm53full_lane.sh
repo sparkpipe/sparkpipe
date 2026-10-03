@@ -76,12 +76,20 @@ setup() {
   rm -rf "$generated"
 }
 
+run_id_valid() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) echo "glm53full_lane: a run id is one or more of [A-Za-z0-9._-], got '$1'" >&2; exit 2 ;;
+  esac
+}
+
 start() {
-  local rank host root
+  local rank host root run_id="${GLMFULL_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+  run_id_valid "$run_id"
+  echo "glm53full_lane: run $run_id; rank logs are logs/residentd-$run_id.log under each lane root"
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
-    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$GLMFULL_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_GLM52_SERVING_FLAT_RANKS=16 -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_ATTACH_LAZY=1 -E SPARK_WEIGHTD_SOCKET=$GLMFULL_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$GLMFULL_LANE -E SPARK_TP_MESH_RANKS=$MESH_RANKS -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$GLMFULL_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$GLMFULL_SPINE_BUDGET_BYTES ${GLMFULL_EXTRA_ENV:-} bash -c 'SPARK_WEIGHTD_PACK_SHA256=\$(cat packs/pack.sha256) exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $rank > residentd.log 2>&1'" &
+    $SSH "$host" "cd $root && mkdir -p logs && if [ -e logs/residentd-$run_id.log ]; then echo 'glm53full_lane: $host already holds logs/residentd-$run_id.log; refusing to overwrite it' >&2; exit 2; fi && ln -sfn logs/residentd-$run_id.log residentd.log && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$GLMFULL_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_GLM52_SERVING_FLAT_RANKS=16 -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_ATTACH_LAZY=1 -E SPARK_WEIGHTD_SOCKET=$GLMFULL_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$GLMFULL_LANE -E SPARK_TP_MESH_RANKS=$MESH_RANKS -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$GLMFULL_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$GLMFULL_SPINE_BUDGET_BYTES ${GLMFULL_EXTRA_ENV:-} bash -c 'SPARK_WEIGHTD_PACK_SHA256=\$(cat packs/pack.sha256) exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $rank > logs/residentd-$run_id.log 2>&1'" &
     PIDS[$rank]=$!
   done
   join_ranks start
@@ -103,6 +111,23 @@ stop() {
     PIDS[$rank]=$!
   done
   join_ranks stop
+}
+
+archive() {
+  local run_id="$1" destination="$2" rank host root failed=0
+  run_id_valid "$run_id"
+  mkdir -p "$destination"
+  for rank in $(seq 0 15); do
+    host="$(host_of "$rank")"
+    root="$(root_of "$host")"
+    if scp -q "$host:$root/logs/residentd-$run_id.log" "$destination/rank$(printf %02d "$rank").log"; then
+      $SSH "$host" "rm -f $root/logs/residentd-$run_id.log"
+    else
+      echo "glm53full_lane: rank $rank log of run $run_id was not copied; it stays on $host" >&2
+      failed=1
+    fi
+  done
+  return "$failed"
 }
 
 api() {
@@ -142,5 +167,6 @@ case "${1:-}" in
   api) api ;;
   api-stop) api_stop ;;
   decode) decode "${2:?decode TOKEN_IDS_CSV NEW_TOKENS}" "${3:?decode TOKEN_IDS_CSV NEW_TOKENS}" ;;
-  *) echo "usage: $0 render DIR|setup|start|status|stop|api|api-stop|decode IDS NEW" >&2; exit 2 ;;
+  archive) archive "${2:?archive RUN_ID DESTINATION}" "${3:?archive RUN_ID DESTINATION}" ;;
+  *) echo "usage: $0 render DIR|setup|start|status|stop|api|api-stop|decode IDS NEW|archive RUN_ID DEST" >&2; exit 2 ;;
 esac

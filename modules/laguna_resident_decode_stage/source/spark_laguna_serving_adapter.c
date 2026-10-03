@@ -190,7 +190,6 @@ static SparkStatus SparkLagunaServingLoadTpCollective(
 	if ( document == 0 || runtime_root == 0 || state == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	policy.peer_count = tp_degree;
-	policy.allow_zero_collective_identifier = 1u;
 	policy.require_contiguous_peer_ports = 1u;
 	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL;

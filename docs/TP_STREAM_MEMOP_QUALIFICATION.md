@@ -35,6 +35,22 @@ see the production status below.
   ranks contains either line (same read-only check), so the fleet currently
   runs a registered mapping with a real alias. No qualification below exercised
   either fallback.
+- Why the unregistered path exists: a shared weightd's mesh region is
+  RDMA-registered shmem (`ibv_reg_mr` with remote access). CUDA refused to
+  host-register those pages with every flag combination tried (PORTABLE|MAPPED,
+  PORTABLE, default), while a self-created memfd of the same size registered
+  cleanly in the same cgroup. The kernels and the stream-wait path address the
+  region through its host virtual address, so registration only buys a mapped
+  alias. That is valid only on a device that reads pageable host memory
+  coherently through the host page tables. Both fallbacks therefore require
+  `cudaDevAttrPageableMemoryAccess` and
+  `cudaDevAttrPageableMemoryAccessUsesHostPageTables` to read 1 on the current
+  device. Without them, attach fails: `MESH-REGISTER-FAIL` or
+  `MESH-DEVICE-ALIAS-FAIL ... pageable_access=.. host_page_tables=..`. Whether
+  the mapping was registered is recorded per collective. Teardown unregisters
+  only a mapping that was registered, and only when its last owner leaves.
+  Still open: why CUDA refuses those pages, and a Spark measurement of the
+  unregistered path against a registered one.
 - The fleet mesh runs on `rocep1s0f1`, GID index 3 (`MESH_INTERFACE` and
   `MESH_SGID_INDEX` in `tools/fleet_node_agent.sh`). The two-host check below
   used `rocep1s0f0`.

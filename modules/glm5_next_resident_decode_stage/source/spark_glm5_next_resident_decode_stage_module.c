@@ -54,6 +54,7 @@ static int SparkGlm5NextProbeEnabled(void)
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "sparkpipe/spark_glm5_next_kv_shard.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_weightd_map.h"
@@ -462,7 +463,8 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
-	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
+	if ( SparkModuleTpCollectiveIdentifier(SPARK_GLM5_NEXT_MODULE_TAG,context->tp_degree,context->tp_collective_identifier,&state->tp_collective_disabled) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
 	state->max_sequence_positions = context->max_sequence_positions;

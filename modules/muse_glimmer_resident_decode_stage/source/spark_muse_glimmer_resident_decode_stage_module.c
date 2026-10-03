@@ -13,6 +13,7 @@
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_muse_glimmer_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
@@ -148,7 +149,7 @@ static SparkStatus SparkMuseGlimmerModuleConfigureTp(SparkMuseGlimmerModuleState
 		return(status);
 	if ( state->tp_rank >= state->tp_degree || state->tp_degree > SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT || (SPARK_MUSE_GLIMMER_MODEL_ATTN_QUERY_HEAD_COUNT % state->tp_degree) != 0u || (SPARK_MUSE_GLIMMER_MODEL_INTERMEDIATE_DIMENSION % state->tp_degree) != 0u || (SPARK_MUSE_GLIMMER_MODEL_OUTPUT_VOCAB_COUNT % state->tp_degree) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+	status = SparkModuleTpStandalone(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_TP_STANDALONE",state->tp_degree,&state->tp_standalone);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_MUSE_GLIMMER_MODULE_TAG,"SPARK_MUSE_GLIMMER_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_MUSE_GLIMMER_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_operation_timeout_milli);
 	SPARK_RETURN(status);

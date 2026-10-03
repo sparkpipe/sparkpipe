@@ -91,6 +91,7 @@ extern uint32_t cuda_stub_host_register_calls;
 extern uint32_t cuda_stub_host_register_flags;
 extern uint32_t cuda_stub_host_unregister_calls;
 extern int cuda_stub_host_register_result;
+extern int cuda_stub_pageable_coherent;
 extern int cuda_stub_host_unregister_result;
 extern uint32_t spark_stub_cuda_host_registered(void *address);
 extern int cudaHostRegister(void *address,size_t bytes,unsigned int flags);
@@ -1313,6 +1314,11 @@ static void FuzzRegistrationOwnership(void)
             if ( fresh != MAP_FAILED )
             {
                 cuda_stub_host_register_result = 1;
+                cuda_stub_pageable_coherent = 0;
+                CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&skip_owner,fresh,1u,
+                    FUZZ_HIDDEN,0u,0) == SPARK_STATUS_IO_ERROR,
+                    "a refused registration on a device without coherent pageable access fails attach");
+                cuda_stub_pageable_coherent = 1;
                 skip_calls = cuda_stub_host_register_calls;
                 CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&skip_owner,fresh,1u,
                     FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK,
@@ -1324,7 +1330,12 @@ static void FuzzRegistrationOwnership(void)
                     FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK &&
                     cuda_stub_host_register_calls == skip_calls + 1u,
                     "skipped registration does not retry on reprepare");
-                SparkTpDeviceCollectiveDestroy(&skip_owner);
+                {
+                    uint32_t unregister_before = cuda_stub_host_unregister_calls;
+                    SparkTpDeviceCollectiveDestroy(&skip_owner);
+                    CHECK(skip_owner.implementation == 0 && cuda_stub_host_unregister_calls == unregister_before,
+                        "teardown of a skipped registration releases the owner without unregistering");
+                }
                 cuda_stub_host_register_result = 0;
                 munmap(fresh,(size_t)SPARK_WEIGHTD_MESH_REGION_BYTES);
             }

@@ -17,6 +17,7 @@
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_ling_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "spark_ling_resident_decode_stage_internal.h"
@@ -431,7 +432,8 @@ static SparkStatus SparkLingModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
-	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
+	if ( SparkModuleTpCollectiveIdentifier(SPARK_LING_MODULE_TAG,context->tp_degree,context->tp_collective_identifier,&state->tp_collective_disabled) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
 	state->max_sequence_positions = context->max_sequence_positions;

@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_hybrid_state.h"
 #include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
@@ -178,7 +179,7 @@ static SparkStatus SparkGemma4ModuleConfigureTp(SparkGemma4ModuleState *state)
 #endif
 	state->sliding_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_SLIDING_KV_HEAD_COUNT,state->tp_degree);
 	state->full_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_FULL_KV_HEAD_COUNT,state->tp_degree);
-	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+	status = SparkModuleTpStandalone(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",state->tp_degree,&state->tp_standalone);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	{
