@@ -362,6 +362,7 @@ TEST_NAMES := \
     test_glm52_mtp_tree \
     test_tp_collective \
     test_serving_tp_config \
+    test_byte_draft \
     test_rope_plan \
     test_glm52_stagepack \
     test_tokenizer \
@@ -1743,6 +1744,9 @@ build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_
 
 build/test_rope_plan: tests/test_rope_plan.c model-families/common/include/sparkpipe/spark_rope_plan.h model-families/laguna/include/sparkpipe/spark_laguna_model.h model-families/laguna/include/sparkpipe/llm_defines.h model-families/common/include/sparkpipe/spark_driver_defines.h
 	$(CC) -Imodel-families/laguna/include $(CPPFLAGS) $(CFLAGS) -I. -Imodel-families/common/include -Imodel-families/laguna/include $< -lm -o $@
+
+build/test_byte_draft: tests/test_byte_draft.c include/sparkpipe/spark_byte_draft.h $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
 build/test_serving_tp_config: tests/test_serving_tp_config.c include/sparkpipe/spark_serving_adapter_template.h $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
