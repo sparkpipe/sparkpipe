@@ -57,7 +57,6 @@ typedef enum SparkTpCollectiveThresholdPolicy
 typedef struct SparkTpCollectiveConfigPolicy
 {
 	uint32_t peer_count;
-	uint32_t allow_zero_collective_identifier;
 	uint32_t require_contiguous_peer_ports;
 	SparkTpCollectiveAlgorithmPolicy algorithms;
 	SparkTpCollectiveThresholdPolicy thresholds;

@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "common/common_kv_frame.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
@@ -218,9 +219,6 @@ typedef struct SparkQwen38MaxModuleState
 static SparkStatus SparkQwen38MaxModuleConfigureTp(SparkQwen38MaxModuleState *state)
 {
 	SparkStatus status;
-	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
 	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_DEGREE",1u,SPARK_QWEN38_MAX_MODEL_ATTN_QUERY_HEAD_COUNT,SPARK_QWEN38_MAX_MODULE_TP_DEGREE_REPLICATED,&state->tp_degree);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_RANK",0u,SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT - 1u,SPARK_QWEN38_MAX_MODULE_TP_RANK_REPLICATED,&state->tp_rank);
@@ -228,6 +226,9 @@ static SparkStatus SparkQwen38MaxModuleConfigureTp(SparkQwen38MaxModuleState *st
 		SPARK_RETURN(status);
 	if ( state->tp_rank >= state->tp_degree || state->tp_degree > SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT || (SPARK_QWEN38_MAX_MODEL_ROUTED_EXPERT_COUNT % state->tp_degree) != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModuleTpStandalone(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_TP_STANDALONE",state->tp_degree,&state->tp_standalone);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_MAX_MODULE_TAG,"SPARK_QWEN38_MAX_STAGE_TP_TIMEOUT_MS",1u,UINT32_MAX,SPARK_QWEN38_MAX_MODULE_TP_TIMEOUT_MILLI_DEFAULT,&state->tp_operation_timeout_milli);
 	SPARK_RETURN(status);
 }

@@ -316,11 +316,6 @@ SparkStatus SparkTpDeviceCollectiveProbeMemoryMode(
 void SparkTpDeviceCollectiveDumpOperations(
     const SparkTpDeviceCollective *collective);
 
-SparkStatus SparkTpDeviceCollectiveCreditStepCount(
-	uint32_t backend_kind,
-	uint32_t tp_degree,
-	uint32_t *step_count_out);
-
 SparkStatus SparkTpDeviceCollectiveCreditBindingRouteCount(
     const SparkTpDeviceCollectiveConfig *config,
     uint32_t *route_count_out);
@@ -355,10 +350,6 @@ SparkStatus SparkTpDeviceCollectiveEnqueueRounds(
 
 uint64_t SparkTpDeviceCollectiveDeviceRoundsDone(
     SparkTpDeviceCollective *collective);
-
-SparkStatus SparkTpDeviceCollectiveWaitAllRoutes(
-    SparkTpDeviceCollective *collective,
-    uint32_t timeout_milli);
 
 typedef struct SparkTpDeviceCollectiveHardwareTiming
 {
@@ -448,21 +439,6 @@ SparkStatus SparkTpDeviceCollectiveOpWaitHandles(
     uint64_t ordinal,
     void **flag_device,
     uint64_t *wait_value);
-
-SparkStatus SparkTpDeviceCollectiveRequestFailure(
-    SparkTpDeviceCollective *collective,
-    SparkStatus failure_status);
-
-SparkStatus SparkTpDeviceCollectiveRequestOperationFailure(
-    SparkTpDeviceCollective *collective,
-    uint64_t ordinal,
-    SparkStatus failure_status);
-
-SparkStatus SparkTpDeviceCollectiveOperationPhase(
-    const SparkTpDeviceCollective *collective,
-    uint64_t ordinal,
-    uint32_t *phase_out,
-    uint32_t *failure_requested_out);
 
 SparkStatus SparkTpDeviceCollectiveExchangeBf16(
     SparkTpDeviceCollective *collective,

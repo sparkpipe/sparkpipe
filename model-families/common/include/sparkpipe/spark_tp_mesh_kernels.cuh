@@ -1290,13 +1290,20 @@ extern "C" cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device_out)
     status = cudaHostGetDevicePointer(device_out,host,0u);
     if ( status == cudaSuccess )
         return status;
-    /* The shared weightd's mesh region cannot always be host-registered
-     * (RDMA-registered shmem pages; lane-0 fleet reproduction), in which
-     * case no mapped alias exists. The mesh kernels and the
-     * stream-wait path address this region through the host virtual address
-     * directly (cache-coherent GB10), so fall back to the identity mapping
-     * instead of failing collective initialization. */
-    fprintf(stderr,"MESH-DEVICE-ALIAS-IDENTITY ptr=%p cuda=%d (%s) coherent-host-path\n",
+    {
+        int device = 0,pageable = 0,host_tables = 0;
+        if ( cudaGetDevice(&device) != cudaSuccess ||
+             cudaDeviceGetAttribute(&pageable,cudaDevAttrPageableMemoryAccess,device) != cudaSuccess ||
+             cudaDeviceGetAttribute(&host_tables,cudaDevAttrPageableMemoryAccessUsesHostPageTables,device) != cudaSuccess ||
+             pageable != 1 || host_tables != 1 )
+        {
+            fprintf(stderr,"MESH-DEVICE-ALIAS-FAIL ptr=%p cuda=%d (%s) pageable_access=%d host_page_tables=%d\n",
+                host,(int)status,cudaGetErrorString(status),pageable,host_tables);
+            return status;
+        }
+    }
+    (void)cudaGetLastError();
+    fprintf(stderr,"MESH-DEVICE-ALIAS-IDENTITY ptr=%p cuda=%d (%s) coherent-host-path pageable_access=1 host_page_tables=1\n",
         host,(int)status,cudaGetErrorString(status));
     *device_out = host;
     return cudaSuccess;

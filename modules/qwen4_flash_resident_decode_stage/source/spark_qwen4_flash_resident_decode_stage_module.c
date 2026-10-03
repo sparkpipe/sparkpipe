@@ -21,6 +21,7 @@
 #include "sparkpipe/spark_qwen4_flash_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
@@ -242,7 +243,7 @@ static SparkStatus SparkQwen4FlashModuleConfigureTp(SparkQwen4FlashModuleState *
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT % state->tp_degree) != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+	status = SparkModuleTpStandalone(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_TP_STANDALONE",state->tp_degree,&state->tp_standalone);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	state->tp_vocab_rows = SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;

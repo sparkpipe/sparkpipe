@@ -266,6 +266,7 @@ static void TestRestartEpoch(SparkTpDeviceCollectiveConfig config,void *mesh)
         cell[1] = 0x10u;
         cell[2] = 2u;
         *(uint64_t *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(0u,1u)) = 1268u;
+        ((SparkWeightdMeshWaitRequest *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,1u)))->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
         CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"restart peer create");
         CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,1u,64u,0u,0) == SPARK_STATUS_OK,"restart maps old epoch before all-rank ready");
         TestEpochPublish publish = {cell,2048u};
@@ -392,6 +393,12 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         "hardware gate refuses a previous owner's pending request");
     memset(request,0,sizeof(*request));
     cuda_stub_mesh_hardware_alias = (uint8_t *)mesh + 64u;
+    CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_UNSUPPORTED,
+        "a weightd that advertises no routes fails attach instead of running a different algorithm");
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES;
+    CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_UNSUPPORTED,
+        "a weightd missing one route the regimes use fails attach");
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
     CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK,
         "failed hardware preparation retains ownership for retry");
     CHECK(SparkTpDeviceCollectiveChainKey(&collective,777u) == SPARK_STATUS_OK,"hardware chain key");
@@ -448,14 +455,42 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshDirectChunks(65536u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
         SparkTpMeshDirectChunks(65536u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u,
         "direct chunk geometry: eight 16384-wide BF16 rows fit one slot, larger payloads split into slot-sized chunks");
-    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
-        cuda_stub_mesh_hardware_slice_routes == 1u,
-        "a weightd that advertises slice routes lets the launcher choose reduce-scatter + all-gather");
+        cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
+        "an attached collective launches with the slice and peer routes fixed at attach");
     request->capabilities = 0u;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
-        cuda_stub_mesh_hardware_slice_routes == 0u,
-        "an older weightd keeps every collective on direct rounds");
+        cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
+        "a later change of the wait cell's capability word cannot change the algorithm");
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    {
+        char path_log[] = "/tmp/spark-tp-path-XXXXXX";
+        int fd = mkstemp(path_log),saved = dup(2);
+        char line[512];
+        uint32_t paths = 0u,captured = 0u;
+        FILE *file;
+        CHECK(fd >= 0 && saved >= 0 && dup2(fd,2) == 2,"path log capture opens");
+        (void)SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u);
+        (void)SparkTpDeviceCollectiveArmCapture(&collective);
+        (void)SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u);
+        (void)SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u);
+        fflush(stderr);
+        (void)dup2(saved,2);
+        (void)close(saved);
+        (void)close(fd);
+        file = fopen(path_log,"r");
+        while ( file != 0 && fgets(line,sizeof(line),file) != 0 )
+            if ( strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=1 path=direct") != 0 )
+            {
+                paths++;
+                captured += strstr(line,"capture=1") != 0 ? 1u : 0u;
+            }
+        if ( file != 0 )
+            (void)fclose(file);
+        (void)unlink(path_log);
+        CHECK(paths == 1u && captured == 1u,
+            "each capture logs the path of every collective regime once, and a repeated regime logs nothing");
+    }
     CHECK(SparkTpMeshDirectPhasesPerChunk(262144u,16u,1u,1u) == 2u &&
         SparkTpMeshDirectPhasesPerChunk(262144u,16u,1u,0u) == 1u &&
         SparkTpMeshDirectPhasesPerChunk(262144u,2u,1u,1u) == 1u &&
@@ -470,24 +505,18 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         uint32_t calls_before = cuda_stub_mesh_hardware_calls;
         submission.active_sequence_count = 2u;
         submission.logical_sequence_count = 2u;
-        request->capabilities = 0u;
-        CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 0u,
-            "a collective reports all-to-all unsupported before the first submission when weightd lacks slice routes");
-        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_UNSUPPORTED &&
-            cuda_stub_mesh_hardware_calls == calls_before,
-            "an all-to-all without slice routes fails loudly instead of degrading to an all-gather");
-        request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
-        CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 1u && SparkTpDeviceCollectiveAllToAllSupported(0) == 0u,
-            "a collective reports all-to-all supported when weightd advertises slice routes");
+        CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) &&
+            SparkTpDeviceCollectiveAllToAllSupported(0) == 0u,
+            "an attached hardware collective reports the all-to-all routes fixed at attach");
         submission.full_device = local;
         CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_INVALID_ARGUMENT,
             "an all-to-all needs separate send and receive buffers");
         submission.full_device = output;
         CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_OK &&
             cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL &&
-            cuda_stub_mesh_hardware_elements == 128u && cuda_stub_mesh_hardware_slice_routes == 1u,
+            cuda_stub_mesh_hardware_elements == 128u &&
+            cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
             "an all-to-all runs on the hardware path with the per-peer payload");
-        request->capabilities = 0u;
         cuda_stub_mesh_hardware_calls = calls_before;
     }
     CHECK(SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u) == 8192u &&
@@ -498,7 +527,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkTpMeshAllToAllChunks(0u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u,
         "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/5/33 rounds");
     submission.active_sequence_count = 2u;
-    CHECK(cuda_stub_mesh_hardware_calls == 12u && cuda_stub_mesh_publish_calls == old_publish,
+    CHECK(cuda_stub_mesh_hardware_calls == 15u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
     CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"hardware disarm capture");
     cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;
@@ -631,8 +660,9 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
     submission.logical_sequence_count = 2u;
     request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_OK &&
-        cuda_stub_mesh_hardware_slice_routes == SPARK_TP_MESH_ROUTES_SLICE && cuda_stub_mesh_hardware_staging == 0,
-        "a lane that stops advertising peer routes runs slice routes without staging");
+        cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) &&
+        cuda_stub_mesh_hardware_staging == mock_staging_mapping,
+        "a lane whose capability word changes after attach keeps the routes and staging fixed at attach");
     request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
     CHECK(SparkTpMeshAllToAllPeerChunks(4112u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
         SparkTpMeshAllToAllPeerChunks(32896u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
@@ -765,6 +795,7 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
     uint32_t syncs,launches;
     SparkTpMeshRoundControl *control;
     memset((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u),0,sizeof(SparkWeightdMeshWaitRequest));
+    ((SparkWeightdMeshWaitRequest *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u)))->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
     cuda_stub_mesh_hardware_alias = (uint8_t *)mesh + 64u;
     cuda_stub_mesh_hardware_launch_result = 0;
     setenv("SPARK_TP_WAIT_MODE","hardware",1);

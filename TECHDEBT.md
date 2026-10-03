@@ -101,24 +101,13 @@ citations refer to that commit.
   and B256 fleet A/B with peer-wait time on the critical path reported per
   step, tokens identical, and the extra weight reads of the split measured
   against the hidden wait.
-- Left out on purpose (2026-10-02): weightd has 16 mesh lanes (`4f0e339`).
-  Since `5814bf2` (PR #1135), when `cudaHostRegister` refuses the weightd mesh
-  region with `cudaErrorInvalidValue`,
-  `SparkTpDeviceCollectivePrepareReceiveBf16`
-  (`ring/transport/tp_device_collective.c:2018-2037`) logs
-  `MESH-REGISTER-SKIP` and attaches the unregistered mapping.
-  `SparkTpMeshHardwarePrepare`
-  (`model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh:1290-1302`)
-  passes the host address as the device alias whenever
-  `cudaHostGetDevicePointer` fails. Neither fallback queries a device
-  coherence attribute, so attach succeeds on a device that cannot coherently
-  address pageable host memory (I03). Both rest on block comments asserting
-  that GB10 is coherent, against I48. The commit reproduced the refusal on a
-  shared weightd, and the 2026-09-28 fleet check found neither log line
-  (`docs/TP_STREAM_MEMOP_QUALIFICATION.md`, Production status). The fix: find
-  out why CUDA refuses those pages, require the coherence attributes before
-  either fallback and fail attach without them, move the rationale into docs,
-  and measure the unregistered path against a registered one on a Spark.
+- Left out on purpose (2026-10-02): the mesh region can attach unregistered
+  (`MESH-REGISTER-SKIP`, `MESH-DEVICE-ALIAS-IDENTITY`). Both paths now require
+  the device to report coherent pageable access through host page tables, and
+  fail attach otherwise (lane `mesh/contracts`). Still open: why CUDA refuses
+  to host-register a shared weightd's RDMA-registered pages, and a Spark
+  measurement of the unregistered path against a registered one
+  ([`docs/TP_STREAM_MEMOP_QUALIFICATION.md`](docs/TP_STREAM_MEMOP_QUALIFICATION.md)).
 - Hardware waits were deployed fleet-wide without distributed fault
   qualification. The real daemon/NIC path has no receipt for rank skew, a
   missing peer, timeout, cancellation, a failed Begin/End or source-slot
@@ -129,104 +118,35 @@ citations refer to that commit.
   Production status). Qualify GPU cancellation, drain and event-driven mesh
   activity on that path too, so that rearming a wait cannot cancel unrelated
   work on the rank.
-- Teardown after a register skip is broken by code reading:
-  `SparkTpDeviceCollectiveReleaseRegion`
-  (`ring/transport/tp_device_collective.c`) still calls `cudaHostUnregister`
-  on a mapping whose registration was skipped, which ends in
-  `MESH-UNREGISTER-FAIL` with a retained cleanup-only owner. Record the skip
-  per mapping.
 - NCCL leftovers after `b31761e`, which deleted the NCCL backend:
   `SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL`, the `nccl` parsers in
   `runtime/serving_adapter_template.c` and
   `modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c`, the
   NCCL branches in the glm5_next and laguna modules, and
   `tools/qwen38_tp4_nccl_bench.c`.
-- Left out on purpose (2026-10-02):
-  `runtime/serving_adapter_template.c:433-437` accepts `collective_identifier`
-  0 whenever the adapter's policy sets `allow_zero_collective_identifier`. The
-  glm5_next
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_serving_adapter.c:310`),
-  glm52
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c:253`),
-  laguna
-  (`modules/laguna_resident_decode_stage/source/spark_laguna_serving_adapter.c:193`),
-  ling
-  (`modules/ling_resident_decode_stage/source/spark_ling_serving_adapter.c:179`)
-  and qwen38_27b
-  (`modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c:375`)
-  adapters set it at every TP degree. The glm52, glm5_next, laguna and ling
-  modules turn identifier 0 into `tp_collective_disabled` (glm52 module
-  `:331`, glm5_next `:465`, laguna `:199`, ling `:434`) and open no collective
-  (`include/sparkpipe/family/module/spark_module_tp_open_node_context.h:13`,
-  glm5_next `:2234`). Every reduce then returns OK without communicating and
-  with no log line (glm52 `:1002` and `:1885`, glm5_next `:2435` and `:2578`,
-  laguna `:1131` and `:1174`, ling `:1230` and `:1264`), so a TP>1 lane with
-  identifier 0 computes tokens from each rank's partial sums and reports
-  success. glm5_next refuses it only at TP16 through its KV-shard check
-  (`:488-492`), and glm52 only with `SPARK_GLM52_PROJECTION_SPLIT=1`
-  (`:2141-2145`). The lane generators render nonzero identifiers today, while
-  `tools/glm52_prefix_probe.c:102` relies on the waiver to run one TP16 rank
-  with collectives off. The fix: delete the policy field and refuse identifier
-  0 in the template and in every module whenever `tp_degree > 1`, keeping a
-  single-rank collectives-off probe build under `#ifdef DEBUG` (I22). The
-  fleet proof is a GLM Full TP16 load whose stage config carries identifier 0
-  failing on every rank, with the same build passing T1 and the accuracy gate.
-- Left out on purpose (2026-10-02): Six TP modules read
-  `SPARK_<FAMILY>_TP_STANDALONE` in every build and accept 1 at any degree
-  above 1:
-  `modules/gemma4_resident_decode_stage/source/spark_gemma4_resident_decode_stage_module.c:181`,
-  `modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_module.c:170`,
-  `modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c:245`,
-  `modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:221`,
-  `modules/muse_glimmer_resident_decode_stage/source/spark_muse_glimmer_resident_decode_stage_module.c:151`
-  and
-  `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_tp.c:149`.
-  With it set,
-  `include/sparkpipe/family/module/spark_module_tp_open_environment.h:11-15`
-  and `spark_qwen38_27b_tp.c:152-156` log a skip and create no collective.
-  Every reduce then returns OK:
-  `include/sparkpipe/family/module/spark_module_tp_all_reduce_hidden.h:5`,
-  `spark_module_tp_submit_ordered.h:9` and `:50`,
-  `spark_module_admission_cost.h:5`, minimax `:552`, qwen38_max `:615`,
-  muse_glimmer `:391` and `:433`, and `spark_qwen38_27b_tp.c:185` and `:201`.
-  Initialize succeeds, and each rank computes tokens from its own partial sums
-  (I03, I22). `tools/qwen38_27b_lane_build_release.sh:98` and
-  `tools/qwen38max_multidev_build_artifacts.sh:170` validate the TP4
-  qwen38_27b module this way before it publishes, so that release validation
-  has no cross-rank result. The fix: put the standalone path under `#ifdef
-  DEBUG`, and make a release Configure return `INVALID_ARGUMENT` for
-  standalone at degree above 1, with the status checked. Prove it on a Spark:
-  a release module started with the variable set fails initialize, and the
-  published build passes its multi-rank T1 gate.
-- Left out on purpose (2026-10-02):
-  `ring/transport/tp_device_collective.c:879-895` reads the route capabilities
-  the local weightd advertises (`node/weightd_mesh.c:445-452`) on every
-  submission. `SparkTpMeshDirectPhasesPerChunk`
-  (`model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h:97-100`)
-  runs a BF16 sum as reduce-scatter plus all-gather only when
-  `SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES` is set, and the PEER staging
-  routes follow the same bits (`tp_device_collective.c:893-894`). With
-  capabilities 0, for example from a weightd that predates the bits, the same
-  TP16 submission runs one-phase direct rounds and nothing is logged; only the
-  all-to-all refuses a missing capability (`:1603-1609`). The weightd build
-  therefore picks the algorithm (I36), and two ranks whose weightd builds
-  differ run different phase sequences for the same collective (I37). The fix:
-  attach fails with a named error when the local weightd lacks a route
-  capability the regime needs, and every rank agrees on the capability set
-  before the first collective. Prove it on the fleet: with one rank on a
-  weightd without the bits, attach fails on every rank, and the matched fleet
-  passes the hardware collective probe and GLM Full T1.
-- Left out on purpose (2026-10-02): `ring/transport/tp_device_collective.c`
-  exports operations that report success without effect:
-  `SparkTpDeviceCollectiveWaitAllRoutes` ignores its timeout (`:1872-1880`),
-  `RequestFailure` and `RequestOperationFailure` do nothing (`:1882-1897`),
-  `OperationPhase` always reports phase 3 with no failure requested
-  (`:1899-1912`), and `CreditStepCount` always reports 1 (`:300-310`) (I01).
-  None of the five has a caller in the tree, so a future caller would be told
-  a failure was requested or a wait completed when nothing happened. Delete
-  them from `include/sparkpipe/spark_tp_device_collective.h` and the
-  transport, and prove the deletion with `tools/cuda13_sm121a_compile_gate.sh`
-  building every module and tool.
+- Awaiting fleet proof (lane `mesh/contracts`): a release module or the
+  adapter template now refuses `collective_identifier` 0 at TP>1
+  (`TP-COLLECTIVE-IDENTIFIER-REQUIRED`). The policy waiver is deleted, and the
+  collectives-off probe needs a `-DDEBUG` module build. Proof: a GLM Full TP16
+  load whose stage config carries identifier 0 fails on every rank, and the
+  same build passes T1 and the accuracy gate.
+- Left out on purpose (2026-10-03): module publish validation for TP>1
+  modules runs one rank alone. `TP_STANDALONE=1` at TP>1 now builds a
+  `-DDEBUG` module into a `-debug` build directory, a release module refuses
+  the variable (`TP-STANDALONE-REFUSED`), and `publish` refuses a standalone
+  build (`MODULE-PUBLISH-REFUSED`). The qwen38_27b and qwen38_max release
+  scripts (`tools/qwen38_27b_lane_build_release.sh`,
+  `tools/qwen38max_multidev_build_artifacts.sh`,
+  `tools/qwen38max_multidev_run_family.sh`) therefore stop at publish until
+  module publish can validate a TP>1 module with its collective open across
+  ranks. Close it with a multi-rank publish validation, proven by a TP4 publish
+  whose validator compares all four ranks' outputs with the CPU oracle.
+- Awaiting fleet proof (lane `mesh/contracts`): attach now fails with
+  `MESH-CAPABILITY-MISSING` when the local weightd lacks a route the regimes
+  use, and the routes are fixed at attach, so no later read of the wait cell
+  can change the algorithm. Proof: with one rank on a weightd without the
+  bits, attach fails on every rank; the matched fleet passes the hardware
+  collective probe and GLM Full T1.
 - Left out on purpose (2026-10-02): weightd does not range-check the
   client-supplied `source_offset`, `length`, `remote_offset` or `lkey` of
   `MESH_WRITE` and `MESH_BROADCAST` requests (`runtime/spark_weightd.c`, the
@@ -263,14 +183,15 @@ citations refer to that commit.
   the NVMe and CX-7 groups (a boot-path change for the owner), the guarded
   pair reproduction, and a report to NVIDIA and Canonical (investigation
   workflow wf_2545220b-a65).
-- Left out on purpose (2026-10-02): no log records which collective path a
-  chain ran (single-band, pipelined, pair-first, host round, tree), and each
-  lane run overwrites `~/glmfull-dev/<lane>/residentd.log` on every rank,
-  which destroyed the incident run's rank logs on 2026-10-02. Close it by
-  logging the selected path and phase count per chain capture and per regime
-  change, and by keeping one rank log per run (named by run id) until the run
-  is archived, proven by a fleet run whose rank logs name the path of every
-  chain and survive a second run on the same lane.
+- Awaiting fleet proof (lane `mesh/contracts`): every collective logs
+  `MESH-PATH` (operation, path, phases, elements, rows, capture) on each regime
+  change and again for each capture. `tools/glm53full_lane.sh` keeps one rank
+  log per run (`logs/residentd-<run id>.log`, refuses to overwrite, `archive`
+  collects and removes). The other lane tools (`ling_lane.sh`, `k3_lane.sh`,
+  `gemma4_lane_resident.sh`, `laguna_multidev_decode.sh`,
+  `qwen38_27b_lane_launch.sh`) still overwrite `residentd.log`. Proof: a
+  fleet run whose rank logs name the path of every chain and survive a second
+  run on the same lane.
 
 ## Steady-state decode hot path
 
