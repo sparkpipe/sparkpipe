@@ -870,7 +870,6 @@ typedef struct SparkGlm52ClaimedContinuityContext
 {
 	SparkGlm52ModuleState *state;
 	const SparkGlm52ResidentDecodeStageBatchView *batch;
-	const SparkModelDriverFrame *frame;
 	uint8_t *bound;
 	uint64_t *sequence_ids;
 	uint64_t *next_positions;
@@ -2477,7 +2476,7 @@ static SparkStatus SparkGlm52PrepareClaimedContinuity(void *prepare_context)
 {
 	SparkGlm52ClaimedContinuityContext *context = (SparkGlm52ClaimedContinuityContext *)prepare_context;
 	const SparkGlm52ResidentDecodeStageBatchView *batch = context->batch;
-	return(SparkStageKvBindingContinuity(&context->state->kv,context->state->lane_states,context->frame,batch->row_count,batch->active_sequence_count,batch->row_resident_slots,batch->row_sequence_ids,batch->row_positions,context->bound,context->sequence_ids,context->next_positions));
+	return(SparkStageKvBindingContinuity(&context->state->kv,context->state->lane_states,batch->row_count,batch->active_sequence_count,batch->row_resident_slots,batch->row_sequence_ids,batch->row_positions,context->bound,context->sequence_ids,context->next_positions));
 }
 
 
@@ -2499,7 +2498,6 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	batch = context->batch;
 	continuity.state = state;
 	continuity.batch = batch;
-	continuity.frame = frame;
 	continuity.bound = simulated_bound;
 	continuity.sequence_ids = simulated_sequence;
 	continuity.next_positions = simulated_next;

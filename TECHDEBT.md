@@ -562,12 +562,6 @@ citations refer to that commit.
   regime bound; the gather buffers cost about 0.8 GB per pipeline slot at
   262,144 positions and grow with the maximum context. Scatter waves are
   capped at 64 rows.
-- Left out on purpose (2026-10-03): The lane-owner split from b45e6f603
-  (`owner_rank`, `owner_count` and `SparkStageKvBindingOwns` in
-  `include/sparkpipe/spark_stage_kv_binding.h`) has no user now that glm52
-  splits by context, and the binding refuses to combine it with
-  `context_shard`. It closes when the owner filter and its lane and slot
-  filtering are removed from the binding.
 - Left out on purpose (2026-10-02): KV memory is owned by each engine, not by
   the node. `SparkStageKvBindingInitialize` allocates the KV regions and the
   page table with `cudaMalloc` through the module's own ledger

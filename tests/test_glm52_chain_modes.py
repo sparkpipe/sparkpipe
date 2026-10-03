@@ -166,10 +166,10 @@ cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,enum cu
 cudaError_t cudaMemsetAsync(void *destination,int value,size_t bytes,cudaStream_t stream) { (void)destination; (void)value; (void)bytes; (void)stream; assert(0); return(cudaErrorUnknown); }
 SparkStatus SparkKvPageCacheCompleteLane(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane) { (void)cache; (void)lane; return(SPARK_STATUS_OK); }
 SparkStatus SparkKvPageCacheRollbackLaneTransaction(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane,uint32_t flags) { (void)cache; (void)lane; (void)flags; return(SPARK_STATUS_OK); }
-SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,const SparkModelDriverFrame *frame,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	uint32_t row,lane;
-	(void)binding; (void)lane_states; (void)frame; (void)row_resident_slots;
+	(void)binding; (void)lane_states; (void)row_resident_slots;
 	for (lane=0u; lane<active_count; lane++)
 	{
 		bound[lane] = 1u;
