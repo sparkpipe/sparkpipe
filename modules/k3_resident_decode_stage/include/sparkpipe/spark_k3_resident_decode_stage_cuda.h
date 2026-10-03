@@ -22,6 +22,7 @@ typedef struct SparkK3StepInput
 	const uint32_t *context_length;
 	const uint32_t *sequence_of_row;
 	const uint32_t *sequence_row_begin;
+	const uint32_t *sequence_row_indices;
 	const uint32_t *kda_state_index;
 	uint32_t *route_expert;
 	uint32_t *route_packed_row;
@@ -63,13 +64,18 @@ typedef struct SparkK3Dispatch
 	uint16_t *kda_v_window_pool;
 	uint8_t *scratch;
 	size_t scratch_bytes;
+	uint32_t tp_degree;
+	uint32_t kda_rank_heads;
+	SparkK3RankStateBytes state_bytes;
 	int device;
 } SparkK3Dispatch;
 
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
-	uint64_t kv_page_bytes, int device);
+	uint64_t kv_page_bytes, uint32_t tp_degree, int device);
 void SparkK3DispatchDestroy(SparkK3Dispatch *d);
+int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
+	uint32_t tp_degree, cudaStream_t stream);
 
 int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	SparkK3BoundLayer *bounds, uint32_t layer_count,

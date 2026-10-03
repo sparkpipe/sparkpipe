@@ -5,6 +5,7 @@
 
 #include "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
+#include "sparkpipe/spark_row_bucket.cuh"
 #include "spark_glm52_resident_decode_stage_internal.h"
 #define SPARK_FAMILY_CAMEL Glm52
 #define SPARK_FAMILY_UPPER GLM52
@@ -13,6 +14,11 @@
 #include "sparkpipe/family/spark_family.h"
 
 #define SPARK_GLM_CUDA_THREADS 256u
+
+extern "C" uint32_t SparkGlm52ExactWaveRows(void)
+{
+	return(LM_SKINNY_ROWS);
+}
 
 extern "C" int32_t SparkGlm52T1Enabled(void)
 {
@@ -84,7 +90,54 @@ __global__ static void SparkGlm52EmbeddingKernel(
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_unpack.cuh"
 
-#include "sparkpipe/family/glm/spark_glm_wave_metadata_parallel.cuh"
+#include "sparkpipe/family/glm/spark_glm_wave_metadata_rows.cuh"
+
+static cudaError_t SparkGlm52CopyWaveInputs(const SparkGlm52CudaWave *wave,uint32_t rows)
+{
+	SparkGlm52ExecutionSlot *slot = wave->slot;
+	cudaStream_t stream = (cudaStream_t)slot->stream;
+	cudaError_t error;
+	error = cudaMemcpyAsync(slot->resident_slots,wave->host_resident_slots,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->positions,wave->host_positions,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess && wave->owns_embedding != 0u )
+		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	return(error);
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaStageWaveInputs(const SparkGlm52CudaWave *wave,uint32_t rows,uint32_t bucket)
+{
+	SparkGlm52ExecutionSlot *slot;
+	cudaError_t error;
+	if ( wave == 0 || wave->slot == 0 || rows == 0u || bucket < rows )
+		return(LM_LAUNCH_ERR_SHAPE);
+	slot = wave->slot;
+	error = SparkGlm52CopyWaveInputs(wave,rows);
+	if ( error == cudaSuccess )
+		error = SparkRowBucketPad((cudaStream_t)slot->stream,slot->resident_slots,slot->positions,wave->owns_embedding != 0u ? slot->token_ids : 0,rows,bucket);
+	return(SparkGlm52CudaStatus(error));
+}
+
+static void SparkGlm52BindLayer(const SparkGlm52CudaWave *wave,uint32_t local_layer,GlmLayerBuffers *buffers);
+
+static __global__ void SparkGlm52HeadGatherKernel(const uint32_t *head_rows,const uint16_t *hidden_bf16,const uint16_t *residual_bf16,uint16_t *head_hidden_bf16,uint16_t *head_residual_bf16)
+{
+	uint64_t source = (uint64_t)head_rows[blockIdx.x] * GLM_HIDDEN,target = (uint64_t)blockIdx.x * GLM_HIDDEN;
+	uint32_t index;
+	for (index=threadIdx.x; index<GLM_HIDDEN; index+=blockDim.x)
+	{
+		head_hidden_bf16[target + index] = hidden_bf16[source + index];
+		head_residual_bf16[target + index] = residual_bf16[source + index];
+	}
+}
+
+static __global__ void SparkGlm52HeadScatterKernel(const uint32_t *head_rows,const uint32_t *head_token,const float *head_score,uint32_t *output_token,float *output_score)
+{
+	if ( threadIdx.x >= SPARK_GLM52_PREFILL_WAVE_SPANS )
+		return;
+	output_token[head_rows[threadIdx.x]] = head_token[threadIdx.x];
+	output_score[head_rows[threadIdx.x]] = head_score[threadIdx.x];
+}
 
 static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 {
@@ -93,15 +146,20 @@ static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 	cudaError_t error;
 	slot = wave->slot;
 	stream = (cudaStream_t)slot->stream;
-	error = cudaMemcpyAsync(slot->resident_slots,wave->host_resident_slots,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-	if ( error == cudaSuccess )
-		error = cudaMemcpyAsync(slot->positions,wave->host_positions,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-	if ( error == cudaSuccess && wave->owns_embedding != 0u )
-		error = cudaMemcpyAsync(slot->token_ids,wave->host_token_ids,(uint64_t)wave->row_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	error = cudaSuccess;
+	if ( wave->inputs_staged == 0u )
+		error = SparkGlm52CopyWaveInputs(wave,wave->row_count);
 	if ( error == cudaSuccess )
 	{
-		SparkGlm52WaveMetadataKernel<<<(wave->row_count + SPARK_GLM_CUDA_THREADS - 1u) / SPARK_GLM_CUDA_THREADS,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
+		SparkGlm52WaveMetadataKernel<<<1u,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->resident_slots,slot->positions,slot->context_lengths,slot->dense_row_offset,wave->row_count);
 		error = cudaPeekAtLastError();
+	}
+	if ( error == cudaSuccess && wave->prefill_block_table != 0 )
+	{
+		GlmLayerBuffers buffers;
+		SparkGlm52BindLayer(wave,0u,&buffers);
+		error = LmPrefillBlockTableLaunch<SPARK_GLM52_PREFILL_BLOCK_ROWS>(buffers.cache,slot->resident_slots,wave->row_count,wave->prefill_block_table,SPARK_GLM52_PREFILL_TABLE_BLOCKS(wave->row_count),
+			wave->row_head_certified != 0u ? slot->head_rows : 0,SPARK_GLM52_PREFILL_WAVE_SPANS,stream);
 	}
 	return(SparkGlm52CudaStatus(error));
 }
@@ -187,12 +245,12 @@ static void SparkGlm52BindLayer(
 	buffers->dense_down_weight = weight->dense_down_bf16;
 	buffers->dense_gate_up_fused = weight->dense_gate_up_bf16 != 0 ? 1u : 0u;
 	if ( wave->expert_lease_base != 0 &&
-		wave->expert_lease_local_layer == local_layer )
+		(wave->expert_lease_pinned != 0u || wave->expert_lease_local_layer == local_layer) )
 	{
 		buffers->expert_w1_weight = wave->expert_lease_base + weight->expert_up_gate_payload_offset;
-		buffers->expert_w1_scale = weight->expert_up_gate_scale == 0 ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
+		buffers->expert_w1_scale = weight->expert_up_gate_scale_offset == 0u ? 0 : wave->expert_lease_base + weight->expert_up_gate_scale_offset;
 		buffers->expert_w2_weight = wave->expert_lease_base + weight->expert_down_payload_offset;
-		buffers->expert_w2_scale = weight->expert_down_scale == 0 ? 0 : wave->expert_lease_base + weight->expert_down_scale_offset;
+		buffers->expert_w2_scale = weight->expert_down_scale_offset == 0u ? 0 : wave->expert_lease_base + weight->expert_down_scale_offset;
 	}
 	else
 	{
@@ -224,6 +282,14 @@ static void SparkGlm52BindLayer(
 	buffers->router_logits = slot->router_logits_f32;
 	buffers->selection_scores = slot->selection_scores_f32;
 	buffers->selected_positions = slot->selected_positions;
+	buffers->selection_rows = slot->selection_rows;
+	buffers->prefill_union_positions = slot->prefill_union_positions;
+	buffers->prefill_union_masks = slot->prefill_union_masks;
+	buffers->prefill_union_counts = slot->prefill_union_counts;
+	buffers->prefill_union_entries = slot->prefill_union_entries;
+	buffers->topk_scratch_values = slot->topk_scratch_values_f32;
+	buffers->topk_scratch_positions = slot->topk_scratch_positions;
+	buffers->topk_scratch_entries = slot->topk_scratch_entries;
 	buffers->selected_position_count = GLM_DSA_SELECTED;
 	buffers->route_expert = slot->route_expert;
 	buffers->route_weight = slot->route_weight;
@@ -243,6 +309,11 @@ static void SparkGlm52BindLayer(
 	buffers->attention_split_partials = wave->attention_split_partials_f32;
 	buffers->attention_split_partial_blocks = wave->attention_split_partial_blocks;
 	buffers->decode_split_context_threshold = wave->decode_split_context_threshold;
+	buffers->single_sequence_rows = wave->single_sequence_rows;
+	buffers->prefill_block_table = wave->prefill_block_table;
+	buffers->prefill_table_blocks = wave->prefill_block_table != 0 ? SPARK_GLM52_PREFILL_TABLE_BLOCKS(wave->row_count) : 0u;
+	buffers->projection_local_bf16 = wave->projection_split != 0u ? slot->projection_local_bf16 : 0;
+	buffers->projection_gather_bf16 = wave->projection_split == 0u ? 0 : buffers->tp_degree > 1u ? slot->projection_gather_bf16 : slot->projection_local_bf16;
 	SparkGlm52BuildKvView(&buffers->cache,wave->kv_cache + ((uint64_t)local_layer * wave->kv_layer_stride_bytes),wave);
 	index_ordinal = wave->index_ordinal_by_local_layer[local_layer];
 	if ( index_ordinal != UINT32_MAX )
@@ -260,6 +331,29 @@ static int32_t SparkGlm52RunLayerAttention(const SparkGlm52CudaWave *wave,uint32
 	return(status);
 }
 
+extern "C" uint32_t SparkGlm52ProjectionSliceWidth(uint32_t tp_degree)
+{
+	return(tp_degree != 0u ? GlmProjectionSliceWidth(tp_degree) : 0u);
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	GlmLayerBuffers buffers;
+	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || local_layer >= wave->layer_count || wave->projection_split == 0u || wave->slot->projection_local_bf16 == 0 || wave->slot->projection_gather_bf16 == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	SparkGlm52BindLayer(wave,local_layer,&buffers);
+	return(GlmLayerAttentionProject(&buffers,wave->row_count,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+}
+
+extern "C" int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t local_layer)
+{
+	GlmLayerBuffers buffers;
+	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || local_layer >= wave->layer_count || wave->projection_split == 0u || wave->slot->projection_local_bf16 == 0 || wave->slot->projection_gather_bf16 == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	SparkGlm52BindLayer(wave,local_layer,&buffers);
+	return(GlmLayerAttentionCore(&buffers,wave->row_count,wave->maximum_context,wave->first_layer_index + local_layer,wave->multiprocessor_count,(cudaStream_t)wave->slot->stream));
+}
+
 static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer)
 {
 	GlmLayerBuffers buffers;
@@ -275,7 +369,7 @@ static int32_t SparkGlm52RunLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	wave->slot->route_recorded = 0u;
-	if ( wave->slot->group_row_offset_host != 0 && wave->slot->route_ready_event != 0 )
+	if ( wave->route_host_copy != 0u && wave->slot->group_row_offset_host != 0 && wave->slot->route_ready_event != 0 )
 	{
 		error = cudaMemcpyAsync(wave->slot->group_row_offset_host,wave->slot->group_row_offset,(GLM_EXPERTS + 1u) * sizeof(uint32_t),cudaMemcpyDeviceToHost,(cudaStream_t)wave->slot->stream);
 		if ( error == cudaSuccess )
@@ -301,6 +395,12 @@ static int32_t SparkGlm52RunLayerMlpExperts(const SparkGlm52CudaWave *wave,uint3
 
 #include "sparkpipe/family/glm/spark_glm_head_maxloc_launch.cuh"
 
+#ifdef SPARK_SCORE_DUMP
+#define SPARK_GLM52_SCORE_EVERY_ROW 1u
+#else
+#define SPARK_GLM52_SCORE_EVERY_ROW 0u
+#endif
+
 static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 {
 	SparkGlm52ExecutionSlot *slot;
@@ -313,13 +413,46 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 	error = cudaSuccess;
 	if ( wave->owns_final_head != 0u )
 	{
-		GlmLayerBuffers buffers;
-		uint32_t rank_offset;
+		GlmLayerBuffers buffers,row_buffers;
+		uint32_t rank_offset,row;
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		if ( wave->row_count == 1u && wave->head_certified_fp8_payload != 0 &&
+		if ( wave->row_head_certified != 0u && wave->prefill_block_table != 0 && SPARK_GLM52_SCORE_EVERY_ROW == 0u &&
+			wave->head_certified_fp8_payload != 0 && SparkGlm52T1Enabled() == 0 )
+		{
+			SparkGlm52HeadGatherKernel<<<SPARK_GLM52_PREFILL_WAVE_SPANS,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->head_rows,buffers.hidden_bf16,buffers.residual_bf16,slot->head_hidden_bf16,slot->head_residual_bf16);
+			status = cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+			for (row=0u; status == LM_LAUNCH_OK && row<SPARK_GLM52_PREFILL_WAVE_SPANS; row++)
+			{
+				row_buffers = buffers;
+				row_buffers.hidden_bf16 = slot->head_hidden_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.residual_bf16 = slot->head_residual_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.normed_bf16 = slot->head_normed_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.output_token = slot->head_token + row;
+				row_buffers.output_score = slot->head_score + row;
+				status = GlmHeadCertifiedB1(&row_buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
+			}
+			if ( status == LM_LAUNCH_OK )
+			{
+				SparkGlm52HeadScatterKernel<<<1u,32u,0,stream>>>(slot->head_rows,slot->head_token,slot->head_score,buffers.output_token,buffers.output_score);
+				status = cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+			}
+		}
+		else if ( (wave->row_count == 1u || wave->row_head_certified != 0u) && wave->head_certified_fp8_payload != 0 &&
 			SparkGlm52T1Enabled() == 0 )
-			status = GlmHeadCertifiedB1(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,rank_offset,buffers.head_vocabulary,stream);
+		{
+			status = LM_LAUNCH_OK;
+			for (row=wave->row_head_certified != 0u && SPARK_GLM52_SCORE_EVERY_ROW == 0u ? wave->row_count - 1u : 0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
+			{
+				row_buffers = buffers;
+				row_buffers.hidden_bf16 = buffers.hidden_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.residual_bf16 = buffers.residual_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.normed_bf16 = buffers.normed_bf16 + (uint64_t)row * GLM_HIDDEN;
+				row_buffers.output_token = buffers.output_token + row;
+				row_buffers.output_score = buffers.output_score + row;
+				status = GlmHeadCertifiedB1(&row_buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->head_certified_fp8_payload,wave->head_certified_fp8_scale_f32,wave->head_certified_fp8_norm_f32,slot->head_certified_scratch,slot->head_certified_candidates,slot->head_screened_count,0u,buffers.head_vocabulary,stream);
+			}
+		}
 		else
 			status = GlmHeadFullVocab(&buffers,wave->final_norm_bf16,wave->lm_head_bf16,wave->row_count,stream);
 		if ( status != LM_LAUNCH_OK )
@@ -357,3 +490,7 @@ extern "C" int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *w
 #include "sparkpipe/family/glm/spark_glm_cuda_wave.cuh"
 
 #include "sparkpipe/family/glm/spark_glm_layer_mlp_experts.cuh"
+
+#ifdef SPARK_SCORE_DUMP
+#include "spark_glm52_score_launch.cuh"
+#endif

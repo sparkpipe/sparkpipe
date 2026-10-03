@@ -4,21 +4,20 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STATUS = ROOT / "STATUS.md"
+README = ROOT / "README.md"
 TECHDEBT = ROOT / "TECHDEBT.md"
 PERFORMANCE = ROOT / "PERFORMANCE_STATUS.md"
 ARCHIVE = ROOT / "docs" / "archive" / "README.md"
 
 
 def main() -> int:
-    status = STATUS.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
     techdebt = TECHDEBT.read_text(encoding="utf-8")
     performance = PERFORMANCE.read_text(encoding="utf-8")
     archive = ARCHIVE.read_text(encoding="utf-8")
     required_status = (
         "[`TECHDEBT.md`](TECHDEBT.md)",
         "[`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md)",
-        "[`ARCHITECTURE.md`](ARCHITECTURE.md)",
         "[`SPEC.md`](SPEC.md)",
         "Production readiness is evaluated per exact model checkpoint and deployment.",
     )
@@ -37,12 +36,12 @@ def main() -> int:
     )
     failures = []
     for marker in required_status:
-        if marker not in status:
+        if marker not in readme:
             failures.append(f"missing status authority: {marker}")
     for text, marker in required_policy:
         if marker not in text:
             failures.append(f"missing documentation policy: {marker}")
-    current_text = status + techdebt + performance
+    current_text = readme + techdebt + performance
     for marker in forbidden:
         if marker in current_text:
             failures.append(f"unsupported status claim: {marker}")

@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 12u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 13u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -100,9 +100,10 @@ typedef struct SparkModelDriverCacheLane
     uint32_t prefix_token_count;
     uint32_t publish_token_count;
     uint32_t flags;
-    uint32_t reserved;
+    uint32_t block_identity_count;
     SparkModelDriverCacheIdentity prefix_identity;
     SparkModelDriverCacheIdentity publish_identity;
+    const SparkModelDriverCacheIdentity *block_identities;
 } SparkModelDriverCacheLane;
 
 typedef struct SparkModelDriverCompletion

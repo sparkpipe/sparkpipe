@@ -12,9 +12,13 @@ rehash or qualify the pack. Verified placement must supply the correct digest.
 The subsequent shared attach handshake validates the daemon IPC and arena.
 
 Start `sparkpipe_weightd --socket <deployment socket>` as a supervised process
-before residentd. For an isolated debug run, give it a lane-specific socket and
-keep it in the same queue-owned cgroup as the driver. For a shared cache daemon,
-its service owner must provide supervision independently of driver lifetimes.
+before residentd. For a shared cache daemon, its service owner must provide
+supervision independently of driver lifetimes. In production that owner is
+`ensure_weightd` in `tools/fleet_node_agent.sh`, and the socket is
+`/tmp/spark_weightd.sock` ([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#production-ownership)).
+An isolated debug daemon, with its own socket inside the driver's queue-owned
+cgroup, is only possible on a host without the fleet agent: on a serving Spark
+any other `sparkpipe_weightd` process stops the agent from managing that node.
 Residentd no longer forks, detaches, or attempts to repair that service. A
 successful socket probe is not proof of model readiness.
 

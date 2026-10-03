@@ -359,7 +359,6 @@ fi
 
 residentd_wait_ready || { kill -TERM "$RESIDENTD_PID" 2>/dev/null || true; exit 2; }
 
-export SPARK_MODEL_API_CONNECT_DEADLINE_MS="${MINIMAX_API_CONNECT_DEADLINE_MS:-480000}"
 "$EXEC_PREFIX/bin/sparkpipe_model_api" \
   --deployment "$ROOT/deployment.json" \
   --runtime-root "$ROOT" \

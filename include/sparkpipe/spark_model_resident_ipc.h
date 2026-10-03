@@ -116,6 +116,8 @@ typedef struct SparkModelResidentIpcSubmit
 	uint32_t row_lane_indices_offset;
 	uint32_t row_positions_offset;
 	uint32_t row_sequence_ids_offset;
+	uint32_t cache_block_identity_count;
+	uint32_t cache_block_identities_offset;
 	uint32_t model_extension_offset;
 } SparkModelResidentIpcSubmit;
 
@@ -262,6 +264,7 @@ SparkStatus SparkModelResidentIpcValidateDecisionResult(
 SparkStatus SparkModelResidentIpcCalculateSubmitBytes(
 	uint32_t lane_count,
 	uint32_t row_count,
+	uint32_t cache_block_identity_count,
 	uint32_t model_extension_bytes,
 	uint32_t *message_bytes_out);
 SparkStatus SparkModelResidentIpcEncodeSubmission(

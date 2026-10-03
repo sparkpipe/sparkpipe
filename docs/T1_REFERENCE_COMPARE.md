@@ -48,8 +48,11 @@ prompts sha256, per-fixture sha256, and generator versions.
 
 ## Driver-side comparison (serving-gated half)
 
-The driver hook dumps the same array names (bf16 patterns for streams, the
-integer routing decisions, head top-1) into a T1R1 file, then:
+No C or CUDA code writes T1R1. A driver with a T1 dump path (glm5_next,
+glm52, gemma4, laguna, ling) prints per-row `<TAG>-T1` stream, route and head
+lines to stderr when its T1 switch is set, and the family's assembler
+(`tools/t1_{g53,gfull,gemma4,lag,ling}_log_assembly.py`) builds the candidate
+T1R1 file with the same array names from those logs, then:
 
     tools/t1_reference_compare.py compare \
         --reference OUT/F/<prompt>.t1r --candidate DRIVER.t1r
@@ -102,6 +105,56 @@ nvfp4a16 vs fp8: 0.994), so the factor is removed.
 Regenerate a quarantined set with `tools/t1_reference_decoder.py` on its
 pinned checkpoint and drop the quarantine in the same commit.
 
+### Decoder double-feed (2026-09-29)
+
+Until 7865648d3 (#1051, 2026-09-19T11:22Z) the decoder fed every
+position after the first generated one a token outside the generated
+chain: first the prompt-prefix argmaxes (the self-append loop before
+e2a0518a4), then the duplicated prompt tail. #1051 and the regeneration
+commits ad18209e1 / 29f6ebcee rebuilt every family's fixtures except two,
+which kept the artifact: glm5_next (2026-09-14) and qwen4_flash
+(2026-09-17). Both are quarantined. `tests/test_t1_reference_quarantine.py`
+requires every committed manifest older than the fix to be quarantined
+with a reason that names the double-feed.
+
+glm5_next is also not reproducible at its first generated token. The same
+committed engine rerun from the frozen checkpoint 84c6a6aa (spark6
+`~/sparkdata/t1ref-warm/glm-5.3-flash`, config and index sha equal to the
+manifest's) gives `capital_of_france` 12089 at the last prompt position,
+as do the glm53flash engine, production a477cfa and a597ff0 and both dev
+TP16 firmwares (12089 13 758 8584, "Paris. In French"). The fixture says
+3837 271 271 12. GLM-5.3 Flash T1 compares against
+`qualification/t1_reference/glm53flash` (glm53flash engine, current
+decoder, header `model-families/glm5_next/include/sparkpipe/llm_defines.h`).
+
+### DSA latent cache (2026-09-29)
+
+`dsa_attention` in `tools/t1_reference_glm53flash.py` and
+`tools/t1_reference_glm5_next.py` appended bf16-rounded float32 latent
+rows to the cache and read them back through `bf16_to_f32`, which decodes
+uint16 codes. A float cast to uint32 and shifted is 0 or a denormal, so
+every cached row decoded to ~0 and all DSA layers returned ~0 attention at
+every position, position 0 included. The caches now hold bf16 codes, and
+`bf16_to_f32` refuses any input that is not uint16, so a float passed as
+codes fails loud in every engine. `tests/test_t1_reference_dsa_cache.py`
+checks both engines bitwise against a hand-computed latent attention over
+four positions and fails on the old code.
+
+Affected fixtures: `glm53flash` (#1363, 2026-09-29T07:59Z), regenerated
+with the fixed engine; `glm5_next` (2026-09-14), which stays quarantined.
+`tests/test_t1_reference_quarantine.py` requires every glm53flash or
+glm5_next manifest older than the fix (`DSA_CACHE_FIX_UTC`) to be
+quarantined with a reason naming the DSA latent cache. No other engine
+had the pattern: every other attention cache reads back the representation
+it stored (codes in ling, glm53full, gemma4, laguna, muse, minimax and
+qwen4_flash; floats in k3, mimo26, qwen38_27b and qwen38_max).
+
+The guard also caught the qwen38_27b synthetic test writing `A_log` and
+`dt_bias` as F32. The engine decodes them as bf16, and the real
+checkpoints (qwen3.8-27b-fp8, qwen3.8-max, qwen3.8-flash-next-fp8) store
+them and every norm weight the engines decode as BF16, so the test now
+writes BF16. The committed qwen38_27b fixtures are unaffected.
+
 ## Position-0 anchor
 
 For families with a committed checkpoint layer oracle, the generator's
@@ -110,6 +163,16 @@ before fixtures are trusted: glm5_next was verified against
 `tools/glm5_next_checkpoint_layer_reference.py` (top-1 token equal, layer
 output norms within 2.3 percent over 45 layers). A generator whose
 position-0 anchor disagrees with the committed oracle is not fixture-grade.
+
+## Families with engines and fixtures
+
+`tools/t1_reference_decoder.py --family F` imports `tools/t1_reference_F.py`.
+Engines exist for 14 families: dsv41, gemma4, glm53flash, glm53full,
+glm5_next, hy4, k3, laguna, ling, minimax, muse, qwen38_27b, qwen38_max and
+qwen4_flash. `qualification/t1_reference/` has 15 directories (gemma4_26b
+runs the gemma4 engine with its own `llm_defines_26b.h`); 14 hold committed
+fixtures and a `MANIFEST.json` (glm5_next and qwen4_flash quarantined), and
+hy4 holds only `prompts.json`.
 
 ## Wave-refs2 families (ling, gemma4 31b, laguna)
 
@@ -130,6 +193,48 @@ same two prompt texts as glm5_next, tokenized per family tokenizer).
   ported line-by-line from
   `modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu`,
   which ACC-2 verified checkpoint-faithful at layers 0/21/41.
+- ling publisher-code reference (2026-09-28): `tools/ling_hf_reference.py`
+  runs the pinned publisher `modeling_bailing_moe_v3.py` (sha256
+  c2509bf7...) with its fla KDA kernels on one Spark GPU, loading the
+  non-expert tensors once (about 10 GB of device memory) and each routed
+  expert on demand with `pread`, so the bf16 checkpoint never has to fit.
+  Two transformers 5 compatibility shims are applied and nothing else:
+  `is_torch_fx_available` returns False (it only decides whether a mask
+  helper is fx-wrapped) and the `default` rope initializer, which
+  transformers 5 removed, is restored with the transformers 4.45 formula.
+  `rope_scaling` is reset to None after transformers 5 rewrites the null
+  value into a dict; `rope_theta` is checked after the reset. The receipt
+  `qualification/ling_reference/ling_hf_reference.json` holds three
+  prompts x 16 greedy tokens with the top-5 logits of every step:
+  "The capital of France is" -> " Paris. (Rewrite the sentence as a
+  question.)\nIs the capital of France", "Counting upward: one, two," ->
+  " three, four, five, six, seven, eight, nine, ten.", and a Python
+  fibonacci docstring prompt -> "    if n <= 0:\n        return 0\n
+  elif n". The committed numpy fixtures above agree with it on all ten
+  tokens they hold, including the 0.0625-logit near tie at the third
+  capital token. `tests/test_ling_reference_agreement.py` checks the
+  receipt against the pinned modeling, checkpoint and prompts and against
+  the numpy fixtures. The run on spark0 used
+  `~/vllm-venv` (torch 2.13, transformers 5.8.1, fla 0.5.2), a
+  `systemd-run --user` unit with `MemoryMax=28G`, and took 440 s:
+  `python ling_hf_reference.py --checkpoint /mnt/model-warm/ling-3.0-flash
+  --prompts prompts.json --out ling_hf_reference.json --new-tokens 16
+  --expert-cache 256 --top 5 --swiglu-limits modeling`. Logits are bf16,
+  so scores are quantized to 1/16 at this magnitude.
+- ling SwiGLU limits: the config carries `expert_swiglu_limit_list` (4 on
+  layers 35-41) and `share_expert_swiglu_limit_list` (5 on layers 34-39,
+  7 on 40-41). The publisher HF modeling ignores them. The publisher
+  serving implementations apply `silu(gate).clamp(max=L) *
+  up.clamp(-L, L)` to the routed experts and the shared expert of those
+  layers: sglang `python/sglang/srt/models/bailing_moe_v3.py` (81f27fb3)
+  and vLLM `vllm/model_executor/models/bailing_moe_v3.py` (d8818125).
+  `--swiglu-limits serving` applies the same clamp. The 2026-09-28 run on
+  spark3 (`qualification/ling_reference/ling_hf_reference_serving_limits.json`,
+  478 s) gives the same 48 greedy tokens as the modeling receipt. Its
+  top-5 logits move by at most 0.5 from a modeling run on the same node.
+  A modeling rerun on spark3 also differs from the spark0 receipt by up
+  to 0.5, so these prompts cannot separate the clamp from run-to-run
+  noise. The CUDA driver implements no clamp (TECHDEBT).
 - gemma4 31b (60 layers, 5 sliding : 1 full): verified against the
   publishers' HF implementation on the fleet — the anchor oracle
   (`tools/t1_gemma4_anchor_check.py`) reproduces the committed

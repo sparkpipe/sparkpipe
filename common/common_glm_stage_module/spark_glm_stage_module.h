@@ -157,7 +157,6 @@ static SparkStatus SparkGlmStageEnqueueAsyncCompletion(
 	cudaError_t error;
 	stream = (cudaStream_t)slot->stream;
 	error = cudaMemcpyAsync(slot->host_kv_access_error,slot->kv_access_error,SPARK_GLM_STAGE_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
-	/* STREAM-ORDERED STAGE COMPLETION CONTRACT */
 	if ( error == cudaSuccess )
 		error = cudaLaunchHostFunc(stream,SPARK_GLM_STAGE_COMPLETE_ASYNC,&state->completions[slot_index]);
 	return(SparkStageModuleCudaStatus(SPARK_GLM_STAGE_MODULE_TAG,error,"async_completion"));

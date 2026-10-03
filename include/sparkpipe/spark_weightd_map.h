@@ -11,6 +11,8 @@ typedef struct SparkWeightdMap SparkWeightdMap;
 // Serialized calls on the creating CUDA context. The borrowed client and its
 // lazy attach must outlive the map. Allocation and events are created here.
 SparkStatus SparkWeightdMapCreate(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,int epoch_fd,int pool_fd,SparkWeightdMap **out);
+SparkStatus SparkWeightdMapCreateAccess(SparkWeightdClient *client,const SparkWeightdLazyAttachResult *attached,int epoch_fd,int pool_fd,uint32_t read_only,SparkWeightdMap **out);
+uint32_t SparkWeightdMapReadOnly(const SparkWeightdMap *map);
 
 const void *SparkWeightdMapEpochDevice(const SparkWeightdMap *map);
 // Once teardown starts, errors permit only a Destroy retry, never new work.
@@ -32,15 +34,7 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 // BUSY retains mappings/pins. Unmap/release precedes the daemon RELEASE message.
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout);
 
-// Startup-only spine copy straight from the daemon's verified arena image:
-// with the pool mapped, every spine span is device-readable at base + file
-// offset, so the compacted spine is assembled device-to-device instead of
-// re-reading the pack file (no page-cache dependence). UNSUPPORTED when the
-// pool is not mapped - callers fall back to SparkWeightdSpineLoad. The
-// destination must stay quarantined until success; a fallback rewrites the
-// same span bytes.
-SparkStatus SparkWeightdMapSpineCopy(const SparkWeightdMap *map,
-    const SparkWeightdManifest *manifest,void *destination,uint64_t capacity);
+SparkStatus SparkWeightdMapPool(const SparkWeightdMap *map,const void **address);
 
 #ifdef __cplusplus
 }

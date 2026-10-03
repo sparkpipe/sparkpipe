@@ -17,10 +17,19 @@ include $(dir $(lastword $(MAKEFILE_LIST)))runtime/weightd_sources.mk
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
+    src/spark_quant_arm.c \
     src/spark_ck128.c \
     src/spark_admission.c \
     src/spark_speculation_policy.c \
     src/spark_speculation_seam.c \
+    src/spark_speculation_reference_draft.c \
+    src/spark_speculation_recorded_draft.c \
+    src/spark_speculation_lookup_draft.c \
+    src/spark_speculation_ngram_draft.c \
+    src/spark_speculation_drafter_mix.c \
+    src/spark_speculation_relay_draft.c \
+    src/spark_speculation_relay_link.c \
+    src/spark_speculation_tap.c \
     ring/transport/draft_bridge.c \
     runtime/filesystem.c \
     runtime/json.c
@@ -34,11 +43,13 @@ SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
     src/spark_orchestrator.c \
     runtime/stagepack_format.c \
+    runtime/spark_expert_working_set.c \
     runtime/runtime_completion.c \
     runtime/model_runtime.c \
 	runtime/model_serving_adapter.c \
 	runtime/model_resident_endpoint.c \
 	runtime/model_resident_deployment.c \
+	runtime/chat_template.c \
 	runtime/model_continuation_lease.c \
 	runtime/model_resident_ipc.c \
 	runtime/model_resident_client.c \
@@ -62,6 +73,7 @@ SPARKPIPE_CACHE_SOURCES := \
     cache/kv_cache.c \
     cache/kv_page_cache.c \
     cache/kv_page_store.c \
+    cache/kv_snapshot.c \
     cache/kv_model_table.c \
     cache/prefix_cache.c \
     cache/store/kv_store.c \
@@ -75,6 +87,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     text/tokenizer.c \
     text/tokenizer_sidecar.c \
     runtime/stage_module_common.c \
+    runtime/stage_kv_binding.c \
     runtime/serving_adapter_template.c \
     runtime/memory_buffer.c \
     runtime/speculation_provider.c \

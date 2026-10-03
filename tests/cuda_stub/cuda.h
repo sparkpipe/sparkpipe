@@ -13,6 +13,8 @@ typedef struct CUctx_st *CUcontext;
 CUresult cuCtxGetCurrent(CUcontext *pctx);
 CUresult cuCtxSetCurrent(CUcontext ctx);
 typedef unsigned long long CUdeviceptr;
+typedef struct CUfunc_st *CUfunction;
+CUresult cuFuncGetParamInfo(CUfunction function,size_t index,size_t *offset,size_t *size);
 typedef struct CUmemGenericAllocationHandle_st *CUmemGenericAllocationHandle;
 
 #define CUDA_SUCCESS 0

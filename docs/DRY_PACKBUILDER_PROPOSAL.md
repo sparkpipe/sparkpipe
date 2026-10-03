@@ -3,11 +3,24 @@
 Operator finding: "every dev did their own thing and we have a massive DRY
 violation. It seems most of pack building is the same shape and having a
 common packbuilder would make it easier to support new models." This document
-is the measured proof of that finding and the executable migration plan behind
-docs/UNIVERSAL_PACKER.md (the 2026-08-30 design sketch, here quantified).
-Read-only study; no code changed. Baseline: main `ce2f8d2`; the dsv5 packer
-reads from `origin/lane/dsv5-flash-dev` (`83b1a09`) where main has not yet
-merged it.
+is the measured proof of that finding and the single packer-consolidation plan.
+It absorbs the 2026-08-30 universal-packer sketch
+(`docs/archive/UNIVERSAL_PACKER.md`). Read-only study; no code changed.
+Baseline: main `ce2f8d2`; the dsv5 packer was read from
+`origin/lane/dsv5-flash-dev` (`83b1a09`) before main merged it.
+
+## Drift since the study (checked 2026-09-28)
+
+The tables below are measurements at `ce2f8d2`. Since then:
+
+* `tools/spark_pack_common.py` is 364 LOC; 19 tools (14 packers, 3
+  verifiers, `acc_parity_oracle.py`, `qwen4_flash_scale_plane_patch.py`) and
+  `tests/test_acc_parity_oracle.py` import it.
+* The dsv41 packer is on main: `tools/dsv41_flash_stagepack.py` (757 LOC).
+  Risk 3 and migration step 7 no longer wait on a lane merge.
+* The K3 TP sharder is `tools/k3_shard.py` (formerly `k3_tp16_shard.py`).
+* `tools/sparkpipe_stagepack.py` and `tools/stagepack_core/` do not exist;
+  nothing in section 5 is implemented.
 
 ## 1. What already exists (do not re-propose it)
 
@@ -17,10 +30,13 @@ merged it.
   replicated-draft rule. 14 tools import it (12 packers, 2 verifiers).
 * `docs/archive/DRY_CONSOLIDATION_PLAN.md` + `docs/archive/PACKER_CORE_PLAN.md`:
   the wave-1 inventory (primitives) — landed.
-* `docs/UNIVERSAL_PACKER.md`: the operator's universal-packer directive —
-  codecs/source/topology/receipts core + byte-compatible emitters. Design
-  only; no LOC data, no verifier plan, no per-family gates. This document
-  supplies those.
+* The universal-packer directive (2026-08-30, archived): one CLI, a
+  codecs/source/topology/receipts core and byte-compatible emitters. It was
+  triggered when qwen-max-4bit blocked because `qwen38_stagepack` asserted
+  F8_E4M3 experts while `glm52_stagepack` already had an unused NVFP4 path:
+  codec and topology knowledge drifts when every family owns a packer. The
+  directive had no LOC data, verifier plan or per-family gates. This
+  document supplies those.
 
 ## 2. The corpus
 
@@ -61,7 +77,7 @@ k3_dspark, stagepack_mtp_strip, the four tp4pp4/fanout drivers):
 | glm52 PP13 | torch `TensorSource` + model contract JSON | PP13 stages (6 layers/stage); no TP | `CODECS` table int6/int7/int8/fp8/nvfp4/mxfp4 — REQUANT from bf16 on CUDA | v3 264 B header + revision + 3 digest slots; 64 B entries | `.receipt.json` + recipe sha | `glm52_validate_pack.py` (254) + 4 test fixtures | 599 |
 | glm52 resident v3 | mmap `Fp8SourceReader` (fp8 spine + scale planes, nvfp4 readers, source name mapping) | TP16 rank packs + PP stages; MLA kv_b split, indexer, fused gate_up | fp8 payload+scale copy-through; nvfp4 pass (block scales + per-expert globals); bf16 spine | 264 B header v3, 64 B entries | `build_receipt` + `write_all_ranks` | `glm52_validate_pack.py` + `glm53full_bf16_tp16_source_verify.py` (303) | 1,051 |
 | glm5_next | same shape as glm52 resident (textually drifted) | TP + PP stages; KDA vs MLA layer classes | fp8, nvfp4, bf16 | same 264 B/64 B framing (v1) | receipt + stage pack names | `glm5_next_pack_verify.py` (327) + region tests | 994 |
-| k3 | `SafetensorDir` + config-driven geometry (nested text_config, layer_types) | NO TP in the packer — `shard_class` annotations in the manifest; slicing is downstream (`k3_tp16_shard.py`, `k3_tp4_slice.sh`) | mxfp4 INTERLEAVED (tile_k 128, group 32 — bespoke transform); gamma_fold; MLA `q_fold_absorb` (compute-in-pack) | K3PK v2: JSON manifest + payload blob, 128 B align; resumable `.journal` writer | the manifest IS the receipt; `.experts` v2 via `k3_experts_v2_build_and_gen.sh` | `k3_verify_pack.py` (450; expert-cell `cross_verify`) + `k3_verify_source.py` (262) + `k3_deployed_audit.py` (46) | 860 |
+| k3 | `SafetensorDir` + config-driven geometry (nested text_config, layer_types) | NO TP in the packer — `shard_class` annotations in the manifest; slicing is downstream (`k3_shard.py`, `k3_tp4_slice.sh`) | mxfp4 INTERLEAVED (tile_k 128, group 32 — bespoke transform); gamma_fold; MLA `q_fold_absorb` (compute-in-pack) | K3PK v2: JSON manifest + payload blob, 128 B align; resumable `.journal` writer | the manifest IS the receipt; `.experts` v2 via `k3_experts_v2_build_and_gen.sh` | `k3_verify_pack.py` (450; expert-cell `cross_verify`) + `k3_verify_source.py` (262) + `k3_deployed_audit.py` (46) | 860 |
 | hy4 | raw index + own header loader | suffix-rule `SPLIT_RULES` table (dim0/dim1/replicate) + the scale contract (`SCALE_REPLICATED` four planes) | verbatim copy only (fp8 e4m3 + E8M0 companions) | SAFETENSORS-PER-RANK (format outlier) + `manifest-rank-XX.json` + `.sha256`; `--manifest-only` regen | manifest + sha sidecar | `hy4_fp8_pack_verify.py` (147; sampled) | 392 |
 
 ## 4. The deltas: what is family data vs copied shape
@@ -99,8 +115,8 @@ Measured evidence of the copied shape:
   class structs. Only the qwen 56-byte entry and the two outlier formats
   (k3 JSON manifest, hy4 safetensors) differ.
 * Dead copy artifacts found while reading (deletable today):
-  `qwen38_stagepack.py` defines `copy_fp8_experts` TWICE (line 557 shadowed
-  by 596) and `sharded_bf16_plan` is dead below its `if True: return`
+  `qwen38_stagepack.py` defines `copy_fp8_experts` TWICE (the second
+  definition shadows the first) and `sharded_bf16_plan` is dead below its `if True: return`
   (the retired runtime-slice path, superseded by `build_tp_plan`);
   ling carries its own reader although it imports the shared core.
 
@@ -123,7 +139,7 @@ family — every D-2-class fix lands twice today.
 ## 5. The common pack-builder design
 
 One engine, one CLI, per-family descriptors, byte-compatible emitters —
-the UNIVERSAL_PACKER.md shape, made concrete:
+the universal-packer shape, made concrete:
 
 ```
 tools/sparkpipe_stagepack.py        ONE CLI (build/verify/census/plan)
@@ -166,7 +182,7 @@ verifier files shrink to a descriptor reference + invocation, or vanish into
 the CLI's `verify` verb. muse gains the dedicated verifier it lacks today.
 
 Fan-out: the four tp4pp4/fanout drivers (88–192 LOC each) collapse into one
-`--fleet-build` flag over the queue (UNIVERSAL_PACKER.md step 4). The six
+`--fleet-build` flag over the queue. The six
 `*_experts_manifest.c` C emitters of `.experts` v2 are one C utility keyed
 by the directory layout, not six copies.
 
@@ -194,7 +210,8 @@ absorbed by the descriptor mechanism.
 ## 7. Risks
 
 1. BYTE COMPATIBILITY IS THE CONTRACT. Every family has sha-receipted,
-   placed 16/16 sets (STAGEPACK_AUDIT_2026-08-31 §10: 16 sets PASS). The
+   placed 16/16 sets (`docs/archive/STAGEPACK_AUDIT_2026-08-31.md` §10: 16 sets
+   PASS). The
    engine does NOT change any format; each family's conversion is gated on
    rebuilding a placed pack byte-identical (the wave-1 identity proof: 78.5 GB
    hashed, zero differing bytes). A family that cannot reproduce its bytes

@@ -28,6 +28,8 @@ extern "C" {
     "spark.hidden_transport.spark_host_pinned_rdma.verbs.v1"
 #define SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID \
     "spark.hidden_transport.spark_gpudirect_rdma.verbs.v1"
+#define SPARK_HIDDEN_TRANSPORT_HOST_STAGED_TCP_MODULE_ID \
+    "spark.hidden_transport.host_staged_tcp.v1"
 #define SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_INFINIBAND_SYSFS_PATH \
     "/sys/class/infiniband"
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES \
@@ -133,6 +135,7 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_NONE 0u
 #define SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_INDEXSHARE_SELECTED_TOKENS 1u
 #define SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_DSPARK_HIDDEN_TAP 2u
+#define SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK 3u
 
 typedef struct SparkHiddenTransportSession SparkHiddenTransportSession;
 

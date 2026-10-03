@@ -1,0 +1,2 @@
++42
+model API binds first: the API listens before its engines exist, connects and waits for all ranks in a background thread with no deadline (backoff 1-8 s), answers /health and completions 503 with Retry-After and the bring-up phase and last connect status until every rank is ready, and adds /health/live.

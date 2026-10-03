@@ -68,6 +68,7 @@ static uint16_t beta_logit[ROWS * K3_KDA_HEADS];
 static float write_gate[ROWS * K3_KDA_HEADS];
 static float retention[ROWS * K3_KDA_HEADS * K3_KDA_KEY_DIM];
 static float router_logits[ROWS * K3_EXPERTS], router_bias[K3_EXPERTS];
+static float layer_router_bias[SLICE_LAYERS][K3_EXPERTS];
 static float route_weight[ROUTES];
 static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES];
 static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
@@ -186,6 +187,10 @@ int main(void)
 		w->kda_q_conv_weight = conv_weight; w->kda_k_conv_weight = conv_weight;
 		w->kda_v_conv_weight = conv_weight;
 		w->kda_decay_bias = decay_bias; w->kda_head_log_scale = head_log_scale;
+		for (index = 0u; index < K3_EXPERTS; ++index)
+			layer_router_bias[layer][index] =
+				0.001f * (float)(((index * 7919u) + (layer * 104729u)) % K3_EXPERTS);
+		w->router_bias = layer_router_bias[layer];
 		w->mla_kv_b_value_weight = head_project_weight;
 		w->attnres_attn_weight = attn_query_weight;
 		w->attnres_mlp_weight = mlp_query_weight;
@@ -216,6 +221,7 @@ int main(void)
 	state.kda_v_window = v_window;
 	state.mla_cache = cache_views;
 	state.sequences = ROWS;
+	state.kda_rank_heads = K3_KDA_HEADS;
 	printf("rows %u layers %u\n", ROWS, SLICE_LAYERS);
 	Emit("embedding", hidden, ROWS * K3_HIDDEN);
 	Emit("attnw", attn_query_weight, K3_HIDDEN);
@@ -300,6 +306,9 @@ int main(void)
 			printf("gemm %u layer %u dest %s wgt %s\n", logged + 1u, layer,
 				GemmName(lm_recorded_gemms[logged].output),
 				WeightName(lm_recorded_gemms[logged].weight));
+		if ( layer >= K3_FIRST_ROUTED_LAYER )
+			for (index = 0u; index < ROWS * K3_TOP_K; ++index)
+				printf("route %u %u %u\n", layer, index / K3_TOP_K, route_expert[index]);
 		Emit("partial", partial, ROWS * K3_HIDDEN);
 		Emit("stream", hidden, ROWS * K3_HIDDEN);
 		Emit("normed", normed, ROWS * K3_HIDDEN);

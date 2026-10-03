@@ -1,0 +1,2 @@
++212
+Prefill waves past 2,048 context attend on tensor cores over each 4-row block's union of selected positions (parallel union kernel and a sparse mode of the existing prefill kernel), 4x faster than the per-row decode kernel at 1,024 rows.

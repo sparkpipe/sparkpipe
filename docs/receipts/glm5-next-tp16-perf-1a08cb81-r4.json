@@ -1,0 +1,290 @@
+{
+ "provenance": "read-only copy from spark0:/tmp on 2026-09-28",
+ "remote_root": "spark0:/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/",
+ "files": {
+  "run.json": {
+   "sha256": "ad986c5704fb2ed640d1818ef6682601a7f9d46c1223315e2e1f6a23e4f08c59",
+   "content": {
+    "source_commit": "1a08cb81583c93e749707fff80504f0012f1097b",
+    "root": "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4",
+    "rank": 0,
+    "mode": "graph",
+    "pack": {
+     "path": "/home/spark0/sparkdata/glm53flash.fp8.tp16/packs/glm53flash.fp8.tp16.rank0.sp",
+     "bytes": 21706046976
+    },
+    "fixture_id": "recNu3MXkvWUzHZr9",
+    "budget_bytes": {
+     "weightd": 34359738368,
+     "expert_pool": 25769803776,
+     "spine": 8589934592,
+     "model_plan": 17179869184
+    },
+    "trace": false
+   }
+  },
+  "receipt.json": {
+   "sha256": "d7119cca04235c93eb921f2ca10df85a3c8e6bd889b3e423012165518373aefb",
+   "content": {
+    "source_commit": "1a08cb81583c93e749707fff80504f0012f1097b",
+    "rank": 0,
+    "environment": {
+     "SPARK_WEIGHTD_ATTACH": "1",
+     "SPARK_WEIGHTD_SOCKET": "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/weightd.sock",
+     "SPARK_WEIGHTD_DEVICE_BYTES_MAX": "34359738368",
+     "SPARK_WEIGHTD_EXPERT_POOL_BYTES": "25769803776",
+     "SPARK_WEIGHTD_SPINE_BUDGET_BYTES": "8589934592",
+     "SPARK_WEIGHTD_KV_RESERVE_BYTES": "0",
+     "SPARK_WEIGHTD_MESH_DIR": "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/mesh",
+     "SPARK_WEIGHTD_LATCH_PORT": "30048",
+     "SPARK_TP_WAIT_MODE": "hardware",
+     "SPARK_GLM5_NEXT_GRAPH_PATH": "1",
+     "SPARK_GLM5_NEXT_PIN_EXPERTS": "1",
+     "CUDA_DEVICE_MAX_CONNECTIONS": "32"
+    },
+    "children": [
+     {
+      "name": "weightd",
+      "pid": 3095533,
+      "argv": [
+       "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/bin/sparkpipe_weightd",
+       "--socket",
+       "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/weightd.sock",
+       "--device-bytes-max",
+       "34359738368",
+       "--mesh-rank",
+       "0",
+       "--mesh-rank-mask",
+       "65535",
+       "--mesh-interface",
+       "rocep1s0f1",
+       "--mesh-sgid-index",
+       "3",
+       "--mesh-dir",
+       "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/mesh"
+      ],
+      "started_seconds": 0.0005501420237123966,
+      "exit": 0,
+      "proc_absent": true
+     },
+     {
+      "name": "residentd",
+      "pid": 3096147,
+      "argv": [
+       "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/bin/sparkpipe_model_residentd",
+       "--deployment",
+       "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/deployment.json",
+       "--rank-index",
+       "0"
+      ],
+      "started_seconds": 6.022817932069302,
+      "exit": 0,
+      "proc_absent": true
+     }
+    ],
+    "terminal": "controller stopped run",
+    "elapsed_seconds": 405.74323599308264
+   }
+  },
+  "benchmark.json": {
+   "sha256": "39019456b3f74f698131ea5a4440597d7fc121639752843c76b9af92902e2d65",
+   "content": {
+    "valid": true,
+    "process_status": 0,
+    "errors": [],
+    "token_count": 32,
+    "sequence_count": 1,
+    "token_order": "arrival",
+    "sequences": [
+     {
+      "request_id": 1,
+      "sequence_id": 1,
+      "token_ids": [
+       154842,
+       1654,
+       1184,
+       311,
+       1477,
+       279,
+       882,
+       10316,
+       553,
+       279,
+       46346,
+       20924,
+       518,
+       348,
+       284,
+       220,
+       15,
+       13,
+       116583,
+       116583,
+       103878,
+       66,
+       504,
+       279,
+       20245,
+       6879,
+       613,
+       31139,
+       14806,
+       311,
+       9234,
+       382
+      ],
+      "arrival_seconds": [
+       17.645651877042837,
+       17.750117953051813,
+       17.84711195505224,
+       17.920739930006675,
+       17.98562442709226,
+       18.061992922099307,
+       18.130337185109966,
+       18.259869107045233,
+       18.332865324104205,
+       18.417981042061,
+       18.543941311072558,
+       18.616672552074306,
+       18.71499800705351,
+       18.794828332029283,
+       18.90307726105675,
+       18.980570265091956,
+       19.049488558084704,
+       19.144247799064033,
+       19.25993467401713,
+       19.324810291058384,
+       19.396966846077703,
+       19.471617731032893,
+       19.566286716028117,
+       19.629280082066543,
+       19.709053176105954,
+       19.79433594807051,
+       19.879607441020198,
+       19.951124271028675,
+       20.031916433013976,
+       20.137667306000367,
+       20.23673475801479,
+       20.32030536001548
+      ]
+     }
+    ],
+    "all_sequences_decode_window": {
+     "all_prefixes_ready_seconds": 17.645651877042837,
+     "first_sequence_last_token_seconds": 20.32030536001548,
+     "valid": true,
+     "scope": "after every sequence first token, through earliest sequence last token",
+     "elapsed_seconds": 2.6746534829726443,
+     "token_count": 31,
+     "aggregate_tokens_per_second": 11.590286441721117
+    },
+    "ttft_seconds": 17.645651877042837,
+    "total_seconds": 20.32030536001548,
+    "decode_seconds_after_first": 2.6746534829726443,
+    "timed_intervals": 31,
+    "decode_tokens_per_second": 11.590286441721117,
+    "token_ids": [
+     154842,
+     1654,
+     1184,
+     311,
+     1477,
+     279,
+     882,
+     10316,
+     553,
+     279,
+     46346,
+     20924,
+     518,
+     348,
+     284,
+     220,
+     15,
+     13,
+     116583,
+     116583,
+     103878,
+     66,
+     504,
+     279,
+     20245,
+     6879,
+     613,
+     31139,
+     14806,
+     311,
+     9234,
+     382
+    ],
+    "token_csv_newline_sha256": "6955a6afeadbb5b8a88399e8f20a275a22d633fcbafa578ed63e5fdc4e7f87da",
+    "measurement": "stdout arrival from first to last token",
+    "inter_token_median_seconds": 0.08079216198530048,
+    "inter_token_p95_seconds": 0.1259602690115571,
+    "command": [
+     "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/bin/sparkpipe_model_batch",
+     "--deployment",
+     "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/deployment.json",
+     "--runtime-root",
+     "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/runtime",
+     "--batch",
+     "/tmp/sparkpipe-perf-1a08cb81583c-graph-r4/batch.json",
+     "--profile-stages"
+    ],
+    "stderr_tail": "e_ns=0 service_ns=11708479 elapsed_ns=12886426 completion_ns=577519358458010 device_bytes=0 host_bytes=0\nsparkpipe_stage_profile submission=209 stage=5 kind=4 lanes=1 rows=0 status=0 flags=3 queue_ns=0 service_ns=12395762 elapsed_ns=13839015 completion_ns=577519359410599 device_bytes=0 host_bytes=0\nsparkpipe_stage_profile_summary events=3344 dropped=16\nsparkpipe_model_batch_pipeline submitted=210 continued=206 admitted=210 rejected=0 leases=0\nsparkpipe_model_batch_status=0 terminal=1 requests=1\n",
+    "start": {
+     "monotonic_ns": 577499025573951,
+     "realtime_ns": 1790074801569549588
+    },
+    "finish": {
+     "monotonic_ns": 577519366449891,
+     "realtime_ns": 1790074821910426216
+    }
+   }
+  },
+  "api-summary.json": {
+   "sha256": "0fc153483fcc6e0df8f33b31458e80fdecdc51b6b89e45712138297944710beb",
+   "content": {
+    "valid": true,
+    "api_pid": 3115283,
+    "prompt_sha256": "0af243b074b8d78134f15bf5021aabdfba8d52625d7cc155fa9f21437a680fc2",
+    "requests": [
+     {
+      "request_id": 100001,
+      "prompt_tokens": 176,
+      "cached_prompt_tokens": 0,
+      "output_tokens": 32,
+      "ttft_seconds": 13.356289326,
+      "decode_tokens_per_second": 12.810851245252719,
+      "median_interval_ms": 77.419654,
+      "max_interval_ms": 103.432029
+     },
+     {
+      "request_id": 100002,
+      "prompt_tokens": 176,
+      "cached_prompt_tokens": 128,
+      "output_tokens": 32,
+      "ttft_seconds": 3.943508417,
+      "decode_tokens_per_second": 11.770386668516819,
+      "median_interval_ms": 82.353545,
+      "max_interval_ms": 131.448448
+     }
+    ]
+   }
+  },
+  "api-owned.json": {
+   "sha256": "eff434feb555cd14b397aa7b575c0597b43f435735b30ba84438e36a00d7ea37",
+   "content": {
+    "pid": 3115283,
+    "port": 30049,
+    "request_test_exit": 0,
+    "exit": 0,
+    "proc_absent": true
+   }
+  }
+ },
+ "not_copied_sha256": {
+  "batch.events.jsonl": "4f520d80d1fac007112ae503a9001ca12725b7ccb6208782c0f05056e14d04f5",
+  "api-measurements.jsonl": "077949adbaab537aaebed12d0c522b854c6d37c65fdfaeaab64f7c4930c95980"
+ }
+}

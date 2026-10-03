@@ -36,17 +36,19 @@ sha256sum "$contract" > "$receipts/contract.sha256"
 contract_sha=$(cut -d' ' -f1 "$receipts/contract.sha256")
 export CUDA_MODULE_LOADING=LAZY CUDA_MODULE_DATA_LOADING=LAZY CUDA_DEVICE_MAX_CONNECTIONS=32
 export PATH="/usr/local/cuda/bin:$PATH"
-make -j4 CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a build/weightd_warm build/sparkpipe_model_residentd build/sparkpipe_weightd build/sparkpipe_model_api build/sparkpipe_model_batch build/sparkpipe_model_compile build/sparkpipe_module_publish build/sparkpipe_driver_inspect hidden_transport_spark_host_rdma_verbs
+make -j4 CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a build/weightd_warm build/weightd_receipt build/sparkpipe_model_residentd build/sparkpipe_weightd build/sparkpipe_model_api build/sparkpipe_model_batch build/sparkpipe_model_compile build/sparkpipe_module_publish build/sparkpipe_driver_inspect hidden_transport_spark_host_rdma_verbs
 nvcc --version > "$receipts/toolchain.txt"
 cc --version >> "$receipts/toolchain.txt"
-make -j4 -C "modules/$family" CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a EXPERT_CODEC="$codec" MODEL_REVISION="$revision" CONTRACT_SHA256="$contract_sha" archive adapter
+firmware="${FIRMWARE_JSON:-examples/model_descriptions/${family}_${codec}_firmware.json}"
+[ -f "$firmware" ] || { printf '%s\n' "firmware description missing: $firmware" >&2; exit 2; }
+description=$(realpath "$firmware")
+make -j4 -C "modules/$family" CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a EXPERT_CODEC="$codec" MODEL_REVISION="$revision" CONTRACT_SHA256="$contract_sha" MODEL_DESCRIPTION="$description" archive adapter
 prefix=${family%_resident_decode_stage}
 adapter="build/modules/$family/$codec/lib${prefix}_serving_adapter_${codec}.so"
 [ -f "$adapter" ] || { printf '%s\n' "adapter not built: $adapter" >&2; exit 1; }
 env_prefix="SPARK_$(printf '%s' "$prefix" | tr '[:lower:]' '[:upper:]')"
 export "${env_prefix}_MODEL_REVISION=$revision" "${env_prefix}_CONTRACT_SHA256=$contract_sha"
 make -j4 -C "modules/$family" CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a EXPERT_CODEC="$codec" MODEL_REVISION="$revision" CONTRACT_SHA256="$contract_sha" publish > "$receipts/publish.log" 2>&1
-firmware="${FIRMWARE_JSON:-examples/model_descriptions/${family}_${codec}_firmware.json}"
 # Static archives come before the -l libs: module archives reference
 # runtime (stagepack format) and core (sha256/ck128, pulled into every
 # module archive by the spine DAEMON_SHA change) symbols that only
@@ -59,7 +61,7 @@ build/sparkpipe_driver_inspect "$output/compiled/stages/stage_000/model_driver.s
 ldd -r "$output/compiled/stages/stage_000/model_driver.so" > "$receipts/driver-dependencies.log" 2>&1
 if grep -Eq 'not found|undefined symbol' "$receipts/driver-dependencies.log"; then cat "$receipts/driver-dependencies.log"; exit 1; fi
 mkdir -p "$output/bin" "$output/lib"
-cp build/weightd_warm build/sparkpipe_model_residentd build/sparkpipe_weightd build/sparkpipe_model_api build/sparkpipe_model_batch build/sparkpipe_model_compile "$output/bin/"
+cp build/weightd_warm build/weightd_receipt build/sparkpipe_model_residentd build/sparkpipe_weightd build/sparkpipe_model_api build/sparkpipe_model_batch build/sparkpipe_model_compile "$output/bin/"
 cp build/libhidden_transport_spark_host_rdma_verbs.so "$output/lib/hidden_transport.so"
 cp "$adapter" "$output/lib/model_serving_adapter.so"
 ldd -r "$output/lib/model_serving_adapter.so" > "$receipts/adapter-dependencies.log" 2>&1

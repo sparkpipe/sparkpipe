@@ -91,6 +91,15 @@ loader, GRUB configuration, kernel, and initrd. A DHCP line containing the Linux
 hostname but no TFTP transfer means the installed OS booted instead; it is not a
 PXE success.
 
+When the installed OS hangs even with the fabric units masked, deploy with
+`--hold bottom`. The rescue initramfs then stops after mounting the installed
+root at `/root` and before handing over to it, with its network and the
+initramfs SSH server on port 22 still up (root, fleet recovery key, at the
+node's DHCP address in the PXE server log). Read the hung boots' journals with
+`journalctl -D /root/var/log/journal --list-boots` copied to a working host,
+repair the root, then kill the `(initramfs)` console shell to continue the
+boot. Redeploy with the default `--hold none` afterwards.
+
 After PXE, test both SSH paths. The rescue initrd places the fleet public key at
 the beginning of `/root/.ssh/authorized_keys`, so port 2222 should work even if
 the previous file contained malformed or concatenated records.
@@ -144,9 +153,14 @@ The policy repairs and verifies:
 
 ### Ceph quarantine
 
-Ceph is not a fleet-supported storage path. Before changing Ceph state, the
-controller fails closed if it finds a Ceph/NFS/CIFS mount, RBD mapping, remote
-filesystem entry, iSCSI node, or NVMe-oF discovery configuration. With that
+This playbook treats Ceph as unsupported. Before changing Ceph state, the
+controller fails closed on remote-storage configuration: a non-comment
+`/etc/ceph/rbdmap` entry, an `/etc/fstab` entry of type `nfs`, `nfs4`, `cifs`
+or `ceph` or with `_netdev`, a file under `/etc/iscsi/nodes`, or an
+`/etc/nvme/discovery.conf` entry (`tools/devcycle/ds4_spark_brickproof.py:676-693`).
+It does not inspect live mounts. A `ceph-fuse@` mount started by its unit
+passes the precheck and is then stopped and masked (`CEPH_MASK_UNITS`,
+`ds4_spark_brickproof.py:44-61`; `remove_ceph_startup`, `:617-649`). With the
 precheck clear, apply performs the complete quarantine:
 
 - stop every active `ceph*.service` and `ceph*.target`
@@ -161,6 +175,64 @@ The audit rejects any active Ceph unit, process, or labeled container, startup
 link, non-mask Ceph systemd artifact, unmasked Ceph unit, legacy marker, or
 obsolete SparkPipe optional-storage file. Re-enabling Ceph requires a separate
 tested design and deployment; it is not a fleet-recovery operation.
+
+**Open policy conflict.** Other current material uses Ceph at `/mnt/model-warm`
+as the pack source: the GLM 5.3 Flash contract (`source.path_on_sparks` in
+`model_contracts/glm53_flash_authoritative.json`) and the fleet runbook's
+warm-storage law ([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#9-laws)).
+spark0 had `/mnt/model-warm` mounted on 2026-09-28 (read-only check). Until the
+operator rules on Ceph, do not run stage 2 on a node that mounts
+`/mnt/model-warm` unless losing that mount is intended.
+
+## DMA guard
+
+spark8 failed twice (2026-10-01, 2026-10-02) the same way:
+1. Its ConnectX-7 logged an uncorrectable PCIe completion timeout.
+2. About 1 s later, SMMU0 logged `CMD_SYNC timeout`.
+3. Minutes later, pages that belonged elsewhere were written to the root disk (superblock and group descriptors).
+
+`tools/devcycle/spark_dma_guard.py` turns that sequence into an immediate reboot instead of disk corruption.
+
+**What it does**
+- `run` reads `/dev/kmsg` from the start of the current boot. Only kernel-facility records count, so user-space writes cannot trigger it.
+- It reboots on the first of these:
+  - an SMMU `CMD_SYNC timeout`;
+  - an SMMU `CMDQ error`, global error or service-failure line;
+  - `mlx5_pci_err_detected`, or an mlx5 uncorrectable `PCIe Bus Error`;
+  - an AER `Uncorrectable (Fatal)` from any device;
+  - an AER `Uncorrectable (Non-Fatal)` from a Mellanox device (vendor 0x15b3);
+  - a fatal firmware-first `[Hardware Error]`.
+- It sends a UDP note to the hub, forwards up to 30 ms of follow-up kernel lines (they carry the error type), waits 0.1 s, then writes `b` to `/proc/sysrq-trigger`. That reboots without syncing, so nothing more reaches the disk.
+- The daemon locks its memory and opens the sysrq file at start.
+
+**Loop protection**
+- `/var/lib/spark-dma-guard/boots.json` records each boot. A clean stop marks the boot clean.
+- If the last 3 boots ended uncleanly within 6 hours, or the state file cannot be written, the guard runs watch-only: it reports, but does not reboot.
+- Delete the file to re-arm.
+
+**Install**
+- `install --notify 192.168.50.4:5514` installs `/usr/local/sbin/spark-dma-guard`, `spark-dma-guard.service` and `spark-dma-guard.timer`.
+- The timer starts the service 60 s after boot. It is ordered after `multi-user.target`, `ssh.service` and `network-online.target`, and is never in the boot-critical path. Restarts are bounded to 5 in 10 minutes.
+- Run `scan` before installing: it reports any trigger already in the current boot's log, because `run` would act on it at once.
+- `self-test` checks the matcher against the real spark8 lines.
+
+**Hub listener**
+- `listen --port 5514 --log ~/spark-dma-guard/events.log` runs on the rtx5090 as the transient user unit `spark-dma-guard-listen`. Start it again after a hub reboot.
+
+**Verification (spark8, 2026-10-02)**
+- A clean reboot re-armed the guard 61 s after boot.
+- An injected trigger in a test instance (`--accept-user`) reached the hub in 19 ms and reset the node. The next boot's first journal entry came 94 s after the trigger; every real guarded crash since took 89-95 s.
+- The killed boot's journal stops before the trigger.
+
+**After any single node reboots**
+- The other nodes' weightd keep wiring to its old queue pair: `WD-WIRE-FAIL ... RTR failed errno=22`. Engines then fail with BUSY at collective attach.
+- Fix: run `systemctl --user restart fleet-agent` on all 16 nodes. Wait for `WD-MESH-STATS ... unready=0 ... ready=1` on all of them, then start the engines.
+
+**IOMMU passthrough on the Lenovo nodes**
+- spark7, spark8 and spark9 boot with `iommu.passthrough=1`, from `/etc/default/grub.d/zz-spark-iommu-passthrough.cfg`. It sorts after the DGX OS `iommu.cfg`, and the kernel uses the last value.
+- The kernel then reports `Default domain type: Passthrough`. The CX-7, NVMe and USB groups are `identity`, and the GPU group stays `DMA`.
+- To revert, delete the file, run `update-grub` and reboot.
+- Passthrough lowers the Lenovo crash rate about 2x but does not stop the completion timeout. The investigation and every crash run are in [CX7_DMA_INVESTIGATION_2026-10.md](CX7_DMA_INVESTIGATION_2026-10.md).
 
 ## Fleet-duty acceptance
 

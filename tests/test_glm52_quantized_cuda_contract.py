@@ -42,7 +42,7 @@ def main() -> int:
             "GLM packed W2 path")
     forbid(layer, "LmGatherRowsKernel", "GLM routed expert path")
     forbid(layer, "LmQuantiseRowsKernel", "GLM BF16 activation path")
-    require(layer, "LmGemmLaunch<\n        LmBf16Format,",
+    require(layer, "LmStreamGemmDense<LmBf16Format>(",
             "GLM BF16 router and nonexpert path")
 
     require(unity, "GlmExpertWeightCodec(void)",

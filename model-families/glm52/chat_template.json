@@ -1,0 +1,18 @@
+{
+ "prefix": "[gMASK]<sop><|system|>Reasoning Effort: Max",
+ "thinking_prefix": "",
+ "system": "<|system|>",
+ "system_thinking": "<|system|>",
+ "user": "<|user|>",
+ "observation": null,
+ "assistant": "<|assistant|><think></think>",
+ "assistant_thinking": "<|assistant|><think></think>",
+ "turn_suffix": "",
+ "generation": "<|assistant|><think></think>",
+ "generation_thinking": "<|assistant|><think>",
+ "stop_markers": [
+  "<|user|>",
+  "<|observation|>",
+  "<|assistant|>"
+ ]
+}

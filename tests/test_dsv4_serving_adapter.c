@@ -92,7 +92,7 @@ int main(void)
 	char runtime_root[4096];
 	assert(unsetenv("SPARK_DSV4_DSPARK") == 0 && unsetenv("SPARK_DSV4_SPECULATORS") == 0);
 	memset(&test_state,0,sizeof(test_state));
-	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&library) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE,&library) == SPARK_STATUS_OK);
 	assert(strcmp(library.adapter_interface.descriptor->model_id,"deepseek-ai/DeepSeek-V4-Flash-0731") == 0);
 	assert(library.adapter_interface.descriptor->max_speculative_token_count == SPARK_DSV4_MODEL_DSPARK_SPEC_STEP);
 	assert(library.adapter_interface.descriptor->max_inflight_submission_count == 13u);

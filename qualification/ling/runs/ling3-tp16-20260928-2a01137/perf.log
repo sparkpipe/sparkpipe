@@ -1,0 +1,4 @@
+{"case": "b1_o128", "prompt": "story", "median_decode_tok_s": 52.3, "label": "nospec-2a01137", "utc": "2026-09-28T13:54:22Z"}
+{"case": "b1_o512", "prompt": "story", "median_decode_tok_s": 43.14, "label": "nospec-2a01137", "utc": "2026-09-28T13:54:59Z"}
+{"case": "ttft", "prompt_tokens": 298, "median_ttft_ms": 5896.1, "label": "nospec-2a01137", "utc": "2026-09-28T13:55:18Z"}
+{"case": "streams8_o128", "wall_s": 19.43, "total_tokens": 1024, "aggregate_tok_s": 52.7, "aggregate_after_last_first_token_tok_s": 63.27, "errors": [], "label": "nospec-2a01137", "utc": "2026-09-28T13:55:38Z"}

@@ -13,34 +13,27 @@
 #include <unistd.h>
 
 #include "fixtures/model_resident_deployment_fixture.h"
-#include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_model_resident_client.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "fixtures/test_child_guard.h"
 
 #ifndef TEST_MODEL_RESIDENTD_PATH
 #define TEST_MODEL_RESIDENTD_PATH ""
 #endif
-#ifndef TEST_DSV4_SERVING_ADAPTER_PATH
-#define TEST_DSV4_SERVING_ADAPTER_PATH ""
-#endif
-#ifndef TEST_DSV4_SERVING_DRIVER_PATH
-#define TEST_DSV4_SERVING_DRIVER_PATH ""
-#endif
-#ifndef TEST_DSV4_SERVING_CONFIG_PATH
-#define TEST_DSV4_SERVING_CONFIG_PATH ""
+#ifndef TEST_MODEL_SERVING_ADAPTER_PATH
+#define TEST_MODEL_SERVING_ADAPTER_PATH ""
 #endif
 #ifndef TEST_MODEL_RESIDENT_TRANSPORT_PATH
 #define TEST_MODEL_RESIDENT_TRANSPORT_PATH ""
 #endif
 
-#define TEST_MODEL_RESIDENT_RANK_COUNT 13u
+#define TEST_MODEL_RESIDENT_RANK_COUNT 3u
 #define TEST_MODEL_RESIDENT_RECONNECT_ATTEMPTS 5000u
 
 static const char *const TestModelResidentTransportHosts[
 	TEST_MODEL_RESIDENT_RANK_COUNT] =
 {
-	"spark0","spark1","spark2","spark3","spark4","spark5","spark6",
-	"spark7","spark8","spark9","sparka","sparkb","sparkc"
+	"spark0","spark1","spark2"
 };
 
 typedef struct TestModelResidentState
@@ -81,7 +74,7 @@ static pid_t TestModelResidentStart(
 	pid_t child;
 	char rank[16];
 	assert(snprintf(rank,sizeof(rank),"%u",rank_index) > 0);
-	child = fork();
+	child = TestChildGuardFork();
 	assert(child >= 0);
 	if ( child == 0 )
 	{
@@ -217,13 +210,13 @@ static void TestModelResidentWriteDeployment(
 	for (rank=0u; rank<TEST_MODEL_RESIDENT_RANK_COUNT; rank++)
 		runtime_roots[rank] = runtime_root;
 	memset(&fixture,0,sizeof(fixture));
-	fixture.adapter_shared_object_path = TEST_DSV4_SERVING_ADAPTER_PATH;
-	fixture.driver_shared_object_path = TEST_DSV4_SERVING_DRIVER_PATH;
+	fixture.adapter_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
+	fixture.driver_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
 	fixture.driver_program_name = "resident_decode";
 	fixture.transport_shared_object_path = TEST_MODEL_RESIDENT_TRANSPORT_PATH;
 	fixture.transport_mode = "host-rdma";
-	fixture.node_target = SPARK_DSV4_MODEL_MODULE_TARGET;
-	fixture.adapter_configuration_path = TEST_DSV4_SERVING_CONFIG_PATH;
+	fixture.node_target = "test.model.serving.target";
+	fixture.adapter_configuration_path = "tests/fixtures/model_serving_adapter_config.json";
 	fixture.runtime_roots = runtime_roots;
 	fixture.transport_hosts = TestModelResidentTransportHosts;
 	fixture.control_endpoints = endpoints;
@@ -294,7 +287,7 @@ int main(void)
 	assert(node != 0);
 	child = TestModelResidentStart(deployment_path,0u);
 	TestModelResidentWaitForSocket(socket_path);
-	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_DSV4_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&adapter) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_MODEL_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&adapter) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;

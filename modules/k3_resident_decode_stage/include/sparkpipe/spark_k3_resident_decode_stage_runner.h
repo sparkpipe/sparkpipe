@@ -25,6 +25,8 @@ extern "C" {
 #define SPARK_K3_STAGE_RUNNER_KNOWN_FLAGS \
     (SPARK_K3_STAGE_RUNNER_FLAG_TENSOR_PARALLEL)
 
+#define SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW (9u * 7168u * 2u)
+
 typedef struct SparkK3StageRunnerConfiguration
 {
     uint32_t abi_version;
@@ -73,10 +75,15 @@ typedef struct SparkK3StageRunnerDispatch
     const uint32_t *sequence_of_row;
     const uint32_t *kda_state_index;
     const uint32_t *sequence_row_begin;
+    const uint32_t *sequence_row_indices;
     const void *hidden_input_bf16;
     uint64_t hidden_input_bytes;
     void *hidden_output_bf16;
     uint64_t hidden_output_bytes;
+    const void *residual_bank_input;
+    uint64_t residual_bank_input_bytes;
+    void *residual_bank_output;
+    uint64_t residual_bank_output_bytes;
     uint32_t *output_token_ids;
     float *output_scores;
     SparkModelDriverCompletionFunction completion_function;
@@ -117,6 +124,10 @@ SparkStatus SparkK3StageRunnerSubmit(
     SparkK3StageRunner *runner,
     const SparkK3StageRunnerDispatch *dispatch);
 
+SparkStatus SparkK3StageRunnerResetSlots(
+    SparkK3StageRunner *runner,
+    const uint32_t *slots,
+    uint32_t count);
 SparkStatus SparkK3StageRunnerGetStats(
     const SparkK3StageRunner *runner,
     SparkK3StageRunnerStats *stats_out);

@@ -410,6 +410,12 @@ static SparkStatus SparkModelResidentdTransportContract(
 		*module_id = SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID;
 		*memory_mode = SPARK_MODEL_RESIDENTD_MEMORY_DEVICE;
 	}
+	else if ( strcmp(mode,"host-staged") == 0 )
+	{
+		*capabilities = SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS | SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS;
+		*module_id = SPARK_HIDDEN_TRANSPORT_HOST_STAGED_TCP_MODULE_ID;
+		*memory_mode = SPARK_MODEL_RESIDENTD_MEMORY_MAPPED_HOST;
+	}
 	else
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
@@ -649,7 +655,7 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	size_t bytes;
 	SparkStatus status;
 	descriptor = runtime->adapter_library.adapter_interface.descriptor;
-	status = SparkModelResidentIpcCalculateSubmitBytes(runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&submit_bytes);
+	status = SparkModelResidentIpcCalculateSubmitBytes(runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,runtime->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? runtime->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&submit_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcCalculateCompletionBytes(descriptor->max_output_token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&completion_bytes);
 	if ( status != SPARK_STATUS_OK )

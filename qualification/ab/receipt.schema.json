@@ -1,0 +1,141 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "sparkpipe-ab-receipt-v1",
+ "title": "Quantization A/B arm run receipt (lanes/quant-ab-design.md §2.6)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["format", "campaign", "plan_sha256", "arm", "arm_digest", "run_label", "source_commit", "build", "packs", "topology", "weightd", "execution", "wave", "ready_event", "requests", "inputs", "dumps", "cache", "memory", "window"],
+ "properties": {
+  "format": {"const": "sparkpipe-ab-receipt-v1"},
+  "campaign": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+  "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+  "arm": {"type": "object"},
+  "arm_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+  "run_label": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+  "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+  "build": {
+   "type": "object", "additionalProperties": false,
+   "required": ["flags", "model_revision", "contract_sha256"],
+   "properties": {
+    "flags": {"type": "object", "additionalProperties": {"type": "string"}},
+    "model_revision": {"type": "string", "minLength": 1},
+    "contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+   }
+  },
+  "packs": {
+   "type": "object", "additionalProperties": false,
+   "required": ["pack_sha256", "sha256sums_sha256", "experts_sha256", "graft_receipt_sha256", "verify_receipt_sha256"],
+   "properties": {
+    "pack_sha256": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "sha256sums_sha256": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "experts_sha256": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "graft_receipt_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "verify_receipt_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+   }
+  },
+  "topology": {
+   "type": "object", "additionalProperties": false,
+   "required": ["tp", "pp", "kv_shard", "rank_nodes"],
+   "properties": {
+    "tp": {"type": "integer", "minimum": 1},
+    "pp": {"type": "integer", "minimum": 1},
+    "kv_shard": {"type": "integer", "minimum": 0, "maximum": 1},
+    "rank_nodes": {"type": "array", "items": {"type": "string", "minLength": 1}}
+   }
+  },
+  "weightd": {
+   "type": "object", "additionalProperties": false,
+   "required": ["lane", "expert_pool_bytes", "residency"],
+   "properties": {
+    "lane": {"type": "integer", "minimum": 0},
+    "expert_pool_bytes": {"type": "integer", "minimum": 0},
+    "residency": {"enum": ["pinned", "lazy"]}
+   }
+  },
+  "execution": {
+   "type": "object", "additionalProperties": false,
+   "required": ["mode", "dropin_sha256", "expert_paths"],
+   "properties": {
+    "mode": {"enum": ["graph", "eager"]},
+    "dropin_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "expert_paths": {"type": "array", "items": {"enum": ["skinny", "grouped-skinny", "gemm"]}}
+   }
+  },
+  "wave": {
+   "type": "object", "additionalProperties": false,
+   "required": ["sequential", "max_prefill_rows_per_submission", "output_token_budget"],
+   "properties": {
+    "sequential": {"const": true},
+    "max_prefill_rows_per_submission": {"type": "integer", "minimum": 1},
+    "output_token_budget": {"type": "integer", "minimum": 1}
+   }
+  },
+  "ready_event": {
+   "type": "object",
+   "required": ["event", "arm_digest", "pack_set_sha256", "linear_weight_codec", "expert_weight_codec", "kv_cache_codec", "model_revision"],
+   "properties": {
+    "event": {"const": "ready"},
+    "arm_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "pack_set_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+   }
+  },
+  "requests": {
+   "type": "object", "additionalProperties": false,
+   "required": ["count", "cached_prompt_tokens", "generated_token_ids_sha256"],
+   "properties": {
+    "count": {"type": "integer", "minimum": 1},
+    "cached_prompt_tokens": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+    "generated_token_ids_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+   }
+  },
+  "inputs": {
+   "type": "object", "additionalProperties": false,
+   "required": ["corpus", "corpus_tokens_sha256", "corpus_index_sha256", "tokenizer_sha256", "probe_sha256", "document_order"],
+   "properties": {
+    "corpus": {"type": "string", "minLength": 1},
+    "corpus_tokens_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "corpus_index_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "tokenizer_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "probe_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "document_order": {"enum": ["corpus", "permuted"]}
+   }
+  },
+  "dumps": {
+   "type": "object", "additionalProperties": false,
+   "required": ["per_rank_sha256", "merged_sha256", "score_dump_on"],
+   "properties": {
+    "per_rank_sha256": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+    "merged_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "score_dump_on": {"type": "boolean"}
+   }
+  },
+  "cache": {
+   "type": "object", "additionalProperties": false,
+   "required": ["arm_root", "kv_snapshot_directory", "fresh_engine", "snapshot_directory_empty_at_start"],
+   "properties": {
+    "arm_root": {"type": "string", "minLength": 1},
+    "kv_snapshot_directory": {"type": "string", "minLength": 1},
+    "fresh_engine": {"const": true},
+    "snapshot_directory_empty_at_start": {"const": true}
+   }
+  },
+  "memory": {
+   "type": "object", "additionalProperties": false,
+   "required": ["nodes", "pool_bulk_span_line"],
+   "properties": {
+    "nodes": {"type": "array", "items": {"type": "object", "required": ["node", "mem_available_before_gib", "mem_available_after_gib"]}},
+    "pool_bulk_span_line": {"type": ["string", "null"]}
+   }
+  },
+  "window": {
+   "type": "object", "additionalProperties": false,
+   "required": ["id", "utc_start", "utc_end", "cotenants"],
+   "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "utc_start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "utc_end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "cotenants": {"type": "array", "items": {"type": "string"}}
+   }
+  }
+ }
+}

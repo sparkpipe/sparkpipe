@@ -18,6 +18,7 @@
 #define SPARK_GLM52_VALIDATION_TOKENS 4u
 #define SPARK_GLM52_VALIDATION_LANES 1u
 #define SPARK_GLM52_VALIDATION_EMBED_ROWS 8u
+#define SPARK_GLM52_VAL_MAX_ROWS 16u
 
 #define SPARK_GLM52_VHIDDEN SPARK_GLM52_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM52_VQUERY_A SPARK_GLM52_MODEL_QUERY_A_DIMENSION
@@ -664,41 +665,41 @@ static int SparkGlm52ValFixtureSetup(SparkGlm52ValFixture *fixture)
 		return(SparkGlm52ValFail("fixture","device_alloc"));
 	if ( cudaMemcpy(fixture->correction_bias,fixture->correction_host,sizeof(fixture->correction_host),cudaMemcpyHostToDevice) != cudaSuccess )
 		return(SparkGlm52ValFail("fixture","bias_upload"));
-	fixture->hidden = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->residual = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->normed = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->q_compressed = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VQUERY_A * 8u * sizeof(uint16_t));
-	fixture->q_bf16 = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VQ_ROWS * 8u * sizeof(uint16_t));
-	fixture->query_rope = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VROPE * 8u * sizeof(uint16_t));
-	fixture->query_latent = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VLATENT * 8u * sizeof(uint16_t));
-	fixture->kv_slot = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VKV_SLOT_ELEMENTS * 8u * sizeof(uint16_t));
-	fixture->attention_latent = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VLATENT * 8u * sizeof(uint16_t));
-	fixture->attention_value = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VVALUE_DIM * 8u * sizeof(uint16_t));
-	fixture->attention_out = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t));
-	fixture->gate_up = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VGATE_UP_ROWS * 8u * sizeof(uint16_t));
-	fixture->intermediate = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VGATE_UP_ROWS * 8u * sizeof(uint16_t));
+	fixture->hidden = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHIDDEN * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->residual = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHIDDEN * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->normed = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHIDDEN * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->q_compressed = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VQUERY_A * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->q_bf16 = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VQ_ROWS * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->query_rope = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VROPE * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->query_latent = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VLATENT * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->kv_slot = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VKV_SLOT_ELEMENTS * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->attention_latent = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VLATENT * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->attention_value = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VVALUE_DIM * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->attention_out = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VHIDDEN * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->gate_up = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VGATE_UP_ROWS * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
+	fixture->intermediate = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VGATE_UP_ROWS * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t));
 	fixture->expert_out = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VALIDATION_ROUTES * SPARK_GLM52_VTOP_K * SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
 	fixture->shared_out = (uint16_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VALIDATION_ROUTES * SPARK_GLM52_VHIDDEN * sizeof(uint16_t));
 	fixture->scratch_small = (uint16_t *)SparkGlm52ValAllocZeroed(8192u * sizeof(uint16_t));
 	fixture->float_scratch = (float *)SparkGlm52ValAllocZeroed(8192u * sizeof(float));
-	fixture->token_ids = (uint32_t *)SparkGlm52ValAllocZeroed(8u * sizeof(uint32_t));
-	fixture->resident_slots = (uint32_t *)SparkGlm52ValAllocZeroed(8u * sizeof(uint32_t));
-	fixture->positions = (uint32_t *)SparkGlm52ValAllocZeroed(8u * sizeof(uint32_t));
+	fixture->token_ids = (uint32_t *)SparkGlm52ValAllocZeroed(SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint32_t));
+	fixture->resident_slots = (uint32_t *)SparkGlm52ValAllocZeroed(SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint32_t));
+	fixture->positions = (uint32_t *)SparkGlm52ValAllocZeroed(SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint32_t));
 	fixture->context_lengths = (uint32_t *)SparkGlm52ValAllocZeroed(SPARK_GLM52_VALIDATION_LANES * sizeof(uint32_t));
 	fixture->dense_row_offset = (uint32_t *)SparkGlm52ValAllocZeroed(4u * sizeof(uint32_t));
 	fixture->dense_tile_prefix = (uint32_t *)SparkGlm52ValAllocZeroed(4u * sizeof(uint32_t));
 	fixture->page_table = (uint32_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VALIDATION_LANES * SPARK_GLM52_VALIDATION_PAGES * sizeof(uint32_t));
 	fixture->route_scratch = (uint32_t *)SparkGlm52ValAllocZeroed(4096u * sizeof(uint32_t));
-	fixture->route_expert = (uint32_t *)SparkGlm52ValAllocZeroed(64u * sizeof(uint32_t));
-	fixture->route_packed_row = (uint32_t *)SparkGlm52ValAllocZeroed(64u * sizeof(uint32_t));
-	fixture->route_source_token = (uint32_t *)SparkGlm52ValAllocZeroed(64u * sizeof(uint32_t));
+	fixture->route_expert = (uint32_t *)SparkGlm52ValAllocZeroed(SPARK_GLM52_VAL_MAX_ROWS * SPARK_GLM52_VTOP_K * sizeof(uint32_t));
+	fixture->route_packed_row = (uint32_t *)SparkGlm52ValAllocZeroed(SPARK_GLM52_VAL_MAX_ROWS * SPARK_GLM52_VTOP_K * sizeof(uint32_t));
+	fixture->route_source_token = (uint32_t *)SparkGlm52ValAllocZeroed(SPARK_GLM52_VAL_MAX_ROWS * SPARK_GLM52_VTOP_K * sizeof(uint32_t));
 	fixture->group_row_offset = (uint32_t *)SparkGlm52ValAllocZeroed(257u * sizeof(uint32_t));
 	fixture->group_tile_prefix_w1 = (uint32_t *)SparkGlm52ValAllocZeroed(257u * sizeof(uint32_t));
 	fixture->group_tile_prefix_w2 = (uint32_t *)SparkGlm52ValAllocZeroed(257u * sizeof(uint32_t));
 	fixture->selected_positions = (uint32_t *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VALIDATION_ROUTES * SPARK_GLM52_VDSA_SELECTED * sizeof(uint32_t));
 	fixture->router_logits = (float *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VALIDATION_ROUTES * 256u * sizeof(float));
 	fixture->selection_scores = (float *)SparkGlm52ValAllocZeroed((uint64_t)SPARK_GLM52_VALIDATION_ROUTES * SPARK_GLM52_VALIDATION_DSA_CONTEXT * sizeof(float));
-	fixture->route_weight = (float *)SparkGlm52ValAllocZeroed(64u * sizeof(float));
+	fixture->route_weight = (float *)SparkGlm52ValAllocZeroed(SPARK_GLM52_VAL_MAX_ROWS * SPARK_GLM52_VTOP_K * sizeof(float));
 	fixture->head_maxloc = (uint64_t *)SparkGlm52ValAllocZeroed(8u * sizeof(uint64_t));
 	pool_bytes = (uint64_t)SPARK_GLM52_VALIDATION_LANES * SPARK_GLM52_VALIDATION_PAGES * SPARK_GLM52_VKV_PAGE_BYTES;
 	fixture->kv_cache = (uint8_t *)SparkGlm52ValAllocZeroed(pool_bytes);
@@ -788,15 +789,15 @@ static int SparkGlm52ValResetStreams(SparkGlm52ValFixture *fixture)
 	if ( cudaMemset(fixture->kv_cache,0,pool_bytes) != cudaSuccess ||
 		cudaMemset(fixture->index_cache,0,(uint64_t)SPARK_GLM52_VALIDATION_PAGES * SPARK_GLM52_VINDEX_PAGE_BYTES) != cudaSuccess ||
 		cudaMemset(fixture->kv_access_error,0,SPARK_GLM52_VALIDATION_KV_ACCESS_WORDS * sizeof(uint32_t)) != cudaSuccess ||
-		cudaMemset(fixture->hidden,0,(uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fixture->residual,0,(uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fixture->normed,0,(uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fixture->q_compressed,0,(uint64_t)SPARK_GLM52_VQUERY_A * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fixture->q_bf16,0,(uint64_t)SPARK_GLM52_VQ_ROWS * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fixture->query_latent,0,(uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VLATENT * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fixture->attention_latent,0,(uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VLATENT * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fixture->attention_value,0,(uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VVALUE_DIM * 8u * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemset(fixture->attention_out,0,(uint64_t)SPARK_GLM52_VHIDDEN * 8u * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->hidden,0,(uint64_t)SPARK_GLM52_VHIDDEN * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->residual,0,(uint64_t)SPARK_GLM52_VHIDDEN * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->normed,0,(uint64_t)SPARK_GLM52_VHIDDEN * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->q_compressed,0,(uint64_t)SPARK_GLM52_VQUERY_A * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->q_bf16,0,(uint64_t)SPARK_GLM52_VQ_ROWS * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->query_latent,0,(uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VLATENT * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->attention_latent,0,(uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VLATENT * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->attention_value,0,(uint64_t)SPARK_GLM52_VHEADS * SPARK_GLM52_VVALUE_DIM * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMemset(fixture->attention_out,0,(uint64_t)SPARK_GLM52_VHIDDEN * SPARK_GLM52_VAL_MAX_ROWS * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMemset(fixture->router_logits,0,(uint64_t)SPARK_GLM52_VALIDATION_ROUTES * 256u * sizeof(float)) != cudaSuccess ||
 		cudaMemset(fixture->selection_scores,0,(uint64_t)SPARK_GLM52_VALIDATION_ROUTES * SPARK_GLM52_VALIDATION_DSA_CONTEXT * sizeof(float)) != cudaSuccess ||
 		cudaMemset(fixture->selected_positions,0,(uint64_t)SPARK_GLM52_VALIDATION_ROUTES * SPARK_GLM52_VDSA_SELECTED * sizeof(uint32_t)) != cudaSuccess )
@@ -886,8 +887,10 @@ static void SparkGlm52ValBuildWave(SparkGlm52ValFixture *fixture,uint32_t first_
 	wave->row_count = 1u;
 	wave->maximum_context = position + 1u;
 	wave->resident_sequence_capacity = SPARK_GLM52_VALIDATION_LANES;
+	wave->execution_row_capacity = SPARK_GLM52_VAL_MAX_ROWS;
 	wave->max_sequence_positions = SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
 	wave->pages_per_sequence = SPARK_GLM52_VALIDATION_PAGES;
+	wave->physical_page_count = SPARK_GLM52_VALIDATION_LANES * SPARK_GLM52_VALIDATION_PAGES;
 	wave->owns_embedding = 1u;
 	wave->owns_final_head = 0u;
 	wave->sideband_input = 0u;

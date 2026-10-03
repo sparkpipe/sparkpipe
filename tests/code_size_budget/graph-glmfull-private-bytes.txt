@@ -1,0 +1,2 @@
++659
+Private GPU bytes tracer (tools/gpu_bytes: CUPTI injection allocation/NVML tracer + report, 545) and the graph-exec bytes rig (glm52_graph_bytes.cu, 154) that measured the 6.91 GiB private spine copy; the shared-spine fix itself is net -40.

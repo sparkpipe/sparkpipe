@@ -27,6 +27,7 @@ SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *c,const SparkWeight
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *c,uint64_t g,const SparkWeightdExpertKey *k,uint32_t n,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->lease_identifier=17;printf("ACQUIRE %u %u\n",k[0].layer,n);if(g!=9 || k[0].layer<3)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("acquire_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("acquire_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientRelease(SparkWeightdClient *c,uint64_t g,uint64_t l,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;printf("RELEASE %llu\n",(unsigned long long)l);if(g!=9 || l!=17)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("release_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("release_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *c,SparkWeightdReclaimResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->reclaimed_bytes=UINT64_C(8192);r->reclaimed_arena_count=2;r->resident_bytes=UINT64_C(4096);r->arena_count=3;if(mode("reclaim_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("reclaim_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
+SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *c,const char *sha,SparkWeightdReclaimResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));printf("RECLAIM_PACK %s\n",sha);r->reclaimed_bytes=UINT64_C(4096);r->reclaimed_arena_count=1;r->resident_bytes=UINT64_C(8192);r->arena_count=2;if(mode("reclaim_busy"))r->busy_arena_count=1;if(mode("reclaim_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("reclaim_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 void SparkWeightdClientClose(SparkWeightdClient *c) { if(c)puts("CLOSED"); }
 ''')
         cls.warmer = cls.directory / "warmer"
@@ -35,7 +36,8 @@ void SparkWeightdClientClose(SparkWeightdClient *c) { if(c)puts("CLOSED"); }
                         "-Imodel-families/dsv4/include",
                         "tools/weightd_warm.c", "runtime/spark_weightd_manifest.c",
                         "model-families/dsv4/src/spark_dsv4_parallel_shape.c",
-                        "src/spark_ck128.c",
+                        "src/spark_ck128.c", "src/spark_sha256.c",
+                        "runtime/spark_weightd_receipt.c",
                         str(faults), "-o", str(cls.warmer)], cwd=ROOT, check=True)
         probe = cls.directory / "latch.c"
         probe.write_text(r'''
@@ -78,7 +80,6 @@ int main(void) {
         cls.ensure = "ensure_weightd() {" + source.split("ensure_weightd() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         cls.ensure = cls.ensure.replace("$HOME", "$TEST_AGENT_HOME").replace("/tmp/weightd-mesh/", "$TEST_MESH_DIR/")
         cls.loop = source[source.rindex("\nwhile true; do"):]
-        cls.api = "ensure_api() {" + source.split("ensure_api() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         cls.warmup = "warmup_hook() {" + source.split("warmup_hook() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         cls.identity = source.split("\nHOST=$(hostname)\n", 1)[1].split("\nPID_FILE=", 1)[0]
 
@@ -206,33 +207,99 @@ int main(void) {
         self.assertIn("weightd_warm SOCKET --reclaim", result.stderr)
         self.assertEqual(result.stdout, "")
 
+    def reclaim_pack(self, *specs, mode=""):
+        env = dict(os.environ, WARM_FAILURE=mode)
+        env.pop("SPARK_WEIGHTD_EXPERT_POOL_BYTES", None)
+        return subprocess.run([str(self.warmer), "unused", "--reclaim-pack", *specs],
+                              env=env, capture_output=True, text=True)
+
+    def test_reclaim_pack_scopes_to_named_packs(self):
+        digest = "ab" * 32
+        pack = self.directory / "lane.rank00.pack"
+        pack.write_bytes(b"pack")
+        Path(str(pack) + ".sha256").write_text(digest + "  lane.rank00.pack\n")
+        upper = "CD" * 32
+        result = self.reclaim_pack(str(pack), upper)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(),
+                         ["RECLAIM_PACK " + digest, "RECLAIM_PACK " + "cd" * 32, "CLOSED"])
+        self.assertIn("RECLAIM-PACK sha=%s spec=%s freed=4096 arenas=1 busy=0" % (digest, pack), result.stderr)
+        self.assertNotIn("RECLAIM freed", result.stderr)
+
+    def test_reclaim_pack_reports_busy_arenas_with_exit_3(self):
+        result = self.reclaim_pack("ef" * 32, mode="reclaim_busy")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("still attached or leased; they were not freed", result.stderr)
+
+    def test_reclaim_pack_rejects_unresolvable_specs_before_connecting(self):
+        for spec in (str(self.directory / "missing.pack"), "ab" * 31, "zz" * 32):
+            with self.subTest(spec=spec):
+                result = self.reclaim_pack("ab" * 32, spec)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("nothing reclaimed", result.stderr)
+        result = self.reclaim_pack()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--reclaim-pack PACK|SHA256", result.stderr)
+
+    def test_reclaim_pack_failures_are_terminal_and_never_global(self):
+        for mode in ("connect_rpc", "reclaim_rpc", "reclaim_status"):
+            with self.subTest(mode=mode):
+                result = self.reclaim_pack("ab" * 32, "cd" * 32, mode=mode)
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn("RECLAIM freed", result.stderr)
+                self.assertEqual(result.stdout.count("RECLAIM_PACK"), mode != "connect_rpc")
+                self.assertEqual(result.stdout.count("CLOSED"), mode != "connect_rpc")
+        result = self.reclaim_pack("ab" * 32, mode="reclaim_rpc")
+        self.assertIn("never fall back to the node-global --reclaim", result.stderr)
+
     def test_latch_never_disturbs_existing_owner(self):
         result = subprocess.run([str(self.latch)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True):
+    def units(self):
+        path = self.directory / "units"
+        text = path.read_text() if path.exists() else ""
+        path.unlink(missing_ok=True)
+        return text
+
+    def agent(self, changed=False, ready=False, owner="owned", binary=True, restart=True, qos="active", trust="dscp",
+              address="10.10.100.10 10.10.200.0", published="", engines="running", kill="forbidden",
+              unit_status="0", extra_env=None, age="10"):
         script = r'''
 set -u
-RANK=0 MESH_INTERFACE=test MESH_SGID_INDEX=3
+RANK=0 MESH_INTERFACE=test MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=test-pair MESH_PAIR_SGID_INDEX=3 MESH_TRAFFIC_CLASS=106
+WEIGHTD_UNIT=sparkpipe-weightd WEIGHTD_LEGACY_NOTED=
 BACKOFF=(1)
+ps() { [ "$*" = "-o etimes= -p 4242" ] && echo "   $TEST_AGE"; }
+restart_healthy() { echo "HEALTHY $1"; }
 weightd=0
-pgrep() { case "$*" in *sparkpipe_weightd*) [ "$TEST_OWNER" != absent ] && echo 4242;; *sparkpipe_model_residentd*) echo 4243;; *) return 1;; esac; }
+pgrep() { case "$*" in *sparkpipe_weightd*) [ "$TEST_OWNER" != absent ] && echo 4242;; *sparkpipe_model_residentd*) [ "$TEST_ENGINES" = running ] && echo 4243;; *) return 1;; esac; }
 readlink() { case "$TEST_OWNER" in owned) printf '%s/sparkdata/weightd/sparkpipe_weightd\n' "$TEST_AGENT_HOME";; unknown) echo /other/sparkpipe_weightd;; deleted) echo '/other/sparkpipe_weightd (deleted)';; shell) echo /bin/bash;; esac; }
 sha16() { case "$1" in /proc/*) echo running;; *) echo "${TEST_DISK_SHA}";; esac; }
 python3() { return "$TEST_PROBE_STATUS"; }
-kill() { echo FORBIDDEN_KILL; return 1; }
+kill() { echo "KILL $*"; [ "$TEST_KILL" = allowed ] || echo FORBIDDEN_KILL; return 0; }
 rm() { echo "UNLINK $*"; }
 restart_ok() { return "$TEST_RESTART_STATUS"; }
-setsid() { echo SPAWN; }
+setsid() { echo FORBIDDEN_SETSID; }
+systemd-run() { echo "UNIT $*" >> "$TEST_AGENT_HOME/units"; [ "$TEST_UNIT_STATUS" = 0 ] || { echo "Unit sparkpipe-weightd.service was already loaded" >&2; return 1; }; }
 sleep() { return 0; }
 sync_rendezvous() { return 0; }
+systemctl() { [ "$TEST_QOS" = active ]; }
+ibdev2netdev() { echo "test port 1 ==> test-netdev (Up)"; }
+mesh_addresses() { if [ -n "$TEST_ADDRESS" ]; then echo "$TEST_ADDRESS"; else echo "test gid 3 is 0000:0000:0000:0000:0000:0000:0000:0000, not an IPv4 RoCE address" >&2; return 1; fi; }
+WEIGHTD_ADDRESSES="$TEST_PUBLISHED"
+mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TRUST"; }
 [() { case "$1" in -S) return 0;; -x) return "$TEST_BINARY_STATUS";; -s) return 1;; esac; builtin [ "$@"; }
 ''' + self.ensure + '\nensure_weightd\nstatus=$?\nwait\nexit "$status"\n'
         env = dict(os.environ, TEST_DISK_SHA="changed" if changed else "running",
                    TEST_PROBE_STATUS="0" if ready else "1", TEST_OWNER=owner,
                    TEST_BINARY_STATUS="0" if binary else "1",
-                   TEST_RESTART_STATUS="0" if restart else "1",
-                   TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh))
+                   TEST_RESTART_STATUS="0" if restart else "1", TEST_QOS=qos, TEST_TRUST=trust,
+                   TEST_ADDRESS=address, TEST_PUBLISHED=published, TEST_ENGINES=engines, TEST_KILL=kill,
+                   TEST_AGENT_HOME=str(self.directory), TEST_MESH_DIR=str(self.mesh), TEST_UNIT_STATUS=unit_status, TEST_AGE=age)
+        env.update(extra_env or {})
+        (self.directory / "units").unlink(missing_ok=True)
         return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
     def test_busy_process_is_preserved(self):
@@ -275,20 +342,85 @@ sync_rendezvous() { return 0; }
                 self.assertNotIn("UNLINK", result.stdout)
                 self.assertNotIn("starting", result.stdout)
 
+    def test_lossless_class_requires_nic_qos(self):
+        result = self.agent(owner="shell", qos="inactive")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("sparkpipe-roce-qos is not active", result.stderr)
+        self.assertNotIn("starting", result.stdout)
+        self.assertNotIn("UNLINK", result.stdout)
+        self.assertFalse((self.directory / "weightd.log").exists())
+
+    def test_lossless_class_requires_dscp_trust_on_the_mesh_door(self):
+        result = self.agent(owner="shell", trust="pcp")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("test (test-netdev) does not trust DSCP", result.stderr)
+        self.assertNotIn("starting", result.stdout)
+        self.assertNotIn("UNLINK", result.stdout)
+        self.assertFalse((self.directory / "weightd.log").exists())
+
+    def test_weightd_waits_for_fabric_addresses(self):
+        result = self.agent(owner="shell", address="")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("waiting for fabric addresses: test gid 3 is", result.stderr)
+        self.assertNotIn("starting", result.stdout)
+        self.assertNotIn("UNLINK", result.stdout)
+        self.assertNotIn("SPAWN", result.stdout)
+
+    def test_changed_fabric_address_restarts_an_idle_weightd(self):
+        result = self.agent(ready=True, published="10.10.100.99 10.10.200.0", engines="absent", kill="allowed")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("fabric addresses changed 10.10.100.99 10.10.200.0 -> 10.10.100.10 10.10.200.0", result.stdout)
+        self.assertIn("KILL -TERM 4242", result.stdout)
+
+    def test_changed_fabric_address_waits_for_engines(self):
+        result = self.agent(ready=True, published="10.10.100.99 10.10.200.0")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("restart waits for dependent engines to drain", result.stderr)
+        self.assertNotIn("KILL", result.stdout)
+
+    def test_unchanged_fabric_address_keeps_weightd(self):
+        result = self.agent(ready=True, published="10.10.100.10 10.10.200.0", engines="absent", kill="allowed")
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("KILL", result.stdout)
+
     def test_new_spawn_requires_a_later_readiness_probe(self):
         result = self.agent(owner="shell")
         self.assertEqual(result.returncode, 1, result.stderr)
         lines = result.stdout.splitlines()
-        self.assertEqual(len(lines), 3, result.stdout)
+        self.assertEqual(len(lines), 2, result.stdout)
         self.assertEqual(lines[0], "UNLINK -f %s/mesh-0.rec %s/mesh-15.rec %s/.ready" % ((self.mesh,) * 3))
-        self.assertRegex(lines[1], r"^\d\d:\d\d:\d\d weightd: starting \(backoff 1s\)$")
-        self.assertEqual(lines[2], "UNLINK -f %s/.shipped_sha" % self.mesh)
-        self.assertEqual((self.directory / "weightd.log").read_text(), "SPAWN\n")
+        self.assertRegex(lines[1], r"^\d\d:\d\d:\d\d weightd: starting on 10\.10\.100\.10 10\.10\.200\.0 \(backoff 1s\)$")
+        home = str(self.directory)
+        self.assertEqual(self.units(), "UNIT --user --quiet --collect --unit=sparkpipe-weightd --working-directory=%s/sparkdata/weightd"
+                         " -p LimitCORE=infinity -p StandardOutput=append:%s/weightd.log -p StandardError=append:%s/weightd.log"
+                         " %s/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock --mesh-rank 0"
+                         " --mesh-rank-mask 0xffff --mesh-interface test --mesh-sgid-index 3 --mesh-pair-interface test-pair"
+                         " --mesh-pair-sgid-index 3 --mesh-traffic-class 106\n" % ((home,) * 4))
+
+    def test_weightd_runs_in_its_own_unit_with_its_environment(self):
+        result = self.agent(owner="shell", extra_env={"SPARK_WEIGHTD_DEVICE_BYTES_MAX": "123", "G5_WARMUP": "0"})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        unit = self.units()
+        self.assertIn(" --setenv=SPARK_WEIGHTD_DEVICE_BYTES_MAX=123 /", unit)
+        self.assertNotIn("G5_WARMUP", unit)
+        self.assertNotIn("FORBIDDEN_SETSID", result.stdout)
+
+    def test_backoff_resets_only_after_two_healthy_minutes(self):
+        self.assertNotIn("HEALTHY", self.agent(ready=True, age="60").stdout)
+        self.assertIn("HEALTHY weightd", self.agent(ready=True, age="121").stdout)
+        self.assertNotIn("HEALTHY", self.agent(age="500").stdout)
+
+    def test_a_failed_unit_start_blocks_dependents_loudly(self):
+        result = self.agent(owner="shell", unit_status="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("weightd: systemd-run sparkpipe-weightd failed: Unit sparkpipe-weightd.service was already loaded; dependent startup blocked",
+                      result.stderr)
 
     def test_main_loop_gates_every_dependent_action(self):
         script = r'''
 set -u
 ROOTS=test
+load_roots() { ROOT_LIST=test; }
 sync_core() { :; }
 install_core() { :; }
 self_update() { :; }
@@ -296,7 +428,8 @@ node_doctor() { :; }
 janitor() { :; }
 ensure_weightd() { return "$TEST_WEIGHTD_STATUS"; }
 sync_root() { echo ROOT_SYNC; }
-sync_rendezvous() { echo RENDEZVOUS; }
+mesh_push() { echo MESH; }
+mesh_pull() { echo MESH; }
 ensure_root() { echo ROOT_START; }
 prune_logs() { :; }
 warmup_hook() { echo WARMUP; }
@@ -308,33 +441,27 @@ sleep() { exit 0; }
                 result = subprocess.run(["bash", "-c", script],
                     env=dict(os.environ, TEST_WEIGHTD_STATUS="0" if ready else "1"),
                     capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
                 self.assertEqual(result.stdout.splitlines(),
-                    ["ROOT_SYNC", "RENDEZVOUS", "ROOT_START", "WARMUP", "REPORT"]
+                    ["ROOT_SYNC", "ROOT_START", "WARMUP", "REPORT"]
                     if ready else ["REPORT"])
 
     def serving_gate(self, function, **values):
         script = r'''
 set -uo pipefail
 exec 3>&1
-RANK=0 HUB=hub ROOTS=test LAST_API_START=0 LAST_WARM_GEN= LAST_WARM_TS=0
-api_root() { echo test; }
-ssh() { echo API_PROBE >&3; echo 0; }
+RANK=0 HUB=hub ROOTS=test LAST_WARM_GEN= LAST_WARM_TS=0
+ssh() { echo FORBIDDEN_SSH >&3; echo 0; }
 root_state() { echo WARMUP_PROBE >&3; echo down; }
+safe_mode_active() { [ -n "${TEST_SAFE:-}" ]; }
 pgrep() { return 1; }
 setsid() { echo FORBIDDEN_SPAWN >&3; }
+systemd-run() { echo FORBIDDEN_SPAWN >&3; }
 curl() { echo FORBIDDEN_CURL >&3; }
 [() { case "$1" in -x) return 0;; esac; builtin [ "$@"; }
 ''' + function + function.split("(", 1)[0] + '\nstatus=$?\nwait\nexit "$status"\n'
         return subprocess.run(["bash", "-c", script], env=dict(os.environ, **values),
                               capture_output=True, text=True)
-
-    def test_serving_drop_in_keeps_the_node_api_down(self):
-        for disabled, expected in (("1", ""), ("", "API_PROBE\n")):
-            with self.subTest(disabled=disabled):
-                result = self.serving_gate(self.api, G5_API_DISABLED=disabled)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual((result.stdout, result.stderr), (expected, ""))
 
     def test_serving_drop_in_skips_the_warmup_request(self):
         for warmup, expected in (("0", ""), ("1", "WARMUP_PROBE\n")):
@@ -342,6 +469,10 @@ curl() { echo FORBIDDEN_CURL >&3; }
                 result = self.serving_gate(self.warmup, G5_WARMUP=warmup)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((result.stdout, result.stderr), (expected, ""))
+
+    def test_safe_mode_skips_the_warmup_request(self):
+        result = self.serving_gate(self.warmup, G5_WARMUP="1", TEST_SAFE="1")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
     def test_rank_comes_from_the_fleet_host_list(self):
         hosts = ["spark%x" % rank for rank in range(16)]

@@ -1,0 +1,28 @@
+{
+  "models": [
+    {
+      "id": "glm-5.3",
+      "model_dir": "model",
+      "engine": "http://127.0.0.1:8446",
+      "context_tokens": 65536,
+      "stop_tokens": ["<|endoftext|>", "<|user|>", "<|observation|>"],
+      "template_defaults": {},
+      "template_kwargs": ["reasoning_effort", "clear_thinking"],
+      "reasoning_effort": {
+        "minimal": {"reasoning_effort": "low"},
+        "low": {"reasoning_effort": "low"},
+        "medium": {"reasoning_effort": "high"},
+        "high": {"reasoning_effort": "max"}
+      },
+      "reasoning": {"start": "<think>", "end": "</think>"},
+      "tool_calls": {
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "key_start": "<arg_key>",
+        "key_end": "</arg_key>",
+        "value_start": "<arg_value>",
+        "value_end": "</arg_value>"
+      }
+    }
+  ]
+}

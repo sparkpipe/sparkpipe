@@ -43,8 +43,6 @@
 33 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: cudaMalloc uses a raw byte-width multiplier
 55 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
 12 modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu: memcpy uses a raw byte-width multiplier
-13 modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu: SparkGlm52ValAllocZeroed uses a raw byte-width multiplier
-9 modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c: memcpy uses a direct size/count literal
 29 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu: SparkGlm5NextValAllocZeroed uses a raw byte-width multiplier
 1 modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
@@ -52,18 +50,13 @@
 1 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: fread uses a direct size/count literal
 1 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: memcpy uses a direct size/count literal
 3 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: strncmp uses a direct size/count literal
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu: cudaMalloc uses a raw byte-width multiplier
 6 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMalloc uses a direct size/count literal
 13 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMalloc uses a raw byte-width multiplier
-4 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemcpy uses a direct size/count literal
-18 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemcpy uses a raw byte-width multiplier
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemcpyAsync uses a raw byte-width multiplier
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: malloc uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memcpy uses a direct size/count literal
 2 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memset uses a raw byte-width multiplier
 6 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferAllocate uses a raw byte-width multiplier
-4 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferCopy uses a raw byte-width multiplier
+1 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferCopy uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: malloc uses a raw byte-width multiplier
 33 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: L7Alloc uses a raw byte-width multiplier
 5 modules/laguna_resident_decode_stage/validation/laguna_layer7_realpack.cu: cudaMemcpy uses a raw byte-width multiplier
@@ -95,14 +88,13 @@
 11 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMemcpy uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMemset uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
-4 node/weightd_mesh.c: memcpy uses a direct size/count literal
+1 node/weightd_mesh.c: memcpy uses a direct size/count literal
 1 node/weightd_spawn.c: fread uses a direct size/count literal
 2 ring/transport/fixed_ring.c: memcpy uses a direct size/count literal
 1 runtime/spark_weightd.c: fread uses a direct size/count literal
 1 runtime/spark_weightd.c: memcpy uses a direct size/count literal
 1 runtime/spark_weightd.c: typed byte array extent is a raw numeric width
 1 runtime/spark_weightd_manifest.c: memcpy uses a direct size/count literal
-4 runtime/spark_weightd_spine.c: memcpy uses a direct size/count literal
 4 src/spark_ck128.c: memcpy uses a direct size/count literal
 3 tools/dev/ling_gemm_repro.cu: cudaMalloc uses a raw byte-width multiplier
 3 tools/dev/ling_gemm_repro.cu: cudaMemset uses a raw byte-width multiplier

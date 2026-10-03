@@ -47,6 +47,7 @@ extern uint64_t cuda_stub_mesh_hardware_elements;
 extern uint32_t cuda_stub_mesh_hardware_operation;
 extern uint32_t cuda_stub_mesh_hardware_logical_rows;
 extern uint32_t cuda_stub_mesh_hardware_slice_routes;
+extern void *cuda_stub_mesh_hardware_staging;
 extern uint32_t cuda_stub_stream_sync_calls;
 
 static uint64_t mock_client_alive = 1u;
@@ -86,6 +87,22 @@ SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,void **mapping,
     *mapping = mmap(0,SPARK_WEIGHTD_MESH_REGION_BYTES,PROT_READ | PROT_WRITE,MAP_PRIVATE | MAP_ANONYMOUS,-1,0);
     assert(*mapping != MAP_FAILED);
     mock_owned_mapping = *mapping;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus mock_staging_map_status = SPARK_STATUS_OK;
+static void *mock_staging_mapping;
+static uint32_t mock_staging_map_calls;
+
+SparkStatus SparkWeightdClientMeshStagingMap(SparkWeightdClient *client,void **mapping,uint64_t timeout)
+{
+    (void)client; (void)timeout;
+    *mapping = 0;
+    mock_staging_map_calls++;
+    if (mock_staging_map_status != SPARK_STATUS_OK) return mock_staging_map_status;
+    *mapping = mmap(0,SPARK_WEIGHTD_MESH_STAGING_BYTES,PROT_READ | PROT_WRITE,MAP_PRIVATE | MAP_ANONYMOUS,-1,0);
+    assert(*mapping != MAP_FAILED);
+    mock_staging_mapping = *mapping;
     return SPARK_STATUS_OK;
 }
 
@@ -355,6 +372,10 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         "unknown wait mode fails instead of silently selecting spin");
     setenv("SPARK_TP_WAIT_MODE","hardware",1);
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"hardware create");
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 0u,
+        "a created collective reports all-to-all unsupported until its mesh region is attached, even when weightd advertises slice routes");
+    request->capabilities = 0u;
     cuda_stub_mesh_hardware_prepare_result = cudaErrorUnknown;
     CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_IO_ERROR,
         "unsupported hardware wait preparation fails explicitly");
@@ -403,6 +424,19 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         }
     }
     submission.logical_sequence_count = 1u;
+    submission.row_elements = 24u;
+    for ( operation = 0u; operation < 3u; operation++ )
+    {
+        uint64_t expected_elements = operation == 2u ? 2u : operation == 0u ? 96u : 48u;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation) == SPARK_STATUS_OK &&
+            cuda_stub_mesh_hardware_operation == operation &&
+            cuda_stub_mesh_hardware_elements == expected_elements,
+            "a submission row width narrower than the collective's carries rows times that width per rank");
+    }
+    submission.row_elements = 65u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a submission row width wider than the collective's is refused");
+    submission.row_elements = 0u;
     submission.active_sequence_count = 4096u;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
         cuda_stub_mesh_hardware_logical_rows == 1u && cuda_stub_mesh_hardware_elements == 262144u,
@@ -432,8 +466,39 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpMeshRsagSlice(131068u,16u) == 8192u && SparkTpMeshRsagSlice(513u,16u) == 36u &&
         SparkTpMeshRsagSlice(49152u,3u) == 16384u && SparkTpMeshRsagSlice(49153u,4u) % 4u == 0u,
         "slices are whole 8-byte words and cover the chunk");
+    {
+        uint32_t calls_before = cuda_stub_mesh_hardware_calls;
+        submission.active_sequence_count = 2u;
+        submission.logical_sequence_count = 2u;
+        request->capabilities = 0u;
+        CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 0u,
+            "a collective reports all-to-all unsupported before the first submission when weightd lacks slice routes");
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_UNSUPPORTED &&
+            cuda_stub_mesh_hardware_calls == calls_before,
+            "an all-to-all without slice routes fails loudly instead of degrading to an all-gather");
+        request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+        CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 1u && SparkTpDeviceCollectiveAllToAllSupported(0) == 0u,
+            "a collective reports all-to-all supported when weightd advertises slice routes");
+        submission.full_device = local;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_INVALID_ARGUMENT,
+            "an all-to-all needs separate send and receive buffers");
+        submission.full_device = output;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_OK &&
+            cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL &&
+            cuda_stub_mesh_hardware_elements == 128u && cuda_stub_mesh_hardware_slice_routes == 1u,
+            "an all-to-all runs on the hardware path with the per-peer payload");
+        request->capabilities = 0u;
+        cuda_stub_mesh_hardware_calls = calls_before;
+    }
+    CHECK(SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u) == 8192u &&
+        SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,2u) == 65544u &&
+        SparkTpMeshAllToAllChunks(4112u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshAllToAllChunks(32896u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 5u &&
+        SparkTpMeshAllToAllChunks(263168u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 33u &&
+        SparkTpMeshAllToAllChunks(0u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u,
+        "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/5/33 rounds");
     submission.active_sequence_count = 2u;
-    CHECK(cuda_stub_mesh_hardware_calls == 9u && cuda_stub_mesh_publish_calls == old_publish,
+    CHECK(cuda_stub_mesh_hardware_calls == 12u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
     CHECK(SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"hardware disarm capture");
     cuda_stub_mesh_hardware_launch_result = cudaErrorUnknown;
@@ -505,6 +570,84 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(cuda_stub_mesh_publish_calls == old_publish,
         "missing legacy callbacks never publish data");
     SparkTpDeviceCollectiveDestroy(&collective);
+}
+
+static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
+{
+    SparkTpDeviceCollective collective = {0};
+    SparkTpDeviceCollectiveSubmission submission = {0};
+    static uint16_t local[64u * 1024u],output[64u * 1024u];
+    SparkWeightdMeshWaitRequest *request = (SparkWeightdMeshWaitRequest *)
+        ((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u));
+    uint32_t calls;
+    config.combine_bf16_function = 0;
+    config.combine_u64_max_function = 0;
+    config.combine_gather_bf16_function = 0;
+    setenv("SPARK_TP_WAIT_MODE","hardware",1);
+    cuda_stub_mesh_hardware_alias = 0;
+    cuda_stub_mesh_hardware_prepare_result = 0;
+    cuda_stub_mesh_hardware_launch_result = 0;
+    memset(request,0,sizeof(*request));
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"peer-route collective create");
+    mock_staging_map_status = SPARK_STATUS_IO_ERROR;
+    calls = mock_staging_map_calls;
+    CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_IO_ERROR &&
+        mock_staging_map_calls == calls + 1u,
+        "a weightd that advertises peer routes but cannot export its staging fails preparation loudly");
+    mock_staging_map_status = SPARK_STATUS_OK;
+    CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK &&
+        mock_staging_map_calls == calls + 2u && mock_staging_mapping != 0,
+        "an advertised peer route maps the staging export once");
+    CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK &&
+        mock_staging_map_calls == calls + 2u,"a prepared collective does not map the staging export again");
+    CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
+        "all-to-all reports slice and peer routes once staging is mapped");
+    CHECK(SparkTpDeviceCollectiveChainKey(&collective,779u) == SPARK_STATUS_OK &&
+        SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK,"peer-route capture armed");
+    submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission.descriptor_bytes = sizeof(submission);
+    submission.local_device = local;
+    submission.full_device = output;
+    submission.cuda_stream = (void *)1;
+    submission.completion_function = TestComplete;
+    submission.active_sequence_count = 128u;
+    submission.logical_sequence_count = 2u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) &&
+        cuda_stub_mesh_hardware_staging == mock_staging_mapping && cuda_stub_mesh_hardware_elements == 128u * 64u,
+        "an all-to-all with peer routes launches with this band's staging slots");
+    submission.active_sequence_count = 1024u;
+    submission.logical_sequence_count = 1u;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) &&
+        cuda_stub_mesh_hardware_staging == mock_staging_mapping && cuda_stub_mesh_hardware_elements == 1024u * 64u,
+        "a large sum launches with peer routes and this band's staging");
+    CHECK(SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2097152u &&
+        SparkTpMeshDirectPeerCapacity(4u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 524288u &&
+        SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u) == 131096u,
+        "a peer reduce-scatter chunk carries one staging slot per peer: 2,097,152 BF16 values at TP16, 16x the slot chunk");
+    submission.active_sequence_count = 128u;
+    submission.logical_sequence_count = 2u;
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES;
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL) == SPARK_STATUS_OK &&
+        cuda_stub_mesh_hardware_slice_routes == SPARK_TP_MESH_ROUTES_SLICE && cuda_stub_mesh_hardware_staging == 0,
+        "a lane that stops advertising peer routes runs slice routes without staging");
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    CHECK(SparkTpMeshAllToAllPeerChunks(4112u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
+        SparkTpMeshAllToAllPeerChunks(32896u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
+        SparkTpMeshAllToAllPeerChunks(526336u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 5u &&
+        SparkTpMeshAllToAllPeerChunks(530448u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 5u &&
+        SparkTpMeshAllToAllPeerChunks(2105344u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 17u &&
+        SparkTpMeshAllToAllPeerChunks(4210688u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 33u &&
+        SparkTpMeshAllToAllPeerChunks(0u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 0u &&
+        SparkTpMeshAllToAllChunks(526336u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 65u &&
+        SparkTpMeshAllToAllChunks(4210688u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 514u,
+        "peer all-to-all rounds for 1/8/128/129/512/1024 kv_shard rows are 1/1/5/5/17/33 (slice routes 65 at 128 rows, 514 at 1024)");
+    memset(request,0,sizeof(*request));
+    SparkTpDeviceCollectiveDestroy(&collective);
+    CHECK(collective.implementation == 0,"peer-route collective destroys");
+    unsetenv("SPARK_TP_WAIT_MODE");
 }
 
 static void TestSpinSingleSequenceWave(SparkTpDeviceCollectiveConfig config,void *mesh)
@@ -589,6 +732,31 @@ static void TestDeferredVerify(SparkTpDeviceCollective *collective,SparkTpMeshRo
     control->error_word = 0u;
 }
 
+static void TestGraphSettle(SparkTpDeviceCollective *collective,SparkTpMeshRoundControl *control)
+{
+    SparkTpDeviceCollectiveSubmission submission;
+    uint16_t local[256] = {0},output[512] = {0};
+    uint64_t graph_error = 5u;
+    uint32_t syncs;
+    TestDeferredSubmission(&submission,local,output);
+    CHECK(SparkTpDeviceCollectiveGraphSettle(collective,(void *)1,0) == SPARK_STATUS_INVALID_ARGUMENT,"settle needs somewhere to put the error word");
+    CHECK(SparkTpDeviceCollectiveGraphSettle(collective,0,&graph_error) == SPARK_STATUS_INVALID_ARGUMENT && graph_error == 0u,"settle needs the replay stream");
+    CHECK(SparkTpDeviceCollectiveArmCapture(collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK,"a captured round before a graph step");
+    control->seq = 41u;
+    control->error_word = 0u;
+    syncs = cuda_stub_stream_sync_calls;
+    CHECK(SparkTpDeviceCollectiveGraphSettle(collective,(void *)1,&graph_error) == SPARK_STATUS_OK && graph_error == 0u && cuda_stub_stream_sync_calls == syncs + 1u,"one read-back settles both the capture state and the error word");
+    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs + 1u,"after settling, a stream-ordered round runs without a read-back");
+    control->rounds_done = 0u;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_IO_ERROR,"after settling, the round is deferred, not captured: verify expects its completion");
+    CHECK(SparkTpDeviceCollectiveEnqueue(collective,&submission,1u) == SPARK_STATUS_OK,"a second deferred round after settling");
+    control->rounds_done = 1u;
+    CHECK(SparkTpDeviceCollectiveVerifyDeferred(collective,(void *)1) == SPARK_STATUS_OK,"the deferred round after settling verifies");
+    control->error_word = 9u;
+    CHECK(SparkTpDeviceCollectiveGraphSettle(collective,(void *)1,&graph_error) == SPARK_STATUS_OK && graph_error == 9u,"settle reports the device error word");
+    control->error_word = 0u;
+}
+
 static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
 {
     SparkTpDeviceCollective collective = {0};
@@ -626,9 +794,10 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
     CHECK(SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs,"captured rounds are not deferred rounds");
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK,"a deferred round is pending");
     control->rounds_done = 5u;
-    CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 0u && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured round records its own counter reset while deferred rounds are pending");
+    CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 5u && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured hardware round records no counter reset: graph replays are checked through the error word");
     control->rounds_done = 1u;
     CHECK(SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK,"the pending deferred round still verifies");
+    TestGraphSettle(&collective,control);
     SparkTpDeviceCollectiveDestroy(&collective);
     unsetenv("SPARK_TP_WAIT_MODE");
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK,"spin fixture");
@@ -847,6 +1016,7 @@ int main(void)
 
 	SparkTpDeviceCollectiveDestroy(&collective);
 	TestHardwareDispatch(config,mesh_buffer);
+	TestPeerRoutes(config,mesh_buffer);
 	TestSpinSingleSequenceWave(config,mesh_buffer);
 	TestDeferredRounds(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);

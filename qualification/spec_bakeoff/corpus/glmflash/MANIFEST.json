@@ -1,0 +1,80 @@
+{
+ "model": "glmflash",
+ "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+ "classes": {
+  "prose": {
+   "prompts": 4,
+   "prompt_tokens": [
+    30,
+    28,
+    28,
+    63
+   ],
+   "sha256": "b532c6bd208bc5cc685730ce3aea4e3a43e9060945b0e8b7d1cb6037aea47975"
+  },
+  "code": {
+   "prompts": 4,
+   "prompt_tokens": [
+    40,
+    46,
+    84,
+    65
+   ],
+   "sha256": "3de21ceee819582441ed456aa403a1af46fc765a6780a794f9e60bd8b762648d"
+  },
+  "repetitive": {
+   "prompts": 3,
+   "prompt_tokens": [
+    41,
+    32,
+    51
+   ],
+   "sha256": "9e197d346b3d30a9320331624b30cabe82f9938b6be08f1720ff702835f44d9b"
+  },
+  "chat": {
+   "prompts": 4,
+   "prompt_tokens": [
+    36,
+    41,
+    33,
+    37
+   ],
+   "sha256": "abe051ee545256524d21295c44a318853d38c0c3cecbe6f8b830094e6fd116f3"
+  },
+  "long": {
+   "prompts": 2,
+   "prompt_tokens": [
+    8147,
+    32643
+   ],
+   "sha256": "b0c524c11448b0bbc2f5593dffe2fc3b36e18ff67fd89692ebded5075ba1023c"
+  },
+  "thinking": {
+   "prompts": 3,
+   "prompt_tokens": [
+    53,
+    54,
+    53
+   ],
+   "sha256": "fd6e54b2351830058917ccd4a782cfd200ca951e30c74f799cc769dd4c921a0c"
+  },
+  "tool_json": {
+   "prompts": 3,
+   "prompt_tokens": [
+    72,
+    66,
+    71
+   ],
+   "sha256": "83133dc0dc88be13a6797c753aae3f053e054bd6328b1caf6733cfdc2aaffeee"
+  },
+  "chinese": {
+   "prompts": 3,
+   "prompt_tokens": [
+    28,
+    38,
+    37
+   ],
+   "sha256": "1ececadca07fcce40794e21333eba51cfd0b3893d3e26603dac5ce0ea8e96dae"
+  }
+ }
+}

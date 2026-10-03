@@ -32,7 +32,7 @@ def main() -> int:
     check("B1 kv pages 128", b1["kv_logical_page_capacity"] == 128)
     check("B1 backing 2GiB", b1["kv_backing_maximum_bytes"] == 2147483648)
     check("B1 input rows 1", b1["max_input_rows"] == 1)
-    check("B1 row capacity = mesh cap", b1["execution_row_capacity"] == 128)
+    check("B1 row capacity = profile row capacity under the mesh cap", b1["execution_row_capacity"] == sp.PROFILE_ROW_CAPACITY == 128 and sp.PROFILE_ROW_CAPACITY <= sp.MESH_MAX_BATCH_ROWS)
 
     # B8 derivation equals the map recovered in #1210.
     check("B8 sequences", b8["max_active_sequences"] == 8)
@@ -40,7 +40,7 @@ def main() -> int:
     check("B8 kv pages 1024", b8["kv_logical_page_capacity"] == 1024)
     check("B8 backing 16GiB", b8["kv_backing_maximum_bytes"] == 17179869184)
     check("B8 input rows >= sequences", b8["max_input_rows"] >= 8)
-    check("B8 row capacity mesh-capped", b8["execution_row_capacity"] == 128)
+    check("B8 row capacity = profile row capacity", b8["execution_row_capacity"] == 128)
 
     # Invariants the validators enforce must hold by construction.
     check("input rows >= sequences always",

@@ -28,6 +28,11 @@ DEFAULT_SERVER = "spark0"
 DEFAULT_INTERFACE = "enP7s7"
 DEFAULT_SERVER_IP = "192.168.50.128"
 DEFAULT_ROOT_DEVICE = "/dev/nvme0n1p2"
+RESCUE_MASKED_UNITS = (
+    "ds4-switched-fabric.service",
+    "ds4-direct-pair-fabric.service",
+    "ds4-direct-pair-fabric-p2.service",
+)
 DEFAULT_RECOVERY_IDENTITY = Path.home() / ".ssh" / "sparkpipe_fleet_root"
 DEFAULT_PROBE_NODES = ("spark0","spark2","spark3","spark4","spark5","spark6","spark7")
 REMOTE_STAGE = "/tmp/ds4_parallel_pxe_rescue.py"
@@ -48,7 +53,8 @@ GRUB_CONFIG_NAMES = ("grub.cfg","grub/grub.cfg")
 EFFECTIVE_GRUB_CONFIG = STATE_DIR / "grub" / "grub.cfg"
 RECOVERY_KEY_SOURCE = Path("/etc/ds4-pxe-rescue/recovery_key.pub")
 RECOVERY_LOCAL_BOTTOM_SOURCE = Path("/etc/ds4-pxe-rescue/ds4-recovery-key")
-CONFIG_FORMAT = "ds4-parallel-pxe-rescue-v2"
+CONFIG_FORMAT = "ds4-parallel-pxe-rescue-v3"
+HOLD_POINTS = ("none","bottom")
 MANIFEST_FORMAT = "ds4-parallel-pxe-rescue-manifest-v2"
 RECOVERY_INITRAMFS_HOOK = """#!/bin/sh
 PREREQ=""
@@ -213,11 +219,18 @@ def validate_recovery_public_key(public_key: str) -> str:
     return(key)
 
 
+def validate_hold(hold: str) -> str:
+    if hold not in HOLD_POINTS:
+        raise PxeRescueError(f"hold must be one of {HOLD_POINTS}")
+    return(hold)
+
+
 def validated_config(payload: dict[str,object]) -> dict[str,str]:
     if payload.get("format") != CONFIG_FORMAT:
         raise PxeRescueError("unsupported PXE rescue config format")
     return({
         "format":CONFIG_FORMAT,
+        "hold":validate_hold(str(payload.get("hold",""))),
         "interface":validate_interface(str(payload.get("interface",""))),
         "recovery_public_key":validate_recovery_public_key(str(payload.get("recovery_public_key",""))),
         "root_device":validate_root_device(str(payload.get("root_device",""))),
@@ -246,11 +259,13 @@ tftp-root={STATE_DIR}
 def grub_config(config: dict[str,str]) -> str:
     interface = config["interface"]
     root_device = config["root_device"]
+    masks = " ".join(f"systemd.mask={unit}" for unit in RESCUE_MASKED_UNITS)
+    hold = "" if config["hold"] == "none" else f" break={config['hold']}"
     return(f"""set timeout=0
 set default=0
 
 menuentry 'DS4 Spark login rescue' {{
-    linux /vmlinuz root={root_device} rw fsck.mode=skip fsck.repair=no systemd.mask=ds4-switched-fabric.service systemd.mask=ds4-direct-pair-fabric.service systemd.unit=multi-user.target console=tty0 console=ttyS0,921600 ip=:::::{interface}:dhcp
+    linux /vmlinuz root={root_device} rw fsck.mode=skip fsck.repair=no {masks} systemd.unit=multi-user.target console=tty0 console=ttyS0,921600 ip=:::::{interface}:dhcp{hold}
     initrd /initrd.img
 }}
 """)
@@ -553,12 +568,13 @@ def remote_status(require_active: bool = False) -> dict[str,object]:
             failures.append(f"initrd:{name}")
     for token in (
         f"root={config['root_device']}",
-        "systemd.mask=ds4-switched-fabric.service",
-        "systemd.mask=ds4-direct-pair-fabric.service",
+        *(f"systemd.mask={unit}" for unit in RESCUE_MASKED_UNITS),
         f"ip=:::::{config['interface']}:dhcp",
     ):
         if token not in grub:
             failures.append(f"grub:{token}")
+    if ("break=" in grub) != (config["hold"] != "none"):
+        failures.append(f"grub:hold:{config['hold']}")
     if not interface_has_address(config["interface"],config["server_ip"]):
         failures.append("server-address")
     active = command(["systemctl","is-active",SERVICE_NAME],check=False)
@@ -692,6 +708,7 @@ def controller_action(args: argparse.Namespace) -> int:
         commit = stage_controller(args.server,args.source_ref)
         config = {
             "format":CONFIG_FORMAT,
+            "hold":validate_hold(args.hold),
             "interface":args.interface,
             "recovery_public_key":recovery_public_key(args.recovery_identity),
             "root_device":args.root_device,
@@ -736,6 +753,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interface",default=DEFAULT_INTERFACE)
     parser.add_argument("--server-ip",default=DEFAULT_SERVER_IP)
     parser.add_argument("--root-device",default=DEFAULT_ROOT_DEVICE)
+    parser.add_argument("--hold",choices=HOLD_POINTS,default="none")
     parser.add_argument("--recovery-identity",type=Path,default=DEFAULT_RECOVERY_IDENTITY)
     parser.add_argument("--source-ref",default="HEAD")
     parser.add_argument("--nodes",default=",".join(DEFAULT_PROBE_NODES))

@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def main():
     gemm = (ROOT / "inference/kernels/gemm.cuh").read_text()
     launch = (ROOT / "runtime/gemm.cuh").read_text()
+    stream = (ROOT / "inference/kernels/stream_gemm.cuh").read_text()
     models = {
         "glm52": (
             "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
@@ -24,11 +25,28 @@ def main():
         failures.append("GEMM has no FP32 output")
     if "(args->output_bf16 == 0) == (args->output_f32 == 0)" not in launch:
         failures.append("GEMM output selection is not fail-closed")
+    if "(args->output_bf16 == 0) == (args->output_f32 == 0)" not in stream:
+        failures.append("stream GEMM output selection is not fail-closed")
+    arg = r"\s*[\w>-]+\s*,"
+    f32_router = {
+        "glm52": (
+            r"LmSkinnyDense<\w+>\(" + arg * 2 + r"\s*0\s*,\s*\w+->router_logits\s*,",
+            r"LmStreamGemmDense<\w+>\(" + arg + r"\s*\w+\(\)\s*," + arg + r"\s*0\s*,\s*\w+->router_logits\s*,",
+        ),
+    }
+    bf16_router = {
+        "glm52": (
+            r"LmSkinnyDense<\w+>\(" + arg * 2 + r"\s*\w+->router_logits",
+            r"LmStreamGemmDense<\w+>\(" + arg + r"\s*\w+\(\)\s*," + arg + r"\s*\w+->router_logits",
+        ),
+    }
     for model,path in models.items():
         source = (ROOT / path).read_text()
-        if not re.search(r"gemm\.output_f32\s*=\s*\w+->router_logits\s*;", source):
+        required = f32_router.get(model, (r"gemm\.output_f32\s*=\s*\w+->router_logits\s*;",))
+        if not all(re.search(pattern, source) for pattern in required):
             failures.append(f"{model} router is not FP32")
-        if re.search(r"output_bf16\s*=\s*\w+->router_logits\s*;", source):
+        refused = bf16_router.get(model, ()) + (r"output_bf16\s*=\s*\w+->router_logits\s*;",)
+        if any(re.search(pattern, source) for pattern in refused):
             failures.append(f"{model} router still writes BF16")
     dsv4 = read_source(
         ROOT

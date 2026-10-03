@@ -58,6 +58,11 @@ CODECS = {
         "scale_group_size": 32,
     },
 }
+ARMS = {
+    "fp8_s1": {"expert_codec": "fp8", "spine_source": "bf16"},
+    "nvfp4_s1": {"expert_codec": "nvfp4", "spine_source": "bf16", "expert_source": "nvfp4"},
+}
+TARGETS = tuple(CODECS) + tuple(ARMS)
 INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_HIDDEN_DIMENSION": "hidden_dimension",
     "SPARK_GLM52_MODEL_LAYER_COUNT": "layer_count",
@@ -305,7 +310,33 @@ def description_path(root: Path, codec: str) -> Path:
     return root / DESCRIPTION_DIRECTORY / DESCRIPTION_NAME.format(codec=codec)
 
 
-def render_model_description(contract: Dict[str, Any], codec: str) -> str:
+def target_codec(target: str) -> str:
+    return ARMS[target]["expert_codec"] if target in ARMS else target
+
+
+def arm_source(contract: Dict[str, Any], target: str) -> Dict[str, Any]:
+    source = contract.get("three_resolution_sources", {}).get(ARMS[target]["spine_source"])
+    if source is None:
+        raise ValueError(f"arm {target} needs the {ARMS[target]['spine_source']} resolution source pin")
+    return source
+
+
+def build_revision(contract: Dict[str, Any], target: str) -> str:
+    return arm_source(contract, target)["revision"] if target in ARMS else contract["model_revision"]
+
+
+def served_model_id(contract: Dict[str, Any], target: str) -> str:
+    revision = build_revision(contract, target)
+    for source in contract.get("three_resolution_sources", {}).values():
+        if source.get("revision") == revision:
+            return source["repo"]
+    return contract["model_id"]
+
+
+def render_model_description(contract: Dict[str, Any], target: str) -> str:
+    if target in ARMS:
+        return render_arm_description(contract, target)
+    codec = target
     codec_contract = CODECS[codec]
     # Per-resolution source pins: the glm53full three-resolution contract
     # carries one revision per expert codec. Selection order: the legacy
@@ -437,30 +468,59 @@ def render_model_description(contract: Dict[str, Any], codec: str) -> str:
     return json.dumps(description, indent=2, sort_keys=True) + "\n"
 
 
+def render_arm_description(contract: Dict[str, Any], target: str) -> str:
+    codec = ARMS[target]["expert_codec"]
+    source = arm_source(contract, target)
+    description = json.loads(render_model_description(contract, codec))
+    description["model"]["revision"] = source["revision"]
+    description["metadata"]["source_model"] = {"id": source["repo"], "revision": source["revision"]}
+    if "expert_source" in ARMS[target]:
+        experts = contract.get("three_resolution_sources", {}).get(ARMS[target]["expert_source"])
+        if experts is None:
+            raise ValueError(f"arm {target} needs the {ARMS[target]['expert_source']} resolution source pin")
+        description["metadata"]["expert_source_model"] = {"id": experts["repo"], "revision": experts["revision"]}
+        origin = f"the {experts['repo']}@{experts['revision']} checkpoint"
+    else:
+        origin = "the published checkpoint"
+    description["metadata"]["purpose"] = (
+        f"GLM 5.3-full resident firmware for the {target} arm: the {ARMS[target]['spine_source']} "
+        f"source spine ({source['repo']}@{source['revision']}) with {codec} routed-expert weights "
+        f"grafted from {origin}, BF16 KV cache and FP32 accumulation")
+    return json.dumps(description, indent=2, sort_keys=True) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
-    parser.add_argument("--print-build-identity", choices=CODECS)
+    parser.add_argument("--print-build-identity", choices=TARGETS)
+    parser.add_argument("--print-model-id", choices=TARGETS)
+    parser.add_argument("--expert-codec", choices=CODECS)
     args = parser.parse_args()
     root = repository_root()
     contract = load_model_contract(root)
+    for target in (args.print_build_identity, args.print_model_id):
+        if target is not None and args.expert_codec is not None and target_codec(target) != args.expert_codec:
+            raise SystemExit(f"GLM-5.2 target {target} serves {target_codec(target)} experts, not {args.expert_codec}")
     if args.print_build_identity is not None:
         description = render_model_description(
             contract,args.print_build_identity).encode("utf-8")
-        print(contract["model_revision"],hashlib.sha256(description).hexdigest())
+        print(build_revision(contract,args.print_build_identity),hashlib.sha256(description).hexdigest())
+        return 0
+    if args.print_model_id is not None:
+        print(served_model_id(contract,args.print_model_id))
         return 0
     expected = render_c_header(contract)
     header_path = root / HEADER_RELATIVE_PATH
     if args.check:
         if header_path.read_text() != expected:
             raise SystemExit("GLM-5.2 generated C model contract is stale")
-        for codec in CODECS:
+        for codec in TARGETS:
             path = description_path(root,codec)
             if not path.is_file() or path.read_text() != render_model_description(contract,codec):
                 raise SystemExit(f"GLM-5.2 {codec} model description is stale")
     else:
         header_path.write_text(expected)
-        for codec in CODECS:
+        for codec in TARGETS:
             description_path(root,codec).write_text(
                 render_model_description(contract,codec),encoding="utf-8")
     return 0

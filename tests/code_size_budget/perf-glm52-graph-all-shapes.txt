@@ -1,0 +1,2 @@
++89
+glm52 chain graphs for every batch shape: power-of-two row buckets, wave inputs staged outside the graph and padded with the last row, per-wave replay; the linear fallback is gone from graph mode.

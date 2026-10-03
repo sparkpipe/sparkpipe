@@ -111,6 +111,7 @@ typedef struct SparkLingCudaWave
 	uint32_t resident_sequence_capacity;
 	uint32_t max_sequence_positions;
 	uint32_t pages_per_sequence;
+	uint32_t physical_page_count;
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
 	uint64_t boundary_row_offset;

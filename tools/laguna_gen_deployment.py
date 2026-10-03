@@ -105,7 +105,7 @@ def stage_config(rank: int) -> dict:
         "stage_pack_path": PACK_TEMPLATE % (rank // TP_DEGREE, rank),
         "max_sequence_positions": 32768,
         # The weightd mesh law caps one submission at
-        # SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS=128 rows; a config above it
+        # SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS=1024 rows; a config above it
         # fails deployment_validation. Rows are NOT sequence slots:
         # execution_row_capacity is validated against the module's row
         # firmware limit, not resident_sequence_capacity (the GDN-state

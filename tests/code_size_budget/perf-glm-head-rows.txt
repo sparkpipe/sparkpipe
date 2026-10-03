@@ -1,0 +1,2 @@
++34
+GLM LM head: rows above one run LmHeadCandidateRowsKernel instead of re-reading the 119 MB vocab shard once per row, with 4/8/16 rows per block by row count so small batches still fill the GPU; the B1 per-row launch stays.

@@ -1,0 +1,15 @@
+{
+ "class": "tool_json",
+ "output_tokens": 384,
+ "prompts": [
+  {
+   "text": "Return only a JSON object, no prose, describing a fictional weather API response for Lisbon on 2026-10-03 with fields: location {city, country, lat, lon}, forecast (array of 8 entries with time, temp_c, humidity_pct, wind_kph, condition), and units."
+  },
+  {
+   "text": "You have a tool `search_flights(origin, destination, date, passengers)`. A user asks for two seats from Oslo to Porto on the second Friday of November 2026. Output exactly one JSON tool call as {\"name\": ..., \"arguments\": {...}} and nothing else."
+  },
+  {
+   "text": "Convert this into a JSON array of objects with keys sku, qty, unit_price_eur, and total_eur (computed): 'A100 x3 at 12.50; B220 x1 at 99.00; C305 x12 at 0.75'. Output only the JSON."
+  }
+ ]
+}

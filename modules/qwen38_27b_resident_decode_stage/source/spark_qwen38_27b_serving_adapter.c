@@ -556,14 +556,17 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	SparkSpeculationSeamConfiguration seam_configuration;
 	const char *control_value;
 	uint32_t available_sources;
+	uint32_t seam_available_sources;
 	uint32_t enabled_sources;
+	char seam_control_value[16];
 	SparkStatus status;
 	status = SparkQwen38_27bServingRejectRetiredSpeculationEnvironment();
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	available_sources = SPARK_QWEN38_27B_SERVING_AVAILABLE_SOURCES;
 	if ( state->bridge_host == 0 )
-		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
+		available_sources &= ~(SPARK_SPECULATION_SEAM_REMOTE_SOURCES & ~SPARK_QWEN38_27B_SERVING_LOCAL_METHOD_SOURCES);
+	seam_available_sources = state->bridge_host == 0 ? available_sources & ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES : available_sources;
 	control_value = getenv(SPARK_QWEN38_27B_SERVING_SPECULATORS_ENV);
 	if ( control_value == 0 || (control_value[0] == '1' && control_value[1] == '\0') )
 		enabled_sources = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
@@ -587,8 +590,9 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	memset(&seam_configuration,0,sizeof(seam_configuration));
 	seam_configuration.abi_version = SPARK_SPECULATION_SEAM_ABI_VERSION;
 	seam_configuration.descriptor_bytes = SPARK_SPECULATION_SEAM_DESCRIPTOR_BYTES;
-	seam_configuration.available_source_mask = available_sources;
-	seam_configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP & available_sources;
+	snprintf(seam_control_value,sizeof(seam_control_value),"0x%x",enabled_sources & seam_available_sources);
+	seam_configuration.available_source_mask = seam_available_sources;
+	seam_configuration.default_source_mask = SPARK_SPECULATION_SEAM_SOURCE_MTP & seam_available_sources;
 	seam_configuration.default_speculative_token_count = state->speculative_draft_count;
 	seam_configuration.lane_count = state->max_active_sequence_count;
 	seam_configuration.max_committed_token_count = state->max_sequence_positions;
@@ -598,7 +602,7 @@ static SparkStatus SparkQwen38_27bServingInitializeSpeculationSeam(
 	seam_configuration.draft_max_node_count = SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_MAX_NODE_COUNT;
 	seam_configuration.connect_timeout_ms = SPARK_QWEN38_27B_SERVING_SEAM_CONNECT_TIMEOUT_MS;
 	seam_configuration.io_timeout_ms = SPARK_QWEN38_27B_SERVING_SEAM_IO_TIMEOUT_MS;
-	seam_configuration.control_value = control_value;
+	seam_configuration.control_value = seam_control_value;
 	seam_configuration.bridge_host = state->bridge_host;
 	seam_configuration.bridge_port = state->bridge_port;
 	memcpy(seam_configuration.target_model,SPARK_QWEN38_27B_SERVING_MODEL_ID,sizeof(SPARK_QWEN38_27B_SERVING_MODEL_ID));

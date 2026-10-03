@@ -59,7 +59,8 @@ def main():
     print(f"decode: wall={wall:.3f}s tokens={len(payload['tokens'])}")
 
     time.sleep(0.5)
-    for entry in measurements(0):
+    entries = list(measurements(0))
+    for entry in entries:
         tokens = entry.get("tokens", [])
         ready = [t[1] for t in tokens]
         tag = ""
@@ -74,6 +75,9 @@ def main():
             tag = "single-token"
         print(f"req={entry['request_id']} prompt={entry['prompt_tokens']} "
               f"cached={entry['cached_prompt_tokens']} out={len(ready)} {tag}")
+    if not entries or entries[-1].get("cached_prompt_tokens", 0) == 0:
+        print("FAIL: the decode pass did not hit the prefix cache, so its decode timing includes a full prefill")
+        return 2
 
 
 if __name__ == "__main__":

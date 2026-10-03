@@ -171,6 +171,7 @@ static void check_manifest_geometry(void)
 		entries[tensor].tensor_kind = SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE + tensor;
 		entries[tensor].layer_index = 3u;
 		entries[tensor].weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+		entries[tensor].scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_F32;
 		entries[tensor].group_count = 288u;
 		entries[tensor].payload_offset = 4096u + (tensor * 131072u);
 		entries[tensor].payload_bytes = 288u * 256u;
@@ -210,6 +211,85 @@ static void check_manifest_geometry(void)
 	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_OK);
 }
 
+static void check_codec_manifest(uint32_t codec,uint32_t encoding,uint64_t payload,uint64_t block)
+{
+	SparkGlm5NextStagePackEntry entries[2] = {0};
+	SparkWeightdRange ranges[288u * 6u + 1u];
+	SparkWeightdRangeGroup groups[288] = {0};
+	SparkWeightdManifest manifest = {0};
+	SparkGlm5NextManifestContext context = {entries,2u};
+	SparkExpertPlanes planes[2];
+	uint32_t expert,tensor,plane,count,per_expert,index,saved;
+	memset(ranges,0,sizeof(ranges));
+	for (tensor=0u; tensor<2u; tensor++)
+	{
+		entries[tensor].tensor_kind = SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE + tensor;
+		entries[tensor].layer_index = 3u;
+		entries[tensor].weight_codec = codec;
+		entries[tensor].scale_encoding = encoding;
+		entries[tensor].group_count = 288u;
+		entries[tensor].payload_offset = 4096u + (tensor * 1048576u);
+		entries[tensor].payload_bytes = 288u * payload;
+		entries[tensor].scale_offset = block == 0u ? 0u : entries[tensor].payload_offset + entries[tensor].payload_bytes;
+		entries[tensor].scale_bytes = block == 0u ? 0u : 288u * (block + (encoding == SPARK_WEIGHT_SCALE_ENCODING_UE4M3_F32_GLOBAL ? 4u : 0u));
+		assert(SparkExpertPlanesDescribe(entries[tensor].tensor_kind,codec,encoding,288u,entries[tensor].payload_offset,entries[tensor].payload_bytes,entries[tensor].scale_offset,entries[tensor].scale_bytes,&planes[tensor]) == SPARK_STATUS_OK);
+	}
+	per_expert = planes[0].count * 2u;
+	count = 0u;
+	for (expert=0u; expert<288u; expert++)
+	{
+		groups[expert] = (SparkWeightdRangeGroup){3u,expert,count,per_expert};
+		for (tensor=0u; tensor<2u; tensor++)
+			for (plane=0u; plane<planes[tensor].count; plane++)
+				ranges[count++] = (SparkWeightdRange){.offset = SparkExpertPlaneOffset(&planes[tensor].planes[plane],expert),.bytes = planes[tensor].planes[plane].bytes,.layer = 3u,.expert = expert,.kind = planes[tensor].planes[plane].kind};
+	}
+	manifest.ranges = ranges;
+	manifest.groups = groups;
+	manifest.range_count = count;
+	manifest.group_count = 288u;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_OK);
+	for (index=0u; index<per_expert; index++)
+	{
+		ranges[5u * per_expert + index].offset++;
+		assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+		ranges[5u * per_expert + index].offset--;
+		saved = ranges[7u * per_expert + index].kind;
+		ranges[7u * per_expert + index].kind = 999u;
+		assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+		ranges[7u * per_expert + index].kind = saved;
+	}
+	groups[9].range_count--;
+	manifest.range_count--;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+	groups[9].range_count++;
+	manifest.range_count++;
+	entries[1].scale_encoding = SPARK_WEIGHT_SCALE_ENCODING_F32 + (encoding == SPARK_WEIGHT_SCALE_ENCODING_F32 ? 1u : 0u);
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+	entries[1].scale_encoding = encoding;
+	entries[0].weight_codec = 99u;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_UNSUPPORTED);
+	entries[0].weight_codec = codec;
+	assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_OK);
+	if ( codec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 )
+	{
+		assert(per_expert == 6u);
+		assert(ranges[2].kind == SPARK_EXPERT_PLANE_GLOBAL_KIND_BASE + SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE && ranges[1].kind == (SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE * 2u) + 1u);
+		assert(ranges[2].offset == entries[0].scale_offset && ranges[2].bytes == 4u);
+		assert(ranges[1].offset == entries[0].scale_offset + 288u * 4u && ranges[1].bytes == block);
+		assert(288u * 6u * 42u <= SPARK_WEIGHTD_RANGE_COUNT_MAX && per_expert <= SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX);
+	}
+	if ( codec == SPARK_WEIGHT_CODEC_BF16 )
+	{
+		assert(per_expert == 2u);
+		entries[1].scale_offset = entries[1].payload_offset + entries[1].payload_bytes;
+		entries[1].scale_bytes = 288u * 4u;
+		assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_SCHEMA_ERROR);
+		entries[1].scale_offset = 0u;
+		entries[1].scale_bytes = 0u;
+		assert(SparkGlm5NextManifestCheck(&manifest,&context) == SPARK_STATUS_OK);
+	}
+}
+
 int main(void)
 {
 	SparkGlm5NextModuleState state = {0};
@@ -221,6 +301,10 @@ int main(void)
 	cudaEvent_t event;
 	cudaStream_t stream;
 	check_manifest_geometry();
+	check_codec_manifest(SPARK_WEIGHT_CODEC_FP8_E4M3,SPARK_WEIGHT_SCALE_ENCODING_F32,256u,16u);
+	check_codec_manifest(SPARK_WEIGHT_CODEC_BF16,SPARK_WEIGHT_SCALE_ENCODING_NONE,512u,0u);
+	check_codec_manifest(SPARK_WEIGHT_CODEC_NVFP4_E2M1,SPARK_WEIGHT_SCALE_ENCODING_UE4M3_F32_GLOBAL,128u,16u);
+	check_codec_manifest(SPARK_WEIGHT_CODEC_MXFP4_E2M1,SPARK_WEIGHT_SCALE_ENCODING_E8M0,128u,8u);
 	check_lazy_attach_retry_pauses();
 	atomic_init(&state.lazy_retained[0],0);
 	assert(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) == cudaSuccess);
@@ -264,6 +348,6 @@ int main(void)
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 	assert(cudaEventDestroy(event) == cudaSuccess);
 	assert(cudaStreamDestroy(stream) == cudaSuccess);
-	puts("PASS GLM lazy dispatch ordering, partial failure ownership and attach retry pauses (CUDA/map stubs)");
+	puts("PASS GLM lazy dispatch ordering, partial failure ownership, attach retry pauses and fp8/bf16/nvfp4/mxfp4 manifest planes (CUDA/map stubs)");
 	return(0);
 }

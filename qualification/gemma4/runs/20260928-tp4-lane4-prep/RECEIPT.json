@@ -1,0 +1,116 @@
+{
+ "run": "20260928-tp4-lane4-prep",
+ "phase": "PREP: no engine, no weightd lane, no API started",
+ "placement": {
+  "topology": "TP4 PP1",
+  "nodes": [
+   "sparka",
+   "sparkb",
+   "sparkc",
+   "sparkd"
+  ],
+  "tp_rank_by_node": {
+   "sparka": 0,
+   "sparkb": 1,
+   "sparkc": 2,
+   "sparkd": 3
+  },
+  "weightd_mesh_ranks": "10,11,12,13",
+  "lane": 4,
+  "control_ports": "23064-23067",
+  "transport_base": 64064,
+  "api": "rtx5090:8436 unit gemma4-api",
+  "kv": "8 sequences x 4096 positions, 7381975040 bytes per rank"
+ },
+ "budget": {
+  "tool": "tools/devcycle/lane_budget_calc.py on a TP4 variant of model-families/gemma4/smoke_experts.json (spine 4 x 15350670968, kv_floor 7381975040, workspace 536870912)",
+  "DEVICE_MIB": 23967,
+  "TOTAL_MIB": 35951,
+  "verdict": "exceeds the 8-lane envelope / 9792 MiB lane allocation: manager approval required",
+  "node_memory_at_prep_mib": {
+   "sparka": {
+    "total": 124546,
+    "used": 46268,
+    "available": 78277
+   },
+   "sparkb": {
+    "total": 122502,
+    "used": 45951,
+    "available": 76551
+   },
+   "sparkc": {
+    "total": 124546,
+    "used": 46517,
+    "available": 78028
+   },
+   "sparkd": {
+    "total": 124610,
+    "used": 46436,
+    "available": 78173
+   }
+  }
+ },
+ "packs": {
+  "path": "~/sparkdata/gemma4_31b.bf16.tp4/packs/gemma4_31b_tp4_rank{r}_stage0.gemma4sp",
+  "command": "python3 tools/gemma4_stagepack.py --model 31b --checkpoint /mnt/model-warm/gemma-4-31b-it --output <pack> --tp-degree 4 --tp-rank <r> --first-layer 0 --layer-count 60 (tools at 09fdad6)",
+  "common": {
+   "tensor_count": 723,
+   "file_bytes": 15350726912,
+   "spine_bytes": 15350670968,
+   "directory_sha256": "1713b39ef4971d8264a78ae739f5224992d2d02153868c5787e693faf591aabb",
+   "source_index_sha256": "d4aff3b976d69c123a29d1c085d7ba4de1ac3f4ca1726a7f81e1b11462a64ea2",
+   "stage_layers": [
+    0,
+    60
+   ],
+   "placement_proof": true
+  },
+  "sha256": {
+   "rank0@sparka": "a735ca25216db178aa2f0a39e5f9701a43b8e2bc0f27060098f1e0bf3ac808b4",
+   "rank1@sparkb": "3e26a82b322d8fc2f409e4c8916091a9e9242e72421fe002185f786ab2f7d01a",
+   "rank2@sparkc": "218cc1954abdd8ca5e314d43fa5d9095a46818b169915a7ec008e8b29f70ce21",
+   "rank3@sparkd": "4446ab38e6633757dfaaddb947092a2ecdf8ccfacf982a4a69a388eef5ce1f38"
+  },
+  "note": "ranks 2 and 3 were emitted on sparka and sparkb (checkpoint in page cache, 57 s each) and rsynced; sha256sum -c passed on sparkc and sparkd. The first in-place emissions on sparkc/sparkd read the checkpoint over cephfs row by row at ~10 percent per 28 min and were stopped."
+ },
+ "release": {
+  "build_host": "sparkf ~/build-gemma4",
+  "source_commit": "f2bd2ab7015539b2bef34337be6d8a08bd1a35c0",
+  "script": "~/build-gemma4.sh (the module_build_release.sh steps without the queue gate; module make with SERVING_TOPOLOGY=4 EXPERT_CODEC=bf16)",
+  "toolchain": "CUDA 13.0 V13.0.88, sm_121a",
+  "module_publish": "validation=executed, gemma4 GPU validator PASS sites=27, module artifact 906cf752137baca011c04c4436d8b3b061aeb64abd8194e021f03866b909e83b, validator c2f4714969c755057033791b693cbf1b77ec09fbdb9f4fa28296ad4db8733661",
+  "driver": "model_sha256 67e813333ae605c2ccd152772416408b77eaba2c24a909fef0f8a0875b13f48e compiled_program_sha256 4ce512322c445c75ff503437de206c1d9751c9f4e9d1d1afedd1e8e6919e1cf8, ldd -r clean",
+  "host_tests": "PASS test_gemma4_serving_adapter, test_gemma4_tp4_serving_adapter, test_gemma4_defines, test_gemma4_defines_moe, test_gemma4_model_header.py, test_gemma4_tp16_shared_socket.py, test_gemma4_adapter_selfcontained.py, test_gemma4_layer_scalar_coverage.py, test_gemma4_workspace.py, test_dry_law.py, test_no_build_defaults.py",
+  "sha256": {
+   "bin/sparkpipe_model_api": "aeb394cbb7898c5d2344fac23010a6b2f7e41fdb7fe2217cf5299c931c2cc2c4",
+   "bin/sparkpipe_model_batch": "6f1041b515c17086d23fe04236721a949d4799a09c7e03f2b5d555c3d7526c8a",
+   "bin/sparkpipe_model_compile": "8904025c83803e49d48928767f84b48c26ed1eb0e7a24fc4884040bbfaa7fb6a",
+   "bin/sparkpipe_model_residentd": "11febb619905a49e9710ecfe7dc70001aa4f9e4c195c3b1fbaaaaba61fc60c73",
+   "bin/sparkpipe_weightd": "f901f7875ba6597860fabe8ecc21d244f07f953e2199b8776a77a092f15718c0",
+   "bin/weightd_warm": "6f86ca5c16ce9911d2a82b69c467fdf33042d9251045d461da7024cf2785a56e",
+   "lib/hidden_transport.so": "779a2ed57ebfb64db78c3b66d1f4ab2dc31b22a334715d0ef471bd6bb2584e75",
+   "lib/model_serving_adapter.so": "98d5403cfa23eaeee5d606eff17fc02710325a80afbaf812f6189446230cdad1",
+   "model_package.json": "bce82507355d8fa72541a3f2d8c0ecd0a1c9f5fafa403708925c6f9dfc3ce24c",
+   "SOURCE_COMMIT": "88a64c6c9645c672f75b1605324d71fec0fd1b23109f1741bdc36a5081e6aea4",
+   "stages/stage_000/link_units/906cf752137baca011c04c4436d8b3b061aeb64abd8194e021f03866b909e83b.a": "906cf752137baca011c04c4436d8b3b061aeb64abd8194e021f03866b909e83b",
+   "stages/stage_000/model_driver.so": "45e88a06a200cbaced556cc025b6f48754626eef136141164064e406749b7278",
+   "stages/stage_000/spark_model_driver_generated.c": "4774dd25e1260b368bbdc5958ad6d0b24529b23823c546b7d52e8dd5cf411da2"
+  },
+  "staged": "~/lanes/gemma4-l4/release-f2bd2ab on sparka..sparkd, SHA256SUMS checked"
+ },
+ "api_channel": {
+  "host": "rtx5090 ~/gemma4-api-channel",
+  "source_commit": "23e4982fc5df83c8287b62f2bfb40ddbd8ee83cb",
+  "build": "make build/sparkpipe_model_api; make -C modules/gemma4_resident_decode_stage adapter EXPERT_CODEC=bf16 SERVING_TOPOLOGY=4 MODEL_REVISION=842da3794eaa0b77d5f08bae87a17459d91ff475",
+  "sha256": {
+   "bin/sparkpipe_model_api": "073b872e319f26046cc2d5a86ea78d9de0422c83fa6c806418f5051f6beba674",
+   "runtime/lib/model_serving_adapter.so": "55ea0cd83a4c8823c18247fa42d3e0a851d5d7287f977e30438cb8cadae6c658",
+   "runtime/tokenizer/tokenizer.json": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+   "model_resident.json": "fd6c07a2ebe3eea0ce35913c39d34cfb9e42ce783ae26bb16e8fef0eb98a0edb",
+   "SOURCE_COMMIT": "46e480d595e77291a5fc211fb9d451ca2b11fc9f1bc60ce7dd8aa33f3e463538",
+   "gemma4-api.service": "142909f5db7fba98a8aa925c3fbe01b16076682aa54355e81e82023039b8204b"
+  },
+  "unit": "~/.config/systemd/user/gemma4-api.service installed, not daemon-reloaded, not enabled, not started"
+ },
+ "launcher_dry_run": "tools/gemma4_lane_resident.sh --dry-run OK on all four ranks (pack sidecars, stage configs, env)"
+}

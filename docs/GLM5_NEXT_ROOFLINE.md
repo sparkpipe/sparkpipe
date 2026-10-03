@@ -1,6 +1,50 @@
 # GLM 5.3 Flash TP16 B1 roofline
 
 The target is 80% of the memory roofline for one decode token per rank.
+Output quality and acceptance gates are in
+[GLM_PERFORMANCE_GATES.md](GLM_PERFORMANCE_GATES.md). Expert residency is in
+[GLM_LAZY_DRIVER_INTEGRATION.md](GLM_LAZY_DRIVER_INTEGRATION.md).
+
+## Where it stands (2026-09-28)
+
+| Item | Value | Source |
+| --- | ---: | --- |
+| B1 decode, TP16 fleet, no speculation | 36 tok/s | lead-dev fleet measurement, 2026-09-28 |
+| Time per token inside an 8-step graph chain | 23-24.5 ms | same measurement |
+| 16-rank 8 KiB all-reduce p50 | 167 µs | "Measured after PR #1208" below |
+| Memory floor | 7.99 ms (125 tok/s) | "Bytes per rank per token" below |
+| 80% target | 10.0 ms (100 tok/s) | same |
+| Best public 4-Spark GLM B1 result, no speculation | 23.2 tok/s | lead dev, 2026-09-28 |
+| TP16 goal, 3-3.5x that result | 70-81 tok/s, 12.3-14.4 ms | arithmetic |
+| COMPSEC-17, thinking off | 14/17 | [GLM_PERFORMANCE_GATES.md](GLM_PERFORMANCE_GATES.md) |
+
+The measured engines were built from `dd3526b`, the head of PR #1243. The
+x86 API on the rtx5090 was built from the same commit. The COMPSEC receipt
+(`qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`)
+lists the binary hashes. Main has moved past that build (`git log dd3526b..origin/main`
+includes the i21-i33 driver fixes, #1255 and #1259), and nothing after
+`dd3526b` has a fleet measurement yet. Quote a build identity with every
+number.
+
+The 36 tok/s was measured with this serving environment, which the
+fleet-agent drop-in `20-serving.conf` sets on every Spark:
+
+| Setting | Effect |
+| --- | --- |
+| `G5_GRAPH_PATH=1` | The agent passes it as `SPARK_GLM5_NEXT_GRAPH_PATH`, which is mandatory. The module fails with `INVALID_ARGUMENT` unless it is `0` or `1`, so deleting the drop-in stops the engines. Use `G5_GRAPH_PATH=0` for eager runs. |
+| `G5_PIN_EXPERTS=1` | Passed as `SPARK_GLM5_NEXT_PIN_EXPERTS`. Pins all 12096 routed experts per rank. Graphs and linear chains run only with it. |
+| `SPARK_TP_WAIT_MODE=hardware` | The collectives use hardware waits and chunked direct rounds. Unset or `spin` makes the GPU poll peer tails itself. |
+| `G5_API_DISABLED=1` | Inert since #1261: the agent never starts an API. The API is `g53-api` on the rtx5090, port 8433. |
+| `G5_WARMUP=0` | The agent's warmup hook does not run. |
+
+Full pinning contradicts bounded residency (I29). See
+[GLM_LAZY_DRIVER_INTEGRATION.md](GLM_LAZY_DRIVER_INTEGRATION.md) for the cost
+and the redesign.
+
+Collective latency is the dominant remaining cost (lead dev, 2026-09-28). A
+chain step at 23-24.5 ms is 13-14.5 ms over the 10.0 ms target (arithmetic).
+About 91 collective rounds per token (see "Linear eager chains") at the
+167 µs p50 come to about 15.2 ms (arithmetic, assuming no overlap).
 
 ## Bytes per rank per token
 
@@ -24,7 +68,7 @@ INDEX_K, INDEX_COMPRESS_GATE, INDEX_HEAD, ROUTER, KDA_DECAY_GATE_DOWN and HC_FN.
 
 ## Where the time went
 
-The CUPTI trace in [TP16_HARDWARE_PROFILE_20260922.md](TP16_HARDWARE_PROFILE_20260922.md)
+The CUPTI trace in [TP16_HARDWARE_PROFILE_20260922.md](archive/TP16_HARDWARE_PROFILE_20260922.md)
 records 54.6 ms of compute kernels per token. The largest items were:
 
 - 14.0 ms of FP8 expert GEMM. 545 MB ran at 39 GB/s.
@@ -59,6 +103,19 @@ Three structural causes explain these numbers.
 | `inference/kernels/skinny.cuh` handles rows ≤ 4: one warp (or a 16- or 8-lane group) per output neuron, eight 16-byte weight loads in flight per lane, every SM busy. It serves all BF16 projections (shared `LaunchBf16Linear` for glm5_next, glm52, ling and laguna), the router, and the routed FP8 W1/W2 through the route map. | tensor-core GEMM for decode rows | BF16 12.8 → about 6 ms; FP8 14 → about 2.5 ms |
 | `Glm5NextHcSiteKernel` fuses HC mix, Sinkhorn and pre-reduce into one eight-CTA cluster launch. K is split across the cluster, reduced in fixed order through distributed shared memory, and Sinkhorn runs in registers. | 3 launches per site, 90 sites | HC 8.7 → about 1 ms |
 | HC post spreads each row over `HIDDEN / 256` CTAs. | HC post | about 1 ms |
+
+The HC site cluster synchronizes once. Each CTA arrives on the cluster
+barrier at kernel start and waits for it after its K-slice dot, so every CTA
+has started before any remote write. Each CTA then pushes its 25 partials
+(24 mixes and the sum of squares) into every other CTA's shared memory. After
+one `cluster.sync()` every CTA sums the eight partials in rank order and
+computes the gates itself. The arithmetic and summation order match the
+earlier kernel, which gathered the partials into CTA 0 and broadcast `pre`
+with two more cluster syncs. The result is bitwise equal
+(`test_glm5_next_hc_mix`, `ROOFLINE-HASH`). Only CTA 0 writes `mixes`, `pre`
+and `post` to global memory.
+Bench, sparkf, 5 interleaved rounds: B1 12.912 -> 12.831 ms, B8 31.569 -> 31.531 ms
+(`qualification/glm5next/performance/glmflash_b1_20260929/ab/ab_hc1_one_sync.txt`).
 
 The expected compute total is about 30 ms. Combined with unchanged waits, this
 predicts roughly 40–50 ms per token on a dedicated fleet (about 20–25 tok/s),
@@ -276,6 +333,59 @@ number of steps per decode wave, 1.0 on lines printed before resident decode
 chains. `linear_walk` is the host's share of `linear_run`; the difference is
 the GPU still running after the host finished enqueueing.
 
+### Chain and replay lines
+
+Three more lines time single chains and waits. The completion worker prints
+one `CHAIN-TIME` line per finished chain:
+
+```
+CHAIN-TIME slot=S path=P steps=N status=C total_ms=T walk_ms=T collective_host_submit_ms=T collective_host_submissions=N stage_ms=T/T/T/T/T/T/T/T
+```
+
+| Field | Meaning |
+| --- | --- |
+| `path` | how the chain ran: `graph`, `linear`, or `eager` for the chain state machine |
+| `steps` | decode steps the frame ran; 1 unless it was a resident decode chain |
+| `total_ms` | the chain from its start to the completion worker, over all of its steps |
+| `walk_ms` | the part of `total_ms` the host spent enqueueing linear steps. A small `walk_ms` means the chain waited for the GPU and its peers. A full CUDA launch queue also blocks the walk, so a `walk_ms` close to `total_ms` shows a launch bound only if the GPU finished soon after the walk did. |
+| `collective_host_submit_ms`, `collective_host_submissions` | host work submitting collective rounds, capture included. This is not the allreduce time of a graph replay; a linear chain checks its rounds once at the end, so its figure is launch work only. |
+| `stage_ms` | host time the chain state machine spent in each of its eight stages (`chain_stage_ns`), reset after every line |
+
+The graph path prints `GRAPH-REPLAY-TIME slot=S wall_ns=N stream_status=C`
+after it waits for a replay. `wall_ns` includes compute and collective waits;
+`stream_status` is the CUDA query result, and the sticky collective-error
+check follows separately. `tp_device_collective.c` prints
+`COLLECTIVE-WAIT-END rank=R slot_idx=I elapsed_since_previous_wait_end_us=N gpu_timestamp_ns=N`
+from its arrival ring; the elapsed figure includes the computation between
+the two waits. These interpretations come from the PR #1077 write-up
+([archive/PR1077_SERVING_RELIABILITY.md](archive/PR1077_SERVING_RELIABILITY.md)).
+
+### KDA state restore and capture
+
+A prefix hit restores the sequence's KDA recurrent state and convolution
+windows from the state store, and every publishing frame captures them.
+The completion worker prints one line per 10 s window in which either
+happened:
+
+```
+G5N-KDA-TIMING rank=R restores=N restore_bytes=B restore_us=T captures=N capture_bytes=B capture_us=T
+```
+
+`restore_us` spans the store read and the host-to-device copy of each
+restore. `capture_us` spans the device-to-host copy and the store write of
+each capture. Both are window totals on the host clock, and captures from
+zero-row publish frames are included. Compare `restore_us` per restore with
+the `key` and `setup` intervals of `G5N-WAVE-TIMING` to see what a hit adds
+to its first frame.
+
+The API prints one `engine_measurements` JSON line whenever a request ends
+or a wave is rejected. It carries the engine's cumulative first-token count,
+queue, prefill and TTFT totals, prefix hits and misses, stale-prefix
+recomputes and rejected waves by status. Each `request_measurements` line
+carries `first_dispatch_ns` and `stale_prefix_recomputes`, so a request's
+queue time is `first_dispatch_ns - accepted_ns` and its prefill time runs
+from `first_dispatch_ns` to its first token's timestamp.
+
 ### Iteration 15's `pre` held the GPU time
 
 Iteration 15 printed `pre` (first sight to "the last launch") and `gpu` (the
@@ -333,6 +443,16 @@ round-control block once. A set `error_word` or a short `rounds_done` prints
 `MESH-DEFERRED-ROUNDS-FAILED`; the module then broadcasts a cancel on both
 bands and fails the frame, which rolls back its cache lanes like any other
 failed frame.
+
+After a graph replay, `SparkTpDeviceCollectiveGraphSettle` reads each band's
+round-control block once (one 144-byte copy on the idle replay stream). That
+read ends the capture state as `SparkTpDeviceCollectiveDisarmCapture` did and
+returns the device error word as `SparkTpDeviceCollectiveGraphError` did. Before,
+each graph step made ten synchronous 8-byte copies: the disarm read two words
+per band, the graph error read one word per band, and `SparkGlm5NextGraphEnsure`
+disarmed a second time. Each such copy costs about 5 us on GB10
+(`qualification/glm5next/performance/glmflash_b1_20260929/ab/syncprobe_sparkf.txt`),
+so the step's host time drops by about 40 us.
 
 A chain runs the state machine instead when experts are not pinned, with MTP,
 speculative verify or the T1 trace, with `SPARK_GLM5_NEXT_GRAPH_RECORD_OPS`
@@ -489,8 +609,12 @@ The fixes:
 
 - In hardware-wait mode every collective now runs as direct all-to-all rounds.
   A payload larger than one slot is split into slot-sized chunks, one relay
-  round each. The binomial tree is no longer used in hardware mode, and spin
-  mode is unchanged.
+  round each. The binomial tree is no longer used in hardware mode. In spin
+  mode, a single-sequence wave larger than one slot still took the host round
+  and failed with `CAPACITY_EXCEEDED`. #1255 (`cf64e90`) sends such waves
+  through chunked device rounds (`SparkTpDeviceCollectiveHostRound`). The
+  deployed `dd3526b` engines predate #1255, so the 2026-09-28 API ran with
+  `SPARK_MODEL_API_MAX_PREFILL_ROWS=8` (COMPSEC receipt).
 - The slot gains a 64-byte trailer margin, so eight 16384-wide BF16 rows fit
   one slot exactly.
 
@@ -568,12 +692,32 @@ Per rank, with TP16, the caches are split as follows (`layer.cuh`,
 
 | State | Layout per rank | Bytes |
 | --- | --- | ---: |
-| KDA recurrent state + conv windows (34 layers) | head-sharded, 4 of 64 heads | about 8.5 MiB per sequence |
+| KDA recurrent state + conv windows (34 layers) | head-sharded, 4 of 64 heads | 8.9 MiB per sequence |
 | DSA latent KV (11 layers) | replicated, every token on every rank | 1024 B per token per layer |
 | DSA indexer keys (11 layers) | replicated, every token on every rank | 514 B per token per layer |
 
+The KDA figure is arithmetic from `spark_glm5_next_model.h`. Per layer, the
+state is 64 heads × 128 × 128 × 4 B = 4 MiB, and the Q, K and V convolution
+windows are 3 × 64 heads × 128 × 4 history entries × 2 B = 192 KiB. The
+module allocates both per rank divided by the TP degree
+(`kda_state_layer_stride_bytes`, `kda_window_layer_stride_bytes`). Per
+sequence, over 34 layers:
+
+| Topology | State | Windows | Total |
+| --- | ---: | ---: | ---: |
+| TP1 | 136 MiB | 6.375 MiB | 142.375 MiB |
+| TP4 | 34 MiB | 1.59375 MiB | 35.59375 MiB |
+| TP16 | 8.5 MiB | 0.3984375 MiB | 8.8984375 MiB |
+
+This is also what a KDA checkpoint must carry per sequence. The
+`check_rank_state` case in `tests/test_glm5_next_stage_context.py` runs the
+real allocator at TP1, TP4 and TP16 and checks the strides, pool sizes and
+checkpoint page bytes.
+
 Only the KDA state is 1/16 per rank. The DSA path stores the full latent
-(`LmKvStoreKernel`) and the full indexer key on every rank. The attention
+(`LmKvStoreKernel`) and the full indexer key on every rank. This violates
+the owner's 1/16 requirement; the sharded kernels are in Phase 3B below,
+and the serving path does not use them yet. The attention
 heads are split (`attn_heads = 64 / tp`), but MLA shares one latent across
 all heads, so every rank also reads the same KV rows. Replicated DSA state
 costs 16.5 KiB per token per rank:
@@ -657,6 +801,11 @@ Output lines:
   `hidden_finite`.
 - `ROOFLINE-FLEET`: adds the modelled collective cost (`--round-us`,
   `--nic-gbps`) for direct, RS/AG and RS/AG overlapped with compute.
+- `ROOFLINE-GRAPH` (with `--graph 1`): the step is captured once as a CUDA
+  graph and replayed `--iterations` times, as the production graph path
+  runs it; prints the node count and the median, minimum, maximum and mean
+  replay time. `--route-readback 0` builds the step the way resident chains
+  do, without the host copy of the expert group offsets.
 
 `achieved_gbps` well below 273 at large B means the grouped expert kernels,
 not the memory, are the limit.
@@ -924,7 +1073,7 @@ below).
 The prefill chunk is `execution_row_capacity` in the adapter configuration,
 together with the engine's `max_prefill_rows_per_submission`. It is
 independent of the sequence bucket: the module caps it at 65536, and the
-mesh at `SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS` (128). With 64- or 128-row
+mesh at `SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS` (1,024 since weightd ABI 9; 128 before). With 64- or 128-row
 chunks:
 
 - a 176-token prompt takes 2–3 prefill submissions instead of 22;
@@ -990,41 +1139,216 @@ The harness takes `--index-cp 16` and adds the index read to `step_gb`.
 It simulates the gather with device copies, so its timing covers the
 compute side only.
 
-## Phase 3B: sharding the latent KV itself (design, not implemented)
+## Phase 3B: sharding the latent KV itself (wired in glm5_next, not yet fleet-checked)
 
-The latent KV (1024 B per token per DSA layer) is still replicated. Storing
-1/16 per rank would mean computing attention where the KV lives:
+Owner requirement (2026-09-28): at TP16 each node holds 1/16 of the KV
+cache. Replicating the latent KV or the indexer keys violates it. The
+shared kernels that store and attend over 1/16 per rank are in #1334. The
+all-to-all transport is #1335. glm5_next uses both behind the `kv_shard`
+stage-config member (the wiring PR, stacked on #1335). k3 does not use
+them yet. Production still replicates until the fleet check passes and the
+deployed stage configs set `kv_shard`.
 
-1. Each rank computes partial softmax states for all 64 heads over its own
-   selected positions.
-2. The partials `(m, l, o[512])` move to the head owners.
-3. The head owners merge them (`LmLatentAttentionDecodeSplitCombineKernel`
-   already does exactly this, with partitions = ranks).
+### Layout
 
-The problem is the traffic, per row per DSA layer:
+| Item | Rule |
+| --- | --- |
+| Owner of position `p` | `(p / grain) % degree` (`include/sparkpipe/spark_kv_shard.h`) |
+| Latent KV grain | 1: each 64-token page puts 4 tokens on each of 16 ranks |
+| Indexer key grain | 4: one DSA pool per rank per page, so pool scoring stays local |
+| Pages | same page table, page ids and page count on every rank; each rank's page is `page_bytes / degree` |
+| Refused | a degree that does not divide `page_slots / grain`, degree > 16, a rank outside the degree (`SparkKvShardValid`) |
 
-| Transfer | Direction | Size |
-| --- | --- | ---: |
-| All-gather of the latent query | into each rank | about 64 KB |
-| All-to-all of the partials | out of each rank | about 62 KB |
+Keeping the page identity global keeps prefix sharing, JIT-KV snapshot and
+restore, and eviction page-granular and identical on all ranks. Each rank
+saves and restores its own slice of every page.
 
-A 256 KiB mesh slot carries only 16 KiB per peer per SCATTER round, so at
-B64 the all-to-all alone needs about 16 rounds per layer. That is about
-18 ms per step at 100 µs per round, which is worse than the memory it
-saves.
+### Attention
 
-Two ways around this:
+1. Each rank stores only the positions it owns (`LmKvShardStoreKernel`).
+   KV_A is replicated, so every rank already has every row's latent.
+2. The latent queries are all-gathered: 4 heads × 1 KiB per rank per row.
+3. Each rank computes `(m, l, o[512])` for all 64 heads over its own keys
+   (`LmLatentShardPartialKernel`). A row's keys come from the row alone:
+   dense up to 2,048 keys, otherwise its selected list compacted in list
+   order. The partitions are the ranks. No bit depends on wave composition.
+4. The partials move to the head owners, 4 heads × 2,056 B per row per
+   peer.
+5. The head owner merges them in rank order (`LmLatentShardMergeKernel`,
+   the same math as `LmLatentAttentionDecodeSplitCombineKernel`).
 
-- **A 2D split.** For example 4 head groups × 4 context shards:
-  - KV is stored at 1/4 per rank;
-  - traffic is about 24 KB per row per DSA layer, exchanged within a group
-    of 4.
-- **Phase 4 first.** GPU-initiated RDMA with per-peer buffers sized to the
-  exchange.
+`LmKvShardReplicaView` runs step 3 over the replicated cache with the
+ownership filter. It is the test oracle and is not a runtime path.
 
-Until then, capacity for long contexts comes from the existing KV arena. It
-evicts cold pages to the backing store (`resident_block_capacity <
-logical_block_count`).
+### Exchange per DSA layer
+
+Numbers come from `SparkKvShardExchangePlanBuild` (4 heads per rank, fp32
+partials, slot payload 262,192 B):
+
+| B | Query out per rank | Query rounds | Partials per peer | SCATTER rounds | Wire out per rank |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 4 KiB | 1 | 8.0 KiB | 1 | 120 KiB |
+| 8 | 32 KiB | 1 | 64 KiB | 5 | 964 KiB |
+| 16 | 64 KiB | 1 | 128 KiB | 9 | 1.9 MiB |
+| 64 | 256 KiB | 1 | 514 KiB | 33 | 7.5 MiB |
+| 128 | 512 KiB | 2 | 1 MiB | 65 | 15 MiB |
+| 256 | 1 MiB | 4 | 2 MiB | 129 | 30 MiB |
+| 512 | 2 MiB | 8 | 4 MiB | 257 | 60 MiB |
+
+The wire bytes are affordable at every batch size: 7.5 MiB at 25 GB/s is
+about 0.3 ms per layer at B64. The 256 KiB mesh slots are the limit,
+because a SCATTER round carries 16 KiB per peer. The chosen collective
+shape is:
+
+- **B ≤ 8:** SCATTER all-to-all over the existing slots (#1335), 1-5
+  rounds per layer. Above 2,048 tokens of context, the query rides in the
+  index-CP all-gather that already runs, so it costs no round of its own.
+- **B ≥ 16:** per-peer exchange buffers sized to the exchange
+  (GPU-initiated RDMA, Phase 4). Until those exist, the sharded path is
+  still exact, but it pays the round counts above.
+
+### glm5_next wiring
+
+| Piece | Where |
+| --- | --- |
+| Config | stage-config member `kv_shard` (0/1) sets `SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD` |
+| Init | refuses `tp >= 16` without `kv_shard` (`GLM-KV-SHARD-REQUIRED`); refuses `kv_shard` without `dsa_index_context_parallel` or when the exchange does not fit (`GLM-KV-SHARD-REFUSED`, `SparkGlm5NextKvShardFits`: TP8 and TP16) |
+| Pools | latent and index layer strides are `physical_pages × page_bytes / tp`; the arena block uses `head_dim / tp` and `index_block / tp`, so the page store, JIT-KV snapshot and `SparkGlm5NextPageCopy` move each rank's own slice |
+| Page identity | unchanged: same page table, page ids and 64-token pages on every rank. The cache layout fingerprint gains `-shard<tp>r<rank>`, so a replicated or foreign-rank page is never restored into a sharded rank |
+| Indexer | keys stored at grain 4 (`LmKvShardStoreKernel` on `Glm5NextIndexKv`); index CP ownership is now per pool (`pool % tp`, `SparkGlm5NextIndexCpShard`), so each rank scores exactly the pools whose keys it holds |
+| Latent | stored at grain 1; queries all-gathered on the main collective; partials (`LmLatentShardPartialKernel` over the rank's slice) sent to head owners with the SCATTER all-to-all; merged in rank order (`LmLatentShardMergeKernel`) before the value and output projections |
+| Chain | eager stages `SHARD_QUERY` and `SHARD_EXCHANGE` after the attention (or index select) launch; the linear and graph walk runs query gather, partial, all-to-all, merge in the same order |
+| Exchange layout | query: `ceil(rows × heads × 512 / 4096)` sequences of the main collective. Partials: 4096-element sequences of the main collective unless that needs more than `execution_row_capacity` sequences (only at full row capacity), then 16384-element sequences of the HC-wide collective. Both layouts move the same bits |
+| MTP | the MTP draft layer keeps its replicated one-page KV (`draft.kv_shard = 0`) |
+
+### Tests
+
+- `tests/test_glm5_next_kv_shard.cu` (`make test-glm5-next-kv-shard`, sm_121,
+  one GPU, all ranks simulated, collectives emulated with the exact
+  collective layouts). It binds each rank through the module's own
+  `SparkGlm5NextBindLayer` and runs the module's store, index pool scoring,
+  shard partial and merge functions. On sparkf, 6/6 cases pass: TP16 B1 at
+  1000 (narrow exchange) and 5000 (wide, selected list), TP16 B8 mixed
+  contexts up to 8191 (wide and narrow), TP8 B2 at 3333, and TP16 B64 at
+  1024. Checks per case:
+  - per-rank latent and index pool bytes are total / tp;
+  - every owned slot holds the replicated bytes;
+  - index pool scores gathered from 16 ranks equal the replicated scores
+    bit for bit;
+  - the merged attention latent equals the replicated-storage oracle
+    (`LmKvShardReplicaView`) bit for bit;
+  - a second run gives identical bits;
+  - no KV access error.
+- `tests/test_glm5_next_stage_context.py` (host harness of the real module
+  chain code): the linear/graph walk emits
+  `A k V a W` (attention, query gather, partial, all-to-all, merge) for a
+  sharded DSA layer and `S g T k V a W` with index CP; a failed partial fails
+  the chain; the eager chain steps through `SHARD_QUERY` and
+  `SHARD_EXCHANGE`; the narrow and wide exchanges use the main and HC
+  collectives with the right sequence counts and buffers; TP8 and TP16
+  pools are 1/tp; TP16 init is refused without `kv_shard` and without
+  index CP. `--sanitize` passes.
+- `tests/test_glm5_next_index_cp_math.c`, `tests/test_glm5_next_index_cp.cu`
+  and `tests/test_glm5_next_index_kv.py` pass with the per-pool ownership.
+  The CUDA index-CP case at 20,000 context with 3 rows at degree 2 was
+  already failing its own `gather fits` requirement at the stack base; it
+  now uses 16,000.
+
+### B1 budget
+
+B1 may cost at most 3% more per token: 0.75 ms on the 25.2 ms engine B1.
+
+The estimate for the wired path at B1 (not a measurement; the fleet check
+in the lead window replaces it):
+
+- **Extra rounds.** Per DSA layer, 1 query all-gather round (8 KiB per
+  rank) and 1 SCATTER all-to-all round (16 KiB per peer in the narrow
+  layout; the wide layout would need 2). 11 layers × 2 rounds × about
+  40 µs (the per-round floor in "Per-token budget" below) = +0.88 ms. The
+  query does not yet ride in the index-CP all-gather above 2,048 tokens.
+- **Attention compute.** #1334 measured 44.5 µs (1k) and 41.5 µs (8k) for
+  sharded partial + merge against 82.6 and 71.9 µs for main's replicated
+  kernel, per layer under `perf_window.py`: about -0.35 ms.
+- **Net.** About +0.5 ms per token (+2%), inside the budget. Folding the
+  query into the index-CP gather above 2,048 tokens would save another
+  11 rounds (about 0.45 ms).
+
+### Measured (sparkf GB10, `tests/cuda/kv_shard_cuda.cu` under `perf_window.py`, shared GPU)
+
+Times are per rank per DSA layer.
+
+Two runs on the shared GPU, first under heavier load, second at review:
+
+| Case | KV per rank | Sharded partial + merge | Main's replicated heads kernel |
+| --- | ---: | ---: | ---: |
+| B1, 1k | 64 KiB of 1 MiB | 44.5 / 30.9 µs | 82.6 / 51.2 µs |
+| B1, 8k (selected list) | 0.5 of 8 MiB | 41.5 / 41.2 µs | 71.9 / 59.4 µs |
+| B8, 1k | 0.5 of 8 MiB | 211 / 78.6 µs | 198 / 137.8 µs |
+| B8, 8k | 4 of 64 MiB | 185 / 113.5 µs | 190 / 159.3 µs |
+| B64, 1k | 4 of 64 MiB | 664 / 563 µs | 525 / 419 µs |
+| B64, 8k | 32 of 512 MiB | 964 / 851 µs | 909 / 780 µs |
+
+At B1 both kernels are latency-bound: the sharded B1 8k partial reads about
+128 KiB per rank per layer, about 1% of GB10 memory bandwidth, and does
+about 1.5% of its fp32 compute.
+
+Correctness in the same runs:
+
+- Every case matches the replicated-storage oracle bit for bit, at grain
+  1 (latent KV) and grain 4 (indexer-key ownership).
+- Every owned slot holds the replicated bytes (CPU-shim test).
+- Rows 0, B/2 and B-1 decoded alone have the same bits as inside the
+  batch, so the row law holds for the store, the partials and the merge.
+- `compute-sanitizer --tool memcheck --padding 256` reports no access
+  outside the 1/degree pools.
+- The all-to-all and all-gather receive layouts merge to the same bits.
+- Against an f64 reference the worst difference is 1.2-2.4e-4 on the
+  device and up to 4.8e-4 on the CPU shim. Both tests require less than
+  2e-3. At the earlier bound of 1e-2, a merge that skipped the max rescale
+  or a partial that dropped one key per rank still passed some cases.
+- Against main's replicated kernel the difference is at most 4.9e-4.
+
+That last difference is a reassociation, so COMPSEC-17 and MTP parity
+must be requalified once the path serves. The same tests at rope 64 (the
+k3 shape) and at degrees 4 and 8 pass too. The CPU-shim variant is
+`tests/test_kv_shard_host.py`.
+
+### Not done yet
+
+- **Transport.** #1335 passes the single-GPU mesh probe (117 cases,
+  including all-to-all at degrees 2/3/4/8/16, eager and graph, under lazy
+  module loading). Two faults had hidden it:
+  - The two all-to-all kernels were not in the preload list of
+    `SparkTpMeshHardwarePrepare`. Under lazy loading, rank 0's host enqueue
+    loaded the unpack kernel while its own stream was already blocked on the
+    peer gate. The load waited on that stream, rank 1 was never enqueued,
+    and the gate timed out after 2 s. They are preloaded now.
+  - The probe runs 16 logical ranks as 16 streams on one GPU. With the
+    default 8 hardware queues (`CUDA_DEVICE_MAX_CONNECTIONS` unset), two rank
+    streams share a queue, and a rank blocked on its peer wait also blocks
+    the other. That is why main's probe failed at its first degree-16 case.
+    With `CUDA_DEVICE_MAX_CONNECTIONS=32`, the setting the qualification
+    receipt used, main passes all 87 cases on sparkf. The probe now refuses
+    to run with fewer than 16 connections.
+- **Deployment.** The TP16 stage configs must set `kv_shard: 1` and
+  `dsa_index_context_parallel: 1`, or this firmware refuses to start.
+- **Numerics requalification.** The sharded attention reassociates the
+  softmax sum (at most 4.9e-4 against main's kernel, #1334), so COMPSEC-17
+  and MTP parity must be requalified on the fleet.
+- **Query folding.** Carry the latent query in the index-CP all-gather
+  above 2,048 tokens.
+- **MTP layer.** Still replicated (one page per slot).
+- **k3 wiring.** The same pieces at rope 64 (`K3_MLA_*`), on k3's own
+  collective.
+- **Fleet check.** B1 and B64 tok/s and KV bytes per rank against
+  production, in an assigned weightd lane.
+- **Large batches.** Without Phase 4 buffers, B64 pays 33 SCATTER rounds
+  per DSA layer: about 11 × 33 × 40 µs = 14.5 ms on a 68 ms step (+21%).
+  That cost needs its own budget before B ≥ 16 serves sharded.
+- **Indexer keys.** No sharded store or scoring kernel exists for them
+  yet. Only the grain-4 ownership rule is tested.
+- **Prefix reuse and JIT-KV restore.** Untested until the per-rank page
+  copy exists.
 
 ## Head and DSA attention at large batches
 
@@ -1220,14 +1544,180 @@ git checkout <branch> && make kernel-codegen-diff BASE_CUBIN=/tmp/base.cubin ALL
 On the first revision it reports the nine `LmGemmKernel` instances as
 unexpected. On the second it reports only skinny kernels.
 
-## Next steps, ordered by expected gain
+## Per-token budget of the released TP16 build (09fdad6, 2026-09-28)
 
-1. Remeasure the ladder tail with the lock-free wiring scan, and measure
-   batched decode at 1, 2, 4 and 8 concurrent streams.
-2. Remove the CPU relay from the critical path: GPU-initiated RDMA
-   (IBGDA-style), with the GPU writing work requests and ringing the NIC
-   doorbell. A 16-rank 8 KiB all-reduce should then cost tens of
-   microseconds.
-3. Pair-link hierarchical all-reduce for prefill and B >= 16.
+Source: the residentd logs of all 16 production ranks, aligned by chain
+epoch with `tools/tp_chain_budget.py`, and the single-GPU bench in CUDA
+graph mode (`bench-glm5-next-batch ROOFLINE_ARGS="--graph 1"`). Receipts:
+`qualification/glm5next/performance/glm_perf_20260928_09fdad6/`. The
+per-rank table comes from `tools/tp_chain_rank_compute.py <log dir> <lo ms>
+<hi ms>` and the per-replay kernel gaps from
+`tools/nsys_graph_replay_gaps.py <nsys cuda_gpu_trace csv>`.
+
+B1 graph chains (472 chains that all 16 ranks ran, rank-mean replay wall
+below 32 ms per step), per decode step:
+
+| Part | ms | Note |
+| --- | ---: | --- |
+| GPU compute in the replay | 19.2-19.8 | replay wall minus device peer wait, copy and combine; spread across ranks 0.6 ms |
+| Collective latency floor | 3.7 | peer wait of the last-arriving rank: about 40 us for each of 92 rounds |
+| Rank skew | 1.0 | mean peer wait minus the floor |
+| Copy and combine | 0.85 | |
+| Host between replays | 1.4 | chain wall minus replay walls, per step |
+| Total | about 26-27 | engine B1 is 25.2 ms per token |
+
+Skew is not the main loss at B1: kernel time is. The same step on an idle
+GB10 in graph mode (sparke, context 1024) takes 15.4-15.7 ms, and nsys
+shows under 1 ms of launch gaps in the 1,462-node graph. The production
+replay spends about 4 ms more on compute than the bench; the bench has no
+collective kernels and uses `cudaMalloc` weights instead of the leased
+expert pool, so that difference needs a profile of a real rank.
+
+The last-arriving rank at B1 is rank 1 in 223 of 472 chains, then ranks 15,
+8 and 12. Those nodes ran other lanes' work at the time: a three-process
+CPU reference decoder on spark1, qwen27b on spark8, gemma4 on sparka to
+sparkd and dev tests on sparkf. The same bench binary took 17.8-85 ms per
+step on sparkf (median 23.9) against 15.3-18.0 ms on sparke. GPU or memory
+bandwidth work on any production node slows every token.
+
+At larger waves (replay wall 32-50 ms per step) the floor is 8.5 ms and skew
+5 ms per step, so skew matters more there.
+
+**Route readback removed from resident chains.** Every routed layer queued
+a device-to-host copy of the expert group offsets and an event record, which
+only the lazy expert path reads. Linear chains and graph captures require
+every expert to be leased and never read them, but the copy sat between the
+router and the expert GEMV in each of 42 layers. The walk now calls
+`SparkGlm5NextLaunchCudaLayerMlpRouteResident`, which launches the same
+kernels without the copy. The graph drops from 1,504 to 1,462 nodes. Six
+alternating rounds of 100 replays on sparke, medians of the round medians:
+B1 15.75 to 15.39 ms (-2.3%), B8 32.17 to 31.87 ms (-0.9%).
+
+Kernel time at B1 on the idle bench (nsys node trace; shares of GPU busy
+time): BF16 skinny GEMV 36%, FP8 expert GEMV 13%, HC site 10%, head 5%,
+latent attention 5%, RMSNorm 3%. At B8 the FP8 expert GEMV is 55%.
+
+## Weight prefetch during collective waits
+
+At TP16 B1 each of the 92 all-reduce rounds leaves the rank's GPU waiting for
+its peers for about 50 us, and DRAM is idle for that time. The kernels that
+follow a round read weights that do not depend on the round:
+- after the attention round: the ffn HC site's `fn` (1.5 MiB f32) and norm,
+  then the router and shared gate/up (or the dense gate/up);
+- after the MLP round: the next layer's attn HC `fn` and norm, then KDA
+  `qkv_beta` and decay/gate down, or DSA `q_a`, index K, index gate and index
+  head.
+
+When the walk captures a decode graph, `SparkGlm5NextL2PrefetchAfterRound`
+adds one kernel node per round, `Glm5NextL2PrefetchKernel`: 48 CTAs of 256
+threads that `ld.global.cg` up to 12 MiB of those weights and discard them.
+Placement:
+- It walks back from the round's last captured node to the round's last
+  wait-value node (`CU_GRAPH_NODE_TYPE_BATCH_MEM_OP`, the peer wait), and hangs
+  the load kernel off the node before that wait. The kernel therefore starts
+  after the round's request and publish kernels, while the GPU front end waits
+  for the peers.
+- The next captured node depends on both the round and the load kernel.
+
+How it behaves:
+- `GRAPH-CAPTURE-OK` reports `l2_prefetch_rounds`.
+- Linear chains and rounds without a wait-value node get no load kernel.
+- `SPARK_GLM5_NEXT_L2_PREFETCH=0` turns it off; `1` or unset turns it on.
+  Any other value fails configuration.
+- `SPARK_GLM5_NEXT_L2_PREFETCH_BYTES` caps the bytes one round loads: a
+  multiple of 65536 from 65536 to 12582912 (12 MiB, the default).
+  `SPARK_GLM5_NEXT_L2_PREFETCH_BLOCKS` sets the load kernel's CTAs, 1 to 192
+  (default 48, one per GB10 SM). Fewer bytes or CTAs leave DRAM bandwidth to
+  the round's own transport while the load runs. Any other value, or either
+  variable with `SPARK_GLM5_NEXT_L2_PREFETCH=0`, fails configuration.
+- The module prints `GLM l2 prefetch=on bytes=<cap> blocks=<ctas>` or
+  `GLM l2 prefetch=off`.
+- The bench takes the same shape as `--l2-prefetch-bytes N` and
+  `--l2-prefetch-blocks N`, and prints `l2_bytes=` and `l2_blocks=` on
+  `ROOFLINE-GRAPH`.
+- It only runs when `tp_degree > 1`.
+- The arithmetic is unchanged, so outputs are bit identical: `ROOFLINE-HASH`
+  matches at B1 and B8.
+
+What did not work on GB10:
+- `cp.async.bulk.prefetch.L2` hints. After a hint and 60 us of idle, an
+  8 MiB read still took 27.5-30.6 us against 35.6 us cold. Data brought in
+  by real loads reads in 8.2 us.
+- Forking the load kernel on a side stream before the round. The wide load
+  kernel delayed the round's own small kernels. A second pre-wait kernel
+  started a median 23.6 us late, and in production that would delay this
+  rank's publish for every peer.
+
+The bench emulates a round with `--round-spin-us N --round-wait 2`: two
+one-thread kernels, then a wait-value node that a host thread releases N us
+after the first kernel ran. That is the shape of the hardware-wait round.
+
+| B | wait per round | off | on |
+|---|---:|---:|---:|
+| 1 | 40 us | 16.904 ms | 14.992 ms |
+| 1 | 50 us | 17.843 ms | 15.383 ms |
+| 8 | 50 us | 36.631 ms | 35.211 ms |
+
+On the fleet this predicts about 1.9-2.5 ms less per B1 token, if production
+rounds keep DRAM idle for 40-50 us. That prediction is for a fleet window to
+test.
+
+Results are in `qualification/glm5next/performance/glmflash_b1_20260929/`.
+
+Release a597ff0 (2026-09-29) measured it on the fleet: over the rows=1 graph
+chains, compute per step fell by 2.4-3.2 ms against a477cfa, but the
+device-measured peer wait rose by 1.66 ms (about 18 us per round), so the
+step gained only 0.3-1.2 ms. The load kernel only overlaps the round's peer
+wait. The source wait that it does not overlap stayed at 0.45 ms per step.
+That points at the load slowing the transport it overlaps. Each attention
+round loads 12 MiB, which takes about 53 us at 235 GB/s and so fills the
+whole wait, while weightd's CPU relay and the NIC work through the same
+LPDDR5X. The byte and CTA knobs let a fleet window find the shape that keeps
+the compute gain without the extra peer wait.
+
+Single-GPU bench, sparkf, B1, context 1024, 45 us host-released waits
+(`--round-spin-us 45 --round-wait 2`), median of 3 interleaved runs of 100
+replays. Production GLM and a K3 lane shared the GPU, so the spread is
+0.2-0.8 ms. `ROOFLINE-HASH` was identical for every shape.
+
+| shape (bytes x CTAs) | step ms |
+|---|---:|
+| off | 17.61 |
+| 12 MiB x 48 (default) | 14.97 |
+| 8 MiB x 48 | 15.12 |
+| 6 MiB x 48 | 15.51 |
+| 4 MiB x 48 | 16.05 |
+| 12 MiB x 24 | 15.63 |
+| 6 MiB x 16 | 15.62 |
+
+Roofline for this bench step: memory 70% at 14.97 ms and 60% at 17.61 ms
+(2.56 GB per step, 243 GB/s peak) | compute about 1-2% | transport not
+measured, because the waits are emulated. The bench has no NIC or relay on
+the wait path, so it only shows the compute side of each shape: 8 MiB keeps
+94% of the default's gain, 6 MiB 80%, 4 MiB 59%.
+
+## Next steps
+
+Collective latency sets most of the B1 gap (see "Where it stands"). The
+09fdad6 per-token budget above attributes most of the B1 step to kernel time
+instead; both measurements stand until a profile of a real rank settles it.
+
+1. Measure main on the fleet. Deploy a merged-main build, record its
+   identity, and rerun B1, the 8-stream load and COMPSEC-17. Later changes
+   should be measured against current code, not against `dd3526b`.
+2. Remove the CPU relay from the critical path with GPU-initiated RDMA
+   (IBGDA-style): the GPU writes the work requests and rings the NIC doorbell.
+   The expectation, not yet measured, is a 16-rank 8 KiB all-reduce in tens
+   of microseconds.
+3. Take the host out of decode chains. Feed each step's tokens on the device,
+   and stop waiting for every graph replay on residentd's thread (TECHDEBT;
+   see "Resident decode chains").
 4. Fuse RMSNorm into the consuming GEMV and batch GEMVs that share an input,
-   to cut the 1950 launches per token.
+   to cut the launches per token (1950 at the #1208 measurement).
+5. Restore bounded expert residency without losing graph speed
+   ([GLM_LAZY_DRIVER_INTEGRATION.md](GLM_LAZY_DRIVER_INTEGRATION.md)).
+6. Choose the topology by measurement. Qualify TP16, TP4xPP4 and PP16 each on
+   its own (I38). Measure aggregate tok/s and per-stream latency from B1 up to
+   the largest batch that fits, and serve with whichever measures best. The
+   pair-link hierarchical all-reduce for prefill and B >= 16 belongs to this
+   step.

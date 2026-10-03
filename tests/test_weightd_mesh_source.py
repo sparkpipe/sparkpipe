@@ -40,9 +40,11 @@ int TestThreadCreate(pthread_t *thread,const pthread_attr_t *attributes,
     void *(*start)(void *),void *argument)
 { (void)thread; (void)attributes; (void)start; (void)argument; return EAGAIN; }
 SparkStatus SparkWeightdMeshInit(uint32_t rank,const char *interface_name,
-    uint32_t sgid,const char *directory,uint32_t mask)
+    uint32_t sgid,const char *directory,uint32_t mask,
+    const char *pair_interface_name,uint32_t pair_sgid,uint32_t traffic_class)
 {
     (void)rank; (void)interface_name; (void)sgid; (void)directory; (void)mask;
+    (void)pair_interface_name; (void)pair_sgid; (void)traffic_class;
     return getenv("TEST_MESH_INIT_OK") != 0 ? SPARK_STATUS_BUSY : SPARK_STATUS_IO_ERROR;
 }
 void SparkWeightdMeshDoorbellLoop(int32_t cpu) { (void)cpu; }

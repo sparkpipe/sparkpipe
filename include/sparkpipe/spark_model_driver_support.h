@@ -77,7 +77,9 @@ static inline uint32_t SparkModelDriverCacheLaneIsValid(
     if (lane == 0 || lane->sequence_id == 0u ||
         lane->request_generation == 0u || lane->step_generation == 0u ||
         lane->resident_sequence_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT ||
-        lane->reserved != 0u ||
+        (lane->block_identity_count != 0u) != (lane->block_identities != 0) ||
+        (lane->block_identity_count != 0u &&
+         (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u) ||
         (lane->flags & ~SPARK_MODEL_DRIVER_CACHE_LANE_KNOWN_FLAGS) != 0u)
         return 0u;
     prefix_present = SparkModelDriverCacheIdentityIsPresent(

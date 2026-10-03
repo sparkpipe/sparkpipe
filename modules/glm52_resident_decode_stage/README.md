@@ -146,3 +146,216 @@ make -C modules/glm52_resident_decode_stage publish \
 ```
 
 The source is correctness-first until hardware profiling says which fused pieces should be replaced by tensor-core or persistent-kernel implementations. It must not be published unless the hardware validator passes the numerical checks and the maximum full-stage submission-to-completion latency ceiling.
+
+## Lazy consumer and serving adapter
+
+Moved from `docs/WEIGHTD_DESIGN.md` on 2026-09-28; the shared weightd contract
+stays there.
+
+LAZY CONSUMER: the lazy pack qualifies the FP8 codec only; BF16 keeps the
+resident eager load. Routed experts stay in the arena's sparse address space
+and materialize through per-wave acquisition. The module retains pack offsets
+for lease binding, while non-expert tensors come from the compact spine.
+Kernel-side, expert pointers are consumer-local leased VMM addresses; the
+weightd map exposes only acquired extents. Route results publish to host
+storage (event plus pinned host mirror) only for slots wired for lazy
+acquisition; resident and validator slots skip it. Retained lazy chains
+awaiting lease recovery are keyed by pipeline slot in the module state.
+
+FLAT RANKS: the adapter exposes FLAT_RANKS flat ranks, one per TP rank, in a
+single PP stage. residentd fans each submission out to every rank
+(PARALLEL_FANOUT) and the firmware stage stays STAGE_COUNT=1; the adapter maps
+flat rank to tp_rank and pins the firmware stage to 0. The rank count is a
+per-deployment environment selection (`SPARK_GLM52_SERVING_FLAT_RANKS`, 8 or 16),
+so one adapter artifact serves TP8 and TP16 while each keeps its own adapter
+identity. ValidateForAdapter pins deployment node_count == stage_count and the
+stage configs' tp_degree == TP_DEGREE. Unset, empty or malformed values leave
+the descriptor unconfigured, and the host's adapter-load validation fails
+closed.
+
+LAUNCHER: `tools/fleet_serve.sh` forwards `SPARK_GLM52_SERVING_FLAT_RANKS` to
+residentd verbatim, with no default. It is a legacy manual launcher: it starts
+residentds over SSH outside the fleet agent, defaults the API host to spark0,
+and sets none of the fleet's serving variables. Do not run it on a root the
+fleet agent manages (`docs/FLEET_RELEASE_RUNBOOK.md` §4).
+
+DRIVER MODEL ID: the expected DRIVER model id must equal the model.id of the
+firmware the driver was compiled from (ServingAdapterTemplateLoadDriver compares
+them). The bf16 arm's firmware pins the 5.3-full identity; every other codec's
+firmware keeps the 5.2 identity. GLM52_EXPERT_WEIGHT_CODEC is a numeric define.
+
+## GLM-5.3 Full at TP16 (lane tools and expert residency)
+
+GLM-5.3 Full (`GlmMoeDsaForCausalLM`) is served by this module at TP16 from
+the `glm53full.fp8.tp16` packs. `tools/glm53full_lane_build.sh` builds a
+bucketed firmware on a Spark, `tools/glm53full_lane.py` renders the
+deployment and sixteen adapter configurations for one weightd lane
+(`tests/test_glm53full_lane.py` pins them to the adapter's member set and the
+build identity), and `tools/glm53full_lane.sh` stages, starts, stops and
+serves the lane. The packs must carry the current contract digest;
+`tools/glm52_pack_restamp_contract.py` rewrites a stale digest when the
+contracts differ only in identity, after checking the pack against its
+sidecar.
+
+Expert residency has two modes:
+
+- Lazy (default with `SPARK_WEIGHTD_ATTACH_LAZY=1`): each routed layer leases
+  its experts through weightd. With a per-chunk pool (pool smaller than the
+  pack) every lease maps and unmaps its chunks, about 20-40 ms per layer, so
+  B1 is well under 1 token per second. It fits beside other lanes.
+- Pinned (`SPARK_GLM52_PIN_EXPERTS=1`): with an expert pool larger than the
+  pack, weightd premaps the whole arena once; the module then leases every
+  routed expert at attach (`spark_module_pin_experts.h`, 512 keys per lease)
+  and binds all layers to that base, so decode never calls weightd. It needs
+  about 50.4 GiB of arena per rank for fp8. Attach prints
+  `EXPERT-RESIDENCY mode=pinned keys=19200 leases=38`, or
+  `EXPERT-PIN-FAILED` and fails startup.
+
+Serving rules for the lane:
+
+- A residentd serves one client at a time and resets the adapter on every
+  new client's hello. The module answers the reset admission
+  (`SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET`) through the shared
+  `spark_module_reset_page_cache.h`: it claims every pipeline slot and
+  sequence lane (BUSY while one is in flight), drains the execution stream,
+  releases every page-cache lane with `SparkKvPageCacheReleaseAll` and
+  unbinds the lanes. Before this the admission fell through to the shape
+  check, was rejected, and every rank exited `status=9` on the second client
+  (`tests/test_module_page_cache_reset.py`, which also covers ling, whose
+  module had the same gap). A stream failure during the drain returns
+  IO_ERROR and keeps the slots and lanes claimed.
+- `tools/glm53full_lane.sh api`, `api-stop` and `decode` run only on the
+  rtx5090. Any other `GLMFULL_API_HOST` is refused before a remote command
+  runs (`tests/test_glm53full_lane.py`). Measure on the fleet with
+  `sparkpipe_model_batch`, which the lane build stages next to the residentd.
+- The model's EOS ids always stop a request (invariant I49); an empty
+  `stop_token_ids` does not disable them. Fixed-length decode measurements
+  need a prompt that does not reach EOS within the budget, and a runner that
+  refuses a case whose token count is below its budget.
+- COMPSEC-17 uses the checkpoint's own chat template:
+  `tools/glm53full_compsec17.py render` gives
+  `[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>{question}<|assistant|><think>`,
+  plus `</think>` for thinking off. The committed prompts are
+  `qualification/glm53full/compsec17_prompts_{off,on}.json`
+  (`tests/test_glm53full_compsec17.py`). The GLM-5.3 Flash framing
+  (`<|user|>\n...<|assistant|>\n<think></think>\n`, no system turn) is not
+  the Full template.
+
+## Chain modes (`SPARK_GLM52_CHAIN_MODE`)
+
+The module runs one token step as a chain: the embedding reduce, then per
+layer attention, a hidden all-reduce, the MLP and a second all-reduce, then the
+head and its max-loc reduce (158 collectives per token at 78 layers).
+
+- `eager` (default): every collective ends in a host completion callback that
+  launches the next stage. Required for `SPARK_GLM52_T1` traces and for lazy
+  expert leases (the route has to reach the host before the experts launch).
+- `linear`: `SparkGlm52RunChain` enqueues the whole chain, every wave of the
+  batch, from the submitting thread. Collectives are stream ordered with no
+  host completion (the device waits on the mesh); the lazy-pack worker then
+  waits for the stream, checks the deferred rounds
+  (`SparkTpDeviceCollectiveVerifyDeferred`) and completes the slot.
+- `graph`: as linear, but a single-wave step is captured once per slot, row
+  count and attention regime, then replayed. The captured context bound is
+  the largest context of its regime (`spark_glm52_graph_regime.h`: unsplit
+  below `decode_split_context_threshold`, split up to the 2048 selected
+  tokens), so a replay launches the same kernels eager launches for any
+  context of that regime. Steps the graph does not cover run linear and log
+  `GLM52-GRAPH-GATE` with the reason (`multi-wave` prefill waves,
+  `selected-context` above 2048 tokens, `rows` above 64); the counts appear in
+  every `GLM52-CHAIN-TIME` line.
+
+`linear` and `graph` refuse to start (`GLM52-CHAIN-MODE-REFUSED`) without the
+lazy attach worker, pinned experts (`SPARK_GLM52_PIN_EXPERTS=1`), stream-ordered
+collectives (`SPARK_TP_WAIT_MODE=hardware`) or with `SPARK_GLM52_T1`. One chain
+is in flight at a time; a second submission returns BUSY until the first has
+settled. If the lazy worker refuses the settle, the submitting thread settles
+the chain itself and logs `GLM52-CHAIN-SETTLE-INLINE`. The shared pieces (mode parse, arm/disarm, capture, pre-launch seed,
+settle) are model-neutral in `include/sparkpipe/spark_tp_chain_graph.h`.
+
+## Split q_a/kv_a projections (`SPARK_GLM52_PROJECTION_SPLIT=1`)
+
+q_a (2048 x 6144) and kv_a (576 x 6144) are replicated on every rank and were
+read in full every token, 2.34 GiB per token per rank. With the split each
+rank reads an 8-element-aligned slice (q_a 128 rows at TP16; kv_a 40 rows on
+ranks 0-7 and 32 on ranks 8-15), writes it into a zeroed gather row, and one
+bf16 sum all-reduce per layer assembles q_compressed and the KV latent before
+their norms (`GlmLayerAttentionProject`, reduce, `GlmLayerAttentionCore`).
+Each gathered element has exactly one nonzero contributor, so the sum is the
+replicated projection. It adds 78 collectives per token and removes about
+2.2 GiB of reads per token per rank.
+
+## Single-GPU parity
+
+`validation/run_glm52_chain_graph_parity.sh fp8 16` builds the b16 archive and
+`glm52_chain_graph_parity`, which walks a dense and a routed layer for 96
+decode steps (split threshold 64) with the validator's synthetic weights, at
+TP1 and at TP16 rank-local shapes, as staged launches (a host sync after every
+stage), a linear walk, replayed graphs, and the projection split with the
+16-rank gather emulated on one GPU. Hidden and residual outputs must be
+bit-identical to the staged walk. Two controls must differ: every step replayed
+with the other regime's bound, and the split gather missing one rank.
+`tests/test_glm52_chain_modes.py` drives the real chain runner on the host:
+walk order, capture and replay per regime, the selected-context and multi-wave
+gates, settle, walk and stream failures, a refused worker, and the busy gate
+(including its release when a submission fails before the chain starts).
+
+## Multi-row prefill waves (`SPARK_GLM52_PREFILL_WAVE_ROWS`)
+
+Without the variable (or with `0`) a prefill submission runs one round per
+wave: a single prompt of 16 rows is 16 full 78-layer waves, so a 300-token
+prompt costs about 300 B1 steps. With `SPARK_GLM52_PREFILL_WAVE_ROWS=N`
+(1 up to the execution row capacity; any other value refuses startup) a
+prefill wave spans consecutive whole rounds up to N rows. The rows of one
+sequence in a wave are causal: every layer stores the wave's KV and DSA index
+rows before attention, and attention, index scoring and top-k mask positions
+after each row's own position.
+
+A wave never mixes attention regimes. The regime of a round is the largest of
+its rows' regimes, where a row's regime is its graph regime (split or unsplit
+attention at `decode_split_context_threshold`) plus whether its context passes
+the 2048-token DSA selection width. With the variable set, a prefill wave runs
+the certified B1 head once per row (`row_head_certified`), so every row's
+token, including the one the prefill emits, comes from the same head
+arithmetic as a one-row wave. Decode waves of several sequences, and every
+wave with the variable unset, keep today's head choice. In graph mode the
+captured graph is keyed by the head path as well as the attention regime and
+the row count (`GLM52-GRAPH-CAPTURE regime=2|3` for per-row certified heads),
+so a prefill wave never replays a decode wave's graph of the same shape, and
+the reverse.
+
+The startup line `GLM52-PREFILL-WAVE-ROWS rows=N exact_rows=8 exact=yes|no`
+names the bound. Up to 8 rows every linear takes the skinny path and each row
+is bit-identical to one-row prefill; above 8 rows the linears take the GEMM and
+the rows are not bit-equal, which the line states.
+
+Two kernel changes make multi-row waves exact:
+- `LmLatentAttentionDecodeSplitLaunch<..., true>` sizes the split partitions
+  per row (from the head count, as for one row) and bounds each row's span by
+  its own position, so a row's attention sums do not depend on the other rows
+  in the wave. At one row per sequence this is the previous launch.
+- The glm52 wave metadata kernel sets each sequence's context length to the
+  maximum over its rows in the wave (the previous kernel let the last writer
+  win).
+
+The DSA indexer stores every position's index key, also while the context is
+within the selection width (the query projection, scoring and top-k still run
+only past it). Before this, positions 0..2047 of every sequence had no index
+key, so any sequence that grew past 2048 tokens selected from zero keys.
+
+`validation/run_glm52_prefill_rows_parity.sh fp8 16` builds
+`glm52_prefill_rows_parity`: on the validator's synthetic weights (a dense and
+a routed layer, TP1, split threshold 64) it prefills 2112 positions one row per
+wave as the reference, then with waves of up to 2, 4, 8 and 16 rows, with and
+without the regime split, and compares every row's hidden and residual, the KV
+pool and the DSA index pool. It then runs verify waves of up to 8 rows at
+anchors in the unsplit, split and selected regimes on the reference cache: an
+oracle wave (reference tokens) must be bit-exact, an adversary wave (wrong
+draft tokens) must leave the anchor row equal and change every drafted row,
+and a one-row replay after the adversary must equal the reference. The run
+also prints FNV hashes of the reference rows before and after 2048 for a
+comparison against another build. With a third argument `head` the rig runs
+the same walks at TP16 rank-local shapes with the final head (a synthetic
+rank-local lm_head and its certified FP8 shadow) and compares every row's
+token: prefill waves up to 8 rows and oracle verify waves must be token-exact
+against one-row waves, and an adversary wave must keep the anchor token.

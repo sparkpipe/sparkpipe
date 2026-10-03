@@ -49,6 +49,13 @@ typedef struct SparkGlm52ExecutionSlot
 	uint32_t *host_kv_access_error;
 	uint32_t *token_ids;
 	uint32_t *resident_slots;
+	uint32_t *prefill_block_table;
+	uint32_t *head_rows;
+	uint16_t *head_hidden_bf16;
+	uint16_t *head_residual_bf16;
+	uint16_t *head_normed_bf16;
+	uint32_t *head_token;
+	float *head_score;
 	uint32_t *positions;
 	uint32_t *context_lengths;
 	uint32_t *dense_row_offset;
@@ -67,6 +74,8 @@ typedef struct SparkGlm52ExecutionSlot
 	uint16_t *attention_latent_bf16;
 	uint16_t *attention_value_bf16;
 	uint16_t *attention_out_bf16;
+	uint16_t *projection_gather_bf16;
+	uint16_t *projection_local_bf16;
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 	uint16_t *expert_out_bf16;
@@ -75,6 +84,14 @@ typedef struct SparkGlm52ExecutionSlot
 	float *selection_scores_f32;
 	float *attention_split_partials_f32;
 	uint32_t *selected_positions;
+	uint32_t selection_rows;
+	uint32_t *prefill_union_positions;
+	uint8_t *prefill_union_masks;
+	uint32_t *prefill_union_counts;
+	uint64_t prefill_union_entries;
+	float *topk_scratch_values_f32;
+	uint32_t *topk_scratch_positions;
+	uint64_t topk_scratch_entries;
 	uint32_t *route_expert;
 	float *route_weight;
 	uint32_t *route_source_token;
@@ -107,8 +124,10 @@ typedef struct SparkGlm52CudaWave
 	uint32_t row_count;
 	uint32_t maximum_context;
 	uint32_t resident_sequence_capacity;
+	uint32_t execution_row_capacity;
 	uint32_t max_sequence_positions;
 	uint32_t pages_per_sequence;
+	uint32_t physical_page_count;
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
 	uint32_t sideband_input;
@@ -143,16 +162,33 @@ typedef struct SparkGlm52CudaWave
 	uint64_t attention_split_partial_blocks;
 	const uint8_t *expert_lease_base;
 	uint32_t expert_lease_local_layer;
+	uint32_t expert_lease_pinned;
+	uint32_t route_host_copy;
+	uint32_t projection_split;
+	uint32_t row_head_certified;
+	uint32_t single_sequence_rows;
+	uint32_t *prefill_block_table;
+	uint32_t inputs_staged;
 } SparkGlm52CudaWave;
+
+#define SPARK_GLM52_PREFILL_WAVE_SPANS 8u
+#define SPARK_GLM52_PREFILL_BLOCK_ROWS 4u
+#define SPARK_GLM52_PREFILL_TABLE_BLOCKS(rows) \
+	(((rows) + SPARK_GLM52_PREFILL_BLOCK_ROWS - 1u) / SPARK_GLM52_PREFILL_BLOCK_ROWS + SPARK_GLM52_PREFILL_WAVE_SPANS)
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 int32_t SparkGlm52T1Enabled(void);
+uint32_t SparkGlm52ExactWaveRows(void);
 int32_t SparkGlm52LaunchCudaWave(const SparkGlm52CudaWave *wave);
 int32_t SparkGlm52LaunchCudaWaveBegin(const SparkGlm52CudaWave *wave);
+int32_t SparkGlm52LaunchCudaStageWaveInputs(const SparkGlm52CudaWave *wave,uint32_t rows,uint32_t bucket);
 int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+uint32_t SparkGlm52ProjectionSliceWidth(uint32_t tp_degree);
+int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t local_layer);
@@ -160,6 +196,10 @@ int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave);
 cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlmLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
+#ifdef SPARK_SCORE_DUMP
+struct SparkScoreDumpStats;
+cudaError_t SparkGlm52LaunchHeadScore(cudaStream_t stream,const uint16_t *normed_bf16,const void *head_bf16,float *logits,uint32_t rows,uint32_t width,uint32_t id_base,const uint32_t *probe_offsets,const uint32_t *probe_local,float *probe_logits,struct SparkScoreDumpStats *stats);
+#endif
 int32_t SparkGlm52ConfigureCudaModule(uint32_t *multiprocessor_count);
 
 #ifdef __cplusplus

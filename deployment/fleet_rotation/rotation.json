@@ -1,0 +1,540 @@
+{
+ "schema": 1,
+ "hub": "rtx5090",
+ "state_dir": "~/fleet-rotation",
+ "ssh": [
+  "ssh",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "ConnectTimeout=8"
+ ],
+ "ssh_timeout_s": 120,
+ "poll_s": 10,
+ "floor_gib": 20,
+ "node_free_gib": 106,
+ "weightd_warm": "$HOME/weightd-bundle-stage/bin/weightd_warm",
+ "weightd_socket": "/tmp/spark_weightd.sock",
+ "schedule_port": 8430,
+ "fleet": [
+  "spark0",
+  "spark1",
+  "spark2",
+  "spark3",
+  "spark4",
+  "spark5",
+  "spark6",
+  "spark7",
+  "spark8",
+  "spark9",
+  "sparka",
+  "sparkb",
+  "sparkc",
+  "sparkd",
+  "sparke",
+  "sparkf"
+ ],
+ "cycle": {
+  "anchor_hour": 0,
+  "slots": [
+   "full",
+   "k3",
+   "flash_plus"
+  ]
+ },
+ "slots": {
+  "full": {
+   "base": "glmfull",
+   "companions": [
+    "qwen",
+    "gemma",
+    "mimo"
+   ],
+   "fallback_slot": "flash_plus"
+  },
+  "k3": {
+   "base": "k3",
+   "companions": [],
+   "fallback_slot": "flash_plus"
+  },
+  "flash_plus": {
+   "base": "flash",
+   "companions": [
+    "qwen",
+    "gemma",
+    "mimo",
+    "ling",
+    "laguna",
+    "hy4",
+    "dsv41",
+    "dsv4pro",
+    "minimax",
+    "qwenmax",
+    "muse"
+   ],
+   "fallback_slot": null
+  }
+ },
+ "fallback": "flash",
+ "rollback_models": [
+  "flash",
+  "qwen"
+ ],
+ "lock": {
+  "pause_file": "ROTATION_PAUSE",
+  "mirror_pause_file": "lock/ROTATION_PAUSE",
+  "holder_file": "lock/PERF_HOLDER",
+  "holder_prefixes": [
+   "lead-"
+  ]
+ },
+ "commands": {
+  "mem_probe": "awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo",
+  "reclaim": "set -o pipefail; for f in @packs@; do test -s \"$f\" || { echo \"missing $f\"; exit 4; }; @warm@ @socket@ --reclaim-pack \"$(cut -c1-64 \"$f\")\" 2>&1 | tail -n 1 || exit $?; done",
+  "smoke": "curl -s --max-time @timeout@ http://127.0.0.1:@port@@path@ -H 'Content-Type: application/json' -d @body@"
+ },
+ "models": {
+  "flash": {
+   "title": "GLM-5.3 Flash fp8 TP16 production (weightd lane 0, fleet-agent, g53-api)",
+   "runnable": true,
+   "validated": true,
+   "nodes": [
+    "spark0",
+    "spark1",
+    "spark2",
+    "spark3",
+    "spark4",
+    "spark5",
+    "spark6",
+    "spark7",
+    "spark8",
+    "spark9",
+    "sparka",
+    "sparkb",
+    "sparkc",
+    "sparkd",
+    "sparke",
+    "sparkf"
+   ],
+   "mem_gib": 38,
+   "engine": {
+    "precheck": "systemctl --user is-active -q fleet-agent && test -d $HOME/sparkdata/glm53flash.fp8.tp16/packs",
+    "start": "rm -f $HOME/sparkdata/glm53flash.fp8.tp16/agent.hold",
+    "stop": "touch $HOME/sparkdata/glm53flash.fp8.tp16/agent.hold",
+    "up": "for p in $(pgrep -f '[s]parkpipe_model_residentd --'); do [ \"$(readlink /proc/$p/cwd)\" = \"$HOME/sparkdata/glm53flash.fp8.tp16\" ] && exit 0; done; exit 1",
+    "ready": "test ! -e $HOME/sparkdata/glm53flash.fp8.tp16/agent.hold && grep -qE '\"state\": ?\"ready\"' $HOME/current/$(hostname).json && for p in $(pgrep -f '[s]parkpipe_model_residentd --'); do [ \"$(readlink /proc/$p/cwd)\" = \"$HOME/sparkdata/glm53flash.fp8.tp16\" ] && exit 0; done; exit 1",
+    "grace_s": 240,
+    "ready_timeout_s": 900,
+    "stop_timeout_s": 240
+   },
+   "packs": [
+    "$HOME/sparkdata/glm53flash.fp8.tp16/packs/*.sha256"
+   ],
+   "api": {
+    "precheck": "systemctl --user cat g53-api >/dev/null",
+    "start": "systemctl --user reset-failed g53-api 2>/dev/null; systemctl --user start g53-api",
+    "stop": "systemctl --user stop g53-api; true",
+    "up": "systemctl --user is-active -q g53-api",
+    "health": "curl -s --max-time 5 http://127.0.0.1:8433/health | grep -q '\"tokenizer\": *true'",
+    "port": 8433,
+    "timeout_s": 180
+   },
+   "smoke": {
+    "path": "/v1/chat/completions",
+    "body": {
+     "messages": [
+      {
+       "role": "user",
+       "content": "What is the capital of France?"
+      }
+     ],
+     "max_tokens": 32,
+     "temperature": 0
+    },
+    "expect": "Paris",
+    "timeout_s": 300
+   }
+  },
+  "glmfull": {
+   "title": "GLM-5.3 Full fp8 TP16 release dfa12a5 (weightd lane 6, pinned experts)",
+   "runnable": true,
+   "validated": true,
+   "nodes": [
+    "spark0",
+    "spark1",
+    "spark2",
+    "spark3",
+    "spark4",
+    "spark5",
+    "spark6",
+    "spark7",
+    "spark8",
+    "spark9",
+    "sparka",
+    "sparkb",
+    "sparkc",
+    "sparkd",
+    "sparke",
+    "sparkf"
+   ],
+   "mem_gib": 68,
+   "engine": {
+    "precheck": "cd $HOME/glmfull-lane6/root && grep -qx source_commit=dfa12a5da848474782aa349cd7e08a59e924b406 RELEASE && sha256sum -c --quiet MANIFEST && test -S /tmp/spark_weightd.sock && ! systemctl --user is-active -q sp-glmfull-rd6",
+    "start": "cd $HOME/glmfull-lane6/root && mv -f residentd.log residentd.prev.log 2>/dev/null; systemctl --user reset-failed sp-glmfull-rd6 2>/dev/null; systemd-run --user --unit=sp-glmfull-rd6 -p MemoryMax=20G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/glmfull-lane6/root -E LD_LIBRARY_PATH=$HOME/glmfull-lane6/root/lib -E SPARK_GLM52_SERVING_FLAT_RANKS=16 -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_ATTACH_LAZY=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=6 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=55834574848 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=8589934592 -E SPARK_GLM52_PIN_EXPERTS=1 -E SPARK_TP_WAIT_MODE=hardware -E SPARK_GLM52_CHAIN_MODE=graph -E SPARK_GLM52_PROJECTION_SPLIT=1 bash -c 'SPARK_WEIGHTD_PACK_SHA256=$(cat packs/pack.sha256) exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index @rank@ > residentd.log 2>&1'",
+    "stop": "systemctl --user stop sp-glmfull-rd6 2>/dev/null; systemctl --user reset-failed sp-glmfull-rd6 2>/dev/null; true",
+    "up": "systemctl --user is-active -q sp-glmfull-rd6",
+    "ready": "cd $HOME/glmfull-lane6/root && grep -q 'model_residentd ready' residentd.log && grep -q 'EXPERT-RESIDENCY mode=pinned keys=19200' residentd.log && grep -q 'GLM52-CHAIN-MODE mode=graph ' residentd.log && grep -q 'GLM52-PROJECTION-SPLIT rank=' residentd.log && systemctl --user is-active -q sp-glmfull-rd6",
+    "grace_s": 60,
+    "ready_timeout_s": 1200,
+    "stop_timeout_s": 180
+   },
+   "packs": [
+    "$HOME/glmfull-lane6/root/packs/pack.sha256"
+   ],
+   "api": {
+    "precheck": "cd $HOME/glmfull-lane6-api && grep -qx dfa12a5da848474782aa349cd7e08a59e924b406 SOURCE_COMMIT && sha256sum -c --quiet SHA256SUMS && ! systemctl --user is-active -q glmfull-api6 && ! ss -ltn | grep -q ':8446 '",
+    "start": "cd $HOME/glmfull-lane6-api && systemctl --user reset-failed glmfull-api6 2>/dev/null; systemd-run --user --unit=glmfull-api6 -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glmfull-lane6-api -E SPARK_GLM52_SERVING_FLAT_RANKS=16 bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glmfull-lane6-api/runtime --port 8446 >> api.log 2>&1'",
+    "stop": "systemctl --user stop glmfull-api6 2>/dev/null; systemctl --user reset-failed glmfull-api6 2>/dev/null; true",
+    "up": "systemctl --user is-active -q glmfull-api6",
+    "health": "curl -s --max-time 5 http://127.0.0.1:8446/health | grep -q '\"tokenizer\": *true'",
+    "port": 8446,
+    "timeout_s": 180
+   },
+   "smoke": {
+    "path": "/v1/chat/completions",
+    "body": {
+     "messages": [
+      {
+       "role": "user",
+       "content": "What is the capital of France? Answer in one word."
+      }
+     ],
+     "max_tokens": 16,
+     "temperature": 0
+    },
+    "expect": "Paris",
+    "timeout_s": 600
+   }
+  },
+  "k3": {
+   "title": "Kimi K3 mxfp4 TP16 full residency (weightd lane 8, 1/16 KV per rank, k3-api8)",
+   "runnable": true,
+   "validated": false,
+   "nodes": [
+    "spark0",
+    "spark1",
+    "spark2",
+    "spark3",
+    "spark4",
+    "spark5",
+    "spark6",
+    "spark7",
+    "spark8",
+    "spark9",
+    "sparka",
+    "sparkb",
+    "sparkc",
+    "sparkd",
+    "sparke",
+    "sparkf"
+   ],
+   "mem_gib": 96,
+   "floor_gib": 8,
+   "abort_gib": 6,
+   "engine": {
+    "precheck": "cd $HOME/k3-lane8/root && grep -qx source_commit=8b19662c24fe104bc2d29009503faf977fb6a97d RELEASE && sha256sum -c --quiet MANIFEST && test -S /tmp/spark_weightd.sock && ! systemctl --user is-active -q sp-k3-rd8 && ! systemctl --user is-active -q sp-k3-rd12",
+    "start": "cd $HOME/k3-lane8/root && mv -f residentd.log residentd.prev.log 2>/dev/null; find $HOME/sparkdata -mindepth 3 -maxdepth 3 -path '*/packs/*' -type f -print0 | xargs -0 -r python3 bin/pack_cache_trim.py > /dev/null && python3 bin/pack_cache_trim.py packs/rank.pack packs/rank.pack.experts && systemctl --user reset-failed sp-k3-rd8 sp-k3-cache8 2>/dev/null; systemd-run --user --unit=sp-k3-cache8 -p Nice=19 -p MemoryMax=256M --working-directory=$HOME/k3-lane8/root python3 bin/pack_cache_trim.py --every 20 packs/rank.pack packs/rank.pack.experts && systemd-run --user --unit=sp-k3-rd8 -p MemoryMax=16G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/k3-lane8/root -E LD_LIBRARY_PATH=$HOME/k3-lane8/root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=8 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=90596966400 -E SPARK_K3_STATE_BUDGET_BYTES=1610612736 -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=8 bash -c 'SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$(cat spine_budget) exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index @rank@ > residentd.log 2>&1'",
+    "stop": "systemctl --user stop sp-k3-rd8 sp-k3-cache8 2>/dev/null; systemctl --user reset-failed sp-k3-rd8 sp-k3-cache8 2>/dev/null; python3 $HOME/k3-lane8/root/bin/pack_cache_trim.py $HOME/k3-lane8/root/packs/rank.pack $HOME/k3-lane8/root/packs/rank.pack.experts >/dev/null 2>&1; true",
+    "up": "systemctl --user is-active -q sp-k3-rd8",
+    "ready": "cd $HOME/k3-lane8/root && grep -q 'model_residentd ready' residentd.log && grep -q 'rank state planned=' residentd.log && systemctl --user is-active -q sp-k3-rd8",
+    "grace_s": 90,
+    "ready_timeout_s": 600,
+    "stop_timeout_s": 180
+   },
+   "packs": [
+    "$HOME/k3-lane8/root/packs/pack.sha256"
+   ],
+   "api": {
+    "precheck": "cd $HOME/k3-lane8-api && grep -qx 8b19662c24fe104bc2d29009503faf977fb6a97d SOURCE_COMMIT && sha256sum -c --quiet SHA256SUMS && ! systemctl --user is-active -q k3-api8 && ! ss -ltn | grep -q ':8448 '",
+    "start": "cd $HOME/k3-lane8-api && systemctl --user reset-failed k3-api8 2>/dev/null; systemd-run --user --unit=k3-api8 -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/k3-lane8-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/k3-lane8-api/runtime --port 8448 >> api.log 2>&1'",
+    "stop": "systemctl --user stop k3-api8 2>/dev/null; systemctl --user reset-failed k3-api8 2>/dev/null; true",
+    "up": "systemctl --user is-active -q k3-api8",
+    "health": "curl -s --max-time 5 http://127.0.0.1:8448/health | grep -q '\"tokenizer\": *true'",
+    "port": 8448,
+    "timeout_s": 180
+   },
+   "smoke": {
+    "path": "/v1/chat/completions",
+    "body": {
+     "messages": [
+      {
+       "role": "user",
+       "content": "What is the capital of France? Answer in one word."
+      }
+     ],
+     "max_tokens": 16,
+     "temperature": 0
+    },
+    "expect": "Paris",
+    "timeout_s": 900
+   }
+  },
+  "qwen": {
+   "title": "Qwen3.8-27B TP4 no-spec (spark0/1/2/5, weightd lane 3, qwen27b-api)",
+   "runnable": true,
+   "validated": true,
+   "nodes": [
+    "spark0",
+    "spark1",
+    "spark2",
+    "spark5"
+   ],
+   "mem_gib": 26,
+   "engine": {
+    "precheck": "test -S /tmp/spark_weightd.sock && test -s $HOME/sparkdata/qwen27b.mx2.tp4/config/model_resident.nospec.json && test -x $HOME/sparkdata/qwen27b.mx2.tp4/bin/sparkpipe_model_residentd && ! systemctl --user is-active -q sp-qwen4-rd",
+    "start": "cd $HOME/sparkdata/qwen27b.mx2.tp4 && python3 -c 'import os, sys; [os.posix_fadvise(os.open(p, os.O_RDONLY), 0, 0, os.POSIX_FADV_DONTNEED) for p in sys.argv[1:]]' packs/qwen27b.mx2.tp4.rank@rank@.qwen36sp && log=$HOME/sparkdata/qwen27b.mx2.tp4/logs/residentd-nospec-$(date -u +%Y%m%dT%H%M%SZ).log && ln -sfn $log $HOME/sparkdata/qwen27b.mx2.tp4/logs/current.log && echo nospec > $HOME/sparkdata/qwen27b.mx2.tp4/logs/current.mode && systemctl --user reset-failed sp-qwen4-rd 2>/dev/null; systemd-run --user --collect --unit=sp-qwen4-rd --same-dir -p MemoryMax=24G -p MemorySwapMax=0 -p StandardOutput=file:$log -p StandardError=file:$log -E LD_LIBRARY_PATH=$HOME/sparkdata/qwen27b.mx2.tp4/lib -E SPARK_WEIGHTD_LANE=3 -E SPARK_TP_MESH_RANKS=0,1,2,5 -E SPARK_QWEN38_27B_TP_STANDALONE=0 -E SPARK_TP_WAIT_MODE=hardware -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 -E SPARK_QWEN38_27B_SPECULATORS=0 $HOME/sparkdata/qwen27b.mx2.tp4/bin/sparkpipe_model_residentd --deployment $HOME/sparkdata/qwen27b.mx2.tp4/config/model_resident.nospec.json --rank-index @rank@ > /dev/null",
+    "stop": "systemctl --user stop sp-qwen4-rd 2>/dev/null; systemctl --user reset-failed sp-qwen4-rd 2>/dev/null; true",
+    "up": "systemctl --user is-active -q sp-qwen4-rd",
+    "ready": "grep -aq 'model_residentd ready' $HOME/sparkdata/qwen27b.mx2.tp4/logs/current.log && systemctl --user is-active -q sp-qwen4-rd",
+    "grace_s": 60,
+    "ready_timeout_s": 600,
+    "stop_timeout_s": 120
+   },
+   "packs": [
+    "$HOME/sparkdata/qwen27b.mx2.tp4/packs/qwen27b.mx2.tp4.rank@rank@.qwen36sp.sha256"
+   ],
+   "api": {
+    "precheck": "systemctl --user cat qwen27b-api >/dev/null && ! systemctl --user is-active -q qwen27b-api && ! ss -ltn | grep -q ':8435 '",
+    "start": "systemctl --user reset-failed qwen27b-api 2>/dev/null; systemctl --user start qwen27b-api",
+    "stop": "systemctl --user stop qwen27b-api; true",
+    "up": "systemctl --user is-active -q qwen27b-api",
+    "health": "curl -s --max-time 5 http://127.0.0.1:8435/health | grep -q '\"tokenizer\": *true'",
+    "port": 8435,
+    "timeout_s": 180
+   },
+   "smoke": {
+    "path": "/v1/completions",
+    "body": {
+     "prompt": "<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+     "max_tokens": 32,
+     "temperature": 0
+    },
+    "expect": "Paris",
+    "timeout_s": 600
+   }
+  },
+  "gemma": {
+   "title": "Gemma 4 31B bf16 TP4 (sparka..sparkd, weightd lane 4, release-11b1d2a, gemma4-api with the gemma4 chat_template)",
+   "runnable": true,
+   "validated": false,
+   "nodes": [
+    "sparka",
+    "sparkb",
+    "sparkc",
+    "sparkd"
+   ],
+   "mem_gib": 36,
+   "engine": {
+    "precheck": "test -S /tmp/spark_weightd.sock && test -x $HOME/lanes/gemma4-l4/gemma4_lane_resident.sh && test -d $HOME/lanes/gemma4-l4/release-11b1d2a && test -d $HOME/lanes/gemma4-l4/deployment && test -d $HOME/lanes/gemma4-l4/root && ! systemctl --user is-active -q sp-g4l4-resident-r@rank@",
+    "start": "systemctl --user reset-failed sp-g4l4-resident-r@rank@ 2>/dev/null; echo '=== fleet-rotation start @stamp@' >> $HOME/lanes/gemma4-l4/root/residentd.log && bash $HOME/lanes/gemma4-l4/gemma4_lane_resident.sh --release $HOME/lanes/gemma4-l4/release-11b1d2a --deployment $HOME/lanes/gemma4-l4/deployment --packs $HOME/sparkdata/gemma4_31b.bf16.tp4/packs --root $HOME/lanes/gemma4-l4/root --rank @rank@ --lane 4 --mesh-ranks 10,11,12,13 --weightd-socket /tmp/spark_weightd.sock --unit-prefix g4l4 --memory-max 40G",
+    "stop": "systemctl --user stop sp-g4l4-resident-r@rank@ 2>/dev/null; systemctl --user reset-failed sp-g4l4-resident-r@rank@ 2>/dev/null; true",
+    "up": "systemctl --user is-active -q sp-g4l4-resident-r@rank@",
+    "ready": "sed -n '/=== fleet-rotation start @stamp@/,$p' $HOME/lanes/gemma4-l4/root/residentd.log | grep -q 'model_residentd ready' && systemctl --user is-active -q sp-g4l4-resident-r@rank@",
+    "grace_s": 60,
+    "ready_timeout_s": 900,
+    "stop_timeout_s": 120
+   },
+   "packs": [
+    "$HOME/sparkdata/gemma4_31b.bf16.tp4/packs/gemma4_31b_tp4_rank@rank@_stage0.gemma4sp.sha256"
+   ],
+   "api": {
+    "precheck": "systemctl --user cat gemma4-api >/dev/null && grep -q '\"chat_template\"' $HOME/gemma4-api-channel/model_resident.json && ! systemctl --user is-active -q gemma4-api && ! ss -ltn | grep -q ':8436 '",
+    "start": "systemctl --user reset-failed gemma4-api 2>/dev/null; systemctl --user start gemma4-api",
+    "stop": "systemctl --user stop gemma4-api; true",
+    "up": "systemctl --user is-active -q gemma4-api",
+    "health": "curl -s --max-time 5 http://127.0.0.1:8436/health | grep -q '\"tokenizer\": *true'",
+    "port": 8436,
+    "timeout_s": 180
+   },
+   "smoke": {
+    "path": "/v1/chat/completions",
+    "body": {
+     "messages": [
+      {
+       "role": "user",
+       "content": "What is the capital of France? Answer in one word."
+      }
+     ],
+     "max_tokens": 16,
+     "temperature": 0
+    },
+    "expect": "Paris",
+    "timeout_s": 600,
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ]
+    }
+   }
+  },
+  "ling": {
+   "title": "Ling-3.0-flash bf16 TP16 (weightd lane 10, build c3148b3, ling3-api)",
+   "runnable": true,
+   "validated": false,
+   "nodes": [
+    "spark0",
+    "spark1",
+    "spark2",
+    "spark3",
+    "spark4",
+    "spark5",
+    "spark6",
+    "spark7",
+    "spark8",
+    "spark9",
+    "sparka",
+    "sparkb",
+    "sparkc",
+    "sparkd",
+    "sparke",
+    "sparkf"
+   ],
+   "mem_gib": 22,
+   "engine": {
+    "precheck": "cd $HOME/ling-lane10/root && test -s spine_budget && test -s packs/pack.sha256 && test -x bin/sparkpipe_model_residentd && test -s model_resident.json && test -S /tmp/spark_weightd.sock && ! systemctl --user is-active -q sp-ling-rd10",
+    "start": "cd $HOME/ling-lane10/root && mv -f residentd.log residentd.prev.log 2>/dev/null; systemctl --user reset-failed sp-ling-rd10 2>/dev/null; systemd-run --user --unit=sp-ling-rd10 -p MemoryMax=12G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/ling-lane10/root -E LD_LIBRARY_PATH=$HOME/ling-lane10/root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=10 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=4294967296 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$(cat spine_budget) bash -c 'exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index @rank@ > residentd.log 2>&1'",
+    "stop": "systemctl --user stop sp-ling-rd10 2>/dev/null; systemctl --user reset-failed sp-ling-rd10 2>/dev/null; true",
+    "up": "systemctl --user is-active -q sp-ling-rd10",
+    "ready": "grep -q 'model_residentd ready' $HOME/ling-lane10/root/residentd.log && systemctl --user is-active -q sp-ling-rd10",
+    "grace_s": 60,
+    "ready_timeout_s": 900,
+    "stop_timeout_s": 120
+   },
+   "packs": [
+    "$HOME/ling-lane10/root/packs/pack.sha256"
+   ],
+   "api": {
+    "precheck": "test -x $HOME/ling-lane10-api/bin/sparkpipe_model_api && test -s $HOME/ling-lane10-api/model_resident.json && ! systemctl --user is-active -q ling3-api && ! ss -ltn | grep -q ':8437 '",
+    "start": "cd $HOME/ling-lane10-api && systemctl --user reset-failed ling3-api 2>/dev/null; systemd-run --user --unit=ling3-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/ling-lane10-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/ling-lane10-api/runtime --port 8437 >> api.log 2>&1'",
+    "stop": "systemctl --user stop ling3-api 2>/dev/null; systemctl --user reset-failed ling3-api 2>/dev/null; true",
+    "up": "systemctl --user is-active -q ling3-api",
+    "health": "curl -s --max-time 5 http://127.0.0.1:8437/health | grep -q '\"tokenizer\": *true'",
+    "port": 8437,
+    "timeout_s": 180
+   },
+   "smoke": {
+    "path": "/v1/completions",
+    "body": {
+     "prompt": "The capital of France is",
+     "max_tokens": 8,
+     "temperature": 0
+    },
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ],
+     "min_words": 3,
+     "min_distinct_words": 3,
+     "look_for": "Paris"
+    },
+    "timeout_s": 600
+   }
+  },
+  "mimo": {
+   "title": "MiMo-V2.6-Flash MXFP4 TP4 (spark4/6/7/8, weightd lane 9, dc4a170, mimo26-api)",
+   "runnable": true,
+   "validated": false,
+   "nodes": [
+    "spark4",
+    "spark6",
+    "spark7",
+    "spark8"
+   ],
+   "mem_gib": 46,
+   "engine": {
+    "precheck": "cd $HOME/mimo-lane9/root && test -s packs/pack.sha256 && test -x bin/sparkpipe_model_residentd && test -s model_resident.json && test -S /tmp/spark_weightd.sock && ! systemctl --user is-active -q sp-mimo-rd9",
+    "start": "cd $HOME/mimo-lane9/root && mv -f residentd.log residentd.prev.log 2>/dev/null; systemctl --user reset-failed sp-mimo-rd9 2>/dev/null; systemd-run --user --unit=sp-mimo-rd9 -p MemoryMax=16G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/mimo-lane9/root -E LD_LIBRARY_PATH=$HOME/mimo-lane9/root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=9 -E SPARK_TP_MESH_RANKS=4,6,7,8 -E SPARK_TP_WAIT_MODE=hardware -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=42000000000 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=2600000000 -E SPARK_MIMO26_TP_RANK=@rank@ -E SPARK_MIMO26_STAGE_MAX_POSITIONS=8192 -E SPARK_MIMO26_STAGE_GRAPH=1 bash -c 'exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index @rank@ > residentd.log 2>&1'",
+    "stop": "systemctl --user stop sp-mimo-rd9 2>/dev/null; systemctl --user reset-failed sp-mimo-rd9 2>/dev/null; true",
+    "up": "systemctl --user is-active -q sp-mimo-rd9",
+    "ready": "grep -q 'model_residentd ready' $HOME/mimo-lane9/root/residentd.log && systemctl --user is-active -q sp-mimo-rd9",
+    "grace_s": 60,
+    "ready_timeout_s": 900,
+    "stop_timeout_s": 120
+   },
+   "packs": [
+    "$HOME/mimo-lane9/root/packs/pack.sha256"
+   ],
+   "api": {
+    "precheck": "test -x $HOME/mimo-lane9-api/bin/sparkpipe_model_api && test -s $HOME/mimo-lane9-api/model_resident.json && ! systemctl --user is-active -q mimo26-api && ! ss -ltn | grep -q ':8439 '",
+    "start": "cd $HOME/mimo-lane9-api && systemctl --user reset-failed mimo26-api 2>/dev/null; systemd-run --user --unit=mimo26-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/mimo-lane9-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/mimo-lane9-api/runtime --port 8439 >> api.log 2>&1'",
+    "stop": "systemctl --user stop mimo26-api 2>/dev/null; systemctl --user reset-failed mimo26-api 2>/dev/null; true",
+    "up": "systemctl --user is-active -q mimo26-api",
+    "health": "curl -s --max-time 5 http://127.0.0.1:8439/health | grep -q '\"tokenizer\": *true'",
+    "port": 8439,
+    "timeout_s": 180
+   },
+   "smoke": {
+    "path": "/v1/completions",
+    "body": {
+     "prompt": "The capital of France is",
+     "max_tokens": 8,
+     "temperature": 0
+    },
+    "reply": {
+     "finish_reason": [
+      "stop",
+      "length"
+     ],
+     "min_words": 3,
+     "min_distinct_words": 3,
+     "look_for": "Paris"
+    },
+    "timeout_s": 600
+   }
+  },
+  "laguna": {
+   "title": "Laguna-S 2.1 bf16 TP8xPP2 (16 nodes, weightd lane 11, ~20 GiB/node)",
+   "runnable": false,
+   "validated": false,
+   "not_runnable": "spark3 is not restaged (no ~/build-laguna/prebuilt-0d7e3c2) and the lane notes carry the start command only in lanes/laguna-w6.md step 2 (truncated there); its lane stop used a node-global reclaim. Restage spark3, then fill engine/packs (root /tmp/sp-laguna-lane11, rank pack sha) and api (laguna-api :8438, ~/laguna-lane11-api)."
+  },
+  "dsv41": {
+   "title": "DeepSeek V4.1-Flash MXFP4 (TP8/TP8xPP2 packs staged)",
+   "runnable": false,
+   "validated": false,
+   "not_runnable": "no module forward, no serving adapter or firmware yet (lanes/dsv41-w6.md): the correct forward exists only as a single-GPU tool."
+  },
+  "dsv4pro": {
+   "title": "DeepSeek V4-Pro-0813 TP4xPP4 (packs placed 16/16)",
+   "runnable": false,
+   "validated": false,
+   "not_runnable": "no serving lane, adapter or API in lanes/*.md; a TP4xPP4 rank pack is 94-100 GB, so it cannot sit beside Flash (needs its own fleet window or a lazy pool)."
+  },
+  "hy4": {
+   "title": "Hunyuan 4 preview fp8 TP16 (packs placed)",
+   "runnable": false,
+   "validated": false,
+   "not_runnable": "resident module is a stub (Execute returns UNSUPPORTED, lanes/hy4-w6.md); full residency ~56 GB/rank would sit at the 20 GiB floor beside Flash."
+  },
+  "minimax": {
+   "title": "MiniMax text bf16 TP4/TP8 (packs staged)",
+   "runnable": false,
+   "validated": false,
+   "not_runnable": "no serving lane or API channel recorded in lanes/*.md."
+  },
+  "qwenmax": {
+   "title": "Qwen3.8 Max nvfp4 TP16 (packs placed)",
+   "runnable": false,
+   "validated": false,
+   "not_runnable": "no serving lane or API channel recorded in lanes/*.md."
+  },
+  "muse": {
+   "title": "Muse bf16 TP16 (packs placed)",
+   "runnable": false,
+   "validated": false,
+   "not_runnable": "no serving lane or API channel recorded in lanes/*.md."
+  }
+ }
+}

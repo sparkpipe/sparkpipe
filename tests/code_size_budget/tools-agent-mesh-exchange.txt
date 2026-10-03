@@ -1,0 +1,2 @@
++39
+Fleet agent mesh record exchange: a background loop, independent of roots and ensure_weightd, publishes the own record by temp-and-rename, verifies the hub copy every 30 s, fetches peer records in parallel with conditional GETs and a full fetch every 60 s, and reports release-server reachability transitions. Replaces the per-root sync_rendezvous (its root rendezvous directories are unused since Sep 10) and the hardcoded one-shot after a weightd start.

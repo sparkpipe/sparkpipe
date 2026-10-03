@@ -230,7 +230,7 @@ print(f"k3 preload: {len(local)} of {len(pairs)} keys are stage "
 PYW
   SHA_HEX="$(cat "$ROOT/packs/pack.sha256")"
   SPARK_WEIGHTD_EXPERT_POOL_BYTES="$K3_EXPERT_POOL_BYTES" \
-    "$ROOT/bin/weightd_warm" "$SOCKET" "$PRIVATE_PACK" "$SHA_HEX" x 16 \
+    "$ROOT/bin/weightd_warm" "$SOCKET" "$PRIVATE_PACK" "$SHA_HEX" x 4 \
     --family k3 --wset "$ROOT/preload.wset" 300 > "$ROOT/warm.log" 2>&1 ||
     { cat "$ROOT/warm.log" >&2; fail "working set warm failed"; }
   grep -q "WSET-WARM keys=" "$ROOT/warm.log" ||

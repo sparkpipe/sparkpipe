@@ -132,6 +132,7 @@ int32_t main(int argc,char **argv)
 	assert(fcntl(S.wake_fds[0],F_SETFL,O_NONBLOCK) == 0);
 	assert(fcntl(S.wake_fds[1],F_SETFL,O_NONBLOCK) == 0);
 	S.running = 1;
+	S.ready = 1;
 	S.context_limit = api_context_limit(&deployment);
 	a = TestEnqueue(100001u);
 	b = TestEnqueue(100002u);

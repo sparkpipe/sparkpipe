@@ -1,0 +1,2 @@
++115
+weightd mesh address records: weightd waits for an IPv4 RoCE GID on each mesh link before it publishes, refuses peer records whose GID is empty or not IPv4 (logged once per generation), and names the QP, transition, errno and dialled address of a wire failure once per generation instead of on every retry.

@@ -49,6 +49,7 @@ static const struct SparkK3WeightBind
 	WF(mla_gate_weight, "mla_gate_weight"),
 	WF(mla_out_weight, "mla_out_weight"),
 	WF(router_weight, "router_weight"),
+	WF(router_bias, "router_bias"),
 	WF(routed_down_weight, "routed_down_weight"),
 	WF(routed_up_weight, "routed_up_weight"),
 	WF(routed_norm_weight, "routed_norm_weight"),
@@ -83,7 +84,7 @@ static const char *const k3_required_mla[] =
 };
 static const char *const k3_required_moe[] =
 {
-	"router_weight", "routed_down_weight", "routed_up_weight",
+	"router_weight", "router_bias", "routed_down_weight", "routed_up_weight",
 	"routed_norm_weight", "expert_w1_weight", "expert_w2_weight",
 	"shared_w1_weight", "shared_w2_weight",
 };
@@ -101,6 +102,31 @@ static int32_t k3_require(const SparkK3BoundLayer *bound,
 	return SPARK_K3_DISPATCH_OK;
 }
 
+static int32_t k3_require_whole_head_table(const SparkK3BoundLayer *bound,
+	const char *name, uint64_t bytes)
+{
+	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
+	if ( entry != 0 && entry->bytes == bytes )
+		return SPARK_K3_DISPATCH_OK;
+	fprintf(stderr, "sparkpipe_k3: %s holds %llu bytes, the per-head table "
+		"must carry all %u heads (%llu bytes)\n", name,
+		(unsigned long long)(entry != 0 ? entry->bytes : 0u), K3_KDA_HEADS,
+		(unsigned long long)bytes);
+	return SPARK_K3_DISPATCH_ERR_BIND;
+}
+
+static int32_t k3_require_f32_table(const SparkK3BoundLayer *bound,
+	const char *name, uint32_t count)
+{
+	const SparkK3PackEntry *entry = SparkK3BoundEntry(bound, name);
+	if ( entry != 0 && entry->kind == SPARK_K3_PACK_KIND_F32 &&
+		entry->bytes == (uint64_t)count * sizeof(float) )
+		return SPARK_K3_DISPATCH_OK;
+	fprintf(stderr, "sparkpipe_k3: %s must be %u F32 values per layer\n",
+		name, count);
+	return SPARK_K3_DISPATCH_ERR_BIND;
+}
+
 static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
 {
 	*offset = (*offset + 15u) & ~(size_t)15u;
@@ -111,12 +137,21 @@ static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
 
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
-	uint64_t kv_page_bytes, int device)
+	uint64_t kv_page_bytes, uint32_t tp_degree, int device)
 {
+	SparkK3KdaRankLayout layout;
+	SparkK3RankStateBytes state_plan;
 	if ( d == 0 || sizing == 0 || sequences == 0u || max_rows == 0u ||
-		sizing->layer_count == 0u )
+		sizing->layer_count == 0u ||
+		SparkK3KdaRankLayoutFor(tp_degree, &layout) == 0u ||
+		SparkK3RankStateBytesFor(sizing->kda_layer_count,
+			sizing->mla_layer_count, sequences, tp_degree,
+			kv_pages_per_view, kv_page_bytes, &state_plan) == 0u )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	memset(d, 0, sizeof(*d));
+	d->tp_degree = tp_degree;
+	d->kda_rank_heads = layout.heads;
+	d->state_bytes = state_plan;
 	cudaSetDevice(device);
 	d->first_layer = sizing->first_layer;
 	d->layer_count = sizing->layer_count;
@@ -129,11 +164,12 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->kv_page_bytes = kv_page_bytes;
 	d->device = device;
 
-	const uint64_t qk_window = (uint64_t)K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL;
-	const uint64_t v_window = (uint64_t)K3_KDA_V_DIM * K3_KDA_CONV_KERNEL;
-	const uint64_t state_bytes = (uint64_t)d->kda_count * sequences * K3_KDA_STATE_SLOT_BYTES;
-	const uint64_t qk_bytes = (uint64_t)d->kda_count * sequences * qk_window * 2u;
-	const uint64_t v_bytes = (uint64_t)d->kda_count * sequences * v_window * 2u;
+	const uint64_t state_bytes = (uint64_t)d->kda_count * sequences * layout.state_slot_bytes;
+	const uint64_t qk_bytes = (uint64_t)d->kda_count * sequences * layout.qk_window_slot_bytes;
+	const uint64_t v_bytes = (uint64_t)d->kda_count * sequences * layout.v_window_slot_bytes;
+	if ( state_bytes + 2u * qk_bytes + v_bytes !=
+		state_plan.kda_state + state_plan.kda_windows )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	if ( cudaMalloc(&d->kda_state_pool, state_bytes) != cudaSuccess ||
 		cudaMalloc(&d->kda_q_window_pool, qk_bytes) != cudaSuccess ||
 		cudaMalloc(&d->kda_k_window_pool, qk_bytes) != cudaSuccess ||
@@ -144,22 +180,35 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	cudaMemset(d->kda_k_window_pool, 0, qk_bytes);
 	cudaMemset(d->kda_v_window_pool, 0, v_bytes);
 
-	uint64_t kv_total = (uint64_t)d->mla_count * kv_pages_per_view * kv_page_bytes;
+	const uint64_t view_pages = (uint64_t)sequences * kv_pages_per_view;
+	const uint64_t kv_total = (uint64_t)d->mla_count * view_pages * kv_page_bytes;
+	if ( kv_total != state_plan.mla_kv )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	if ( cudaMalloc(&d->kv_pool, kv_total) != cudaSuccess ||
-		cudaMalloc(&d->page_table, (size_t)d->mla_count * kv_pages_per_view * 4u) != cudaSuccess ||
+		cudaMalloc(&d->page_table, (size_t)d->mla_count * view_pages * sizeof(uint32_t)) != cudaSuccess ||
 		cudaMalloc(&d->access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 	cudaMemset(d->kv_pool, 0, kv_total);
 	cudaMemset(d->access_error, 0, (size_t)d->mla_count * sizeof(LmKvAccessError));
+	{
+		uint32_t *identity = new uint32_t[view_pages];
+		for ( uint64_t page = 0u; page < view_pages; ++page )
+			identity[page] = (uint32_t)page;
+		for ( uint32_t i = 0u; i < d->mla_count; ++i )
+			if ( cudaMemcpy(d->page_table + (size_t)i * view_pages, identity,
+					view_pages * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess )
+				{ delete[] identity; SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
+		delete[] identity;
+	}
 	d->mla_cache = new LmKvView[d->mla_count];
 	for ( uint32_t i = 0u; i < d->mla_count; ++i )
 	{
 		memset(&d->mla_cache[i], 0, sizeof(d->mla_cache[i]));
-		d->mla_cache[i].pool = d->kv_pool + (size_t)i * kv_pages_per_view * kv_page_bytes;
-		d->mla_cache[i].page_table = d->page_table + (size_t)i * kv_pages_per_view;
-		d->mla_cache[i].page_table_stride = 1u;
+		d->mla_cache[i].pool = d->kv_pool + (size_t)i * view_pages * kv_page_bytes;
+		d->mla_cache[i].page_table = d->page_table + (size_t)i * view_pages;
+		d->mla_cache[i].page_table_stride = kv_pages_per_view;
 		d->mla_cache[i].sequence_count = sequences;
-		d->mla_cache[i].pool_page_count = kv_pages_per_view;
+		d->mla_cache[i].pool_page_count = (uint32_t)view_pages;
 		d->mla_cache[i].access_error = d->access_error + i;
 	}
 
@@ -178,7 +227,10 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	st->kda_v_window = d->kda_v_window_pool;
 	st->mla_cache = d->mla_cache;
 	st->sequences = sequences;
+	st->kda_rank_heads = layout.heads;
 	st->kda_state_bf16 = 0u;
+	st->first_mla_index = d->first_layer / 4u;
+	st->first_kda_index = d->first_layer - (d->first_layer / 4u);
 
 	size_t off = 0u;
 	d->scratch_bytes = 0u;
@@ -231,6 +283,29 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	b->intermediate_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u);
 	b->kda_retention = (float *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u);
 	b->router_logits = (float *)k3_carve(d, &off, (size_t)max_rows * K3_EXPERTS * 4u);
+	return SPARK_K3_DISPATCH_OK;
+}
+
+int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
+	uint32_t tp_degree, cudaStream_t stream)
+{
+	SparkK3SlotResetSpan spans[SPARK_K3_SLOT_RESET_SPANS_MAX];
+	uint8_t *pools[SPARK_K3_SLOT_POOLS];
+	uint32_t count;
+	if ( d == 0 || d->kda_state_pool == 0 )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	count = SparkK3SlotResetSpans(d->kda_count, d->sequences, tp_degree, slot,
+		spans, SPARK_K3_SLOT_RESET_SPANS_MAX);
+	if ( count != d->kda_count * SPARK_K3_SLOT_POOLS )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	pools[SPARK_K3_SLOT_POOL_STATE] = d->kda_state_pool;
+	pools[SPARK_K3_SLOT_POOL_Q_WINDOW] = (uint8_t *)d->kda_q_window_pool;
+	pools[SPARK_K3_SLOT_POOL_K_WINDOW] = (uint8_t *)d->kda_k_window_pool;
+	pools[SPARK_K3_SLOT_POOL_V_WINDOW] = (uint8_t *)d->kda_v_window_pool;
+	for ( uint32_t i = 0u; i < count; ++i )
+		if ( cudaMemsetAsync(pools[spans[i].pool] + spans[i].offset, 0,
+				spans[i].bytes, stream) != cudaSuccess )
+			return SPARK_K3_DISPATCH_ERR_CUDA;
 	return SPARK_K3_DISPATCH_OK;
 }
 
@@ -307,55 +382,84 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 			status = k3_require(bound, k3_required_mla,
 				(uint32_t)(sizeof(k3_required_mla) / sizeof(k3_required_mla[0])));
 		else
+		{
 			status = k3_require(bound, k3_required_kda,
 				(uint32_t)(sizeof(k3_required_kda) / sizeof(k3_required_kda[0])));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_whole_head_table(bound, "kda_decay_bias",
+					(uint64_t)K3_KDA_QK_DIM * sizeof(float));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_whole_head_table(bound, "kda_head_log_scale",
+					(uint64_t)K3_KDA_HEADS * sizeof(float));
+		}
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 		if ( bound->layer_is_dense )
 			status = k3_require(bound, k3_required_dense,
 				(uint32_t)(sizeof(k3_required_dense) / sizeof(k3_required_dense[0])));
 		else
+		{
 			status = k3_require(bound, k3_required_moe,
 				(uint32_t)(sizeof(k3_required_moe) / sizeof(k3_required_moe[0])));
+			if ( status == SPARK_K3_DISPATCH_OK )
+				status = k3_require_f32_table(bound, "router_bias", K3_EXPERTS);
+		}
 		if ( status != SPARK_K3_DISPATCH_OK )
 			break;
 	}
 	if ( status == SPARK_K3_DISPATCH_OK )
 	{
 		char dim_name[96];
-		uint32_t base = d->first_layer;
+		SparkK3SliceKindLayers kinds;
 		SparkK3PackEntry dim_entry;
-#define K3_FILL_RANK(layer, field_name, field_ptr, columns) \
+		SparkK3SliceKindLayersFor(d->first_layer, layer_count, &kinds);
+#define K3_FILL_RANK(layer, field_name, field_ptr, axis, rank) \
 		do { \
+			if ( status != SPARK_K3_DISPATCH_OK || (layer) == SPARK_K3_SLICE_NO_LAYER ) \
+				break; \
 			snprintf(dim_name, sizeof(dim_name), "model.layers.%u.%s", \
 				(uint32_t)(layer), field_name); \
-			if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 && \
-				dim_entry.shape_count >= 2u ) \
-				*(field_ptr) = (columns) ? dim_entry.shape[1] : dim_entry.shape[0]; \
+			if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) != 0 || \
+				dim_entry.shape_count < (rank) || dim_entry.shape[axis] == 0u ) \
+			{ \
+				fprintf(stderr, "sparkpipe_k3: rank dimension missing %s\n", dim_name); \
+				status = SPARK_K3_DISPATCH_ERR_BIND; \
+				break; \
+			} \
+			*(field_ptr) = (uint32_t)dim_entry.shape[axis]; \
 		} while ( 0 )
-		K3_FILL_RANK(base, "kda_qkv_beta_weight", &d->buffers->kda_qkvb_rows, 0);
-		K3_FILL_RANK(base, "kda_gate_weight", &d->buffers->kda_gate_rows, 0);
-		K3_FILL_RANK(base, "kda_decay_up_weight", &d->buffers->kda_decay_up_rows, 0);
-		K3_FILL_RANK(base, "kda_out_weight", &d->buffers->kda_out_input, 1);
-		K3_FILL_RANK(base + 3u, "mla_q_up_weight", &d->buffers->mla_q_up_rows, 0);
-		K3_FILL_RANK(base + 3u, "mla_gate_weight", &d->buffers->mla_gate_rows, 0);
-		K3_FILL_RANK(base + 3u, "mla_out_weight", &d->buffers->mla_out_input, 1);
-		K3_FILL_RANK(base + 1u, "routed_down_weight", &d->buffers->routed_down_rows, 0);
-		K3_FILL_RANK(base + 1u, "routed_up_weight", &d->buffers->routed_up_input, 1);
-		K3_FILL_RANK(base + 1u, "expert_w1_weight", &d->buffers->expert_w1_output, 1);
-		K3_FILL_RANK(base + 1u, "shared_w1_weight", &d->buffers->shared_w1_rows, 0);
-		K3_FILL_RANK(base + 1u, "shared_w2_weight", &d->buffers->shared_w2_input, 1);
-		snprintf(dim_name, sizeof(dim_name), "model.layers.%u.expert_w2_weight", base + 1u);
-		if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) == 0 &&
-			dim_entry.shape_count >= 3u )
-			d->buffers->expert_w2_input = dim_entry.shape[2];
-		if ( d->first_layer == 0u )
+		K3_FILL_RANK(kinds.kda, "kda_qkv_beta_weight", &d->buffers->kda_qkvb_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_gate_weight", &d->buffers->kda_gate_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_decay_up_weight", &d->buffers->kda_decay_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.kda, "kda_out_weight", &d->buffers->kda_out_input, 1u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_q_up_weight", &d->buffers->mla_q_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_gate_weight", &d->buffers->mla_gate_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.mla, "mla_out_weight", &d->buffers->mla_out_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "routed_down_weight", &d->buffers->routed_down_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.routed, "routed_up_weight", &d->buffers->routed_up_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "expert_w1_weight", &d->buffers->expert_w1_output, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "shared_w1_weight", &d->buffers->shared_w1_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.routed, "shared_w2_weight", &d->buffers->shared_w2_input, 1u, 2u);
+		K3_FILL_RANK(kinds.routed, "expert_w2_weight", &d->buffers->expert_w2_input, 2u, 3u);
+		K3_FILL_RANK(kinds.dense, "dense_gate_up_weight", &d->buffers->dense_gate_up_rows, 0u, 2u);
+		K3_FILL_RANK(kinds.dense, "dense_down_weight", &d->buffers->dense_down_input, 1u, 2u);
+		if ( status != SPARK_K3_DISPATCH_OK )
 		{
-			K3_FILL_RANK(0u, "dense_gate_up_weight", &d->buffers->dense_gate_up_rows, 0);
-			K3_FILL_RANK(0u, "dense_down_weight", &d->buffers->dense_down_input, 1);
+			delete[] host;
+			return status;
 		}
 		if ( d->buffers->kda_qkvb_rows != 0u )
 			d->buffers->kda_heads_rank = d->buffers->kda_qkvb_rows / 385u;
+		if ( (d->buffers->kda_qkvb_rows != 0u ?
+				d->buffers->kda_heads_rank : (uint32_t)K3_KDA_HEADS) !=
+			d->kda_rank_heads )
+		{
+			fprintf(stderr, "sparkpipe_k3: pack KDA heads per rank %u != "
+				"state pool heads per rank %u (tp_degree %u)\n",
+				d->buffers->kda_heads_rank, d->kda_rank_heads, d->tp_degree);
+			delete[] host;
+			return SPARK_K3_DISPATCH_ERR_BIND;
+		}
 		if ( d->buffers->mla_gate_rows != 0u )
 			d->buffers->mla_heads_rank = d->buffers->mla_gate_rows / K3_V_HEAD_DIM;
 #undef K3_FILL_RANK
@@ -376,26 +480,6 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		else
 			d->buffers_host->attnres_out_weight = 0;
 		d->buffers_host->router_bias = 0;
-		for ( uint32_t off = 0u; off < layer_count; ++off )
-		{
-			const SparkK3PackEntry *bias_entry =
-				SparkK3BoundEntry(&bounds[off], "router_bias");
-			const void *bias = 0;
-			if ( bias_entry == 0 )
-				continue;
-			status = SparkWeightdLazyPackSlice(lazy,
-				pack->payload_base + bias_entry->payload_offset,
-				bias_entry->bytes, &bias);
-			if ( status != SPARK_K3_DISPATCH_OK )
-				break;
-			d->buffers_host->router_bias = (const float *)bias;
-			break;
-		}
-		if ( status != SPARK_K3_DISPATCH_OK )
-		{
-			delete[] host;
-			return status;
-		}
 		memcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights));
 	}
 	delete[] host;
@@ -416,6 +500,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->context_length = in->context_length;
 	b->sequence_of_row = in->sequence_of_row;
 	b->sequence_row_begin = in->sequence_row_begin;
+	b->sequence_row_indices = in->sequence_row_indices;
 	b->kda_state_index = in->kda_state_index;
 	b->route_expert = in->route_expert;
 	b->route_packed_row = in->route_packed_row;

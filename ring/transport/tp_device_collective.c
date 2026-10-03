@@ -55,7 +55,7 @@ extern int SparkTpLaunchMeshHardware(void *stream,void *band,
     uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,void *gate,
     void *round_control,uint32_t rank,uint32_t degree,const void *local,
     void *output,void *scratch,uint64_t elements,uint32_t operation,
-    uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,uint64_t timeout_ns);
+    uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,uint64_t timeout_ns);
 extern int SparkTpLaunchMeshSeqPad(void *stream,void *seq_cell);
 extern int SparkTpLaunchMeshGuard(void *stream,
     volatile void *error_word,void *output);
@@ -121,6 +121,8 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint8_t *mesh_buffer;
     void *owned_mesh_mapping;
     uint8_t *mesh_device;
+    void *staging_mapping;
+    uint8_t *staging_device;
     uint32_t hardware_wait;
     struct SparkTpDeviceCollectiveImplementation *registration_next;
     uint64_t band_base;
@@ -874,13 +876,22 @@ static SparkStatus SparkTpDeviceCollectiveReadControl(SparkTpDeviceCollectiveImp
     return SPARK_STATUS_OK;
 }
 
-static uint32_t SparkTpDeviceCollectiveSliceRoutes(const SparkTpDeviceCollectiveImplementation *implementation)
+static uint64_t SparkTpDeviceCollectiveCapabilities(const SparkTpDeviceCollectiveImplementation *implementation)
 {
     const SparkWeightdMeshWaitRequest *request;
     if ( implementation->hardware_wait == 0u || implementation->mesh_buffer == 0 )
         return(0u);
     request = (const SparkWeightdMeshWaitRequest *)(implementation->mesh_buffer + SPARK_WEIGHTD_MESH_WAIT_ENTRY(SparkTpDeviceCollectiveBandIndex(implementation),implementation->tp_rank));
-    return((__atomic_load_n(&request->capabilities,__ATOMIC_ACQUIRE) & SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES) != 0u ? 1u : 0u);
+    return(__atomic_load_n(&request->capabilities,__ATOMIC_ACQUIRE));
+}
+
+static uint32_t SparkTpDeviceCollectiveSliceRoutes(const SparkTpDeviceCollectiveImplementation *implementation)
+{
+    uint64_t capabilities = SparkTpDeviceCollectiveCapabilities(implementation);
+    if ( (capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES) == 0u )
+        return(0u);
+    return((capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES) != 0u && implementation->staging_device != 0 ?
+        SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER : SPARK_TP_MESH_ROUTES_SLICE);
 }
 
 static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveImplementation *implementation,uint32_t operation,uint64_t elements,uint32_t rounds,uint32_t slice_routes,uint64_t *phases_out)
@@ -894,11 +905,30 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
     {
         chunks = SparkTpMeshDirectChunks(elements,implementation->tp_degree,operation,implementation->slot_bytes);
         phases = SparkTpMeshDirectPhasesPerChunk(elements,implementation->tp_degree,operation,slice_routes);
+        if ( phases == 2u && (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u )
+            chunks = (SparkTpMeshDirectLocalElements(elements,implementation->tp_degree,operation) - 1u) /
+                SparkTpMeshDirectPeerCapacity(implementation->tp_degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) + 1u;
+    }
+    if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+    {
+        chunks = (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u ?
+            SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) :
+            SparkTpMeshAllToAllChunks(elements,implementation->tp_degree,implementation->slot_bytes);
+        phases = 1u;
+        if ( chunks == 0u )
+            return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ( chunks > UINT32_MAX / (phases != 0u ? phases : 1u) / rounds )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     *phases_out = phases * chunks * rounds;
     return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkTpDeviceCollectiveRowElements(
+    const SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveSubmission *submission)
+{
+    return submission->row_elements != 0u ? submission->row_elements : implementation->local_hidden_dimension;
 }
 
 static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
@@ -911,7 +941,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     uint64_t phases;
     SparkStatus status;
     uint32_t band = SparkTpDeviceCollectiveBandIndex(implementation),slice_routes = SparkTpDeviceCollectiveSliceRoutes(implementation);
-    if ( operation != 2u ) elements *= implementation->local_hidden_dimension;
+    if ( operation != 2u ) elements *= SparkTpDeviceCollectiveRowElements(implementation,submission);
     if ( operation == 0u )
     {
         if ( elements > UINT64_MAX / implementation->tp_degree ||
@@ -934,7 +964,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
         implementation->f32_scratch = scratch;
         implementation->f32_scratch_bytes = implementation->slot_bytes;
     }
-    if ( (SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u || implementation->deferred_rounds == 0u) &&
+    if ( (implementation->capture_armed == 0u || implementation->hardware_wait == 0u) && (SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u || implementation->deferred_rounds == 0u) &&
          cudaMemsetAsync((uint8_t *)implementation->round_control +
             SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUNDS_DONE * sizeof(uint64_t),0,
             sizeof(uint64_t),submission->cuda_stream) != 0 )
@@ -948,6 +978,8 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
             implementation->round_control,implementation->tp_rank,implementation->tp_degree,
             submission->local_device,submission->full_device,implementation->f32_scratch,
             elements,operation,rounds,1u,slice_routes,
+            (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u ?
+                implementation->staging_device + (uint64_t)band * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES : 0,
             implementation->round_timeout_ns);
     else
         launch_result = SparkTpLaunchMeshTree(submission->cuda_stream,
@@ -998,7 +1030,7 @@ static uint64_t SparkTpDeviceCollectiveRoundBytes(const SparkTpDeviceCollectiveI
 {
     if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
         return (uint64_t)submission->active_sequence_count * 8u;
-    return (uint64_t)submission->active_sequence_count * implementation->local_hidden_dimension * 2u;
+    return (uint64_t)submission->active_sequence_count * SparkTpDeviceCollectiveRowElements(implementation,submission) * 2u;
 }
 
 static uint32_t SparkTpDeviceCollectiveHostRound(const SparkTpDeviceCollectiveImplementation *implementation,const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation_kind)
@@ -1312,7 +1344,7 @@ static SparkStatus SparkTpDeviceCollectiveCombineSerial(SparkTpDeviceCollectiveI
         if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
             status = implementation->combine_u64_max(implementation->combine_context,(uint64_t *)submission->full_device,(const uint64_t *)source,submission->active_sequence_count,submission->cuda_stream);
         else
-            status = implementation->combine_bf16(implementation->combine_context,submission->full_device,source,submission->active_sequence_count,implementation->local_hidden_dimension,submission->cuda_stream);
+            status = implementation->combine_bf16(implementation->combine_context,submission->full_device,source,submission->active_sequence_count,SparkTpDeviceCollectiveRowElements(implementation,submission),submission->cuda_stream);
         if ( status != SPARK_STATUS_OK )
             return status;
     }
@@ -1325,9 +1357,9 @@ static SparkStatus SparkTpDeviceCollectiveRoundCombine(SparkTpDeviceCollectiveIm
     uint32_t reduce = operation_kind != SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64;
     SparkTpDeviceCollectivePeerSlots(implementation,parity,source_devices);
     if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER )
-        return implementation->combine_gather_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,implementation->local_hidden_dimension,submission->cuda_stream);
+        return implementation->combine_gather_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,SparkTpDeviceCollectiveRowElements(implementation,submission),submission->cuda_stream);
     if ( reduce != 0u && implementation->combine_fused_bf16 != 0 )
-        return implementation->combine_fused_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,implementation->local_hidden_dimension,submission->cuda_stream);
+        return implementation->combine_fused_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,SparkTpDeviceCollectiveRowElements(implementation,submission),submission->cuda_stream);
     if ( reduce != 0u && implementation->combine_f32_seed != 0 && implementation->combine_f32_add != 0 && implementation->round_f32 != 0 )
         return SparkTpDeviceCollectiveCombineF32(implementation,submission,bytes,parity);
     return SparkTpDeviceCollectiveCombineSerial(implementation,submission,operation_kind,bytes,parity);
@@ -1539,7 +1571,7 @@ static SparkStatus SparkTpDeviceCollectiveValidateSubmission(
          submission->logical_sequence_count == 0u ||
          submission->active_sequence_count >
              collective->max_active_sequence_count ||
-         submission->reserved0 != 0u ||
+         submission->row_elements > collective->local_hidden_dimension ||
          (submission->flags &
              ~SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_KNOWN_FLAGS) != 0u ||
          submission->ordinal == UINT64_MAX )
@@ -1560,11 +1592,21 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     status = SparkTpDeviceCollectiveValidateSubmission(collective,submission);
     if ( status != SPARK_STATUS_OK )
         return status;
-    if ( operation_kind > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
+    if ( operation_kind > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = collective->implementation;
     if ( implementation->mesh_buffer == 0 )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL &&
+         submission->local_device == submission->full_device )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL &&
+         SparkTpDeviceCollectiveSliceRoutes(implementation) == 0u )
+    {
+        fprintf(stderr,"TP-ALL-TO-ALL-UNSUPPORTED rank=%u wait=%s: the exchange needs hardware waits and a weightd that advertises slice routes\n",
+            implementation->tp_rank,implementation->hardware_wait != 0u ? "hardware" : "spin");
+        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    }
     if ( implementation->capture_armed == 0u &&
          submission->completion_function == 0 &&
          SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u )
@@ -1676,7 +1718,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
         return status;
     }
     bytes = (uint64_t)submission->active_sequence_count *
-        implementation->local_hidden_dimension * 2u;
+        SparkTpDeviceCollectiveRowElements(implementation,submission) * 2u;
     if ( (bytes & 3ull) != 0ull )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     if ( implementation->mesh_buffer == 0 )
@@ -1885,11 +1927,39 @@ static SparkStatus SparkTpDeviceCollectivePrepareHardware(
         return SPARK_STATUS_ABI_MISMATCH;
     if ( request->request_id != 0u && request->ready != 1u )
         return SPARK_STATUS_BUSY;
-    if ( implementation->mesh_device != 0 ) return SPARK_STATUS_OK;
-    result = SparkTpMeshHardwarePrepare(implementation->mesh_buffer,
-        (void **)&implementation->mesh_device);
-    if ( result == 0 ) return SPARK_STATUS_OK;
-    implementation->mesh_device = 0;
+    if ( implementation->mesh_device == 0 )
+    {
+        result = SparkTpMeshHardwarePrepare(implementation->mesh_buffer,
+            (void **)&implementation->mesh_device);
+        if ( result != 0 )
+        {
+            implementation->mesh_device = 0;
+            fprintf(stderr,"MESH-WAIT-PREPARE-FAIL rank=%u cuda=%d (%s)\n",
+                implementation->tp_rank,result,cudaGetErrorString(result));
+            return SPARK_STATUS_IO_ERROR;
+        }
+    }
+    if ( implementation->staging_device != 0 ||
+         (__atomic_load_n(&request->capabilities,__ATOMIC_ACQUIRE) & SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES) == 0u )
+        return SPARK_STATUS_OK;
+    {
+        SparkStatus status = SparkWeightdClientMeshStagingMap(implementation->lane_client != 0 ? implementation->lane_client : implementation->client,&implementation->staging_mapping,
+            implementation->round_timeout_ns);
+        if ( status != SPARK_STATUS_OK )
+        {
+            fprintf(stderr,"MESH-STAGING-MAP-FAIL rank=%u status=%d: weightd advertises peer routes but the staging export failed\n",
+                implementation->tp_rank,(int)status);
+            return status;
+        }
+    }
+    result = SparkTpMeshHardwarePrepare(implementation->staging_mapping,(void **)&implementation->staging_device);
+    if ( result == 0 )
+    {
+        fprintf(stderr,"MESH-PEER-ROUTES rank=%u band=%u staging_bytes=%llu\n",implementation->tp_rank,band,
+            (unsigned long long)SPARK_WEIGHTD_MESH_STAGING_BYTES);
+        return SPARK_STATUS_OK;
+    }
+    implementation->staging_device = 0;
     fprintf(stderr,"MESH-WAIT-PREPARE-FAIL rank=%u cuda=%d (%s)\n",
         implementation->tp_rank,result,cudaGetErrorString(result));
     return SPARK_STATUS_IO_ERROR;
@@ -2235,6 +2305,37 @@ SparkStatus SparkTpDeviceCollectiveDisarmCapture(
     return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkTpDeviceCollectiveGraphSettle(
+    SparkTpDeviceCollective *collective,void *stream,uint64_t *error_out)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    uint64_t cell;
+    if ( error_out == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    *error_out = 0ull;
+    if ( collective == 0 || collective->implementation == 0 || stream == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    implementation->capture_armed = 0u;
+    if ( implementation->seq_cell == 0 )
+        return(SPARK_STATUS_OK);
+    if ( cudaMemcpyAsync((void *)implementation->published_host_cell,implementation->round_control,
+            SPARK_TP_MESH_ROUND_CONTROL_BYTES,SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST,stream) != 0 ||
+         cudaStreamSynchronize(stream) != 0 )
+    {
+        *error_out = 1ull;
+        return SPARK_STATUS_IO_ERROR;
+    }
+    cell = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ];
+    implementation->publish_ack_prev = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUND_SEQ];
+    implementation->cell_mirror = cell;
+    implementation->capture_rounds = 0u;
+    if ( cell != 0ull )
+        implementation->round_seq = cell;
+    *error_out = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_ERROR];
+    return(SPARK_STATUS_OK);
+}
+
 uint64_t SparkTpDeviceCollectiveChainEpoch(
     const SparkTpDeviceCollective *collective)
 {
@@ -2502,6 +2603,9 @@ void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
     if (implementation->owned_mesh_mapping != 0 &&
         munmap(implementation->owned_mesh_mapping,SPARK_WEIGHTD_MESH_REGION_BYTES) != 0)
         return;
+    if (implementation->staging_mapping != 0 &&
+        munmap(implementation->staging_mapping,SPARK_WEIGHTD_MESH_STAGING_BYTES) != 0)
+        return;
     SparkWeightdClientClose(implementation->client);
     free(implementation);
     collective->implementation = 0;
@@ -2537,6 +2641,13 @@ uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *col
         return 0u;
     implementation = collective->implementation;
     return implementation->hardware_wait != 0u && implementation->mesh_buffer != 0 ? 1u : 0u;
+}
+
+uint32_t SparkTpDeviceCollectiveAllToAllSupported(const SparkTpDeviceCollective *collective)
+{
+    if ( collective == 0 || collective->implementation == 0 )
+        return 0u;
+    return SparkTpDeviceCollectiveSliceRoutes(collective->implementation);
 }
 
 SparkStatus SparkTpDeviceCollectiveVerifyDeferred(SparkTpDeviceCollective *collective,void *stream)

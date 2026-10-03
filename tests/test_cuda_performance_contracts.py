@@ -93,6 +93,36 @@ def strip_comments_and_literals(text: str) -> str:
     return "".join(output)
 
 
+def split_ifdef(text: str, macro: str) -> tuple[str, str]:
+    outside: list[str] = []
+    inside: list[str] = []
+    stack: list[tuple[bool, bool]] = []
+    for line in text.split("\n"):
+        directive = line.strip()
+        gated_line = False
+        if re.match(r"#\s*if", directive):
+            if re.fullmatch(rf"#\s*ifdef\s+{macro}", directive):
+                stack.append((True, True))
+                gated_line = True
+            elif re.fullmatch(rf"#\s*ifndef\s+{macro}", directive):
+                stack.append((True, False))
+                gated_line = True
+            elif re.search(rf"\b{macro}\b", directive):
+                raise AssertionError(f"unsupported {macro} directive {directive!r}")
+            else:
+                stack.append((False, False))
+        elif re.match(r"#\s*(else|elif)", directive) and stack and stack[-1][0]:
+            if re.match(r"#\s*elif", directive):
+                raise AssertionError(f"unsupported {macro} directive {directive!r}")
+            stack[-1] = (True, not stack[-1][1])
+            gated_line = True
+        elif re.match(r"#\s*endif", directive) and stack:
+            gated_line = stack.pop()[0]
+        if not gated_line:
+            (inside if any(active for _, active in stack) else outside).append(line)
+    return "\n".join(outside), "\n".join(inside)
+
+
 def validate_balanced_delimiters(path: Path) -> None:
     source = strip_comments_and_literals(path.read_text(encoding="utf-8"))
     opening = {"(": ")", "[": "]", "{": "}"}
@@ -275,7 +305,7 @@ def validate_model_precision_contracts() -> None:
             f"LM_WEIGHT_CODEC(SPARK_WEIGHT_CODEC_{codec},",
             f"generic {codec} weight codec",
         )
-    require(glm, "LmGemmLaunch<\n        LmBf16Format,", "GLM BF16 non-expert execution")
+    require(glm, "LmStreamGemmDense<LmBf16Format>(", "GLM BF16 non-expert execution")
     forbid(glm, "LmQuantiseRowsKernel", "GLM BF16 activation path")
     forbid(glm, "LmGatherRowsKernel", "GLM materialized expert activation gather")
     glm_cuda = read(
@@ -428,16 +458,6 @@ def validate_stream_ordered_dispatch() -> None:
         "SPARK_GLM_STAGE_COMPLETE_ASYNC SparkGlm52CompleteAsync",
         "glm52 binds its callback into the shared enqueue",
     )
-    require(
-        module,
-        "STREAM-ORDERED STAGE COMPLETION CONTRACT",
-        "glm52 completion call-site contract marker",
-    )
-    require(
-        common_stage,
-        "STREAM-ORDERED STAGE COMPLETION CONTRACT",
-        "shared enqueue stream-order contract marker",
-    )
     require(common_stage, "cudaLaunchHostFunc(", "stream-ordered stage completion")
     require(module, "SparkStageModuleSlotRelease", "callback-owned slot release")
     require(module, "host_callback_completion_count", "callback completion telemetry")
@@ -453,11 +473,19 @@ def validate_stream_ordered_dispatch() -> None:
     # fence (278013e, narrowed to a single retirement fence by 1e08ebb),
     # and the two serving-gated T1 reference-tap fences (f5fe7fa). All are
     # failure/teardown, lease-retirement, or opt-in tap paths.
-    if module.count("cudaStreamSynchronize(") != 6:
+    production_module, score_module = split_ifdef(module, "SPARK_SCORE_DUMP")
+    if production_module.count("cudaStreamSynchronize(") != 6:
         raise AssertionError(
             "GLM host module synchronization must be limited to failed-enqueue "
             "cleanup (including the TP chain fail branch), teardown, the lazy "
             "expert-lease record fence, and the opt-in T1 taps"
+        )
+    if score_module.count("cudaStreamSynchronize(") != 1 or [
+        name for name, _ in dsv4_sync_inventory(score_module)
+    ] != ["SparkGlm52ScoreWaveLocked"]:
+        raise AssertionError(
+            "the glm52 SCORE_DUMP build may add exactly one stream fence, in "
+            "SparkGlm52ScoreWaveLocked, and production builds none"
         )
 
     dsv4_module = read(

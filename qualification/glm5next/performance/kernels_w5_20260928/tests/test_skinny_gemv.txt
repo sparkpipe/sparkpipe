@@ -1,0 +1,4 @@
+DEVICE sm=12.1 multiprocessors=48 l2_bytes=25165824 persisting_l2_max_bytes=18874368
+PASS skinny dense bf16 shapes=19 rows=1,2,3,4,5,8 reference=f64
+PASS skinny grouped fp8 w1/w2 tokens=1,2,8 duplicate_expert=yes reference=f64
+FAIL line=211 test=memcmp(single.data(),out.data(),out.size()*2u) == 0

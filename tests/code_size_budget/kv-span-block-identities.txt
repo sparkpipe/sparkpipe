@@ -1,0 +1,2 @@
++103
+Per-block KV cache identities for multi-block prefill spans: the engine sends the prompt-prefix identity at every block boundary inside a span, IPC carries them, the adapter validates each lane slice and maps it to the driver cache lane, and the page cache publishes and deduplicates each sealed block under its identity, so repeated and shared prompts reuse KV at block granularity.

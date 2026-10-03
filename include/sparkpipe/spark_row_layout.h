@@ -129,6 +129,123 @@ static inline uint32_t SparkRowLayoutRoundMajorWaveRowCount(
 	return(count);
 }
 
+typedef uint32_t (*SparkRowLayoutRowRegimeFunction)(
+	void *context,
+	uint32_t row);
+
+static inline uint32_t SparkRowLayoutRoundRegime(
+	SparkRowLayoutRowRegimeFunction regime_function,
+	void *regime_context,
+	uint32_t first_row,
+	uint32_t count)
+{
+	uint32_t index,regime,value;
+	regime = 0u;
+	for (index=0u; index<count; index++)
+	{
+		value = regime_function(regime_context,first_row + index);
+		if ( value > regime )
+			regime = value;
+	}
+	return(regime);
+}
+
+static inline uint32_t SparkRowLayoutRoundSpanWaveRowCount(
+	uint32_t first_row,
+	uint32_t row_count,
+	const uint32_t *row_lane_ids,
+	SparkRowLayoutLaneOrdinalFunction ordinal_function,
+	void *ordinal_context,
+	SparkRowLayoutRowRegimeFunction regime_function,
+	void *regime_context,
+	uint32_t maximum_rows)
+{
+	uint32_t count,round,regime;
+	count = SparkRowLayoutRoundMajorWaveRowCount(first_row,row_count,row_lane_ids,ordinal_function,ordinal_context);
+	if ( count == 0u || regime_function == 0 )
+		return(count);
+	regime = SparkRowLayoutRoundRegime(regime_function,regime_context,first_row,count);
+	while ( first_row + count < row_count && count < maximum_rows )
+	{
+		round = SparkRowLayoutRoundMajorWaveRowCount(first_row + count,row_count,row_lane_ids,ordinal_function,ordinal_context);
+		if ( round == 0u || count + round > maximum_rows || SparkRowLayoutRoundRegime(regime_function,regime_context,first_row + count,round) != regime )
+			break;
+		count += round;
+	}
+	return(count);
+}
+
+static inline SparkStatus SparkRowLayoutLaneMajorOrder(
+	uint32_t row_count,
+	const uint32_t *row_lane_ids,
+	uint32_t *order)
+{
+	uint32_t first,row,count,lane;
+	if ( row_count == 0u || row_lane_ids == 0 || order == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	count = 0u;
+	for (first=0u; first<row_count; first++)
+	{
+		lane = row_lane_ids[first];
+		for (row=0u; row<first && row_lane_ids[row] != lane; row++)
+			;
+		if ( row != first )
+			continue;
+		for (row=first; row<row_count; row++)
+			if ( row_lane_ids[row] == lane )
+				order[count++] = row;
+	}
+	return(count == row_count ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR);
+}
+
+static inline uint32_t SparkRowLayoutLaneSpanWaveRowCount(
+	uint32_t first_row,
+	uint32_t row_count,
+	const uint32_t *row_lane_ids,
+	SparkRowLayoutRowRegimeFunction regime_function,
+	void *regime_context,
+	uint32_t maximum_rows)
+{
+	uint32_t count,regime;
+	if ( first_row >= row_count || row_lane_ids == 0 || maximum_rows == 0u )
+		return(0u);
+	regime = regime_function != 0 ? regime_function(regime_context,first_row) : 0u;
+	count = 1u;
+	while ( first_row + count < row_count && count < maximum_rows &&
+		row_lane_ids[first_row + count] == row_lane_ids[first_row] &&
+		(regime_function == 0 || regime_function(regime_context,first_row + count) == regime) )
+		count++;
+	return(count);
+}
+
+static inline uint32_t SparkRowLayoutPackedSpanWaveRowCount(
+	uint32_t first_row,
+	uint32_t row_count,
+	const uint32_t *row_lane_ids,
+	SparkRowLayoutRowRegimeFunction regime_function,
+	void *regime_context,
+	uint32_t maximum_rows,
+	uint32_t maximum_spans)
+{
+	uint32_t count,span,spans,regime,next;
+	count = SparkRowLayoutLaneSpanWaveRowCount(first_row,row_count,row_lane_ids,regime_function,regime_context,maximum_rows);
+	if ( count == 0u || maximum_spans == 0u )
+		return(count);
+	regime = regime_function != 0 ? regime_function(regime_context,first_row) : 0u;
+	for (spans=1u; spans<maximum_spans && count<maximum_rows; spans++)
+	{
+		next = first_row + count;
+		if ( next >= row_count || row_lane_ids[next] == row_lane_ids[next - 1u] ||
+			(regime_function != 0 && regime_function(regime_context,next) != regime) )
+			break;
+		span = SparkRowLayoutLaneSpanWaveRowCount(next,row_count,row_lane_ids,regime_function,regime_context,maximum_rows - count);
+		if ( next + span < row_count && row_lane_ids[next + span] == row_lane_ids[next] )
+			break;
+		count += span;
+	}
+	return(count);
+}
+
 static inline SparkStatus SparkRowLayoutGroupRows(
 	uint32_t row_count,
 	uint32_t lane_count,
