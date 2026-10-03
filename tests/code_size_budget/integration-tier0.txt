@@ -1,0 +1,2 @@
++6
+Integration base for stacked lanes: the in-flight PR grants were measured against older bases; this grant is dropped when those PRs rebase onto main.
