@@ -374,10 +374,9 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
         result = self.agent(owner="shell")
         self.assertEqual(result.returncode, 1, result.stderr)
         lines = result.stdout.splitlines()
-        self.assertEqual(len(lines), 3, result.stdout)
+        self.assertEqual(len(lines), 2, result.stdout)
         self.assertEqual(lines[0], "UNLINK -f %s/mesh-0.rec %s/mesh-15.rec %s/.ready" % ((self.mesh,) * 3))
         self.assertRegex(lines[1], r"^\d\d:\d\d:\d\d weightd: starting on 10\.10\.100\.10 10\.10\.200\.0 \(backoff 1s\)$")
-        self.assertEqual(lines[2], "UNLINK -f %s/.shipped_sha" % self.mesh)
         self.assertEqual((self.directory / "weightd.log").read_text(), "SPAWN\n")
 
     def test_main_loop_gates_every_dependent_action(self):
@@ -392,7 +391,8 @@ node_doctor() { :; }
 janitor() { :; }
 ensure_weightd() { return "$TEST_WEIGHTD_STATUS"; }
 sync_root() { echo ROOT_SYNC; }
-sync_rendezvous() { echo RENDEZVOUS; }
+mesh_push() { echo MESH; }
+mesh_pull() { echo MESH; }
 ensure_root() { echo ROOT_START; }
 prune_logs() { :; }
 warmup_hook() { echo WARMUP; }
@@ -406,7 +406,7 @@ sleep() { exit 0; }
                     capture_output=True, text=True)
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
                 self.assertEqual(result.stdout.splitlines(),
-                    ["ROOT_SYNC", "RENDEZVOUS", "ROOT_START", "WARMUP", "REPORT"]
+                    ["ROOT_SYNC", "ROOT_START", "WARMUP", "REPORT"]
                     if ready else ["REPORT"])
 
     def serving_gate(self, function, **values):

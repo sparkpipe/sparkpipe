@@ -480,55 +480,94 @@ if ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=
 fi
 RELEASE_HTTP="${FLEET_HTTP_RELEASE:-http://100.123.97.61:8802}"
 
-sync_rendezvous() {
-    local name="$1" host rd
-    host=$(hostname -s)
-    rd="$HOME/sparkdata/$name/rendezvous"
-    if [ -d "$rd" ]; then
-        if [ ! -f "$rd/.shipped" ] || [ -n "$(find "$rd" -name '*.rec' -newer "$rd/.shipped" 2>/dev/null | head -1)" ]; then
-            [ -f "$rd/.upload_lock" ] && [ $(( $(date +%s) - $(stat -c %Y "$rd/.upload_lock") )) -lt 3 ] && return 0
-            touch "$rd/.upload_lock"
-            $HUBSSH "$HUB" "mkdir -p release/qpn/$host/$name" 2>/dev/null
-            scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=4 "$rd"/*.rec \
-                "$HUB:release/qpn/$host/$name/" 2>/dev/null
-            $HUBSSH "$HUB" "cd release/qpn/$host/$name && sha256sum *.rec > index.txt.\$\$ 2>/dev/null && mv index.txt.\$\$ index.txt" 2>/dev/null
-            touch "$rd/.shipped"
+MESH_DIR=/tmp/weightd-mesh
+MESH_PIDFILE="$HOME/.fleet_agent_mesh.pid"
+MESH_VERIFY_SECONDS=30
+MESH_REFRESH_SECONDS=60
+
+mesh_push() {
+    local name own sum hub_sum
+    printf -v name 'mesh-%x.rec' "$RANK"
+    own="$MESH_DIR/$name"
+    [ -f "$own" ] || return 0
+    sum=$(sha256sum < "$own" | cut -d' ' -f1)
+    if [ "$sum" = "$MESH_PUSHED" ]; then
+        [ $(( $(date +%s) - MESH_VERIFIED )) -lt "$MESH_VERIFY_SECONDS" ] && return 0
+        hub_sum=$(curl -sf --max-time 2 "$RELEASE_HTTP/qpn/${HOST%%.*}/mesh/$name" 2>/dev/null | sha256sum | cut -d' ' -f1)
+        if [ "$hub_sum" = "$sum" ]; then
+            MESH_VERIFIED=$(date +%s)
+            return 0
         fi
+        echo "$(date +%T) mesh: hub copy of $name differs from the live record; publishing again"
     fi
-    local mesh_dir="/tmp/weightd-mesh"
-    if [ -d "$mesh_dir" ]; then
-        local own_rank
-        printf -v own_rank '%x' "$RANK"
-        local own_rec="$mesh_dir/mesh-$own_rank.rec"
-        if [ -f "$own_rec" ]; then
-            local sum
-            sum=$(sha256sum "$own_rec" | cut -d' ' -f1)
-            if [ ! -f "$mesh_dir/.shipped_sha" ] || \
-               [ "$(cat "$mesh_dir/.shipped_sha" 2>/dev/null)" != "$sum" ]; then
-                $HUBSSH "$HUB" "mkdir -p release/qpn/$host/mesh" 2>/dev/null
-                scp -q -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=4 "$own_rec" \
-                    "$HUB:release/qpn/$host/mesh/" 2>/dev/null && \
-                    echo "$sum" > "$mesh_dir/.shipped_sha"
-            fi
+    if $HUBSSH "$HUB" "d=release/qpn/${HOST%%.*}/mesh && mkdir -p \$d && cat > \$d/.$name.\$\$ && mv -f \$d/.$name.\$\$ \$d/$name" < "$own" 2>/dev/null; then
+        MESH_PUSHED=$sum
+        MESH_VERIFIED=$(date +%s)
+        echo "$(date +%T) mesh: published $name ${sum:0:16}"
+    fi
+}
+
+mesh_fetch() {
+    local url="$1" file="$2" refresh="$3" rc condition=()
+    [ "$refresh" = 0 ] && [ -f "$file" ] && condition=(-z "$file")
+    curl -sf -R --max-time 2 "${condition[@]}" "$url" -o "$file.$BASHPID" 2>/dev/null
+    rc=$?
+    [ "$rc" = 0 ] && [ -s "$file.$BASHPID" ] && mv -f "$file.$BASHPID" "$file"
+    rm -f "$file.$BASHPID"
+    [ "$rc" = 0 ] || [ "$rc" = 22 ]
+}
+
+mesh_pull() {
+    local index=0 peer name refresh=0 unreachable=0 pid pids=()
+    if [ $(( $(date +%s) - MESH_REFRESHED )) -ge "$MESH_REFRESH_SECONDS" ]; then
+        refresh=1
+        MESH_REFRESHED=$(date +%s)
+    fi
+    for peer in $FLEET_HOSTS; do
+        if [ "$index" != "$RANK" ]; then
+            printf -v name 'mesh-%x.rec' "$index"
+            mesh_fetch "$RELEASE_HTTP/qpn/$peer/mesh/$name" "$MESH_DIR/$name" "$refresh" &
+            pids+=("$!")
         fi
-        local pr pn fn now age
-        now=$(date +%s)
-        for pr in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
-            pn="spark$pr"
-            [ "$pn" = "$host" ] && continue
-            fn="$mesh_dir/mesh-$pr.rec"
-            if [ -f "$fn" ]; then
-                age=$(( now - $(stat -c %Y "$fn" 2>/dev/null || echo "$now") ))
-                [ "$age" -lt 2 ] && continue
-            fi
-            if curl -sf --max-time 2 "$RELEASE_HTTP/qpn/$pn/mesh/mesh-$pr.rec" \
-                -o "$fn.tmp" 2>/dev/null; then
-                mv "$fn.tmp" "$fn"
-            else
-                rm -f "$fn.tmp"
-            fi
-        done
+        index=$((index + 1))
+    done
+    for pid in "${pids[@]}"; do
+        wait "$pid" || unreachable=$((unreachable + 1))
+    done
+    if [ "$unreachable" = "${#pids[@]}" ]; then
+        [ -n "$MESH_HUB_DOWN" ] || { MESH_HUB_DOWN=$(date +%s); echo "$(date +%T) mesh: release server $RELEASE_HTTP unreachable; peer records not refreshed" >&2; }
+    elif [ -n "$MESH_HUB_DOWN" ]; then
+        echo "$(date +%T) mesh: release server reachable again after $(( $(date +%s) - MESH_HUB_DOWN ))s"
+        MESH_HUB_DOWN=""
     fi
+}
+
+mesh_exchange_loop() {
+    local agent="$1"
+    MESH_PUSHED=""
+    MESH_VERIFIED=0
+    MESH_REFRESHED=0
+    MESH_HUB_DOWN=""
+    while kill -0 "$agent" 2>/dev/null; do
+        if [ -d "$MESH_DIR" ]; then
+            mesh_push
+            mesh_pull
+        fi
+        sleep 1
+    done
+}
+
+stop_mesh_exchange() {
+    local pid
+    pid=$(cat "$MESH_PIDFILE" 2>/dev/null)
+    [ -n "$pid" ] && [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$$" ] && kill "$pid" 2>/dev/null
+    rm -f "$MESH_PIDFILE"
+}
+
+start_mesh_exchange() {
+    stop_mesh_exchange
+    mesh_exchange_loop "$$" &
+    echo "$!" > "$MESH_PIDFILE"
 }
 
 apply_manifest() {
@@ -642,6 +681,7 @@ self_update() {
     { [ "$disk" != none ] && [ -n "$START_SHA" ] && [ "$START_SHA" != none ]; } || return 0
     [ "$disk" != "$START_SHA" ] || return 0
     echo "$(date +%T) agent: self-updating $START_SHA -> $disk ($0)"
+    stop_mesh_exchange
     exec bash "$new" "$ROOTS" "$HUB"
 }
 
@@ -813,8 +853,6 @@ ensure_weightd() {
         --mesh-pair-interface "$MESH_PAIR_INTERFACE" --mesh-pair-sgid-index "$MESH_PAIR_SGID_INDEX" \
         --mesh-traffic-class "$MESH_TRAFFIC_CLASS" \
         > "$HOME/weightd.log" 2>&1 < /dev/null &
-    rm -f /tmp/weightd-mesh/.shipped_sha 2>/dev/null
-    ( sleep 2; sync_rendezvous "glm53flash.fp8.tp16" ) >/dev/null 2>&1 &
     return 1
 }
 
@@ -907,6 +945,7 @@ warmup_hook() {
 echo "$$" > "$PID_FILE"
 echo "agent: rank=$RANK roots=$ROOT_LIST roots_file=$ROOTS_FILE headroom=${HEADROOM_GIB}GiB hub=$HUB http=$RELEASE_HTTP self=$(sha16 "$0")"
 report
+start_mesh_exchange
 
 while true; do
     load_roots
@@ -921,7 +960,6 @@ while true; do
         continue
     fi
     for r in $ROOT_LIST; do sync_root "$r"; done
-    for r in $ROOT_LIST; do sync_rendezvous "$r"; done
     for r in $ROOT_LIST; do ensure_root "$r"; done
     for r in $ROOT_LIST; do prune_logs "$HOME/sparkdata/$r"; done
     warmup_hook

@@ -161,8 +161,19 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
    (`:186`, `:201`, and the hub MANIFEST), which matches none of these patterns.
    A change to that file alone lands on disk without a restart. Ship it with an
    engine, library or stage change, or drain the root (section 4.3).
-7. `sync_rendezvous` ships this node's mesh record to the hub and fetches the
-   peers' records (`:220-269`).
+7. The mesh records are not exchanged in this loop. `start_mesh_exchange`
+   runs `mesh_exchange_loop` in the background from agent start, once per
+   second, independent of roots and of `ensure_weightd`:
+   - `mesh_push` publishes this node's `mesh-<rank>.rec` to
+     `release/qpn/<host>/mesh/` with one ssh that writes a temporary file and
+     renames it. Every 30 s it compares the hub copy with the live record and
+     publishes again on a mismatch;
+   - `mesh_pull` fetches the 15 peers' records in parallel with conditional
+     GETs (`curl -z`, 2 s timeout each) and a full fetch every 60 s, and
+     renames each download into place. It logs once when the release server
+     becomes unreachable and once when it returns.
+
+   A self-update stops the loop before `exec`; the new agent starts its own.
 8. `ensure_root` starts a down root. It also recycles an engine whose binary or
    driver changed since boot (`:482-523`). The guards:
    - a node up less than 900 s does not start engines (`:516`);
