@@ -32,7 +32,10 @@ def contract_kv_page_bytes():
     return BLOCK_TOKENS * (geometry["layer_count"] * latent + len(index_layers) * geometry["dsa_index_head_dimension"]) * 2
 
 
-KV_PAGE_BYTES = contract_kv_page_bytes()
+KV_FULL_PAGE_BYTES = contract_kv_page_bytes()
+if KV_FULL_PAGE_BYTES % WORLD != 0:
+    raise SystemExit(f"a {KV_FULL_PAGE_BYTES}-byte KV page does not split across {WORLD} ranks")
+KV_PAGE_BYTES = KV_FULL_PAGE_BYTES // WORLD
 MAX_LANES = 16
 
 

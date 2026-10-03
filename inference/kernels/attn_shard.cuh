@@ -220,6 +220,25 @@ void LmLatentShardPartialKernel(
     }
 }
 
+template<uint32_t LATENT, uint32_t ROPE, uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmLatentShardQueryPackKernel(const uint16_t *__restrict__ latent_bf16, const uint16_t *__restrict__ rope_bf16, uint32_t heads, uint16_t *__restrict__ query_bf16)
+{
+    uint32_t row = blockIdx.x, head = blockIdx.y, element;
+    uint64_t pair = (uint64_t)row * heads + head;
+    for (element = threadIdx.x; element < LATENT + ROPE; element += THREADS)
+        query_bf16[pair * (LATENT + ROPE) + element] = element < LATENT ? latent_bf16[pair * LATENT + element] : rope_bf16[pair * ROPE + element - LATENT];
+}
+
+template<uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentShardQueryPackLaunch(const uint16_t *latent_bf16, const uint16_t *rope_bf16, uint32_t heads, uint32_t rows, uint16_t *query_bf16, cudaStream_t stream)
+{
+    if (latent_bf16 == 0 || rope_bf16 == 0 || query_bf16 == 0 || heads == 0u || rows == 0u)
+        return cudaErrorInvalidValue;
+    LM_LAUNCH((LmLatentShardQueryPackKernel<LATENT, ROPE, LM_LATENT_SHARD_THREADS>), dim3(rows, heads), LM_LATENT_SHARD_THREADS, 0, stream, latent_bf16, rope_bf16, heads, query_bf16);
+    return cudaPeekAtLastError();
+}
+
 template<uint32_t THREADS, uint32_t LATENT>
 __global__ __launch_bounds__(THREADS, 1)
 void LmLatentShardMergeKernel(

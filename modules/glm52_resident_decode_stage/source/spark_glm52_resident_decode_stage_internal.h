@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_model.h"
+#include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_status.h"
 
 typedef struct SparkGlm52LayerWeights
@@ -112,6 +113,21 @@ typedef struct SparkGlm52ExecutionSlot
 	void *expert_done_event;
 	uint32_t route_recorded;
 	void *kv_access_error;
+	uint16_t *shard_send_bf16;
+	uint16_t *shard_received_bf16;
+	float *shard_partials_f32;
+	float *shard_partials_received_f32;
+	uint32_t *index_local_selected;
+	uint8_t *kv_gather_latent_pack;
+	uint8_t *kv_gather_latent_pool;
+	uint32_t *kv_gather_latent_remap;
+	uint32_t *kv_select_local;
+	uint64_t *kv_select_candidates;
+	uint64_t *kv_select_received;
+	uint32_t *kv_select_merged;
+	uint32_t *kv_gather_rows_zero;
+	uint32_t *kv_gather_plan;
+	unsigned long long *kv_gather_digest;
 } SparkGlm52ExecutionSlot;
 
 typedef struct SparkGlm52CudaWave
@@ -169,7 +185,37 @@ typedef struct SparkGlm52CudaWave
 	uint32_t single_sequence_rows;
 	uint32_t *prefill_block_table;
 	uint32_t inputs_staged;
+	SparkKvShard kv_shard;
+	uint32_t kv_gather;
+	uint32_t kv_gather_old_bound;
+	uint32_t kv_gather_old_keys;
+	uint32_t kv_gather_capacity;
+	uint64_t kv_gather_latent_tail_slot;
+	SparkKvShardSectionLayout kv_gather_latent;
+	uint32_t kv_select_keep;
+	uint32_t kv_select_slice;
+	uint32_t kv_select_rows;
+	uint32_t shard_query_units;
+	uint32_t shard_indexing_units;
+	uint32_t shard_partial_units;
+	uint64_t shard_candidate_offset;
 } SparkGlm52CudaWave;
+
+#define SPARK_GLM52_SHARD_SCATTER_ROWS 64u
+#define SPARK_GLM52_SHARD_UNIT_BYTES ((uint64_t)SPARK_GLM52_MODEL_HIDDEN_DIMENSION * 2u)
+#define SPARK_GLM52_SHARD_CANDIDATE_BYTES 8u
+#define SPARK_GLM52_SHARD_PARTIAL_FLOATS (SPARK_GLM52_MODEL_LATENT_DIMENSION + 2u)
+#define SPARK_GLM52_SHARD_SLOT_ALIGN 3u
+#define SPARK_GLM52_SHARD_PHASE_SCATTER_PRE 0u
+#define SPARK_GLM52_SHARD_PHASE_SCATTER_MID 1u
+#define SPARK_GLM52_SHARD_PHASE_SCATTER_POST 2u
+#define SPARK_GLM52_SHARD_PHASE_GATHER_PRE 3u
+#define SPARK_GLM52_SHARD_PHASE_GATHER_POST 4u
+#define SPARK_GLM52_SHARD_PHASE_GATHER_MERGE 5u
+#define SPARK_GLM52_SHARD_PLAN_ARRAYS 3u
+#define SPARK_GLM52_SHARD_PLAN_WORDS 2u
+#define SPARK_GLM52_SHARD_DIGESTS 1u
+#define SPARK_GLM52_SHARD_DIGEST_WORDS (3u * SPARK_GLM52_SHARD_DIGESTS)
 
 #define SPARK_GLM52_PREFILL_WAVE_SPANS 8u
 #define SPARK_GLM52_PREFILL_BLOCK_ROWS 4u
@@ -189,6 +235,9 @@ int32_t SparkGlm52LaunchCudaLayerAttention(const SparkGlm52CudaWave *wave,uint32
 uint32_t SparkGlm52ProjectionSliceWidth(uint32_t tp_degree);
 int32_t SparkGlm52LaunchCudaLayerAttentionProject(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,uint32_t local_layer);
+int32_t SparkGlm52LaunchCudaLayerShard(const SparkGlm52CudaWave *wave,uint32_t local_layer,uint32_t phase);
+int32_t SparkGlm52LaunchKvDigest(const SparkGlm52CudaWave *wave,uint32_t check);
+uint32_t SparkGlm52LayerShardIndexing(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t local_layer);

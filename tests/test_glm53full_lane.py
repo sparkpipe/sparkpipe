@@ -160,6 +160,8 @@ def main():
         except SystemExit:
             pass
     page = glm53full_lane.KV_PAGE_BYTES
+    if page * glm53full_lane.WORLD != 64 * (78 * (512 + 64) + 21 * 128) * 2 or page != 380928:
+        failures.append(f"each rank stores 1/16 of every 64-token KV page: per-rank page bytes {page}")
     spill = (4 << 30) // page
     for budget, physical in ((100 * page, 100), (64 * page, 64), (10000 * page, 8 * 64)):
         limits = rendered(6, kv_physical_bytes=budget)["model_resident.json"]["runtime_limits"]

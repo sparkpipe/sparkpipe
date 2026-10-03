@@ -540,117 +540,41 @@ citations refer to that commit.
   TP16 it is optional, and the TP4xPP4 generator leaves it off.
 - Replace per-driver KV and index pools with one node-level pool shared by
   all resident drivers, admitted against resident demand.
-- Left out on purpose (2026-10-02): GLM-5.3 Full (glm52) stores the whole
-  latent KV and DSA index cache of every lane on every TP rank.
-  `SparkGlm52AllocateCaches` zeroes the binding configuration and never sets
-  `owner_rank` or `owner_count`
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:729-758`),
-  so `SparkStageKvBindingOwns` is true for every slot
-  (`include/sparkpipe/spark_stage_kv_binding.h:108-111`), the owner filter
-  from b45e6f603 never engages, and each rank allocates the full pool
-  (`runtime/stage_kv_binding.c:230-231`). At TP16 every 64-token page costs
-  6,094,848 bytes on all sixteen ranks (`tools/glm53full_lane.py:24`), against
-  README:268-274; glm5_next refuses TP16 without `kv_shard`
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:482-487`),
-  but glm52 loads the replicated layout without a refusal. The binding assigns
-  whole lanes to owners (`slot % owner_count`), while README:271-273 splits
-  shared latent and indexer state by context, which shared code already does
-  for glm5_next (`include/sparkpipe/spark_kv_shard.h`,
-  `inference/kernels/attn_shard.cuh`); the owner has not chosen between the
-  two. It closes when glm52 configures each rank's share, adds `owner_rank`
-  and `owner_count` to the layout fingerprint (a constant today,
-  `spark_glm52_resident_decode_stage_module.c:749`), and refuses a replicated
-  TP16 load. The proof is a TP16 fleet run whose binding log shows 1/16 of
-  today's physical pages per rank, with T1 bit-exact against the replicated
-  build and B1, B16, TTFT and d1024 measured.
-- Left out on purpose (2026-10-02): GLM-5.3 Full attention has no owner split.
-  `GlmLayerAttentionCore`
-  (`common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh:543`) attends every
-  row's lane on the calling rank, and glm52 launches it for all wave rows
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_cuda.cu:340-346`).
-  Neither the eager chain
-  (`spark_glm52_resident_decode_stage_module.c:1662-1780`) nor the shared walk
-  used by the linear and graph chains (`:1894-1935`) has a query or output
-  exchange around it. The lane-owner pack and unpack kernels from ab55d7691
-  (`model-families/common/include/sparkpipe/spark_lane_owner.cuh`) are not
-  included anywhere. Non-owner page-table entries stay 0xffffffff
-  (`runtime/stage_kv_binding.c:233-237`, `:558-559`) and the kernel view
-  rejects them (`inference/kernels/kv.cuh:198-202`), so if `owner_count` is
-  set before this split, every wave that touches a lane the rank does not own
-  fails. It closes when the attention core is split into Pre, Owner and Post
-  phases with a query exchange to the owner and an output exchange back, wired
-  into the eager, linear and graph chains, and refused when the TP collective
-  is disabled (`spark_glm52_resident_decode_stage_module.c:331`); the proof is
-  a TP16 fleet run with T1 bit-exact against the replicated build at B1 and
-  B16.
-- Left out on purpose (2026-10-02): The batch engine binds a request to
-  whatever resident slot heads its free list
-  (`runtime/model_batch_engine.c:573-588`), the prefix index records no owner
-  per entry (`include/sparkpipe/spark_prefix_cache.h:45-67`), and the runtime
-  limits carry no owner count
-  (`include/sparkpipe/spark_model_serving_adapter.h:141-152`). The binding
-  maps a slot to its owner as `slot % owner_count`, and only the owner runs
-  lane transactions and publishes pages into its own page cache
-  (`include/sparkpipe/spark_stage_kv_binding.h:108-111`,
-  `runtime/stage_kv_binding.c:316-322`). Once owners are set, a returning
-  prefix bound to another owner's slot misses on that owner's PREPARE, and the
-  engine recomputes the whole prefix (`runtime/model_batch_engine.c:869-873`).
-  Nothing balances new lanes across owners. It closes when the engine learns
-  `owner_count` from the runtime limits, each prefix entry stores the owner
-  that published it, slot choice puts a prefix lane on a free slot of that
-  owner and spreads new lanes across owners, and behaviour is unchanged at
-  `owner_count` 1. The proof is the I27 suite unchanged at `owner_count` 1,
-  plus a TP16 fleet run whose engine log shows owner placement and whose
-  repeated prompts report `cached_tokens` > 0.
-- Left out on purpose (2026-10-02): The engine budgets KV pages against one
-  global count. `SparkModelBatchMaximumLaneCount`,
-  `SparkModelBatchCacheDemandTryAdd`, the submit-time fit and the
-  prefix-lookup fit all compare demand with
-  `engine->kv_physical_page_capacity`
-  (`runtime/model_batch_engine.c:1773-1786`, `:1880-1884`, `:1466-1469`,
-  `:1578-1579`). Under owner sharding each owner's pool holds only its own
-  lanes, so the engine admits waves that one owner's pool cannot hold. That
-  owner's page cache answers `CAPACITY_EXCEEDED`
-  (`cache/kv_page_cache.c:890-897`, `:926-933`), and the engine fails those
-  requests (`runtime/model_batch_engine.c:895-902`) where it should queue
-  them. It closes when the engine tracks in-flight pages per owner against
-  each owner's capacity, with identical behaviour at `owner_count` 1. The
-  proof is a TP16 fleet run that oversubscribes one owner and shows the engine
-  queueing that owner's lanes while the other owners keep running.
-- Left out on purpose (2026-10-02): Under owner sharding, a non-owner rank
-  accepts a lane that resumes mid-sequence on a fresh slot whenever the frame
-  marks it PREFIX with a matching sequence id and position
-  (`runtime/stage_kv_binding.c:426-437`, `:452-461`). It never checks that the
-  owner restored or committed that prefix, while the owner checks its own
-  committed lane transaction (`:462-468`). The path is unreachable today
-  because glm52 sets no owner. Once owners are set, a frame with a stale or
-  wrong PREFIX flag passes continuity on every non-owner rank, and only the
-  owner catches it. It closes when non-owners validate the lane against
-  metadata the owner publishes (its committed sequence id, position and prefix
-  identity) instead of the frame flag. The proof is a TP16 fleet I27 case that
-  restores a prefix onto a fresh slot, plus a case with a forged PREFIX flag
-  that fails on every rank.
-- Left out on purpose (2026-10-02): `kv_physical_page_capacity` is one
-  deployment-wide number (`runtime/model_resident_deployment.c:44-49`,
-  `:317`). It feeds both the engine's page budget
-  (`runtime/model_batch_engine.c:1330`) and every rank's binding pool
-  (`node/model_residentd.c:372-373`,
-  `runtime/serving_adapter_template.c:557-558`,
-  `modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:330`,
-  `:754`); the node entries carry no page count
-  (`runtime/model_resident_deployment.c:51-56`), and the hello ack requires
-  every rank to report identical limits (`runtime/model_resident_ipc.c:242`).
-  Setting the number to one owner's share (owned lanes x pages per sequence)
-  cuts the engine's budget to one owner's pages. Leaving it global makes every
-  rank allocate the full pool, although the binding needs only the owned share
-  (`runtime/stage_kv_binding.c:109-116`, `:230-231`). It closes when the
-  deployment carries a per-rank physical page count that residentd passes to
-  the binding, the engine derives its budget from the per-owner counts,
-  `tools/glm53full_lane.py:130-134` writes owned lanes x pages per sequence,
-  and the binding log (`runtime/stage_kv_binding.c:256-257`) prints
-  `owner_rank` and `owner_count`. The proof is a TP16 fleet run in which each
-  rank's binding holds 1/16 of today's pages while the engine still admits all
-  lanes.
+- Left out on purpose (2026-10-03): GLM-5.3 Full (glm52) splits every
+  sequence's latent KV and DSA index keys across the TP ranks by context
+  (owner of position p is p % tp; `SparkGlm52ModuleConfigure`, binding
+  `context_shard` in `runtime/stage_kv_binding.c`), and refuses TP > 1 without
+  the collective or without all-to-all. The change is not yet fleet-proven.
+  It closes with a TP16 fleet run whose binding log shows `page_bytes=380928`
+  per rank with the `-shard16r<rank>` layout, the `GLM52-KV-SHARD` sizing
+  line, T1 and the accuracy A/B against the bf16 floor, and B1, B16, 16K and
+  128K TTFT measured against 0b5371e. Known costs that stay after the proof:
+  decode waves (scatter mode) add a query all-gather and a partial all-to-all
+  per layer, with the index candidates riding the gather on the 21
+  full-indexer layers; folding the query into the projection gather and
+  sending bf16 partials are the planned cuts. Decode attention is not
+  bit-exact against the replicated split kernel (a different summation
+  order); the host and device oracles compare against the replica-view shard
+  math, and the index selection and prefill attention are bit-identical
+  (`tests/cuda/index_shard_cuda.cu`, `tests/host_cuda/index_shard_host.cu`).
+  Prefill waves (gather mode) carry one sequence, so packed multi-span
+  prefill is off under the split. They exchange only the latent keys of
+  the context before the wave, in balanced chunks, and read them in place
+  through a per-position remap; the wave's own rows come from each rank's
+  local copy, and a row digest folded into one 2-word MAX all-reduce per
+  wave fails the request loudly if any rank's local rows differ. DSA
+  selection on full-indexer layers past 2,048 positions is sharded: each
+  rank scores every row only against the keys it owns, keeps its exact
+  top-k, sends the candidates to the rank that owns the row (one
+  all-to-all), that rank merges them into the exact replicated top-k, and
+  one all-gather returns every row's selection to every rank. On one GB10
+  this cut per-layer selection from 20.5 ms to 2.0 ms at 64K and from
+  112 ms to 5.7 ms at 256K for 1024 rows (the replicated layout repeats the
+  same selection on all 16 ranks). Graph mode sizes the latent exchange and
+  the selection keep from the regime bound. Execution rows must be a
+  multiple of the context-split degree (refused at allocation otherwise).
+  Still open: fetching only the selected union's latents, once its size is
+  measured on the fleet. Scatter waves are capped at 64 rows.
 - Left out on purpose (2026-10-02): KV memory is owned by each engine, not by
   the node. `SparkStageKvBindingInitialize` allocates the KV regions and the
   page table with `cudaMalloc` through the module's own ledger
