@@ -1,13 +1,15 @@
 {
   "schema_version": 1,
-  "model_id": "AngelSlim/Hy4-preview-GGUF",
+  "model_id": "tencent/Hy4-preview-FP8",
   "architecture": "HYV4ForCausalLM",
-  "source_revision": "779242edccdedc2109a0b36b164263a88f015bfa",
-  "source_selection_note": "Operator ruling 2026-09-01: the image workload tolerates the ~1-bit dynamic quantization error profile, so the AngelSlim UD-IQ1_M GGUF is the source of truth. The FP8 safetensors (tencent/Hy4-preview-FP8 @4215ec29de873a998e849cee902654490c7ff4d1, warm dir hy4-preview-fp8-official) stay as reference only.",
+  "license": "apache-2.0",
+  "source_revision": "4215ec29de873a998e849cee902654490c7ff4d1",
+  "source_verified_utc": "2026-09-28",
+  "source_selection_note": "The resident decode module serves the publisher's MXFP8 checkpoint: E4M3 payloads with one E8M0 scale per 32 columns, BF16 for the tensors the publisher excludes from quantization. The BF16 sibling tencent/Hy4-preview @705d81ee51566a186d645b74c974d642ef2828fe carries the same geometry. The AngelSlim UD-IQ1_M GGUF (2026-09-01 operator ruling for the image workload) keeps its own contract in hy4_ud_iq1m_authoritative.json; no module builds an IQ1 codec.",
   "model": {
     "hidden_dimension": 6144,
     "layer_count": 78,
-    "mtp_layer_count": 0,
+    "mtp_layer_count": 1,
     "vocabulary_size": 120832,
     "bos_token_id": 120000,
     "eos_token_id": 120025,
@@ -22,22 +24,48 @@
     "v_head_dimension": 256,
     "kv_lora_rank": 512,
     "query_lora_rank": 2048,
-    "lm_head_fp32": true
+    "lm_head_fp32": true,
+    "tie_word_embeddings": false,
+    "total_parameters_billion": 770,
+    "active_parameters_billion": 49
   },
   "attention": {
     "gated_mla": true,
     "index_head_count": 32,
     "index_head_dimension": 128,
     "index_top_k": 2048,
-    "indexer_full_period": 4,
+    "indexer_full_layers": [
+      0,
+      1,
+      5,
+      9,
+      13,
+      17,
+      21,
+      25,
+      29,
+      33,
+      37,
+      41,
+      45,
+      49,
+      53,
+      57,
+      61,
+      65,
+      69,
+      73,
+      77
+    ],
+    "learnable_sink": true,
     "rope_theta": 10000000,
-    "rope_type": "default",
-    "learnable_sink": true
+    "rope_type": "default"
   },
   "hyper_connections": {
     "stream_count": 4,
     "magnitude": 2.0,
-    "epsilon": 1e-06
+    "epsilon": 1e-06,
+    "enable_ihc": true
   },
   "moe": {
     "routed_expert_count": 256,
@@ -52,58 +80,103 @@
     "norm_topk_prob": true
   },
   "mtp": {
-    "shipped_layer_count": 0,
-    "reference_layer_count": 1,
-    "reference_note": "The publisher config declares num_nextn_predict_layers=1, but the UD-IQ1_M GGUF ships no nextn tensors (blocks 0-77 only). The 39 model.mtp_layers.0.* tensors exist only in the FP8 safetensors reference. Drafter wiring is deferred per operator sequencing."
+    "shipped_layer_count": 1,
+    "publisher_note": "1 native MTP layer, 10B total and 0.7B active parameters, shipped as model.mtp_layers.0.* (39 tensors) in the checkpoint and in every hy4.fp8.tp16 rank pack."
   },
   "source_precision": {
-    "format": "gguf_ud_iq1m_dynamic",
-    "tensor_count": 2134,
-    "gguf_data_offset": 5051520,
-    "ggml_type_geometry": {
-      "0": [1, 4],
-      "8": [32, 34],
-      "12": [256, 144],
-      "13": [256, 176],
-      "14": [256, 210],
-      "16": [256, 66],
-      "18": [256, 98],
-      "23": [256, 72],
-      "24": [256, 56],
-      "29": [256, 56]
-    },
-    "geometry_note": "block elements and bytes per block, solved empirically from GGUF offset windows by tools/hy4_tp16_shard.py --dry-census; type ids follow the publisher's llama.cpp build (their patch extends the enum to NVFP4=40/Q1_0=41/Q2_0=42/STQ1_0=43). The solver's byte-integrity check pins these values against the file; ids 12/23 bytes are asserted by integration, names by convention."
+    "format": "modelopt_mxfp8",
+    "payload_dtype": "F8_E4M3",
+    "scale_dtype": "U8_E8M0",
+    "scale_group_size": 32,
+    "unquantized_dtypes": [
+      "BF16",
+      "F32"
+    ],
+    "unquantized_classes": [
+      "lm_head",
+      "model.embed_tokens",
+      "hc_head/hc_pre",
+      "self_attn.linear_gate",
+      "self_attn.indexer.weights_proj",
+      "mlp.gate",
+      "mtp_layers.0.eh_proj"
+    ],
+    "parameter_count": {
+      "F8_E4M3": 770289303552,
+      "U8": 23555211264,
+      "BF16": 9640893760,
+      "F32": 30795421
+    }
   },
-  "source_index_sha256": "12d325844103bac75bd286d14e0e45f87e35e8e60401877282a30b6f26ba6ac6",
-  "source_bytes": 235351974336,
-  "source_tensor_count": 2134,
+  "source_bytes": 813800659217,
+  "source_file_count": 169,
+  "source_safetensors_count": 130,
+  "source_config_sha256": "8f08e75af6c46578a6fc93883b4446189c67cc8b6ff47f20a51c43cd3dd9d6d4",
+  "source_index_sha256": "ebc41cb4183d6c0fa91ad15b5f2beebcc1e224bf97516bfe51cb6bf08bdbf106",
   "shards": {
     "topology": "tp16",
-    "placement": "/home/<peer_hosts[r]>/sparkdata/hy4.ud-iq1m.tp16/packs/rank-{RR}/",
-    "placement_verified_utc": "2026-09-03",
-    "rank_bytes": 18724364736,
+    "schema": "hy4-fp8-tp16-v1",
+    "placement": "/home/<peer_hosts[r]>/sparkdata/hy4.fp8.tp16/packs/rank-{RR}/model-fp8-tp16-rank-{RR}.safetensors",
+    "placement_verified_utc": "2026-09-28",
+    "digest_source": "placement sidecar model-fp8-tp16-rank-{RR}.safetensors.sha256, equal to manifest-rank-{RR}.json file_sha256 on every rank",
     "ranks": {
-      "0": "4677a7f3b321d986e2954d4932aca23b9618fdfd3c66e32e28b8b4134f5533c1",
-      "1": "9fca5b8e1a2569f5973430fa43179f49621c7ae41e86476b329ce7c5b60bf677",
-      "2": "a29ed405c8c61498e6e627a35288d0cffdf65f4bc5ae953efcab78b29203bf68",
-      "3": "338870126b2d3c9db5aca14415709a256a42f56a6a8099c90536f19cd251fa7b",
-      "4": "1dec73857add63655e1ba49a1a82abfe02a53f47c4602c816233f2c5fe69004c",
-      "5": "e5aec7f308ce74a9049d216cc13fab2017a3128e40c337127ccec015e366822d",
-      "6": "891b04e20d8d99f8441a8f1f60ed0b9ee2651ae7c38976ea963a5c76d0735cdd",
-      "7": "97afe277a56cebc3eca955fe045ba1aff28077f0f5f10beb83015af53ccc28be",
-      "8": "babb8235fe5f0b0dd030a5e8ea1193feb81cd8b83c24c54738a346575f7d1260",
-      "9": "299a36658932fe426eb1a466d6bdd4843df16216f2ba37894dc9f7e8ffd71fed",
-      "10": "08c47589ffeb8f717269c37e89d5808394513c3a53912cb2eda7ee34a4ad674c",
-      "11": "675f197a43d5e48e821600030c6e5cb27703eb741dbb87a96b6f84ef548ce21d",
-      "12": "eb8d92f07c92aae9b4bc17c1ea3fefecfb545d4afa86e948f64b6ed889c37f61",
-      "13": "6210051074e932330bf6f73dad8162c759add2872756ba406828014083df5596",
-      "14": "8c940f3c27b46c459ac22094bc82fd5f5e14b759770fcbc718e691164f839a51",
-      "15": "ab9bb9d9dd92d284dd6bbec69a7b5d88ca66e3107f21b69f31993fdbe6aad044"
+      "0": "2db6e885526e8ea000e82694c837864145134430fbf9615ed897f97dee53900e",
+      "1": "f700b883a4cbe7406e2fa8ae9912586adfb4fd329c696dd2a445eb2cd1524292",
+      "2": "722509514a02392dc99467b6b65b51b8aea1651e586f2c53dbc034f238e43cbc",
+      "3": "a523605bae84f1edae1547c6c9948ecdf81b8ae9817db635950c14a704f00274",
+      "4": "69c353639744f90a90a019625fa0a82c9334a8cb73ad5d30e7e0bddb7b37cf36",
+      "5": "b1259b51b8650941177d6e8a4f1a0fb56a7623f1e08acc50039eb5349c1ef275",
+      "6": "8cadf87626c797491030139f90bdd0a103ae18faedeb3c658cd1d21f165bfdf1",
+      "7": "0d151d9b54ba6859f334fd523b87137796bb85bdbca97eab1fa29292767ad92e",
+      "8": "12d612a31dd32f4bbe5513decb62482926b671260e7fe79c2f065bf857724414",
+      "9": "5cf7edf3d65f42253447b806f123bc13c06a4c4b048cc776ad5a1cfc254619c2",
+      "10": "6a08a9c687f7378ab1d7f10732616e8f5bf404a1fa5c04eea4c9f5a2959f17a6",
+      "11": "576001957dbed79340e14e6809c55e85f2562f231df4d5834352721123a25878",
+      "12": "26c002814845e04e84fdcb48ae11605187dca6298c698dcdf006c222e7e910b9",
+      "13": "e3c9d1fece6060d8bb86d880332a6b77ea44afd935fdea19da1eeb20bbd1f05b",
+      "14": "73a3735bb1c77d085f27f30ca48df0104b188d4f2da3b8217070d71b6068e7dc",
+      "15": "095d796f8c2cc068c38b32751e4c3f551ded5bee9e5983538ecd6f2f3d0f676d"
+    },
+    "rank_bytes": {
+      "0": 56131321268,
+      "1": 56131321268,
+      "2": 56131321268,
+      "3": 56131321268,
+      "4": 56131321268,
+      "5": 56131321268,
+      "6": 56131321268,
+      "7": 56131321268,
+      "8": 56131321268,
+      "9": 56131321268,
+      "10": 56131321269,
+      "11": 56131321269,
+      "12": 56131321269,
+      "13": 56131321269,
+      "14": 56131321269,
+      "15": 56131321269
+    },
+    "experts_manifests": {
+      "0": "1410d012b448039c5da398928bc0db5e2981601118718a9b367db0c65c912f45",
+      "1": "b3c237486ba0a9ed7ee001790e56b94b4c6ced68b2373c90bffe68cc969c327a",
+      "2": "776df1491c1f70d435a0c3a9dee3bcd57f8a8e9218508c7d6152e33f884ecbdd",
+      "3": "933693991be198685b0ef03899b98c64c12332b10c9d9e8e8b85c394191947da",
+      "4": "85997b36eb449012eeb4fbfb21be2df1e4974f2d2fdaab8ea0214fbef81cd0df",
+      "5": "8c0c80c177752881b58eaa638b99a31ba87af749da4cbf41743a4d97eaf49aa1",
+      "6": "0a53c4c497b4427ab9366f8262048637240250833ea197135ab892478fdef876",
+      "7": "a15fed24b4c168ac7ab745c39965b6707b5976a887ae7cdf7eec147c5d0d8139",
+      "8": "ccbbef34ef2cba445c1db5278ddac4bb92782c15c6233a6d4f6d3b5be554d9d8",
+      "9": "e60db39ee0f1e3ec38dd24def3b54ee7f8fbb7e589d90c79292d93fc5b766909",
+      "10": "f4ab2da69164676660337012ecf16706c511cbeb2a6179ef072c8f06ae0624a2",
+      "11": "781448e913816a90c5751386e4f4a1d0da28a3a5c4e185b7de1109d2fe9d735e",
+      "12": "a0dfa0921a44205c0803f818e73cfc96eb9193f47977a2888d180efccf4bc96d",
+      "13": "af34ff995890119e3c9c26a4fba7642c8893e6f57d5bb763ab8725f56339599e",
+      "14": "d7362de0a44f783c81a571745863590a45cc9a36151c493a695ead7d6379e2e1",
+      "15": "6e41b100ef68717a5f6b9c5b347c86a2e039684c1df232ce25646fd3f10dcfe2"
     }
   },
   "runtime": {
     "speculative_decoding": "deferred",
-    "speculative_decoding_reason": "No MTP tensors in the source of truth; operator sequencing rules drafter wiring last."
+    "speculative_decoding_reason": "The MTP layer ships in the checkpoint and in every rank pack; drafter wiring follows decode qualification."
   },
   "qualification": {
     "cuda_target": "sm_121a",

@@ -5,17 +5,42 @@
     "index_head_count": 32,
     "index_head_dimension": 128,
     "index_top_k": 2048,
-    "indexer_full_period": 4,
+    "indexer_full_layers": [
+      0,
+      1,
+      5,
+      9,
+      13,
+      17,
+      21,
+      25,
+      29,
+      33,
+      37,
+      41,
+      45,
+      49,
+      53,
+      57,
+      61,
+      65,
+      69,
+      73,
+      77
+    ],
     "learnable_sink": true,
     "rope_theta": 10000000,
     "rope_type": "default"
   },
   "hyper_connections": {
+    "enable_ihc": true,
     "epsilon": 1e-06,
     "magnitude": 2.0,
     "stream_count": 4
   },
+  "license": "apache-2.0",
   "model": {
+    "active_parameters_billion": 49,
     "attention_head_count": 64,
     "bos_token_id": 120000,
     "eos_token_id": 120025,
@@ -26,16 +51,18 @@
     "layer_count": 78,
     "lm_head_fp32": true,
     "maximum_context_tokens": 1048576,
-    "mtp_layer_count": 0,
+    "mtp_layer_count": 1,
     "pad_token_id": 120002,
     "qk_nope_head_dimension": 192,
     "qk_rope_head_dimension": 64,
     "query_lora_rank": 2048,
     "rms_norm_epsilon": 1e-05,
+    "tie_word_embeddings": false,
+    "total_parameters_billion": 770,
     "v_head_dimension": 256,
     "vocabulary_size": 120832
   },
-  "model_id": "AngelSlim/Hy4-preview-GGUF",
+  "model_id": "tencent/Hy4-preview-FP8",
   "moe": {
     "dense_ffn_intermediate_dimension": 18432,
     "dense_ffn_layer_count": 1,
@@ -49,9 +76,8 @@
     "swiglu_limit": 10.0
   },
   "mtp": {
-    "reference_layer_count": 1,
-    "reference_note": "The publisher config declares num_nextn_predict_layers=1, but the UD-IQ1_M GGUF ships no nextn tensors (blocks 0-77 only). The 39 model.mtp_layers.0.* tensors exist only in the FP8 safetensors reference. Drafter wiring is deferred per operator sequencing.",
-    "shipped_layer_count": 0
+    "publisher_note": "1 native MTP layer, 10B total and 0.7B active parameters, shipped as model.mtp_layers.0.* (39 tensors) in the checkpoint and in every hy4.fp8.tp16 rank pack.",
+    "shipped_layer_count": 1
   },
   "qualification": {
     "cuda_target": "sm_121a",
@@ -60,59 +86,38 @@
   },
   "runtime": {
     "speculative_decoding": "deferred",
-    "speculative_decoding_reason": "No MTP tensors in the source of truth; operator sequencing rules drafter wiring last."
+    "speculative_decoding_reason": "The MTP layer ships in the checkpoint and in every rank pack; drafter wiring follows decode qualification."
   },
   "schema_version": 1,
-  "source_bytes": 235351974336,
-  "source_index_sha256": "12d325844103bac75bd286d14e0e45f87e35e8e60401877282a30b6f26ba6ac6",
+  "source_bytes": 813800659217,
+  "source_config_sha256": "8f08e75af6c46578a6fc93883b4446189c67cc8b6ff47f20a51c43cd3dd9d6d4",
+  "source_file_count": 169,
+  "source_index_sha256": "ebc41cb4183d6c0fa91ad15b5f2beebcc1e224bf97516bfe51cb6bf08bdbf106",
   "source_precision": {
-    "format": "gguf_ud_iq1m_dynamic",
-    "geometry_note": "block elements and bytes per block, solved empirically from GGUF offset windows by tools/hy4_tp16_shard.py --dry-census; type ids follow the publisher's llama.cpp build (their patch extends the enum to NVFP4=40/Q1_0=41/Q2_0=42/STQ1_0=43). The solver's byte-integrity check pins these values against the file; ids 12/23 bytes are asserted by integration, names by convention.",
-    "ggml_type_geometry": {
-      "0": [
-        1,
-        4
-      ],
-      "12": [
-        256,
-        144
-      ],
-      "13": [
-        256,
-        176
-      ],
-      "14": [
-        256,
-        210
-      ],
-      "16": [
-        256,
-        66
-      ],
-      "18": [
-        256,
-        98
-      ],
-      "23": [
-        256,
-        72
-      ],
-      "24": [
-        256,
-        56
-      ],
-      "29": [
-        256,
-        56
-      ],
-      "8": [
-        32,
-        34
-      ]
+    "format": "modelopt_mxfp8",
+    "parameter_count": {
+      "BF16": 9640893760,
+      "F32": 30795421,
+      "F8_E4M3": 770289303552,
+      "U8": 23555211264
     },
-    "gguf_data_offset": 5051520,
-    "tensor_count": 2134
+    "payload_dtype": "F8_E4M3",
+    "scale_dtype": "U8_E8M0",
+    "scale_group_size": 32,
+    "unquantized_classes": [
+      "lm_head",
+      "model.embed_tokens",
+      "hc_head/hc_pre",
+      "self_attn.linear_gate",
+      "self_attn.indexer.weights_proj",
+      "mlp.gate",
+      "mtp_layers.0.eh_proj"
+    ],
+    "unquantized_dtypes": [
+      "BF16",
+      "F32"
+    ]
   },
-  "source_revision": "779242edccdedc2109a0b36b164263a88f015bfa",
-  "source_tensor_count": 2134
+  "source_revision": "4215ec29de873a998e849cee902654490c7ff4d1",
+  "source_safetensors_count": 130
 }

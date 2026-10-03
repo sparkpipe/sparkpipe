@@ -53,8 +53,8 @@
 #define SPARK_LLM_ROUTE_UNION_TRIM              SET_ME_ROUTE_UNION_TRIM
 
 #define SPARK_LLM_ADAPTER_DESCRIPTOR            SET_ME_ADAPTER_DESCRIPTOR
-#define SPARK_LLM_MODEL_SOURCE_URI              "AngelSlim/Hy4-preview-GGUF"
-#define SPARK_LLM_MODEL_REVISION                "779242edccdedc2109a0b36b164263a88f015bfa"
+#define SPARK_LLM_MODEL_SOURCE_URI              "tencent/Hy4-preview-FP8"
+#define SPARK_LLM_MODEL_REVISION                "4215ec29de873a998e849cee902654490c7ff4d1"
 
 #define SPARK_LLM_FP8_SCALE_BLOCK               32u
 #define SPARK_LLM_KV_BITS                       32u

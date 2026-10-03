@@ -92,9 +92,14 @@ _Static_assert(SPARK_HY4_MODEL_EXPERTS_PER_RANK == {experts // 16}u, "vector exp
 _Static_assert(SPARK_HY4_MODEL_ATTN_QUERY_HEADS_PER_RANK == {heads // 16}u, "vector heads per rank");
 _Static_assert(SPARK_HY4_MODEL_INDEX_HEADS_PER_RANK == 2u, "vector index heads per rank");
 _Static_assert(SPARK_HY4_MODEL_ROUTE_GROUP_MAX == {top_k * 4}u, "vector route group max");
-_Static_assert(SPARK_HY4_MODEL_IS_INDEXER_ACTIVE_LAYER(0u), "vector indexer layer 0");
-_Static_assert(SPARK_HY4_MODEL_IS_INDEXER_ACTIVE_LAYER(4u), "vector indexer layer 4");
-_Static_assert(!SPARK_HY4_MODEL_IS_INDEXER_ACTIVE_LAYER(2u), "vector indexer layer 2");
+_Static_assert(SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(0u), "vector indexer layer 0");
+_Static_assert(SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(1u), "vector indexer layer 1");
+_Static_assert(SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(5u), "vector indexer layer 5");
+_Static_assert(SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(77u), "vector indexer layer 77");
+_Static_assert(!SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(2u), "vector indexer layer 2");
+_Static_assert(!SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(4u), "vector indexer layer 4");
+_Static_assert(!SPARK_HY4_MODEL_IS_INDEXER_FULL_LAYER(76u), "vector indexer layer 76");
+_Static_assert(SPARK_HY4_MODEL_INDEXER_FULL_LAYER_COUNT == 21u, "vector indexer full layer count");
 _Static_assert(SPARK_HY4_STAGEPACK_FP8_PLANES_PER_RANK == 832u, "vector fp8 planes");
 _Static_assert(SPARK_HY4_STAGEPACK_FP8_ALIGNED_PLANES_PER_RANK == 573u, "vector fp8 aligned planes");
 

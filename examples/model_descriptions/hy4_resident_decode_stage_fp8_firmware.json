@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "tencent.hy4-preview.resident-decode-stage-firmware",
+    "revision": "4215ec29de873a998e849cee902654490c7ff4d1"
+  },
+  "metadata": {
+    "architecture": "hy4_resident_decode_stage",
+    "purpose": "Hy4 preview resident decode firmware: gated MLA with learnable sinks and a DSA indexer, four hyper-connection streams, 256+1 elementwise-gated MoE with MXFP8 experts, TP16",
+    "source_model": {
+      "id": "tencent/Hy4-preview-FP8",
+      "revision": "4215ec29de873a998e849cee902654490c7ff4d1",
+      "license": "apache-2.0"
+    },
+    "module_geometry": {
+      "hidden_dimension": 6144,
+      "layer_count": 78,
+      "mtp_layer_count": 1,
+      "mla_head_count": 64,
+      "mla_query_lora_rank": 2048,
+      "mla_latent_dimension": 512,
+      "mla_qk_nope_head_dimension": 192,
+      "mla_qk_rope_head_dimension": 64,
+      "mla_value_head_dimension": 256,
+      "index_head_count": 32,
+      "index_head_dimension": 128,
+      "index_top_k": 2048,
+      "indexer_full_layer_count": 21,
+      "hc_mult": 4,
+      "moe_expert_count": 256,
+      "moe_intermediate_dimension": 2048,
+      "moe_top_k": 8,
+      "dense_intermediate_dimension": 18432,
+      "output_vocab_count": 120832,
+      "tp_degree": 16
+    },
+    "precision_contract": {
+      "expert_weight_codec": "fp8",
+      "expert_scale_encoding": "u8_e8m0",
+      "expert_scale_group_size": 32,
+      "accumulator_codec": "fp32",
+      "fallback_allowed": false,
+      "runtime_precision_selection": "forbidden"
+    },
+    "qualification": {
+      "status": "NOT_MEASURED",
+      "production_ready": false
+    }
+  },
+  "stages": [
+    {
+      "name": "hy4_resident_decode_stage",
+      "target": "cuda.sm121.hy4.resident_decode_stage.fp8",
+      "programs": [
+        {
+          "name": "resident_decode",
+          "id": 1,
+          "max_inflight": 4,
+          "completion": "submit_return",
+          "scheduling": {
+            "flags": [
+              "stream_ordered",
+              "driver_owns_resident_state",
+              "driver_owns_kv_cache",
+              "fixed_firmware",
+              "requires_hidden_transport",
+              "no_file_transport",
+              "no_shell_transport"
+            ],
+            "max_active_slots": 64,
+            "max_new_tokens": 64,
+            "max_resident_sequences": 64,
+            "max_sequence_tokens": 1048576
+          },
+          "operations": [
+            {
+              "name": "hy4_resident_decode_stage",
+              "module": "spark.hy4.resident_decode_stage.fp8.tp16.v1",
+              "configuration": {
+                "expert_weight_codec": "fp8",
+                "fallback_allowed": false,
+                "runtime_backend_selection": "forbidden"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
