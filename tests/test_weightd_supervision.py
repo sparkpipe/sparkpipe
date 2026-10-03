@@ -453,6 +453,7 @@ exec 3>&1
 RANK=0 HUB=hub ROOTS=test LAST_WARM_GEN= LAST_WARM_TS=0
 ssh() { echo FORBIDDEN_SSH >&3; echo 0; }
 root_state() { echo WARMUP_PROBE >&3; echo down; }
+safe_mode_active() { [ -n "${TEST_SAFE:-}" ]; }
 pgrep() { return 1; }
 setsid() { echo FORBIDDEN_SPAWN >&3; }
 systemd-run() { echo FORBIDDEN_SPAWN >&3; }
@@ -468,6 +469,10 @@ curl() { echo FORBIDDEN_CURL >&3; }
                 result = self.serving_gate(self.warmup, G5_WARMUP=warmup)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((result.stdout, result.stderr), (expected, ""))
+
+    def test_safe_mode_skips_the_warmup_request(self):
+        result = self.serving_gate(self.warmup, G5_WARMUP="1", TEST_SAFE="1")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
     def test_rank_comes_from_the_fleet_host_list(self):
         hosts = ["spark%x" % rank for rank in range(16)]

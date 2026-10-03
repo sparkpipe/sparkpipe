@@ -439,6 +439,7 @@ PYTHON_TESTS := \
 	tests/test_weightd_supervision.py \
 	tests/test_fleet_agent_doctor.py \
 	tests/test_fleet_agent_mesh_exchange.py \
+	tests/test_fleet_agent_boot_breaker.py \
 	tests/test_roce_qos_contract.py \
 	tests/test_fleet_agent_multi_root.py \
 	tests/test_ab_fleet.py \

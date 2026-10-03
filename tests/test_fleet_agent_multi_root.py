@@ -305,26 +305,26 @@ echo "STATE $(root_state {PROD})"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("STATE ready", result.stdout)
 
-    def test_autospawn_waits_fifteen_minutes_after_boot(self):
-        self.uptime.write_text("899\n")
+    def test_autospawn_waits_five_minutes_after_boot(self):
+        self.uptime.write_text("299\n")
         result = self.run_agent(f'''
 ensure_root {PROD}
 ensure_root {DEV}
 echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"{PROD}: node up 899s (<15min); autospawn blocked", result.stdout)
-        self.assertEqual(result.stdout.count("autospawn blocked"), 1)
+        self.assertIn(f"{PROD}: node up 299s (<300s); autospawn waits", result.stdout)
+        self.assertEqual(result.stdout.count("autospawn waits"), 1)
         self.assertIn("PIDS 0 0", result.stdout)
         self.assertFalse((self.prod / "launch.txt").exists())
         self.assertFalse((self.dev / "launch.txt").exists())
-        self.uptime.write_text("900\n")
+        self.uptime.write_text("300\n")
         result = self.run_agent(f'''
 ensure_root {PROD} && wait_ready {PROD} || exit 4
 echo "STATE $(root_state {PROD})"
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("autospawn blocked", result.stdout)
+        self.assertNotIn("autospawn waits", result.stdout)
         self.assertIn("STATE ready", result.stdout)
 
     def test_dev_root_waits_for_production(self):
