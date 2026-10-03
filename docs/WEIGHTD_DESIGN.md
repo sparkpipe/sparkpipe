@@ -104,11 +104,29 @@ disconnect of an owner with mesh activity quarantines only that lane
 releases its activity count; other lanes keep working. The quarantined lane is
 reused only by an acquire that carries a topology and passes
 `SparkWeightdMeshLaneConfigure`'s quiescence checks in `node/weightd_mesh.c`: no
-lane activity, no pending raw mesh RPC, and no pending or failed transfer,
-unconsumed doorbell or open wait request on the lane's bands. An acquire
-without a topology gets `BUSY`, and an activity request on a quarantined lane
-gets `IO_ERROR`. Lane reservation does not partition the shared expert-memory
+lane activity, no pending raw mesh RPC, nothing in flight, no open wait request
+and no doorbell that could still ship on the lane's bands. A refusal is `BUSY`
+and logs `WD-LANE-BUSY` with the reason once per change. On success the lane's
+cells are reset to a fresh daemon's state (`WD-LANE-RESET`, with the count of
+failed cells and stale doorbells): doorbell entries, shipped words, wait
+entries, transfer state and their bookkeeping are zeroed and the capabilities
+re-advertised. The band's `BASE` and `CANCEL` words and the slot payloads and
+tails are kept, so rank 0's epoch stays monotonic and a faster peer's first
+round is not lost. A failed transfer fences only its own cell while the lane is
+configured; it no longer refuses the next acquire. An acquire without a
+topology gets `BUSY`, and an activity request on a quarantined lane gets
+`IO_ERROR`. Lane reservation does not partition the shared expert-memory
 budget.
+
+When a peer re-wires (a new record or a QP that left RTS), weightd first drains
+the completion queue, then clears that peer's pending bits in every cell, marks
+those cells failed with the peer named, zeroes the peer's send and RPC counters
+and advances the peer's wire epoch (`WD-PEER-RESET`). RPC work requests carry
+the epoch in their id, so a completion from before the reset never decrements
+the new counters, and transfer completions are already dropped by their
+generation and bit. A shipped wait on a cell that lost a round to the reset
+returns `SPARK_WEIGHTD_MESH_WAIT_ERROR_PEER_RESET` with the peer's physical
+rank in the low bits.
 
 `test_weightd_mesh_mock` runs two actual IPC servers with reversed 2-, 3- and
 4-job startup order across 24 seeded lane permutations, plus capacity,

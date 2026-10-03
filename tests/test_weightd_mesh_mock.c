@@ -1133,9 +1133,10 @@ static void test_mesh_topology(void)
     CHECK(SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_BUSY,
         "partial completion cannot release lane configuration");
     test_complete_range(last - 1u,last);
-    CHECK(test_shipped(band,local) == tag &&
-        SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_OK && entry[0] == tag,
-        "exact same topology reuses drained lane without resetting tags");
+    CHECK(test_shipped(band,local) == tag,"the drained round shipped before re-configuration");
+    CHECK(SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_OK && entry[0] == 0u &&
+        test_shipped(band,local) == 0u && weightd_mesh.doorbell_posted[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local] == 0u,
+        "re-acquired idle lane starts from zero cells (WD-LANE-RESET)");
     bad = subset;bad.physical_ranks[0] = 0u;
     CHECK(SparkWeightdMeshLaneConfigure(7u,&bad) == SPARK_STATUS_UNSUPPORTED,
         "even drained lane rejects a changed topology until daemon restart");
@@ -1167,9 +1168,13 @@ static void test_mesh_topology(void)
     }
     SparkWeightdMeshDrainCq();
     test_complete_range(first + 1u,last);
-    CHECK(SparkWeightdMeshLaneConfigure(6u,&permuted) == SPARK_STATUS_IO_ERROR &&
+    CHECK(weightd_mesh.transfers[12u * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + 4u].failed != 0u &&
+        test_post_slot(12u,4u,tag + 1u,1u << 0u) == SPARK_STATUS_IO_ERROR,
+        "a failed cell fences the next publication while its lane stays configured");
+    CHECK(SparkWeightdMeshLaneConfigure(6u,&permuted) == SPARK_STATUS_OK &&
+        weightd_mesh.transfers[12u * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + 4u].failed == 0u &&
         SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_OK,
-        "failed source generation remains fenced without poisoning a different lane");
+        "re-configuring the idle lane resets its failed cell without poisoning a different lane");
     first = spark_stub_ibv_posted_count();
     CHECK(SparkWeightdMeshBroadcast(1u << 0u,0u,64u,0u,0u,0u) == 1u &&
         SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_BUSY,
@@ -1338,6 +1343,78 @@ static void test_mesh_lane_protocol(void)
     }
 }
 
+static void test_mesh_peer_reset(uint32_t local_rank)
+{
+    SparkWeightdMeshTopology topology = test_identity_topology(16u,local_rank);
+    const uint32_t lane = 5u,band = 10u,peer = 7u;
+    const uint32_t physical = test_peer_rank(peer,local_rank);
+    const uint32_t index = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank;
+    SparkWeightdMeshWaitRequest *request = test_wait_request(band,local_rank);
+    uint64_t *base = (uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+        (uint64_t)(SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE + 2u * band) * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+    uint64_t *cancel = (uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+        (uint64_t)(SPARK_WEIGHTD_MESH_DOORBELL_CELL_CANCEL + 2u * band) * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+    uint64_t *tail = test_peer_tail(band,physical,9u);
+    const uint64_t tag = 41u,base_value = UINT64_C(0x1234),cancel_value = UINT64_C(0x77),tail_value = UINT64_C(0x5151);
+    uint32_t first,last,i;
+    char log_path[256];
+    SparkStatus status;
+    test_complete_range(0u,spark_stub_ibv_posted_count());
+    CHECK(SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_OK,"peer reset lane starts configured");
+    *base = base_value;
+    *cancel = cancel_value;
+    *tail = tail_value;
+    CHECK(SparkWeightdMeshSetActivity(lane,1u) == SPARK_STATUS_OK,"peer reset producer begins");
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_slot(band,local_rank,tag,1u << physical) == SPARK_STATUS_OK &&
+        weightd_mesh.transfers[index].pending != 0u,"payload and tail to one peer are in flight");
+    last = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshBroadcast(1u << physical,0u,64u,0u,0u,0u) == 1u &&
+        weightd_mesh.rpc_pending[peer] == 1u && weightd_mesh.send_pending[peer] == 3u,
+        "an rpc write to the same peer is in flight beside the round");
+    CHECK(test_write_record(physical,31u) == 0,"the peer restarts and publishes a new record");
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-peer-reset.log",SPARK_WEIGHTD_MESH_DIR);
+    test_capture_begin(log_path);
+    SparkWeightdMeshTryWire();
+    test_capture_end();
+    CHECK(test_file_contains(log_path,"WD-PEER-RESET") && test_file_contains(log_path,"reason=record") &&
+        test_file_contains(log_path,"cells=1 bits=2 send_pending=3 rpc_pending=1"),
+        "the restarted peer's in-flight work is reset before re-wiring");
+    CHECK(weightd_mesh.transfers[index].pending == 0u &&
+        weightd_mesh.transfers[index].failed == SPARK_WEIGHTD_MESH_TRANSFER_PEER_RESET &&
+        weightd_mesh.transfers[index].reset_peer == physical,"the lost round fails and names the peer");
+    CHECK(weightd_mesh.send_pending[peer] == 0u && weightd_mesh.rpc_pending[peer] == 0u &&
+        SparkWeightdMeshReady() == 1u,"the peer's counters restart from zero on a ready mesh");
+    (void)test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,tag,0u,cancel_value);
+    SparkWeightdMeshWaitRequestsPoll(200u);
+    CHECK(request->ready == 1u && request->error == (SPARK_WEIGHTD_MESH_WAIT_ERROR_PEER_RESET | physical),
+        "the shipped wait of the lost round reports the reset peer");
+    for (i=first; i<=last; i++)
+    {
+        SparkStubIbvPostedWork work;
+        assert(spark_stub_ibv_posted(i,&work) == 0);
+        assert(spark_stub_ibv_complete(work.wr_id,IBV_WC_SUCCESS) == 0);
+    }
+    SparkWeightdMeshDrainCq();
+    CHECK(weightd_mesh.send_pending[peer] == 0u && weightd_mesh.rpc_pending[peer] == 0u &&
+        test_shipped(band,local_rank) != tag,"late completions from before the reset change nothing");
+    CHECK(SparkWeightdMeshSetActivity(lane,0u) == SPARK_STATUS_OK,"the producer of the lost round ends");
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-lane-reset.log",SPARK_WEIGHTD_MESH_DIR);
+    test_capture_begin(log_path);
+    status = SparkWeightdMeshLaneConfigure(lane,&topology);
+    test_capture_end();
+    CHECK(status == SPARK_STATUS_OK && test_file_contains(log_path,"WD-LANE-RESET") &&
+        test_file_contains(log_path,"failed_cells=1"),"re-acquiring the idle lane resets its cells instead of refusing");
+    CHECK(weightd_mesh.transfers[index].failed == 0u && weightd_mesh.doorbell_posted[index] == 0u &&
+        test_shipped(band,local_rank) == 0u && request->request_id == 0u &&
+        request->capabilities == SPARK_WEIGHTD_MESH_CAPABILITIES,"the lane's cells equal a fresh daemon's");
+    CHECK(*base == base_value && *cancel == cancel_value && *tail == tail_value,
+        "BASE, CANCEL and peer slot tails survive the lane reset");
+    CHECK(test_post_slot(band,local_rank,tag + 1u,1u << physical) == SPARK_STATUS_OK,
+        "the reset lane posts its next round to the restarted peer");
+    test_complete_range(spark_stub_ibv_posted_count() - 2u,spark_stub_ibv_posted_count());
+}
+
 static void test_mesh_activity_protocol(uint32_t pending_first)
 {
     SparkWeightdServerConfig config;
@@ -1405,7 +1482,7 @@ static void test_mesh_activity_protocol(uint32_t pending_first)
     CHECK(atomic_load(&waiter.returned) == 1u,"queued GPU publication keeps progress awake without active producers");
     pthread_mutex_lock(&SparkWeightdMeshWireLock);
     post_last = spark_stub_ibv_posted_count();
-    CHECK(post_last - post_first == 6u && test_shipped(0u,0u) == 1u,
+    CHECK(post_last - post_first == 6u && test_shipped(0u,0u) == 0u,
         "final queued publication posts payload and tail while retaining its source");
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
     memset(&waiter,0,sizeof(waiter));
@@ -1811,6 +1888,7 @@ int main(void)
     test_slice_routes(local_rank);
     test_peer_routes(local_rank);
     test_mesh_topology();
+    test_mesh_peer_reset(local_rank);
 
     /* case 6: a second daemon instance with its own record dir must not
      * touch ours — the two-daemons-one-host separation (the fleet's
