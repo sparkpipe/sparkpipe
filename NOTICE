@@ -30,10 +30,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 tools/hy4_dequant/hy4_iq_dequant_vendor.h is adapted from ggml-org/llama.cpp
-(https://github.com/ggml-org/llama.cpp, commit 0cea36222): the IQ codebook
-tables (kmask_iq2xs, ksigns_iq2xs, iq2xxs_grid, iq3xxs_grid, iq1s_grid) of
-ggml/src/ggml-common.h and the dequantize_row_iq2_xxs, dequantize_row_iq3_xxs
-and dequantize_row_iq1_m math of ggml/src/ggml-quants.c, with the ggml
+(https://github.com/ggml-org/llama.cpp, commit 0cea36222): the codebook
+tables kmask_iq2xs, ksigns_iq2xs, iq2xxs_grid, iq3xxs_grid, iq1s_grid and
+kvalues_iq4nl of ggml/src/ggml-common.h, and dequantize_row_iq2_xxs,
+dequantize_row_iq3_xxs, dequantize_row_iq1_m, dequantize_row_q4_K,
+dequantize_row_q5_K, dequantize_row_q6_K, dequantize_row_iq4_xs and
+get_scale_min_k4 of ggml/src/ggml-quants.c, renamed and with the ggml
 dependencies removed. llama.cpp is distributed under the following license:
 
 MIT License

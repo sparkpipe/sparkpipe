@@ -33,3 +33,28 @@ python3 tests/test_weightd_supervised.py
 make -j4 build/test_model_resident_deadline
 build/test_model_resident_deadline
 ```
+
+## Startup check
+
+`model_residentd` calls `SparkModelResidentdPrepareWeightd`
+(`node/weightd_spawn.c`) when the deployment has a non-empty
+`weightd.socket_path`, before `SparkModelResidentdInitialize`. It checks
+`SPARK_WEIGHTD_ATTACH`, reads the digest sidecar, probes the socket and sets
+two environment variables.
+
+- `SPARK_WEIGHTD_ATTACH`, when set, must be exactly `1`. Any other value,
+  the empty string included, fails.
+- The sidecar must be a regular file. Its first 64 bytes must be lowercase
+  hex, followed by end of file, a space, a tab or a newline. Nothing after
+  that is read.
+- The socket probe is one non-blocking `connect` on the Unix socket, closed
+  at once. It sends no `HELLO`.
+- On success it sets `SPARK_WEIGHTD_SOCKET` to the deployment socket and
+  `SPARK_WEIGHTD_PACK_SHA256` to the digest, replacing any existing values.
+  `SparkWeightdAttachRequested` reads the socket from there. The shared lazy
+  open helper (`include/sparkpipe/family/module/spark_module_lazy_open.h`)
+  reads the digest, and `SparkWeightdAttachPack` falls back to it when the
+  slice carries none.
+- On failure it returns a negative code. Residentd logs a line starting
+  `model_residentd weightd-required status=<code> root=<root> socket=<socket>`
+  and exits 1.

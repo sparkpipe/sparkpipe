@@ -56,3 +56,59 @@ kv_a_norm; kv_b decomposed attn_k_b/attn_v_b; indexer: wq_b/wk/weights_proj/
 k_norm -> top-k 2048 index over token scores (full indexer own kv every 4th
 layer, shared layers reuse layer 0's index); sinks added per head; scale
 1/sqrt(256).
+
+## Vendored dequantization (`hy4_iq_dequant_vendor.h`)
+
+`hy4_iq_dequant_vendor.h` holds the block decoders that the forward tools
+and `hy4_iq_dequant_ref` in this directory and the CUDA tests in
+`tools/hy4_gpu` use. It is adapted from ggml in ggml-org/llama.cpp at commit
+`0cea36222`, the same commit as the ground-truth reference named at the top
+of this file. The MIT license text that covers it is in the repository
+`NOTICE`.
+
+IQ decoders:
+
+- Tables `kmask_iq2xs`, `ksigns_iq2xs`, `iq2xxs_grid`, `iq3xxs_grid` and
+  `iq1s_grid` from `ggml/src/ggml-common.h`, with `NGRID_IQ1S` and
+  `IQ1S_DELTA`.
+- The arithmetic of `dequantize_row_iq2_xxs`, `dequantize_row_iq3_xxs` and
+  `dequantize_row_iq1_m` from `ggml/src/ggml-quants.c`, as
+  `hy4_dequant_iq2_xxs`, `hy4_dequant_iq3_xxs` and `hy4_dequant_iq1_m`.
+
+K-quant and IQ4_XS decoders, taken from the same commit with renames only:
+`dequantize_row_q4_K`, `dequantize_row_q5_K`, `dequantize_row_q6_K`,
+`dequantize_row_iq4_xs` and `get_scale_min_k4` become
+`hy4_dequant_row_q4_K`, `hy4_dequant_row_q5_K`, `hy4_dequant_row_q6_K`,
+`hy4_dequant_row_iq4_xs` and `hy4_get_scale_min_k4`, with the
+`kvalues_iq4nl` table.
+
+Changes from ggml. The arithmetic is unchanged.
+
+- `GGML_FP16_TO_FP32` is replaced by `hy4_fp16_to_fp32`, a plain IEEE
+  binary16 to binary32 conversion that handles zero, subnormals, infinity
+  and NaN.
+- `GGML_TABLE_BEGIN` and `GGML_TABLE_END` are defined locally as plain
+  `static const` arrays.
+- The three IQ decoders take a raw byte pointer and a block count instead
+  of a block-struct pointer and an element count. They step fixed strides
+  of 66 (IQ2_XXS), 98 (IQ3_XXS) and 56 (IQ1_M) bytes per 256 values.
+  IQ2_XXS and IQ3_XXS read the fp16 scale at the start of the block with
+  `memcpy`. IQ1_M reads its 8 scale bytes at offset 48 of the block as four
+  16-bit words and assembles the fp16 scale from their top 4 bits.
+- The K-quant and IQ4_XS decoders keep the ggml signature: block pointer,
+  element count `k`, `assert(k % QK_K == 0)`. Their block structs are
+  redeclared with `uint16_t` for the fp16 fields, and `_Static_assert`s pin
+  the sizes at 144 (Q4_K), 176 (Q5_K), 210 (Q6_K) and 136 (IQ4_XS) bytes.
+
+Block geometry:
+
+- The sizes used for types 12, 13, 14, 16, 18 and 29 (144, 176, 210, 66, 98
+  and 56 bytes per 256 values) match `source_precision.ggml_type_geometry`
+  in `model_contracts/hy4_ud_iq1m_authoritative.json`.
+  `tools/hy4_tp16_shard.py` solves that table from the GGUF's tensor
+  offsets; `--dry-census` prints it without writing bundles.
+- Type 23 is an open question. `hy4_generate` and `hy4_stack_forward`
+  decode it as IQ4_XS at 136 bytes per 256 values, but the contract lists
+  type 23 at 72 bytes per 256 values, as does the sharder's `GGML_TYPES`
+  table, and the contract notes that type ids follow the publisher's patched
+  llama.cpp build. Settle which is right before trusting a type-23 decode.

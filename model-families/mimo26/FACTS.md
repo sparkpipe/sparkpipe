@@ -106,6 +106,59 @@ where they are not data. Emission is staged/resumable (`--emit`/`--assemble`
 /`--verify`, `--layer-window FIRST:COUNT` for TTL-bounded fanout); verify
 byte-compares every plane against the checkpoint.
 
+### Tensor kinds, header fields and per-rank census
+
+`modules/mimo26_resident_decode_stage/source/spark_mimo26_stagepack_format.h`
+is the C side of the M26P wire. The values of `SparkMimo26StagePackTensorKind`
+equal the `KIND_*` constants in `tools/mimo26_stagepack.py`.
+
+**Tensor kinds.**
+
+- **Kinds 0-2** (embedding, final norm, LM head) are the global tensors
+  (`SparkMimo26StagePackIsGlobal`). They are not part of the shared
+  `SparkStagePackCommonTensorKind`, but they use the same values as
+  qwen4_flash.
+- **Kinds 3-5** (attention norm, MLP norm, MoE router gate) have the values
+  of the shared `SparkStagePackCommonTensorKind`. mimo26 does not use the
+  shared kinds 6-21.
+- **Kinds 22-33** are the family block: sink bias, router gate bias, q, k,
+  v, o_proj, the three dense-MLP tensors, and the three expert slabs at
+  31-33 (`SparkMimo26StagePackIsExpert`).
+  `SPARK_MIMO26_STAGEPACK_TENSOR_KIND_COUNT` is 34.
+
+**Header and entry fields.**
+
+- `SparkMimo26StagePackHeader` matches `SparkStagePackHeaderCommon` field
+  for field, which `SPARK_STAGEPACK_HEADER_LAYOUT_PROOF` checks.
+- The full/SWA layer pattern is irregular, so the tool writes 0 for
+  `attention_period`, `full_attention_phase` and the GDN fields.
+- Per-layer kinds come from compile-time tables in the family model headers:
+  `SPARK_MIMO26_PRO_MODEL_LAYER_KIND` and `SPARK_MIMO26_MODEL_LAYER_KIND`,
+  plus the matching `_LAYER_IS_MOE` tables. `tests/test_mimo26_census.py`
+  checks each table against the census (`hybrid_layer_pattern`,
+  `moe_layer_freq`).
+- The sixth entry field is `scale_group_size` in the C struct, and the tool
+  writes 0 there. The MXFP4 group size (32) travels in the header's
+  `mxfp4_group_size`.
+
+**Census.** `SparkMimo26StagePackExpectedTensorCount(layer_count,
+swa_layer_count, moe_layer_count)` gives the number of directory entries in
+one rank pack. The count does not depend on the TP degree:
+
+- 3 globals;
+- plus 6 per layer (attention norm, MLP norm, q, k, v, o_proj);
+- plus 1 per SWA layer (sink bias);
+- plus 5 per MoE layer (router gate, router bias, three expert slabs);
+- plus 3 per dense layer (dense-MLP gate, up and down).
+
+This gives 831 for pro (70 layers: 60 SWA, 69 MoE) and 568 for flash (48
+layers: 39 SWA, 47 MoE). `tests/test_mimo26_stagepack_format.py` pins both
+values.
+
+No mimo26 loader exists, so nothing enforces the count at load time.
+`tools/mimo26_stagepack.py --verify` compares the pack's `tensor_count` with
+the tool's own plan.
+
 ## Registration
 
 - Geometry headers: `include/sparkpipe/spark_mimo26_pro_model.h`,
