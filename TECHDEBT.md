@@ -398,7 +398,7 @@ citations refer to that commit.
   `SparkWeightdServerConfig.kv_reserve_bytes` (`:371`).
   `runtime/spark_weightd.c` never reads that field: arena and expert-pool
   admission compares against `device_bytes_max` alone
-  (`runtime/spark_weightd.c:996-997`, `:1449-1450`, `:1834-1835`). An operator
+  (`runtime/spark_weightd.c:956-957`, `:1392-1393`, `:1777-1778`). An operator
   who sets a reserve expects device memory to be held back for KV, but weightd
   can lease all of it to weights, and the engine's KV `cudaMalloc` then fails
   or crowds out co-resident drivers. Close it by subtracting the reserve from
@@ -411,8 +411,8 @@ citations refer to that commit.
   `SPARK_WEIGHTD_SOCKET` is unset and `SPARK_WEIGHTD_ATTACH` is not `1`: a
   retryable status for a missing configuration, with no operation outstanding
   (I17). k3 returns it from `SparkK3StageRunnerInitialize`
-  (`modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu:1153-1164`)
-  and adapter initialize (`spark_k3_serving_adapter.c:605-607`), and
+  (`modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu:1116-1127`)
+  and adapter initialize (`spark_k3_serving_adapter.c:588-590`), and
   `tests/test_k3_attach_contract.c:159-162` asserts `BUSY`. Other modules read
   the same `BUSY` as 'attach not requested' and load directly (next entry).
   Return a non-retryable configuration status from
@@ -421,7 +421,7 @@ citations refer to that commit.
   that status.
 - Left out on purpose (2026-10-02): A deployment may omit the `weightd` member
   (`runtime/model_resident_deployment.c:563-568`); residentd then skips
-  weightd (`node/model_residentd.c:3238-3248`) and
+  weightd (`node/model_residentd.c:3235-3245`) and
   `SparkWeightdAttachRequested` answers `BUSY`. The shared `LazyOpen`
   (`include/sparkpipe/family/module/spark_module_lazy_open.h:10-12`, used by
   glm52 and laguna), qwen38_max
@@ -430,14 +430,20 @@ citations refer to that commit.
   (`spark_dsv4_resident_decode_stage_module.c:1055-1056`) treat that as
   success, and their pack loaders copy the whole stage pack to device
   (`spark_glm52_resident_decode_stage_module.c:529-545`,
-  `model-families/common/include/sparkpipe/spark_pack_load_common.h:196-202`).
+  `model-families/common/include/sparkpipe/spark_pack_load_common.h:191-197`).
   `c67be235e` made attach mandatory because direct full-pack loads by several
   drivers kill Sparks, but only glm5_next refuses this case (`:731-733`); the
   GLM-5.3 Full lane renders `weightd` (`tools/glm53full_lane.py:127`), so it
   is latent there. Make the `weightd` member required, make every module fail
   initialization when attach is not configured, and prove it with a GLM-5.3
   Full residentd start from a deployment without `weightd` that fails before
-  any device allocation.
+  any device allocation. The same eager copy also happens with
+  attach configured (2026-10-03): the laguna, qwen38_max and qwen4_flash
+  region hooks (`SparkLagunaModuleRegionHook`, `SparkQwen38MaxModuleRegionHook`,
+  `SparkQwen4FlashModuleRegionHook`) return 0 when the lazy pack is absent or
+  not ready or a `SparkWeightdLazyPackSlice` fails, and the common loader in
+  `spark_pack_load_common.h` then copies the entry to device with
+  `SparkStageModuleLoadDeviceRegion` instead of failing the load.
 
 ## KV sharding
 
@@ -725,9 +731,9 @@ citations refer to that commit.
 - Left out on purpose (2026-10-02): A deployment node with no
   `kv_backing_directory` still spills KV under `/tmp` in three drivers:
   glm5_next
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1677-1685`),
+  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1672-1680`),
   laguna
-  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:790-798`)
+  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:782-790`)
   and ling
   (`modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c:648-656`).
   71c2a7692 made the common binding refuse the load
@@ -739,14 +745,14 @@ citations refer to that commit.
   field removed that fails with a named error for every driver. glm5_next and
   laguna also size that backing to `page_count * payload_bytes` and ignore
   `kv_backing_maximum_bytes`
-  (`spark_glm5_next_resident_decode_stage_module.c:1686`,
-  `spark_laguna_resident_decode_stage_module.c:799`), so spilled pages land
+  (`spark_glm5_next_resident_decode_stage_module.c:1681`,
+  `spark_laguna_resident_decode_stage_module.c:791`), so spilled pages land
   outside the deployment's declared storage path and budget.
 - Left out on purpose (2026-10-02): Every production page store is anonymous:
   the common binding (`runtime/stage_kv_binding.c:176`) and the glm5_next
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1581`,
-  `:1673`), laguna
-  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:786`),
+  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1577`,
+  `:1668`), laguna
+  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:778`),
   ling
   (`modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c:644`)
   and dsv4
@@ -930,7 +936,7 @@ citations refer to that commit.
   no weight revision or content digest
   (`spark_qwen38_max_stagepack_format.h:64-94`,
   `spark_muse_glimmer_stagepack_format.h:38-68`,
-  `include/sparkpipe/spark_stagepack_format.h:83-113`). Two model revisions
+  `include/sparkpipe/spark_stagepack_format.h:78-108`). Two model revisions
   with the same shapes write under the same key prefix, and the key names the
   request's sequence id rather than its token prefix, so one request can never
   restore a block another request stored. Close it by keying blocks on the
@@ -1051,7 +1057,7 @@ Related common-code debt:
   the whole first reply and tokens identical to an uncached run.
 - Left out on purpose (2026-10-02): residentd's slot claim checks slot
   ownership and the lane's request id, generation and sequence id
-  (`node/model_residentd.c:714-783`), not position continuity. Continuity is
+  (`node/model_residentd.c:711-780`), not position continuity. Continuity is
   checked only inside adapters: the common `SparkStageKvBindingContinuity`
   (`runtime/stage_kv_binding.c:507`) has one caller, glm52
   (`spark_glm52_resident_decode_stage_module.c:2223`). An adapter that skips
@@ -1098,11 +1104,11 @@ Related common-code debt:
 - Left out on purpose (2026-10-02): A reconnect or restart of residentd throws
   away the engine's prefix index, and nothing rebuilds it from a durable
   store. residentd gives each client connection a new generation
-  (`node/model_residentd.c:1232`), the pipeline folds it into the session
+  (`node/model_residentd.c:1229`), the pipeline folds it into the session
   fingerprint (`runtime/model_pipeline_client.c:716-728`), and the engine
   resets its prefix index when the fingerprint changes
-  (`runtime/model_batch_engine.c:2485-2499`, `SparkPrefixCacheReset` at
-  `:2471`); a restarted engine also starts empty (`:1256`), and
+  (`runtime/model_batch_engine.c:2483-2497`, `SparkPrefixCacheReset` at
+  `:2469`); a restarted engine also starts empty (`:1256`), and
   `cache/prefix_cache.c` has no load or rebuild path. The engine marks a lane
   PREFIX only from its own index lookup
   (`runtime/model_batch_engine.c:767-770`, `:2046-2051`), and PREPARE restores
@@ -1163,7 +1169,7 @@ Related common-code debt:
   resets a slot (`include/sparkpipe/spark_score_dump.h:103-144`), and neither
   caller tells it that a restored prefix now owns the slot
   (`spark_glm52_resident_decode_stage_module.c:1540`,
-  `spark_glm5_next_resident_decode_stage_module.c:4390`). A restored lane
+  `spark_glm5_next_resident_decode_stage_module.c:4384`). A restored lane
   whose first row is at position P can land on a slot that last held a
   different sequence of at least P tokens. That row gets a key chained from
   the other sequence and the KEY_VALID flag, although
@@ -1178,17 +1184,17 @@ Related common-code debt:
 - Left out on purpose (2026-10-02): glm5_next and laguna were not moved onto
   `runtime/stage_kv_binding.c`, so each keeps a private copy of the KV
   plumbing. That copy covers model table, arena and page store setup
-  (`spark_glm5_next_resident_decode_stage_module.c:1596-1724`,
-  `spark_laguna_resident_decode_stage_module.c:726-829`), page-table builds
-  (`:1418-1440`, `:656-677`), lane transactions (glm5_next `:1873`, `:5861`,
-  `:6515`, `:6623`; laguna `:860`, `:1467`, `:1652`) and the upload in the
+  (`spark_glm5_next_resident_decode_stage_module.c:1591-1719`,
+  `spark_laguna_resident_decode_stage_module.c:718-821`), page-table builds
+  (`:1418-1440`, `:648-669`), lane transactions (glm5_next `:1867`, `:5855`,
+  `:6508`, `:6616`; laguna `:852`, `:1459`, `:1644`) and the upload in the
   driver-named family header. Fixes made in the binding do not reach these
   copies. Both drivers still fall back silently to
   `/tmp/sparkpipe_<model>_kv_<revision>` when the deployment leaves
-  `kv_backing_directory` null (glm5_next `:1677-1685`, laguna `:790-798`; ling
+  `kv_backing_directory` null (glm5_next `:1672-1680`, laguna `:782-790`; ling
   the same at `spark_ling_resident_decode_stage_module.c:648-656`), which
   `runtime/model_resident_deployment.c:205-206` allows. The glm5_next module
-  also sizes its backing quota from its page count (`:1686`) instead of the
+  also sizes its backing quota from its page count (`:1681`) instead of the
   stored deployment `kv_backing_maximum_bytes` (`:464`). The binding has no
   hook for per-prefix recurrent state
   (`include/sparkpipe/spark_stage_kv_binding.h:20-46`), and glm5_next's KDA
@@ -1359,6 +1365,13 @@ Related common-code debt:
   route gather, in-load E8M0 decode, and full expert-path comparison.
 - Bind GLM 5.2 dense gate, up, down, and router-logit tensor-core linear plans
   at startup before required-stage validation.
+- `tools/gen_geometry_header.py --check` reports drift for glm5_next and
+  qwen4_flash (2026-10-03): the tracked headers carry defines the generator
+  does not emit (for example `SPARK_GLM5_NEXT_REPLAY_ROWS_MAX` and the
+  `MISS_RING_*` defines) and the qwen4_flash header includes `llm_defines.h`.
+  No gate runs the check; only qwen38_27b is byte-identical. Bring the
+  generator and both headers back into agreement and run `--check` for every
+  family in the host suite.
 
 ## Speculation
 
@@ -1498,17 +1511,17 @@ Related common-code debt:
   only, so a TP16 PP1 deployment cannot load
   ([`docs/K3_PERF.md`](docs/K3_PERF.md)).
 - Left out on purpose (2026-10-02): `K3ServingReset`
-  (`modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c:921-926`)
+  (`modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c:904-909`)
   returns OK without touching the stage runner, and `K3ServingPrefetch`,
   `K3ServingResolvePrefetch`, `K3ServingProgress` and `K3ServingQuiesce`
-  (`:872-902`) are also success-returning no-ops (I01). On a client reset
+  (`:855-885`) are also success-returning no-ops (I01). On a client reset
   residentd calls `reset`, takes OK as done, zeroes its own slot table and
-  sets `reset_done` (`node/model_residentd.c:2998-3014`), while nothing clears
+  sets `reset_done` (`node/model_residentd.c:2995-3011`), while nothing clears
   the K3 runner's slots, so their KDA and KV state from the previous client
   stays in place (I16). k3 is refused at load today (no PREFIX_REUSE,
   `:26-30`, `:49-51`). Close it by having reset release every runner slot
   through `SparkK3StageRunnerResetSlots` (used today only for RELEASE at
-  `:780`) and refuse stale-generation submissions, and by making each other
+  `:763`) and refuse stale-generation submissions, and by making each other
   hook do its work or return `UNSUPPORTED` naming itself; prove it on the
   fleet with a client reconnect after a completed request, after which a
   request on the same slot matches a fresh-process run token for token.
@@ -1667,19 +1680,6 @@ Related common-code debt:
   DEBUG` or delete them, and make a release pack without PLE tensors fail to
   load. Prove it on a Spark: release qwen4_flash and qwen38_max loads refuse
   the variables and pass their T1 gates.
-- Left out on purpose (2026-10-02): About 50 C, C++ and CUDA sources outside
-  `tests/` still carry comments, against I48 and AGENTS.md. Examples:
-  `runtime/spark_weightd.c` (54 comment lines),
-  `include/sparkpipe/spark_kv_page_store.h`, `spark_kv_page_cache.h`,
-  `ring/transport/tp_device_collective.c:2020-2032` (the host-register skip
-  rationale), `node/model_residentd.c:400` and
-  `runtime/model_batch_engine.c:2316`. `inference/kernels/route.cuh:11` is a
-  marker comment that `tests/test_cuda_performance_contracts.py:378` requires
-  word for word, so the test keeps a comment alive. The fix: move each
-  rationale into documentation, delete the comments and the wording assertion,
-  and add a source lint that fails on any comment in a C, C++ or CUDA file
-  outside tests. It is closed when that lint passes on the whole tree.
-
 ## Runtime completion
 
 - Add bounded cancellation and drain for terminal client I/O failures so every
@@ -1716,10 +1716,10 @@ Related common-code debt:
   accuracy, performance, route counters, and drained queue state.
 - Left out on purpose (2026-10-02): When a glm5_next graph replay is stuck or
   its wait times out, the module clears `graph_path_enabled`
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:4686`,
-  `:4734`), fails that frame, and runs every later wave eager until the
+  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:4680`,
+  `:4728`), fails that frame, and runs every later wave eager until the
   process restarts. The degraded state appears only as `graph_path=2` in the
-  `G5N-WAVE-TIMING` log line (`:2848-2853`, `:5928`); `degrade_graph_stuck` is
+  `G5N-WAVE-TIMING` log line (`:2842-2847`, `:5922`); `degrade_graph_stuck` is
   never read and readiness is unchanged, so the rank keeps serving on the slow
   path while reporting ready (I22). Report the degraded path in the snapshot
   and readiness, fail benchmark verdicts taken on a degraded rank, and prove
@@ -1918,7 +1918,7 @@ door and the static pages and playground in `site/`.
 - Left out on purpose (2026-10-02): `tools/glm5_next_driver_compare.py` cannot
   produce a receipt. Its probe gives the driver a TP16 context with collective
   identifier 0 and no `KV_SHARD` flag (`tools/glm5_next_driver_probe.c:95`,
-  `:100`), which the module has refused at configure since `43ddc3ee4`
+  `:99`), which the module has refused at configure since `43ddc3ee4`
   (`spark_glm5_next_resident_decode_stage_module.c:482-491`) in resident and
   lazy mode alike; resident mode would fail anyway because weightd attach is
   mandatory (`:731-733`). The compare tool also requires the literal
@@ -1998,8 +1998,8 @@ door and the static pages and playground in `site/`.
 - Left out on purpose (2026-10-02): The gemma4 GPU validator skips
   `SparkGemma4ValCheckChainSliding`, its only chained-layer check, when
   `SPARK_GEMMA4_VALIDATION_CHAIN=0`
-  (`modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu:1960-1964`),
-  and still prints PASS and exits 0 (`:1965-1967`). `make publish`
+  (`modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu:1934-1938`),
+  and still prints PASS and exits 0 (`:1939-1941`). `make publish`
   (`modules/resident_decode_stage_rules.mk:203-222`) treats exit 0 as
   validation (`runtime/pack/module_library.c:938-954`), so a gemma4 module can
   be published with a validation receipt for a layer chain that never ran.
@@ -2059,14 +2059,14 @@ door and the static pages and playground in `site/`.
   tolerances, fail the validator until they exist, and prove it with a
   validator run on a Spark against the GLM-5.3 Flash TP16 rank pack.
 - Left out on purpose (2026-10-02): `tools/glm5_next_driver_probe.c:95` and
-  `:100` configure the glm5_next driver at TP16 with collective identifier 0
+  `:99` configure the glm5_next driver at TP16 with collective identifier 0
   and no `KV_SHARD` flag, a context the real module refuses
   (`spark_glm5_next_resident_decode_stage_module.c:482-491`), so the probe
   computes nothing on a real driver. `tests/test_glm5_next_driver_probe.c:25`
   asserts that same context against `fake_create`, and
   `tools/cuda13_sm121a_compile_gate.sh:171-174` runs it in CI, so CI stays
   green while the probe is dead; the CLI also accepts only 1, 3 or 5 rows
-  (`:547-549`). Configure the probe with a context the real module accepts,
+  (`:545-547`). Configure the probe with a context the real module accepts,
   accept any row count up to the execution capacity, make the test assert the
   real module's acceptance rules, and prove it with a probe receipt from a
   Spark run.
@@ -2103,7 +2103,7 @@ door and the static pages and playground in `site/`.
 - Left out on purpose (2026-10-02): The qwen38_max GPU validator runs its GDN
   step, gated-norm and chunk checks only at `tp_degree` 1
   (`modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu:315`,
-  `:389`, `:606`) and prints PASS (`:1168-1169`). `59b082ded` deleted the TP4
+  `:389`, `:606`) and prints PASS (`:1164-1165`). `59b082ded` deleted the TP4
   rank-local GDN check because it could not fail, and nothing replaced it, so
   the head-sharded GDN launches qwen38_max serves with have no numerical gate
   (I40). Add a rank-local GDN tier at the serving TP degree compared with a
