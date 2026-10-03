@@ -18,6 +18,7 @@ DATA_SECTION = re.compile(r"^\.(?:data|rodata)(?:\.|$)")
 RELOCATION_HEADER = re.compile(r"^RELOCATION RECORDS FOR \[(.+)\]:$")
 RELOCATION_ENTRY = re.compile(r"^([0-9a-f]+)\s+(R_\S+)\s+(\S+)$")
 NUMBERED = re.compile(r"^(.+)\.(\d+)$")
+PADDING = re.compile(r"^(?:nop\w*|int3|xchg %ax,%ax|data16 .*|cs nop\w* .*)$")
 
 
 def run(tool, *arguments):
@@ -45,17 +46,34 @@ def local_constants(path):
             constants[fields[7]] = "STR(%s)" % data[start:data.index(b"\0", start)].hex()
         else:
             constants[fields[7]] = "CST(%s)" % data[start:start + (entry or size - int(fields[1], 16))].hex()
+    for name, offset, size, entry in table.values():
+        if ".str" in name:
+            cursor = 0
+            while cursor < size:
+                end = data.index(b"\0", offset + cursor)
+                constants[section_offset(name, cursor)] = "STR(%s)" % data[offset + cursor:end].hex()
+                cursor = end + 1 - offset
+        elif ".cst" in name and entry:
+            for cursor in range(0, size, entry):
+                constants[section_offset(name, cursor)] = "CST(%s)" % data[offset + cursor:offset + cursor + entry].hex()
     return constants
 
 
-def symbol(text, constants):
+def section_offset(name, offset):
+    return name if offset == 0 else "%s+0x%x" % (name, offset)
+
+
+def symbol(text, constants, kind=""):
+    if kind.startswith("R_AARCH64_") and text in constants:
+        return constants[text]
     return re.sub(r"\.LC\d+", lambda found: constants.get(found.group(0), found.group(0)), text)
 
 
 def normalize(text, start, constants):
-    relocations = ["reloc %s %s" % (kind, symbol(target, constants)) for kind, target in INLINE_RELOCATION.findall(text)]
+    relocations = ["reloc %s %s" % (kind, symbol(target, constants, kind)) for kind, target in INLINE_RELOCATION.findall(text)]
     text = INLINE_RELOCATION.sub("", text)
-    text = re.sub(r"\s*#.*$", "", text)
+    text = re.sub(r"\s*//.*$", "", text)
+    text = re.sub(r"\s+#\s.*$", "", text)
     text = re.sub(r"\s*<[^>]*>", "", text)
     text = re.sub(r"\s+", " ", symbol(text, constants)).strip()
     branch = BRANCH.match(text)
@@ -111,7 +129,7 @@ def data_objects(path, constants):
             continue
         value, size = int(fields[1], 16), int(fields[2], 0)
         entries = ["bytes " + data[offset + value:offset + value + size].hex()]
-        entries += ["reloc +%x %s %s" % (at - value, kind, symbol(target, constants)) for at, kind, target in relocations.get(name, []) if value <= at < value + size]
+        entries += ["reloc +%x %s %s" % (at - value, kind, symbol(target, constants, kind)) for at, kind, target in relocations.get(name, []) if value <= at < value + size]
         objects[fields[7]] = "\n".join(renumber(entries))
     renamed = ordinal_names(objects)
     return {"data " + renamed[name]: text for name, text in objects.items()}
@@ -122,6 +140,8 @@ def functions(path):
     for line in run(OBJDUMP, "-d", "-r", "--no-show-raw-insn", "-w", path).splitlines() + ["0 <end>:"]:
         header = HEADER.match(line)
         if header:
+            while lines and PADDING.match(lines[-1]):
+                lines.pop()
             if name is not None:
                 table[name] = "\n".join(renumber(lines))
             name, start, lines = header.group(2), int(header.group(1), 16), []
@@ -131,7 +151,7 @@ def functions(path):
         if name is None or (relocation is None and instruction is None):
             continue
         if relocation:
-            lines.append("reloc %s %s" % (relocation.group(1), symbol(relocation.group(2), constants)))
+            lines.append("reloc %s %s" % (relocation.group(1), symbol(relocation.group(2), constants, relocation.group(1))))
         else:
             lines.extend(normalize(instruction.group(2), start, constants))
     table.update(data_objects(path, constants))
