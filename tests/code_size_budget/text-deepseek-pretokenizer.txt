@@ -1,0 +1,2 @@
++325
+Tokenizer: split mode 5, the DeepSeek V4 / V4.1 Flash / Hy4 pre-tokenizer Sequence (three Isolated Splits, then ByteLevel without regex) with a punctuation/symbol Unicode class, so those tokenizers stop BPE-encoding whole segments; deepseek-v4.1-flash parity 112/112 against HF tokenizers (14/112 before).
