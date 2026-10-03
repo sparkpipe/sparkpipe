@@ -588,6 +588,28 @@ A weightd older than the bundle answers `reclaim_pack=unsupported`.
 
 ## 6. The GLM API on the hub (`g53-api`)
 
+### 6.0 The serving stack today and its persistent units
+
+Since 2026-10-02 the hub serves GLM Full through three layers:
+- the C engine API on `:8446` from `~/glmfull-lane6-api`;
+- the OpenAI chat layer (`tools/serving/chat_frontend.py`) on `:8433` from `~/sparkpipe-chat`;
+- LiteLLM on `:4000`, configured from `config/litellm-config.yaml` (262,144-token context).
+
+They and the DMA-guard listener have versioned user units in
+`tools/hub/systemd/`, with `Restart=always`, no ordering between them,
+and logs appended in their working directories. The chat layer answers
+503 with `Retry-After` while the engine API is down and serves
+`/health/liveliness` independently of `/health`, so start order does not
+matter.
+
+`tools/hub/install_units.sh` installs them into `~/.config/systemd/user`
+and reloads; `--enable` also enables them and refuses if linger is off.
+
+Switching from the transient `systemd-run` units of the deploy kit to
+these units is a hub system change and needs the owner's approval. Once
+approved, deploys call `systemctl --user restart <unit>` instead of
+`systemd-run`, and the stale `g53-api` unit is disabled.
+
 The serving API runs on the hub, not on spark0. The unit on 2026-09-28
 (excerpt):
 

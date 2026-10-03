@@ -1,2 +1,2 @@
-+144
-Startup resilience: the fabric door tool checks each setting before changing it so repeated runs are no-ops; weightd resets a re-wired peer's in-flight bits and counters (WD-PEER-RESET, epoch-tagged RPC completions) and resets an idle lane's cells on re-acquire (WD-LANE-RESET) instead of fencing the lane until a daemon restart.
++188
+Startup resilience: the fabric door tool checks each setting before changing it so repeated runs are no-ops; weightd resets a re-wired peer's in-flight bits and counters (WD-PEER-RESET, epoch-tagged RPC completions) and resets an idle lane's cells on re-acquire (WD-LANE-RESET) instead of fencing the lane until a daemon restart. The chat layer answers 503 with Retry-After while the engine is down, the hub release server is the forking version that serves, and an installer places the hub user units.
