@@ -144,9 +144,6 @@ __global__ void SparkMinimaxHeadNormRopeKernel(__nv_bfloat16 *query_bf16,__nv_bf
 	}
 	__syncthreads();
 	normalized = value * rsqrtf(squared[0] / (float)SPARK_MINIMAX_KERNEL_HEAD_DIM + epsilon) * SparkMinimaxBf16ToFloat(gain,element);
-	/* The rope partner must be the NORMALIZED partner value (per-head norm
-	 * precedes full-dim rope); exchange carries it across the element
-	 * half-swap while the source buffer stays raw until the final write. */
 	exchange[element] = normalized;
 	__syncthreads();
 	{
@@ -384,9 +381,6 @@ __global__ void SparkMinimaxVocabArgmaxKernel(const __nv_bfloat16 *lm_head_bf16,
 	}
 	if ( (threadIdx.x & 31u) == 0u )
 	{
-		/* CUDA provides no uint64_t (unsigned long on LP64) atomicMax; the
-		 * intrinsic exists for unsigned long long, which has identical
-		 * width and representation - reinterpret the cell. */
 		atomicMax(reinterpret_cast<unsigned long long *>(&argmax_reduce_u64[row]),
 			static_cast<unsigned long long>(SparkMinimaxSortableScore(score,token)));
 	}

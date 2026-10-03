@@ -8,20 +8,6 @@
 
 #include "sparkpipe/spark_minimax_resident_decode_stage_firmware.h"
 
-/* minimax text-tower resident decode stage - component-tier GPU validation.
- *
- * SCOPE (honest, laguna-precedent style): this exercises the carved kernel
- * set the launchers export - embedding gather, RMSNorm, residual add,
- * per-head norm + rope, SwiGlu, vocabulary argmax (sortable-u64) with the
- * u64 combine, and the two TP combine kernels - against host mirrors of the
- * same math at real geometry, plus a bit-exact determinism rerun. It does
- * NOT consume a stage pack, does not run the linear projections, the
- * attention dataflow, the KV write path, multi-row decode, TP collectives
- * over real transports, or the t1 fixture streams. A PASS here is a kernel
- * component PASS, not full minimax numerical or driver acceptance (the
- * fixture-level ladder runs through the CPU validator + the lane receipts).
- */
-
 #define VALIDATION_HIDDEN SPARK_MINIMAX_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION
 #define VALIDATION_HEAD_DIM SPARK_MINIMAX_RESIDENT_DECODE_STAGE_HEAD_DIMENSION
 #define VALIDATION_LOCAL_QUERY_HEADS (SPARK_MINIMAX_RESIDENT_DECODE_STAGE_HEAD_COUNT / 4u)
@@ -57,8 +43,6 @@ static uint16_t ValidationFloatToBf16(float value)
 	return(*reinterpret_cast<uint16_t *>(&rounded));
 }
 
-/* Tolerance for one bf16 output produced from fp32 math that the host
- * mirror evaluates in double: two bf16 rounding steps. */
 static int ValidationCloseBf16(float produced,float expected,const char *what,uint64_t index,double *worst)
 {
 	double delta = fabs((double)produced - (double)expected);
@@ -140,7 +124,6 @@ static int ValidationRmsNorm(const struct ValidationBuffers *buffers,cudaStream_
 				return(1);
 		}
 	}
-	/* Determinism rerun: bit-exact. */
 	if ( ValidationCheckCuda(SparkMinimaxLaunchRmsNorm(stream,buffers->device_a,buffers->device_b,buffers->device_out,rows,VALIDATION_HIDDEN,epsilon),"rmsnorm relaunch") != 0 )
 		return(1);
 	if ( ValidationCheckCuda(cudaStreamSynchronize(stream),"rmsnorm resync") != 0 )
@@ -243,7 +226,6 @@ static int ValidationHeadNormRope(const struct ValidationBuffers *buffers,cudaSt
 		buffers->host_b[index] = value;
 		key_original[index] = value;
 	}
-	/* host_out[0 .. qh*128) = query norm gains, [qh*128 .. (qh+kh)*128) = key gains. */
 	for (uint64_t index = 0u; index < (uint64_t)(query_heads + kv_heads) * VALIDATION_HEAD_DIM; index++)
 		buffers->host_out[index] = ValidationFloatToBf16(1.0f + 0.25f * ValidationNextRandom());
 	if ( ValidationCheckCuda(cudaMemcpy(buffers->device_a,buffers->host_a,query_elements * sizeof(uint16_t),cudaMemcpyHostToDevice),"rope upload query") != 0 )
@@ -339,10 +321,6 @@ static int ValidationVocabArgmax(const struct ValidationBuffers *buffers,cudaStr
 				ValidationFloatToBf16(ValidationNextRandom() * 0.03f);
 	for (column = 0u; column < VALIDATION_HIDDEN; column++)
 		buffers->host_a[column] = ValidationFloatToBf16(ValidationNextRandom());
-	/* Make the winner row a copy of the input: its dot product is the input
-	 * energy (~1.7e3 at this scale) while every random row stays a
-	 * zero-mean random walk (~1e0) - the argmax margin is bulletproof
-	 * against fp32 accumulation-order noise. */
 	for (column = 0u; column < VALIDATION_HIDDEN; column++)
 		weights[(uint64_t)winner * VALIDATION_HIDDEN + column] = buffers->host_a[column];
 	for (index = 0u; index < local_vocab_rows; index++)

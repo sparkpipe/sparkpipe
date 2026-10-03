@@ -3,10 +3,6 @@
 #include "inference/kernels/kv.cuh"
 #include "sparkpipe/spark_glm5_next_model.h"
 
-// BindLayer already advances the pool to this layer's slab. Physical pages
-// therefore stride within one layer, not across the model's DSA layer count.
-// Each scalar-index slot is 257 BF16 values (514 bytes), so the vector-aligned
-// LmKvGeometry contract does not apply. Shared KV access still handles mapping.
 struct Glm5NextIndexKv
 {
 	static constexpr uint32_t kSlotBytes = SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;

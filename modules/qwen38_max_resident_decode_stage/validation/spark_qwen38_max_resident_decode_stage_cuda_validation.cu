@@ -789,10 +789,6 @@ static int SparkQwen38MaxValModuleExecute(SparkQwen38MaxValModule *module, uint3
 			? SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT
 			: 0u);
 	module->context.kv_block_table = &module->table;
-	/* The DECODE_BATCH_VIEW flag promises the view the module's KV frame
-	   preparation reads (row_sequence_ids feed LmKvFramePrepareFrame; the
-	   r14 tier reached KvPrepareFrame and fail-closed on a null view -
-	   the 27b validator pattern, adapted to this harness's arrays). */
 	module->decode_batch.abi_version = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION;
 	module->decode_batch.descriptor_bytes = sizeof(module->decode_batch);
 	module->decode_batch.row_count = rows;

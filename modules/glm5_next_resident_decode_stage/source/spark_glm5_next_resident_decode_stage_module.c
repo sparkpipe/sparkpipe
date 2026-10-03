@@ -1441,8 +1441,6 @@ static SparkStatus SparkGlm5NextBuildPageTable(SparkGlm5NextModuleState *state)
 	SPARK_RETURN(status);
 }
 
-// Checkpoints pack all KDA layers, then all Q, K and V convolution layers.
-// The caller owns the resident slot until the complete transfer succeeds.
 static inline SparkStatus SparkGlm5NextRecurrentCopy(SparkGlm5NextModuleState *state,uint32_t direction,uint32_t slot,void *host,uint64_t bytes)
 {
 	SparkKvLayeredPageLayout layout;
@@ -1529,8 +1527,6 @@ static SparkStatus SparkGlm5NextPageCopy(
 	packed_page_bytes = layout.layer_page_bytes * layout.layer_count;
 	if ( device_address < layout.device_base || device_address - layout.device_base >= layout.device_bytes || packed_page_bytes == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	// Arena block addresses name packed payloads. Translate their page index
-	// to the native layer-major allocation before a device copy dereferences it.
 	offset = device_address - layout.device_base;
 	if ( offset % packed_page_bytes != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1586,7 +1582,6 @@ static SparkStatus SparkGlm5NextRecurrentInitialize(SparkGlm5NextModuleState *st
 	config.page_bytes = state->recurrent_page_bytes;
 	config.maximum_backing_bytes = state->page_count * state->recurrent_page_bytes;
 	config.backing_path = backing_path;
-	// First half is caller-owned gather/scatter storage; the worker uses the second.
 	config.staging_address = state->recurrent_staging + state->recurrent_page_bytes;
 	config.staging_bytes = state->recurrent_page_bytes;
 	status = SparkKvPageStoreInitialize(&state->recurrent_store,&config);
@@ -1762,7 +1757,6 @@ static SparkStatus SparkGlm5NextAllocateCaches(SparkGlm5NextModuleState *state)
 		main_page_bytes = SparkKvShardPageBytes(SparkGlm5NextKvShardLatent(state->tp_rank,state->tp_degree),SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS,SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
 		index_page_bytes = SparkKvShardPageBytes(SparkGlm5NextKvShardIndex(state->tp_rank,state->tp_degree),SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS,SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
 	}
-	// The model constant includes all three windows; each pool owns one rank-local window.
 	kda_window_stride = (uint64_t)state->resident_sequence_capacity *
 		(SPARK_GLM5_NEXT_MODEL_KDA_CONV_WINDOW_BYTES_PER_LAYER / (3u * state->tp_degree));
 	state->kv_layer_stride_bytes = (uint64_t)state->physical_page_count * main_page_bytes;
@@ -6161,7 +6155,6 @@ static void SparkGlm5NextCompleteOnWorker(void *context)
 	else
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
-	// Snapshot before releasing the slot: callback-driven reuse can overwrite async.
 	completion = async->completion;
 	complete = async->completion_function;
 	complete_context = async->completion_context;
@@ -6643,11 +6636,6 @@ static SparkStatus SparkGlm5NextReset(SparkGlm5NextModuleState *state,const Spar
 	SparkStatus status;
 	if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	/* A reset kills this rank's in-flight chains; every peer is potentially
-	 * waiting on this rank's cells for those chains. Cancel first so the
-	 * peers' waits fail fast (CKEY-CANCEL) instead of wedging 30s per chain
-	 * — the session-reset cascade turned one rank's reconnect into a
-	 * fleet-wide stall. */
 	SparkTpDeviceCollectiveBroadcastCancel(&state->tp_device_collective);
 	if ( state->tp_device_collective_hc_initialized != 0u )
 		SparkTpDeviceCollectiveBroadcastCancel(&state->tp_device_collective_hc);
