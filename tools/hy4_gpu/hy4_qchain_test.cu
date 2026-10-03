@@ -1,12 +1,3 @@
-// hy4 lane: GPU q-path chain cell — gemv + rms_norm + interleaved rope
-// kernels validated against an in-harness float64 reference on real
-// rank-00 weights (the exact chain the llama-diff tick proved in fp64:
-// embd row 802 -> attn_norm -> q_a -> q_a_norm -> q_b head 0 -> rope).
-//
-// Usage: hy4_qchain_test <rank00.gguf>
-// Per-stage PASS/FAIL plus a QCHAIN final verdict; tolerance is
-// 1e-3 * max(1, |ref|) per element (fp32-vs-fp64 envelope — the lane
-// exactness policy reserves bitwise for dequant only).
 #include <cstdio>
 #include <cstring>
 #include <cstdint>

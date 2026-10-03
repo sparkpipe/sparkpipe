@@ -1,13 +1,3 @@
-/* hy4 lane: full 78-layer stack prompt forward (CPU, fp32), rank-02 partial.
- *
- * Layer-major prompt processing: all T tokens pass through each layer in
- * turn (filling that layer's kv cache), with each token carrying its own
- * hc-stream state [4 x 6144] across layers. Attention is this rank's 4-head
- * slice (kv_a latent is replicated, so the cache is rank-invariant); the MoE
- * contributes only this rank's owned experts; the final rank-local vocab
- * slice is scored. The TP16 all-reduce of attention/MoE partials and the
- * cross-rank argmax complete a true token at serving time.
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -119,7 +109,6 @@ static int has_nan(const float *v, long n) {
 static float *loadt(const hy4_rank *rank, const char *name) {
     const hy4_tensor_view *tv = hy4_tensor_lookup(rank, name);
     if (!tv) { fprintf(stderr, "missing %s\n", name); return NULL; }
-    /* allocate the DEQUANTIZED element count, not the compressed bytes */
     long nelems = 1;
     for (int i = 0; i < tv->n_dims; ++i) nelems *= tv->dims[i];
     float *y = malloc((size_t)nelems * 4);
@@ -132,19 +121,14 @@ int main(int argc, char **argv) {
     hy4_rank *rank = NULL;
     if (hy4_rank_open(argv[1], 0, &rank)) { fprintf(stderr, "open failed\n"); return 1; }
 
-    /* per-layer kv cache */
     static float klat[LAYERS][T][KV_LORA], kpe[LAYERS][T][ROT];
 
-    /* per-token hc streams: initialized as the broadcast of the token's
-     * embedding stand-in (true embedding gather needs the owning rank) */
     static float streams[T][HC][N_EMBD];
     for (int t = 0; t < T; ++t)
         for (int s = 0; s < HC; ++s)
             for (int i = 0; i < N_EMBD; ++i)
                 streams[t][s][i] = sinf((float)(i + 31 * t)) * 0.1f;
 
-    /* reusable weight buffers: allocate for the largest shape once
-     * (o_proj/gate: [16384, 6144] F32 = 402 MB) */
     float *W = malloc((size_t)HEADS * VD * N_EMBD * 4);
     float *W2 = malloc((size_t)HEADS * VD * N_EMBD * 4);
 
@@ -227,17 +211,13 @@ int main(int argc, char **argv) {
                 matvec(wvb + (size_t)lh * VD * KV_LORA, vlat,
                        attn_all + (size_t)lh * VD, VD, KV_LORA);
             }
-            /* gate slice: gate rows [h*VD .. h*VD+VD) for this rank's heads */
             float *gatev = malloc((size_t)RANK_HEADS * VD * 4);
             for (int lh = 0; lh < RANK_HEADS; ++lh)
-                /* attn_gate is HEAD-SLICED in the shard: local row index */
                 matvec(wgate + (size_t)lh * VD * N_EMBD, att_in,
                        gatev + (size_t)lh * VD, VD, N_EMBD);
             for (int i = 0; i < RANK_HEADS * VD; ++i)
                 attn_all[i] *= 1.0f / (1.0f + expf(-gatev[i]));
             free(gatev);
-            /* o_proj is head-SLICED: [RANK_HEADS*VD, N_EMBD] local rows;
-             * the TP16 all-reduce sums the rank partials */
             float abranch[N_EMBD];
             matvec(wo, attn_all, abranch, N_EMBD, RANK_HEADS * VD);
             hc_distribute(streams[t], abranch, post);
@@ -250,7 +230,6 @@ int main(int argc, char **argv) {
             rms_norm(fcur, ln2v, fcur, N_EMBD, 1e-5f);
 
             if (il == 0) {
-                /* dense layer: intermediate 18432 (not the MoE 2048) */
                 float *dg = loadt(rank, (snprintf(nm, 160, "blk.0.ffn_gate.weight"), nm));
                 float *du = loadt(rank, (snprintf(nm, 160, "blk.0.ffn_up.weight"), nm));
                 float *dd = loadt(rank, (snprintf(nm, 160, "blk.0.ffn_down.weight"), nm));
@@ -335,7 +314,6 @@ int main(int argc, char **argv) {
                 hc_distribute(streams[t], ffn, fpost);
             }
         }
-        /* layer-scoped frees: the weights serve ALL tokens of this layer */
         free(hc_attn_fn); free(hc_attn_sc); free(hc_attn_ba); free(ln1);
         free(hc_ffn_fn2); free(hc_ffn_sc2); free(hc_ffn_ba2); free(ln2v);
         free(wq_a); free(qan); free(wq_b); free(wkv_a); free(kvan);
@@ -343,7 +321,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "layer %d done\n", il);
     }
 
-    /* final: hc_head collapse of the last token's streams, norm, vocab slice */
     float *hfn = loadt(rank, "output_hc_fn.weight");
     float *hsc = loadt(rank, "output_hc_scale.weight");
     float *hba = loadt(rank, "output_hc_base.weight");

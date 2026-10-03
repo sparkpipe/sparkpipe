@@ -1,13 +1,3 @@
-/* weightd_loadall — attach EVERY arm's pack lazily at once (multiple
- * instances of the same model are distinct arenas by identity), then
- * ensure a small spread of segments per arm: the all-models resident
- * precondition for routed serving. Pools are sized so the full roster
- * fits the daemon ceiling; nothing beyond the ensured segments loads.
- *
- *   weightd_loadall <roster-file> <pool-mib> <touches>
- * roster lines: "<pack-path> <model>"
- * requires SPARK_WEIGHTD_SOCKET / SPARK_WEIGHTD_ATTACH.
- */
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_attach.h"
