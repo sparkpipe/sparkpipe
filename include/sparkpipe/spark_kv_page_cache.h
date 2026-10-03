@@ -150,13 +150,10 @@ SparkKvPageCache;
 SparkStatus SparkKvPageCacheInitialize(
 	SparkKvPageCache *cache,
 	const SparkKvPageCacheConfiguration *configuration);
-// Attach before admitting lanes. State records use the corresponding logical
-// page generation; transfers must retain that page's residency pin until done.
 SparkStatus SparkKvPageCacheAttachStateStore(SparkKvPageCache *cache,SparkKvPageStore *store);
 SparkStatus SparkKvPageCacheAttachSnapshot(SparkKvPageCache *cache,SparkKvPageCacheSnapshot *snapshot);
 SparkStatus SparkKvPageCacheSavePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
 SparkStatus SparkKvPageCacheRestorePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
-// Reclaim one unreferenced, unpinned prefix using the common LRU policy.
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCachePrepareLane(
 	SparkKvPageCache *cache,
@@ -203,11 +200,6 @@ SparkStatus SparkKvPageCacheBuildLaneTable(
 	uint32_t logical_page_capacity,
 	uint32_t *logical_page_count_out);
 
-/* Caller holds exclusive lane ownership and serializes cache/arena access.
- * On success both tables remain caller-owned and every page is pinned until
- * device completion. Unpin before CompleteLane (which may deduplicate/free a
- * mutable page), or before RollbackLaneTransaction on abort. On failure this
- * operation undoes its pins and lane mutations; outputs count/flags are zero. */
 SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane,
@@ -248,13 +240,9 @@ typedef struct SparkKvLaneTransactions
 SparkStatus SparkKvLaneTransactionsAdmit(
 	SparkKvLaneTransactions *transactions,
 	const SparkModelDriverAdmissionRequest *request);
-/* Dispatch binds generation=control_generation, cookie0=transaction_id,
- * cookie1=submission_id. Claim checks these and the complete lane payload. */
 SparkStatus SparkKvLaneTransactionsClaim(
 	SparkKvLaneTransactions *transactions,
 	const SparkModelDriverFrame *frame);
-// Quiescent reset: executing lanes prevent any mutation. On a later busy/error
-// result keep admission stopped and retry; completed cleanup is preserved.
 SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions);
 SparkStatus SparkKvLaneTransactionsFinish(
 	SparkKvLaneTransactions *transactions,

@@ -2338,8 +2338,6 @@ static SparkStatus SparkModelBatchDispatchKind(
 	{
 		state->active = 0u;
 		engine->next_submission_id--;
-		/* BUSY is transient backpressure (a rank mid-chain); it must not
-		 * count toward the circuit — the circuit exists for real faults */
 		if ( status != SPARK_STATUS_BUSY )
 			engine->consecutive_pipeline_failures++;
 		if ( engine->consecutive_pipeline_failures >= 8u )

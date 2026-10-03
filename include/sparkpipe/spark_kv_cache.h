@@ -579,10 +579,6 @@ SparkStatus SparkKvCacheArenaResolveBlock(
     uint32_t logical_block_index,
     SparkKvCacheBlockView *block_view);
 
-/* Caller serializes arena access and keeps the logical table immutable until
- * unpin. Input/output arrays must not overlap. Pins protect physical mappings
- * through device completion. Failure rolls back only this call's pins; output
- * mappings are usable only on success. Repeated pages own repeated pins. */
 SparkStatus SparkKvCacheArenaPinResidentTable(
     SparkKvCacheArena *arena,
     const uint32_t *logical_block_indices,

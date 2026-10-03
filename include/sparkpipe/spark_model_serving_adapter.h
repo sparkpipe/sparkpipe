@@ -40,8 +40,6 @@ extern "C" {
 
 #define SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 1u
 
-// Prefill, decode, release, JIT cache transactions and reset are mandatory.
-// Retired capability bits are reserved and rejected, never compatibility aliases.
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION \
 	UINT32_C(0x00000008)
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT \

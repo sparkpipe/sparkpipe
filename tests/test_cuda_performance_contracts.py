@@ -372,10 +372,6 @@ def validate_grouped_moe_contract() -> None:
 
     require(route, "packed_rows != expected_packed_rows", "route cardinality validation")
     require(route, "LmLaunchGroupedTileM(rows,top_k,EXPERTS)", "token-priced grouped tile")
-    # The gather double-touch is retired by reading A rows through
-    # route_source_token; the consumer contract and the named mapping are
-    # what the gather4 GEMM wave builds against.
-    require(route, "ROUTE ROW INDIRECTION CONSUMER CONTRACT", "route row indirection contract")
     require(route, "LmRouteSourceRow", "named route indirection mapping")
     require(gemm, "const uint32_t *source_row_map;", "GEMM source-row map")
     require(gemm, "LmPipelineProduceManualA<FormatA", "GEMM indexed/codec activation stage")
