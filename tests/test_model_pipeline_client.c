@@ -248,7 +248,12 @@ static void TestModelBatchSchedulerPolicy(void)
 	next = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
 	assert(SparkModelBatchSchedulerChooseWorkKind(queued,minimum,1u,10u,13u,&next,bypass) == SPARK_MODEL_SERVING_WORK_KIND_DECODE);
 	assert(SparkModelBatchSchedulerPipelineDepth(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT,16u,0u) == 1u);
-	assert(SparkModelBatchSchedulerPipelineDepth(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP,16u,4u) == 4u);
+	assert(SparkModelBatchSchedulerPipelineDepth(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,16u,4u) == 4u);
+	assert(SparkModelBatchSchedulerPipelineDepth(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,16u,16u) == 1u);
 	assert(SparkModelBatchSchedulerPipelineDepth(0u,3u,0u) == 3u);
 	memset(inflight,0,sizeof(inflight));
 	inflight[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 3u;
