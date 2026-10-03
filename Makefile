@@ -716,6 +716,7 @@ PYTHON_TESTS := \
 	tests/test_mimo26_census.py \
 	tests/test_mimo26_model_inputs.py \
 	tests/test_mimo26_stagepack.py \
+	tests/test_mimo26_stagepack_windows.py \
 	tests/test_mimo26_stagepack_format.py \
 	tests/test_model_api_queue_lifetime.py \
 	tests/test_module_build_release_adapter_gate.py \
