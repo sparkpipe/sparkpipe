@@ -40,7 +40,6 @@
 #define SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 4u
 #define SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 5u
 #define SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_E8M0B128 6u
-/* wire-code 8 matches SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED */
 #define SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 8u
 
 #define SPARK_LM_EXPERT_TILE_POLICY_ALL_WARPS 0u
@@ -612,9 +611,6 @@ static __device__ __forceinline__ void SparkLmDotRowMxfp4Pair(const float *share
 	*second_total = second_value;
 }
 
-/* NVFP4 (modelopt): e2m1 payloads identical to MXFP4, but the per-16
- * scale plane is e4m3 and each expert segment carries an F32 weight
- * global (weight_scale_2). Decoded weight = e2m1 * e4m3 * global. */
 template <uint32_t GROUP_SIZE>
 static __device__ __forceinline__ float SparkLmDotRowNvfp4(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale, const float *weight_global_f32, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
@@ -837,7 +833,6 @@ static __device__ __forceinline__ float SparkLmDotLinearRow(
 		return(SparkLmDotRowFp8E8m0(shared_input,weight_payload,
 			(const uint8_t *)weight_scale,neuron,input_dimension,lane));
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
-		/* dense nvfp4: the F32 weight global is the segment tail. */
 		return(SparkLmDotRowNvfp4<16u>(shared_input,weight_payload,
 			(const uint8_t *)weight_scale,weight_global_f32,neuron,
 			input_dimension,lane));
@@ -1069,8 +1064,6 @@ static __global__ void SparkLmGatherLinearKernel(uint32_t weight_format, const v
 	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 		accumulator = SparkLmDotRowFp8F32<128u>(shared_input,weight_payload,(const float *)weight_scale,neuron,input_dimension,lane);
 	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
-		/* dense nvfp4: one segment [plane][global F32]; the global sits
-		 * at output_dimension * (input_dimension / 16) + 4. */
 		accumulator = SparkLmDotRowNvfp4<16u>(shared_input,weight_payload,(const uint8_t *)weight_scale,(const float *)((const uint8_t *)weight_scale + ((uint64_t)output_dimension * (input_dimension / 16u))),neuron,input_dimension,lane);
 	else
 		accumulator = SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,weight_payload,(const uint8_t *)weight_scale,neuron,input_dimension,lane);
@@ -3356,8 +3349,6 @@ static __device__ __forceinline__ void SparkLmTileDecodeRun(uint32_t weight_form
 	}
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
 	{
-		/* e2m1 nibbles x per-16 e4m3 plane x the expert's F32
-		 * weight_scale_2 global. */
 		#pragma unroll
 		for (chunk = 0; chunk < 4u; chunk++)
 		{
@@ -4177,9 +4168,6 @@ static __global__ void SparkLmExpertTileAllMloopKernel(uint32_t weight_format, c
                 for (m = 0u; m < chunk_m; ++m)
                 {
                     row_limit = count - (chunk_base + (m * SPARK_LM_TILE));
-                    /* the staging warps are 4-7 (threads 128-255): index the
-                     * tile from the producer-local thread id or rows 0-1 of
-                     * every staged input tile are never written */
                     for (entry = threadIdx.x - 128u; entry < SPARK_LM_TILE * SPARK_LM_TILE_K; entry += 128u)
                     {
                         row = (entry / SPARK_LM_TILE_K) + (m * SPARK_LM_TILE);
@@ -4346,13 +4334,6 @@ static __global__ void SparkLmGroupedScalarLinearKernel(uint32_t weight_format, 
 	const void *group_payload;
 	const uint8_t *group_scale;
 	float accumulator;
-	/* A TP-windowed launch hands this kernel a prefix window whose first
-	 * entry is THIS rank's first GLOBAL tile index (the window is
-	 * [prefix[0], prefix[group_count]) inside the global route table).
-	 * Tasks below prefix[0] belong to other ranks: with the loop bound
-	 * starting at zero they binary-search into group 0 with a negative
-	 * in_group (unsigned) and read wild rows - rank 0 never saw it (its
-	 * window starts at 0); every other rank faulted data-dependently. */
 	for (task = group_tile_prefix[0] + blockIdx.x; task < group_tile_prefix[group_count]; task += gridDim.x)
 	{
 		group = SparkLmGroupedScalarGroupOfTile(group_tile_prefix,group_count,task);
@@ -4395,9 +4376,6 @@ static __global__ void SparkLmGroupedScalarLinearKernel(uint32_t weight_format, 
 					else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
 						accumulator = SparkLmDotRowFp8F32<128u>(shared_input,group_payload,(const float *)group_scale,neuron,input_dimension,lane);
 					else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1 )
-						/* weight_scale_2 rides at the expert segment tail:
-						 * [plane][input_scale][weight_scale_2] - the LAST
-						 * 4 bytes, not -8 (that is the input scale). */
 						accumulator = SparkLmDotRowNvfp4<16u>(shared_input,group_payload,group_scale,(const float *)(group_scale + scale_group_stride_bytes - 4u),neuron,input_dimension,lane);
 					else
 						accumulator = SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,group_payload,group_scale,neuron,input_dimension,lane);

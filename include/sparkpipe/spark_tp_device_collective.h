@@ -334,10 +334,6 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
 
-// Host-thread API. OK transfers submission ownership until completion, including
-// when a credit is temporarily occupied. One pending submission per slot_index;
-// buffers and callback context must remain alive. Pending work shares the
-// collective timeout/failure lifecycle. Never call from a CUDA host callback.
 SparkStatus SparkTpDeviceCollectiveEnqueue(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission,

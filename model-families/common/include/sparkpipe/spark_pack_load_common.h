@@ -86,11 +86,6 @@ static SPARK_PACK_LOAD_SEEN_TYPE SPARK_PACK_LOAD_FN(ExpectedMtpBits)(
 static SPARK_PACK_LOAD_SEEN_TYPE SPARK_PACK_LOAD_FN(ExpectedLayerBits)(
 	const SPARK_PACK_LOAD_TYPE(ModuleState) *state,
 	uint32_t layer);
-// Optional per-entry region source override: return SPARK_STATUS_OK with
-// payload/scale set to skip eager H2D for this entry (lazy consumer-map
-// path). Absent or non-OK non-first returns use the eager loader. Set
-// SPARK_PACK_LOAD_REGION_HOOK to a family function with this signature
-// returning 1 when it consumed the entry, 0 to use the eager loader.
 #ifdef SPARK_PACK_LOAD_REGION_HOOK
 static int SPARK_PACK_LOAD_REGION_HOOK(
 	SPARK_PACK_LOAD_TYPE(ModuleState) *state,

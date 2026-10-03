@@ -284,7 +284,6 @@ typedef SparkStatus (*SparkHiddenTransportGetPollDescriptorsFunction)(
     uint32_t descriptor_capacity,
     uint32_t *descriptor_count_out);
 
-// remote_offset addresses bytes within the peer registered span; sequence is only a completion tag.
 typedef SparkStatus (*SparkHiddenTransportSendFixedFunction)(
     void *transport_state,
     const void *local_buffer,

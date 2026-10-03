@@ -8,7 +8,6 @@
 #include "runtime/launch.h"
 #include <stdint.h>
 
-/* ROUTE ROW INDIRECTION CONSUMER CONTRACT */
 static __device__ __forceinline__ uint32_t LmRouteSourceRow(const uint32_t *__restrict__ route_source_token, uint32_t packed_row)
 {
 	return(route_source_token[packed_row]);
