@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 import sys
 import time
@@ -39,6 +40,14 @@ def strftime_now(format_string):
 
 def error_body(code, message):
     return {"error": {"message": message, "type": "invalid_request_error", "code": code}}
+
+
+def error_response(error):
+    body = error_body(error.code, error.message)
+    if error.status >= 500:
+        body["error"]["type"] = "server_error"
+    headers = {"Retry-After": "5"} if error.status == 503 else None
+    return web.json_response(body, status=error.status, headers=headers)
 
 
 def longest_marker_prefix(text, markers):
@@ -272,6 +281,9 @@ class Frontend:
         healthy = all(state["status"] == 200 for state in states.values())
         return web.json_response({"ok": healthy, "models": states}, status=200 if healthy else 503)
 
+    async def liveliness(self, request):
+        return web.json_response({"ok": True})
+
     async def list_models(self, request):
         created = int(time.time())
         return web.json_response({"object": "list", "data": [
@@ -315,22 +327,25 @@ class Frontend:
         return engine_body, parser, len(prompt_ids)
 
     async def engine_events(self, model, engine_body):
-        async with self.session.post(model.engine + "/v1/completions", json=engine_body) as response:
-            if response.status != 200:
-                text = await response.text()
-                try:
-                    payload = json.loads(text)
-                except json.JSONDecodeError:
-                    payload = error_body("engine_error", text.strip() or f"engine status {response.status}")
-                raise RequestError(response.status, payload.get("error", {}).get("code", "engine_error"), payload.get("error", {}).get("message", text))
-            async for raw in response.content:
-                line = raw.decode("utf-8", "replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    return
-                yield json.loads(data)
+        try:
+            async with self.session.post(model.engine + "/v1/completions", json=engine_body) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    try:
+                        payload = json.loads(text)
+                    except json.JSONDecodeError:
+                        payload = error_body("engine_error", text.strip() or f"engine status {response.status}")
+                    raise RequestError(response.status, payload.get("error", {}).get("code", "engine_error"), payload.get("error", {}).get("message", text))
+                async for raw in response.content:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        return
+                    yield json.loads(data)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
     async def generate(self, model, engine_body, parser):
         decoder = DecodeStream(skip_special_tokens=False)
@@ -401,7 +416,7 @@ class Frontend:
                 else:
                     result = value
         except RequestError as error:
-            return web.json_response(error_body(error.code, error.message), status=error.status)
+            return error_response(error)
         message = {"role": "assistant", "content": "".join(content) or None}
         if reasoning:
             message["reasoning_content"] = "".join(reasoning)
@@ -446,7 +461,7 @@ class Frontend:
                     result = value
         except RequestError as error:
             if response is None:
-                return web.json_response(error_body(error.code, error.message), status=error.status)
+                return error_response(error)
             await response.write(("data: " + json.dumps(error_body(error.code, error.message)) + "\n\n").encode())
             await response.write(b"data: [DONE]\n\n")
             return response
@@ -475,6 +490,7 @@ def main():
     app.on_startup.append(frontend.start)
     app.on_cleanup.append(frontend.stop)
     app.router.add_get("/health", frontend.health)
+    app.router.add_get("/health/liveliness", frontend.liveliness)
     app.router.add_get("/v1/models", frontend.list_models)
     app.router.add_post("/v1/chat/completions", frontend.chat)
     web.run_app(app, host=arguments.host, port=arguments.port, access_log=None)

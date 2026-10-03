@@ -8,7 +8,8 @@ exec 9>"$HOME/release/.core.publish.lock"
 flock 9
 case "$MODE" in
     agent) install -m 755 "$TREE/tools/fleet_node_agent.sh" "$RELEASE/bin/fleet_node_agent.sh" ;;
-    weightd) install -m 755 "$TREE/build/sparkpipe_weightd" "$RELEASE/bin/sparkpipe_weightd" ;;
+    weightd) install -m 755 "$TREE/build/sparkpipe_mesh_status" "$RELEASE/bin/sparkpipe_mesh_status"
+             install -m 755 "$TREE/build/sparkpipe_weightd" "$RELEASE/bin/sparkpipe_weightd" ;;
     *) echo "mode must be agent or weightd" >&2
        exit 2 ;;
 esac

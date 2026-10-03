@@ -33,8 +33,10 @@ It passes no `--device-bytes-max`, so the budget is
 sets `SPARK_WEIGHTD_DEVICE_BYTES_MAX`. It passes no `--mesh-dir`, so records live
 in `/tmp/weightd-mesh`. The agent copies its own `mesh-<rank>.rec` to the hub
 (`release/qpn/<host>/mesh/`) and pulls the 15 peers' records into the same
-directory. The production GLM residentds attach to this socket. weightd and the
-residentds run in the agent's cgroup, so restarting the agent restarts them.
+directory. The production GLM residentds attach to this socket. The agent starts
+weightd as its own transient user unit, `sparkpipe-weightd`, and each root as its
+own unit, so restarting the agent does not restart them. Restart weightd with
+`systemctl --user restart sparkpipe-weightd` only when no residentd runs.
 
 These rules follow from that code:
 
@@ -104,11 +106,29 @@ disconnect of an owner with mesh activity quarantines only that lane
 releases its activity count; other lanes keep working. The quarantined lane is
 reused only by an acquire that carries a topology and passes
 `SparkWeightdMeshLaneConfigure`'s quiescence checks in `node/weightd_mesh.c`: no
-lane activity, no pending raw mesh RPC, and no pending or failed transfer,
-unconsumed doorbell or open wait request on the lane's bands. An acquire
-without a topology gets `BUSY`, and an activity request on a quarantined lane
-gets `IO_ERROR`. Lane reservation does not partition the shared expert-memory
+lane activity, no pending raw mesh RPC, nothing in flight, no open wait request
+and no doorbell that could still ship on the lane's bands. A refusal is `BUSY`
+and logs `WD-LANE-BUSY` with the reason once per change. On success the lane's
+cells are reset to a fresh daemon's state (`WD-LANE-RESET`, with the count of
+failed cells and stale doorbells): doorbell entries, shipped words, wait
+entries, transfer state and their bookkeeping are zeroed and the capabilities
+re-advertised. The band's `BASE` and `CANCEL` words and the slot payloads and
+tails are kept, so rank 0's epoch stays monotonic and a faster peer's first
+round is not lost. A failed transfer fences only its own cell while the lane is
+configured; it no longer refuses the next acquire. An acquire without a
+topology gets `BUSY`, and an activity request on a quarantined lane gets
+`IO_ERROR`. Lane reservation does not partition the shared expert-memory
 budget.
+
+When a peer re-wires (a new record or a QP that left RTS), weightd first drains
+the completion queue, then clears that peer's pending bits in every cell, marks
+those cells failed with the peer named, zeroes the peer's send and RPC counters
+and advances the peer's wire epoch (`WD-PEER-RESET`). RPC work requests carry
+the epoch in their id, so a completion from before the reset never decrements
+the new counters, and transfer completions are already dropped by their
+generation and bit. A shipped wait on a cell that lost a round to the reset
+returns `SPARK_WEIGHTD_MESH_WAIT_ERROR_PEER_RESET` with the peer's physical
+rank in the low bits.
 
 `test_weightd_mesh_mock` runs two actual IPC servers with reversed 2-, 3- and
 4-job startup order across 24 seeded lane permutations, plus capacity,
@@ -204,9 +224,110 @@ fetches each peer's record from the hub's release HTTP server every second with
 a conditional GET. Until every peer in its rank mask is wired, weightd retries on every poll. After that it
 rechecks records once per second, rewires a peer whose record boot time
 changed, and re-transitions a QP that left RTS (`WD-QP-REPAIR`). When every peer
-is wired it creates `<mesh-dir>/.ready`, and the agent starts a multi-rank
+is wired it writes `<mesh-dir>/.ready`, and the agent starts a multi-rank
 residentd only after that file exists. `WD-MESH-STATS` logs the wiring, rewire
-and repair counters every 10 seconds.
+and repair counters every 10 seconds, but only while the mesh is ready; an
+unready mesh is silent there. Use `sparkpipe_mesh_status` (next section) to see
+an unready mesh.
+
+## Mesh readiness surface
+
+**Startup order.** `node/weightd.c` creates the server without a socket
+(`SparkWeightdServerCreateUnbound`: CUDA context and worker), then runs mesh
+init, then binds the socket (`SparkWeightdServerListen`), then starts the mesh
+thread and prints `spark_weightd ready`. Mesh init waits up to 120 s for the
+switch GID and up to another 120 s for the pair GID, so for up to 240 s after a
+start the socket is missing (a clean predecessor removed it) or refuses
+connections (a crashed predecessor left the file). Clients see that as "absent",
+not as a hung HELLO. A CUDA or worker failure still happens before the mesh
+record is published, so a broken daemon never makes peers rewire to it. The
+socket is removed only by the instance that bound it.
+
+**`.ready` v1.** The file is one line:
+`weightd-ready v1 pid=<pid> boot_ns=<boot_ns> rank=<rank> rank_mask=0x<mask>`.
+`boot_ns` is the mesh boot identity, the same value the record carries and peers
+wire against. weightd writes `.ready.tmp` and renames it over `.ready` when the
+mesh becomes ready, removes `.ready` while the mesh is unready, rewrites it
+within a second if it is missing or was written by another process, and removes
+its own file on a clean stop (`WD-MESH-STOP rank=.. ready_marker_removed=1`).
+All marker I/O runs on the main thread outside the mesh lock and without fsync.
+A SIGKILL or crash leaves the file behind until the next start removes it, so a
+reader must check the pid (against the unit's MainPID) or ask the daemon.
+
+**MESH_STATUS (kinds 41/42).** An additive kind under ABI 9; an ABI 8
+connection, or a request before HELLO, is closed. It is answered inline on the
+server thread, so a probe never waits behind a cold attach. The request carries
+`layout` (1) and a reserved word; layout 0 or a non-zero reserved word gets
+`status = INVALID_ARGUMENT` and the connection stays usable. A request for a
+newer layout is answered in the daemon's layout. The 4096-byte result
+(`SparkWeightdIpcMeshStatusResult`) holds the daemon generation (HELLO's),
+pid, rank, rank mask, `mesh_state` (disabled, wiring, ready), the mesh boot
+identity, a change counter `mesh_generation`, `ready_since`, the twelve
+`WD-MESH-STATS` counters, one entry per physical rank and one per lane:
+
+- peer: state (absent, self, no_record, record_rejected, record_invalid,
+  wire_failed, wired), the record status behind it, the record and wired boot
+  identities, queue-pair RTS bits, send and RPC work in flight, the time of the
+  last good and bad completion and the run of completion errors since the last
+  good one;
+- lane: topology (`packed_ranks` nibble i = physical rank of logical rank i),
+  configured / owned / quarantined flags, activity, failed and pending cells,
+  and `configure_status` with `busy_reason` and `busy_index`. These come from
+  the same check `SparkWeightdMeshLaneConfigure` uses (`LaneCheckLocked`), so
+  the report cannot drift from the real gate. Owned and quarantined are server
+  facts published when the worker is idle; a cold attach can keep a dead
+  owner's lane owned until it finishes.
+
+`mesh_generation` counts peer state changes, readiness transitions, a wired
+peer's new boot identity, failed cells and lane configuration. It does not
+count activity toggles, which happen once per chain. It is a change counter, not
+an identity: to see whether a peer restarted, compare its `wired_boot_ns`.
+`WIRED` means the local queue pairs were transitioned to the peer's record; it
+is not proof the peer is alive. A powered-off peer whose stale record is still
+in the mesh directory is wired. The only liveness evidence is traffic:
+`cq_err_since_ok` and `last_err > last_ok`.
+
+Layout rules: bytes [0,80) keep their meaning forever; an additive layout may
+only give meaning to `reserved0` and `reserved_tail` and add enum values
+(readers print unknown values as `unknown(N)` and treat them as not ready), and
+keeps `layout_compat = 1`; any other change raises `layout_compat`; a different
+size needs a new kind. `status` carries only OK, INVALID_ARGUMENT or
+UNSUPPORTED: readiness is in `mesh_state`. A runtime linked without the mesh
+answers UNSUPPORTED; a daemon started without mesh flags answers OK with
+`mesh_state = disabled`.
+
+**Client.** `SparkWeightdClientConnect` now bounds the connect by the client
+timeout (10 s by default): the socket is non-blocking during connect, a full
+listen backlog (Linux `EAGAIN`) is retried until the deadline and then reported
+as BUSY. `SparkWeightdClientConnectWithin` takes the caller's timeout.
+`SparkWeightdMeshStatusQuery` opens, asks and closes, and classifies the
+outcome: answered, absent (`ENOENT`, `ECONNREFUSED`, or the daemon restarted
+between two connects: `WD-STATUS-RESTARTED`), unresponsive (connect, HELLO or
+MESH_STATUS timed out), unserved (a pre-readiness daemon closed the connection
+on kind 41 and a reconnect found the same daemon generation:
+`WD-STATUS-UNSERVED`), incompatible (`layout_compat` above the client's) or
+fault.
+
+**Tool.** `sparkpipe_mesh_status --socket PATH --timeout SECONDS
+[--wait-lane-peers MASK [--lane N]]`. Without `--wait-lane-peers` it prints one
+JSON line. With it, it polls every 250 ms until `status` is OK, the mesh is
+ready and every rank in MASK is wired; with `--lane`, the lane must also be
+neither owned nor quarantined and its configure gate open. A daemon restart
+during the wait prints `MESH-STATUS-DAEMON-RESTART` and the wait continues.
+Exit codes: 0 met (or answered, in status mode); 1 fault; 2 usage (including a
+MASK outside the daemon's rank mask); 3 timed out with the daemon answering
+(stderr starts with `MESH-STATUS-TIMEOUT state=.. missing=0x..` followed by one
+`MESH-STATUS-PEER` line per missing rank and, with `--lane`, a
+`MESH-STATUS-LANE` line); 4 mixed version (unserved or incompatible, no retry);
+5 the lane is configured for another rank set; 6 daemon absent at the deadline;
+7 mesh disabled or not built; 8 daemon unresponsive at the deadline. The tool
+requires `ready` because the data path still gates on the global mesh state.
+`tools/publish_core.sh weightd` and `tools/fleet_release/weightd.sh publish`
+publish it to `core/bin` with weightd. Nodes sync `core/bin` every loop but
+install a new weightd only after the announce, so the tool may run ahead of the
+daemon; against an older daemon it exits 4. The fleet agent does not use it
+yet: switching the agent's gate from `.ready` to the tool is a second release,
+after every node runs this weightd.
 
 ## ABI 9: per-peer routes, served ABI range, row cap
 

@@ -365,6 +365,19 @@ int main(int argument_count, char **arguments)
         return 2;
     }
 
+    if (weightd_mesh_launch.pair_fields != 0u &&
+        (weightd_mesh_launch.pair_fields != 3u || mesh_fields != 15u))
+    {
+        fprintf(stderr,"weightd: --mesh-pair-interface and --mesh-pair-sgid-index go together and need the mesh flags\n");
+        SparkWeightdUsage(arguments[0]);
+        return 2;
+    }
+    if (weightd_mesh_launch.traffic_class_set != 0u && mesh_fields != 15u)
+    {
+        fprintf(stderr,"weightd: --mesh-traffic-class needs the mesh flags\n");
+        SparkWeightdUsage(arguments[0]);
+        return 2;
+    }
     memset(&config, 0, sizeof(config));
     config.socket_path = socket_path;
     config.device_bytes_max = device_bytes_max;
@@ -396,29 +409,15 @@ int main(int argument_count, char **arguments)
             return 1;
     }
 
-    status = SparkWeightdServerCreate(&config, &server);
+    status = SparkWeightdServerCreateUnbound(&config, &server);
     if (status != SPARK_STATUS_OK)
     {
         fprintf(stderr, "weightd create=%s socket=%s\n",
             SparkStatusToString(status), socket_path);
         return 1;
     }
-    if (weightd_mesh_launch.pair_fields != 0u &&
-        (weightd_mesh_launch.pair_fields != 3u || mesh_fields != 15u))
-    {
-        fprintf(stderr,"weightd: --mesh-pair-interface and --mesh-pair-sgid-index go together and need the mesh flags\n");
-        SparkWeightdUsage(arguments[0]);
-        return 2;
-    }
-    if (weightd_mesh_launch.traffic_class_set != 0u && mesh_fields != 15u)
-    {
-        fprintf(stderr,"weightd: --mesh-traffic-class needs the mesh flags\n");
-        SparkWeightdUsage(arguments[0]);
-        return 2;
-    }
     if (mesh_fields == 15u)
     {
-        static pthread_t mesh_thread;
         status = SparkWeightdMeshInit(weightd_mesh_launch.rank,
             weightd_mesh_launch.interface_name,weightd_mesh_launch.sgid_index,
             weightd_mesh_launch.mesh_dir,weightd_mesh_launch.rank_mask,
@@ -430,17 +429,31 @@ int main(int argument_count, char **arguments)
             SparkWeightdServerDestroy(server);
             return 1;
         }
-        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
-        {
-            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
-            SparkWeightdServerDestroy(server);
-            return 1;
-        }
     }
     else
     {
         fprintf(stderr,
             "weightd-mesh: identity not stated; mesh disabled\n");
+    }
+    status = SparkWeightdServerListen(server);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "weightd listen=%s socket=%s\n",
+            SparkStatusToString(status), socket_path);
+        SparkWeightdMeshStop();
+        SparkWeightdServerDestroy(server);
+        return 1;
+    }
+    if (mesh_fields == 15u)
+    {
+        static pthread_t mesh_thread;
+        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
+        {
+            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
+            SparkWeightdMeshStop();
+            SparkWeightdServerDestroy(server);
+            return 1;
+        }
     }
 
     printf("spark_weightd ready unix=%s ceiling=%llu\n",
@@ -448,6 +461,7 @@ int main(int argument_count, char **arguments)
     fflush(stdout);
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);
+    SparkWeightdMeshStop();
 
     arena_count = SparkWeightdServerArenaCount(server);
     resident_bytes = SparkWeightdServerResidentBytes(server);
