@@ -341,8 +341,8 @@ MASK outside the daemon's rank mask); 3 timed out with the daemon answering
 5 the lane is configured for another rank set; 6 daemon absent at the deadline;
 7 mesh disabled or not built; 8 daemon unresponsive at the deadline. The tool
 requires `ready` because the data path still gates on the global mesh state.
-`tools/publish_core.sh weightd` and `tools/fleet_release/weightd.sh publish`
-publish it to `core/bin` with weightd. Nodes sync `core/bin` every loop but
+`tools/fleet_release/weightd.sh publish` publishes it to `core/bin` with
+weightd. Nodes sync `core/bin` every loop but
 install a new weightd only after the announce, so the tool may run ahead of the
 daemon; against an older daemon it exits 4. The fleet agent does not use it
 yet: switching the agent's gate from `.ready` to the tool is a second release,
