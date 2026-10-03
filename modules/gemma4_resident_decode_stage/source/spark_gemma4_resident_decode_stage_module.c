@@ -614,11 +614,6 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 	uint64_t rows = state->max_input_row_count;
 	uint64_t hidden_bytes = rows * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t sliding_query_bytes = rows * ((SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
-	/* sliding K and V live in SEPARATE buffers (rows x kv_per_rank x dim each):
-	   the fused per-row [K|V] layout cannot be head-normed, roped or stored by
-	   the head-strided kernels - the head-norm/store row stride is
-	   heads*head_dimension, which addressed row r's V (and roped it) as row
-	   r+1's K, corrupting every decode row past the first. */
 	uint64_t sliding_kv_bytes = rows * (state->sliding_kv_heads_per_rank * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t full_query_bytes = rows * ((SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t full_kv_bytes = rows * (state->full_kv_heads_per_rank * SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;

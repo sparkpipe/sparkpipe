@@ -1229,8 +1229,6 @@ static SparkStatus SparkQwen38MaxModuleAllocateSlot(SparkQwen38MaxModuleState *s
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * local_gdn_value_dimension * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES,&slot->z_bf16);
 	if ( status == SPARK_STATUS_OK )
-		/* decay/beta projections are REPLICATED (full head rows; the linear
-	   fills the full row) - the DecayBeta kernel reads this rank's slice. */
 	status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES,&slot->beta_pre_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_QWEN38_MAX_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN38_MAX_MODEL_BF16_ELEMENT_BYTES,&slot->decay_pre_bf16);

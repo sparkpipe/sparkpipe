@@ -289,18 +289,10 @@ static SparkStatus SparkLagunaManifestCheck(const SparkWeightdManifest *manifest
 		entry = &context->entries[index];
 		if ( entry->tensor_kind != SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_GATE_UP && entry->tensor_kind != SPARK_LAGUNA_STAGEPACK_TENSOR_EXPERT_DOWN )
 			continue;
-		/* The check validates THIS build's pinned codec (bf16 arm packs
-		 * carry weight_codec 1 = SPARK_WEIGHT_CODEC_BF16; the fp8/nvfp4
-		 * arms carry 5/6). The old form hardcoded FP8_E4M3, so the
-		 * placed bf16 packs failed the lazy attach with UNSUPPORTED
-		 * (lane-8 attach-006 finding). */
 		if ( entry->weight_codec != LAGUNA_EXPERT_WEIGHT_CODEC )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		for (plane=0u; plane<2u; plane++)
 		{
-			/* Plane 1 is the scale plane: quantized arms carry it,
-			 * the bf16 arm carries none (scale_bytes 0) - walking an
-			 * absent plane fails the bytes==0 guard. */
 			if ( plane == 1u && entry->scale_bytes == 0u )
 				continue;
 			status = SparkLagunaManifestPlane(manifest,entry,plane);

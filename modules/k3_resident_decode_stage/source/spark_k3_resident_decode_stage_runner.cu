@@ -31,16 +31,6 @@ typedef struct SparkK3RunnerTpContext SparkK3RunnerTpContext;
 static_assert(K3_RUNNER_TP_CONTEXT_POOL_DEPTH >= 2u * K3_LAYERS,
 	"tp context pool must cover both per-layer collectives");
 
-/* Width contract (cold16): the shared device collective sizes EVERY
- * ALL_REDUCE as active_sequence_count x the COLLECTIVE's
- * local_hidden_dimension - never a per-submission element count - and
- * submission.reserved0 must stay zero. k3 therefore rides TWO width-matched
- * collectives: the hidden collective (band 0, width K3_HIDDEN) carries the
- * in-place embedding reduce, the per-layer attention/hidden segment, the
- * shared segment (a second stream-ordered op) and the width-independent
- * ALL_REDUCE_MAX_U64 head argmax; the wide collective (band 1, width
- * K3_TOP_K x 2 x K3_EXPERT_INTERMEDIATE) carries the fused gate_up reduce
- * whose per-row extent is not an integer multiple of K3_HIDDEN. */
 #define K3_RUNNER_GATE_UP_WIDTH (K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u))
 
 typedef struct SparkK3RunnerTpContext
@@ -309,11 +299,6 @@ typedef struct SparkK3RunnerState
 	uint32_t *context_length;
 	uint32_t *sequence_of_row;
 	uint32_t *kda_state_index;
-	/* M3 lazy-stray accounting (opt-in: SPARK_K3_STRAY_WSET names the
-	 * preload head .wset; every routed (layer, expert) selection the
-	 * runner demands is checked against it and the receipt prints at
-	 * destroy — the measured stray rate to compare with the manifest's
-	 * pinned head_selection_coverage). */
 	uint8_t *stray_head_bits;
 	uint8_t *stray_seen_bits;
 	uint64_t stray_selections;
@@ -326,9 +311,6 @@ typedef struct SparkK3RunnerState
 	uint64_t kv_page_bytes;
 } SparkK3RunnerState;
 
-/* Bit index over the full-model (layer, expert) key space; the head .wset
- * holds full-model pairs (the census basis), of which only this rank's
- * PP stage can ever route. */
 #define K3_STRAY_BIT_INDEX(layer, expert) \
 	((uint64_t)(layer) * K3_EXPERTS + (uint64_t)(expert))
 #define K3_STRAY_BIT_BYTES \
@@ -576,9 +558,6 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 	uint32_t elements = rows * K3_HIDDEN;
 	if ( state->device_collective_created != 0 )
 	{
-		/* Hidden collective (band 0, width K3_HIDDEN): rows x K3_HIDDEN
-		 * elements in place; reserved0 must stay zero (the transport sizes
-		 * the reduce from the collective width, not the submission). */
 		SparkTpDeviceCollectiveSubmission submission;
 		memset(&submission, 0, sizeof(submission));
 		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -641,8 +620,6 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		uint16_t *reduce_values = phase == 2u ? b->gate_up_bf16 : b->shared_out_bf16;
 		if ( state->device_collective_wide_created != 0 )
 		{
-			/* Wide collective (band 1, width K3_RUNNER_GATE_UP_WIDTH):
-			 * rows x 98304 elements exactly, ordinal chain of its own. */
 			K3RunnerFusedPackKernel<<<(gate_up_elements + 255u) / 256u,
 				256u, 0, stream>>>(
 				0, 0, reduce_values, reduce_values, state->fused_device,
@@ -700,12 +677,6 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
 			phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 			state->fused_device,rows,phase,segments,0u);
-		/* Hidden collective (band 0, width K3_HIDDEN): one stream-ordered
-		 * op per segment (attention/hidden at fused[0], shared at
-		 * fused[elements]) instead of one wide op - the collective's
-		 * width is the row extent, so a 2xhidden reduce cannot ride it.
-		 * Completions fire in ordinal order, reproducing the previous
-		 * single-completion PartialAdd sequence exactly. */
 		{
 			const uint32_t op_count =
 				(phase == 1u && segments == 2u) ? 2u : 1u;
@@ -826,13 +797,6 @@ static SparkStatus SparkK3ManifestCheck(const SparkWeightdManifest *manifest,
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		if ( !have_w1 )
 			continue;
-		/* per-expert divisibility per tensor only: k3's w1/w2 expert
-		 * geometries differ (intermediate 6144 vs 3072 halves the w2
-		 * span), so demanding equal per-expert bytes rejects the real
-		 * deployed manifests — measured: w1 2924544 vs w2 1462272
-		 * bytes/expert on every rank pack (first-launch find #7, the
-		 * lazy-attach manifest check). Each range is still validated
-		 * against ITS tensor's span below. */
 		if ( w1.bytes % pack->config.experts != 0u ||
 			w2.bytes % pack->config.experts != 0u )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
@@ -1197,10 +1161,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 		snprintf(request.identity.model, sizeof(request.identity.model), "kimi-k3");
 		snprintf(request.identity.revision, sizeof(request.identity.revision), "mxfp4");
 		request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-		/* the daemon's size-mismatch contract: identity.arena_bytes must
-		 * equal the pack file size (WDATTACH rejects anything else with
-		 * INVALID_ARGUMENT - measured against the release-shared weightd;
-		 * the campaign-era daemon tolerated the old pool-sized value) */
 		request.identity.arena_bytes = state->module.pack.file_bytes;
 		request.identity.topology = configuration->tp_degree;
 		memcpy(request.pack_path, configuration->rank_pack_path,
@@ -1239,12 +1199,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 			delete state;
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
-		/* the slice bound is config.layers (this rank pack's stage
-		 * slice), NOT config.total_layers (the whole model): a stage-0
-		 * pack holds layers 0..23 of 93, and layer 0 is dense (no
-		 * expert tensors). Skip dense layers like the manifest check
-		 * does; every layer that HAS experts inside the slice must
-		 * load both spans (first-launch find #8). */
 		{
 			uint32_t routed_layers = 0u;
 			for ( routed = state->module.pack.config.first_layer;
@@ -1350,10 +1304,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 	}
 	if ( configuration->device_collective != 0 )
 	{
-		/* Width contract (cold16): the hidden collective must be exactly
-		 * K3_HIDDEN wide - every ALL_REDUCE moves rows x this width from
-		 * the submitted device pointer, so a mismatch is memory corruption
-		 * or a silent wrong-extent reduce, not a slowdown. */
 		if ( configuration->device_collective->local_hidden_dimension !=
 			K3_HIDDEN )
 		{
@@ -1855,8 +1805,6 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	if ( runner == 0 || runner->private_state == 0 )
 		return;
 	state = (SparkK3RunnerState *)runner->private_state;
-	/* the M3 stray receipt prints on every teardown path, including
-	 * partial ones (early returns below) — the counters are the point */
 	SparkK3RunnerStrayReport(state);
 	free(state->stray_head_bits);
 	free(state->stray_seen_bits);

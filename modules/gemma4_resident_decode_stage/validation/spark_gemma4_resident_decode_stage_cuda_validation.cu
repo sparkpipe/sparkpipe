@@ -139,13 +139,6 @@ static int SparkGemma4ValReport(const char *check, const SparkGemma4ValMetrics *
 	return(0);
 }
 
-/* relative_threshold: single-stage checks carry the 5e-3 single-kernel
-   bound; composed-tier callers pass the ACCUMULATED bound. The chain hidden
-   output spans attention (measured 2.4e-3 at its own boundary) + output
-   projection + residual + fused RMS + gate_up/gelu/down: six bf16-rounding
-   stages against an fp32-internal mirror. 1e-2 keeps composition defects
-   loud (the row-stride bug read ~0.99 relative) without failing on
-   arithmetic accumulation. */
 static int SparkGemma4ValCompareBf16Threshold(const char *check, const uint16_t *actual, const uint16_t *expected, uint64_t count, float relative_threshold)
 {
 	float *actual_f = (float *)malloc(count * sizeof(float));
@@ -1002,12 +995,6 @@ static int SparkGemma4ValKvCheckErrorClear(SparkGemma4ValKv *kv, const char *che
 
 static void SparkGemma4ValMirrorDecode(const SparkGemma4ValKv *kv, const uint16_t *query, const uint32_t *window, uint32_t window_count, uint32_t query_heads, uint16_t *output, uint32_t rows)
 {
-	/* rows is caller-owned: the standalone checks use SPARK_GEMMA4_VAL_ROWS-sized
-	   buffers, the chain tier uses SPARK_GEMMA4_VAL_CHAIN_ROWS-sized buffers. The
-	   former hardcoded bound overran the chain's two-row output by two rows
-	   (2048 bytes of host heap), corrupting the heap under libcuda: the next
-	   CUDA call segfaulted layout-dependently (-O3 publish builds died at the
-	   window copy; -lineinfo builds leaked the garbage into the compare). */
 	uint32_t row,head,step,element;
 	uint32_t group = query_heads / kv->kv_heads;
 	for (row = 0u; row < rows; row++)
@@ -1570,10 +1557,6 @@ static cudaError_t SparkGemma4ValChainDeviceStages(SparkGemma4ValChain *chain)
 {
 	SparkGemma4LinearView view;
 	cudaError_t error;
-	/* self-contained per run: gain_device is shared with the tail's
-	   post_attention/post_feedforward uploads, so every stages run must
-	   re-stage the input_ln gains it consumes - the determinism rerun
-	   otherwise normed with the previous run's leftover tail gains. */
 	error = SparkGemma4ValCopyUp(chain->gain_device,chain->input_ln,(uint64_t)chain->hidden * 2u);
 	if (error == cudaSuccess)
 		error = SparkGemma4LaunchRmsNorm(cudaStreamPerThread,chain->h_device,chain->gain_device,chain->normed_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->hidden,SPARK_GEMMA4_MODEL_RMS_NORM_EPSILON);
@@ -1589,11 +1572,6 @@ static cudaError_t SparkGemma4ValChainDeviceStages(SparkGemma4ValChain *chain)
 		SparkRopeDomainInitTheta(&rope_domain,chain->head_dimension,chain->head_dimension,SPARK_GEMMA4_MODEL_SLIDING_ROPE_THETA,SPARK_GEMMA4_MODEL_QK_SCALE);
 		error = SparkGemma4LaunchRope(cudaStreamPerThread,chain->query_device,(const uint32_t *)chain->positions_device,SPARK_GEMMA4_VAL_CHAIN_ROWS,chain->query_out / chain->head_dimension,&rope_domain);
 	}
-	/* the fused kv projection splits at launch into K/V views over the fused
-	   weight, feeding SEPARATE rows x kv_half buffers - the head-strided
-	   norm/rope/store kernels cannot address a per-row [K|V] packed buffer
-	   (row stride heads*head_dimension addressed row r's V as row r+1's K).
-	   Same composition as the fixed module sliding path. */
 	if (error == cudaSuccess)
 		error = SparkGemma4ValChainView(&view,chain->kv_weight_device,chain->hidden,chain->kv_half);
 	if (error == cudaSuccess)
@@ -1828,10 +1806,6 @@ static int SparkGemma4ValCheckChainSliding(void)
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(chain.output_weight_device,chain.output_weight,(uint64_t)chain.hidden * chain.query_out * 2u);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(chain.gate_up_weight_device,chain.gate_up_weight,(uint64_t)chain.intermediate * 2u * chain.hidden * 2u);
 	if (error == cudaSuccess) error = SparkGemma4ValCopyUp(chain.down_weight_device,chain.down_weight,(uint64_t)chain.hidden * chain.intermediate * 2u);
-	/* the five weight payloads above were previously never uploaded: the
-	   device GEMMs read uninitialized device memory while the host mirror
-	   used the filled weights (chain_sliding_attention_dataflow relative_l2
-	   ~0.99). */
 	if (error == cudaSuccess) error = SparkGemma4ValSync();
 	if (SparkGemma4ValCuda(error,"chain_sliding") != 0)
 		return(1);
