@@ -4802,6 +4802,7 @@ int32_t main(void)
 	context.max_sequence_positions = 64u;
 	context.execution_row_capacity = 3u;
 	context.tp_degree = 4u;
+	context.tp_collective_identifier = 1u;
 	context.stage_pack_path = "fixture.g5nsp";
 	context.model_revision = "fixture";
 	configuration.model_revision = context.model_revision;
@@ -4836,6 +4837,7 @@ int32_t main(void)
 	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
 	context.layer_count = 45u;
 	context.tp_degree = 16u;
+	context.tp_collective_identifier = 0u;
 	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
 	context.flags = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD;
 	assert(SparkGlm5NextModuleConfigure(&state,&configuration,&services,&path) == SPARK_STATUS_INVALID_ARGUMENT);
