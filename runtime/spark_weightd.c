@@ -60,6 +60,11 @@ __attribute__((weak)) void SparkWeightdMeshDeviceProbe(const char *tag,
     (void)tag; (void)device_pointer; (void)bytes;
 }
 __attribute__((weak)) void SparkWeightdMeshPoll(void) { }
+__attribute__((weak)) SparkStatus SparkWeightdMeshStatusFill(SparkWeightdIpcMeshStatusResult *result)
+{
+    (void)result;
+    return SPARK_STATUS_UNSUPPORTED;
+}
 __attribute__((weak)) SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
     const SparkWeightdMeshTopology *topology)
 {
@@ -209,6 +214,9 @@ struct SparkWeightdServer
     uint32_t dispatch_next;
     atomic_uint published_arena_count;
     atomic_ullong published_resident_bytes;
+    atomic_uint published_lane_owned;
+    atomic_uint published_lane_orphan;
+    uint32_t bound;
     uint64_t daemon_generation;
     uint64_t next_arena_generation;
     uint64_t next_owner;
@@ -381,6 +389,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return sizeof(SparkWeightdIpcMeshMapResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP_RESULT:
             return sizeof(SparkWeightdIpcMeshStagingMapResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_STATUS:
+            return sizeof(SparkWeightdIpcMeshStatus) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT:
+            return sizeof(SparkWeightdIpcMeshStatusResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return sizeof(SparkWeightdIpcMeshActivity) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT:
@@ -488,6 +500,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP:
             return SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_MESH_STATUS:
+            return SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_WRITE:
@@ -2687,6 +2701,32 @@ static uint32_t SparkWeightdServerOnMeshActivity(SparkWeightdServer *server, Spa
     return sizeof(*result);
 }
 
+static uint32_t SparkWeightdServerOnMeshStatus(SparkWeightdServer *server, const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+{
+    const SparkWeightdIpcMeshStatus *query = (const SparkWeightdIpcMeshStatus *)request;
+    SparkWeightdIpcMeshStatusResult *result = (SparkWeightdIpcMeshStatusResult *)response;
+    uint32_t owned = atomic_load_explicit(&server->published_lane_owned,memory_order_acquire);
+    uint32_t orphan = atomic_load_explicit(&server->published_lane_orphan,memory_order_acquire);
+    uint32_t lane;
+    memset(result,0,sizeof(*result));
+    SparkWeightdBuildHeader(response,result_kind,request_id);
+    result->layout = SPARK_WEIGHTD_MESH_STATUS_LAYOUT;
+    result->layout_compat = SPARK_WEIGHTD_MESH_STATUS_LAYOUT_COMPAT;
+    result->pid = (uint32_t)getpid();
+    result->daemon_generation = server->daemon_generation;
+    result->pair_rank = UINT32_MAX;
+    if ( query->reserved != 0u || query->layout == 0u )
+    {
+        result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+        return sizeof(*result);
+    }
+    result->status = (uint32_t)SparkWeightdMeshStatusFill(result);
+    for (lane=0u; lane<SPARK_WEIGHTD_MESH_MAX_LANES; lane++)
+        result->lanes[lane].flags |= ((owned >> lane) & 1u) * SPARK_WEIGHTD_MESH_LANE_OWNED |
+            ((orphan >> lane) & 1u) * SPARK_WEIGHTD_MESH_LANE_QUARANTINED;
+    return sizeof(*result);
+}
+
 static uint32_t SparkWeightdServerOnMeshWrite(const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
 {
     SparkWeightdIpcMeshWriteResult *result =
@@ -3021,6 +3061,8 @@ static uint32_t SparkWeightdServerDispatchKind(SparkWeightdServer *server, Spark
             return(SparkWeightdServerOnAcquireOrRelease(server,connection,request,response,request_header,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return(SparkWeightdServerOnMeshActivity(server,connection,request,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_MESH_STATUS:
+            return(SparkWeightdServerOnMeshStatus(server,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_MESH_WRITE:
             return(SparkWeightdServerOnMeshWrite(request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST:
@@ -3068,8 +3110,13 @@ static void SparkWeightdServerDispatchWork(void *context)
 
 static void SparkWeightdServerPublish(SparkWeightdServer *server)
 {
+    uint32_t lane,owned = 0u;
+    for (lane=0u; lane<SPARK_WEIGHTD_MESH_MAX_LANES; lane++)
+        owned |= server->lane_owner[lane] != 0u ? 1u << lane : 0u;
     atomic_store_explicit(&server->published_resident_bytes,server->resident_bytes,memory_order_release);
     atomic_store_explicit(&server->published_arena_count,server->arena_count,memory_order_release);
+    atomic_store_explicit(&server->published_lane_owned,owned,memory_order_release);
+    atomic_store_explicit(&server->published_lane_orphan,server->orphan_lanes,memory_order_release);
 }
 
 static void SparkWeightdServerCompleteWork(SparkWeightdServer *server)
@@ -3301,7 +3348,8 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
             if (header->kind != SPARK_WEIGHTD_IPC_KIND_HELLO &&
                 header->kind != SPARK_WEIGHTD_IPC_KIND_MESH_WRITE &&
                 header->kind != SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST &&
-                header->kind != SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY)
+                header->kind != SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY &&
+                header->kind != SPARK_WEIGHTD_IPC_KIND_MESH_STATUS)
             {
                 connection->request_ready = 1u;
                 return;
@@ -3510,7 +3558,7 @@ SparkStatus SparkWeightdServerRun(SparkWeightdServer *server,
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkWeightdServerCreate(const SparkWeightdServerConfig *config,
+SparkStatus SparkWeightdServerCreateUnbound(const SparkWeightdServerConfig *config,
     SparkWeightdServer **server)
 {
     struct sockaddr_un address;
@@ -3540,39 +3588,15 @@ SparkStatus SparkWeightdServerCreate(const SparkWeightdServerConfig *config,
     atomic_init(&instance->dispatch_state,0u);
     atomic_init(&instance->published_arena_count,0u);
     atomic_init(&instance->published_resident_bytes,0u);
+    atomic_init(&instance->published_lane_owned,0u);
+    atomic_init(&instance->published_lane_orphan,0u);
     for (index = 0u; index < SPARK_WEIGHTD_CONNECTION_COUNT_MAX; index++)
     {
-        /* calloc zero-fills state to OPEN: fresh slots must start CLOSED
-         * (fd = -1, not accepting) or the accept loop never finds a slot */
         instance->connections[index].fd = -1;
         instance->connections[index].state = SPARK_WEIGHTD_CONNECTION_CLOSED;
     }
     (void)signal(SIGPIPE, SIG_IGN);
-
-    /* a stale socket from a crashed predecessor is reclaimed, never feared */
-    (void)unlink(instance->socket_path);
-    instance->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (instance->listen_fd < 0)
-    {
-        free(instance);
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    }
-    memset(&address, 0, sizeof(address));
-    address.sun_family = AF_UNIX;
-    memcpy(address.sun_path, instance->socket_path,
-        strlen(instance->socket_path) + 1u);
-    if (bind(instance->listen_fd, (const struct sockaddr *)&address,
-            sizeof(address)) != 0 ||
-        listen(instance->listen_fd,
-            (int)SPARK_WEIGHTD_CONNECTION_COUNT_MAX) != 0)
-    {
-        (void)close(instance->listen_fd);
-        (void)unlink(instance->socket_path);
-        free(instance);
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    }
-    if (fcntl(instance->listen_fd,F_SETFL,O_NONBLOCK) != 0 ||
-        pipe(instance->dispatch_notify) != 0 ||
+    if (pipe(instance->dispatch_notify) != 0 ||
         fcntl(instance->dispatch_notify[0],F_SETFL,O_NONBLOCK) != 0 ||
         fcntl(instance->dispatch_notify[1],F_SETFL,O_NONBLOCK) != 0 ||
         cudaFree(0) != cudaSuccess ||
@@ -3581,8 +3605,59 @@ SparkStatus SparkWeightdServerCreate(const SparkWeightdServerConfig *config,
         SparkWeightdServerDestroy(instance);
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
-    (void)chmod(instance->socket_path, 0600);
-    instance->daemon_generation = SparkWeightdMonotonicTimeNs();
+    *server = instance;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdServerListen(SparkWeightdServer *server)
+{
+    struct sockaddr_un address;
+    if (server == 0 || server->listen_fd >= 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    (void)unlink(server->socket_path);
+    server->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (server->listen_fd < 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    }
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    memcpy(address.sun_path, server->socket_path,
+        strlen(server->socket_path) + 1u);
+    if (bind(server->listen_fd, (const struct sockaddr *)&address,
+            sizeof(address)) != 0 ||
+        listen(server->listen_fd,
+            (int)SPARK_WEIGHTD_CONNECTION_COUNT_MAX) != 0 ||
+        fcntl(server->listen_fd,F_SETFL,O_NONBLOCK) != 0)
+    {
+        (void)close(server->listen_fd);
+        server->listen_fd = -1;
+        (void)unlink(server->socket_path);
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    }
+    server->bound = 1u;
+    (void)chmod(server->socket_path, 0600);
+    server->daemon_generation = SparkWeightdMonotonicTimeNs();
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdServerCreate(const SparkWeightdServerConfig *config,
+    SparkWeightdServer **server)
+{
+    SparkWeightdServer *instance = 0;
+    SparkStatus status = SparkWeightdServerCreateUnbound(config,&instance);
+    if (status != SPARK_STATUS_OK)
+    {
+        SPARK_RETURN(status);
+    }
+    status = SparkWeightdServerListen(instance);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkWeightdServerDestroy(instance);
+        SPARK_RETURN(status);
+    }
     *server = instance;
     return SPARK_STATUS_OK;
 }
@@ -3625,7 +3700,8 @@ void SparkWeightdServerDestroy(SparkWeightdServer *server)
         (void)close(server->dispatch_notify[0]);
     if (server->dispatch_notify[1] >= 0)
         (void)close(server->dispatch_notify[1]);
-    (void)unlink(server->config.socket_path);
+    if (server->bound != 0u)
+        (void)unlink(server->config.socket_path);
     free(server);
 }
 
@@ -3775,22 +3851,69 @@ static SparkStatus SparkWeightdClientExchange(SparkWeightdClient *client,
     SPARK_RETURN(status);
 }
 
-SparkStatus SparkWeightdClientConnect(const char *socket_path,
+static int SparkWeightdClientConnectSocket(int fd,
+    const struct sockaddr_un *address,
+    uint64_t deadline_ns)
+{
+    struct timespec pause = {0, 10000000L};
+    struct pollfd poll_fd;
+    socklen_t bytes = sizeof(int);
+    int error,timeout_ms;
+    for (;;)
+    {
+        if (connect(fd, (const struct sockaddr *)address, sizeof(*address)) == 0)
+            return 0;
+        error = errno;
+        if (error == EINTR)
+            continue;
+        if (error != EAGAIN && error != EINPROGRESS)
+            return error;
+        if (SparkWeightdDeadlineRemaining(deadline_ns, &timeout_ms) != SPARK_STATUS_OK)
+            return error == EAGAIN ? EAGAIN : ETIMEDOUT;
+        if (error == EAGAIN)
+        {
+            (void)nanosleep(&pause, 0);
+            continue;
+        }
+        poll_fd.fd = fd;
+        poll_fd.events = POLLOUT;
+        poll_fd.revents = 0;
+        if (poll(&poll_fd, 1u, timeout_ms) <= 0)
+            return ETIMEDOUT;
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &bytes) != 0)
+            return errno;
+        return error;
+    }
+}
+
+static SparkStatus SparkWeightdClientOpen(const char *socket_path,
+    uint64_t timeout_nanoseconds,
     SparkWeightdClient **client,
-    SparkWeightdHelloResult *hello_out)
+    SparkWeightdHelloResult *hello_out,
+    int *connect_errno)
 {
     struct sockaddr_un address;
     SparkWeightdClient *instance;
     SparkWeightdIpcHello wire_hello;
     SparkWeightdIpcHelloAck wire_ack;
     SparkStatus status;
+    uint64_t now = SparkWeightdMonotonicTimeNs();
+    uint64_t timeout = timeout_nanoseconds != 0ull
+        ? timeout_nanoseconds : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS;
+    uint64_t deadline;
+    int flags,error;
 
+    if (connect_errno != 0)
+    {
+        *connect_errno = 0;
+    }
     if (socket_path == 0 || socket_path[0] == '\0' ||
         strlen(socket_path) >= sizeof(address.sun_path) ||
-        client == 0)
+        client == 0 || now == 0ull || timeout > UINT64_MAX - now)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
+    deadline = now + timeout;
     if (hello_out != 0)
     {
         memset(hello_out, 0, sizeof(*hello_out));
@@ -3822,14 +3945,31 @@ SparkStatus SparkWeightdClientConnect(const char *socket_path,
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     memcpy(address.sun_path, socket_path, strlen(socket_path) + 1u);
-    if (connect(instance->fd, (const struct sockaddr *)&address,
-            sizeof(address)) != 0)
+    flags = fcntl(instance->fd, F_GETFL);
+    error = flags < 0 || fcntl(instance->fd, F_SETFL, flags | O_NONBLOCK) != 0 ? errno :
+        SparkWeightdClientConnectSocket(instance->fd, &address, deadline);
+    if (error == 0 && fcntl(instance->fd, F_SETFL, flags) != 0)
+        error = errno;
+    if (error != 0)
     {
         (void)close(instance->fd);
         free(instance);
-        /* refused / missing daemon: the consumer fails closed here, it does
-         * not fall back to a stale pointer (the crash contract) */
+        if (connect_errno != 0)
+        {
+            *connect_errno = error;
+        }
+        if (error == EAGAIN || error == ETIMEDOUT)
+        {
+            SPARK_FAIL(SPARK_STATUS_BUSY);
+        }
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    }
+    now = SparkWeightdMonotonicTimeNs();
+    if (now >= deadline)
+    {
+        (void)close(instance->fd);
+        free(instance);
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
 
     memset(&wire_hello, 0, sizeof(wire_hello));
@@ -3842,7 +3982,7 @@ SparkStatus SparkWeightdClientConnect(const char *socket_path,
     memset(&wire_ack, 0, sizeof(wire_ack));
     status = SparkWeightdClientExchange(instance, &wire_hello,
         SPARK_WEIGHTD_IPC_HELLO_BYTES, &wire_ack,
-        SPARK_WEIGHTD_IPC_HELLO_ACK_BYTES, 0ull);
+        SPARK_WEIGHTD_IPC_HELLO_ACK_BYTES, deadline - now);
     if (status != SPARK_STATUS_OK)
     {
         (void)close(instance->fd);
@@ -3866,6 +4006,139 @@ SparkStatus SparkWeightdClientConnect(const char *socket_path,
     instance->daemon_generation = wire_ack.daemon_generation;
     *client = instance;
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientConnect(const char *socket_path,
+    SparkWeightdClient **client,
+    SparkWeightdHelloResult *hello_out)
+{
+    return SparkWeightdClientOpen(socket_path, 0ull, client, hello_out, 0);
+}
+
+SparkStatus SparkWeightdClientConnectWithin(const char *socket_path,
+    uint64_t timeout_nanoseconds,
+    SparkWeightdClient **client,
+    SparkWeightdHelloResult *hello_out)
+{
+    if (timeout_nanoseconds == 0ull)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    return SparkWeightdClientOpen(socket_path, timeout_nanoseconds, client, hello_out, 0);
+}
+
+SparkStatus SparkWeightdClientMeshStatus(SparkWeightdClient *client,
+    SparkWeightdIpcMeshStatusResult *result,
+    uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcMeshStatus wire;
+    SparkStatus status;
+    if (client == 0 || result == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    memset(&wire, 0, sizeof(wire));
+    SparkWeightdBuildHeader((uint8_t *)&wire, SPARK_WEIGHTD_IPC_KIND_MESH_STATUS,
+        ++client->next_request_id);
+    wire.layout = SPARK_WEIGHTD_MESH_STATUS_LAYOUT;
+    memset(result, 0, sizeof(*result));
+    status = SparkWeightdClientExchange(client, &wire, sizeof(wire), result,
+        sizeof(*result), timeout_nanoseconds);
+    if (status != SPARK_STATUS_OK)
+    {
+        SPARK_RETURN(status);
+    }
+    if (result->layout == 0u || result->layout_compat == 0u ||
+        result->layout_compat > result->layout ||
+        result->daemon_generation != client->daemon_generation)
+    {
+        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+    }
+    if (result->layout_compat > SPARK_WEIGHTD_MESH_STATUS_LAYOUT)
+    {
+        SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
+    }
+    if (result->status > (uint32_t)SPARK_STATUS_EVICT_DENIED)
+    {
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+    }
+    return SPARK_STATUS_OK;
+}
+
+static uint64_t SparkWeightdQueryRemaining(uint64_t started_ns,
+    uint64_t timeout_nanoseconds,
+    uint64_t floor_nanoseconds)
+{
+    uint64_t now = SparkWeightdMonotonicTimeNs();
+    uint64_t elapsed = now > started_ns ? now - started_ns : 0ull;
+    uint64_t remaining = elapsed < timeout_nanoseconds ? timeout_nanoseconds - elapsed : 0ull;
+    return remaining > floor_nanoseconds ? remaining : floor_nanoseconds;
+}
+
+SparkStatus SparkWeightdMeshStatusQuery(const char *socket_path,
+    uint64_t timeout_nanoseconds,
+    SparkWeightdIpcMeshStatusResult *result,
+    uint32_t *outcome)
+{
+    SparkWeightdClient *client = 0;
+    SparkWeightdHelloResult hello;
+    SparkWeightdHelloResult again;
+    uint64_t started = SparkWeightdMonotonicTimeNs();
+    int connect_error = 0;
+    SparkStatus status;
+    if (socket_path == 0 || result == 0 || outcome == 0 ||
+        timeout_nanoseconds == 0ull)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    *outcome = SPARK_WEIGHTD_MESH_QUERY_FAULT;
+    status = SparkWeightdClientOpen(socket_path, timeout_nanoseconds, &client,
+        &hello, &connect_error);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkWeightdClientMeshStatus(client, result,
+            SparkWeightdQueryRemaining(started, timeout_nanoseconds, UINT64_C(1000000)));
+        SparkWeightdClientClose(client);
+        client = 0;
+        if (status == SPARK_STATUS_OK)
+        {
+            *outcome = SPARK_WEIGHTD_MESH_QUERY_ANSWERED;
+            return SPARK_STATUS_OK;
+        }
+        if (status == SPARK_STATUS_IO_ERROR)
+        {
+            status = SparkWeightdClientOpen(socket_path,
+                SparkWeightdQueryRemaining(started, timeout_nanoseconds, UINT64_C(1000000000)),
+                &client, &again, &connect_error);
+            SparkWeightdClientClose(client);
+            if (status == SPARK_STATUS_OK && again.daemon_generation == hello.daemon_generation)
+            {
+                fprintf(stderr, "WD-STATUS-UNSERVED socket=%s daemon_generation=%llu: weightd closed the connection on MESH_STATUS (kind 41); it predates the readiness surface\n",
+                    socket_path, (unsigned long long)hello.daemon_generation);
+                *outcome = SPARK_WEIGHTD_MESH_QUERY_UNSERVED;
+                return SPARK_STATUS_UNSUPPORTED;
+            }
+            fprintf(stderr, "WD-STATUS-RESTARTED socket=%s\n", socket_path);
+            *outcome = SPARK_WEIGHTD_MESH_QUERY_ABSENT;
+            return SPARK_STATUS_IO_ERROR;
+        }
+    }
+    else if (connect_error == ENOENT || connect_error == ECONNREFUSED)
+    {
+        *outcome = SPARK_WEIGHTD_MESH_QUERY_ABSENT;
+        return status;
+    }
+    if (status == SPARK_STATUS_BUSY)
+    {
+        *outcome = SPARK_WEIGHTD_MESH_QUERY_UNRESPONSIVE;
+        return status;
+    }
+    if (status == SPARK_STATUS_ABI_MISMATCH)
+    {
+        *outcome = SPARK_WEIGHTD_MESH_QUERY_INCOMPATIBLE;
+        return status;
+    }
+    SPARK_RETURN(status);
 }
 
 SparkStatus SparkWeightdClientAttach(SparkWeightdClient *client,

@@ -1603,6 +1603,191 @@ static void test_mesh_pair_link(uint32_t local_rank)
     (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
 }
 
+static void test_status(SparkWeightdIpcMeshStatusResult *status)
+{
+    memset(status,0,sizeof(*status));
+    CHECK(SparkWeightdMeshStatusFill(status) == SPARK_STATUS_OK,"mesh status fill answers");
+}
+
+static int test_ready_text(char *text,size_t bytes)
+{
+    char path[512];
+    ssize_t got;
+    int fd;
+    test_ready_path(path,sizeof(path));
+    fd = open(path,O_RDONLY);
+    if ( fd < 0 )
+        return -1;
+    got = read(fd,text,bytes - 1u);
+    (void)close(fd);
+    if ( got < 0 )
+        return -1;
+    text[got] = '\0';
+    return 0;
+}
+
+static void test_mesh_status_surface(uint32_t local_rank)
+{
+    SparkWeightdIpcMeshStatusResult status;
+    SparkWeightdMeshTopology topology = test_identity_topology(16u,local_rank);
+    TestMeshRecord record,own;
+    struct stat st;
+    char path[512],text[256],expected[256];
+    const uint32_t gap = test_peer_rank(2u,local_rank),noisy_peer = 4u,noisy = test_peer_rank(noisy_peer,local_rank);
+    const uint32_t lane = 1u,cell = 2u * lane * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank;
+    uint64_t generation,ready_since;
+    uint32_t rank,first;
+    SparkStubIbvPostedWork work;
+    test_clean_dir();
+    for (rank=0u; rank<SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
+        if ( rank != local_rank && rank != gap )
+            CHECK(test_write_record(rank,40u) == 0,"status: peer records published except one");
+    CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u) ==
+        SPARK_STATUS_BUSY,"status: init publishes");
+    CHECK(test_read_record(local_rank,&own) == 0,"status: own record readable");
+    test_status(&status);
+    CHECK(status.mesh_state == SPARK_WEIGHTD_MESH_STATE_WIRING && status.mesh_generation == 1u &&
+        status.boot_ns == own.boot_ns && status.local_rank == local_rank && status.rank_mask == test_rank_mask &&
+        status.pair_rank == UINT32_MAX && status.wired_mask == (1u << local_rank),"status: a fresh mesh reports wiring at generation 1");
+    CHECK(status.peers[local_rank].state == SPARK_WEIGHTD_MESH_PEER_SELF &&
+        status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_NO_RECORD && status.peers[gap].record_status == SPARK_STATUS_BUSY,
+        "status: peers start without a record");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    test_ready_path(path,sizeof(path));
+    CHECK(status.mesh_state == SPARK_WEIGHTD_MESH_STATE_WIRING && status.wired_mask == (0xffffu & ~(1u << gap)) &&
+        status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_NO_RECORD && stat(path,&st) != 0,
+        "status: a missing record keeps the mesh wiring, names the peer, and leaves no marker");
+    CHECK(status.peers[noisy].state == SPARK_WEIGHTD_MESH_PEER_WIRED &&
+        status.peers[noisy].qp_flags == (SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS | SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS) &&
+        status.peers[noisy].wired_boot_ns == status.peers[noisy].record_boot_ns && status.peers[noisy].since_mono_ns != 0u,
+        "status: a wired peer reports both queue pairs in RTS and its record identity");
+    generation = status.mesh_generation;
+    CHECK(generation > 1u,"status: wiring peers advances the generation");
+    CHECK(test_write_record(gap,40u) == 0,"status: the missing record appears");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.mesh_state == SPARK_WEIGHTD_MESH_STATE_READY && status.wired_mask == 0xffffu &&
+        status.ready_since_mono_ns != 0u && status.mesh_generation > generation,"status: the last record makes the mesh ready");
+    (void)snprintf(expected,sizeof(expected),"weightd-ready v1 pid=%ld boot_ns=%llu rank=%u rank_mask=0x%04x\n",
+        (long)getpid(),(unsigned long long)own.boot_ns,local_rank,test_rank_mask);
+    CHECK(test_ready_text(text,sizeof(text)) == 0 && strcmp(text,expected) == 0,"status: .ready holds the v1 line with pid and boot_ns");
+    (void)snprintf(path,sizeof(path),"%s/.ready.tmp",SPARK_WEIGHTD_MESH_DIR);
+    CHECK(stat(path,&st) != 0,"status: no temporary marker remains");
+    generation = status.mesh_generation;
+    ready_since = status.ready_since_mono_ns;
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.mesh_generation == generation && status.ready_since_mono_ns == ready_since,"status: a pass with no change keeps the generation");
+    CHECK(status.counters[0] == weightd_mesh.stat_trywire && status.counters[1] == weightd_mesh.stat_record_failures &&
+        status.counters[2] == weightd_mesh.stat_record_invalid && status.counters[3] == weightd_mesh.stat_wire_failures &&
+        status.counters[4] == weightd_mesh.stat_rewires && status.counters[5] == weightd_mesh.stat_unready &&
+        status.counters[6] == weightd_mesh.stat_repairs && status.counters[7] == weightd_mesh.send_ok &&
+        status.counters[8] == weightd_mesh.send_err && status.counters[9] == weightd_mesh.stat_peer_resets &&
+        status.counters[10] == weightd_mesh.stat_peer_reset_bits && status.counters[11] == weightd_mesh.stat_lane_resets,
+        "status: counters are the daemon's own statistics");
+    test_fill_record(&record,gap,41u);
+    record.magic = UINT64_C(0x4d45534830303031);
+    CHECK(test_write_record_raw(&record) == 0,"status: an old-format record is published");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    test_ready_path(path,sizeof(path));
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_RECORD_REJECTED && status.peers[gap].record_status == SPARK_STATUS_ABI_MISMATCH &&
+        status.mesh_state == SPARK_WEIGHTD_MESH_STATE_WIRING && status.ready_since_mono_ns == 0u && stat(path,&st) != 0 &&
+        status.mesh_generation > generation,"status: an incompatible record is rejected by name and drops readiness and the marker");
+    test_fill_record(&record,gap,41u);
+    record.rank_mask = 0xffu;
+    CHECK(test_write_record_raw(&record) == 0,"status: a record from another group is published");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_RECORD_REJECTED && status.peers[gap].record_status == SPARK_STATUS_INVALID_ARGUMENT,
+        "status: a group mismatch is rejected with its own status");
+    test_fill_record(&record,gap,41u);
+    memset(record.gid,0,sizeof(record.gid));
+    CHECK(test_write_record_raw(&record) == 0,"status: a record without an IPv4 address is published");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_RECORD_INVALID && status.peers[gap].record_status == SPARK_STATUS_OK &&
+        status.peers[gap].record_boot_ns == record.boot_ns,"status: an unusable record is reported as invalid with its boot");
+    test_fill_record(&record,gap,42u);
+    spark_stub_ibv_fail_modify_qp_for_qpn(record.recv_qpn[test_my_index(gap,local_rank)]);
+    CHECK(test_write_record(gap,42u) == 0,"status: a record with a dead queue pair is published");
+    SparkWeightdMeshTryWire();
+    spark_stub_ibv_fail_modify_qp_for_qpn(0u);
+    test_status(&status);
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_WIRE_FAILED && status.peers[gap].record_status == SPARK_STATUS_DRIVER_LOAD_ERROR &&
+        status.peers[gap].record_boot_ns == record.boot_ns && (status.peers[gap].qp_flags & 3u) == 0u,
+        "status: a failed wire names the record it failed on");
+    SparkWeightdMeshTryWire();
+    test_status(&status);
+    CHECK(status.peers[gap].state == SPARK_WEIGHTD_MESH_PEER_WIRED && status.peers[gap].wired_boot_ns == record.boot_ns &&
+        status.mesh_state == SPARK_WEIGHTD_MESH_STATE_READY,"status: the retry wires the peer and the mesh is ready again");
+    test_complete_range(0u,spark_stub_ibv_posted_count());
+    generation = status.mesh_generation;
+    CHECK(SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_OK,"status: lane configured");
+    test_status(&status);
+    CHECK((status.lanes[lane].flags & SPARK_WEIGHTD_MESH_LANE_CONFIGURED) != 0u && status.lanes[lane].rank_count == 16u &&
+        status.lanes[lane].local_rank == local_rank && status.lanes[lane].physical_mask == 0xffffu &&
+        status.lanes[lane].packed_ranks == UINT64_C(0xfedcba9876543210) && status.lanes[lane].configure_status == SPARK_STATUS_OK &&
+        status.mesh_generation > generation,"status: a configured lane reports its topology and an open gate");
+    generation = status.mesh_generation;
+    CHECK(SparkWeightdMeshSetActivity(lane,1u) == SPARK_STATUS_OK,"status: lane becomes active");
+    test_status(&status);
+    CHECK(status.lanes[lane].activity == 1u && status.lanes[lane].configure_status == SPARK_STATUS_BUSY &&
+        status.lanes[lane].busy_reason == SPARK_WEIGHTD_MESH_LANE_BUSY_ACTIVITY &&
+        SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_BUSY,"status: an active lane reports the same refusal configure gives");
+    CHECK(SparkWeightdMeshSetActivity(lane,0u) == SPARK_STATUS_OK,"status: lane goes idle");
+    test_status(&status);
+    CHECK(status.mesh_generation == generation && status.lanes[lane].activity == 0u,"status: activity toggles do not move the generation");
+    weightd_mesh.transfers[cell].pending = 1u;
+    test_status(&status);
+    CHECK(status.lanes[lane].pending_cells == 1u && status.lanes[lane].busy_reason == SPARK_WEIGHTD_MESH_LANE_BUSY_PENDING &&
+        status.lanes[lane].busy_index == cell && SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_BUSY,
+        "status: a pending cell is reported where configure refuses");
+    weightd_mesh.transfers[cell].pending = 0u;
+    weightd_mesh.transfers[cell].failed = SPARK_WEIGHTD_MESH_TRANSFER_FAILED;
+    test_status(&status);
+    CHECK(status.lanes[lane].failed_cells == 1u && status.lanes[lane].configure_status == SPARK_STATUS_OK,
+        "status: a failed cell is visible and does not block a reconfigure");
+    CHECK(SparkWeightdMeshLaneConfigure(lane,&topology) == SPARK_STATUS_OK,"status: reconfigure resets the failed cell");
+    test_status(&status);
+    CHECK(status.lanes[lane].failed_cells == 0u,"status: the reset cell is no longer failed");
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshBroadcast(1u << noisy,0u,64u,0u,0u,0u) == 1u &&
+        spark_stub_ibv_posted(first,&work) == 0,"status: one write to a peer is posted");
+    CHECK(spark_stub_ibv_complete(work.wr_id,IBV_WC_RETRY_EXC_ERR) == 0,"status: the write fails on the wire");
+    SparkWeightdMeshDrainCq();
+    test_status(&status);
+    CHECK(status.peers[noisy].cq_err_since_ok == 1u && status.peers[noisy].last_err_mono_ns != 0u,
+        "status: a completion error is charged to its peer");
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshBroadcast(1u << noisy,0u,64u,0u,0u,0u) == 1u &&
+        spark_stub_ibv_posted(first,&work) == 0 && spark_stub_ibv_complete(work.wr_id,IBV_WC_SUCCESS) == 0,
+        "status: a second write completes");
+    SparkWeightdMeshDrainCq();
+    test_status(&status);
+    CHECK(status.peers[noisy].cq_err_since_ok == 0u && status.peers[noisy].last_ok_mono_ns >= status.peers[noisy].last_err_mono_ns,
+        "status: a success clears the peer's error run");
+    (void)noisy_peer;
+    test_ready_path(path,sizeof(path));
+    SparkWeightdMeshTryWire();
+    CHECK(stat(path,&st) == 0,"status: the marker exists before stop");
+    SparkWeightdMeshStop();
+    CHECK(stat(path,&st) != 0 && SparkWeightdMeshReady() == 1u,"status: stop removes the daemon's own marker and leaves readiness alone");
+    {
+        int fd = open(path,O_WRONLY | O_CREAT | O_TRUNC,0644);
+        const char *foreign = "weightd-ready v1 pid=1 boot_ns=1 rank=0 rank_mask=0xffff\n";
+        CHECK(fd >= 0 && test_write_fully(fd,foreign,strlen(foreign)) == 0,"status: a foreign marker is planted");
+        if ( fd >= 0 )
+            (void)close(fd);
+    }
+    SparkWeightdMeshStop();
+    CHECK(stat(path,&st) == 0,"status: stop leaves a marker it did not write");
+    weightd_mesh.artifact_check_ns = 0u;
+    SparkWeightdMeshPoll();
+    CHECK(test_ready_text(text,sizeof(text)) == 0 && strcmp(text,expected) == 0,"status: the self-heal replaces a foreign marker with its own");
+}
+
 static void test_mesh_record_addresses(uint32_t local_rank)
 {
     TestMeshRecord record,own;
@@ -1917,6 +2102,7 @@ int main(void)
     }
 
     test_mesh_record_addresses(local_rank);
+    test_mesh_status_surface(local_rank);
 
     test_clean_dir();
     test_rank_mask = 0xfu;
