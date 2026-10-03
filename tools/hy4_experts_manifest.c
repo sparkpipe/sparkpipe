@@ -7,11 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* .experts lazy-manifest of record (tools/glm5_next_experts_manifest.c
-   format): 16B header (WPEX magic, version, count, reserved) + 40B
-   records (reserved u32, chunk ordinal u32, offset u64, bytes u64,
-   ck128 16B). The records cover the whole pack in 64 MiB chunks —
-   the granularity the residentd lazy map verifies at map time. */
 #define MANIFEST_MAGIC UINT32_C(0x58504557)
 #define MANIFEST_VERSION 1u
 #define CHUNK_BYTES (64ull * 1024ull * 1024ull)

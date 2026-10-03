@@ -406,7 +406,7 @@ def render_header(
             f"\treturn({prefix}_LAYER_KIND_INVALID);",
             "}",
             "",
-            "#endif /* SPARK_DSV4_PRO_BUILD */",
+            "#endif",
             "",
         ])
     return "\n".join(lines)

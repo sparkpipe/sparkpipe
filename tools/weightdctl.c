@@ -1,15 +1,3 @@
-/* weightdctl — manual load/unload driver for the weightd residency daemon
- * (the operator's debug-one-step law: scripts drive the daemon directly
- * before anything automated rides it).
- *
- *   weightdctl load   <pack-path> <model> <revision>   (attach; cold-loads)
- *   weightdctl unload <pack-path> <model> <revision>   (release+detach)
- *   weightdctl status                                      (attach probe)
- *
- * The identity fields mirror what a deployment would publish; the SHA is
- * computed from the file when SPARK_WEIGHTD_PACK_SHA256 is unset (a real
- * deployment carries it from placement receipts).
- */
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_sha256.h"
 #include <stdio.h>
@@ -132,8 +120,6 @@ int main(int argc, char **argv)
            mode, (unsigned long long)outcome.arena_bytes,
            (unsigned long long)outcome.arena_generation,
            outcome.loaded_from_pack, outcome.refcount);
-    SparkWeightdAttachRelease(&outcome); /* unmap; the arena itself stays
-                                          * resident (unload semantics come
-                                          * from the daemon's reclaim path) */
+    SparkWeightdAttachRelease(&outcome);
     return 0;
 }

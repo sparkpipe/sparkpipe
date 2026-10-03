@@ -10,24 +10,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/*
- * DSV4 Pro routed-expert range manifest producer (lane 5, shared multidev).
- *
- * Writes <pack>.experts next to a deployed TP4xPP4 rank pack: the version-2
- * ck128 range manifest the lazy weightd tier requires for shared-socket
- * attach (runtime/spark_weightd.c rejects the attach without it).
- *
- * DSV4 expert tensors are tensor-parallel INSIDE every expert: the rank pack
- * carries, for each of the 384 experts, its TP4 slice of W1/W3 (rows
- * EXPERT_WIDTH/4) and its column shard of W2. The directory entry is
- * expert-uniform, so per-expert ranges are the entry sliced into 384 equal
- * spans per plane (payload, scales). The replicated DSpark draft layers
- * (layer markers 0xFFFFFFFB..FD) are full-width and are included for
- * completeness; non-speculative work never leases them.
- *
- * Usage: dsv4_pro_experts_manifest <pack> [<out>]   (default out: pack.experts)
- */
-
 #define DSV4_PACK_MAGIC UINT32_C(0x34565344)
 #define DSV4_WEIGHT_FP4 3u
 #define DSV4_KIND_EXPERTS_W1 19u
@@ -54,7 +36,6 @@ typedef struct
 	uint64_t scale_offset;
 } Dsv4PackEntry;
 
-/* Range kind = tensor kind * 2 + plane (0 payload, 1 scale). */
 static int32_t range_write(FILE *pack, FILE *out, uint32_t layer,
     uint32_t expert, uint32_t kind, uint64_t offset, uint64_t bytes)
 {
@@ -115,7 +96,7 @@ static int32_t entry_write(FILE *pack, FILE *out, const Dsv4PackHeader *header,
     if ( entry->layer < 64u )
         *seen_layers |= (UINT64_C(1) << entry->layer);
     else if ( entry->layer < DSV4_DRAFT_LAYER_FIRST || entry->layer > DSV4_DRAFT_LAYER_LAST )
-        return(-8); /* unexpected layer marker */
+        return(-8);
     for ( plane = 0u; plane < 2u; plane++ )
     {
         uint64_t offset = plane == 0u ? entry->payload_offset : entry->scale_offset;
@@ -166,8 +147,6 @@ static int32_t manifest_write(FILE *pack, FILE *out, const Dsv4PackHeader *heade
         if ( err < 0 )
             return(err);
     }
-    /* Every backbone layer of this stage carries all three expert kinds,
-       and the replicated DSpark block carries all three draft layers. */
     if ( seen_layers != expected_layers || draft_entries != 9u ||
         expert_entries != (count * 3u) || words[2] == 0u )
         return(-12);

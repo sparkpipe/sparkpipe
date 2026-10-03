@@ -1,4 +1,3 @@
-/* hy4 lane: CPU reference dequant of real rank-pack tensors (type 8/16/18/29). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -100,8 +100,6 @@
 3 tools/dev/ling_gemm_repro.cu: cudaMemset uses a raw byte-width multiplier
 1 tools/devcycle/bw_probe.cu: cudaMalloc uses a direct size/count literal
 5 tools/dsv4_pro_experts_manifest.c: memcpy uses a direct size/count literal
-1 tools/gen_geometry_header.py: GLM model literal 12288 is outside the model contract
-1 tools/gen_geometry_header.py: GLM model literal 576 is outside the model contract
 5 tools/glm52_experts_manifest.c: memcpy uses a direct size/count literal
 1 tools/glm52_resident_stagepack.py: GLM model literal 576 is outside the model contract
 1 tools/glm52_resident_stagepack.py: GLM model literal 6144 is outside the model contract
