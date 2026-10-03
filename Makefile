@@ -267,7 +267,8 @@ TOOL_NAMES := \
     spark_pmtu_characterize \
     sparkpipe_registrar \
     sparkpipe_weightd \
-    sparkpipe_weightsd
+    sparkpipe_weightsd \
+    sparkpipe_mesh_status
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -749,9 +750,12 @@ PYTHON_TESTS := \
 	tests/test_tp_standalone_configuration.py \
 	tests/test_weightd_map_fd_ownership.py \
 	tests/test_weightd_mesh_source.py \
+	tests/test_mesh_status_tool.py \
 	tests/test_weightd_warm_family.py
 PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
 	build/weightd_lazy_consumer \
+	build/sparkpipe_weightd \
+	build/sparkpipe_mesh_status \
 	build/dsv41_flash_pack_synthesize \
 	build/dsv41_flash_experts_manifest \
 	build/test_dsv41_flash_pack_contract
@@ -1875,6 +1879,9 @@ build/weightd_lazy_consumer: tools/weightd_lazy_consumer.c $(RUNTIME_LIBRARY) $(
 
 build/weightd_receipt: tools/weightd_receipt.c runtime/spark_weightd_receipt.c $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+build/sparkpipe_mesh_status: tools/mesh_status.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@
 
 build/weightdctl: tools/weightdctl.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@

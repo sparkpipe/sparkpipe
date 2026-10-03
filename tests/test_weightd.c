@@ -674,6 +674,126 @@ static void SparkTestServedAbiVersions(void)
     printf("served ABI 8 and 9 green (replies echo the client ABI; staging map is ABI 9 only)\n");
 }
 
+static ssize_t SparkTestRawSend(int fd, const void *request, size_t request_bytes,
+    void *response, size_t response_bytes)
+{
+    struct pollfd poll_fd;
+    size_t filled = 0u;
+    assert(write(fd, request, request_bytes) == (ssize_t)request_bytes);
+    while (filled < response_bytes)
+    {
+        ssize_t got;
+        poll_fd.fd = fd;
+        poll_fd.events = POLLIN;
+        poll_fd.revents = 0;
+        assert(poll(&poll_fd, 1u, 5000) > 0);
+        got = read(fd, (uint8_t *)response + filled, response_bytes - filled);
+        if (got <= 0)
+            return got;
+        filled += (size_t)got;
+    }
+    return (ssize_t)filled;
+}
+
+static void SparkTestMeshStatusFrame(SparkWeightdIpcMeshStatus *request, uint32_t abi_version,
+    uint64_t request_id, uint32_t layout, uint32_t reserved)
+{
+    memset(request, 0, sizeof(*request));
+    request->header.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    request->header.abi_version = abi_version;
+    request->header.kind = SPARK_WEIGHTD_IPC_KIND_MESH_STATUS;
+    request->header.body_bytes = (uint32_t)(sizeof(*request) - sizeof(request->header));
+    request->header.request_id = request_id;
+    request->layout = layout;
+    request->reserved = reserved;
+}
+
+static void SparkTestMeshStatus(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_mesh_status.sock";
+    SparkTestServerThread thread_context;
+    pthread_t thread_handle;
+    SparkWeightdIpcHeader hello;
+    SparkWeightdIpcHelloAck ack;
+    SparkWeightdIpcMeshStatus request;
+    static SparkWeightdIpcMeshStatusResult result;
+    static SparkWeightdIpcMeshStatusResult clean;
+    SparkWeightdClient *client = 0;
+    SparkWeightdHelloResult hello_result;
+    SparkWeightdMeshTopology empty;
+    uint32_t lane = SPARK_WEIGHTD_LANE_NONE;
+    uint32_t outcome = 0u;
+    uint32_t index;
+    int fd;
+    (void)remove(socket_path);
+    SparkTestStartServer(&thread_context, &thread_handle, socket_path, SPARK_TEST_CEILING_BYTES);
+    fd = SparkTestRawConnect(socket_path);
+    SparkTestRawFrame(&hello, 9u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    assert(SparkTestRawExchange(fd, &hello, &ack, sizeof(ack)) == (ssize_t)sizeof(ack));
+    SparkTestMeshStatusFrame(&request, 9u, 2u, SPARK_WEIGHTD_MESH_STATUS_LAYOUT, 0u);
+    assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == (ssize_t)sizeof(result));
+    assert(result.header.kind == SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT && result.header.abi_version == 9u &&
+        result.header.body_bytes == 4072u && result.header.request_id == 2u);
+    assert(result.layout == 1u && result.layout_compat == 1u && result.pid == (uint32_t)getpid() &&
+        result.daemon_generation == ack.daemon_generation && result.daemon_generation != 0u);
+    assert(result.status == (uint32_t)SPARK_STATUS_UNSUPPORTED && result.mesh_state == SPARK_WEIGHTD_MESH_STATE_DISABLED &&
+        result.pair_rank == UINT32_MAX);
+    assert(result.reserved0 == 0u);
+    for (index = 0u; index < sizeof(result.reserved_tail); index++)
+        assert(result.reserved_tail[index] == 0u);
+    SparkTestMeshStatusFrame(&request, 9u, 3u, 0u, 0u);
+    assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == (ssize_t)sizeof(result));
+    assert(result.status == (uint32_t)SPARK_STATUS_INVALID_ARGUMENT && result.header.request_id == 3u);
+    SparkTestMeshStatusFrame(&request, 9u, 4u, 1u, 7u);
+    assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == (ssize_t)sizeof(result));
+    assert(result.status == (uint32_t)SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestMeshStatusFrame(&request, 9u, 5u, 9u, 0u);
+    assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == (ssize_t)sizeof(result));
+    assert(result.layout == 1u && result.status == (uint32_t)SPARK_STATUS_UNSUPPORTED);
+    (void)close(fd);
+    fd = SparkTestRawConnect(socket_path);
+    SparkTestRawFrame(&hello, 8u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    assert(SparkTestRawExchange(fd, &hello, &ack, sizeof(ack)) == (ssize_t)sizeof(ack));
+    SparkTestMeshStatusFrame(&request, 8u, 2u, 1u, 0u);
+    assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == 0);
+    (void)close(fd);
+    SparkTestMeshStatusFrame(&request, 9u, 1u, 1u, 0u);
+    SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
+    assert(SparkWeightdClientConnectWithin(socket_path, SPARK_TEST_TIMEOUT_NS, &client, &hello_result) == SPARK_STATUS_OK);
+    memset(&empty, 0, sizeof(empty));
+    assert(SparkWeightdClientLaneAcquire(client, 6u, &empty, &lane, SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && lane == 6u);
+    for (index = 0u; index < 200u; index++)
+    {
+        assert(SparkWeightdMeshStatusQuery(socket_path, SPARK_TEST_TIMEOUT_NS, &result, &outcome) == SPARK_STATUS_OK &&
+            outcome == SPARK_WEIGHTD_MESH_QUERY_ANSWERED);
+        if ((result.lanes[6].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) != 0u)
+            break;
+        {
+            struct timespec pause = {0, 10000000L};
+            (void)nanosleep(&pause, 0);
+        }
+    }
+    assert((result.lanes[6].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) != 0u && (result.lanes[5].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u);
+    SparkWeightdClientClose(client);
+    for (index = 0u; index < 200u; index++)
+    {
+        assert(SparkWeightdMeshStatusQuery(socket_path, SPARK_TEST_TIMEOUT_NS, &result, &outcome) == SPARK_STATUS_OK);
+        if ((result.lanes[6].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u)
+            break;
+        {
+            struct timespec pause = {0, 10000000L};
+            (void)nanosleep(&pause, 0);
+        }
+    }
+    assert((result.lanes[6].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u);
+    SparkTestStopServer(&thread_context, thread_handle);
+    assert(access(socket_path, F_OK) != 0);
+    memset(&clean, 0, sizeof(clean));
+    assert(SparkWeightdMeshStatusQuery(socket_path, UINT64_C(500000000), &clean, &outcome) != SPARK_STATUS_OK &&
+        outcome == SPARK_WEIGHTD_MESH_QUERY_ABSENT);
+    printf("mesh status green (kind 41 answers inline in layout 1, refuses bad requests, closes on ABI 8 and before HELLO, reports lane owners)\n");
+}
+
 static void SparkTestFailClosedPaths(void)
 {
     const char *socket_path = "/tmp/spark_weightd_test_closed.sock";
@@ -957,6 +1077,7 @@ int main(void)
     SparkTestStopAttachStartNeverHoldsTwoArenas();
     SparkTestReclaimPackIsScopedToOnePack();
     SparkTestServedAbiVersions();
+    SparkTestMeshStatus();
     SparkTestFailClosedPaths();
     SparkTestDaemonProcessTermPath();
     printf("w2 weightd lane: identity arenas + NO-2x + TERM green\n");

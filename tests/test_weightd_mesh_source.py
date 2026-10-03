@@ -38,19 +38,23 @@ int TestListen(int fd,int backlog)
 int TestClose(int fd) { (void)fd; return 0; }
 int TestThreadCreate(pthread_t *thread,const pthread_attr_t *attributes,
     void *(*start)(void *),void *argument)
-{ (void)thread; (void)attributes; (void)start; (void)argument; return EAGAIN; }
+{ (void)thread; (void)attributes; (void)start; (void)argument; return getenv("TEST_THREAD_OK") != 0 ? 0 : EAGAIN; }
 SparkStatus SparkWeightdMeshInit(uint32_t rank,const char *interface_name,
     uint32_t sgid,const char *directory,uint32_t mask,
     const char *pair_interface_name,uint32_t pair_sgid,uint32_t traffic_class)
 {
     (void)rank; (void)interface_name; (void)sgid; (void)directory; (void)mask;
     (void)pair_interface_name; (void)pair_sgid; (void)traffic_class;
+    puts("MESH-INIT");
     return getenv("TEST_MESH_INIT_OK") != 0 ? SPARK_STATUS_BUSY : SPARK_STATUS_IO_ERROR;
 }
+void SparkWeightdMeshStop(void) { puts("MESH-STOP"); }
 void SparkWeightdMeshDoorbellLoop(int32_t cpu) { (void)cpu; }
-SparkStatus SparkWeightdServerCreate(const SparkWeightdServerConfig *config,
+SparkStatus SparkWeightdServerCreateUnbound(const SparkWeightdServerConfig *config,
     SparkWeightdServer **server)
-{ (void)config; *server = (SparkWeightdServer *)(uintptr_t)1u; return SPARK_STATUS_OK; }
+{ (void)config; puts("SERVER-UNBOUND"); *server = (SparkWeightdServer *)(uintptr_t)1u; return SPARK_STATUS_OK; }
+SparkStatus SparkWeightdServerListen(SparkWeightdServer *server)
+{ (void)server; puts("SERVER-LISTEN"); return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdServerRun(SparkWeightdServer *server,const volatile sig_atomic_t *stop)
 { (void)server; (void)stop; puts("SERVER-RUN"); return SPARK_STATUS_OK; }
 void SparkWeightdServerDestroy(SparkWeightdServer *server)
@@ -67,17 +71,27 @@ const char *SparkStatusToString(SparkStatus status)
                    cwd=ROOT, check=True)
     arguments = [str(binary), "--mesh-rank", "0", "--mesh-interface", "test0",
                  "--mesh-sgid-index", "3", "--mesh-rank-mask", "0xf"]
-    for environment, diagnostic in (({}, "init=test-status"),
-                                    ({"TEST_MESH_INIT_OK": "1"}, "thread create failed")):
-        result = subprocess.run(arguments, env=environment, capture_output=True, text=True)
-        assert result.returncode == 1, result
-        assert diagnostic in result.stderr, result
-        assert "ready" not in result.stdout and "SERVER-RUN" not in result.stdout, result
-        assert result.stdout.count("SERVER-DESTROY") == 1, result
+    def markers(output):
+        return [line for line in output.splitlines() if line.isupper() and line.replace("-", "").isalpha()]
+    result = subprocess.run(arguments, env={"TEST_MESH_INIT_OK": "1", "TEST_THREAD_OK": "1"}, capture_output=True, text=True)
+    assert result.returncode == 0, result
+    assert markers(result.stdout) == ["SERVER-UNBOUND", "MESH-INIT", "SERVER-LISTEN", "SERVER-RUN", "MESH-STOP", "SERVER-DESTROY"], result
+    assert result.stdout.index("spark_weightd ready") > result.stdout.index("SERVER-LISTEN"), result
+    result = subprocess.run(arguments, env={}, capture_output=True, text=True)
+    assert result.returncode == 1 and "init=test-status" in result.stderr, result
+    assert markers(result.stdout) == ["SERVER-UNBOUND", "MESH-INIT", "SERVER-DESTROY"], result
+    assert "ready" not in result.stdout, result
+    result = subprocess.run(arguments, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
+    assert result.returncode == 1 and "thread create failed" in result.stderr, result
+    assert markers(result.stdout) == ["SERVER-UNBOUND", "MESH-INIT", "SERVER-LISTEN", "MESH-STOP", "SERVER-DESTROY"], result
+    assert "ready" not in result.stdout, result
     for flag in range(1, len(arguments), 2):
         partial = arguments[:flag] + arguments[flag + 2:]
         result = subprocess.run(partial, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
         assert result.returncode == 2 and "SERVER-RUN" not in result.stdout, (arguments[flag], result)
+    for extra in (["--mesh-pair-interface", "pair0"], ["--mesh-traffic-class", "106"]):
+        result = subprocess.run([str(binary)] + extra, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
+        assert result.returncode == 2 and "SERVER-UNBOUND" not in result.stdout, (extra, result)
     outside = arguments[:2] + ["4"] + arguments[3:]
     result = subprocess.run(outside, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
     assert result.returncode == 2 and "SERVER-RUN" not in result.stdout, result

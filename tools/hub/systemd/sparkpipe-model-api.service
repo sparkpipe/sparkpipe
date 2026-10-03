@@ -1,0 +1,16 @@
+[Unit]
+Description=SparkPipe engine API (C model_api) for the production GLM Full lane
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/glmfull-lane6-api
+ExecStart=%h/glmfull-lane6-api/bin/sparkpipe_model_api --deployment model_resident.json --runtime-root %h/glmfull-lane6-api/runtime --port 8446
+StandardOutput=append:%h/glmfull-lane6-api/api.log
+StandardError=append:%h/glmfull-lane6-api/api.log
+Restart=always
+RestartSec=2
+MemoryMax=8G
+
+[Install]
+WantedBy=default.target

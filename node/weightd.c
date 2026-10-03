@@ -120,6 +120,29 @@ static int SparkWeightdLatchAcquire(uint16_t port)
     return(1);
 }
 
+static SparkStatus SparkWeightdLatchFromEnvironment(void)
+{
+    uint16_t latch_port = SPARK_WEIGHTD_LATCH_PORT_DEFAULT;
+    const char *latch_env = getenv("SPARK_WEIGHTD_LATCH_PORT");
+    if ( latch_env != 0 )
+    {
+        char *end;
+        unsigned long value;
+        errno = 0;
+        value = strtoul(latch_env,&end,10);
+        if ( errno != 0 || end == latch_env || *end != '\0' ||
+             latch_env[0] == '-' || value == 0ul || value > UINT16_MAX )
+        {
+            fprintf(stderr,"weightd: invalid SPARK_WEIGHTD_LATCH_PORT\n");
+            return(SPARK_STATUS_INVALID_ARGUMENT);
+        }
+        latch_port = (uint16_t)value;
+    }
+    if ( SparkWeightdLatchAcquire(latch_port) < 0 )
+        return(SPARK_STATUS_IO_ERROR);
+    return(SPARK_STATUS_OK);
+}
+
 static int SparkWeightdParseByte(const char *program, const char *flag,
     const char *text, uint32_t *value)
 {
@@ -365,44 +388,6 @@ int main(int argument_count, char **arguments)
         return 2;
     }
 
-    memset(&config, 0, sizeof(config));
-    config.socket_path = socket_path;
-    config.device_bytes_max = device_bytes_max;
-    config.kv_reserve_bytes = kv_reserve_bytes;
-
-    signal(SIGINT, SparkWeightdSignal);
-    signal(SIGTERM, SparkWeightdSignal);
-
-    {
-        uint16_t latch_port = SPARK_WEIGHTD_LATCH_PORT_DEFAULT;
-        const char *latch_env = getenv("SPARK_WEIGHTD_LATCH_PORT");
-        int latch;
-        if ( latch_env != 0 )
-        {
-            char *end;
-            unsigned long value;
-            errno = 0;
-            value = strtoul(latch_env,&end,10);
-            if ( errno != 0 || end == latch_env || *end != '\0' ||
-                 latch_env[0] == '-' || value == 0ul || value > UINT16_MAX )
-            {
-                fprintf(stderr,"weightd: invalid SPARK_WEIGHTD_LATCH_PORT\n");
-                return 2;
-            }
-            latch_port = (uint16_t)value;
-        }
-        latch = SparkWeightdLatchAcquire(latch_port);
-        if ( latch < 0 )
-            return 1;
-    }
-
-    status = SparkWeightdServerCreate(&config, &server);
-    if (status != SPARK_STATUS_OK)
-    {
-        fprintf(stderr, "weightd create=%s socket=%s\n",
-            SparkStatusToString(status), socket_path);
-        return 1;
-    }
     if (weightd_mesh_launch.pair_fields != 0u &&
         (weightd_mesh_launch.pair_fields != 3u || mesh_fields != 15u))
     {
@@ -416,9 +401,27 @@ int main(int argument_count, char **arguments)
         SparkWeightdUsage(arguments[0]);
         return 2;
     }
+    memset(&config, 0, sizeof(config));
+    config.socket_path = socket_path;
+    config.device_bytes_max = device_bytes_max;
+    config.kv_reserve_bytes = kv_reserve_bytes;
+
+    signal(SIGINT, SparkWeightdSignal);
+    signal(SIGTERM, SparkWeightdSignal);
+
+    status = SparkWeightdLatchFromEnvironment();
+    if ( status != SPARK_STATUS_OK )
+        return(status == SPARK_STATUS_INVALID_ARGUMENT ? 2 : 1);
+
+    status = SparkWeightdServerCreateUnbound(&config, &server);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "weightd create=%s socket=%s\n",
+            SparkStatusToString(status), socket_path);
+        return 1;
+    }
     if (mesh_fields == 15u)
     {
-        static pthread_t mesh_thread;
         status = SparkWeightdMeshInit(weightd_mesh_launch.rank,
             weightd_mesh_launch.interface_name,weightd_mesh_launch.sgid_index,
             weightd_mesh_launch.mesh_dir,weightd_mesh_launch.rank_mask,
@@ -430,17 +433,31 @@ int main(int argument_count, char **arguments)
             SparkWeightdServerDestroy(server);
             return 1;
         }
-        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
-        {
-            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
-            SparkWeightdServerDestroy(server);
-            return 1;
-        }
     }
     else
     {
         fprintf(stderr,
             "weightd-mesh: identity not stated; mesh disabled\n");
+    }
+    status = SparkWeightdServerListen(server);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "weightd listen=%s socket=%s\n",
+            SparkStatusToString(status), socket_path);
+        SparkWeightdMeshStop();
+        SparkWeightdServerDestroy(server);
+        return 1;
+    }
+    if (mesh_fields == 15u)
+    {
+        static pthread_t mesh_thread;
+        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
+        {
+            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
+            SparkWeightdMeshStop();
+            SparkWeightdServerDestroy(server);
+            return 1;
+        }
     }
 
     printf("spark_weightd ready unix=%s ceiling=%llu\n",
@@ -448,6 +465,7 @@ int main(int argument_count, char **arguments)
     fflush(stdout);
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);
+    SparkWeightdMeshStop();
 
     arena_count = SparkWeightdServerArenaCount(server);
     resident_bytes = SparkWeightdServerResidentBytes(server);
