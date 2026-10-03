@@ -139,19 +139,30 @@ static __global__ void SparkGlm52HeadScatterKernel(const uint32_t *head_rows,con
 	output_score[head_rows[threadIdx.x]] = head_score[threadIdx.x];
 }
 
-static __global__ void SparkGlm52GatherPlanKernel(const uint32_t *resident_slots,const uint32_t *positions,uint32_t rows,uint32_t capacity,uint32_t *plan)
+static __global__ void SparkGlm52GatherPlanKernel(const uint32_t *resident_slots,const uint32_t *positions,uint32_t rows,uint32_t capacity,uint32_t *plan,LmKvAccessError *error)
 {
-	uint32_t sequence,row,context = 0u;
+	uint32_t sequence,row,first,end,contiguous = 1u;
 	if ( threadIdx.x != 0u || blockIdx.x != 0u )
 		return;
 	sequence = resident_slots[0];
-	for (row=0u; row<rows; row++)
-		if ( resident_slots[row] == sequence && positions[row] + 1u > context )
-			context = positions[row] + 1u;
+	first = positions[0];
+	end = positions[0] + 1u;
+	for (row=1u; row<rows; row++)
+	{
+		if ( resident_slots[row] != sequence || positions[row] < positions[row - 1u] )
+		{
+			LmFrameErrorReport(error,LM_FRAME_ERROR_PAGE_TABLE_OUT_OF_RANGE,LM_KV_ACCESS_WRITE,row,resident_slots[row],positions[row],positions[row - 1u]);
+			return;
+		}
+		if ( positions[row] - positions[row - 1u] > 1u )
+			contiguous = 0u;
+		end = positions[row] + 1u;
+	}
 	plan[0] = sequence;
 	plan[capacity + sequence] = 0u;
-	plan[2u * capacity + sequence] = context;
-	plan[3u * capacity + sequence] = 0u;
+	plan[2u * capacity + sequence] = contiguous != 0u ? first : end;
+	plan[3u * capacity] = contiguous != 0u ? first : end;
+	plan[3u * capacity + 1u] = end;
 }
 
 static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
@@ -171,8 +182,15 @@ static int32_t SparkGlm52StageWaveMetadata(const SparkGlm52CudaWave *wave)
 	}
 	if ( error == cudaSuccess && wave->kv_gather != 0u )
 	{
-		SparkGlm52GatherPlanKernel<<<1u,1u,0,stream>>>(slot->resident_slots,slot->positions,wave->row_count,wave->resident_sequence_capacity,slot->kv_gather_plan);
+		const uint32_t capacity = wave->resident_sequence_capacity;
+		SparkGlm52GatherPlanKernel<<<1u,1u,0,stream>>>(slot->resident_slots,slot->positions,wave->row_count,capacity,slot->kv_gather_plan,(LmKvAccessError *)slot->kv_access_error);
 		error = cudaPeekAtLastError();
+		if ( error == cudaSuccess )
+			error = cudaMemsetAsync(slot->kv_gather_digest,0,SPARK_GLM52_SHARD_DIGESTS * sizeof(unsigned long long),stream);
+		if ( error == cudaSuccess )
+			error = LmKvShardRemapLaunch<SPARK_GLM_CUDA_THREADS>(wave->kv_shard,wave->kv_gather_latent,slot->kv_gather_plan + 3u * capacity,wave->kv_gather_capacity,slot->kv_gather_latent_remap,stream);
+		if ( error == cudaSuccess )
+			error = LmKvRowsRemapLaunch<SPARK_GLM_CUDA_THREADS>(slot->positions,wave->row_count,(uint32_t)wave->kv_gather_latent_tail_slot,wave->kv_gather_capacity,slot->kv_gather_latent_remap,(LmKvAccessError *)slot->kv_access_error,stream);
 	}
 	if ( error == cudaSuccess && wave->prefill_block_table != 0 )
 	{
@@ -230,26 +248,32 @@ static void SparkGlm52BindLayerShard(
 		memset(&buffers->index_shard.pages,0,sizeof(buffers->index_shard.pages));
 	if ( wave->kv_gather != 0u )
 	{
-		buffers->kv_gather_pack = slot->kv_gather_pack;
-		buffers->kv_gather_index_offset = wave->kv_gather_index_offset;
-		buffers->kv_gather_received = slot->kv_gather_received;
-		buffers->kv_gather_chunk_bytes = (uint64_t)wave->kv_gather_chunk_units * SPARK_GLM52_SHARD_UNIT_BYTES;
+		buffers->kv_gather_latent_pack = slot->kv_gather_latent_pack;
+		buffers->kv_gather_index_pack = slot->kv_gather_index_pack;
+		buffers->kv_gather_latent_tail = slot->kv_gather_latent_pool + wave->kv_gather_latent_tail_slot * GLM_KV_SLOT_BYTES;
+		buffers->kv_gather_index_received = slot->kv_gather_index_pool;
+		buffers->kv_gather_index_chunk_bytes = wave->kv_gather_index.chunk_bytes;
+		buffers->kv_gather_old_most = wave->kv_gather_old_bound;
 		buffers->kv_gather_sequences = slot->kv_gather_plan;
 		buffers->kv_gather_offset = slot->kv_gather_plan + capacity;
-		buffers->kv_gather_context = slot->kv_gather_plan + 2u * capacity;
-		buffers->kv_gather_page_base = slot->kv_gather_plan + 3u * capacity;
-		buffers->kv_gather_sequence_count = wave->kv_gather_sequence_count;
-		buffers->kv_gather_most_context = wave->kv_gather_most_context;
-		buffers->kv_gathered_table_stride = wave->pages_per_sequence;
-		buffers->kv_gathered_table = slot->kv_gathered_table;
-		buffers->cache_gathered.pool = slot->kv_gathered_latent;
-		buffers->cache_gathered.page_table = slot->kv_gathered_table;
-		buffers->cache_gathered.page_table_stride = wave->pages_per_sequence;
-		buffers->cache_gathered.sequence_count = capacity;
-		buffers->cache_gathered.pool_page_count = wave->kv_gathered_page_capacity;
+		buffers->kv_gather_old_bound = slot->kv_gather_plan + 2u * capacity;
+		buffers->kv_gather_rows_zero = slot->kv_gather_rows_zero;
+		buffers->kv_gather_context_word = slot->kv_gather_plan + 3u * capacity + 1u;
+		buffers->kv_gather_digest = slot->kv_gather_digest;
+		buffers->kv_gather_old_keys = wave->kv_gather_old_keys;
+		buffers->cache_gathered.pool = slot->kv_gather_latent_pool;
+		buffers->cache_gathered.page_table = slot->kv_gather_latent_remap;
+		buffers->cache_gathered.page_table_stride = wave->kv_gather_capacity;
+		buffers->cache_gathered.sequence_count = 1u;
+		buffers->cache_gathered.pool_page_count = (uint32_t)(wave->kv_gather_latent_tail_slot + wave->execution_row_capacity);
 		buffers->cache_gathered.access_error = (LmKvAccessError *)slot->kv_access_error;
 		buffers->index_gathered = buffers->cache_gathered;
 		buffers->index_gathered.pool = slot->kv_gathered_index;
+		buffers->index_gathered.page_table = slot->kv_gathered_table;
+		buffers->index_gathered.page_table_stride = wave->pages_per_sequence;
+		buffers->index_gathered.pool_page_count = wave->pages_per_sequence;
+		if ( slot->kv_gathered_index == 0 )
+			memset(&buffers->index_gathered,0,sizeof(buffers->index_gathered));
 		return;
 	}
 	buffers->shard_send_bf16 = slot->shard_send_bf16;
@@ -431,7 +455,20 @@ extern "C" uint32_t SparkGlm52LayerShardIndexing(const SparkGlm52CudaWave *wave,
 	return(wave != 0 && wave->kv_shard.degree > 1u && local_layer < wave->layer_count ? GlmLayerShardIndexing(wave->first_layer_index + local_layer,wave->maximum_context) : 0u);
 }
 
-extern "C" int32_t SparkGlm52LaunchCudaLayerShard(const SparkGlm52CudaWave *wave,uint32_t local_layer,uint32_t phase)
+extern "C" int32_t SparkGlm52LaunchKvDigest(const SparkGlm52CudaWave *wave,uint32_t check)
+{
+	SparkGlm52ExecutionSlot *slot;
+	cudaError_t error;
+	if ( SparkGlm52ValidateWaveShape(wave) != LM_LAUNCH_OK || wave->kv_gather == 0u || wave->slot->kv_gather_digest == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	slot = wave->slot;
+	error = check != 0u ?
+		LmRowDigestCheckLaunch(slot->kv_gather_digest + SPARK_GLM52_SHARD_DIGESTS,SPARK_GLM52_SHARD_DIGESTS,(LmKvAccessError *)slot->kv_access_error,(cudaStream_t)slot->stream) :
+		LmRowDigestFinishLaunch(slot->kv_gather_digest,SPARK_GLM52_SHARD_DIGESTS,slot->kv_gather_digest + SPARK_GLM52_SHARD_DIGESTS,(cudaStream_t)slot->stream);
+	return(SparkGlm52CudaStatus(error));
+}
+
+int32_t SparkGlm52LaunchCudaLayerShard(const SparkGlm52CudaWave *wave,uint32_t local_layer,uint32_t phase)
 {
 	GlmLayerBuffers buffers;
 	cudaStream_t stream;

@@ -558,10 +558,23 @@ citations refer to that commit.
   math, and the index selection and prefill attention are bit-identical
   (`tests/cuda/index_shard_cuda.cu`, `tests/host_cuda/index_shard_host.cu`).
   Prefill waves (gather mode) carry one sequence, so packed multi-span
-  prefill is off under the split; graph mode sizes the key gather by the
-  regime bound; the gather buffers cost about 0.8 GB per pipeline slot at
-  262,144 positions and grow with the maximum context. Scatter waves are
-  capped at 64 rows.
+  prefill is off under the split. They exchange only the context before
+  the wave (latent and index keys in separate balanced sections, index keys
+  only on full-indexer layers past 2,048 positions); the wave's own rows
+  are read from each rank's local copy, and a row digest folded into one
+  4-word MAX all-reduce per wave fails the request loudly if any rank's
+  local rows differ. Latent keys are read in place through a per-position
+  remap. Index keys are unpacked into position-ordered pages first: read
+  through the remap, the scorer ran 8% slower at 16K and 25-28% slower at
+  175-260K on one GB10 (64 rows), while the unpack costs one copy of the
+  section. Graph mode sizes the exchange by the regime bound, so it ships
+  up to the bound rather than the real old context. The transient buffers
+  per pipeline slot are two packs, two receive sections, a latent tail, the
+  paged index copy and one remap table (about half of the previous
+  gathered pages at 262,144 positions). Still open: exact sharded DSA
+  selection for gather waves (each rank scores its own positions, which
+  removes the index-key exchange), and fetching only the selected union's
+  latents once its size is measured. Scatter waves are capped at 64 rows.
 - Left out on purpose (2026-10-02): KV memory is owned by each engine, not by
   the node. `SparkStageKvBindingInitialize` allocates the KV regions and the
   page table with `cudaMalloc` through the module's own ledger

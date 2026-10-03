@@ -23,7 +23,7 @@ static void *PENDING_CONTEXT;
 static SparkStatus COMPLETED_STATUS;
 static uint32_t COMPLETED_COUNT;
 static SparkGlm52ModuleState *STATE;
-static uint32_t EAGER,KV_CHUNK;
+static uint32_t EAGER,KV_LATENT,KV_INDEX;
 static SparkTpDeviceCollectiveCompletionFunction PENDING_COMPLETION;
 static void *PENDING_COMPLETION_CONTEXT;
 
@@ -68,6 +68,7 @@ int32_t SparkGlm52LaunchCudaLayerShard(const SparkGlm52CudaWave *wave,uint32_t l
 	Log(names[phase],layer);
 	return(0);
 }
+int32_t SparkGlm52LaunchKvDigest(const SparkGlm52CudaWave *wave,uint32_t check) { assert(wave->kv_gather != 0u && check < 2u); Log("digest",check); return(0); }
 uint32_t SparkGlm52LayerShardIndexing(const SparkGlm52CudaWave *wave,uint32_t layer) { return(wave->kv_shard.degree > 1u && wave->maximum_context > SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT && layer == 0u ? 1u : 0u); }
 int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *wave,uint32_t layer) { (void)wave; (void)layer; assert(0); return(1); }
 int32_t SparkGlm52LaunchCudaLayerMlpExperts(const SparkGlm52CudaWave *wave,uint32_t layer) { (void)wave; (void)layer; assert(0); return(1); }
@@ -95,6 +96,18 @@ cudaError_t cudaGraphLaunch(cudaGraphExec_t exec,cudaStream_t stream) { (void)st
 cudaError_t cudaGraphDestroy(cudaGraph_t graph) { (void)graph; return(cudaSuccess); }
 cudaError_t cudaGraphExecDestroy(cudaGraphExec_t exec) { (void)exec; return(cudaSuccess); }
 
+static uint32_t KvOp(const void *pack,const void *pool,uint32_t *part,const SparkTpDeviceCollectiveSubmission *submission)
+{
+	uintptr_t bytes = (uintptr_t)submission->active_sequence_count * SPARK_GLM52_SHARD_UNIT_BYTES;
+	if ( (uintptr_t)submission->local_device == (uintptr_t)pack )
+		*part = 0u;
+	if ( (uintptr_t)submission->local_device != (uintptr_t)pack + (uintptr_t)*part * bytes ||
+		(uintptr_t)submission->full_device != (uintptr_t)pool + (uintptr_t)*part * STATE->kv_shard.degree * bytes )
+		return(0u);
+	(*part)++;
+	return(1u);
+}
+
 SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation)
 {
 	SparkGlm52ExecutionSlot *slot = &STATE->slots[0];
@@ -110,7 +123,10 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 	assert((submission->flags & SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) != 0u);
 	if ( ENQUEUE_COUNT++ == ENQUEUE_FAIL_AT )
 		return(ENQUEUE_STATUS);
-	if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
+	if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 && submission->local_device == slot->kv_gather_digest + SPARK_GLM52_SHARD_DIGESTS &&
+		submission->full_device == submission->local_device )
+		Log("x-digest",submission->active_sequence_count);
+	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
 		Log("reduce-max",submission->local_device == slot->head_maxloc_u64 ? 1u : 0u);
 	else if ( submission->local_device == slot->hidden_bf16 )
 		Log("reduce-hidden",submission->active_sequence_count);
@@ -125,12 +141,11 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL && submission->local_device == slot->shard_partials_f32 && submission->full_device == slot->shard_partials_received_f32 )
 		Log("x-partials",submission->active_sequence_count);
 	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->row_elements == 0u &&
-		(uintptr_t)submission->local_device == (uintptr_t)slot->kv_gather_pack + (uintptr_t)KV_CHUNK * submission->active_sequence_count * SPARK_GLM52_SHARD_UNIT_BYTES &&
-		(uintptr_t)submission->full_device == (uintptr_t)slot->kv_gather_received + (uintptr_t)KV_CHUNK * STATE->kv_shard.degree * submission->active_sequence_count * SPARK_GLM52_SHARD_UNIT_BYTES )
-	{
-		Log("x-kv",submission->active_sequence_count);
-		KV_CHUNK++;
-	}
+		KvOp(slot->kv_gather_latent_pack,slot->kv_gather_latent_pool,&KV_LATENT,submission) != 0u )
+		Log("x-kvL",submission->active_sequence_count);
+	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->row_elements == 0u &&
+		KvOp(slot->kv_gather_index_pack,slot->kv_gather_index_pool,&KV_INDEX,submission) != 0u )
+		Log("x-kvI",submission->active_sequence_count);
 	else
 		Log("reduce-unknown",0u);
 	return(SPARK_STATUS_OK);
@@ -198,7 +213,8 @@ static SparkGlm52ModuleState state;
 static SparkWeightdLazyPack lazy;
 static uint16_t dev_hidden[8],dev_attn[8],dev_gather[8],dev_local[8],dev_shard_send[8],dev_shard_received[8];
 static float dev_partials[8],dev_partials_received[8];
-static uint8_t dev_kv_pack[8],dev_kv_received[8];
+static uint8_t dev_kv_latent_pack[8],dev_kv_latent_pool[8],dev_kv_index_pack[8],dev_kv_index_pool[8];
+static unsigned long long dev_kv_digest[SPARK_GLM52_SHARD_DIGEST_WORDS];
 static uint32_t dev_table[16];
 static uint64_t dev_maxloc[4];
 static SparkGlm52ResidentDecodeStageBatchView batch;
@@ -209,7 +225,8 @@ static void Reset(uint32_t mode,uint32_t split,uint32_t layers)
 {
 	LOG_COUNT = 0u;
 	ENQUEUE_COUNT = 0u;
-	KV_CHUNK = 0u;
+	KV_LATENT = 0u;
+	KV_INDEX = 0u;
 	ENQUEUE_FAIL_AT = UINT32_MAX;
 	VERIFY_STATUS = SPARK_STATUS_OK;
 	GRAPH_ERROR = 0u;
@@ -281,8 +298,11 @@ static void Setup(void)
 	slot->shard_received_bf16 = dev_shard_received;
 	slot->shard_partials_f32 = dev_partials;
 	slot->shard_partials_received_f32 = dev_partials_received;
-	slot->kv_gather_pack = dev_kv_pack;
-	slot->kv_gather_received = dev_kv_received;
+	slot->kv_gather_latent_pack = dev_kv_latent_pack;
+	slot->kv_gather_latent_pool = dev_kv_latent_pool;
+	slot->kv_gather_index_pack = dev_kv_index_pack;
+	slot->kv_gather_index_pool = dev_kv_index_pool;
+	slot->kv_gather_digest = dev_kv_digest;
 	assert(SparkStageModuleCudaWaitInitialize(&state.chain_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	batch.row_count = 1u;
 	batch.active_sequence_count = 1u;
@@ -702,6 +722,7 @@ static void Shard(uint32_t on)
 		state.kv_shard.rank = 3u;
 		state.kv_shard.grain = 1u;
 	}
+	state.index_layer_count = on;
 }
 
 static int32_t ExpectScatterLayer(uint32_t layer,uint32_t gather_units,uint32_t partial_units,int32_t at,const char *prefix)
@@ -725,7 +746,7 @@ static void TestShardDecode(void)
 	SparkGlm52RunChain(NewChain(9u));
 	at = ExpectScatterLayer(0u,1u,1u,0,"");
 	at = ExpectScatterLayer(1u,1u,1u,at,"");
-	assert(Count("attn0") == 0u && Count("attn1") == 0u && Count("core0") == 0u && Count("x-gather1") == 2u && Count("x-partials1") == 2u && Count("x-kv3") == 0u);
+	assert(Count("attn0") == 0u && Count("attn1") == 0u && Count("core0") == 0u && Count("x-gather1") == 2u && Count("x-partials1") == 2u && Count("x-kvL3") == 0u && Count("x-digest4") == 0u);
 	assert(COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,2u);
 	SparkGlm52RunChain(NewChain(4000u));
@@ -774,28 +795,70 @@ static SparkGlm52TpChain *NewOrderedChain(uint32_t first_position,uint32_t rows)
 	return(chain);
 }
 
+static int32_t ExpectDigest(int32_t at,const char *prefix)
+{
+	char entry[40];
+	(void)snprintf(entry,sizeof(entry),"%sdigest0",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sx-digest4",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sdigest1",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%shead1",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	return(at);
+}
+
 static void TestShardPrefillGather(void)
 {
 	int32_t at;
+	uint32_t bound,op;
+	SparkKvShardSectionLayout latent,index;
+	char entry[40];
 	Shard(1u);
 	state.execution_row_capacity = 16u;
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	SparkGlm52RunChain(NewOrderedChain(9u,12u));
 	at = Find("gpre0",0u); assert(at >= 0);
-	at = Find("x-kv3",(uint32_t)at); assert(at >= 0);
+	at = Find("x-kvL3",(uint32_t)at); assert(at >= 0);
 	at = Find("gpost0",(uint32_t)at); assert(at >= 0);
 	at = Find("reduce-attn12",(uint32_t)at); assert(at >= 0);
-	assert(Count("x-kv3") == 1u && Count("spre0") == 0u && Count("x-gather1") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	(void)ExpectDigest(at,"");
+	assert(Count("x-kvL3") == 1u && Count("x-kvI4") == 0u && Count("spre0") == 0u && Count("x-gather1") == 0u && Count("x-digest4") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	SparkGlm52RunChain(NewOrderedChain(3000u,12u));
 	at = Find("gpre0",0u); assert(at >= 0);
-	at = Find("x-kv15",(uint32_t)at); assert(at >= 0);
-	at = Find("x-kv15",(uint32_t)at + 1u); assert(at >= 0);
+	at = Find("x-kvI4",(uint32_t)at); assert(at >= 0);
+	at = Find("x-kvL9",(uint32_t)at); assert(at >= 0);
+	at = Find("x-kvL9",(uint32_t)at + 1u); assert(at >= 0);
 	at = Find("gpost0",(uint32_t)at); assert(at >= 0);
-	assert(Count("x-kv15") == 2u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	(void)ExpectDigest(at,"");
+	assert(Count("x-kvI4") == 1u && Count("x-kvL9") == 2u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	SparkGlm52RunChain(NewOrderedChain(0u,12u));
+	at = Find("gpre0",0u); assert(at >= 0);
+	at = Find("gpost0",(uint32_t)at); assert(at >= 0);
+	(void)ExpectDigest(at,"");
+	assert(Count("x-kvL3") == 0u && Count("x-kvL9") == 0u && Count("x-kvI4") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
 	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
 	SparkGlm52RunChain(NewOrderedChain(9u,6u));
-	assert(Count("gpre0") == 0u && Count("spre0") == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	assert(Count("gpre0") == 0u && Count("spre0") == 1u && Count("x-digest4") == 0u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
+	CAPTURES = 0u;
+	(void)SparkGlm52GraphRegime(3012u,state.decode_split_context_threshold,state.max_sequence_positions,&bound);
+	SparkGlm52ShardGatherSizes(&state,bound,&latent,&index);
+	assert(latent.chunks != 0u && index.chunks != 0u);
+	SparkGlm52RunChain(NewOrderedChain(3000u,12u));
+	at = Find("cap:gpre0",0u); assert(at >= 0);
+	for (op=0u; op<index.chunks; op++)
+	{
+		(void)snprintf(entry,sizeof(entry),"cap:x-kvI%u",index.chunk_units); at = Find(entry,(uint32_t)at + 1u); assert(at >= 0);
+	}
+	for (op=0u; op<latent.chunks; op++)
+	{
+		(void)snprintf(entry,sizeof(entry),"cap:x-kvL%u",latent.chunk_units); at = Find(entry,(uint32_t)at + 1u); assert(at >= 0);
+	}
+	at = Find("cap:gpost0",(uint32_t)at); assert(at >= 0);
+	(void)ExpectDigest(at,"cap:");
+	assert(CAPTURES == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	SparkTpChainGraphTableDestroy(&state.graphs[0]);
 	FinishPrefill();
 	state.execution_row_capacity = 4u;
 	Shard(0u);
@@ -854,8 +917,9 @@ static void TestShardEager(void)
 	Reset(SPARK_TP_CHAIN_MODE_EAGER,0u,1u);
 	EagerRun(NewOrderedChain(3000u,12u),"reduce-attn12");
 	at = Find("gpre0",0u); assert(at >= 0);
-	at = Find("x-kv15",(uint32_t)at); assert(at >= 0);
-	at = Find("x-kv15",(uint32_t)at + 1u); assert(at >= 0);
+	at = Find("x-kvI4",(uint32_t)at); assert(at >= 0);
+	at = Find("x-kvL9",(uint32_t)at); assert(at >= 0);
+	at = Find("x-kvL9",(uint32_t)at + 1u); assert(at >= 0);
 	at = Find("gpost0",(uint32_t)at); assert(at >= 0);
 	at = Find("reduce-attn12",(uint32_t)at); assert(at >= 0);
 	FinishPrefill();
