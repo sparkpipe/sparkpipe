@@ -471,6 +471,7 @@ PYTHON_TESTS := \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_cuda_math_policy.py \
 	tests/test_dry_law.py \
+	tests/test_no_source_comments.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_dsv4_contracts.py \

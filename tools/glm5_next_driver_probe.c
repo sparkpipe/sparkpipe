@@ -96,7 +96,6 @@ static void probe_node(probe_state_t *state,const char *pack,uint32_t rows)
 	node->tp_rank = 0u;
 	node->stage_pack_path = pack;
 	node->model_revision = state->driver.interface->descriptor->model_revision;
-	// Explicit local differential execution: no collective transport.
 	node->tp_collective_identifier = 0u;
 }
 
@@ -355,7 +354,6 @@ static void probe_checkpoint_frame(probe_state_t *state,uint32_t rows,uint32_t s
 			state->slots[row] = lane->resident_sequence_slot = rows + row;
 			state->sequences[row] = lane->sequence_id = rows + row + 1u;
 		}
-		// Fixed-input test identities distinguish the three complete prompts.
 		if ( step + 1u == PROBE_PREFIX_TOKENS || step + 1u == 64u )
 		{
 			lane->flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;

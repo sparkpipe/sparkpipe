@@ -33,10 +33,6 @@
 #define SPARK_WEIGHTD_MESH_DEFAULT_DIR "/tmp/weightd-mesh"
 #define SPARK_WEIGHTD_MESH_ADDRESS_POLL_NS 250000000L
 
-/* Two weightd-line daemons can share one host (the fleet's weightd and the
- * driver developers' standalone weightsd): the record directory must be
- * per-deployment or they clobber each other's mesh-<rank>.rec and .ready.
- * Set at init; the define is only the default. */
 static const char *weightd_mesh_dir = SPARK_WEIGHTD_MESH_DEFAULT_DIR;
 static uint64_t weightd_mesh_address_wait_ns = UINT64_C(120000000000);
 

@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include "sparkpipe/spark_error_site.h"
 #include <stdlib.h>
@@ -37,13 +36,6 @@
 #define SPARK_QWEN38_MAX_SERVING_TARGET \
 	"cuda.sm121.qwen38.resident_decode_stage.fp8"
 #define SPARK_QWEN38_MAX_SERVING_PROGRAM_NAME "resident_decode"
-/* TP16 transport-stage convention (the GLM/gemma4 TP16 shape): the
-	   deployment carries 16 nodes with stage_index = world rank, and the
-	   loader requires descriptor stage_count == deployment node_count
-	   (model_resident_deployment.c:615; the attach-b target_mismatch).
-	   Every rank is one parallel group executing the whole model with
-	   tensor-sharded weights: parallel_group_size 16, PP degree 1, all
-	   16 stage entries carry the full layer count. */
 #define SPARK_QWEN38_MAX_SERVING_STAGE_COUNT 16u
 #define SPARK_QWEN38_MAX_SERVING_PARALLEL_GROUP_SIZE 16u
 #define SPARK_QWEN38_MAX_SERVING_STAGE_LAYER_LIST \
@@ -350,11 +342,6 @@ static SparkStatus SparkQwen38MaxServingBindFamily(
 	SparkQwen38MaxServingState *state)
 {
 	SparkStatus status;
-	/* The MTP provider descriptor requires a nonzero draft budget
-	   (SparkSpeculationProviderValidate rejects default 0); this family
-	   compiles MTP_LAYER_COUNT=0 today, so the provider and seam bind
-	   only when the MTP head exists - attach-j died at adapter_initialize
-	   binding a zero-draft provider. Unbind tolerates the null seam. */
 	if ( SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT == 0 )
 		return(SPARK_STATUS_OK);
 	status = SparkQwen38MaxServingBindMtpProvider(state);
@@ -378,13 +365,6 @@ static const SparkModelServingAdapterDescriptor SparkQwen38MaxServingDescriptor 
 		QWEN38_MODEL_REVISION,
 		SPARK_QWEN38_MAX_SERVING_PROGRAM_NAME,
 		QWEN38_CONTRACT_SHA256),
-	/* SPECULATION pairs with a nonzero speculative-token budget
-	   (SparkDescriptorCheckSpeculationPairing); this family runs
-	   MTP_LAYER_COUNT=0 today, so the flag rides the MTP count.
-	   PARALLEL_FANOUT|HIDDEN_TRANSPORT pairs with HYBRID_TP_PP
-	   (SparkDescriptorCheckParallelTransportHybridPairing): the 16
-	   tensor-parallel ranks are one parallel group (group size 16,
-	   PP degree 1), each stage entry the full layer count. */
 	.capability_flags = SPARK_SERVING_ADAPTER_CAPABILITY_CHAIN(
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
@@ -408,18 +388,10 @@ static const SparkModelServingAdapterDescriptor SparkQwen38MaxServingDescriptor 
 	.max_output_token_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_speculative_token_count = SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT,
 	.cache_block_token_count = SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS,
-	/* every transport stage carries the whole model (tensor-sharded
-	   weights); the hybrid totals check reads one group of 16 equal
-	   entries summing (per group) to the layer count. */
 	.stage_layer_counts = {SPARK_QWEN38_MAX_SERVING_STAGE_LAYER_LIST},
 	.minimum_efficient_submission_row_count = 0u
 };
 
-/* The interface contract requires non-null prefetch/resolve/reset (the
-   residentd's SPARK_REQUIRE_SERVING_OPERATION set). This family claims
-   no CACHE_PUBLISH capability, so prefetch validates and admits without
-   cache staging; reset quiesces then takes the driver's RESET admission
-   (the qwen38_27b serving pattern). */
 #include <stdatomic.h>
 static SparkStatus SparkQwen38MaxServingValidateSubmissionBase(
 	SparkQwen38MaxServingState *state,
@@ -492,13 +464,6 @@ static SparkStatus SparkQwen38MaxServingReset(void *adapter_state,uint64_t contr
 #define SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH SparkQwen38MaxServingResolvePrefetch
 #define SPARK_QWEN38_SERVING_ADAPTER_RESET SparkQwen38MaxServingReset
 
-/* The driver-request contract's model_description_sha256 must equal the
-   FIRMWARE model-description FILE's sha (the driver compile embeds
-   description->source_sha256 = sha of that file) - not the package
-   contract sha the qwen38-common default passes. This family's firmware
-   description and package contract are separate files, so the request
-   overrides through the #1166 hook (the gemma4 launches-8/9/10 lesson;
-   the remaining latent half of the attach-r15j identity gap). */
 #define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 \
 	QWEN38_MAX_MODEL_DESCRIPTION_SHA256
 

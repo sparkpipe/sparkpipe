@@ -28,3 +28,44 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+tools/hy4_dequant/hy4_iq_dequant_vendor.h is adapted from ggml-org/llama.cpp
+(https://github.com/ggml-org/llama.cpp, commit 0cea36222): the codebook
+tables kmask_iq2xs, ksigns_iq2xs, iq2xxs_grid, iq3xxs_grid, iq1s_grid and
+kvalues_iq4nl of ggml/src/ggml-common.h, and dequantize_row_iq2_xxs,
+dequantize_row_iq3_xxs, dequantize_row_iq1_m, dequantize_row_q4_K,
+dequantize_row_q5_K, dequantize_row_q6_K, dequantize_row_iq4_xs and
+get_scale_min_k4 of ggml/src/ggml-quants.c, renamed and with the ggml
+dependencies removed. llama.cpp is distributed under the following license:
+
+MIT License
+
+Copyright (c) 2023-2026 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+tools/hy4_dequant/vendor/hyv4_reference.patch is the src/models/hyv4.cpp
+section, with the leading + of each line removed, of
+hy4-preview-patch/0001-hyv4-architecture.patch from the AngelSlim
+Hy4-preview-GGUF repository
+(https://huggingface.co/AngelSlim/Hy4-preview-GGUF, revision
+779242edccdedc2109a0b36b164263a88f015bfa), a patch against llama.cpp commit
+0cea36222. It is kept byte-identical and SHA-256 pinned by
+tools/hy4_fp8_scale_contract.py. The upstream repository states no license
+for the patch.

@@ -11,19 +11,6 @@
 #include <sys/stat.h>
 #include <time.h>
 
-/*
- * Family identities (multidev): the GLM path above is the historical
- * default. --family dsv4_pro derives the EXACT identity the DSV4 Pro
- * module sends through SparkWeightdAttachMappedPack
- * (SparkDsv4ModuleWeightdAttach): model "dsv4", empty revision,
- * topology = the (u32-truncated) SparkDsv4TpNodeConfig configuration_hash
- * for this world rank's TP4xPP4 shape, geometry_fingerprint = the same
- * FNV-1a chain over the same pack-header fields in the same order. The
- * derivation shares the family's shape source, so warm and resident
- * identities match by construction; a source-contract test pins the hash
- * order against the module.
- */
-
 static int parse_positive(const char *text,uint64_t maximum,uint64_t *value)
 {
     char *end;
@@ -137,12 +124,6 @@ static int warm_keys(SparkWeightdClient *client,uint64_t generation,
     return 0;
 }
 
-/* DSV4 Pro pack header (little-endian): 16 u32 + 2 u64. The geometry
- * chain hashes exactly the fields the module hashes, in its order:
- * format_version, codec_abi_version, linear/expert/kv codecs,
- * tensor_count, first_layer, layer_count, total_layer_count, hidden,
- * vocab, routed_expert_count, mtp_layer_count (u32 each), file_bytes
- * (u64). Mirrors SparkDsv4ModuleWeightdAttach. */
 static int dsv4_pro_identity(const char *pack_path, uint32_t world_rank,
     SparkWeightdIdentity *identity)
 {
@@ -325,11 +306,6 @@ int main(int argument_count,char **arguments)
         goto usage;
     if ( argument_count == 3 && strcmp(arguments[2],"--reclaim") == 0 )
     {
-        /* Lane utility (additive): free every COLD arena (refcount 0, no
-           leases). The pool size is fixed at arena creation, so a stale
-           arena created with the wrong expert-pool budget blocks the
-           correctly-sized one until reclaimed - measured on the lane-4
-           rank3 cell (ACQUIRE-LOAD-STAGE stage=budget). */
         SparkWeightdReclaimResult reclaim = {0};
         SparkWeightdClient *reclaim_client = 0;
         status = SparkWeightdClientConnect(arguments[1],&reclaim_client,0);
@@ -386,22 +362,10 @@ int main(int argument_count,char **arguments)
     request.identity.topology = (uint32_t)topology;
     if ( family != 0 && strcmp(family,"dsv41_flash") == 0 )
     {
-        /* Lane 4 (dsv41_flash): the module pins only the model tag
-         * (SPARK_DSV41_FLASH_MODULE_TAG "dsv41_flash_stage") and sends
-         * revision/topology from its node context, geometry unset (0).
-         * REVISION/TOPOLOGY arguments stay authoritative here - they come
-         * from the stage config - so the family hook pins the tag only. */
         strcpy(request.identity.model,"dsv41_flash_stage");
     }
     else if ( family != 0 && strcmp(family,"ling") == 0 )
     {
-        /* Lane 9 (ling): the module pins only the model tag
-         * (SPARK_LING_MODULE_TAG "ling_stage") and sends
-         * revision/topology from its stage config (revision = the
-         * stage model_revision, topology = tp_degree), geometry unset
-         * (0). REVISION/TOPOLOGY arguments stay authoritative here -
-         * they come from the stage config - so the family hook pins
-         * the tag only, exactly the dsv41_flash shape. */
         strcpy(request.identity.model,"ling_stage");
     }
     else if ( family != 0 && strcmp(family,"k3") == 0 )
@@ -419,8 +383,6 @@ int main(int argument_count,char **arguments)
     }
     else if ( family != 0 )
     {
-        /* Preserve the pack_sha256/abi/arena_bytes filled above; the
-         * family owns model/revision/topology/geometry. */
         SparkWeightdIdentity derived;
         if ( !dsv4_pro_identity(arguments[2],(uint32_t)world_rank,&derived) )
         {
@@ -445,9 +407,6 @@ int main(int argument_count,char **arguments)
     }
     strcpy(request.pack_path,arguments[2]);
     snprintf(manifest_path,sizeof(manifest_path),"%s.experts",arguments[2]);
-    /* the manifest bound is the PACK size; identity.arena_bytes is the
-     * daemon-side arena identity and for k3 is the pool budget, which
-     * would reject every offset past 3 GiB of a ~98 GiB pack. */
     status = SparkWeightdManifestLoad(manifest_path,(uint64_t)pack.st_size,&manifest);
     if ( status != SPARK_STATUS_OK || manifest.group_count == 0u )
     {

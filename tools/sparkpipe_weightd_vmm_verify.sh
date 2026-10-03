@@ -38,10 +38,6 @@ if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi >/dev/null 2>&1; then
 fi
 
 cat > "$WORK/vmm_verify.c" <<'EOF'
-/* The GPU-side VMM + fd-tier receipt consumer (see the wrapper script).
- * Modeless invocation runs the daemon-side parent (legs 1-4 + 6-7);
- * `--consumer <pack> <hex>` runs the real second-process consumer (leg 5)
- * through the production attach helper. */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <pthread.h>
@@ -60,7 +56,7 @@ cat > "$WORK/vmm_verify.c" <<'EOF'
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_weightd.h"
 
-#define ARENA_BYTES (8ull * 1024ull * 1024ull) /* 4 x 2 MiB chunks */
+#define ARENA_BYTES (8ull * 1024ull * 1024ull)
 #define CHUNK_MIN (2ull * 1024ull * 1024ull)
 
 typedef struct { SparkWeightdServer *server; volatile sig_atomic_t stop; } server_thread;
@@ -72,7 +68,6 @@ static void *server_main(void *raw)
     return 0;
 }
 
-/* ---- leg 5: the real second-process consumer, production helper path ---- */
 static int consumer_main(const char *pack_path, const char *hex)
 {
     SparkWeightdPackSlice slice;
@@ -81,9 +76,6 @@ static int consumer_main(const char *pack_path, const char *hex)
     uint8_t *readback = 0;
     char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
     FILE *file;
-    /* the digest ALSO arrives via SPARK_WEIGHTD_PACK_SHA256 (inherited env);
-     * the argv copy is the belt to that suspenders — the child verifies the
-     * map against the PACK FILE, the daemon-independent bytes authority */
     (void)hex;
     (void)signal(SIGPIPE, SIG_IGN);
 
@@ -126,7 +118,6 @@ static int consumer_main(const char *pack_path, const char *hex)
         fprintf(stderr, "consumer: import map failed reason=%s\n", reason);
         return 1;
     }
-    /* byte-exact readback through THIS process's imported mapping */
     if (cudaMemcpy(readback, outcome.map_base, ARENA_BYTES,
             cudaMemcpyDeviceToHost) != cudaSuccess ||
         memcmp(readback, expected, ARENA_BYTES) != 0)
@@ -134,7 +125,7 @@ static int consumer_main(const char *pack_path, const char *hex)
         fprintf(stderr, "consumer: imported map readback mismatch\n");
         return 1;
     }
-    SparkWeightdAttachRelease(&outcome); /* unmap; no detach; arena warm */
+    SparkWeightdAttachRelease(&outcome);
     free(expected);
     free(readback);
     printf("consumer import map verified bytes=%llu\n",
@@ -179,8 +170,6 @@ int main(int argument_count, char **arguments)
         return consumer_main(arguments[2], arguments[3]);
     }
 
-    /* unique per-run paths: two concurrent verifies must never share a
-     * socket (two daemons on one path would be a test bug, not a feature) */
     snprintf(socket_text, sizeof(socket_text),
         "/tmp/spark_weightd_vmm_verify_%ld.sock", (long)getpid());
     snprintf(pack_text, sizeof(pack_text),
@@ -203,7 +192,6 @@ int main(int argument_count, char **arguments)
     }
     printf("granularity=%zu\n", granularity);
 
-    /* deterministic 8 MiB pack, the arena's content */
     staging = (uint8_t *)malloc(ARENA_BYTES);
     readback = (uint8_t *)malloc(ARENA_BYTES);
     if (staging == 0 || readback == 0) { return 1; }
@@ -239,7 +227,6 @@ int main(int argument_count, char **arguments)
     thread_context.stop = 0;
     pthread_create(&thread_handle, 0, server_main, &thread_context);
 
-    /* COLD: the real cuMemCreate/Map/SetAccess path inside the daemon */
     if (SparkWeightdClientConnect(socket_path, &first, &hello) != SPARK_STATUS_OK)
         { return 1; }
     memset(&request, 0, sizeof(request));
@@ -256,7 +243,6 @@ int main(int argument_count, char **arguments)
         return 1;
     }
     generation = result.arena_generation;
-    /* the mapped VA reads back the pack bytes through the REAL VMM map */
     if (cudaMemcpy(readback, (const void *)(uintptr_t)result.device_handle,
             ARENA_BYTES, cudaMemcpyDeviceToHost) != cudaSuccess ||
         memcmp(readback, staging, ARENA_BYTES) != 0)
@@ -267,7 +253,6 @@ int main(int argument_count, char **arguments)
     printf("cold arena bytes verified over cuMemMap span=%llu\n",
         (unsigned long long)result.arena_bytes);
 
-    /* WARM: one arena, two consumers, same handle */
     if (SparkWeightdClientConnect(socket_path, &second, 0) != SPARK_STATUS_OK)
         { return 1; }
     memset(&result, 0, sizeof(result));
@@ -283,8 +268,6 @@ int main(int argument_count, char **arguments)
     printf("warm attach shared handle=%llx refcount=2\n",
         (unsigned long long)result.device_handle);
 
-    /* W3 IMPORT LEG, in-process: the production helper exports the chunks,
-     * verifies coverage, and maps them at THIS process's own span */
     memset(&helper, 0, sizeof(helper));
     if (setenv("SPARK_WEIGHTD_SOCKET", socket_path, 1) != 0 ||
         setenv("SPARK_WEIGHTD_PACK_SHA256", hex, 1) != 0)
@@ -329,10 +312,8 @@ int main(int argument_count, char **arguments)
         printf("in-process import map verified chunks=%u chunk_bytes=%llu\n",
             helper.map_chunk_count, (unsigned long long)helper.map_chunk_bytes);
     }
-    SparkWeightdAttachRelease(&helper); /* unmap; no detach; refcount 2 */
+    SparkWeightdAttachRelease(&helper);
 
-    /* W3 CROSS-PROCESS LEG: a real second consumer PROCESS runs the same
-     * production path and reads the pack bytes through ITS OWN mapping */
     memcpy(sha_env, hex, sizeof(sha_env));
     consumer_pid = fork();
     if (consumer_pid < 0) { return 1; }
@@ -349,7 +330,6 @@ int main(int argument_count, char **arguments)
         return 1;
     }
 
-    /* WARM RE-ATTACH AFTER CONSUMER EXIT: still the same arena, no reload */
     memset(&result, 0, sizeof(result));
     if (SparkWeightdClientConnect(socket_path, &fresh, 0) != SPARK_STATUS_OK)
         { return 1; }

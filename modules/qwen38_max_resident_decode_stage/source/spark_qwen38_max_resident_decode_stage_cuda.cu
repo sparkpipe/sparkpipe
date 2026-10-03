@@ -1,11 +1,6 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 
-// Common TP mesh kernels header: embeds the SPARK_TP_MESH_KERNELS_MARKER
-// build constant the module publish step fail-closes on (guards against
-// private/stale kernel copies), and is the shared source for the mesh
-// transport this module's TP16 collectives ride (glm5_next include
-// precedent).
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
 
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"

@@ -1,24 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
 
-/* Qwen 3.8 27B dense-FFN expert manifest producer (multidev lane 1).
- *
- * The 27B is a DENSE model: the weightd expert tier is the per-layer FFN
- * (gate/up/down). Every pack layer with FFN tensors becomes exactly one
- * expert group (layer, expert 0) whose ranges are the payload and scale
- * planes of the three FFN tensors (manifest kinds 10..15 = tensor kind * 2
- * + plane, mirroring the qwen38max convention). The spine (embedding, head,
- * norms, attention/GDN projections) is the loader-computed complement and
- * stays full resolution per the quality law.
- *
- * Manifest wire format (include/sparkpipe/spark_weightd_manifest.h):
- *   16-byte header: magic, version 2, range_count, zero (u32 LE)
- *   48-byte record: layer, expert, kind, zero (u32), offset, bytes (u64),
- *   ck128[16] over the pack bytes of the range.
- *
- * Self-verifies through SparkWeightdManifestLoad before the atomic
- * link() publish; the existing output is preserved on any failure.
- */
-
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_manifest.h"
@@ -101,8 +82,6 @@ static int32_t entry_write(FILE *pack, FILE *out, const PackHeader *header,
 			break;
 	if (which == 3)
 		return(0);
-	/* The MTP layer's FFN stays in the spine: the lane is non-speculative
-	 * and one draft layer of gate/up/down is not a routing tier. */
 	if (entry->layer_index == SPARK_QWEN38_27B_STAGEPACK_GLOBAL_LAYER ||
 		entry->layer_index == SPARK_QWEN38_27B_STAGEPACK_MTP_LAYER)
 		return(0);
@@ -176,7 +155,6 @@ static int32_t manifest_write(FILE *pack, FILE *out, const PackHeader *header,
 			return(-10);
 		(*layers)++;
 	}
-	/* A dense whole-stack rank pack carries FFN for every pack layer. */
 	if (*layers != header->layer_count)
 		return(-11);
 	if (words[2] == 0u || fseeko(out, 0, SEEK_SET) != 0 ||

@@ -244,7 +244,6 @@ static inline uint64_t SparkGlm5NextReplayStepsIndex(uint32_t ordinal,uint32_t r
 
 static inline uint32_t SparkGlm5NextResidentDecodeStageBoundaryCarriesDsa(uint32_t source_stage_index)
 {
-	// Every complete DSA layer executes its own indexer; no cross-layer index state.
 	(void)source_stage_index;
 	return(0u);
 }

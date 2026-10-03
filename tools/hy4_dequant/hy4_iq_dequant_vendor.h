@@ -1,11 +1,3 @@
-/* hy4 lane: vendored IQ dequant ground truth.
- * Extracted verbatim from ggml-org/llama.cpp @ 0cea36222 (the commit the
- * AngelSlim Hy4-preview-GGUF build pins): ggml/src/ggml-common.h tables
- * (kmask_iq2xs, ksigns_iq2xs, iq2xxs_grid, iq3xxs_grid, iq1s_grid) and the
- * dequantize_row_iq2_xxs/iq3_xxs/iq1_m math from ggml/src/ggml-quants.c,
- * adapted only to drop ggml dependencies (hy4_fp16_to_fp32 = IEEE binary16).
- * Byte geometry cross-checked against the checkpoint itself by
- * tools/hy4_tp16_shard.py's solver (66/98/56 bytes per 256 elements). */
 #ifndef HY4_IQ_DEQUANT_VENDOR_H
 #define HY4_IQ_DEQUANT_VENDOR_H
 #include <stdint.h>
@@ -716,7 +708,7 @@ static void hy4_dequant_iq1_m(const uint8_t *x, float *y, long nblocks) {
     float delta[4];
     uint16_t idx[4];
     for (long i = 0; i < nblocks; ++i, x += 56) {
-        const uint16_t *sc = (const uint16_t *)(x + 32 + 16); /* scales[8] */
+        const uint16_t *sc = (const uint16_t *)(x + 32 + 16);
         uint16_t su = (uint16_t)((sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) |
                                  ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000));
         const float d = hy4_fp16_to_fp32(su);
@@ -748,8 +740,6 @@ static void hy4_dequant_iq1_m(const uint8_t *x, float *y, long nblocks) {
         }
     }
 }
-
-/* ---- K-quant + IQ4_XS (verbatim llama.cpp @0cea36222, renames only) ---- */
 
 typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qs[128]; } block_q4_K;
 typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qh[32]; uint8_t qs[128]; } block_q5_K;

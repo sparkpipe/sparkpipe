@@ -2576,9 +2576,6 @@ static int32_t Glm5NextLayerMoeExperts(
     return status;
 }
 
-// Resident execution retains the same submission order. Lazy execution can
-// acquire/import the routed working set between these two calls on this stream.
-
 static int32_t Glm5NextHeadCommit(const Glm5NextLayerBuffers *buffers, uint32_t rows, uint32_t tiles, cudaStream_t stream)
 {
     LM_LAUNCH((LmHeadCommitKernel<GLM5_NEXT_LAYER_THREADS>), rows, GLM5_NEXT_LAYER_THREADS, 0, stream, buffers->head_candidate_score, buffers->head_candidate_token, tiles, buffers->output_token, buffers->output_score, rows);
