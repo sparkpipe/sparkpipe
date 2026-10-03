@@ -13,6 +13,8 @@ MESH_PAIR_SGID_INDEX="${SPARK_MESH_PAIR_SGID_INDEX:-3}"
 MESH_TRAFFIC_CLASS=106
 MESH_FABRIC_PREFIX="${SPARK_MESH_FABRIC_PREFIX:-10.10.}"
 WEIGHTD_ADDRESSES=""
+WEIGHTD_UNIT=sparkpipe-weightd
+WEIGHTD_LEGACY_NOTED=""
 RANK=""
 _idx=0
 for _host in $FLEET_HOSTS; do
@@ -773,7 +775,7 @@ mesh_addresses() {
 }
 
 ensure_weightd() {
-    local wdd="$HOME/sparkdata/weightd" q owner="" executable exe_sha disk_sha addresses reason
+    local wdd="$HOME/sparkdata/weightd" q owner="" executable exe_sha disk_sha addresses reason age variable
     for q in $(pgrep -f "sparkpipe_weightd"); do
         executable=$(readlink "/proc/$q/exe" 2>/dev/null) || continue
         case "$executable" in
@@ -805,6 +807,12 @@ ensure_weightd() {
             return 1
         fi
         if [ -S /tmp/spark_weightd.sock ] && python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect("/tmp/spark_weightd.sock"); s.close()' 2>/dev/null; then
+            age=$(ps -o etimes= -p "$owner" 2>/dev/null | tr -d ' ')
+            [ "${age:-0}" -gt 120 ] && restart_healthy weightd
+            if [ -z "$WEIGHTD_LEGACY_NOTED" ] && ! grep -q "/$WEIGHTD_UNIT.service\$" "/proc/$owner/cgroup" 2>/dev/null; then
+                echo "$(date +%T) weightd: owner $owner runs outside $WEIGHTD_UNIT (started by an older agent); it moves to the unit at its next restart"
+                WEIGHTD_LEGACY_NOTED=1
+            fi
             addresses=$(mesh_addresses 2>/dev/null) || return 0
             if [ -z "$WEIGHTD_ADDRESSES" ]; then
                 WEIGHTD_ADDRESSES=$addresses
@@ -847,12 +855,21 @@ ensure_weightd() {
     WEIGHTD_ADDRESSES=$addresses
     echo "$(date +%T) weightd: starting on $addresses (backoff ${BACKOFF[weightd]:-1}s)"
     [ -s "$HOME/weightd.log" ] && mv "$HOME/weightd.log" "$HOME/weightd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
-    setsid nohup "$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock \
-        --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE" \
-        --mesh-sgid-index "$MESH_SGID_INDEX" \
-        --mesh-pair-interface "$MESH_PAIR_INTERFACE" --mesh-pair-sgid-index "$MESH_PAIR_SGID_INDEX" \
-        --mesh-traffic-class "$MESH_TRAFFIC_CLASS" \
-        > "$HOME/weightd.log" 2>&1 < /dev/null &
+    local -a command=(systemd-run --user --quiet --collect --unit="$WEIGHTD_UNIT" --working-directory="$home"
+        -p LimitCORE=infinity -p StandardOutput=append:"$HOME/weightd.log" -p StandardError=append:"$HOME/weightd.log")
+    for variable in $(compgen -e); do
+        case "$variable" in SPARK_WEIGHTD_*) command+=(--setenv="$variable=${!variable}") ;; esac
+    done
+    command+=("$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock
+        --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE"
+        --mesh-sgid-index "$MESH_SGID_INDEX"
+        --mesh-pair-interface "$MESH_PAIR_INTERFACE" --mesh-pair-sgid-index "$MESH_PAIR_SGID_INDEX"
+        --mesh-traffic-class "$MESH_TRAFFIC_CLASS")
+    systemctl --user reset-failed "$WEIGHTD_UNIT" >/dev/null 2>&1
+    reason=$("${command[@]}" 2>&1) || {
+        echo "weightd: systemd-run $WEIGHTD_UNIT failed: $reason; dependent startup blocked" >&2
+        return 1
+    }
     return 1
 }
 

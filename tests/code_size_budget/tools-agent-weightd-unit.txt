@@ -1,0 +1,2 @@
++17
+Fleet agent weightd unit: weightd starts as the collected user unit sparkpipe-weightd (reset-failed first, SPARK_WEIGHTD_* environment passed through, systemd-run failure reported) so an agent restart no longer kills it; a running weightd resets its restart backoff after 120 s, and a weightd started by an older agent is reported once and moves to the unit at its next restart.
