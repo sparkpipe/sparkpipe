@@ -1,6 +1,6 @@
 # hy4 layer forward semantics (from AngelSlim's llama.cpp implementation)
 
-Ground truth: `vendor/hyv4_reference.cpp` (src/models/hyv4.cpp @ llama.cpp
+Ground truth: `vendor/hyv4_reference.patch` (src/models/hyv4.cpp @ llama.cpp
 0cea36222, from hy4-preview-patch/0001). Config pins: hc=4, eps=1e-6,
 magnitude=2.0, sigmoid routing + e_score_correction_bias, experts 8/256 + 1
 shared, scale 2.827, weights_norm=true, swiglu clamp 10.0 on ROUTED experts

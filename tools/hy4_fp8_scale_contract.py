@@ -5,7 +5,7 @@ Validates every F8_E4M3 payload + U8 E8M0 scale pair of a hy4-fp8-tp16-v1
 rank pack against the scale-row-offset contract and emits the per-plane
 table. Own math from the pinned publisher reference (llama.cpp hyv4.cpp
 of the AngelSlim hy4-preview patch, vendored at
-tools/hy4_dequant/vendor/hyv4_reference.cpp) and the checkpoint config;
+tools/hy4_dequant/vendor/hyv4_reference.patch) and the checkpoint config;
 no driver imports. Mirrors modules/hy4_resident_decode_stage/source/
 spark_hy4_fp8_scale_contract.h rule for rule.
 
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE = ROOT / "tools" / "hy4_dequant" / "vendor" / "hyv4_reference.cpp"
+REFERENCE = ROOT / "tools" / "hy4_dequant" / "vendor" / "hyv4_reference.patch"
 REFERENCE_SHA256 = (
     "514ef62ae147171d5675229de59e8e6d3b8e1f84f20680056df8708601fe52fd")
 REFERENCE_COMMIT = "0cea36222"

@@ -164,6 +164,7 @@ def check_oracle_cli(workdir: Path) -> None:
                          text=True)
     assert run.returncode == 0, run.stderr
     assert "24 FP8 planes, 0 contract failures" in run.stdout, run.stdout
+    assert "(pinned);" in run.stdout, run.stdout
     bad = workdir / "bad.json"
     bad.write_text(json.dumps(synthetic_header(True)))
     run = subprocess.run([sys.executable,
