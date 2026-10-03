@@ -257,6 +257,68 @@ static inline cudaError_t LmKvShardGatherUnpackLaunch(
 	return(cudaPeekAtLastError());
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmKvShardRemapKernel(SparkKvShard shard, SparkKvShardSectionLayout layout, const uint32_t *__restrict__ old_bound, uint32_t capacity, uint32_t *__restrict__ table)
+{
+	uint32_t position, old = *old_bound;
+	for (position = blockIdx.x * THREADS + threadIdx.x; position < capacity; position += gridDim.x * THREADS)
+		table[position] = position < old ? (uint32_t)SparkKvShardSectionSlot(shard, layout, position) : LM_KV_PAGE_UNMAPPED;
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmKvRowsRemapKernel(const uint32_t *__restrict__ position_of_row, uint32_t row_count, uint32_t tail_slot, uint32_t capacity, uint32_t *__restrict__ table, LmKvAccessError *error)
+{
+	uint32_t row, position;
+	for (row = blockIdx.x * THREADS + threadIdx.x; row < row_count; row += gridDim.x * THREADS)
+	{
+		position = position_of_row[row];
+		if ( position >= capacity )
+		{
+			LmFrameErrorReport(error, LM_FRAME_ERROR_PAGE_TABLE_OUT_OF_RANGE, LM_KV_ACCESS_WRITE, row, 0u, position, capacity);
+			continue;
+		}
+		if ( row == 0u || position_of_row[row - 1u] != position )
+			table[position] = tail_slot + row;
+	}
+}
+
+template<uint32_t THREADS>
+static inline cudaError_t LmKvShardRemapLaunch(
+	SparkKvShard shard,
+	SparkKvShardSectionLayout layout,
+	const uint32_t *old_bound,
+	uint32_t capacity,
+	uint32_t *table,
+	cudaStream_t stream)
+{
+	uint32_t blocks = (capacity + THREADS - 1u) / THREADS;
+	if ( old_bound == 0 || table == 0 || capacity == 0u || shard.degree == 0u || shard.grain == 0u ||
+		(layout.keys != 0u && (layout.chunk_bytes == 0u || layout.slot_bytes == 0u || layout.chunk_bytes % layout.slot_bytes != 0u)) )
+		return(cudaErrorInvalidValue);
+	if ( layout.keys == 0u )
+		layout.chunk_bytes = layout.slot_bytes = 1u;
+	LM_LAUNCH((LmKvShardRemapKernel<THREADS>), blocks < LM_KV_SHARD_UNPACK_BLOCKS ? blocks : LM_KV_SHARD_UNPACK_BLOCKS, THREADS, 0, stream, shard, layout, old_bound, capacity, table);
+	return(cudaPeekAtLastError());
+}
+
+template<uint32_t THREADS>
+static inline cudaError_t LmKvRowsRemapLaunch(
+	const uint32_t *position_of_row,
+	uint32_t row_count,
+	uint32_t tail_slot,
+	uint32_t capacity,
+	uint32_t *table,
+	LmKvAccessError *error,
+	cudaStream_t stream)
+{
+	if ( position_of_row == 0 || table == 0 || row_count == 0u || capacity == 0u )
+		return(cudaErrorInvalidValue);
+	LM_LAUNCH((LmKvRowsRemapKernel<THREADS>), (row_count + THREADS - 1u) / THREADS, THREADS, 0, stream, position_of_row, row_count, tail_slot, capacity, table, error);
+	return(cudaPeekAtLastError());
+}
+
 template<class Geometry, uint32_t THREADS>
 static inline cudaError_t LmKvShardGatherPackLaunch(
 	LmKvShardView view,

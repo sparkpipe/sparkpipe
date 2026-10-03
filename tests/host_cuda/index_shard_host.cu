@@ -14,6 +14,7 @@ LmHostDim3 blockDim,gridDim;
 #include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/attn_shard.cuh"
+#include "inference/kernels/row_digest.cuh"
 
 #define HOST_THREADS 64u
 #define HOST_PAGE 64u
@@ -182,6 +183,165 @@ static void HostGatherCase(uint32_t degree,const std::vector<uint32_t> &contexts
 	printf("%s gather %s: %u keys per rank-sequence set\n",host_failures == 0 ? "PASS" : "FAIL",label,total);
 }
 
+static void HostSectionLayouts(void)
+{
+	const uint32_t caps[] = {1023u,1008u,3u};
+	const uint64_t keys[] = {1u,31u,32u,33u,4096u,10912u,10913u,16384u,65536u};
+	const uint64_t slots[] = {1152u,256u};
+	const uint32_t aligns[] = {3u,1u};
+	uint32_t c,k,s,ok = 1u;
+	for (s=0u; s<2u; s++)
+		for (c=0u; c<3u; c++)
+			for (k=0u; k<sizeof(keys)/sizeof(keys[0]); k++)
+			{
+				SparkKvShardSectionLayout layout = SparkKvShardSectionLayoutBuild(keys[k],slots[s],12288u,aligns[s],caps[c]);
+				if ( caps[c] < aligns[s] )
+				{
+					ok &= layout.chunks == 0u ? 1u : 0u;
+					continue;
+				}
+				ok &= layout.chunks != 0u && layout.chunk_bytes % slots[s] == 0u && layout.chunk_units % aligns[s] == 0u &&
+					layout.chunk_units <= caps[c] / aligns[s] * aligns[s] &&
+					(uint64_t)layout.chunks * layout.chunk_bytes >= keys[k] * slots[s] &&
+					(uint64_t)(layout.chunks - 1u) * layout.chunk_bytes < keys[k] * slots[s] + (uint64_t)aligns[s] * 12288u * layout.chunks ? 1u : 0u;
+			}
+	HostCheck(ok,"section layouts: whole slots per chunk, aligned units under the cap, balanced chunks that cover every key");
+	HostCheck(SparkKvShardSectionLayoutBuild(10912u,1152u,12288u,3u,1023u).chunks == 1u &&
+		SparkKvShardSectionLayoutBuild(10913u,1152u,12288u,3u,1023u).chunks == 2u,"one 1023-unit chunk holds 10912 latent keys; the next key opens a second chunk");
+	for (k=0u; k<3u; k++)
+	{
+		SparkKvShard shard = {16u,0u,1u};
+		SparkKvShardSectionLayout layout = SparkKvShardSectionLayoutBuild(keys[k + 5u],1152u,12288u,3u,1023u);
+		uint32_t position,bad = 0u;
+		for (position=0u; position<keys[k + 5u] * 16u; position += 37u)
+		{
+			uint64_t local = position / 16u,byte = local * 1152u,owner = position % 16u;
+			uint64_t expect = ((byte / layout.chunk_bytes) * 16u * layout.chunk_bytes + owner * layout.chunk_bytes + byte % layout.chunk_bytes) / 1152u;
+			bad += SparkKvShardSectionSlot(shard,layout,position) != expect ? 1u : 0u;
+		}
+		HostCheck(bad == 0u,"section slot equals the brute-force [chunk][rank][bytes] address");
+	}
+	printf("%s section layouts\n",host_failures == 0 ? "PASS" : "FAIL");
+}
+
+template<uint32_t WIDTH>
+static void HostRemapCase(uint32_t degree,uint32_t first,uint32_t rows,uint32_t cap_units,uint32_t gap,uint32_t duplicates)
+{
+	typedef HostPageKv<WIDTH> Geometry;
+	typedef LmKvGeometry<Geometry::kSlotBytes,1u,true> Remap;
+	std::vector<uint32_t> wave_position;
+	uint32_t index,rank,position;
+	for (index=0u; index<rows; index++)
+		wave_position.push_back(first + index + (gap != 0u && index >= rows / 2u ? gap : 0u));
+	for (index=0u; index<duplicates; index++)
+		wave_position.push_back(wave_position.back());
+	const uint32_t total_rows = (uint32_t)wave_position.size(),context = wave_position.back() + 1u;
+	const uint32_t old_bound = gap == 0u ? first : context,pages = (context + HOST_PAGE - 1u) / HOST_PAGE,capacity = context + 64u;
+	const uint32_t align = Geometry::kSlotBytes % 1152u == 0u ? 3u : 1u;
+	SparkKvShard shard = {degree,0u,1u};
+	std::vector<uint32_t> table(pages),token_sequence(context,0u),token_position(context),list(1,0u),offset(1,0u),old(1,old_bound),remap(capacity,0u);
+	std::vector<uint16_t> values((uint64_t)context * WIDTH);
+	std::vector<uint8_t> replicated((uint64_t)pages * Geometry::kPageBytes);
+	LmKvAccessError error;
+	LmKvView view,remapped;
+	char label[128];
+	snprintf(label,sizeof(label),"width%u degree%u first%u rows%u gap%u duplicates%u cap%u",WIDTH,degree,first,rows,gap,duplicates,cap_units);
+	for (index=0u; index<pages; index++)
+		table[index] = index;
+	for (index=pages; index>1u; index--)
+	{
+		uint32_t pick = HostNext() % index,swap = table[index - 1u];
+		table[index - 1u] = table[pick];
+		table[pick] = swap;
+	}
+	for (index=0u; index<context; index++)
+		token_position[index] = index;
+	for (index=0u; index<values.size(); index++)
+		values[index] = (uint16_t)HostNext();
+	LmKvAccessErrorReset(&error);
+	HostCheck(LmKvViewInitialize(&view,replicated.data(),table.data(),pages,1u,pages,&error) == 0,"remap replicated view");
+	LM_LAUNCH((LmKvStoreKernel<Geometry,1u>),context,1u,0,0,view,values.data(),token_sequence.data(),token_position.data(),context,WIDTH);
+	const uint32_t keys = SparkKvShardGatherKeys(shard,old_bound);
+	const SparkKvShardSectionLayout layout = SparkKvShardSectionLayoutBuild(keys,Geometry::kSlotBytes,12288u,align,cap_units);
+	const uint64_t pool_bytes = (uint64_t)degree * layout.chunks * layout.chunk_bytes;
+	std::vector<uint8_t> packed((uint64_t)layout.chunks * layout.chunk_bytes + Geometry::kSlotBytes,0x5au),received(pool_bytes + (uint64_t)total_rows * Geometry::kSlotBytes,0xa5u);
+	for (rank=0u; rank<degree; rank++)
+	{
+		std::vector<uint8_t> pool(SparkKvShardPoolBytes(shard,HOST_PAGE,Geometry::kSlotBytes,pages),0u);
+		LmKvShardView local;
+		shard.rank = rank;
+		HostCheck(LmKvShardViewInitialize<Geometry>(&local,pool.data(),table.data(),pages,1u,pages,&error,shard) == 0,"remap shard view");
+		LM_LAUNCH((LmKvShardStoreKernel<Geometry,1u>),context,1u,0,0,local,values.data(),token_sequence.data(),token_position.data(),context,WIDTH);
+		if ( keys != 0u )
+			HostCheck((LmKvShardGatherPackLaunch<Geometry,1u>(local,list.data(),offset.data(),old.data(),1u,keys,packed.data(),0)) == cudaSuccess,"old-context pack launch");
+		for (uint64_t chunk=0u; chunk<layout.chunks; chunk++)
+			memcpy(received.data() + (chunk * degree + rank) * layout.chunk_bytes,packed.data() + chunk * layout.chunk_bytes,layout.chunk_bytes);
+	}
+	std::vector<uint16_t> wave_rows((uint64_t)total_rows * WIDTH);
+	for (index=0u; index<total_rows; index++)
+		memcpy(wave_rows.data() + (uint64_t)index * WIDTH,values.data() + (uint64_t)wave_position[index] * WIDTH,WIDTH * 2u);
+	memcpy(received.data() + pool_bytes,wave_rows.data(),(uint64_t)total_rows * Geometry::kSlotBytes);
+	shard.rank = 0u;
+	HostCheck((LmKvShardRemapLaunch<1u>(shard,layout,old.data(),capacity,remap.data(),0)) == cudaSuccess,"old-context remap launch");
+	HostCheck((LmKvRowsRemapLaunch<1u>(wave_position.data(),total_rows,(uint32_t)(pool_bytes / Geometry::kSlotBytes),capacity,remap.data(),&error,0)) == cudaSuccess,"row overlay launch");
+	HostCheck(LmKvViewInitialize(&remapped,received.data(),remap.data(),capacity,1u,(uint32_t)(received.size() / Geometry::kSlotBytes),&error) == 0,"remap view");
+	for (position=0u; position<context; position++)
+	{
+		const uint8_t *full = replicated.data() + (uint64_t)table[position / HOST_PAGE] * Geometry::kPageBytes + (uint64_t)(position % HOST_PAGE) * Geometry::kSlotBytes;
+		const uint8_t *seen = LmKvSlotRequired<Remap>(remapped,0u,position,position,LM_KV_ACCESS_READ);
+		if ( seen == 0 || memcmp(full,seen,Geometry::kSlotBytes) != 0 )
+		{
+			HostCheck(0,"every position read through the remap holds the replicated bytes");
+			break;
+		}
+	}
+	HostCheck(error.error_code == LM_FRAME_ERROR_NONE,"no KV access error inside the context");
+	HostCheck(LmKvSlotRequired<Remap>(remapped,0u,context,context,LM_KV_ACCESS_READ) == 0 && error.error_code != LM_FRAME_ERROR_NONE,
+		"a position past the context fails loudly");
+	printf("%s remap %s: %u old keys per rank in %u chunk(s) of %llu bytes\n",host_failures == 0 ? "PASS" : "FAIL",label,keys,layout.chunks,(unsigned long long)layout.chunk_bytes);
+}
+
+static void HostRowDigest(void)
+{
+	const uint32_t rows = 96u,elements = 576u;
+	std::vector<uint16_t> data((uint64_t)(rows + 1u) * elements),reversed((uint64_t)rows * elements);
+	std::vector<uint32_t> position(rows + 1u),reversed_position(rows);
+	unsigned long long forward = 0u,backward = 0u,changed = 0u,duplicated = 0u,salted = 0u,words[4],digests[2];
+	LmFrameError error;
+	uint32_t index;
+	for (index=0u; index<data.size(); index++)
+		data[index] = (uint16_t)HostNext();
+	for (index=0u; index<rows; index++)
+		position[index] = 5000u + index;
+	position[rows] = position[rows - 1u];
+	memcpy(data.data() + (uint64_t)rows * elements,data.data() + (uint64_t)(rows - 1u) * elements,elements * 2u);
+	for (index=0u; index<rows; index++)
+	{
+		reversed_position[index] = position[rows - 1u - index];
+		memcpy(reversed.data() + (uint64_t)index * elements,data.data() + (uint64_t)(rows - 1u - index) * elements,elements * 2u);
+	}
+	HostCheck((LmRowDigestLaunch<HOST_THREADS>(data.data(),elements,position.data(),rows,7u,&forward,0)) == cudaSuccess &&
+		(LmRowDigestLaunch<HOST_THREADS>(reversed.data(),elements,reversed_position.data(),rows,7u,&backward,0)) == cudaSuccess &&
+		forward == backward,"the row digest does not depend on row order");
+	HostCheck((LmRowDigestLaunch<HOST_THREADS>(data.data(),elements,position.data(),rows + 1u,7u,&duplicated,0)) == cudaSuccess &&
+		duplicated != forward,"a duplicated padded row adds to the digest instead of cancelling");
+	HostCheck((LmRowDigestLaunch<HOST_THREADS>(data.data(),elements,position.data(),rows,8u,&salted,0)) == cudaSuccess &&
+		salted != forward,"the salt separates layers");
+	reversed[(uint64_t)(rows / 2u) * elements + 3u] ^= 0x10u;
+	HostCheck((LmRowDigestLaunch<HOST_THREADS>(reversed.data(),elements,reversed_position.data(),rows,7u,&changed,0)) == cudaSuccess &&
+		changed != forward,"one changed bit changes the digest");
+	digests[0] = forward;
+	digests[1] = salted;
+	HostCheck(LmRowDigestFinishLaunch(digests,2u,words,0) == cudaSuccess && words[0] == forward && words[1] == ~forward,"finish writes each digest and its complement");
+	LmFrameErrorReset(&error);
+	HostCheck(LmRowDigestCheckLaunch(words,2u,&error,0) == cudaSuccess && error.error_code == LM_FRAME_ERROR_NONE,"equal digests on every rank pass the check");
+	words[0] = forward > changed ? forward : changed;
+	words[1] = ~(forward < changed ? forward : changed);
+	HostCheck(LmRowDigestCheckLaunch(words,2u,&error,0) == cudaSuccess && error.error_code == LM_FRAME_ERROR_ROW_DIGEST_MISMATCH,
+		"a rank with different bytes fails the check loudly");
+	printf("%s row digest\n",host_failures == 0 ? "PASS" : "FAIL");
+}
+
 static void HostQueryPack(void)
 {
 	const uint32_t rows = 3u,heads = 4u;
@@ -213,6 +373,15 @@ int main(void)
 	HostGatherCase<576u>(4u,std::vector<uint32_t>{130u},0u,0u);
 	HostGatherCase<576u>(16u,std::vector<uint32_t>{9000u,1300u},96u,0u);
 	HostGatherCase<128u>(16u,std::vector<uint32_t>{9000u,1300u},48u,1024u);
+	HostSectionLayouts();
+	HostRemapCase<576u>(16u,8192u,1024u,1023u,0u,0u);
+	HostRemapCase<128u>(16u,8192u,1024u,1023u,0u,3u);
+	HostRemapCase<576u>(16u,0u,700u,1023u,0u,0u);
+	HostRemapCase<576u>(4u,3001u,777u,1023u,0u,1u);
+	HostRemapCase<576u>(16u,175000u,64u,1023u,0u,0u);
+	HostRemapCase<128u>(16u,70001u,1024u,1008u,0u,0u);
+	HostRemapCase<576u>(16u,5000u,300u,1023u,17u,2u);
+	HostRowDigest();
 	HostQueryPack();
 	if ( host_failures != 0 )
 	{

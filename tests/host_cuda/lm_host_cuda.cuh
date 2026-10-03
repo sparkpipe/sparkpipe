@@ -118,6 +118,10 @@ static inline unsigned atomicMax(unsigned *address, unsigned value)
 {
 	unsigned old = *address; if (value > old) *address = value; return old;
 }
+static inline unsigned long long atomicAdd(unsigned long long *address, unsigned long long value)
+{
+	return __atomic_fetch_add(address, value, __ATOMIC_SEQ_CST);
+}
 
 template <typename T> static inline T __ldg(const T *pointer) { return *pointer; }
 template <typename T> static inline T __ldcs(const T *pointer) { return *pointer; }
