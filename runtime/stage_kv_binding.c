@@ -101,8 +101,8 @@ static SparkStatus SparkStageKvBindingAllocateHost(SparkStageKvBinding *binding,
 
 static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
 {
-	uint64_t packed,missing;
-	uint32_t region,owned;
+	uint64_t packed,missing,layer_page;
+	uint32_t region,owned,shards;
 	binding->pages_per_sequence = (configuration->max_sequence_positions + configuration->block_token_count - 1u) / configuration->block_token_count;
 	if ( binding->pages_per_sequence == 0u || configuration->resident_sequence_capacity > UINT32_MAX / binding->pages_per_sequence )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -121,19 +121,29 @@ static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,cons
 			configuration->module_tag,configuration->max_input_row_count,SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES,configuration->block_token_count);
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
+	shards = SparkStageKvBindingContextSharded(configuration) != 0u ? configuration->context_shard.degree : 1u;
+	if ( shards > 1u && (configuration->owner_count > 1u || SparkKvShardValid(configuration->context_shard,configuration->block_token_count) == 0u ||
+		configuration->arena_head_dim % shards != 0u) )
+	{
+		fprintf(stderr,"%s kv binding refused: context shard degree %u rank %u grain %u cannot split %u-token pages (owner_count %u, arena head %u)\n",
+			configuration->module_tag,configuration->context_shard.degree,configuration->context_shard.rank,configuration->context_shard.grain,configuration->block_token_count,configuration->owner_count,configuration->arena_head_dim);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	binding->page_bytes = 0u;
 	for (region=0u; region<configuration->region_count; region++)
 	{
 		const SparkStageKvRegion *declared = &configuration->regions[region];
 		if ( (declared->layout != SPARK_STAGE_KV_REGION_PAGE_MAJOR && declared->layout != SPARK_STAGE_KV_REGION_LAYER_MAJOR) || declared->layer_count == 0u || declared->layer_page_bytes == 0u ||
-			declared->layer_page_bytes > UINT64_MAX / declared->layer_count )
+			declared->layer_page_bytes % shards != 0u || declared->layer_page_bytes > UINT64_MAX / declared->layer_count )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		packed = declared->layer_page_bytes * declared->layer_count;
+		layer_page = declared->layer_page_bytes / shards;
+		packed = layer_page * declared->layer_count;
 		if ( packed > UINT64_MAX / configuration->physical_page_count || packed > UINT64_MAX - binding->page_bytes )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		binding->regions[region] = *declared;
+		binding->regions[region].layer_page_bytes = layer_page;
 		binding->region_packed_page_bytes[region] = packed;
-		binding->region_layer_stride_bytes[region] = declared->layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? declared->layer_page_bytes : (uint64_t)configuration->physical_page_count * declared->layer_page_bytes;
+		binding->region_layer_stride_bytes[region] = declared->layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? layer_page : (uint64_t)configuration->physical_page_count * layer_page;
 		binding->page_bytes += packed;
 	}
 	missing = (uint64_t)(configuration->logical_page_count - configuration->physical_page_count);
@@ -159,7 +169,7 @@ static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const Spar
 	table->arena_configuration.resident_block_capacity = binding->physical_page_count;
 	table->arena_configuration.layer_count = binding->regions[0].layer_count;
 	table->arena_configuration.kv_head_count = configuration->arena_kv_head_count;
-	table->arena_configuration.head_dim = configuration->arena_head_dim;
+	table->arena_configuration.head_dim = configuration->arena_head_dim / (SparkStageKvBindingContextSharded(configuration) != 0u ? configuration->context_shard.degree : 1u);
 	table->arena_configuration.bytes_per_scalar = configuration->arena_bytes_per_scalar;
 	table->arena_configuration.key_device_base = binding->region_base[0];
 	table->arena_configuration.key_block_stride_bytes = binding->region_packed_page_bytes[0];
@@ -193,7 +203,7 @@ static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const Spar
 	table->entry_indices_by_logical_page = binding->entry_indices_by_logical_page;
 	table->model_id = configuration->model_id;
 	table->model_revision = configuration->model_revision;
-	table->cache_layout_fingerprint = configuration->layout_fingerprint;
+	table->cache_layout_fingerprint = binding->layout_fingerprint;
 }
 
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
@@ -201,6 +211,7 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	SparkKvModelTable table;
 	uint64_t lane_entries;
 	uint32_t region;
+	int written;
 	SparkStatus status;
 	cudaError_t error;
 	if ( binding == 0 || configuration == 0 || configuration->ledger == 0 || configuration->module_tag == 0 || configuration->block_token_count == 0u || configuration->region_count == 0u ||
@@ -223,7 +234,13 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->pipeline_slot_count = configuration->pipeline_slot_count;
 	binding->owner_rank = configuration->owner_rank;
 	binding->owner_count = configuration->owner_count;
+	binding->context_shard = configuration->context_shard;
 	if ( binding->owner_count > 1u && binding->owner_rank >= binding->owner_count )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	written = SparkStageKvBindingContextSharded(configuration) != 0u ?
+		snprintf(binding->layout_fingerprint,sizeof(binding->layout_fingerprint),"%s-shard%ur%u",configuration->layout_fingerprint,configuration->context_shard.degree,configuration->context_shard.rank) :
+		snprintf(binding->layout_fingerprint,sizeof(binding->layout_fingerprint),"%s",configuration->layout_fingerprint);
+	if ( written < 0 || (size_t)written >= sizeof(binding->layout_fingerprint) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageKvBindingGeometry(binding,configuration);
 	if ( status != SPARK_STATUS_OK )
@@ -254,8 +271,9 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	if ( pthread_mutex_init(&binding->mutex,0) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	binding->mutex_initialized = 1u;
-	fprintf(stderr,"%s kv binding logical_pages=%u physical_pages=%u pages_per_sequence=%u page_bytes=%llu regions=%u\n",
-		binding->module_tag,binding->logical_page_count,binding->physical_page_count,binding->pages_per_sequence,(unsigned long long)binding->page_bytes,binding->region_count);
+	fprintf(stderr,"%s kv binding logical_pages=%u physical_pages=%u pages_per_sequence=%u page_bytes=%llu regions=%u context_shard=%u/%u layout=%s\n",
+		binding->module_tag,binding->logical_page_count,binding->physical_page_count,binding->pages_per_sequence,(unsigned long long)binding->page_bytes,binding->region_count,
+		binding->context_shard.degree > 1u ? binding->context_shard.rank : 0u,binding->context_shard.degree > 1u ? binding->context_shard.degree : 1u,binding->layout_fingerprint);
 	return(SPARK_STATUS_OK);
 }
 

@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_kv_shard.h"
 
 #define LM_KV_ACCESS_ERROR_SHARD_NOT_OWNED LM_FRAME_ERROR_SHARD_NOT_OWNED
+#define LM_KV_SHARD_UNPACK_BLOCKS 4096u
 
 struct LmKvShardView
 {
@@ -199,6 +200,61 @@ void LmKvShardGatherPackKernel(LmKvShardView view, const uint32_t *__restrict__ 
 		for (index = threadIdx.x; index < Geometry::kSlotBytes / 16u; index += THREADS)
 			target[index] = slot != 0 ? ((const uint4 *)slot)[index] : zero;
 	}
+}
+
+template<uint32_t SLOT_BYTES, uint32_t PAGE_SLOTS, uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmKvShardGatherUnpackKernel(SparkKvShard shard, const uint8_t *__restrict__ gathered, uint64_t chunk_bytes, uint64_t section_offset, const uint32_t *__restrict__ sequences, const uint32_t *__restrict__ key_offset, const uint32_t *__restrict__ key_context, const uint32_t *__restrict__ page_base, uint8_t *__restrict__ pages)
+{
+	static_assert(SLOT_BYTES % 16u == 0u, "a gathered key moves as whole 16-byte words");
+	uint32_t entry = blockIdx.y, sequence = sequences[entry], context = key_context[sequence], position, index;
+	uint64_t byte;
+	const uint4 *source;
+	uint4 *target;
+	for (position = blockIdx.x; position < context; position += gridDim.x)
+	{
+		byte = section_offset + ((uint64_t)key_offset[sequence] + SparkKvShardLocalIndex(shard, position)) * SLOT_BYTES;
+		source = (const uint4 *)(gathered + ((byte / chunk_bytes) * shard.degree + SparkKvShardOwner(shard, position)) * chunk_bytes + byte % chunk_bytes);
+		target = (uint4 *)(pages + (((uint64_t)page_base[sequence] + position / PAGE_SLOTS) * PAGE_SLOTS + position % PAGE_SLOTS) * SLOT_BYTES);
+		for (index = threadIdx.x; index < SLOT_BYTES / 16u; index += THREADS)
+			target[index] = source[index];
+	}
+}
+
+template<uint32_t PAGE_SLOTS, uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmKvShardGatherTableKernel(const uint32_t *__restrict__ sequences, const uint32_t *__restrict__ key_context, const uint32_t *__restrict__ page_base, uint32_t page_table_stride, uint32_t *__restrict__ page_table)
+{
+	uint32_t entry = blockIdx.x, sequence = sequences[entry], pages = (key_context[sequence] + PAGE_SLOTS - 1u) / PAGE_SLOTS, page;
+	for (page = threadIdx.x; page < pages && page < page_table_stride; page += THREADS)
+		page_table[(uint64_t)sequence * page_table_stride + page] = page_base[sequence] + page;
+}
+
+template<uint32_t SLOT_BYTES, uint32_t PAGE_SLOTS, uint32_t THREADS>
+static inline cudaError_t LmKvShardGatherUnpackLaunch(
+	SparkKvShard shard,
+	const uint8_t *gathered,
+	uint64_t chunk_bytes,
+	uint64_t section_offset,
+	const uint32_t *sequences,
+	const uint32_t *key_offset,
+	const uint32_t *key_context,
+	const uint32_t *page_base,
+	uint32_t sequence_count,
+	uint32_t most_context,
+	uint32_t page_table_stride,
+	uint32_t *page_table,
+	uint8_t *pages,
+	cudaStream_t stream)
+{
+	if ( gathered == 0 || sequences == 0 || key_offset == 0 || key_context == 0 || page_base == 0 || pages == 0 ||
+		sequence_count == 0u || most_context == 0u || page_table_stride == 0u || SparkKvShardValid(shard,PAGE_SLOTS) == 0u ||
+		chunk_bytes == 0u || chunk_bytes % SLOT_BYTES != 0u || section_offset % SLOT_BYTES != 0u )
+		return(cudaErrorInvalidValue);
+	if ( page_table != 0 )
+		LM_LAUNCH((LmKvShardGatherTableKernel<PAGE_SLOTS, THREADS>), sequence_count, THREADS, 0, stream, sequences, key_context, page_base, page_table_stride, page_table);
+	LM_LAUNCH((LmKvShardGatherUnpackKernel<SLOT_BYTES, PAGE_SLOTS, THREADS>), dim3(most_context < LM_KV_SHARD_UNPACK_BLOCKS ? most_context : LM_KV_SHARD_UNPACK_BLOCKS, sequence_count), THREADS, 0, stream, shard, gathered, chunk_bytes, section_offset, sequences, key_offset, key_context, page_base, pages);
+	return(cudaPeekAtLastError());
 }
 
 template<class Geometry, uint32_t THREADS>

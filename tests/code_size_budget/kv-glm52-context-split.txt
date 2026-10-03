@@ -1,0 +1,2 @@
++1070
+KV context split for GLM-5.3 Full (glm52): each TP rank stores 1/16 of every sequence's latent KV and DSA index keys (owner requirement, any workload). Shared kernels: view-generic index scorer, exact per-rank top-k candidate merge, chunked key gather unpack, query pack; binding per-rank page split; glm52 attention core split into prologue/store/attention/output pieces plus scatter (decode) and gather (prefill) phases; exchange wiring in eager, linear and graph chains.

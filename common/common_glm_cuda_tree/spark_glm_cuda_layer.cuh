@@ -8,6 +8,8 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/index_score.cuh"
+#include "inference/kernels/index_shard.cuh"
+#include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/route.cuh"
@@ -39,6 +41,21 @@ using GlmIndexKv = LmKvLatent<
     GLM_DSA_INDEX_DIM,
     0u,
     GLM_KV_PAGE_SLOTS>;
+struct GlmKvGathered
+{
+    static constexpr uint32_t kSlotBytes = GLM_KV_SLOT_BYTES;
+    static constexpr uint32_t kPageSlots = GLM_KV_PAGE_SLOTS;
+    static constexpr uint32_t kPageBytes = GLM_KV_SLOT_BYTES * GLM_KV_PAGE_SLOTS;
+    static constexpr bool kGrows = true;
+    static __host__ __device__ constexpr uint32_t PageOf(uint32_t position)
+    { return position / GLM_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position)
+    { return position % GLM_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens)
+    { return (tokens + GLM_KV_PAGE_SLOTS - 1u) / GLM_KV_PAGE_SLOTS; }
+    static __host__ __device__ constexpr uint64_t PoolBytes(uint64_t pages)
+    { return pages * (uint64_t)kPageBytes; }
+};
 
 #include "common/common_glm_cuda_tree/spark_glm_cuda_launch_shape.h"
 
@@ -177,6 +194,32 @@ struct GlmLayerBuffers
     uint32_t prefill_table_blocks;
     uint16_t *projection_gather_bf16;
     uint16_t *projection_local_bf16;
+
+    SparkKvShard kv_shard;
+    LmKvShardView cache_shard;
+    LmKvShardView index_shard;
+    LmKvView cache_gathered;
+    LmKvView index_gathered;
+    uint8_t *kv_gather_pack;
+    uint64_t kv_gather_index_offset;
+    const uint8_t *kv_gather_received;
+    uint64_t kv_gather_chunk_bytes;
+    const uint32_t *kv_gather_sequences;
+    const uint32_t *kv_gather_offset;
+    const uint32_t *kv_gather_context;
+    const uint32_t *kv_gather_page_base;
+    uint32_t kv_gather_sequence_count;
+    uint32_t kv_gather_most_context;
+    uint32_t kv_gathered_table_stride;
+    uint32_t *kv_gathered_table;
+    uint16_t *shard_send_bf16;
+    uint64_t shard_candidate_offset;
+    const uint16_t *shard_received_bf16;
+    uint64_t shard_rank_stride_bytes;
+    float *shard_partials;
+    float *shard_partials_received;
+    uint64_t shard_partial_stride;
+    uint32_t *index_local_selected;
 };
 
 static inline void GlmProjectionSlice(
@@ -297,32 +340,14 @@ static int32_t GlmLaunchBf16Linear(
     return LmStreamGemmDense<LmBf16Format>(weight_bf16, LmScaleTensorNone(), activation_bf16, output_bf16, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset, multiprocessors, stream);
 }
 
-static int32_t GlmLayerIndexer(
+static int32_t GlmLayerIndexerKeys(
     const GlmLayerBuffers *buffers,
     uint32_t rows,
-    uint32_t context,
-    uint32_t layer_index,
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
     int32_t status;
 
-    if (GlmLayerHasFullIndexer(layer_index) == 0u)
-    {
-        return LM_LAUNCH_OK;
-    }
-    if (buffers == 0 || rows == 0u || context == 0u ||
-        buffers->positions == 0 || buffers->sequence_of_row == 0 ||
-        buffers->context_length == 0 ||
-        !LmKvViewIsConfigured(buffers->index_cache) ||
-        buffers->index_q_weight == 0 || buffers->index_k_weight == 0 ||
-        buffers->index_head_weight == 0 || buffers->index_norm_weight == 0 ||
-        buffers->index_norm_bias == 0 || buffers->index_query_bf16 == 0 ||
-        buffers->index_key_bf16 == 0 ||
-        buffers->index_head_weight_bf16 == 0)
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
     status = GlmLaunchBf16Linear(
         buffers->normed_bf16,
         buffers->index_k_weight,
@@ -363,28 +388,49 @@ static int32_t GlmLayerIndexer(
         0u,
         GLM_ROPE_DIM,
         GLM_ROPE_THETA);
-    LM_LAUNCH(
-        (LmKvStoreKernel<GlmIndexKv,GLM_LAYER_THREADS>),
-        rows,
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->index_cache,
-        buffers->index_key_bf16,
-        buffers->sequence_of_row,
-        buffers->positions,
-        rows,
-        GLM_DSA_INDEX_DIM);
-    if (context <= GLM_DSA_SELECTED)
+    if (buffers->kv_shard.degree > 1u)
     {
-        return cudaPeekAtLastError() == cudaSuccess
-            ? LM_LAUNCH_OK
-            : LM_LAUNCH_ERR_LAUNCH;
+        LM_LAUNCH(
+            (LmKvShardStoreKernel<GlmIndexKv,GLM_LAYER_THREADS>),
+            rows,
+            GLM_LAYER_THREADS,
+            0,
+            stream,
+            buffers->index_shard,
+            buffers->index_key_bf16,
+            buffers->sequence_of_row,
+            buffers->positions,
+            rows,
+            GLM_DSA_INDEX_DIM);
     }
-    if (buffers->selection_scores == 0 || buffers->selected_positions == 0)
+    else
     {
-        return LM_LAUNCH_ERR_SHAPE;
+        LM_LAUNCH(
+            (LmKvStoreKernel<GlmIndexKv,GLM_LAYER_THREADS>),
+            rows,
+            GLM_LAYER_THREADS,
+            0,
+            stream,
+            buffers->index_cache,
+            buffers->index_key_bf16,
+            buffers->sequence_of_row,
+            buffers->positions,
+            rows,
+            GLM_DSA_INDEX_DIM);
     }
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t GlmLayerIndexerQuery(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
     status = GlmLaunchBf16Linear(
         buffers->q_compressed_bf16,
         buffers->index_q_weight,
@@ -428,55 +474,135 @@ static int32_t GlmLayerIndexer(
         0u,
         GLM_ROPE_DIM,
         GLM_ROPE_THETA);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static uint32_t GlmLayerIndexerChunkRows(const GlmLayerBuffers *buffers, uint32_t rows)
+{
+    return buffers->selection_rows != 0u && buffers->selection_rows < rows
+        ? buffers->selection_rows : rows;
+}
+
+template<class Pages>
+static int32_t GlmLayerIndexerScore(
+    const GlmLayerBuffers *buffers,
+    Pages pages,
+    uint32_t rows,
+    uint32_t score_stride,
+    uint32_t keep,
+    uint32_t *selected,
+    uint2 *candidates,
+    cudaStream_t stream)
+{
+    const uint32_t chunk_rows = GlmLayerIndexerChunkRows(buffers, rows);
+    uint32_t first;
+
+    for (first = 0u; first < rows; first += chunk_rows)
     {
-        const uint32_t chunk_rows =
-            buffers->selection_rows != 0u && buffers->selection_rows < rows
-                ? buffers->selection_rows : rows;
-        uint32_t first;
-        for (first = 0u; first < rows; first += chunk_rows)
+        const uint32_t count =
+            rows - first < chunk_rows ? rows - first : chunk_rows;
+        if (LmWeightedSparseScoreLaunch<
+                GlmIndexKv,GLM_DSA_INDEX_HEADS,GLM_DSA_INDEX_DIM>(
+                buffers->index_query_bf16 +
+                    (uint64_t)first * GLM_DSA_INDEX_HEADS * GLM_DSA_INDEX_DIM,
+                buffers->index_head_weight_bf16 +
+                    (uint64_t)first * GLM_DSA_INDEX_HEADS,
+                pages,
+                buffers->sequence_of_row + first,
+                buffers->context_length,
+                buffers->row_positions != 0
+                    ? buffers->row_positions + first : 0,
+                count,
+                score_stride,
+                GLM_DSA_INDEX_SCALE / sqrtf((float)GLM_DSA_INDEX_HEADS),
+                buffers->selection_scores,
+                stream) != cudaSuccess)
         {
-            const uint32_t count =
-                rows - first < chunk_rows ? rows - first : chunk_rows;
-            if (LmWeightedSparseScoreLaunch<
-                    GlmIndexKv,GLM_DSA_INDEX_HEADS,GLM_DSA_INDEX_DIM>(
-                    buffers->index_query_bf16 +
-                        (uint64_t)first * GLM_DSA_INDEX_HEADS * GLM_DSA_INDEX_DIM,
-                    buffers->index_head_weight_bf16 +
-                        (uint64_t)first * GLM_DSA_INDEX_HEADS,
-                    buffers->index_cache,
-                    buffers->sequence_of_row + first,
-                    buffers->context_length,
-                    buffers->row_positions != 0
-                        ? buffers->row_positions + first : 0,
-                    count,
-                    context,
-                    GLM_DSA_INDEX_SCALE / sqrtf((float)GLM_DSA_INDEX_HEADS),
-                    buffers->selection_scores,
-                    stream) != cudaSuccess)
-            {
-                return LM_LAUNCH_ERR_LAUNCH;
-            }
-            if (LmTopkExactLaunch<GLM_LAYER_THREADS>(
-                    buffers->selection_scores,
-                    count,
-                    context,
-                    GLM_DSA_SELECTED,
-                    LM_TOPK_EXACT_CHUNK,
-                    LM_TOPK_EXACT_CHUNKED_ROWS,
-                    buffers->topk_scratch_values,
-                    buffers->topk_scratch_positions,
-                    buffers->topk_scratch_entries,
-                    buffers->selected_positions +
-                        (uint64_t)first * GLM_DSA_SELECTED,
-                    stream) != cudaSuccess)
-            {
-                return LM_LAUNCH_ERR_LAUNCH;
-            }
+            return LM_LAUNCH_ERR_LAUNCH;
+        }
+        if (LmTopkExactLaunch<GLM_LAYER_THREADS>(
+                buffers->selection_scores,
+                count,
+                score_stride,
+                keep,
+                LM_TOPK_EXACT_CHUNK,
+                LM_TOPK_EXACT_CHUNKED_ROWS,
+                buffers->topk_scratch_values,
+                buffers->topk_scratch_positions,
+                buffers->topk_scratch_entries,
+                selected + (uint64_t)first * keep,
+                stream) != cudaSuccess)
+        {
+            return LM_LAUNCH_ERR_LAUNCH;
+        }
+        if (candidates != 0 &&
+            LmIndexShardCandidatePackLaunch<GLM_LAYER_THREADS>(
+                buffers->kv_shard,
+                buffers->selection_scores,
+                score_stride,
+                selected + (uint64_t)first * keep,
+                keep,
+                count,
+                candidates + (uint64_t)first * keep,
+                stream) != cudaSuccess)
+        {
+            return LM_LAUNCH_ERR_LAUNCH;
         }
     }
     return cudaPeekAtLastError() == cudaSuccess
         ? LM_LAUNCH_OK
         : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static uint32_t GlmLayerIndexerReady(const GlmLayerBuffers *buffers, uint32_t rows, uint32_t context)
+{
+    return buffers != 0 && rows != 0u && context != 0u &&
+        buffers->positions != 0 && buffers->sequence_of_row != 0 &&
+        buffers->context_length != 0 &&
+        (buffers->kv_shard.degree > 1u
+            ? LmKvViewIsConfigured(buffers->index_shard.pages)
+            : LmKvViewIsConfigured(buffers->index_cache)) &&
+        buffers->index_q_weight != 0 && buffers->index_k_weight != 0 &&
+        buffers->index_head_weight != 0 && buffers->index_norm_weight != 0 &&
+        buffers->index_norm_bias != 0 && buffers->index_query_bf16 != 0 &&
+        buffers->index_key_bf16 != 0 &&
+        buffers->index_head_weight_bf16 != 0 &&
+        (context <= GLM_DSA_SELECTED ||
+         (buffers->selection_scores != 0 && buffers->selected_positions != 0)) ? 1u : 0u;
+}
+
+static int32_t GlmLayerIndexer(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    if (GlmLayerHasFullIndexer(layer_index) == 0u)
+    {
+        return LM_LAUNCH_OK;
+    }
+    if (GlmLayerIndexerReady(buffers, rows, context) == 0u)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    status = GlmLayerIndexerKeys(buffers, rows, multiprocessors, stream);
+    if (status != LM_LAUNCH_OK || context <= GLM_DSA_SELECTED)
+    {
+        return status;
+    }
+    status = GlmLayerIndexerQuery(buffers, rows, multiprocessors, stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    return GlmLayerIndexerScore(buffers, buffers->index_cache, rows, context,
+        GLM_DSA_SELECTED, buffers->selected_positions, (uint2 *)0, stream);
 }
 
 static int32_t GlmLayerAttentionProject(
@@ -569,54 +695,42 @@ static int32_t GlmLayerAttentionProject(
     return status;
 }
 
-static int32_t GlmLayerAttentionCore(
+static uint32_t GlmLayerAttentionReady(const GlmLayerBuffers *buffers, uint32_t rows, uint32_t context)
+{
+    return buffers != 0 && rows != 0u && context != 0u &&
+        buffers->qk_scale > 0.0f && buffers->hidden_bf16 != 0 &&
+        buffers->residual_bf16 != 0 && buffers->normed_bf16 != 0 &&
+        buffers->attn_norm_weight != 0 && buffers->kv_slot_bf16 != 0 &&
+        buffers->attention_latent_bf16 != 0 &&
+        buffers->attention_value_bf16 != 0 &&
+        buffers->attention_out_bf16 != 0 && buffers->output_weight != 0 &&
+        buffers->sequence_of_row != 0 && buffers->context_length != 0 &&
+        buffers->positions != 0 &&
+        buffers->q_a_weight != 0 && buffers->q_a_norm_weight != 0 &&
+        buffers->q_b_weight != 0 && buffers->kv_a_weight != 0 &&
+        buffers->kv_a_norm_weight != 0 &&
+        buffers->kv_b_key_transposed_weight != 0 &&
+        buffers->kv_b_value_weight != 0 &&
+        buffers->q_compressed_bf16 != 0 && buffers->q_bf16 != 0 &&
+        buffers->query_latent_bf16 != 0 &&
+        buffers->query_rope_bf16 != 0 &&
+        (context <= GLM_DSA_SELECTED ||
+         (buffers->selected_positions != 0 &&
+          buffers->selected_position_count == GLM_DSA_SELECTED)) &&
+        (buffers->projection_gather_bf16 == 0 || buffers->tp_degree != 0u) ? 1u : 0u;
+}
+
+static int32_t GlmLayerAttentionPrologue(
     const GlmLayerBuffers *buffers,
     uint32_t rows,
-    uint32_t context,
-    uint32_t layer_index,
     uint32_t multiprocessors,
     cudaStream_t stream)
 {
-    const uint32_t *selected_positions;
-    uint32_t selected_position_count;
-    uint32_t gathered;
+    const uint32_t gathered = buffers->projection_gather_bf16 != 0 ? 1u : 0u;
     int32_t status;
-
-    if (buffers == 0 || rows == 0u || context == 0u ||
-        buffers->qk_scale <= 0.0f || buffers->hidden_bf16 == 0 ||
-        buffers->residual_bf16 == 0 || buffers->normed_bf16 == 0 ||
-        buffers->attn_norm_weight == 0 || buffers->kv_slot_bf16 == 0 ||
-        buffers->attention_latent_bf16 == 0 ||
-        buffers->attention_value_bf16 == 0 ||
-        buffers->attention_out_bf16 == 0 || buffers->output_weight == 0 ||
-        buffers->sequence_of_row == 0 || buffers->context_length == 0 ||
-        buffers->positions == 0 ||
-        buffers->q_a_weight == 0 || buffers->q_a_norm_weight == 0 ||
-        buffers->q_b_weight == 0 || buffers->kv_a_weight == 0 ||
-        buffers->kv_a_norm_weight == 0 ||
-        buffers->kv_b_key_transposed_weight == 0 ||
-        buffers->kv_b_value_weight == 0 ||
-        buffers->q_compressed_bf16 == 0 || buffers->q_bf16 == 0 ||
-        buffers->query_latent_bf16 == 0 ||
-        buffers->query_rope_bf16 == 0 ||
-        (context > GLM_DSA_SELECTED &&
-         (buffers->selected_positions == 0 ||
-          buffers->selected_position_count != GLM_DSA_SELECTED)))
-    {
-        return LM_LAUNCH_ERR_SHAPE;
-    }
-    selected_positions = context > GLM_DSA_SELECTED
-        ? buffers->selected_positions : 0;
-    selected_position_count = context > GLM_DSA_SELECTED
-        ? buffers->selected_position_count : 0u;
-    gathered = buffers->projection_gather_bf16 != 0 ? 1u : 0u;
 
     if (gathered != 0u)
     {
-        if (buffers->tp_degree == 0u)
-        {
-            return LM_LAUNCH_ERR_SHAPE;
-        }
         GlmProjectionUnpackKernel<<<rows, GLM_LAYER_THREADS, 0, stream>>>(
             buffers->projection_gather_bf16,
             buffers->q_compressed_bf16,
@@ -662,17 +776,6 @@ static int32_t GlmLayerAttentionCore(
         GLM_QUERY_A_DIM,
         GLM_QUERY_A_DIM,
         GLM_RMS_EPSILON);
-    status = GlmLayerIndexer(
-        buffers,
-        rows,
-        context,
-        layer_index,
-        multiprocessors,
-        stream);
-    if (status != LM_LAUNCH_OK)
-    {
-        return status;
-    }
     status = GlmLaunchBf16Linear(
         buffers->q_compressed_bf16,
         buffers->q_b_weight,
@@ -720,7 +823,6 @@ static int32_t GlmLayerAttentionCore(
         GLM_LATENT,
         GLM_LATENT_ROW,
         GLM_RMS_EPSILON);
-
     LM_LAUNCH(
         (LmExtractRopePerHeadKernel<
             GLM_LAYER_THREADS,LM_ROPE_INTERLEAVED>),
@@ -763,24 +865,69 @@ static int32_t GlmLayerAttentionCore(
     {
         return LM_LAUNCH_ERR_LAUNCH;
     }
-    LM_LAUNCH(
-        (LmKvStoreKernel<GlmKv, GLM_LAYER_THREADS>),
-        rows,
-        GLM_LAYER_THREADS,
-        0,
-        stream,
-        buffers->cache,
-        buffers->kv_slot_bf16,
-        buffers->sequence_of_row,
-        buffers->positions,
-        rows,
-        GLM_LATENT_ROW);
+    return LM_LAUNCH_OK;
+}
+
+static int32_t GlmLayerLatentStore(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    cudaStream_t stream)
+{
+    if (buffers->kv_shard.degree > 1u)
+    {
+        LM_LAUNCH(
+            (LmKvShardStoreKernel<GlmKv, GLM_LAYER_THREADS>),
+            rows,
+            GLM_LAYER_THREADS,
+            0,
+            stream,
+            buffers->cache_shard,
+            buffers->kv_slot_bf16,
+            buffers->sequence_of_row,
+            buffers->positions,
+            rows,
+            GLM_LATENT_ROW);
+    }
+    else
+    {
+        LM_LAUNCH(
+            (LmKvStoreKernel<GlmKv, GLM_LAYER_THREADS>),
+            rows,
+            GLM_LAYER_THREADS,
+            0,
+            stream,
+            buffers->cache,
+            buffers->kv_slot_bf16,
+            buffers->sequence_of_row,
+            buffers->positions,
+            rows,
+            GLM_LATENT_ROW);
+    }
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
+}
+
+template<class Geometry>
+static int32_t GlmLayerLatentAttention(
+    const GlmLayerBuffers *buffers,
+    LmKvView cache,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    const uint32_t *selected_positions = context > GLM_DSA_SELECTED
+        ? buffers->selected_positions : 0;
+    const uint32_t selected_position_count = context > GLM_DSA_SELECTED
+        ? buffers->selected_position_count : 0u;
+
     if ((buffers->single_sequence_rows != 0u || buffers->prefill_block_table != 0) && rows > LM_SKINNY_ROWS && selected_positions == 0)
     {
-        if (LmLatentAttentionPrefillLaunch<GlmKv, GLM_LATENT, GLM_ROPE_DIM>(
+        if (LmLatentAttentionPrefillLaunch<Geometry, GLM_LATENT, GLM_ROPE_DIM>(
                 buffers->query_latent_bf16,
                 buffers->query_rope_bf16,
-                buffers->cache,
+                cache,
                 buffers->sequence_of_row,
                 buffers->row_positions,
                 buffers->attn_heads,
@@ -793,14 +940,15 @@ static int32_t GlmLayerAttentionCore(
         {
             return LM_LAUNCH_ERR_LAUNCH;
         }
+        return LM_LAUNCH_OK;
     }
-    else if ((buffers->single_sequence_rows != 0u || buffers->prefill_block_table != 0) && rows > LM_SKINNY_ROWS &&
+    if ((buffers->single_sequence_rows != 0u || buffers->prefill_block_table != 0) && rows > LM_SKINNY_ROWS &&
         selected_positions != 0 && buffers->prefill_union_positions != 0)
     {
-        if (LmLatentAttentionSparsePrefillLaunch<GlmKv, GLM_LATENT, GLM_ROPE_DIM, GLM_DSA_SELECTED>(
+        if (LmLatentAttentionSparsePrefillLaunch<Geometry, GLM_LATENT, GLM_ROPE_DIM, GLM_DSA_SELECTED>(
                 buffers->query_latent_bf16,
                 buffers->query_rope_bf16,
-                buffers->cache,
+                cache,
                 buffers->sequence_of_row,
                 buffers->row_positions,
                 buffers->attn_heads,
@@ -819,12 +967,13 @@ static int32_t GlmLayerAttentionCore(
         {
             return LM_LAUNCH_ERR_LAUNCH;
         }
+        return LM_LAUNCH_OK;
     }
-    else if (LmLatentRopeHeadsSplitLaunch<
-            GlmKv, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM, true>(
+    if (LmLatentRopeHeadsSplitLaunch<
+            Geometry, GLM_ATTN_THREADS, GLM_LATENT, GLM_ROPE_DIM, true>(
             buffers->query_latent_bf16,
             buffers->query_rope_bf16,
-            buffers->cache,
+            cache,
             buffers->sequence_of_row,
             buffers->context_length,
             selected_positions,
@@ -843,7 +992,15 @@ static int32_t GlmLayerAttentionCore(
     {
         return LM_LAUNCH_ERR_LAUNCH;
     }
+    return LM_LAUNCH_OK;
+}
 
+static int32_t GlmLayerAttentionOutput(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
     if (LmPerHeadProjectChainLaunch<
             GLM_LAYER_THREADS,GLM_LATENT,GLM_VALUE_DIM>(
             buffers->attention_latent_bf16,
@@ -867,6 +1024,319 @@ static int32_t GlmLayerAttentionCore(
         0u,
         multiprocessors,
         stream);
+}
+
+static int32_t GlmLayerAttentionCore(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    if (GlmLayerAttentionReady(buffers, rows, context) == 0u || buffers->kv_shard.degree > 1u)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    status = GlmLayerAttentionPrologue(buffers, rows, multiprocessors, stream);
+    if (status == LM_LAUNCH_OK)
+        status = GlmLayerIndexer(buffers, rows, context, layer_index, multiprocessors, stream);
+    if (status == LM_LAUNCH_OK)
+        status = GlmLayerLatentStore(buffers, rows, stream);
+    if (status == LM_LAUNCH_OK)
+        status = GlmLayerLatentAttention<GlmKv>(buffers, buffers->cache, rows, context, multiprocessors, stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    return GlmLayerAttentionOutput(buffers, rows, multiprocessors, stream);
+}
+
+static uint32_t GlmLayerShardIndexing(uint32_t layer_index, uint32_t context)
+{
+    return GlmLayerHasFullIndexer(layer_index) != 0u && context > GLM_DSA_SELECTED ? 1u : 0u;
+}
+
+static uint32_t GlmLayerShardKeep(SparkKvShard shard, uint32_t context)
+{
+    const uint32_t stride = SparkKvShardGatherKeys(shard, context);
+    return stride < GLM_DSA_SELECTED ? stride : GLM_DSA_SELECTED;
+}
+
+static int32_t GlmLayerShardStoreAll(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    if (GlmLayerAttentionReady(buffers, rows, context) == 0u || buffers->kv_shard.degree < 2u ||
+        !LmKvViewIsConfigured(buffers->cache_shard.pages))
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    status = GlmLayerAttentionPrologue(buffers, rows, multiprocessors, stream);
+    if (status == LM_LAUNCH_OK && GlmLayerHasFullIndexer(layer_index) != 0u)
+    {
+        status = GlmLayerIndexerReady(buffers, rows, context) != 0u
+            ? GlmLayerIndexerKeys(buffers, rows, multiprocessors, stream)
+            : LM_LAUNCH_ERR_SHAPE;
+    }
+    if (status == LM_LAUNCH_OK)
+        status = GlmLayerLatentStore(buffers, rows, stream);
+    return status;
+}
+
+static int32_t GlmLayerShardScatterPre(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    if (buffers == 0 || buffers->shard_send_bf16 == 0 || buffers->index_local_selected == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    status = GlmLayerShardStoreAll(buffers, rows, context, layer_index, multiprocessors, stream);
+    if (status == LM_LAUNCH_OK && GlmLayerShardIndexing(layer_index, context) != 0u)
+    {
+        status = GlmLayerIndexerQuery(buffers, rows, multiprocessors, stream);
+        if (status == LM_LAUNCH_OK)
+            status = GlmLayerIndexerScore(buffers, buffers->index_shard, rows,
+                SparkKvShardGatherKeys(buffers->kv_shard, context),
+                GlmLayerShardKeep(buffers->kv_shard, context),
+                buffers->index_local_selected,
+                (uint2 *)((uint8_t *)buffers->shard_send_bf16 + buffers->shard_candidate_offset),
+                stream);
+    }
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    return LmLatentShardQueryPackLaunch<GLM_LATENT, GLM_ROPE_DIM>(
+        buffers->query_latent_bf16,
+        buffers->query_rope_bf16,
+        buffers->attn_heads,
+        rows,
+        buffers->shard_send_bf16,
+        stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t GlmLayerShardScatterMid(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    cudaStream_t stream)
+{
+    if (buffers == 0 || buffers->shard_received_bf16 == 0 || buffers->shard_partials == 0 ||
+        buffers->shard_rank_stride_bytes == 0u || buffers->kv_shard.degree < 2u)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    if (GlmLayerShardIndexing(layer_index, context) != 0u)
+    {
+        const uint32_t keep = GlmLayerShardKeep(buffers->kv_shard, context);
+        const uint32_t chunk_rows = GlmLayerIndexerChunkRows(buffers, rows);
+        const uint2 *candidates = (const uint2 *)((const uint8_t *)buffers->shard_received_bf16 + buffers->shard_candidate_offset);
+        uint32_t first;
+        for (first = 0u; first < rows; first += chunk_rows)
+        {
+            const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
+            if (LmIndexShardCandidateScatterLaunch<GLM_LAYER_THREADS>(
+                    candidates + (uint64_t)first * keep,
+                    buffers->shard_rank_stride_bytes / sizeof(uint2),
+                    buffers->kv_shard.degree,
+                    keep,
+                    count,
+                    context,
+                    buffers->selection_scores,
+                    stream) != cudaSuccess ||
+                LmTopkExactLaunch<GLM_LAYER_THREADS>(
+                    buffers->selection_scores,
+                    count,
+                    context,
+                    GLM_DSA_SELECTED,
+                    LM_TOPK_EXACT_CHUNK,
+                    LM_TOPK_EXACT_CHUNKED_ROWS,
+                    buffers->topk_scratch_values,
+                    buffers->topk_scratch_positions,
+                    buffers->topk_scratch_entries,
+                    buffers->selected_positions + (uint64_t)first * GLM_DSA_SELECTED,
+                    stream) != cudaSuccess)
+            {
+                return LM_LAUNCH_ERR_LAUNCH;
+            }
+        }
+    }
+    return LmLatentShardPartialLaunch<GlmKv, LmKvShardView, GLM_LATENT, GLM_ROPE_DIM>(
+        buffers->cache_shard,
+        buffers->shard_received_bf16,
+        buffers->shard_rank_stride_bytes / sizeof(uint16_t),
+        buffers->attn_heads,
+        buffers->sequence_of_row,
+        buffers->context_length,
+        buffers->row_positions,
+        context > GLM_DSA_SELECTED ? buffers->selected_positions : 0,
+        GLM_DSA_SELECTED,
+        GLM_DSA_SELECTED,
+        buffers->qk_scale,
+        buffers->shard_partials,
+        buffers->shard_partial_stride,
+        rows,
+        stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+static int32_t GlmLayerShardScatterPost(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    if (buffers == 0 || buffers->shard_partials_received == 0 || buffers->kv_shard.degree < 2u)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    if (LmLatentShardMergeLaunch<GLM_LATENT>(
+            buffers->shard_partials_received,
+            buffers->shard_partial_stride,
+            buffers->kv_shard.degree,
+            buffers->attn_heads,
+            buffers->attention_latent_bf16,
+            rows,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
+    return GlmLayerAttentionOutput(buffers, rows, multiprocessors, stream);
+}
+
+static int32_t GlmLayerShardGatherPre(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    const uint32_t most_keys = buffers != 0 ? SparkKvShardGatherKeys(buffers->kv_shard, buffers->kv_gather_most_context) : 0u;
+    int32_t status;
+
+    if (buffers == 0 || buffers->kv_gather_pack == 0 || buffers->kv_gather_sequence_count == 0u || most_keys == 0u)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    status = GlmLayerShardStoreAll(buffers, rows, context, layer_index, multiprocessors, stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    if (LmKvShardGatherPackLaunch<GlmKv, GLM_LAYER_THREADS>(
+            buffers->cache_shard,
+            buffers->kv_gather_sequences,
+            buffers->kv_gather_offset,
+            buffers->kv_gather_context,
+            buffers->kv_gather_sequence_count,
+            most_keys,
+            buffers->kv_gather_pack,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
+    if (GlmLayerShardIndexing(layer_index, context) != 0u &&
+        LmKvShardGatherPackLaunch<GlmIndexKv, GLM_LAYER_THREADS>(
+            buffers->index_shard,
+            buffers->kv_gather_sequences,
+            buffers->kv_gather_offset,
+            buffers->kv_gather_context,
+            buffers->kv_gather_sequence_count,
+            most_keys,
+            buffers->kv_gather_pack + buffers->kv_gather_index_offset,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
+    return LM_LAUNCH_OK;
+}
+
+static int32_t GlmLayerShardGatherPost(
+    const GlmLayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_index,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    int32_t status;
+
+    if (buffers == 0 || buffers->kv_gather_received == 0 || buffers->kv_gathered_table == 0 ||
+        !LmKvViewIsConfigured(buffers->cache_gathered) || buffers->kv_gather_chunk_bytes == 0u)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    if (LmKvShardGatherUnpackLaunch<GLM_KV_SLOT_BYTES, GLM_KV_PAGE_SLOTS, GLM_LAYER_THREADS>(
+            buffers->kv_shard,
+            buffers->kv_gather_received,
+            buffers->kv_gather_chunk_bytes,
+            0u,
+            buffers->kv_gather_sequences,
+            buffers->kv_gather_offset,
+            buffers->kv_gather_context,
+            buffers->kv_gather_page_base,
+            buffers->kv_gather_sequence_count,
+            buffers->kv_gather_most_context,
+            buffers->kv_gathered_table_stride,
+            buffers->kv_gathered_table,
+            buffers->cache_gathered.pool,
+            stream) != cudaSuccess)
+    {
+        return LM_LAUNCH_ERR_LAUNCH;
+    }
+    if (GlmLayerShardIndexing(layer_index, context) != 0u)
+    {
+        if (!LmKvViewIsConfigured(buffers->index_gathered) ||
+            LmKvShardGatherUnpackLaunch<GlmIndexKv::kSlotBytes, GLM_KV_PAGE_SLOTS, GLM_LAYER_THREADS>(
+                buffers->kv_shard,
+                buffers->kv_gather_received,
+                buffers->kv_gather_chunk_bytes,
+                buffers->kv_gather_index_offset,
+                buffers->kv_gather_sequences,
+                buffers->kv_gather_offset,
+                buffers->kv_gather_context,
+                buffers->kv_gather_page_base,
+                buffers->kv_gather_sequence_count,
+                buffers->kv_gather_most_context,
+                buffers->kv_gathered_table_stride,
+                0,
+                buffers->index_gathered.pool,
+                stream) != cudaSuccess)
+        {
+            return LM_LAUNCH_ERR_LAUNCH;
+        }
+        status = GlmLayerIndexerQuery(buffers, rows, multiprocessors, stream);
+        if (status == LM_LAUNCH_OK)
+            status = GlmLayerIndexerScore(buffers, buffers->index_gathered, rows, context,
+                GLM_DSA_SELECTED, buffers->selected_positions, (uint2 *)0, stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
+    }
+    status = GlmLayerLatentAttention<GlmKvGathered>(buffers, buffers->cache_gathered, rows, context, multiprocessors, stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    return GlmLayerAttentionOutput(buffers, rows, multiprocessors, stream);
 }
 
 static int32_t GlmLayerAttention(

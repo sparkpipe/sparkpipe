@@ -86,6 +86,7 @@ static inline int __ffs(int value) { return __builtin_ffs(value); }
 struct float2 { float x, y; };
 struct float4 { float x, y, z, w; };
 struct uint2 { unsigned x, y; };
+static inline uint2 make_uint2(unsigned x, unsigned y) { uint2 value = {x, y}; return value; }
 struct uint4 { unsigned x, y, z, w; };
 static inline uint4 make_uint4(unsigned x, unsigned y, unsigned z, unsigned w) { uint4 v; v.x = x; v.y = y; v.z = z; v.w = w; return v; }
 static inline float2 make_float2(float a, float b) { float2 v; v.x = a; v.y = b; return v; }
