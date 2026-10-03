@@ -1,6 +1,7 @@
 #include "spark_qwen38_27b_tp.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
 
 #include <errno.h>
@@ -146,14 +147,11 @@ SparkStatus SparkQwen38_27bTpInitialize(
 	if ( degree == 1u )
 		return(SPARK_STATUS_OK);
 	standalone = 0u;
-	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_QWEN38_27B_TP_TAG,"SPARK_QWEN38_27B_TP_STANDALONE",0u,1u,0u,&standalone);
+	status = SparkModuleTpStandalone(SPARK_QWEN38_27B_TP_TAG,"SPARK_QWEN38_27B_TP_STANDALONE",degree,&standalone);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( standalone != 0u )
-	{
-		fprintf(stderr,"%s standalone degree=%u rank=%u (collective skipped)\n",SPARK_QWEN38_27B_TP_TAG,degree,rank);
 		return(SPARK_STATUS_OK);
-	}
 	status = SparkQwen38_27bTpOpen(tp,max_active_sequence_count);
 	if ( status != SPARK_STATUS_OK )
 	{

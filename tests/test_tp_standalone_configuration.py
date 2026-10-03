@@ -38,13 +38,20 @@ int main(void)
 {{
     Spark{tag}ModuleState state = {{0}};
     setenv("SPARK_{macro}_TP_DEGREE","{degree}",1);
+    setenv("SPARK_{macro}_STAGE_TP_DEGREE","{degree}",1);
     setenv("SPARK_{macro}_TP_RANK","0",1);
+    setenv("SPARK_{macro}_STAGE_TP_RANK","0",1);
     setenv("SPARK_{macro}_TP_STANDALONE","0",1);
     (void)Spark{tag}ModuleConfigure(&state);
     assert(state.tp_standalone == 0u);
     setenv("SPARK_{macro}_TP_STANDALONE","1",1);
+#ifdef DEBUG
     (void)Spark{tag}ModuleConfigure(&state);
     assert(state.tp_standalone == 1u);
+#else
+    assert(Spark{tag}ModuleConfigure(&state) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(state.tp_standalone == 0u);
+#endif
     unsetenv("SPARK_{macro}_TP_STANDALONE");
     (void)Spark{tag}ModuleConfigure(&state);
     assert(state.tp_standalone == 0u);
@@ -58,10 +65,13 @@ int main(void)
 ''')
                 paths = [".", "include", "src", "runtime", "tests/cuda_stub", "model-families/common/include", f"model-families/{family}/include", f"model-families/{family}/include/sparkpipe", f"modules/{family}_resident_decode_stage/include", f"modules/{family}_resident_decode_stage/source"]
                 command = ["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-D_DARWIN_C_SOURCE", '-DQWEN4_FLASH_MODEL_REVISION="test"', '-DQWEN38_MODEL_REVISION="test"', "-DSPARK_LLM_MTP_LAYER_COUNT=0u", "-ffunction-sections", "-fdata-sections", *["-I" + str(ROOT / p) for p in paths], str(source), "runtime/stage_module_common.c", "tests/cuda_stub/cuda_runtime_stub.c", "build/libsparkpipe_runtime.a", "build/libsparkpipe_core.a", "-pthread", "-lm", "-Wl,-dead_strip" if os.uname().sysname == "Darwin" else "-Wl,--gc-sections", "-o", str(Path(temp) / "test")]
-                built = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
-                self.assertEqual(built.returncode, 0, built.stderr)
-                tested = subprocess.run([str(Path(temp) / "test")], text=True, capture_output=True)
-                self.assertEqual(tested.returncode, 0, tested.stdout + tested.stderr)
+                for variant in ([], ["-DDEBUG"]):
+                    built = subprocess.run(command[:1] + variant + command[1:], cwd=ROOT, text=True, capture_output=True)
+                    self.assertEqual(built.returncode, 0, built.stderr)
+                    tested = subprocess.run([str(Path(temp) / "test")], text=True, capture_output=True)
+                    self.assertEqual(tested.returncode, 0, f"{variant}: " + tested.stdout + tested.stderr)
+                    if not variant:
+                        self.assertIn("TP-STANDALONE-REFUSED", tested.stderr)
 
 
 if __name__ == "__main__":

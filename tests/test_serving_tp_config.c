@@ -53,7 +53,7 @@ static const char *const SHAPE_GLM52 =
 "\"tp_collective\":{"
 "\"backend\":\"nccl\","
 "\"backend_module_path\":\"tp/libnccl.sh\","
-"\"collective_identifier\":0,"
+"\"collective_identifier\":52,"
 "\"listen_port\":5000,"
 "\"connect_timeout_milli\":100,"
 "\"operation_timeout_milli\":200,"
@@ -147,7 +147,6 @@ int32_t main(void)
 	glm52.backend_module_path_buffer = glm52_path_scratch;
 	glm52.backend_module_path_bytes = sizeof(glm52_path_scratch);
 	policy.peer_count = TP_DEGREE;
-	policy.allow_zero_collective_identifier = 0u;
 	policy.require_contiguous_peer_ports = 1u;
 	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL;
@@ -195,7 +194,6 @@ int32_t main(void)
 		&policy,&glm52),SPARK_STATUS_SCHEMA_ERROR);
 	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED;
-	policy.allow_zero_collective_identifier = 1u;
 	status = load_shape(SHAPE_GLM52,&policy,&glm52);
 	expect_status("glm52_shape_loads",status,SPARK_STATUS_OK);
 	if ( status == SPARK_STATUS_OK )
@@ -206,7 +204,6 @@ int32_t main(void)
 	}
 	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL;
-	policy.allow_zero_collective_identifier = 0u;
 	snprintf(algorithm_negative,sizeof(algorithm_negative),
 		"{\"tp_collective\":{\"backend\":\"hidden_transport\",\"backend_module_path\":\"tp/libtp.so\",\"collective_identifier\":77,\"listen_port\":4240,\"connect_timeout_milli\":900,\"operation_timeout_milli\":31000,\"peer_hosts\":[\"h0\",\"h1\",\"h2\",\"h3\"],\"peer_ports\":[4240,4241,4242,4243],\"algorithms\":[\"recursive_halving\"],\"direct_all_to_all_max_payload_bytes\":0,\"split_ring_min_payload_bytes\":0,\"rail_peer_hosts\":[[\"r0\",\"r1\",\"r2\",\"r3\"],[\"s0\",\"s1\",\"s2\",\"s3\"]],\"step_rail_indices\":[0,1,0],\"session_ports\":[[0,11,12,13],[21,0,23,24],[31,32,0,34],[41,42,43,0]],\"session_ports_hc\":[[0,51,52,53],[61,0,63,64],[71,72,0,74],[81,82,83,0]]}}");
 	expect_status("negative_unknown_algorithm_rejected",load_shape(algorithm_negative,&policy,&glm52),SPARK_STATUS_SCHEMA_ERROR);
@@ -223,6 +220,16 @@ int32_t main(void)
 	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED;
 	expect_status("negative_zero_identifier_rejected",load_shape(zero_identifier_negative,&policy,&glm52),SPARK_STATUS_SCHEMA_ERROR);
+	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS;
+	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL;
+	snprintf(zero_identifier_negative,sizeof(zero_identifier_negative),"%s",SHAPE_LING);
+	{
+		char *identifier = strstr(zero_identifier_negative,"\"collective_identifier\":77");
+		if ( identifier != 0 )
+			memcpy(identifier,"\"collective_identifier\":0 ",strlen("\"collective_identifier\":0 "));
+		expect_true("zero_identifier_fixture_built",identifier != 0);
+	}
+	expect_status("negative_zero_identifier_rejected_every_policy",load_shape(zero_identifier_negative,&policy,&ling),SPARK_STATUS_SCHEMA_ERROR);
 	if ( failures == 0u )
 	{
 		printf("test_serving_tp_config: PASS (ling/laguna/glm52 shapes + negative controls)\n");

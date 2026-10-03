@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_glm52_kv_geometry.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "sparkpipe/spark_row_layout.h"
@@ -351,7 +352,8 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
 	state->kv_logical_page_capacity = host_services->kv_logical_page_capacity;
 	state->kv_physical_page_capacity = host_services->kv_physical_page_capacity;
-	state->tp_collective_disabled = context->tp_collective_identifier == 0u ? 1u : 0u;
+	if ( SparkModuleTpCollectiveIdentifier(SPARK_GLM52_MODULE_TAG,context->tp_degree,context->tp_collective_identifier,&state->tp_collective_disabled) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state->resident_sequence_capacity = context->resident_sequence_capacity;
 	state->pipeline_slot_count = context->pipeline_slot_count;
 	state->max_sequence_positions = context->max_sequence_positions;

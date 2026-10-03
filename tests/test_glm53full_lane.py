@@ -111,6 +111,23 @@ def api_host_problems():
                         hosts.update(w.split(":")[0] for w in words if ":" in w)
                 if result.returncode != 0 or not calls or hosts != {"rtx5090"}:
                     failures.append(f"{command[0]} {extra}: rc={result.returncode} hosts={sorted(hosts)} stderr={result.stderr[-200:]}")
+        result, calls = lane(["start"], {"GLMFULL_RUN_ID": "r20261003a"})
+        starts = [call for call in calls if call.startswith("ssh ") and "systemd-run" in call]
+        if result.returncode != 0 or len(starts) != 16:
+            failures.append(f"start: rc={result.returncode} rank starts={len(starts)}")
+        for call in starts:
+            if "> logs/residentd-r20261003a.log" not in call or "> residentd.log" in call or "refusing to overwrite" not in call or "ln -sfn logs/residentd-r20261003a.log residentd.log" not in call:
+                failures.append(f"start does not keep a per-run rank log: {call[:160]}")
+                break
+        for bad in ("a/b", "x y", "../up"):
+            result, calls = lane(["start"], {"GLMFULL_RUN_ID": bad})
+            if result.returncode != 2 or calls:
+                failures.append(f"start accepted run id {bad!r}: rc={result.returncode} remote calls={len(calls)}")
+        result, calls = lane(["archive", "r20261003a", str(fake / "archive")], {})
+        copies = [call for call in calls if call.startswith("scp ") and "logs/residentd-r20261003a.log" in call]
+        removals = [call for call in calls if call.startswith("ssh ") and "rm -f" in call and "logs/residentd-r20261003a.log" in call]
+        if result.returncode != 0 or len(copies) != 16 or len(removals) != 16 or not any("rank15.log" in call for call in copies):
+            failures.append(f"archive: rc={result.returncode} copies={len(copies)} removals={len(removals)}")
     return failures
 
 
