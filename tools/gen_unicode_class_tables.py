@@ -8,6 +8,7 @@ CLASS_LETTER = 2
 CLASS_NUMBER = 3
 CLASS_OTHER = 4
 CLASS_MARK = 5
+CLASS_PUNCTUATION = 6
 SPACE_CODEPOINTS = frozenset(list(range(0x09, 0x0E)) + [0x20, 0x85])
 
 
@@ -23,6 +24,8 @@ def classify(value):
         return CLASS_NUMBER
     if category[0] == "M":
         return CLASS_MARK
+    if category[0] in ("P", "S"):
+        return CLASS_PUNCTUATION
     return CLASS_OTHER
 
 
@@ -47,6 +50,7 @@ def render(items):
     lines.append(f"#define SPARK_UNICODE_CLASS_NUMBER {CLASS_NUMBER}u")
     lines.append(f"#define SPARK_UNICODE_CLASS_OTHER {CLASS_OTHER}u")
     lines.append(f"#define SPARK_UNICODE_CLASS_MARK {CLASS_MARK}u")
+    lines.append(f"#define SPARK_UNICODE_CLASS_PUNCTUATION {CLASS_PUNCTUATION}u")
     lines.append(f"#define SPARK_UNICODE_CLASS_RANGE_COUNT {len(items)}u")
     lines.append("")
     lines.append("static const uint32_t g_spark_unicode_class_ranges[][3] =\n{")
