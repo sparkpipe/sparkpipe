@@ -459,10 +459,14 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpMeshDirectPhasesPerChunk(262144u,16u,1u,1u) == 2u &&
         SparkTpMeshDirectPhasesPerChunk(262144u,16u,1u,0u) == 1u &&
         SparkTpMeshDirectPhasesPerChunk(262144u,2u,1u,1u) == 1u &&
-        SparkTpMeshDirectPhasesPerChunk(32768u,16u,1u,1u) == 1u &&
+        SparkTpMeshDirectPhasesPerChunk(18432u,16u,1u,1u) == 2u &&
+        SparkTpMeshDirectPhasesPerChunk(18431u,16u,1u,1u) == 1u &&
+        SparkTpMeshDirectPhasesPerChunk(32768u,8u,1u,1u) == 1u &&
+        SparkTpMeshDirectPhasesPerChunk(49152u,8u,1u,1u) == 2u &&
+        SparkTpMeshDirectPhasesPerChunk(49151u,4u,1u,1u) == 1u &&
         SparkTpMeshDirectPhasesPerChunk(262144u,16u,2u,1u) == 1u &&
         SparkTpMeshDirectPhasesPerChunk(262144u,16u,0u,1u) == 1u,
-        "reduce-scatter + all-gather only for BF16 sums of at least 12 rows over 4+ ranks");
+        "reduce-scatter + all-gather only for BF16 sums over 4+ ranks of at least 18432 elements at 16+ ranks, 49152 below");
     CHECK(SparkTpMeshRsagSlice(131068u,16u) == 8192u && SparkTpMeshRsagSlice(513u,16u) == 36u &&
         SparkTpMeshRsagSlice(49152u,3u) == 16384u && SparkTpMeshRsagSlice(49153u,4u) % 4u == 0u,
         "slices are whole 8-byte words and cover the chunk");

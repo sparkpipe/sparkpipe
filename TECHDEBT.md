@@ -44,7 +44,8 @@ citations refer to that commit.
   (`ring/transport/tp_device_collective.c:1491`) every payload runs chunked
   direct rounds through `SparkTpLaunchMeshHardware`, always called with one
   logical row (`:972-983`), and BF16 sums of at least
-  `SPARK_TP_MESH_RSAG_MIN_ELEMENTS` (49,152) elements at degree 4 or more run
+  `SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE` (18,432) elements at degree 16 or
+  more, or `SPARK_TP_MESH_RSAG_MIN_ELEMENTS` (49,152) at degree 4 to 15, run
   reduce-scatter plus all-gather (`SparkTpDeviceCollectivePhases`,
   `:897-911`). With spin wait the capability read returns 0 (`:882-883`). A
   single-sequence payload that fits one slot then takes the host round
