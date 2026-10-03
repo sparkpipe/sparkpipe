@@ -1488,10 +1488,12 @@ and the multidev docs on 2026-09-28. Line numbers are in
 - `tools/fleet_ready_poll.sh` reads heartbeats from sparkf instead of the
   rtx5090 hub, waits on an `UPDATE` sentinel the agent no longer uses, and
   miscounts ready nodes when it greps several files.
-- Neither the `20-serving.conf` drop-in (Production qualification) nor
-  `sparkpipe-hub-route.service` is in the repository or shipped by
-  `fleet_sync.sh`. Production GLM should also pin its lane with
-  `SPARK_WEIGHTD_LANE=0` in that drop-in.
+- Owner decision (2026-10-03): nothing SparkPipe-specific runs at boot.
+  After a reboot, `tools/fleet_post_reboot.sh HOST...` checks the node and its
+  mesh peers. The serving settings now in the hand-installed `20-serving.conf`
+  drop-in (and the lane pin `SPARK_WEIGHTD_LANE`) move into the deployment
+  contract (lane A06), and `sparkpipe-hub-route.service` stays a hub-side
+  runtime step listed in `docs/INCIDENT_RECOVERY_PLAYBOOK.md`.
 - The queue ledger holds 32 stale persistent owners
   (`sparkpipe-weightd-shared.service`,
   `sparkpipe-glm-serving-dd3526b2.service`) that block `gpu-shared`
