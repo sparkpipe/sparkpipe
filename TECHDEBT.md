@@ -2130,53 +2130,19 @@ Found while verifying [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBO
 and the multidev docs on 2026-09-28. Line numbers are in
 `tools/fleet_node_agent.sh` unless another file is named.
 
-- `restart_scope` (`:311-316`) matches `config/model_resident.json`, but a
-  root's deployment file is the top-level `model_resident.json`, so a
-  deployment-only change never restarts the root.
-- An installed but unrecycled weightd makes `ensure_weightd` return 1 on
-  every pass while an engine runs (`:440-444`, `:565-569`), which stops all
-  root convergence.
-- `apply_manifest` never re-verifies on-disk files while the `MANIFEST` is
-  unchanged (`:279`), so an agent copied in by `fleet_sync.sh start`
-  persists.
-- Heartbeats are sent only on change (`:105-118`), so the epoch is not
-  liveness. Add a periodic report.
-- `fleet-agent.service` runs with the default `KillMode=control-group`, so
-  any agent stop, restart or exit kills weightd and the engine. Set
-  `KillMode=process` in the drop-in or record why not.
-- `fleet-agent.service` has no finite `MemoryMax`; give it one and track it
-  with `spark_queue.py track --scope user`.
-- `tools/publish_core.sh:4` ignores `SPARKPIPE_BUILD_TREE`, and
-  `tools/publish_local.sh:32` takes `model_driver.so` from `~/sparkdata/out`,
-  which the current build never writes. Fix or retire both.
-- The janitor's log message (`:410`) is inverted relative to what it kills.
-- The `install_core` and `tools/weightsd_announce.sh` messages still say
-  weightsd owns the restart.
-- `tools/fleet_release_hygiene.sh:16` defaults `HUB` to sparkf; the hub is
-  the rtx5090.
-- `tools/fleet_ready_poll.sh` reads heartbeats from sparkf instead of the
-  rtx5090 hub, waits on an `UPDATE` sentinel the agent no longer uses, and
-  miscounts ready nodes when it greps several files.
 - Owner decision (2026-10-03): nothing SparkPipe-specific runs at boot.
   After a reboot, `tools/fleet_post_reboot.sh HOST...` checks the node and its
   mesh peers. The serving settings now in the hand-installed `20-serving.conf`
   drop-in (and the lane pin `SPARK_WEIGHTD_LANE`) move into the deployment
   contract (lane A06), and `sparkpipe-hub-route.service` stays a hub-side
   runtime step listed in `docs/INCIDENT_RECOVERY_PLAYBOOK.md`.
-- The queue ledger holds 32 stale persistent owners
-  (`sparkpipe-weightd-shared.service`,
-  `sparkpipe-glm-serving-dd3526b2.service`) that block `gpu-shared`
-  admission. Untrack them.
 - Bump `SPARK_WEIGHTD_IPC_ABI_VERSION` whenever the mesh layout changes.
-- The family wrappers default to `/run/sparkpipe-weightd-shared/weightd.sock`,
-  which no Spark provides.
 - `tools/devcycle/lane_assignments.json` and `lane_budget_calc.py` still
-  assume 8 lanes, and `lane_assignments.json` gives lane 0, which production
-  GLM should hold, to a GLM development lane. `tools/inference_smoke.py` accepts lanes
-  0-7 only.
+  assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
+  lane while production GLM runs on lane 6. Replace both with the lane
+  allocator of lane B04 (TD287/TD288).
 - A stale, idle `sparkpipe_weightsd` still runs on spark6.
-- Operations: linger is missing for the fleet user on spark8, spark9,
-  sparka to sparkd and sparkf. Run `sudo loginctl enable-linger` there.
+- Operations: confirm linger on all 16 nodes once they are up; `tools/fleet_post_reboot.sh` checks it on every rebooted node.
 
 ## Hardware independence
 

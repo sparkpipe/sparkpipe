@@ -283,15 +283,12 @@ Two traps from 09-28, from the handoff's evidence:
 - A reused module-library record (`validation=reused`) hid unverifiable
   provenance. A fresh checkout avoids it.
 
-Do not publish with `tools/publish_local.sh` or `tools/publish_core.sh`:
+`tools/publish_local.sh`, `tools/publish_core.sh` and `tools/fullbuild_once.sh` were deleted on 2026-10-03:
+- they wrote the local host's `~/release`, not the hub's;
+- `publish_core.sh` ignored `SPARKPIPE_BUILD_TREE`;
+- `publish_local.sh` paired a stale `model_driver.so` with fresh binaries.
 
-- Both write the local host's `~/release`, not the hub's.
-- `publish_core.sh` ignores `SPARKPIPE_BUILD_TREE` and always installs from
-  `~/sparkpipe-build` (`publish_core.sh:4`).
-- `publish_local.sh` installs `model_driver.so` from `~/sparkdata/out`
-  (`publish_local.sh:32`), which the current build never writes. It pairs that
-  driver with the engine, adapter and transport from the build tree, which
-  makes a mixed release.
+Releases go through `tools/fleet_release/`, and the core release steps are in §5.
 
 Never rsync sparkf's `~/release` to the hub. On 2026-09-28 it held:
 
@@ -473,8 +470,7 @@ section 9 still hold for any manual step.
 `~/release/core/` holds `bin/fleet_node_agent.sh`, `bin/sparkpipe_weightd`,
 `MANIFEST` (the `bin/` files only) and `WEIGHTSD_BIN`. On 2026-09-28 the hub
 served agent `a05e207588da2cef` (origin/main) and weightd `3da98597a88b60b5`,
-which was the announced one. Write the core MANIFEST as `publish_core.sh:15-17`
-does:
+which was the announced one. Write the core MANIFEST like this:
 
 ```sh
 cd ~/release/core && find bin -type f | sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST

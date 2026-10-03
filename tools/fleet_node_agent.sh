@@ -15,6 +15,10 @@ MESH_FABRIC_PREFIX="${SPARK_MESH_FABRIC_PREFIX:-10.10.}"
 WEIGHTD_ADDRESSES=""
 WEIGHTD_UNIT=sparkpipe-weightd
 WEIGHTD_LEGACY_NOTED=""
+WEIGHTD_UPDATE_NOTED=""
+HEARTBEAT_PERIOD=60
+MANIFEST_VERIFY_PERIOD=600
+LAST_REPORT_AT=0
 RANK=""
 _idx=0
 for _host in $FLEET_HOSTS; do
@@ -354,8 +358,9 @@ report_if_changed() {
         states="$states$r=$(root_state "$r");"
         pids="$pids$r=$(root_pid "$r");"
     done
-    { [ "$states" != "$LAST_REPORT" ] || [ "$pids" != "$LAST_PIDS" ]; } && {
+    { [ "$states" != "$LAST_REPORT" ] || [ "$pids" != "$LAST_PIDS" ] || [ "$(( $(date +%s) - ${LAST_REPORT_AT:-0} ))" -ge "$HEARTBEAT_PERIOD" ]; } && {
         LAST_PIDS="$pids"
+        LAST_REPORT_AT=$(date +%s)
         report
     }
 }
@@ -616,11 +621,23 @@ apply_manifest() {
         [ -f "$manifest_applied" ] || echo "$(date +%T) $name: manifest unreachable" >&2
         return 1
     fi
-    cmp -s "$manifest_cur" "$manifest_applied" 2>/dev/null && return 1
-    echo "$(date +%T) $name: manifest changed; syncing diff"
+    local fetch_errors=0 rel want tmp got old_f="$manifest_applied" list="$root/.fetch.list" stamp="$root/.manifest_verified"
+    if cmp -s "$manifest_cur" "$manifest_applied" 2>/dev/null; then
+        [ -f "$stamp" ] && [ $(( $(date +%s) - $(stat -c %Y "$stamp" 2>/dev/null || echo 0) )) -lt "$MANIFEST_VERIFY_PERIOD" ] && return 1
+        : > "$list"
+        while IFS=' ' read -r want rel; do
+            [ -n "$rel" ] || continue
+            [ -f "$root/$rel" ] && [ "$(sha256sum < "$root/$rel" | cut -d' ' -f1)" = "$want" ] || echo "$rel $want" >> "$list"
+        done < "$manifest_cur"
+        touch "$stamp"
+        [ -s "$list" ] || return 1
+        echo "$(date +%T) $name: $(wc -l < "$list" | tr -d ' ') files differ from the unchanged manifest; re-fetching them" >&2
+    else
+        echo "$(date +%T) $name: manifest changed; syncing diff"
+        [ -f "$old_f" ] || old_f=/dev/null
+        awk 'NR==FNR { old[$2]=$1; next } $2 != "" && old[$2] != $1 { print $2, $1 }' "$old_f" "$manifest_cur" > "$list"
+    fi
     : > "$scope"
-    local fetch_errors=0 rel want tmp got old_f="$manifest_applied"
-    [ -f "$old_f" ] || old_f=/dev/null
     while IFS=' ' read -r rel want; do
         [ -n "$rel" ] || continue
         tmp="$root/.fetch.tmp"
@@ -641,8 +658,7 @@ apply_manifest() {
             bin/*) chmod 755 "$root/$rel" ;;
         esac
         echo "$rel" >> "$scope"
-    done < <(awk 'NR==FNR { old[$2]=$1; next } $2 != "" && old[$2] != $1 { print $2, $1 }' \
-        "$old_f" "$manifest_cur")
+    done < "$list"
     [ "$fetch_errors" != 0 ] && { echo "$(date +%T) $name: $fetch_errors fetch errors; retrying next cycle" >&2; return 1; }
     cp "$manifest_cur" "$manifest_applied"
     return 0
@@ -653,7 +669,7 @@ restart_scope() {
     while IFS= read -r rel; do
         [ -n "$rel" ] || continue
         case "$rel" in
-            bin/sparkpipe_model_residentd|lib/*|stages/*|config/model_resident.json|agent.env|config/rank_index_*|config/env_*.env)
+            bin/sparkpipe_model_residentd|lib/*|stages/*|model_resident.json|agent.env|config/rank_index_*|config/env_*.env)
                 echo "root"
                 return ;;
             bin/sparkpipe_model_api)
@@ -704,7 +720,7 @@ install_core() {
     [ -n "$announced" ] || return 0
     [ "$(sha16 "$core/bin/sparkpipe_weightd")" = "$announced" ] || return 0
     [ "$(sha16 "$wd/sparkpipe_weightd")" != "$announced" ] || return 0
-    echo "$(date +%T) core: installing announced weightd $announced; weightsd owns the restart"
+    echo "$(date +%T) core: installing announced weightd $announced; the agent restarts weightd once no engine depends on it"
     mkdir -p "$wd"
     install -m 755 "$core/bin/sparkpipe_weightd" "$wd/sparkpipe_weightd.new"
     mv "$wd/sparkpipe_weightd.new" "$wd/sparkpipe_weightd"
@@ -764,15 +780,16 @@ janitor() {
     local name q a youngest pids
     for name in $ROOT_LIST; do
         pids=$(match_pids "sparkpipe_model_residentd" "$(root_path "$name")")
-        youngest=0
+        youngest=""
         for q in $pids; do
             a=$(ps -o etimes= -p "$q" 2>/dev/null | tr -d ' ')
-            [ -n "$a" ] && [ "$a" -gt "$youngest" ] && youngest=$a
+            [ -n "$a" ] && { [ -z "$youngest" ] || [ "$a" -lt "$youngest" ]; } && youngest=$a
         done
+        [ -n "$youngest" ] || continue
         for q in $pids; do
             a=$(ps -o etimes= -p "$q" 2>/dev/null | tr -d ' ')
-            [ -n "$a" ] && [ "$a" -lt "$youngest" ] && [ "$a" -gt 1800 ] && {
-                echo "$(date +%T) janitor: $name: killing stale residentd pid=$q age=${a}s (current is younger)" >&2
+            [ -n "$a" ] && [ "$a" -gt "$youngest" ] && [ "$a" -gt 1800 ] && {
+                echo "$(date +%T) janitor: $name: killing stale residentd pid=$q age=${a}s (the current one is ${youngest}s old)" >&2
                 kill -9 "$q" 2>/dev/null
             }
         done
@@ -835,13 +852,15 @@ ensure_weightd() {
             return 1
         fi
         if [ "$exe_sha" != "$disk_sha" ]; then
-            if pgrep -f "bin/sparkpipe_model_residentd" >/dev/null; then
-                echo "weightd: update $exe_sha -> $disk_sha requires dependent engines to drain; owner $owner retained" >&2
+            if ! pgrep -f "bin/sparkpipe_model_residentd" >/dev/null; then
+                echo "weightd: stopping owned pid $owner for installed update; waiting for process exit"
+                kill -TERM "$owner" 2>/dev/null
                 return 1
             fi
-            echo "weightd: stopping owned pid $owner for installed update; waiting for process exit"
-            kill -TERM "$owner" 2>/dev/null
-            return 1
+            if [ "${WEIGHTD_UPDATE_NOTED:-}" != "$disk_sha" ]; then
+                echo "$(date +%T) weightd: update $exe_sha -> $disk_sha waits for dependent engines to drain; owner $owner keeps serving"
+                WEIGHTD_UPDATE_NOTED=$disk_sha
+            fi
         fi
         if [ -S /tmp/spark_weightd.sock ] && python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect("/tmp/spark_weightd.sock"); s.close()' 2>/dev/null; then
             age=$(ps -o etimes= -p "$owner" 2>/dev/null | tr -d ' ')

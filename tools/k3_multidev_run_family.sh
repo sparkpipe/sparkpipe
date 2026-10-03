@@ -97,7 +97,7 @@ done
 
 # shared-socket only: the k3 lane charter runs smoke and small B* under the
 # shared lanes; a private daemon is never started by this wrapper.
-SOCKET="${K3_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/run/sparkpipe-weightd-shared/weightd.sock}}"
+SOCKET="${K3_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}}"
 [ -S "$SOCKET" ] || fail "shared weightd socket $SOCKET is not a live socket; \
 the operator must establish the shared daemon (never start one by hand)"
 
