@@ -4,6 +4,7 @@ import argparse
 import os
 import pathlib
 import selectors
+import socket as socket_module
 import subprocess
 import tempfile
 import time
@@ -46,7 +47,11 @@ def main():
         subprocess.run([probe, "prepare", str(pack)], check=True, timeout=10)
         with (root / "daemon.log").open("w+") as log:
             try:
-                server = subprocess.Popen([daemon, "--socket", str(socket), "--device-bytes-max", str(8 * 1024 * 1024)], stdout=log, stderr=log)
+                with socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM) as probe_port:
+                    probe_port.bind(("127.0.0.1", 0))
+                    latch_port = probe_port.getsockname()[1]
+                environment = dict(os.environ, SPARK_WEIGHTD_LATCH_PORT=str(latch_port))
+                server = subprocess.Popen([daemon, "--socket", str(socket), "--device-bytes-max", str(8 * 1024 * 1024)], stdout=log, stderr=log, env=environment)
                 processes.append(server)
                 deadline = time.monotonic() + 10
                 while not socket.is_socket():
