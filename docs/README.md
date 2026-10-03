@@ -106,6 +106,10 @@ current authority.
   cycle.
 - [`INCIDENT_RECOVERY_PLAYBOOK.md`](INCIDENT_RECOVERY_PLAYBOOK.md): Spark boot
   and OOM recovery (PXE, then the brickproof controller).
+- [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
+  the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
+  (dated record: incidents, every crash run, mitigations, implications, open
+  experiments).
 - [`SPARK_MANAGEMENT_FAILOVER.md`](SPARK_MANAGEMENT_FAILOVER.md): management
   SSH route selection.
 - [`TP_CUPTI_TRACE.md`](TP_CUPTI_TRACE.md): isolated per-rank CUPTI timing

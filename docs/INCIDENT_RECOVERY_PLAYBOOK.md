@@ -202,7 +202,7 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
   - an AER `Uncorrectable (Fatal)` from any device;
   - an AER `Uncorrectable (Non-Fatal)` from a Mellanox device (vendor 0x15b3);
   - a fatal firmware-first `[Hardware Error]`.
-- It sends a UDP note to the hub, waits 0.1 s, then writes `b` to `/proc/sysrq-trigger`. That reboots without syncing, so nothing more reaches the disk.
+- It sends a UDP note to the hub, forwards up to 30 ms of follow-up kernel lines (they carry the error type), waits 0.1 s, then writes `b` to `/proc/sysrq-trigger`. That reboots without syncing, so nothing more reaches the disk.
 - The daemon locks its memory and opens the sysrq file at start.
 
 **Loop protection**
@@ -221,17 +221,18 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
 
 **Verification (spark8, 2026-10-02)**
 - A clean reboot re-armed the guard 61 s after boot.
-- An injected trigger in a test instance (`--accept-user`) reached the hub in 19 ms and reset the node. The node came back in 52 s.
+- An injected trigger in a test instance (`--accept-user`) reached the hub in 19 ms and reset the node. The next boot's first journal entry came 94 s after the trigger; every real guarded crash since took 89-95 s.
 - The killed boot's journal stops before the trigger.
 
 **After any single node reboots**
 - The other nodes' weightd keep wiring to its old queue pair: `WD-WIRE-FAIL ... RTR failed errno=22`. Engines then fail with BUSY at collective attach.
 - Fix: run `systemctl --user restart fleet-agent` on all 16 nodes. Wait for `WD-MESH-STATS ... unready=0 ... ready=1` on all of them, then start the engines.
 
-**IOMMU passthrough experiment**
-- spark8 boots with `iommu.passthrough=1`, from `/etc/default/grub.d/zz-spark-iommu-passthrough.cfg`. It sorts after the DGX OS `iommu.cfg`, and the kernel uses the last value.
+**IOMMU passthrough on the Lenovo nodes**
+- spark7, spark8 and spark9 boot with `iommu.passthrough=1`, from `/etc/default/grub.d/zz-spark-iommu-passthrough.cfg`. It sorts after the DGX OS `iommu.cfg`, and the kernel uses the last value.
 - The kernel then reports `Default domain type: Passthrough`. The CX-7, NVMe and USB groups are `identity`, and the GPU group stays `DMA`.
 - To revert, delete the file, run `update-grub` and reboot.
+- Passthrough lowers the Lenovo crash rate about 2x but does not stop the completion timeout. The investigation and every crash run are in [CX7_DMA_INVESTIGATION_2026-10.md](CX7_DMA_INVESTIGATION_2026-10.md).
 
 ## Fleet-duty acceptance
 
