@@ -905,12 +905,10 @@ Related common-code debt:
   `SparkGlm5NextBuildPageTable` and the cache allocation code in
   `spark_glm5_next_resident_decode_stage_module.c`. Reuse the shared paged-cache
   contracts to admit against resident demand; do not merely raise the limit.
-- The KV page cache keeps every published block until an allocation finds the
-  logical pool full, then evicts the least recently used unreferenced entry
-  from the head of its LRU list. Making a page resident when the resident pool
-  is full still scans every resident slot for a victim. Nothing reports how
-  full the pool is; add used pages, retained entries and evictions to the wave
-  timeline.
+- Making a page resident when the resident pool is full still scans every
+  resident slot for a victim instead of taking the least recently used
+  unreferenced entry; pool fullness, retained pages, evictions and spill
+  traffic are now reported in the API's `kv_store_report`.
 - Publish one logical resident model driver with prewarmed B1-B1024
   specializations rather than batch-specific resident identities.
 - Batch weight amortization (perf-program rock R4): take the WS/native path

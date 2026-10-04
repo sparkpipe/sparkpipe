@@ -908,6 +908,8 @@ static void TestSnapshotRestartRestore(void)
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.attached == 1u && counters.restore_count == 1u && counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
 	assert(counters.store_file_count == 2u && counters.store_foreign_layout_file_count == 0u && counters.store_used_bytes != 0u);
+	assert(counters.pool_physical_pages == TEST_PHYSICAL && counters.pool_logical_pages == TEST_LOGICAL && counters.pool_resident_pages <= TEST_PHYSICAL);
+	assert(counters.spill_digest_mismatches == 0u && counters.spill_read_errors == 0u);
 	Close();
 	printf("A10 restart restore: ok\n");
 }

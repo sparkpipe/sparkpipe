@@ -61,7 +61,7 @@ static uint32_t SparkModelResidentIpcTextMatches(
 	return(terminator != 0 && strcmp(wire_text,expected) == 0 ? 1u : 0u);
 }
 
-_Static_assert(sizeof(SparkModelDriverKvStoreCounters) == 184u,"SparkModelDriverKvStoreCounters is embedded in the driver, adapter and resident IPC ABIs");
+_Static_assert(sizeof(SparkModelDriverKvStoreCounters) == 264u,"SparkModelDriverKvStoreCounters is embedded in the driver, adapter and resident IPC ABIs");
 _Static_assert(sizeof(SparkModelResidentIpcStatusReport) == 56u + sizeof(SparkModelServingAdapterSnapshot),"status report wire layout");
 
 static void SparkModelResidentIpcInitializeHeader(

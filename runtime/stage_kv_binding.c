@@ -1999,10 +1999,25 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 	if ( counters == 0 )
 		return;
 	memset(counters,0,sizeof(*counters));
-	if ( binding == 0 || binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 )
+	if ( binding == 0 || binding->mutex_initialized == 0u )
 		return;
 	(void)pthread_mutex_lock(&binding->mutex);
+	counters->pool_resident_pages = binding->arena.resident_block_count;
+	counters->pool_physical_pages = binding->physical_page_count;
+	counters->pool_logical_pages = binding->logical_page_count;
+	counters->pool_retained_pages = binding->arena.retained_block_count;
+	counters->pool_evicted_entries = binding->page_cache.evicted_entry_count;
+	counters->pool_resident_evictions = binding->arena.resident_evicted_block_count;
+	counters->spill_write_bytes = binding->page_store.write_bytes;
+	counters->spill_read_bytes = binding->page_store.read_bytes;
+	counters->spill_digest_mismatches = binding->page_store.read_digest_mismatch_count;
+	counters->spill_read_errors = binding->page_store.read_error_count;
 	snapshot = binding->page_cache.snapshot;
+	if ( snapshot == 0 )
+	{
+		(void)pthread_mutex_unlock(&binding->mutex);
+		return;
+	}
 	counters->save_count = snapshot->save_count;
 	counters->save_page_count = snapshot->save_page_count;
 	counters->save_ns = snapshot->save_ns;
