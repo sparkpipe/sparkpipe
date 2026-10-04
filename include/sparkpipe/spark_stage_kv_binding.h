@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_kv_page_cache.h"
 #include "sparkpipe/spark_kv_page_store.h"
 #include "sparkpipe/spark_kv_shard.h"
+#include "sparkpipe/spark_kv_shared_index.h"
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_model_driver.h"
@@ -288,6 +289,17 @@ struct SparkStageKvBinding
 	uint64_t snapshot_page_file_bytes;
 	SparkKvSnapshotStore snapshot_store;
 	SparkWeightdKvPoolMapping kv_pool;
+	SparkWeightdKvSharedMapping kv_shared;
+	SparkKvSharedIndex shared_index;
+	uint64_t *shared_generations;
+	uint32_t *shared_chain_slots;
+	uint64_t *shared_chain_generations;
+	uint64_t *shared_chunk_offsets;
+	void *kv_reservation;
+	uint64_t kv_reservation_bytes;
+	uint32_t shared_page_count;
+	uint32_t shared_alignment_pages;
+	uint32_t shared_pages_given_up;
 	uint32_t *kv_pool_chunk_need;
 	uint32_t kv_pool_minimum_chunks;
 	uint32_t kv_pool_wanted_chunks;

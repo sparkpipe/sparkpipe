@@ -970,8 +970,10 @@ static SparkStatus SparkKvCacheArenaReleaseResidentSlot(
     uint32_t resident_slot_index;
 
     resident_slot_index = block->resident_slot_index;
-    if (resident_slot_index == SPARK_KV_CACHE_NO_RESIDENT_SLOT)
+    if (resident_slot_index == SPARK_KV_CACHE_NO_RESIDENT_SLOT ||
+        (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) != 0u)
     {
+        block->resident_slot_index = SPARK_KV_CACHE_NO_RESIDENT_SLOT;
         block->key_device_address = 0u;
         block->value_device_address = 0u;
         return SPARK_STATUS_OK;
@@ -1270,6 +1272,8 @@ SparkStatus SparkKvCacheArenaParkResidentBlock(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( arena->evict_function == 0 && arena->blocks[logical_block_index].reference_count != 0u )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
+	if ( (arena->blocks[logical_block_index].flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkKvCacheArenaEvictResidentBlock(arena,&arena->blocks[logical_block_index]));
 }
 
@@ -1635,6 +1639,54 @@ uint32_t SparkKvCacheArenaBlockIsParkable(
     return 1u;
 }
 
+SparkStatus SparkKvCacheArenaSetSharedWindow(
+	SparkKvCacheArena *arena,
+	uint32_t shared_page_base,
+	uint32_t shared_page_count)
+{
+	SparkStatus status;
+	status = SparkKvCacheArenaValidate(arena);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( arena->shared_block_count != 0u )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	if ( shared_page_base < arena->resident_block_capacity || (uint64_t)shared_page_base + shared_page_count > UINT32_MAX - 1u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	arena->shared_page_base = shared_page_base;
+	arena->shared_page_count = shared_page_count;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvCacheArenaAdoptSharedBlock(
+	SparkKvCacheArena *arena,
+	uint32_t window_slot,
+	uint32_t *logical_block_index_out)
+{
+	SparkKvCacheBlock *block;
+	uint32_t logical_block_index,physical;
+	SparkStatus status;
+	if ( logical_block_index_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*logical_block_index_out = SPARK_KV_CACHE_NO_BLOCK;
+	status = SparkKvCacheArenaValidate(arena);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( window_slot >= arena->shared_page_count )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkKvCacheArenaAcquireBlock(arena,&logical_block_index);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	physical = arena->shared_page_base + window_slot;
+	block = &arena->blocks[logical_block_index];
+	block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT | SPARK_KV_CACHE_BLOCK_FLAG_SHARED;
+	block->resident_slot_index = physical;
+	block->key_device_address = arena->key_device_base + (uintptr_t)((uint64_t)physical * arena->key_block_stride_bytes);
+	block->value_device_address = arena->value_device_base != 0u ? arena->value_device_base + (uintptr_t)((uint64_t)physical * arena->value_block_stride_bytes) : 0u;
+	arena->shared_block_count++;
+	*logical_block_index_out = logical_block_index;
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkKvCacheArenaFreeBlock(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index)
@@ -1666,7 +1718,16 @@ SparkStatus SparkKvCacheArenaFreeBlock(
     {
         SPARK_FAIL(SPARK_STATUS_BUSY);
     }
-    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u)
+    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) != 0u)
+    {
+        (void)SparkKvCacheArenaReleaseResidentSlot(arena, block);
+        if (arena->shared_block_count == 0u)
+        {
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+        }
+        arena->shared_block_count -= 1u;
+    }
+    else if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u)
     {
         status = SparkKvCacheArenaReleaseResidentSlot(arena, block);
         if (status != SPARK_STATUS_OK)
@@ -1717,6 +1778,10 @@ SparkStatus SparkKvCacheArenaMarkBlockNonResident(
         block->residency_reference_count != 0u)
     {
         SPARK_FAIL(SPARK_STATUS_BUSY);
+    }
+    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) != 0u)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
     if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u)
     {
@@ -2488,7 +2553,8 @@ SparkStatus SparkKvCacheArenaPinResidentTable(
 		status = SparkKvCacheArenaResolveBlock(arena,logical_block_indices[page],&view);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		if ( view.resident_slot_index >= arena->resident_block_capacity )
+		if ( (view.flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) != 0u ? view.resident_slot_index < arena->shared_page_base || view.resident_slot_index >= arena->shared_page_base + arena->shared_page_count :
+			view.resident_slot_index >= arena->resident_block_capacity )
 		{
 			status = SPARK_STATUS_INTERNAL_ERROR;
 			break;
@@ -2535,6 +2601,7 @@ SparkStatus SparkKvCacheArenaReset(
 	atomic_store(&arena->unassigned_resident_block_count,0u);
     arena->retained_block_count = 0u;
     arena->released_reference_count = 0u;
+    arena->shared_block_count = 0u;
     return SPARK_STATUS_OK;
 }
 

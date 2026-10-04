@@ -73,7 +73,7 @@ static SparkStatus SparkStageKvBindingPageCopy(void *context,uint32_t direction,
 	{
 		base = (uintptr_t)binding->region_base[region];
 		packed = binding->region_packed_page_bytes[region];
-		span = (uint64_t)binding->physical_page_count * packed;
+		span = ((uint64_t)binding->physical_page_count + binding->shared_page_count) * packed;
 		if ( device_address < base || device_address - base >= span )
 			continue;
 		offset = device_address - base;
@@ -296,7 +296,7 @@ static SparkStatus SparkStageKvBindingAttachCopier(SparkStageKvBinding *binding)
 	copy.module_tag = binding->module_tag;
 	copy.stream = binding->copy_stream;
 	copy.arena = &binding->arena;
-	copy.physical_page_count = binding->physical_page_count;
+	copy.physical_page_count = binding->physical_page_count + binding->shared_page_count;
 	copy.region_count = binding->region_count;
 	for (region=0u; region<binding->region_count; region++)
 	{
@@ -399,7 +399,8 @@ static uint32_t SparkStageKvBindingRestoreWanted(SparkStageKvBinding *binding,co
 		consumed = 1u;
 		slot = 0;
 	}
-	if ( consumed != 0u || SparkKvPageCachePrefixReady(&binding->page_cache,&lane->prefix_identity,lane->prefix_token_count) != 0u )
+	if ( consumed != 0u || SparkKvPageCachePrefixReady(&binding->page_cache,&lane->prefix_identity,lane->prefix_token_count) != 0u ||
+		SparkKvPageCacheImportShared(&binding->page_cache,&lane->prefix_identity,lane->prefix_token_count) == SPARK_STATUS_OK )
 		return(0u);
 	if ( slot != 0 )
 		return(1u);
@@ -418,7 +419,8 @@ static uint32_t SparkStageKvBindingRestoreWanted(SparkStageKvBinding *binding,co
 static void SparkStageKvBindingRestoreQueue(SparkStageKvBinding *binding,const SparkModelDriverCacheIdentity *identity,uint32_t token_count)
 {
 	SparkStageKvRestoreSlot *slot;
-	if ( SparkKvPageCachePrefixReady(&binding->page_cache,identity,token_count) != 0u || SparkStageKvBindingRestoreFind(binding,identity,token_count) != 0 )
+	if ( SparkKvPageCachePrefixReady(&binding->page_cache,identity,token_count) != 0u || SparkStageKvBindingRestoreFind(binding,identity,token_count) != 0 ||
+		SparkKvPageCacheImportShared(&binding->page_cache,identity,token_count) == SPARK_STATUS_OK )
 		return;
 	slot = SparkStageKvBindingRestoreFree(binding);
 	if ( slot == 0 )
@@ -867,7 +869,7 @@ static uint32_t SparkStageKvPoolSlotNeed(const SparkStageKvBinding *binding,uint
 	if ( binding->regions[region].layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR )
 		return((uint32_t)(local / binding->region_packed_page_bytes[region]) + 1u);
 	layer_page = binding->regions[region].layer_page_bytes;
-	layer_span = (uint64_t)binding->physical_page_count * layer_page;
+	layer_span = binding->region_layer_stride_bytes[region];
 	layer = local / layer_span;
 	if ( local + chunk > (layer + 1u) * layer_span && layer + 1u < binding->regions[region].layer_count )
 		return(1u);
@@ -954,6 +956,198 @@ static SparkStatus SparkStageKvBindingPoolLayout(SparkStageKvBinding *binding,ui
 	return(SPARK_STATUS_OK);
 }
 
+static uint64_t SparkStageKvGcd(uint64_t left,uint64_t right)
+{
+	while ( right != 0u )
+	{
+		uint64_t rest = left % right;
+		left = right;
+		right = rest;
+	}
+	return(left);
+}
+
+static uint64_t SparkStageKvSharedAlignment(const SparkStageKvBinding *binding,uint64_t granularity)
+{
+	uint64_t alignment = 1u,bytes,need;
+	uint32_t region;
+	for (region=0u; region<binding->region_count; region++)
+	{
+		bytes = binding->regions[region].layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? binding->region_packed_page_bytes[region] : binding->regions[region].layer_page_bytes;
+		need = granularity / SparkStageKvGcd(granularity,bytes);
+		alignment = alignment / SparkStageKvGcd(alignment,need) * need;
+		if ( alignment > SPARK_KV_SHARED_INDEX_SLOTS_MAX )
+			return(0u);
+	}
+	return(alignment);
+}
+
+static SparkStatus SparkStageKvBindingLayout(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration);
+
+static SparkStatus SparkStageKvBindingAttachShared(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
+{
+	SparkWeightdKvSharedRequest request;
+	SparkSha256Context context;
+	uint64_t granularity = 0u,alignment;
+	SparkStatus status;
+	if ( binding->recurrent.lane_bytes != 0u )
+	{
+		fprintf(stderr,"%s kv shared prefix off: recurrent state lives in this engine's state store\n",binding->module_tag);
+		return(SPARK_STATUS_OK);
+	}
+	status = SparkWeightdKvPoolGranularity(&granularity);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingLayout(binding,configuration);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	alignment = SparkStageKvSharedAlignment(binding,granularity);
+	if ( alignment == 0u || alignment > binding->physical_page_count )
+	{
+		fprintf(stderr,"%s kv shared prefix off: the %llu-byte mapping granularity aligns no window over %u pages\n",binding->module_tag,(unsigned long long)granularity,binding->physical_page_count);
+		return(SPARK_STATUS_OK);
+	}
+	memset(&request,0,sizeof(request));
+	SparkSha256Initialize(&context);
+	SparkStageKvDigestText(&context,"sparkpipe.kv-shared.v1");
+	SparkSha256Update(&context,binding->layout_sha256,SPARK_SHA256_DIGEST_BYTES);
+	SparkSha256Finalize(&context,request.key);
+	memcpy(request.layout_sha256,binding->layout_sha256,sizeof(request.layout_sha256));
+	request.chunk_bytes = granularity;
+	request.page_bytes = binding->page_bytes;
+	request.alignment_pages = (uint32_t)alignment;
+	request.label = binding->module_tag;
+	status = SparkWeightdKvSharedAttach(&request,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS,&binding->kv_shared);
+	if ( status == SPARK_STATUS_UNSUPPORTED )
+	{
+		fprintf(stderr,"%s kv shared prefix off: weightd has no shared window for %u-page groups of %llu bytes\n",binding->module_tag,(uint32_t)alignment,(unsigned long long)binding->page_bytes);
+		return(SPARK_STATUS_OK);
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv binding refused: weightd shared prefix attach status=%s\n",binding->module_tag,SparkStatusToString(status));
+		SPARK_RETURN(status);
+	}
+	status = SparkKvSharedIndexAttach(&binding->shared_index,binding->kv_shared.metadata,binding->kv_shared.metadata_bytes,binding->kv_shared.holder,binding->page_bytes,binding->layout_sha256);
+	if ( status != SPARK_STATUS_OK || binding->kv_shared.slot_count % alignment != 0u )
+	{
+		fprintf(stderr,"%s kv binding refused: the weightd shared index does not match this layout status=%s\n",binding->module_tag,SparkStatusToString(status));
+		SparkWeightdKvSharedUnmap(&binding->kv_shared);
+		SPARK_FAIL(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
+	}
+	binding->shared_page_count = binding->kv_shared.slot_count;
+	binding->shared_alignment_pages = (uint32_t)alignment;
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkStageKvBindingWindowOffsets(const SparkStageKvBinding *binding,const uint64_t region_offsets[SPARK_STAGE_KV_MAX_REGIONS],uint64_t granularity,uint64_t *offsets)
+{
+	uint64_t start,span,step,count = 0u;
+	uint32_t region,layer;
+	for (region=0u; region<binding->region_count; region++)
+	{
+		uint32_t layers = binding->regions[region].layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? 1u : binding->regions[region].layer_count;
+		uint64_t bytes = binding->regions[region].layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? binding->region_packed_page_bytes[region] : binding->regions[region].layer_page_bytes;
+		for (layer=0u; layer<layers; layer++)
+		{
+			start = region_offsets[region] + (uint64_t)layer * ((uint64_t)binding->physical_page_count + binding->shared_page_count) * bytes + (uint64_t)binding->physical_page_count * bytes;
+			span = (uint64_t)binding->shared_page_count * bytes;
+			for (step=0u; step<span; step+=granularity)
+				offsets[count++] = start + step;
+		}
+	}
+}
+
+static SparkStatus SparkStageKvBindingPoolLayoutWindowed(SparkStageKvBinding *binding,uint64_t lane_entries,SparkWeightdKvPoolRequest *request,uint64_t region_offsets[SPARK_STAGE_KV_MAX_REGIONS],uint64_t **offsets_out)
+{
+	SparkStageKvPoolSlot *slots;
+	uint64_t granularity = 0u,chunk,group,pages,table_span,cursor,raw,bytes,piece,start,step,*offsets;
+	uint32_t count = 0u,index,region,layer,layers,minimum = 0u,given_up;
+	SparkStatus status = SparkWeightdKvPoolGranularity(&granularity);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	raw = lane_entries * sizeof(uint32_t) + (uint64_t)binding->physical_page_count * binding->page_bytes;
+	chunk = granularity;
+	while ( raw / (chunk * 2u) >= SPARK_STAGE_KV_POOL_TARGET_CHUNKS && (uint64_t)binding->physical_page_count / ((uint64_t)binding->shared_alignment_pages * (chunk * 2u / granularity)) * ((uint64_t)binding->shared_alignment_pages * (chunk * 2u / granularity)) >= binding->pages_per_sequence )
+		chunk *= 2u;
+	group = (uint64_t)binding->shared_alignment_pages * (chunk / granularity);
+	pages = (uint64_t)binding->physical_page_count / group * group;
+	if ( pages < binding->pages_per_sequence )
+	{
+		fprintf(stderr,"%s kv binding refused: aligning the shared window to %llu-page groups leaves %llu private pages, one lane needs %u\n",binding->module_tag,
+			(unsigned long long)group,(unsigned long long)pages,binding->pages_per_sequence);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	given_up = binding->physical_page_count - (uint32_t)pages;
+	binding->shared_pages_given_up = given_up;
+	binding->physical_page_count = (uint32_t)pages;
+	for (region=0u; region<binding->region_count; region++)
+		if ( binding->regions[region].layout == SPARK_STAGE_KV_REGION_LAYER_MAJOR )
+			binding->region_layer_stride_bytes[region] = ((uint64_t)binding->physical_page_count + binding->shared_page_count) * binding->regions[region].layer_page_bytes;
+	table_span = (lane_entries * sizeof(uint32_t) + chunk - 1u) / chunk * chunk;
+	cursor = table_span;
+	for (region=0u; region<binding->region_count; region++)
+	{
+		region_offsets[region] = cursor;
+		cursor += ((uint64_t)binding->physical_page_count + binding->shared_page_count) * binding->region_packed_page_bytes[region];
+	}
+	count = (uint32_t)(table_span / chunk);
+	for (region=0u; region<binding->region_count; region++)
+		count += (uint32_t)((uint64_t)binding->physical_page_count * binding->region_packed_page_bytes[region] / chunk);
+	if ( count > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX || (uint64_t)binding->shared_page_count * binding->page_bytes / granularity != binding->kv_shared.chunk_count )
+	{
+		fprintf(stderr,"%s kv binding refused: the windowed KV pool needs %u chunks of %llu bytes (weightd carries %u) and a %u-chunk window\n",binding->module_tag,count,
+			(unsigned long long)chunk,SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX,binding->kv_shared.chunk_count);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	slots = (SparkStageKvPoolSlot *)calloc(count,sizeof(*slots));
+	offsets = (uint64_t *)malloc((size_t)count * sizeof(uint64_t));
+	binding->kv_pool_chunk_need = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
+	binding->shared_chunk_offsets = (uint64_t *)malloc((size_t)binding->kv_shared.chunk_count * sizeof(uint64_t));
+	if ( slots == 0 || offsets == 0 || binding->kv_pool_chunk_need == 0 || binding->shared_chunk_offsets == 0 )
+	{
+		free(slots);
+		free(offsets);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	index = 0u;
+	for (step=0u; step<table_span; step+=chunk)
+		slots[index++].offset = step;
+	for (region=0u; region<binding->region_count; region++)
+	{
+		layers = binding->regions[region].layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? 1u : binding->regions[region].layer_count;
+		bytes = binding->regions[region].layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? binding->region_packed_page_bytes[region] : binding->regions[region].layer_page_bytes;
+		piece = (uint64_t)binding->physical_page_count * bytes;
+		for (layer=0u; layer<layers; layer++)
+		{
+			start = (uint64_t)layer * ((uint64_t)binding->physical_page_count + binding->shared_page_count) * bytes;
+			for (step=0u; step<piece; step+=chunk)
+			{
+				slots[index].offset = region_offsets[region] + start + step;
+				slots[index].need = SparkStageKvPoolSlotNeed(binding,region,start + step,chunk);
+				index++;
+			}
+		}
+	}
+	qsort(slots,count,sizeof(*slots),SparkStageKvPoolSlotOrder);
+	for (index=0u; index<count; index++)
+	{
+		offsets[index] = slots[index].offset;
+		binding->kv_pool_chunk_need[index] = slots[index].need;
+		if ( slots[index].need <= binding->pages_per_sequence )
+			minimum = index + 1u;
+	}
+	free(slots);
+	SparkStageKvBindingWindowOffsets(binding,region_offsets,granularity,binding->shared_chunk_offsets);
+	binding->kv_pool_minimum_chunks = minimum;
+	binding->kv_reservation_bytes = cursor;
+	request->device_bytes = (uint64_t)count * chunk;
+	request->minimum_bytes = (uint64_t)minimum * chunk;
+	request->chunk_bytes = chunk;
+	request->reservation_bytes = cursor;
+	*offsets_out = offsets;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkStageKvBindingPoolKey(const SparkStageKvConfiguration *configuration,uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES])
 {
 	char directory[PATH_MAX];
@@ -980,13 +1174,31 @@ static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,co
 	memset(&request,0,sizeof(request));
 	status = SparkStageKvBindingPoolKey(configuration,request.key);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageKvBindingPoolLayout(binding,lane_entries,&request,region_offsets,&offsets);
+		status = binding->shared_page_count != 0u ? SparkStageKvBindingPoolLayoutWindowed(binding,lane_entries,&request,region_offsets,&offsets) :
+			SparkStageKvBindingPoolLayout(binding,lane_entries,&request,region_offsets,&offsets);
+	if ( status == SPARK_STATUS_OK && binding->shared_page_count != 0u )
+	{
+		status = SparkWeightdKvReserveAddress(binding->kv_reservation_bytes,&binding->kv_reservation);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"%s kv binding refused: cannot reserve %llu bytes of address space for the windowed KV layout\n",binding->module_tag,(unsigned long long)binding->kv_reservation_bytes);
+		request.device_base = binding->kv_reservation;
+	}
 	if ( status != SPARK_STATUS_OK )
+	{
+		free(offsets);
 		SPARK_RETURN(status);
+	}
 	request.metadata_bytes = sizeof(SparkStageKvPoolSeal) + (uint64_t)binding->physical_page_count * sizeof(SparkKvPageCacheResidentRecord);
 	request.label = binding->module_tag;
 	status = SparkWeightdKvPoolMap(&request,offsets,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS,&binding->kv_pool);
 	free(offsets);
+	if ( status == SPARK_STATUS_OK && binding->shared_page_count != 0u )
+	{
+		status = SparkWeightdKvSharedMapChunks(&binding->kv_shared,binding->kv_reservation,binding->shared_chunk_offsets,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"%s kv binding refused: mapping the shared prefix window failed status=%s mapped=%u of %u chunks\n",binding->module_tag,SparkStatusToString(status),
+				binding->kv_shared.mapped_count,binding->kv_shared.chunk_count);
+	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	for (region=0u; region<binding->region_count; region++)
@@ -1116,6 +1328,24 @@ static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *co
 
 static SparkStatus SparkStageKvBindingStartPool(SparkStageKvBinding *binding);
 
+static SparkStatus SparkStageKvBindingAttachSharedCache(SparkStageKvBinding *binding)
+{
+	SparkStatus status;
+	binding->shared_generations = (uint64_t *)calloc(binding->logical_page_count,sizeof(uint64_t));
+	binding->shared_chain_slots = (uint32_t *)calloc(binding->pages_per_sequence,sizeof(uint32_t));
+	binding->shared_chain_generations = (uint64_t *)calloc(binding->pages_per_sequence,sizeof(uint64_t));
+	if ( binding->shared_generations == 0 || binding->shared_chain_slots == 0 || binding->shared_chain_generations == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	status = SparkKvCacheArenaSetSharedWindow(&binding->arena,binding->physical_page_count,binding->shared_page_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageCacheAttachShared(&binding->page_cache,&binding->shared_index,binding->shared_generations,binding->shared_chain_slots,binding->shared_chain_generations,binding->pages_per_sequence);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	fprintf(stderr,"%s kv shared prefix window pages=%u base_page=%u holder=%u created=%u alignment_pages=%u private_pages_given_up=%u\n",binding->module_tag,binding->shared_page_count,
+		binding->physical_page_count,binding->kv_shared.holder,binding->kv_shared.created,binding->shared_alignment_pages,binding->shared_pages_given_up);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
 {
 	SparkKvModelTable table;
@@ -1143,6 +1373,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->pipeline_slot_count = configuration->pipeline_slot_count;
 	binding->context_shard = configuration->context_shard;
 	status = SparkStageKvBindingGeometry(binding,configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingAttachShared(binding,configuration);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	lane_entries = (uint64_t)binding->resident_sequence_capacity * binding->pages_per_sequence;
@@ -1174,6 +1406,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	status = SparkKvBackendInitialize(&table,&binding->arena,&binding->page_cache,&binding->page_store);
 	if ( status == SPARK_STATUS_OK )
 		binding->arena.resident_block_capacity = SparkStageKvBindingPoolPageLimit(binding,binding->kv_pool.mapped_count);
+	if ( status == SPARK_STATUS_OK && binding->shared_page_count != 0u )
+		status = SparkStageKvBindingAttachSharedCache(binding);
 	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u )
 		status = SparkStageKvBindingAttachStates(binding,configuration);
 	if ( status == SPARK_STATUS_OK )
@@ -1219,6 +1453,11 @@ static void SparkStageKvBindingLogCounters(const SparkStageKvBinding *binding)
 		(unsigned long long)binding->page_cache.backing_full_count,(unsigned long long)binding->page_cache.backing_full_queued_count,
 		binding->arena.park_degraded,(unsigned long long)binding->arena.park_degraded_count,(unsigned long long)binding->page_cache.degraded_discard_count,
 		(unsigned long long)binding->page_cache.park_stall_queued_count);
+	if ( binding->shared_page_count != 0u )
+		fprintf(stderr,"%s kv binding shared window pages=%u allocated=%llu published=%llu imports=%llu imported_pages=%llu import_misses=%llu shared_blocks=%u\n",binding->module_tag,
+			binding->shared_page_count,(unsigned long long)binding->page_cache.shared_allocated_count,(unsigned long long)binding->page_cache.shared_published_count,
+			(unsigned long long)binding->page_cache.shared_import_count,(unsigned long long)binding->page_cache.shared_imported_page_count,
+			(unsigned long long)binding->page_cache.shared_import_miss_count,binding->arena.shared_block_count);
 	fprintf(stderr,"%s kv binding restore worker jobs=%llu hints=%llu hinted_jobs=%llu pending_answers=%llu imported_pages=%llu\n",binding->module_tag,
 		(unsigned long long)binding->restore_jobs,(unsigned long long)binding->restore_hints,(unsigned long long)binding->restore_hinted_jobs,
 		(unsigned long long)binding->restore_pending_answers,(unsigned long long)binding->restore_imported_pages);
@@ -1268,6 +1507,12 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 			binding->kv_pool.chunk_capacity,binding->arena.resident_block_capacity,binding->physical_page_count,(unsigned long long)binding->pool_grow_count,
 			(unsigned long long)binding->pool_shrink_count,(unsigned long long)binding->pool_vacated_pages);
 	SparkWeightdKvPoolUnmap(&binding->kv_pool);
+	SparkWeightdKvSharedUnmap(&binding->kv_shared);
+	SparkWeightdKvFreeAddress(binding->kv_reservation,binding->kv_reservation_bytes);
+	free(binding->shared_generations);
+	free(binding->shared_chain_slots);
+	free(binding->shared_chain_generations);
+	free(binding->shared_chunk_offsets);
 	free(binding->kv_pool_chunk_need);
 	if ( binding->snapshot_store.runtime != 0 )
 		SparkKvSnapshotStoreClose(&binding->snapshot_store);

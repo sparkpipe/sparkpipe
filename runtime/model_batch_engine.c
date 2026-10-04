@@ -27,6 +27,7 @@
 #define SPARK_MODEL_BATCH_REQUEST_PUBLISH_INFLIGHT 9u
 #define SPARK_MODEL_BATCH_NO_SLOT UINT32_MAX
 #define SPARK_MODEL_BATCH_PREFIX_INDEX_SAVE_INTERVAL_NS UINT64_C(10000000000)
+#define SPARK_MODEL_BATCH_PEER_PREFIX_INTERVAL_NS UINT64_C(2000000000)
 #define SPARK_MODEL_BATCH_STATUS_INTERVAL_NS UINT64_C(1000000000)
 #define SPARK_MODEL_BATCH_RESTORE_POLL_MS 2u
 #define SPARK_MODEL_BATCH_SELECT_AGED 1u
@@ -189,6 +190,12 @@ struct SparkModelBatchEngine
 	uint64_t prefix_index_loaded_record_count;
 	uint64_t prefix_index_refused_count;
 	uint64_t prefix_index_reimported_record_count;
+	char peer_prefix_index_paths[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX][SPARK_PREFIX_INDEX_FILE_PATH_BYTES];
+	uint64_t peer_prefix_index_stamps[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX][3];
+	uint32_t peer_prefix_index_count;
+	uint64_t peer_prefix_next_import_ns;
+	uint64_t peer_prefix_import_count;
+	uint64_t peer_prefix_imported_record_count;
 	uint64_t next_status_ns;
 	uint32_t next_work_kind;
 	uint32_t work_kind_bypass_counts[5];
@@ -1412,6 +1419,19 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 			if ( configuration->deployment->eos_token_ids[left] == configuration->deployment->eos_token_ids[right] )
 				SPARK_FAIL(SPARK_STATUS_DUPLICATE);
 	}
+	if ( configuration->peer_prefix_index_count > SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX || (configuration->peer_prefix_index_count != 0u && configuration->peer_prefix_index_paths == 0) ||
+		configuration->reserved0 != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (left=0u; left<configuration->peer_prefix_index_count; left++)
+	{
+		if ( SparkModelBatchValidateIndexPath(configuration->peer_prefix_index_paths[left]) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( configuration->prefix_index_path != 0 && strcmp(configuration->peer_prefix_index_paths[left],configuration->prefix_index_path) == 0 )
+		{
+			fprintf(stderr,"batch engine refused: peer prefix index %s is this engine's own index\n",configuration->peer_prefix_index_paths[left]);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+	}
 	return(SparkModelBatchValidateIndexPath(configuration->prefix_index_path));
 }
 
@@ -1665,6 +1685,8 @@ static SparkStatus SparkModelBatchInitialize(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	strcpy(engine->prefix_index_path,configuration->prefix_index_path);
+	for (engine->peer_prefix_index_count=0u; engine->peer_prefix_index_count<configuration->peer_prefix_index_count; engine->peer_prefix_index_count++)
+		strcpy(engine->peer_prefix_index_paths[engine->peer_prefix_index_count],configuration->peer_prefix_index_paths[engine->peer_prefix_index_count]);
 	return(SparkModelBatchLoadPrefixIndex(engine));
 }
 
@@ -2999,9 +3021,53 @@ static SparkStatus SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine 
 	return(SparkModelBatchKeepPrefixIndex(engine));
 }
 
+static void SparkModelBatchImportPeerPrefixes(SparkModelBatchEngine *engine)
+{
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+	struct stat info;
+	uint32_t peer,count,imported,skipped;
+	const char *reason;
+	SparkStatus status;
+	if ( engine->prefix_index_loaded == 0u || engine->prefix_index_scratch == 0 )
+		return;
+	SparkModelBatchPrefixIndexDigest(engine,digest);
+	for (peer=0u; peer<engine->peer_prefix_index_count; peer++)
+	{
+		if ( stat(engine->peer_prefix_index_paths[peer],&info) != 0 ||
+			(engine->peer_prefix_index_stamps[peer][0] == (uint64_t)info.st_ino && engine->peer_prefix_index_stamps[peer][1] == (uint64_t)info.st_mtime &&
+			 engine->peer_prefix_index_stamps[peer][2] == (uint64_t)info.st_size) )
+			continue;
+		count = imported = skipped = 0u;
+		reason = 0;
+		status = SparkPrefixIndexFileRead(engine->peer_prefix_index_paths[peer],digest,engine->cache_block_token_count,engine->prefix_index_scratch,engine->prefix_cache_entry_capacity,&count,&reason);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&imported,&skipped);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"batch engine peer prefix index refused path=%s reason=%s status=%s\n",engine->peer_prefix_index_paths[peer],reason != 0 ? reason : "io",SparkStatusToString(status));
+			continue;
+		}
+		engine->peer_prefix_index_stamps[peer][0] = (uint64_t)info.st_ino;
+		engine->peer_prefix_index_stamps[peer][1] = (uint64_t)info.st_mtime;
+		engine->peer_prefix_index_stamps[peer][2] = (uint64_t)info.st_size;
+		engine->peer_prefix_import_count++;
+		engine->peer_prefix_imported_record_count += imported;
+		if ( imported != 0u )
+		{
+			engine->prefix_index_dirty = 1u;
+			fprintf(stderr,"batch engine peer prefix index path=%s records=%u imported=%u skipped=%u\n",engine->peer_prefix_index_paths[peer],count,imported,skipped);
+		}
+	}
+}
+
 static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
 {
 	uint64_t now = SparkModelBatchNowNs();
+	if ( engine->peer_prefix_index_count != 0u && now >= engine->peer_prefix_next_import_ns )
+	{
+		SparkModelBatchImportPeerPrefixes(engine);
+		engine->peer_prefix_next_import_ns = now + SPARK_MODEL_BATCH_PEER_PREFIX_INTERVAL_NS;
+	}
 	if ( now >= engine->next_status_ns )
 	{
 		(void)SparkModelPipelineClientRequestStatus(engine->pipeline);
@@ -3253,6 +3319,8 @@ SparkStatus SparkModelBatchEngineGetView(
 	view->prefix_index_loaded_record_count = engine->prefix_index_loaded_record_count;
 	view->prefix_index_refused_count = engine->prefix_index_refused_count;
 	view->prefix_index_reimported_record_count = engine->prefix_index_reimported_record_count;
+	view->peer_prefix_import_count = engine->peer_prefix_import_count;
+	view->peer_prefix_imported_record_count = engine->peer_prefix_imported_record_count;
 	view->speculative_verify_lane_count = engine->verify_lane_count;
 	view->speculative_draft_token_count = engine->draft_token_count;
 	view->speculative_accepted_token_count = engine->accepted_draft_token_count;

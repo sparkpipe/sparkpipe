@@ -27,6 +27,7 @@ extern "C" {
 #define SPARK_KV_CACHE_BLOCK_FLAG_DIRTY 0x00000008u
 #define SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID 0x00000010u
 #define SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED 0x00000020u
+#define SPARK_KV_CACHE_BLOCK_FLAG_SHARED 0x00000040u
 
 #define SPARK_KV_CACHE_NO_BLOCK 0xffffffffu
 #define SPARK_KV_CACHE_NO_RESIDENT_SLOT 0xffffffffu
@@ -452,6 +453,9 @@ typedef struct SparkKvCacheArena
     uint64_t released_reference_count;
     uint32_t park_degraded;
     uint64_t park_degraded_count;
+    uint32_t shared_page_base;
+    uint32_t shared_page_count;
+    uint32_t shared_block_count;
 } SparkKvCacheArena;
 
 SparkStatus SparkKvCacheEstimateCapacity(
@@ -528,6 +532,16 @@ SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
 uint32_t SparkKvCacheArenaBlockIsParkable(
     const SparkKvCacheArena *arena,
     uint32_t logical_block_index);
+
+SparkStatus SparkKvCacheArenaSetSharedWindow(
+    SparkKvCacheArena *arena,
+    uint32_t shared_page_base,
+    uint32_t shared_page_count);
+
+SparkStatus SparkKvCacheArenaAdoptSharedBlock(
+    SparkKvCacheArena *arena,
+    uint32_t window_slot,
+    uint32_t *logical_block_index_out);
 
 SparkStatus SparkKvCacheArenaFreeBlock(
     SparkKvCacheArena *arena,

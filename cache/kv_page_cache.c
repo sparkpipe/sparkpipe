@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_kv_shared_index.h"
 #include "sparkpipe/spark_model_driver_support.h"
 
 static uint64_t SparkKvPageCacheHashIdentity(
@@ -346,6 +347,30 @@ static uint32_t SparkKvPageCacheCopyPins(const SparkKvPageCache *cache,uint32_t 
 		cache->device_copy.destination_pins(cache->device_copy.context,logical_page_index) : 0u);
 }
 
+static uint32_t SparkKvPageCacheSharedSlot(const SparkKvPageCache *cache,uint32_t logical_page_index)
+{
+	const SparkKvCacheBlock *block;
+	if ( cache->shared_index == 0 || logical_page_index >= cache->kv_cache_arena->logical_block_count )
+		return(SPARK_KV_SHARED_NO_SLOT);
+	block = &cache->kv_cache_arena->blocks[logical_page_index];
+	if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) == 0u || block->resident_slot_index < cache->kv_cache_arena->shared_page_base ||
+		block->resident_slot_index - cache->kv_cache_arena->shared_page_base >= cache->shared_index->slot_count )
+		return(SPARK_KV_SHARED_NO_SLOT);
+	return(block->resident_slot_index - cache->kv_cache_arena->shared_page_base);
+}
+
+static void SparkKvPageCacheDropShared(SparkKvPageCache *cache,uint32_t logical_page_index)
+{
+	uint32_t slot = SparkKvPageCacheSharedSlot(cache,logical_page_index);
+	if ( slot == SPARK_KV_SHARED_NO_SLOT )
+		return;
+	if ( SparkKvSharedIndexWriting(cache->shared_index,slot) != 0u )
+		SparkKvSharedIndexAbandon(cache->shared_index,slot);
+	else
+		SparkKvSharedIndexRelease(cache->shared_index,slot);
+	cache->shared_generations[logical_page_index] = 0u;
+}
+
 static uint32_t SparkKvPageCachePageCanDiscard(const SparkKvPageCache *cache,uint32_t logical_page_index)
 {
 	const SparkKvCacheBlock *block;
@@ -354,7 +379,8 @@ static uint32_t SparkKvPageCachePageCanDiscard(const SparkKvPageCache *cache,uin
 		return(0u);
 	pins = SparkKvPageCacheCopyPins(cache,logical_page_index);
 	block = &cache->kv_cache_arena->blocks[logical_page_index];
-	return((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u && block->reference_count == 1u && block->residency_reference_count == pins && (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) == 0u);
+	return((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u && block->reference_count == 1u && block->residency_reference_count == pins && (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) == 0u &&
+		((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) == 0u || pins == 0u));
 }
 
 static SparkStatus SparkKvPageCacheDiscardLogicalPage(
@@ -367,7 +393,7 @@ static SparkStatus SparkKvPageCacheDiscardLogicalPage(
 	pins = SparkKvPageCacheCopyPins(cache,logical_page_index);
 	if ( SparkKvPageCachePageCanDiscard(cache,logical_page_index) == 0u )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
-	if ( cache->page_store != 0 )
+	if ( cache->page_store != 0 && (cache->kv_cache_arena->blocks[logical_page_index].flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) == 0u )
 	{
 		status = SparkKvCacheArenaResolveBlock(cache->kv_cache_arena,
 			logical_page_index,&view);
@@ -387,6 +413,7 @@ static SparkStatus SparkKvPageCacheDiscardLogicalPage(
 	if ( pins != 0u )
 		return(cache->device_copy.defer_free(cache->device_copy.context,logical_page_index) == SPARK_STATUS_OK ?
 			SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR);
+	SparkKvPageCacheDropShared(cache,logical_page_index);
 	return(SparkKvCacheArenaFreeBlock(cache->kv_cache_arena,logical_page_index));
 }
 
@@ -1200,6 +1227,49 @@ static SparkStatus SparkKvPageCacheSpanRoom(SparkKvPageCache *cache,const SparkK
 	return(status);
 }
 
+static uint32_t SparkKvPageCacheSharedEligible(const SparkKvPageCache *cache,const SparkKvPageCacheSequence *sequence)
+{
+	uint32_t terminal = sequence->terminal_entry_index;
+	if ( cache->shared_index == 0 )
+		return(0u);
+	if ( sequence->mutable_page_count != 0u )
+		return(SparkKvPageCacheSharedSlot(cache,SparkKvPageCacheMutablePage(sequence,sequence->mutable_page_count - 1u)) != SPARK_KV_SHARED_NO_SLOT ? 1u : 0u);
+	if ( terminal == SPARK_KV_PAGE_CACHE_NO_INDEX )
+		return(1u);
+	return(cache->entries[terminal].token_count % cache->kv_cache_arena->block_token_count == 0u &&
+		SparkKvPageCacheSharedSlot(cache,cache->entries[terminal].logical_page_index) != SPARK_KV_SHARED_NO_SLOT ? 1u : 0u);
+}
+
+static SparkStatus SparkKvPageCacheAllocateShared(SparkKvPageCache *cache,uint32_t *logical_page_index_out)
+{
+	uint64_t generation;
+	uint32_t slot,page = SPARK_KV_CACHE_NO_BLOCK;
+	SparkStatus status;
+	status = SparkKvSharedIndexReserve(cache->shared_index,&slot,&generation);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	status = SparkKvCacheArenaAdoptSharedBlock(cache->kv_cache_arena,slot,&page);
+	if ( status == SPARK_STATUS_CAPACITY_EXCEEDED && SparkKvPageCacheEvictUnused(cache) == SPARK_STATUS_OK )
+		status = SparkKvCacheArenaAdoptSharedBlock(cache->kv_cache_arena,slot,&page);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvCacheArenaRetainBlock(cache->kv_cache_arena,page);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkKvSharedIndexAbandon(cache->shared_index,slot);
+		if ( page != SPARK_KV_CACHE_NO_BLOCK )
+		{
+			if ( cache->kv_cache_arena->blocks[page].reference_count != 0u )
+				(void)SparkKvCacheArenaReleaseBlockReference(cache->kv_cache_arena,page);
+			(void)SparkKvCacheArenaFreeBlock(cache->kv_cache_arena,page);
+		}
+		return(status);
+	}
+	cache->shared_generations[page] = generation;
+	cache->shared_allocated_count++;
+	*logical_page_index_out = page;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkKvPageCacheAllocateMutable(SparkKvPageCache *cache,SparkKvPageCacheSequence *sequence,uint32_t first_token_index)
 {
 	uint32_t logical_page_index;
@@ -1207,17 +1277,26 @@ static SparkStatus SparkKvPageCacheAllocateMutable(SparkKvPageCache *cache,Spark
 	if ( sequence->mutable_page_count >= SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	logical_page_index = SPARK_KV_CACHE_NO_BLOCK;
-	status = SparkKvPageCacheAcquireLogicalPage(cache,&logical_page_index);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkKvCacheArenaRetainBlock(cache->kv_cache_arena,logical_page_index);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkKvPageCacheMarkPageResident(cache,logical_page_index);
+	if ( SparkKvPageCacheSharedEligible(cache,sequence) != 0u && SparkKvPageCacheAllocateShared(cache,&logical_page_index) == SPARK_STATUS_OK )
+		status = SPARK_STATUS_OK;
+	else
+	{
+		logical_page_index = SPARK_KV_CACHE_NO_BLOCK;
+		status = SparkKvPageCacheAcquireLogicalPage(cache,&logical_page_index);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkKvCacheArenaRetainBlock(cache->kv_cache_arena,logical_page_index);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkKvPageCacheMarkPageResident(cache,logical_page_index);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		if ( logical_page_index != SPARK_KV_CACHE_NO_BLOCK && logical_page_index < cache->kv_cache_arena->logical_block_count && cache->kv_cache_arena->blocks[logical_page_index].reference_count != 0u )
 			(void)SparkKvCacheArenaReleaseBlockReference(cache->kv_cache_arena,logical_page_index);
 		if ( logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
+		{
+			SparkKvPageCacheDropShared(cache,logical_page_index);
 			(void)SparkKvCacheArenaFreeBlock(cache->kv_cache_arena,logical_page_index);
+		}
 		SPARK_RETURN(status);
 	}
 	if ( sequence->mutable_page_count == 0u )
@@ -1432,6 +1511,30 @@ static uint32_t SparkKvPageCacheMutableParent(const SparkKvPageCache *cache,cons
 	return(parent);
 }
 
+static void SparkKvPageCachePublishShared(SparkKvPageCache *cache,uint32_t entry_index)
+{
+	const SparkKvPageCacheEntry *entry = &cache->entries[entry_index];
+	SparkKvSharedIndexView parent_view;
+	uint64_t parent_generation = 0u;
+	uint32_t slot,parent_slot = SPARK_KV_SHARED_NO_SLOT,parent_page;
+	slot = SparkKvPageCacheSharedSlot(cache,entry->logical_page_index);
+	if ( slot == SPARK_KV_SHARED_NO_SLOT || (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u || SparkKvSharedIndexWriting(cache->shared_index,slot) == 0u )
+		return;
+	if ( entry->parent_entry_index != SPARK_KV_PAGE_CACHE_NO_INDEX )
+	{
+		parent_page = cache->entries[entry->parent_entry_index].logical_page_index;
+		parent_slot = SparkKvPageCacheSharedSlot(cache,parent_page);
+		if ( parent_slot == SPARK_KV_SHARED_NO_SLOT || SparkKvSharedIndexRead(cache->shared_index,parent_slot,&parent_view) == 0u ||
+			parent_view.generation != cache->shared_generations[parent_page] )
+			return;
+		parent_generation = parent_view.generation;
+	}
+	else if ( entry->token_count > cache->kv_cache_arena->block_token_count )
+		return;
+	if ( SparkKvSharedIndexPublish(cache->shared_index,slot,entry->identity.sha256,entry->token_count,parent_slot,parent_generation) == SPARK_STATUS_OK )
+		cache->shared_published_count++;
+}
+
 static SparkStatus SparkKvPageCachePublishNewEntry(
 	SparkKvPageCache *cache,
 	SparkKvPageCacheSequence *sequence,
@@ -1481,6 +1584,7 @@ static SparkStatus SparkKvPageCachePublishNewEntry(
 	sequence->terminal_entry_index = entry_index;
 	SparkKvPageCacheShiftMutable(cache,sequence);
 	cache->published_page_count++;
+	SparkKvPageCachePublishShared(cache,entry_index);
 	return(SPARK_STATUS_OK);
 }
 
@@ -2395,6 +2499,151 @@ SparkStatus SparkKvPageCacheRestoreBegin(SparkKvPageCache *cache,SparkKvPageCach
 	return(SPARK_STATUS_PENDING);
 }
 
+SparkStatus SparkKvPageCacheAttachShared(SparkKvPageCache *cache,struct SparkKvSharedIndex *index,uint64_t *generations,uint32_t *chain_slots,uint64_t *chain_generations,uint32_t chain_capacity)
+{
+	if ( SparkKvPageCacheIsValid(cache) == 0u || index == 0 || generations == 0 || index->slots == 0 || chain_slots == 0 || chain_generations == 0 || chain_capacity == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( cache->state_store != 0 || cache->shared_index != 0 || cache->kv_cache_arena->shared_page_count != index->slot_count )
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	memset(generations,0,(size_t)cache->kv_cache_arena->logical_block_count * sizeof(*generations));
+	cache->shared_generations = generations;
+	cache->shared_chain_slots = chain_slots;
+	cache->shared_chain_generations = chain_generations;
+	cache->shared_chain_capacity = chain_capacity;
+	cache->shared_index = index;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkKvPageCacheImportSharedPage(SparkKvPageCache *cache,const SparkKvSharedIndexView *view,uint32_t slot,uint32_t parent,uint32_t page_count,uint32_t *entry_index_out)
+{
+	SparkKvPageCacheEntry *entry;
+	uint32_t entry_index,page = SPARK_KV_CACHE_NO_BLOCK,bucket;
+	SparkStatus status;
+	status = SparkKvPageCacheAcquireEntry(cache,&entry_index);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = SparkKvSharedIndexAcquire(cache->shared_index,slot,view->generation);
+	if ( status == SPARK_STATUS_OK )
+	{
+		status = SparkKvCacheArenaAdoptSharedBlock(cache->kv_cache_arena,slot,&page);
+		if ( status == SPARK_STATUS_CAPACITY_EXCEEDED && SparkKvPageCacheEvictUnused(cache) == SPARK_STATUS_OK )
+			status = SparkKvCacheArenaAdoptSharedBlock(cache->kv_cache_arena,slot,&page);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkKvCacheArenaRetainBlock(cache->kv_cache_arena,page);
+		if ( status == SPARK_STATUS_OK && cache->entry_indices_by_logical_page[page] != SPARK_KV_PAGE_CACHE_NO_INDEX )
+			status = SPARK_STATUS_INTERNAL_ERROR;
+		if ( status != SPARK_STATUS_OK )
+		{
+			SparkKvSharedIndexRelease(cache->shared_index,slot);
+			if ( page != SPARK_KV_CACHE_NO_BLOCK )
+			{
+				if ( cache->kv_cache_arena->blocks[page].reference_count != 0u )
+					(void)SparkKvCacheArenaReleaseBlockReference(cache->kv_cache_arena,page);
+				(void)SparkKvCacheArenaFreeBlock(cache->kv_cache_arena,page);
+			}
+		}
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		cache->entries[entry_index].free_next = cache->free_entry_head;
+		cache->free_entry_head = entry_index;
+		return(status);
+	}
+	cache->shared_generations[page] = view->generation;
+	entry = &cache->entries[entry_index];
+	entry->flags = SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID;
+	entry->token_count = view->token_count;
+	entry->page_count = page_count;
+	entry->parent_entry_index = parent;
+	entry->logical_page_index = page;
+	entry->reference_count = 1u;
+	entry->priority = cache->admission_priority;
+	memcpy(entry->identity.sha256,view->identity,sizeof(entry->identity.sha256));
+	cache->entry_indices_by_logical_page[page] = entry_index;
+	cache->epoch++;
+	entry->last_used_epoch = cache->epoch;
+	bucket = SparkKvPageCacheBucket(cache,&entry->identity,entry->token_count);
+	entry->hash_next = cache->hash_bucket_heads[bucket];
+	cache->hash_bucket_heads[bucket] = entry_index;
+	cache->published_page_count++;
+	cache->shared_imported_page_count++;
+	*entry_index_out = entry_index;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkKvPageCacheSharedMiss(SparkKvPageCache *cache)
+{
+	cache->shared_import_miss_count++;
+	return(SPARK_STATUS_NOT_FOUND);
+}
+
+SparkStatus SparkKvPageCacheImportShared(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count)
+{
+	SparkKvSharedIndexView view;
+	SparkModelDriverCacheIdentity link;
+	uint64_t parent_generation;
+	uint32_t depth = 0u,slot,level,existing,parent = SPARK_KV_PAGE_CACHE_NO_INDEX,created,block,child_tokens;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( SparkKvPageCacheIsValid(cache) == 0u || identity == 0 || token_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( cache->shared_index == 0 )
+		return(SPARK_STATUS_NOT_FOUND);
+	if ( SparkKvPageCacheFindEntryConst(cache,identity,token_count) != SPARK_KV_PAGE_CACHE_NO_INDEX )
+		return(SPARK_STATUS_OK);
+	block = cache->kv_cache_arena->block_token_count;
+	slot = SparkKvSharedIndexFind(cache->shared_index,identity->sha256,token_count,&view);
+	if ( slot == SPARK_KV_SHARED_NO_SLOT || (token_count - 1u) / block + 1u > cache->shared_chain_capacity )
+		return(SparkKvPageCacheSharedMiss(cache));
+	for (;;)
+	{
+		cache->shared_chain_slots[depth] = slot;
+		cache->shared_chain_generations[depth] = view.generation;
+		depth++;
+		if ( view.parent_slot == SPARK_KV_SHARED_NO_SLOT )
+			break;
+		child_tokens = view.token_count;
+		parent_generation = view.parent_generation;
+		slot = view.parent_slot;
+		if ( depth == cache->shared_chain_capacity || SparkKvSharedIndexRead(cache->shared_index,slot,&view) == 0u || view.generation != parent_generation ||
+			view.token_count % block != 0u || view.token_count >= child_tokens || child_tokens - view.token_count > block )
+			return(SparkKvPageCacheSharedMiss(cache));
+	}
+	if ( view.token_count > block || (token_count - 1u) / block + 1u != depth )
+		return(SparkKvPageCacheSharedMiss(cache));
+	for (level=depth; level-- > 0u && status == SPARK_STATUS_OK;)
+	{
+		if ( SparkKvSharedIndexRead(cache->shared_index,cache->shared_chain_slots[level],&view) == 0u || view.generation != cache->shared_chain_generations[level] )
+		{
+			status = SPARK_STATUS_NOT_FOUND;
+			break;
+		}
+		memcpy(link.sha256,view.identity,sizeof(link.sha256));
+		existing = SparkKvPageCacheFindEntryConst(cache,&link,view.token_count);
+		if ( existing != SPARK_KV_PAGE_CACHE_NO_INDEX )
+		{
+			if ( cache->entries[existing].parent_entry_index != parent )
+				status = SPARK_STATUS_NOT_FOUND;
+			else
+			{
+				SparkKvPageCacheReference(cache,existing);
+				if ( parent != SPARK_KV_PAGE_CACHE_NO_INDEX )
+					SparkKvPageCacheDereference(cache,parent);
+				parent = existing;
+			}
+			continue;
+		}
+		status = SparkKvPageCacheImportSharedPage(cache,&view,cache->shared_chain_slots[level],parent,depth - level,&created);
+		if ( status == SPARK_STATUS_OK )
+			parent = created;
+	}
+	if ( parent != SPARK_KV_PAGE_CACHE_NO_INDEX )
+		SparkKvPageCacheDereference(cache,parent);
+	if ( status != SPARK_STATUS_OK )
+		return(SparkKvPageCacheSharedMiss(cache));
+	cache->shared_import_count++;
+	return(SPARK_STATUS_OK);
+}
+
 uint32_t SparkKvPageCachePrefixReady(const SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count)
 {
 	uint32_t existing = SparkKvPageCacheFindEntryConst(cache,identity,token_count);
@@ -2833,6 +3082,15 @@ static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *
 		owned += transactions->lanes[request->cache_lanes[index].resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY ? 1u : 0u;
 	if ( owned != 0u )
 		return(SparkKvLaneTransactionsRequire(transactions,request,SPARK_KV_LANE_TRANSACTION_PREPARED));
+	for (index=0u; transactions->cache->shared_index != 0 && index<request->cache_lane_count; index++)
+	{
+		lane = &request->cache_lanes[index];
+		if ( (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) == 0u || lane->prefix_token_count == 0u || transactions->cache->sequences[lane->resident_sequence_slot].sequence_id == lane->sequence_id )
+			continue;
+		status = SparkKvPageCacheImportShared(transactions->cache,&lane->prefix_identity,lane->prefix_token_count);
+		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
+			SPARK_RETURN(status);
+	}
 	for (index=0u; transactions->cache->snapshot != 0 && transactions->restore_async == 0u && index<request->cache_lane_count; index++)
 	{
 		lane = &request->cache_lanes[index];

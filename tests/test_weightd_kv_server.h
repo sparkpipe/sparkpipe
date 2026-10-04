@@ -14,6 +14,7 @@ static SparkWeightdServer *TestKvServer;
 static pthread_t TestKvServerThread;
 static volatile sig_atomic_t TestKvServerStopFlag;
 static char TestKvServerSocket[96];
+static uint64_t TestKvServerSharedWindowBytes;
 
 static void *TestKvServerMain(void *argument)
 {
@@ -32,6 +33,7 @@ static void TestKvServerStart(uint64_t kv_reserve_bytes)
 	config.device_bytes_max = kv_reserve_bytes + (64ull << 20);
 	config.kv_reserve_bytes = kv_reserve_bytes;
 	config.kv_write_budget_bytes_per_day = UINT64_C(1) << 40;
+	config.kv_shared_window_bytes = TestKvServerSharedWindowBytes;
 	TestKvServerStopFlag = 0;
 	assert(SparkWeightdServerCreate(&config,&TestKvServer) == SPARK_STATUS_OK);
 	assert(pthread_create(&TestKvServerThread,0,TestKvServerMain,TestKvServer) == 0);

@@ -8,6 +8,8 @@
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
 
+struct SparkKvSharedIndex;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -250,6 +252,16 @@ typedef struct SparkKvPageCache
 	uint64_t backing_full_queued_count;
 	uint64_t park_stall_queued_count;
 	uint64_t degraded_discard_count;
+	struct SparkKvSharedIndex *shared_index;
+	uint64_t *shared_generations;
+	uint32_t *shared_chain_slots;
+	uint64_t *shared_chain_generations;
+	uint32_t shared_chain_capacity;
+	uint64_t shared_allocated_count;
+	uint64_t shared_published_count;
+	uint64_t shared_import_count;
+	uint64_t shared_imported_page_count;
+	uint64_t shared_import_miss_count;
 }
 SparkKvPageCache;
 
@@ -315,6 +327,19 @@ SparkStatus SparkKvPageCacheRollbackLaneTransaction(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane,
 	uint32_t mutation_flags);
+SparkStatus SparkKvPageCacheAttachShared(
+	SparkKvPageCache *cache,
+	struct SparkKvSharedIndex *index,
+	uint64_t *generations,
+	uint32_t *chain_slots,
+	uint64_t *chain_generations,
+	uint32_t chain_capacity);
+
+SparkStatus SparkKvPageCacheImportShared(
+	SparkKvPageCache *cache,
+	const SparkModelDriverCacheIdentity *identity,
+	uint32_t token_count);
+
 SparkStatus SparkKvPageCacheCompleteLane(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane);

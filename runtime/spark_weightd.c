@@ -8,6 +8,7 @@
 #include "sparkpipe/spark_weightd_pacer.h"
 #include "sparkpipe/spark_weightd_direct.h"
 #include "sparkpipe/spark_weightd_receipt.h"
+#include "sparkpipe/spark_kv_shared_index.h"
 #include <stdatomic.h>
 
 #include <errno.h>
@@ -211,6 +212,10 @@ typedef struct SparkWeightdKvPool
     int metadata_fd;
     void **chunk_handles;
     char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
+    uint32_t shared;
+    uint64_t holder_mask;
+    uint32_t holder_connection[SPARK_KV_SHARED_INDEX_HOLDERS_MAX];
+    void *metadata_map;
 } SparkWeightdKvPool;
 
 struct SparkWeightdServer
@@ -466,6 +471,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return sizeof(SparkWeightdIpcKvPoolStatus) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS_RESULT:
             return sizeof(SparkWeightdIpcKvPoolStatusResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH:
+            return sizeof(SparkWeightdIpcKvSharedAttach) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH_RESULT:
+            return sizeof(SparkWeightdIpcKvSharedAttachResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return sizeof(SparkWeightdIpcMeshActivity) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT:
@@ -583,6 +592,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS:
             return SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH:
+            return SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_WRITE:
@@ -2970,6 +2981,8 @@ static void SparkWeightdKvPoolFree(SparkWeightdKvPool *pool)
 		if ( pool->chunk_handles[index] != 0 )
 			(void)cuMemRelease((CUmemGenericAllocationHandle)pool->chunk_handles[index]);
 	free(pool->chunk_handles);
+	if ( pool->metadata_map != 0 )
+		(void)munmap(pool->metadata_map,(size_t)pool->metadata_bytes);
 	if ( pool->metadata_fd >= 0 )
 		(void)close(pool->metadata_fd);
 	memset(pool,0,sizeof(*pool));
@@ -2993,7 +3006,7 @@ static uint32_t SparkWeightdKvPoolOldestDetached(const SparkWeightdServer *serve
 {
 	uint32_t index,oldest = SPARK_WEIGHTD_KV_POOL_COUNT_MAX;
 	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
-		if ( server->kv_pools[index].generation != 0u && &server->kv_pools[index] != keep && server->kv_pools[index].owner_connection == 0u &&
+		if ( server->kv_pools[index].generation != 0u && &server->kv_pools[index] != keep && server->kv_pools[index].owner_connection == 0u && server->kv_pools[index].shared == 0u &&
 			(oldest == SPARK_WEIGHTD_KV_POOL_COUNT_MAX || server->kv_pools[index].detached_ns < server->kv_pools[oldest].detached_ns) )
 			oldest = index;
 	return(oldest);
@@ -3165,7 +3178,7 @@ static SparkStatus SparkWeightdKvPoolAdmit(SparkWeightdServer *server,SparkWeigh
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	slot = SparkWeightdKvPoolFind(server,request->key);
-	if ( slot != SPARK_WEIGHTD_KV_POOL_COUNT_MAX && server->kv_pools[slot].owner_connection != 0u )
+	if ( slot != SPARK_WEIGHTD_KV_POOL_COUNT_MAX && (server->kv_pools[slot].owner_connection != 0u || server->kv_pools[slot].shared != 0u) )
 	{
 		fprintf(stderr,"weightd kv pool refused label=%s: pool generation=%llu is attached by another connection\n",request->label,(unsigned long long)server->kv_pools[slot].generation);
 		SPARK_FAIL(SPARK_STATUS_BUSY);
@@ -3195,10 +3208,26 @@ static SparkStatus SparkWeightdKvPoolAdmit(SparkWeightdServer *server,SparkWeigh
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkWeightdKvPoolHolder(const SparkWeightdKvPool *pool,uint32_t owner);
+
 static void SparkWeightdKvPoolDetachConnection(SparkWeightdServer *server,uint32_t connection_index)
 {
 	SparkWeightdConnection *connection = &server->connections[connection_index];
-	uint32_t index;
+	uint32_t index,holder,freed;
+	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX && connection->kv_pool_count != 0u; index++)
+	{
+		SparkWeightdKvPool *pool = &server->kv_pools[index];
+		if ( pool->generation == 0u || pool->shared == 0u || (holder = SparkWeightdKvPoolHolder(pool,connection_index + 1u)) == SPARK_KV_SHARED_NO_HOLDER )
+			continue;
+		freed = SparkKvSharedIndexClearHolder(pool->metadata_map,pool->metadata_bytes,holder);
+		pool->holder_mask &= ~(UINT64_C(1) << holder);
+		pool->holder_connection[holder] = 0u;
+		connection->kv_pool_count--;
+		fprintf(stderr,"weightd kv shared pool holder left label=%s generation=%llu holder=%u writing_slots_freed=%u holders_left=%u\n",pool->label,
+			(unsigned long long)pool->generation,holder,freed,(unsigned)__builtin_popcountll(pool->holder_mask));
+		if ( pool->holder_mask == 0u )
+			SparkWeightdKvPoolRelease(server,index,"last_holder_left");
+	}
 	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX && connection->kv_pool_count != 0u; index++)
 	{
 		if ( server->kv_pools[index].generation == 0u || server->kv_pools[index].owner_connection != connection_index + 1u )
@@ -3213,11 +3242,21 @@ static void SparkWeightdKvPoolDetachConnection(SparkWeightdServer *server,uint32
 	connection->kv_pool_count = 0u;
 }
 
+static uint32_t SparkWeightdKvPoolHolder(const SparkWeightdKvPool *pool,uint32_t owner)
+{
+	uint32_t holder;
+	for (holder=0u; pool->shared != 0u && holder<SPARK_KV_SHARED_INDEX_HOLDERS_MAX; holder++)
+		if ( (pool->holder_mask & (UINT64_C(1) << holder)) != 0u && pool->holder_connection[holder] == owner )
+			return(holder);
+	return(SPARK_KV_SHARED_NO_HOLDER);
+}
+
 static SparkWeightdKvPool *SparkWeightdKvPoolOwned(SparkWeightdServer *server,const SparkWeightdConnection *connection,uint64_t generation)
 {
 	uint32_t index,owner = (uint32_t)(connection - server->connections) + 1u;
 	for (index=0u; generation != 0u && index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
-		if ( server->kv_pools[index].generation == generation && server->kv_pools[index].owner_connection == owner )
+		if ( server->kv_pools[index].generation == generation &&
+			(server->kv_pools[index].owner_connection == owner || SparkWeightdKvPoolHolder(&server->kv_pools[index],owner) != SPARK_KV_SHARED_NO_HOLDER) )
 			return(&server->kv_pools[index]);
 	return(0);
 }
@@ -3276,6 +3315,136 @@ static uint32_t SparkWeightdServerOnKvPoolAttach(SparkWeightdServer *server,Spar
 	return(sizeof(*result));
 }
 
+static SparkStatus SparkWeightdKvSharedAdmit(SparkWeightdServer *server,SparkWeightdConnection *connection,const SparkWeightdIpcKvSharedAttach *request,uint32_t *slot_out,uint32_t *holder_out,uint32_t *created)
+{
+	SparkWeightdIpcKvPoolAttach pool_request;
+	SparkWeightdKvPool *pool;
+	SparkKvSharedIndex index;
+	uint64_t metadata_bytes;
+	uint32_t slot,holder;
+	SparkStatus status;
+	*created = 0u;
+	uint64_t window_pages,device_bytes;
+	uint32_t slot_count;
+	if ( request->page_bytes == 0u || request->alignment_pages == 0u || request->reserved0 != 0u || request->chunk_bytes == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( server->config.kv_shared_window_bytes == 0u )
+	{
+		fprintf(stderr,"weightd kv shared pool refused label=%s: weightd runs without --kv-shared-window-bytes\n",request->label);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	window_pages = server->config.kv_shared_window_bytes / request->page_bytes / request->alignment_pages * request->alignment_pages;
+	if ( window_pages > SPARK_KV_SHARED_INDEX_SLOTS_MAX )
+		window_pages = SPARK_KV_SHARED_INDEX_SLOTS_MAX / request->alignment_pages * request->alignment_pages;
+	if ( window_pages == 0u )
+	{
+		fprintf(stderr,"weightd kv shared pool refused label=%s: a window of %llu bytes holds no aligned group of %u pages of %llu bytes\n",request->label,
+			(unsigned long long)server->config.kv_shared_window_bytes,request->alignment_pages,(unsigned long long)request->page_bytes);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	slot_count = (uint32_t)window_pages;
+	device_bytes = window_pages * request->page_bytes;
+	if ( device_bytes % request->chunk_bytes != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	metadata_bytes = SparkKvSharedIndexBytes(slot_count);
+	memset(&pool_request,0,sizeof(pool_request));
+	memcpy(pool_request.key,request->key,sizeof(pool_request.key));
+	pool_request.device_bytes = device_bytes;
+	pool_request.minimum_bytes = device_bytes;
+	pool_request.chunk_bytes = request->chunk_bytes;
+	pool_request.metadata_bytes = metadata_bytes;
+	memcpy(pool_request.label,request->label,sizeof(pool_request.label));
+	status = SparkWeightdKvPoolRequestValid(&pool_request);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	slot = SparkWeightdKvPoolFind(server,request->key);
+	if ( slot != SPARK_WEIGHTD_KV_POOL_COUNT_MAX && server->kv_pools[slot].shared == 0u )
+	{
+		fprintf(stderr,"weightd kv shared pool refused label=%s: its key names a private pool\n",request->label);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	}
+	if ( slot != SPARK_WEIGHTD_KV_POOL_COUNT_MAX && (server->kv_pools[slot].requested_bytes != device_bytes || server->kv_pools[slot].chunk_bytes != request->chunk_bytes ||
+		server->kv_pools[slot].metadata_bytes != metadata_bytes ||
+		SparkKvSharedIndexAttach(&index,server->kv_pools[slot].metadata_map,metadata_bytes,0u,request->page_bytes,request->layout_sha256) != SPARK_STATUS_OK) )
+	{
+		fprintf(stderr,"weightd kv shared pool refused label=%s: the attached pool has another geometry or layout\n",request->label);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( slot == SPARK_WEIGHTD_KV_POOL_COUNT_MAX )
+	{
+		status = SparkWeightdKvPoolCreate(server,&pool_request,&slot);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+		pool = &server->kv_pools[slot];
+		pool->shared = 1u;
+		pool->metadata_map = mmap(0,(size_t)metadata_bytes,PROT_READ | PROT_WRITE,MAP_SHARED,pool->metadata_fd,0);
+		if ( pool->metadata_map == MAP_FAILED )
+			pool->metadata_map = 0;
+		if ( pool->chunk_count != pool->chunk_capacity || pool->metadata_map == 0 ||
+			SparkKvSharedIndexFormat(pool->metadata_map,metadata_bytes,slot_count,request->page_bytes,request->layout_sha256) != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"weightd kv shared pool refused label=%s: %u of %u chunks granted within kv_reserve=%llu\n",request->label,pool->chunk_count,pool->chunk_capacity,
+				(unsigned long long)server->config.kv_reserve_bytes);
+			SparkWeightdKvPoolRelease(server,slot,"shared_create_failed");
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		*created = 1u;
+	}
+	pool = &server->kv_pools[slot];
+	for (holder=0u; holder<SPARK_KV_SHARED_INDEX_HOLDERS_MAX && (pool->holder_mask & (UINT64_C(1) << holder)) != 0u; holder++)
+		;
+	if ( holder == SPARK_KV_SHARED_INDEX_HOLDERS_MAX || SparkWeightdKvPoolHolder(pool,(uint32_t)(connection - server->connections) + 1u) != SPARK_KV_SHARED_NO_HOLDER )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	pool->holder_mask |= UINT64_C(1) << holder;
+	pool->holder_connection[holder] = (uint32_t)(connection - server->connections) + 1u;
+	connection->kv_pool_count++;
+	fprintf(stderr,"weightd kv shared pool attached label=%s generation=%llu holder=%u created=%u slots=%u bytes=%llu holders=%u kv_committed=%llu kv_reserve=%llu\n",pool->label,
+		(unsigned long long)pool->generation,holder,*created,slot_count,(unsigned long long)(pool->chunk_bytes * pool->chunk_count),(unsigned)__builtin_popcountll(pool->holder_mask),
+		(unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes);
+	*slot_out = slot;
+	*holder_out = holder;
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkWeightdServerOnKvSharedAttach(SparkWeightdServer *server,SparkWeightdConnection *connection,const uint8_t *request_bytes,uint8_t *response,uint32_t result_kind,uint64_t request_id)
+{
+	const SparkWeightdIpcKvSharedAttach *request = (const SparkWeightdIpcKvSharedAttach *)request_bytes;
+	SparkWeightdIpcKvSharedAttachResult *result = (SparkWeightdIpcKvSharedAttachResult *)response;
+	SparkWeightdKvPool *pool;
+	uint32_t slot = SPARK_WEIGHTD_KV_POOL_COUNT_MAX,holder = 0u,created = 0u;
+	SparkStatus status;
+	int fd;
+	memset(result,0,sizeof(*result));
+	SparkWeightdBuildHeader(response,result_kind,request_id);
+	status = SparkWeightdKvSharedAdmit(server,connection,request,&slot,&holder,&created);
+	if ( status == SPARK_STATUS_OK )
+	{
+		fd = fcntl(server->kv_pools[slot].metadata_fd,F_DUPFD_CLOEXEC,0);
+		if ( fd < 0 )
+			status = SPARK_STATUS_IO_ERROR;
+		else
+			connection->response_fds[connection->response_fd_count++] = fd;
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkWeightdServerCloseStagedFds(connection);
+		result->status = (uint32_t)status;
+		return(sizeof(*result));
+	}
+	pool = &server->kv_pools[slot];
+	result->status = (uint32_t)SPARK_STATUS_OK;
+	result->holder = holder;
+	result->pool_generation = pool->generation;
+	result->chunk_bytes = pool->chunk_bytes;
+	result->device_bytes = pool->chunk_bytes * pool->chunk_capacity;
+	result->metadata_bytes = pool->metadata_bytes;
+	result->chunk_count = pool->chunk_count;
+	result->metadata_fd_count = 1u;
+	result->created = created;
+	result->slot_count = ((const SparkKvSharedIndexHeader *)pool->metadata_map)->slot_count;
+	return(sizeof(*result));
+}
+
 static uint32_t SparkWeightdServerOnKvPoolResize(SparkWeightdServer *server,SparkWeightdConnection *connection,const uint8_t *request_bytes,uint8_t *response,uint32_t result_kind,uint64_t request_id)
 {
 	const SparkWeightdIpcKvPoolResize *request = (const SparkWeightdIpcKvPoolResize *)request_bytes;
@@ -3284,7 +3453,7 @@ static uint32_t SparkWeightdServerOnKvPoolResize(SparkWeightdServer *server,Spar
 	uint32_t before;
 	memset(result,0,sizeof(*result));
 	SparkWeightdBuildHeader(response,result_kind,request_id);
-	if ( pool == 0 || request->reserved0 != 0u || request->target_chunks > pool->chunk_capacity )
+	if ( pool == 0 || request->reserved0 != 0u || request->target_chunks > pool->chunk_capacity || pool->shared != 0u )
 	{
 		result->status = (uint32_t)(pool == 0 ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_INVALID_ARGUMENT);
 		return(sizeof(*result));
@@ -3653,6 +3822,8 @@ static uint32_t SparkWeightdServerDispatchKind(SparkWeightdServer *server, Spark
             return(SparkWeightdServerOnKvPoolExport(server,connection,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS:
             return(SparkWeightdServerOnKvPoolStatus(server,connection,request,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH:
+            return(SparkWeightdServerOnKvSharedAttach(server,connection,request,response,result_kind,request_id));
         default:
             return(0u);
     }
@@ -5480,6 +5651,58 @@ SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,const Spar
 	grant->reattached = response.reattached;
 	grant->write_budget_bytes_per_day = response.write_budget_bytes_per_day;
 	grant->metadata_fd = response.metadata_fd_count != 0u ? fds[0] : -1;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdClientKvSharedAttach(SparkWeightdClient *client,const SparkWeightdKvSharedRequest *request,SparkWeightdKvSharedGrant *grant,uint64_t timeout_nanoseconds)
+{
+	SparkWeightdIpcKvSharedAttach wire;
+	SparkWeightdIpcKvSharedAttachResult response;
+	int fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+	uint32_t received = 0u,expected;
+	SparkStatus status;
+	if ( client == 0 || request == 0 || grant == 0 || request->label == 0 || request->label[0] == '\0' || strlen(request->label) >= sizeof(wire.label) || request->alignment_pages == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(grant,0,sizeof(*grant));
+	grant->metadata_fd = -1;
+	if ( client->next_request_id == UINT64_MAX )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(&wire,0,sizeof(wire));
+	memset(&response,0,sizeof(response));
+	SparkWeightdBuildHeader((uint8_t *)&wire,SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH,++client->next_request_id);
+	memcpy(wire.key,request->key,sizeof(wire.key));
+	memcpy(wire.layout_sha256,request->layout_sha256,sizeof(wire.layout_sha256));
+	wire.chunk_bytes = request->chunk_bytes;
+	wire.page_bytes = request->page_bytes;
+	wire.alignment_pages = request->alignment_pages;
+	memcpy(wire.label,request->label,strlen(request->label));
+	status = SparkWeightdClientExportExchange(client,&wire,sizeof(wire),&response,sizeof(response),fds,&received,timeout_nanoseconds);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = SparkWeightdIpcValidateHeader(&response.header,sizeof(response),SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH_RESULT);
+	expected = response.status == SPARK_STATUS_OK ? 1u : 0u;
+	if ( status == SPARK_STATUS_OK && (response.header.request_id != wire.header.request_id || received != expected ||
+		(response.status == SPARK_STATUS_OK && (response.chunk_bytes != request->chunk_bytes || response.slot_count == 0u || response.slot_count % request->alignment_pages != 0u ||
+		response.device_bytes != (uint64_t)response.slot_count * request->page_bytes || response.chunk_count != response.device_bytes / response.chunk_bytes ||
+		response.metadata_fd_count != 1u || response.metadata_bytes != SparkKvSharedIndexBytes(response.slot_count) || response.holder >= SPARK_KV_SHARED_INDEX_HOLDERS_MAX))) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdStatusFromWire(response.status);
+	if ( status != SPARK_STATUS_OK )
+	{
+		while ( received != 0u )
+			(void)close(fds[--received]);
+		SPARK_RETURN(status);
+	}
+	grant->pool_generation = response.pool_generation;
+	grant->chunk_bytes = response.chunk_bytes;
+	grant->device_bytes = response.device_bytes;
+	grant->metadata_bytes = response.metadata_bytes;
+	grant->chunk_count = response.chunk_count;
+	grant->holder = response.holder;
+	grant->created = response.created;
+	grant->slot_count = response.slot_count;
+	grant->metadata_fd = fds[0];
 	return(SPARK_STATUS_OK);
 }
 
