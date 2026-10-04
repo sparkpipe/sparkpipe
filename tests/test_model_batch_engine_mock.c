@@ -1254,6 +1254,38 @@ static void TestScenarioRankKilledAndRevived(const SparkModelResidentDeployment 
  * pipeline must NOT fail-stop (that reconnects every rank and resets every
  * engine session, killing all in-flight chains fleet-wide). The request
  * retries and completes; no rank ever reconnects. */
+static void TestScenarioBusyRestoreDeadline(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchEngine *engine = 0;
+	struct timespec start,now;
+	uint64_t elapsed_ns = 0u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,8u,0u);
+	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS;
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"busy deadline: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientScriptSubmitStatus(1u,SPARK_STATUS_BUSY);
+	TestSubmit(engine,1u,510u,2u);
+	clock_gettime(CLOCK_MONOTONIC,&start);
+	while ( state.total_terminals == 0u && elapsed_ns < UINT64_C(5000000000) )
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveAll();
+		usleep(5000);
+		clock_gettime(CLOCK_MONOTONIC,&now);
+		elapsed_ns = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - (uint64_t)start.tv_nsec;
+	}
+	CHECK(state.error_events[1] == 1u && elapsed_ns >= SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS && elapsed_ns < UINT64_C(5000000000),
+		"busy deadline: a rank that stays BUSY fails the request once the in-flight budget passes, not after a retry count");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRankBusyBackpressure(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -1670,6 +1702,7 @@ int main(void)
 	TestScenarioStalePrefixIsolatesLanes(&deployment,runtime_root);
 	TestScenarioVerificationFailureIsFatal(&deployment,runtime_root);
 	TestScenarioRankBusyBackpressure(&deployment,runtime_root);
+	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);
 	TestScenarioDriverIoError(&deployment,runtime_root);
 	TestScenarioEosEarlyStop(&deployment,runtime_root);
 	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
