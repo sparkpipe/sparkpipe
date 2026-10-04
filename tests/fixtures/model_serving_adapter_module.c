@@ -229,7 +229,7 @@ static SparkStatus TestModelServingValidateSubmission(
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_kind == 98u && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
-	if ( (submission->model_extension_kind == 89u || submission->model_extension_kind == 93u || submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
+	if ( (submission->model_extension_kind == 87u || submission->model_extension_kind == 89u || submission->model_extension_kind == 93u || submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -260,7 +260,7 @@ static void TestModelServingBuildCompletion(
 	completion->service_time_ns = (uint64_t)(state->stage_index + 1u) * 10u;
 	completion->device_memcpy_bytes = (uint64_t)(state->stage_index + 1u) * 100u;
 	completion->host_staging_bytes = (uint64_t)(state->stage_index + 1u) * 1000u;
-	if ( submission->model_extension_kind == 96u )
+	if ( submission->model_extension_kind == 96u || (submission->model_extension_kind == 87u && state->stage_index == 0u) )
 		completion->status = SPARK_STATUS_IO_ERROR;
 	if ( submission->model_extension_kind == 94u || submission->model_extension_kind == 95u )
 		completion->host_staging_bytes = state->submitted_count;
@@ -451,7 +451,7 @@ static SparkStatus TestModelServingResolvePrefetch(
 			state->prepared[index].submission_id == submission->submission_id )
 			break;
 	if ( index == sizeof(state->prepared) / sizeof(state->prepared[0]) ||
-		state->prepared[index].committed != 0u ||
+		(state->prepared[index].committed != 0u && resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) ||
 		TestModelServingPreparedIdentityMatches(&state->prepared[index],
 			submission) == 0u )
 		return(SPARK_STATUS_SCHEMA_ERROR);

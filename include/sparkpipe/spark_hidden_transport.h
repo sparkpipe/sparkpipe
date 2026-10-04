@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 5u
+#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 6u
 #define SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportInterface))
 #define SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES \
@@ -299,6 +299,9 @@ typedef SparkStatus (*SparkHiddenTransportSetFixedLocalFunction)(
     void *transport_state,
     void *local_buffer,
     uint64_t local_bytes);
+typedef SparkStatus (*SparkHiddenTransportCancelFunction)(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packet);
 
 typedef struct SparkHiddenTransportInterface
 {
@@ -332,6 +335,7 @@ typedef struct SparkHiddenTransportInterface
     SparkHiddenTransportSendFixedFunction send_fixed;
     SparkHiddenTransportSetFixedRemoteFunction set_fixed_remote;
     SparkHiddenTransportSetFixedLocalFunction set_fixed_local;
+    SparkHiddenTransportCancelFunction cancel;
 } SparkHiddenTransportInterface;
 
 typedef const SparkHiddenTransportInterface *(*SparkHiddenTransportGetInterfaceFunction)(
@@ -378,6 +382,9 @@ SparkStatus SparkHiddenTransportPostReceive(
     SparkHiddenTransportSession *session,
     SparkHiddenTransportPacket *packet);
 SparkStatus SparkHiddenTransportSend(
+    SparkHiddenTransportSession *session,
+    const SparkHiddenTransportPacket *packet);
+SparkStatus SparkHiddenTransportCancel(
     SparkHiddenTransportSession *session,
     const SparkHiddenTransportPacket *packet);
 SparkStatus SparkHiddenTransportPostReceiveBatch(

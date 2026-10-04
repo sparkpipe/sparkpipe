@@ -1172,16 +1172,18 @@ Related common-code debt:
   retried frame would run on half-updated state. Restore the lanes' recurrent
   state before a retried frame, then map the failure to `BUSY` as GLM Full
   does.
-- Pipeline-parallel stages still wedge after a failure on another rank. When
-  one rank fails a submission's COMMIT or frame, the next stage's route has
-  already posted its hidden-transport receive and waits in WAIT_INPUT for data
-  that never comes. Only a deadline moves it, and the engine sets none, so the
-  route keeps its slot claim and blocks the reset the reconnect needs. The
-  in-tree test transport completes receives without a peer, so no test sees
-  this. On client-generation change, cancel abandoned WAIT_INPUT/WAIT_OUTPUT
-  routes through the transport before releasing their boundary buffers, and
-  add a test transport that needs a real peer. Tensor-parallel deployments
-  (glm5_next TP16) post no inter-stage receives and are not affected.
+- Pipeline-parallel stages no longer wedge after a failure on another rank in
+  the host tests: the hidden transport has a `cancel` operation (ABI 6;
+  `host_staged_tcp` drops the posted receive and any queued frame), and
+  residentd cancels a route's transfer when the route is abandoned, its client
+  generation changed or its deadline expired. A route cancelled while waiting
+  for input fails through the failed-route path, which aborts its committed
+  cache transaction, so the session reset can run. The in-tree test transport
+  has a peer mode (`SPARK_TEST_TRANSPORT_PEER_DIRECTORY`) in which a receive
+  completes only after the peer sent, and `test_model_pipeline_client` proves
+  the reconnect with it. Not yet fleet-proven: fail one stage of a K3
+  TP4xPP4 lane mid-run and see the next stage log `ROUTE-TRANSPORT-CANCEL`
+  and the lane serve again after the engine reconnects.
 - Produce one immutable qualification bundle for a release candidate with
   `tools/qualification_bundle.py`: merged commit, release generation, package
   and driver hashes, all-rank identities, token stream, accuracy, performance,

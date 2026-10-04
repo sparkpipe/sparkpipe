@@ -191,6 +191,7 @@ typedef struct SparkModelResidentdRoute
 	uint32_t deadline_expired;
 	uint32_t deadline_completion_queued;
 	uint32_t deadline_wait_state;
+	uint32_t transport_cancelled;
 	uint32_t failure_status;
 	uint32_t failure_delivered;
 	uint32_t driver_completed;
@@ -2694,6 +2695,16 @@ static SparkStatus SparkModelResidentdApplyTransportCompletionLocked(
 	}
 	if ( matched == 0 )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	if ( matched->transport_cancelled != 0u && state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT )
+	{
+		(void)SparkModelResidentdFailRouteLocked(matched,SPARK_STATUS_IO_ERROR,1u);
+		return(SPARK_STATUS_OK);
+	}
+	if ( matched->transport_cancelled != 0u )
+	{
+		matched->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
+		return(SPARK_STATUS_OK);
+	}
 	if ( matched->deadline_expired == 0u )
 	{
 		SparkStatus deadline_status;
@@ -3000,13 +3011,40 @@ static SparkStatus SparkModelResidentdProgressRoute(
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT ||
 			state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_OUTPUT )
 		{
+			uint32_t cancel = 0u;
 			pthread_mutex_lock(&runtime->mutex);
 			if ( route->active != 0u && route->state == state )
+			{
 				status = SparkModelResidentdExpireTransportRouteLocked(runtime,
 					route,state);
+				if ( route->transport_cancelled == 0u && (route->deadline_expired != 0u || route->abandoned != 0u ||
+					runtime->client.fd < 0 || route->client_generation != runtime->client.generation) )
+				{
+					route->transport_cancelled = 1u;
+					route->deadline_wait_state = state;
+					cancel = 1u;
+				}
+			}
 			else
 				status = SPARK_STATUS_OK;
 			pthread_mutex_unlock(&runtime->mutex);
+			if ( cancel != 0u )
+			{
+				SparkStatus cancel_status = SparkHiddenTransportCancel(
+					state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT ? runtime->input_transport : runtime->output_transport,
+					state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT ? &route->input_packet : &route->output_packet);
+				fprintf(stderr,"ROUTE-TRANSPORT-CANCEL id=%llu wait=%s abandoned=%u deadline=%u status=%s\n",(unsigned long long)route->submission_id,
+					state == SPARK_MODEL_RESIDENTD_ROUTE_WAIT_INPUT ? "input" : "output",route->abandoned,route->deadline_expired,SparkStatusToString(cancel_status));
+				if ( cancel_status == SPARK_STATUS_BUSY )
+				{
+					pthread_mutex_lock(&runtime->mutex);
+					route->transport_cancelled = 0u;
+					pthread_mutex_unlock(&runtime->mutex);
+					return(SPARK_STATUS_OK);
+				}
+				if ( cancel_status != SPARK_STATUS_OK )
+					SPARK_RETURN(cancel_status);
+			}
 			return(status == SPARK_STATUS_CAPACITY_EXCEEDED ? SPARK_STATUS_OK :
 				status);
 		}

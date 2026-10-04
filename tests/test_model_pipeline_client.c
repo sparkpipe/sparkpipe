@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -1732,6 +1733,55 @@ static void TestModelPipelineFailedAbortResetsSession(const SparkModelResidentDe
 	printf("test_model_pipeline_client: a failed cache abort resets the rank's session (client dropped, every lane reset) and the next client is served without restarting residentd\n");
 }
 
+static void TestModelPipelinePeerTransportCancel(const SparkModelResidentDeployment *deployment,const char *deployment_path,char paths[][108],pid_t children[TEST_MODEL_PIPELINE_RANK_COUNT])
+{
+	TestModelPipelineState state;
+	SparkModelPipelineClient *pipeline;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t tokens[4],row_lanes[4],rank,attempt;
+	uint64_t positions[4],sequences[4];
+	uint8_t failure = 1u;
+	char directory[] = "/tmp/sparkpipe-peer-transport-XXXXXX";
+	SparkStatus status;
+	assert(mkdtemp(directory) != 0);
+	assert(setenv("SPARK_TEST_TRANSPORT_PEER_DIRECTORY",directory,1) == 0);
+	for (rank=0u; rank<TEST_MODEL_PIPELINE_RANK_COUNT; rank++)
+		children[rank] = TestModelPipelineStartResident(deployment_path,rank);
+	TestModelPipelineWaitForSockets(paths);
+	memset(&state,0,sizeof(state));
+	pipeline = TestModelPipelineConnect(deployment,&state);
+	state.pipeline = pipeline;
+	TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,951u);
+	submission.model_extension_kind = 87u;
+	submission.model_extension_bytes = sizeof(failure);
+	submission.model_extension = &failure;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	(void)TestModelPipelineWaitForFailure(pipeline);
+	assert(state.completion_count == 0u || state.completions[0].status != SPARK_STATUS_OK);
+	SparkModelPipelineClientDestroy(pipeline);
+	status = SPARK_STATUS_IO_ERROR;
+	for (attempt=0u; attempt<50u && status != SPARK_STATUS_OK; attempt++)
+	{
+		memset(&state,0,sizeof(state));
+		pipeline = TestModelPipelineConnect(deployment,&state);
+		state.pipeline = pipeline;
+		TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,953u + attempt);
+		status = SparkModelPipelineClientSubmit(pipeline,&submission);
+		if ( status == SPARK_STATUS_OK )
+		{
+			TestModelPipelineWaitForCompletion(pipeline,&state,1u);
+			status = (SparkStatus)state.completions[0].status;
+		}
+		SparkModelPipelineClientDestroy(pipeline);
+	}
+	assert(status == SPARK_STATUS_OK);
+	TestModelPipelineStopResidents(children,paths,0u);
+	assert(unsetenv("SPARK_TEST_TRANSPORT_PEER_DIRECTORY") == 0);
+	(void)rmdir(directory);
+	printf("test_model_pipeline_client: with a transport that needs its peer, a later stage waiting for input from a failed stage is cancelled when the client goes away, so the reconnect resets and serves\n");
+}
+
 static void TestModelPipelineAssertExecutionOrder(const TestModelPipelineState *state,uint64_t first,uint64_t second)
 {
 	const SparkModelPipelineStageCompletion *early,*late;
@@ -2063,6 +2113,7 @@ int main(void)
 	TestModelBatchProcess(deployment_path,3u);
 	TestModelBatchProcessOverCapacity(deployment_path);
 	TestModelPipelineStopResidents(children,paths,0u);
+	TestModelPipelinePeerTransportCancel(&deployment,deployment_path,paths,children);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	unlink(deployment_path);
 	return(0);

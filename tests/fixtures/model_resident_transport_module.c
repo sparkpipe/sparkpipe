@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_hidden_transport.h"
 
@@ -9,6 +10,7 @@
 typedef struct TestModelResidentTransportPending
 {
 	uint32_t active;
+	uint32_t awaiting_peer;
 	SparkHiddenTransportPacket packet;
 } TestModelResidentTransportPending;
 
@@ -57,21 +59,13 @@ static TestModelResidentTransportPending *TestModelResidentTransportReserve(
 	return(0);
 }
 
-static SparkStatus TestModelResidentTransportQueue(
+static void TestModelResidentTransportComplete(
 	TestModelResidentTransport *state,
 	const SparkHiddenTransportPacket *packet,
 	SparkStatus completion_status)
 {
-	TestModelResidentTransportPending *pending;
 	SparkHiddenTransportCompletion *completion;
 	uint32_t tail;
-	if ( TestModelResidentTransportFind(state,packet) != 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( state->completion_count >= TEST_MODEL_RESIDENT_TRANSPORT_PENDING_CAPACITY )
-		return(SPARK_STATUS_BUSY);
-	pending = TestModelResidentTransportReserve(state,packet);
-	if ( pending == 0 )
-		return(SPARK_STATUS_BUSY);
 	tail = (state->completion_head + state->completion_count) % TEST_MODEL_RESIDENT_TRANSPORT_PENDING_CAPACITY;
 	completion = &state->completions[tail];
 	memset(completion,0,sizeof(*completion));
@@ -84,6 +78,35 @@ static SparkStatus TestModelResidentTransportQueue(
 	completion->transfer_bytes = (uint64_t)packet->active_sequence_count * ((uint64_t)packet->bytes_per_sequence + packet->sideband_bytes_per_sequence);
 	state->completion_delays[tail] = 1u;
 	state->completion_count++;
+}
+
+static uint32_t TestModelResidentTransportPeerPath(
+	const TestModelResidentTransport *state,
+	const SparkHiddenTransportPacket *packet,
+	char *path,
+	size_t capacity)
+{
+	const char *directory = getenv("SPARK_TEST_TRANSPORT_PEER_DIRECTORY");
+	if ( directory == 0 || directory[0] == '\0' )
+		return(0u);
+	return(snprintf(path,capacity,"%s/%u-%u-%llu-%llu",directory,state->endpoint.source_rank_index,state->endpoint.sink_rank_index,
+		(unsigned long long)packet->sequence_id,(unsigned long long)packet->token_index) < (int)capacity ? 1u : 0u);
+}
+
+static SparkStatus TestModelResidentTransportQueue(
+	TestModelResidentTransport *state,
+	const SparkHiddenTransportPacket *packet,
+	SparkStatus completion_status)
+{
+	TestModelResidentTransportPending *pending;
+	if ( TestModelResidentTransportFind(state,packet) != 0 )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	if ( state->completion_count >= TEST_MODEL_RESIDENT_TRANSPORT_PENDING_CAPACITY )
+		return(SPARK_STATUS_BUSY);
+	pending = TestModelResidentTransportReserve(state,packet);
+	if ( pending == 0 )
+		return(SPARK_STATUS_BUSY);
+	TestModelResidentTransportComplete(state,packet,completion_status);
 	return(SPARK_STATUS_OK);
 }
 
@@ -113,9 +136,21 @@ static SparkStatus TestModelResidentTransportReceive(
 {
 	TestModelResidentTransport *state;
 	uint64_t bytes;
+	char path[512];
 	state = (TestModelResidentTransport *)transport_state;
 	if ( state == 0 || packet == 0 || packet->hidden_bf16 == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( TestModelResidentTransportPeerPath(state,packet,path,sizeof(path)) != 0u )
+	{
+		TestModelResidentTransportPending *pending;
+		if ( TestModelResidentTransportFind(state,packet) != 0 )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		pending = TestModelResidentTransportReserve(state,packet);
+		if ( pending == 0 )
+			return(SPARK_STATUS_BUSY);
+		pending->awaiting_peer = 1u;
+		return(SPARK_STATUS_OK);
+	}
 	bytes = (uint64_t)packet->active_sequence_count * packet->bytes_per_sequence;
 	memset((void *)packet->hidden_bf16,0x2c,(size_t)bytes);
 	bytes = (uint64_t)packet->active_sequence_count * packet->sideband_bytes_per_sequence;
@@ -129,9 +164,17 @@ static SparkStatus TestModelResidentTransportSend(
 	const SparkHiddenTransportPacket *packet)
 {
 	TestModelResidentTransport *state;
+	char path[512];
+	FILE *marker;
 	state = (TestModelResidentTransport *)transport_state;
 	if ( state == 0 || packet == 0 || packet->hidden_bf16 == 0 || (packet->sideband_bytes_per_sequence != 0u && (packet->sideband_payload == 0 || ((const uint8_t *)packet->sideband_payload)[0] == 0u)) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( TestModelResidentTransportPeerPath(state,packet,path,sizeof(path)) != 0u )
+	{
+		marker = fopen(path,"w");
+		if ( marker == 0 || fclose(marker) != 0 )
+			return(SPARK_STATUS_IO_ERROR);
+	}
 	return(TestModelResidentTransportQueue(state,packet,((const uint8_t *)packet->hidden_bf16)[0] != 0u ? SPARK_STATUS_OK : SPARK_STATUS_VALIDATION_FAILED));
 }
 
@@ -168,9 +211,22 @@ static SparkStatus TestModelResidentTransportPoll(
 	TestModelResidentTransport *state;
 	TestModelResidentTransportPending *pending;
 	SparkHiddenTransportPacket packet;
+	uint32_t index;
+	char path[512];
 	state = (TestModelResidentTransport *)transport_state;
 	if ( state == 0 || completion == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (index=0u; index<TEST_MODEL_RESIDENT_TRANSPORT_PENDING_CAPACITY && state->completion_count < TEST_MODEL_RESIDENT_TRANSPORT_PENDING_CAPACITY; index++)
+	{
+		pending = &state->pending[index];
+		if ( pending->active == 0u || pending->awaiting_peer == 0u || TestModelResidentTransportPeerPath(state,&pending->packet,path,sizeof(path)) == 0u || unlink(path) != 0 )
+			continue;
+		memset((void *)pending->packet.hidden_bf16,0x2c,(size_t)((uint64_t)pending->packet.active_sequence_count * pending->packet.bytes_per_sequence));
+		if ( pending->packet.sideband_bytes_per_sequence != 0u )
+			memset((void *)pending->packet.sideband_payload,0x5a,(size_t)((uint64_t)pending->packet.active_sequence_count * pending->packet.sideband_bytes_per_sequence));
+		pending->awaiting_peer = 0u;
+		TestModelResidentTransportComplete(state,&pending->packet,SPARK_STATUS_OK);
+	}
 	if ( state->completion_count == 0u )
 	{
 		memset(completion,0,sizeof(*completion));
@@ -206,6 +262,25 @@ static SparkStatus TestModelResidentTransportPoll(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus TestModelResidentTransportCancel(
+	void *transport_state,
+	const SparkHiddenTransportPacket *packet)
+{
+	TestModelResidentTransport *state;
+	TestModelResidentTransportPending *pending;
+	state = (TestModelResidentTransport *)transport_state;
+	if ( state == 0 || packet == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	pending = TestModelResidentTransportFind(state,packet);
+	if ( pending == 0 || pending->awaiting_peer == 0u )
+		return(SPARK_STATUS_OK);
+	if ( state->completion_count >= TEST_MODEL_RESIDENT_TRANSPORT_PENDING_CAPACITY )
+		return(SPARK_STATUS_BUSY);
+	pending->awaiting_peer = 0u;
+	TestModelResidentTransportComplete(state,&pending->packet,SPARK_STATUS_IO_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus TestModelResidentTransportPollDescriptors(
 	void *transport_state,
 	SparkHiddenTransportPollDescriptor *descriptors,
@@ -232,7 +307,8 @@ static const SparkHiddenTransportInterface TestModelResidentTransportInterface =
 	.poll = TestModelResidentTransportPoll,
 	.post_receive_batch = TestModelResidentTransportReceiveBatch,
 	.send_batch = TestModelResidentTransportSendBatch,
-	.get_poll_descriptors = TestModelResidentTransportPollDescriptors
+	.get_poll_descriptors = TestModelResidentTransportPollDescriptors,
+	.cancel = TestModelResidentTransportCancel
 };
 
 __attribute__((visibility("default")))

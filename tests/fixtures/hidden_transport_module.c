@@ -104,6 +104,17 @@ static SparkStatus TestHiddenTransportModulePoll(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus TestHiddenTransportModuleCancel(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packet)
+{
+    if (transport_state == 0 || packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
+}
+
 const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
 {
     static SparkHiddenTransportInterface transport_interface;
@@ -122,5 +133,6 @@ const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
     transport_interface.post_receive_batch =
         TestHiddenTransportModulePostReceiveBatch;
     transport_interface.send_batch = TestHiddenTransportModuleSendBatch;
+    transport_interface.cancel = TestHiddenTransportModuleCancel;
     return &transport_interface;
 }
