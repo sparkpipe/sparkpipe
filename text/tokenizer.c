@@ -1867,7 +1867,7 @@ static uint32_t SparkTokenizerJsonIsNull(
     {
         return 0u;
     }
-    is_null = bytes == 4u && memcmp(text, "null", 4u) == 0 ? 1u : 0u;
+    is_null = bytes == sizeof("null") - 1u && memcmp(text, "null", sizeof("null") - 1u) == 0 ? 1u : 0u;
     free(text);
     return is_null;
 }
