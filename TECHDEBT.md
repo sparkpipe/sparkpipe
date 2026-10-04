@@ -1708,13 +1708,6 @@ Related common-code debt:
   DEBUG` or delete them, and make a release pack without PLE tensors fail to
   load. Prove it on a Spark: release qwen4_flash and qwen38_max loads refuse
   the variables and pass their T1 gates.
-- `tests/test_no_source_comments.py` scans C, C++ and CUDA sources outside
-  `tests/` only (2026-10-03). 15 C-family files under `tests/` hold 182
-  comment lines, and Python, shell, Makefile and YAML comments are not linted,
-  although I48 has no such exception. The owner decides whether I48 covers
-  them; any extension keeps the SPDX and copyright headers of third-party
-  copies.
-
 ## Runtime completion
 
 - Add bounded cancellation and drain for terminal client I/O failures so every
