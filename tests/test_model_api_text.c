@@ -1035,6 +1035,20 @@ static uint32_t TestApiWaitHealthBody(const TestApiStack *stack,int status,const
 	return(0u);
 }
 
+static void TestApiDegradedPath(TestApiStack *stack)
+{
+	const char *flag = getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE");
+	FILE *file;
+	assert(flag != 0 && TestApiWaitHealthBody(stack,200,"\"degraded_rank\":-1",20u) != 0u);
+	file = fopen(flag,"w");
+	assert(file != 0 && fclose(file) == 0);
+	assert(TestApiWaitHealthBody(stack,503,"\"degraded_path\":\"eager\"",20u) != 0u);
+	assert(TestApiWaitHealthBody(stack,503,"\"degraded_rank\":0",5u) != 0u);
+	assert(unlink(flag) == 0);
+	assert(TestApiWaitHealthBody(stack,200,"\"degraded_path\":\"none\"",20u) != 0u);
+	printf("test_model_api_text: degraded path OK (/health answers 503 naming the rank whose driver fell back to the eager path, and 200 once it reports none)\n");
+}
+
 static void TestApiRankLoss(TestApiStack *stack)
 {
 	char response[65536];
@@ -1177,6 +1191,8 @@ int main(void)
 {
 	TestApiStack stack;
 	TestApiWriteTokenizerFixture("build/test_tokenizer_sidecar_api_hf.json");
+	assert(setenv("SPARK_TEST_ADAPTER_DEGRADED_FILE","build/test_model_api_text_degraded.flag",1) == 0);
+	unlink("build/test_model_api_text_degraded.flag");
 
 	memset(&stack,0,sizeof(stack));
 	stack.api_port = TestApiProbeFreeTcpPort();
@@ -1215,6 +1231,7 @@ int main(void)
 	}
 	TestApiChatDeclaredStops(&stack);
 	TestApiSamplingOptions(&stack);
+	TestApiDegradedPath(&stack);
 	TestApiRankLoss(&stack);
 	TestApiStopStack(&stack);
 

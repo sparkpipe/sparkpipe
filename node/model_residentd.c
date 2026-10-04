@@ -46,6 +46,7 @@
 #define SPARK_MODEL_RESIDENTD_PROGRESS_STEPS 64u
 #define SPARK_MODEL_RESIDENTD_QUIESCE_TIMEOUT_NS UINT64_C(5000000000)
 #define SPARK_MODEL_RESIDENTD_QUIESCE_POLL_NS 1000000L
+#define SPARK_MODEL_RESIDENTD_ABORT_RETRY_NS UINT64_C(5000000000)
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ROUTE 1u
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY 2u
 #define SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_IDENTITY 3u
@@ -200,6 +201,7 @@ typedef struct SparkModelResidentdRoute
 	uint64_t sequence_position;
 	uint64_t client_generation;
 	uint64_t adapter_submit_time_ns;
+	uint64_t abort_retry_since_ns;
 	SparkModelServingSubmission submission;
 	SparkHiddenTransportPacket input_packet;
 	SparkHiddenTransportPacket output_packet;
@@ -242,6 +244,7 @@ typedef struct SparkModelResidentdRuntime
 	uint32_t committed_fifo_head;
 	uint32_t committed_fifo_tail;
 	uint64_t progress_pass_count;
+	uint64_t session_reset_count;
 	uint64_t adapter_op_count;
 	uint32_t adapter_op_max_per_pass;
 	SparkModelResidentdMemoryMode memory_mode;
@@ -1591,6 +1594,18 @@ static void SparkModelResidentdCloseClientLocked(
 		}
 }
 
+static void SparkModelResidentdRequestSessionResetLocked(SparkModelResidentdRuntime *runtime,uint64_t submission_id,SparkStatus status)
+{
+	runtime->session_reset_count++;
+	fprintf(stderr,"model_residentd session_reset rank=%u submission=%llu abort=%s resets=%llu: the driver's cache state for this route is unknown, so the rank drops its client and resets every lane before the next hello instead of restarting\n",
+		runtime->rank_plan.rank_index,(unsigned long long)submission_id,SparkStatusToString(status),(unsigned long long)runtime->session_reset_count);
+	SparkModelResidentdCloseClientLocked(runtime);
+	runtime->client.generation += 1u;
+	if ( runtime->client.generation == 0u )
+		runtime->client.generation = 1u;
+	runtime->client.pending_client_reset = runtime->client.generation;
+}
+
 static SparkStatus SparkModelResidentdAbortPreparedRoutes(
 	SparkModelResidentdRuntime *runtime)
 {
@@ -1621,11 +1636,12 @@ static SparkStatus SparkModelResidentdAbortPreparedRoutes(
 		else if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 			route->state = SPARK_MODEL_RESIDENTD_ROUTE_RESERVED;
 		else
+		{
+			route->prepared_cache = 0u;
 			(void)SparkModelResidentdFailRouteLocked(route,status,1u);
+			SparkModelResidentdRequestSessionResetLocked(runtime,route->submission_id,status);
+		}
 		pthread_mutex_unlock(&runtime->mutex);
-		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
-			status != SPARK_STATUS_PENDING )
-			SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -2885,7 +2901,7 @@ static SparkStatus SparkModelResidentdCloseFailedRouteLocked(SparkModelResidentd
 	SparkStatus status;
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_FAILED;
 	if ( abort_status != SPARK_STATUS_OK )
-		atomic_store(&runtime->failed_status,abort_status);
+		SparkModelResidentdRequestSessionResetLocked(runtime,route->submission_id,abort_status);
 	route->prepared_cache = 0u;
 	status = SparkModelResidentdRemoveCommittedLocked(runtime,route);
 	if ( status == SPARK_STATUS_OK )
@@ -2918,6 +2934,18 @@ static SparkStatus SparkModelResidentdFinalizeFailedRoute(SparkModelResidentdRun
 	pthread_mutex_unlock(&runtime->mutex);
 	status = abort_cache != 0u ? SparkModelServingAdapterResolvePrefetch(&runtime->adapter_library.adapter_interface,runtime->adapter_state,&route->submission,SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) : SPARK_STATUS_OK;
 	pthread_mutex_lock(&runtime->mutex);
+	if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
+	{
+		uint64_t now_ns = SparkModelResidentdMonotonicTimeNs();
+		if ( route->abort_retry_since_ns == 0u )
+			route->abort_retry_since_ns = now_ns;
+		if ( now_ns - route->abort_retry_since_ns < SPARK_MODEL_RESIDENTD_ABORT_RETRY_NS )
+		{
+			route->state = SPARK_MODEL_RESIDENTD_ROUTE_FAILED;
+			pthread_mutex_unlock(&runtime->mutex);
+			return(SPARK_STATUS_OK);
+		}
+	}
 	status = SparkModelResidentdCloseFailedRouteLocked(runtime,route,status);
 	pthread_mutex_unlock(&runtime->mutex);
 	SPARK_RETURN(status);

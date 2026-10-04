@@ -6599,6 +6599,7 @@ SparkStatus SparkGlm5NextResidentDecodeStageSnapshot(
 	snapshot->host_callback_completion_count = atomic_load_explicit(&state->host_callback_completion_count,memory_order_relaxed);
 	snapshot->resident_sequence_count = SparkStageKvBindingResidentCount(&state->kv);
 	snapshot->kv_token_capacity = (uint64_t)state->page_count * SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT;
+	snapshot->degraded_flags = state->graph_path_requested != 0u && state->graph_path_enabled == 0u ? SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH : 0u;
 	SparkStageKvBindingKvStoreCounters(&state->kv,&snapshot->kv_store);
 	return(SparkGlm5NextWeightdHealth(state));
 }

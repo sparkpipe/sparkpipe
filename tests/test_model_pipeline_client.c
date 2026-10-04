@@ -1691,6 +1691,47 @@ static void TestModelPipelineFailedCommitRecovers(const SparkModelResidentDeploy
 	memset(state,0,sizeof(*state));
 }
 
+static void TestModelPipelineFailedAbortResetsSession(const SparkModelResidentDeployment *deployment,TestModelPipelineState *state)
+{
+	SparkModelPipelineClient *pipeline;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t tokens[4],row_lanes[4];
+	uint64_t positions[4],sequences[4];
+	uint32_t attempt;
+	uint8_t failure;
+	SparkStatus status;
+	failure = 1u;
+	memset(state,0,sizeof(*state));
+	pipeline = TestModelPipelineConnect(deployment,state);
+	state->pipeline = pipeline;
+	TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,651u);
+	submission.model_extension_kind = 89u;
+	submission.model_extension_bytes = sizeof(failure);
+	submission.model_extension = &failure;
+	assert(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK);
+	assert(TestModelPipelineWaitForFailure(pipeline) != SPARK_STATUS_OK);
+	SparkModelPipelineClientDestroy(pipeline);
+	status = SPARK_STATUS_IO_ERROR;
+	for (attempt=0u; attempt<50u && status != SPARK_STATUS_OK; attempt++)
+	{
+		memset(state,0,sizeof(*state));
+		pipeline = TestModelPipelineConnect(deployment,state);
+		state->pipeline = pipeline;
+		TestModelPipelineBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences,652u + attempt);
+		status = SparkModelPipelineClientSubmit(pipeline,&submission);
+		if ( status == SPARK_STATUS_OK )
+		{
+			TestModelPipelineWaitForCompletion(pipeline,state,1u);
+			status = (SparkStatus)state->completions[0].status;
+		}
+		SparkModelPipelineClientDestroy(pipeline);
+	}
+	assert(status == SPARK_STATUS_OK);
+	memset(state,0,sizeof(*state));
+	printf("test_model_pipeline_client: a failed cache abort resets the rank's session (client dropped, every lane reset) and the next client is served without restarting residentd\n");
+}
+
 static void TestModelPipelineAssertExecutionOrder(const TestModelPipelineState *state,uint64_t first,uint64_t second)
 {
 	const SparkModelPipelineStageCompletion *early,*late;
@@ -1864,6 +1905,7 @@ int main(void)
 	TestModelPipelineFailedPrefillFreesSlot(pipeline,&state);
 	SparkModelPipelineClientDestroy(pipeline);
 	TestModelPipelineFailedCommitRecovers(&deployment,&state);
+	TestModelPipelineFailedAbortResetsSession(&deployment,&state);
 	memset(&state,0,sizeof(state));
 	pipeline = TestModelPipelineConnect(&deployment,&state);
 	state.pipeline = pipeline;

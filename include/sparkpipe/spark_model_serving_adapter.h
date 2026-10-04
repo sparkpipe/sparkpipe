@@ -306,7 +306,7 @@ typedef struct SparkModelServingAdapterSnapshot
 	uint64_t host_staging_bytes_per_submit;
 	SparkModelDriverKvStoreCounters kv_store;
 	uint32_t max_sequence_positions;
-	uint32_t reserved0;
+	uint32_t degraded_flags;
 } SparkModelServingAdapterSnapshot;
 
 typedef SparkStatus (*SparkModelServingAdapterInitializeFunction)(

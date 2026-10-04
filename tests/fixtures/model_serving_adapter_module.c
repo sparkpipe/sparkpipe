@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
@@ -228,7 +229,7 @@ static SparkStatus TestModelServingValidateSubmission(
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_kind == 98u && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
-	if ( (submission->model_extension_kind == 93u || submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
+	if ( (submission->model_extension_kind == 89u || submission->model_extension_kind == 93u || submission->model_extension_kind == 94u || submission->model_extension_kind == 95u || submission->model_extension_kind == 96u) && submission->model_extension_bytes == 1u )
 		return(SPARK_STATUS_OK);
 	if ( submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
 		return(SPARK_STATUS_UNSUPPORTED);
@@ -454,8 +455,13 @@ static SparkStatus TestModelServingResolvePrefetch(
 		TestModelServingPreparedIdentityMatches(&state->prepared[index],
 			submission) == 0u )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && submission->model_extension_kind == 93u && state->stage_index == 1u )
+	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT && (submission->model_extension_kind == 93u || submission->model_extension_kind == 89u) && state->stage_index == 1u )
 		return(SPARK_STATUS_IO_ERROR);
+	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT && submission->model_extension_kind == 89u && state->stage_index == 1u )
+	{
+		memset(&state->prepared[index],0,sizeof(state->prepared[index]));
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	if ( resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT )
 		state->prepared[index].committed = 1u;
 	else
@@ -530,6 +536,8 @@ static SparkStatus TestModelServingSnapshot(
 	snapshot->completed_count = state->completed_count;
 	snapshot->rejected_count = state->rejected_count;
 	snapshot->max_sequence_positions = UINT32_C(1) << 20;
+	if ( getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE") != 0 && access(getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE"),F_OK) == 0 )
+		snapshot->degraded_flags = SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH;
 	return(SPARK_STATUS_OK);
 }
 

@@ -281,6 +281,8 @@ typedef struct SparkModelDriverKvStoreCounters
     uint64_t write_budget_discarded_pages;
 } SparkModelDriverKvStoreCounters;
 
+#define SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH 0x00000001u
+
 typedef struct SparkModelDriverRuntimeSnapshot
 {
     uint32_t descriptor_bytes;
@@ -300,7 +302,7 @@ typedef struct SparkModelDriverRuntimeSnapshot
     uint64_t host_callback_completion_count;
     uint64_t stale_admission_count;
     uint32_t private_queue_pressure;
-    uint32_t reserved;
+    uint32_t degraded_flags;
     SparkModelDriverKvStoreCounters kv_store;
 } SparkModelDriverRuntimeSnapshot;
 
