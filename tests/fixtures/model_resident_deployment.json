@@ -30,6 +30,7 @@
       "transport_host": "spark0",
       "adapter_configuration_path": "config/test-adapter-0.json",
       "kv_backing_directory": "/tmp/test-runtime-0/kvcache",
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 0,
       "control_endpoint": {"kind": "tcp", "host": "127.0.0.1", "port": 18080}
     },
@@ -41,6 +42,7 @@
       "transport_host": "spark1",
       "adapter_configuration_path": "config/test-adapter-1.json",
       "kv_backing_directory": "/tmp/test-runtime-1/kvcache",
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 0,
       "control_endpoint": {"kind": "unix", "path": "/tmp/test-model-resident-1.sock"}
     },
@@ -52,6 +54,7 @@
       "transport_host": "spark2",
       "adapter_configuration_path": "config/test-adapter-2.json",
       "kv_backing_directory": "/tmp/test-runtime-2/kvcache",
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 0,
       "control_endpoint": {"kind": "unix", "path": "/tmp/test-model-resident-2.sock"}
     }

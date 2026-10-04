@@ -65,6 +65,7 @@ stage() {
       "transport_host": "${SPARK_HOST}",
       "adapter_configuration_path": "config/qwen38_27b_tp1_rank0.json",
       "kv_backing_directory": null,
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 0,
       "control_endpoint": { "kind": "tcp", "host": "${SPARK_HOST}", "port": ${CONTROL_PORT} }
     }

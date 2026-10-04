@@ -15,6 +15,7 @@ typedef struct TestModelResidentDeploymentFixture
 	const char *node_target;
 	const char *adapter_configuration_path;
 	const char *kv_backing_directory;
+	const char *kv_partition;
 	uint64_t kv_backing_maximum_bytes;
 	const char *tokenizer_asset_path;
 	uint32_t tokenizer_vocabulary_size;

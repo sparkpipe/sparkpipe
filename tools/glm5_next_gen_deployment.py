@@ -202,6 +202,7 @@ def resident_deployment() -> dict:
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory": "/home/%s/kvcache/" % host + ROOT_NAME,
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": KV_BACKING_MAXIMUM_BYTES,
             "kv_snapshot_directory": "/home/%s/kvsnapshot/" % host + ROOT_NAME,
             "kv_snapshot_maximum_bytes": KV_SNAPSHOT_MAXIMUM_BYTES,

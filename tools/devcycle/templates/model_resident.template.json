@@ -30,6 +30,7 @@
       "transport_host": "spark4",
       "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
       "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 1073741824,
       "control_endpoint": {
         "kind": "tcp",
@@ -45,6 +46,7 @@
       "transport_host": "spark5",
       "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
       "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 1073741824,
       "control_endpoint": {
         "kind": "tcp",
@@ -60,6 +62,7 @@
       "transport_host": "spark6",
       "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
       "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 1073741824,
       "control_endpoint": {
         "kind": "tcp",
@@ -75,6 +78,7 @@
       "transport_host": "spark7",
       "adapter_configuration_path": "config/dsv4_flash_tp4_stage.json",
       "kv_backing_directory": "/tmp/dsv4-integrated-lean-3d962820-runtime/kv",
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 1073741824,
       "control_endpoint": {
         "kind": "tcp",

@@ -66,6 +66,7 @@ def derive(sequences: int, positions: int = 512) -> dict:
         "max_input_rows": 1 if sequences == 1 else min(sequences, row_capacity),
         "kv_logical_page_capacity": kv_pages,
         "kv_physical_page_capacity": kv_pages,
+        "kv_partition": "/",
         "kv_backing_maximum_bytes": kv_pages * KV_PAGE_BYTES * KV_BACKING_HEADROOM,
         "execution_row_capacity": row_capacity,
         "max_sequence_positions": positions,

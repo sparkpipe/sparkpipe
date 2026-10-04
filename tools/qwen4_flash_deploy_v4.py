@@ -73,6 +73,7 @@ def main():
             "transport_host": host,
             "adapter_configuration_path": f"config/adapter-r{rank}.json",
             "kv_backing_directory": f"/home/{host}/kvcache/qwen4_flash.tp4",
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": 8589934592,
             "control_endpoint": {"kind": "tcp", "host": host,
                                  "port": CONTROL_PORT_BASE + position},

@@ -53,6 +53,7 @@ def deployment(args, adapter_config: str) -> dict:
             "transport_host": args.host,
             "adapter_configuration_path": adapter_config,
             "kv_backing_directory": f"/home/{args.host}/kvcache/qwen38_27b.tp1",
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": 8589934592,
             "control_endpoint": {"kind": "tcp", "host": args.host, "port": args.control_port},
         }],

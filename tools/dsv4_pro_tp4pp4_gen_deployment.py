@@ -99,6 +99,7 @@ def build_deployment() -> dict:
             "transport_host": f"{host}-fabric",
             "adapter_configuration_path": STAGE_CONFIG_NAME,
             "kv_backing_directory": KV_BACKING.format(host=rank),
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": KV_BACKING_MAX,
             "control_endpoint": {
                 "kind": "tcp",

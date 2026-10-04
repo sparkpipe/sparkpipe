@@ -378,15 +378,13 @@ citations refer to that commit.
   reactivate it, resend the prompt, and see `cached_tokens > 0` with tokens
   identical to the first run.
 - The KV page store reserves its whole backing quota at open (`fallocate`),
-  so a full partition or a quota larger than the free space fails the load with
-  `CAPACITY_EXCEEDED`, and the deployment loader requires
-  `kv_backing_directory`. Nothing checks that the directory is on the hot-KV
-  NVMe partition: a backing directory on the root filesystem or tmpfs loads.
-  Name the KV partition in the deployment (mount point or device) and refuse a
-  backing or snapshot directory on any other filesystem, proven on one Spark
-  by loading against a directory off the partition.
-## KV sharding
-
+  so a full partition or a quota larger than the free space fails the load
+  with `CAPACITY_EXCEEDED`, and each deployment node names its `kv_partition`:
+  residentd refuses a backing or snapshot directory on another filesystem, or
+  a partition on tmpfs, ramfs, NFS, Ceph, FUSE, CIFS/SMB or 9p. The Sparks
+  keep KV on the root NVMe (`/`), so the check does not separate KV from the
+  OS. Close it on one Spark by loading a deployment whose backing directory is
+  on `/mnt/model-warm` (Ceph) and seeing the refusal.
 - Left out on purpose (2026-10-02): GLM-5.3 Flash (glm5_next) requires
   `kv_shard` (and with it `dsa_index_context_parallel`) at every TP degree the
   shard check accepts (8 and 16), so each rank holds 1/tp of the latent KV and
@@ -462,12 +460,12 @@ citations refer to that commit.
   store write the snapshot format and moving those families onto the
   binding, proven on the fleet by a spill, residentd restart and restore run
   that hits through the snapshot store alone.
-- Left out on purpose (2026-10-04): The unwired lane pager is deleted and
-  nothing replaces its whole-lane park, park budget or restore-bandwidth
-  admission: the binding parks per page through the arena's evict hook.
-  Close it with lane park and restore-bandwidth admission in the binding,
-  proven by a fleet backpressure run at 2x device pages where parked lanes
-  restore bit-exact at B1 and B16.
+- Oversubscription is fleet-unproven. The engine admits lanes up to the
+  physical pages, and the arena parks the pages of lanes outside the running
+  wave one at a time through the page store and brings them back when the
+  lane rejoins, so a lane is parked and restored page by page rather than as
+  one contiguous transfer. Close it with a fleet backpressure run at 2x device
+  pages where parked lanes restore bit-exact at B1 and B16.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens
@@ -503,19 +501,14 @@ citations refer to that commit.
   Close it by spilling into the persistent store, proven on the fleet by a
   prompt spilled before a residentd restart that hits after it with tokens
   equal to an uninterrupted run.
-- Left out on purpose (2026-10-02): Eviction ignores request priority and
-  deadline. Victims are the least recently used entry
-  (`cache/kv_page_cache.c:354-361`), the oldest resident entry (`:363-393`),
-  or in the arena the block with the lowest reference count and then reuse
-  value or recency (`cache/kv_cache.c:1094-1116`); the frame priority is
-  copied into the admission request (`cache/kv_page_cache.c:2137`) only to be
-  compared on retry (`:1904`). Pages pinned by a running transaction are
-  protected (`:317-324`, `cache/kv_cache.c:1147-1151`), but a high-priority
-  request's cached state is evicted as readily as a low-priority one's,
-  against `docs/archive/JIT_KV_DESIGN.md:81-86`. Close it by ranking victims
-  by owning-request priority and deadline before reuse value, proven on the
-  fleet by an oversubscribed run with two priority classes where the higher
-  class keeps its hits and its TTFT stays flat.
+- Prefix-cache eviction ranks victims by the highest priority of the requests
+  that published or reused an entry, then prefers entries the snapshot store
+  holds, then age (`SparkKvPageCacheSelectVictim`,
+  `SparkKvPageCacheResidentVictim`), but deadlines are not considered and the
+  arena's choice of which resident page to park is still reuse value and
+  recency. Close it with deadline-aware ranking, proven on the fleet by an
+  oversubscribed run with two priority classes where the higher class keeps
+  its hits and its TTFT stays flat.
 - A full backing store fails the admission: after the page cache relieves
   backing (releasing an idle restored page's record or evicting an unused
   entry) and still finds no slot, the admission answers `CAPACITY_EXCEEDED`

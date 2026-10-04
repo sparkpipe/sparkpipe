@@ -36,6 +36,7 @@
    "transport_host": "spark4",
    "adapter_configuration_path": "config/stage.json",
    "kv_backing_directory": "/home/spark4/sparkdata/dsv41flash.mxfp4.tp4/kvcache",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 0,
    "control_endpoint": {
     "kind": "tcp",
@@ -51,6 +52,7 @@
    "transport_host": "spark5",
    "adapter_configuration_path": "config/stage.json",
    "kv_backing_directory": "/home/spark5/sparkdata/dsv41flash.mxfp4.tp4/kvcache",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 0,
    "control_endpoint": {
     "kind": "tcp",
@@ -66,6 +68,7 @@
    "transport_host": "spark6",
    "adapter_configuration_path": "config/stage.json",
    "kv_backing_directory": "/home/spark6/sparkdata/dsv41flash.mxfp4.tp4/kvcache",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 0,
    "control_endpoint": {
     "kind": "tcp",
@@ -81,6 +84,7 @@
    "transport_host": "spark7",
    "adapter_configuration_path": "config/stage.json",
    "kv_backing_directory": "/home/spark7/sparkdata/dsv41flash.mxfp4.tp4/kvcache",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 0,
    "control_endpoint": {
     "kind": "tcp",

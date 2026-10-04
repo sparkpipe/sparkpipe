@@ -140,6 +140,7 @@ def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions,
             "transport_host": host,
             "adapter_configuration_path": f"config/stage_{rank:02d}.json",
             "kv_backing_directory": f"{root_path}/kvcache",
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": kv_backing_bytes,
             "control_endpoint": {"kind": "tcp", "host": host, "port": ports["control"] + rank},
         })

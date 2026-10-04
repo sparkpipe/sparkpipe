@@ -23,6 +23,12 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#if defined(__linux__)
+#include <sys/vfs.h>
+#else
+#include <sys/mount.h>
+#include <sys/param.h>
+#endif
 #include <unistd.h>
 
 #include <cuda_runtime_api.h>
@@ -69,6 +75,7 @@ typedef struct SparkModelResidentdConfiguration
 	const char *previous_transport_host;
 	const char *next_transport_host;
 	const char *kv_backing_directory;
+	const char *kv_partition;
 	uint64_t kv_backing_maximum_bytes;
 	const char *kv_snapshot_directory;
 	uint64_t kv_snapshot_maximum_bytes;
@@ -365,6 +372,7 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	configuration->previous_transport_host = previous != 0 ? previous->transport_host : 0;
 	configuration->next_transport_host = next != 0 ? next->transport_host : 0;
 	configuration->kv_backing_directory = node->kv_backing_directory;
+	configuration->kv_partition = node->kv_partition;
 	configuration->kv_backing_maximum_bytes = node->kv_backing_maximum_bytes;
 	configuration->kv_snapshot_directory = node->kv_snapshot_directory;
 	configuration->kv_snapshot_maximum_bytes = node->kv_snapshot_maximum_bytes;
@@ -384,6 +392,62 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	return(SPARK_STATUS_OK);
 }
 
+static const char *SparkModelResidentdKvFilesystemRefusal(const char *partition)
+{
+#if defined(__linux__)
+	static const struct { long magic; const char *name; } refused[] = {
+		{ 0x01021994L,"tmpfs" },{ (long)0x858458f6L,"ramfs" },{ 0x6969L,"nfs" },{ 0x00c36400L,"ceph" },
+		{ 0x65735546L,"fuse" },{ (long)0xff534d42L,"cifs" },{ (long)0xfe534d42L,"smb2" },{ 0x01021997L,"9p" }
+	};
+	struct statfs info;
+	uint32_t index;
+	if ( statfs(partition,&info) != 0 )
+		return("unreadable");
+	for (index=0u; index<sizeof(refused) / sizeof(refused[0]); index++)
+		if ( (long)info.f_type == refused[index].magic )
+			return(refused[index].name);
+#else
+	static const char *const refused[] = { "nfs","smbfs","afpfs","webdav","devfs","autofs" };
+	struct statfs info;
+	uint32_t index;
+	if ( statfs(partition,&info) != 0 )
+		return("unreadable");
+	for (index=0u; index<sizeof(refused) / sizeof(refused[0]); index++)
+		if ( strcmp(info.f_fstypename,refused[index]) == 0 )
+			return(refused[index]);
+#endif
+	return(0);
+}
+
+static SparkStatus SparkModelResidentdValidateKvPartition(
+	const SparkModelResidentdConfiguration *configuration)
+{
+	struct stat partition,directory;
+	const char *refusal;
+	if ( configuration->kv_partition == 0 || stat(configuration->kv_partition,&partition) != 0 || !S_ISDIR(partition.st_mode) )
+	{
+		fprintf(stderr,"model_residentd: kv_partition %s is not a directory\n",configuration->kv_partition != 0 ? configuration->kv_partition : "(missing)");
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	refusal = SparkModelResidentdKvFilesystemRefusal(configuration->kv_partition);
+	if ( refusal != 0 )
+	{
+		fprintf(stderr,"model_residentd: kv_partition %s is on a %s filesystem; KV spill and snapshots need a local block device\n",configuration->kv_partition,refusal);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( stat(configuration->kv_backing_directory,&directory) != 0 || directory.st_dev != partition.st_dev )
+	{
+		fprintf(stderr,"model_residentd: kv_backing_directory %s is not on kv_partition %s\n",configuration->kv_backing_directory,configuration->kv_partition);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( configuration->kv_snapshot_directory != 0 && (stat(configuration->kv_snapshot_directory,&directory) != 0 || directory.st_dev != partition.st_dev) )
+	{
+		fprintf(stderr,"model_residentd: kv_snapshot_directory %s is not on kv_partition %s\n",configuration->kv_snapshot_directory,configuration->kv_partition);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelResidentdValidateDirectories(
 	const SparkModelResidentdConfiguration *configuration)
 {
@@ -399,7 +463,7 @@ static SparkStatus SparkModelResidentdValidateDirectories(
 	if ( configuration->kv_snapshot_directory != 0 &&
 		!SparkPathIsRealDirectoryTree(configuration->kv_snapshot_directory) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	return(SPARK_STATUS_OK);
+	return(SparkModelResidentdValidateKvPartition(configuration));
 }
 
 static SparkStatus SparkModelResidentdTransportContract(
