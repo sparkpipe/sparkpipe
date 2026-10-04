@@ -119,6 +119,10 @@ typedef struct SparkGlm5NextResidentDecodeStageBatchView
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
 	const SparkRowSampling *row_sampling;
+	uint32_t distribution_count;
+	const uint32_t *distribution_rows;
+	const SparkRowSampling *distribution_rules;
+	SparkSamplingLogprob *distribution_logprobs;
 } SparkGlm5NextResidentDecodeStageBatchView;
 
 #define SPARK_GLM5_NEXT_STATE_CAPTURE_ABI_VERSION 1u

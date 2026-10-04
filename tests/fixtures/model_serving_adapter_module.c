@@ -15,7 +15,9 @@
 	(TEST_MODEL_SERVING_TRANSPORT_CAPABILITIES | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS)
 #if defined(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE)
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.without-prefix-reuse.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES \
@@ -283,6 +285,16 @@ static void TestModelServingBuildCompletion(
 				(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ?
 				 4203u : 4200u) + lane + step + (submission->lanes[lane].sampling.inverse_temperature != 0.0f ? (uint32_t)((submission->lanes[lane].sampling.seed + submission->lanes[lane].sequence_position + step) % 3u) : 0u) : 0u;
 		}
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		if ( submission->lanes[lane].sampling.logprobs > completion->logprob_stride )
+			completion->logprob_stride = submission->lanes[lane].sampling.logprobs;
+	completion->logprob_entry_count = completion->token_count * completion->logprob_stride;
+	for (token_index=0u; token_index<completion->logprob_entry_count; token_index++)
+	{
+		step = token_index % completion->logprob_stride;
+		completion->logprobs[token_index].token = step == 0u ? completion->token_ids[token_index / completion->logprob_stride] : 1000u + step;
+		completion->logprobs[token_index].logprob = -0.25f * (float)(step + 1u);
+	}
 }
 
 static uint32_t TestModelServingPreparedIdentityMatches(

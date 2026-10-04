@@ -189,6 +189,12 @@ typedef struct SparkGlm5NextServingPending
 	uint64_t row_sequence_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	SparkRowSampling row_sampling[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint32_t distribution_count;
+	uint32_t logprob_stride;
+	uint32_t distribution_rows[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t distribution_lanes[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	SparkRowSampling distribution_rules[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	SparkSamplingLogprob distribution_logprobs[SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_SAMPLING_MAX_LOGPROBS];
 } SparkGlm5NextServingPending;
 
 typedef struct SparkGlm5NextServingState
@@ -248,7 +254,9 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS,
 	.stage_count = SPARK_GLM5_NEXT_SERVING_STAGE_COUNT,
 	.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
@@ -608,7 +616,7 @@ static void SparkGlm5NextServingDriverCompletion(
 	{
 		uint32_t burst = driver_completion->tokens_per_sequence != 0u ?
 			driver_completion->tokens_per_sequence : 1u;
-		if ( burst > SparkGlm5NextServingBurstLimit(state,pending->work_kind,pending->active_sequence_count,pending->frame.tokens_per_sequence) )
+		if ( burst > SparkGlm5NextServingBurstLimit(state,pending->work_kind,pending->active_sequence_count,pending->frame.tokens_per_sequence) || (pending->logprob_stride != 0u && burst != 1u) )
 		{
 			completion.status = SPARK_STATUS_SCHEMA_ERROR;
 			completion.accepted_token_count = 0u;
@@ -622,6 +630,10 @@ static void SparkGlm5NextServingDriverCompletion(
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		for (index=0u; index<completion.token_count; index++)
 			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index / burst] * burst + index % burst];
+		completion.logprob_stride = pending->logprob_stride;
+		completion.logprob_entry_count = completion.token_count * pending->logprob_stride;
+		for (index=0u; pending->logprob_stride != 0u && index<pending->distribution_count; index++)
+			memcpy(&completion.logprobs[(uint64_t)pending->distribution_lanes[index] * pending->logprob_stride],&pending->distribution_logprobs[(uint64_t)index * SPARK_SAMPLING_MAX_LOGPROBS],(uint64_t)pending->distribution_rules[index].logprobs * sizeof(SparkSamplingLogprob));
 	}
 	atomic_store_explicit(&pending->active,0u,memory_order_release);
 	state->completion_function(state->completion_context,&completion);
@@ -839,9 +851,23 @@ static void SparkGlm5NextServingBuildFrame(
 	SparkGlm5NextResidentDecodeStageFrameContext *context = &pending->context;
 	SparkModelDriverBuffer *buffer = &pending->buffer;
 	SparkModelDriverFrame *frame = &pending->frame;
-	uint32_t row;
+	uint32_t row,lane;
 	for (row=0u; SparkModelServingWorkKindUsesRows(submission->work_kind) != 0u && row<submission->row_count; row++)
 		pending->row_sampling[row] = submission->lanes[submission->row_lane_indices[row]].sampling;
+	pending->distribution_count = 0u;
+	pending->logprob_stride = 0u;
+	for (lane=0u; SparkModelServingWorkKindUsesRows(submission->work_kind) != 0u && lane<submission->active_sequence_count; lane++)
+	{
+		const SparkRowSampling *rule = &submission->lanes[lane].sampling;
+		if ( SparkSamplingRuleTruncates(rule) == 0u && rule->logprobs == 0u )
+			continue;
+		pending->distribution_rows[pending->distribution_count] = pending->last_row_by_lane[lane];
+		pending->distribution_lanes[pending->distribution_count] = lane;
+		pending->distribution_rules[pending->distribution_count] = *rule;
+		if ( rule->logprobs > pending->logprob_stride )
+			pending->logprob_stride = rule->logprobs;
+		pending->distribution_count++;
+	}
 	memset(batch,0,sizeof(*batch));
 	batch->abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_BATCH_VIEW_ABI_VERSION;
 	batch->descriptor_bytes = sizeof(*batch);
@@ -852,6 +878,10 @@ static void SparkGlm5NextServingBuildFrame(
 	batch->row_positions = pending->row_positions;
 	batch->row_sequence_ids = pending->row_sequence_ids;
 	batch->row_sampling = pending->row_sampling;
+	batch->distribution_count = pending->distribution_count;
+	batch->distribution_rows = pending->distribution_rows;
+	batch->distribution_rules = pending->distribution_rules;
+	batch->distribution_logprobs = pending->distribution_logprobs;
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);

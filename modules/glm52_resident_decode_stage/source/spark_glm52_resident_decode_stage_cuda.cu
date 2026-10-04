@@ -631,6 +631,65 @@ extern "C" int32_t SparkGlm52LaunchCudaLayerMlpRoute(const SparkGlm52CudaWave *w
 	return(SparkGlm52RunLayerMlpRoute(wave,local_layer));
 }
 
+#include "inference/kernels/sample.cuh"
+
+#define SPARK_GLM52_SAMPLE_THREADS 1024u
+#define SPARK_GLM52_DISTRIBUTION_HEAD_ROWS (GLM_HEAD_ROWS / 4u)
+
+extern "C" int32_t SparkGlm52LaunchDistributionLogits(const SparkGlm52CudaWave *wave)
+{
+	SparkGlm52ExecutionSlot *slot;
+	GlmLayerBuffers buffers;
+	cudaStream_t stream;
+	uint32_t first,rows,width;
+	if ( wave == 0 || wave->owns_final_head == 0u || wave->distribution_count == 0u || wave->slot == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	slot = wave->slot;
+	stream = (cudaStream_t)slot->stream;
+	first = wave->distribution_first;
+	rows = wave->distribution_count;
+	SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
+	width = buffers.head_vocabulary;
+	if ( cudaMemcpyAsync(slot->distribution_wave_rows + first,slot->host_distribution_wave_rows + first,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	SparkGlm52HeadGatherKernel<<<rows,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->distribution_wave_rows + first,buffers.hidden_bf16,buffers.residual_bf16,slot->distribution_hidden_bf16,slot->distribution_residual_bf16);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_LAYER_THREADS,uint16_t>),rows,GLM_LAYER_THREADS,(GLM_HIDDEN + 8u) * sizeof(float),stream,
+		slot->distribution_hidden_bf16,slot->distribution_residual_bf16,(const uint16_t *)wave->final_norm_bf16,0,slot->distribution_normed_bf16,GLM_HIDDEN,GLM_HIDDEN,GLM_RMS_EPSILON);
+	LM_LAUNCH((LmHeadLogitsRowsKernel<GLM_LAYER_THREADS,GLM_HEAD_TILE,SPARK_GLM52_DISTRIBUTION_HEAD_ROWS>),
+		dim3((width + GLM_HEAD_TILE - 1u) / GLM_HEAD_TILE,(rows + SPARK_GLM52_DISTRIBUTION_HEAD_ROWS - 1u) / SPARK_GLM52_DISTRIBUTION_HEAD_ROWS),GLM_LAYER_THREADS,0,stream,
+		slot->distribution_normed_bf16,(const uint16_t *)wave->lm_head_bf16,slot->distribution_logits_f32,rows,GLM_HIDDEN,width,width);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+extern "C" int32_t SparkGlm52LaunchDistributionSample(const SparkGlm52CudaWave *wave,uint32_t first,uint32_t rows)
+{
+	SparkGlm52ExecutionSlot *slot;
+	LmSampleVocab vocab;
+	LmSampleRows sample;
+	uint32_t width,entry;
+	if ( wave == 0 || wave->slot == 0 || rows == 0u || first + rows > wave->distribution_count || wave->tp_degree == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	slot = wave->slot;
+	width = SPARK_GLM_MODEL_OUTPUT_VOCAB_COUNT / wave->tp_degree;
+	entry = wave->distribution_first + first;
+	vocab.logits = wave->tp_degree > 1u ? slot->distribution_gathered_f32 : slot->distribution_logits_f32 + (uint64_t)first * width;
+	vocab.shard_stride = (uint64_t)rows * width;
+	vocab.row_stride = width;
+	vocab.shard_tokens = width;
+	vocab.vocabulary = SPARK_GLM_MODEL_OUTPUT_VOCAB_COUNT;
+	sample.rules = slot->distribution_rules + entry;
+	sample.positions = slot->distribution_positions + entry;
+	sample.source_rows = slot->distribution_wave_rows + entry;
+	sample.greedy_tokens = slot->output_token;
+	sample.logprob_rows = 0;
+	sample.token_out = slot->output_token;
+	sample.logit_out = 0;
+	sample.logprobs_out = slot->distribution_logprobs + (uint64_t)entry * SPARK_SAMPLING_MAX_LOGPROBS;
+	sample.rows = rows;
+	LM_LAUNCH((LmSampleRowsKernel<SPARK_GLM52_SAMPLE_THREADS>),rows,SPARK_GLM52_SAMPLE_THREADS,0,(cudaStream_t)slot->stream,vocab,sample);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
 #include "sparkpipe/family/glm/spark_glm_layer_mlp.cuh"
 
 #include "sparkpipe/family/glm/spark_glm_cuda_wave.cuh"

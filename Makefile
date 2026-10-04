@@ -718,6 +718,8 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_geometry.py \
 	tests/test_glm5_next_module_host_syntax.py \
 	tests/test_head_host.py \
+	tests/test_sample_host.py \
+	tests/test_chat_frontend_sampling.py \
 	tests/test_hy4_fp8_scale_contract.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \

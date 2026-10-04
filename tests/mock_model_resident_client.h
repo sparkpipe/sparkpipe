@@ -50,6 +50,8 @@ void MockResidentClientDeliverStatus(uint32_t stage_index, const SparkModelServi
 void MockResidentClientKill(uint32_t stage_index);
 void MockResidentClientRevive(uint32_t stage_index);
 void MockResidentClientSetAutoTokens(uint32_t count);
+void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt);
+uint32_t MockResidentClientTakeMaxTokensPerSequence(void);
 void MockResidentClientSetTokenStart(uint32_t first_token_id);
 void MockResidentClientSetFinalRank(uint32_t stage_index, uint32_t is_final);
 uint32_t MockResidentClientDriveAll(void);

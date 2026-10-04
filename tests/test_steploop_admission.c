@@ -366,6 +366,7 @@ int main(void)
 		memset(&request,0,sizeof(request));
 		request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 		request.descriptor_bytes = SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES;
+		request.top_p = 1.0f;
 		request.priority = 10u;
 		request.output_token_budget = 1u;
 		request.request_id = 5100u + index;

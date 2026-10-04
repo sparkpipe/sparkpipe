@@ -1043,7 +1043,10 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	uint64_t row_sequence_ids[SPARK_K3_SERVING_MAX_ROWS], row_positions[SPARK_K3_SERVING_MAX_ROWS];
 	uint8_t bound[SPARK_K3_SERVING_MAX_LANES];
 	uint64_t sequence_ids[SPARK_K3_SERVING_MAX_LANES], next_positions[SPARK_K3_SERVING_MAX_LANES];
-	uint32_t rows, active = 0u;
+	uint32_t distribution_rows[SPARK_K3_SERVING_MAX_LANES], distribution_positions[SPARK_K3_SERVING_MAX_LANES], distribution_lanes[SPARK_K3_SERVING_MAX_LANES];
+	SparkRowSampling distribution_rules[SPARK_K3_SERVING_MAX_LANES];
+	SparkSamplingLogprob distribution_logprobs[SPARK_K3_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
+	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u;
 	SparkStatus status, finished;
 	void *stream;
 	status = K3ServingValidateSubmission(state, submission);
@@ -1060,6 +1063,20 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	K3ServingContinuityRows(state, submission, rows, active, row_slots, row_sequence_ids, row_positions);
+	for ( uint32_t lane = 0u; state->runner.owns_final_head != 0u && submission->lanes != 0 && lane < active; ++lane )
+	{
+		const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
+		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+		if ( SparkSamplingRuleNeedsDistribution(&submission->lanes[lane].sampling) == 0u )
+			continue;
+		distribution_rows[distribution_count] = order[runs[lane + 1u] - 1u];
+		distribution_positions[distribution_count] = ((const uint32_t *)state->positions_host.pointer)[distribution_rows[distribution_count]];
+		distribution_rules[distribution_count] = submission->lanes[lane].sampling;
+		distribution_lanes[distribution_count] = lane;
+		if ( submission->lanes[lane].sampling.logprobs > logprob_stride )
+			logprob_stride = submission->lanes[lane].sampling.logprobs;
+		distribution_count++;
+	}
 	continuity.state = state;
 	continuity.rows = rows;
 	continuity.active = active;
@@ -1132,6 +1149,11 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		dispatch.residual_bank_output_bytes = submission->boundary_sideband_output_bytes;
 		dispatch.output_token_ids = state->output_tokens.pointer;
 		dispatch.output_scores = state->output_scores.pointer;
+		dispatch.distribution_count = distribution_count;
+		dispatch.distribution_rows = distribution_rows;
+		dispatch.distribution_positions = distribution_positions;
+		dispatch.distribution_rules = distribution_rules;
+		dispatch.distribution_logprobs = distribution_logprobs;
 		dispatch.completion_function = 0;
 		dispatch.completion_context = 0;
 		status = SparkK3StageRunnerSubmit(&state->runner, &dispatch);
@@ -1169,6 +1191,12 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 			for ( uint32_t s = 0u; s < sequences && s < SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT; ++s )
 				completion.token_ids[s] = tokens_host[order[runs[s + 1u] - 1u]];
 			free(tokens_host);
+			completion.logprob_stride = logprob_stride;
+			completion.logprob_entry_count = completion.token_count * logprob_stride;
+			for ( uint32_t entry = 0u; logprob_stride != 0u && entry < distribution_count; ++entry )
+				memcpy(&completion.logprobs[(uint64_t)distribution_lanes[entry] * logprob_stride],
+					&distribution_logprobs[(uint64_t)entry * SPARK_SAMPLING_MAX_LOGPROBS],
+					(uint64_t)distribution_rules[entry].logprobs * sizeof(SparkSamplingLogprob));
 		}
 		state->completion_function(state->completion_context, &completion);
 	}
@@ -1277,7 +1305,10 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		SPARK_K3_SERVING_CONTRACT_SHA256),
 	.capability_flags = SPARK_K3_SERVING_CAPABILITIES |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS,
 	.stage_count = 16u,
 	.layer_count = SPARK_K3_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,

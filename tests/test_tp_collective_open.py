@@ -161,6 +161,11 @@ cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,c
 	(void)stream;(void)destination;(void)source;(void)element_count;
 	return(TpOpenLaunchError);
 }
+cudaError_t SparkTpLaunchGatherRanks(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t elements_per_rank)
+{
+	(void)stream;(void)destination;(void)sources;(void)source_count;(void)elements_per_rank;
+	return(TpOpenLaunchError);
+}
 static uint32_t TpOpenCombineStatuses(const SparkTpDeviceCollectiveConfig *config)
 {
 	SparkStatus failed,exhausted,passed;

@@ -701,6 +701,39 @@ extern "C" cudaError_t SparkTpLaunchSumRanksF32(cudaStream_t stream,
 	return cudaPeekAtLastError();
 }
 
+static __global__ void SparkTpGatherRanksKernel(
+    uint16_t *destination,
+    SparkTpRankSources sources,
+    uint32_t source_count,
+    uint32_t elements_per_rank)
+{
+	uint64_t index,total = (uint64_t)source_count * elements_per_rank;
+	for (index=(uint64_t)blockIdx.x*blockDim.x+threadIdx.x; index<total; index+=(uint64_t)blockDim.x*gridDim.x)
+		destination[index] = ((const uint16_t *)sources.pointer[index / elements_per_rank])[index % elements_per_rank];
+}
+
+extern "C" cudaError_t SparkTpLaunchGatherRanks(cudaStream_t stream,
+    void *destination,const void *const *sources,uint32_t source_count,
+    uint32_t elements_per_rank)
+{
+	SparkTpRankSources by_value;
+	uint64_t blocks;
+	uint32_t index;
+	if ( destination == 0 || sources == 0 || source_count == 0u ||
+	     source_count > 16u || elements_per_rank == 0u )
+		return(cudaErrorInvalidValue);
+	for ( index = 0u; index < source_count; index++ )
+	{
+		if ( sources[index] == 0 )
+			return(cudaErrorInvalidValue);
+		by_value.pointer[index] = sources[index];
+	}
+	blocks = ((uint64_t)source_count * elements_per_rank + 255u) / 256u;
+	SparkTpGatherRanksKernel<<<(uint32_t)(blocks < 65535u ? blocks : 65535u),256u,0u,stream>>>(
+	    (uint16_t *)destination,by_value,source_count,elements_per_rank);
+	return cudaPeekAtLastError();
+}
+
 static __global__ void SparkTpSeedF32Kernel(
     float *destination_f32,
     const void *source_a_bf16,

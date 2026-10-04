@@ -187,6 +187,38 @@ static void HostDistribution(float temperature, uint64_t seed)
 		HostFail("sample frequencies do not follow softmax(logits / T)",0u,0u,0u,0u);
 }
 
+static void HostLogitsRows(uint32_t rows)
+{
+	static HostHead head;
+	static float logits[HOST_MAX_ROWS * HOST_VOCABULARY],shard[HOST_MAX_ROWS * HOST_SHARD];
+	uint32_t greedy[HOST_MAX_ROWS],row,token,element,best_token;
+	float greedy_score[HOST_MAX_ROWS],total,best;
+	const uint32_t tiles = (HOST_VOCABULARY + HOST_TILE - 1u) / HOST_TILE;
+	HostFill(&head,rows,0u);
+	LM_LAUNCH((LmHeadLogitsRowsKernel<HOST_THREADS,HOST_TILE,HOST_ROWS_PER_BLOCK>),dim3(tiles,(rows + HOST_ROWS_PER_BLOCK - 1u) / HOST_ROWS_PER_BLOCK),HOST_THREADS,0,0,head.normed,head.weight,logits,rows,HOST_HIDDEN,HOST_VOCABULARY,HOST_VOCABULARY);
+	LM_LAUNCH((LmHeadLogitsRowsKernel<HOST_THREADS,HOST_TILE,HOST_ROWS_PER_BLOCK>),dim3((HOST_SHARD + HOST_TILE - 1u) / HOST_TILE,(rows + HOST_ROWS_PER_BLOCK - 1u) / HOST_ROWS_PER_BLOCK),HOST_THREADS,0,0,head.normed,head.weight + (uint64_t)HOST_SHARD * HOST_HIDDEN,shard,rows,HOST_HIDDEN,HOST_SHARD,HOST_SHARD);
+	HostRun(1u,&head,rows,0u,HOST_VOCABULARY,greedy,greedy_score);
+	for (row=0u; row<rows; row++)
+	{
+		best = -INFINITY;
+		best_token = 0u;
+		for (token=0u; token<HOST_VOCABULARY; token++)
+		{
+			total = 0.0f;
+			for (element=0u; element<HOST_HIDDEN; element++)
+				total += LmBf16ToFloat(head.normed[row * HOST_HIDDEN + element]) * LmBf16ToFloat(head.weight[token * HOST_HIDDEN + element]);
+			if ( fabsf(total - logits[row * HOST_VOCABULARY + token]) > 1e-4f )
+				HostFail("logits row differs from the scalar dot product",rows,row,token,0u);
+			if ( token >= HOST_SHARD && memcmp(&logits[row * HOST_VOCABULARY + token],&shard[row * HOST_SHARD + token - HOST_SHARD],sizeof(float)) != 0 )
+				HostFail("a vocabulary shard computes different logits",rows,row,token,0u);
+			if ( logits[row * HOST_VOCABULARY + token] > best )
+				best = logits[row * HOST_VOCABULARY + token], best_token = token;
+		}
+		if ( best_token != greedy[row] || memcmp(&best,&greedy_score[row],sizeof(float)) != 0 )
+			HostFail("logits argmax differs from the greedy rows head",rows,row,best_token,greedy[row]);
+	}
+}
+
 int main(void)
 {
 	HostGreedyEquivalence(1u);
@@ -197,6 +229,10 @@ int main(void)
 	HostDistribution(1.0f,7u);
 	HostDistribution(0.5f,8u);
 	HostDistribution(2.0f,9u);
-	puts("head sampling host: greedy rules bitwise greedy; single-row, rows and sharded runs agree; frequencies follow softmax");
+	HostLogitsRows(1u);
+	HostLogitsRows(5u);
+	HostLogitsRows(HOST_MAX_ROWS);
+	puts("head sampling host: greedy rules bitwise greedy; single-row, rows and sharded runs agree; frequencies follow softmax; "
+		"full logit rows match the scalar dot, the greedy head's argmax score bit for bit and every vocabulary shard");
 	return(0);
 }

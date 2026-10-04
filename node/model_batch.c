@@ -176,6 +176,7 @@ static SparkStatus SparkModelBatchParseRequest(
 	memset(request,0,sizeof(*request));
 	request->abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	request->descriptor_bytes = SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES;
+	request->top_p = 1.0f;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchJsonU64(document,object,"request_id",&request->request_id);
 	if ( status == SPARK_STATUS_OK )

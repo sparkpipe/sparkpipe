@@ -3,12 +3,13 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_model_pipeline_client.h"
+#include "sparkpipe/spark_sampling.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 9u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 10u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
@@ -54,6 +55,8 @@ typedef struct SparkModelBatchEvent
 	uint32_t first_draft_policy;
 	uint32_t stale_prefix_recompute_count;
 	uint64_t first_dispatch_ns;
+	uint32_t logprob_count;
+	SparkSamplingLogprob logprobs[SPARK_SAMPLING_MAX_LOGPROBS];
 } SparkModelBatchEvent;
 
 typedef void (*SparkModelBatchEventFunction)(
@@ -94,6 +97,9 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t prompt_token_count;
 	float temperature;
 	uint64_t seed;
+	float top_p;
+	uint32_t top_k;
+	uint32_t logprobs;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView

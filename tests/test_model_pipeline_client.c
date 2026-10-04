@@ -947,6 +947,7 @@ static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
 	memset(&request,0,sizeof(request));
 	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	request.descriptor_bytes = SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES;
+	request.top_p = 1.0f;
 	request.priority = priority;
 	request.output_token_budget = output_budget;
 	request.request_id = request_id;

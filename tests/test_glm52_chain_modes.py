@@ -63,6 +63,8 @@ int32_t SparkGlm52LaunchCudaLayerAttentionCore(const SparkGlm52CudaWave *wave,ui
 int32_t SparkGlm52LaunchCudaLayerMlp(const SparkGlm52CudaWave *wave,uint32_t layer) { assert(wave->route_host_copy == 0u); Log("mlp",layer); return(0); }
 int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave) { Log("head",wave->row_head_certified); return(0); }
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *tokens,uint32_t rows) { (void)stream; (void)maxloc; (void)tokens; Log("unpack",rows); return(cudaSuccess); }
+int32_t SparkGlm52LaunchDistributionLogits(const SparkGlm52CudaWave *wave) { Log("dist-logits",wave->distribution_first * 100u + wave->distribution_count); return(0); }
+int32_t SparkGlm52LaunchDistributionSample(const SparkGlm52CudaWave *wave,uint32_t first,uint32_t rows) { assert(first + rows <= wave->distribution_count); Log("dist-sample",(wave->distribution_first + first) * 100u + rows); return(0); }
 int32_t SparkGlm52LaunchCudaLayerShard(const SparkGlm52CudaWave *wave,uint32_t layer,uint32_t phase)
 {
 	static const char *const names[6] = { "spre", "smid", "spost", "gpre", "gpost", "gmerge" };
@@ -149,6 +151,11 @@ SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective,c
 		submission->full_device == slot->kv_select_received && submission->row_elements != 0u && submission->row_elements % 2u == 0u &&
 		submission->row_elements <= 2u * SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT )
 		Log("x-select",submission->active_sequence_count);
+	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && slot->distribution_logits_f32 != 0 &&
+		(const float *)submission->local_device >= slot->distribution_logits_f32 && submission->full_device == slot->distribution_gathered_f32 &&
+		submission->row_elements == 2u * (SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT / STATE->tp_degree) / STATE->distribution_sub_rows &&
+		submission->active_sequence_count % STATE->distribution_sub_rows == 0u )
+		Log("x-dist",(uint32_t)(((const float *)submission->local_device - slot->distribution_logits_f32) / (SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT / STATE->tp_degree)) * 100u + submission->active_sequence_count);
 	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && submission->local_device == slot->kv_select_merged &&
 		submission->full_device == slot->selected_positions && submission->row_elements == 2u * SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT )
 		Log("x-selected",submission->active_sequence_count);
@@ -952,6 +959,136 @@ static void EagerRun(SparkGlm52TpChain *chain,const char *until)
 	free(chain);
 }
 
+static float dev_dist_logits[4u * (SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT / 16u)],dev_dist_gathered[8];
+static SparkSamplingLogprob dev_dist_lp[8],host_dist_lp[16u * SPARK_SAMPLING_MAX_LOGPROBS],dist_destination[16u * SPARK_SAMPLING_MAX_LOGPROBS];
+static uint32_t dev_dist_rows[16],host_dist_rows[16],dev_dist_positions[16],host_dist_positions[16];
+static SparkRowSampling dev_dist_rules[16],host_dist_rules[16];
+
+static void TestDistributionConfigure(void)
+{
+	SparkGlm52ModuleState probe;
+	memset(&probe,0,sizeof(probe));
+	probe.tp_degree = 16u;
+	probe.execution_row_capacity = 4u;
+	assert(SparkGlm52DistributionConfigure(&probe) == SPARK_STATUS_OK && probe.distribution_wave_capacity == 0u);
+	probe.owns_final_head = 1u;
+	assert(SparkGlm52DistributionConfigure(&probe) == SPARK_STATUS_OK && probe.distribution_wave_capacity == 4u && probe.distribution_sub_rows == 4u && probe.distribution_chunk_rows == 1u);
+	assert(2u * (SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT / 16u) / probe.distribution_sub_rows <= SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
+	probe.execution_row_capacity = 64u;
+	assert(SparkGlm52DistributionConfigure(&probe) == SPARK_STATUS_OK && probe.distribution_chunk_rows == 16u);
+	probe.execution_row_capacity = 3u;
+	assert(SparkGlm52DistributionConfigure(&probe) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	probe.tp_degree = 1u;
+	assert(SparkGlm52DistributionConfigure(&probe) == SPARK_STATUS_OK && probe.distribution_chunk_rows == 3u);
+	state.execution_row_capacity = 4u;
+	assert(SparkGlm52DistributionConfigure(&state) == SPARK_STATUS_OK);
+	state.slots[0].distribution_logits_f32 = dev_dist_logits;
+	state.slots[0].distribution_gathered_f32 = dev_dist_gathered;
+	state.slots[0].distribution_logprobs = dev_dist_lp;
+	state.slots[0].host_distribution_logprobs = host_dist_lp;
+	state.slots[0].distribution_wave_rows = dev_dist_rows;
+	state.slots[0].host_distribution_wave_rows = host_dist_rows;
+	state.slots[0].distribution_positions = dev_dist_positions;
+	state.slots[0].host_distribution_positions = host_dist_positions;
+	state.slots[0].distribution_rules = dev_dist_rules;
+	state.slots[0].host_distribution_rules = host_dist_rules;
+}
+
+static SparkGlm52TpChain *NewDistributionChain(void)
+{
+	static const uint32_t rows[2] = { 1u, 0u };
+	static SparkRowSampling rules[2];
+	SparkGlm52TpChain *chain = NewDecodeChain(30u,2u);
+	rules[0] = SparkSamplingRuleWith(0.8f,5u,0.9f,0u,3u);
+	rules[1] = SparkSamplingRuleWith(0.0f,0u,1.0f,0u,2u);
+	batch.distribution_count = 2u;
+	batch.distribution_rows = rows;
+	batch.distribution_rules = rules;
+	batch.distribution_logprobs = dist_destination;
+	assert(SparkGlm52ValidateDistribution(&state,&batch) == SPARK_STATUS_OK);
+	assert(SparkGlm52StageDistribution(chain,&batch) == SPARK_STATUS_OK);
+	assert(chain->distribution_count == 2u && chain->distribution_ordered_rows[0] == 0u && chain->distribution_ordered_rows[1] == 1u);
+	assert(state.completions[0].distribution_source[0] == 1u && state.completions[0].distribution_source[1] == 0u);
+	assert(host_dist_rules[0].logprobs == 2u && host_dist_rules[1].logprobs == 3u && host_dist_positions[0] == 30u && host_dist_positions[1] == 31u);
+	memset(host_dist_lp,0,sizeof(host_dist_lp));
+	memset(dist_destination,0,sizeof(dist_destination));
+	host_dist_lp[0].token = 600u;
+	host_dist_lp[SPARK_SAMPLING_MAX_LOGPROBS].token = 500u;
+	return(chain);
+}
+
+static void FinishDistribution(void)
+{
+	uint32_t row;
+	for (row=0u; row<4u; row++)
+		atomic_store(&state.lane_states[row],0u);
+	batch.distribution_count = 0u;
+	batch.active_sequence_count = 1u;
+	batch.row_count = 1u;
+}
+
+static void CheckDistributionOrder(const char *prefix)
+{
+	char entry[40];
+	int32_t at;
+	(void)snprintf(entry,sizeof(entry),"%sunpack2",prefix); at = Find(entry,0u); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sdist-logits2",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sx-dist4",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sdist-sample1",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sx-dist104",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sdist-sample101",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sd2h%u",prefix,(uint32_t)(2u * SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob))); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	(void)snprintf(entry,sizeof(entry),"%sd2h8",prefix); at = Find(entry,(uint32_t)at); assert(at >= 0);
+	assert(COMPLETED_COUNT == 1u && COMPLETED_STATUS == SPARK_STATUS_OK);
+	assert(dist_destination[0].token == 500u && dist_destination[SPARK_SAMPLING_MAX_LOGPROBS].token == 600u);
+}
+
+static void TestDistribution(void)
+{
+	SparkGlm52TpChain *chain;
+	uint32_t steps;
+	Reset(SPARK_TP_CHAIN_MODE_GRAPH,0u,1u);
+	CAPTURES = 0u;
+	SparkGlm52RunChain(NewDistributionChain());
+	assert(CAPTURES == 0u && Count("capture-begin0") == 0u && Count("graph-launch257") == 0u && Count("verify0") == 1u);
+	CheckDistributionOrder("");
+	FinishDistribution();
+	Reset(SPARK_TP_CHAIN_MODE_EAGER,0u,1u);
+	chain = NewDistributionChain();
+	EAGER = 1u;
+	PENDING_COMPLETION = 0;
+	SparkGlm52BuildWave(chain);
+	assert(chain->wave.distribution_first == 0u && chain->wave.distribution_count == 2u && host_dist_rows[0] == 0u && host_dist_rows[1] == 1u);
+	chain->stage = SPARK_GLM52_CHAIN_STAGE_ATTENTION;
+	chain->next_layer = 0u;
+	SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
+	for (steps=0u; steps<32u && COMPLETED_COUNT == 0u && PENDING_COMPLETION != 0; steps++)
+	{
+		SparkTpDeviceCollectiveCompletion done;
+		SparkTpDeviceCollectiveCompletionFunction function = PENDING_COMPLETION;
+		memset(&done,0,sizeof(done));
+		done.status = SPARK_STATUS_OK;
+		PENDING_COMPLETION = 0;
+		function(PENDING_COMPLETION_CONTEXT,&done);
+	}
+	EAGER = 0u;
+	CheckDistributionOrder("");
+	FinishDistribution();
+	batch.distribution_count = 1u;
+	batch.distribution_rows = host_dist_rows;
+	host_dist_rows[0] = 5u;
+	batch.distribution_rules = host_dist_rules;
+	host_dist_rules[0] = SparkSamplingRuleWith(0.7f,1u,1.0f,4u,0u);
+	assert(SparkGlm52ValidateDistribution(&state,&batch) == SPARK_STATUS_INVALID_ARGUMENT);
+	host_dist_rows[0] = 0u;
+	host_dist_rules[0] = SparkSamplingRuleWith(0.0f,0u,1.0f,0u,0u);
+	assert(SparkGlm52ValidateDistribution(&state,&batch) == SPARK_STATUS_INVALID_ARGUMENT);
+	host_dist_rules[0] = SparkSamplingRuleWith(0.0f,0u,1.0f,0u,4u);
+	batch.distribution_logprobs = 0;
+	assert(SparkGlm52ValidateDistribution(&state,&batch) == SPARK_STATUS_INVALID_ARGUMENT);
+	batch.distribution_count = 0u;
+}
+
 static void TestShardEager(void)
 {
 	int32_t at;
@@ -1002,6 +1139,8 @@ int main(void)
 	TestShardDecode();
 	TestShardPrefillGather();
 	TestShardEager();
+	TestDistributionConfigure();
+	TestDistribution();
 	printf("glm52 chain modes: ok\n");
 	return(0);
 }
@@ -1022,7 +1161,7 @@ def main():
                         '-DGLM_MODEL_DESCRIPTION_SHA256="fixture"', "-include", "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
                         str(source), "runtime/stage_module_common.c", "src/spark_status.c", "-o", str(binary), "-pthread"], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
-    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph keyed by head path), KV context split (scatter exchanges per layer in decode with candidates only on indexed layers, old-context key gather and row-owner DSA selection for single-sequence prefill waves, graph capture of the exchanges, eager stages, scatter row cap)")
+    print("PASS glm52 chain modes: linear walk order, graph capture/replay per regime, gates, settle and stream failures, worker refusal, busy gate, multi-row prefill waves (row cap, regime boundaries, graph keyed by head path), full-vocab distribution rows (collective-row split, chunked logit gathers, linear walk in graph mode, eager stages, logprobs copied back per lane), KV context split (scatter exchanges per layer in decode with candidates only on indexed layers, old-context key gather and row-owner DSA selection for single-sequence prefill waves, graph capture of the exchanges, eager stages, scatter row cap)")
 
 
 if __name__ == "__main__":

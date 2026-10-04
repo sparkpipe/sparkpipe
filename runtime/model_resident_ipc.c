@@ -633,22 +633,33 @@ SparkStatus SparkModelResidentIpcDecodeSubmission(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkModelResidentIpcLogprobsOffset(uint32_t token_count,uint32_t model_extension_bytes)
+{
+	uint32_t offset = SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES + token_count * (uint32_t)sizeof(uint32_t) + model_extension_bytes;
+	return((offset + 3u) & ~3u);
+}
+
 SparkStatus SparkModelResidentIpcCalculateCompletionBytes(
 	uint32_t token_count,
 	uint32_t model_extension_bytes,
+	uint32_t logprob_entry_count,
 	uint32_t *message_bytes_out)
 {
 	uint32_t total;
 	SparkStatus status;
-	if ( message_bytes_out == 0 || token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT || model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES )
+	if ( message_bytes_out == 0 || token_count > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT || model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES ||
+		logprob_entry_count > SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	total = SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES;
-	status = SparkModelResidentIpcAddBytes(&total,token_count,sizeof(uint32_t));
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentIpcAddBytes(&total,model_extension_bytes,sizeof(uint8_t));
+	total = SparkModelResidentIpcLogprobsOffset(token_count,model_extension_bytes);
+	status = SparkModelResidentIpcAddBytes(&total,logprob_entry_count,sizeof(SparkSamplingLogprob));
 	if ( status == SPARK_STATUS_OK )
 		*message_bytes_out = total;
 	SPARK_RETURN(status);
+}
+
+static uint32_t SparkModelResidentIpcLogprobsValid(uint32_t token_count,uint32_t stride,uint32_t entries)
+{
+	return(stride <= SPARK_SAMPLING_MAX_LOGPROBS && entries <= SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES && (uint64_t)token_count * stride == entries ? 1u : 0u);
 }
 
 SparkStatus SparkModelResidentIpcEncodeCompletion(
@@ -662,9 +673,10 @@ SparkStatus SparkModelResidentIpcEncodeCompletion(
 	uint8_t *bytes;
 	uint32_t message_bytes;
 	SparkStatus status;
-	if ( completion == 0 || message_id == 0u || message_buffer == 0 || message_bytes_out == 0 || completion->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || completion->descriptor_bytes != SPARK_MODEL_SERVING_COMPLETION_BYTES )
+	if ( completion == 0 || message_id == 0u || message_buffer == 0 || message_bytes_out == 0 || completion->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || completion->descriptor_bytes != SPARK_MODEL_SERVING_COMPLETION_BYTES ||
+		SparkModelResidentIpcLogprobsValid(completion->token_count,completion->logprob_stride,completion->logprob_entry_count) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkModelResidentIpcCalculateCompletionBytes(completion->token_count,completion->model_extension_bytes,&message_bytes);
+	status = SparkModelResidentIpcCalculateCompletionBytes(completion->token_count,completion->model_extension_bytes,completion->logprob_entry_count,&message_bytes);
 	if ( status != SPARK_STATUS_OK || message_capacity < message_bytes )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(message_buffer,0,message_bytes);
@@ -690,6 +702,9 @@ SparkStatus SparkModelResidentIpcEncodeCompletion(
 	wire->model_extension_bytes = completion->model_extension_bytes;
 	wire->token_ids_offset = SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES;
 	wire->model_extension_offset = wire->token_ids_offset + (completion->token_count * sizeof(uint32_t));
+	wire->logprob_stride = completion->logprob_stride;
+	wire->logprob_entry_count = completion->logprob_entry_count;
+	wire->logprobs_offset = SparkModelResidentIpcLogprobsOffset(completion->token_count,completion->model_extension_bytes);
 	wire->queue_delay_ns = completion->queue_delay_ns;
 	wire->service_time_ns = completion->service_time_ns;
 	wire->device_memcpy_bytes = completion->device_memcpy_bytes;
@@ -697,6 +712,8 @@ SparkStatus SparkModelResidentIpcEncodeCompletion(
 	memcpy(bytes + wire->token_ids_offset,completion->token_ids,completion->token_count * sizeof(uint32_t));
 	if ( completion->model_extension_bytes != 0u )
 		memcpy(bytes + wire->model_extension_offset,completion->model_extension,completion->model_extension_bytes);
+	if ( completion->logprob_entry_count != 0u )
+		memcpy(bytes + wire->logprobs_offset,completion->logprobs,(size_t)completion->logprob_entry_count * sizeof(SparkSamplingLogprob));
 	*message_bytes_out = message_bytes;
 	return(SPARK_STATUS_OK);
 }
@@ -715,8 +732,10 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	wire = (const SparkModelResidentIpcCompletion *)message_buffer;
 	status = SparkModelResidentIpcValidateHeader(&wire->header,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION,SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentIpcCalculateCompletionBytes(wire->token_count,wire->model_extension_bytes,&expected);
-	if ( status != SPARK_STATUS_OK || expected != message_bytes || wire->token_ids_offset != SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES || wire->model_extension_offset != wire->token_ids_offset + (wire->token_count * sizeof(uint32_t)) )
+		status = SparkModelResidentIpcLogprobsValid(wire->token_count,wire->logprob_stride,wire->logprob_entry_count) != 0u ?
+			SparkModelResidentIpcCalculateCompletionBytes(wire->token_count,wire->model_extension_bytes,wire->logprob_entry_count,&expected) : SPARK_STATUS_SCHEMA_ERROR;
+	if ( status != SPARK_STATUS_OK || expected != message_bytes || wire->token_ids_offset != SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES || wire->model_extension_offset != wire->token_ids_offset + (wire->token_count * sizeof(uint32_t)) ||
+		wire->logprobs_offset != SparkModelResidentIpcLogprobsOffset(wire->token_count,wire->model_extension_bytes) || wire->reserved != 0u )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_SCHEMA_ERROR);
 	bytes = (const uint8_t *)message_buffer;
 	memset(completion_out,0,sizeof(*completion_out));
@@ -745,5 +764,9 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	completion_out->host_staging_bytes = wire->host_staging_bytes;
 	memcpy(completion_out->token_ids,bytes + wire->token_ids_offset,wire->token_count * sizeof(uint32_t));
 	memcpy(completion_out->model_extension,bytes + wire->model_extension_offset,wire->model_extension_bytes);
+	completion_out->logprob_stride = wire->logprob_stride;
+	completion_out->logprob_entry_count = wire->logprob_entry_count;
+	if ( wire->logprob_entry_count != 0u )
+		memcpy(completion_out->logprobs,bytes + wire->logprobs_offset,(size_t)wire->logprob_entry_count * sizeof(SparkSamplingLogprob));
 	return(SPARK_STATUS_OK);
 }

@@ -399,7 +399,16 @@ static void TestSubmissionValidation(void)
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
-	lane.sampling.reserved = 1u;
+	lane.sampling.nucleus = 1.0f;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.sampling.nucleus = -0.5f;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.sampling = SparkSamplingRule(0.7f,5u);
+	lane.sampling.nucleus = 1.5f;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.sampling = SparkSamplingRuleWith(0.7f,5u,1.0f,SPARK_SAMPLING_MAX_TOP_K + 1u,0u);
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.sampling = SparkSamplingRuleWith(0.7f,5u,1.0f,0u,SPARK_SAMPLING_MAX_LOGPROBS + 1u);
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	lane.sampling = SparkSamplingRule(0.7f,5u);
 	lane.sampling.inverse_temperature = SPARK_SAMPLING_MAX_INVERSE_TEMPERATURE * 2.0f;
@@ -408,7 +417,20 @@ static void TestSubmissionValidation(void)
 	lane.sampling.seed = 3u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	lane.sampling = SparkSamplingRule(0.0f,0u);
-	descriptor.capability_flags &= ~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING;
+	lane.sampling.top_k = 4u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.sampling = SparkSamplingRuleWith(0.7f,5u,0.9f,0u,0u);
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
+	lane.sampling = SparkSamplingRuleWith(0.7f,5u,1.0f,40u,0u);
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lane.sampling = SparkSamplingRuleWith(0.0f,0u,1.0f,0u,3u);
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lane.sampling = SparkSamplingRule(0.0f,0u);
+	descriptor.capability_flags &= ~(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS);
 	lane.sequence_position = row_position = 63u;
 	lane.context_token_count = 64u;
 	lane.cache_prefix_token_count = 63u;
@@ -850,6 +872,17 @@ static void TestCompletionValidation(void)
 	completion.token_count = 2u;
 	assert(SparkModelServingAdapterValidateCompletion(&descriptor,&completion) == SPARK_STATUS_INVALID_ARGUMENT);
 	completion.token_count = 1u;
+	completion.logprob_stride = 2u;
+	completion.logprob_entry_count = 2u;
+	assert(SparkModelServingAdapterValidateCompletion(&descriptor,&completion) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS;
+	assert(SparkModelServingAdapterValidateCompletion(&descriptor,&completion) == SPARK_STATUS_OK);
+	completion.logprob_entry_count = 3u;
+	assert(SparkModelServingAdapterValidateCompletion(&descriptor,&completion) == SPARK_STATUS_INVALID_ARGUMENT);
+	completion.logprob_stride = completion.logprob_entry_count = SPARK_SAMPLING_MAX_LOGPROBS + 1u;
+	assert(SparkModelServingAdapterValidateCompletion(&descriptor,&completion) == SPARK_STATUS_INVALID_ARGUMENT);
+	completion.logprob_stride = completion.logprob_entry_count = 0u;
+	descriptor.capability_flags &= ~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS;
 	assert(SparkModelServingAdapterValidateStageCompletion(&descriptor,12u,
 		SPARK_MODEL_SERVING_WORK_KIND_DECODE,1u,1u,&residency,
 		&completion) == SPARK_STATUS_OK);

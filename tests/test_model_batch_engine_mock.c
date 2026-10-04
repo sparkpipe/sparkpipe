@@ -57,6 +57,8 @@ typedef struct TestBatchState
 	uint32_t token_event_order;
 	uint32_t first_token_order[TEST_MAX_REQUESTS + 1u];
 	uint32_t second_token_order[TEST_MAX_REQUESTS + 1u];
+	uint32_t logprob_matches[TEST_MAX_REQUESTS + 1u];
+	uint32_t logprob_events[TEST_MAX_REQUESTS + 1u];
 } TestBatchState;
 
 static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
@@ -78,6 +80,11 @@ static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
 			s->first_token_ns[id] = event->monotonic_ns;
 		s->cached_tokens[id] = event->cached_prompt_token_count;
 		s->first_dispatch_ns[id] = event->first_dispatch_ns;
+		if ( event->logprob_count != 0u )
+			s->logprob_events[id]++;
+		if ( event->logprob_count == 3u && event->logprobs[0].token == event->token_id && event->logprobs[0].logprob == -0.25f &&
+			event->logprobs[1].token == 1001u && event->logprobs[1].logprob == -0.5f && event->logprobs[2].token == 1002u )
+			s->logprob_matches[id]++;
 	}
 	s->stale_recomputes[id] = event->stale_prefix_recompute_count;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED )
@@ -208,6 +215,7 @@ static SparkStatus TestSubmitPromptStatus(SparkModelBatchEngine *engine,uint64_t
 	memset(&request,0,sizeof(request));
 	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
 	request.request_id = request_id;
 	request.sequence_id = sequence_id;
 	request.prompt_token_ids = prompt;
@@ -877,6 +885,7 @@ static void TestScenarioSamplingValidation(const SparkModelResidentDeployment *d
 		return;
 	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
 	request.request_id = request.sequence_id = 1u;
 	request.prompt_token_ids = prompt;
 	request.prompt_token_count = 2u;
@@ -888,8 +897,71 @@ static void TestScenarioSamplingValidation(const SparkModelResidentDeployment *d
 	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: a greedy request carries no seed");
 	request.temperature = 0.00001f;
 	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: temperature below the minimum is rejected");
+	request.seed = 0u;
+	request.temperature = 0.0f;
+	request.top_p = 0.5f;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: a greedy request carries no top-p");
+	request.top_p = 1.0f;
+	request.top_k = 3u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: a greedy request carries no top-k");
+	request.top_k = 0u;
 	request.temperature = 0.7f;
+	request.seed = 5u;
+	request.top_p = 0.0f;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: top-p must be above zero");
+	request.top_p = 1.5f;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: top-p above one is rejected");
+	request.top_p = 1.0f;
+	request.top_k = SPARK_SAMPLING_MAX_TOP_K + 1u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: top-k above the maximum is rejected");
+	request.top_k = 0u;
+	request.logprobs = SPARK_SAMPLING_MAX_LOGPROBS + 1u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_INVALID_ARGUMENT,"sampling: more than twenty top logprobs are rejected");
+	request.logprobs = 0u;
 	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK && handle != 0u,"sampling: a seeded request is admitted by a sampling adapter");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioLogprobs(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchSubmitRequest request = {0};
+	SparkModelBatchRequestHandle handle = 0u;
+	uint32_t prompt[2] = {11u,12u};
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,901u,4u,prompt,2u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u && MockResidentClientTakeMaxTokensPerSequence() > 1u && state.logprob_events[1] == 0u,"logprobs: a plain request chains decode steps and carries no logprobs");
+	MockResidentClientSetLogprobs(3u,0u);
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.request_id = 2u;
+	request.sequence_id = 902u;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = 2u;
+	request.output_token_budget = 4u;
+	request.temperature = 0.7f;
+	request.seed = 9u;
+	request.top_p = 0.9f;
+	request.top_k = 5u;
+	request.logprobs = 3u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"logprobs: a sampled request with top-p, top-k and logprobs is admitted");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.token_events[2] == 4u,"logprobs: the request completes with its four tokens");
+	CHECK(state.logprob_matches[2] == 4u,"logprobs: every token event carries three entries led by the emitted token");
+	CHECK(MockResidentClientTakeMaxTokensPerSequence() == 1u,"logprobs: a logprob lane decodes one token per step on a chaining adapter");
+	MockResidentClientSetLogprobs(3u,7u);
+	request.request_id = 3u;
+	request.sequence_id = 903u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"logprobs: a second logprob request is admitted");
+	TestDriveUntilTerminal(engine,&state,3u,400u);
+	CHECK(state.error_events[3] == 1u && state.token_events[3] == 0u,"logprobs: entries that do not lead with the emitted token fail the request");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -909,6 +981,7 @@ static void TestScenarioPartialCopyCapacity(const SparkModelResidentDeployment *
 		return;
 	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
 	request.request_id = request.sequence_id = 1u;
 	request.prompt_token_ids = prompt;
 	request.prompt_token_count = 3u;
@@ -1498,6 +1571,7 @@ int main(void)
 	TestScenarioDecodeAfterPrefill(&deployment,runtime_root);
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);
+	TestScenarioLogprobs(&deployment,runtime_root);
 	TestScenarioMeasurements(&deployment,runtime_root);
 	TestScenarioStalePrefixRecomputes(&deployment,runtime_root);
 	TestScenarioStalePrefixTerminates(&deployment,runtime_root);

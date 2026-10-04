@@ -42,10 +42,14 @@ markers, the accepted `chat_template_kwargs` and the mapping of OpenAI
 
 Known limits:
 
-- GLM-5.3 Full decodes greedily: the glm52 adapter has no sampled head, so
-  `temperature` and `top_p` do not change the output.
-- `n`, `logprobs`, `logit_bias` and a `response_format` other than text
-  answer 400.
+- The layer forwards `temperature`, `top_p`, `top_k` (vLLM's extension;
+  `-1` and `0` mean off), `seed`, `logprobs` and `top_logprobs` (up to 20)
+  to the engine. A request without `temperature` decodes greedily. Logprobs
+  cover every generated token except the stop token, reasoning included, as
+  vLLM reports them; a logprob too small for a float is `-9999.0`.
+- `n`, `logit_bias`, `best_of`, `echo`, `suffix`, a nonzero
+  `frequency_penalty`, `presence_penalty` or `min_p`, a `repetition_penalty`
+  other than 1 and a `response_format` other than text answer 400.
 - Prompts past `context_tokens` answer 400 `context_length_exceeded`; a
   client must compact before 65,536 tokens.
 - A 60K-token prompt takes about 90 s to prefill the first time; later turns
@@ -86,7 +90,9 @@ Optional request fields:
 | `deadline_ms` | relative deadline; queued requests are submitted earliest-deadline first within a priority, and a request still running at its deadline is cancelled and answered `504` with code `deadline_exceeded` (or an error event on a stream) |
 | `temperature` | `0` (the default) decodes greedily; `0.0001` to `2` samples from softmax(logits / T) with Gumbel-max noise keyed by (seed, position, token) |
 | `seed` | unsigned 64-bit; the same seed, prompt and deployment reproduce a sampled completion token for token. Without one, the API draws a random seed and logs it |
-| `top_p` | accepted only as `1`: nucleus sampling is not implemented |
+| `top_p` | above 0 and at most 1, default 1; samples from the smallest set of top tokens whose probability at the request's temperature reaches `top_p` |
+| `top_k` | unsigned integer up to 1048576, default 0 (off); samples from the `top_k` most likely tokens, applied before `top_p` |
+| `logprobs` | unsigned integer up to 20: return each emitted token's log-probability and that many top alternatives. The response adds `token_logprobs`, one entry per token in `tokens`: an array of `[token_id, logprob]` pairs, the emitted token first and the alternatives in descending order. Logprobs are the model's log_softmax at temperature 1 (before truncation); `null` stands for a value too small for a float |
 | `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
 ### Declared chat template
@@ -141,11 +147,16 @@ An older `model_api` refuses a `model_resident.json` that carries
 install as the API binary that reads it.
 
 A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed`,
-`top_p` or `chat_template_kwargs`, or `chat_template_kwargs` on a
-`prompt` or `prompt_token_ids` request, is a `400 invalid_option`, never a
-silent default. A nonzero
-temperature on a deployment whose adapter cannot sample is a `400
-sampling_unsupported`. A prompt plus `max_tokens` that the
+`top_p`, `top_k`, `logprobs` or `chat_template_kwargs`, or
+`chat_template_kwargs` on a `prompt` or `prompt_token_ids` request, is a
+`400 invalid_option`, never a silent default. With `temperature` 0,
+`top_p` and `top_k` cannot change the greedy token and are not forwarded.
+A nonzero temperature on a deployment whose adapter cannot sample is a
+`400 sampling_unsupported`; `top_p` below 1 or a `top_k` on an adapter
+that samples by temperature only is a `400 truncation_unsupported`;
+`logprobs` on an adapter that cannot return them is a `400
+logprobs_unsupported`. GLM-5.3 Full (glm52), GLM Flash (glm5_next) and K3
+serve all three. A prompt plus `max_tokens` that the
 deployment's context or KV pages cannot hold is a `400
 context_length_exceeded`; the batch engine's own admission check decides, so
 the API never duplicates the limits. Without a tokenizer sidecar the

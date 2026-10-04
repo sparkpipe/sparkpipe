@@ -52,6 +52,7 @@
 #define SPARK_GLM52_HEAD_TILE 1024u
 #define SPARK_GLM52_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT 6u
+#define SPARK_GLM52_DISTRIBUTION_CHUNK_LIMIT 16u
 
 typedef struct SparkGlm52PackRange
 {
@@ -75,6 +76,9 @@ typedef struct SparkGlm52AsyncCompletion
 	uint64_t lane_sequence_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint64_t lane_next_positions[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t *output_token_destination;
+	SparkSamplingLogprob *distribution_destination;
+	uint32_t distribution_count;
+	uint32_t distribution_source[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkModelDriverCompletion completion;
 } SparkGlm52AsyncCompletion;
 
@@ -150,6 +154,9 @@ struct SparkGlm52ModuleState
 	SparkStageModuleCudaWait chain_wait;
 	atomic_uint chain_busy;
 	SparkTpChainGraphTable graphs[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	uint32_t distribution_wave_capacity;
+	uint32_t distribution_chunk_rows;
+	uint32_t distribution_sub_rows;
 };
 
 typedef enum SparkGlm52ChainStage
@@ -168,7 +175,8 @@ typedef enum SparkGlm52ChainStage
 	SPARK_GLM52_CHAIN_STAGE_KV_GATHER,
 	SPARK_GLM52_CHAIN_STAGE_KV_DIGEST,
 	SPARK_GLM52_CHAIN_STAGE_KV_SELECT,
-	SPARK_GLM52_CHAIN_STAGE_KV_SELECTED
+	SPARK_GLM52_CHAIN_STAGE_KV_SELECTED,
+	SPARK_GLM52_CHAIN_STAGE_DISTRIBUTION
 } SparkGlm52ChainStage;
 
 typedef struct SparkGlm52TpChain
@@ -204,6 +212,10 @@ typedef struct SparkGlm52TpChain
 	uint64_t walk_ns;
 	uint32_t row_ordered;
 	uint32_t shard_chunk;
+	uint32_t distribution_count;
+	uint32_t distribution_next;
+	uint32_t distribution_chunk_first;
+	uint32_t distribution_ordered_rows[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t row_order[];
 } SparkGlm52TpChain;
 
@@ -648,6 +660,9 @@ static void SparkGlm52ReleaseSlotHost(SparkGlm52ModuleState *state)
 		if ( state->slots[index].group_row_offset_host != 0 )
 			(void)cudaFreeHost(state->slots[index].group_row_offset_host);
 		state->slots[index].group_row_offset_host = 0;
+		if ( state->slots[index].distribution_host != 0 )
+			(void)cudaFreeHost(state->slots[index].distribution_host);
+		state->slots[index].distribution_host = 0;
 		if ( state->slots[index].route_ready_event != 0 )
 			(void)cudaEventDestroy((cudaEvent_t)state->slots[index].route_ready_event);
 		state->slots[index].route_ready_event = 0;
@@ -752,6 +767,80 @@ static uint32_t SparkGlm52ShardSelectSlice(SparkKvShard shard,uint32_t rows)
 	return((rows + shard.degree - 1u) / shard.degree);
 }
 
+static uint32_t SparkGlm52DistributionWidth(const SparkGlm52ModuleState *state)
+{
+	return(SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree);
+}
+
+static SparkStatus SparkGlm52DistributionConfigure(SparkGlm52ModuleState *state)
+{
+	uint32_t elements,sub_rows,chunk;
+	state->distribution_wave_capacity = 0u;
+	state->distribution_chunk_rows = 0u;
+	state->distribution_sub_rows = 0u;
+	if ( state->owns_final_head == 0u )
+		return(SPARK_STATUS_OK);
+	if ( state->tp_degree == 0u || SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT % state->tp_degree != 0u )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	state->distribution_wave_capacity = state->execution_row_capacity < SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT ? state->execution_row_capacity : SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT;
+	if ( state->tp_degree == 1u )
+	{
+		state->distribution_sub_rows = 1u;
+		state->distribution_chunk_rows = state->distribution_wave_capacity;
+		return(SPARK_STATUS_OK);
+	}
+	elements = 2u * SparkGlm52DistributionWidth(state);
+	for (sub_rows=1u; sub_rows<=elements && (elements % sub_rows != 0u || elements / sub_rows > SPARK_GLM52_MODEL_HIDDEN_DIMENSION); sub_rows++)
+		;
+	chunk = sub_rows <= elements ? state->execution_row_capacity / sub_rows : 0u;
+	if ( chunk == 0u )
+	{
+		fprintf(stderr,"GLM52-DISTRIBUTION-REFUSED tp=%u rows=%u: a full-vocab logit row needs %u collective rows and the execution row capacity holds fewer\n",state->tp_degree,state->execution_row_capacity,sub_rows);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	state->distribution_sub_rows = sub_rows;
+	state->distribution_chunk_rows = chunk < SPARK_GLM52_DISTRIBUTION_CHUNK_LIMIT ? chunk : SPARK_GLM52_DISTRIBUTION_CHUNK_LIMIT;
+	if ( state->distribution_chunk_rows > state->distribution_wave_capacity )
+		state->distribution_chunk_rows = state->distribution_wave_capacity;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm52AllocateSlotDistribution(
+	SparkGlm52ModuleState *state,
+	SparkGlm52ExecutionSlot *slot)
+{
+	uint64_t entries = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,rows = state->distribution_wave_capacity,width = SparkGlm52DistributionWidth(state);
+	uint64_t host_bytes;
+	uint8_t *cursor;
+	cudaError_t error;
+	SparkStatus status;
+	status = SparkGlmStageAllocateBytes(state,entries,1u,sizeof(uint32_t),(void **)&slot->distribution_wave_rows);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,entries,1u,sizeof(uint32_t),(void **)&slot->distribution_positions);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,entries,1u,sizeof(SparkRowSampling),(void **)&slot->distribution_rules);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,entries,SPARK_SAMPLING_MAX_LOGPROBS,sizeof(SparkSamplingLogprob),(void **)&slot->distribution_logprobs);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->distribution_hidden_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->distribution_residual_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateRows(state,rows,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,(void **)&slot->distribution_normed_bf16);
+	if ( status == SPARK_STATUS_OK ) status = SparkGlmStageAllocateBytes(state,rows,width,sizeof(float),(void **)&slot->distribution_logits_f32);
+	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u ) status = SparkGlmStageAllocateBytes(state,(uint64_t)state->tp_degree * state->distribution_chunk_rows,width,sizeof(float),(void **)&slot->distribution_gathered_f32);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	host_bytes = entries * (2u * sizeof(uint32_t) + sizeof(SparkRowSampling) + SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob));
+	error = cudaHostAlloc(&slot->distribution_host,host_bytes,cudaHostAllocPortable);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"distribution_host"));
+	memset(slot->distribution_host,0,host_bytes);
+	cursor = (uint8_t *)slot->distribution_host;
+	slot->host_distribution_rules = (SparkRowSampling *)cursor;
+	cursor += entries * sizeof(SparkRowSampling);
+	slot->host_distribution_logprobs = (SparkSamplingLogprob *)cursor;
+	cursor += entries * SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob);
+	slot->host_distribution_wave_rows = (uint32_t *)cursor;
+	cursor += entries * sizeof(uint32_t);
+	slot->host_distribution_positions = (uint32_t *)cursor;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm52AllocateSlotShard(
 	SparkGlm52ModuleState *state,
 	SparkGlm52ExecutionSlot *slot)
@@ -843,6 +932,8 @@ static SparkStatus SparkGlm52AllocateSlotMlp(
 	}
 	if ( status == SPARK_STATUS_OK && state->kv_shard.degree > 1u )
 		status = SparkGlm52AllocateSlotShard(state,slot);
+	if ( status == SPARK_STATUS_OK && state->distribution_wave_capacity != 0u )
+		status = SparkGlm52AllocateSlotDistribution(state,slot);
 	SPARK_RETURN(status);
 }
 
@@ -1052,6 +1143,12 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 		uint32_t old_bound = chain->row_ordered != 0u ? SparkGlm52KvGatherOldBound(wave->host_positions,wave->row_count) : maximum_context;
 		SparkGlm52WaveShardSizes(state,wave,old_bound != UINT32_MAX ? old_bound : maximum_context);
 	}
+	for (row=0u; row<chain->distribution_count && chain->distribution_ordered_rows[row] < chain->first_row; row++)
+		;
+	wave->distribution_first = row;
+	for (; row<chain->distribution_count && chain->distribution_ordered_rows[row] < chain->first_row + chain->wave_rows; row++)
+		slot->host_distribution_wave_rows[row] = chain->distribution_ordered_rows[row] - chain->first_row;
+	wave->distribution_count = row - wave->distribution_first;
 }
 
 typedef struct SparkGlm52WaveRegimeContext
@@ -1152,6 +1249,74 @@ static cudaError_t SparkGlm52CopyWaveTokens(const SparkGlm52TpChain *chain,cudaS
 	return(cudaMemcpyAsync(chain->slot->host_output_token_ids + (chain->row_ordered != 0u ? chain->row_order[last] : last),chain->slot->output_token + chain->wave.row_count - 1u,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream));
 }
 
+static uint32_t SparkGlm52DistributionChunk(const SparkGlm52TpChain *chain,uint32_t first)
+{
+	uint32_t remaining = chain->wave.distribution_count - first;
+	return(remaining < chain->state->distribution_chunk_rows ? remaining : chain->state->distribution_chunk_rows);
+}
+
+static cudaError_t SparkGlm52CopyDistributionLogprobs(const SparkGlm52TpChain *chain)
+{
+	uint64_t offset = (uint64_t)chain->wave.distribution_first * SPARK_SAMPLING_MAX_LOGPROBS;
+	return(cudaMemcpyAsync(chain->slot->host_distribution_logprobs + offset,chain->slot->distribution_logprobs + offset,(uint64_t)chain->wave.distribution_count * SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob),cudaMemcpyDeviceToHost,(cudaStream_t)chain->slot->stream));
+}
+
+static SparkStatus SparkGlm52ValidateDistribution(const SparkGlm52ModuleState *state,const SparkGlm52ResidentDecodeStageBatchView *batch)
+{
+	uint32_t entry,other,logprobs = 0u;
+	if ( batch->distribution_count == 0u )
+		return(SPARK_STATUS_OK);
+	if ( state->distribution_wave_capacity == 0u || batch->distribution_count > batch->active_sequence_count || batch->distribution_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT || batch->distribution_rows == 0 || batch->distribution_rules == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (entry=0u; entry<batch->distribution_count; entry++)
+	{
+		if ( batch->distribution_rows[entry] >= batch->row_count || SparkSamplingRuleValid(&batch->distribution_rules[entry]) == 0u || SparkSamplingRuleNeedsDistribution(&batch->distribution_rules[entry]) == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for (other=0u; other<entry; other++)
+			if ( batch->distribution_rows[other] == batch->distribution_rows[entry] )
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		logprobs |= batch->distribution_rules[entry].logprobs;
+	}
+	if ( logprobs != 0u && batch->distribution_logprobs == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkGlm52StageDistribution(SparkGlm52TpChain *chain,const SparkGlm52ResidentDecodeStageBatchView *batch)
+{
+	SparkGlm52ExecutionSlot *slot = chain->slot;
+	SparkGlm52AsyncCompletion *async = &chain->state->completions[chain->slot_index];
+	uint32_t count = batch->distribution_count,*inverse = chain->row_ordered != 0u ? chain->row_order + batch->row_count : 0,entry,index,ordered,row;
+	cudaError_t error;
+	chain->distribution_count = count;
+	async->distribution_count = count;
+	async->distribution_destination = batch->distribution_logprobs;
+	if ( count == 0u )
+		return(SPARK_STATUS_OK);
+	for (row=0u; inverse != 0 && row<batch->row_count; row++)
+		inverse[chain->row_order[row]] = row;
+	for (entry=0u; entry<count; entry++)
+	{
+		ordered = inverse != 0 ? inverse[batch->distribution_rows[entry]] : batch->distribution_rows[entry];
+		for (index=entry; index>0u && chain->distribution_ordered_rows[index - 1u] > ordered; index--)
+		{
+			chain->distribution_ordered_rows[index] = chain->distribution_ordered_rows[index - 1u];
+			async->distribution_source[index] = async->distribution_source[index - 1u];
+		}
+		chain->distribution_ordered_rows[index] = ordered;
+		async->distribution_source[index] = entry;
+	}
+	for (index=0u; index<count; index++)
+	{
+		slot->host_distribution_rules[index] = batch->distribution_rules[async->distribution_source[index]];
+		slot->host_distribution_positions[index] = slot->host_positions[chain->distribution_ordered_rows[index]];
+	}
+	error = cudaMemcpyAsync(slot->distribution_rules,slot->host_distribution_rules,(uint64_t)count * sizeof(SparkRowSampling),cudaMemcpyHostToDevice,(cudaStream_t)slot->stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->distribution_positions,slot->host_distribution_positions,(uint64_t)count * sizeof(uint32_t),cudaMemcpyHostToDevice,(cudaStream_t)slot->stream);
+	return(SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"distribution_stage"));
+}
+
 #define SPARK_GLM52_MODULE_TP_DISABLED(state) ((state)->tp_collective_disabled != 0u)
 #define SPARK_GLM52_MODULE_TP_ROW_CAPACITY(state) ((state)->execution_row_capacity)
 #define SPARK_GLM52_MODULE_TP_MESH_REGION(state) ((state)->lazy_pack != 0 ? (void *)(uintptr_t)(state)->lazy_pack->attached.mesh_send_buffer_addr : 0)
@@ -1209,6 +1374,26 @@ static SparkStatus SparkGlm52ModuleReduceHidden(SparkGlm52TpChain *chain,void *d
 static SparkStatus SparkGlm52ModuleReduceHeadMax(SparkGlm52TpChain *chain)
 {
 	return(SparkGlm52ModuleReduce(chain,chain->slot->head_maxloc_u64,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64));
+}
+
+static SparkStatus SparkGlm52DistributionGather(SparkGlm52TpChain *chain,uint32_t first,uint32_t rows,uint32_t host_completion)
+{
+	SparkGlm52ModuleState *state = chain->state;
+	SparkTpDeviceCollectiveSubmission submission;
+	uint32_t width = SparkGlm52DistributionWidth(state);
+	if ( state->tp_degree == 1u )
+	{
+		if ( host_completion != 0u )
+			SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
+		return(SPARK_STATUS_OK);
+	}
+	if ( state->tp_collective_disabled != 0u || state->tp_device_collective_initialized == 0u || rows == 0u || rows > state->distribution_chunk_rows )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	SparkGlm52ChainSubmission(chain,chain->slot->distribution_gathered_f32,host_completion,&submission);
+	submission.local_device = chain->slot->distribution_logits_f32 + (uint64_t)first * width;
+	submission.active_sequence_count = rows * state->distribution_sub_rows;
+	submission.row_elements = 2u * width / state->distribution_sub_rows;
+	return(SparkTpDeviceCollectiveEnqueue(&state->tp_device_collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER));
 }
 
 #define SPARK_GLM52_EXCHANGE_SHARD_GATHER 0u
@@ -1978,6 +2163,54 @@ static void SparkGlm52EagerShardFinish(SparkGlm52TpChain *chain,uint32_t phase)
 		SparkGlm52TpChainFail(chain,status);
 }
 
+static void SparkGlm52TpChainFinishWave(SparkGlm52TpChain *chain)
+{
+	SparkGlm52ModuleState *state = chain->state;
+	SparkStatus launch_status;
+	launch_status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,SparkGlm52CopyWaveTokens(chain,(cudaStream_t)chain->slot->stream),"tp_head_tokens");
+	if ( launch_status != SPARK_STATUS_OK )
+	{
+		SparkGlm52TpChainFail(chain,launch_status);
+		return;
+	}
+	SparkGlm52T1Head(chain);
+#ifdef SPARK_SCORE_DUMP
+	launch_status = SparkGlm52ScoreWave(chain);
+	if ( launch_status != SPARK_STATUS_OK )
+	{
+		SparkGlm52TpChainFail(chain,launch_status);
+		return;
+	}
+#endif
+	if ( chain->next_wave_row < chain->batch->row_count )
+	{
+		uint32_t next_wave;
+		next_wave = SparkGlm52WaveRows(chain,chain->next_wave_row);
+		if ( next_wave == 0u )
+		{
+			SparkGlm52TpChainFail(chain,SPARK_STATUS_INVALID_ARGUMENT);
+			return;
+		}
+		chain->first_row = chain->next_wave_row;
+		chain->wave_rows = next_wave;
+		chain->next_wave_row += next_wave;
+		chain->stage = SPARK_GLM52_CHAIN_STAGE_BEGIN;
+		SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
+		return;
+	}
+	launch_status = SparkGlm52LazyRelease(chain);
+	if ( launch_status == SPARK_STATUS_OK )
+		launch_status = SparkGlmStageEnqueueAsyncCompletion(state,chain->slot,chain->slot_index);
+	if ( launch_status != SPARK_STATUS_OK )
+	{
+		SparkGlm52TpChainFail(chain,launch_status);
+		return;
+	}
+	chain->stage = SPARK_GLM52_CHAIN_STAGE_FINISH;
+	chain->active = 0u;
+	free(chain);
+}
+
 static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 {
 	SparkGlm52TpChain *chain;
@@ -2172,50 +2405,52 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 		return;
 	case SPARK_GLM52_CHAIN_STAGE_REDUCE_HEAD:
 		error = SparkGlm52LaunchHeadMaxlocUnpack((cudaStream_t)chain->slot->stream,chain->slot->head_maxloc_u64,chain->slot->output_token,chain->wave_rows);
-		if ( error == cudaSuccess )
-			error = SparkGlm52CopyWaveTokens(chain,(cudaStream_t)chain->slot->stream);
 		launch_status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,error,"tp_head_unpack");
 		if ( launch_status != SPARK_STATUS_OK )
 		{
 			SparkGlm52TpChainFail(chain,launch_status);
 			return;
 		}
-		SparkGlm52T1Head(chain);
-#ifdef SPARK_SCORE_DUMP
-		launch_status = SparkGlm52ScoreWave(chain);
-		if ( launch_status != SPARK_STATUS_OK )
+		if ( chain->wave.distribution_count != 0u )
 		{
-			SparkGlm52TpChainFail(chain,launch_status);
-			return;
-		}
-#endif
-		if ( chain->next_wave_row < chain->batch->row_count )
-		{
-			uint32_t next_wave;
-			next_wave = SparkGlm52WaveRows(chain,chain->next_wave_row);
-			if ( next_wave == 0u )
+			if ( SparkGlm52LaunchDistributionLogits(&chain->wave) != 0 )
 			{
-				SparkGlm52TpChainFail(chain,SPARK_STATUS_INVALID_ARGUMENT);
+				SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
 				return;
 			}
-			chain->first_row = chain->next_wave_row;
-			chain->wave_rows = next_wave;
-			chain->next_wave_row += next_wave;
-			chain->stage = SPARK_GLM52_CHAIN_STAGE_BEGIN;
-			SparkGlm52TpChainAdvance(chain,SPARK_STATUS_OK);
+			chain->distribution_chunk_first = 0u;
+			chain->stage = SPARK_GLM52_CHAIN_STAGE_DISTRIBUTION;
+			launch_status = SparkGlm52DistributionGather(chain,0u,SparkGlm52DistributionChunk(chain,0u),1u);
+			if ( launch_status != SPARK_STATUS_OK )
+				SparkGlm52TpChainFail(chain,launch_status);
 			return;
 		}
-		launch_status = SparkGlm52LazyRelease(chain);
-		if ( launch_status == SPARK_STATUS_OK )
-			launch_status = SparkGlmStageEnqueueAsyncCompletion(state,chain->slot,chain->slot_index);
+		SparkGlm52TpChainFinishWave(chain);
+		return;
+	case SPARK_GLM52_CHAIN_STAGE_DISTRIBUTION:
+		{
+			uint32_t rows = SparkGlm52DistributionChunk(chain,chain->distribution_chunk_first);
+			if ( SparkGlm52LaunchDistributionSample(&chain->wave,chain->distribution_chunk_first,rows) != 0 )
+			{
+				SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
+				return;
+			}
+			chain->distribution_chunk_first += rows;
+		}
+		if ( chain->distribution_chunk_first < chain->wave.distribution_count )
+		{
+			launch_status = SparkGlm52DistributionGather(chain,chain->distribution_chunk_first,SparkGlm52DistributionChunk(chain,chain->distribution_chunk_first),1u);
+			if ( launch_status != SPARK_STATUS_OK )
+				SparkGlm52TpChainFail(chain,launch_status);
+			return;
+		}
+		launch_status = SparkStageModuleCudaStatus(SPARK_GLM52_MODULE_TAG,SparkGlm52CopyDistributionLogprobs(chain),"distribution_logprobs");
 		if ( launch_status != SPARK_STATUS_OK )
 		{
 			SparkGlm52TpChainFail(chain,launch_status);
 			return;
 		}
-		chain->stage = SPARK_GLM52_CHAIN_STAGE_FINISH;
-		chain->active = 0u;
-		free(chain);
+		SparkGlm52TpChainFinishWave(chain);
 		return;
 	default:
 		SparkGlm52TpChainFail(chain,SPARK_STATUS_INTERNAL_ERROR);
@@ -2228,6 +2463,7 @@ static void SparkGlm52FinishedAsync(void *context,SparkStatus status)
 	SparkGlm52AsyncCompletion *async;
 	SparkGlm52ModuleState *state;
 	SparkGlm52ExecutionSlot *slot;
+	uint32_t index;
 	async = (SparkGlm52AsyncCompletion *)context;
 	state = async->state;
 	slot = &state->slots[async->slot_index];
@@ -2236,6 +2472,8 @@ static void SparkGlm52FinishedAsync(void *context,SparkStatus status)
 	{
 		if ( async->output_token_destination != 0 )
 			memcpy(async->output_token_destination,slot->host_output_token_ids,(uint64_t)async->row_count * sizeof(uint32_t));
+		for (index=0u; async->distribution_destination != 0 && index<async->distribution_count; index++)
+			memcpy(async->distribution_destination + (uint64_t)async->distribution_source[index] * SPARK_SAMPLING_MAX_LOGPROBS,slot->host_distribution_logprobs + (uint64_t)index * SPARK_SAMPLING_MAX_LOGPROBS,SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob));
 		atomic_fetch_add_explicit(&state->completed_count,1u,memory_order_relaxed);
 	}
 	else
@@ -2395,6 +2633,22 @@ static uint32_t SparkGlm52WalkWave(void *context)
 		return(8u);
 	if ( SparkGlm52LaunchHeadMaxlocUnpack(stream,slot->head_maxloc_u64,slot->output_token,wave->row_count) != cudaSuccess )
 		return(9u);
+	if ( wave->distribution_count != 0u )
+	{
+		uint32_t first,rows;
+		if ( SparkGlm52LaunchDistributionLogits(wave) != 0 )
+			return(30u);
+		for (first=0u; first<wave->distribution_count; first+=rows)
+		{
+			rows = SparkGlm52DistributionChunk(chain,first);
+			if ( SparkGlm52DistributionGather(chain,first,rows,0u) != SPARK_STATUS_OK )
+				return(31u);
+			if ( SparkGlm52LaunchDistributionSample(wave,first,rows) != 0 )
+				return(32u);
+		}
+		if ( SparkGlm52CopyDistributionLogprobs(chain) != cudaSuccess )
+			return(33u);
+	}
 	if ( wave->inputs_staged == 0u && SparkGlm52CopyWaveTokens(chain,stream) != cudaSuccess )
 		return(10u);
 	return(0u);
@@ -2565,7 +2819,7 @@ static void SparkGlm52RunChain(SparkGlm52TpChain *chain)
 	chain->start_ns = SparkGlm52NowNs();
 	SparkGlm52ChainCollectives(state,&collectives);
 	SparkGlm52BuildWave(chain);
-	if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH )
+	if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && chain->distribution_count == 0u )
 		status = SparkGlm52GraphWalk(chain,&collectives,&site);
 	else
 		status = SparkGlm52LinearWalk(chain,&site);
@@ -2707,6 +2961,9 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	SparkStatus status;
 	cudaError_t error;
 	batch = context->batch;
+	status = SparkGlm52ValidateDistribution(state,batch);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	continuity.state = state;
 	continuity.batch = batch;
 	continuity.bound = simulated_bound;
@@ -2794,6 +3051,13 @@ static SparkStatus SparkGlm52ExecuteBatch(
 			SparkGlm52TpChainFail(chain,status);
 			return(SPARK_STATUS_OK);
 		}
+	}
+	status = SparkGlm52StageDistribution(chain,batch);
+	if ( status != SPARK_STATUS_OK )
+	{
+		atomic_store_explicit(&state->chain_busy,0u,memory_order_release);
+		SparkGlm52TpChainFail(chain,status);
+		return(SPARK_STATUS_OK);
 	}
 	chain->wave_rows = SparkGlm52WaveRows(chain,0u);
 	chain->next_wave_row = chain->wave_rows;
@@ -2996,6 +3260,8 @@ static SparkStatus SparkGlm52ModulePrepare(
 		status = SparkGlm52ProjectionSplitConfigure(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52PrefillWaveRowsConfigure(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm52DistributionConfigure(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52AllocateCaches(state);
 	if ( status == SPARK_STATUS_OK )

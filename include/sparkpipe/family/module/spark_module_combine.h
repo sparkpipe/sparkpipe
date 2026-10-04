@@ -48,6 +48,17 @@ static SparkStatus SPARK_FAMILY(ModuleCombineU64Max)(void *combine_context, uint
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_max_u64"));
 }
 
+static SparkStatus SPARK_FAMILY(ModuleCombineGatherBf16)(void *combine_context, void *destination_device, const void *const *source_devices, uint32_t source_count, uint32_t active_sequence_count, uint32_t row_elements, void *cuda_stream)
+{
+	cudaError_t error;
+	uint64_t elements = (uint64_t)active_sequence_count * row_elements;
+	(void)combine_context;
+	if ( elements == 0u || elements > UINT32_MAX )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	error = SparkTpLaunchGatherRanks((cudaStream_t)cuda_stream,destination_device,source_devices,source_count,(uint32_t)elements);
+	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_gather"));
+}
+
 static inline void SPARK_FAMILY(ModuleRegisterCombines)(SparkTpDeviceCollectiveConfig *configuration)
 {
 	configuration->combine_fused_bf16_function = SPARK_FAMILY(ModuleCombineFusedBf16);
@@ -56,4 +67,5 @@ static inline void SPARK_FAMILY(ModuleRegisterCombines)(SparkTpDeviceCollectiveC
 	configuration->round_f32_function = SPARK_FAMILY(ModuleRoundF32);
 	configuration->combine_bf16_function = SPARK_FAMILY(ModuleCombineBf16);
 	configuration->combine_u64_max_function = SPARK_FAMILY(ModuleCombineU64Max);
+	configuration->combine_gather_bf16_function = SPARK_FAMILY(ModuleCombineGatherBf16);
 }

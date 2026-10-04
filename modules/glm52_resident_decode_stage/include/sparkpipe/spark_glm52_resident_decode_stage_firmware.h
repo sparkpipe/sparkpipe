@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_module_abi.h"
+#include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
 
@@ -105,6 +106,10 @@ typedef struct SparkGlm52ResidentDecodeStageBatchView
 	const uint32_t *row_resident_slots;
 	const uint64_t *row_positions;
 	const uint64_t *row_sequence_ids;
+	uint32_t distribution_count;
+	const uint32_t *distribution_rows;
+	const SparkRowSampling *distribution_rules;
+	SparkSamplingLogprob *distribution_logprobs;
 } SparkGlm52ResidentDecodeStageBatchView;
 
 typedef struct SparkGlm52ResidentDecodeStageFrameContext

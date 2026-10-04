@@ -126,6 +126,12 @@ typedef struct SparkGlm52ServingPending
 	uint32_t output_token_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	SparkModelDriverCacheLane cache_lanes[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t cache_lane_count;
+	uint32_t distribution_count;
+	uint32_t logprob_stride;
+	uint32_t distribution_rows[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t distribution_lanes[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	SparkRowSampling distribution_rules[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	SparkSamplingLogprob distribution_logprobs[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_SAMPLING_MAX_LOGPROBS];
 } SparkGlm52ServingPending;
 
 typedef struct SparkGlm52ServingState
@@ -184,6 +190,9 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTempl
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
 		SPARK_GLM52_SERVING_TOPOLOGY_FLAG),
 	.stage_count = 0u,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
@@ -465,7 +474,7 @@ static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 	const SparkModelServingSubmission *submission)
 {
 	SparkGlm52ServingPending *pending;
-	uint32_t row;
+	uint32_t row,lane;
 	pending = (SparkGlm52ServingPending *)
 		SparkServingAdapterTemplateReservePending(state->pending,
 			sizeof(*pending),
@@ -480,6 +489,19 @@ static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 	for (row=0u; row<submission->row_count; row++)
 		pending->resident_slots[row] =
 			submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot;
+	pending->distribution_count = 0u;
+	pending->logprob_stride = 0u;
+	for (lane=0u; SparkModelServingWorkKindUsesRows(submission->work_kind) != 0u && lane<submission->active_sequence_count; lane++)
+	{
+		if ( SparkSamplingRuleNeedsDistribution(&submission->lanes[lane].sampling) == 0u )
+			continue;
+		pending->distribution_rows[pending->distribution_count] = pending->last_row_by_lane[lane];
+		pending->distribution_lanes[pending->distribution_count] = lane;
+		pending->distribution_rules[pending->distribution_count] = submission->lanes[lane].sampling;
+		if ( submission->lanes[lane].sampling.logprobs > pending->logprob_stride )
+			pending->logprob_stride = submission->lanes[lane].sampling.logprobs;
+		pending->distribution_count++;
+	}
 	return(pending);
 }
 
@@ -526,6 +548,10 @@ static void SparkGlm52ServingDriverCompletion(
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		for (index=0u; index<completion.token_count; index++)
 			completion.token_ids[index] = pending->output_token_ids[pending->last_row_by_lane[index]];
+		completion.logprob_stride = pending->logprob_stride;
+		completion.logprob_entry_count = completion.token_count * pending->logprob_stride;
+		for (index=0u; pending->logprob_stride != 0u && index<pending->distribution_count; index++)
+			memcpy(&completion.logprobs[(uint64_t)pending->distribution_lanes[index] * pending->logprob_stride],&pending->distribution_logprobs[(uint64_t)index * SPARK_SAMPLING_MAX_LOGPROBS],(uint64_t)pending->distribution_rules[index].logprobs * sizeof(SparkSamplingLogprob));
 	}
 	pending->common.active = 0u;
 	state->completion_function(state->completion_context,&completion);
@@ -726,6 +752,10 @@ static void SparkGlm52ServingBuildFrame(
 	batch->row_resident_slots = pending->resident_slots;
 	batch->row_positions = submission->row_positions;
 	batch->row_sequence_ids = submission->row_sequence_ids;
+	batch->distribution_count = pending->distribution_count;
+	batch->distribution_rows = pending->distribution_rows;
+	batch->distribution_rules = pending->distribution_rules;
+	batch->distribution_logprobs = pending->distribution_logprobs;
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);

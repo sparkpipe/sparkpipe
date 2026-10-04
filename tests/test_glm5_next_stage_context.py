@@ -139,6 +139,15 @@ cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,c
 	(void)element_count;
 	return(cudaErrorInvalidValue);
 }
+cudaError_t SparkTpLaunchGatherRanks(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t elements_per_rank)
+{
+	(void)stream;
+	(void)destination;
+	(void)sources;
+	(void)source_count;
+	(void)elements_per_rank;
+	return(cudaErrorInvalidValue);
+}
 
 static int32_t ALLOCATIONS_BEFORE_FAILURE = -1;
 
@@ -344,6 +353,20 @@ cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,const uint32_t
 	}
 	POISON_PENDING = plan != 0u ? 1u : 0u;
 	return(walk_note('p') != 0 ? cudaErrorInvalidValue : cudaSuccess);
+}
+
+int32_t SparkGlm5NextLaunchDistributionLogits(const SparkGlm5NextCudaWave *wave)
+{
+	assert(wave == 0);
+	return(1);
+}
+
+int32_t SparkGlm5NextLaunchDistributionSample(const SparkGlm5NextCudaWave *wave,uint32_t first,uint32_t rows)
+{
+	(void)first;
+	(void)rows;
+	assert(wave == 0);
+	return(1);
 }
 
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count)
