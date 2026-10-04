@@ -508,12 +508,19 @@ citations refer to that commit.
   recency. Close it with deadline-aware ranking, proven on the fleet by an
   oversubscribed run with two priority classes where the higher class keeps
   its hits and its TTFT stays flat.
-- A full backing store fails the admission: after the page cache relieves
-  backing (releasing an idle restored page's record or evicting an unused
-  entry) and still finds no slot, the admission answers `CAPACITY_EXCEEDED`
-  and logs `KV-BACKING-FULL` (`cache/kv_page_cache.c`,
-  `SparkKvPageCacheBackingOutcome`). Close it by feeding store occupancy into
-  engine admission so a full store queues new work instead of failing it.
+- A full backing store queues new work instead of failing it. The page
+  cache first relieves backing: it releases an idle restored page's record
+  or evicts an unused entry. If the store is still full (`KV-BACKING-FULL`)
+  for an admission whose lanes are all new sequences, and a live sequence
+  outside the wave could free backing, the lane transactions answer `BUSY`
+  (`SparkKvLaneTransactionsPrepare`, `cache/kv_page_cache.c`). The engine
+  then retries with backoff inside the in-flight budget; the binding's
+  arena line counts these as `backing_full_queued`. Two cases still answer
+  `CAPACITY_EXCEEDED`: nothing outside the wave is live, or a running lane
+  needs backing for its growth or restore. Waiting there could leave waves
+  stalled on each other for the whole budget. Not yet fleet-proven: close
+  it with a one-Spark run on a small backing quota where new requests wait
+  and complete as running ones finish, and no running request fails.
 - The KV NVMe write budget covers only the engines on the common binding. weightd
   hands each KV pool a share of `--kv-write-budget-bytes-per-day`, and the
   binding stops snapshot saves and discards parked pages for recompute once

@@ -2769,7 +2769,7 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvLaneTransactionsPrepare(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
 {
 	SparkKvLaneTransaction *owner;
 	const SparkModelDriverCacheLane *lane;
@@ -2828,6 +2828,35 @@ static SparkStatus SparkKvLaneTransactionsPrepare(SparkKvLaneTransactions *trans
 			status = rollback;
 	}
 	SPARK_RETURN(status);
+}
+
+static uint32_t SparkKvLaneTransactionsNewWorkCanWait(const SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t slot,index,member;
+	for (index=0u; index<request->cache_lane_count; index++)
+		if ( transactions->cache->sequences[request->cache_lanes[index].resident_sequence_slot].sequence_id == request->cache_lanes[index].sequence_id )
+			return(0u);
+	for (slot=0u; slot<transactions->cache->sequence_capacity; slot++)
+	{
+		if ( transactions->cache->sequences[slot].sequence_id == 0u )
+			continue;
+		for (member=0u,index=0u; index<request->cache_lane_count; index++)
+			member |= request->cache_lanes[index].resident_sequence_slot == slot ? 1u : 0u;
+		if ( member == 0u )
+			return(1u);
+	}
+	return(0u);
+}
+
+static SparkStatus SparkKvLaneTransactionsPrepare(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+{
+	uint64_t backing_full_before = transactions->cache->backing_full_count;
+	SparkStatus status = SparkKvLaneTransactionsPrepareLanes(transactions,request);
+	if ( status != SPARK_STATUS_CAPACITY_EXCEEDED || transactions->cache->backing_full_count == backing_full_before ||
+		SparkKvLaneTransactionsNewWorkCanWait(transactions,request) == 0u )
+		return(status);
+	transactions->cache->backing_full_queued_count++;
+	return(SPARK_STATUS_BUSY);
 }
 
 static SparkStatus SparkKvLaneTransactionsRelease(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)

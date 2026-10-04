@@ -2790,6 +2790,76 @@ static void SparkTestKvBackingFullIsRelieved(void)
 	assert(unlink(path) == 0);
 }
 
+static void SparkTestKvWriteUnpublishedPage(SparkTestKvPageFixture *fixture,SparkKvPageStore *store,uint64_t sequence,uint32_t slot)
+{
+	SparkModelDriverCacheLane lane;
+	uint32_t logical[4],count,mutations;
+	SparkTestKvPageLane(&lane,sequence,slot,0u,1u);
+	assert(SparkTestKvBeginReady(fixture,store,&lane,logical,&count,&mutations) == SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaUnpinResidentTable(&fixture->kv.arena,logical,count) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkTestKvAdmitPastTransfers(SparkTestKvTransactions *fixture,SparkKvPageStore *store,uint64_t queued_before)
+{
+	SparkStatus status;
+	SparkTestBusyStart();
+	for (;;)
+	{
+		status = SparkKvLaneTransactionsAdmit(&fixture->transactions,&fixture->request);
+		if ( status != SPARK_STATUS_BUSY || fixture->pages.cache.backing_full_queued_count != queued_before )
+			return(status);
+		SparkTestYieldBusy();
+		(void)SparkKvPageStoreWaitForTransfers(store);
+		(void)SparkKvPageStoreProgress(store,&fixture->pages.kv.arena,1u);
+	}
+}
+
+static void SparkTestKvBackingFullQueuesNewWork(void)
+{
+	SparkTestKvTransactions fixture;
+	SparkKvPageStore store;
+	SparkKvPageStoreConfiguration configuration;
+	uint8_t staging[SPARK_TEST_BLOCK_BYTES];
+	char path[] = "/tmp/sparkpipe-kv-queue-XXXXXX";
+	int32_t descriptor = mkstemp(path);
+	assert(descriptor >= 0 && close(descriptor) == 0 && unlink(path) == 0);
+	SparkTestKvTransactionsInitialize(&fixture,1u);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
+	configuration.logical_page_capacity = SPARK_TEST_LOGICAL_BLOCK_COUNT;
+	configuration.transfer_capacity = SPARK_TEST_RESIDENT_SLOT_COUNT;
+	configuration.page_bytes = SPARK_TEST_BLOCK_BYTES;
+	configuration.maximum_backing_bytes = SPARK_TEST_BLOCK_BYTES;
+	configuration.backing_path = path;
+	configuration.staging_address = staging;
+	configuration.staging_bytes = sizeof(staging);
+	assert(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_OK);
+	fixture.pages.kv.arena.evict_function = SparkKvPageStoreWriteback;
+	fixture.pages.kv.arena.evict_context = &store;
+	fixture.pages.cache.page_store = &store;
+	SparkTestKvWriteUnpublishedPage(&fixture.pages,&store,1u,0u);
+	SparkTestKvWriteUnpublishedPage(&fixture.pages,&store,2u,1u);
+	SparkTestKvWriteUnpublishedPage(&fixture.pages,&store,3u,2u);
+	assert(store.backing_page_count == 1u);
+	SparkTestKvPageLane(&fixture.lanes[0],4u,3u,0u,1u);
+	assert(SparkTestKvAdmitPastTransfers(&fixture,&store,0u) == SPARK_STATUS_BUSY);
+	assert(fixture.pages.cache.backing_full_queued_count == 1u && fixture.pages.cache.backing_full_count >= 1u);
+	assert(fixture.owners[3].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && fixture.pages.cache.sequences[3].sequence_id == 0u);
+	SparkTestKvPageLane(&fixture.lanes[0],1u,0u,1u,2u);
+	assert(SparkTestKvAdmitPastTransfers(&fixture,&store,1u) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(fixture.pages.cache.backing_full_queued_count == 1u && fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && fixture.pages.cache.sequences[0].sequence_id == 1u);
+	SparkTestKvPageLane(&fixture.lanes[0],4u,3u,0u,1u);
+	assert(SparkKvPageCacheReleaseLane(&fixture.pages.cache,0u,1u) == SPARK_STATUS_OK);
+	assert(SparkTestKvAdmitPastTransfers(&fixture,&store,1u) == SPARK_STATUS_OK);
+	assert(fixture.pages.cache.backing_full_queued_count == 1u && fixture.owners[3].phase == SPARK_KV_LANE_TRANSACTION_PREPARED);
+	SparkKvPageStoreDestroy(&store);
+	assert(unlink(path) == 0);
+	printf("PASS kv backing full queues new work while a sequence outside the wave can free backing; a running lane still fails loudly\n");
+}
+
 int main(void)
 {
 	int32_t status;
@@ -2841,6 +2911,7 @@ int main(void)
 	SparkTestKvCopyOnWriteRequiresDeviceCopy();
 	SparkTestKvDeferredDestinationFree();
 	SparkTestKvBackingFullIsRelieved();
+	SparkTestKvBackingFullQueuesNewWork();
 	SparkTestKvPageStoreRetiredWriteFailureReachesEvictor();
 	SparkTestKvLogicalBlockFreeListReusesReleasedHead();
 	SparkTestKvFramePinProtectsResidentBlock();
