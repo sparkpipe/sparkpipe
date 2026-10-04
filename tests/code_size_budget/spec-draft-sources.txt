@@ -1,0 +1,2 @@
++1001
+Draft sources: the speculation seam drafts the first tokens of an oversized proposal; a model-neutral byte-draft client for a byte-retrieval memory service (the Centaur draft_bytes contract: request builder, bounded HTTP transport, strict response invariants, exact service error codes) and the token alignment that proves a retrieved continuation starts at the uncommitted boundary before any token is proposed.
