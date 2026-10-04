@@ -194,6 +194,7 @@ typedef struct SparkGlm52TpChain
 	uint32_t wave_rows;
 	uint32_t next_wave_row;
 	uint32_t prefill;
+	uint32_t verify;
 	uint32_t stage;
 	uint32_t next_layer;
 	struct timespec lazy_synced;
@@ -1120,6 +1121,7 @@ static void SparkGlm52BuildWave(SparkGlm52TpChain *chain)
 	wave->route_host_copy = state->lazy_pack != 0 && state->experts_pinned == 0u ? 1u : 0u;
 	wave->projection_split = state->projection_split;
 	wave->row_head_certified = chain->prefill != 0u && state->prefill_wave_rows != 0u ? 1u : 0u;
+	wave->head_every_row = chain->verify;
 	wave->single_sequence_rows = chain->row_ordered;
 	wave->prefill_block_table = chain->row_ordered != 0u && SparkGlm52PackedPrefill(state,slot) != 0u ? slot->prefill_block_table : 0;
 	wave->head_certified_fp8_payload = state->head_certified_fp8_payload;
@@ -1233,6 +1235,15 @@ static cudaError_t SparkGlm52CopyWaveTokens(const SparkGlm52TpChain *chain,cudaS
 		return(cudaSuccess);
 	if ( chain->wave.row_head_certified == 0u )
 		return(cudaMemcpyAsync(chain->slot->host_output_token_ids + chain->first_row,chain->slot->output_token,(uint64_t)chain->wave_rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream));
+	for (row=0u; chain->wave.head_every_row != 0u && row<chain->wave_rows; row++)
+	{
+		index = chain->first_row + row;
+		error = cudaMemcpyAsync(chain->slot->host_output_token_ids + (chain->row_ordered != 0u ? chain->row_order[index] : index),chain->slot->output_token + row,sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
+		if ( error != cudaSuccess )
+			return(error);
+	}
+	if ( chain->wave.head_every_row != 0u )
+		return(cudaSuccess);
 	for (row=0u; chain->wave.prefill_block_table != 0 && row<chain->wave_rows; row++)
 	{
 		if ( SparkGlm52WaveSegmentEnd(chain,row) == 0u )
@@ -2003,7 +2014,7 @@ static SparkStatus SparkGlm52ScorePlan(SparkGlm52Score *score,const SparkStageKv
 static uint32_t SparkGlm52ScoreServedToken(const SparkGlm52TpChain *chain,uint32_t row)
 {
 	uint32_t index = chain->first_row + row;
-	if ( chain->wave.row_head_certified != 0u && (chain->wave.prefill_block_table != 0 ? SparkGlm52WaveSegmentEnd(chain,row) == 0u : row + 1u != chain->wave_rows) )
+	if ( chain->wave.row_head_certified != 0u && chain->wave.head_every_row == 0u && (chain->wave.prefill_block_table != 0 ? SparkGlm52WaveSegmentEnd(chain,row) == 0u : row + 1u != chain->wave_rows) )
 		return(SPARK_SCORE_DUMP_NO_TOKEN);
 	return(chain->slot->host_output_token_ids[chain->row_ordered != 0u ? chain->row_order[index] : index]);
 }
@@ -2818,7 +2829,7 @@ static void SparkGlm52RunChain(SparkGlm52TpChain *chain)
 	chain->start_ns = SparkGlm52NowNs();
 	SparkGlm52ChainCollectives(state,&collectives);
 	SparkGlm52BuildWave(chain);
-	if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && chain->distribution_count == 0u )
+	if ( state->chain_mode == SPARK_TP_CHAIN_MODE_GRAPH && chain->distribution_count == 0u && chain->verify == 0u )
 		status = SparkGlm52GraphWalk(chain,&collectives,&site);
 	else
 		status = SparkGlm52LinearWalk(chain,&site);
@@ -3042,6 +3053,7 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	chain->batch = &chain->batch_copy;
 	chain->first_row = 0u;
 	chain->prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
+	chain->verify = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY) != 0u ? 1u : 0u;
 	if ( chain->prefill != 0u && state->prefill_wave_rows != 0u )
 	{
 		status = SparkGlm52OrderPrefillRows(chain);
@@ -3146,7 +3158,8 @@ static SparkStatus SparkGlm52ModuleAdmit(
 	table.max_input_row_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT;
 	table.max_sequence_positions = state->max_sequence_positions;
 	table.flags = SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS |
-		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG;
+		SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG |
+		SPARK_ADMISSION_POLICY_FLAG_ALLOW_VERIFY;
 	table.predicate = SparkGlm52AdmissionPredicate;
 	table.predicate_context = state;
 	table.cost = SparkStageModuleAdmissionCost;

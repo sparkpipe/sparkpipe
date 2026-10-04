@@ -238,6 +238,20 @@ typedef struct SparkModelServingSubmission
 	SparkModelDriverResidencyToken residency;
 } SparkModelServingSubmission;
 
+static inline uint32_t SparkModelServingSubmissionFrameFlags(const SparkModelServingSubmission *submission)
+{
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+		return(SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE &&
+		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+		return(SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL | SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		return(SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
+		return(SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH);
+	return(0u);
+}
+
 typedef struct SparkModelServingCompletion
 {
 	uint32_t abi_version;

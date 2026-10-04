@@ -240,6 +240,9 @@ struct SparkStageKvBinding
 	atomic_uchar *lane_bound;
 	atomic_ullong *lane_sequence_ids;
 	atomic_ullong *lane_next_positions;
+	atomic_ullong *lane_rewind_floors;
+	atomic_ullong *lane_rewind_ceilings;
+	atomic_ullong *lane_pending_floors;
 	pthread_mutex_t mutex;
 	uint32_t mutex_initialized;
 	uint64_t control_generation;

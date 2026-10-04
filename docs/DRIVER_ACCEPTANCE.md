@@ -74,7 +74,11 @@ submission flag: a verify decode carries one row per input token for each lane
 (the lane's token, then the engine's drafts at consecutive positions), and
 the completion returns the model's greedy token for every row, padded with
 `SPARK_MODEL_SERVING_NO_TOKEN` to `tokens_per_sequence`. The engine, not the
-driver, decides which drafts are accepted. Cache geometry and positive
+driver, decides which drafts are accepted. The driver sees it as a prefill
+frame with `SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY` (driver ABI 20) and
+verify-flagged cache lanes; the KV page cache and the stage binding then let
+the lane's next wave start anywhere in the window the verify left (its first
+row plus one to its last row plus one) and nowhere else. Cache geometry and positive
 runtime page capacities are required.
 Clearing every remaining capability bit does not skip any of these checks.
 The remaining descriptors describe transport/topology and specialized

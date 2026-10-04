@@ -916,32 +916,37 @@ Related common-code debt:
   it; they are gone too, so a DFlash2 request is refused as unavailable.
   Restore the capture inside the graph engine, with the ring and gate from
   `e60f690b`, when a GLM 5.3 Flash DFlash2 drafter is to be qualified.
-- The engine drafts from each request's own history, but no driver verifies
-  yet. `runtime/model_batch_engine.c` keeps a 3-gram chain index over the
-  request's prompt and generated tokens (`SparkSpeculationLookupIndex`). It
-  takes the most recent longest suffix match (up to 8 tokens) and proposes the
-  tokens that followed it, with the adaptive depth of
+- Context-lookup speculation runs end to end for GLM Full; GLM Flash and K3
+  have no verify head yet. The engine (`runtime/model_batch_engine.c`) keeps a
+  3-gram chain index over each request's prompt and generated tokens
+  (`SparkSpeculationLookupIndex`). It drafts the tokens that followed the most
+  recent longest suffix match (up to 8 tokens), with the adaptive depth of
   `spark_speculation_depth.h`. Only greedy lanes without logprobs draft, and a
-  draft never reaches the last position of a KV block, so the row that
-  completes a block is always a lane's first row and publishes as a plain
-  decode does. Every lane of the wave rides one decode submission flagged
-  `SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY` (adapter ABI 33), one row per
-  input token, and the completion returns the model's greedy token per row
-  with `SPARK_MODEL_SERVING_NO_TOKEN` padding. The engine commits the longest
-  prefix whose drafts equal the model's tokens plus the model's token at the
-  first mismatch. It counts verify lanes, drafted and accepted tokens in its
-  view (engine ABI 13) and in the API's `engine_measurements` line. The
-  engine sends verify waves only to an adapter that declares
-  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`, and none of the
-  production adapters does. Still to build:
-  - the verify head in glm52 (GLM Full): k+1 rows per lane with a certified
-    head on every row. KV rollback needs nothing beyond the engine's
-    position, because rejected rows sit past it in the same block and are
-    rewritten. The verify math on closed PR #1398 is the starting point;
+  draft never reaches the last position of a KV block: the row that completes
+  a block is always a lane's first row, and a lane in a verify wave that would
+  publish defers it to a CACHE_PUBLISH step. A wave with drafts is one decode
+  submission flagged `SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY` (adapter ABI
+  33): rows wave-major, the lane's context at its last row plus one, and the
+  completion carrying the model's greedy token per row with
+  `SPARK_MODEL_SERVING_NO_TOKEN` padding. The engine commits the longest prefix
+  whose drafts equal the model's tokens plus the model's token at the first
+  mismatch, and counts verify lanes, drafted and accepted tokens in its view
+  (engine ABI 13) and the API's `engine_measurements` line. Rejected KV rolls
+  back by position. A verify frame (`SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY`,
+  cache-lane flag `..._CACHE_LANE_FLAG_VERIFY`, driver ABI 20) leaves a rewind
+  window in the page cache sequence and in the stage binding: the next wave
+  may start anywhere from the verify's first row plus one up to its last row
+  plus one, and only while the recorded next position is still the one the
+  verify set. Everywhere else continuity stays exact. glm52 runs a verify frame
+  as a prefill-style wave with the certified head on every row
+  (`head_every_row`) on the linear walk (no graph capture), and its adapter
+  declares `SPECULATIVE_VERIFY` with up to 7 drafts. Still to do:
   - glm5_next (GLM Flash) and k3: the same head, plus restoring KDA state to
     the accepted row (the common recurrent-state hook, I-05). glm5_next's
     in-driver lookup regime (`SPARK_GLM5_NEXT_VERIFY_ROWS`) then goes away,
     so drafting stays with the engine;
+  - verify waves on the graph path: they need their own regime family in the
+    graph table, which the 72-entry bound does not have room for;
   - multi-row verify numerics differ from a 1-row decode by the reordering
     floor, so speculative output is judged against the floor like batched
     output.

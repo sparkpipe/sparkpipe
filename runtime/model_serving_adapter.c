@@ -495,6 +495,9 @@ static SparkStatus SparkModelServingAdapterValidateVerifyRows(
 	uint32_t counts[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t lane,row;
 	memset(counts,0,sizeof(counts));
+	for (lane=0u; lane<submission->active_sequence_count && lane<submission->row_count; lane++)
+		if ( submission->row_lane_indices[lane] != lane )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (row=0u; row<submission->row_count; row++)
 	{
 		lane = submission->row_lane_indices[row];
@@ -506,7 +509,8 @@ static SparkStatus SparkModelServingAdapterValidateVerifyRows(
 		counts[lane]++;
 	}
 	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		if ( counts[lane] == 0u )
+		if ( counts[lane] == 0u || submission->lanes[lane].context_token_count != submission->lanes[lane].sequence_position + counts[lane] ||
+			(submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
@@ -705,6 +709,8 @@ SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
 				destination->flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
 			if ( (source->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )
 				destination->flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;
+			if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+				destination->flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY;
 		}
 		if ( SparkModelDriverCacheLaneIsValid(destination) == 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);

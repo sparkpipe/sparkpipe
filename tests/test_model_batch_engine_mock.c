@@ -1708,7 +1708,7 @@ static uint32_t TestLaneInputsFollowScript(uint64_t request_id,const uint32_t *s
 	uint32_t index,checked = 0u;
 	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
 	{
-		if ( lane.request_id != request_id || (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) == 0u || lane.context_token_count != lane.sequence_position + 1u )
+		if ( lane.request_id != request_id || (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) == 0u || lane.sequence_position < 44u )
 			continue;
 		if ( lane.sequence_position >= script_count || lane.input_token_id != script[lane.sequence_position] )
 			return(0u);

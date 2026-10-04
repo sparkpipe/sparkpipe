@@ -9,8 +9,8 @@
 #define TEST_MODEL_SERVING_ADAPTER_MODULE_PATH ""
 #endif
 
-_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 19u,
-	"resident decode chaining requires model-driver ABI 19");
+_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 20u,
+	"resident decode chaining and verify frames require model-driver ABI 20");
 
 static SparkStatus TestInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
@@ -954,8 +954,10 @@ static void TestVerifySubmission(void)
 	SparkModelServingAdapterDescriptor descriptor;
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lanes[2];
-	uint32_t token_ids[5] = {500u,501u,502u,503u,700u},row_lanes[5] = {0u,0u,0u,0u,1u};
-	uint64_t row_positions[5] = {40u,41u,42u,43u,9u},row_sequences[5] = {7u,7u,7u,7u,8u};
+	uint32_t token_ids[5] = {500u,700u,501u,502u,503u},row_lanes[5] = {0u,1u,0u,0u,0u};
+	uint64_t row_positions[5] = {40u,9u,41u,42u,43u},row_sequences[5] = {7u,8u,7u,7u,7u};
+	SparkModelDriverCacheLane cache_lanes[2];
+	uint32_t cache_lane_count;
 	uint32_t lane;
 	TestBuildDescriptor(&descriptor);
 	descriptor.max_output_token_count = 16u;
@@ -978,7 +980,7 @@ static void TestVerifySubmission(void)
 		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
 	}
 	lanes[0].sequence_position = 40u;
-	lanes[0].context_token_count = 41u;
+	lanes[0].context_token_count = 44u;
 	lanes[0].input_token_id = 500u;
 	lanes[1].sequence_position = 9u;
 	lanes[1].context_token_count = 10u;
@@ -1008,6 +1010,17 @@ static void TestVerifySubmission(void)
 	submission.row_positions = row_positions;
 	submission.row_sequence_ids = row_sequences;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	assert(SparkModelServingAdapterBuildDriverCacheLanes(&submission,cache_lanes,2u,&cache_lane_count) == SPARK_STATUS_OK && cache_lane_count == 2u);
+	assert((cache_lanes[0].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u && (cache_lanes[1].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u);
+	assert(cache_lanes[0].context_token_count == 44u && cache_lanes[1].context_token_count == 10u);
+	lanes[0].context_token_count = 41u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lanes[0].context_token_count = 44u;
+	row_lanes[0] = 1u;
+	row_lanes[1] = 0u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	row_lanes[0] = 0u;
+	row_lanes[1] = 1u;
 	submission.flags = UINT32_C(0x00000002);
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY;
@@ -1016,15 +1029,15 @@ static void TestVerifySubmission(void)
 	submission.tokens_per_sequence = 3u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.tokens_per_sequence = 4u;
-	row_positions[2] = 43u;
+	row_positions[3] = 43u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
-	row_positions[2] = 42u;
+	row_positions[3] = 42u;
 	token_ids[0] = 499u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	token_ids[0] = 500u;
-	token_ids[3] = SPARK_MODEL_SERVING_NO_TOKEN;
+	token_ids[4] = SPARK_MODEL_SERVING_NO_TOKEN;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
-	token_ids[3] = 503u;
+	token_ids[4] = 503u;
 	submission.row_count = submission.token_count = submission.new_token_count = 4u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.row_count = submission.token_count = submission.new_token_count = 5u;

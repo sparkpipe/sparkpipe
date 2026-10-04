@@ -117,6 +117,8 @@ static const char *const SparkGlm52ServingScoreMembers[] =
 #define SPARK_GLM52_SERVING_CONFIGURATION_MEMBERS_MAX ((sizeof(SparkGlm52ServingConfigurationMembersBridge) / sizeof(SparkGlm52ServingConfigurationMembersBridge[0])) + SPARK_GLM52_SERVING_SCORE_MEMBER_COUNT)
 #endif
 
+#define SPARK_GLM52_SERVING_VERIFY_ROWS 8u
+
 typedef struct SparkGlm52ServingPending
 {
 	struct SparkGlm52ServingState *owner;
@@ -124,6 +126,9 @@ typedef struct SparkGlm52ServingPending
 	uint32_t last_row_by_lane[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t resident_slots[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
 	uint32_t output_token_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT];
+	uint32_t verify;
+	uint32_t verify_counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t verify_rows[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT][SPARK_GLM52_SERVING_VERIFY_ROWS];
 	SparkModelDriverCacheLane cache_lanes[SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t cache_lane_count;
 	uint32_t distribution_count;
@@ -192,6 +197,8 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTempl
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY |
 		SPARK_GLM52_SERVING_TOPOLOGY_FLAG),
 	.stage_count = 0u,
 	.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT,
@@ -206,7 +213,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm52ServingDescriptorTempl
 	.max_input_row_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
 	.max_resident_sequence_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_output_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
-	.max_speculative_token_count = 0u,
+	.max_speculative_token_count = SPARK_GLM52_SERVING_VERIFY_ROWS - 1u,
 	.cache_block_token_count = 64u,
 	.boundary_sideband_kinds = {0u},
 	.boundary_sideband_bytes_per_sequence = {0u}
@@ -485,9 +492,14 @@ static SparkGlm52ServingPending *SparkGlm52ServingReservePending(
 		return(0);
 	pending->owner = state;
 	pending->common.active = 1u;
+	pending->verify = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
 	for (row=0u; row<submission->row_count; row++)
-		pending->resident_slots[row] =
-			submission->lanes[submission->row_lane_indices[row]].resident_sequence_slot;
+	{
+		lane = submission->row_lane_indices[row];
+		pending->resident_slots[row] = submission->lanes[lane].resident_sequence_slot;
+		if ( pending->verify != 0u && pending->verify_counts[lane] < SPARK_GLM52_SERVING_VERIFY_ROWS )
+			pending->verify_rows[lane][pending->verify_counts[lane]++] = row;
+	}
 	pending->distribution_count = 0u;
 	pending->logprob_stride = 0u;
 	for (lane=0u; SparkModelServingWorkKindUsesRows(submission->work_kind) != 0u && lane<submission->active_sequence_count; lane++)
@@ -540,7 +552,18 @@ static void SparkGlm52ServingDriverCompletion(
 	else
 		state->orphan_completion_count++;
 
-	if ( state->stage_index + 1u == SparkGlm52ServingDescriptor.stage_count && completion.status == SPARK_STATUS_OK && SparkModelServingWorkKindUsesRows(pending->common.work_kind) != 0u )
+	if ( state->stage_index + 1u == SparkGlm52ServingDescriptor.stage_count && completion.status == SPARK_STATUS_OK && pending->verify != 0u )
+	{
+		uint32_t lane,row,stride = pending->common.tokens_per_sequence;
+		completion.tokens_per_sequence = stride;
+		completion.token_count = pending->common.active_sequence_count * stride;
+		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+		for (lane=0u; lane<pending->common.active_sequence_count; lane++)
+			for (row=0u; row<stride; row++)
+				completion.token_ids[lane * stride + row] = row < pending->verify_counts[lane] ?
+					pending->output_token_ids[pending->verify_rows[lane][row]] : SPARK_MODEL_SERVING_NO_TOKEN;
+	}
+	else if ( state->stage_index + 1u == SparkGlm52ServingDescriptor.stage_count && completion.status == SPARK_STATUS_OK && SparkModelServingWorkKindUsesRows(pending->common.work_kind) != 0u )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->common.active_sequence_count;
@@ -754,7 +777,7 @@ static void SparkGlm52ServingBuildFrame(
 	memset(context,0,sizeof(*context));
 	context->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
 	context->descriptor_bytes = sizeof(*context);
-	context->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
+	context->flags = (SparkModelServingSubmissionFrameFlags(submission) & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_FLAG_PREFILL : 0u;
 	context->batch = batch;
 	context->hidden_input_bf16 = submission->hidden_input_address;
 	context->hidden_input_bytes = submission->hidden_input_bytes;
@@ -777,7 +800,7 @@ static void SparkGlm52ServingBuildFrame(
 	frame->new_token_count = submission->row_count;
 	frame->tokens_per_sequence = submission->tokens_per_sequence;
 	frame->priority = submission->priority;
-	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL : submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH : 0u;
+	frame->flags = SparkModelServingSubmissionFrameFlags(submission) & ~SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->program_id = state->program->program_id;
 	frame->execution_stream = state->execution_stream;
