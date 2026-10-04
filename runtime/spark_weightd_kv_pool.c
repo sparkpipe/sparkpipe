@@ -114,6 +114,7 @@ SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,uint6
 	mapping->chunk_count = grant.chunk_count;
 	mapping->pool_generation = grant.pool_generation;
 	mapping->reattached = grant.reattached;
+	mapping->write_budget_bytes_per_day = grant.write_budget_bytes_per_day;
 	status = SparkWeightdKvPoolImport(mapping,&grant);
 	SparkWeightdKvPoolGrantClose(&grant);
 	if ( status != SPARK_STATUS_OK )

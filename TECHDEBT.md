@@ -521,17 +521,15 @@ citations refer to that commit.
   and logs `KV-BACKING-FULL` (`cache/kv_page_cache.c`,
   `SparkKvPageCacheBackingOutcome`). Close it by feeding store occupancy into
   engine admission so a full store queues new work instead of failing it.
-- Left out on purpose (2026-10-02): No code budgets or reports NVMe write
-  endurance. The page store and snapshot store count written bytes
-  (`cache/kv_page_store.c:439`, `cache/kv_snapshot.c:390`), but nothing reads
-  those counters and no limit stops spill writes once they pass the
-  drive-writes-per-day budget (`docs/archive/JIT_KV_RESPONSE.md:26-28` sets
-  0.1-0.3 DWPD). A thrashing workload wears out the KV NVMe with no signal.
-  Close it with a per-drive write budget in the deployment, enforced by
-  refusing further spill writes (recompute instead) once the rolling budget is
-  spent and reported in the wave timeline, proven on one Spark by a run with a
-  small budget that reports the write rate, stops spilling at the limit and
-  keeps serving.
+- The KV NVMe write budget covers only the engines on the common binding. weightd
+  hands each KV pool a share of `--kv-write-budget-bytes-per-day`, and the
+  binding stops snapshot saves and discards parked pages for recompute once
+  its share is spent (`cache/kv_page_cache.c`, `SparkKvPageCacheDiscardForBudget`),
+  reported in `kv_store_report`. The non-core families' own page stores
+  (laguna, ling, dsv4) write unbudgeted until they move onto the binding, and
+  the budget has not run on a Spark. Close it with those families on the
+  binding and a one-Spark run with a small budget that reports the write
+  rate, stops spilling at the limit and keeps serving.
 - Copy-on-write of a partial prefix page needs a device copier attached to
   the page cache (`SparkKvPageCacheAttachDeviceCopy`). glm52 (through the KV
   binding) and glm5_next attach one; dsv4, laguna and ling do not, so a

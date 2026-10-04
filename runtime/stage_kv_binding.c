@@ -920,6 +920,22 @@ static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count);
 }
 
+static SparkStatus SparkStageKvBindingAttachWriteBudget(SparkStageKvBinding *binding)
+{
+	if ( SparkKvWriteBudgetInitialize(&binding->write_budget,binding->kv_pool.write_budget_bytes_per_day,SparkStageKvNowNs()) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv binding refused: the weightd pool grants no NVMe write budget\n",binding->module_tag);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	binding->page_store.write_budget = &binding->write_budget;
+	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
+		binding->state_store.write_budget = &binding->write_budget;
+	binding->page_cache.write_budget = &binding->write_budget;
+	fprintf(stderr,"%s kv write budget bytes_per_day=%llu: spill and snapshot writes past it are discarded or skipped and recomputed\n",binding->module_tag,
+		(unsigned long long)binding->write_budget.bytes_per_day);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *configuration)
 {
 	const char *missing;
@@ -1005,6 +1021,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	status = SparkKvBackendInitialize(&table,&binding->arena,&binding->page_cache,&binding->page_store);
 	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u )
 		status = SparkStageKvBindingAttachStates(binding,configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingAttachWriteBudget(binding);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( pthread_mutex_init(&binding->mutex,0) != 0 )
@@ -2309,6 +2327,12 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 	counters->pool_generation = binding->kv_pool.pool_generation;
 	counters->pool_reattached = binding->kv_pool.reattached;
 	counters->pool_adopted_pages = binding->kv_pool_adopted_pages;
+	SparkKvWriteBudgetRefill(&binding->write_budget,SparkStageKvNowNs());
+	counters->write_budget_bytes_per_day = binding->write_budget.bytes_per_day;
+	counters->write_budget_available_bytes = binding->write_budget.available_bytes;
+	counters->write_budget_overrun_bytes = binding->write_budget.overrun_bytes;
+	counters->write_budget_refused_saves = binding->write_budget.refused_saves;
+	counters->write_budget_discarded_pages = binding->write_budget.discarded_pages;
 	snapshot = binding->page_cache.snapshot;
 	if ( snapshot == 0 )
 	{

@@ -279,6 +279,7 @@ struct SparkStageKvBinding
 	uint64_t snapshot_page_file_bytes;
 	SparkKvSnapshotStore snapshot_store;
 	SparkWeightdKvPoolMapping kv_pool;
+	SparkKvWriteBudget write_budget;
 	uint32_t kv_pool_adopted_pages;
 	uint32_t kv_pool_sealed_pages;
 	uint32_t kv_pool_seal_cleared;

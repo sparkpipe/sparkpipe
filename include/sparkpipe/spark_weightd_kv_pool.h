@@ -24,6 +24,7 @@ typedef struct SparkWeightdKvPoolMapping
     uint64_t pool_generation;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
+    uint64_t write_budget_bytes_per_day;
     uint8_t *metadata;
     uint64_t metadata_bytes;
     void *chunk_handles[SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX];

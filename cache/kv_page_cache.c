@@ -1016,11 +1016,14 @@ static SparkStatus SparkKvPageCacheAcquireLogicalPage(SparkKvPageCache *cache,ui
 	return(status);
 }
 
+static void SparkKvPageCacheDiscardForBudget(SparkKvPageCache *cache,uint64_t slots_needed);
+
 static SparkStatus SparkKvPageCacheMarkPageResident(SparkKvPageCache *cache,uint32_t logical_page_index)
 {
 	uint64_t before = cache->kv_cache_arena->park_backing_full_count;
 	uint32_t victim,backing_full = 0u;
 	SparkStatus status;
+	SparkKvPageCacheDiscardForBudget(cache,1u);
 	status = SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,logical_page_index);
 	while ( status == SPARK_STATUS_CAPACITY_EXCEEDED && cache->kv_cache_arena->park_backing_full_count != before )
 	{
@@ -1053,6 +1056,27 @@ static uint32_t SparkKvPageCacheResidentLivePages(const SparkKvPageCache *cache)
 	return(count);
 }
 
+static uint64_t SparkKvPageCacheNowNs(void);
+
+static void SparkKvPageCacheDiscardForBudget(SparkKvPageCache *cache,uint64_t slots_needed)
+{
+	SparkKvCacheArena *arena = cache->kv_cache_arena;
+	uint64_t free_slots;
+	uint32_t victim;
+	if ( cache->write_budget == 0 )
+		return;
+	for (;;)
+	{
+		free_slots = arena->resident_block_capacity > arena->resident_block_count ? arena->resident_block_capacity - arena->resident_block_count : 0u;
+		if ( free_slots >= slots_needed || SparkKvWriteBudgetAllows(cache->write_budget,cache->page_store->page_bytes,SparkKvPageCacheNowNs()) != 0u )
+			return;
+		victim = SparkKvPageCacheResidentVictim(cache);
+		if ( victim == SPARK_KV_PAGE_CACHE_NO_INDEX || SparkKvPageCacheEvictEntry(cache,victim) != SPARK_STATUS_OK )
+			return;
+		cache->write_budget->discarded_pages++;
+	}
+}
+
 static SparkStatus SparkKvPageCacheSpanRoom(SparkKvPageCache *cache,const SparkKvPageCacheSequence *sequence,uint32_t pages)
 {
 	SparkKvCacheArena *arena = cache->kv_cache_arena;
@@ -1067,6 +1091,7 @@ static SparkStatus SparkKvPageCacheSpanRoom(SparkKvPageCache *cache,const SparkK
 	SparkStatus status;
 	for (index=0u; index<sequence->mutable_page_count; index++)
 		held[index] = SparkKvPageCacheMutablePage(sequence,index);
+	SparkKvPageCacheDiscardForBudget(cache,fixed);
 	status = SparkKvCacheArenaTrimResidentBlocks(arena,held,sequence->mutable_page_count,
 		(uint32_t)(arena->resident_block_capacity - fixed),0);
 	while ( status == SPARK_STATUS_CAPACITY_EXCEEDED && arena->park_backing_full_count != before )
@@ -1971,6 +1996,12 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 			SparkKvPageCacheSaveDropHead(cache,status);
 			continue;
 		}
+		if ( cache->write_budget != 0 && SparkKvWriteBudgetAllows(cache->write_budget,cache->page_store->page_bytes,SparkKvPageCacheNowNs()) == 0u )
+		{
+			cache->write_budget->refused_saves++;
+			SparkKvPageCacheSavePop(cache);
+			continue;
+		}
 		memset(work,0,sizeof(*work));
 		status = SparkKvPageCacheSaveBegin(cache,entry_index,work);
 		if ( status == SPARK_STATUS_DUPLICATE )
@@ -2002,6 +2033,8 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 		}
 		work->page = (uint8_t *)work->ticket.segments[1].data;
 		work->state = cache->state_store != 0 ? (uint8_t *)work->ticket.segments[2].data : 0;
+		if ( cache->write_budget != 0 )
+			SparkKvWriteBudgetCharge(cache->write_budget,work->ticket.file_bytes,SparkKvPageCacheNowNs());
 		snapshot->in_flight = 1u;
 		return(SPARK_STATUS_OK);
 	}

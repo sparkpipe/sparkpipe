@@ -956,6 +956,48 @@ static void TestRestartAdoptsDevicePages(void)
 	printf("restart adopts device pages: a clean shutdown seals the resident prefix pages in the weightd pool, the restart serves them with no snapshot reads, an unsealed pool adopts nothing\n");
 }
 
+static void WaitSavesIdle(void)
+{
+	uint32_t attempt;
+	for (attempt=0u; attempt<500u; attempt++)
+	{
+		uint32_t pending;
+		assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+		pending = SparkKvPageCacheSavePending(&BINDING.page_cache);
+		assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+		if ( pending == 0u )
+			return;
+		SleepMs(2u);
+	}
+	assert(0);
+}
+
+static void TestWriteBudgetDiscardsAndSkips(void)
+{
+	SparkModelDriverKvStoreCounters counters;
+	uint8_t page[TEST_PAGE_BYTES];
+	uint64_t writes;
+	uint32_t chain;
+	Open();
+	assert(BINDING.write_budget.bytes_per_day == BINDING.kv_pool.write_budget_bytes_per_day && BINDING.write_budget.bytes_per_day == (uint64_t)(((unsigned __int128)(UINT64_C(1) << 40) * BINDING.kv_pool.device_bytes) / (UINT64_C(64) << 20)) && BINDING.page_store.write_budget == &BINDING.write_budget && BINDING.page_cache.write_budget == &BINDING.write_budget);
+	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+	BINDING.write_budget.bytes_per_day = 1u;
+	BINDING.write_budget.available_bytes = 0u;
+	writes = BINDING.page_store.write_count;
+	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+	for (chain=0u; chain<TEST_PHYSICAL + 2u; chain++)
+	{
+		PublishStep(30u + chain,0u,0u,4u,(uint8_t)(0x90u + chain),(uint8_t)(0x20u + chain),page);
+		ReleaseSequence(30u + chain,0u);
+		WaitSavesIdle();
+	}
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.write_budget_bytes_per_day == 1u && counters.write_budget_discarded_pages >= 2u && counters.write_budget_refused_saves >= TEST_PHYSICAL + 2u);
+	assert(BINDING.page_store.write_count == writes && counters.save_page_count == 0u && counters.store_file_count == 0u);
+	Close();
+	printf("write budget: once spent, snapshot saves are refused and new pages displace unreferenced resident entries instead of spilling\n");
+}
+
 static void ExpectForeignLayout(const SparkStageKvConfiguration *configuration,uint8_t pages[2][TEST_PAGE_BYTES])
 {
 	SparkModelDriverKvStoreCounters counters;
@@ -1180,6 +1222,7 @@ int main(void)
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
 	TestRestartAdoptsDevicePages();
+	TestWriteBudgetDiscardsAndSkips();
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();

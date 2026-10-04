@@ -222,6 +222,7 @@ typedef struct SparkKvPageCache
 	SparkKvPageStore *page_store;
 	SparkKvPageStore *state_store;
 	SparkKvPageCacheSnapshot *snapshot;
+	SparkKvWriteBudget *write_budget;
 	SparkKvPageCacheEntry *entries;
 	SparkKvPageCacheSequence *sequences;
 	uint32_t *hash_bucket_heads;

@@ -4,12 +4,13 @@
 
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_kv_write_budget.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_STORE_ABI_VERSION 4u
+#define SPARK_KV_PAGE_STORE_ABI_VERSION 5u
 #define SPARK_KV_PAGE_STORE_PATH_BYTES 1024u
 #define SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkKvPageStoreConfiguration))
@@ -122,6 +123,7 @@ typedef struct SparkKvPageStore
 	uint64_t read_bytes;
 	uint64_t read_digest_mismatch_count;
 	uint64_t read_error_count;
+	SparkKvWriteBudget *write_budget;
 }
 SparkKvPageStore;
 
