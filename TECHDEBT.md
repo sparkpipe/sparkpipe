@@ -904,9 +904,7 @@ Related common-code debt:
   DFLASH2 as a remote tap source.
 - qwen38_27b remote drafting is synchronous: a decode frame, then a blocking
   20 ms `DraftRemoteChain`, then verify. Pipeline it one round ahead.
-- `tests/test_speculation_tree_resolve.c`,
-  `tests/test_speculation_headers_coexist.c` and
-  `tests/test_qwen38_27b_remote_spec.c` are not built by the Makefile.
+- `tests/test_qwen38_27b_remote_spec.c` is not built by the Makefile.
 - glm5_next resident decode chains run no MTP draft: a frame of more than
   one step skips `SparkGlm5NextMtpDriveDraft`, and the engine asks for chains
   whenever the adapter offers them, so with MTP enabled drafts only run on
