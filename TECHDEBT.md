@@ -512,18 +512,6 @@ citations refer to that commit.
   rank while saves are queued, restart it, and check that no `.kvs-writing-`
   file remains, `removed_temporary_count` equals the leftovers, and the resent
   prompt restores with tokens identical to an uninterrupted run.
-- Left out on purpose (2026-10-02): `tools/glm52_gen_deployment.py:112-113`
-  renders `kv_logical_page_capacity` equal to `kv_physical_page_capacity` (16
-  x 512 pages), so a GLM Full deployment rendered by it has zero spill pages
-  (`runtime/stage_kv_binding.c:138`) and every eviction under device pressure
-  discards cached KV. The lane renderer already adds `kv_backing_bytes //
-  KV_PAGE_BYTES` spill pages (`tools/glm53full_lane.py:133-134`, c7edad09e)
-  and refuses a non-positive backing size (`:164-165`); the TP8 generator was
-  never updated. Close it by rendering logical > physical in
-  `glm52_gen_deployment.py` the same way, or by deleting it in favour of the
-  lane renderer, proven by the binding load line
-  (`runtime/stage_kv_binding.c:256-257`) showing logical_pages >
-  physical_pages on every rank of the rendered deployment.
 - Left out on purpose (2026-10-02): Evicting a prefix-cache entry destroys it
   in every tier: `SparkKvPageCacheEvictEntry`
   (`cache/kv_page_cache.c:395-432`) calls `SparkKvPageCacheDiscardLogicalPage`
@@ -1105,19 +1093,13 @@ Related common-code debt:
   `:133-134`). The renderer is driven by `tools/glm53full_lane.sh`, which
   requires `GLMFULL_POSITIONS`, `GLMFULL_ROWS`, `GLMFULL_SEQUENCES` and
   `GLMFULL_INFLIGHT` from the environment (`:10-13`), so the deployed context
-  limit is recorded nowhere in the repository. Two older generators remain:
-  `tools/glm52_gen_deployment.py` (TP8 band by default at `:15-18`, `tp8` pack
-  and backing names at `:57` and `:81` whatever the TP) and
-  `tools/glm53full_gen_deployment.py`. Both write `max_sequence_positions`
-  4096 (`:58`, `:98`) but size the pool for 32768 positions with logical =
-  physical (`:112-113`, `:152-153`). That is eight times the pages 4096
-  positions can address, with no spill headroom.
-  `tests/test_deployment_config_drift.py:205-213` covers only the TP8
-  generator. Close it by deleting the two older generators (or deriving their
-  pages from positions), checking in the TP16 lane deployment and pinning it
-  in the drift test. The proof is the drift test passing on the checked-in
-  tree and a fleet load of that tree logging the expected `kv binding
-  logical_pages= physical_pages=` line.
+  limit is recorded nowhere in the repository. The two older generators are
+  gone and the drift test renders a lane tree and requires spill pages
+  (logical > physical), but no production tree is pinned. Close it by checking
+  in the TP16 lane deployment rendered with the production positions, rows,
+  sequences and inflight, and pinning it in the drift test, proven by a fleet
+  load of that tree logging the expected `kv binding logical_pages=
+  physical_pages=` line.
 
 ## Driver consolidation
 

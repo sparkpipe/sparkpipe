@@ -2,7 +2,7 @@
 """Generate the Qwen3.8-27B TP4 deployment tree: per-rank stage configs and
 the shared model_resident.json, rebuilt for the converged engine (weightd
 owns the mesh, hidden_transport default, hex pack ranks, ROOT_NAME single
-source). Mirrors tools/glm5_next_gen_deployment.py / glm52_gen_deployment.py.
+source). Mirrors tools/glm5_next_gen_deployment.py.
 
 The 27B serving adapter validates its stage-config member set EXACTLY:
 schema_version, model_revision, stage_pack_path, max_sequence_positions,
