@@ -106,6 +106,8 @@ typedef struct SparkKvPageCacheSnapshot
 	uint64_t save_mark_count;
 	uint64_t save_skipped_count;
 	uint64_t save_cancelled_count;
+	uint64_t evicted_unsaved_count;
+	uint64_t demote_queued_count;
 }
 SparkKvPageCacheSnapshot;
 

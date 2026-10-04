@@ -512,20 +512,16 @@ citations refer to that commit.
   rank while saves are queued, restart it, and check that no `.kvs-writing-`
   file remains, `removed_temporary_count` equals the leftovers, and the resent
   prompt restores with tokens identical to an uninterrupted run.
-- Left out on purpose (2026-10-02): Evicting a prefix-cache entry destroys it
-  in every tier: `SparkKvPageCacheEvictEntry`
-  (`cache/kv_page_cache.c:395-432`) calls `SparkKvPageCacheDiscardLogicalPage`
-  (`:326-352`), which invalidates the page-store copy (`:334-345`) and frees
-  the logical page. It runs when logical pages or entries run out (`:434-441`,
-  `:443-460`) and when a page cannot be made resident (`:899-910`); the only
-  demotion is the arena's per-page write-back into the process-lifetime page
-  store (`cache/kv_cache.c:1186-1229`). Once logical pages are exhausted an
-  evicted prefix is gone and its next request recomputes it. Required:
-  eviction demotes an entry to the next tier and discards only from the last
-  one. Close it by moving entry eviction onto the tier chain, proven on the
-  fleet by a run at 2x device pages where a prompt evicted from the device and
-  logical pools is restored from the lower tier with `cached_tokens` covering
-  it and tokens equal to an uninterrupted run.
+- Eviction now prefers entries the snapshot store already holds (or cannot
+  hold), and queues a save for the older unsaved entries it passes over
+  (`SparkKvPageCacheSelectVictim`, `cache/kv_page_cache.c`), so a saved prefix
+  evicted from the device and logical pools restores from the snapshot store.
+  When no safe entry is in the scan window the oldest unsaved entry is still
+  discarded (counted as `evicted_unsaved` in the store close line) rather than
+  stalling admission on the save thread. Close it on the fleet with a run at
+  2x device pages where `evicted_unsaved` stays zero and an evicted prompt
+  restores with `cached_tokens` covering it and tokens equal to an
+  uninterrupted run.
 - Left out on purpose (2026-10-02): There is no host-memory KV tier. The
   binding's only host KV memory is one pinned staging page
   (`runtime/stage_kv_binding.c:87-91`, `:182-183`), and a page leaving the
