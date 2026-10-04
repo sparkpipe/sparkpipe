@@ -256,7 +256,7 @@ static SparkStatus SparkDsv41FlashLazyOpen(
 	SparkStatus status;
 	status = SparkWeightdAttachRequested();
 	if ( status != SPARK_STATUS_OK )
-		return(status == SPARK_STATUS_BUSY ? SPARK_STATUS_UNSUPPORTED : status);
+		return(status);
 	memset(&request,0,sizeof(request));
 	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
 	if ( digest == 0 || strlen(digest) != 64u || strlen(path) >= sizeof(request.pack_path) )

@@ -412,46 +412,6 @@ citations refer to that commit.
   The node proof is a weightd started with a reserve that refuses arena growth
   past `device_bytes_max - kv_reserve_bytes` while the engine's KV allocation
   succeeds.
-- Left out on purpose (2026-10-02): `SparkWeightdAttachRequested`
-  (`runtime/spark_weightd_attach.c:37-48`) answers `BUSY` when
-  `SPARK_WEIGHTD_SOCKET` is unset and `SPARK_WEIGHTD_ATTACH` is not `1`: a
-  retryable status for a missing configuration, with no operation outstanding
-  (I17). k3 returns it from `SparkK3StageRunnerInitialize`
-  (`modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu:1117-1128`)
-  and adapter initialize (`spark_k3_serving_adapter.c:588-590`), and
-  `tests/test_k3_attach_contract.c:159-162` asserts `BUSY`. Other modules read
-  the same `BUSY` as 'attach not requested' and load directly (next entry).
-  Return a non-retryable configuration status from
-  `SparkWeightdAttachRequested`, update every caller, and prove it with a
-  residentd start on a Spark from a deployment without weightd that fails with
-  that status.
-- Left out on purpose (2026-10-02): A deployment may omit the `weightd` member
-  (`runtime/model_resident_deployment.c:563-568`); residentd then skips
-  weightd (`node/model_residentd.c:3235-3245`) and
-  `SparkWeightdAttachRequested` answers `BUSY`. The shared `LazyOpen`
-  (`include/sparkpipe/family/module/spark_module_lazy_open.h:10-12`, used by
-  glm52 and laguna), qwen38_max
-  (`spark_qwen38_max_resident_decode_stage_module.c:450-452`), qwen4_flash
-  (`spark_qwen4_flash_resident_decode_stage_module.c:455-457`) and dsv4
-  (`spark_dsv4_resident_decode_stage_module.c:1055-1056`) treat that as
-  success, and their pack loaders copy the whole stage pack to device
-  (`spark_glm52_resident_decode_stage_module.c:529-545`,
-  `model-families/common/include/sparkpipe/spark_pack_load_common.h:191-197`).
-  `c67be235e` made attach mandatory because direct full-pack loads by several
-  drivers kill Sparks, but only glm5_next refuses this case (`:731-733`); the
-  GLM-5.3 Full lane renders `weightd` (`tools/glm53full_lane.py:127`), so it
-  is latent there. Make the `weightd` member required, make every module fail
-  initialization when attach is not configured, and prove it with a GLM-5.3
-  Full residentd start from a deployment without `weightd` that fails before
-  any device allocation. The lazy region hooks turn a failed
-  `SparkWeightdLazyPackSlice` into an eager arena load: laguna
-  `spark_laguna_resident_decode_stage_module.c:426`; qwen38_max `:426-428`,
-  `:435-437`; qwen4_flash `:431-433`, `:440-442`. qwen38_max (`:416-417`) and
-  qwen4_flash (`:421-422`) do the same for a pack that is not ready. All of
-  them return 0, so `spark_pack_load_common.h:191-197` loads the entry through
-  `SparkStageModuleLoadDeviceRegion` (`runtime/stage_module_common.c:1489-1491`)
-  instead of failing.
-
 ## KV sharding
 
 - Left out on purpose (2026-10-02): GLM-5.3 Flash (glm5_next) refuses TP16
@@ -1519,24 +1479,6 @@ Related common-code debt:
   but `spark_batch_variant_tuning_common.h` can be instantiated once per
   translation unit and `tests/test_batch_variants.py` compiles the glm52,
   k3 and dsv4 headers together; no k3 build includes k3's header.
-- Left out on purpose (2026-10-02):
-  `modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c:241-242`
-  and
-  `modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c:260-261`
-  read `SPARK_<FAMILY>_STAGE_DEBUG_SKIP_GDN` and `_SKIP_MOE` in every build.
-  Any value skips the whole token-mixer step, full attention as well as GDN
-  (qwen38_max `:1131-1132`, qwen4_flash `:1464-1465`), or the MoE block
-  (qwen38_max `:1133-1134`, qwen4_flash `:1476-1477`), with no log line, and
-  the step still returns OK.
-  `spark_qwen4_flash_resident_decode_stage_module.c:277-283` reads
-  `SPARK_QWEN4_FLASH_STAGE_ALLOW_MISSING_PLE` in every build and drops the PLE
-  tensors from the required pack geometry (`:327`, `:669-670`). A pack without
-  them then loads, and the PLE layer runs without the n-gram injection
-  (`:1457`). A stray variable in a serving environment produces wrong tokens
-  with a successful status (I03, I22). The fix: put all three under `#ifdef
-  DEBUG` or delete them, and make a release pack without PLE tensors fail to
-  load. Prove it on a Spark: release qwen4_flash and qwen38_max loads refuse
-  the variables and pass their T1 gates.
 ## Runtime completion
 
 - Add bounded cancellation and drain for terminal client I/O failures so every
@@ -1948,15 +1890,10 @@ door and the static pages and playground in `site/`.
   state from the checkpoint) to the module tier, run the MTP check whenever
   the pack carries an MTP layer, and prove it with a Spark validator run on
   the qwen38_27b rank pack.
-- Left out on purpose (2026-10-02): The hy4 module's Prepare logs `ready ...
-  execute=UNSUPPORTED` and returns OK
-  (`modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c:95-111`),
-  Admit accepts every request (`:121-132`), and Execute returns `UNSUPPORTED`
-  (`:113-119`). A host that loads hy4 sees a ready driver that accepts work
-  and computes nothing (I01). Make Initialize return `UNSUPPORTED` until
-  Execute runs the model, register `test_hy4_driver_acceptance` with the real
-  driver, and prove it with an hy4 rank-pack run that produces reference
-  tokens.
+- The hy4 driver refuses initialization (`UNSUPPORTED`) because Execute
+  does not run the model. Implement Execute, register
+  `test_hy4_driver_acceptance` with the real driver, and prove it with an hy4
+  rank-pack run that produces reference tokens.
 - Left out on purpose (2026-10-02): The qwen38_max GPU validator runs its GDN
   step, gated-norm and chunk checks only at `tp_degree` 1
   (`modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu:315`,

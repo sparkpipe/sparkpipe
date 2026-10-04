@@ -470,7 +470,7 @@ static int SparkLagunaModuleRegionHook(
 	status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->payload_offset,entry->payload_bytes,(const void **)payload);
 	if ( status == SPARK_STATUS_OK && entry->scale_bytes != 0u )
 		status = SparkWeightdLazyPackSlice(state->lazy_pack,entry->scale_offset,entry->scale_bytes,(const void **)scale);
-	return(status == SPARK_STATUS_OK ? 1 : 0);
+	return(status == SPARK_STATUS_OK ? 1 : -1);
 }
 
 #include "sparkpipe/family/module/spark_module_bind_global_mtp.h"

@@ -715,7 +715,7 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	uint64_t spine_budget;
 	status = SparkWeightdAttachRequested();
 	if ( status != SPARK_STATUS_OK )
-		return(status == SPARK_STATUS_BUSY ? SPARK_STATUS_UNSUPPORTED : status);
+		return(status);
 	if ( state->mtp_enabled != 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	memset(&request,0,sizeof(request));

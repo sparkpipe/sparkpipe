@@ -1052,8 +1052,9 @@ static SparkStatus SparkDsv4ModuleWeightdAttach(SparkDsv4ModuleState *state, con
 	char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
 	uint64_t geometry = UINT64_C(1469598103934665603);
 	SparkStatus status;
-	if ( SparkWeightdAttachRequested() != SPARK_STATUS_OK )
-		return(SPARK_STATUS_OK);
+	status = SparkWeightdAttachRequested();
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	geometry = SparkHashBytes(geometry,&header->format_version,sizeof(uint32_t));
 	geometry = SparkHashBytes(geometry,&header->codec_abi_version,sizeof(uint32_t));
 	geometry = SparkHashBytes(geometry,&header->linear_weight_codec,sizeof(uint32_t));

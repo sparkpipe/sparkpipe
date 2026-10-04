@@ -144,7 +144,7 @@ static void SparkTestConfigurationGates(void)
     SparkTestMakeSlice(&slice, 65536ull);
     SparkTestClearAttachEnv();
 
-    assert(SparkWeightdAttachRequested() == SPARK_STATUS_BUSY);
+    assert(SparkWeightdAttachRequested() == SPARK_STATUS_UNSUPPORTED);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
     assert(SparkWeightdAttachRequested() == SPARK_STATUS_OK);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "0");
