@@ -422,6 +422,7 @@ static SparkStatus SparkStageKvBindingHint(SparkStageKvBinding *binding,const Sp
 	uint64_t held;
 	uint32_t lane;
 	SparkStatus status;
+	SparkModelDriverInitializeAdmissionDecision(decision);
 	if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageKvBindingLock(binding,&held);

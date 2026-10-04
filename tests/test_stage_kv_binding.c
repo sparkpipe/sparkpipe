@@ -13,6 +13,7 @@
 
 #include "cuda_runtime_api.h"
 #include "sparkpipe/spark_kv_snapshot.h"
+#include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_weight_codec.h"
 #include "tests/test_weightd_kv_server.h"
@@ -1020,7 +1021,8 @@ static void TestRestoreHintStartsEarly(void)
 	hint.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT;
 	hint.request.cache_lanes = &lane;
 	hint.request.cache_lane_count = 1u;
-	assert(SparkStageKvBindingAdmit(&BINDING,&hint.request,&hint.decision) == SPARK_STATUS_OK && hint.decision.accepted == 1u);
+	assert(SparkStageKvBindingAdmit(&BINDING,&hint.request,&hint.decision) == SPARK_STATUS_OK && hint.decision.accepted == 1u &&
+		SparkModelDriverAdmissionDecisionStatus(&hint.decision) == SPARK_STATUS_OK);
 	assert(BINDING.restore_hints == 1u && BINDING.restore_hinted_jobs == 1u);
 	for (attempt=0u; BINDING.restore_imported_pages < 2u && attempt<500u; attempt++)
 		SleepMs(2u);

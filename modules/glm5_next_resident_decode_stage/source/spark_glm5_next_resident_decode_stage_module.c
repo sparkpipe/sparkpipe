@@ -6538,6 +6538,8 @@ SparkStatus SparkGlm5NextResidentDecodeStageAdmit(
 	status = SparkGlm5NextWeightdHealth(state);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT )
+		return(SparkStageKvBindingAdmit(&state->kv,request,decision));
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
 	{
 		SparkModelDriverInitializeAdmissionDecision(decision);
