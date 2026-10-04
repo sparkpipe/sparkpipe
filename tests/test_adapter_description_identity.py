@@ -39,7 +39,7 @@ CASES = (
     root_case("muse_glimmer", "muse_glimmer", TEMPLATE, "muse_glimmer_resident_decode_stage_firmware.json", []),
     root_case("laguna", "laguna", own("LAGUNA", "LAGUNA_MODEL_REVISION", "LAGUNA_MODEL_DESCRIPTION_SHA256"), "laguna_resident_decode_stage_bf16_firmware.json", ["EXPERT_CODEC=bf16", *INVOKED]),
     module_case("laguna", own("LAGUNA", None, "LAGUNA_MODEL_DESCRIPTION_SHA256"), "laguna_resident_decode_stage_bf16_firmware.json", ["EXPERT_CODEC=bf16", *INVOKED]),
-    root_case("ling", "ling", own("LING", "LING_MODEL_REVISION", "LING_MODEL_DESCRIPTION_SHA256"), "ling_resident_decode_stage_firmware.json", ["EXPERT_CODEC=bf16", *INVOKED]),
+    root_case("ling", "ling", own("LING", "LING_MODEL_REVISION", "LING_MODEL_DESCRIPTION_SHA256"), "ling_resident_decode_stage_bf16_firmware.json", ["EXPERT_CODEC=bf16", *INVOKED]),
     root_case("qwen38_27b", "qwen38_27b", own("QWEN38_27B", "QWEN38_27B_MODEL_REVISION", "QWEN38_27B_CONTRACT_SHA256"), "qwen38_27b_resident_decode_stage_firmware.json", []),
     root_case("dsv4", "dsv4", ("SPARK_DSV4_SERVING_DRIVER_MODEL_ID", "SPARK_DSV4_SERVING_DRIVER_MODEL_REVISION", "SPARK_DSV4_SERVING_DRIVER_STAGE_NAME", None, "SPARK_DSV4_SERVING_MODEL_CONTRACT_SHA256"), "dsv4_resident_decode_stage_firmware.json", ["EXPERT_CODEC=fp8", *INVOKED]),
     module_case("minimax", TEMPLATE, "minimax_resident_decode_stage_bf16_firmware.json", []),

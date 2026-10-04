@@ -1090,9 +1090,10 @@ Related common-code debt:
   `examples/model_descriptions/<module>_<codec>_firmware.json` unless
   `FIRMWARE_JSON` names another description:
   - such a description exists only for gemma4 31B (bf16), glm52 (seven
-    codecs), glm5_next (fp8), laguna (bf16) and minimax (bf16); ling,
-    qwen38_max, qwen4_flash and glm5_next's other codecs need
-    `FIRMWARE_JSON`. laguna's module Makefile refuses `make adapter` for a
+    codecs), glm5_next (fp8), laguna (bf16), ling (bf16) and minimax (bf16);
+    ling's other six codecs, qwen38_max, qwen4_flash and glm5_next's other
+    codecs need `FIRMWARE_JSON`, and `tools/ling_multidev_build.sh` refuses
+    its fp8 arm because the bf16 description names the bf16 module. laguna's module Makefile refuses `make adapter` for a
     codec without a description. Its fp8 and nvfp4 descriptions wait for
     per-layer expert codecs: poolside's FP8 and NVFP4 releases keep the
     routed experts of layers 44-47 and 40-47 in BF16, and the module
@@ -1109,11 +1110,6 @@ Related common-code debt:
   ling module does through `MODEL_DESCRIPTION` and the laguna module through
   `LAGUNA_MODEL_DESCRIPTION_SHA256`; the tree holds a glm5_next description
   for fp8 only.
-- `tools/module_build_release.sh` defaults the ling firmware description to
-  `examples/model_descriptions/ling_resident_decode_stage_<codec>_firmware.json`,
-  which does not exist; a ling release must pass `FIRMWARE_JSON` (the
-  script refuses without it). Commit the per-codec ling descriptions or
-  point the default at `ling_resident_decode_stage_firmware.json`.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in

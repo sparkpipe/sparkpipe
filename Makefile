@@ -190,7 +190,7 @@ LING_SERVING_ADAPTER := build/libling_serving_adapter.$(SHARED_LIBRARY_EXT)
 LING_MODEL_REVISION ?= e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3
 LING_CONTRACT_SOURCE := model_contracts/ling_authoritative.json
 LING_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(LING_CONTRACT_SOURCE)"; else shasum -a 256 "$(LING_CONTRACT_SOURCE)"; fi | awk '{print $$1}')
-LING_DESCRIPTION_SOURCE := examples/model_descriptions/ling_resident_decode_stage_firmware.json
+LING_DESCRIPTION_SOURCE := examples/model_descriptions/ling_resident_decode_stage_bf16_firmware.json
 LING_DESCRIPTION_SHA256 := $(shell python3 -c 'import hashlib; print(hashlib.sha256(open("$(LING_DESCRIPTION_SOURCE)","rb").read()).hexdigest())')
 LING_SERVING_ADAPTER_FLAGS := -DLING_MODEL_REVISION=\"$(LING_MODEL_REVISION)\" -DLING_CONTRACT_SHA256=\"$(LING_CONTRACT_SHA256)\" -DLING_MODEL_DESCRIPTION_SHA256=\"$(LING_DESCRIPTION_SHA256)\" -DLING_EXPERT_WEIGHT_CODEC=1u -DLING_EXPERT_CODEC_NAME=\"bf16\"
 TEST_LING_SERVING_DRIVER_MODULE := \
