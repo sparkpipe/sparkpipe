@@ -32,7 +32,6 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
 	$(REPOSITORY_ROOT)/model-families/qwen38_max/src/spark_qwen38_max_work_control.c \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
 # Adapter provenance pins: the vendor FP8 checkpoint revision and the exact
 # package contract, checked at adapter compile time (the adapter #errors

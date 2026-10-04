@@ -31,14 +31,6 @@ citations refer to that commit.
   waiter. Replace it with GPU-initiated RDMA so kernels post work requests
   and ring the NIC doorbell themselves; a 16-rank 8 KiB all-reduce should
   then cost tens of microseconds rather than the measured 167 us p50.
-- Two collective substrates coexist: the residentd-owned hidden transport
-  (`ring/transport/tp_collective.c`, recursive doubling and split rings),
-  which only k3's runner still creates (`SparkTpCollectiveCreate` in
-  `spark_k3_resident_decode_stage_runner.cu`), and the weightd mesh through
-  `ring/transport/tp_device_collective.c`, which every other TP module
-  opens. Move k3 onto the mesh and delete the hidden transport; its own
-  control-plane debt (per-collective host callbacks, credit-return sends,
-  per-direction sessions) goes with it.
 - Left out on purpose (2026-10-02): The wait mode picks the algorithm, against
   I36. With `SPARK_TP_WAIT_MODE=hardware`
   (`ring/transport/tp_device_collective.c:1491`) every payload runs chunked
@@ -1232,17 +1224,10 @@ Related common-code debt:
 - glm5_next assigns its combine wrappers field by field instead of calling
   `SPARK_FAMILY(ModuleRegisterCombines)`, and its `internal.h` re-declares
   the `SparkTpLaunch*` prototypes from `spark_tp_mesh_register.h`.
-- k3 has no TP16 adapter descriptor: `K3ServingDescriptor` is `k3-tp4pp4`
-  only, so a TP16 PP1 deployment cannot load
-  ([`docs/K3_PERF.md`](docs/K3_PERF.md)).
 - K3 now resets every runner slot and the KV binding on a client reset and
   refuses stale-generation submissions, but no fleet run has proved it: run a
   client reconnect after a completed request, after which a request on the
   same slot matches a fresh-process run token for token.
-- The `capture_graphs` keys that `tools/k3_gen_adapter_configs.sh`,
-  `tools/k3_multidev_lane.py` and
-  `modules/k3_resident_decode_stage/configs/*.json` emit have been read by
-  nothing since `a29ea53`.
 - qwen4_flash: `ServingSeamInterface` in
   `spark_qwen4_flash_serving_adapter.c` sets no `prefetch`,
   `resolve_prefetch` or `reset`, so
@@ -1606,11 +1591,6 @@ door and the static pages and playground in `site/`.
 - `test_hy4_driver_acceptance` has a build rule but stays out of
   `TEST_NAMES`: it holds the behaviour a complete hy4 driver must show and
   fails on the current stub module. Register it with the hy4 driver.
-- Four K3 test sources have no build rule and no runner:
-  `test_k3_serving_adapter_smoke.c` needs an adapter configuration argument,
-  and `test_k3_interleave_gemm.cu`, `test_k3_layer_probe.cu` and
-  `test_k3_swizzle_probe.cu` are sm_121a probes. Each needs an nvcc-gated
-  rule and a Spark runner, or deletion.
 - Eleven C tests are neither registered nor run anywhere. Ten should be
   deleted: `test_cache`, `test_sideband`, `test_group_gemm_workspace` and
   `test_state_pool` test headers no product includes (`cache/cache.h`,

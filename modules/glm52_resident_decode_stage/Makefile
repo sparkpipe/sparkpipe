@@ -27,7 +27,6 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../src/spark_sha256.c \
 	../../src/spark_ck128.c \
 	../../ring/transport/hidden_transport.c \
-	../../ring/transport/tp_collective.c \
 	../../ring/transport/tp_device_collective.c \
 	$(addprefix ../../,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	../../cache/kv_cache.c \

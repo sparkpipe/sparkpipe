@@ -124,20 +124,9 @@ def adapter_gates(config, rank, failures, per_host_ports):
     check(config["stage_pack_path"] == expected_pack, failures,
           f"{host}: stage_pack_path {config['stage_pack_path']}")
 
-    collective = config["tp_collective"]
-    check(collective["listen_port"] == lane.TP_COLLECTIVE_PORT + tp,
-          failures, f"{host}: tp_collective listen_port")
-    peers = collective["peers"]
-    check(len(peers) == 2, failures, f"{host}: expected 2 STEP peers")
-    for peer_index, partner in ((0, tp ^ 1), (1, tp ^ 2)):
-        # peers are numeric IPv4 literals: SparkTpCollectiveCreate
-        # validates with inet_pton and rejects hostnames outright
-        expected = (f"{lane.HOST_ADDRESSES[f'spark{HEX[stage * 4 + partner]}']}:"
-                    f"{lane.TP_COLLECTIVE_PORT + partner}")
-        check(peers[peer_index] == expected, failures,
-              f"{host}: STEP peer {peer_index} {peers[peer_index]} != {expected}")
-    per_host_ports.setdefault(host, []).append(collective["listen_port"])
-    per_host_ports[host].append(lane.CONTROL_BASE + rank)
+    check("tp_collective" not in config, failures, f"{host}: the host TCP collective is gone")
+    per_host_ports.setdefault(host, []).append(lane.CONTROL_BASE + rank)
+    check(config["device_collective"]["wait_mode"] == "hardware", failures, f"{host}: device collective wait mode")
 
     device = config["device_collective"]
     check(device["local_host"] == host, failures, f"{host}: device local_host")

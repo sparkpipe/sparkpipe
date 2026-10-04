@@ -19,12 +19,7 @@ transport 64048-64063; every number below stays inside those blocks):
 
   control_endpoint      23048 + rank   BOUND (residentd client listener);
                                       one per host, so the block is full.
-  tp_collective listen  53048 + tp     BOUND (host TCP collective; required
-                                      by the k3 adapter at tp_degree 4).
-                                      Group-local: the four ranks of a PP
-                                      stage listen 53048..53051 and every
-                                      stage reuses those numbers because
-                                      its ranks are on disjoint hosts.
+  53048..53051          UNUSED (the host TCP collective is gone).
   device session table  packed into    TOPOLOGY ONLY under the shared
                         53052..53063   socket: SparkTpDeviceCollectiveCreate
                                       transports through the weightd mesh
@@ -68,17 +63,11 @@ PP = 4
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
 
-# Numeric peer addresses for the host TP collective: SparkTpCollectiveCreate
-# validates peers with inet_pton (IPv4 literals only — hostnames are
-# INVALID_ARGUMENT at create). The fleet's sparkN names are static DNS
-# (verified 2026-09-23: spark0=10.10.100.10 .. sparkf=10.10.100.25).
-HOST_ADDRESSES = {f"spark{HEX[i]}": f"10.10.100.{10 + i}" for i in range(WORLD)}
 
 CONTROL_BASE = 23048                            # 23048 .. 23063
 COLLECTIVE_BASE = 53048                         # 53048 .. 53063 (u16-valid, #1094)
 TRANSPORT_BASE = 64048                          # 64048 .. 64063
 
-TP_COLLECTIVE_PORT = COLLECTIVE_BASE      # + tp rank (group-local, bound)
 K3_SESSION_BLOCK_BASE = 18432             # PORT_LEDGER kimi k3 block, TP16 cells
 DEVICE_SESSION_BASE = COLLECTIVE_BASE + 4 # packed 12-number table below
 
@@ -100,14 +89,13 @@ def select_topology(topology: str) -> None:
 
 def select_lane(lane: int) -> None:
     global LANE, CONTROL_BASE, COLLECTIVE_BASE, TRANSPORT_BASE
-    global TP_COLLECTIVE_PORT, DEVICE_SESSION_BASE
+    global DEVICE_SESSION_BASE
     if lane < 1 or lane > 15:
         raise SystemExit(f"lane {lane} outside 1..15 (lane 0 is production)")
     LANE = lane
     CONTROL_BASE = 23000 + 16 * lane
     COLLECTIVE_BASE = 53000 + 16 * lane
     TRANSPORT_BASE = 64000 + 16 * lane
-    TP_COLLECTIVE_PORT = COLLECTIVE_BASE
     DEVICE_SESSION_BASE = COLLECTIVE_BASE + 4
 MESH_RANKS = ",".join(str(i) for i in range(WORLD))
 
@@ -160,8 +148,7 @@ def session_table() -> list[list[int]]:
     Row a is listened by the host whose TP rank is a (every PP stage
     reuses the table because stages own disjoint hosts). The packing
     53052 + 3a + (b if b < a else b - 1) keeps all twelve values inside
-    the twelve numbers left in the collective block after the bound
-    tp_collective listeners take 53048..53051.
+    the twelve numbers above 53048..53051.
     """
     if TOPOLOGY == "tp16":
         return [[0 if a == b else K3_SESSION_BLOCK_BASE + a * TP + b
@@ -184,7 +171,7 @@ def group_hosts(rank: int) -> list[str]:
 
 
 def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
-                   sequences: int = 16, collective: str = "device") -> dict:
+                   sequences: int = 16) -> dict:
     tp = tp_rank_of(rank)
     config = {
         "stage_pack_path": deployed_pack(rank),
@@ -195,7 +182,6 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
         "max_rows": sequences,
         "resident_capacity": sequences,
         "kv_pages": kv_pages,
-        "capture_graphs": 1,
         "hidden": 7168,
         "device_collective": {
             "backend": "hidden_transport",
@@ -209,22 +195,7 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
             "session_ports": session_table(),
             "wait_mode": "hardware",
         },
-        "tp_collective": {
-            "listen_port": TP_COLLECTIVE_PORT + tp,
-            "connect_timeout_milli": 300000,
-            "operation_timeout_milli": 30000,
-            "collective_identifier": 1,
-            "peers": [
-                "{host}:{port}".format(
-                    host=HOST_ADDRESSES[group_hosts(rank)[partner]],
-                    port=TP_COLLECTIVE_PORT + partner)
-                for partner in [tp ^ (1 << step)
-                                for step in range(TP.bit_length() - 1)]
-            ],
-        },
     }
-    if collective == "host":
-        del config["device_collective"]
     return config
 
 
@@ -352,11 +323,6 @@ def main() -> int:
     parser.add_argument("--kv-pages", type=int, default=KV_PAGES_PER_SEQUENCE,
                         help="64-token KV pages per sequence "
                              "(default %(default)d)")
-    parser.add_argument("--collective", choices=("device", "host"),
-                        default="device",
-                        help="TP all-reduce path: the weightd-mesh device "
-                             "collective or the host TCP collective "
-                             "(default %(default)s)")
     parser.add_argument("--pipeline-transport",
                         choices=("host-rdma", "host-staged"),
                         default="host-rdma",
@@ -400,8 +366,7 @@ def main() -> int:
     ranks = range(WORLD) if arguments.rank is None else [arguments.rank]
     for rank in ranks:
         text = render(adapter_config(rank, arguments.kv_pages,
-                                     arguments.sequences,
-                                     arguments.collective))
+                                     arguments.sequences))
         name = f"adapter.{host_of(rank)}.json" if arguments.rank is None \
             else "adapter.json"
         wrote = write_or_check(output / name, text, arguments.check) or wrote

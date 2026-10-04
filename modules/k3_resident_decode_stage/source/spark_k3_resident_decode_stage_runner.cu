@@ -237,8 +237,6 @@ typedef struct SparkK3RunnerState
 {
 	SparkK3ModuleState module;
 	SparkK3Dispatch dispatch;
-	SparkTpCollective collective;
-	int collective_created;
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
 	SparkTpDeviceCollective device_collective_wide;
@@ -274,11 +272,8 @@ typedef struct SparkK3RunnerState
 	uint32_t *head_screened_count;
 	uint32_t vocab;
 	uint32_t vocab_slice_rows;
-	uint16_t *staging_values;
-	uint16_t *staging_scratch;
 	uint32_t staging_capacity;
 	uint32_t fused_capacity;
-	float *head_slots_host;
 	float *head_slots_device;
 	uint64_t *head_maxloc;
 	uint32_t head_slots_capacity;
@@ -324,8 +319,6 @@ typedef struct SparkK3RunnerState
 	uint16_t *distribution_normed;
 	float *distribution_logits;
 	float *distribution_gathered;
-	float *distribution_host_values;
-	float *distribution_host_scratch;
 } SparkK3RunnerState;
 
 static SparkStatus K3RunnerAllocateDistribution(SparkK3RunnerState *state,
@@ -555,13 +548,6 @@ static cudaError_t K3RunnerCopy(void *destination, const void *source,
 	return cudaStreamSynchronize(stream);
 }
 
-static void K3RunnerHostAllReduce(SparkK3RunnerState *state, uint64_t elements)
-{
-	if ( SparkTpCollectiveAllReduceSumBf16(&state->collective,
-		state->staging_values, elements, state->staging_scratch) != SPARK_STATUS_OK )
-		state->tp_collective_failed = 1u;
-}
-
 static SparkStatus K3RunnerTakeFailure(SparkK3RunnerState *state)
 {
 	SparkStatus status = SPARK_STATUS_OK;
@@ -606,24 +592,9 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 			&submission,
 			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
 	}
-	if ( state->collective_created == 0 )
-		return SPARK_STATUS_OK;
-	cudaError_t error = cudaStreamSynchronize(stream);
-	if ( error != cudaSuccess )
-		return SPARK_STATUS_INTERNAL_ERROR;
-	error = K3RunnerCopy(state->staging_values, device_values,
-		(uint64_t)elements * sizeof(uint16_t), stream);
-	if ( error != cudaSuccess )
-		return SPARK_STATUS_INTERNAL_ERROR;
-	status = SparkTpCollectiveAllReduceSumBf16(&state->collective,
-		state->staging_values, elements, state->staging_scratch);
-	if ( status != SPARK_STATUS_OK )
-		return status;
-	error = K3RunnerCopy((void *)device_values, state->staging_values,
-		(uint64_t)elements * sizeof(uint16_t), stream);
-	if ( error != cudaSuccess )
-		return SPARK_STATUS_INTERNAL_ERROR;
-	return SPARK_STATUS_OK;
+	(void)status;
+	(void)elements;
+	return state->dispatch.buffers->tp_sharded != 0u ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_OK;
 }
 
 static void K3RunnerLayerCollective(void *context, void *stream_void,
@@ -688,17 +659,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			K3RunnerTpApply(completion_context);
 			return;
 		}
-		if ( state->collective_created != 0 )
-		{
-			cudaStreamSynchronize(stream);
-			if ( K3RunnerCopy(state->staging_values, reduce_values,
-				(uint64_t)gate_up_elements * sizeof(uint16_t), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			K3RunnerHostAllReduce(state, gate_up_elements);
-			if ( K3RunnerCopy(reduce_values, state->staging_values,
-				(uint64_t)gate_up_elements * sizeof(uint16_t), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-		}
+		state->tp_collective_failed = 1u;
 		return;
 	}
 	if ( state->device_collective_created != 0 )
@@ -751,45 +712,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		}
 		return;
 	}
-	if ( state->collective_created != 0 )
-	{
-		cudaStreamSynchronize(stream);
-		if ( phase == 0u )
-		{
-			if ( K3RunnerCopy(state->staging_values, phase0_source,
-				(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			K3RunnerHostAllReduce(state, elements);
-			if ( K3RunnerCopy(phase0_source, state->staging_values,
-				(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			if ( boundary != 0u )
-				K3PartialSet(b, phase0_source, rows, stream);
-			else
-				K3PartialAdd(b, phase0_source, rows, stream);
-		}
-		else
-		{
-			if ( K3RunnerCopy(state->staging_values, b->hidden_bf16,
-				(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			if ( segments == 2u )
-				if ( K3RunnerCopy(state->staging_values + elements, b->shared_out_bf16,
-					(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
-					state->copy_failed = 1u;
-			K3RunnerHostAllReduce(state, (uint64_t)segments * elements);
-			if ( K3RunnerCopy(b->hidden_bf16, state->staging_values,
-				(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			if ( segments == 2u )
-				if ( K3RunnerCopy(b->shared_out_bf16, state->staging_values + elements,
-					(uint64_t)elements * sizeof(uint16_t), stream) != cudaSuccess )
-					state->copy_failed = 1u;
-			K3PartialAdd(b, b->hidden_bf16, rows, stream);
-			if ( segments == 2u )
-				K3PartialAdd(b, b->shared_out_bf16, rows, stream);
-		}
-	}
+	state->tp_collective_failed = 1u;
 }
 typedef struct SparkK3ManifestCheckContext
 {
@@ -1307,22 +1230,10 @@ SparkStatus SparkK3StageRunnerInitialize(
 		SparkK3RunnerLazyAcquire;
 	state->dispatch.slice_state->lazy_release =
 		SparkK3RunnerLazyRelease;
-	if ( configuration->tp_degree > 1u )
+	if ( configuration->tp_degree > 1u && (configuration->device_collective == 0 || configuration->device_collective_wide == 0) )
 	{
-		if ( configuration->tp_collective == 0 &&
-			configuration->device_collective == 0 )
-			{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INVALID_ARGUMENT; }
-		if ( configuration->tp_collective != 0 )
-		{
-			fprintf(stderr, "sparkpipe_k3: creating host collective tp=%u rank=%u port=%u\n",
-				configuration->tp_degree, configuration->tp_rank,
-				configuration->tp_collective->listen_port);
-			status = SparkTpCollectiveCreate(configuration->tp_collective,&state->collective);
-			fprintf(stderr, "sparkpipe_k3: host collective create -> %d\n", (int)status);
-			if ( status != SPARK_STATUS_OK )
-				{ SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return status; }
-			state->collective_created = 1;
-		}
+		fprintf(stderr, "sparkpipe_k3: tp=%u needs the device collective and its wide band\n", configuration->tp_degree);
+		SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	if ( configuration->layer_collective_override != 0 )
 	{
@@ -1473,11 +1384,8 @@ SparkStatus SparkK3StageRunnerInitialize(
 	}
 	state->staging_capacity = configuration->max_input_row_count *
 		K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
-	state->staging_values = new uint16_t[state->staging_capacity];
-	state->staging_scratch = new uint16_t[state->staging_capacity];
 	state->fused_capacity = state->staging_capacity;
 	state->head_slots_capacity = configuration->max_input_row_count * 2u * configuration->tp_degree;
-	state->head_slots_host = new float[state->head_slots_capacity];
 	cudaMalloc(&state->head_slots_device,(uint64_t)state->head_slots_capacity * 4u);
 	cudaMalloc(&state->head_maxloc,
 		(uint64_t)configuration->max_input_row_count * sizeof(uint64_t));
@@ -1553,8 +1461,7 @@ static SparkStatus K3RunnerAllocateDistribution(SparkK3RunnerState *state,
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		}
 	}
-	full = runner->tp_degree > 1u && state->device_collective_created == 0 ? rows * slice * runner->tp_degree :
-		(uint64_t)runner->tp_degree * state->distribution_chunk_rows * slice;
+	full = (uint64_t)runner->tp_degree * state->distribution_chunk_rows * slice;
 	if ( cudaMalloc(&state->distribution_rows, rows * sizeof(uint32_t)) != cudaSuccess ||
 		cudaMalloc(&state->distribution_positions, rows * sizeof(uint32_t)) != cudaSuccess ||
 		cudaMalloc(&state->distribution_rules, rows * sizeof(SparkRowSampling)) != cudaSuccess ||
@@ -1564,11 +1471,6 @@ static SparkStatus K3RunnerAllocateDistribution(SparkK3RunnerState *state,
 		cudaMalloc(&state->distribution_logits, rows * slice * sizeof(float)) != cudaSuccess ||
 		cudaMalloc(&state->distribution_gathered, full * sizeof(float)) != cudaSuccess )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	if ( runner->tp_degree > 1u && state->device_collective_created == 0 )
-	{
-		state->distribution_host_values = new float[full];
-		state->distribution_host_scratch = new float[full];
-	}
 	state->distribution_capacity = (uint32_t)rows;
 	return SPARK_STATUS_OK;
 }
@@ -1669,63 +1571,13 @@ static SparkStatus K3RunnerDistribution(SparkK3RunnerState *state,
 				status = K3RunnerSampleDistribution(state, state->distribution_gathered, (uint64_t)rows * slice, slice, slice, first, rows, stream);
 		}
 	else
-	{
-		const uint64_t width = (uint64_t)tp * slice, values = (uint64_t)count * width;
-		memset(state->distribution_host_values, 0, values * sizeof(float));
-		for ( row = 0u; row < count; ++row )
-			if ( cudaMemcpyAsync(state->distribution_host_values + row * width + (uint64_t)runner->tp_rank * slice,
-				state->distribution_logits + (uint64_t)row * slice, (uint64_t)slice * sizeof(float), cudaMemcpyDeviceToHost, stream) != cudaSuccess )
-				return SPARK_STATUS_IO_ERROR;
-		if ( cudaStreamSynchronize(stream) != cudaSuccess )
-			return SPARK_STATUS_IO_ERROR;
-		status = SparkTpCollectiveAllReduceSumF32(&state->collective, state->distribution_host_values, values, state->distribution_host_scratch);
-		if ( status == SPARK_STATUS_OK && cudaMemcpyAsync(state->distribution_gathered, state->distribution_host_values, values * sizeof(float), cudaMemcpyHostToDevice, stream) != cudaSuccess )
-			status = SPARK_STATUS_IO_ERROR;
-		if ( status == SPARK_STATUS_OK )
-			status = K3RunnerSampleDistribution(state, state->distribution_gathered, 0u, (uint32_t)width, (uint32_t)width, 0u, count, stream);
-	}
+		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( K3RunnerCopy(state->output_token_host, state->output_token, (uint64_t)dispatch->row_count * sizeof(uint32_t), stream) != cudaSuccess ||
 		(dispatch->output_token_ids != 0 && K3RunnerCopy(dispatch->output_token_ids, state->output_token, (uint64_t)dispatch->row_count * sizeof(uint32_t), stream) != cudaSuccess) ||
 		(dispatch->distribution_logprobs != 0 && K3RunnerCopy(dispatch->distribution_logprobs, state->distribution_logprobs, (uint64_t)count * SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob), stream) != cudaSuccess) )
 		state->copy_failed = 1u;
-	return SPARK_STATUS_OK;
-}
-
-static SparkStatus K3RunnerHeadExchange(SparkK3RunnerState *state,
-	uint32_t rows, uint32_t tp_degree, uint32_t tp_rank,
-	uint32_t *output_token_ids, float *output_scores)
-{
-	uint32_t slots = rows * 2u * tp_degree;
-	SparkStatus status;
-	uint32_t row, rank_slot, best, r;
-	if ( tp_degree <= 1u )
-		return SPARK_STATUS_OK;
-	memset(state->head_slots_host, 0, (uint64_t)slots * 4u);
-	for ( row = 0u; row < rows; ++row )
-	{
-		rank_slot = tp_rank * 2u;
-		state->head_slots_host[row * 2u * tp_degree + rank_slot] = output_scores[row];
-		state->head_slots_host[row * 2u * tp_degree + rank_slot + 1u] = (float)output_token_ids[row];
-	}
-	status = SparkTpCollectiveAllReduceSumF32(&state->collective,
-		state->head_slots_host, slots, (float *)state->staging_values);
-	if ( status != SPARK_STATUS_OK )
-		return status;
-	for ( row = 0u; row < rows; ++row )
-	{
-		best = 0u;
-		for ( r = 1u; r < tp_degree; ++r )
-		{
-			float bs = state->head_slots_host[row * 2u * tp_degree + best * 2u];
-			float rs = state->head_slots_host[row * 2u * tp_degree + r * 2u];
-			if ( rs > bs )
-				best = r;
-		}
-		output_token_ids[row] = (uint32_t)state->head_slots_host[row * 2u * tp_degree + best * 2u + 1u];
-		output_scores[row] = state->head_slots_host[row * 2u * tp_degree + best * 2u];
-	}
 	return SPARK_STATUS_OK;
 }
 
@@ -1915,10 +1767,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 			if ( K3RunnerCopy(state->output_score_host, state->output_score,
 				(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
 				state->copy_failed = 1u;
-			exchange_status = K3RunnerHeadExchange(state, rows, runner->tp_degree,
-				runner->tp_rank, state->output_token_host, state->output_score_host);
-			if ( exchange_status != SPARK_STATUS_OK )
-				return exchange_status;
+			if ( runner->tp_degree > 1u )
+				return SPARK_STATUS_INTERNAL_ERROR;
 			if ( dispatch->output_token_ids != 0 )
 				if ( K3RunnerCopy(dispatch->output_token_ids, state->output_token_host,
 					(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
@@ -2140,17 +1990,10 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 			return;
 		state->lazy_pack = 0;
 	}
-	if ( state->collective_created != 0 )
-		SparkTpCollectiveDestroy(&state->collective);
 	cudaFree(state->fused_device);
 	SparkK3DispatchDestroy(&state->dispatch);
 	SparkK3ModuleDestroy(&state->module);
-	delete[] state->staging_values;
 	free(state->group_offset_host);
-	delete[] state->staging_scratch;
-	delete[] state->head_slots_host;
-	delete[] state->distribution_host_values;
-	delete[] state->distribution_host_scratch;
 	cudaFree(state->distribution_rows);
 	cudaFree(state->distribution_positions);
 	cudaFree(state->distribution_rules);

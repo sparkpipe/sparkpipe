@@ -47,9 +47,6 @@ def check_runner(failures):
     if readback >= 0 and (sync < 0 or sync > readback):
         failures.append("the lazy route readback does not follow a sync of the "
                         "execution stream, so it can read stale group offsets")
-    if statements_calling(text, "SparkTpCollectiveAllReduceSumBf16"):
-        failures.append("a host all-reduce result is discarded; a failed reduce "
-                        "must fail the step instead of decoding partial sums")
     if statements_calling(text, "SparkTpDeviceCollectiveEnqueue"):
         failures.append("a device-collective enqueue result is discarded")
     apply = body(text, "K3RunnerTpApply")
@@ -64,9 +61,11 @@ def check_runner(failures):
             failures.append(f"{name} reads a collective completion status but is "
                             f"never registered as a completion function, so the "
                             f"check is dead")
-    reduce_helper = body(text, "K3RunnerHostAllReduce")
-    if "tp_collective_failed = 1u" not in reduce_helper:
-        failures.append("K3RunnerHostAllReduce does not record a failed reduce")
+    if "SparkTpCollective" in text.replace("SparkTpDeviceCollective", ""):
+        failures.append("the runner still reaches the removed host TCP collective")
+    layer = body(text, "K3RunnerLayerCollective")
+    if layer.count("tp_collective_failed = 1u") < 4:
+        failures.append("a tensor-parallel layer reduce without its device collective does not fail the step")
     submit = body(text, "SparkK3StageRunnerSubmit")
     begin = submit.find("K3RunnerChainBegin(state, dispatch->request_id)")
     first_work = min(i for i in (submit.find("K3Embedding("), submit.find("K3RunnerCopy(")) if i >= 0)

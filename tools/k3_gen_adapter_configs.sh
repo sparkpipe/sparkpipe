@@ -45,7 +45,6 @@ for i in $(seq 0 15); do
   # fixtures need 3,500 pages ~= 25 GiB/rank at 16 sequences - re-plan
   # memory before that step, or run them at lower sequence occupancy.
   echo "  \"kv_pages\": 64,"
-    echo "  \"capture_graphs\": 1,"
     echo "  \"hidden\": 7168,"
     echo "  \"device_collective\": {"
     echo "    \"backend\": \"hidden_transport\","
@@ -81,27 +80,6 @@ for i in $(seq 0 15); do
     echo "    ],"
     echo "    \"wait_mode\": \"hardware\""
     echo "  }"
-    if [ "$TP" = "4" ]; then
-      echo "  ,"
-      echo "  \"tp_collective\": {"
-      echo "    \"listen_port\": $((61620 + rank)),"
-      echo "    \"connect_timeout_milli\": 300000,"
-      echo "    \"operation_timeout_milli\": 30000,"
-      echo "    \"collective_identifier\": 1,"
-      echo "    \"peers\": ["
-      # STEP-ordered: peers[s] pairs with tp_rank ^ (1 << s) - the
-      # collective dials its step partners by array index, not rank
-      for s in 0 1; do
-        partner=$((rank ^ (1 << s)))
-        p=$((stage * 4 + partner))
-        ip="10.20.0.$((10 + p))"
-        comma=","
-        [ "$s" = "1" ] && comma=""
-        echo "      \"$ip:$((61620 + partner))\"$comma"
-      done
-      echo "    ]"
-      echo "  }"
-    fi
     echo "}"
   } > "$OUT/$host.json"
   echo "wrote $OUT/$host.json"

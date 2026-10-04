@@ -10,7 +10,6 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/runtime/stage_module_lifecycle.c \
 	$(addprefix $(REPOSITORY_ROOT)/,$(SPARKPIPE_WEIGHTD_SOURCES)) \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
 GEMMA4_MODEL_REVISION ?= 842da3794eaa0b77d5f08bae87a17459d91ff475
 # The serving-adapter descriptor must carry the model-description sha the
