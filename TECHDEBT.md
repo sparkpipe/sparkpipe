@@ -260,16 +260,13 @@ citations refer to that commit.
   cache. B16 decode at 16K context reads 5.2 GB of bf16 index keys per step.
   With the context split, each rank scores its own 1/tp of the context and
   the ranks merge their top-k candidates.
-- KV pages are just in time: physical pages must hold one full lane and
-  logical pages every lane, so lanes share one resident pool and pages past
-  it park in the backing store. Fleet record (2026-10-02, 0b5371e, TP16, 2 x
-  262,144 positions on a 32 GiB pool = 5,637 pages, 20 GiB backing): two
-  concurrent 124,997-token prompts each retrieved their pass key (TTFT
-  450 s for both); pass keys retrieved at 8K to 60K; B1 30.3 tok/s. Parking
-  copies synchronously under the binding mutex (see the JIT KV plan, G6),
-  but the engine reserves each request's full prompt and output pages when
-  it binds a lane, so active lanes never overcommit the pool; a request that
-  does not fit waits in the queue.
+- KV admission answers `BUSY` while a park or restore is in flight: nothing
+  answers `PENDING` with a completion signal, so the engine polls with a 10 to
+  200 ms backoff (`runtime/stage_kv_binding.c`, `SparkStageKvBindingAdmit`).
+  The JIT-KV pager's queued park (`cache/kv_pager.c`) still drops a block whose
+  write fails and answers RECOMPUTE, unlike the arena, which keeps the page.
+  Close both: prepare answers `PENDING` until the pages are in place and the
+  pager keeps a failed park's page resident.
 - Left out on purpose (2026-10-02): glm52 graph regimes key long contexts on
   4,096-token buckets to 16K and four buckets per octave above, in the fixed
   72-regime table (`spark_glm52_graph_regime.h`): a 1,048,576-position
@@ -790,19 +787,12 @@ citations refer to that commit.
   by owning-request priority and deadline before reuse value, proven on the
   fleet by an oversubscribed run with two priority classes where the higher
   class keeps its hits and its TTFT stays flat.
-- Left out on purpose (2026-10-02): A full backing store neither tightens
-  admission nor logs. When the page store has no free slot it returns
-  `CAPACITY_EXCEEDED` (`cache/kv_page_store.c:786-793`); the arena then drops
-  an unreferenced block's contents and bumps `write_back_degraded_block_count`
-  (`cache/kv_cache.c:1201-1210`), or the page cache discards its least
-  recently used entry and retries (`cache/kv_page_cache.c:899-910`). No
-  production code reads or prints that counter or `evicted_entry_count`
-  (`:430`), so a full store silently turns cached prefixes into recomputes.
-  Required (`docs/archive/JIT_KV_DESIGN.md:114-115`): a full store queues new
-  work and logs the transition. Close it by feeding store occupancy into
-  engine admission with a logged backing-full transition, proven on the fleet
-  by a run with a small `kv_backing_maximum_bytes` that logs the transition,
-  queues requests and completes every request without wedging.
+- A full backing store fails the admission: after the page cache relieves
+  backing (releasing an idle restored page's record or evicting an unused
+  entry) and still finds no slot, the admission answers `CAPACITY_EXCEEDED`
+  and logs `KV-BACKING-FULL` (`cache/kv_page_cache.c`,
+  `SparkKvPageCacheBackingOutcome`). Close it by feeding store occupancy into
+  engine admission so a full store queues new work instead of failing it.
 - Left out on purpose (2026-10-02): No code budgets or reports NVMe write
   endurance. The page store and snapshot store count written bytes
   (`cache/kv_page_store.c:439`, `cache/kv_snapshot.c:390`), but nothing reads
@@ -814,58 +804,32 @@ citations refer to that commit.
   spent and reported in the wave timeline, proven on one Spark by a run with a
   small budget that reports the write rate, stops spilling at the limit and
   keeps serving.
-- Left out on purpose (2026-10-02): Copy-on-write of a partial prefix page and
-  snapshot restore run synchronously on the residentd submission thread while
-  the KV binding lock is held. `SparkStageKvBindingAdmit` holds
-  `binding->mutex` (`runtime/stage_kv_binding.c:315-328`) around the lane
-  prepare, which clones the page through `SparkKvPageCacheCloneMutable`
-  (`cache/kv_page_cache.c:972-1010`, called at `:1063`) into
-  `SparkKvPageStoreCopyResidentPage` (`cache/kv_page_store.c:629-663`):
-  blocking `cudaMemcpy` calls (`runtime/stage_kv_binding.c:17-19`) move the
-  whole page device to host to device through the store's one staging page
-  under the store mutex, and the copy answers `BUSY` while any spill transfer
-  is queued (`kv_page_store.c:649-651`). `SparkKvPageCacheRestorePrefix` is
-  called inline in the same prepare (`cache/kv_page_cache.c:2006-2014`); it
-  does not run today only because no production code attaches a snapshot
-  (`SparkKvPageCacheAttachSnapshot`, `:1480`, has test callers only). Nothing
-  answers `PENDING`; the engine polls `BUSY` with a 10 to 200 ms backoff
-  (Dynamic batching, JIT KV admission does not prefetch). Close it by making
-  copy-on-write a device-to-device copy ordered on the execution stream and by
-  reading restores outside the lock, with prepare answering `PENDING` until
-  the pages are in place; the fleet proof is a B16 decode run that admits
-  copy-on-write and restored prefixes mid-run with unchanged per-step decode
-  time and tokens identical to an uninterrupted run.
-- Left out on purpose (2026-10-02): The glm52 completion host function waits
-  on the same lock as admission. `SparkGlm52CompleteAsync` runs as a
-  `cudaLaunchHostFunc` host function
-  (`common/common_glm_stage_module/spark_glm_stage_module.h:161`) and calls
-  `SparkStageKvBindingFinish`
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:1849`),
-  which locks `binding->mutex` (`runtime/stage_kv_binding.c:578`); the submit
-  path takes the same lock (`:512`, `:533`). While an admission holds it for a
-  copy-on-write copy, or for a restore once a snapshot is attached, every
-  finishing wave's host function blocks, and its stream runs nothing enqueued
-  after it until it returns. The stall has not been measured for GLM Full.
-  Close it by keeping restore and copy work out from under the lock the
-  completion path takes; the fleet proof is B16 per-step decode time with
-  prefix admissions arriving during decode, equal to the same run without
-  admissions.
-- Left out on purpose (2026-10-02): a block whose spill write-back fails is
-  degraded (`cache/kv_cache.c`, `SparkKvCacheArenaEvictResidentBlock`): its
-  contents are dropped, its backing is marked invalid, and a later restore of
-  it answers NOT_FOUND so the engine recomputes, never a wedge. The page-cache
-  entry that owns the block stays VALID, so every later request whose chain
-  matches it reaches the same missing page and recomputes again, and a
-  persistent disk error turns every spill into a recompute with no signal
-  beyond `write_back_degraded_block_count`, which nothing reports. (From
-  2026-10-01 to 2026-10-02 the degrade was limited to unreferenced blocks,
-  which made a failed write-back fail the request instead; that broke the B1
-  drop-and-recompute contract tested by `tests/test_jit_kv_wire.c` scenario 5
-  and was reverted.) Close it by evicting the owning page-cache entry and its
-  descendants when a write-back fails, and reporting the degraded count,
-  proven by a fleet run with injected write errors in which the first affected
-  request recomputes, later requests miss cleanly without touching the bad
-  page, and tokens match an uninterrupted run.
+- A snapshot restore runs inline in the lane prepare while the KV binding lock
+  is held (`SparkKvPageCacheRestorePrefix`, called from the prepare in
+  `cache/kv_page_cache.c`), so a restore blocks every admission and the
+  completion thread for the length of its file reads. Close it by reading
+  restores on a worker outside the lock, with prepare answering `PENDING`
+  until the pages are in place.
+- Copy-on-write of a partial prefix page needs a device copier attached to
+  the page cache (`SparkKvPageCacheAttachDeviceCopy`). glm52 (through the KV
+  binding) and glm5_next attach one; dsv4, laguna and ling do not, so a
+  mid-page prefix admission on them answers `UNSUPPORTED`
+  (`KV-COPY-ON-WRITE-UNAVAILABLE`). Close it by moving those drivers onto the
+  KV binding.
+- The glm5_next completion still finishes cache lanes inside its
+  `cudaLaunchHostFunc` host function under `kv_mutex`
+  (`SparkGlm5NextFinishCacheLanes`), the same lock admission takes, so an
+  admission holding the lock stalls the finishing wave's stream. glm52 hands
+  its completion to the KV binding's completion thread
+  (`SparkStageKvBindingFinishAsync`). Close it by moving glm5_next onto the KV
+  binding.
+- A page whose park keeps failing stays resident with `PARK_FAILED`
+  (`cache/kv_cache.c`, `SparkKvCacheArenaEvictResidentBlock`); once every
+  resident page has failed, the last-resort retry also fails and the
+  admission answers `IO_ERROR` with `KV-PARK-STALLED`. A persistent disk
+  error therefore stops admissions that need a park. Close it by failing the
+  backing store over to a second path or degrading to recompute-only prefix
+  reuse with a logged transition.
 - Left out on purpose (2026-10-02): The rule for a missing, corrupt or
   unreadable KV page is not written down (JIT KV plan owner decision 5), and
   the spill store GLM Full uses cannot detect corruption. A missing prefix
@@ -1248,6 +1212,12 @@ Related common-code debt:
   pressure, cancellation, and starvation bounds.
 - Make priority and deadline enforcement span admission, prefill, decode,
   speculation, gang scheduling, model promotion, and storage I/O.
+- `LmSkinnyGroupedExperts` (grouped FP8 gate/up experts) does not match the
+  per-pair expert kernel bit for bit at 8 rows on a GB10:
+  `tests/test_skinny_dependent_cuda.py` fails with "rows8: grouped experts
+  differ from the per-pair experts" on main and on branches that do not touch
+  the kernel. Find the race or order difference in the grouped kernel and
+  make the device test pass.
 - Dense projections above eight rows leave the skinny kernel for
   tensor-core GEMM with a different accumulation order, and batched latent
   attention sums in a different order from the per-head kernel, so prefill
