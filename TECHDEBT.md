@@ -1543,11 +1543,21 @@ for seamless production multi-model.
   belongs to a lane currently executing, wait for its batch boundary, then
   evict; when nothing greater than X is resident, the acquire errors
   rather than thrashes.
-- Request queueing behind not-yet-live models: lane exhaustion fails the
-  residentd load closed and requests for that model see connection
-  refused at the router. Required: warm request queue that drains when the
-  model finishes loading (swap starts, requester waits, serving model
-  continues).
+- Requests for a model that is not live wait in the chat layer, but nothing
+  starts a cold model yet. `tools/serving/chat_frontend.py` holds a request
+  whose engine answers the bring-up 503 (`"status":"starting"`) or is
+  unreachable, before any output, in a per-model bounded queue (`warm_queue`:
+  `depth`, `wait_seconds`, `activation_url`, all required). A poll of the
+  engine's `/health` releases the waiters once it turns ready, and `/health`
+  reports the queue. A full queue or an expired wait answers 503 with
+  Retry-After, and a latched engine failure is never queued
+  (`tests/test_chat_frontend_warm_queue.py`). The queue POSTs
+  `activation_url` once per cold period, but no hub endpoint exists that asks
+  the fleet agent to start a model's root without stopping the serving model,
+  so the GLM configuration sets it to null and an operator starts the engine.
+  Build that endpoint, then prove it with a request to a non-resident model
+  while GLM serves: the model loads, the request completes, and GLM TPOT is
+  unaffected.
 - Load bandwidth fairness is enforced but not yet configured or measured.
   weightd paces pack streams, spine preloads and expert lease loads with one
   token bucket (`runtime/spark_weightd_pacer.c`) while another connection's

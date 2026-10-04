@@ -31,7 +31,13 @@ nothing more:
 - it decodes the returned token ids incrementally and splits the model's
   reasoning and tool-call markup into standard `reasoning_content` and
   `tool_calls` (tool arguments typed from the tool's JSON schema);
-- it keeps no state; prefix reuse happens in the engine.
+- it keeps no request state; prefix reuse happens in the engine;
+- while the engine is starting (its 503 says `"status":"starting"`) or is
+  unreachable, a request waits in the model's `warm_queue` (`depth`,
+  `wait_seconds`, and `activation_url`, which is POSTed once per cold period
+  or null when an operator starts the engine) until `/health` turns ready.
+  A full queue or an expired wait answers 503 with Retry-After; `/health`
+  shows the queue.
 
 The layer is model-neutral. A model family supplies its configuration
 (`model-families/glm52/serving/chat_frontend.json`): the model directory
