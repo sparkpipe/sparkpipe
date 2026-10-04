@@ -1408,9 +1408,10 @@ Related common-code debt:
   flag as it was, so the driver and residentd can disagree about the slot
   until the next session reset. Settle the slot the way an error completion
   does.
-- Produce one immutable qualification bundle containing merged commit, release
-  generation, package and driver hashes, all-rank identities, token stream,
-  accuracy, performance, route counters, and drained queue state.
+- Produce one immutable qualification bundle for a release candidate with
+  `tools/qualification_bundle.py`: merged commit, release generation, package
+  and driver hashes, all-rank identities, token stream, accuracy, performance,
+  route counters and drained queue state. No release has one yet.
 - Left out on purpose (2026-10-02): When a glm5_next graph replay is stuck or
   its wait times out, the module clears `graph_path_enabled`
   (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:4680`,
@@ -1602,10 +1603,6 @@ door and the static pages and playground in `site/`.
   the probe a node context the real module accepts, compare full-vocabulary
   logits and require `exact`, and prove it with a RESULT.json from a Spark run
   on the GLM-5.3 Flash rank-0 pack.
-- Four Python tests stay outside `make test` because they drive the fleet
-  over ssh: `test_expert_io_perf`, `test_jit_kv_page_fault`,
-  `test_lossless_doorbell` and `test_transport_stability`. Give them a
-  runner and register them.
 - `test_hy4_driver_acceptance` has a build rule but stays out of
   `TEST_NAMES`: it holds the behaviour a complete hy4 driver must show and
   fails on the current stub module. Register it with the hy4 driver.

@@ -12,9 +12,10 @@ FLEET_NODES = [
     "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb",
     "sparkc", "sparkd", "sparke", "sparkf",
 ]
-API_HOST = "rtx5090"
-API_PORT = 8433
-HUB = "rtx5090"
+API_HOST = os.environ.get("SPARK_FLEET_API_HOST", "")
+API_PORT = int(os.environ.get("SPARK_FLEET_API_PORT", "0"))
+API_RESTART = os.environ.get("SPARK_FLEET_API_RESTART", "")
+HUB = os.environ.get("SPARK_FLEET_HUB", "")
 ROOT_NAME = "glm53flash.fp8.tp16"
 FIXTURE_TOKENS = [1, 2, 3, 4, 5, 6, 7, 8]
 EXPECTED_FIRST_TOKENS = [3764, 10]
@@ -98,11 +99,14 @@ def fleet_ready(beats):
 
 
 def restart_api():
-    ssh(API_HOST, "systemctl --user restart g53-api")
+    ssh(API_HOST, API_RESTART)
     time.sleep(12)
 
 
 def main():
+    if not API_HOST or API_PORT == 0 or not API_RESTART or not HUB:
+        print("set SPARK_FLEET_API_HOST, SPARK_FLEET_API_PORT, SPARK_FLEET_API_RESTART and SPARK_FLEET_HUB", file=sys.stderr)
+        return 2
     duration_min = int(sys.argv[1]) if len(sys.argv) > 1 else 5
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 42
     rng = random.Random(seed)
