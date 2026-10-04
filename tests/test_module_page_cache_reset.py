@@ -41,6 +41,11 @@ static void Bind(void)
 		atomic_store(&LANES.lane_bound[lane],1u);
 		atomic_store(&LANES.lane_sequence_ids[lane],100u + lane);
 		atomic_store(&LANES.lane_next_positions[lane],7u + lane);
+#ifdef SPARK_STAGE_KV_REGION_PAGE_MAJOR
+		atomic_store(&state.kv.lane_rewind_floors[lane],3u + lane);
+		atomic_store(&state.kv.lane_rewind_ceilings[lane],7u + lane);
+		atomic_store(&state.kv.lane_pending_floors[lane],5u + lane);
+#endif
 	}
 	RELEASE_ALL_CALLS = 0u;
 	SYNC_CALLS = 0u;
@@ -58,8 +63,12 @@ static void BindingSetup(void)
 	state.kv.lane_bound = (atomic_uchar *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_bound));
 	state.kv.lane_sequence_ids = (atomic_ullong *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_sequence_ids));
 	state.kv.lane_next_positions = (atomic_ullong *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_next_positions));
+	state.kv.lane_rewind_floors = (atomic_ullong *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_rewind_floors));
+	state.kv.lane_rewind_ceilings = (atomic_ullong *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_rewind_ceilings));
+	state.kv.lane_pending_floors = (atomic_ullong *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.lane_pending_floors));
 	state.kv.page_table_shadow = (uint32_t *)calloc(state.resident_sequence_capacity,sizeof(*state.kv.page_table_shadow));
 	assert(state.kv.lane_bound != 0 && state.kv.lane_sequence_ids != 0 && state.kv.lane_next_positions != 0 && state.kv.page_table_shadow != 0);
+	assert(state.kv.lane_rewind_floors != 0 && state.kv.lane_rewind_ceilings != 0 && state.kv.lane_pending_floors != 0);
 	assert(pthread_mutex_init(&state.kv.mutex,0) == 0);
 	state.kv.mutex_initialized = 1u;
 }
@@ -69,7 +78,13 @@ static uint32_t Bound(void)
 {
 	uint32_t lane,count = 0u;
 	for (lane=0u; lane<state.resident_sequence_capacity; lane++)
-		count += atomic_load(&LANES.lane_bound[lane]) != 0u || atomic_load(&LANES.lane_sequence_ids[lane]) != 0u || atomic_load(&LANES.lane_next_positions[lane]) != 0u ? 1u : 0u;
+	{
+		uint32_t bound = atomic_load(&LANES.lane_bound[lane]) != 0u || atomic_load(&LANES.lane_sequence_ids[lane]) != 0u || atomic_load(&LANES.lane_next_positions[lane]) != 0u ? 1u : 0u;
+#ifdef SPARK_STAGE_KV_REGION_PAGE_MAJOR
+		bound |= atomic_load(&state.kv.lane_rewind_floors[lane]) != 0u || atomic_load(&state.kv.lane_rewind_ceilings[lane]) != 0u || atomic_load(&state.kv.lane_pending_floors[lane]) != UINT64_MAX ? 1u : 0u;
+#endif
+		count += bound;
+	}
 	return(count);
 }
 
@@ -222,7 +237,7 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         for name, module in MODULES.items():
             run_module(name, module, directory)
-    print("PASS module page-cache reset (glm52, ling): client reset accepted, every lane unbound, waits for in-flight slots and lanes, stream and release failures stay loud")
+    print("PASS module page-cache reset (glm52, ling): client reset accepted, every lane unbound with its rewind window and pending verify floor cleared, waits for in-flight slots and lanes, stream and release failures stay loud")
 
 if __name__ == "__main__":
     main()

@@ -1378,6 +1378,7 @@ SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t gener
 			atomic_store_explicit(&binding->lane_next_positions[lane],0u,memory_order_release);
 			atomic_store_explicit(&binding->lane_rewind_floors[lane],0u,memory_order_release);
 			atomic_store_explicit(&binding->lane_rewind_ceilings[lane],0u,memory_order_release);
+			atomic_store_explicit(&binding->lane_pending_floors[lane],UINT64_MAX,memory_order_release);
 		}
 		binding->reset_generation = generation;
 		binding->control_generation = 0u;
