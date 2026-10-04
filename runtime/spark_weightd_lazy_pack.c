@@ -148,6 +148,7 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 	struct stat info;
 	int32_t fd;
 	uint32_t read_only;
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
 	char absolute[4096];
 	if ( out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -168,7 +169,7 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 		request = &resolved;
 	}
 	identity = request->identity;
-	if ( SparkWeightdIdentityPrepare(&identity) != SPARK_STATUS_OK )
+	if ( SparkWeightdIdentityPrepare(&identity) != SPARK_STATUS_OK || SparkSha256HexToDigest(identity.pack_sha256,digest) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	fd = open(request->pack_path,O_RDONLY | O_NONBLOCK);
 	if ( fd < 0 )
@@ -185,6 +186,7 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	pack->read_only = read_only;
+	memcpy(pack->pack_sha256,digest,sizeof(pack->pack_sha256));
 	status = lazy_pack_initialize(pack,fd,socket,request,spine_budget,timeout,check,context);
 	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;

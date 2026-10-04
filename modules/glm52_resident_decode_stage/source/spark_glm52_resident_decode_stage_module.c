@@ -114,6 +114,10 @@ struct SparkGlm52ModuleState
 	SparkStageKvBinding kv;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
+	const char *model_id;
+	uint32_t kv_cache_codec;
 	SparkWeightdLazyPack *lazy_pack;
 	uint64_t expert_pin_leases[64];
 	uint32_t expert_pin_lease_count;
@@ -318,6 +322,7 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	if ( state == 0 || configuration == 0 || host_services == 0 || pack_path == 0 || host_services->node_context == 0 || host_services->execution_stream == 0 ||
 		host_services->kv_logical_page_capacity == 0u || host_services->kv_physical_page_capacity == 0u || host_services->kv_physical_page_capacity > host_services->kv_logical_page_capacity )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state->model_id = configuration->model_id;
 	context = (const SparkGlm52ResidentDecodeStageNodeContext *)host_services->node_context;
 	if ( context->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION || context->descriptor_bytes != SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_BYTES )
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
@@ -350,6 +355,8 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->tp_rank = context->tp_rank;
 	state->kv_backing_directory = context->kv_backing_directory;
 	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
+	state->kv_snapshot_directory = context->kv_snapshot_directory;
+	state->kv_snapshot_maximum_bytes = context->kv_snapshot_maximum_bytes;
 	state->kv_logical_page_capacity = host_services->kv_logical_page_capacity;
 	state->kv_physical_page_capacity = host_services->kv_physical_page_capacity;
 	if ( SparkModuleTpCollectiveIdentifier(SPARK_GLM52_MODULE_TAG,context->tp_degree,context->tp_collective_identifier,&state->tp_collective_disabled) != SPARK_STATUS_OK )
@@ -603,6 +610,8 @@ static SparkStatus SparkGlm52PackLoad(
 		status = SparkStageModulePackRead(SPARK_GLM52_MODULE_TAG,file,0u,&header,sizeof(header));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm52PackValidateHeader(state,&header,file_bytes);
+	if ( status == SPARK_STATUS_OK )
+		state->kv_cache_codec = header.kv_cache_codec;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModulePackRead(SPARK_GLM52_MODULE_TAG,file,header.directory_offset,entries,(uint64_t)header.tensor_count * sizeof(entries[0]));
 	for (index=0u; status==SPARK_STATUS_OK && index<header.tensor_count; index++)
@@ -866,9 +875,21 @@ static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 	configuration.capacity_request.index_key_layer_count = state->index_layer_count;
 	configuration.capacity_request.index_key_dimension = SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION;
 	configuration.capacity_request.index_key_bytes_per_scalar = 2u;
-	configuration.model_id = "glm52";
+	configuration.model_id = state->model_id;
 	configuration.model_revision = state->model_revision;
-	configuration.layout_fingerprint = "latent-bf16-page-major-index-bf16-layer-major-v1";
+	if ( state->lazy_pack == 0 )
+	{
+		fprintf(stderr,"%s kv binding refused: no weightd lazy pack, so the KV layout has no pack identity\n",SPARK_GLM52_MODULE_TAG);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	memcpy(configuration.pack_sha256,state->lazy_pack->pack_sha256,SPARK_SHA256_DIGEST_BYTES);
+	if ( SparkGlm52ContractHash(configuration.contract_sha256) < 0 )
+		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
+	configuration.expert_codec = state->expert_weight_codec;
+	configuration.kv_codec = state->kv_cache_codec;
+	configuration.driver_symbol = (const void *)&SparkGlm52AllocateCaches;
+	configuration.snapshot_directory = state->kv_snapshot_directory;
+	configuration.snapshot_maximum_bytes = state->kv_snapshot_maximum_bytes;
 	configuration.resident_sequence_capacity = state->resident_sequence_capacity;
 	configuration.max_sequence_positions = state->max_sequence_positions;
 	configuration.max_input_row_count = state->execution_row_capacity;
@@ -2884,6 +2905,7 @@ static void SparkGlm52ModuleSnapshotExtend(
 	resident_count = SparkStageKvBindingResidentCount(&state->kv);
 	snapshot->resident_sequence_count = resident_count;
 	snapshot->kv_token_capacity = (uint64_t)state->resident_sequence_capacity * state->max_sequence_positions;
+	SparkStageKvBindingKvStoreCounters(&state->kv,&snapshot->kv_store);
 }
 
 static SparkStatus SparkGlm52ModuleStateTeardown(void *module_state)

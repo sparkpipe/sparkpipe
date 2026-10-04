@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 15u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 16u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -24,6 +24,8 @@ extern "C" {
 #define SPARK_MODEL_RESIDENT_IPC_KIND_DECISION 7u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_DECISION_RESULT 8u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE 9u
+#define SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST 10u
+#define SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT 11u
 
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT 1u
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT 2u
@@ -128,6 +130,25 @@ typedef struct SparkModelResidentIpcSubmitResult
 	uint32_t status;
 	uint32_t reserved0;
 } SparkModelResidentIpcSubmitResult;
+
+typedef struct SparkModelResidentIpcStatusRequest
+{
+	SparkModelResidentIpcHeader header;
+} SparkModelResidentIpcStatusRequest;
+
+typedef struct SparkModelResidentIpcStatusReport
+{
+	SparkModelResidentIpcHeader header;
+	uint64_t client_generation;
+	uint32_t status;
+	uint32_t rank_index;
+	uint32_t stage_index;
+	uint32_t residentd_pid;
+	SparkModelServingAdapterSnapshot adapter_snapshot;
+} SparkModelResidentIpcStatusReport;
+
+#define SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES ((uint32_t)sizeof(SparkModelResidentIpcStatusRequest))
+#define SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES ((uint32_t)sizeof(SparkModelResidentIpcStatusReport))
 
 typedef struct SparkModelResidentIpcDecision
 {
@@ -243,6 +264,24 @@ SparkStatus SparkModelResidentIpcValidateSubmitResult(
 	uint32_t message_bytes,
 	uint64_t message_id,
 	uint64_t submission_id);
+SparkStatus SparkModelResidentIpcInitializeStatusRequest(
+	SparkModelResidentIpcStatusRequest *request,
+	uint64_t message_id);
+SparkStatus SparkModelResidentIpcInitializeStatusReport(
+	SparkModelResidentIpcStatusReport *report,
+	const SparkModelResidentIpcStatusRequest *request,
+	SparkStatus status,
+	uint64_t client_generation,
+	uint32_t rank_index,
+	uint32_t stage_index,
+	uint32_t residentd_pid,
+	const SparkModelServingAdapterSnapshot *adapter_snapshot);
+SparkStatus SparkModelResidentIpcValidateStatusReport(
+	const SparkModelResidentIpcStatusReport *report,
+	uint32_t message_bytes,
+	uint64_t message_id,
+	uint32_t rank_index,
+	uint32_t stage_index);
 SparkStatus SparkModelResidentIpcInitializeDecision(
 	SparkModelResidentIpcDecision *decision,
 	uint64_t message_id,

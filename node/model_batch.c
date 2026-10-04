@@ -792,6 +792,7 @@ int main(int argc,char **argv)
 	SparkModelBatchOutput output;
 	static SparkQuantArm quant_arm;
 	const char *deployment_path,*runtime_root,*batch_path,*quant_arm_path;
+	static char resolved_root[4096],index_path[4200];
 	char quant_arm_error[512];
 	uint32_t failed_stage_index,profile_stages,view_valid;
 	uint32_t continuous,admission_closed,submitted_count;
@@ -801,6 +802,13 @@ int main(int argc,char **argv)
 		fprintf(stderr,"usage: sparkpipe_model_batch --deployment PATH --runtime-root PATH --batch PATH [--quant-arm ARM_JSON] [--profile-stages]\n");
 		return(2);
 	}
+	if ( realpath(runtime_root,resolved_root) == 0 )
+	{
+		fprintf(stderr,"sparkpipe_model_batch: --runtime-root %s cannot be resolved errno=%d\n",runtime_root,errno);
+		return(1);
+	}
+	runtime_root = resolved_root;
+	(void)snprintf(index_path,sizeof(index_path),"%s/prefix_index_batch.spi",resolved_root);
 	if ( quant_arm_path != 0 && SparkQuantArmLoadFile(quant_arm_path,&quant_arm,quant_arm_error,(uint32_t)sizeof(quant_arm_error)) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"sparkpipe_model_batch: --quant-arm %s REFUSED: %s\n",quant_arm_path,quant_arm_error);
@@ -844,6 +852,7 @@ int main(int argc,char **argv)
 		file.engine.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 		file.engine.deployment = &deployment;
 		file.engine.runtime_root = runtime_root;
+		file.engine.prefix_index_path = index_path;
 		file.engine.event_function = SparkModelBatchWriteEvent;
 		file.engine.event_context = &output;
 		if ( profile_stages != 0u )

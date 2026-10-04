@@ -1,4 +1,5 @@
 #pragma once
+#include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd_map.h"
 #include "sparkpipe/spark_weightd_worker.h"
 
@@ -18,6 +19,7 @@ typedef struct SparkWeightdLazyPack
 	uint64_t spine_allocation_bytes;
 	uint32_t ready;
 	uint32_t read_only;
+	uint8_t pack_sha256[SPARK_SHA256_DIGEST_BYTES];
 } SparkWeightdLazyPack;
 
 SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t spine_budget,uint64_t timeout,SparkWeightdLazyPack **out);

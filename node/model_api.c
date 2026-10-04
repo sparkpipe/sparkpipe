@@ -103,6 +103,7 @@ typedef struct ApiState
 	uint64_t next_id;
 	uint64_t served;
 	const char *runtime_root;
+	const char *prefix_index_path;
 	uint64_t seq_saved_ms;
 	uint32_t context_limit;
 	volatile int ready;
@@ -532,7 +533,38 @@ static void api_log_engine_measurements(void)
 		return;
 	logged_terminals = terminals;
 	logged_rejections = view.rejected_lane_count;
-	fprintf(stderr,"{\"event\":\"engine_measurements\",\"boot_pid\":%d,\"completed\":%llu,\"cancelled\":%llu,\"first_tokens\":%llu,\"queue_ns_total\":%llu,\"prefill_ns_total\":%llu,\"ttft_ns_total\":%llu,\"ttft_ns_maximum\":%llu,\"prefix_hits\":%llu,\"prefix_misses\":%llu,\"prefix_hit_tokens\":%llu,\"stale_prefix_recomputes\":%llu,\"stale_prefix_isolations\":%llu,\"rejected_lanes\":%llu,\"rejected_waves_busy\":%llu,\"rejected_waves_not_found\":%llu,\"rejected_waves_validation_failed\":%llu,\"rejected_waves_io_error\":%llu}\n",(int)getpid(),(unsigned long long)view.completed_request_count,(unsigned long long)view.cancelled_request_count,(unsigned long long)view.first_token_count,(unsigned long long)view.queue_ns_total,(unsigned long long)view.prefill_ns_total,(unsigned long long)view.ttft_ns_total,(unsigned long long)view.ttft_ns_maximum,(unsigned long long)view.prefix_hit_count,(unsigned long long)view.prefix_miss_count,(unsigned long long)view.prefix_hit_token_count,(unsigned long long)view.stale_prefix_recompute_count,(unsigned long long)view.stale_prefix_isolation_count,(unsigned long long)view.rejected_lane_count,(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_BUSY],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_NOT_FOUND],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_VALIDATION_FAILED],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_IO_ERROR]);
+	fprintf(stderr,"{\"event\":\"engine_measurements\",\"boot_pid\":%d,\"completed\":%llu,\"cancelled\":%llu,\"first_tokens\":%llu,\"queue_ns_total\":%llu,\"prefill_ns_total\":%llu,\"ttft_ns_total\":%llu,\"ttft_ns_maximum\":%llu,\"prefix_hits\":%llu,\"prefix_misses\":%llu,\"prefix_hit_tokens\":%llu,\"stale_prefix_recomputes\":%llu,\"stale_prefix_isolations\":%llu,\"rejected_lanes\":%llu,\"rejected_waves_busy\":%llu,\"rejected_waves_not_found\":%llu,\"rejected_waves_validation_failed\":%llu,\"rejected_waves_io_error\":%llu,\"prefix_index_saves\":%llu,\"prefix_index_save_failures\":%llu,\"prefix_index_write_ns\":%llu,\"prefix_index_write_ns_max\":%llu,\"prefix_index_export_ns_max\":%llu,\"prefix_index_loaded\":%llu,\"prefix_index_refused\":%llu,\"prefix_index_reimported\":%llu}\n",(int)getpid(),(unsigned long long)view.completed_request_count,(unsigned long long)view.cancelled_request_count,(unsigned long long)view.first_token_count,(unsigned long long)view.queue_ns_total,(unsigned long long)view.prefill_ns_total,(unsigned long long)view.ttft_ns_total,(unsigned long long)view.ttft_ns_maximum,(unsigned long long)view.prefix_hit_count,(unsigned long long)view.prefix_miss_count,(unsigned long long)view.prefix_hit_token_count,(unsigned long long)view.stale_prefix_recompute_count,(unsigned long long)view.stale_prefix_isolation_count,(unsigned long long)view.rejected_lane_count,(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_BUSY],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_NOT_FOUND],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_VALIDATION_FAILED],(unsigned long long)view.rejected_submission_count_by_status[SPARK_STATUS_IO_ERROR],(unsigned long long)view.prefix_index_save_count,(unsigned long long)view.prefix_index_save_failure_count,(unsigned long long)view.prefix_index_write_ns_total,(unsigned long long)view.prefix_index_write_ns_maximum,(unsigned long long)view.prefix_index_export_ns_maximum,(unsigned long long)view.prefix_index_loaded_record_count,(unsigned long long)view.prefix_index_refused_count,(unsigned long long)view.prefix_index_reimported_record_count);
+}
+
+static uint64_t api_per_page(uint64_t total,uint64_t pages)
+{
+	return(pages != 0u ? total / pages : 0u);
+}
+
+static void api_log_status_reports(void)
+{
+	static SparkModelResidentStatusReport logged[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	SparkModelResidentStatusReport report;
+	const SparkModelDriverKvStoreCounters *kv;
+	uint32_t rank;
+	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
+	{
+		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
+			break;
+		if ( report.generation == 0u || (memcmp(&report.adapter_snapshot.kv_store,&logged[rank].adapter_snapshot.kv_store,sizeof(report.adapter_snapshot.kv_store)) == 0 &&
+			report.residentd_pid == logged[rank].residentd_pid && report.client_generation == logged[rank].client_generation) )
+			continue;
+		logged[rank] = report;
+		kv = &report.adapter_snapshot.kv_store;
+		fprintf(stderr,"{\"event\":\"kv_store_report\",\"boot_pid\":%d,\"rank\":%u,\"stage\":%u,\"residentd_pid\":%u,\"client_generation\":%llu,\"status\":%u,\"generation\":%llu,\"attached\":%u,\"save_count\":%llu,\"save_pages\":%llu,\"save_ns\":%llu,\"save_ns_per_page\":%llu,\"save_failures\":%llu,\"save_deferred\":%llu,\"restore_count\":%llu,\"restore_pages\":%llu,\"restore_ns\":%llu,\"restore_ns_per_page\":%llu,\"restore_misses\":%llu,\"restore_corrupt\":%llu,\"restore_read_errors\":%llu,\"restore_failures\":%llu,\"store_used_bytes\":%llu,\"store_maximum_bytes\":%llu,\"store_files\":%llu,\"store_foreign_layout_files\":%llu,\"store_checksum_failures\":%llu,\"store_removed_temporaries\":%llu,\"store_evictions\":%llu,\"store_write_failures\":%llu,\"store_queue_full\":%llu,\"store_queued\":%llu,\"store_failed_status\":%u}\n",
+			(int)getpid(),rank,report.stage_index,report.residentd_pid,(unsigned long long)report.client_generation,report.status,(unsigned long long)report.generation,kv->attached,
+			(unsigned long long)kv->save_count,(unsigned long long)kv->save_page_count,(unsigned long long)kv->save_ns,(unsigned long long)api_per_page(kv->save_ns,kv->save_page_count),
+			(unsigned long long)kv->save_failure_count,(unsigned long long)kv->save_deferred_count,(unsigned long long)kv->restore_count,(unsigned long long)kv->restore_page_count,
+			(unsigned long long)kv->restore_ns,(unsigned long long)api_per_page(kv->restore_ns,kv->restore_page_count),(unsigned long long)kv->restore_miss_count,(unsigned long long)kv->restore_corrupt_count,
+			(unsigned long long)kv->restore_read_error_count,(unsigned long long)kv->restore_failure_count,(unsigned long long)kv->store_used_bytes,(unsigned long long)kv->store_maximum_bytes,
+			(unsigned long long)kv->store_file_count,(unsigned long long)kv->store_foreign_layout_file_count,(unsigned long long)kv->store_checksum_failure_count,(unsigned long long)kv->store_removed_temporary_count,
+			(unsigned long long)kv->store_eviction_count,(unsigned long long)kv->store_write_failure_count,(unsigned long long)kv->store_queue_full_count,(unsigned long long)kv->store_queued_count,kv->store_failed_status);
+	}
 }
 
 static void *api_worker(void *arg)
@@ -547,6 +579,7 @@ static void *api_worker(void *arg)
 		busy = api_submit_pending();
 		(void)SparkModelBatchEngineProgress(S.engine,4u);
 		api_log_engine_measurements();
+		api_log_status_reports();
 		api_save_sequence();
 		api_poll_engine(busy);
 	}
@@ -1634,6 +1667,18 @@ int main(int argc, char **argv)
 			}
 		}
 	}
+	{
+		static char resolved_root[4096];
+		static char index_path[4200];
+		if (realpath(root, resolved_root) == 0)
+		{
+			fprintf(stderr, "model_api: --runtime-root %s cannot be resolved errno=%d\n", root, errno);
+			return 1;
+		}
+		root = resolved_root;
+		(void)snprintf(index_path, sizeof(index_path), "%s/prefix_index.spi", resolved_root);
+		S.prefix_index_path = index_path;
+	}
 	api_logf("api_start pid=%d deployment=%s runtime_root=%s", (int)getpid(), dep_path, root);
 	S.runtime_root = root;
 	S.seq_saved_ms = 0u;
@@ -1648,6 +1693,7 @@ int main(int argc, char **argv)
 	cfg.descriptor_bytes = (uint32_t)sizeof(cfg);
 	cfg.deployment = &dep;
 	cfg.runtime_root = root;
+	cfg.prefix_index_path = S.prefix_index_path;
 	cfg.request_capacity = 64;
 	cfg.max_context_tokens = api_context_limit(&dep);
 	S.context_limit = cfg.max_context_tokens;

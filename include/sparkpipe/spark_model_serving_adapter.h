@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 24u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 25u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -267,6 +267,8 @@ typedef struct SparkModelServingAdapterConfiguration
 	const char *driver_program_name;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
 	void *execution_stream;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;
@@ -288,6 +290,7 @@ typedef struct SparkModelServingAdapterSnapshot
 	uint64_t kv_token_capacity;
 	uint64_t device_memcpy_bytes_per_submit;
 	uint64_t host_staging_bytes_per_submit;
+	SparkModelDriverKvStoreCounters kv_store;
 } SparkModelServingAdapterSnapshot;
 
 typedef SparkStatus (*SparkModelServingAdapterInitializeFunction)(

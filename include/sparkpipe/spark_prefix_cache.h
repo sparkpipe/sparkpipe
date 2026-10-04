@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_kv_cache.h"
+#include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -342,6 +343,29 @@ SparkStatus SparkPrefixCacheTombstonePrompt(
 
 SparkStatus SparkPrefixCacheReset(
     SparkPrefixCache *cache);
+
+typedef struct SparkPrefixCacheCommittedRecord
+{
+    uint32_t first_token_index;
+    uint32_t token_count;
+    uint64_t parent_hash;
+    uint64_t block_hash;
+    uint64_t content_hash;
+    uint8_t content_digest[SPARK_SHA256_DIGEST_BYTES];
+} SparkPrefixCacheCommittedRecord;
+
+SparkStatus SparkPrefixCacheExportCommitted(
+    const SparkPrefixCache *cache,
+    SparkPrefixCacheCommittedRecord *records,
+    uint32_t record_capacity,
+    uint32_t *record_count_out);
+
+SparkStatus SparkPrefixCacheImportCommitted(
+    SparkPrefixCache *cache,
+    const SparkPrefixCacheCommittedRecord *records,
+    uint32_t record_count,
+    uint32_t *imported_out,
+    uint32_t *skipped_out);
 
 #ifdef __cplusplus
 }

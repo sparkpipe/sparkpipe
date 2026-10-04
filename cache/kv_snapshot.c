@@ -1,7 +1,11 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -93,30 +97,6 @@ static void SparkKvSnapshotDigest(const void *data,uint64_t bytes,uint8_t digest
 	SparkSha256Finalize(&context,digest);
 }
 
-static int32_t SparkKvSnapshotHexNibble(char value)
-{
-	if ( value >= '0' && value <= '9' )
-		return(value - '0');
-	if ( value >= 'a' && value <= 'f' )
-		return(value - 'a' + 10);
-	return(-1);
-}
-
-static uint32_t SparkKvSnapshotParseHex(const char *text,uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
-{
-	uint32_t index;
-	int32_t high,low;
-	for (index=0u; index<SPARK_SHA256_DIGEST_BYTES; index++)
-	{
-		high = SparkKvSnapshotHexNibble(text[2u * index]);
-		low = SparkKvSnapshotHexNibble(text[2u * index + 1u]);
-		if ( high < 0 || low < 0 )
-			return(0u);
-		digest[index] = (uint8_t)((high << 4) | low);
-	}
-	return(1u);
-}
-
 static uint32_t SparkKvSnapshotParseName(const char *name,SparkKvSnapshotKey *key)
 {
 	const size_t hex = 2u * SPARK_SHA256_DIGEST_BYTES,suffix = strlen(SPARK_KV_SNAPSHOT_SUFFIX);
@@ -125,7 +105,7 @@ static uint32_t SparkKvSnapshotParseName(const char *name,SparkKvSnapshotKey *ke
 	memset(key,0,sizeof(*key));
 	if ( length <= 2u * hex + 2u + suffix || name[hex] != '-' || name[2u * hex + 1u] != '-' || strcmp(name + length - suffix,SPARK_KV_SNAPSHOT_SUFFIX) != 0 )
 		return(0u);
-	if ( SparkKvSnapshotParseHex(name,key->layout_sha256) == 0u || SparkKvSnapshotParseHex(name + hex + 1u,key->identity_sha256) == 0u )
+	if ( SparkSha256HexToDigest(name,key->layout_sha256) != SPARK_STATUS_OK || SparkSha256HexToDigest(name + hex + 1u,key->identity_sha256) != SPARK_STATUS_OK )
 		return(0u);
 	for (cursor=2u * hex + 2u; cursor<length - suffix; cursor++)
 	{
@@ -634,6 +614,49 @@ SparkStatus SparkKvSnapshotPrune(SparkKvSnapshotStore *store,const uint8_t layou
 	}
 	pthread_mutex_unlock(&runtime->mutex);
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvSnapshotCountLayout(SparkKvSnapshotStore *store,const uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],uint64_t *matching_files,uint64_t *foreign_files)
+{
+	SparkKvSnapshotRuntime *runtime;
+	uint64_t matching = 0u,foreign = 0u;
+	uint32_t index;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u || layout_sha256 == 0 || matching_files == 0 || foreign_files == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	runtime = SparkKvSnapshotRuntimeOf(store);
+	pthread_mutex_lock(&runtime->mutex);
+	for (index=0u; index<runtime->entry_count; index++)
+	{
+		if ( memcmp(runtime->entries[index].key.layout_sha256,layout_sha256,SPARK_SHA256_DIGEST_BYTES) == 0 )
+			matching++;
+		else
+			foreign++;
+	}
+	pthread_mutex_unlock(&runtime->mutex);
+	*matching_files = matching;
+	*foreign_files = foreign;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvSnapshotBinaryDigest(const void *symbol,uint8_t digest[SPARK_SHA256_DIGEST_BYTES],char *path,uint32_t path_capacity)
+{
+	char hex[SPARK_SHA256_HEX_BYTES];
+	Dl_info info;
+	size_t length;
+	SparkStatus status;
+	if ( symbol == 0 || digest == 0 || path == 0 || path_capacity == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(&info,0,sizeof(info));
+	if ( dladdr(symbol,&info) == 0 || info.dli_fname == 0 || info.dli_fname[0] == '\0' )
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	length = strlen(info.dli_fname);
+	if ( length >= path_capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memcpy(path,info.dli_fname,length + 1u);
+	status = SparkSha256File(path,hex);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	return(SparkSha256HexToDigest(hex,digest));
 }
 
 static void SparkKvSnapshotDiscard(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)

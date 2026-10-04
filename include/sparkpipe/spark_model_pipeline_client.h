@@ -117,6 +117,11 @@ SparkStatus SparkModelPipelineClientGetView(
 	SparkModelPipelineClientView *view);
 const SparkModelServingAdapterDescriptor *SparkModelPipelineClientGetAdapterDescriptor(
 	const SparkModelPipelineClient *pipeline);
+SparkStatus SparkModelPipelineClientRequestStatus(SparkModelPipelineClient *pipeline);
+SparkStatus SparkModelPipelineClientGetRankStatus(
+	const SparkModelPipelineClient *pipeline,
+	uint32_t rank_index,
+	SparkModelResidentStatusReport *report);
 
 #ifdef __cplusplus
 }

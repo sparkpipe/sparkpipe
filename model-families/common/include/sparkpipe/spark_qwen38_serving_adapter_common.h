@@ -223,6 +223,7 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSnapshot)(
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
 	snapshot->device_memcpy_bytes_per_submit = driver_snapshot.device_memcpy_bytes_per_submit;
 	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
+	snapshot->kv_store = driver_snapshot.kv_store;
 	return(SPARK_STATUS_OK);
 }
 

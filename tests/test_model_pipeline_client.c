@@ -894,6 +894,7 @@ static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	SparkModelBatchEngineConfiguration configuration;
 	SparkModelBatchEngine *engine;
 	char runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	static char index_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES + 64u];
 	assert(getcwd(runtime_root,sizeof(runtime_root)) != 0);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
@@ -908,6 +909,9 @@ static SparkModelBatchEngine *TestModelBatchConnectCapacity(
 	configuration.stop_token_ids[0] = stop_token_id;
 	configuration.deployment = deployment;
 	configuration.runtime_root = runtime_root;
+	(void)snprintf(index_path,sizeof(index_path),"%s/build/pipeline-client-%d.spi",runtime_root,(int)getpid());
+	(void)unlink(index_path);
+	configuration.prefix_index_path = index_path;
 	configuration.event_function = TestModelBatchEvent;
 	configuration.event_context = state;
 	configuration.stage_completion_function = TestModelBatchStageCompletion;

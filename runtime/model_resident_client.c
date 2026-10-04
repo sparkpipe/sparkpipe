@@ -73,6 +73,10 @@ struct SparkModelResidentClient
 	uint32_t connect_timeout_ms;
 	uint64_t next_message_id;
 	uint64_t last_submission_id;
+	uint64_t status_message_id;
+	uint32_t status_outstanding;
+	uint32_t reserved_status;
+	SparkModelResidentStatusReport status_report;
 	uint64_t submitted_count;
 	uint64_t prepared_total;
 	uint64_t continued_total;
@@ -212,6 +216,8 @@ static SparkStatus SparkModelResidentClientAllocate(
 	client->queue_capacity = configuration->runtime_limits.max_inflight_submission_count;
 	client->output_message_capacity = output_bytes;
 	client->input_capacity = input_bytes > SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES ? input_bytes : SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES;
+	if ( client->input_capacity < SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES )
+		client->input_capacity = SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES;
 	client->outputs = (SparkModelResidentClientOutput *)calloc(client->queue_capacity,sizeof(client->outputs[0]));
 	client->pending = (SparkModelResidentClientPending *)calloc(client->queue_capacity,sizeof(client->pending[0]));
 	client->output_storage = (uint8_t *)calloc(client->queue_capacity,output_bytes);
@@ -448,6 +454,7 @@ void SparkModelResidentClientFailStop(SparkModelResidentClient *client)
 	if ( client == 0 || client->connected == 0u )
 		return;
 	client->connected = 0u;
+	client->status_outstanding = 0u;
 	if ( client->fd >= 0 )
 	{
 		(void)shutdown(client->fd,SHUT_RDWR);
@@ -982,6 +989,68 @@ static SparkStatus SparkModelResidentClientProcessDecisionResult(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelResidentClientProcessStatus(
+	SparkModelResidentClient *client,
+	const SparkModelResidentIpcStatusReport *report,
+	uint32_t message_bytes)
+{
+	struct timespec now;
+	SparkStatus status;
+	if ( client->status_outstanding == 0u )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	status = SparkModelResidentIpcValidateStatusReport(report,message_bytes,client->status_message_id,client->rank_index,client->stage_index);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	(void)clock_gettime(CLOCK_MONOTONIC,&now);
+	client->status_report.generation++;
+	client->status_report.received_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+	client->status_report.client_generation = report->client_generation;
+	client->status_report.status = report->status;
+	client->status_report.rank_index = report->rank_index;
+	client->status_report.stage_index = report->stage_index;
+	client->status_report.residentd_pid = report->residentd_pid;
+	client->status_report.adapter_snapshot = report->adapter_snapshot;
+	client->status_outstanding = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentClientRequestStatus(SparkModelResidentClient *client)
+{
+	SparkModelResidentClientOutput *output;
+	uint32_t index;
+	SparkStatus status;
+	if ( client == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->connected == 0u )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( client->status_outstanding != 0u )
+		SPARK_FAIL(SPARK_STATUS_DUPLICATE);
+	if ( client->output_count >= client->queue_capacity )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	if ( client->output_message_capacity < SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	index = (client->output_head + client->output_count) % client->queue_capacity;
+	output = &client->outputs[index];
+	status = SparkModelResidentIpcInitializeStatusRequest((SparkModelResidentIpcStatusRequest *)(client->output_storage + ((uint64_t)index * client->output_message_capacity)),client->next_message_id);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	client->status_message_id = client->next_message_id++;
+	client->status_outstanding = 1u;
+	output->message_bytes = SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES;
+	output->sent_bytes = 0u;
+	client->output_count++;
+	(void)SparkModelResidentClientFlush(client);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentClientGetStatus(const SparkModelResidentClient *client,SparkModelResidentStatusReport *report)
+{
+	if ( client == 0 || report == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*report = client->status_report;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelResidentClientProcessMessage(
 	SparkModelResidentClient *client,
 	const void *message,
@@ -989,6 +1058,8 @@ static SparkStatus SparkModelResidentClientProcessMessage(
 {
 	const SparkModelResidentIpcHeader *header;
 	header = (const SparkModelResidentIpcHeader *)message;
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT )
+		return(SparkModelResidentClientProcessStatus(client,(const SparkModelResidentIpcStatusReport *)message,message_bytes));
 	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT )
 		return(SparkModelResidentClientProcessResult(client,(const SparkModelResidentIpcSubmitResult *)message,message_bytes));
 	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION )

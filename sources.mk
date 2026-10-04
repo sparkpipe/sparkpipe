@@ -56,6 +56,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
 	runtime/model_pipeline_client.c \
 	$(SPARKPIPE_WEIGHTD_SOURCES) \
 	runtime/model_batch_engine.c \
+	runtime/prefix_index_file.c \
 	runtime/pipeline_runtime.c
 
 # Transport, memory link, collectives, tokenizer, KV store, stage module ABI.

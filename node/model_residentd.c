@@ -70,6 +70,8 @@ typedef struct SparkModelResidentdConfiguration
 	const char *next_transport_host;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
 	uint32_t rank_index;
 	uint32_t stage_index;
 	uint32_t previous_rank_index;
@@ -359,6 +361,8 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	configuration->next_transport_host = next != 0 ? next->transport_host : 0;
 	configuration->kv_backing_directory = node->kv_backing_directory;
 	configuration->kv_backing_maximum_bytes = node->kv_backing_maximum_bytes;
+	configuration->kv_snapshot_directory = node->kv_snapshot_directory;
+	configuration->kv_snapshot_maximum_bytes = node->kv_snapshot_maximum_bytes;
 	configuration->rank_index = node->rank_index;
 	configuration->stage_index = node->stage_index;
 	configuration->previous_rank_index = previous != 0 ? previous->rank_index : SPARK_PIPELINE_RUNTIME_NO_RANK;
@@ -383,6 +387,9 @@ static SparkStatus SparkModelResidentdValidateDirectories(
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( configuration->kv_backing_directory != 0 &&
 		!SparkPathIsRealDirectoryTree(configuration->kv_backing_directory) )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( configuration->kv_snapshot_directory != 0 &&
+		!SparkPathIsRealDirectoryTree(configuration->kv_snapshot_directory) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return(SPARK_STATUS_OK);
 }
@@ -660,9 +667,9 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	runtime->route_capacity = runtime->runtime_limits.max_inflight_submission_count;
 	runtime->route_message_capacity = submit_bytes;
 	runtime->client.input_capacity = SparkModelResidentdMaximumU32(submit_bytes,SPARK_MODEL_RESIDENT_IPC_HELLO_BYTES);
-	runtime->client.output_capacity = (2u * runtime->route_capacity) + 2u;
+	runtime->client.output_capacity = (2u * runtime->route_capacity) + 3u;
 	output_bytes = SparkModelResidentdMaximumU32(completion_bytes,SPARK_MODEL_RESIDENT_IPC_HELLO_ACK_BYTES);
-	runtime->client.output_message_capacity = SparkModelResidentdMaximumU32(output_bytes,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES);
+	runtime->client.output_message_capacity = SparkModelResidentdMaximumU32(SparkModelResidentdMaximumU32(output_bytes,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES),SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES);
 	if ( runtime->route_message_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES || runtime->client.input_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES || runtime->client.output_message_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	runtime->routes = (SparkModelResidentdRoute *)calloc(runtime->route_capacity,sizeof(runtime->routes[0]));
@@ -1209,6 +1216,10 @@ static SparkStatus SparkModelResidentdInitializeAdapter(
 		configuration->kv_backing_directory;
 	adapter_configuration.kv_backing_maximum_bytes =
 		configuration->kv_backing_maximum_bytes;
+	adapter_configuration.kv_snapshot_directory =
+		configuration->kv_snapshot_directory;
+	adapter_configuration.kv_snapshot_maximum_bytes =
+		configuration->kv_snapshot_maximum_bytes;
 	adapter_configuration.execution_stream = runtime->execution_stream;
 	adapter_configuration.completion_function = SparkModelResidentdCompletion;
 	adapter_configuration.completion_context = runtime;
@@ -2280,6 +2291,32 @@ static SparkStatus SparkModelResidentdProcessDecision(
 	SPARK_RETURN(queue_status);
 }
 
+static SparkStatus SparkModelResidentdProcessStatusRequest(
+	SparkModelResidentdRuntime *runtime,
+	const void *message,
+	uint32_t message_bytes)
+{
+	SparkModelServingAdapterSnapshot snapshot;
+	SparkModelResidentIpcStatusReport report;
+	SparkStatus status,snapshot_status;
+	status = SparkModelResidentIpcValidateHeader((const SparkModelResidentIpcHeader *)message,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST,SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&snapshot,0,sizeof(snapshot));
+	snapshot_status = runtime->adapter_state != 0 && runtime->adapter_library.adapter_interface.snapshot != 0 ?
+		runtime->adapter_library.adapter_interface.snapshot(runtime->adapter_state,&snapshot) : SPARK_STATUS_UNSUPPORTED;
+	if ( snapshot_status != SPARK_STATUS_OK )
+		memset(&snapshot,0,sizeof(snapshot));
+	status = SparkModelResidentIpcInitializeStatusReport(&report,(const SparkModelResidentIpcStatusRequest *)message,snapshot_status,runtime->client.generation,
+		runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(uint32_t)getpid(),&snapshot);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	pthread_mutex_lock(&runtime->mutex);
+	status = SparkModelResidentdQueueRawLocked(runtime,&report,sizeof(report));
+	pthread_mutex_unlock(&runtime->mutex);
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkModelResidentdProcessMessage(
 	SparkModelResidentdRuntime *runtime,
 	const void *message,
@@ -2319,6 +2356,8 @@ static SparkStatus SparkModelResidentdProcessMessage(
 	}
 	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_DECISION )
 		status = SparkModelResidentdProcessDecision(runtime,(const SparkModelResidentIpcDecision *)message,message_bytes);
+	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST )
+		status = SparkModelResidentdProcessStatusRequest(runtime,message,message_bytes);
 	else
 		status = SPARK_STATUS_UNSUPPORTED;
 	if ( status == SPARK_STATUS_OK )
