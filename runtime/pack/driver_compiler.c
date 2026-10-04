@@ -501,9 +501,11 @@ static void SparkWriteGeneratedConfigurations(
             file,
             ",\n    .configuration_json = SparkGeneratedConfigurationJson_%u,\n"
             "    .configuration_json_bytes = %uu,\n"
-            "    .reserved1 = 0u\n};\n\n",
+            "    .reserved1 = 0u,\n"
+            "    .validated_artifact_sha256 = \"%s\"\n};\n\n",
             operation_index,
-            resolved_operation->operation->configuration_json_bytes);
+            resolved_operation->operation->configuration_json_bytes,
+            resolved_operation->artifact.artifact_sha256);
     }
 }
 

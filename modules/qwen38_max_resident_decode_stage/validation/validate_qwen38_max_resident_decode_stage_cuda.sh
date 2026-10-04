@@ -32,10 +32,9 @@ spark_cuda_validation_check_hash_format
 spark_cuda_validation_check_archive
 spark_cuda_validation_check_source_digests
 
-# The module tier drives decode frames through the module's own unqualified
-# smoke path (the serving adapter owns the qualified one), so the gate must
-# be open and the stage must be the slice-0 stage of its configuration.
-require_configuration_value SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION 1
+# The module tier initializes the candidate archive with its own hash as the
+# validation receipt, and the stage must be the slice-0 stage of its
+# configuration.
 require_configuration_value SPARK_QWEN38_MAX_STAGE_INDEX 0
 require_configuration_value SPARK_QWEN38_MAX_STAGE_FIRST_LAYER 0
 require_configuration_value SPARK_QWEN38_MAX_STAGE_MTP 0

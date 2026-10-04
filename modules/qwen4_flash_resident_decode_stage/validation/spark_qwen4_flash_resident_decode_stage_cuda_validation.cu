@@ -152,13 +152,7 @@ static int SparkQwen4FlashValCheckModule(void)
 		prefill_token = module.output_token_ids[0];
 		printf("qwen4_flash_validation check=module_decode_vs_prefill decode_token=%u prefill_token=%u bit_exact=%d\n",decode_token,prefill_token,decode_token == prefill_token ? 1 : 0);
 		if ( decode_token != prefill_token )
-		{
-			if ( getenv("SPARK_QWEN4_FLASH_VALIDATION_TOKEN_PARITY") != 0 &&
-				strcmp(getenv("SPARK_QWEN4_FLASH_VALIDATION_TOKEN_PARITY"),"warn") == 0 )
-				printf("qwen4_flash_validation check=module_decode_vs_prefill token_parity=warn (continuing per env)\n");
-			else
-				return(SparkQwen4FlashValFail("module_decode_vs_prefill","token_mismatch"));
-		}
+			return(SparkQwen4FlashValFail("module_decode_vs_prefill","token_mismatch"));
 	}
 #if SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT != 0
 	if (module.head_stage != 0u && SparkQwen4FlashValCheckMtpDraft(&module) != 0)

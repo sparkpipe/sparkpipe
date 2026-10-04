@@ -637,7 +637,6 @@ static SparkStatus SparkQwen38_27bServingSetEnvironment(
 	do { if ( setenv(name,text,1) != 0 ) return(SPARK_STATUS_INTERNAL_ERROR); } while (0)
 #define SPARK_QWEN38_27B_SERVING_SET_UNSIGNED(name,number) \
 	do { snprintf(value,sizeof(value),"%u",(uint32_t)(number)); SPARK_QWEN38_27B_SERVING_SET_TEXT(name,value); } while (0)
-	SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION","1");
 	SPARK_QWEN38_27B_SERVING_SET_TEXT("SPARK_QWEN38_27B_STAGE_PACK_PATH",state->stage_pack_path);
 #if SPARK_QWEN38_27B_SERVING_TP
 	SPARK_QWEN38_27B_SERVING_SET_UNSIGNED("SPARK_QWEN38_27B_STAGE_COUNT",1u);

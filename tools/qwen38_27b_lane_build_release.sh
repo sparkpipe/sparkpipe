@@ -95,7 +95,7 @@ SPARK_WEIGHTD_PACK_SHA256="$pack_sha" \
 make -j4 -C modules/qwen38_27b_resident_decode_stage \
     CUDA_HOME=/usr/local/cuda CUDA_ARCH=sm_121a \
     STAGE_PACK_PATH="$(cd "$(dirname "$PACK")" && pwd)/$(basename "$PACK")" \
-    ALLOW_UNQUALIFIED_EXECUTION=1 TP_DEGREE=4 TP_RANK=$validate_tp_rank TP_STANDALONE=1 \
+    TP_DEGREE=4 TP_RANK=$validate_tp_rank TP_STANDALONE=1 MTP_LAYER_COUNT=1 \
     STAGE_COUNT=1 STAGE_INDEX=0 STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=64 \
     MAX_ACTIVE_SEQUENCES=16 KV_BLOCK_COUNT=256 \
     publish > "$receipts/module-publish.log" 2>&1

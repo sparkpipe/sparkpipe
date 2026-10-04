@@ -84,11 +84,6 @@ def main() -> int:
         expect(run_script(DRIVER, [HEX64, str(scratch)],
                           dict(pack_environment,
                                SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256=validator_sha)),
-               "requires SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=1")
-        expect(run_script(DRIVER, [HEX64, str(scratch)],
-                          dict(pack_environment,
-                               SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256=validator_sha,
-                               SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION="1")),
                "requires SPARK_QWEN38_MAX_STAGE_INDEX=0")
 
         wrapper = run_script(WRAPPER, [])
@@ -99,11 +94,11 @@ def main() -> int:
         expect(run_script(WRAPPER, [HEX64, str(temporary / "absent_pack")]),
                "module archive is missing or empty", "wrapper")
         expect(run_script(WRAPPER, [HEX64, str(scratch)], pack_environment),
-               "requires SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=1", "wrapper")
+               "requires SPARK_QWEN38_MAX_STAGE_INDEX=0", "wrapper")
         expect(run_script(WRAPPER, [HEX64, str(scratch)],
                           dict(pack_environment,
                                SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256=HEX64)),
-               "requires SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=1", "wrapper")
+               "requires SPARK_QWEN38_MAX_STAGE_INDEX=0", "wrapper")
 
     source = VALIDATOR.read_text(encoding="utf-8")
     for needle, label in (

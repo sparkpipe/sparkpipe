@@ -35,7 +35,7 @@ SparkStatus SparkStageModuleLifecycleInitialize(
     }
     if (ops->initialize_gate != 0)
     {
-        status = ops->initialize_gate();
+        status = ops->initialize_gate(configuration);
         if (status != SPARK_STATUS_OK)
         {
             return status;

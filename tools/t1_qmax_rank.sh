@@ -7,7 +7,6 @@ sha=$(python3 -c "import json;print(json.load(open('$pack.receipt.json'))['outpu
 . "/tmp/t1qmax/rank$rank.env"
 rc=0
 sudo -n /usr/local/sbin/sparkcap env \
-	SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=1 \
 	"SPARK_QWEN38_MAX_STAGE_PACK_PATH=$pack" \
 	SPARK_QWEN38_MAX_STAGE_COUNT=1 \
 	SPARK_QWEN38_MAX_STAGE_INDEX=0 \

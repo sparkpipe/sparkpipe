@@ -97,7 +97,7 @@ static SparkStatus TestGemma4ServingDriverCreate(
 	if ( request->node_context != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	pack_path = getenv("SPARK_GEMMA4_STAGE_PACK_PATH");
-	if ( pack_path == 0 || strstr(pack_path,"gemma4") == 0 || getenv("SPARK_GEMMA4_ALLOW_UNQUALIFIED_EXECUTION") == 0 || getenv("SPARK_GEMMA4_ALLOW_UNQUALIFIED_EXECUTION")[0] != '1' )
+	if ( pack_path == 0 || strstr(pack_path,"gemma4") == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( TestGemma4ServingDriverEnvironmentUnsigned("SPARK_GEMMA4_STAGE_COUNT",&stage_count) == 0u || stage_count == 0u || TestGemma4ServingDriverEnvironmentUnsigned("SPARK_GEMMA4_STAGE_INDEX",&stage_index) == 0u || stage_index >= stage_count || TestGemma4ServingDriverEnvironmentUnsigned("SPARK_GEMMA4_STAGE_KV_BLOCKS",&kv_blocks) == 0u || kv_blocks == 0u || TestGemma4ServingDriverEnvironmentUnsigned("SPARK_GEMMA4_STAGE_PIPELINE_SLOTS",&pipeline_slots) == 0u || pipeline_slots == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);

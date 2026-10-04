@@ -1731,22 +1731,6 @@ build/test_qwen38_math_kernels: tests/test_qwen38_math_kernels.cu modules/qwen38
 build/test_gdn_stage_launch_checks: tests/test_gdn_stage_launch_checks.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu common/common_gdn_stage_kernels.cu common/common_gdn_stage_kernels.h
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@; else echo "SKIP test_gdn_stage_launch_checks (no nvcc on this host)"; fi
 
-# Real-pack decode smoke (the execute test): needs nvcc AND a stage pack on
-# the host, both explicit - TEST_QWEN38_MAX_EXECUTE_PACK names the pack so the
-# make gate never depends on node-local data. The hardware validation harness
-# in modules/qwen38_max_resident_decode_stage/validation/ is the qualified
-# gate; this smoke is the quick path on a spark node with a synthesized pack.
-build/test_qwen38_execute: tests/test_qwen38_execute.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
-	@if command -v $(NVCC) >/dev/null 2>&1 && [ -n "$${TEST_QWEN38_MAX_EXECUTE_PACK:-}" ] && [ -s "$$TEST_QWEN38_MAX_EXECUTE_PACK" ]; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@ && ./$@ "$$TEST_QWEN38_MAX_EXECUTE_PACK"; else echo "SKIP test_qwen38_execute (set TEST_QWEN38_MAX_EXECUTE_PACK and provide nvcc to run the pack smoke)"; fi
-
-# The pack-LOAD half of the execute smoke (was an orphan: d19d159 noted it
-# needed Makefile wiring). Same nvcc + pack-on-host contract as
-# test_qwen38_execute above, and deliberately NOT in TEST_NAMES: the
-# offline mac gate never depends on node-local packs. On a spark node:
-#   make build/test_qwen38_pack_load && ./build/test_qwen38_pack_load <pack>
-build/test_qwen38_pack_load: tests/test_qwen38_pack_load.c modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen38_max/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/source $< modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_cuda.cu modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@; else echo "SKIP build/test_qwen38_pack_load (nvcc unavailable; spark-gated pack-load smoke)"; fi
-
 build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 

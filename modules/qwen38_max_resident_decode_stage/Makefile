@@ -93,12 +93,10 @@ KV_SERVICE_ADDRESS ?= none
 KV_SOCKET_PATH ?= none
 KV_POOL_BYTES ?= 0
 KV_WORKER_COUNT ?= 0
-ALLOW_UNQUALIFIED_EXECUTION ?= 0
 TP_STANDALONE ?= 0
 
 RUNTIME_CONFIGURATION := \
 	SPARK_QWEN38_MAX_TP_STANDALONE=$(TP_STANDALONE) \
-	SPARK_QWEN38_MAX_ALLOW_UNQUALIFIED_EXECUTION=$(ALLOW_UNQUALIFIED_EXECUTION) \
 	SPARK_QWEN38_MAX_STAGE_PACK_PATH=$(STAGE_PACK_PATH) \
 	SPARK_QWEN38_MAX_STAGE_COUNT=$(STAGE_COUNT) \
 	SPARK_QWEN38_MAX_STAGE_INDEX=$(STAGE_INDEX) \
@@ -122,11 +120,11 @@ include ../resident_decode_stage_rules.mk
 # = 32 experts per layer), so the module's manifest check and rank-local
 # math need degree 16 + THIS node's rank even though the single-node
 # validation never opens the inter-node collective (the module skips it
-# under ALLOW_UNQUALIFIED_EXECUTION=1). Derived from the host name so
+# under TP_STANDALONE=1). Derived from the host name so
 # the per-node fleet form needs no env plumbing.
 VALIDATION_HOST_SUFFIX := $(shell hostname | sed 's/^spark//')
 VALIDATION_NODE_RANK := $(shell printf '%d' 0x$(VALIDATION_HOST_SUFFIX))
-ifeq ($(ALLOW_UNQUALIFIED_EXECUTION),1)
+ifeq ($(TP_STANDALONE),1)
 RUNTIME_CONFIGURATION += \
 	SPARK_QWEN38_MAX_STAGE_TP_DEGREE=16 \
 	SPARK_QWEN38_MAX_STAGE_TP_RANK=$(VALIDATION_NODE_RANK)

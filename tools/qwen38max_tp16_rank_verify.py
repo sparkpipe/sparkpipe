@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 """Verify a qwen38_max TP rank pack against the v2 wire format.
 
-Covers both placed generations of the max family:
-
-  * current-packer packs: MTP-stripped (mtp_layer_count 0), routed experts
-    stamped NVFP4_PACKED (8) with per-expert [input_scale][weight_scale_2]
-    f32 tails, directory rows/columns authoritative;
-  * placed tp4pp4 stage packs (tools/qwen38_max_tp4pp4_stagepacks.py,
-    mtp_layer_count 1): routed experts carry the pre-split nvfp4 code (4)
-    with the tail-less per-16 scale plane, and the directory rows/columns
-    ride the packer's late-binding defect (every entry repeats the LAST
-    inventory tensor's shape; commit 4ca697a). On those packs the entry
-    byte math is proven from the tp plan instead of the on-wire shape
-    fields, and the stale pair must equal the last inventory ref's packed
-    shape exactly.
+Only the current-packer form is accepted: routed experts stamped
+NVFP4_PACKED (8) with per-expert [input_scale][weight_scale_2] f32 tails and
+a directory whose rows/columns equal each tensor's rank shard. The placed
+tp4pp4 form (codec 4 experts, every directory entry repeating the last
+inventory tensor's shape) is refused and must be repacked.
 
 Header identity (v2 128-byte header carrying tp_degree/tp_rank), inventory
-closure, payload/scale byte math, 256-alignment, bounds, extent and the
-receipt are checked on both. The content pass (--checkpoint) re-emits each
-rank's bytes through the packer's own copy path; it requires the
-current-packer codec-8 form.
+closure, payload/scale byte math, 256-alignment, bounds and extent are
+checked on every pack. A --receipt must exist and carry every field the
+verifier recomputes. The content pass (--checkpoint) re-emits each rank's
+bytes through the packer's own copy path.
 """
 from __future__ import annotations
 
@@ -142,7 +134,7 @@ def verify(pack: Path, tp_degree: int, tp_rank: int, checkpoint: Path | None,
         want("mxfp4_group_size", mxfp4_group, tables.MXFP4_GROUP)
         if mtp_count not in (0, tables.MTP_LAYERS):
             fail(f"header mtp_layer_count={mtp_count}, expected 0 "
-                 f"(MTP-stripped) or {tables.MTP_LAYERS} (placed tp4pp4 form)")
+                 f"(MTP-stripped) or {tables.MTP_LAYERS}")
         want("header tp_degree", header_tp_degree, tp_degree)
         want("header tp_rank", header_tp_rank, tp_rank)
         want("directory_offset", directory_offset, tables.HEADER2_BYTES)
@@ -179,21 +171,12 @@ def verify(pack: Path, tp_degree: int, tp_rank: int, checkpoint: Path | None,
             if ref.kind in expert_kinds(tables):
                 resident = srows // (ref.rows // tables.EXPERT_COUNT)
             ladder_fmt = tables.ref_weight_format(ref)
-            variants = {ladder_fmt: "packer"}
-            if ladder_fmt == tables.WEIGHT_NVFP4_PACKED:
-                variants[tables.WEIGHT_FP8_F32B128] = "placed-legacy"
-            accepted = {}
-            for fmt_variant in variants:
-                payload, scale = entry_bytes_for(
-                    tables, fmt_variant, ref.kind, srows, scols, resident)
-                accepted[fmt_variant] = (payload, scale,
-                                         want_group(tables, fmt_variant, ref.kind))
-            planned[key] = (plan, ladder_fmt, sorted(accepted), accepted,
-                            srows, scols)
+            payload, scale = entry_bytes_for(
+                tables, ladder_fmt, ref.kind, srows, scols, resident)
+            planned[key] = (plan, ladder_fmt, payload, scale,
+                            want_group(tables, ladder_fmt, ref.kind), srows, scols)
 
         decoded = []
-        wire_pairs: set[tuple[int, int]] = set()
-        plan_matches: set[bool] = set()
         for index in range(tensor_count):
             entry = ENTRY_STRUCT.unpack_from(raw_dir, index * tables.ENTRY_BYTES)
             (kind, layer, fmt, rows, cols, scale_group, p_off, p_bytes,
@@ -207,23 +190,19 @@ def verify(pack: Path, tp_degree: int, tp_rank: int, checkpoint: Path | None,
                 fail(f"{tag}: not in the inventory of slice "
                      f"{first_layer}+{layer_count}")
                 continue
-            plan, ladder_fmt, fmts, accepted, srows, scols = planned[key]
-            if fmt not in accepted:
-                fail(f"{tag}: weight_format={fmt}, accepted formats for this "
-                     f"kind are {fmts} (packer ladder {ladder_fmt})")
+            plan, ladder_fmt, want_payload, want_scale, w_group, srows, scols = planned[key]
+            if fmt != ladder_fmt:
+                fail(f"{tag}: weight_format={fmt}, expected {ladder_fmt}; "
+                     f"repack with the current packer")
                 continue
-            want_payload, want_scale, w_group = accepted[fmt]
             if scale_group != w_group:
                 fail(f"{tag}: scale_group_size={scale_group}, expected {w_group}")
-            matches_plan = (rows, cols) == (srows, scols)
+            if (rows, cols) != (srows, scols):
+                fail(f"{tag}: shape {rows}x{cols}, expected rank shard "
+                     f"{srows}x{scols}; repack with the current packer")
             if p_bytes != want_payload or s_bytes != want_scale:
-                detail = (f"payload_bytes={p_bytes} (expected {want_payload}), "
-                          f"scale_bytes={s_bytes} (expected {want_scale})")
-                if matches_plan:
-                    fail(f"{tag}: {detail}")
-                else:
-                    fail(f"{tag}: shape {rows}x{cols}, expected rank shard "
-                         f"{srows}x{scols}; {detail}")
+                fail(f"{tag}: payload_bytes={p_bytes} (expected {want_payload}), "
+                     f"scale_bytes={s_bytes} (expected {want_scale})")
             if p_off % PAYLOAD_ALIGNMENT != 0:
                 fail(f"{tag}: payload_offset {p_off} not {PAYLOAD_ALIGNMENT}-aligned")
             if s_bytes and s_off % PAYLOAD_ALIGNMENT != 0:
@@ -232,29 +211,10 @@ def verify(pack: Path, tp_degree: int, tp_rank: int, checkpoint: Path | None,
                 fail(f"{tag}: payload region overruns file")
             if s_bytes and s_off + s_bytes > file_bytes_actual:
                 fail(f"{tag}: scale region overruns file")
-            decoded.append((key, ref, plan, fmt, p_off, p_bytes, s_off, s_bytes))
-            wire_pairs.add((rows, cols))
-            plan_matches.add(matches_plan)
+            decoded.append((key, expected_refs[key], plan, fmt, p_off, p_bytes, s_off, s_bytes))
 
         for key in sorted(set(planned) - {d[0] for d in decoded}):
             fail(f"missing tensor kind={key[0]} layer={hex(key[1])}")
-
-        if decoded and plan_matches != {True}:
-            if len(wire_pairs) > 1:
-                fail("directory mixes plan-shaped and non-plan-shaped entries")
-            else:
-                last_key = list(planned)[-1]
-                last_shape = (planned[last_key][4], planned[last_key][5])
-                wire_pair = next(iter(wire_pairs))
-                if wire_pair != last_shape:
-                    fail(f"directory carries a uniform non-plan shape "
-                         f"{wire_pair[0]}x{wire_pair[1]}; the late-binding stale "
-                         f"signature must equal the last inventory ref's packed "
-                         f"shape {last_shape[0]}x{last_shape[1]}")
-
-    stale_any = bool(decoded) and len(wire_pairs) == 1 and plan_matches != {True}
-    expert_fmt4 = any(d[3] == tables.WEIGHT_FP8_F32B128 and
-                      d[1].kind in expert_kinds(tables) for d in decoded)
 
     verdict = {
         "verdict": "FAIL",
@@ -266,94 +226,93 @@ def verify(pack: Path, tp_degree: int, tp_rank: int, checkpoint: Path | None,
         "layer_count": layer_count,
         "tensor_count": tensor_count,
         "mtp_layer_count": mtp_count,
-        "placed_stale_shape_directory": bool(stale_any),
         "errors": findings,
     }
     if findings:
         return False, verdict
 
     if checkpoint is not None:
-        if stale_any or expert_fmt4:
-            fail("content pass requires the current-packer form "
-                 "(plan-shaped directory, codec-8 experts); this pack is "
-                 "the placed legacy form and is structure+receipt verified "
-                 "only")
-        else:
-            source = tables.SafetensorsSource(checkpoint)
-            source.check_config()
-            content_failures = 0
-            compared = 0
-            with pack.open("rb") as f:
-                for key, ref, plan, fmt, p_off, p_bytes, s_off, s_bytes, _ in decoded:
-                    pack_digest = hashlib.sha256()
+        source = tables.SafetensorsSource(checkpoint)
+        source.check_config()
+        content_failures = 0
+        compared = 0
+        with pack.open("rb") as f:
+            for key, ref, plan, fmt, p_off, p_bytes, s_off, s_bytes in decoded:
+                pack_digest = hashlib.sha256()
 
-                    def stream_region(offset: int, length: int) -> bool:
-                        f.seek(offset)
-                        remaining = length
-                        while remaining > 0:
-                            step = min(remaining, HASH_CHUNK)
-                            chunk = f.read(step)
-                            if len(chunk) != step:
-                                return False
-                            pack_digest.update(chunk)
-                            remaining -= step
-                        return True
+                def stream_region(offset: int, length: int) -> bool:
+                    f.seek(offset)
+                    remaining = length
+                    while remaining > 0:
+                        step = min(remaining, HASH_CHUNK)
+                        chunk = f.read(step)
+                        if len(chunk) != step:
+                            return False
+                        pack_digest.update(chunk)
+                        remaining -= step
+                    return True
 
-                    ok = stream_region(p_off, p_bytes)
-                    if s_bytes:
-                        ok = stream_region(s_off, s_bytes) and ok
-                    if not ok:
-                        content_failures += 1
-                        fail(f"kind={ref.kind} layer={hex(ref.layer)}: pack region short read")
-                        continue
-                    try:
-                        _, _, source_offset = source.check_shape(ref)
-                        sink = _HashingSink()
-                        if plan is not None:
-                            tables.copy_tp_plan(source, ref, plan, sink)
-                        elif ref.weight_format == tables.WEIGHT_FP8_F32B128:
-                            tables.copy_nvfp4_experts(source, ref, sink)
-                        else:
-                            tables.copy_bf16_tensor(source, ref, source_offset, sink)
-                    except (RuntimeError, tables.PackFailure) as error:
-                        content_failures += 1
-                        fail(f"kind={ref.kind} layer={hex(ref.layer)} name={ref.name}: "
-                             f"source re-emit failed: {error}")
-                        continue
-                    compared += 1
-                    if pack_digest.hexdigest() != sink.digest.hexdigest():
-                        content_failures += 1
-                        fail(f"kind={ref.kind} layer={hex(ref.layer)} name={ref.name}: "
-                             f"pack bytes != source bytes for this rank")
-                    if compared % 50 == 0:
-                        print(f"  content {compared}/{len(decoded)} tensors", flush=True)
-            verdict["tensors_compared"] = compared
-            verdict["content_errors"] = content_failures
-            if content_failures:
-                fail(f"{content_failures} content mismatches")
+                ok = stream_region(p_off, p_bytes)
+                if s_bytes:
+                    ok = stream_region(s_off, s_bytes) and ok
+                if not ok:
+                    content_failures += 1
+                    fail(f"kind={ref.kind} layer={hex(ref.layer)}: pack region short read")
+                    continue
+                try:
+                    _, _, source_offset = source.check_shape(ref)
+                    sink = _HashingSink()
+                    if plan is not None:
+                        tables.copy_tp_plan(source, ref, plan, sink)
+                    elif ref.weight_format == tables.WEIGHT_FP8_F32B128:
+                        tables.copy_nvfp4_experts(source, ref, sink)
+                    else:
+                        tables.copy_bf16_tensor(source, ref, source_offset, sink)
+                except (RuntimeError, tables.PackFailure) as error:
+                    content_failures += 1
+                    fail(f"kind={ref.kind} layer={hex(ref.layer)} name={ref.name}: "
+                         f"source re-emit failed: {error}")
+                    continue
+                compared += 1
+                if pack_digest.hexdigest() != sink.digest.hexdigest():
+                    content_failures += 1
+                    fail(f"kind={ref.kind} layer={hex(ref.layer)} name={ref.name}: "
+                         f"pack bytes != source bytes for this rank")
+                if compared % 50 == 0:
+                    print(f"  content {compared}/{len(decoded)} tensors", flush=True)
+        verdict["tensors_compared"] = compared
+        verdict["content_errors"] = content_failures
+        if content_failures:
+            fail(f"{content_failures} content mismatches")
 
-    if recompute_file_hash:
+    if recompute_file_hash or receipt_path is not None:
         file_sha = sha256_file(pack)
         verdict["file_sha256_recomputed"] = file_sha
 
-    if receipt_path is not None and Path(receipt_path).is_file():
-        receipt = json.loads(Path(receipt_path).read_text())
-        checks = {
-            "tensor_count": (receipt.get("tensor_count"), tensor_count),
-            "bytes": (receipt.get("bytes"), file_bytes_actual),
-            "file_bytes": (receipt.get("file_bytes"), file_bytes_actual),
-            "first_layer_index": (receipt.get("first_layer_index"), first_layer),
-            "layer_count": (receipt.get("layer_count"), layer_count),
-            "tp_degree": (receipt.get("tp_degree"), tp_degree),
-            "tp_rank": (receipt.get("tp_rank"), tp_rank),
-        }
-        if file_sha is not None:
-            checks["output_sha256"] = (receipt.get("output_sha256"), file_sha)
-        for name, (recorded, recomputed) in checks.items():
-            if recorded is not None and recorded != recomputed:
-                fail(f"receipt {name}={recorded!r}, verifier recomputed {recomputed!r}")
-        if source is not None and receipt.get("source_index_sha256") not in (None, source.index_sha256):
-            fail("receipt source_index_sha256 does not match the live checkpoint index")
+    if receipt_path is not None:
+        receipt_file = Path(receipt_path)
+        if not receipt_file.is_file():
+            fail(f"receipt {receipt_file} does not exist")
+        else:
+            receipt = json.loads(receipt_file.read_text())
+            checks = {
+                "tensor_count": tensor_count,
+                "bytes": file_bytes_actual,
+                "first_layer_index": first_layer,
+                "layer_count": layer_count,
+                "tp_degree": tp_degree,
+                "tp_rank": tp_rank,
+                "output_sha256": file_sha,
+            }
+            for name, recomputed in checks.items():
+                if name not in receipt:
+                    fail(f"receipt is missing {name}")
+                elif receipt[name] != recomputed:
+                    fail(f"receipt {name}={receipt[name]!r}, verifier recomputed {recomputed!r}")
+            if "source_index_sha256" not in receipt:
+                fail("receipt is missing source_index_sha256")
+            elif source is not None and receipt["source_index_sha256"] != source.index_sha256:
+                fail("receipt source_index_sha256 does not match the live checkpoint index")
 
     verdict["errors"] = findings
     verdict["verdict"] = "PASS" if not findings else "FAIL"
@@ -373,10 +332,8 @@ def sha256_file(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="verify one qwen38_max TP rank "
-                                     "pack against the v2 wire format (both the "
-                                     "MTP-stripped codec-8 form and the placed "
-                                     "tp4pp4 legacy form) and, optionally, the "
-                                     "live checkpoint")
+                                     "pack against the v2 wire format and, "
+                                     "optionally, the live checkpoint")
     parser.add_argument("--pack", type=Path, required=True)
     parser.add_argument("--tp-degree", type=int, default=16)
     parser.add_argument("--tp-rank", type=int, required=True)

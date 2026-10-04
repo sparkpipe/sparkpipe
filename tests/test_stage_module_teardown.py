@@ -29,7 +29,7 @@ static void TestFree(void *pointer);
 static Spark@PREFIX@ModuleState *owner;
 static void *sentinel;
 static uint32_t fail_collective,fail_lazy,fail_slots;
-static uint32_t collectives,lazy_calls,unmaps,host_frees,state_frees,ledger_frees;
+static uint32_t collectives,lazy_calls,unmaps,host_frees,state_frees,ledger_frees,prepares;
 static void TestFree(void *pointer)
 {
     if (pointer == 0)
@@ -84,6 +84,7 @@ cudaError_t cudaFree(void *pointer) { assert(pointer == 0);return cudaSuccess; }
 static SparkStatus TestPrepare(void *state,const SparkFirmwareModuleConfiguration *configuration,const SparkFirmwareModuleHostServices *services)
 {
     (void)configuration;(void)services;
+    prepares++;
     owner=state;
     sentinel=malloc(32u);assert(sentinel != 0);
     owner->@SENTINEL@=sentinel;
@@ -137,7 +138,35 @@ int main(void)
     assert(SparkStageModuleLifecycleInitialize(&configuration,&services,&published,&ops) == SPARK_STATUS_SCHEMA_ERROR);
     assert(published == 0 && collectives == 1u && host_frees == 1u && ledger_frees == 1u && state_frees == 1u);
     assert(SparkStageModuleLifecycleDestroy(0,&ops) == SPARK_STATUS_OK);
+    const SparkStageModuleLifecycleOps gated = {
+        .state_bytes = sizeof(*owner),
+        .initialize_gate = Spark@PREFIX@ModuleInitializeGate,
+        .state_prepare = TestPrepare,
+        .describe = Spark@PREFIX@ModuleDescribe,
+        .state_destroy = Spark@PREFIX@ModuleStateTeardown
+    };
+    const char *refused[] = {
+        0,
+        "",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0",
+        "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
+        "0123456789abcdeg0123456789abcdef0123456789abcdef0123456789abcdef"
+    };
+    for (uint32_t index=0u; index<sizeof(refused)/sizeof(refused[0]); index++)
+    {
+        prepares=0u;
+        published=(void *)(uintptr_t)1u;
+        configuration.validated_artifact_sha256=refused[index];
+        assert(SparkStageModuleLifecycleInitialize(&configuration,&services,&published,&gated) == SPARK_STATUS_MODULE_NOT_VALIDATED);
+        assert(published == 0 && prepares == 0u);
+    }
+    collectives=lazy_calls=unmaps=host_frees=state_frees=ledger_frees=prepares=0u;
+    configuration.validated_artifact_sha256="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    assert(SparkStageModuleLifecycleInitialize(&configuration,&services,&published,&gated) == SPARK_STATUS_SCHEMA_ERROR);
+    assert(published == 0 && prepares == 1u && state_frees == 1u);
     puts("PASS @FAMILY@ actual teardown ownership and retry");
+    puts("PASS @FAMILY@ initialize refuses a module without a validated artifact receipt");
     return 0;
 }
 '''

@@ -23,7 +23,7 @@ typedef struct SparkStageModuleLifecycle
 typedef struct SparkStageModuleLifecycleOps
 {
     uint32_t state_bytes;
-    SparkStatus (*initialize_gate)(void);
+    SparkStatus (*initialize_gate)(const SparkFirmwareModuleConfiguration *configuration);
     void (*describe)(void *state, SparkStageModuleLifecycle *lifecycle);
     SparkStatus (*state_prepare)(void *state,
         const SparkFirmwareModuleConfiguration *configuration,

@@ -46,7 +46,6 @@ if [[ -z "${SPARK_MUSE_GLIMMER_STAGE_PACK_PATH:-}" ]]; then
         --output "${SPARK_MUSE_GLIMMER_STAGE_PACK_PATH}" --tp 16
 fi
 
-require_configuration_value SPARK_MUSE_GLIMMER_ALLOW_UNQUALIFIED_EXECUTION 1
 require_configuration_value SPARK_MUSE_GLIMMER_STAGE_INDEX 0
 require_configuration_value SPARK_MUSE_GLIMMER_STAGE_FIRST_LAYER 0
 case "${SPARK_MUSE_GLIMMER_STAGE_MAX_ACTIVE_SEQUENCES:-8}" in

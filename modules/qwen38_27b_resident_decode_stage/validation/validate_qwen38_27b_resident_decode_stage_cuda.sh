@@ -42,7 +42,6 @@ spark_cuda_validation_check_source_digests
 # validates the whole-stack tier instead: rank 0 in standalone collective
 # mode (the build host has no peer group), so consistency and determinism
 # gate here while cross-rank numerics gate at the band E2E run.
-require_configuration_value SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION 1
 require_configuration_value SPARK_QWEN38_27B_STAGE_INDEX 0
 require_configuration_value SPARK_QWEN38_27B_STAGE_FIRST_LAYER 0
 # The harness block table spans MAX_ACTIVE_SEQUENCES lanes (the -D plumbing
@@ -62,15 +61,9 @@ if [[ "${SPARK_QWEN38_27B_TP_DEGREE:-1}" != "1" ]] || [[ "${SPARK_QWEN38_27B_TP_
     require_configuration_value SPARK_QWEN38_27B_TP_STANDALONE 1
     require_configuration_value SPARK_QWEN38_27B_STAGE_COUNT 1
     require_configuration_value SPARK_QWEN38_27B_STAGE_LAYER_COUNT 64
-    # MTP-free packs are the fleet standard (speculation lives on the
-    # speculator node); qualify both the MTP-carrying and MTP-free shapes
-    case "${SPARK_QWEN38_27B_STAGE_MTP:-0}" in
-        0|1) ;;
-        *)
-            echo "qwen38_27b hardware validation requires SPARK_QWEN38_27B_STAGE_MTP in {0,1}, got '${SPARK_QWEN38_27B_STAGE_MTP:-}'" >&2
-            exit 2
-            ;;
-    esac
+    # Every qwen38_27b pack header carries the MTP layer, so the whole-stack
+    # tier always arms it and runs the MTP draft check.
+    require_configuration_value SPARK_QWEN38_27B_STAGE_MTP 1
 else
     if (( ${SPARK_QWEN38_27B_STAGE_COUNT:-0} < 2 )); then
         echo "qwen38_27b hardware validation requires SPARK_QWEN38_27B_STAGE_COUNT >= 2 (mid-pipeline stage 0)" >&2

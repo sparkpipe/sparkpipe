@@ -203,5 +203,8 @@ spark_cuda_validation_build_and_run() {
 	    -Xcompiler -pthread \
 	    -o "${validation_directory}/${validation_output_name}"
 
-	"${validation_directory}/${validation_output_name}" "${configuration_hash}"
+	local candidate_sha256 remainder
+	read -r candidate_sha256 remainder < <(sha256sum "${module_archive}")
+	SPARK_VALIDATION_CANDIDATE_SHA256="${candidate_sha256}" \
+		"${validation_directory}/${validation_output_name}" "${configuration_hash}"
 }
