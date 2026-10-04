@@ -765,13 +765,17 @@ SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,uint6
 	if ( cudaMalloc(&mapping->device_base,(size_t)request->device_bytes) != cudaSuccess )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	mapping->device_bytes = request->device_bytes;
+	mapping->metadata = (uint8_t *)calloc(1u,(size_t)request->metadata_bytes);
+	mapping->metadata_bytes = request->metadata_bytes;
 	mapping->pool_generation = ++KV_POOL_GENERATION;
-	return(SPARK_STATUS_OK);
+	return(mapping->metadata != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
 }
+cudaError_t cudaDeviceSynchronize(void) { return(cudaSuccess); }
 void SparkWeightdKvPoolUnmap(SparkWeightdKvPoolMapping *mapping)
 {
 	if ( mapping->device_base != 0 )
 		(void)cudaFree(mapping->device_base);
+	free(mapping->metadata);
 	memset(mapping,0,sizeof(*mapping));
 }
 SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context,SparkWeightdLazyPack **out)
