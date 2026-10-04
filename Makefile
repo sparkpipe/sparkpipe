@@ -419,12 +419,17 @@ TEST_NAMES := \
     test_llm_module_contract \
     test_llm_stagepack_format
 
+ifneq ($(UNAME_S),Darwin)
+TEST_NAMES += test_stage_kv_binding
+endif
+
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 SHELL_TESTS := \
 	tests/fuzz_system_loopback.sh \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
 	tests/test_stray_fixture_processes.py \
+	tests/test_kv_binding_async_source.py \
 	tests/test_ab_stats.py \
 	tests/test_ab_verdict.py \
 	tests/test_ab_arm.py \
@@ -1829,6 +1834,10 @@ build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY)
 
 build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+STAGE_KV_BINDING_TEST_SOURCES := tests/test_stage_kv_binding.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c
+build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(STAGE_KV_BINDING_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 HY4_SMOKE_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/hy4/include -Imodules/hy4_resident_decode_stage/include -Imodules/hy4_resident_decode_stage/source
 HY4_MODULE_TEST_SOURCES := modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c \

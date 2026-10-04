@@ -177,9 +177,69 @@ static void MutateIdentity(FuzzHarness *h,uint32_t field)
     }
 }
 
+typedef struct FuzzCopy
+{
+    SparkKvCacheArena *arena;
+    uint32_t source,destination,active,done,deferred;
+} FuzzCopy;
+
+static SparkStatus FuzzCopyPage(void *context,uint32_t source,uint32_t destination)
+{
+    FuzzCopy *copy = context;
+    if ( copy->active != 0u )
+        return(SPARK_STATUS_BUSY);
+    *copy = (FuzzCopy){copy->arena,source,destination,1u,0u,0u};
+    return(SPARK_STATUS_OK);
+}
+
+static void FuzzCopyComplete(FuzzCopy *copy)
+{
+    SparkKvCacheBlockView source,destination;
+    CHECK(copy->active != 0u);
+    CHECK(SparkKvCacheArenaResolveBlock(copy->arena,copy->source,&source) == SPARK_STATUS_OK);
+    CHECK(SparkKvCacheArenaResolveBlock(copy->arena,copy->destination,&destination) == SPARK_STATUS_OK);
+    memcpy((void *)destination.key_device_address,(const void *)source.key_device_address,(size_t)copy->arena->key_block_stride_bytes);
+}
+
+static SparkStatus FuzzCopyRetire(void *context,uint32_t require_all)
+{
+    FuzzCopy *copy = context;
+    if ( copy->active == 0u || (copy->done == 0u && require_all == 0u) )
+        return(SPARK_STATUS_OK);
+    CHECK(SparkKvCacheArenaUnpinResidentBlock(copy->arena,copy->source) == SPARK_STATUS_OK);
+    CHECK(SparkKvCacheArenaUnpinResidentBlock(copy->arena,copy->destination) == SPARK_STATUS_OK);
+    if ( copy->deferred != 0u )
+        CHECK(SparkKvCacheArenaFreeBlock(copy->arena,copy->destination) == SPARK_STATUS_OK);
+    copy->active = 0u;
+    return(SPARK_STATUS_OK);
+}
+
+static uint32_t FuzzCopyPins(void *context,uint32_t page)
+{
+    FuzzCopy *copy = context;
+    return(copy->active != 0u && copy->deferred == 0u && copy->destination == page ? 1u : 0u);
+}
+
+static SparkStatus FuzzCopyDeferFree(void *context,uint32_t page)
+{
+    FuzzCopy *copy = context;
+    if ( FuzzCopyPins(context,page) == 0u )
+        return(SPARK_STATUS_NOT_FOUND);
+    copy->deferred = 1u;
+    return(SPARK_STATUS_OK);
+}
+
+static void FuzzCopySettle(FuzzCopy *copy)
+{
+    copy->done = 1u;
+    CHECK(FuzzCopyRetire(copy,0u) == SPARK_STATUS_OK);
+}
+
 static void RunCowCase(void)
 {
     FuzzHarness h;
+    FuzzCopy copy = {0};
+    SparkKvPageCacheDeviceCopy hook = {FuzzCopyPage,FuzzCopyRetire,FuzzCopyPins,FuzzCopyDeferFree,&copy};
     SparkKvPageStore store;
     SparkKvPageStoreConfiguration configuration = {0};
     SparkModelDriverCacheLane original_lane;
@@ -202,6 +262,8 @@ static void RunCowCase(void)
     CHECK(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_OK);
     HarnessInit(&h,1u,SEQ_CAP);
     h.cache.page_store = &store;
+    copy.arena = &h.arena;
+    CHECK(SparkKvPageCacheAttachDeviceCopy(&h.cache,&hook) == SPARK_STATUS_OK);
     original_lane = h.lanes[0];
     original_lane.context_token_count = original_lane.publish_token_count = prefix;
     original_lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;
@@ -227,8 +289,10 @@ static void RunCowCase(void)
         h.request.transaction_id++;
         CHECK(Admit(&h,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
         CHECK(h.owners[1].page_count == 1u);
-        CHECK(h.logical[PAGE_CAP] != source && h.blocks[source].residency_reference_count == 0u);
+        CHECK(h.logical[PAGE_CAP] != source && h.blocks[source].residency_reference_count == 1u);
+        CHECK(copy.active != 0u && copy.source == source && copy.destination == h.logical[PAGE_CAP]);
         CHECK(SparkKvCacheArenaResolveBlock(&h.arena,h.logical[PAGE_CAP],&mutable_view) == SPARK_STATUS_OK);
+        FuzzCopyComplete(&copy);
         CHECK(memcmp((void *)mutable_view.key_device_address,original,sizeof(original)) == 0);
         if ( operation == 0u )
             CHECK(Admit(&h,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
@@ -246,6 +310,10 @@ static void RunCowCase(void)
             }
         }
         CHECK(memcmp((void *)original_view.key_device_address,original,sizeof(original)) == 0);
+        if ( operation <= 1u )
+            CHECK((h.blocks[copy.destination].flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u &&
+                h.blocks[copy.destination].residency_reference_count == 1u && copy.deferred != 0u);
+        FuzzCopySettle(&copy);
         CHECK(h.cache.live_sequence_count == 1u && h.sequences[0].sequence_id == 100u);
         CHECK(h.entries[h.entry_map[source]].reference_count == 1u);
         allocated = 0u;

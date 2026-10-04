@@ -6,31 +6,67 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
-static SparkStatus SparkStageKvBindingDeviceCopy(void *context,uint32_t direction,uintptr_t device_address,void *host_address,uint64_t bytes)
+#define SPARK_STAGE_KV_COMPLETION_FREE 0u
+#define SPARK_STAGE_KV_COMPLETION_QUEUED 1u
+
+static const char *const SparkStageKvLockSiteNames[SPARK_STAGE_KV_LOCK_SITE_COUNT] =
 {
-	const SparkStageKvBinding *binding = (const SparkStageKvBinding *)context;
-	cudaError_t error;
-	if ( binding == 0 || device_address == 0u || host_address == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
-		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
-	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
-		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
-	else
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SparkStageModuleCudaStatus(binding->module_tag,error,"kv_page_copy"));
+	"admit","reset","continuity","claim","finish","publish","save"
+};
+
+static uint64_t SparkStageKvNowNs(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC,&now);
+	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
+}
+
+static SparkStatus SparkStageKvBindingLock(SparkStageKvBinding *binding,uint64_t *start_ns)
+{
+	if ( pthread_mutex_lock(&binding->mutex) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	*start_ns = SparkStageKvNowNs();
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkStageKvBindingAccount(SparkStageKvBinding *binding,uint32_t site,uint64_t start_ns)
+{
+	SparkStageKvLockSite *counter = &binding->counters.lock_sites[site];
+	uint64_t held = SparkStageKvNowNs() - start_ns;
+	counter->count++;
+	counter->total_ns += held;
+	if ( held > counter->max_ns )
+		counter->max_ns = held;
+}
+
+static void SparkStageKvBindingUnlock(SparkStageKvBinding *binding,uint32_t site,uint64_t start_ns)
+{
+	SparkStageKvBindingAccount(binding,site,start_ns);
+	(void)pthread_mutex_unlock(&binding->mutex);
+}
+
+static void SparkStageKvBindingWakeSaver(SparkStageKvBinding *binding)
+{
+	if ( binding->save_started != 0u && SparkKvPageCacheSavePending(&binding->page_cache) != 0u )
+		(void)pthread_cond_signal(&binding->save_ready);
 }
 
 static SparkStatus SparkStageKvBindingPageCopy(void *context,uint32_t direction,uintptr_t device_address,void *host_address,uint64_t bytes)
 {
 	const SparkStageKvBinding *binding = (const SparkStageKvBinding *)context;
-	SparkKvLayeredPageLayout layout;
+	cudaStream_t stream;
+	enum cudaMemcpyKind kind;
+	cudaError_t error;
 	uintptr_t base;
-	uint64_t span,offset,packed;
-	uint32_t region;
-	if ( binding == 0 )
+	uint64_t span,offset,packed,layer_page,stride;
+	uint32_t region,layers;
+	if ( binding == 0 || device_address == 0u || host_address == 0 ||
+		(direction != SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST && direction != SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	stream = (cudaStream_t)binding->copy_stream;
+	kind = direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice;
 	for (region=0u; region<binding->region_count; region++)
 	{
 		base = (uintptr_t)binding->region_base[region];
@@ -43,17 +79,24 @@ static SparkStatus SparkStageKvBindingPageCopy(void *context,uint32_t direction,
 		{
 			if ( bytes > span - offset )
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-			return(SparkStageKvBindingDeviceCopy(context,direction,device_address,host_address,bytes));
+			error = direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST ?
+				cudaMemcpyAsync(host_address,(const void *)device_address,(size_t)bytes,kind,stream) :
+				cudaMemcpyAsync((void *)device_address,host_address,(size_t)bytes,kind,stream);
 		}
-		if ( offset % packed != 0u )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		layout.device_base = base;
-		layout.device_bytes = span;
-		layout.layer_stride_bytes = binding->region_layer_stride_bytes[region];
-		layout.layer_page_bytes = binding->regions[region].layer_page_bytes;
-		layout.layer_count = binding->regions[region].layer_count;
-		layout.page_count = binding->physical_page_count;
-		return(SparkKvPageStoreCopyLayered(&layout,direction,(uint32_t)(offset / packed),host_address,bytes,SparkStageKvBindingDeviceCopy,context));
+		else
+		{
+			if ( offset % packed != 0u || bytes != packed )
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+			layer_page = binding->regions[region].layer_page_bytes;
+			layers = binding->regions[region].layer_count;
+			stride = binding->region_layer_stride_bytes[region];
+			error = direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST ?
+				cudaMemcpy2DAsync(host_address,(size_t)layer_page,(const void *)(base + (offset / packed) * layer_page),(size_t)stride,(size_t)layer_page,layers,kind,stream) :
+				cudaMemcpy2DAsync((void *)(base + (offset / packed) * layer_page),(size_t)stride,host_address,(size_t)layer_page,(size_t)layer_page,layers,kind,stream);
+		}
+		if ( error == cudaSuccess )
+			error = cudaStreamSynchronize(stream);
+		return(SparkStageModuleCudaStatus(binding->module_tag,error,"kv_page_copy"));
 	}
 	SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 }
@@ -99,7 +142,7 @@ static SparkStatus SparkStageKvBindingAllocateHost(SparkStageKvBinding *binding,
 static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
 {
 	uint64_t packed,missing,layer_page;
-	uint32_t region,shards;
+	uint32_t region,shards,in_flight;
 	binding->pages_per_sequence = (configuration->max_sequence_positions + configuration->block_token_count - 1u) / configuration->block_token_count;
 	if ( binding->pages_per_sequence == 0u || configuration->resident_sequence_capacity > UINT32_MAX / binding->pages_per_sequence )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -142,10 +185,11 @@ static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,cons
 		binding->page_bytes += packed;
 	}
 	missing = (uint64_t)(configuration->logical_page_count - configuration->physical_page_count);
-	if ( missing != 0u && (configuration->backing_maximum_bytes == 0u || missing > configuration->backing_maximum_bytes / binding->page_bytes) )
+	in_flight = configuration->logical_page_count < 2u ? configuration->logical_page_count : 2u;
+	if ( missing != 0u && (configuration->backing_maximum_bytes == 0u || missing + in_flight > configuration->backing_maximum_bytes / binding->page_bytes) )
 	{
-		fprintf(stderr,"%s kv binding refused: %llu spill pages of %llu bytes need backing, %llu bytes configured\n",
-			configuration->module_tag,(unsigned long long)missing,(unsigned long long)binding->page_bytes,(unsigned long long)configuration->backing_maximum_bytes);
+		fprintf(stderr,"%s kv binding refused: %llu spill pages and %u in flight of %llu bytes need backing, %llu bytes configured\n",
+			configuration->module_tag,(unsigned long long)missing,in_flight,(unsigned long long)binding->page_bytes,(unsigned long long)configuration->backing_maximum_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	return(SPARK_STATUS_OK);
@@ -201,6 +245,104 @@ static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const Spar
 	table->cache_layout_fingerprint = binding->layout_fingerprint;
 }
 
+static SparkStatus SparkStageKvBindingAttachCopier(SparkStageKvBinding *binding)
+{
+	SparkKvDeviceCopyConfiguration copy;
+	SparkKvPageCacheDeviceCopy hook;
+	uint32_t region;
+	SparkStatus status;
+	memset(&copy,0,sizeof(copy));
+	copy.module_tag = binding->module_tag;
+	copy.stream = binding->copy_stream;
+	copy.arena = &binding->arena;
+	copy.physical_page_count = binding->physical_page_count;
+	copy.region_count = binding->region_count;
+	for (region=0u; region<binding->region_count; region++)
+	{
+		copy.regions[region].layout = binding->regions[region].layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? SPARK_KV_DEVICE_COPY_PAGE_MAJOR : SPARK_KV_DEVICE_COPY_LAYER_MAJOR;
+		copy.regions[region].layer_count = binding->regions[region].layer_count;
+		copy.regions[region].device_base = (uintptr_t)binding->region_base[region];
+		copy.regions[region].layer_page_bytes = binding->regions[region].layer_page_bytes;
+		copy.regions[region].layer_stride_bytes = binding->region_layer_stride_bytes[region];
+	}
+	copy.pending_capacity = 2u * binding->resident_sequence_capacity;
+	status = SparkKvDeviceCopierInitialize(&binding->copier,&copy);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	binding->copier_initialized = 1u;
+	hook.copy_page = SparkKvDeviceCopierCopyPage;
+	hook.retire_copies = SparkKvDeviceCopierRetire;
+	hook.destination_pins = SparkKvDeviceCopierDestinationPins;
+	hook.defer_free = SparkKvDeviceCopierDeferFree;
+	hook.context = &binding->copier;
+	return(SparkKvPageCacheAttachDeviceCopy(&binding->page_cache,&hook));
+}
+
+static SparkStatus SparkStageKvBindingAllocateCompletions(SparkStageKvBinding *binding)
+{
+	SparkStageKvBindingCompletionRecord *record;
+	uint32_t slot,lanes = binding->resident_sequence_capacity;
+	binding->completion_records = (SparkStageKvBindingCompletionRecord *)calloc(binding->pipeline_slot_count,sizeof(*binding->completion_records));
+	binding->completion_queue = (uint32_t *)calloc(binding->pipeline_slot_count,sizeof(uint32_t));
+	if ( binding->completion_records == 0 || binding->completion_queue == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (slot=0u; slot<binding->pipeline_slot_count; slot++)
+	{
+		record = &binding->completion_records[slot];
+		record->resident_slots = (uint32_t *)calloc(lanes,sizeof(uint32_t));
+		record->bound = (uint8_t *)calloc(lanes,sizeof(uint8_t));
+		record->sequence_ids = (uint64_t *)calloc(lanes,sizeof(uint64_t));
+		record->next_positions = (uint64_t *)calloc(lanes,sizeof(uint64_t));
+		if ( record->resident_slots == 0 || record->bound == 0 || record->sequence_ids == 0 || record->next_positions == 0 )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkStageKvBindingFreeCompletions(SparkStageKvBinding *binding)
+{
+	uint32_t slot;
+	if ( binding->completion_records != 0 )
+		for (slot=0u; slot<binding->pipeline_slot_count; slot++)
+		{
+			free(binding->completion_records[slot].resident_slots);
+			free(binding->completion_records[slot].bound);
+			free(binding->completion_records[slot].sequence_ids);
+			free(binding->completion_records[slot].next_positions);
+		}
+	free(binding->completion_records);
+	free(binding->completion_queue);
+	binding->completion_records = 0;
+	binding->completion_queue = 0;
+}
+
+static void *SparkStageKvBindingCompletionMain(void *context);
+static void *SparkStageKvBindingSaveMain(void *context);
+
+static SparkStatus SparkStageKvBindingStartAsync(SparkStageKvBinding *binding)
+{
+	SparkStatus status;
+	status = SparkStageKvBindingAttachCopier(binding);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingAllocateCompletions(binding);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( pthread_mutex_init(&binding->completion_mutex,0) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( pthread_cond_init(&binding->completion_ready,0) != 0 || pthread_cond_init(&binding->completion_idle,0) != 0 ||
+		pthread_cond_init(&binding->save_ready,0) != 0 || pthread_cond_init(&binding->save_idle,0) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	binding->sync_initialized = 1u;
+	if ( pthread_create(&binding->completion_thread,0,SparkStageKvBindingCompletionMain,binding) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	binding->completion_started = 1u;
+	if ( pthread_create(&binding->save_thread,0,SparkStageKvBindingSaveMain,binding) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	binding->save_started = 1u;
+	fprintf(stderr,"%s kv binding async completion_records=%u copy_on_write=device copy_stream=nonblocking\n",binding->module_tag,binding->pipeline_slot_count);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
 {
 	SparkKvModelTable table;
@@ -248,6 +390,13 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingAllocateHost(binding,lane_entries);
+	if ( status == SPARK_STATUS_OK )
+	{
+		error = cudaStreamCreateWithFlags((cudaStream_t *)&binding->copy_stream,cudaStreamNonBlocking);
+		status = SparkStageModuleCudaStatus(binding->module_tag,error,"kv_copy_stream");
+		if ( status != SPARK_STATUS_OK )
+			binding->copy_stream = 0;
+	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	binding->transactions.cache = &binding->page_cache;
@@ -262,18 +411,59 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	if ( pthread_mutex_init(&binding->mutex,0) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	binding->mutex_initialized = 1u;
+	status = SparkStageKvBindingStartAsync(binding);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	fprintf(stderr,"%s kv binding logical_pages=%u physical_pages=%u pages_per_sequence=%u page_bytes=%llu regions=%u context_shard=%u/%u layout=%s\n",
 		binding->module_tag,binding->logical_page_count,binding->physical_page_count,binding->pages_per_sequence,(unsigned long long)binding->page_bytes,binding->region_count,
 		binding->context_shard.degree > 1u ? binding->context_shard.rank : 0u,binding->context_shard.degree > 1u ? binding->context_shard.degree : 1u,binding->layout_fingerprint);
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkStageKvBindingLogCounters(const SparkStageKvBinding *binding)
+{
+	const SparkStageKvBindingCounters *counters = &binding->counters;
+	uint32_t site;
+	for (site=0u; site<SPARK_STAGE_KV_LOCK_SITE_COUNT; site++)
+		fprintf(stderr,"%s kv binding lock site=%s count=%llu mean_us=%.1f max_us=%.1f\n",binding->module_tag,SparkStageKvLockSiteNames[site],
+			(unsigned long long)counters->lock_sites[site].count,
+			counters->lock_sites[site].count != 0u ? (double)counters->lock_sites[site].total_ns / (double)counters->lock_sites[site].count / 1000.0 : 0.0,
+			(double)counters->lock_sites[site].max_ns / 1000.0);
+	fprintf(stderr,"%s kv binding completions=%llu entry_max_us=%.1f queue_mean_us=%.1f queue_max_us=%.1f copy_on_write=%llu\n",binding->module_tag,
+		(unsigned long long)counters->completion_count,(double)counters->entry_max_ns / 1000.0,
+		counters->completion_count != 0u ? (double)counters->completion_queue_total_ns / (double)counters->completion_count / 1000.0 : 0.0,
+		(double)counters->completion_queue_max_ns / 1000.0,(unsigned long long)binding->copier.copy_count);
+	fprintf(stderr,"%s kv binding arena evicted=%llu park_failures=%llu park_backing_full=%llu park_stalls=%llu store_writes=%llu store_reads=%llu backing_pages=%u backing_reclaims=%llu\n",binding->module_tag,
+		(unsigned long long)binding->arena.resident_evicted_block_count,(unsigned long long)binding->arena.park_failure_count,
+		(unsigned long long)binding->arena.park_backing_full_count,(unsigned long long)binding->arena.park_stall_count,
+		(unsigned long long)binding->page_store.write_count,(unsigned long long)binding->page_store.read_count,
+		binding->page_store.backing_page_count,(unsigned long long)binding->page_cache.backing_reclaim_count);
+}
+
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 {
 	if ( binding == 0 )
 		return;
+	SparkStageKvBindingStop(binding);
+	if ( binding->page_cache.snapshot != 0 )
+	{
+		uint64_t before = binding->page_cache.snapshot->save_cancelled_count;
+		SparkKvPageCacheSaveCancelAll(&binding->page_cache);
+		if ( binding->page_cache.snapshot->save_cancelled_count != before )
+			fprintf(stderr,"KV-SNAPSHOT pending saves cancelled count=%llu\n",(unsigned long long)(binding->page_cache.snapshot->save_cancelled_count - before));
+	}
 	if ( binding->page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&binding->page_store);
+	if ( binding->copier_initialized != 0u )
+	{
+		(void)SparkKvDeviceCopierDrain(&binding->copier);
+		SparkKvDeviceCopierDestroy(&binding->copier);
+	}
+	if ( binding->copy_stream != 0 )
+		(void)cudaStreamDestroy((cudaStream_t)binding->copy_stream);
+	if ( binding->module_tag != 0 && binding->mutex_initialized != 0u )
+		SparkStageKvBindingLogCounters(binding);
+	SparkStageKvBindingFreeCompletions(binding);
 	if ( binding->physical_pages != 0 )
 		(void)cudaFreeHost(binding->physical_pages);
 	if ( binding->staging != 0 )
@@ -292,6 +482,14 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->lane_next_positions);
 	if ( binding->mutex_initialized != 0u )
 		(void)pthread_mutex_destroy(&binding->mutex);
+	if ( binding->sync_initialized != 0u )
+	{
+		(void)pthread_mutex_destroy(&binding->completion_mutex);
+		(void)pthread_cond_destroy(&binding->completion_ready);
+		(void)pthread_cond_destroy(&binding->completion_idle);
+		(void)pthread_cond_destroy(&binding->save_ready);
+		(void)pthread_cond_destroy(&binding->save_idle);
+	}
 	memset(binding,0,sizeof(*binding));
 }
 
@@ -299,10 +497,12 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 {
 	SparkStatus status;
 	uint32_t lane;
+	uint64_t held;
 	if ( binding == 0 || request == 0 || decision == 0 || binding->mutex_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( pthread_mutex_lock(&binding->mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkStageKvBindingLock(binding,&held);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = binding->control_generation != 0u && binding->control_generation != request->control_generation ?
 		SPARK_STATUS_VALIDATION_FAILED : SparkKvLaneTransactionsAdmit(&binding->transactions,request);
 	if ( status == SPARK_STATUS_OK )
@@ -310,7 +510,8 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 	if ( status == SPARK_STATUS_OK && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 		for (lane=0u; lane<request->cache_lane_count; lane++)
 			atomic_store_explicit(&binding->lane_bound[request->cache_lanes[lane].resident_sequence_slot],0u,memory_order_release);
-	(void)pthread_mutex_unlock(&binding->mutex);
+	SparkStageKvBindingWakeSaver(binding);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_ADMIT,held);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	decision->accepted = 1u;
@@ -325,11 +526,13 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t generation)
 {
 	SparkStatus status;
+	uint64_t held;
 	uint32_t lane;
 	if ( binding == 0 || binding->mutex_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( pthread_mutex_lock(&binding->mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkStageKvBindingLock(binding,&held);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = generation > binding->reset_generation ? SparkKvLaneTransactionsReset(&binding->transactions) : SPARK_STATUS_VALIDATION_FAILED;
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -343,7 +546,7 @@ SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t gener
 		binding->reset_generation = generation;
 		binding->control_generation = 0u;
 	}
-	(void)pthread_mutex_unlock(&binding->mutex);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_RESET,held);
 	SPARK_RETURN(status);
 }
 
@@ -381,8 +584,15 @@ SparkStatus SparkStageKvBindingAdmitReset(SparkStageKvBinding *binding,const Spa
 		{
 			drain = cudaStreamSynchronize((cudaStream_t)stream);
 			if ( drain != cudaSuccess )
-			{
 				(void)SparkStageModuleCudaStatus(binding->module_tag,drain,"kv_reset_stream_drain");
+			else
+			{
+				drain = cudaStreamSynchronize((cudaStream_t)binding->copy_stream);
+				if ( drain != cudaSuccess )
+					(void)SparkStageModuleCudaStatus(binding->module_tag,drain,"kv_reset_copy_stream_drain");
+			}
+			if ( drain != cudaSuccess )
+			{
 				fprintf(stderr,"%s reset: execution stream failed; lanes and slots stay claimed\n",binding->module_tag);
 				free(slots);
 				free(lanes);
@@ -469,14 +679,16 @@ static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *b
 SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	SparkStatus status;
+	uint64_t held;
 	if ( binding == 0 || lane_states == 0 || row_resident_slots == 0 || row_sequence_ids == 0 || row_positions == 0 || bound == 0 || sequence_ids == 0 || next_positions == 0 || row_count < active_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( pthread_mutex_lock(&binding->mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkStageKvBindingLock(binding,&held);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	status = SparkStageKvBindingLoadContinuity(binding,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingRowContinuity(binding,lane_states,row_count,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
-	(void)pthread_mutex_unlock(&binding->mutex);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_CONTINUITY,held);
 	SPARK_RETURN(status);
 }
 
@@ -492,10 +704,14 @@ SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkMod
 		if ( frame->cache_lanes[lane].resident_sequence_slot != row_resident_slots[lane] || frame->cache_lanes[lane].sequence_id != row_sequence_ids[lane] ||
 			frame->cache_lanes[lane].sequence_position != row_positions[lane] || frame->cache_lanes[lane].context_token_count != next_positions[lane] )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-	if ( pthread_mutex_lock(&binding->mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkKvLaneTransactionsClaim(&binding->transactions,frame);
-	(void)pthread_mutex_unlock(&binding->mutex);
+	{
+		uint64_t held;
+		status = SparkStageKvBindingLock(binding,&held);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+		status = SparkKvLaneTransactionsClaim(&binding->transactions,frame);
+		SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_CLAIM,held);
+	}
 	SPARK_RETURN(status);
 }
 
@@ -523,14 +739,10 @@ SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,con
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkStatus status,uint32_t extra_tokens,const uint8_t *bound,const uint64_t *sequence_ids,const uint64_t *next_positions)
+static SparkStatus SparkStageKvBindingApplyCompletion(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkStatus status,uint32_t extra_tokens,const uint8_t *bound,const uint64_t *sequence_ids,const uint64_t *next_positions)
 {
 	uint32_t lane,resident;
 	SparkStatus result;
-	if ( binding == 0 || resident_slots == 0 || bound == 0 || sequence_ids == 0 || next_positions == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( pthread_mutex_lock(&binding->mutex) != 0 )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	result = SparkKvLaneTransactionsFinish(&binding->transactions,resident_slots,lane_count,status,extra_tokens);
 	for (lane=0u; lane<lane_count; lane++)
 	{
@@ -546,7 +758,6 @@ SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_
 		else
 			memset(binding->page_table_shadow + (uint64_t)resident * binding->pages_per_sequence,0xff,(size_t)binding->pages_per_sequence * sizeof(uint32_t));
 	}
-	(void)pthread_mutex_unlock(&binding->mutex);
 	return(result);
 }
 
@@ -554,7 +765,8 @@ static SparkStatus SparkStageKvBindingPublishLanes(SparkStageKvBinding *binding,
 {
 	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t lane,resident;
-	if ( pthread_mutex_lock(&binding->mutex) != 0 )
+	uint64_t held;
+	if ( SparkStageKvBindingLock(binding,&held) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for (lane=0u; lane<frame->cache_lane_count && status==SPARK_STATUS_OK; lane++)
 	{
@@ -571,7 +783,8 @@ static SparkStatus SparkStageKvBindingPublishLanes(SparkStageKvBinding *binding,
 		status = SparkKvLaneTransactionsClaim(&binding->transactions,frame);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvLaneTransactionsFinish(&binding->transactions,indices,frame->cache_lane_count,SPARK_STATUS_OK,0u);
-	(void)pthread_mutex_unlock(&binding->mutex);
+	SparkStageKvBindingWakeSaver(binding);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_PUBLISH,held);
 	SPARK_RETURN(status);
 }
 
@@ -621,4 +834,245 @@ uint32_t SparkStageKvBindingResidentCount(const SparkStageKvBinding *binding)
 	for (index=0u; index<binding->resident_sequence_capacity; index++)
 		count += atomic_load_explicit(&binding->lane_bound[index],memory_order_acquire) != 0u ? 1u : 0u;
 	return(count);
+}
+
+SparkStatus SparkStageKvBindingFinishAsync(SparkStageKvBinding *binding,uint32_t dispatch_slot,const SparkStageKvBindingCompletion *completion)
+{
+	SparkStageKvBindingCompletionRecord *record;
+	uint64_t entry_ns,elapsed;
+	uint32_t state;
+	entry_ns = SparkStageKvNowNs();
+	if ( binding == 0 || completion == 0 || binding->sync_initialized == 0u || dispatch_slot >= binding->pipeline_slot_count ||
+		completion->lane_count == 0u || completion->lane_count > binding->resident_sequence_capacity || completion->resident_slots == 0 ||
+		completion->bound == 0 || completion->sequence_ids == 0 || completion->next_positions == 0 || completion->finished_function == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( pthread_mutex_lock(&binding->completion_mutex) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( binding->completion_stop != 0u )
+	{
+		(void)pthread_mutex_unlock(&binding->completion_mutex);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	record = &binding->completion_records[dispatch_slot];
+	state = record->state;
+	if ( state != SPARK_STAGE_KV_COMPLETION_FREE )
+	{
+		(void)pthread_mutex_unlock(&binding->completion_mutex);
+		fprintf(stderr,"%s kv binding completion refused slot=%u state=%u\n",binding->module_tag,dispatch_slot,state);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	record->lane_count = completion->lane_count;
+	record->extra_tokens = completion->extra_tokens;
+	record->status = completion->status;
+	memcpy(record->resident_slots,completion->resident_slots,(size_t)completion->lane_count * sizeof(uint32_t));
+	memcpy(record->bound,completion->bound,(size_t)completion->lane_count * sizeof(uint8_t));
+	memcpy(record->sequence_ids,completion->sequence_ids,(size_t)completion->lane_count * sizeof(uint64_t));
+	memcpy(record->next_positions,completion->next_positions,(size_t)completion->lane_count * sizeof(uint64_t));
+	record->finished_function = completion->finished_function;
+	record->finished_context = completion->finished_context;
+	record->queued_ns = SparkStageKvNowNs();
+	record->state = SPARK_STAGE_KV_COMPLETION_QUEUED;
+	binding->completion_queue[(binding->completion_head + binding->completion_count) % binding->pipeline_slot_count] = dispatch_slot;
+	binding->completion_count++;
+	elapsed = SparkStageKvNowNs() - entry_ns;
+	binding->counters.entry_count++;
+	binding->counters.entry_total_ns += elapsed;
+	if ( elapsed > binding->counters.entry_max_ns )
+		binding->counters.entry_max_ns = elapsed;
+	(void)pthread_cond_signal(&binding->completion_ready);
+	(void)pthread_mutex_unlock(&binding->completion_mutex);
+	return(SPARK_STATUS_OK);
+}
+
+static void *SparkStageKvBindingCompletionMain(void *context)
+{
+	SparkStageKvBinding *binding = (SparkStageKvBinding *)context;
+	SparkStageKvBindingCompletionRecord *record;
+	SparkStageKvBindingFinishedFunction function;
+	void *function_context;
+	SparkStatus result;
+	uint64_t held,waited;
+	uint32_t slot;
+	for (;;)
+	{
+		(void)pthread_mutex_lock(&binding->completion_mutex);
+		while ( binding->completion_count == 0u && binding->completion_stop == 0u )
+			(void)pthread_cond_wait(&binding->completion_ready,&binding->completion_mutex);
+		if ( binding->completion_count == 0u )
+		{
+			(void)pthread_mutex_unlock(&binding->completion_mutex);
+			break;
+		}
+		slot = binding->completion_queue[binding->completion_head];
+		binding->completion_head = (binding->completion_head + 1u) % binding->pipeline_slot_count;
+		binding->completion_count--;
+		binding->completion_running = 1u;
+		(void)pthread_mutex_unlock(&binding->completion_mutex);
+		record = &binding->completion_records[slot];
+		if ( SparkStageKvBindingLock(binding,&held) == SPARK_STATUS_OK )
+		{
+			result = SparkStageKvBindingApplyCompletion(binding,record->resident_slots,record->lane_count,record->status,record->extra_tokens,record->bound,record->sequence_ids,record->next_positions);
+			SparkStageKvBindingWakeSaver(binding);
+			SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_FINISH,held);
+		}
+		else
+			result = SPARK_STATUS_INTERNAL_ERROR;
+		function = record->finished_function;
+		function_context = record->finished_context;
+		(void)pthread_mutex_lock(&binding->completion_mutex);
+		waited = SparkStageKvNowNs() - record->queued_ns;
+		binding->counters.completion_count++;
+		binding->counters.completion_queue_total_ns += waited;
+		if ( waited > binding->counters.completion_queue_max_ns )
+			binding->counters.completion_queue_max_ns = waited;
+		record->state = SPARK_STAGE_KV_COMPLETION_FREE;
+		(void)pthread_mutex_unlock(&binding->completion_mutex);
+		function(function_context,result);
+		(void)pthread_mutex_lock(&binding->completion_mutex);
+		binding->completion_running = 0u;
+		if ( binding->completion_count == 0u )
+			(void)pthread_cond_broadcast(&binding->completion_idle);
+		(void)pthread_mutex_unlock(&binding->completion_mutex);
+	}
+	return(0);
+}
+
+static void SparkStageKvBindingSaveOne(SparkStageKvBinding *binding,uint64_t *held)
+{
+	SparkKvPageCacheSaveWork work;
+	SparkStatus status,copy;
+	status = SparkKvPageCacheSaveTake(&binding->page_cache,&work);
+	if ( status == SPARK_STATUS_BUSY )
+	{
+		SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,*held);
+		(void)SparkKvSnapshotFlush(binding->page_cache.snapshot->store);
+		(void)SparkStageKvBindingLock(binding,held);
+		status = SparkKvPageCacheSaveTake(&binding->page_cache,&work);
+		if ( status == SPARK_STATUS_BUSY )
+		{
+			SparkStageKvBindingAccount(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,*held);
+			(void)pthread_cond_wait(&binding->save_ready,&binding->mutex);
+			*held = SparkStageKvNowNs();
+			return;
+		}
+	}
+	if ( status != SPARK_STATUS_OK )
+		return;
+	binding->save_running = 1u;
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,*held);
+	copy = SparkKvPageCacheSaveCopy(&binding->page_cache,&work);
+	(void)SparkStageKvBindingLock(binding,held);
+	if ( SparkKvPageCacheSaveFinish(&binding->page_cache,&work,copy) == SPARK_STATUS_OK )
+		binding->counters.save_worker_page_count++;
+	else
+		binding->counters.save_worker_failure_count++;
+	binding->save_running = 0u;
+}
+
+static void *SparkStageKvBindingSaveMain(void *context)
+{
+	SparkStageKvBinding *binding = (SparkStageKvBinding *)context;
+	uint64_t held;
+	(void)SparkStageKvBindingLock(binding,&held);
+	for (;;)
+	{
+		while ( binding->save_stop == 0u && (binding->page_cache.snapshot == 0 || SparkKvPageCacheSavePending(&binding->page_cache) == 0u) )
+		{
+			(void)pthread_cond_broadcast(&binding->save_idle);
+			SparkStageKvBindingAccount(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,held);
+			(void)pthread_cond_wait(&binding->save_ready,&binding->mutex);
+			held = SparkStageKvNowNs();
+		}
+		if ( binding->save_stop != 0u )
+			break;
+		SparkStageKvBindingSaveOne(binding,&held);
+	}
+	(void)pthread_cond_broadcast(&binding->save_idle);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,held);
+	return(0);
+}
+
+SparkStatus SparkStageKvBindingFenceExecution(SparkStageKvBinding *binding,void *stream)
+{
+	if ( binding == 0 || binding->copier_initialized == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkKvDeviceCopierFence(&binding->copier,stream));
+}
+
+static void SparkStageKvBindingDeadline(uint64_t timeout_ns,struct timespec *deadline)
+{
+	clock_gettime(CLOCK_REALTIME,deadline);
+	deadline->tv_sec += (time_t)(timeout_ns / 1000000000ull);
+	deadline->tv_nsec += (long)(timeout_ns % 1000000000ull);
+	if ( deadline->tv_nsec >= 1000000000L )
+	{
+		deadline->tv_sec += 1;
+		deadline->tv_nsec -= 1000000000L;
+	}
+}
+
+SparkStatus SparkStageKvBindingQuiesce(SparkStageKvBinding *binding,uint64_t timeout_ns)
+{
+	struct timespec deadline;
+	uint32_t queued,completing,saving;
+	int waited = 0;
+	if ( binding == 0 || binding->sync_initialized == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	SparkStageKvBindingDeadline(timeout_ns,&deadline);
+	(void)pthread_mutex_lock(&binding->completion_mutex);
+	while ( waited == 0 && (binding->completion_count != 0u || binding->completion_running != 0u) )
+		waited = pthread_cond_timedwait(&binding->completion_idle,&binding->completion_mutex,&deadline);
+	queued = binding->completion_count;
+	completing = binding->completion_running;
+	(void)pthread_mutex_unlock(&binding->completion_mutex);
+	(void)pthread_mutex_lock(&binding->mutex);
+	while ( waited == 0 && binding->save_running != 0u )
+		waited = pthread_cond_timedwait(&binding->save_idle,&binding->mutex,&deadline);
+	saving = binding->save_running;
+	(void)pthread_mutex_unlock(&binding->mutex);
+	if ( queued != 0u || completing != 0u || saving != 0u )
+	{
+		fprintf(stderr,"%s kv binding quiesce timeout queued=%u completing=%u saving=%u\n",binding->module_tag,queued,completing,saving);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+void SparkStageKvBindingStop(SparkStageKvBinding *binding)
+{
+	if ( binding == 0 || binding->sync_initialized == 0u )
+		return;
+	(void)pthread_mutex_lock(&binding->completion_mutex);
+	binding->completion_stop = 1u;
+	(void)pthread_cond_broadcast(&binding->completion_ready);
+	(void)pthread_mutex_unlock(&binding->completion_mutex);
+	if ( binding->completion_started != 0u )
+		(void)pthread_join(binding->completion_thread,0);
+	binding->completion_started = 0u;
+	(void)pthread_mutex_lock(&binding->mutex);
+	binding->save_stop = 1u;
+	(void)pthread_cond_broadcast(&binding->save_ready);
+	(void)pthread_mutex_unlock(&binding->mutex);
+	if ( binding->save_started != 0u )
+		(void)pthread_join(binding->save_thread,0);
+	binding->save_started = 0u;
+}
+
+SparkStatus SparkStageKvBindingSampleCounters(SparkStageKvBinding *binding,SparkStageKvBindingCounters *counters)
+{
+	SparkStageKvBindingCounters sample;
+	if ( binding == 0 || counters == 0 || binding->sync_initialized == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	(void)pthread_mutex_lock(&binding->completion_mutex);
+	sample = binding->counters;
+	(void)pthread_mutex_unlock(&binding->completion_mutex);
+	(void)pthread_mutex_lock(&binding->mutex);
+	memcpy(sample.lock_sites,binding->counters.lock_sites,sizeof(sample.lock_sites));
+	sample.save_worker_page_count = binding->counters.save_worker_page_count;
+	sample.save_worker_failure_count = binding->counters.save_worker_failure_count;
+	sample.copy_on_write_count = binding->copier.copy_count;
+	sample.copy_on_write_bytes = binding->copier.copy_bytes;
+	(void)pthread_mutex_unlock(&binding->mutex);
+	*counters = sample;
+	return(SPARK_STATUS_OK);
 }

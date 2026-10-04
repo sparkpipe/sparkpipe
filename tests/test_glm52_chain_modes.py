@@ -15,6 +15,8 @@ static char LOG[LOG_CAPACITY][40];
 static uint32_t LOG_COUNT;
 static uint32_t T1_ENABLED,STREAM_ORDERED = 1u,CAPTURING,CAPTURES,LAUNCHES,WORKER_INLINE = 1u;
 static SparkStatus VERIFY_STATUS,ENQUEUE_STATUS,WORKER_STATUS,CHAIN_KEY_STATUS = SPARK_STATUS_IO_ERROR;
+static SparkStatus FENCE_STATUS,UPLOAD_STATUS;
+static uint32_t FENCED;
 static cudaError_t STREAM_QUERY = cudaSuccess;
 static uint32_t ENQUEUE_FAIL_AT = UINT32_MAX,ENQUEUE_COUNT;
 static uint64_t GRAPH_ERROR;
@@ -203,8 +205,9 @@ SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const ato
 	return(SPARK_STATUS_OK);
 }
 SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *next_positions) { (void)binding; (void)frame; (void)active_count; (void)row_resident_slots; (void)row_sequence_ids; (void)row_positions; (void)next_positions; return(SPARK_STATUS_OK); }
-SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream) { (void)binding; (void)resident_slots; (void)lane_count; (void)stream; return(SPARK_STATUS_OK); }
-SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkStatus status,uint32_t extra_tokens,const uint8_t *bound,const uint64_t *sequence_ids,const uint64_t *next_positions) { (void)binding; (void)resident_slots; (void)lane_count; (void)extra_tokens; (void)bound; (void)sequence_ids; (void)next_positions; return(status); }
+SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream) { (void)binding; (void)resident_slots; (void)lane_count; (void)stream; Log("upload",FENCED); assert(FENCED == 1u); FENCED = 0u; return(UPLOAD_STATUS); }
+SparkStatus SparkStageKvBindingFinishAsync(SparkStageKvBinding *binding,uint32_t dispatch_slot,const SparkStageKvBindingCompletion *completion) { (void)binding; (void)dispatch_slot; completion->finished_function(completion->finished_context,completion->status); return(SPARK_STATUS_OK); }
+SparkStatus SparkStageKvBindingFenceExecution(SparkStageKvBinding *binding,void *stream) { (void)binding; assert(stream == STATE->execution_stream); Log("fence",0u); FENCED = 1u; return(FENCE_STATUS); }
 
 static void Completed(void *context,const SparkModelDriverCompletion *completion)
 {
@@ -709,6 +712,45 @@ static void TestSubmitFailureClearsBusy(void)
 	assert(Count("chain-key0") == 1u && atomic_load(&state.chain_busy) == 0u && COMPLETED_COUNT == 0u);
 }
 
+static void ExecuteFenceCase(SparkStatus fence_status,SparkStatus upload_status)
+{
+	static uint32_t tokens[1] = { 5u };
+	static uint64_t positions[1] = { 9u },sequences[1] = { 11u };
+	static uint32_t output[1];
+	static SparkModelDriverBuffer buffers[1];
+	SparkModelDriverFrame execute = frame;
+	SparkGlm52ResidentDecodeStageBatchView view = batch;
+	SparkGlm52ResidentDecodeStageFrameContext frame_context = context;
+	Reset(SPARK_TP_CHAIN_MODE_LINEAR,0u,1u);
+	atomic_store(&state.chain_busy,0u);
+	atomic_store(&state.slot_states[0],0u);
+	view.token_ids = tokens;
+	view.row_positions = positions;
+	view.row_sequence_ids = sequences;
+	frame_context.batch = &view;
+	execute.execution_stream = state.execution_stream;
+	execute.completion_function = Completed;
+	buffers[0].address = output;
+	execute.buffers = buffers;
+	CHAIN_KEY_STATUS = SPARK_STATUS_OK;
+	FENCE_STATUS = fence_status;
+	UPLOAD_STATUS = upload_status;
+	FENCED = 0u;
+	assert(SparkGlm52ExecuteChain(&state,&execute,&frame_context) == SPARK_STATUS_OK);
+	CHAIN_KEY_STATUS = SPARK_STATUS_IO_ERROR;
+	FENCE_STATUS = UPLOAD_STATUS = SPARK_STATUS_OK;
+	assert(COMPLETED_COUNT == 1u && atomic_load(&state.chain_busy) == 0u && atomic_load(&state.slot_states[0]) == 0u);
+}
+
+static void TestFenceBeforeUpload(void)
+{
+	ExecuteFenceCase(SPARK_STATUS_OK,SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(Find("fence0",0u) >= 0 && Find("fence0",0u) < Find("upload1",0u));
+	assert(Count("fence0") == 1u && Count("upload1") == 1u && COMPLETED_STATUS == SPARK_STATUS_CAPACITY_EXCEEDED);
+	ExecuteFenceCase(SPARK_STATUS_IO_ERROR,SPARK_STATUS_OK);
+	assert(Count("fence0") == 1u && Count("upload0") == 0u && Count("upload1") == 0u && COMPLETED_STATUS == SPARK_STATUS_IO_ERROR);
+}
+
 static void TestBusy(void)
 {
 	WORKER_INLINE = 0u;
@@ -955,6 +997,7 @@ int main(void)
 	TestWorkerRefusal();
 	TestSubmitFailureClearsBusy();
 	TestBusy();
+	TestFenceBeforeUpload();
 	TestShardRows();
 	TestShardDecode();
 	TestShardPrefillGather();

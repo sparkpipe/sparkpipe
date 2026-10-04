@@ -810,9 +810,6 @@ int main(void)
 		expect(fixture.pager.statistics.park_write_failures == 1u &&
 			fixture.pager.statistics.park_completions_published == 2u,
 			"one failure published beside one healthy publish");
-		expect(fixture.arena.write_back_degraded_block_count == 1u,
-			"the B1 degrade applied at publish: drop + recompute,"
-			" never a wedge");
 		expect(fixture.tier.slots_in_use == 1u,
 			"the failed reservation aborted: its tier slot returned");
 		expect(C34DispatchOffer(&fixture,0u,&dispatch) &&

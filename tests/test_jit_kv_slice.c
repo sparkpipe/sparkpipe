@@ -681,7 +681,7 @@ int main(void)
 				"the rewind answers BUSY while the tier is pinned full");
 			expect(!SliceBlockIsResident(&fixture,0u),
 				"the block stays parked: no half-restored residency");
-			expect(fixture.arena.write_back_degraded_block_count == 0u,
+			expect(fixture.arena.park_failure_count == 0u,
 				"nothing was degraded: BUSY is backpressure, not failure");
 		}
 		expect(SparkNvmeTierPin(&fixture.tier,SliceFoldDigest(digest0),

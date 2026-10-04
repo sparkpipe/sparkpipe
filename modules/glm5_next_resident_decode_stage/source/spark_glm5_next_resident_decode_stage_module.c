@@ -50,6 +50,7 @@ static int SparkGlm5NextProbeEnabled(void)
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_admission.h"
 #include "sparkpipe/spark_kv_model_table.h"
+#include "sparkpipe/spark_kv_device_copy.h"
 #include "sparkpipe/spark_glm5_next_kv_geometry.h"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "sparkpipe/spark_glm5_next_kv_shard.h"
@@ -280,6 +281,9 @@ struct SparkGlm5NextModuleState
 	SparkKvCacheArena kv_arena;
 	SparkKvPageCache kv_page_cache;
 	SparkKvPageStore kv_page_store;
+	SparkKvDeviceCopier kv_copier;
+	void *kv_copy_stream;
+	uint32_t kv_copier_initialized;
 	SparkKvPageStore recurrent_store;
 	uint8_t *recurrent_staging;
 	uint64_t recurrent_page_bytes;
@@ -1590,6 +1594,51 @@ static SparkStatus SparkGlm5NextRecurrentInitialize(SparkGlm5NextModuleState *st
 	SPARK_RETURN(status);
 }
 
+static SparkStatus SparkGlm5NextKvCopierInitialize(SparkGlm5NextModuleState *state)
+{
+	SparkKvDeviceCopyConfiguration copy;
+	SparkKvPageCacheDeviceCopy hook;
+	cudaError_t error;
+	SparkStatus status;
+	error = cudaStreamCreateWithFlags((cudaStream_t *)&state->kv_copy_stream,cudaStreamNonBlocking);
+	if ( error != cudaSuccess )
+	{
+		state->kv_copy_stream = 0;
+		return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"kv_copy_stream"));
+	}
+	memset(&copy,0,sizeof(copy));
+	copy.module_tag = SPARK_GLM5_NEXT_MODULE_TAG;
+	copy.stream = state->kv_copy_stream;
+	copy.arena = &state->kv_arena;
+	copy.physical_page_count = state->physical_page_count;
+	copy.region_count = 1u;
+	copy.regions[0].layout = SPARK_KV_DEVICE_COPY_LAYER_MAJOR;
+	copy.regions[0].layer_count = state->kv_layer_count;
+	copy.regions[0].device_base = (uintptr_t)state->kv_cache;
+	copy.regions[0].layer_page_bytes = state->kv_layer_stride_bytes / state->physical_page_count;
+	copy.regions[0].layer_stride_bytes = state->kv_layer_stride_bytes;
+	if ( state->index_layer_count != 0u )
+	{
+		copy.region_count = 2u;
+		copy.regions[1].layout = SPARK_KV_DEVICE_COPY_LAYER_MAJOR;
+		copy.regions[1].layer_count = state->index_layer_count;
+		copy.regions[1].device_base = (uintptr_t)state->index_cache;
+		copy.regions[1].layer_page_bytes = state->index_layer_stride_bytes / state->physical_page_count;
+		copy.regions[1].layer_stride_bytes = state->index_layer_stride_bytes;
+	}
+	copy.pending_capacity = 2u * state->resident_sequence_capacity;
+	status = SparkKvDeviceCopierInitialize(&state->kv_copier,&copy);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	state->kv_copier_initialized = 1u;
+	hook.copy_page = SparkKvDeviceCopierCopyPage;
+	hook.retire_copies = SparkKvDeviceCopierRetire;
+	hook.destination_pins = SparkKvDeviceCopierDestinationPins;
+	hook.defer_free = SparkKvDeviceCopierDeferFree;
+	hook.context = &state->kv_copier;
+	return(SparkKvPageCacheAttachDeviceCopy(&state->kv_page_cache,&hook));
+}
+
 static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 {
 	SparkKvModelTable table;
@@ -1717,6 +1766,9 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 		(uint64_t)state->physical_page_count * block_bytes !=
 			state->kv_layer_stride_bytes * (uint64_t)state->kv_layer_count )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkGlm5NextKvCopierInitialize(state);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	return(SparkGlm5NextRecurrentInitialize(state,table.page_store_config.backing_path));
 }
 
@@ -6417,6 +6469,9 @@ static SparkStatus SparkGlm5NextStartSlot(SparkGlm5NextModuleState *state,SparkM
 	SparkStatus status;
 	*busy_reason = SPARK_GLM5_NEXT_BUSY_OTHER;
 	slot->stream = frame->execution_stream;
+	status = SparkKvDeviceCopierFence(&state->kv_copier,slot->stream);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	status = SparkGlm5NextStageHostBatch(state,slot,batch);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -6593,6 +6648,15 @@ static SparkStatus SparkGlm5NextResetExecutionState(SparkGlm5NextModuleState *st
 		(void)SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,drain,"reset_stream_drain");
 		SPARK_FAIL(SPARK_STATUS_PENDING);
 	}
+	if ( state->kv_copy_stream != 0 )
+	{
+		drain = cudaStreamSynchronize((cudaStream_t)state->kv_copy_stream);
+		if ( drain != cudaSuccess )
+		{
+			(void)SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,drain,"reset_copy_stream_drain");
+			SPARK_FAIL(SPARK_STATUS_PENDING);
+		}
+	}
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_GLM5_NEXT_MODULE_TAG,error,"cache_reset"));
 	memset(state->page_table_shadow,0xff,(uint64_t)state->resident_sequence_capacity * state->pages_per_sequence * sizeof(uint32_t));
@@ -6755,6 +6819,17 @@ static SparkStatus SparkGlm5NextReleaseCaches(SparkGlm5NextModuleState *state)
 		SparkKvPageStoreDestroy(&state->recurrent_store);
 	if ( state->recurrent_staging != 0 )
 		(void)cudaFreeHost(state->recurrent_staging);
+	if ( state->kv_copier_initialized != 0u )
+	{
+		(void)SparkKvDeviceCopierDrain(&state->kv_copier);
+		SparkKvDeviceCopierDestroy(&state->kv_copier);
+		state->kv_copier_initialized = 0u;
+	}
+	if ( state->kv_copy_stream != 0 )
+	{
+		(void)cudaStreamDestroy((cudaStream_t)state->kv_copy_stream);
+		state->kv_copy_stream = 0;
+	}
 	if ( state->kv_page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&state->kv_page_store);
 	free(state->kda_state_index_host);

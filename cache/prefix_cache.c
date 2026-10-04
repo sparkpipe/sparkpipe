@@ -1815,6 +1815,7 @@ static SparkStatus SparkPrefixCacheSelectResidentReuseScoreVictim(
         block = &cache->kv_cache_arena->blocks[logical_block_index];
         if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
             (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
+            (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED) != 0u ||
             SparkKvProtectedBlockListContainsBlock(
                 hard_protected_logical_block_indices,
                 hard_protected_logical_block_count,
@@ -1902,6 +1903,10 @@ SparkStatus SparkPrefixCacheTrimResidentBlocksByReuseScore(
         status = SparkKvCacheArenaMarkBlockNonResident(
             cache->kv_cache_arena,
             victim.logical_block_index);
+        if (status == SPARK_STATUS_IO_ERROR)
+        {
+            continue;
+        }
         if (status != SPARK_STATUS_OK)
         {
             if (evicted_block_count_out != 0)

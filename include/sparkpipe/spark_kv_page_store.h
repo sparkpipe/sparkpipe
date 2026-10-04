@@ -136,10 +136,6 @@ SparkStatus SparkKvPageStoreBuildPath(
 	uint32_t stage_index);
 void SparkKvPageStoreDestroy(SparkKvPageStore *store);
 SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store);
-SparkStatus SparkKvPageStoreCopyResidentPage(
-	SparkKvPageStore *store,
-	const SparkKvCacheBlockView *source,
-	const SparkKvCacheBlockView *destination);
 SparkStatus SparkKvPageStoreWriteback(
 	void *context,
 	uint32_t logical_page_index,
@@ -164,6 +160,8 @@ SparkStatus SparkKvPageStoreProgress(
 	SparkKvCacheArena *arena,
 	uint32_t maximum_job_count);
 SparkStatus SparkKvPageStoreValidateRecord(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation);
+SparkStatus SparkKvPageStoreSupersede(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation);
+SparkStatus SparkKvPageStoreReleaseIdle(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation);
 SparkStatus SparkKvPageStoreInvalidate(
 	SparkKvPageStore *store,
 	uint32_t logical_page_index,
