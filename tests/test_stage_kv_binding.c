@@ -998,6 +998,39 @@ static void TestWriteBudgetDiscardsAndSkips(void)
 	printf("write budget: once spent, snapshot saves are refused and new pages displace unreferenced resident entries instead of spilling\n");
 }
 
+static void TestRestoreHintStartsEarly(void)
+{
+	TestStep hint;
+	SparkModelDriverCacheLane lane;
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	uint32_t attempt;
+	Open();
+	PublishTwoPageChain(pages);
+	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	memset(&hint,0,sizeof(hint));
+	memset(&lane,0,sizeof(lane));
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	lane.prefix_token_count = 8u;
+	Identity(&lane.prefix_identity,0x71u);
+	hint.request.descriptor_bytes = (uint32_t)sizeof(hint.request);
+	hint.request.program_id = 1u;
+	hint.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT;
+	hint.request.cache_lanes = &lane;
+	hint.request.cache_lane_count = 1u;
+	assert(SparkStageKvBindingAdmit(&BINDING,&hint.request,&hint.decision) == SPARK_STATUS_OK && hint.decision.accepted == 1u);
+	assert(BINDING.restore_hints == 1u && BINDING.restore_hinted_jobs == 1u);
+	for (attempt=0u; BINDING.restore_imported_pages < 2u && attempt<500u; attempt++)
+		SleepMs(2u);
+	assert(BINDING.restore_imported_pages == 2u);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK && BINDING.restore_pending_answers == 0u && BINDING.restore_jobs == 1u);
+	assert(SparkStageKvBindingAdmit(&BINDING,&hint.request,&hint.decision) == SPARK_STATUS_OK && BINDING.restore_hinted_jobs == 1u);
+	Close();
+	printf("restore hint: a hinted prefix restores before its prepare, which is admitted without waiting; a resident prefix queues nothing\n");
+}
+
 static void ExpectForeignLayout(const SparkStageKvConfiguration *configuration,uint8_t pages[2][TEST_PAGE_BYTES])
 {
 	SparkModelDriverKvStoreCounters counters;
@@ -1222,6 +1255,7 @@ int main(void)
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
 	TestRestartAdoptsDevicePages();
+	TestRestoreHintStartsEarly();
 	TestWriteBudgetDiscardsAndSkips();
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();

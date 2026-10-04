@@ -839,17 +839,14 @@ Related common-code debt:
   each other. Add a gate that replays a fixed prompt set sequentially and
   concurrently and requires byte-identical completions, and run it with
   every serving release until the batch kernels pass it.
-- JIT KV admission does not prefetch. Restores now run on the binding's
-  restore worker with file reads outside the binding lock
-  (`SparkStageKvBindingRestoreMain`, `runtime/stage_kv_binding.c`): the first
-  prepare of a lane whose prefix is in the snapshot store queues a job and
-  answers `BUSY`, the engine retries within its in-flight budget, and the lane
-  is admitted once the pages are in place. The job still starts only when the
-  first submission reaches residentd, not when the engine queues the request,
-  and admission does not account for restore bandwidth. Close it by sending
-  the engine's queued prefixes to the ranks as restore hints at enqueue,
-  proven on the fleet by a queued restore whose TTFT drops by the restore
-  time against a run without hints.
+- Restore hints are fleet-unproven. When the engine first finds a cached
+  prefix for a queued request it sends every rank a `CACHE_HINT` (resident
+  IPC 22); residentd hands it to the adapter's `cache_hint`, and the core
+  drivers pass it to the binding as a `CACHE_HINT` admission, which queues the
+  restore so it runs while the request waits for dispatch. Non-core adapters
+  have no hook and count the hint as unsupported. Close it on the fleet: a
+  queued request whose prefix was evicted to the snapshot store shows a TTFT
+  that drops by the restore time against a run with hints dropped.
 - A prefix-cache hit reuses KV and KDA state computed however the source
   request ran: one-row prefill for prompt tokens, batched decode rows for
   generated ones. Until batched rows equal B1, a warm and a cold run of the
@@ -868,17 +865,12 @@ Related common-code debt:
   DSA selection, pool expansion) and run the selection kernels. Add the
   logits comparison to the CUDA validation at contexts 63, 64, 2,048, 2,049
   and 4,099.
-- Left out on purpose (2026-10-02): Admission does not account for restore
-  bandwidth. The engine bounds lanes by physical pages and in-flight page
-  demand only (`runtime/model_batch_engine.c:1758-1786`); the rule that admits
-  work only while queued restore bytes over measured drive bandwidth fit the
-  slack (`docs/archive/JIT_KV_RESPONSE.md:21-24`) existed only in the deleted
-  lane pager. Nothing bounds how many restore bytes are admitted at once. Close it by measuring the backing
-  drive's sustained read rate at startup and admitting against it in the
-  common engine with no off switch, proven on the fleet by a burst of
-  spilled-prefix requests whose admitted restore bytes per second stay at or
-  under the measured rate while the decode step time of running lanes is
-  unchanged.
+- Restore bandwidth is bounded only by construction: one binding worker reads
+  restores one job at a time, so restore reads never exceed one sequential
+  stream per engine, but nothing measures the drive or admits against it.
+  Close it on the fleet with a burst of spilled-prefix requests whose restore
+  bytes per second stay at or under the drive's measured rate while the decode
+  step time of running lanes is unchanged.
 ## Model contracts
 
 - Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`

@@ -139,6 +139,7 @@ SparkStatus SparkModelResidentClientGetView(
 	const SparkModelResidentClient *client,
 	SparkModelResidentClientView *view);
 SparkStatus SparkModelResidentClientRequestStatus(SparkModelResidentClient *client);
+SparkStatus SparkModelResidentClientCacheHint(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count);
 SparkStatus SparkModelResidentClientGetStatus(const SparkModelResidentClient *client,SparkModelResidentStatusReport *report);
 
 #ifdef __cplusplus

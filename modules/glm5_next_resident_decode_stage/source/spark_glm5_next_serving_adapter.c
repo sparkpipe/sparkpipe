@@ -979,6 +979,7 @@ static const SparkModelServingAdapterInterface SparkGlm5NextServingInterface =
 	.validate_submission = SparkGlm5NextServingValidateSubmission,
 	.submit = SparkGlm5NextServingSubmit,
 	.prefetch = SparkGlm5NextServingPrefetch,
+	.cache_hint = SparkGlm5NextServingCacheHint,
 	.resolve_prefetch = SparkGlm5NextServingResolvePrefetch,
 	.progress = SparkGlm5NextServingProgress,
 	.quiesce = SparkGlm5NextServingQuiesce,

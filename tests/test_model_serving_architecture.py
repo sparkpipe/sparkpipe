@@ -409,7 +409,7 @@ def main() -> int:
         "generated driver boundary does not forward neutral KV page budgets",
     )
     require(
-        "#define SPARK_MODEL_DRIVER_ABI_VERSION 18u" in driver_header
+        "#define SPARK_MODEL_DRIVER_ABI_VERSION 19u" in driver_header
         and "uint64_t submission_id;" in driver_header
         and "uint64_t control_generation;" in driver_header
         and "uint64_t transaction_id;" in driver_header

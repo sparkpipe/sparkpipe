@@ -432,6 +432,12 @@ static void TestScenarioPrefixIndexSurvivesRestart(const SparkModelResidentDeplo
 		(restored.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u &&
 		memcmp(&canonical.cache_publish_identity,&restored.cache_prefix_identity,sizeof(canonical.cache_publish_identity)) == 0,
 		"index restart: the restarted engine sends the saved block as a prefix lane");
+	{
+		uint32_t rank,hints = 0u;
+		for (rank=0u; rank<TEST_RANKS; rank++)
+			hints += MockResidentClientCalls(rank,MOCK_CALL_CACHE_HINT) == 1u ? 1u : 0u;
+		CHECK(hints == TEST_RANKS,"index restart: the engine hints the queued prefix to every rank once so restores start before dispatch");
+	}
 	TestDriveUntilTerminal(engine,&state,2u,400u);
 	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"index restart: the request completes with four cached prompt tokens");
 	SparkModelBatchEngineDestroy(engine);

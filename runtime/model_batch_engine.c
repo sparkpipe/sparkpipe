@@ -70,6 +70,7 @@ typedef struct SparkModelBatchRequestState
 	uint64_t request_id;
 	uint64_t sequence_id;
 	SparkModelServingCacheIdentity cache_prefix_identity;
+	uint32_t restore_hint_sent;
 	SparkModelServingCacheIdentity cache_published_identity;
 	SparkSha256Context cache_published_digest_context;
 	uint32_t model_extension_kind;
@@ -193,6 +194,8 @@ struct SparkModelBatchEngine
 	uint64_t rejected_lane_count;
 	uint64_t prefix_hit_count;
 	uint64_t prefix_miss_count;
+	uint64_t restore_hint_count;
+	uint64_t restore_hint_dropped_count;
 	uint64_t prefix_hit_token_count;
 	uint64_t stale_prefix_recompute_count;
 	uint64_t stale_prefix_isolation_count;
@@ -886,6 +889,7 @@ static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *en
 	memset(&request->cache_published_identity,0,sizeof(request->cache_published_identity));
 	SparkSha256Initialize(&request->cache_published_digest_context);
 	request->prefix_isolated = 0u;
+	request->restore_hint_sent = 0u;
 	request->stale_prefix_recompute_count++;
 	engine->stale_prefix_recompute_count++;
 	return(SPARK_STATUS_OK);
@@ -1801,8 +1805,17 @@ static void SparkModelBatchRefreshQueuedPrefix(
 				request->sequence_id,SparkModelBatchRequestTokens(engine,slot),aligned,&lookup);
 	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		SparkModelBatchApplyPrefixLookup(engine,request,
 			SparkModelBatchRequestTokens(engine,slot),&lookup);
+		if ( request->cache_prefix_token_count != 0u && request->restore_hint_sent == 0u )
+		{
+			request->restore_hint_sent = 1u;
+			engine->restore_hint_count++;
+			if ( SparkModelPipelineClientCacheHint(engine->pipeline,&request->cache_prefix_identity,request->cache_prefix_token_count) != SPARK_STATUS_OK )
+				engine->restore_hint_dropped_count++;
+		}
+	}
 	else
 		SparkModelBatchFailRequest(engine,request,status);
 }

@@ -23,3 +23,14 @@ static SparkStatus SPARK_FAMILY(ServingResolvePrefetch)(void *adapter_state,cons
 	cache = SPARK_FAMILY(ServingCacheContext)(state,state->prefetch_lanes);
 	return(SparkServingCacheAdmissionRun(&cache,submission,1u,flags));
 }
+
+static inline SparkStatus SPARK_FAMILY(ServingCacheHint)(void *adapter_state,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	SPARK_FAMILY(ServingState) *state;
+	SparkServingCacheAdmission cache;
+	state = (SPARK_FAMILY(ServingState) *)adapter_state;
+	if ( state == 0 || state->program == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = SPARK_FAMILY(ServingCacheContext)(state,state->prefetch_lanes);
+	return(SparkServingCacheHintRun(&cache,identity,token_count));
+}

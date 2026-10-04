@@ -400,6 +400,43 @@ static uint32_t SparkStageKvBindingRestoreWanted(SparkStageKvBinding *binding,co
 	return(1u);
 }
 
+static void SparkStageKvBindingRestoreQueue(SparkStageKvBinding *binding,const SparkModelDriverCacheIdentity *identity,uint32_t token_count)
+{
+	SparkStageKvRestoreSlot *slot;
+	if ( SparkKvPageCachePrefixReady(&binding->page_cache,identity,token_count) != 0u || SparkStageKvBindingRestoreFind(binding,identity,token_count) != 0 )
+		return;
+	slot = SparkStageKvBindingRestoreFree(binding);
+	if ( slot == 0 )
+		return;
+	memset(slot,0,sizeof(*slot));
+	slot->identity = *identity;
+	slot->token_count = token_count;
+	slot->state = SPARK_STAGE_KV_RESTORE_QUEUED;
+	binding->restore_jobs++;
+	binding->restore_hinted_jobs++;
+	(void)pthread_cond_signal(&binding->restore_ready);
+}
+
+static SparkStatus SparkStageKvBindingHint(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
+{
+	uint64_t held;
+	uint32_t lane;
+	SparkStatus status;
+	if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkStageKvBindingLock(binding,&held);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	binding->restore_hints++;
+	if ( binding->page_cache.snapshot != 0 && binding->restore_started != 0u )
+		for (lane=0u; lane<request->cache_lane_count; lane++)
+			SparkStageKvBindingRestoreQueue(binding,&request->cache_lanes[lane].prefix_identity,request->cache_lanes[lane].prefix_token_count);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_RESTORE,held);
+	decision->accepted = 1u;
+	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkStageKvBindingRestoreGate(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request)
 {
 	uint32_t lane,waiting = 0u;
@@ -1059,8 +1096,9 @@ static void SparkStageKvBindingLogCounters(const SparkStageKvBinding *binding)
 		(unsigned long long)binding->arena.park_backing_full_count,(unsigned long long)binding->arena.park_stall_count,
 		(unsigned long long)binding->page_store.write_count,(unsigned long long)binding->page_store.read_count,
 		binding->page_store.backing_page_count,(unsigned long long)binding->page_cache.backing_reclaim_count);
-	fprintf(stderr,"%s kv binding restore worker jobs=%llu pending_answers=%llu imported_pages=%llu\n",binding->module_tag,
-		(unsigned long long)binding->restore_jobs,(unsigned long long)binding->restore_pending_answers,(unsigned long long)binding->restore_imported_pages);
+	fprintf(stderr,"%s kv binding restore worker jobs=%llu hints=%llu hinted_jobs=%llu pending_answers=%llu imported_pages=%llu\n",binding->module_tag,
+		(unsigned long long)binding->restore_jobs,(unsigned long long)binding->restore_hints,(unsigned long long)binding->restore_hinted_jobs,
+		(unsigned long long)binding->restore_pending_answers,(unsigned long long)binding->restore_imported_pages);
 }
 
 static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
@@ -1159,6 +1197,8 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 	uint64_t held;
 	if ( binding == 0 || request == 0 || decision == 0 || binding->mutex_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT )
+		return(SparkStageKvBindingHint(binding,request,decision));
 	status = SparkStageKvBindingLock(binding,&held);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);

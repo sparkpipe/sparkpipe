@@ -268,6 +268,8 @@ struct SparkStageKvBinding
 	SparkKvPageCacheRestoreJob restore_job;
 	uint64_t restore_jobs;
 	uint64_t restore_pending_answers;
+	uint64_t restore_hints;
+	uint64_t restore_hinted_jobs;
 	uint64_t restore_imported_pages;
 	uint32_t save_stop;
 	uint32_t save_running;
