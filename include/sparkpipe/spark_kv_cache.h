@@ -447,6 +447,8 @@ typedef struct SparkKvCacheArena
     uint64_t resident_capacity_stall_count;
     uint64_t retained_block_count;
     uint64_t released_reference_count;
+    uint32_t park_degraded;
+    uint64_t park_degraded_count;
 } SparkKvCacheArena;
 
 SparkStatus SparkKvCacheEstimateCapacity(

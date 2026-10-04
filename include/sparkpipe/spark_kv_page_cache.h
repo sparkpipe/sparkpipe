@@ -247,6 +247,8 @@ typedef struct SparkKvPageCache
 	uint64_t backing_reclaim_count;
 	uint64_t backing_full_count;
 	uint64_t backing_full_queued_count;
+	uint64_t park_stall_queued_count;
+	uint64_t degraded_discard_count;
 }
 SparkKvPageCache;
 

@@ -1220,6 +1220,12 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
         {
             return status;
         }
+        if (arena->park_degraded != 0u)
+        {
+            arena->park_degraded = 0u;
+            fprintf(stderr, "KV-STORE-RECOVERED page=%u: parks succeed again and prefix pages spill again\n",
+                block->logical_block_index);
+        }
         block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
         block->flags &= ~(SPARK_KV_CACHE_BLOCK_FLAG_DIRTY |
             SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED);
@@ -1344,6 +1350,12 @@ static SparkStatus SparkKvCacheArenaTrimResidentBlocksWithPrefetchProtection(
                 victim->logical_block_index,
                 SparkKvCacheArenaParkFailedCount(arena),
                 (unsigned long long)arena->park_stall_count);
+            if (arena->park_degraded == 0u)
+            {
+                arena->park_degraded = 1u;
+                arena->park_degraded_count += 1u;
+                fprintf(stderr, "KV-STORE-DEGRADED parks fail with an I/O error: unused prefix pages are discarded instead of spilled and new work waits for running sequences until a park succeeds\n");
+            }
         }
         if (status != SPARK_STATUS_OK)
         {

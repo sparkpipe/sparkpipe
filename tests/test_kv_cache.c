@@ -186,6 +186,7 @@ static void SparkTestKvParkFailureKeepsPage(void)
 	assert(fixture.evicted_logical_block == block0);
 	assert(fixture.arena.park_failure_count == 3u);
 	assert(fixture.arena.park_stall_count == 1u);
+	assert(fixture.arena.park_degraded == 1u && fixture.arena.park_degraded_count == 1u);
 	assert(fixture.arena.resident_block_count == SPARK_TEST_RESIDENT_SLOT_COUNT);
 	assert(SparkKvCacheArenaResolveBlock(&fixture.arena,block0,&view) ==
 		SPARK_STATUS_OK);
@@ -203,6 +204,7 @@ static void SparkTestKvParkFailureKeepsPage(void)
 		SPARK_STATUS_OK);
 	assert(fixture.evict_count == 4u);
 	assert(fixture.evicted_logical_block == block0);
+	assert(fixture.arena.park_degraded == 0u && fixture.arena.park_degraded_count == 1u);
 	assert((fixture.blocks[block0].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
 	assert((fixture.blocks[block0].flags & SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) != 0u);
 	assert((fixture.blocks[block0].flags &
@@ -2860,6 +2862,56 @@ static void SparkTestKvBackingFullQueuesNewWork(void)
 	printf("PASS kv backing full queues new work while a sequence outside the wave can free backing; a running lane still fails loudly\n");
 }
 
+static void SparkTestKvWritePageWithoutStore(SparkTestKvPageFixture *fixture,SparkModelDriverCacheLane *lane)
+{
+	uint32_t logical[4],physical[4],count,mutations;
+	assert(SparkKvPageCacheBeginPinnedLaneTransaction(&fixture->cache,lane,logical,physical,4u,&count,&mutations) == SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaUnpinResidentTable(&fixture->kv.arena,logical,count) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,lane) == SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkTestKvAbortAdmission(SparkTestKvTransactions *fixture)
+{
+	SparkStatus status;
+	fixture->request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	status = SparkKvLaneTransactionsAdmit(&fixture->transactions,&fixture->request);
+	fixture->request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
+	return(status);
+}
+
+static void SparkTestKvParkStallDegradesToRecompute(void)
+{
+	SparkTestKvTransactions fixture;
+	SparkModelDriverCacheLane lane;
+	SparkTestKvTransactionsInitialize(&fixture,1u);
+	SparkTestKvPageLane(&lane,1u,0u,0u,4u);
+	SparkTestKvPagePublish(&lane,4u,0x11u);
+	SparkTestKvWritePageWithoutStore(&fixture.pages,&lane);
+	assert(SparkKvPageCacheReleaseLane(&fixture.pages.cache,0u,1u) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,2u,1u,0u,1u);
+	SparkTestKvWritePageWithoutStore(&fixture.pages,&lane);
+	assert(fixture.pages.kv.arena.resident_block_count == SPARK_TEST_RESIDENT_SLOT_COUNT);
+	fixture.pages.kv.evict_status = SPARK_STATUS_IO_ERROR;
+	SparkTestKvPageLane(&fixture.lanes[0],3u,2u,0u,1u);
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	assert(fixture.pages.kv.arena.park_degraded == 1u && fixture.pages.kv.arena.park_stall_count >= 1u);
+	assert(fixture.pages.cache.degraded_discard_count == 1u && fixture.pages.cache.evicted_entry_count == 1u);
+	assert(SparkTestKvAbortAdmission(&fixture) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,3u,2u,0u,1u);
+	SparkTestKvWritePageWithoutStore(&fixture.pages,&lane);
+	SparkTestKvPageLane(&fixture.lanes[0],4u,3u,0u,1u);
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_BUSY);
+	assert(fixture.pages.cache.park_stall_queued_count == 1u && fixture.owners[3].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && fixture.pages.cache.sequences[3].sequence_id == 0u);
+	SparkTestKvPageLane(&fixture.lanes[0],2u,1u,1u,2u);
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	assert(SparkTestKvAbortAdmission(&fixture) == SPARK_STATUS_OK);
+	fixture.pages.kv.evict_status = SPARK_STATUS_OK;
+	SparkTestKvPageLane(&fixture.lanes[0],4u,3u,0u,1u);
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	assert(fixture.pages.kv.arena.park_degraded == 0u && fixture.pages.kv.arena.park_degraded_count == 1u && fixture.pages.cache.park_stall_queued_count == 1u);
+	printf("PASS kv park stall degrades to recompute-only: unused prefix pages are discarded, new work waits, a successful park recovers\n");
+}
+
 int main(void)
 {
 	int32_t status;
@@ -2912,6 +2964,7 @@ int main(void)
 	SparkTestKvDeferredDestinationFree();
 	SparkTestKvBackingFullIsRelieved();
 	SparkTestKvBackingFullQueuesNewWork();
+	SparkTestKvParkStallDegradesToRecompute();
 	SparkTestKvPageStoreRetiredWriteFailureReachesEvictor();
 	SparkTestKvLogicalBlockFreeListReusesReleasedHead();
 	SparkTestKvFramePinProtectsResidentBlock();
