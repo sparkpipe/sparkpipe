@@ -249,7 +249,6 @@ TOOL_NAMES := \
     sparkpipe_model_residentd \
     sparkpipe_model_batch \
     sparkpipe_model_api \
-    spark_kv_backing_test \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
     sparkpipe_quant_arm \
@@ -340,10 +339,6 @@ TEST_NAMES := \
 	test_k3_tp16_serving_adapter \
 	test_kv_model_table \
     test_nvme_tier \
-    test_jit_kv_slice \
-    test_jit_kv_wire \
-    test_jit_kv_c3c4 \
-    test_jit_kv_c5w2 \
     test_kv_mooncake \
     test_qwen38_27b_work_control \
     test_qwen38_work_control \
@@ -1293,8 +1288,6 @@ build/debug/sparkpipe_model_batch: node/model_batch.c scheduler/continuous_batch
 	@mkdir -p $(dir $@)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) -DDEBUG node/model_batch.c scheduler/continuous_batch.c runtime/model_batch_engine.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/spark_kv_backing_test: tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY)
-	$(CC) $(CFLAGS) -Iinclude tools/spark_kv_backing_test.c runtime/spark_kv_backing.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 # Fleet startup protocol phase 1+1b registrar (docs/archive/FLEET_STARTUP_PROTOCOL.md):
 # pure POSIX TCP, poll-driven, no threads; deliberately links NOTHING — it
@@ -1672,29 +1665,6 @@ build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
 # archive to link for two translation units.
 build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_nvme_tier.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_jit_kv_slice: tests/test_jit_kv_slice.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_jit_kv_slice.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
-
-# The family wiring proof: the pager over the decode stage module's frame
-# ops (spark_dsv4_jit_kv.c), the parkability condition, and the C2 dispatch
-# gate, end to end on the host.
-build/test_jit_kv_wire: tests/test_jit_kv_wire.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Imodules/dsv4_resident_decode_stage/source tests/test_jit_kv_wire.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
-
-# The C3+C4 proof: measured bandwidth in admission (EMA over observed
-# page-in/page-out throughput against an injected fake clock) and the async
-# park worker (stop flag + poll quantum, completion publishing, B1 degrade,
-# TERM mid-park consistency) over the read-vtable fake backing.
-build/test_jit_kv_c3c4: tests/test_jit_kv_c3c4.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_jit_kv_c3c4.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
-
-# The C5+W2 proof: the reuse-value park policy (victim choice vs LRU under a
-# selectable knob, budget accounting invariant) and the dispatch gate's
-# deadline hint riding the tier's read path (EDF debt ordering under
-# saturation vs the hintless FIFO starvation) over the read-vtable fake.
-build/test_jit_kv_c5w2: tests/test_jit_kv_c5w2.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_kv_pager.h include/sparkpipe/spark_kv_cache.h include/sparkpipe/spark_nvme_tier.h include/sparkpipe/spark_sha256.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_jit_kv_c5w2.c cache/kv_pager.c cache/kv_cache.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
 # The switch machine sits on the same mock-drive tier: two translation units,
 # vtable devices, compiled directly like the tier test above.

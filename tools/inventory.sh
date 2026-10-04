@@ -38,7 +38,6 @@ describe() {
 	runtime/pipeline_runtime.c) echo "model-neutral rank and boundary plan" ;;
 	text/tokenizer.c) echo "generic compiled byte-level BPE tokenizer" ;;
 	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c) echo "DSpark dispatch policy" ;;
-	cache/cache.h) echo "THE CACHE: arena, content-addressed sharing, JIT reserve" ;;
 	cache/store/*) echo "KV block store and client" ;;
 	ring/sideband.h) echo "cross-rank payloads: index share, hidden tap, prefix indices" ;;
 	ring/transport/hidden_transport.*) echo "hidden state between ranks" ;;

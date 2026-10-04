@@ -258,12 +258,12 @@ cache-layout fingerprints, so a changed model or layout can never read old
 KV. Publication is transactional: prepare, commit and abort, with
 generations checked at every transition.
 
-**Tiers.** Pages move between GPU memory, host memory, the 2.5 TB NVMe tier
-and an optional external store. The pager parks and restores whole lanes
-rather than paging per token, because attention reads the entire context on
-every step. Under pressure, admission queues work instead of thrashing. The
-pager (`cache/kv_pager.c`) is host-tested but not yet wired into any module
-([`TECHDEBT.md`](TECHDEBT.md), KV tiers).
+**Tiers.** KV device memory belongs to weightd, which keeps each engine's
+pool across an engine restart. Pages leaving the device park in a per-engine
+spill file on the KV NVMe, and published prefixes are saved to a persistent
+snapshot store on the same drive, which serves restores after eviction or a
+restart; restores run on a worker off the admission path. There is no host
+DRAM tier ([`TECHDEBT.md`](TECHDEBT.md), KV tiers).
 
 **Sharding.** The fleet stores 1/N of the cache on each of N nodes:
 
