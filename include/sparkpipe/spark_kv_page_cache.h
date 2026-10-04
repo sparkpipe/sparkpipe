@@ -110,6 +110,7 @@ typedef struct SparkKvPageCacheSnapshot
 	uint64_t save_cancelled_count;
 	uint64_t evicted_unsaved_count;
 	uint64_t demote_queued_count;
+	uint64_t park_save_queued_count;
 }
 SparkKvPageCacheSnapshot;
 
@@ -277,6 +278,7 @@ SparkStatus SparkKvPageCacheRestoreFinish(SparkKvPageCache *cache,SparkKvPageCac
 SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKvPageCacheResidentRecord *records,uint32_t capacity,uint32_t *count_out);
 SparkStatus SparkKvPageCacheAdoptResident(SparkKvPageCache *cache,const SparkKvPageCacheResidentRecord *records,uint32_t count,uint32_t *adopted_out);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
+uint32_t SparkKvPageCacheSaveParked(SparkKvPageCache *cache,uint32_t logical_page_index);
 SparkStatus SparkKvPageCacheVacateResident(SparkKvPageCache *cache,uint32_t limit,uint32_t *kept_limit,uint32_t *vacated_pages);
 SparkStatus SparkKvPageCachePrepareLane(
 	SparkKvPageCache *cache,

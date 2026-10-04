@@ -454,9 +454,13 @@ citations refer to that commit.
   lane pager with its dsv4 frame ops and the header-only `LmCache` are
   deleted, and the binding uses two stores, the per-engine spill page store
   (`cache/kv_page_store.c`, digest-checked, quota reserved at open) and the
-  persistent snapshot store (`cache/kv_snapshot.c`). Still left: the spill
-  store is anonymous, so a parked page that was never saved does not survive
-  the process; `cache/nvme_tier.c` remains for the unwired topology switch;
+  persistent snapshot store (`cache/kv_snapshot.c`). A parked prefix page
+  whose entry is not yet saved queues its snapshot save when the arena parks
+  it (`SparkStageKvBindingPark`, `SparkKvPageCacheSaveParked`), and the save
+  reads the spill copy, so spilled prefixes reach the persistent store
+  within the write budget. Still left: the spill store itself stays anonymous
+  for pages of running sequences (not reusable after a restart);
+  `cache/nvme_tier.c` remains for the unwired topology switch;
   and the external provider client (`cache/store/`, `common/common_kv_frame.h`)
   stays inside the qwen38_max, qwen38_27b, qwen4_flash and muse_glimmer
   modules until they move onto the binding. Close it by making the spill
@@ -487,23 +491,19 @@ citations refer to that commit.
   2x device pages where `evicted_unsaved` stays zero and an evicted prompt
   restores with `cached_tokens` covering it and tokens equal to an
   uninterrupted run.
-- Left out on purpose (2026-10-02): Every production page store is anonymous:
-  the common binding (`runtime/stage_kv_binding.c:176`) and the glm5_next
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1577`,
-  `:1668`), laguna
-  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:778`),
+- Spilled prefixes on the common binding (GLM Full, GLM Flash, K3) reach the
+  snapshot store: a parked page of an unsaved prefix entry queues its save
+  from the spill copy, and released sequences already queue theirs. Not yet
+  fleet-proven: close it with a prompt spilled before a kill -9 of residentd
+  that hits after the restart with tokens equal to an uninterrupted run. The
+  laguna
+  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:831`),
   ling
-  (`modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c:644`)
+  (`modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c:645`)
   and dsv4
-  (`modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c:1326`)
-  modules set `SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS`, and the store then opens
-  an unnamed `O_TMPFILE` (`cache/kv_page_store.c:174-185`). Spilled KV dies
-  with the process, so a residentd restart or crash loses every spilled prefix
-  and the next request recomputes it. The named-path helper
-  `SparkKvPageStoreBuildPath` (`cache/kv_page_store.c:75-101`) has no caller.
-  Close it by spilling into the persistent store, proven on the fleet by a
-  prompt spilled before a residentd restart that hits after it with tokens
-  equal to an uninterrupted run.
+  (`modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c:1327`)
+  modules keep their own anonymous page stores, so their spilled KV still dies
+  with the process until they move onto the binding (B07–B11).
 - Prefix-cache eviction ranks victims by the highest priority of the requests
   that published or reused an entry, then prefers entries the snapshot store
   holds, then age (`SparkKvPageCacheSelectVictim`,

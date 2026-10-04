@@ -999,6 +999,90 @@ static void TestWriteBudgetDiscardsAndSkips(void)
 	printf("write budget: once spent, snapshot saves are refused and new pages displace unreferenced resident entries instead of spilling\n");
 }
 
+static void PublishStepRetry(uint64_t sequence,uint8_t identity,uint8_t seed,uint8_t *bytes)
+{
+	TestStep step;
+	TestFinished finished = {0};
+	SparkStatus status = SPARK_STATUS_BUSY;
+	uint32_t attempt,page;
+	StepInit(&step,sequence,0u,0u,4u);
+	StepPublish(&step,4u,identity);
+	for (attempt=0u; (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING) && attempt<2000u; attempt++)
+	{
+		status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+		if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
+			SleepMs(1u);
+	}
+	assert(status == SPARK_STATUS_OK);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
+	assert(StepClaim(&step) == SPARK_STATUS_OK);
+	page = LanePage(0u,0u);
+	FillPage(page,seed);
+	PageBytes(page,bytes);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	assert(atomic_load(&finished.count) == 1u && finished.status == SPARK_STATUS_OK);
+	ReleaseSequence(sequence,0u);
+}
+
+static uint32_t EntryFlags(uint8_t identity)
+{
+	SparkModelDriverCacheIdentity wanted;
+	uint32_t index,flags = 0u;
+	Identity(&wanted,identity);
+	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+	for (index=0u; index<BINDING.logical_page_count; index++)
+		if ( (BINDING.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && BINDING.entries[index].token_count == 4u &&
+			memcmp(&BINDING.entries[index].identity,&wanted,sizeof(wanted)) == 0 )
+			flags = BINDING.entries[index].flags | ((BINDING.blocks[BINDING.entries[index].logical_page_index].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u ? 0x80000000u : 0u);
+	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+	return(flags);
+}
+
+static void TestParkedPrefixSaves(void)
+{
+	SparkModelDriverKvStoreCounters counters;
+	uint8_t page[TEST_PAGE_BYTES],first[1][TEST_PAGE_BYTES];
+	uint64_t rate;
+	uint32_t chain,flags,attempt;
+	Open();
+	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+	rate = BINDING.write_budget.bytes_per_day;
+	BINDING.write_budget.bytes_per_day = 1u;
+	BINDING.write_budget.available_bytes = 0u;
+	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+	PublishStepRetry(60u,0xa0u,0x31u,first[0]);
+	WaitSavesIdle();
+	flags = EntryFlags(0xa0u);
+	assert((flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && (flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u && (flags & 0x80000000u) != 0u);
+	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+	BINDING.write_budget.bytes_per_day = rate;
+	BINDING.write_budget.available_bytes = rate;
+	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+	for (chain=0u; chain<TEST_PHYSICAL + 1u && (EntryFlags(0xa0u) & 0x80000000u) != 0u; chain++)
+	{
+		PublishStepRetry(61u + chain,(uint8_t)(0xb0u + chain),(uint8_t)(0x40u + chain),page);
+		WaitSavesIdle();
+	}
+	for (attempt=0u; attempt<500u && (EntryFlags(0xa0u) & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u; attempt++)
+	{
+		WaitSavesIdle();
+		SleepMs(2u);
+	}
+	flags = EntryFlags(0xa0u);
+	assert((flags & 0x80000000u) == 0u && (flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) != 0u && BINDING.snapshot.park_save_queued_count >= 1u);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.save_page_count >= 2u && counters.write_budget_refused_saves >= 1u);
+	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	assert(BINDING.kv_pool.reattached == 0u);
+	assert(RestorePrefix(70u,1u,4u,0xa0u,first,1u) == SPARK_STATUS_OK);
+	Close();
+	printf("parked prefix saves: a prefix page whose save was refused is saved when the arena parks it, from the spill copy, so it restores after a restart with a fresh pool\n");
+}
+
 static void TestRestoreHintStartsEarly(void)
 {
 	TestStep hint;
@@ -1260,6 +1344,7 @@ int main(void)
 	TestRestartAdoptsDevicePages();
 	TestRestoreHintStartsEarly();
 	TestWriteBudgetDiscardsAndSkips();
+	TestParkedPrefixSaves();
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();
