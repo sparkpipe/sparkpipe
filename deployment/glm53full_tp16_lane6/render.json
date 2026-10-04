@@ -1,0 +1,12 @@
+{
+ "lane": 6,
+ "codec": "fp8",
+ "arm": "fp8",
+ "socket": "/tmp/spark_weightd.sock",
+ "kv_backing_bytes": 21474836480,
+ "kv_physical_bytes": 34359738368,
+ "max_sequence_positions": 262144,
+ "execution_row_capacity": 1024,
+ "sequences": 2,
+ "inflight": 1
+}

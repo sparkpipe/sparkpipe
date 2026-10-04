@@ -198,6 +198,17 @@ def main():
         subprocess.run(command, check=True, capture_output=True)
         if subprocess.run(command + ["--check"], capture_output=True).returncode != 0:
             failures.append("--check reports drift on a fresh render")
+    production = ROOT / "deployment/glm53full_tp16_lane6"
+    settings = json.loads((production / "render.json").read_text())
+    command = [sys.executable, str(ROOT / "tools/glm53full_lane.py"), "--output", str(production), "--check"]
+    for name, value in settings.items():
+        command += ["--" + name.replace("_", "-"), str(value)]
+    if subprocess.run(command, capture_output=True).returncode != 0:
+        failures.append("the committed production lane tree drifted from its render.json; re-render deployment/glm53full_tp16_lane6")
+    limits = json.loads((production / "model_resident.json").read_text())["runtime_limits"]
+    if limits["max_sequence_positions"] != 262144 or limits["resident_sequence_capacity"] != 2 or limits["max_input_rows"] != 1024 or \
+            limits["kv_physical_page_capacity"] != 2 * 262144 // 64 or limits["kv_logical_page_capacity"] != limits["kv_physical_page_capacity"] + settings["kv_backing_bytes"] // page:
+        failures.append(f"production lane limits {limits}")
         stage = Path(directory) / "config/stage_03.json"
         stage.write_text(stage.read_text().replace('"tp_rank": 3', '"tp_rank": 4'))
         if subprocess.run(command + ["--check"], capture_output=True).returncode == 0:
