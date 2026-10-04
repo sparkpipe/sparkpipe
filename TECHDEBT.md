@@ -365,16 +365,12 @@ citations refer to that commit.
   seconds without disrupting unrelated resident requests.
 - Preserve resumable KV and request ownership across model eviction and
   reactivation, subject to explicit capacity and retention policy.
-- Left out on purpose (2026-10-02): KV does not survive model eviction and
-  reactivation, which `README.md:157-158` requires. Unloading GLM-5.3 Full
-  destroys the binding
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:2490`),
-  and the binding destroys its anonymous `O_TMPFILE` spill store
-  (`runtime/stage_kv_binding.c:176`, `:266`; `cache/kv_page_store.c:179-185`)
-  without saving anything, so every resident and spilled prefix is gone when
-  the model returns. Close it by saving every published, unsaved chain to the
-  snapshot store before the binding is destroyed and restoring through the
-  store after reactivation. Fleet proof: publish a prompt, evict GLM-5.3 Full,
+- KV survives model eviction and reactivation in code (`README.md:157-158`):
+  destroying the binding saves every published, unsaved chain to the snapshot
+  store first (`SparkStageKvBindingSaveAtDestroy`, bounded by
+  `SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS`), parked prefix pages queue their
+  saves when they spill, and the weightd pool keeps the sealed resident pages
+  for a reattach. Not yet fleet-proven: publish a prompt, evict GLM-5.3 Full,
   reactivate it, resend the prompt, and see `cached_tokens > 0` with tokens
   identical to the first run.
 - The KV page store reserves its whole backing quota at open (`fallocate`),
