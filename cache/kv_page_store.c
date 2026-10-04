@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #define _FILE_OFFSET_BITS 64
 
 #include "sparkpipe/spark_kv_page_store.h"
@@ -152,6 +155,37 @@ static uint32_t SparkKvPageStoreIsValid(const SparkKvPageStore *store)
 		store->generations != 0 && store->valid_pages != 0 ? 1u : 0u);
 }
 
+static SparkStatus SparkKvPageStoreReserve(
+	SparkKvPageStore *store,
+	const char *backing_path)
+{
+	uint64_t bytes;
+	int32_t error;
+	bytes = (store->maximum_backing_bytes / store->page_bytes) * store->page_bytes;
+#if defined(__linux__)
+	error = fallocate(store->file_descriptor,0,0,(off_t)bytes) == 0 ? 0 : errno;
+#elif defined(__APPLE__)
+	{
+		fstore_t request;
+		memset(&request,0,sizeof(request));
+		request.fst_flags = F_ALLOCATEALL;
+		request.fst_posmode = F_PEOFPOSMODE;
+		request.fst_length = (off_t)bytes;
+		error = fcntl(store->file_descriptor,F_PREALLOCATE,&request) == -1 ? errno : 0;
+		if ( error == 0 && ftruncate(store->file_descriptor,(off_t)bytes) != 0 )
+			error = errno;
+	}
+#else
+	error = ENOTSUP;
+#endif
+	if ( error == 0 )
+		return(SPARK_STATUS_OK);
+	fprintf(stderr,"kv page store: backing %s cannot reserve %llu bytes: %s\n",backing_path,(unsigned long long)bytes,strerror(error));
+	if ( error == ENOSPC || error == EFBIG )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+}
+
 static SparkStatus SparkKvPageStoreOpen(
 	SparkKvPageStore *store,
 	const SparkKvPageStoreConfiguration *configuration)
@@ -185,7 +219,7 @@ static SparkStatus SparkKvPageStoreOpen(
 	}
 	store->file_descriptor = open(configuration->backing_path,flags,0600);
 	if ( store->file_descriptor >= 0 )
-		return(SPARK_STATUS_OK);
+		return(SparkKvPageStoreReserve(store,configuration->backing_path));
 	if ( (configuration->flags & SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO) != 0u &&
 		(errno == EINVAL
 #ifdef EOPNOTSUPP

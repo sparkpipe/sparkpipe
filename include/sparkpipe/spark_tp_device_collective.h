@@ -9,7 +9,9 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 15u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 16u
+#define SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN 0u
+#define SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_SPLIT_RING_PHASE_COUNT 30u
@@ -28,7 +30,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES 64u
 #define SPARK_TP_DEVICE_COLLECTIVE_NONCE_BYTES 8u
 
-#define SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION 2u
+#define SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION 3u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT 0u
@@ -218,7 +220,7 @@ typedef struct SparkTpDeviceCollectiveTopology
     uint32_t direct_all_to_all_max_payload_bytes;
     uint32_t split_ring_min_payload_bytes;
     uint32_t step_rail_indices[SPARK_TP_DEVICE_COLLECTIVE_MAX_STEPS];
-    uint32_t reserved0;
+    uint32_t wait_mode;
     uint16_t session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
         [SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
     char rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
@@ -259,6 +261,7 @@ typedef struct SparkTpDeviceCollectiveConfig
     uint64_t collective_identifier;
     struct SparkWeightdClient *mesh_lane_client;
     uint32_t mesh_band_index;
+    uint32_t wait_mode;
 	const char *backend_module_path;
     const char *local_host;
     const char *rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];

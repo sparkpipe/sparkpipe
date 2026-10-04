@@ -300,6 +300,13 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 			state->device_topology.algorithm_mask =
 				SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 			{
+				int32_t wait_token = SparkJsonFindObjectMember(&doc, dev, "wait_mode");
+				if ( wait_token >= 0 && SparkJsonStringEquals(&doc, wait_token, "hardware") )
+					state->device_topology.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
+				else if ( wait_token >= 0 && !SparkJsonStringEquals(&doc, wait_token, "spin") )
+					{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
+			}
+			{
 				int32_t ports_token = SparkJsonFindObjectMember(&doc, dev, "session_ports");
 				uint32_t ports_rows = ports_token >= 0 ?
 					SparkJsonGetArrayElementCount(&doc, ports_token) : 0u;
@@ -1261,6 +1268,7 @@ static SparkStatus K3ServingSnapshot(void *adapter_state,
 	snapshot->completed_count = stats.completed_count;
 	snapshot->resident_sequence_count = SparkStageKvBindingResidentCount(&state->kv);
 	snapshot->kv_token_capacity = (uint64_t)state->kv.logical_page_count * SPARK_K3_KV_PAGE_SLOTS;
+	snapshot->max_sequence_positions = state->runner_config.kv_pages_per_sequence * SPARK_K3_KV_PAGE_SLOTS;
 	SparkStageKvBindingKvStoreCounters(&state->kv, &snapshot->kv_store);
 	return SPARK_STATUS_OK;
 }

@@ -272,7 +272,6 @@ static void SparkTestKvPageStoreFullDiskKeepsPagesAndRecovers(void)
 	assert(getrlimit(RLIMIT_FSIZE,&old_limit) == 0);
 	full_limit.rlim_cur = SPARK_TEST_BLOCK_BYTES;
 	full_limit.rlim_max = old_limit.rlim_max;
-	assert(setrlimit(RLIMIT_FSIZE,&full_limit) == 0);
 	SparkTestKvInitialize(&fixture);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
@@ -285,7 +284,12 @@ static void SparkTestKvPageStoreFullDiskKeepsPagesAndRecovers(void)
 	configuration.backing_path = path;
 	configuration.staging_address = staging;
 	configuration.staging_bytes = sizeof(staging);
+	assert(setrlimit(RLIMIT_FSIZE,&full_limit) == 0);
+	assert(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	(void)unlink(path);
+	assert(setrlimit(RLIMIT_FSIZE,&old_limit) == 0);
 	assert(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_OK);
+	assert(setrlimit(RLIMIT_FSIZE,&full_limit) == 0);
 	fixture.arena.evict_function = SparkKvPageStoreWriteback;
 	fixture.arena.evict_context = &store;
 	block0 = SparkTestKvAcquire(&fixture);
@@ -362,7 +366,6 @@ static void SparkTestKvPageStoreRetiredWriteFailureReachesEvictor(void)
 	assert(getrlimit(RLIMIT_FSIZE,&old_limit) == 0);
 	full_limit.rlim_cur = SPARK_TEST_BLOCK_BYTES;
 	full_limit.rlim_max = old_limit.rlim_max;
-	assert(setrlimit(RLIMIT_FSIZE,&full_limit) == 0);
 	SparkTestKvInitialize(&fixture);
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
@@ -375,7 +378,12 @@ static void SparkTestKvPageStoreRetiredWriteFailureReachesEvictor(void)
 	configuration.backing_path = path;
 	configuration.staging_address = staging;
 	configuration.staging_bytes = sizeof(staging);
+	assert(setrlimit(RLIMIT_FSIZE,&full_limit) == 0);
+	assert(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	(void)unlink(path);
+	assert(setrlimit(RLIMIT_FSIZE,&old_limit) == 0);
 	assert(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_OK);
+	assert(setrlimit(RLIMIT_FSIZE,&full_limit) == 0);
 	page0 = (uintptr_t)fixture.device;
 	page1 = (uintptr_t)(fixture.device + SPARK_TEST_BLOCK_BYTES);
 	assert(SparkKvPageStoreWriteback(&store,0u,0u,1u,page0,SPARK_TEST_BLOCK_BYTES,0u,0u) == SPARK_STATUS_BUSY);

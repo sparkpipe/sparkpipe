@@ -47,7 +47,8 @@ static SparkStatus SparkTpCollectiveValidateMembers(
 		"peer_hosts","peer_ports","algorithms",
 		"direct_all_to_all_max_payload_bytes",
 		"split_ring_min_payload_bytes","rail_peer_hosts",
-		"step_rail_indices","session_ports","session_ports_hc"
+		"step_rail_indices","session_ports","session_ports_hc",
+		"wait_mode"
 	};
 	const char *const *members;
 	uint32_t member_count;
@@ -56,6 +57,9 @@ static SparkStatus SparkTpCollectiveValidateMembers(
 	member_count = backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT ?
 		(uint32_t)(sizeof(adaptive_members) / sizeof(adaptive_members[0])) :
 		(uint32_t)(sizeof(base_members) / sizeof(base_members[0]));
+	if ( backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT &&
+		SparkJsonFindObjectMember(document,object,"wait_mode") < 0 )
+		member_count--;
 	return(SparkJsonValidateObjectMembersExact(document,object,members,
 		member_count));
 }
@@ -434,6 +438,11 @@ static SparkStatus SparkTpCollectiveLoadBackend(
 	if ( status != SPARK_STATUS_OK || collective_identifier == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 	config->collective_identifier = collective_identifier;
+	token = SparkJsonFindObjectMember(document,object,"wait_mode");
+	if ( token >= 0 && SparkJsonStringEquals(document,token,"hardware") )
+		config->topology.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
+	else if ( token >= 0 && !SparkJsonStringEquals(document,token,"spin") )
+		return(SPARK_STATUS_SCHEMA_ERROR);
 	status = SparkServingAdapterTemplateJsonUnsigned(document,object,
 		"listen_port",&port);
 	if ( status != SPARK_STATUS_OK || port == 0u || port > UINT16_MAX )
@@ -558,6 +567,10 @@ SparkStatus SparkServingAdapterTemplateLoadDriver(
 		configuration->kv_backing_directory;
 	create_request.kv_backing_maximum_bytes =
 		configuration->kv_backing_maximum_bytes;
+	create_request.kv_snapshot_directory =
+		configuration->kv_snapshot_directory;
+	create_request.kv_snapshot_maximum_bytes =
+		configuration->kv_snapshot_maximum_bytes;
 	create_request.execution_stream = configuration->execution_stream;
 	create_request.completion_function = request->completion_function;
 	create_request.completion_context = request->completion_context;

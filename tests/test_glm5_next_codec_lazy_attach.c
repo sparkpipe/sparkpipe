@@ -168,7 +168,7 @@ static void check_codec(const char *root,const char *socket_path,uint32_t codec,
 	snprintf(pool,sizeof(pool),"%llu",(unsigned long long)(single != 0u ? pack.size + TEST_CHUNK : pack.size));
 	assert(setenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES",pool,1) == 0);
 	assert(setenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES","8388608",1) == 0);
-	assert(setenv("SPARK_GLM5_NEXT_PIN_EXPERTS","1",1) == 0);
+	state->pin_experts = 1u;
 	strcpy(state->model_revision,"codec-test");
 	state->tp_degree = 1u;
 	state->first_layer_index = TEST_LAYER;

@@ -218,6 +218,7 @@ typedef struct SparkModelResidentdRuntime
 	SparkHiddenTransportSession *output_transport;
 	SparkPipelineRuntimeRankPlan rank_plan;
 	SparkModelServingRuntimeLimits runtime_limits;
+	uint32_t adapter_max_sequence_positions;
 	SparkModelResidentdClient client;
 	SparkModelResidentdRoute *routes;
 	SparkModelResidentdSlot *slots;
@@ -386,9 +387,12 @@ static SparkStatus SparkModelResidentdValidateDirectories(
 	if ( configuration == 0 ||
 		!SparkPathIsRealDirectoryTree(configuration->runtime_root) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( configuration->kv_backing_directory != 0 &&
+	if ( configuration->kv_backing_directory == 0 ||
 		!SparkPathIsRealDirectoryTree(configuration->kv_backing_directory) )
+	{
+		fprintf(stderr,"model_residentd: kv_backing_directory %s is not a real directory\n",configuration->kv_backing_directory != 0 ? configuration->kv_backing_directory : "(missing)");
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
 	if ( configuration->kv_snapshot_directory != 0 &&
 		!SparkPathIsRealDirectoryTree(configuration->kv_snapshot_directory) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -1250,6 +1254,23 @@ static SparkStatus SparkModelResidentdInitializeAdapter(
 	return(runtime->adapter_library.adapter_interface.initialize(&adapter_configuration,&runtime->adapter_state));
 }
 
+static SparkStatus SparkModelResidentdReadAdapterLimits(SparkModelResidentdRuntime *runtime)
+{
+	SparkModelServingAdapterSnapshot snapshot;
+	SparkStatus status;
+	memset(&snapshot,0,sizeof(snapshot));
+	status = runtime->adapter_library.adapter_interface.snapshot != 0 ?
+		runtime->adapter_library.adapter_interface.snapshot(runtime->adapter_state,&snapshot) : SPARK_STATUS_UNSUPPORTED;
+	if ( status != SPARK_STATUS_OK || snapshot.max_sequence_positions == 0u )
+	{
+		fprintf(stderr,"model_residentd: the adapter reports no max_sequence_positions (snapshot status=%s)\n",SparkStatusToString(status));
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	runtime->adapter_max_sequence_positions = snapshot.max_sequence_positions;
+	fprintf(stderr,"model_residentd adapter_max_sequence_positions=%u\n",snapshot.max_sequence_positions);
+	return(SPARK_STATUS_OK);
+}
+
 static void SparkModelResidentdResetRuntime(SparkModelResidentdRuntime *runtime)
 {
 	memset(runtime,0,sizeof(*runtime));
@@ -1434,6 +1455,11 @@ static SparkStatus SparkModelResidentdInitializeResources(
 	{
 		runtime->initialize_phase = "adapter_initialize";
 		status = SparkModelResidentdInitializeAdapter(runtime,configuration);
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		runtime->initialize_phase = "adapter_limits";
+		status = SparkModelResidentdReadAdapterLimits(runtime);
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -1827,7 +1853,8 @@ static SparkStatus SparkModelResidentdFinishHello(SparkModelResidentdRuntime *ru
 		runtime->client.hello_message_id,SPARK_STATUS_OK,
 		runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,
 		runtime->client.generation,runtime->client.session_epoch,
-		runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits);
+		runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,
+		runtime->adapter_max_sequence_positions);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	pthread_mutex_lock(&runtime->mutex);
@@ -1885,7 +1912,8 @@ static SparkStatus SparkModelResidentdAdoptCandidate(
 			hello->header.message_id,SPARK_STATUS_BUSY,
 			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,
 			runtime->client.generation,hello->session_epoch,
-			runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits);
+			runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,
+			runtime->adapter_max_sequence_positions);
 		if ( status == SPARK_STATUS_OK && SparkModelResidentSend(fd,&ack,sizeof(ack)) != sizeof(ack) )
 			fprintf(stderr,"model_residentd client_rejection_reply_failed rank=%u\n",runtime->rank_plan.rank_index);
 		close(fd);

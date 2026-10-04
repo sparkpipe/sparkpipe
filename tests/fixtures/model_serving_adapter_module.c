@@ -529,6 +529,7 @@ static SparkStatus TestModelServingSnapshot(
 	snapshot->submitted_count = state->submitted_count;
 	snapshot->completed_count = state->completed_count;
 	snapshot->rejected_count = state->rejected_count;
+	snapshot->max_sequence_positions = UINT32_C(1) << 20;
 	return(SPARK_STATUS_OK);
 }
 

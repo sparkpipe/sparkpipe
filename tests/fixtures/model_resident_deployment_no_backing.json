@@ -40,7 +40,7 @@
       "node_target": "test.target.1",
       "transport_host": "spark1",
       "adapter_configuration_path": "config/test-adapter-1.json",
-      "kv_backing_directory": "/tmp/test-runtime-1/kvcache",
+      "kv_backing_directory": null,
       "kv_backing_maximum_bytes": 0,
       "control_endpoint": {"kind": "unix", "path": "/tmp/test-model-resident-1.sock"}
     },

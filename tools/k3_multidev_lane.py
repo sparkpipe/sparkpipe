@@ -207,6 +207,7 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
             "operation_timeout_milli": 30000,
             "peer_hosts": group_hosts(rank),
             "session_ports": session_table(),
+            "wait_mode": "hardware",
         },
         "tp_collective": {
             "listen_port": TP_COLLECTIVE_PORT + tp,

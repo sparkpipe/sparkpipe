@@ -599,6 +599,11 @@ static void api_publish_health(void)
 	__atomic_store_n(&S.health_missing_rank,view.pipeline.first_disconnected_rank,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_failed_status,view.failed_status,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_live_requests,view.live_request_count,__ATOMIC_RELEASE);
+	if ( view.context_limit != 0u && view.context_limit != __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE) )
+	{
+		__atomic_store_n(&S.context_limit,view.context_limit,__ATOMIC_RELEASE);
+		api_logf("api_context_limit max_context_tokens=%u source=engine", view.context_limit);
+	}
 }
 
 static void *api_worker(void *arg)
@@ -645,10 +650,11 @@ static uint32_t api_context_limit(const SparkModelResidentDeployment *deployment
 
 static int api_fit_context(uint32_t prompt_len, uint32_t *max_tokens)
 {
-	if ( prompt_len >= S.context_limit )
+	uint32_t limit = __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE);
+	if ( prompt_len >= limit )
 		return(0);
-	if ( *max_tokens > S.context_limit - prompt_len )
-		*max_tokens = S.context_limit - prompt_len;
+	if ( *max_tokens > limit - prompt_len )
+		*max_tokens = limit - prompt_len;
 	return(1);
 }
 
@@ -1504,7 +1510,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		char err[224];
 		free(prompt);
 		free(request_stops);
-		(void)snprintf(err, sizeof(err), "{\"error\":{\"message\":\"the prompt has %u tokens and this deployment serves %u positions, so no output fits\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}", prompt_len, S.context_limit);
+		(void)snprintf(err, sizeof(err), "{\"error\":{\"message\":\"the prompt has %u tokens and this deployment serves %u positions, so no output fits\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}", prompt_len, __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE));
 		send_response(fd, 400, err);
 		return;
 	}
@@ -1822,15 +1828,7 @@ int main(int argc, char **argv)
 	S.context_limit = cfg.max_context_tokens;
 	api_logf("api_context_limit max_context_tokens=%u deployment_max_sequence_positions=%u", cfg.max_context_tokens, dep.max_sequence_positions);
 	cfg.max_prefill_rows_per_submission = dep.runtime_limits.max_input_row_count;
-	{
-		const char *rows_env = getenv("SPARK_MODEL_API_MAX_PREFILL_ROWS");
-		if ( rows_env != 0 && rows_env[0] != '\0' )
-		{
-			uint32_t clamp = (uint32_t)strtoul(rows_env,0,10);
-			if ( clamp != 0u && clamp < cfg.max_prefill_rows_per_submission )
-				cfg.max_prefill_rows_per_submission = clamp;
-		}
-	}
+	api_logf("api_prefill_rows max_prefill_rows_per_submission=%u deployment_max_input_row_count=%u", cfg.max_prefill_rows_per_submission, dep.runtime_limits.max_input_row_count);
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
 	cfg.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;

@@ -246,8 +246,8 @@ def prepare(spec, environment):
     if "working_set" in spec:
         working = spec["working_set"]
         require(working["mode"] in ("partial", "full"), "working set mode must be partial or full")
-        expected = "1" if working["mode"] == "full" else "0"
-        require(all(spec["environment"].get(key) == expected for key in ("SPARK_GLM5_NEXT_GRAPH_PATH", "SPARK_GLM5_NEXT_PIN_EXPERTS")), "graph and pin-all must match explicit working set mode")
+        expected = 1 if working["mode"] == "full" else 0
+        require(all(config.get(key) == expected for key in ("graph_path", "pin_experts")), "graph and pin-all must match explicit working set mode")
         require(working["path"] in assets, "working set is not pinned")
         raw = (source / working["path"]).read_bytes()
         require(0 < len(raw) <= 512 * 8 and len(raw) % 8 == 0, "working set requires 1..512 complete key pairs")

@@ -86,6 +86,7 @@ static SparkModelServingCacheIdentity mock_identity_log[256];
 static uint32_t mock_identity_log_count;
 static uint32_t mock_token_start = 11u;
 static uint32_t mock_logprob_stride;
+static uint32_t mock_max_sequence_positions[64];
 static uint32_t mock_logprob_corrupt;
 static uint32_t mock_max_tokens_per_sequence;
 
@@ -365,6 +366,7 @@ void MockResidentClientReset(void)
 	mock_logprob_stride = 0u;
 	mock_logprob_corrupt = 0u;
 	mock_max_tokens_per_sequence = 0u;
+	memset(mock_max_sequence_positions,0,sizeof(mock_max_sequence_positions));
 	memset(mock_registry,0,sizeof(mock_registry));
 }
 
@@ -651,7 +653,15 @@ SparkStatus SparkModelResidentClientGetView(
 	view->max_active_sequence_count = 4u;
 	view->max_input_row_count = 8u;
 	view->resident_sequence_capacity = 4u;
+	view->max_sequence_positions = client->stage_index < 64u && mock_max_sequence_positions[client->stage_index] != 0u ?
+		mock_max_sequence_positions[client->stage_index] : UINT32_C(1) << 20;
 	return(SPARK_STATUS_OK);
+}
+
+void MockResidentClientSetMaxSequencePositions(uint32_t stage_index, uint32_t positions)
+{
+	if ( stage_index < 64u )
+		mock_max_sequence_positions[stage_index] = positions;
 }
 
 void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt)

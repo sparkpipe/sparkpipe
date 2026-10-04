@@ -133,6 +133,7 @@ struct SparkModelBatchEngine
 	uint32_t request_capacity;
 	uint32_t resident_sequence_capacity;
 	uint32_t max_context_tokens;
+	uint32_t context_tokens;
 	uint64_t inflight_budget_ns;
 	uint32_t max_prefill_rows;
 	uint32_t max_active_sequence_count;
@@ -773,7 +774,7 @@ static SparkStatus SparkModelBatchAcceptToken(
 	const SparkSamplingLogprob *logprobs = 0;
 	uint32_t stop,token_id;
 	uint32_t *tokens;
-	if ( request->generated_token_count >= request->output_token_budget || request->prompt_token_count + request->generated_token_count >= engine->max_context_tokens )
+	if ( request->generated_token_count >= request->output_token_budget || request->prompt_token_count + request->generated_token_count >= engine->context_tokens )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	token_id = completion->token_ids[token_index];
 	if ( request->sampling.logprobs != 0u )
@@ -1514,6 +1515,7 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->kv_logical_page_capacity = limits->kv_logical_page_capacity;
 	engine->kv_physical_page_capacity = limits->kv_physical_page_capacity;
 	engine->max_context_tokens = SparkModelBatchContextLimit(configuration);
+	engine->context_tokens = engine->max_context_tokens;
 	engine->inflight_budget_ns = configuration->inflight_budget_ns;
 	engine->max_prefill_rows = configuration->max_prefill_rows_per_submission;
 	engine->max_active_sequence_count = limits->max_active_sequence_count;
@@ -1663,7 +1665,7 @@ static SparkStatus SparkModelBatchValidateSubmit(
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( request->logprobs != 0u && (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	if ( request->prompt_token_count > engine->max_context_tokens || request->output_token_budget > engine->max_context_tokens - request->prompt_token_count )
+	if ( request->prompt_token_count > engine->context_tokens || request->output_token_budget > engine->context_tokens - request->prompt_token_count )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( SparkModelBatchSchedulerRequestFitsPageCapacity(
 		engine->cache_block_token_count,engine->kv_physical_page_capacity,
@@ -2371,7 +2373,7 @@ static void SparkModelBatchBuildDecodeRows(
 			request->generated_token_count;
 		if ( remaining < chain_tokens )
 			chain_tokens = remaining;
-		remaining = engine->max_context_tokens -
+		remaining = engine->context_tokens -
 			(request->prompt_token_count + request->generated_token_count);
 		if ( remaining < chain_tokens )
 			chain_tokens = remaining;
@@ -2666,6 +2668,29 @@ static void SparkModelBatchFailIdleRequests(
 	}
 }
 
+static void SparkModelBatchRefreshContextLimit(SparkModelBatchEngine *engine)
+{
+	SparkModelPipelineClientView view;
+	SparkModelBatchRequestState *request;
+	uint32_t index,limit;
+	memset(&view,0,sizeof(view));
+	if ( SparkModelPipelineClientGetView(engine->pipeline,&view) != SPARK_STATUS_OK || view.max_sequence_positions == 0u )
+		return;
+	limit = view.max_sequence_positions < engine->max_context_tokens ? view.max_sequence_positions : engine->max_context_tokens;
+	if ( limit == engine->context_tokens )
+		return;
+	engine->context_tokens = limit;
+	fprintf(stderr,"batch engine context limit %u positions (smallest adapter limit %u, configured %u)\n",limit,view.max_sequence_positions,engine->max_context_tokens);
+	for (index=0u; index<engine->request_capacity; index++)
+	{
+		request = &engine->requests[index];
+		if ( request->state == SPARK_MODEL_BATCH_REQUEST_FREE || request->state == SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT || request->state == SPARK_MODEL_BATCH_REQUEST_DECODE_INFLIGHT || request->state == SPARK_MODEL_BATCH_REQUEST_RELEASE_INFLIGHT || request->state == SPARK_MODEL_BATCH_REQUEST_PUBLISH_INFLIGHT )
+			continue;
+		if ( request->prompt_token_count > limit || request->output_token_budget > limit - request->prompt_token_count )
+			SparkModelBatchFailRequest(engine,request,SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+}
+
 static SparkStatus SparkModelBatchKeepPrefixIndex(SparkModelBatchEngine *engine)
 {
 	uint32_t count = 0u,imported = 0u,skipped = 0u;
@@ -2775,6 +2800,7 @@ SparkStatus SparkModelBatchEngineProgress(
 			SparkModelBatchFailIdleRequests(engine,(SparkStatus)engine->failed_status);
 		return((SparkStatus)engine->failed_status);
 	}
+	SparkModelBatchRefreshContextLimit(engine);
 	SparkModelBatchExpireStalledRequests(engine);
 	SparkModelBatchRefreshInflightKvPageCount(engine);
 	SparkModelBatchPeriodicWork(engine);
@@ -2958,6 +2984,7 @@ SparkStatus SparkModelBatchEngineGetView(
 	view->kv_physical_page_capacity = engine->kv_physical_page_capacity;
 	view->kv_logical_page_capacity = engine->kv_logical_page_capacity;
 	view->failed_status = engine->failed_status;
+	view->context_limit = engine->context_tokens;
 	view->submitted_request_count = engine->submitted_request_count;
 	view->completed_request_count = engine->completed_request_count;
 	view->cancelled_request_count = engine->cancelled_request_count;

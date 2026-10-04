@@ -332,6 +332,7 @@ SparkStatus SparkTpDeviceCollectiveApplyTopology(
     if ( topology == 0 || config == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     config->tp_degree = topology->rank_count;
+    config->wait_mode = topology->wait_mode;
     return SPARK_STATUS_OK;
 }
 
@@ -1473,7 +1474,6 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     SparkTpDeviceCollectiveImplementation *implementation;
     SparkStatus status;
     const char *socket;
-    const char *wait_mode = getenv("SPARK_TP_WAIT_MODE");
 
     if ( config == 0 || collective_out == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1504,15 +1504,15 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     socket = getenv("SPARK_WEIGHTD_SOCKET");
     if ( socket == 0 || socket[0] == '\0' )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-    if ( wait_mode != 0 && strcmp(wait_mode,"spin") != 0 && strcmp(wait_mode,"hardware") != 0 )
+    if ( config->wait_mode != SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN && config->wait_mode != SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE )
     {
-        fprintf(stderr,"MESH-WAIT-CONFIG-FAIL value=%s expected=spin|hardware\n",wait_mode);
+        fprintf(stderr,"MESH-WAIT-CONFIG-FAIL value=%u expected=spin|hardware\n",config->wait_mode);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     implementation = calloc(1u,sizeof(*implementation));
     if ( implementation == 0 )
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-    implementation->hardware_wait = wait_mode != 0 && strcmp(wait_mode,"hardware") == 0;
+    implementation->hardware_wait = config->wait_mode == SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
     implementation->tp_rank = config->tp_rank;
     implementation->tp_degree = config->tp_degree;
     implementation->local_hidden_dimension = config->local_hidden_dimension;

@@ -5,6 +5,7 @@
 static SparkStatus SPARK_FAMILY(ModuleInitializeTpCollective)(SPARK_FAMILY(ModuleState) *state)
 {
 	SparkTpDeviceCollectiveConfig configuration;
+	const char *wait_mode;
 	SparkStatus status;
 	if ( state->tp_degree == 1u )
 		return(SPARK_STATUS_OK);
@@ -22,6 +23,14 @@ static SparkStatus SPARK_FAMILY(ModuleInitializeTpCollective)(SPARK_FAMILY(Modul
 	configuration.local_hidden_dimension = SPARK_FAMILY_CONST(MODULE_TP_HIDDEN_DIMENSION);
 	configuration.max_active_sequence_count = SPARK_FAMILY_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT);
 	configuration.operation_timeout_milli = state->tp_operation_timeout_milli;
+	wait_mode = getenv("SPARK_" SPARK_FAMILY_STRING(SPARK_FAMILY_UPPER) "_TP_WAIT_MODE");
+	if ( wait_mode != 0 && strcmp(wait_mode,"hardware") == 0 )
+		configuration.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
+	else if ( wait_mode != 0 && strcmp(wait_mode,"spin") != 0 )
+	{
+		fprintf(stderr,"%s tp wait mode %s must be spin or hardware\n",SPARK_FAMILY_CONST(MODULE_TAG),wait_mode);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	SPARK_FAMILY(ModuleRegisterCombines)(&configuration);
 	status = SparkTpDeviceCollectiveCreate(&configuration,&state->tp_device_collective);
 	if ( status != SPARK_STATUS_OK )

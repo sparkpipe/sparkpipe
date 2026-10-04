@@ -78,7 +78,8 @@ for i in $(seq 0 15); do
       [ "$a" = "$((TP - 1))" ] && comma=""
       echo "      [$row]$comma"
     done
-    echo "    ]"
+    echo "    ],"
+    echo "    \"wait_mode\": \"hardware\""
     echo "  }"
     if [ "$TP" = "4" ]; then
       echo "  ,"

@@ -1098,9 +1098,15 @@ SparkStatus SparkModelPipelineClientGetView(
 	view->first_disconnected_rank = UINT32_MAX;
 	for (rank=0u; rank<pipeline->rank_count; rank++)
 		if ( SparkModelResidentClientGetView(pipeline->clients[rank],&client_view) == SPARK_STATUS_OK && client_view.connected != 0u )
+		{
 			view->connected_rank_count++;
+			if ( view->max_sequence_positions == 0u || client_view.max_sequence_positions < view->max_sequence_positions )
+				view->max_sequence_positions = client_view.max_sequence_positions;
+		}
 		else if ( view->first_disconnected_rank == UINT32_MAX )
 			view->first_disconnected_rank = pipeline->rank_contexts[rank].rank_index;
+	if ( view->connected_rank_count != view->rank_count )
+		view->max_sequence_positions = 0u;
 	return(SPARK_STATUS_OK);
 }
 

@@ -151,7 +151,6 @@ struct SparkLagunaModuleState
 	uint64_t reset_generation;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
-	char kv_backing_default[256];
 	SparkLagunaExecutionSlot slots[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkLagunaAsyncCompletion completions[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -756,7 +755,12 @@ static SparkStatus SparkLagunaBackingCapacity(SparkLagunaModuleState *state,uint
 	if ( total > INT64_MAX / state->page_count )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	total *= state->page_count;
-	if ( state->kv_backing_maximum_bytes != 0u && state->kv_backing_maximum_bytes < total )
+	if ( state->kv_backing_directory == 0 || state->kv_backing_directory[0] == '\0' )
+	{
+		fprintf(stderr,"laguna kv backing refused: the deployment names no kv_backing_directory\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( state->kv_backing_maximum_bytes < total )
 	{
 		fprintf(stderr,"laguna cache backing budget insufficient: need %llu bytes for %u pages, configured %llu\n",(unsigned long long)total,state->page_count,(unsigned long long)state->kv_backing_maximum_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -828,16 +832,8 @@ static SparkStatus SparkLagunaKvInitialize(SparkLagunaModuleState *state)
 	table.page_store_config.logical_page_capacity = state->page_count;
 	table.page_store_config.transfer_capacity = state->page_count < 2u ? state->page_count : 2u;
 	table.page_store_config.page_bytes = payload_bytes;
-	if ( state->kv_backing_directory != 0 && state->kv_backing_directory[0] != '\0' )
-		table.page_store_config.backing_path = state->kv_backing_directory;
-	else
-	{
-		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
-			"/tmp/sparkpipe_laguna_kv_%s",state->model_revision);
-		mkdir(state->kv_backing_default,0700);
-		table.page_store_config.backing_path = state->kv_backing_default;
-	}
-	table.page_store_config.maximum_backing_bytes = state->page_count * payload_bytes;
+	table.page_store_config.backing_path = state->kv_backing_directory;
+	table.page_store_config.maximum_backing_bytes = state->kv_backing_maximum_bytes;
 	table.page_store_config.staging_address = state->kv_page_staging;
 	table.page_store_config.staging_bytes = payload_bytes;
 	table.page_store_config.copy_function = SparkLagunaPageCopy;

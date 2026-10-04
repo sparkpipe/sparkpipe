@@ -183,7 +183,7 @@ static SparkStatus SparkGemma4ModuleConfigureTp(SparkGemma4ModuleState *state)
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	{
-		const char *wait_mode = getenv("SPARK_TP_WAIT_MODE");
+		const char *wait_mode = getenv("SPARK_GEMMA4_TP_WAIT_MODE");
 		state->tp_deferred_rounds = wait_mode != 0 && strcmp(wait_mode,"hardware") == 0 ? 1u : 0u;
 	}
 	state->tp_vocab_rows = SPARK_GEMMA4_MODEL_OUTPUT_VOCAB_COUNT / state->tp_degree;

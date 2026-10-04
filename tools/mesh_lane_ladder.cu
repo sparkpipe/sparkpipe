@@ -239,8 +239,6 @@ static int ladder_mesh_run(const char *socket_path,uint32_t rank,
     ladder_require(input != 0 && actual != 0 && input_after != 0,"host-allocation");
     ladder_require(setenv("SPARK_WEIGHTD_SOCKET",socket_path,1) == 0 &&
         setenv("SPARK_TP_MESH_RANKS",rank_map,1) == 0,"environment");
-    ladder_require(getenv("SPARK_TP_WAIT_MODE") != 0 &&
-        strcmp(getenv("SPARK_TP_WAIT_MODE"),"hardware") == 0,"hardware-mode-required");
     ladder_status(SparkTpDeviceCollectiveMeshTopology(rank,degree,&topology),"topology");
     ladder_require(cudaFree(0) == cudaSuccess,"cuda-init");
     ladder_status(SparkWeightdClientConnect(socket_path,&owner,0),"connect");
@@ -278,6 +276,7 @@ static int ladder_mesh_run(const char *socket_path,uint32_t rank,
     config.max_active_sequence_count = rows;
     config.connect_timeout_milli = 60000u;
     config.operation_timeout_milli = 60000u;
+    config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
     config.mesh_lane_client = owner;
     config.mesh_band_index = 0u;
     config.collective_identifier = 2u * (uint64_t)lane;

@@ -135,7 +135,6 @@ struct SparkLingModuleState
 	SparkModelDriverCacheLane *kv_lane_cache_lanes;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
-	char kv_backing_default[256];
 	SparkLingExecutionSlot slots[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	SparkLingAsyncCompletion completions[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_LING_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
@@ -647,15 +646,7 @@ static void SparkLingKvFillTable(SparkLingModuleState *state,SparkKvModelTable *
 	table->page_store_config.logical_page_capacity = state->page_count;
 	table->page_store_config.transfer_capacity = 2u;
 	table->page_store_config.page_bytes = block_bytes;
-	if ( state->kv_backing_directory != 0 && state->kv_backing_directory[0] != '\0' )
-		table->page_store_config.backing_path = state->kv_backing_directory;
-	else
-	{
-		(void)snprintf(state->kv_backing_default,sizeof(state->kv_backing_default),
-			"/tmp/sparkpipe_ling_kv_%s",state->model_revision);
-		mkdir(state->kv_backing_default,0700);
-		table->page_store_config.backing_path = state->kv_backing_default;
-	}
+	table->page_store_config.backing_path = state->kv_backing_directory;
 	table->page_store_config.maximum_backing_bytes =
 		state->kv_backing_maximum_bytes >= block_bytes
 			? state->kv_backing_maximum_bytes
@@ -683,6 +674,11 @@ static SparkStatus SparkLingKvInitialize(SparkLingModuleState *state)
 	block_bytes = (uint64_t)SPARK_LING_KV_BLOCK_TOKEN_COUNT *
 		(uint64_t)state->kv_layer_count * SPARK_LING_KV_ARENA_HEAD_DIM *
 		SPARK_LING_KV_BYTES_PER_SCALAR;
+	if ( state->kv_backing_directory == 0 || state->kv_backing_directory[0] == '\0' )
+	{
+		fprintf(stderr,"ling kv backing refused: the deployment names no kv_backing_directory\n");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	status = SparkLingKvAllocateArrays(state,block_bytes);
 	if ( status != SPARK_STATUS_OK )
 		return(status);

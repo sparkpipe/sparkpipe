@@ -386,17 +386,14 @@ citations refer to that commit.
   store after reactivation. Fleet proof: publish a prompt, evict GLM-5.3 Full,
   reactivate it, resend the prompt, and see `cached_tokens > 0` with tokens
   identical to the first run.
-- Left out on purpose (2026-10-02): Nothing validates the KV backing directory
-  at startup beyond a non-empty string (`runtime/stage_kv_binding.c:209-213`)
-  and a successful `O_TMPFILE` open (`cache/kv_page_store.c:174-185`). No code
-  checks that the directory is on the hot-KV NVMe partition or that the
-  partition has `kv_backing_maximum_bytes` free, and the page store reserves
-  no space, so a misplaced or full directory shows up later as write-back
-  failures that drop pages. Close it with a startup check (mount point,
-  filesystem, free bytes against every resident driver's backing quota) that
-  fails the load with a named error, proven on one Spark by loading against a
-  directory off the partition and against a quota larger than the free space,
-  both refused.
+- The KV page store reserves its whole backing quota at open (`fallocate`),
+  so a full partition or a quota larger than the free space fails the load with
+  `CAPACITY_EXCEEDED`, and the deployment loader requires
+  `kv_backing_directory`. Nothing checks that the directory is on the hot-KV
+  NVMe partition: a backing directory on the root filesystem or tmpfs loads.
+  Name the KV partition in the deployment (mount point or device) and refuse a
+  backing or snapshot directory on any other filesystem, proven on one Spark
+  by loading against a directory off the partition.
 - Left out on purpose (2026-10-02): weightd accepts a KV reserve and never
   applies it. `--kv-reserve-bytes` and `SPARK_WEIGHTD_KV_RESERVE_BYTES` are
   parsed (`node/weightd.c:175-186`, `:344-356`), checked only against the
@@ -569,27 +566,6 @@ citations refer to that commit.
   rank while saves are queued, restart it, and check that no `.kvs-writing-`
   file remains, `removed_temporary_count` equals the leftovers, and the resent
   prompt restores with tokens identical to an uninterrupted run.
-- Left out on purpose (2026-10-02): GLM-5.3 Full takes its KV backing
-  directory through a driver-private path. The adapter copies
-  `kv_backing_directory` and `kv_backing_maximum_bytes` into the glm52 node
-  context
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c:666-667`,
-  fields at
-  `modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h:83-84`)
-  and the module reads them from there
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:327-328`),
-  although the common host services already carry both values
-  (`include/sparkpipe/spark_module_abi.h:43-44`, filled by
-  `runtime/pack/driver_compiler.c:591-592` from
-  `runtime/serving_adapter_template.c:559-562`). No snapshot directory field
-  exists in the deployment, the host services or the binding configuration, so
-  KV storage policy stays in the driver and a persistence store has no common
-  source. Close it by reading the backing and snapshot directories only from
-  host services inside `SparkStageKvBindingInitialize`, adding a required
-  `kv_snapshot_directory` and byte budget to the deployment node and host
-  services, and deleting the glm52 node-context fields. Fleet proof: GLM-5.3
-  Full loads with the glm52 fields removed, and the binding log on every rank
-  names the host-service backing and snapshot directories.
 - Left out on purpose (2026-10-02): `tools/glm52_gen_deployment.py:112-113`
   renders `kv_logical_page_capacity` equal to `kv_physical_page_capacity` (16
   x 512 pages), so a GLM Full deployment rendered by it has zero spill pages
@@ -637,23 +613,6 @@ citations refer to that commit.
   hook with the surviving store as its backing, proven on the fleet by a spill
   run whose write-backs are counted by the pager's statistics, not the page
   store's.
-- Left out on purpose (2026-10-02): A deployment node with no
-  `kv_backing_directory` still spills KV under `/tmp` in two drivers:
-  laguna
-  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:782-790`)
-  and ling
-  (`modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c:648-656`).
-  71c2a7692 made the common binding refuse the load
-  (`runtime/stage_kv_binding.c:209-213`), but the deployment loader still
-  accepts a missing directory (`runtime/model_resident_deployment.c:204-206`,
-  `:656`), so these drivers silently put KV outside the KV partition. Close it
-  by making `kv_backing_directory` required in the deployment loader and
-  deleting the two fallbacks, proven by a residentd load on a Spark with the
-  field removed that fails with a named error for every driver. laguna also
-  sizes that backing to `page_count * payload_bytes` and ignores
-  `kv_backing_maximum_bytes`
-  (`spark_laguna_resident_decode_stage_module.c:791`), so spilled pages land
-  outside the deployment's declared storage path and budget.
 - Left out on purpose (2026-10-02): Every production page store is anonymous:
   the common binding (`runtime/stage_kv_binding.c:176`) and the glm5_next
   (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1577`,
@@ -1049,18 +1008,6 @@ Related common-code debt:
   the binding and deleting the private copy; the proof is laguna refusing a
   deployment with no `kv_backing_directory` and passing its TP fleet I27 run
   (cold vs warm token parity at B1 and B16).
-- Left out on purpose (2026-10-02): `SPEC.md:223` says the orchestrator does
-  not understand KV layout or JIT-KV policy and that both belong inside model
-  firmware. `SPEC.md:157-159` lets a module own resident KV pages, and
-  `SPEC.md:252` forbids forcing KV internals into the orchestrator.
-  `sparkpipe_invariants.md` gives cache transactions and ownership to common
-  code (I02, `:23-26`) and makes JIT and prefix reuse common behaviour (I23,
-  `:120-122`), and the tree implements them in `runtime/stage_kv_binding.c`
-  and `cache/`. The two contracts that AGENTS.md and this file point to
-  therefore disagree on who owns KV. The fix: rewrite SPEC.md section 6 and
-  the module ABI paragraphs so that KV pages, cache transactions and JIT-KV
-  policy belong to common code, as the invariants say.
-
 ## Dynamic batching
 
 - GLM Flash's shared batch scheduler already selects arbitrary counts up to
@@ -1614,31 +1561,10 @@ Related common-code debt:
 - Carry `deadline_ms` into the batch engine and the serving submission
   (`deadline_time_ns` exists but is not populated) so the scheduler, not
   only the API, orders work by deadline.
-- The engine's position limit comes from the deployment's optional
-  `runtime_limits.max_sequence_positions`, while each adapter enforces its
-  own stage config's `max_sequence_positions`. Nothing compares them, so a
-  deployment without the member, or with a larger value, still fails
-  mid-decode instead of at admission. Report the adapter's limit in the
-  residentd hello and let the engine take the smallest across ranks.
 - Positions are sized for every resident sequence at full length
   (`tools/spark_serving_profile.py`: B8 is 8 × 512 positions in 1,024
   pages). A request cannot use the pages its neighbours leave idle. Size
   positions for one long sequence and let paged admission share the pool.
-- Left out on purpose (2026-10-02): `node/model_api.c:1529-1537` lowers the
-  engine's `max_prefill_rows_per_submission` below the deployment's validated
-  `runtime_limits.max_input_row_count` (`:1528`) whenever
-  `SPARK_MODEL_API_MAX_PREFILL_ROWS` is set. This happens in every build,
-  writes no log line, and silently ignores a non-numeric value. A production
-  API run with the variable set prefills in smaller submissions than the
-  deployment declares, so prefill and TTFT receipts measure a shape the
-  deployment does not describe (I22, I04). The 2026-09-28 hub unit set it to 8
-  (`docs/FLEET_RELEASE_RUNBOOK.md:582`) to avoid a spin-mode host-round
-  failure that #1255 fixed (`docs/GLM5_NEXT_ROOFLINE.md:610-617`). The fix:
-  delete the env read so the bound comes only from the deployment, and log the
-  bound the engine receives. Close it with a GLM Full TP16 API run whose unit
-  carries no such variable, whose log shows the deployment's
-  `max_input_row_count`, and which passes the T1 and TTFT gates.
-
 ## Provider network
 
 Of the provider network in `README.md`, the tree has only the LiteLLM front
@@ -1760,16 +1686,6 @@ door and the static pages and playground in `site/`.
   launcher calls behind the module boundary, or give host links one object
   that defines them, rather than linking the stub case by case (#1258 did
   that for two tests).
-- The production serving configuration is not in the repository. GLM 5.3
-  Flash at 36 tok/s B1 needs `G5_GRAPH_PATH=1`, `G5_PIN_EXPERTS=1`,
-  `SPARK_TP_WAIT_MODE=hardware` and `G5_WARMUP=0`, set only in each node's
-  untracked drop-in
-  `~/.config/systemd/user/fleet-agent.service.d/20-serving.conf`;
-  `tools/fleet-agent.service` sets none of them. Without the drop-in,
-  residentd refuses to start (`SPARK_GLM5_NEXT_GRAPH_PATH` unset) and warmup
-  runs; with only `G5_GRAPH_PATH=0`, the node falls to eager chains, spin
-  wait and unpinned experts. Move these settings into the deployment contract as validated
-  fields (I04) and record their hash in every receipt (I33).
 - Left out on purpose (2026-10-02): The dsv4 GPU validator compares against
   reference outputs only for stage 0 with the three-layer slice starting at
   layer 0

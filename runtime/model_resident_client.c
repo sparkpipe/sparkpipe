@@ -67,6 +67,7 @@ struct SparkModelResidentClient
 	uint32_t pending_count;
 	uint32_t prepared_count;
 	uint64_t client_generation;
+	uint32_t max_sequence_positions;
 	uint64_t session_epoch;
 	SparkModelServingRuntimeLimits runtime_limits;
 	SparkModelResidentEndpoint endpoint;
@@ -391,7 +392,10 @@ static SparkStatus SparkModelResidentClientHandshake(
 	if ( status == SPARK_STATUS_OK && ack.status != SPARK_STATUS_OK )
 		status = (SparkStatus)ack.status;
 	if ( status == SPARK_STATUS_OK )
+	{
 		client->client_generation = ack.client_generation;
+		client->max_sequence_positions = ack.max_sequence_positions;
+	}
 	SPARK_RETURN(status);
 }
 
@@ -1186,6 +1190,7 @@ SparkStatus SparkModelResidentClientGetView(
 	view->kv_physical_page_capacity =
 		client->runtime_limits.kv_physical_page_capacity;
 	view->prepared_submission_count = client->prepared_count;
+	view->max_sequence_positions = client->max_sequence_positions;
 	view->client_generation = client->client_generation;
 	view->submitted_count = client->submitted_count;
 	view->prepared_count = client->prepared_total;

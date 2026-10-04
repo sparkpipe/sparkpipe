@@ -14,7 +14,7 @@
 #          then the same launch + request
 #
 # Mode claim: the resident runs the GPU-qualified configuration
-# (SPARK_GLM5_NEXT_GRAPH_PATH=1 + SPARK_GLM5_NEXT_PIN_EXPERTS=1, full pool
+# (stage config graph_path 1 + pin_experts 1, full pool
 # pinning at graph capture). Numbers are smoke-relative stdout timings under
 # shared-lane conditions, not isolated-fleet receipts.
 #
@@ -251,12 +251,9 @@ export SPARK_WEIGHTD_ATTACH=1
 export SPARK_WEIGHTD_SOCKET="$SHARED_SOCKET"
 export SPARK_WEIGHTD_LANE="$LANE"
 export SPARK_TP_MESH_RANKS="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
-export SPARK_TP_WAIT_MODE=hardware
 export CUDA_MODULE_LOADING=LAZY
 export CUDA_MODULE_DATA_LOADING=LAZY
 export CUDA_DEVICE_MAX_CONNECTIONS=32
-export SPARK_GLM5_NEXT_GRAPH_PATH=1
-export SPARK_GLM5_NEXT_PIN_EXPERTS=1
 
 t0=$(date +%s.%N)
 setsid "$EXEC_ROOT/bin/sparkpipe_model_residentd" \

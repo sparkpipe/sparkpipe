@@ -93,7 +93,6 @@ static void check_lazy_attach_retry_pauses(void)
 	uint32_t index;
 	assert(setenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256,"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",1) == 0);
 	assert(setenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES","1073741824",1) == 0);
-	(void)unsetenv("SPARK_GLM5_NEXT_PIN_EXPERTS");
 	assert(run_lazy_open(3u,0u,0u) == SPARK_STATUS_OK);
 	assert(CREATE_CALLS == 4u && PAUSE_CALLS == 3u);
 	for (index=0u; index<PAUSE_CALLS; index++)
