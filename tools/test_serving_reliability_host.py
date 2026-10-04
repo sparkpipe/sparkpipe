@@ -20,7 +20,7 @@ GROUPS = {
     "weights": "weightd weightd_lease weightd_working_set weightd_churn weightd_expert_stress weightd_worker weightd_fd_frames weightd_attach weightd_expert weightd_map stage_module_weightd glm5_next_lazy_dispatch",
     "model_contracts": "model_description module_library driver_compiler stage_module_common llm_module_contract llm_stagepack_format tokenizer tokenizer_sidecar json numerical_metrics weight_codec gemm_descriptor_cache gemm_tile_k_fallback glm52_stagepack kda_reference rope_plan tensor_map_geometry",
     "driver_fixtures": "required_cache_refusal hy4_lifecycle_smoke k3_attach_contract k3_kv_cache k3_llm_defines glm52_dspark glm52_mtp_tree kv_mooncake dsv4_cache_plan dsv4_lane_continuity dsv4_paged_cache dsv4_parallel_shape dsv4_pool_layout dsv4_stage_runner dsv4_tp_graph_contract dsv4_w1_loader gemma4_defines gemma4_defines_moe gemma4_defines_negative gemma4_defines_moe_negative k3_run_equivalence qwen38_27b_work_control qwen38_work_control",
-    "speculation": "draft_bridge dspark_drafter_pin dsv4_pro_dspark_drafter_pin speculation_policy_pin speculation_provider_slot speculation_seam speculation_tree_pin speculation_tree_resolve",
+    "speculation": "draft_bridge dspark_drafter_pin dsv4_pro_dspark_drafter_pin speculation_policy_pin speculation_seam speculation_tree_pin speculation_tree_resolve",
 }
 PYTHON = {
     "weights": "weightd_supervision weightd_supervised weightd_manifest weightd_lazy_pair weightd_map_fd_ownership",

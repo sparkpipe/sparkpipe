@@ -1,7 +1,5 @@
 {
  "execution_row_capacity": "production serves 128 rows per step (committed twin 1024)",
  "decode_split_context_threshold": "production splits decode attention above 2048 (committed twin 64)",
- "tp_collective.operation_timeout_milli": "production op timeout 120000 ms (committed twin 30000)",
- "draft_bridge_host": "production keeps the draft bridge declared (MTP off by env; committed twin has none)",
- "draft_bridge_port": "production keeps the draft bridge declared (MTP off by env; committed twin has none)"
+ "tp_collective.operation_timeout_milli": "production op timeout 120000 ms (committed twin 30000)"
 }

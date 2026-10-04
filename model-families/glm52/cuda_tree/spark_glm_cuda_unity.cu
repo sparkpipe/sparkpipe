@@ -14,7 +14,6 @@
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/route.cuh"
-#include "inference/kernels/speculate.cuh"
 #include "inference/kernels/topk.cuh"
 #include "model-families/glm52/cuda_tree/spark_glm_cuda_api.h"
 #include "model-families/glm52/cuda_tree/spark_glm_cuda_config.h"

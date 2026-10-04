@@ -71,7 +71,7 @@ EXEMPT = {
                                "before the output projection. Three layers in "
                                "four do not reach this path; the fourth is wrong "
                                "until a gate kernel exists",
-    "GLM52_MTP_DRAFT_TOKENS": "speculation is wired in kernels/speculate.cuh but no model drives it yet",
+    "GLM52_MTP_DRAFT_TOKENS": "no GLM Full kernel drives MTP drafting yet",
     "GLM52_MTP_LAYER_INDEX": "same",
     "GLM52_WEIGHT_LAYERS": "used by the host packer, not by kernels",
     "QWEN38_27B_VOCAB": "same",

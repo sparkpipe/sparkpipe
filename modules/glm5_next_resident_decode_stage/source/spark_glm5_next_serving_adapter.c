@@ -59,9 +59,7 @@
 
 #define SPARK_GLM5_NEXT_SERVING_MTP_ENV "SPARK_GLM5_NEXT_MTP"
 #define SPARK_GLM5_NEXT_SERVING_SPECULATORS_ENV "SPARK_GLM5_NEXT_SPECULATORS"
-#define SPARK_GLM5_NEXT_SERVING_AVAILABLE_SOURCES \
-	(SPARK_SPECULATION_SEAM_SOURCE_MTP | \
-	 SPARK_SPECULATION_SEAM_REMOTE_TAP_FREE_SOURCES)
+#define SPARK_GLM5_NEXT_SERVING_AVAILABLE_SOURCES SPARK_SPECULATION_SEAM_SOURCE_MTP
 #define SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_TIME_BUDGET_MS 20u
 #define SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_MAX_DEPTH 16u
 #define SPARK_GLM5_NEXT_SERVING_SEAM_DRAFT_MAX_NODE_COUNT 64u
@@ -140,21 +138,16 @@ static const char *const SparkGlm5NextServingScoreMembers[] =
 	"score_tier2_rows_path"
 };
 #define SPARK_GLM5_NEXT_SERVING_SCORE_MEMBER_COUNT (sizeof(SparkGlm5NextServingScoreMembers) / sizeof(SparkGlm5NextServingScoreMembers[0]))
-#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 4u + SPARK_GLM5_NEXT_SERVING_SCORE_MEMBER_COUNT)
+#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 2u + SPARK_GLM5_NEXT_SERVING_SCORE_MEMBER_COUNT)
 #else
-#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 4u)
+#define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_MAX (SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE + 2u)
 #endif
 
-static uint32_t SparkGlm5NextServingConfigurationList(uint32_t bridge,uint32_t index_cp,uint32_t kv_shard,const char **list)
+static uint32_t SparkGlm5NextServingConfigurationList(uint32_t index_cp,uint32_t kv_shard,const char **list)
 {
 	uint32_t count;
 	for (count=0u; count<SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE; count++)
 		list[count] = SparkGlm5NextServingConfigurationMembers[count];
-	if ( bridge != 0u )
-	{
-		list[count++] = "draft_bridge_host";
-		list[count++] = "draft_bridge_port";
-	}
 	if ( index_cp != 0u )
 		list[count++] = "dsa_index_context_parallel";
 	if ( kv_shard != 0u )
@@ -222,8 +215,6 @@ typedef struct SparkGlm5NextServingState
 	uint32_t graph_path;
 	uint32_t pin_experts;
 	SparkSpeculationSeam *speculation_seam;
-	char *bridge_host;
-	uint32_t bridge_port;
 	atomic_uint quiescing;
 	atomic_uint reset_active;
 	atomic_uint_fast64_t reset_generation;
@@ -399,7 +390,6 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	char *relative_stage_pack_path;
 	uint32_t schema_version;
 	int32_t root,token,index_cp_token,kv_shard_token;
-	int32_t bridge_host_token,bridge_port_token;
 	SparkStatus status;
 	relative_stage_pack_path = 0;
 	SparkJsonDocumentReset(&document);
@@ -407,23 +397,16 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	root = status == SPARK_STATUS_OK ? SparkJsonGetRootToken(&document) : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	bridge_host_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"draft_bridge_host") : -1;
-	bridge_port_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"draft_bridge_port") : -1;
 	index_cp_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"dsa_index_context_parallel") : -1;
 	kv_shard_token = status == SPARK_STATUS_OK ? SparkGlm5NextServingJsonMember(&document,root,"kv_shard") : -1;
-	if ( status == SPARK_STATUS_OK && (bridge_host_token < 0) != (bridge_port_token < 0) )
-	{
-		(void)fprintf(stderr,"GLM5_NEXT-ADAPTER draft_bridge_host and draft_bridge_port must both be present or both absent\n");
-		status = SPARK_STATUS_SCHEMA_ERROR;
-	}
 #ifdef SPARK_SCORE_DUMP
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingScoreList(&document,root,SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,kv_shard_token >= 0 ? 1u : 0u,members),members,&state->score_present));
+		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingScoreList(&document,root,SparkGlm5NextServingConfigurationList(index_cp_token >= 0 ? 1u : 0u,kv_shard_token >= 0 ? 1u : 0u,members),members,&state->score_present));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingLoadScore(&document,root,runtime_root,state);
 #else
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingConfigurationList(bridge_host_token >= 0 ? 1u : 0u,index_cp_token >= 0 ? 1u : 0u,kv_shard_token >= 0 ? 1u : 0u,members));
+		status = SparkJsonValidateObjectMembersExact(&document,root,members,SparkGlm5NextServingConfigurationList(index_cp_token >= 0 ? 1u : 0u,kv_shard_token >= 0 ? 1u : 0u,members));
 #endif
 	state->index_cp = 0u;
 	if ( status == SPARK_STATUS_OK && index_cp_token >= 0 )
@@ -468,12 +451,6 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingLoadTpCollective(&document,root,runtime_root,state,*tp_degree);
-	if ( status == SPARK_STATUS_OK && bridge_host_token >= 0 )
-	{
-		status = SparkJsonCopyString(&document,bridge_host_token,&state->bridge_host);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkJsonGetUInt32(&document,bridge_port_token,&state->bridge_port);
-	}
 	SparkJsonDocumentDestroy(&document);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkResolveRuntimePath(runtime_root,relative_stage_pack_path,state->stage_pack_path,sizeof(state->stage_pack_path));
@@ -515,8 +492,6 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	uint32_t enabled_sources;
 	SparkStatus status;
 	available_sources = SPARK_GLM5_NEXT_SERVING_AVAILABLE_SOURCES;
-	if ( state->bridge_host == 0 )
-		available_sources &= ~SPARK_SPECULATION_SEAM_REMOTE_SOURCES;
 	control_value = 0;
 	enabled_sources = 0u;
 	status = SparkGlm5NextServingResolveSpeculationControl(available_sources,&control_value,&enabled_sources);
@@ -538,8 +513,6 @@ static SparkStatus SparkGlm5NextServingInitializeSpeculationSeam(
 	seam_configuration.connect_timeout_ms = SPARK_GLM5_NEXT_SERVING_SEAM_CONNECT_TIMEOUT_MS;
 	seam_configuration.io_timeout_ms = SPARK_GLM5_NEXT_SERVING_SEAM_IO_TIMEOUT_MS;
 	seam_configuration.control_value = control_value;
-	seam_configuration.bridge_host = state->bridge_host;
-	seam_configuration.bridge_port = state->bridge_port;
 	memcpy(seam_configuration.target_model,SPARK_GLM5_NEXT_SERVING_MODEL_ID,sizeof(SPARK_GLM5_NEXT_SERVING_MODEL_ID));
 	SparkGlm5NextServingModelContract(&seam_configuration.model_contract);
 	status = SparkSpeculationSeamInitialize(&seam_configuration,&state->speculation_seam);
@@ -670,7 +643,6 @@ static void SparkGlm5NextServingDestroy(void *adapter_state)
 		state->driver.interface->destroy(state->driver_instance);
 	SparkUnloadModelDriver(&state->driver);
 	SparkSpeculationSeamDestroy(state->speculation_seam);
-	free(state->bridge_host);
 	free(state);
 }
 

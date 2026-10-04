@@ -15,7 +15,6 @@
 #include "sparkpipe/spark_qwen38_max_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_qwen38_max_serving_adapter.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
-#include "sparkpipe/spark_speculation_provider.h"
 #include "sparkpipe/spark_speculation_seam.h"
 
 #ifndef QWEN38_MODEL_REVISION
@@ -157,124 +156,11 @@ typedef struct SparkQwen38MaxServingState
 	void *gather_scratch;
 	SparkQwen38MaxServingTransportShim shim;
 	SparkQwen38MaxServingPending pending[SPARK_QWEN38_MAX_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
-	SparkSpeculationProvider provider;
-	uint32_t provider_bound;
 	SparkSpeculationSeam *seam;
 	uint64_t reset_generation;
 	uint32_t reset_active;
 } SparkQwen38MaxServingState;
 
-
-static SparkStatus SparkQwen38MaxMtpCapabilityQuery(
-	const SparkSpeculationGeometryQuery *geometry,
-	char *refusal_buffer, uint32_t refusal_buffer_bytes)
-{
-	if ( geometry == 0 ||
-		geometry->hidden_dimension != SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION ||
-		geometry->layer_count < SPARK_QWEN38_MAX_MODEL_LAYER_COUNT )
-	{
-		if ( refusal_buffer != 0 && refusal_buffer_bytes != 0u )
-			(void)snprintf(refusal_buffer, refusal_buffer_bytes,
-				"qwen38 max mtp provider requires the max target geometry "
-				"(hidden %u, %u layers), got hidden %u layers %u",
-				SPARK_QWEN38_MAX_MODEL_HIDDEN_DIMENSION,
-				SPARK_QWEN38_MAX_MODEL_LAYER_COUNT,
-				geometry != 0 ? geometry->hidden_dimension : 0u,
-				geometry != 0 ? geometry->layer_count : 0u);
-		return(SPARK_STATUS_UNSUPPORTED);
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkQwen38MaxMtpDraftBegin(void *provider_state,
-	const SparkSpeculationDraftRequest *request)
-{
-	(void)provider_state;
-	(void)request;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-static SparkStatus SparkQwen38MaxMtpDraftNext(void *provider_state,
-	SparkSpeculationDraft *draft)
-{
-	(void)provider_state;
-	(void)draft;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-static void SparkQwen38MaxMtpDraftCancel(void *provider_state)
-{
-	(void)provider_state;
-}
-
-static SparkStatus SparkQwen38MaxMtpVerifyAccount(void *provider_state,
-	uint32_t verified_count, SparkSpeculationVerifyContract *contract_out)
-{
-	(void)provider_state;
-	if ( contract_out == 0 || verified_count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(contract_out, 0, sizeof(*contract_out));
-	contract_out->chain_width = verified_count;
-	contract_out->accepted_token_count = verified_count - 1u;
-	contract_out->tokens_per_sequence = contract_out->accepted_token_count;
-	contract_out->chain_live = 1u;
-	return(SPARK_STATUS_OK);
-}
-
-static const SparkSpeculationKvContract SparkQwen38MaxMtpKvContract =
-{
-	.frame_flags = SPARK_SPECULATION_KV_FLAG_TAIL_FRAME,
-	.block_history_depth = 0u
-};
-
-static const SparkSpeculationKvContract *SparkQwen38MaxMtpKvContractQuery(
-	void *provider_state)
-{
-	(void)provider_state;
-	return(&SparkQwen38MaxMtpKvContract);
-}
-
-static const SparkSpeculationProviderOps SparkQwen38MaxMtpProviderOps =
-{
-	.capability_query = SparkQwen38MaxMtpCapabilityQuery,
-	.draft_begin = SparkQwen38MaxMtpDraftBegin,
-	.draft_next = SparkQwen38MaxMtpDraftNext,
-	.draft_cancel = SparkQwen38MaxMtpDraftCancel,
-	.verify_account = SparkQwen38MaxMtpVerifyAccount,
-	.kv_contract = SparkQwen38MaxMtpKvContractQuery
-};
-
-static const char *const SparkQwen38MaxMtpEnvironmentSchema[] =
-{
-	"SPEC_METHOD",
-	"DRAFT_COUNT"
-};
-
-static const SparkSpeculationProviderDescriptor SparkQwen38MaxMtpProviderDescriptor =
-{
-	.abi_version = SPARK_SPECULATION_PROVIDER_ABI_VERSION,
-	.descriptor_bytes = SPARK_SPECULATION_PROVIDER_DESCRIPTOR_BYTES,
-	.kind = SPARK_SPECULATION_PROVIDER_MTP,
-	.provider_id = "qwen38max.mtp-head.v1",
-	.max_draft_token_count = SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT,
-	.default_draft_token_count = SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT,
-	.environment_schema = SparkQwen38MaxMtpEnvironmentSchema,
-	.environment_schema_count = 2u
-};
-
-static SparkStatus SparkQwen38MaxServingBindMtpProvider(
-	SparkQwen38MaxServingState *state)
-{
-	SparkStatus status;
-	state->provider.descriptor = &SparkQwen38MaxMtpProviderDescriptor;
-	state->provider.ops = &SparkQwen38MaxMtpProviderOps;
-	state->provider.provider_state = 0;
-	status = SparkSpeculationProviderValidate(&state->provider);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	state->provider_bound = 1u;
-	return(SPARK_STATUS_OK);
-}
 
 static void SparkQwen38MaxServingWriteSeamModelContract(
 	SparkSpeculationModelContract *model_contract)
@@ -345,9 +231,6 @@ static SparkStatus SparkQwen38MaxServingBindFamily(
 	SparkStatus status;
 	if ( SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT == 0 )
 		return(SPARK_STATUS_OK);
-	status = SparkQwen38MaxServingBindMtpProvider(state);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
 	return(SparkQwen38MaxServingBindSpeculationSeam(state));
 }
 

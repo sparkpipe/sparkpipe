@@ -357,8 +357,6 @@ TEST_NAMES := \
     test_speculation_policy_pin \
     test_speculation_tree_pin \
     test_speculation_tree_resolve \
-    test_speculation_headers_coexist_provider_first \
-    test_speculation_headers_coexist_policy_first \
     test_glm52_dspark \
     test_glm52_mtp_tree \
     test_serving_tp_config \
@@ -390,7 +388,6 @@ TEST_NAMES := \
     test_graph_reloc \
     test_weightd_mesh_mock \
     test_module_library \
-    test_speculation_provider_slot \
     test_speculation_reference_draft \
     test_speculation_recorded_draft \
     test_speculation_lookup_draft \
@@ -1589,10 +1586,10 @@ build/test_gemma4_tp4_serving_adapter: tests/test_gemma4_serving_adapter.c tests
 # artifact unbuilt instead of failing `make all` — same contract as
 # test_qwen38_math_kernels below; a spark node builds and validates it for real.
 $(K3_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h $(wildcard inference/llms/kimi_k3/*.cu inference/llms/kimi_k3/*.cuh inference/llms/kimi_k3/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=404 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c runtime/speculation_provider.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=404 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(K3_TP16_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_runner.h $(wildcard inference/llms/kimi_k3/*.cu inference/llms/kimi_k3/*.cuh inference/llms/kimi_k3/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=16 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c runtime/speculation_provider.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=16 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 build/test_model_resident_reconnect: tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1795,11 +1792,6 @@ build/test_speculation_tree_pin: tests/test_speculation_tree_pin.c $(COMMON_LIBR
 build/test_speculation_tree_resolve: tests/test_speculation_tree_resolve.c $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_speculation_headers_coexist_provider_first: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_policy.h include/sparkpipe/spark_speculation_provider.h | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_headers_coexist_policy_first: tests/test_speculation_headers_coexist.c include/sparkpipe/spark_speculation_policy.h include/sparkpipe/spark_speculation_provider.h | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_COEXIST_POLICY_FIRST $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_dspark: tests/test_glm52_dspark.c modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c $(CORE_LIBRARY) $(GLM52_HOST_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -2002,8 +1994,6 @@ build/test_speculation_relay_link: tests/test_speculation_relay_link.c include/s
 build/spark_speculation_relay_probe: tools/spec_relay_probe.c include/sparkpipe/spark_speculation_relay_link.h include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tools/spec_relay_probe.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_speculation_provider_slot: tests/test_speculation_provider_slot.c runtime/speculation_provider.c include/sparkpipe/spark_speculation_provider.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_provider_slot.c runtime/speculation_provider.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 # K3DS drafter-pack format + bind (the k3 speculation-provider slot's wire half)
 
