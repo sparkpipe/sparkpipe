@@ -173,13 +173,13 @@ citations refer to that commit.
   workflow wf_2545220b-a65).
 - Awaiting fleet proof (lane `mesh/contracts`): every collective logs
   `MESH-PATH` (operation, path, phases, elements, rows, capture) on each regime
-  change and again for each capture. `tools/glm53full_lane.sh` keeps one rank
-  log per run (`logs/residentd-<run id>.log`, refuses to overwrite, `archive`
-  collects and removes). The other lane tools (`ling_lane.sh`, `k3_lane.sh`,
-  `gemma4_lane_resident.sh`, `laguna_multidev_decode.sh`,
-  `qwen38_27b_lane_launch.sh`) still overwrite `residentd.log`. Proof: a
-  fleet run whose rank logs name the path of every chain and survive a second
-  run on the same lane.
+  change and again for each capture. `tools/glm53full_lane.sh`,
+  `k3_lane.sh`, `ling_lane.sh` and `fleet_serve.sh` keep one rank log per run
+  through `tools/lane_run_log.sh` (`logs/residentd-<run id>.log`, refuses to
+  overwrite, moves an older launcher's `residentd.log` aside, `archive`
+  collects and removes); `fleet_node_agent.sh` moves a non-empty
+  `residentd.log` aside with a timestamp before each start. Proof: a fleet run whose rank logs name the path of every chain and survive
+  a second run on the same lane.
 
 ## Steady-state decode hot path
 

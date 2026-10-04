@@ -17,8 +17,13 @@ API_PORT="${G5_API_PORT:-8433}"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
        spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
+LANE_TOOL=fleet_serve
+LANE_RANKS=${#HOSTS[@]}
+. "$(cd "$(dirname "$0")" && pwd)/lane_run_log.sh"
 
 rr() { echo "/home/$1/sparkdata/$NAME"; }
+host_of() { echo "${HOSTS[$1]}"; }
+root_of() { rr "$1"; }
 
 stop() {
     local h
@@ -52,7 +57,9 @@ stop() {
 }
 
 start() {
-    local h i=0 ready err line deadline n busy=""
+    local h i=0 ready err line deadline n busy="" run_id pid refused=""
+    local -a pids=()
+    run_id="$(lane_run_id "${FLEET_RUN_ID:-}")" || return 2
     for h in "${HOSTS[@]}"; do
         n=$($SSH "$h" "rr='$(rr "$h")'; n=0; for l in \$(ls -l /proc/[0-9]*/exe 2>/dev/null | grep sparkpipe_model | sed 's|.*/proc/\\([0-9]*\\)/exe.*|\\1|'); do c=\$(readlink /proc/\$l/cwd 2>/dev/null); [ \"\$c\" = \"\$rr\" ] && n=1; done; echo \$n" 2>/dev/null)
         if [ -z "$n" ]; then busy="$busy $h(unreachable)"
@@ -62,11 +69,21 @@ start() {
         echo "REFUSE: $NAME daemons already running on:$busy — stop first (one instance per root)" >&2
         return 1
     fi
+    echo "fleet_serve: run $run_id; rank logs are $(lane_log_file "$run_id") under each runtime root"
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "cd '$(rr "$h")' && ln -sf stage_$(printf %02d $i).json config/stage.json && mv residentd.log residentd.log.prev 2>/dev/null; LD_LIBRARY_PATH='$(rr "$h")'/lib ${SPARK_GLM5_NEXT_MTP:+SPARK_GLM5_NEXT_MTP=$SPARK_GLM5_NEXT_MTP} SPARK_TP_D2A_TIMING='${SPARK_TP_D2A_TIMING:-0}' SPARK_GLM52_SERVING_FLAT_RANKS='${SPARK_GLM52_SERVING_FLAT_RANKS-}' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $i > residentd.log 2>&1 < /dev/null &" &
+        $SSH "$h" "cd '$(rr "$h")' && ln -sf stage_$(printf %02d $i).json config/stage.json && $(lane_log_prelude "$h" "$run_id") && LD_LIBRARY_PATH='$(rr "$h")'/lib ${SPARK_GLM5_NEXT_MTP:+SPARK_GLM5_NEXT_MTP=$SPARK_GLM5_NEXT_MTP} SPARK_TP_D2A_TIMING='${SPARK_TP_D2A_TIMING:-0}' SPARK_GLM52_SERVING_FLAT_RANKS='${SPARK_GLM52_SERVING_FLAT_RANKS-}' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $i > $(lane_log_file "$run_id") 2>&1 < /dev/null &" &
+        pids+=("$!")
         i=$((i+1))
     done
-    wait
+    i=0
+    for pid in "${pids[@]}"; do
+        wait "$pid" || refused="$refused ${HOSTS[$i]}"
+        i=$((i+1))
+    done
+    if [ -n "$refused" ]; then
+        echo "FAIL: run $run_id did not start on:$refused" >&2
+        return 1
+    fi
     deadline=$((SECONDS + 300))
     while (( SECONDS < deadline )); do
         ready=0
@@ -117,5 +134,6 @@ case "$CMD" in
     start) start ;;
     sync) sync ;;
     api) api ;;
+    archive) lane_archive "${3:?archive RUN_ID DESTINATION}" "${4:?archive RUN_ID DESTINATION}" ;;
     full|*) stop && sync && "$0" "$NAME" start && api ;;
 esac

@@ -756,6 +756,7 @@ PYTHON_TESTS := \
 	tests/test_validation_batch_bucket.py \
 	tests/test_validator_digest.py \
 	tests/test_gen_geometry_header.py \
+	tests/test_lane_run_log.py \
 	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
 	tests/test_tp_standalone_configuration.py \

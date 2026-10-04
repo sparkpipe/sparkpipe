@@ -10,6 +10,9 @@ K3_TOPOLOGY="${K3_TOPOLOGY:-tp4pp4}"
 case "$K3_TOPOLOGY" in tp4pp4|tp16) ;; *) echo "k3_lane: K3_TOPOLOGY $K3_TOPOLOGY is not tp4pp4 or tp16" >&2; exit 2 ;; esac
 [ "$K3_LANE" -ge 1 ] && [ "$K3_LANE" -le 15 ] || { echo "k3_lane: lane $K3_LANE outside 1..15" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
+LANE_TOOL=k3_lane
+LANE_RANKS=16
+. "$HERE/lane_run_log.sh"
 CHECKOUT="$(cd "$HERE/.." && pwd)"
 HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
@@ -89,14 +92,16 @@ setup() {
 }
 
 start() {
-  local rank host root stage
+  local rank host root stage run_id
+  run_id="$(lane_run_id "${K3_RUN_ID:-}")" || exit 2
+  echo "k3_lane: run $run_id; rank logs are $(lane_log_file "$run_id") under each lane root"
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     stage=$((rank / 4))
     wrapper=""
     case " ${K3_WRAP_RANKS:-} " in *" $rank "*) wrapper="${K3_RANK_WRAPPER:-} " ;; esac
-    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$K3_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$K3_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$K3_LANE -E SPARK_TP_MESH_RANKS=$(mesh_ranks_of "$rank") -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$K3_EXPERT_POOL_BYTES -E SPARK_K3_STATE_BUDGET_BYTES=$K3_STATE_BUDGET_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=${K3_DEVICE_MAX_CONNECTIONS:-32} bash -c 'exec ${wrapper}./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > residentd.log 2>&1'" &
+    $SSH "$host" "cd $root && $(lane_log_prelude "$host" "$run_id") && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$K3_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$K3_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$K3_LANE -E SPARK_TP_MESH_RANKS=$(mesh_ranks_of "$rank") -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$K3_EXPERT_POOL_BYTES -E SPARK_K3_STATE_BUDGET_BYTES=$K3_STATE_BUDGET_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=${K3_DEVICE_MAX_CONNECTIONS:-32} bash -c 'exec ${wrapper}./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > $(lane_log_file "$run_id") 2>&1'" &
     PIDS[$rank]=$!
   done
   join_ranks start
@@ -158,5 +163,6 @@ case "${1:-}" in
   reclaim) reclaim ;;
   clean) clean ;;
   batch) batch "${2:?batch BATCH_JSON}" ;;
-  *) echo "usage: $0 render DIR|setup|start|status|stop|reclaim|clean|batch FILE" >&2; exit 2 ;;
+  archive) lane_archive "${2:?archive RUN_ID DESTINATION}" "${3:?archive RUN_ID DESTINATION}" ;;
+  *) echo "usage: $0 render DIR|setup|start|status|stop|reclaim|clean|batch FILE|archive RUN_ID DEST" >&2; exit 2 ;;
 esac
