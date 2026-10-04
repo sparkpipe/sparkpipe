@@ -756,6 +756,24 @@ static void check_working_set_recover(void)
 static uint32_t LAZY_OPEN_CALLS,LAZY_OPEN_MODE;
 static SparkWeightdLazyPack OPEN_PACK;
 SparkStatus SparkWeightdAttachRequested(void) { return(SPARK_STATUS_OK); }
+static uint64_t KV_POOL_GENERATION;
+SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,uint64_t timeout,SparkWeightdKvPoolMapping *mapping)
+{
+	(void)timeout;
+	assert(request != 0 && mapping != 0 && request->device_bytes != 0u && request->label != 0);
+	memset(mapping,0,sizeof(*mapping));
+	if ( cudaMalloc(&mapping->device_base,(size_t)request->device_bytes) != cudaSuccess )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	mapping->device_bytes = request->device_bytes;
+	mapping->pool_generation = ++KV_POOL_GENERATION;
+	return(SPARK_STATUS_OK);
+}
+void SparkWeightdKvPoolUnmap(SparkWeightdKvPoolMapping *mapping)
+{
+	if ( mapping->device_base != 0 )
+		(void)cudaFree(mapping->device_base);
+	memset(mapping,0,sizeof(*mapping));
+}
 SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context,SparkWeightdLazyPack **out)
 {
 	(void)socket;(void)request;(void)budget;(void)timeout;(void)check;(void)context;

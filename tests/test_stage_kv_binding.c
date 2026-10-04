@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_weight_codec.h"
+#include "tests/test_weightd_kv_server.h"
 
 #define TEST_BLOCK 4u
 #define TEST_POSITIONS 8u
@@ -64,7 +65,6 @@ typedef struct TestHook
 	uint32_t track_threads;
 } TestHook;
 
-static SparkStageModuleLedger LEDGER;
 static SparkStageKvBinding BINDING;
 static char DIRECTORY[64];
 static char SNAPSHOT_DIRECTORY[64];
@@ -160,7 +160,6 @@ static void SleepMs(uint32_t milliseconds)
 static void Configure(SparkStageKvConfiguration *configuration)
 {
 	memset(configuration,0,sizeof(*configuration));
-	configuration->ledger = &LEDGER;
 	configuration->module_tag = "kvtest";
 	configuration->block_token_count = TEST_BLOCK;
 	configuration->region_count = 2u;
@@ -197,8 +196,6 @@ static void Configure(SparkStageKvConfiguration *configuration)
 static SparkStatus OpenWith(const SparkStageKvConfiguration *configuration)
 {
 	SparkStatus status;
-	memset(&LEDGER,0,sizeof(LEDGER));
-	LEDGER.module_tag = "kvtest";
 	HookReset();
 	spark_stub_cuda_event_pending(0u);
 	spark_stub_cuda_event_record_failure(0u);
@@ -241,7 +238,6 @@ static void Open(void)
 static void Unload(void)
 {
 	SparkStageKvBindingDestroy(&BINDING);
-	SparkStageModuleLedgerRollback(&LEDGER,0u);
 	spark_stub_cuda_set_copy_hook(0,0);
 }
 
@@ -799,7 +795,6 @@ static void TestSnapshotRefusals(void)
 {
 	SparkStageKvConfiguration configuration;
 	SparkStageKvBinding other;
-	SparkStageModuleLedger other_ledger;
 	int on_stack = 0;
 	MakeDirectories();
 	Configure(&configuration);
@@ -835,13 +830,9 @@ static void TestSnapshotRefusals(void)
 	Configure(&CONFIGURATION);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	configuration = CONFIGURATION;
-	memset(&other_ledger,0,sizeof(other_ledger));
-	other_ledger.module_tag = "kvtest";
-	configuration.ledger = &other_ledger;
 	memset(&other,0,sizeof(other));
-	assert(SparkStageKvBindingInitialize(&other,&configuration) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkStageKvBindingInitialize(&other,&configuration) == SPARK_STATUS_BUSY);
 	SparkStageKvBindingDestroy(&other);
-	SparkStageModuleLedgerRollback(&other_ledger,0u);
 	Close();
 	printf("A10 snapshot refusals: ok\n");
 }
@@ -1096,9 +1087,35 @@ static void TestRecurrentRefusals(void)
 	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size and a backing budget short of one record per logical page refuse: ok\n");
 }
 
+static void TestWeightdOwnsPool(void)
+{
+	uint64_t generation,committed,lane_bytes;
+	Open();
+	generation = BINDING.kv_pool.pool_generation;
+	committed = SparkWeightdServerKvCommittedBytes(TestKvServer);
+	lane_bytes = (uint64_t)TEST_LANES * BINDING.pages_per_sequence * sizeof(uint32_t);
+	assert(generation != 0u && BINDING.kv_pool.reattached == 0u && BINDING.kv_pool.client != 0);
+	assert(BINDING.region_base[0] == (uint8_t *)BINDING.kv_pool.device_base);
+	assert(BINDING.region_base[1] > BINDING.region_base[0] && (uint8_t *)BINDING.page_table > BINDING.region_base[1]);
+	assert((uint8_t *)BINDING.page_table + lane_bytes <= (uint8_t *)BINDING.kv_pool.device_base + BINDING.kv_pool.device_bytes);
+	assert(committed >= BINDING.kv_pool.device_bytes && SparkWeightdServerKvPoolCount(TestKvServer) >= 1u);
+	Unload();
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	assert(BINDING.kv_pool.reattached == 1u && BINDING.kv_pool.pool_generation == generation);
+	Unload();
+	assert(unsetenv("SPARK_WEIGHTD_SOCKET") == 0);
+	assert(OpenWith(&CONFIGURATION) != SPARK_STATUS_OK && BINDING.kv_pool.client == 0);
+	Unload();
+	assert(setenv("SPARK_WEIGHTD_SOCKET",TestKvServerSocket,1) == 0);
+	RemoveDirectories();
+	printf("weightd owns the KV pool: regions and page table carved from it, reattach keeps the generation, no weightd refuses\n");
+}
+
 int main(void)
 {
 	setvbuf(stdout,0,_IONBF,0);
+	TestKvServerStart(64ull << 20);
+	TestWeightdOwnsPool();
 	TestCompletionEntryNeverWaits();
 	TestCopyOnWriteIsOneDeviceCopyPerRegion();
 	TestCopyOnWriteDuringAPark();
@@ -1113,6 +1130,7 @@ int main(void)
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();
 	TestRecurrentRefusals();
+	TestKvServerFinish();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
 	return(0);
 }

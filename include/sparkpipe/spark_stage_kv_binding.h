@@ -15,6 +15,7 @@
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_weightd_kv_pool.h"
 
 #define SPARK_STAGE_KV_REGION_PAGE_MAJOR 1u
 #define SPARK_STAGE_KV_REGION_LAYER_MAJOR 2u
@@ -138,7 +139,6 @@ typedef SparkStatus (*SparkStageKvInspectFunction)(void *context,const SparkStag
 
 typedef struct SparkStageKvConfiguration
 {
-	SparkStageModuleLedger *ledger;
 	const char *module_tag;
 	uint32_t block_token_count;
 	uint32_t region_count;
@@ -235,6 +235,7 @@ struct SparkStageKvBinding
 	char driver_path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	uint64_t snapshot_page_file_bytes;
 	SparkKvSnapshotStore snapshot_store;
+	SparkWeightdKvPoolMapping kv_pool;
 	SparkKvPageCacheSnapshot snapshot;
 	SparkKvPageCacheSnapshotLink *snapshot_links;
 	uint8_t *snapshot_page;

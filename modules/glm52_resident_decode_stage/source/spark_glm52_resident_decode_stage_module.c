@@ -949,7 +949,6 @@ static SparkStatus SparkGlm52AllocateCaches(SparkGlm52ModuleState *state)
 			state->index_ordinal_by_local_layer[local] = state->index_layer_count++;
 	}
 	memset(&configuration,0,sizeof(configuration));
-	configuration.ledger = &state->ledger;
 	configuration.module_tag = SPARK_GLM52_MODULE_TAG;
 	configuration.block_token_count = SPARK_GLM_KV_BLOCK_TOKEN_COUNT;
 	configuration.region_count = state->index_layer_count != 0u ? 2u : 1u;

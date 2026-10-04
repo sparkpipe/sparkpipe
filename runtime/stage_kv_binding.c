@@ -3,12 +3,14 @@
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_weight_codec.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 
+#define SPARK_STAGE_KV_POOL_ALIGNMENT 4096u
 #define SPARK_STAGE_KV_COMPLETION_FREE 0u
 #define SPARK_STAGE_KV_COMPLETION_QUEUED 1u
 
@@ -647,6 +649,59 @@ static SparkStatus SparkStageKvBindingAttachStates(SparkStageKvBinding *binding,
 	SPARK_RETURN(status);
 }
 
+static uint64_t SparkStageKvPoolAlign(uint64_t bytes)
+{
+	return((bytes + SPARK_STAGE_KV_POOL_ALIGNMENT - 1u) / SPARK_STAGE_KV_POOL_ALIGNMENT * SPARK_STAGE_KV_POOL_ALIGNMENT);
+}
+
+static SparkStatus SparkStageKvBindingPoolKey(const SparkStageKvConfiguration *configuration,uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES])
+{
+	char directory[PATH_MAX];
+	SparkSha256Context context;
+	if ( realpath(configuration->snapshot_directory,directory) == 0 )
+	{
+		fprintf(stderr,"%s kv binding refused: kv_snapshot_directory %s does not resolve\n",configuration->module_tag,configuration->snapshot_directory);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
+	SparkSha256Initialize(&context);
+	SparkStageKvDigestText(&context,"sparkpipe.kv-pool.v1");
+	SparkStageKvDigestText(&context,configuration->module_tag);
+	SparkStageKvDigestText(&context,directory);
+	SparkSha256Finalize(&context,key);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration,uint64_t lane_entries)
+{
+	SparkWeightdKvPoolRequest request;
+	uint64_t offsets[SPARK_STAGE_KV_MAX_REGIONS + 1u],cursor = 0u;
+	uint32_t region;
+	SparkStatus status;
+	memset(&request,0,sizeof(request));
+	for (region=0u; region<binding->region_count; region++)
+	{
+		offsets[region] = cursor;
+		cursor += SparkStageKvPoolAlign((uint64_t)binding->physical_page_count * binding->region_packed_page_bytes[region]);
+	}
+	offsets[binding->region_count] = cursor;
+	cursor += SparkStageKvPoolAlign(lane_entries * sizeof(uint32_t));
+	status = SparkStageKvBindingPoolKey(configuration,request.key);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	request.device_bytes = cursor;
+	request.label = binding->module_tag;
+	status = SparkWeightdKvPoolMap(&request,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS,&binding->kv_pool);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	for (region=0u; region<binding->region_count; region++)
+		binding->region_base[region] = (uint8_t *)binding->kv_pool.device_base + offsets[region];
+	binding->page_table = (uint32_t *)((uint8_t *)binding->kv_pool.device_base + offsets[binding->region_count]);
+	fprintf(stderr,"%s kv pool weightd generation=%llu reattached=%u device_bytes=%llu chunks=%u kv_committed=%llu kv_reserve=%llu private_kv_bytes=0\n",binding->module_tag,
+		(unsigned long long)binding->kv_pool.pool_generation,binding->kv_pool.reattached,(unsigned long long)binding->kv_pool.device_bytes,binding->kv_pool.chunk_count,
+		(unsigned long long)binding->kv_pool.kv_committed_bytes,(unsigned long long)binding->kv_pool.kv_reserve_bytes);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *configuration)
 {
 	const char *missing;
@@ -678,10 +733,9 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 {
 	SparkKvModelTable table;
 	uint64_t lane_entries;
-	uint32_t region;
 	SparkStatus status;
 	cudaError_t error;
-	if ( binding == 0 || configuration == 0 || configuration->ledger == 0 || configuration->module_tag == 0 || configuration->block_token_count == 0u || configuration->region_count == 0u ||
+	if ( binding == 0 || configuration == 0 || configuration->module_tag == 0 || configuration->block_token_count == 0u || configuration->region_count == 0u ||
 		configuration->region_count > SPARK_STAGE_KV_MAX_REGIONS || configuration->resident_sequence_capacity == 0u || configuration->max_sequence_positions == 0u || configuration->pipeline_slot_count == 0u ||
 		configuration->physical_page_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -704,11 +758,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	status = SparkStageKvBindingGeometry(binding,configuration);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	for (region=0u; region<binding->region_count && status==SPARK_STATUS_OK; region++)
-		status = SparkStageModuleDeviceAllocate(configuration->ledger,(uint64_t)binding->physical_page_count * binding->region_packed_page_bytes[region],(void **)&binding->region_base[region]);
 	lane_entries = (uint64_t)binding->resident_sequence_capacity * binding->pages_per_sequence;
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(configuration->ledger,lane_entries * sizeof(uint32_t),(void **)&binding->page_table);
+	status = SparkStageKvBindingAttachPool(binding,configuration,lane_entries);
 	if ( status == SPARK_STATUS_OK )
 	{
 		error = cudaMemset(binding->page_table,0xff,(size_t)lane_entries * sizeof(uint32_t));
@@ -808,6 +859,7 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	}
 	if ( binding->copy_stream != 0 )
 		(void)cudaStreamDestroy((cudaStream_t)binding->copy_stream);
+	SparkWeightdKvPoolUnmap(&binding->kv_pool);
 	if ( binding->snapshot_store.runtime != 0 )
 		SparkKvSnapshotStoreClose(&binding->snapshot_store);
 	free(binding->snapshot_links);

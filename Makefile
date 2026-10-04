@@ -133,7 +133,7 @@ $(MODEL_COMMON_OBJECTS): SP_INCLUDE_FLAGS = $(MODEL_COMMON_INCLUDE_FLAGS)
 # attach helper reach <cuda_runtime.h>/<cuda.h> (the VMM surface), so they
 # compile with the model-common include shape - the stub headers where
 # CUDA_HOME is absent, the real ones where it exists.
-build/obj/runtime/spark_weightd.o build/obj/runtime/spark_weightd_attach.o build/obj/runtime/spark_weightd_map.o build/obj/runtime/spark_weightd_spine.o build/obj/runtime/spark_weightd_receipt.o build/obj/runtime/spark_weightd_worker.o build/obj/runtime/spark_weightd_lazy_pack.o: SP_INCLUDE_FLAGS = $(MODEL_COMMON_INCLUDE_FLAGS)
+build/obj/runtime/spark_weightd.o build/obj/runtime/spark_weightd_attach.o build/obj/runtime/spark_weightd_kv_pool.o build/obj/runtime/spark_weightd_map.o build/obj/runtime/spark_weightd_spine.o build/obj/runtime/spark_weightd_receipt.o build/obj/runtime/spark_weightd_worker.o build/obj/runtime/spark_weightd_lazy_pack.o: SP_INCLUDE_FLAGS = $(MODEL_COMMON_INCLUDE_FLAGS)
 $(DEPLOYMENT_OBJECTS): SP_INCLUDE_FLAGS = $(DEPLOYMENT_INCLUDE_FLAGS)
 $(GLM52_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(GLM52_INCLUDE_FLAGS)
 $(QWEN38_27B_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(QWEN38_27B_INCLUDE_FLAGS)
@@ -1238,7 +1238,7 @@ build/test_k3_pack_bind: tests/test_k3_pack_bind.c $(K3_PACK_BIND_SOURCES) $(COR
 build/test_k3_serving_adapter: tests/test_k3_serving_adapter.c tests/test_k3_runner_stub.h modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/configs/model_resident.json $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function -DSPARK_K3_SERVING_TOPOLOGY=404 $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-build/test_k3_kv_binding: tests/test_k3_kv_binding.c tests/test_k3_runner_stub.h modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+build/test_k3_kv_binding: tests/test_k3_kv_binding.c tests/test_k3_runner_stub.h tests/test_weightd_kv_server.h modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function -DSPARK_K3_SERVING_TOPOLOGY=404 $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_k3_tp16_serving_adapter: tests/test_k3_serving_adapter.c tests/test_k3_runner_stub.h modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c modules/k3_resident_decode_stage/configs/model_resident_tp16.json $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
@@ -1828,9 +1828,9 @@ STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES := tests/test_stage_kv_layout_digest.c runti
 build/test_stage_kv_layout_digest: $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-STAGE_KV_BINDING_TEST_SOURCES := tests/test_stage_kv_binding.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c
-build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(STAGE_KV_BINDING_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+STAGE_KV_BINDING_TEST_SOURCES := tests/test_stage_kv_binding.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
+build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) tests/test_weightd_kv_server.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_BINDING_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 HY4_SMOKE_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/hy4/include -Imodules/hy4_resident_decode_stage/include -Imodules/hy4_resident_decode_stage/source
 HY4_MODULE_TEST_SOURCES := modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_module.c \
