@@ -907,8 +907,6 @@ Related common-code debt:
 - `tests/test_speculation_tree_resolve.c`,
   `tests/test_speculation_headers_coexist.c` and
   `tests/test_qwen38_27b_remote_spec.c` are not built by the Makefile.
-- `tools/fleet_serve.sh` defaults `SPARK_GLM5_NEXT_MTP=1` (`:66`, `:96`),
-  which fails glm5_next initialization at TP > 1.
 - glm5_next resident decode chains run no MTP draft: a frame of more than
   one step skips `SparkGlm5NextMtpDriveDraft`, and the engine asks for chains
   whenever the adapter offers them, so with MTP enabled drafts only run on
@@ -1471,7 +1469,6 @@ and the multidev docs on 2026-09-28. Line numbers are in
   assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
   lane while production GLM runs on lane 6. Replace both with the lane
   allocator of lane B04 (TD287/TD288).
-- A stale, idle `sparkpipe_weightsd` still runs on spark6.
 - Operations: confirm linger on all 16 nodes once they are up; `tools/fleet_post_reboot.sh` checks it on every rebooted node.
 
 ## Hardware independence
@@ -1582,19 +1579,6 @@ for seamless production multi-model.
 - Fleet tooling is single-model: the agent accepts multiple runtime roots
   but release sync, health, and measurement lanes are per-root; no
   multi-model deploy or update has been tested.
-- `tools/fleet_swap.sh` still drives the system unit
-  `sparkpipe_model_residentd` through sudo (`start_model`, `stop_model`),
-  not the `fleet-agent` user unit that serves. Running it writes `/etc`
-  drop-ins and starts a system-level residentd outside the fleet-agent
-  cgroup: a fleet-scope swap would start a second residentd beside the
-  agent's on all 16 nodes, which the agent's janitor does not reap because
-  it only matches its own roots. The registry it reads
-  (`tools/devcycle/fleet_registry.json`) has no GLM 5.3 Flash entry and
-  marks both DSV4 models removed. The fleet_swap procedure is obsolete:
-  delete the script and the registry, together with their remaining
-  callers `tools/devcycle/deploy_pro.sh` and
-  `tools/devcycle/first_decode_pro.sh`, or rebuild model swaps on the
-  agent's release roots.
 - Device allocation budgets are incomplete. GB10 `MemoryMax` does not
   contain every CUDA allocation, and the driver ledger omits some direct
   allocations and graph and context overhead. Enforce complete budgets

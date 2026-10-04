@@ -27,7 +27,7 @@
 #   K3_WEIGHTD_SOCKET          shared weightd socket path (supervised
 #                              daemon; this wrapper never starts one).
 #                              Defaults to the fleet shared unit:
-#                              /run/sparkpipe-weightd-shared/weightd.sock
+#                              /tmp/spark_weightd.sock
 #   K3_EXPERT_POOL_BYTES       bounded routed-expert pool (calculator:
 #                              tools/devcycle/lane_budget_calc.py)
 #   K3_SPINE_BUDGET_BYTES      bounded full-resolution spine budget

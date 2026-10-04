@@ -34,7 +34,7 @@ start)
     for h in "${HOSTS[@]}"; do
         $SSH "$h" "chmod 755 ~/sparkdata/core/bin/fleet_node_agent.sh; \
             mkdir -p ~/.config/systemd/user; \
-            printf '[Unit]\nDescription=fleet release agent\nAfter=network-online.target\n\n[Service]\nExecStart=%%h/sparkdata/core/bin/fleet_node_agent.sh %s %s\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n' \
+            printf '[Unit]\nDescription=fleet release agent\nAfter=network-online.target\n\n[Service]\nExecStart=%%h/sparkdata/core/bin/fleet_node_agent.sh %s %s\nRestart=always\nRestartSec=3\nMemoryMax=512M\n\n[Install]\nWantedBy=default.target\n' \
               '$ROOTS' '$HUB' > ~/.config/systemd/user/fleet-agent.service; \
             systemctl --user daemon-reload; \
             systemctl --user enable fleet-agent.service; \
