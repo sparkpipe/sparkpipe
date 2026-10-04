@@ -2,6 +2,24 @@
 #include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
+#include <time.h>
+
+static uint64_t SparkModelResidentIpcMonotonicNs(void)
+{
+	struct timespec now;
+	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
+		return(0u);
+	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
+}
+
+static uint64_t SparkModelResidentIpcDeadlineRemaining(uint64_t deadline_time_ns)
+{
+	uint64_t now;
+	if ( deadline_time_ns == 0u )
+		return(0u);
+	now = SparkModelResidentIpcMonotonicNs();
+	return(deadline_time_ns > now ? deadline_time_ns - now : 1u);
+}
 
 SparkStatus SparkModelResidentIpcValidateDirectSubmitDescriptor(
 	const SparkModelServingAdapterDescriptor *descriptor)
@@ -471,7 +489,7 @@ static void SparkModelResidentIpcCopySubmissionScalars(
 	wire->request_id = submission->request_id;
 	wire->sequence_id = submission->sequence_id;
 	wire->sequence_position = submission->sequence_position;
-	wire->deadline_time_ns = submission->deadline_time_ns;
+	wire->deadline_remaining_ns = SparkModelResidentIpcDeadlineRemaining(submission->deadline_time_ns);
 	wire->control_generation = submission->control_generation;
 	wire->transaction_id = submission->transaction_id;
 	wire->dispatch_generation = submission->dispatch_generation;
@@ -637,7 +655,7 @@ SparkStatus SparkModelResidentIpcDecodeSubmission(
 	submission_out->request_id = wire->request_id;
 	submission_out->sequence_id = wire->sequence_id;
 	submission_out->sequence_position = wire->sequence_position;
-	submission_out->deadline_time_ns = wire->deadline_time_ns;
+	submission_out->deadline_time_ns = wire->deadline_remaining_ns != 0u ? SparkModelResidentIpcMonotonicNs() + wire->deadline_remaining_ns : 0u;
 	submission_out->control_generation = wire->control_generation;
 	submission_out->transaction_id = wire->transaction_id;
 	submission_out->dispatch_generation = wire->dispatch_generation;

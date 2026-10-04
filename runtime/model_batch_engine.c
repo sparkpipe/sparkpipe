@@ -39,6 +39,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t generation;
 	uint32_t next_free_slot;
 	uint32_t priority;
+	uint64_t deadline_ns;
 	uint32_t prompt_token_count;
 	uint32_t computed_prompt_token_count;
 	uint32_t generated_token_count;
@@ -125,6 +126,8 @@ struct SparkModelBatchEngine
 	SparkModelServingCacheIdentity *scratch_block_identities;
 	uint32_t scratch_block_identity_count;
 	uint32_t *scratch_request_slots;
+	uint32_t *scratch_request_order;
+	uint32_t scratch_request_order_count;
 	uint32_t *scratch_prefill_counts;
 	SparkModelBatchCacheDemandEntry *cache_demand_entries;
 	SparkPrefixCacheEntry *prefix_cache_entries;
@@ -1362,6 +1365,9 @@ static SparkStatus SparkModelBatchAllocate(
 	engine->scratch_block_identities = (SparkModelServingCacheIdentity *)calloc(engine->scratch_row_capacity,sizeof(engine->scratch_block_identities[0]));
 	engine->scratch_request_slots = (uint32_t *)calloc(engine->max_active_sequence_count,sizeof(engine->scratch_request_slots[0]));
 	engine->scratch_prefill_counts = (uint32_t *)calloc(engine->max_active_sequence_count,sizeof(engine->scratch_prefill_counts[0]));
+	engine->scratch_request_order = (uint32_t *)calloc(engine->request_capacity,sizeof(engine->scratch_request_order[0]));
+	if ( engine->scratch_request_order == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( engine->requests == 0 || engine->submissions == 0 || engine->request_token_storage == 0 || engine->resident_slot_next == 0 || engine->submission_request_slots == 0 || engine->submission_prefill_counts == 0 || engine->scratch_lanes == 0 || engine->scratch_token_ids == 0 || engine->scratch_row_lane_indices == 0 || engine->scratch_row_positions == 0 || engine->scratch_row_sequence_ids == 0 || engine->scratch_block_identities == 0 || engine->scratch_request_slots == 0 || engine->scratch_prefill_counts == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	engine->cache_demand_entry_capacity =
@@ -1630,6 +1636,7 @@ SparkStatus SparkModelBatchEngineDestroy(SparkModelBatchEngine *engine)
 	SparkModelPipelineClientDestroy(engine->pipeline);
 	free(engine->scratch_prefill_counts);
 	free(engine->scratch_request_slots);
+	free(engine->scratch_request_order);
 	free(engine->scratch_row_sequence_ids);
 	free(engine->scratch_block_identities);
 	free(engine->scratch_row_positions);
@@ -1718,6 +1725,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 		state->generation = 1u;
 	state->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
 	state->priority = request->priority;
+	state->deadline_ns = request->deadline_ns;
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->prompt_token_count = request->prompt_token_count;
 	state->output_token_budget = request->output_token_budget;
@@ -2101,9 +2109,9 @@ static uint32_t SparkModelBatchSelectRequestPass(
 	uint32_t aged,context,index,resident_bound,slot,stride;
 	now_ns = SparkModelBatchNowNs();
 	stride = SparkModelBatchLogprobStride(engine,selected);
-	for (index=0u; index<engine->request_capacity && selected<lane_limit; index++)
+	for (index=0u; index<engine->scratch_request_order_count && selected<lane_limit; index++)
 	{
-		slot = (engine->next_request_scan + index) % engine->request_capacity;
+		slot = engine->scratch_request_order[index];
 		request = &engine->requests[slot];
 		if ( request->state != state )
 			continue;
@@ -2172,6 +2180,32 @@ static void SparkModelBatchUpdateRequestAges(
 		engine->requests[engine->scratch_request_slots[lane]].scheduling_bypass_count = 0u;
 }
 
+static uint64_t SparkModelBatchDeadlineKey(const SparkModelBatchRequestState *request)
+{
+	return(request->deadline_ns != 0u ? request->deadline_ns : UINT64_MAX);
+}
+
+static void SparkModelBatchOrderRequests(
+	SparkModelBatchEngine *engine,
+	uint32_t state)
+{
+	uint32_t index,slot,count = 0u,cursor;
+	for (index=0u; index<engine->request_capacity; index++)
+	{
+		slot = (engine->next_request_scan + index) % engine->request_capacity;
+		if ( engine->requests[slot].state != state )
+			continue;
+		cursor = count++;
+		while ( cursor != 0u && SparkModelBatchDeadlineKey(&engine->requests[engine->scratch_request_order[cursor - 1u]]) > SparkModelBatchDeadlineKey(&engine->requests[slot]) )
+		{
+			engine->scratch_request_order[cursor] = engine->scratch_request_order[cursor - 1u];
+			cursor--;
+		}
+		engine->scratch_request_order[cursor] = slot;
+	}
+	engine->scratch_request_order_count = count;
+}
+
 static uint32_t SparkModelBatchSelectRequests(
 	SparkModelBatchEngine *engine,
 	uint32_t work_kind)
@@ -2212,6 +2246,7 @@ static uint32_t SparkModelBatchSelectRequests(
 	maximum_by_kind[SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH] = SparkModelBatchMaximumLaneCount(engine,SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH);
 	lane_limit = SparkModelBatchSchedulerPlanMixedLaneCount(queued_by_kind,maximum_by_kind,inflight_by_kind,work_kind,engine->submission_capacity);
 	prefill_span_budget = engine->max_prefill_rows;
+	SparkModelBatchOrderRequests(engine,state);
 	selected = SparkModelBatchSelectRequestPass(engine,cache_demand_pointer,state,
 		work_kind,lane_limit,SPARK_MODEL_BATCH_SELECT_AGED,maximum_priority,0u,
 		work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? &prefill_span_budget : 0);
@@ -2447,16 +2482,26 @@ static void SparkModelBatchFinishSubmissionShape(
 	SparkModelBatchEngine *engine,
 	SparkModelServingSubmission *submission)
 {
-	uint32_t lane;
+	uint64_t latest = 0u;
+	uint32_t lane,every;
 	submission->token_ids = submission->row_count != 0u ? engine->scratch_token_ids : 0;
 	submission->row_lane_indices = submission->row_count != 0u ? engine->scratch_row_lane_indices : 0;
 	submission->row_positions = submission->row_count != 0u ? engine->scratch_row_positions : 0;
 	submission->row_sequence_ids = submission->row_count != 0u ? engine->scratch_row_sequence_ids : 0;
 	submission->cache_block_identity_count = engine->scratch_block_identity_count;
 	submission->cache_block_identities = engine->scratch_block_identity_count != 0u ? engine->scratch_block_identities : 0;
+	every = submission->lane_count != 0u && (submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE) ? 1u : 0u;
 	for (lane=0u; lane<submission->lane_count; lane++)
-		if ( engine->requests[engine->scratch_request_slots[lane]].priority > submission->priority )
-			submission->priority = engine->requests[engine->scratch_request_slots[lane]].priority;
+	{
+		const SparkModelBatchRequestState *request = &engine->requests[engine->scratch_request_slots[lane]];
+		if ( request->priority > submission->priority )
+			submission->priority = request->priority;
+		if ( request->deadline_ns == 0u )
+			every = 0u;
+		else if ( request->deadline_ns > latest )
+			latest = request->deadline_ns;
+	}
+	submission->deadline_time_ns = every != 0u ? latest : 0u;
 }
 
 static uint32_t SparkModelBatchBuildSubmission(

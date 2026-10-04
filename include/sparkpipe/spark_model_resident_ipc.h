@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 22u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 23u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -98,7 +98,7 @@ typedef struct SparkModelResidentIpcSubmit
 	uint64_t request_id;
 	uint64_t sequence_id;
 	uint64_t sequence_position;
-	uint64_t deadline_time_ns;
+	uint64_t deadline_remaining_ns;
 	uint64_t client_generation;
 	uint64_t control_generation;
 	uint64_t transaction_id;

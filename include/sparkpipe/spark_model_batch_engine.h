@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 11u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 12u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
@@ -100,6 +100,7 @@ typedef struct SparkModelBatchSubmitRequest
 	float top_p;
 	uint32_t top_k;
 	uint32_t logprobs;
+	uint64_t deadline_ns;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView
