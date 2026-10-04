@@ -876,7 +876,7 @@ static SparkStatus RestorePrefix(uint64_t sequence,uint32_t slot,uint32_t tokens
 	StepInit(&step,sequence,slot,tokens,tokens);
 	StepPrefix(&step,tokens,identity);
 	status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
-	for (attempt=0u; status == SPARK_STATUS_BUSY && attempt<500u; attempt++)
+	for (attempt=0u; status == SPARK_STATUS_PENDING && attempt<500u; attempt++)
 	{
 		SleepMs(2u);
 		status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
@@ -911,7 +911,7 @@ static void TestSnapshotRestartRestore(void)
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	assert(BINDING.kv_pool.reattached == 0u && BINDING.kv_pool_adopted_pages == 0u);
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
-	assert(BINDING.restore_jobs == 1u && BINDING.restore_busy_answers >= 1u && BINDING.restore_imported_pages == 2u && BINDING.transactions.restore_async == 1u);
+	assert(BINDING.restore_jobs == 1u && BINDING.restore_pending_answers >= 1u && BINDING.restore_imported_pages == 2u && BINDING.transactions.restore_async == 1u);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.attached == 1u && counters.restore_count == 1u && counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
 	assert(counters.store_file_count == 2u && counters.store_foreign_layout_file_count == 0u && counters.store_used_bytes != 0u);

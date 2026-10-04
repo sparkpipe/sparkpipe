@@ -2128,7 +2128,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 			(uint32_t)status,(unsigned long long)submission.submission_id,submission.work_kind,
 			submission.row_count,submission.active_sequence_count,
 			(unsigned long long)runtime->client.last_submission_id);
-	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_DUPLICATE )
+	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_PENDING && status != SPARK_STATUS_DUPLICATE )
 		SparkModelResidentdLogSubmission("SUBMISSION-REJECTED",&submission,status);
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route != 0 && status == SPARK_STATUS_OK && cache_committed != 0u &&

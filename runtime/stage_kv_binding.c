@@ -410,8 +410,8 @@ static SparkStatus SparkStageKvBindingRestoreGate(SparkStageKvBinding *binding,c
 			waiting += SparkStageKvBindingRestoreWanted(binding,&request->cache_lanes[lane]);
 	if ( waiting == 0u )
 		return(SPARK_STATUS_OK);
-	binding->restore_busy_answers++;
-	return(SPARK_STATUS_BUSY);
+	binding->restore_pending_answers++;
+	return(SPARK_STATUS_PENDING);
 }
 
 static SparkStatus SparkStageKvBindingRestoreRun(SparkStageKvBinding *binding,SparkStageKvRestoreSlot *slot)
@@ -1059,8 +1059,8 @@ static void SparkStageKvBindingLogCounters(const SparkStageKvBinding *binding)
 		(unsigned long long)binding->arena.park_backing_full_count,(unsigned long long)binding->arena.park_stall_count,
 		(unsigned long long)binding->page_store.write_count,(unsigned long long)binding->page_store.read_count,
 		binding->page_store.backing_page_count,(unsigned long long)binding->page_cache.backing_reclaim_count);
-	fprintf(stderr,"%s kv binding restore worker jobs=%llu busy_answers=%llu imported_pages=%llu\n",binding->module_tag,
-		(unsigned long long)binding->restore_jobs,(unsigned long long)binding->restore_busy_answers,(unsigned long long)binding->restore_imported_pages);
+	fprintf(stderr,"%s kv binding restore worker jobs=%llu pending_answers=%llu imported_pages=%llu\n",binding->module_tag,
+		(unsigned long long)binding->restore_jobs,(unsigned long long)binding->restore_pending_answers,(unsigned long long)binding->restore_imported_pages);
 }
 
 static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)

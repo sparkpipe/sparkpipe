@@ -26,6 +26,7 @@
 #define SPARK_MODEL_BATCH_NO_SLOT UINT32_MAX
 #define SPARK_MODEL_BATCH_PREFIX_INDEX_SAVE_INTERVAL_NS UINT64_C(10000000000)
 #define SPARK_MODEL_BATCH_STATUS_INTERVAL_NS UINT64_C(1000000000)
+#define SPARK_MODEL_BATCH_RESTORE_POLL_MS 2u
 #define SPARK_MODEL_BATCH_SELECT_AGED 1u
 #define SPARK_MODEL_BATCH_SELECT_PRIORITY 2u
 #define SPARK_MODEL_BATCH_SELECT_FILL 3u
@@ -987,14 +988,16 @@ static void SparkModelBatchHandleRejected(
 			request->busy_retry_not_before_ns = 0u;
 			SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
 		}
-		else if ( (status == SPARK_STATUS_BUSY || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) &&
+		else if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) &&
 			(request->busy_since_ns == 0u || SparkModelBatchNowNs() - request->busy_since_ns < engine->inflight_budget_ns) )
 		{
 			uint64_t now = SparkModelBatchNowNs();
 			if ( request->busy_since_ns == 0u )
 				request->busy_since_ns = now;
 			request->busy_restore_count++;
-			if ( request->busy_retry_backoff_ms == 0u )
+			if ( status == SPARK_STATUS_PENDING )
+				request->busy_retry_backoff_ms = SPARK_MODEL_BATCH_RESTORE_POLL_MS;
+			else if ( request->busy_retry_backoff_ms == 0u )
 				request->busy_retry_backoff_ms = 10u;
 			else if ( request->busy_retry_backoff_ms < 200u )
 				request->busy_retry_backoff_ms *= 2u;
@@ -1005,7 +1008,7 @@ static void SparkModelBatchHandleRejected(
 		}
 		else
 		{
-			if ( status == SPARK_STATUS_BUSY )
+			if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 				fprintf(stderr,"batch_retry_deadline request=%llu restores=%u waited_ns=%llu budget_ns=%llu; failing\n",
 					(unsigned long long)request->request_id,
 					(unsigned)request->busy_restore_count,

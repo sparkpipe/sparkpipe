@@ -248,11 +248,12 @@ citations refer to that commit.
   cache. B16 decode at 16K context reads 5.2 GB of bf16 index keys per step.
   With the context split, each rank scores its own 1/tp of the context and
   the ranks merge their top-k candidates.
-- KV admission answers `BUSY` while a park or restore is in flight: nothing
-  answers `PENDING` with a completion signal, so the engine polls with a 10 to
-  200 ms backoff (`runtime/stage_kv_binding.c`, `SparkStageKvBindingAdmit`).
-  Close it with a restore-complete signal to the engine so a lane is
-  dispatched as soon as its restore worker job finishes.
+- A prepare waiting on its snapshot restore answers `PENDING` and the engine
+  polls it every 2 ms within the in-flight budget, but there is still no
+  completion signal, and a prepare that waits on a park or a full slot table
+  answers `BUSY` with the 10 to 200 ms backoff. Close it with a
+  restore-complete and park-complete notification from residentd to the
+  engine, so a lane is dispatched as soon as its pages are in place.
 - Left out on purpose (2026-10-02): glm52 graph regimes key long contexts on
   4,096-token buckets to 16K and four buckets per octave above, in the fixed
   72-regime table (`spark_glm52_graph_regime.h`): a 1,048,576-position
