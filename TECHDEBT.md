@@ -321,6 +321,19 @@ citations refer to that commit.
 
 ## Model residency and storage
 
+- Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
+  al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
+  8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
+  every decoded weight stays bit-identical. The spine is replicated on all 16
+  ranks, so each GB saved per rank frees 16 GB of fleet memory for KV and
+  expert residency. Write our own encoder (pack time) and GPU decoder (a
+  lookup-table decode into the layer's BF16 working buffer just before its
+  GEMM/GEMV, overlapped with the previous layer), reading only the paper;
+  no code from the repository. Gate: weights decode bit-exact against the
+  BF16 pack, logits identical, and B1/B16 decode tok/s within noise of the
+  uncompressed spine. An unfused decode adds a write and read of each layer's
+  BF16 weights per step, which can cost more than the bytes saved on
+  memory-bound decode. If the gate fails, try decoding inside the GEMV.
 - Relocatable expert graphs (saved graphs) are designed but not built. `8adebc6`
   proposed capturing a graph once, recording which kernel arguments are
   expert pointers and patching them on load, as a dynamic linker does, and
