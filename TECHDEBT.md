@@ -403,25 +403,15 @@ citations refer to that commit.
   succeeds.
 ## KV sharding
 
-- Left out on purpose (2026-10-02): GLM-5.3 Flash (glm5_next) refuses TP16
-  without `kv_shard`
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:482-487`).
-  With it, each rank stores 1/tp of the latent KV and indexer keys through the
-  shared context split (`include/sparkpipe/spark_kv_shard.h`,
-  `inference/kernels/attn_shard.cuh`). Below TP16, `kv_shard` is optional, and
-  `tools/glm5_next_gen_tp4pp4_deployment.py` sets neither `kv_shard` nor
-  `dsa_index_context_parallel`, so a TP4xPP4 glm5_next deployment stores the
-  full latent KV and indexer keys on every rank of each TP group, against
-  README:268-274. It closes when `kv_shard` is required at every TP degree the
-  shard check accepts
-  (`model-families/glm5_next/include/sparkpipe/spark_glm5_next_kv_shard.h:103-110`),
-  proven by a TP4xPP4 fleet run with T1 parity. GLM-5.3 Full replicates at
-  every degree; see the glm52 entries below.
-- Left out on purpose (2026-10-02): `dsa_index_context_parallel` is required
-  whenever `kv_shard` is set
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:493-497`),
-  and `tools/glm5_next_gen_deployment.py:136-138` sets both at TP16. Below
-  TP16 it is optional, and the TP4xPP4 generator leaves it off.
+- Left out on purpose (2026-10-02): GLM-5.3 Flash (glm5_next) requires
+  `kv_shard` (and with it `dsa_index_context_parallel`) at every TP degree the
+  shard check accepts (8 and 16), so each rank holds 1/tp of the latent KV and
+  indexer keys. At TP2 and TP4 the shard check refuses the split (the 64-head
+  and 64-slot page geometry at the index grain), so a TP4xPP4 deployment still
+  stores the full latent KV on every rank of a TP group, against
+  README:268-274. Close it by extending the context split to degrees 2 and 4,
+  proven by a TP4xPP4 fleet run with T1 parity. GLM-5.3 Full: see the glm52
+  entry below.
 - Replace per-driver KV and index pools with one node-level pool shared by
   all resident drivers, admitted against resident demand.
 - Left out on purpose (2026-10-03): GLM-5.3 Full (glm52) splits every
