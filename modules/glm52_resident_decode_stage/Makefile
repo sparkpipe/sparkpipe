@@ -62,7 +62,7 @@ MAX_SEQUENCE_POSITIONS ?= 32768
 EXECUTION_ROW_CAPACITY ?= 64
 PIPELINE_SLOT_COUNT ?= 2
 
-override GLM52_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_glm52_resident_decode_stage_cuda_validation.cu | awk '{print $$1}')
+override GLM52_CUDA_VALIDATOR_SHA256 := $(shell python3 ../../tools/validator_digest.py validation/spark_glm52_resident_decode_stage_cuda_validation.cu)
 
 RUNTIME_CONFIGURATION := \
 	SPARK_GLM52_EXPERT_CODEC=$(EXPERT_CODEC) \

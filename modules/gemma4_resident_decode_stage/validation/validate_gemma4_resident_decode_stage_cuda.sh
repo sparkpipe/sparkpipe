@@ -39,7 +39,7 @@ spark_cuda_validation_check_hash_format
 spark_cuda_validation_check_archive
 spark_cuda_validation_check_source_digests
 
-require_configuration_value SPARK_GEMMA4_CUDA_VALIDATOR_SHA256 "$(sha256sum "${script_directory}/${validation_validator_file}" | awk '{print $1}')"
+require_configuration_value SPARK_GEMMA4_CUDA_VALIDATOR_SHA256 "$(python3 "${script_directory}/../../../tools/validator_digest.py" "${script_directory}/${validation_validator_file}")"
 
 case "${SPARK_GEMMA4_VALIDATION_MOE_BUILD:-0}" in
     0|1) ;;

@@ -24,7 +24,7 @@ export SPARK_DSV4_STAGE_LOGICAL_PAGES=1024
 export SPARK_DSV4_STAGE_PHYSICAL_PAGES=1024
 export SPARK_DSV4_STAGE_MTP=0
 export SPARK_DSV4_STAGE_GRAPHS=0
-export SPARK_DSV4_CUDA_VALIDATOR_SHA256="$(sha256sum "${ROOT}/modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu" | cut -d' ' -f1)"
+export SPARK_DSV4_CUDA_VALIDATOR_SHA256="$(python3 "${ROOT}/tools/validator_digest.py" "${ROOT}/modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu")"
 export SPARK_DSV4_REFERENCE_VERIFIER_SHA256="$(sha256sum "${ROOT}/tools/verify_dsv4_ga_reference_fixture.py" | cut -d' ' -f1)"
 
 ARCHIVE="${ROOT}/build/modules/dsv4_pro_resident_decode_stage/libdsv4_resident_decode_stage_b${SPARK_MODULE_BATCH_BUCKET}.a"

@@ -69,7 +69,7 @@ LOGICAL_PAGE_CAPACITY ?= 16384
 MTP_LAYER_COUNT ?= 1
 CUDA_GRAPH_COUNT ?= 0
 override DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256 := 9ef837975bc4ddbd3cf0de0ea19c59c2c4c8a3750a8b8f302a19df0e09f39fa3
-override DSV4_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_dsv4_resident_decode_stage_cuda_validation.cu | awk '{print $$1}')
+override DSV4_CUDA_VALIDATOR_SHA256 := $(shell python3 ../../tools/validator_digest.py validation/spark_dsv4_resident_decode_stage_cuda_validation.cu)
 override DSV4_REFERENCE_VERIFIER_SHA256 := $(shell sha256sum ../../tools/verify_dsv4_ga_reference_fixture.py | awk '{print $$1}')
 
 RUNTIME_CONFIGURATION := \

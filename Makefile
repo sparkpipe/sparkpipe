@@ -754,6 +754,7 @@ PYTHON_TESTS := \
 	tests/test_module_default_goal.py \
 	tests/test_adapter_description_identity.py \
 	tests/test_validation_batch_bucket.py \
+	tests/test_validator_digest.py \
 	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
 	tests/test_tp_standalone_configuration.py \

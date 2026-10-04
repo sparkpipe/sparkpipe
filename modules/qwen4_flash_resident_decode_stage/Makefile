@@ -54,7 +54,7 @@ KV_WORKER_COUNT ?= 0
 TP_DEGREE ?= 1
 TP_RANK ?= 0
 TP_STANDALONE ?= 0
-override QWEN4_FLASH_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
+override QWEN4_FLASH_CUDA_VALIDATOR_SHA256 := $(shell python3 ../../tools/validator_digest.py validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu 2>/dev/null)
 override QWEN4_FLASH_CPU_ORACLE_SHA256 := $(shell sha256sum ../../model-families/common/validation/spark_gdn_reference.c 2>/dev/null | awk '{print $$1}')
 
 RUNTIME_CONFIGURATION := \

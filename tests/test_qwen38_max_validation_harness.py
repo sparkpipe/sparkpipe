@@ -57,7 +57,7 @@ def main() -> int:
             print(f"  FAIL {label} contract '{message_fragment}': "
                   f"exit={result.returncode} stderr={result.stderr.strip()}")
 
-    validator_sha = hashlib.sha256(VALIDATOR.read_bytes()).hexdigest()
+    validator_sha = subprocess.run([sys.executable, str(ROOT / "tools/validator_digest.py"), str(VALIDATOR)], capture_output=True, text=True, check=True).stdout.strip()
     with tempfile.TemporaryDirectory(prefix="qwen38-max-validation-") as directory:
         temporary = Path(directory)
         expect(run_script(DRIVER, []), "usage:")

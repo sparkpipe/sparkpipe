@@ -53,7 +53,7 @@ ifeq ($(filter $(EXPERT_CODEC),bf16),)
 $(error unsupported EXPERT_CODEC '$(EXPERT_CODEC)': the dense gemma4 module builds bf16 only)
 endif
 BUILD_DIRECTORY ?= $(REPOSITORY_ROOT)/build/modules/gemma4_resident_decode_stage/$(EXPERT_CODEC)
-override GEMMA4_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_gemma4_resident_decode_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
+override GEMMA4_CUDA_VALIDATOR_SHA256 := $(shell python3 ../../tools/validator_digest.py validation/spark_gemma4_resident_decode_stage_cuda_validation.cu 2>/dev/null)
 override GEMMA4_CPU_ORACLE_SHA256 := $(shell sha256sum ../../validation/spark_gemma4_reference.c 2>/dev/null | awk '{print $$1}')
 
 RUNTIME_CONFIGURATION := \

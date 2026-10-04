@@ -50,7 +50,7 @@ TP_RANK ?= 0
 TP_STANDALONE ?= 0
 
 # Digest pin must precede RUNTIME_CONFIGURATION (simple := expansion).
-override MINIMAX_CUDA_VALIDATOR_SHA256 := $(shell sha256sum validation/spark_minimax_resident_decode_stage_cuda_validation.cu 2>/dev/null | awk '{print $$1}')
+override MINIMAX_CUDA_VALIDATOR_SHA256 := $(shell python3 ../../tools/validator_digest.py validation/spark_minimax_resident_decode_stage_cuda_validation.cu 2>/dev/null)
 
 RUNTIME_CONFIGURATION := \
 	SPARK_MINIMAX_TP_DEGREE=$(TP_DEGREE) \
