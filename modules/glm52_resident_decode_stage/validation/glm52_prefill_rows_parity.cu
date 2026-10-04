@@ -6,7 +6,9 @@
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_head_screen.h"
 
-#define ROWS_MAX 16u
+#define ROWS_MAX SPARK_BATCH_BUCKET
+#define ROWS_RELATIVE_BOUND (1.0f / 64.0f)
+#define ROWS_TOKEN_DIFFER_DIVISOR 64u
 #define ROWS_LAYERS 2u
 #define ROWS_FIRST_LAYER (SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER - 1u)
 #define ROWS_SPLIT_THRESHOLD 64u
@@ -361,6 +363,19 @@ static uint32_t RowsCompareBoundary(const RowsRig *rig,const uint16_t *a,const u
 	return(differing);
 }
 
+static float RowsMaxAbs(const RowsRig *rig,const uint16_t *values)
+{
+	uint64_t index,count = (uint64_t)rig->positions_total * ROWS_BOUNDARY;
+	float maximum = 0.0f,value;
+	for (index=0u; index<count; index++)
+	{
+		value = fabsf(RowsBf16(values[index]));
+		if ( value > maximum )
+			maximum = value;
+	}
+	return(maximum);
+}
+
 static uint64_t RowsHash(const uint16_t *values,uint32_t first,uint32_t count)
 {
 	uint64_t hash = UINT64_C(1469598103934665603),index;
@@ -496,7 +511,7 @@ static int RowsVerifyHead(RowsRig *rig,uint32_t anchor,uint32_t depth,uint32_t a
 
 static int RowsHeadMain(RowsRig *rig)
 {
-	static const uint32_t widths[] = {2u,4u,8u,16u};
+	static const uint32_t widths[] = {2u,4u,8u,16u,64u,256u,1024u};
 	static const uint32_t anchors[] = {5u,100u,1500u,2044u,2060u,2090u};
 	uint32_t index,waves,differing,first,distinct,position;
 	int failures = 0;
@@ -509,15 +524,16 @@ static int RowsHeadMain(RowsRig *rig)
 		distinct += rig->reference_tokens[position] != rig->reference_tokens[position - 1u] ? 1u : 0u;
 	printf("glm52_prefill_rows_parity head reference tp=%u rank-local positions=%u waves=%u certified B1 head, token changes=%u %s\n",rig->tp_degree,rig->positions_total,waves,distinct,distinct != 0u ? "NONTRIVIAL" : "FAIL");
 	failures += distinct == 0u ? 1 : 0;
-	for (index=0u; index<sizeof(widths)/sizeof(widths[0]); index++)
+	for (index=0u; index<sizeof(widths)/sizeof(widths[0]) && widths[index]<=ROWS_MAX; index++)
 	{
 		rig->row_head_certified = 1u;
 		if ( RowsRun(rig,widths[index],1u,rig->mode_boundary,rig->mode_kv,rig->mode_index,&waves) != 0 )
 			return(1);
 		differing = RowsTokenDiffer(rig,0u,rig->positions_total,&first);
 		printf("glm52_prefill_rows_parity head prefill rows<=%u row_certified=1 waves=%u differing_tokens=%u first=%d %s\n",widths[index],waves,differing,first == UINT32_MAX ? -1 : (int)first,
-			differing == 0u ? "TOKEN-EXACT" : (widths[index] > SparkGlm52ExactWaveRows() ? "DIFFER-EXPECTED" : "DIFFER"));
+			differing == 0u ? "TOKEN-EXACT" : (widths[index] > SparkGlm52ExactWaveRows() && differing * ROWS_TOKEN_DIFFER_DIVISOR <= rig->positions_total ? "WITHIN-BOUND" : "DIFFER"));
 		failures += widths[index] <= SparkGlm52ExactWaveRows() && differing != 0u ? 1 : 0;
+		failures += widths[index] > SparkGlm52ExactWaveRows() && differing * ROWS_TOKEN_DIFFER_DIVISOR > rig->positions_total ? 1 : 0;
 	}
 	rig->row_head_certified = 0u;
 	if ( RowsRun(rig,8u,1u,rig->mode_boundary,rig->mode_kv,rig->mode_index,&waves) != 0 )
@@ -535,19 +551,18 @@ static int RowsHeadMain(RowsRig *rig)
 
 int main(int argc,char **argv)
 {
-	static const uint32_t widths[] = {2u,4u,8u,16u};
+	static const uint32_t widths[] = {2u,4u,8u,16u,64u,256u,1024u};
 	static const uint32_t anchors[] = {5u,60u,100u,1500u,2044u,2047u,2060u,2090u};
 	RowsRig *rig;
 	uint32_t index,split,waves,differing,first,positions_total,missing,position;
-	float difference;
-	int failures = 0,exact_required;
+	float difference,bound;
+	int failures = 0;
 	positions_total = argc > 1 ? (uint32_t)strtoul(argv[1],0,10) : 2112u;
-	exact_required = argc > 2 ? atoi(argv[2]) : 1;
 	rig = (RowsRig *)calloc(1u,sizeof(*rig));
 	if ( rig == 0 || positions_total <= SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT || positions_total > 4096u )
 		return(1);
 	rig->tp_degree = 1u;
-	if ( argc > 3 && strcmp(argv[3],"head") == 0 )
+	if ( argc > 2 && strcmp(argv[2],"head") == 0 )
 	{
 		rig->head = 1u;
 		rig->tp_degree = 16u;
@@ -576,27 +591,27 @@ int main(int argc,char **argv)
 		(unsigned long long)RowsHash(rig->reference_boundary,0u,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT),
 		(unsigned long long)RowsHash(rig->reference_boundary,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,positions_total - SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT),
 		SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT,positions_total);
-	if ( exact_required < 0 )
-		return(0);
+	bound = ROWS_RELATIVE_BOUND * RowsMaxAbs(rig,rig->reference_boundary);
 	for (split=0u; split<2u; split++)
-		for (index=0u; index<sizeof(widths)/sizeof(widths[0]); index++)
+		for (index=0u; index<sizeof(widths)/sizeof(widths[0]) && widths[index]<=ROWS_MAX; index++)
 		{
 			if ( RowsRun(rig,widths[index],split,rig->mode_boundary,rig->mode_kv,rig->mode_index,&waves) != 0 )
 				return(1);
 			differing = RowsCompareBoundary(rig,rig->mode_boundary,rig->reference_boundary,0u,positions_total,&first,&difference);
-			printf("glm52_prefill_rows_parity prefill rows<=%u regime_split=%u waves=%u differing_rows=%u first=%d max_abs=%.6g kv=%s index=%s %s\n",
-				widths[index],split,waves,differing,first == UINT32_MAX ? -1 : (int)first,difference,
+			printf("glm52_prefill_rows_parity prefill rows<=%u regime_split=%u waves=%u differing_rows=%u first=%d max_abs=%.6g bound=%.6g kv=%s index=%s %s\n",
+				widths[index],split,waves,differing,first == UINT32_MAX ? -1 : (int)first,difference,bound,
 				memcmp(rig->mode_kv,rig->reference_kv,rig->kv_bytes) == 0 ? "EQUAL" : "DIFFER",
 				memcmp(rig->mode_index,rig->reference_index,rig->index_bytes) == 0 ? "EQUAL" : "DIFFER",
-				differing == 0u ? "BIT-EXACT" : (widths[index] > SparkGlm52ExactWaveRows() || split == 0u ? "DIFFER-EXPECTED" : "DIFFER"));
-			failures += split != 0u && exact_required != 0 && widths[index] <= SparkGlm52ExactWaveRows() && differing != 0u ? 1 : 0;
+				differing == 0u ? "BIT-EXACT" : ((widths[index] > SparkGlm52ExactWaveRows() || split == 0u) && difference <= bound ? "WITHIN-BOUND" : "DIFFER"));
+			failures += split != 0u && widths[index] <= SparkGlm52ExactWaveRows() && differing != 0u ? 1 : 0;
+			failures += (widths[index] > SparkGlm52ExactWaveRows() || split == 0u) && difference > bound ? 1 : 0;
 			failures += split == 0u && widths[index] > 2u && differing == 0u ? 1 : 0;
 		}
 	for (index=0u; index<sizeof(anchors)/sizeof(anchors[0]); index++)
 	{
 		if ( anchors[index] + ROWS_VERIFY_DEPTH + ROWS_ADVERSARY_TAIL > positions_total )
 			continue;
-		failures += RowsVerify(rig,anchors[index],ROWS_VERIFY_DEPTH,0u) != 0 && exact_required != 0 ? 1 : 0;
+		failures += RowsVerify(rig,anchors[index],ROWS_VERIFY_DEPTH,0u) != 0 ? 1 : 0;
 		failures += RowsVerify(rig,anchors[index],ROWS_VERIFY_DEPTH,1u) != 0 ? 1 : 0;
 	}
 	printf("glm52_prefill_rows_parity %s\n",failures == 0 ? "PASS" : "FAIL");

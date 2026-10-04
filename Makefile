@@ -274,6 +274,7 @@ TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
 TEST_NAMES := \
 	test_status \
+	test_score_dump_keys \
     test_gemm_descriptor_cache \
     test_launch \
     test_arena \
@@ -654,6 +655,7 @@ PYTHON_TESTS := \
 	tests/test_module_host_contracts.py \
 	tests/test_timing_reports.py \
 	tests/test_glm5_next_bench_wrap.py \
+	tests/test_i27_session.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \
 	tests/test_glm5_next_pack_header_codec.py \
@@ -1459,6 +1461,9 @@ build/test_arena: tests/test_arena.c runtime/arena.h
 
 build/test_status: tests/test_status.c $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_status.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_score_dump_keys: tests/test_score_dump_keys.c src/spark_score_dump.c include/sparkpipe/spark_score_dump.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_score_dump_keys.c src/spark_score_dump.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_work_transaction: tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

@@ -153,7 +153,7 @@ int main(int argc, char **argv)
 			return(4);
 		}
 		for (row = 0u; row < rows; row++)
-			valid[row] = SparkScoreDumpKeysAdvance(&writer.keys, row / document_rows, row % document_rows, tokens[row], &keys[row]);
+			valid[row] = SparkScoreDumpKeysAdvance(&writer.keys, row / document_rows, row / document_rows + 1u, row % document_rows, tokens[row], &keys[row]);
 		count = 0u;
 		for (row = 0u; row < rows; row++)
 		{

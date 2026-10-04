@@ -129,7 +129,7 @@ def measure(command, timeout, env=None, event_sink=None, stderr_path=None):
         return result
 
 
-def summarize_api_measurements(records):
+def summarize_api_measurements(records, require_prefix_hits=False):
     try:
         if not records or len({r['boot_pid'] for r in records}) != 1:
             raise ValueError('measurements must come from one persistent engine process')
@@ -169,6 +169,10 @@ def summarize_api_measurements(records):
             sequence.update(cached_prompt_tokens=record['cached_prompt_tokens'],
                             engine_ttft_seconds=(stamps[0]-record['accepted_ns'])/1e9,
                             decode_tokens_per_second=(len(stamps)-1)*1e9/(stamps[-1]-stamps[0]) if stamps[-1]>stamps[0] else None)
+        missed = sorted(r['request_id'] for r in records if r['cached_prompt_tokens'] == 0)
+        if require_prefix_hits and missed:
+            result['valid'] = False
+            result['errors'] = sorted(set(result.get('errors', [])) | {'prefix cache miss on requests %s' % missed})
         return result
     except (KeyError, TypeError, ValueError) as error:
         return {'valid':False,'errors':[str(error)]}
@@ -178,6 +182,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout-seconds", type=float, default=600)
     parser.add_argument("--api-log")
+    parser.add_argument("--require-prefix-hits", action="store_true",
+                        help="fail the receipt when any request reports cached_prompt_tokens 0")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -186,9 +192,12 @@ def main():
             parser.error('provide an API log or a command, not both')
         with open(args.api_log) as source:
             records = [json.loads(line) for line in source if line.startswith('{')]
-        result = summarize_api_measurements([r for r in records if r.get('event') == 'request_measurements'])
+        result = summarize_api_measurements([r for r in records if r.get('event') == 'request_measurements'],
+                                            args.require_prefix_hits)
         print(json.dumps(result,indent=1))
         return 0 if result['valid'] else 1
+    if args.require_prefix_hits:
+        parser.error('--require-prefix-hits needs --api-log, which carries cached_prompt_tokens')
     if not command or not 0 < args.timeout_seconds <= 900:
         parser.error("provide a command and a finite timeout in (0, 900] seconds")
     result = measure(command, args.timeout_seconds)

@@ -1034,6 +1034,13 @@ static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *b
 	SPARK_RETURN(status);
 }
 
+uint64_t SparkStageKvBindingLaneSequence(const SparkStageKvBinding *binding,uint32_t slot)
+{
+	if ( binding == 0 || binding->lane_sequence_ids == 0 || slot >= binding->resident_sequence_capacity )
+		return(0u);
+	return(atomic_load_explicit(&binding->lane_sequence_ids[slot],memory_order_acquire));
+}
+
 SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	SparkStatus status;
