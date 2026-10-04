@@ -889,17 +889,12 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    if (cuda_stub_vmm_single_mapping(phys, &mapped_at))
+    if (!cuda_stub_vmm_single_mapping(phys, &mapped_at))
     {
-        if (phys->backing == 0 && (phys->backing = cuda_stub_backing_create(phys->bytes)) == 0)
-            return CUDA_ERROR_OUT_OF_MEMORY;
-        memcpy(cuda_stub_backing_data(phys->backing), (const void *)(uintptr_t)mapped_at, (size_t)phys->bytes);
-    }
-    else if (phys->backing == 0)
-    {
-        if (phys->mapped_count != 0u)
+        mapped_at = 0;
+        if (phys->backing == 0 && phys->mapped_count != 0u)
             return CUDA_ERROR_INVALID_VALUE;
-        if ((phys->backing = cuda_stub_backing_create(phys->bytes)) == 0)
+        if (phys->backing == 0 && (phys->backing = cuda_stub_backing_create(phys->bytes)) == 0)
             return CUDA_ERROR_OUT_OF_MEMORY;
     }
     tmp_dir = getenv("TMPDIR");
@@ -932,7 +927,7 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     header.version = CUDA_STUB_SHARE_VERSION;
     header.bytes = phys->bytes;
     header.process = (uint64_t)getpid();
-    header.backing = (uint64_t)(uintptr_t)phys->backing;
+    header.backing = mapped_at == 0 ? (uint64_t)(uintptr_t)phys->backing : 0u;
     cursor = (uint8_t *)&header;
     remaining = sizeof(header);
     while (remaining != 0u)
@@ -950,7 +945,7 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
         cursor += written;
         remaining -= (size_t)written;
     }
-    cursor = cuda_stub_backing_data(phys->backing);
+    cursor = mapped_at != 0 ? (uint8_t *)(uintptr_t)mapped_at : cuda_stub_backing_data(phys->backing);
     remaining = (size_t)phys->bytes;
     while (remaining != 0u)
     {
