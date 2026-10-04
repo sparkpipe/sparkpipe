@@ -499,6 +499,59 @@ static SparkStatus SparkKvPageCacheEvictEntry(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkKvPageCacheVacatePage(SparkKvPageCache *cache,uint32_t page)
+{
+	SparkKvCacheArena *arena = cache->kv_cache_arena;
+	const SparkKvCacheBlock *block;
+	uint32_t entry_index,discardable = 0u;
+	SparkStatus status;
+	if ( page >= arena->logical_block_count )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	block = &arena->blocks[page];
+	entry_index = cache->entry_indices_by_logical_page[page];
+	if ( entry_index < cache->entry_capacity && (cache->entries[entry_index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u &&
+		cache->entries[entry_index].reference_count == 0u && SparkKvPageCachePageCanDiscard(cache,page) != 0u )
+		discardable = 1u;
+	if ( discardable != 0u && SparkKvPageCacheDiscardIsSafe(cache,entry_index) != 0u )
+		return(SparkKvPageCacheEvictEntry(cache,entry_index));
+	if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u || block->residency_reference_count != 0u )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	status = SparkKvCacheArenaParkResidentBlock(arena,page);
+	if ( status == SPARK_STATUS_OK || status == SPARK_STATUS_BUSY || discardable == 0u )
+		SPARK_RETURN(status);
+	if ( cache->snapshot != 0 )
+		cache->snapshot->evicted_unsaved_count++;
+	return(SparkKvPageCacheEvictEntry(cache,entry_index));
+}
+
+SparkStatus SparkKvPageCacheVacateResident(SparkKvPageCache *cache,uint32_t limit,uint32_t *kept_limit,uint32_t *vacated_pages)
+{
+	SparkKvCacheArena *arena;
+	uint64_t held;
+	uint32_t slot,page;
+	if ( SparkKvPageCacheIsValid(cache) == 0u || kept_limit == 0 || vacated_pages == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	arena = cache->kv_cache_arena;
+	*vacated_pages = 0u;
+	slot = arena->resident_block_capacity;
+	while ( slot > limit )
+	{
+		page = arena->resident_slot_logical_block_indices[slot - 1u];
+		if ( page != SPARK_KV_CACHE_NO_BLOCK )
+		{
+			if ( SparkKvPageCacheVacatePage(cache,page) != SPARK_STATUS_OK || arena->resident_slot_logical_block_indices[slot - 1u] != SPARK_KV_CACHE_NO_BLOCK )
+				break;
+			(*vacated_pages)++;
+		}
+		slot--;
+	}
+	held = (uint64_t)arena->resident_block_count + arena->reserved_block_count + atomic_load(&arena->unassigned_resident_block_count);
+	if ( held > slot )
+		slot = held < arena->resident_block_capacity ? (uint32_t)held : arena->resident_block_capacity;
+	*kept_limit = slot;
+	return(SPARK_STATUS_OK);
+}
+
 static uint32_t SparkKvPageCachePageIsProtected(const uint32_t *pages,uint32_t count,uint32_t page)
 {
 	uint32_t index;
@@ -1091,7 +1144,10 @@ static SparkStatus SparkKvPageCacheSpanRoom(SparkKvPageCache *cache,const SparkK
 	uint64_t fixed = (uint64_t)arena->reserved_block_count + atomic_load(&arena->unassigned_resident_block_count) + pages;
 	uint32_t held[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES],index;
 	if ( fixed + SparkKvPageCacheResidentLivePages(cache) > arena->resident_block_capacity )
+	{
+		arena->resident_capacity_stall_count++;
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	if ( fixed + arena->resident_block_count <= arena->resident_block_capacity )
 		return(SPARK_STATUS_OK);
 	uint64_t before = arena->park_backing_full_count;

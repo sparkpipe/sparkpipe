@@ -394,11 +394,14 @@ citations refer to that commit.
   README:268-274. Close it by extending the context split to degrees 2 and 4,
   proven by a TP4xPP4 fleet run with T1 parity. GLM-5.3 Full: see the glm52
   entry below.
-- Each engine's KV pool lives in weightd under one node budget
-  (`--kv-reserve-bytes`), but the budget is a static carve-out and pages do not
-  move between engines: an idle engine's pool cannot lend pages to a busy one.
-  Admit pool growth and shrink against resident demand across drivers, proven
-  by two co-resident engines whose pools resize under load.
+- KV pools resize by chunk inside the node reserve with resident demand
+  (`runtime/stage_kv_binding.c` pool policy, weightd `KV_POOL_RESIZE`/
+  `KV_POOL_STATUS`), and `tests/test_stage_kv_pool_resize.c` moves chunks
+  between two bindings in one process under the CUDA stub. Not yet proven on
+  the fleet: close it with two co-resident engines on one Spark (two GLM Flash
+  lanes on a shared reserve) whose `kv pool grew` and `kv pool shrank` lines
+  follow the load, with identical outputs to unshared runs and no
+  `KV-PARK-FAILED`.
 - Left out on purpose (2026-10-03): GLM-5.3 Full (glm52) splits every
   sequence's latent KV and DSA index keys across the TP ranks by context
   (owner of position p is p % tp; `SparkGlm52ModuleConfigure`, binding

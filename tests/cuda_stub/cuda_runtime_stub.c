@@ -701,7 +701,7 @@ cudaError_t cudaGetDevice(int *device)
 
 #define CUDA_STUB_VMM_MAGIC UINT32_C(0x564D4D31)
 #define CUDA_STUB_RESERVATION_MAGIC UINT32_C(0x564D4D32)
-#define CUDA_STUB_VMM_MAPPED_MAX 128
+#define CUDA_STUB_VMM_MAPPED_MAX 4096
 
 typedef struct cuda_stub_vmm_phys
 {

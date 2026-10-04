@@ -1240,6 +1240,21 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkKvCacheArenaParkResidentBlock(
+	SparkKvCacheArena *arena,
+	uint32_t logical_block_index)
+{
+	SparkStatus status;
+	status = SparkKvCacheArenaValidate(arena);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( logical_block_index >= arena->logical_block_count )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( arena->evict_function == 0 && arena->blocks[logical_block_index].reference_count != 0u )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	return(SparkKvCacheArenaEvictResidentBlock(arena,&arena->blocks[logical_block_index]));
+}
+
 static uint32_t SparkKvCacheArenaParkFailedCount(const SparkKvCacheArena *arena)
 {
     uint32_t resident_slot_index,count;

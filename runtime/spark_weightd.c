@@ -201,10 +201,12 @@ typedef struct SparkWeightdKvPool
     uint64_t metadata_bytes;
     uint64_t generation;
     uint64_t detached_ns;
+    uint32_t chunk_capacity;
     uint32_t chunk_count;
+    uint32_t wanted_chunks;
     uint32_t owner_connection;
     int metadata_fd;
-    void *chunk_handles[SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX];
+    void **chunk_handles;
     char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
 } SparkWeightdKvPool;
 
@@ -407,6 +409,18 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return sizeof(SparkWeightdIpcKvPoolAttach) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH_RESULT:
             return sizeof(SparkWeightdIpcKvPoolAttachResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE:
+            return sizeof(SparkWeightdIpcKvPoolResize) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE_RESULT:
+            return sizeof(SparkWeightdIpcKvPoolResizeResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT:
+            return sizeof(SparkWeightdIpcKvPoolExport) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT_RESULT:
+            return sizeof(SparkWeightdIpcKvPoolExportResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS:
+            return sizeof(SparkWeightdIpcKvPoolStatus) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS_RESULT:
+            return sizeof(SparkWeightdIpcKvPoolStatusResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return sizeof(SparkWeightdIpcMeshActivity) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT:
@@ -518,6 +532,12 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH:
             return SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE:
+            return SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT:
+            return SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS:
+            return SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY:
             return SPARK_WEIGHTD_IPC_KIND_MESH_ACTIVITY_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_MESH_WRITE:
@@ -2778,9 +2798,10 @@ static uint32_t SparkWeightdServerOnDetach(SparkWeightdServer *server, SparkWeig
 static void SparkWeightdKvPoolFree(SparkWeightdKvPool *pool)
 {
 	uint32_t index;
-	for (index=0u; index<pool->chunk_count; index++)
+	for (index=0u; pool->chunk_handles != 0 && index<pool->chunk_count; index++)
 		if ( pool->chunk_handles[index] != 0 )
 			(void)cuMemRelease((CUmemGenericAllocationHandle)pool->chunk_handles[index]);
+	free(pool->chunk_handles);
 	if ( pool->metadata_fd >= 0 )
 		(void)close(pool->metadata_fd);
 	memset(pool,0,sizeof(*pool));
@@ -2790,50 +2811,151 @@ static void SparkWeightdKvPoolFree(SparkWeightdKvPool *pool)
 static void SparkWeightdKvPoolRelease(SparkWeightdServer *server,uint32_t slot,const char *reason)
 {
 	SparkWeightdKvPool *pool = &server->kv_pools[slot];
+	if ( pool->generation == 0u )
+		return;
 	server->kv_committed_bytes -= pool->chunk_bytes * pool->chunk_count;
 	fprintf(stderr,"weightd kv pool released label=%s generation=%llu bytes=%llu reason=%s kv_committed=%llu kv_reserve=%llu\n",pool->label,
 		(unsigned long long)pool->generation,(unsigned long long)(pool->chunk_bytes * pool->chunk_count),reason,
 		(unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes);
 	SparkWeightdKvPoolFree(pool);
 	server->kv_pool_count--;
-	if ( slot != server->kv_pool_count )
-	{
-		server->kv_pools[slot] = server->kv_pools[server->kv_pool_count];
-		memset(&server->kv_pools[server->kv_pool_count],0,sizeof(server->kv_pools[0]));
-		server->kv_pools[server->kv_pool_count].metadata_fd = -1;
-	}
 }
 
-static uint32_t SparkWeightdKvPoolOldestDetached(const SparkWeightdServer *server)
+static uint32_t SparkWeightdKvPoolOldestDetached(const SparkWeightdServer *server,const SparkWeightdKvPool *keep)
 {
 	uint32_t index,oldest = SPARK_WEIGHTD_KV_POOL_COUNT_MAX;
-	for (index=0u; index<server->kv_pool_count; index++)
-		if ( server->kv_pools[index].owner_connection == 0u &&
+	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
+		if ( server->kv_pools[index].generation != 0u && &server->kv_pools[index] != keep && server->kv_pools[index].owner_connection == 0u &&
 			(oldest == SPARK_WEIGHTD_KV_POOL_COUNT_MAX || server->kv_pools[index].detached_ns < server->kv_pools[oldest].detached_ns) )
 			oldest = index;
 	return(oldest);
 }
 
-static SparkStatus SparkWeightdKvPoolCreate(const SparkWeightdIpcKvPoolAttach *request,uint64_t chunk_bytes,uint32_t chunk_count,const CUmemAllocationProp *prop,SparkWeightdKvPool *pool)
+static uint64_t SparkWeightdKvFreeBytes(const SparkWeightdServer *server)
 {
-	uint32_t index;
-	memset(pool,0,sizeof(*pool));
-	pool->metadata_fd = -1;
-	pool->chunk_bytes = chunk_bytes;
-	pool->chunk_count = chunk_count;
-	for (index=0u; index<chunk_count; index++)
+	return(server->config.kv_reserve_bytes > server->kv_committed_bytes ? server->config.kv_reserve_bytes - server->kv_committed_bytes : 0u);
+}
+
+static void SparkWeightdKvMakeRoom(SparkWeightdServer *server,const SparkWeightdKvPool *keep,uint64_t bytes)
+{
+	uint32_t victim;
+	while ( SparkWeightdKvFreeBytes(server) < bytes )
+	{
+		victim = SparkWeightdKvPoolOldestDetached(server,keep);
+		if ( victim == SPARK_WEIGHTD_KV_POOL_COUNT_MAX )
+			return;
+		SparkWeightdKvPoolRelease(server,victim,"evicted_detached");
+	}
+}
+
+static uint32_t SparkWeightdKvPoolGrow(SparkWeightdServer *server,SparkWeightdKvPool *pool,uint32_t target)
+{
+	CUmemAllocationProp prop;
+	uint64_t room;
+	uint32_t grant;
+	int device = 0;
+	if ( target > pool->chunk_capacity )
+		target = pool->chunk_capacity;
+	if ( target <= pool->chunk_count )
+	{
+		pool->wanted_chunks = 0u;
+		return(pool->chunk_count);
+	}
+	SparkWeightdKvMakeRoom(server,pool,(uint64_t)(target - pool->chunk_count) * pool->chunk_bytes);
+	room = SparkWeightdKvFreeBytes(server) / pool->chunk_bytes;
+	grant = target - pool->chunk_count < room ? target : pool->chunk_count + (uint32_t)room;
+	if ( cudaGetDevice(&device) != cudaSuccess )
+		return(pool->chunk_count);
+	memset(&prop,0,sizeof(prop));
+	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+	prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+	prop.location.id = device;
+	prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+	while ( pool->chunk_count < grant )
 	{
 		CUmemGenericAllocationHandle handle = 0;
-		if ( cuMemCreate(&handle,(size_t)chunk_bytes,prop,0ull) != CUDA_SUCCESS )
+		if ( cuMemCreate(&handle,(size_t)pool->chunk_bytes,&prop,0ull) != CUDA_SUCCESS )
 			break;
-		pool->chunk_handles[index] = (void *)handle;
+		pool->chunk_handles[pool->chunk_count++] = (void *)handle;
+		server->kv_committed_bytes += pool->chunk_bytes;
 	}
-	if ( index != chunk_count )
+	pool->wanted_chunks = target > pool->chunk_count ? target - pool->chunk_count : 0u;
+	return(pool->chunk_count);
+}
+
+static SparkStatus SparkWeightdKvPoolRequestValid(const SparkWeightdIpcKvPoolAttach *request)
+{
+	size_t granularity = 0u;
+	CUmemAllocationProp prop;
+	uint32_t index,nonzero = 0u;
+	int device = 0;
+	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_KEY_BYTES; index++)
+		nonzero |= request->key[index];
+	if ( nonzero == 0u || request->device_bytes == 0u || request->chunk_bytes == 0u || request->minimum_bytes > request->device_bytes ||
+		request->metadata_bytes > SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX || (request->device_bytes + request->chunk_bytes - 1u) / request->chunk_bytes > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX ||
+		memchr(request->label,'\0',sizeof(request->label)) == 0 || request->label[0] == '\0' )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( cudaGetDevice(&device) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	memset(&prop,0,sizeof(prop));
+	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+	prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+	prop.location.id = device;
+	prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+	if ( cuMemGetAllocationGranularity(&granularity,&prop,CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS || granularity == 0u ||
+		request->chunk_bytes % granularity != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkWeightdKvPoolFind(const SparkWeightdServer *server,const uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES])
+{
+	uint32_t index;
+	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
+		if ( server->kv_pools[index].generation != 0u && memcmp(server->kv_pools[index].key,key,SPARK_WEIGHTD_KV_POOL_KEY_BYTES) == 0 )
+			return(index);
+	return(SPARK_WEIGHTD_KV_POOL_COUNT_MAX);
+}
+
+static uint32_t SparkWeightdKvMinimumChunks(const SparkWeightdIpcKvPoolAttach *request)
+{
+	uint64_t chunks = (request->minimum_bytes + request->chunk_bytes - 1u) / request->chunk_bytes;
+	return(chunks == 0u ? 1u : (uint32_t)chunks);
+}
+
+static SparkStatus SparkWeightdKvPoolCreate(SparkWeightdServer *server,const SparkWeightdIpcKvPoolAttach *request,uint32_t *slot_out)
+{
+	SparkWeightdKvPool *pool;
+	uint32_t slot,victim;
+	if ( (uint64_t)SparkWeightdKvMinimumChunks(request) * request->chunk_bytes > server->config.kv_reserve_bytes )
 	{
-		SparkWeightdKvPoolFree(pool);
+		fprintf(stderr,"weightd kv pool refused label=%s: the minimum %llu bytes (%u chunks of %llu) exceed kv_reserve=%llu%s\n",request->label,(unsigned long long)request->minimum_bytes,
+			SparkWeightdKvMinimumChunks(request),(unsigned long long)request->chunk_bytes,(unsigned long long)server->config.kv_reserve_bytes,
+			server->config.kv_reserve_bytes == 0u ? "; weightd runs without --kv-reserve-bytes" : "");
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	if ( request->metadata_bytes != 0u )
+	while ( server->kv_pool_count >= SPARK_WEIGHTD_KV_POOL_COUNT_MAX )
+	{
+		victim = SparkWeightdKvPoolOldestDetached(server,0);
+		if ( victim == SPARK_WEIGHTD_KV_POOL_COUNT_MAX )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SparkWeightdKvPoolRelease(server,victim,"evicted_detached");
+	}
+	for (slot=0u; server->kv_pools[slot].generation != 0u; slot++)
+		;
+	server->kv_pool_count++;
+	pool = &server->kv_pools[slot];
+	memset(pool,0,sizeof(*pool));
+	pool->metadata_fd = -1;
+	memcpy(pool->key,request->key,sizeof(pool->key));
+	memcpy(pool->label,request->label,sizeof(pool->label));
+	pool->requested_bytes = request->device_bytes;
+	pool->chunk_bytes = request->chunk_bytes;
+	pool->metadata_bytes = request->metadata_bytes;
+	pool->chunk_capacity = (uint32_t)((request->device_bytes + request->chunk_bytes - 1u) / request->chunk_bytes);
+	pool->chunk_handles = (void **)calloc(pool->chunk_capacity,sizeof(void *));
+	pool->generation = ++server->next_kv_pool_generation;
+	if ( pool->chunk_handles != 0 && request->metadata_bytes != 0u )
 	{
 #if defined(__linux__)
 		pool->metadata_fd = memfd_create("spark-kv-pool",MFD_CLOEXEC);
@@ -2848,77 +2970,22 @@ static SparkStatus SparkWeightdKvPoolCreate(const SparkWeightdIpcKvPoolAttach *r
 			}
 		}
 #endif
-		if ( pool->metadata_fd < 0 || ftruncate(pool->metadata_fd,(off_t)request->metadata_bytes) != 0 )
-		{
-			SparkWeightdKvPoolFree(pool);
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		}
 	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkWeightdKvPoolSize(uint64_t device_bytes,CUmemAllocationProp *prop,uint64_t *chunk_bytes,uint32_t *chunk_count)
-{
-	size_t granularity = 0u;
-	int device = 0;
-	if ( cudaGetDevice(&device) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	memset(prop,0,sizeof(*prop));
-	prop->type = CU_MEM_ALLOCATION_TYPE_PINNED;
-	prop->location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-	prop->location.id = device;
-	prop->requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-	if ( cuMemGetAllocationGranularity(&granularity,prop,CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) != CUDA_SUCCESS || granularity == 0u )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	*chunk_bytes = SparkWeightdVmmRoundUp((device_bytes + SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX - 1u) / SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX,(uint64_t)granularity);
-	*chunk_count = (uint32_t)((device_bytes + *chunk_bytes - 1u) / *chunk_bytes);
-	return(SPARK_STATUS_OK);
-}
-
-static uint32_t SparkWeightdKvPoolFind(const SparkWeightdServer *server,const uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES])
-{
-	uint32_t index;
-	for (index=0u; index<server->kv_pool_count; index++)
-		if ( memcmp(server->kv_pools[index].key,key,SPARK_WEIGHTD_KV_POOL_KEY_BYTES) == 0 )
-			return(index);
-	return(SPARK_WEIGHTD_KV_POOL_COUNT_MAX);
-}
-
-static SparkStatus SparkWeightdKvPoolRequestValid(const SparkWeightdIpcKvPoolAttach *request)
-{
-	uint32_t index,nonzero = 0u;
-	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_KEY_BYTES; index++)
-		nonzero |= request->key[index];
-	if ( nonzero == 0u || request->device_bytes == 0u || request->metadata_bytes > SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX ||
-		memchr(request->label,'\0',sizeof(request->label)) == 0 || request->label[0] == '\0' )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkWeightdKvPoolMakeRoom(SparkWeightdServer *server,const SparkWeightdIpcKvPoolAttach *request,uint64_t bytes)
-{
-	uint32_t victim;
-	while ( bytes > server->config.kv_reserve_bytes - server->kv_committed_bytes || server->kv_pool_count >= SPARK_WEIGHTD_KV_POOL_COUNT_MAX )
+	if ( pool->chunk_handles == 0 || (request->metadata_bytes != 0u && (pool->metadata_fd < 0 || ftruncate(pool->metadata_fd,(off_t)request->metadata_bytes) != 0)) )
 	{
-		victim = SparkWeightdKvPoolOldestDetached(server);
-		if ( victim == SPARK_WEIGHTD_KV_POOL_COUNT_MAX )
-		{
-			fprintf(stderr,"weightd kv pool refused label=%s bytes=%llu: kv_reserve=%llu kv_committed=%llu pools=%u and no detached pool to evict%s\n",request->label,
-				(unsigned long long)bytes,(unsigned long long)server->config.kv_reserve_bytes,(unsigned long long)server->kv_committed_bytes,server->kv_pool_count,
-				server->config.kv_reserve_bytes == 0u ? "; weightd runs without --kv-reserve-bytes" : "");
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		SparkWeightdKvPoolRelease(server,victim,"evicted_detached");
+		SparkWeightdKvPoolRelease(server,slot,"create_failed");
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
+	(void)SparkWeightdKvPoolGrow(server,pool,pool->chunk_capacity);
+	pool->wanted_chunks = pool->chunk_count < SparkWeightdKvMinimumChunks(request) ? SparkWeightdKvMinimumChunks(request) - pool->chunk_count : 0u;
+	*slot_out = slot;
 	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkWeightdKvPoolAdmit(SparkWeightdServer *server,SparkWeightdConnection *connection,const SparkWeightdIpcKvPoolAttach *request,uint32_t *slot_out,uint32_t *reattached)
 {
-	CUmemAllocationProp prop;
-	uint64_t chunk_bytes = 0u;
-	uint32_t chunk_count = 0u,slot;
 	SparkWeightdKvPool *pool;
+	uint32_t slot;
 	SparkStatus status;
 	*reattached = 0u;
 	status = SparkWeightdKvPoolRequestValid(request);
@@ -2935,28 +3002,17 @@ static SparkStatus SparkWeightdKvPoolAdmit(SparkWeightdServer *server,SparkWeigh
 		fprintf(stderr,"weightd kv pool refused label=%s: pool generation=%llu is attached by another connection\n",request->label,(unsigned long long)server->kv_pools[slot].generation);
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
-	if ( slot != SPARK_WEIGHTD_KV_POOL_COUNT_MAX && (server->kv_pools[slot].requested_bytes != request->device_bytes || server->kv_pools[slot].metadata_bytes != request->metadata_bytes) )
+	if ( slot != SPARK_WEIGHTD_KV_POOL_COUNT_MAX && (server->kv_pools[slot].requested_bytes != request->device_bytes || server->kv_pools[slot].chunk_bytes != request->chunk_bytes ||
+		server->kv_pools[slot].metadata_bytes != request->metadata_bytes || server->kv_pools[slot].chunk_count < SparkWeightdKvMinimumChunks(request)) )
 	{
 		SparkWeightdKvPoolRelease(server,slot,"resized");
 		slot = SPARK_WEIGHTD_KV_POOL_COUNT_MAX;
 	}
 	if ( slot == SPARK_WEIGHTD_KV_POOL_COUNT_MAX )
 	{
-		status = SparkWeightdKvPoolSize(request->device_bytes,&prop,&chunk_bytes,&chunk_count);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkWeightdKvPoolMakeRoom(server,request,chunk_bytes * chunk_count);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkWeightdKvPoolCreate(request,chunk_bytes,chunk_count,&prop,&server->kv_pools[server->kv_pool_count]);
+		status = SparkWeightdKvPoolCreate(server,request,&slot);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
-		slot = server->kv_pool_count++;
-		pool = &server->kv_pools[slot];
-		memcpy(pool->key,request->key,sizeof(pool->key));
-		memcpy(pool->label,request->label,sizeof(pool->label));
-		pool->requested_bytes = request->device_bytes;
-		pool->metadata_bytes = request->metadata_bytes;
-		pool->generation = ++server->next_kv_pool_generation;
-		server->kv_committed_bytes += chunk_bytes * chunk_count;
 	}
 	else
 		*reattached = 1u;
@@ -2964,9 +3020,10 @@ static SparkStatus SparkWeightdKvPoolAdmit(SparkWeightdServer *server,SparkWeigh
 	pool->owner_connection = (uint32_t)(connection - server->connections) + 1u;
 	connection->kv_pool_count++;
 	*slot_out = slot;
-	fprintf(stderr,"weightd kv pool attached label=%s generation=%llu reattached=%u bytes=%llu chunks=%u chunk_bytes=%llu metadata_bytes=%llu kv_committed=%llu kv_reserve=%llu\n",
-		pool->label,(unsigned long long)pool->generation,*reattached,(unsigned long long)(pool->chunk_bytes * pool->chunk_count),pool->chunk_count,
-		(unsigned long long)pool->chunk_bytes,(unsigned long long)pool->metadata_bytes,(unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes);
+	fprintf(stderr,"weightd kv pool attached label=%s generation=%llu reattached=%u bytes=%llu of %llu chunks=%u/%u chunk_bytes=%llu metadata_bytes=%llu kv_committed=%llu kv_reserve=%llu\n",
+		pool->label,(unsigned long long)pool->generation,*reattached,(unsigned long long)(pool->chunk_bytes * pool->chunk_count),(unsigned long long)pool->requested_bytes,
+		pool->chunk_count,pool->chunk_capacity,(unsigned long long)pool->chunk_bytes,(unsigned long long)pool->metadata_bytes,(unsigned long long)server->kv_committed_bytes,
+		(unsigned long long)server->config.kv_reserve_bytes);
 	return(SPARK_STATUS_OK);
 }
 
@@ -2974,11 +3031,12 @@ static void SparkWeightdKvPoolDetachConnection(SparkWeightdServer *server,uint32
 {
 	SparkWeightdConnection *connection = &server->connections[connection_index];
 	uint32_t index;
-	for (index=0u; index<server->kv_pool_count && connection->kv_pool_count != 0u; index++)
+	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX && connection->kv_pool_count != 0u; index++)
 	{
-		if ( server->kv_pools[index].owner_connection != connection_index + 1u )
+		if ( server->kv_pools[index].generation == 0u || server->kv_pools[index].owner_connection != connection_index + 1u )
 			continue;
 		server->kv_pools[index].owner_connection = 0u;
+		server->kv_pools[index].wanted_chunks = 0u;
 		server->kv_pools[index].detached_ns = SparkWeightdMonotonicTimeNs();
 		connection->kv_pool_count--;
 		fprintf(stderr,"weightd kv pool detached label=%s generation=%llu bytes=%llu; kept for reattach\n",server->kv_pools[index].label,
@@ -2987,12 +3045,31 @@ static void SparkWeightdKvPoolDetachConnection(SparkWeightdServer *server,uint32
 	connection->kv_pool_count = 0u;
 }
 
+static SparkWeightdKvPool *SparkWeightdKvPoolOwned(SparkWeightdServer *server,const SparkWeightdConnection *connection,uint64_t generation)
+{
+	uint32_t index,owner = (uint32_t)(connection - server->connections) + 1u;
+	for (index=0u; generation != 0u && index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
+		if ( server->kv_pools[index].generation == generation && server->kv_pools[index].owner_connection == owner )
+			return(&server->kv_pools[index]);
+	return(0);
+}
+
+static uint64_t SparkWeightdKvReclaimWanted(const SparkWeightdServer *server,const SparkWeightdKvPool *asking)
+{
+	uint64_t wanted = 0u;
+	uint32_t index;
+	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
+		if ( server->kv_pools[index].generation != 0u && &server->kv_pools[index] != asking && server->kv_pools[index].owner_connection != 0u )
+			wanted += (uint64_t)server->kv_pools[index].wanted_chunks * server->kv_pools[index].chunk_bytes;
+	return(wanted);
+}
+
 static uint32_t SparkWeightdServerOnKvPoolAttach(SparkWeightdServer *server,SparkWeightdConnection *connection,const uint8_t *request_bytes,uint8_t *response,uint32_t result_kind,uint64_t request_id)
 {
 	const SparkWeightdIpcKvPoolAttach *request = (const SparkWeightdIpcKvPoolAttach *)request_bytes;
 	SparkWeightdIpcKvPoolAttachResult *result = (SparkWeightdIpcKvPoolAttachResult *)response;
 	SparkWeightdKvPool *pool;
-	uint32_t slot = SPARK_WEIGHTD_KV_POOL_COUNT_MAX,reattached = 0u,index;
+	uint32_t slot = SPARK_WEIGHTD_KV_POOL_COUNT_MAX,reattached = 0u;
 	SparkStatus status;
 	int fd;
 	memset(result,0,sizeof(*result));
@@ -3000,17 +3077,9 @@ static uint32_t SparkWeightdServerOnKvPoolAttach(SparkWeightdServer *server,Spar
 	status = SparkWeightdKvPoolAdmit(server,connection,request,&slot,&reattached);
 	result->kv_reserve_bytes = server->config.kv_reserve_bytes;
 	result->kv_committed_bytes = server->kv_committed_bytes;
-	if ( status != SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && server->kv_pools[slot].metadata_fd >= 0 )
 	{
-		result->status = (uint32_t)status;
-		return(sizeof(*result));
-	}
-	pool = &server->kv_pools[slot];
-	for (index=0u; index<pool->chunk_count && status == SPARK_STATUS_OK; index++)
-		status = SparkWeightdServerExportOne(connection,pool->chunk_handles[index]);
-	if ( status == SPARK_STATUS_OK && pool->metadata_fd >= 0 )
-	{
-		fd = fcntl(pool->metadata_fd,F_DUPFD_CLOEXEC,0);
+		fd = fcntl(server->kv_pools[slot].metadata_fd,F_DUPFD_CLOEXEC,0);
 		if ( fd < 0 )
 			status = SPARK_STATUS_IO_ERROR;
 		else
@@ -3022,17 +3091,109 @@ static uint32_t SparkWeightdServerOnKvPoolAttach(SparkWeightdServer *server,Spar
 		result->status = (uint32_t)status;
 		return(sizeof(*result));
 	}
+	pool = &server->kv_pools[slot];
 	result->status = (uint32_t)SPARK_STATUS_OK;
 	result->reattached = reattached;
 	result->pool_generation = pool->generation;
 	result->chunk_bytes = pool->chunk_bytes;
+	result->chunk_capacity = pool->chunk_capacity;
 	result->chunk_count = pool->chunk_count;
 	result->metadata_fd_count = pool->metadata_fd >= 0 ? 1u : 0u;
-	result->device_bytes = pool->chunk_bytes * pool->chunk_count;
+	result->device_bytes = pool->chunk_bytes * pool->chunk_capacity;
 	result->metadata_bytes = pool->metadata_bytes;
-	result->write_budget_bytes_per_day = (uint64_t)((unsigned __int128)server->config.kv_write_budget_bytes_per_day * result->device_bytes / server->config.kv_reserve_bytes);
+	result->write_budget_bytes_per_day = (uint64_t)((unsigned __int128)server->config.kv_write_budget_bytes_per_day *
+		(pool->requested_bytes < server->config.kv_reserve_bytes ? pool->requested_bytes : server->config.kv_reserve_bytes) / server->config.kv_reserve_bytes);
 	if ( result->write_budget_bytes_per_day == 0u )
 		result->write_budget_bytes_per_day = 1u;
+	return(sizeof(*result));
+}
+
+static uint32_t SparkWeightdServerOnKvPoolResize(SparkWeightdServer *server,SparkWeightdConnection *connection,const uint8_t *request_bytes,uint8_t *response,uint32_t result_kind,uint64_t request_id)
+{
+	const SparkWeightdIpcKvPoolResize *request = (const SparkWeightdIpcKvPoolResize *)request_bytes;
+	SparkWeightdIpcKvPoolResizeResult *result = (SparkWeightdIpcKvPoolResizeResult *)response;
+	SparkWeightdKvPool *pool = SparkWeightdKvPoolOwned(server,connection,request->pool_generation);
+	uint32_t before;
+	memset(result,0,sizeof(*result));
+	SparkWeightdBuildHeader(response,result_kind,request_id);
+	if ( pool == 0 || request->reserved0 != 0u || request->target_chunks > pool->chunk_capacity )
+	{
+		result->status = (uint32_t)(pool == 0 ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_INVALID_ARGUMENT);
+		return(sizeof(*result));
+	}
+	before = pool->chunk_count;
+	if ( request->target_chunks >= pool->chunk_count )
+		(void)SparkWeightdKvPoolGrow(server,pool,request->target_chunks);
+	else
+	{
+		while ( pool->chunk_count > request->target_chunks )
+		{
+			pool->chunk_count--;
+			(void)cuMemRelease((CUmemGenericAllocationHandle)pool->chunk_handles[pool->chunk_count]);
+			pool->chunk_handles[pool->chunk_count] = 0;
+			server->kv_committed_bytes -= pool->chunk_bytes;
+		}
+		pool->wanted_chunks = 0u;
+	}
+	if ( pool->chunk_count != before )
+		fprintf(stderr,"weightd kv pool resized label=%s generation=%llu chunks=%u->%u of %u wanted=%u kv_committed=%llu kv_reserve=%llu\n",pool->label,
+			(unsigned long long)pool->generation,before,pool->chunk_count,pool->chunk_capacity,pool->wanted_chunks,
+			(unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes);
+	result->status = (uint32_t)SPARK_STATUS_OK;
+	result->chunk_count = pool->chunk_count;
+	result->wanted_chunks = pool->wanted_chunks;
+	result->kv_committed_bytes = server->kv_committed_bytes;
+	return(sizeof(*result));
+}
+
+static uint32_t SparkWeightdServerOnKvPoolExport(SparkWeightdServer *server,SparkWeightdConnection *connection,const uint8_t *request_bytes,uint8_t *response,uint32_t result_kind,uint64_t request_id)
+{
+	const SparkWeightdIpcKvPoolExport *request = (const SparkWeightdIpcKvPoolExport *)request_bytes;
+	SparkWeightdIpcKvPoolExportResult *result = (SparkWeightdIpcKvPoolExportResult *)response;
+	SparkWeightdKvPool *pool = SparkWeightdKvPoolOwned(server,connection,request->pool_generation);
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index;
+	memset(result,0,sizeof(*result));
+	SparkWeightdBuildHeader(response,result_kind,request_id);
+	if ( pool == 0 || request->chunk_count == 0u || request->chunk_count > SPARK_WEIGHTD_KV_POOL_EXPORT_MAX ||
+		request->first_chunk >= pool->chunk_count || request->chunk_count > pool->chunk_count - request->first_chunk )
+	{
+		result->status = (uint32_t)(pool == 0 ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_INVALID_ARGUMENT);
+		return(sizeof(*result));
+	}
+	for (index=0u; index<request->chunk_count && status == SPARK_STATUS_OK; index++)
+		status = SparkWeightdServerExportOne(connection,pool->chunk_handles[request->first_chunk + index]);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkWeightdServerCloseStagedFds(connection);
+		result->status = (uint32_t)status;
+		return(sizeof(*result));
+	}
+	result->status = (uint32_t)SPARK_STATUS_OK;
+	result->first_chunk = request->first_chunk;
+	result->chunk_count = request->chunk_count;
+	return(sizeof(*result));
+}
+
+static uint32_t SparkWeightdServerOnKvPoolStatus(SparkWeightdServer *server,SparkWeightdConnection *connection,const uint8_t *request_bytes,uint8_t *response,uint32_t result_kind,uint64_t request_id)
+{
+	const SparkWeightdIpcKvPoolStatus *request = (const SparkWeightdIpcKvPoolStatus *)request_bytes;
+	SparkWeightdIpcKvPoolStatusResult *result = (SparkWeightdIpcKvPoolStatusResult *)response;
+	SparkWeightdKvPool *pool = SparkWeightdKvPoolOwned(server,connection,request->pool_generation);
+	memset(result,0,sizeof(*result));
+	SparkWeightdBuildHeader(response,result_kind,request_id);
+	result->kv_reserve_bytes = server->config.kv_reserve_bytes;
+	result->kv_committed_bytes = server->kv_committed_bytes;
+	if ( pool == 0 )
+	{
+		result->status = (uint32_t)SPARK_STATUS_NOT_FOUND;
+		return(sizeof(*result));
+	}
+	result->status = (uint32_t)SPARK_STATUS_OK;
+	result->chunk_count = pool->chunk_count;
+	result->chunk_capacity = pool->chunk_capacity;
+	result->wanted_chunks = pool->wanted_chunks;
+	result->reclaim_wanted_bytes = SparkWeightdKvReclaimWanted(server,pool);
 	return(sizeof(*result));
 }
 
@@ -3318,6 +3479,12 @@ static uint32_t SparkWeightdServerDispatchKind(SparkWeightdServer *server, Spark
             return(SparkWeightdServerOnReclaimPack(server,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH:
             return(SparkWeightdServerOnKvPoolAttach(server,connection,request,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE:
+            return(SparkWeightdServerOnKvPoolResize(server,connection,request,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT:
+            return(SparkWeightdServerOnKvPoolExport(server,connection,request,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS:
+            return(SparkWeightdServerOnKvPoolStatus(server,connection,request,response,result_kind,request_id));
         default:
             return(0u);
     }
@@ -3815,6 +3982,8 @@ SparkStatus SparkWeightdServerCreateUnbound(const SparkWeightdServerConfig *conf
         instance->connections[index].fd = -1;
         instance->connections[index].state = SPARK_WEIGHTD_CONNECTION_CLOSED;
     }
+    for (index = 0u; index < SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
+        instance->kv_pools[index].metadata_fd = -1;
     (void)signal(SIGPIPE, SIG_IGN);
     if (pipe(instance->dispatch_notify) != 0 ||
         fcntl(instance->dispatch_notify[0],F_SETFL,O_NONBLOCK) != 0 ||
@@ -3912,9 +4081,9 @@ void SparkWeightdServerDestroy(SparkWeightdServer *server)
     {
         SparkWeightdServerFreeArenaSlot(server, server->arena_count - 1u);
     }
-    while (server->kv_pool_count != 0u)
+    for (index = 0u; index < SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
     {
-        SparkWeightdKvPoolRelease(server, server->kv_pool_count - 1u, "daemon_exit");
+        SparkWeightdKvPoolRelease(server, index, "daemon_exit");
     }
     if (server->listen_fd >= 0)
     {
@@ -5089,26 +5258,12 @@ SparkStatus SparkWeightdClientMeshStagingMap(SparkWeightdClient *client,
     return status;
 }
 
-void SparkWeightdKvPoolGrantClose(SparkWeightdKvPoolGrant *grant)
-{
-	uint32_t index;
-	if ( grant == 0 )
-		return;
-	for (index=0u; index<grant->chunk_count && index<SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX; index++)
-		if ( grant->chunk_fds[index] >= 0 )
-			(void)close(grant->chunk_fds[index]);
-	if ( grant->metadata_fd >= 0 )
-		(void)close(grant->metadata_fd);
-	memset(grant,0,sizeof(*grant));
-	grant->metadata_fd = -1;
-}
-
 SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,const SparkWeightdKvPoolRequest *request,SparkWeightdKvPoolGrant *grant,uint64_t timeout_nanoseconds)
 {
 	SparkWeightdIpcKvPoolAttach wire;
 	SparkWeightdIpcKvPoolAttachResult response;
 	int fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
-	uint32_t received = 0u,index,expected;
+	uint32_t received = 0u,expected;
 	SparkStatus status;
 	if ( client == 0 || request == 0 || grant == 0 || request->label == 0 || request->label[0] == '\0' || strlen(request->label) >= sizeof(wire.label) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -5121,6 +5276,8 @@ SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,const Spar
 	SparkWeightdBuildHeader((uint8_t *)&wire,SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH,++client->next_request_id);
 	memcpy(wire.key,request->key,sizeof(wire.key));
 	wire.device_bytes = request->device_bytes;
+	wire.minimum_bytes = request->minimum_bytes;
+	wire.chunk_bytes = request->chunk_bytes;
 	wire.metadata_bytes = request->metadata_bytes;
 	memcpy(wire.label,request->label,strlen(request->label));
 	status = SparkWeightdClientExportExchange(client,&wire,sizeof(wire),&response,sizeof(response),fds,&received,timeout_nanoseconds);
@@ -5129,11 +5286,11 @@ SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,const Spar
 	status = SparkWeightdIpcValidateHeader(&response.header,sizeof(response),SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH_RESULT);
 	grant->kv_reserve_bytes = response.kv_reserve_bytes;
 	grant->kv_committed_bytes = response.kv_committed_bytes;
-	expected = response.status == SPARK_STATUS_OK ? response.chunk_count + response.metadata_fd_count : 0u;
+	expected = response.status == SPARK_STATUS_OK ? response.metadata_fd_count : 0u;
 	if ( status == SPARK_STATUS_OK && (response.header.request_id != wire.header.request_id || received != expected ||
-		(response.status == SPARK_STATUS_OK && (response.chunk_count == 0u || response.chunk_count > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX || response.metadata_fd_count != (request->metadata_bytes != 0u ? 1u : 0u) ||
-		response.metadata_bytes != request->metadata_bytes || response.device_bytes != response.chunk_bytes * response.chunk_count || response.device_bytes < request->device_bytes ||
-		response.write_budget_bytes_per_day == 0u))) )
+		(response.status == SPARK_STATUS_OK && (response.chunk_bytes != request->chunk_bytes || response.chunk_capacity == 0u || response.chunk_capacity > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX ||
+		response.chunk_count > response.chunk_capacity || response.metadata_fd_count != (request->metadata_bytes != 0u ? 1u : 0u) || response.metadata_bytes != request->metadata_bytes ||
+		response.device_bytes != response.chunk_bytes * response.chunk_capacity || response.device_bytes < request->device_bytes || response.write_budget_bytes_per_day == 0u))) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdStatusFromWire(response.status);
@@ -5145,14 +5302,113 @@ SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,const Spar
 	}
 	grant->pool_generation = response.pool_generation;
 	grant->chunk_bytes = response.chunk_bytes;
+	grant->chunk_capacity = response.chunk_capacity;
 	grant->chunk_count = response.chunk_count;
 	grant->device_bytes = response.device_bytes;
 	grant->metadata_bytes = response.metadata_bytes;
 	grant->reattached = response.reattached;
 	grant->write_budget_bytes_per_day = response.write_budget_bytes_per_day;
-	for (index=0u; index<response.chunk_count; index++)
-		grant->chunk_fds[index] = fds[index];
-	grant->metadata_fd = response.metadata_fd_count != 0u ? fds[response.chunk_count] : -1;
+	grant->metadata_fd = response.metadata_fd_count != 0u ? fds[0] : -1;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdClientKvPoolExport(SparkWeightdClient *client,uint64_t pool_generation,uint32_t first_chunk,uint32_t chunk_count,int *fds,uint64_t timeout_nanoseconds)
+{
+	SparkWeightdIpcKvPoolExport wire;
+	SparkWeightdIpcKvPoolExportResult response;
+	int received_fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+	uint32_t received = 0u,index;
+	SparkStatus status;
+	if ( client == 0 || fds == 0 || chunk_count == 0u || chunk_count > SPARK_WEIGHTD_KV_POOL_EXPORT_MAX )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->next_request_id == UINT64_MAX )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(&wire,0,sizeof(wire));
+	memset(&response,0,sizeof(response));
+	SparkWeightdBuildHeader((uint8_t *)&wire,SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT,++client->next_request_id);
+	wire.pool_generation = pool_generation;
+	wire.first_chunk = first_chunk;
+	wire.chunk_count = chunk_count;
+	status = SparkWeightdClientExportExchange(client,&wire,sizeof(wire),&response,sizeof(response),received_fds,&received,timeout_nanoseconds);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = SparkWeightdIpcValidateHeader(&response.header,sizeof(response),SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT_RESULT);
+	if ( status == SPARK_STATUS_OK && (response.header.request_id != wire.header.request_id ||
+		received != (response.status == SPARK_STATUS_OK ? chunk_count : 0u) ||
+		(response.status == SPARK_STATUS_OK && (response.first_chunk != first_chunk || response.chunk_count != chunk_count))) )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdStatusFromWire(response.status);
+	if ( status != SPARK_STATUS_OK )
+	{
+		while ( received != 0u )
+			(void)close(received_fds[--received]);
+		SPARK_RETURN(status);
+	}
+	for (index=0u; index<chunk_count; index++)
+		fds[index] = received_fds[index];
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdClientKvPoolResize(SparkWeightdClient *client,uint64_t pool_generation,uint32_t target_chunks,SparkWeightdKvPoolState *state,uint64_t timeout_nanoseconds)
+{
+	SparkWeightdIpcKvPoolResize wire;
+	SparkWeightdIpcKvPoolResizeResult response;
+	SparkStatus status;
+	if ( client == 0 || state == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->next_request_id == UINT64_MAX )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(&wire,0,sizeof(wire));
+	memset(&response,0,sizeof(response));
+	SparkWeightdBuildHeader((uint8_t *)&wire,SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE,++client->next_request_id);
+	wire.pool_generation = pool_generation;
+	wire.target_chunks = target_chunks;
+	status = SparkWeightdClientExchange(client,&wire,sizeof(wire),&response,sizeof(response),timeout_nanoseconds);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = SparkWeightdIpcValidateHeader(&response.header,sizeof(response),SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE_RESULT);
+	if ( status == SPARK_STATUS_OK && response.header.request_id != wire.header.request_id )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdStatusFromWire(response.status);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	state->chunk_count = response.chunk_count;
+	state->wanted_chunks = response.wanted_chunks;
+	state->kv_committed_bytes = response.kv_committed_bytes;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdClientKvPoolStatus(SparkWeightdClient *client,uint64_t pool_generation,SparkWeightdKvPoolState *state,uint64_t timeout_nanoseconds)
+{
+	SparkWeightdIpcKvPoolStatus wire;
+	SparkWeightdIpcKvPoolStatusResult response;
+	SparkStatus status;
+	if ( client == 0 || state == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->next_request_id == UINT64_MAX )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(&wire,0,sizeof(wire));
+	memset(&response,0,sizeof(response));
+	SparkWeightdBuildHeader((uint8_t *)&wire,SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS,++client->next_request_id);
+	wire.pool_generation = pool_generation;
+	status = SparkWeightdClientExchange(client,&wire,sizeof(wire),&response,sizeof(response),timeout_nanoseconds);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = SparkWeightdIpcValidateHeader(&response.header,sizeof(response),SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS_RESULT);
+	if ( status == SPARK_STATUS_OK && response.header.request_id != wire.header.request_id )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdStatusFromWire(response.status);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	state->chunk_count = response.chunk_count;
+	state->chunk_capacity = response.chunk_capacity;
+	state->wanted_chunks = response.wanted_chunks;
+	state->reclaim_wanted_bytes = response.reclaim_wanted_bytes;
+	state->kv_reserve_bytes = response.kv_reserve_bytes;
+	state->kv_committed_bytes = response.kv_committed_bytes;
 	return(SPARK_STATUS_OK);
 }
 

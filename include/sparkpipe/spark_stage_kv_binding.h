@@ -33,6 +33,10 @@
 #define SPARK_STAGE_KV_LOCK_SITE_RESTORE 7u
 #define SPARK_STAGE_KV_LOCK_SITE_COUNT 8u
 
+#define SPARK_STAGE_KV_POOL_TARGET_CHUNKS 1024u
+#define SPARK_STAGE_KV_POOL_TICK_NS 50000000ull
+#define SPARK_STAGE_KV_POOL_IDLE_TICKS 4u
+
 #define SPARK_STAGE_KV_RESTORE_SLOTS 16u
 #define SPARK_STAGE_KV_RESTORE_FREE 0u
 #define SPARK_STAGE_KV_RESTORE_QUEUED 1u
@@ -281,6 +285,21 @@ struct SparkStageKvBinding
 	uint64_t snapshot_page_file_bytes;
 	SparkKvSnapshotStore snapshot_store;
 	SparkWeightdKvPoolMapping kv_pool;
+	uint32_t *kv_pool_chunk_need;
+	uint32_t kv_pool_minimum_chunks;
+	uint32_t kv_pool_wanted_chunks;
+	uint32_t pool_stop;
+	uint32_t pool_started;
+	uint32_t pool_wake_initialized;
+	uint32_t pool_idle_ticks;
+	uint32_t pool_last_status;
+	pthread_cond_t pool_wake;
+	pthread_t pool_thread;
+	uint64_t pool_mapped_bytes;
+	uint64_t pool_pressure_mark;
+	uint64_t pool_grow_count;
+	uint64_t pool_shrink_count;
+	uint64_t pool_vacated_pages;
 	SparkKvWriteBudget write_budget;
 	uint32_t kv_pool_adopted_pages;
 	uint32_t kv_pool_sealed_pages;

@@ -10,7 +10,6 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#define SPARK_STAGE_KV_POOL_ALIGNMENT 4096u
 #define SPARK_STAGE_KV_COMPLETION_FREE 0u
 #define SPARK_STAGE_KV_COMPLETION_QUEUED 1u
 
@@ -831,9 +830,112 @@ static SparkStatus SparkStageKvBindingAttachStates(SparkStageKvBinding *binding,
 	SPARK_RETURN(status);
 }
 
-static uint64_t SparkStageKvPoolAlign(uint64_t bytes)
+typedef struct SparkStageKvPoolSlot
 {
-	return((bytes + SPARK_STAGE_KV_POOL_ALIGNMENT - 1u) / SPARK_STAGE_KV_POOL_ALIGNMENT * SPARK_STAGE_KV_POOL_ALIGNMENT);
+	uint32_t need;
+	uint32_t reserved0;
+	uint64_t offset;
+} SparkStageKvPoolSlot;
+
+static int SparkStageKvPoolSlotOrder(const void *left,const void *right)
+{
+	const SparkStageKvPoolSlot *a = (const SparkStageKvPoolSlot *)left,*b = (const SparkStageKvPoolSlot *)right;
+	if ( a->need != b->need )
+		return(a->need < b->need ? -1 : 1);
+	return(a->offset < b->offset ? -1 : a->offset > b->offset ? 1 : 0);
+}
+
+static uint32_t SparkStageKvPoolSlotNeed(const SparkStageKvBinding *binding,uint32_t region,uint64_t local,uint64_t chunk)
+{
+	uint64_t layer_page,layer_span,layer;
+	if ( binding->regions[region].layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR )
+		return((uint32_t)(local / binding->region_packed_page_bytes[region]) + 1u);
+	layer_page = binding->regions[region].layer_page_bytes;
+	layer_span = (uint64_t)binding->physical_page_count * layer_page;
+	layer = local / layer_span;
+	if ( local + chunk > (layer + 1u) * layer_span && layer + 1u < binding->regions[region].layer_count )
+		return(1u);
+	return((uint32_t)((local - layer * layer_span) / layer_page) + 1u);
+}
+
+static uint32_t SparkStageKvBindingPoolPageLimit(const SparkStageKvBinding *binding,uint32_t chunks)
+{
+	uint32_t need;
+	if ( chunks >= binding->kv_pool.chunk_capacity )
+		return(binding->physical_page_count);
+	need = binding->kv_pool_chunk_need[chunks];
+	return(need == 0u ? 0u : need - 1u);
+}
+
+static uint32_t SparkStageKvBindingPoolChunksFor(const SparkStageKvBinding *binding,uint32_t pages)
+{
+	uint32_t chunks = 0u;
+	while ( chunks < binding->kv_pool.chunk_capacity && binding->kv_pool_chunk_need[chunks] <= pages )
+		chunks++;
+	return(chunks);
+}
+
+static SparkStatus SparkStageKvBindingPoolLayout(SparkStageKvBinding *binding,uint64_t lane_entries,SparkWeightdKvPoolRequest *request,uint64_t region_offsets[SPARK_STAGE_KV_MAX_REGIONS],uint64_t **offsets_out)
+{
+	SparkStageKvPoolSlot *slots;
+	uint64_t granularity = 0u,raw,chunk,table_span,cursor,spans[SPARK_STAGE_KV_MAX_REGIONS],*offsets;
+	uint32_t count,index,region,minimum = 0u;
+	SparkStatus status;
+	status = SparkWeightdKvPoolGranularity(&granularity);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	raw = lane_entries * sizeof(uint32_t);
+	for (region=0u; region<binding->region_count; region++)
+		raw += (uint64_t)binding->physical_page_count * binding->region_packed_page_bytes[region];
+	chunk = granularity * ((raw + granularity * SPARK_STAGE_KV_POOL_TARGET_CHUNKS - 1u) / (granularity * SPARK_STAGE_KV_POOL_TARGET_CHUNKS));
+	if ( chunk == 0u )
+		chunk = granularity;
+	table_span = (lane_entries * sizeof(uint32_t) + chunk - 1u) / chunk * chunk;
+	cursor = table_span;
+	for (region=0u; region<binding->region_count; region++)
+	{
+		region_offsets[region] = cursor;
+		spans[region] = ((uint64_t)binding->physical_page_count * binding->region_packed_page_bytes[region] + chunk - 1u) / chunk * chunk;
+		cursor += spans[region];
+	}
+	if ( cursor / chunk > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX )
+	{
+		fprintf(stderr,"%s kv binding refused: the KV pool needs %llu chunks of %llu bytes, weightd carries %u\n",binding->module_tag,(unsigned long long)(cursor / chunk),
+			(unsigned long long)chunk,SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	count = (uint32_t)(cursor / chunk);
+	slots = (SparkStageKvPoolSlot *)calloc(count,sizeof(*slots));
+	offsets = (uint64_t *)malloc((size_t)count * sizeof(uint64_t));
+	binding->kv_pool_chunk_need = (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
+	if ( slots == 0 || offsets == 0 || binding->kv_pool_chunk_need == 0 )
+	{
+		free(slots);
+		free(offsets);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	for (index=0u; index<count; index++)
+	{
+		slots[index].offset = (uint64_t)index * chunk;
+		for (region=0u; slots[index].offset >= table_span && region<binding->region_count; region++)
+			if ( slots[index].offset >= region_offsets[region] && slots[index].offset < region_offsets[region] + spans[region] )
+				slots[index].need = SparkStageKvPoolSlotNeed(binding,region,slots[index].offset - region_offsets[region],chunk);
+	}
+	qsort(slots,count,sizeof(*slots),SparkStageKvPoolSlotOrder);
+	for (index=0u; index<count; index++)
+	{
+		offsets[index] = slots[index].offset;
+		binding->kv_pool_chunk_need[index] = slots[index].need;
+		if ( slots[index].need <= binding->pages_per_sequence )
+			minimum = index + 1u;
+	}
+	free(slots);
+	binding->kv_pool_minimum_chunks = minimum;
+	request->device_bytes = (uint64_t)count * chunk;
+	request->minimum_bytes = (uint64_t)minimum * chunk;
+	request->chunk_bytes = chunk;
+	*offsets_out = offsets;
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkStageKvBindingPoolKey(const SparkStageKvConfiguration *configuration,uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES])
@@ -856,31 +958,28 @@ static SparkStatus SparkStageKvBindingPoolKey(const SparkStageKvConfiguration *c
 static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration,uint64_t lane_entries)
 {
 	SparkWeightdKvPoolRequest request;
-	uint64_t offsets[SPARK_STAGE_KV_MAX_REGIONS + 1u],cursor = 0u;
+	uint64_t region_offsets[SPARK_STAGE_KV_MAX_REGIONS],*offsets = 0;
 	uint32_t region;
 	SparkStatus status;
 	memset(&request,0,sizeof(request));
-	for (region=0u; region<binding->region_count; region++)
-	{
-		offsets[region] = cursor;
-		cursor += SparkStageKvPoolAlign((uint64_t)binding->physical_page_count * binding->region_packed_page_bytes[region]);
-	}
-	offsets[binding->region_count] = cursor;
-	cursor += SparkStageKvPoolAlign(lane_entries * sizeof(uint32_t));
 	status = SparkStageKvBindingPoolKey(configuration,request.key);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingPoolLayout(binding,lane_entries,&request,region_offsets,&offsets);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	request.device_bytes = cursor;
 	request.metadata_bytes = sizeof(SparkStageKvPoolSeal) + (uint64_t)binding->physical_page_count * sizeof(SparkKvPageCacheResidentRecord);
 	request.label = binding->module_tag;
-	status = SparkWeightdKvPoolMap(&request,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS,&binding->kv_pool);
+	status = SparkWeightdKvPoolMap(&request,offsets,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS,&binding->kv_pool);
+	free(offsets);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	for (region=0u; region<binding->region_count; region++)
-		binding->region_base[region] = (uint8_t *)binding->kv_pool.device_base + offsets[region];
-	binding->page_table = (uint32_t *)((uint8_t *)binding->kv_pool.device_base + offsets[binding->region_count]);
-	fprintf(stderr,"%s kv pool weightd generation=%llu reattached=%u device_bytes=%llu chunks=%u kv_committed=%llu kv_reserve=%llu private_kv_bytes=0\n",binding->module_tag,
-		(unsigned long long)binding->kv_pool.pool_generation,binding->kv_pool.reattached,(unsigned long long)binding->kv_pool.device_bytes,binding->kv_pool.chunk_count,
+		binding->region_base[region] = (uint8_t *)binding->kv_pool.device_base + region_offsets[region];
+	binding->page_table = (uint32_t *)binding->kv_pool.device_base;
+	binding->pool_mapped_bytes = (uint64_t)binding->kv_pool.mapped_count * binding->kv_pool.chunk_bytes;
+	fprintf(stderr,"%s kv pool weightd generation=%llu reattached=%u chunks=%u/%u minimum_chunks=%u chunk_bytes=%llu pages=%u/%u kv_committed=%llu kv_reserve=%llu private_kv_bytes=0\n",binding->module_tag,
+		(unsigned long long)binding->kv_pool.pool_generation,binding->kv_pool.reattached,binding->kv_pool.mapped_count,binding->kv_pool.chunk_capacity,binding->kv_pool_minimum_chunks,
+		(unsigned long long)binding->kv_pool.chunk_bytes,SparkStageKvBindingPoolPageLimit(binding,binding->kv_pool.mapped_count),binding->physical_page_count,
 		(unsigned long long)binding->kv_pool.kv_committed_bytes,(unsigned long long)binding->kv_pool.kv_reserve_bytes);
 	return(SPARK_STATUS_OK);
 }
@@ -999,6 +1098,8 @@ static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *co
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkStageKvBindingStartPool(SparkStageKvBinding *binding);
+
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
 {
 	SparkKvModelTable table;
@@ -1055,6 +1156,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->transactions.page_capacity = binding->pages_per_sequence;
 	SparkStageKvBindingFillTable(binding,configuration,&table);
 	status = SparkKvBackendInitialize(&table,&binding->arena,&binding->page_cache,&binding->page_store);
+	if ( status == SPARK_STATUS_OK )
+		binding->arena.resident_block_capacity = SparkStageKvBindingPoolPageLimit(binding,binding->kv_pool.mapped_count);
 	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u )
 		status = SparkStageKvBindingAttachStates(binding,configuration);
 	if ( status == SPARK_STATUS_OK )
@@ -1069,6 +1172,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 		status = SparkStageKvBindingAdoptPool(binding);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingStartAsync(binding);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingStartPool(binding);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	fprintf(stderr,"%s kv binding logical_pages=%u physical_pages=%u pages_per_sequence=%u page_bytes=%llu regions=%u context_shard=%u/%u layout=%s\n",
@@ -1138,7 +1243,12 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	if ( binding->copy_stream != 0 )
 		(void)cudaStreamDestroy((cudaStream_t)binding->copy_stream);
 	SparkStageKvBindingSealPool(binding);
+	if ( binding->kv_pool.chunk_capacity != 0u )
+		fprintf(stderr,"%s kv binding pool chunks=%u/%u pages=%u/%u grows=%llu shrinks=%llu vacated_pages=%llu\n",binding->module_tag,binding->kv_pool.mapped_count,
+			binding->kv_pool.chunk_capacity,binding->arena.resident_block_capacity,binding->physical_page_count,(unsigned long long)binding->pool_grow_count,
+			(unsigned long long)binding->pool_shrink_count,(unsigned long long)binding->pool_vacated_pages);
 	SparkWeightdKvPoolUnmap(&binding->kv_pool);
+	free(binding->kv_pool_chunk_need);
 	if ( binding->snapshot_store.runtime != 0 )
 		SparkKvSnapshotStoreClose(&binding->snapshot_store);
 	free(binding->snapshot_links);
@@ -1185,6 +1295,8 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 		(void)pthread_cond_destroy(&binding->save_idle);
 		if ( binding->restore_ready_initialized != 0u )
 			(void)pthread_cond_destroy(&binding->restore_ready);
+		if ( binding->pool_wake_initialized != 0u )
+			(void)pthread_cond_destroy(&binding->pool_wake);
 	}
 	memset(binding,0,sizeof(*binding));
 }
@@ -2247,10 +2359,151 @@ SparkStatus SparkStageKvBindingQuiesce(SparkStageKvBinding *binding,uint64_t tim
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkStageKvBindingPoolMark(SparkStageKvBinding *binding)
+{
+	binding->pool_pressure_mark = binding->arena.resident_capacity_stall_count + binding->arena.resident_evicted_block_count + binding->page_cache.evicted_entry_count;
+}
+
+static void SparkStageKvBindingPoolOutcome(SparkStageKvBinding *binding,const char *step,SparkStatus status)
+{
+	if ( (uint32_t)status != binding->pool_last_status && status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s kv pool %s failed status=%s chunks=%u of %u\n",binding->module_tag,step,SparkStatusToString(status),binding->kv_pool.mapped_count,binding->kv_pool.chunk_capacity);
+	binding->pool_last_status = (uint32_t)status;
+}
+
+static void SparkStageKvBindingPoolGrow(SparkStageKvBinding *binding)
+{
+	SparkWeightdKvPoolState state;
+	uint32_t before = binding->kv_pool.mapped_count,pages = binding->arena.resident_block_capacity,target,limit;
+	SparkStatus status;
+	target = before > binding->kv_pool.chunk_capacity / 2u ? binding->kv_pool.chunk_capacity : 2u * before;
+	(void)pthread_mutex_unlock(&binding->mutex);
+	status = SparkWeightdKvPoolGrow(&binding->kv_pool,target,&state,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS);
+	(void)pthread_mutex_lock(&binding->mutex);
+	SparkStageKvBindingPoolOutcome(binding,"grow",status);
+	limit = SparkStageKvBindingPoolPageLimit(binding,binding->kv_pool.mapped_count);
+	if ( limit > binding->arena.resident_block_capacity )
+		binding->arena.resident_block_capacity = limit;
+	binding->pool_mapped_bytes = (uint64_t)binding->kv_pool.mapped_count * binding->kv_pool.chunk_bytes;
+	if ( status == SPARK_STATUS_OK )
+		binding->kv_pool_wanted_chunks = state.wanted_chunks;
+	if ( binding->kv_pool.mapped_count == before )
+		return;
+	binding->pool_grow_count++;
+	fprintf(stderr,"%s kv pool grew chunks=%u->%u of %u pages=%u->%u of %u wanted_chunks=%u kv_committed=%llu kv_reserve=%llu\n",binding->module_tag,before,binding->kv_pool.mapped_count,
+		binding->kv_pool.chunk_capacity,pages,binding->arena.resident_block_capacity,binding->physical_page_count,binding->kv_pool_wanted_chunks,
+		(unsigned long long)binding->kv_pool.kv_committed_bytes,(unsigned long long)binding->kv_pool.kv_reserve_bytes);
+}
+
+static void SparkStageKvBindingPoolShrink(SparkStageKvBinding *binding,uint64_t reclaim_bytes)
+{
+	SparkWeightdKvPoolState state;
+	uint32_t before = binding->kv_pool.mapped_count,pages = binding->arena.resident_block_capacity,give,target,kept_pages = 0u,kept,vacated = 0u;
+	SparkStatus status;
+	give = (uint32_t)((reclaim_bytes + binding->kv_pool.chunk_bytes - 1u) / binding->kv_pool.chunk_bytes);
+	if ( give > before - binding->kv_pool_minimum_chunks )
+		give = before - binding->kv_pool_minimum_chunks;
+	target = before - give;
+	status = SparkKvPageCacheVacateResident(&binding->page_cache,SparkStageKvBindingPoolPageLimit(binding,target),&kept_pages,&vacated);
+	SparkStageKvBindingPoolMark(binding);
+	binding->pool_vacated_pages += vacated;
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkStageKvBindingPoolOutcome(binding,"vacate",status);
+		return;
+	}
+	kept = SparkStageKvBindingPoolChunksFor(binding,kept_pages);
+	if ( kept < target )
+		kept = target;
+	if ( kept >= before )
+		return;
+	binding->arena.resident_block_capacity = SparkStageKvBindingPoolPageLimit(binding,kept);
+	binding->arena.next_resident_slot_scan = 0u;
+	(void)pthread_mutex_unlock(&binding->mutex);
+	status = cudaDeviceSynchronize() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdKvPoolShrink(&binding->kv_pool,kept,&state,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS);
+	(void)pthread_mutex_lock(&binding->mutex);
+	SparkStageKvBindingPoolOutcome(binding,"shrink",status);
+	binding->pool_mapped_bytes = (uint64_t)binding->kv_pool.mapped_count * binding->kv_pool.chunk_bytes;
+	binding->pool_shrink_count++;
+	fprintf(stderr,"%s kv pool shrank chunks=%u->%u of %u pages=%u->%u vacated_pages=%u reclaim_wanted=%llu kv_committed=%llu status=%s\n",binding->module_tag,before,binding->kv_pool.mapped_count,
+		binding->kv_pool.chunk_capacity,pages,binding->arena.resident_block_capacity,vacated,(unsigned long long)reclaim_bytes,(unsigned long long)binding->kv_pool.kv_committed_bytes,
+		SparkStatusToString(status));
+}
+
+static void SparkStageKvBindingPoolTick(SparkStageKvBinding *binding)
+{
+	SparkWeightdKvPoolState state;
+	uint64_t pressure = binding->arena.resident_capacity_stall_count + binding->arena.resident_evicted_block_count + binding->page_cache.evicted_entry_count;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( pressure != binding->pool_pressure_mark )
+	{
+		binding->pool_pressure_mark = pressure;
+		binding->pool_idle_ticks = 0u;
+		if ( binding->kv_pool.mapped_count < binding->kv_pool.chunk_capacity )
+			SparkStageKvBindingPoolGrow(binding);
+		return;
+	}
+	if ( binding->pool_idle_ticks < SPARK_STAGE_KV_POOL_IDLE_TICKS )
+	{
+		binding->pool_idle_ticks++;
+		return;
+	}
+	(void)pthread_mutex_unlock(&binding->mutex);
+	if ( binding->kv_pool_wanted_chunks != 0u )
+		status = SparkWeightdKvPoolGrow(&binding->kv_pool,binding->kv_pool.mapped_count,&state,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdKvPoolStatus(&binding->kv_pool,&state,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS);
+	(void)pthread_mutex_lock(&binding->mutex);
+	SparkStageKvBindingPoolOutcome(binding,"status",status);
+	if ( status != SPARK_STATUS_OK )
+		return;
+	binding->kv_pool_wanted_chunks = state.wanted_chunks;
+	if ( state.reclaim_wanted_bytes != 0u && binding->kv_pool.mapped_count > binding->kv_pool_minimum_chunks )
+		SparkStageKvBindingPoolShrink(binding,state.reclaim_wanted_bytes);
+}
+
+static void *SparkStageKvBindingPoolMain(void *context)
+{
+	SparkStageKvBinding *binding = (SparkStageKvBinding *)context;
+	struct timespec wake;
+	(void)pthread_mutex_lock(&binding->mutex);
+	SparkStageKvBindingPoolMark(binding);
+	while ( binding->pool_stop == 0u )
+	{
+		SparkStageKvBindingDeadline(SPARK_STAGE_KV_POOL_TICK_NS,&wake);
+		(void)pthread_cond_timedwait(&binding->pool_wake,&binding->mutex,&wake);
+		if ( binding->pool_stop == 0u )
+			SparkStageKvBindingPoolTick(binding);
+	}
+	(void)pthread_mutex_unlock(&binding->mutex);
+	return(0);
+}
+
+static SparkStatus SparkStageKvBindingStartPool(SparkStageKvBinding *binding)
+{
+	if ( pthread_cond_init(&binding->pool_wake,0) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	binding->pool_wake_initialized = 1u;
+	if ( pthread_create(&binding->pool_thread,0,SparkStageKvBindingPoolMain,binding) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	binding->pool_started = 1u;
+	return(SPARK_STATUS_OK);
+}
+
 void SparkStageKvBindingStop(SparkStageKvBinding *binding)
 {
 	if ( binding == 0 || binding->sync_initialized == 0u )
 		return;
+	(void)pthread_mutex_lock(&binding->mutex);
+	binding->pool_stop = 1u;
+	if ( binding->pool_wake_initialized != 0u )
+		(void)pthread_cond_broadcast(&binding->pool_wake);
+	(void)pthread_mutex_unlock(&binding->mutex);
+	if ( binding->pool_started != 0u )
+		(void)pthread_join(binding->pool_thread,0);
+	binding->pool_started = 0u;
 	(void)pthread_mutex_lock(&binding->completion_mutex);
 	binding->completion_stop = 1u;
 	(void)pthread_cond_broadcast(&binding->completion_ready);
@@ -2353,7 +2606,7 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 		return;
 	(void)pthread_mutex_lock(&binding->mutex);
 	counters->pool_resident_pages = binding->arena.resident_block_count;
-	counters->pool_physical_pages = binding->physical_page_count;
+	counters->pool_physical_pages = binding->arena.resident_block_capacity;
 	counters->pool_logical_pages = binding->logical_page_count;
 	counters->pool_retained_pages = binding->arena.retained_block_count;
 	counters->pool_evicted_entries = binding->page_cache.evicted_entry_count;
@@ -2362,7 +2615,7 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 	counters->spill_read_bytes = binding->page_store.read_bytes;
 	counters->spill_digest_mismatches = binding->page_store.read_digest_mismatch_count;
 	counters->spill_read_errors = binding->page_store.read_error_count;
-	counters->pool_device_bytes = binding->kv_pool.device_bytes;
+	counters->pool_device_bytes = binding->pool_mapped_bytes;
 	counters->pool_generation = binding->kv_pool.pool_generation;
 	counters->pool_reattached = binding->kv_pool.reattached;
 	counters->pool_adopted_pages = binding->kv_pool_adopted_pages;
