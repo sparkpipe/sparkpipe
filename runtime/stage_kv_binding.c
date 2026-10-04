@@ -689,6 +689,7 @@ static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,co
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	request.device_bytes = cursor;
+	request.metadata_bytes = sizeof(SparkStageKvPoolSeal) + (uint64_t)binding->physical_page_count * sizeof(SparkKvPageCacheResidentRecord);
 	request.label = binding->module_tag;
 	status = SparkWeightdKvPoolMap(&request,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS,&binding->kv_pool);
 	if ( status != SPARK_STATUS_OK )
@@ -700,6 +701,77 @@ static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,co
 		(unsigned long long)binding->kv_pool.pool_generation,binding->kv_pool.reattached,(unsigned long long)binding->kv_pool.device_bytes,binding->kv_pool.chunk_count,
 		(unsigned long long)binding->kv_pool.kv_committed_bytes,(unsigned long long)binding->kv_pool.kv_reserve_bytes);
 	return(SPARK_STATUS_OK);
+}
+
+static const char *SparkStageKvBindingSealRefusal(const SparkStageKvBinding *binding,const SparkStageKvPoolSeal *seal)
+{
+	if ( binding->kv_pool.reattached == 0u )
+		return("new_pool");
+	if ( seal->magic != SPARK_STAGE_KV_POOL_SEAL_MAGIC || seal->version != SPARK_STAGE_KV_POOL_SEAL_VERSION || __atomic_load_n(&seal->sealed,__ATOMIC_ACQUIRE) != 1u )
+		return("not_sealed");
+	if ( seal->pool_generation != binding->kv_pool.pool_generation )
+		return("pool_generation");
+	if ( memcmp(seal->layout_sha256,binding->layout_sha256,SPARK_SHA256_DIGEST_BYTES) != 0 )
+		return("layout");
+	if ( seal->physical_page_count != binding->physical_page_count || seal->page_bytes != binding->page_bytes || seal->record_count > binding->physical_page_count )
+		return("geometry");
+	return(0);
+}
+
+static SparkStatus SparkStageKvBindingAdoptPool(SparkStageKvBinding *binding)
+{
+	SparkStageKvPoolSeal *seal = (SparkStageKvPoolSeal *)binding->kv_pool.metadata;
+	const char *refused;
+	uint32_t records = 0u,adopted = 0u;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( seal == 0 || binding->kv_pool.metadata_bytes < sizeof(*seal) + (uint64_t)binding->physical_page_count * sizeof(SparkKvPageCacheResidentRecord) )
+	{
+		fprintf(stderr,"%s kv binding refused: the weightd pool carries no seal region\n",binding->module_tag);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	refused = SparkStageKvBindingSealRefusal(binding,seal);
+	if ( refused == 0 )
+	{
+		records = seal->record_count;
+		status = SparkKvPageCacheAdoptResident(&binding->page_cache,(const SparkKvPageCacheResidentRecord *)(seal + 1),records,&adopted);
+	}
+	__atomic_store_n(&seal->sealed,0u,__ATOMIC_RELEASE);
+	seal->record_count = 0u;
+	binding->kv_pool_seal_cleared = 1u;
+	binding->kv_pool_adopted_pages = adopted;
+	fprintf(stderr,"%s kv pool adopt reattached=%u records=%u adopted_pages=%u refused=%s status=%s\n",binding->module_tag,binding->kv_pool.reattached,records,adopted,
+		refused != 0 ? refused : "none",SparkStatusToString(status));
+	SPARK_RETURN(status);
+}
+
+static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
+{
+	SparkStageKvPoolSeal *seal = (SparkStageKvPoolSeal *)binding->kv_pool.metadata;
+	uint32_t count = 0u;
+	SparkStatus status;
+	if ( seal == 0 || binding->mutex_initialized == 0u || binding->kv_pool_seal_cleared == 0u )
+		return;
+	if ( cudaDeviceSynchronize() != cudaSuccess )
+	{
+		fprintf(stderr,"%s kv pool not sealed: the device did not drain\n",binding->module_tag);
+		return;
+	}
+	status = SparkKvPageCacheExportResident(&binding->page_cache,(SparkKvPageCacheResidentRecord *)(seal + 1),binding->physical_page_count,&count);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv pool not sealed: export status=%s\n",binding->module_tag,SparkStatusToString(status));
+		return;
+	}
+	seal->magic = SPARK_STAGE_KV_POOL_SEAL_MAGIC;
+	seal->version = SPARK_STAGE_KV_POOL_SEAL_VERSION;
+	seal->pool_generation = binding->kv_pool.pool_generation;
+	memcpy(seal->layout_sha256,binding->layout_sha256,SPARK_SHA256_DIGEST_BYTES);
+	seal->physical_page_count = binding->physical_page_count;
+	seal->page_bytes = binding->page_bytes;
+	seal->record_count = count;
+	__atomic_store_n(&seal->sealed,1u,__ATOMIC_RELEASE);
+	binding->kv_pool_sealed_pages = count;
+	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count);
 }
 
 static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *configuration)
@@ -794,6 +866,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->mutex_initialized = 1u;
 	status = SparkStageKvBindingOpenSnapshot(binding,configuration);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingAdoptPool(binding);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingStartAsync(binding);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -859,6 +933,7 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	}
 	if ( binding->copy_stream != 0 )
 		(void)cudaStreamDestroy((cudaStream_t)binding->copy_stream);
+	SparkStageKvBindingSealPool(binding);
 	SparkWeightdKvPoolUnmap(&binding->kv_pool);
 	if ( binding->snapshot_store.runtime != 0 )
 		SparkKvSnapshotStoreClose(&binding->snapshot_store);
@@ -2064,6 +2139,10 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 	counters->spill_read_bytes = binding->page_store.read_bytes;
 	counters->spill_digest_mismatches = binding->page_store.read_digest_mismatch_count;
 	counters->spill_read_errors = binding->page_store.read_error_count;
+	counters->pool_device_bytes = binding->kv_pool.device_bytes;
+	counters->pool_generation = binding->kv_pool.pool_generation;
+	counters->pool_reattached = binding->kv_pool.reattached;
+	counters->pool_adopted_pages = binding->kv_pool_adopted_pages;
 	snapshot = binding->page_cache.snapshot;
 	if ( snapshot == 0 )
 	{

@@ -1467,6 +1467,52 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkKvCacheArenaAdoptResidentSlot(
+    SparkKvCacheArena *arena,
+    uint32_t logical_block_index,
+    uint32_t resident_slot_index)
+{
+    SparkKvCacheBlock *block;
+    SparkStatus status;
+
+    status = SparkKvCacheArenaValidate(arena);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (logical_block_index >= arena->logical_block_count ||
+        resident_slot_index >= arena->resident_block_capacity)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    block = &arena->blocks[logical_block_index];
+    if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
+        (block->flags & (SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT |
+            SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED |
+            SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID)) != 0u ||
+        block->resident_slot_index != SPARK_KV_CACHE_NO_RESIDENT_SLOT ||
+        arena->resident_slot_logical_block_indices[resident_slot_index] !=
+            SPARK_KV_CACHE_NO_BLOCK)
+    {
+        SPARK_FAIL(SPARK_STATUS_BUSY);
+    }
+    arena->resident_slot_logical_block_indices[resident_slot_index] =
+        logical_block_index;
+    block->resident_slot_index = resident_slot_index;
+    block->key_device_address = arena->key_device_base +
+        (uintptr_t)(arena->key_block_stride_bytes * resident_slot_index);
+    block->value_device_address =
+        SparkKvCacheArenaHasValuePayload(arena) != 0u
+        ? arena->value_device_base +
+            (uintptr_t)(arena->value_block_stride_bytes * resident_slot_index)
+        : 0u;
+    block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT;
+    arena->resident_block_count += 1u;
+    arena->epoch += 1u;
+    block->last_used_epoch = arena->epoch;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index)

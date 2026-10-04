@@ -134,6 +134,21 @@ typedef struct SparkStageKvRecurrentCounters
 	uint64_t capture_ns;
 } SparkStageKvRecurrentCounters;
 
+#define SPARK_STAGE_KV_POOL_SEAL_MAGIC UINT64_C(0x4c4145534c4f4f50)
+#define SPARK_STAGE_KV_POOL_SEAL_VERSION 1u
+
+typedef struct SparkStageKvPoolSeal
+{
+	uint64_t magic;
+	uint32_t version;
+	uint32_t sealed;
+	uint64_t pool_generation;
+	uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES];
+	uint32_t physical_page_count;
+	uint32_t record_count;
+	uint64_t page_bytes;
+} SparkStageKvPoolSeal;
+
 typedef struct SparkStageKvBinding SparkStageKvBinding;
 typedef SparkStatus (*SparkStageKvInspectFunction)(void *context,const SparkStageKvBinding *binding);
 
@@ -236,6 +251,9 @@ struct SparkStageKvBinding
 	uint64_t snapshot_page_file_bytes;
 	SparkKvSnapshotStore snapshot_store;
 	SparkWeightdKvPoolMapping kv_pool;
+	uint32_t kv_pool_adopted_pages;
+	uint32_t kv_pool_sealed_pages;
+	uint32_t kv_pool_seal_cleared;
 	SparkKvPageCacheSnapshot snapshot;
 	SparkKvPageCacheSnapshotLink *snapshot_links;
 	uint8_t *snapshot_page;

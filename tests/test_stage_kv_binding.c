@@ -894,7 +894,10 @@ static void TestSnapshotRestartRestore(void)
 	Open();
 	PublishTwoPageChain(pages);
 	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	assert(BINDING.kv_pool.reattached == 0u && BINDING.kv_pool_adopted_pages == 0u);
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.attached == 1u && counters.restore_count == 1u && counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
@@ -903,6 +906,41 @@ static void TestSnapshotRestartRestore(void)
 	assert(counters.spill_digest_mismatches == 0u && counters.spill_read_errors == 0u);
 	Close();
 	printf("A10 restart restore: ok\n");
+}
+
+static int RemoveSnapshotEntry(const char *path,const struct stat *info,int flag,struct FTW *walk)
+{
+	(void)info;
+	(void)flag;
+	return(walk->level == 0 ? 0 : remove(path));
+}
+
+static void TestRestartAdoptsDevicePages(void)
+{
+	SparkModelDriverKvStoreCounters counters;
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	uint64_t generation;
+	Open();
+	PublishTwoPageChain(pages);
+	generation = BINDING.kv_pool.pool_generation;
+	Unload();
+	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	assert(BINDING.kv_pool.reattached == 1u && BINDING.kv_pool.pool_generation == generation && BINDING.kv_pool_adopted_pages == 2u);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.restore_page_count == 0u && counters.store_file_count == 0u);
+	assert(counters.pool_reattached == 1u && counters.pool_adopted_pages == 2u && counters.pool_generation == generation && counters.pool_device_bytes == BINDING.kv_pool.device_bytes);
+	Unload();
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	assert(BINDING.kv_pool_adopted_pages == 2u);
+	BINDING.kv_pool_seal_cleared = 0u;
+	Unload();
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	assert(BINDING.kv_pool.reattached == 1u && BINDING.kv_pool_adopted_pages == 0u);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_NOT_FOUND);
+	Close();
+	printf("restart adopts device pages: a clean shutdown seals the resident prefix pages in the weightd pool, the restart serves them with no snapshot reads, an unsealed pool adopts nothing\n");
 }
 
 static void ExpectForeignLayout(const SparkStageKvConfiguration *configuration,uint8_t pages[2][TEST_PAGE_BYTES])
@@ -951,6 +989,8 @@ static void TestSnapshotDestroySavesAll(void)
 		ReleaseSequence(10u + chain,0u);
 	}
 	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	for (chain=0u; chain<3u; chain++)
 		assert(RestorePrefix(20u + chain,1u,4u,(uint8_t)(0x80u + chain),pages[chain],1u) == SPARK_STATUS_OK);
@@ -1126,6 +1166,7 @@ int main(void)
 	TestCopierContract();
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
+	TestRestartAdoptsDevicePages();
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();

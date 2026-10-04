@@ -204,7 +204,6 @@ typedef struct SparkWeightdKvPool
     uint32_t chunk_count;
     uint32_t owner_connection;
     int metadata_fd;
-    void *device_base;
     void *chunk_handles[SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX];
     char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
 } SparkWeightdKvPool;
@@ -2778,15 +2777,10 @@ static uint32_t SparkWeightdServerOnDetach(SparkWeightdServer *server, SparkWeig
 
 static void SparkWeightdKvPoolFree(SparkWeightdKvPool *pool)
 {
-	uint64_t span = pool->chunk_bytes * pool->chunk_count;
 	uint32_t index;
-	if ( pool->device_base != 0 )
-		(void)cuMemUnmap((CUdeviceptr)(uintptr_t)pool->device_base,(size_t)span);
 	for (index=0u; index<pool->chunk_count; index++)
 		if ( pool->chunk_handles[index] != 0 )
 			(void)cuMemRelease((CUmemGenericAllocationHandle)pool->chunk_handles[index]);
-	if ( pool->device_base != 0 )
-		(void)cuMemAddressFree((CUdeviceptr)(uintptr_t)pool->device_base,(size_t)span);
 	if ( pool->metadata_fd >= 0 )
 		(void)close(pool->metadata_fd);
 	memset(pool,0,sizeof(*pool));
@@ -2822,8 +2816,6 @@ static uint32_t SparkWeightdKvPoolOldestDetached(const SparkWeightdServer *serve
 
 static SparkStatus SparkWeightdKvPoolCreate(const SparkWeightdIpcKvPoolAttach *request,uint64_t chunk_bytes,uint32_t chunk_count,const CUmemAllocationProp *prop,SparkWeightdKvPool *pool)
 {
-	CUmemAccessDesc access;
-	CUdeviceptr base = 0;
 	uint32_t index;
 	memset(pool,0,sizeof(*pool));
 	pool->metadata_fd = -1;
@@ -2836,23 +2828,7 @@ static SparkStatus SparkWeightdKvPoolCreate(const SparkWeightdIpcKvPoolAttach *r
 			break;
 		pool->chunk_handles[index] = (void *)handle;
 	}
-	if ( index == chunk_count && cuMemAddressReserve(&base,(size_t)(chunk_bytes * chunk_count),0u,0ull,0ull) == CUDA_SUCCESS )
-	{
-		pool->device_base = (void *)(uintptr_t)base;
-		for (index=0u; index<chunk_count; index++)
-			if ( cuMemMap(base + (CUdeviceptr)index * chunk_bytes,(size_t)chunk_bytes,0u,(CUmemGenericAllocationHandle)pool->chunk_handles[index],0ull) != CUDA_SUCCESS )
-				break;
-		if ( index != chunk_count && index != 0u )
-			(void)cuMemUnmap(base,(size_t)(index * chunk_bytes));
-		if ( index != chunk_count )
-		{
-			(void)cuMemAddressFree(base,(size_t)(chunk_bytes * chunk_count));
-			pool->device_base = 0;
-		}
-	}
-	access.location = prop->location;
-	access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-	if ( pool->device_base == 0 || cuMemSetAccess(base,(size_t)(chunk_bytes * chunk_count),&access,1u) != CUDA_SUCCESS )
+	if ( index != chunk_count )
 	{
 		SparkWeightdKvPoolFree(pool);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
