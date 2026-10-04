@@ -1106,6 +1106,66 @@ static int32_t SparkTestKvPageStoreReadback(void)
 	return(status);
 }
 
+static SparkStatus SparkTestKvReadUntilSettled(SparkKvPageStore *store,SparkTestKvFixture *fixture,uint32_t logical_page,uint64_t generation,uint8_t *output)
+{
+	SparkStatus status = SPARK_STATUS_BUSY;
+	uint32_t attempts;
+	for (attempts=0u; attempts<100000u && status==SPARK_STATUS_BUSY; attempts++)
+	{
+		if ( SparkKvPageStoreProgress(store,&fixture->arena,1u) != SPARK_STATUS_OK )
+			return(SPARK_STATUS_INTERNAL_ERROR);
+		status = SparkKvPageStoreReadback(store,logical_page,generation,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES);
+		(void)sched_yield();
+	}
+	return(status);
+}
+
+static int32_t SparkTestKvPageStoreDigestMismatch(void)
+{
+	SparkKvPageStore store;
+	SparkKvPageStoreConfiguration configuration = {0};
+	SparkTestKvFixture fixture;
+	uint8_t staging[SPARK_TEST_BLOCK_BYTES],source[SPARK_TEST_BLOCK_BYTES],output[SPARK_TEST_BLOCK_BYTES],flip = 0x5au;
+	char path[] = "/tmp/sparkpipe-kv-digest-XXXXXX";
+	int32_t descriptor,result = 0;
+	uint32_t index;
+	descriptor = mkstemp(path);
+	if ( descriptor < 0 || close(descriptor) != 0 || unlink(path) != 0 )
+		return(-70);
+	SparkTestKvInitialize(&fixture);
+	configuration.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
+	configuration.logical_page_capacity = 2u;
+	configuration.transfer_capacity = 1u;
+	configuration.page_bytes = configuration.maximum_backing_bytes = sizeof(staging);
+	configuration.backing_path = path;
+	configuration.staging_address = staging;
+	configuration.staging_bytes = sizeof(staging);
+	if ( SparkKvPageStoreInitialize(&store,&configuration) != SPARK_STATUS_OK )
+		return(-71);
+	for (index=0u; index<SPARK_TEST_BLOCK_BYTES; index++)
+		source[index] = (uint8_t)(index * 3u + 1u);
+	if ( SparkTestKvRecordWrite(&store,1u,7u,source) != SPARK_STATUS_OK || SparkKvPageStoreWaitForTransfers(&store) != SPARK_STATUS_OK )
+		result = -72;
+	descriptor = open(path,O_RDWR);
+	if ( result == 0 && (descriptor < 0 || pwrite(descriptor,&flip,1u,17) != 1 || close(descriptor) != 0) )
+		result = -73;
+	if ( result == 0 && SparkTestKvReadUntilSettled(&store,&fixture,1u,7u,output) != SPARK_STATUS_NOT_FOUND )
+		result = -74;
+	if ( result == 0 && (store.read_digest_mismatch_count != 1u || store.read_count != 0u || store.backing_page_count != 0u) )
+		result = -75;
+	if ( result == 0 && SparkKvPageStoreReadback(&store,1u,7u,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_NOT_FOUND )
+		result = -76;
+	if ( result == 0 && (SparkTestKvRecordWrite(&store,1u,8u,source) != SPARK_STATUS_OK || SparkKvPageStoreWaitForTransfers(&store) != SPARK_STATUS_OK ||
+		SparkTestKvReadUntilSettled(&store,&fixture,1u,8u,output) != SPARK_STATUS_OK || memcmp(output,source,SPARK_TEST_BLOCK_BYTES) != 0) )
+		result = -77;
+	SparkKvPageStoreDestroy(&store);
+	if ( unlink(path) != 0 && result == 0 )
+		result = -78;
+	return(result);
+}
+
 static void SparkTestPrefixCacheReusesCommittedLogicalBlocks(void)
 {
 	SparkTestKvFixture fixture;
@@ -2699,6 +2759,8 @@ int main(void)
 		status = SparkTestKvCheckpointEviction();
 	if ( status == 0 )
 		status = SparkTestKvPageStoreReadback();
+	if ( status == 0 )
+		status = SparkTestKvPageStoreDigestMismatch();
 	if ( status == 0 )
 		status = SparkTestKvPinnedTableUsesPhysicalMapping();
 	if ( status == 0 )
