@@ -482,19 +482,17 @@ static void *SparkStageKvBindingRestoreMain(void *context)
 	SparkStageKvRestoreSlot *slot;
 	uint32_t index;
 	(void)pthread_mutex_lock(&binding->mutex);
-	for (;;)
+	while ( binding->restore_stop == 0u )
 	{
 		slot = 0;
 		for (index=0u; slot == 0 && index<SPARK_STAGE_KV_RESTORE_SLOTS; index++)
 			if ( binding->restores[index].state == SPARK_STAGE_KV_RESTORE_QUEUED )
 				slot = &binding->restores[index];
-		if ( slot == 0 && binding->restore_stop == 0u )
+		if ( slot == 0 )
 		{
 			(void)pthread_cond_wait(&binding->restore_ready,&binding->mutex);
 			continue;
 		}
-		if ( slot == 0 )
-			break;
 		slot->state = SPARK_STAGE_KV_RESTORE_RUNNING;
 		slot->status = SparkStageKvBindingRestoreRun(binding,slot);
 		slot->done_ns = SparkStageKvNowNs();
