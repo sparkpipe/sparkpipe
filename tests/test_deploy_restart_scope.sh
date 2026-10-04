@@ -231,11 +231,13 @@ COREHUB="$HOME/release/core"
 mkdir -p "$TREE/build" "$TREE/tools"
 cp "$AGENT" "$TREE/tools/fleet_node_agent.sh"
 echo weightd-new > "$TREE/build/sparkpipe_weightd"
+echo mesh-status-new > "$TREE/build/sparkpipe_mesh_status"
 if bash tools/publish_core.sh agent > /dev/null; then ok "core: agent mode ran"; else bad "core: agent mode ran"; fi
 [ -x "$COREHUB/bin/fleet_node_agent.sh" ] && ok "core: agent mode publishes agent" || bad "core: agent mode publishes agent"
 [ ! -f "$COREHUB/bin/sparkpipe_weightd" ] && ok "core: agent mode never touches weightd" || bad "core: agent mode never touches weightd"
 if bash tools/publish_core.sh weightd > /dev/null; then ok "core: weightd mode ran"; else bad "core: weightd mode ran"; fi
 [ -f "$COREHUB/bin/sparkpipe_weightd" ] && ok "core: weightd mode publishes candidate" || bad "core: weightd mode publishes candidate"
+[ -x "$COREHUB/bin/sparkpipe_mesh_status" ] && ok "core: weightd mode publishes the mesh status tool with it" || bad "core: weightd mode publishes the mesh status tool with it"
 if bash tools/publish_core.sh 2> /dev/null; then bad "core: missing mode rejected"; else ok "core: missing mode rejected"; fi
 if bash tools/weightsd_announce.sh "$COREHUB" > /dev/null; then ok "announce: ran"; else bad "announce: ran"; fi
 announced=$(cat "$COREHUB/WEIGHTSD_BIN")
