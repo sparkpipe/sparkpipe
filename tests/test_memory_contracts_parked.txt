@@ -217,7 +217,6 @@
 1 tools/qwen4_flash_nvfp4_smoke.cu: wire header uses a numeric field offset
 4 tools/slot_bench.cu: cudaMalloc uses a raw byte-width multiplier
 1 tools/slot_bench.cu: cudaMemset uses a raw byte-width multiplier
-1 tools/spark_kv_backing_test.c: fwrite uses a direct size/count literal
 1 tools/t1_reference_glm53full.py: GLM model literal 12288 is outside the model contract
 1 tools/t1_reference_glm53full.py: GLM model literal 6144 is outside the model contract
 1 tools/t1_reference_glm53full.py: GLM model scalar is assigned from a raw literal
