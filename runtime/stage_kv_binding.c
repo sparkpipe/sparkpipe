@@ -343,18 +343,18 @@ static SparkStatus SparkStageKvBindingStartAsync(SparkStageKvBinding *binding)
 
 static void SparkStageKvDigestU32(SparkSha256Context *context,uint32_t value)
 {
-	uint8_t bytes[4];
+	uint8_t bytes[sizeof(uint32_t)];
 	uint32_t index;
-	for (index=0u; index<4u; index++)
+	for (index=0u; index<sizeof(bytes); index++)
 		bytes[index] = (uint8_t)(value >> (8u * index));
 	SparkSha256Update(context,bytes,sizeof(bytes));
 }
 
 static void SparkStageKvDigestU64(SparkSha256Context *context,uint64_t value)
 {
-	uint8_t bytes[8];
+	uint8_t bytes[sizeof(uint64_t)];
 	uint32_t index;
-	for (index=0u; index<8u; index++)
+	for (index=0u; index<sizeof(bytes); index++)
 		bytes[index] = (uint8_t)(value >> (8u * index));
 	SparkSha256Update(context,bytes,sizeof(bytes));
 }
