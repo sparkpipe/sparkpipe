@@ -1042,9 +1042,6 @@ Related common-code debt:
   `docs/COMMON_MODULE_ARCHITECTURE.md` and delete the near-copy code they
   replace (estimated by the 2026-09-13 SEAM surveys at about 26,000 lines
   across the families), each migration proved by byte or behaviour identity.
-- glm5_next assigns its combine wrappers field by field instead of calling
-  `SPARK_FAMILY(ModuleRegisterCombines)`, and its `internal.h` re-declares
-  the `SparkTpLaunch*` prototypes from `spark_tp_mesh_register.h`.
 - K3 now resets every runner slot and the KV binding on a client reset and
   refuses stale-generation submissions, but no fleet run has proved it: run a
   client reconnect after a completed request, after which a request on the
