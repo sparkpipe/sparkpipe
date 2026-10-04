@@ -867,6 +867,7 @@ typedef struct SparkWeightdServerConfig
     uint64_t device_bytes_max;
     uint64_t kv_reserve_bytes;
     uint64_t kv_write_budget_bytes_per_day;
+    uint64_t load_pace_bytes_per_second;
 } SparkWeightdServerConfig;
 
 typedef struct SparkWeightdServer SparkWeightdServer;

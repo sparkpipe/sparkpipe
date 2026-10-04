@@ -375,12 +375,15 @@ static void check_short_range_reads(void)
 	read_limit = 19u;
 	{
 		const SparkWeightdRange *order[2] = {&ranges[1],&ranges[0]};
-		assert(SparkWeightdLoadRanges(&arena,fd,0u,order,2u) == SPARK_STATUS_OK);
+		SparkWeightdServer *idle = calloc(1u,sizeof(*idle));
+		assert(idle != 0 && SparkWeightdPacerInitialize(&idle->pacer,0u,SparkWeightdPacerNow,SparkWeightdPacerSleepNs,0) == SPARK_STATUS_OK);
+		assert(SparkWeightdLoadRanges(idle,&arena,fd,0u,order,2u) == SPARK_STATUS_OK);
 		assert(memcmp(source,destination,sizeof(source)) == 0);
 		ranges[1].digest[0] ^= 1u;
 		order[0] = &ranges[1];
 		order[1] = &ranges[0];
-		assert(SparkWeightdLoadRanges(&arena,fd,0u,order,2u) == SPARK_STATUS_HASH_MISMATCH);
+		assert(SparkWeightdLoadRanges(idle,&arena,fd,0u,order,2u) == SPARK_STATUS_HASH_MISMATCH);
+		free(idle);
 	}
 	read_limit = 0u;
 	SparkWeightdDirectDestroy(arena.direct);

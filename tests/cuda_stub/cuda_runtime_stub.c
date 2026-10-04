@@ -1862,7 +1862,10 @@ cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,void *band,
     return cuda_stub_mesh_hardware_launch_result;
 }
 
-void SparkTpDeviceCollectiveRegisterLaunchers(const SparkTpMeshLaunchers *launchers) __attribute__((weak));
+__attribute__((weak)) void SparkTpDeviceCollectiveRegisterLaunchers(const SparkTpMeshLaunchers *launchers)
+{
+    (void)launchers;
+}
 
 static const SparkTpMeshLaunchers SparkTpMeshStubLaunchers =
 {
@@ -1881,6 +1884,5 @@ static const SparkTpMeshLaunchers SparkTpMeshStubLaunchers =
 
 __attribute__((constructor)) static void SparkTpMeshStubLaunchersInstall(void)
 {
-    if ( SparkTpDeviceCollectiveRegisterLaunchers != 0 )
-        SparkTpDeviceCollectiveRegisterLaunchers(&SparkTpMeshStubLaunchers);
+    SparkTpDeviceCollectiveRegisterLaunchers(&SparkTpMeshStubLaunchers);
 }

@@ -344,9 +344,14 @@ citations refer to that commit.
     set, with the same greedy tokens as the pinned build
     ([`docs/GLM_LAZY_DRIVER_INTEGRATION.md`](docs/GLM_LAZY_DRIVER_INTEGRATION.md),
     [`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#open-relocatable-graphs)).
-- Partial residency (S3) and queue warm hints with pin-on-dispatch (S4) from
-  the archived `WEIGHTD_RESIDENT_CACHE_DESIGN.md` are not implemented; S2 is
-  partial.
+- Queue warm hints with pin-on-dispatch (S4) from the archived
+  `WEIGHTD_RESIDENT_CACHE_DESIGN.md` are not implemented; its carrier,
+  spark_queue, is retired, so promotion (the model catalog entry) drives the
+  `.wset` warm and lease pinning instead. S2 and S3 are in: weightd reclaims the
+  least recently used cold arena first (attach, detach, acquire and release
+  stamp its last use), and a lazy cold arena first gives up its least recently
+  used groups and stays registered, freeing whole only if that is not enough
+  (`tests/test_weightd_working_set.c` `check_cold_reclaim_order`).
 - Implement one catalog that keeps every configured frontier model addressable
   while tracking resident, warm, promotable, and unavailable states.
 - Partition and mount each 4 TB internal NVMe as 2.5 TB hot KV, 1 TB active
@@ -1531,10 +1536,25 @@ for seamless production multi-model.
   refused at the router. Required: warm request queue that drains when the
   model finishes loading (swap starts, requester waits, serving model
   continues).
-- Load bandwidth fairness: swap-in reads run at full readahead with no
-  QoS; the serving model's page-cache and mesh traffic compete
-  unbounded. Required: a fair-share cap on loader throughput while any
-  lane is serving.
+- Load bandwidth fairness is enforced but not yet configured or measured.
+  weightd paces pack streams, spine preloads and expert lease loads with one
+  token bucket (`runtime/spark_weightd_pacer.c`) while another connection's
+  lane has been active within the last second, at
+  `--load-pace-bytes-per-second` (`SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND`).
+  Without the setting such a load is refused, so the fleet agent's
+  environment must carry the value before a second model loads beside a
+  serving one. Close it with a fleet run that loads a pack beside a serving
+  GLM Full lane and shows the serving lane's B1 step time unchanged and the
+  load's bytes per second at the cap.
+- weightd serves one queued request at a time on its worker. Mesh activity,
+  writes and status run on the main loop, so a pinned serving engine keeps
+  running while another engine's pack loads; but expert lease acquires and
+  releases and KV pool status and resize calls of every other engine wait
+  behind the whole load (and the pacer lengthens that wait). Required: loads
+  run off the request path, with the arena table locked against them, so
+  lease and KV pool requests are answered during a load. Prove it with a host
+  test where a lease acquire on one arena completes while another connection's
+  attach is still streaming.
 - Output chunking for GPU fairness: decode chains hold the GPU for whole
   tokens and cross-model sharing relies on driver time-slicing (no MPS).
   Required: bounded output quanta analogous to prefill chunks so a lane
