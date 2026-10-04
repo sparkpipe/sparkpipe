@@ -58,7 +58,7 @@ document does not claim that implementation is already complete.
 
 ## Mandatory interface and behavior
 
-The serving ABI is 23 (`SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION` in
+The serving ABI is 33 (`SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION` in
 `include/sparkpipe/spark_model_serving_adapter.h`). ABI 21 retired the
 PREFILL, DECODE, RELEASE, PREFETCH, RESET, DRIVER_OWNS_KV and JIT_KV
 capability bits; their old numeric bits are rejected. Every interface must
@@ -69,7 +69,13 @@ rejects a missing one. ABI 22 removed the slot-reuse policy field. Common code
 always requires release before another sequence can own a bound slot,
 including at position zero. ABI 23 (a2fbb5f) added per-lane sampling rules and
 the SAMPLING capability; a sampled lane on an adapter without the capability
-is rejected. Cache geometry and positive runtime page capacities are required.
+is rejected. ABI 33 added the SPECULATIVE_VERIFY capability and the VERIFY
+submission flag: a verify decode carries one row per input token for each lane
+(the lane's token, then the engine's drafts at consecutive positions), and
+the completion returns the model's greedy token for every row, padded with
+`SPARK_MODEL_SERVING_NO_TOKEN` to `tokens_per_sequence`. The engine, not the
+driver, decides which drafts are accepted. Cache geometry and positive
+runtime page capacities are required.
 Clearing every remaining capability bit does not skip any of these checks.
 The remaining descriptors describe transport/topology and specialized
 execution modes; they cannot waive required externally observable behavior.

@@ -88,6 +88,11 @@ static SparkStatus SparkDescriptorCheckSpeculationPairing(
 {
 	if ( ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION) != 0u) != (descriptor->max_speculative_token_count != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u &&
+		((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION) == 0u ||
+		 descriptor->max_speculative_token_count + 1u > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE ||
+		 descriptor->max_output_token_count < descriptor->max_speculative_token_count + 1u) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -484,10 +489,33 @@ static SparkStatus SparkModelServingAdapterValidateSampling(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelServingAdapterValidateVerifyRows(
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t counts[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t lane,row;
+	memset(counts,0,sizeof(counts));
+	for (row=0u; row<submission->row_count; row++)
+	{
+		lane = submission->row_lane_indices[row];
+		if ( lane >= submission->active_sequence_count || counts[lane] >= submission->tokens_per_sequence ||
+			submission->row_positions[row] != submission->lanes[lane].sequence_position + counts[lane] ||
+			(counts[lane] == 0u && submission->token_ids[row] != submission->lanes[lane].input_token_id) ||
+			submission->token_ids[row] == SPARK_MODEL_SERVING_NO_TOKEN )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		counts[lane]++;
+	}
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		if ( counts[lane] == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelServingAdapterValidateSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingSubmission *submission)
 {
+	uint32_t verify;
 	SparkStatus status;
 	uint32_t total_output_tokens;
 	status = SparkModelServingAdapterValidateDescriptor(descriptor);
@@ -497,10 +525,16 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || submission->descriptor_bytes != SPARK_MODEL_SERVING_SUBMISSION_BYTES )
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
-	if ( submission->flags != 0u || submission->submission_id == 0u || submission->control_generation == 0u || submission->transaction_id == 0u || submission->dispatch_generation == 0u || submission->request_generation == 0u || submission->step_generation == 0u || submission->work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind > SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH || submission->lane_count == 0u || submission->lane_count > descriptor->max_active_sequence_count || submission->active_sequence_count == 0u || submission->active_sequence_count > submission->lane_count || submission->lanes == 0 )
+	if ( (submission->flags & ~SPARK_MODEL_SERVING_SUBMISSION_KNOWN_FLAGS) != 0u || submission->submission_id == 0u || submission->control_generation == 0u || submission->transaction_id == 0u || submission->dispatch_generation == 0u || submission->request_generation == 0u || submission->step_generation == 0u || submission->work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind > SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH || submission->lane_count == 0u || submission->lane_count > descriptor->max_active_sequence_count || submission->active_sequence_count == 0u || submission->active_sequence_count > submission->lane_count || submission->lanes == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&
 		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	verify = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
+	if ( verify != 0u && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( verify != 0u && ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u ||
+		submission->tokens_per_sequence > descriptor->max_speculative_token_count + 1u) )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -519,7 +553,7 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	else if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL &&
 		submission->tokens_per_sequence != 1u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	else if ( submission->tokens_per_sequence > 1u &&
+	else if ( verify == 0u && submission->tokens_per_sequence > 1u &&
 		(descriptor->capability_flags &
 		 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -540,6 +574,12 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	}
 	if ( submission->row_count == 0u || submission->token_count != submission->row_count || submission->new_token_count != submission->row_count || submission->token_count > descriptor->max_input_row_count || submission->token_ids == 0 || submission->row_lane_indices == 0 || submission->row_positions == 0 || submission->row_sequence_ids == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( verify != 0u )
+	{
+		status = SparkModelServingAdapterValidateVerifyRows(submission);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
 	return(SparkModelServingAdapterValidateRows(submission,1u,descriptor->max_resident_sequence_count,descriptor->cache_block_token_count));
 }
 

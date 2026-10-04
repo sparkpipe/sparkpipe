@@ -144,11 +144,68 @@ static void Speculate(const uint32_t *prompt,const uint32_t *expected,uint32_t d
 	SparkSpeculationLookupDraftDestroy(&draft);
 }
 
+static void TestIndexMatchesLinearScan(uint32_t bucket_count,uint32_t alphabet,uint32_t seed)
+{
+	enum { LENGTH = 600u, GRAM = 3u, MAXIMUM = 8u };
+	SparkSpeculationLookupDraft draft;
+	SparkSpeculationLookupIndex index;
+	SparkSpeculationLookupMatch linear,indexed;
+	uint32_t history[LENGTH],heads[64],chain[LENGTH],length,state = seed;
+	SparkStatus linear_status,indexed_status;
+	uint32_t found = 0u;
+	Require(SparkSpeculationLookupDraftInitialize(&draft,1u,LENGTH,GRAM,MAXIMUM) == SPARK_STATUS_OK,"linear drafter initializes");
+	Require(SparkSpeculationLookupIndexBind(&index,heads,bucket_count,chain,LENGTH,GRAM) == SPARK_STATUS_OK,"index binds");
+	for (length=1u; length<=LENGTH; length++)
+	{
+		state = state * 1103515245u + 12345u;
+		history[length - 1u] = (state >> 16) % alphabet;
+		Require(SparkSpeculationLookupDraftObserve(&draft,0u,9u,length - 1u,&history[length - 1u],1u) == SPARK_STATUS_OK,"linear drafter observes");
+		Require(SparkSpeculationLookupIndexAppend(&index,history,length) == SPARK_STATUS_OK,"index appends");
+		linear_status = SparkSpeculationLookupDraftFind(&draft,0u,length - 1u,&linear);
+		indexed_status = SparkSpeculationLookupIndexFind(&index,history,MAXIMUM,UINT32_MAX,&indexed);
+		Require(linear_status == SPARK_STATUS_OK,"linear scan runs");
+		if ( linear.match_length == 0u )
+		{
+			Require(indexed_status == SPARK_STATUS_NOT_FOUND && indexed.match_length == 0u,"index finds nothing where the scan finds nothing");
+			continue;
+		}
+		found++;
+		Require(indexed_status == SPARK_STATUS_OK && indexed.match_length == linear.match_length && indexed.source_end == linear.source_end,"index picks the scan's most recent longest match");
+	}
+	Require(found > 50u,"the sequence repeats often enough to test matches");
+	SparkSpeculationLookupDraftDestroy(&draft);
+}
+
+static void TestIndexBounds(void)
+{
+	SparkSpeculationLookupIndex index;
+	SparkSpeculationLookupMatch match;
+	uint32_t heads[4],chain[16],history[16] = {1u,2u,3u,9u,1u,2u,3u,8u,1u,2u,3u,7u,1u,2u,3u,0u};
+	Require(SparkSpeculationLookupIndexBind(&index,heads,3u,chain,16u,3u) == SPARK_STATUS_INVALID_ARGUMENT,"bucket count must be a power of two");
+	Require(SparkSpeculationLookupIndexBind(&index,heads,4u,chain,16u,0u) == SPARK_STATUS_INVALID_ARGUMENT,"gram must be positive");
+	Require(SparkSpeculationLookupIndexBind(&index,heads,4u,chain,16u,3u) == SPARK_STATUS_OK,"index binds");
+	Require(SparkSpeculationLookupIndexAppend(&index,history,17u) == SPARK_STATUS_CAPACITY_EXCEEDED,"history beyond the capacity is refused");
+	Require(SparkSpeculationLookupIndexAppend(&index,history,3u) == SPARK_STATUS_OK,"short history appends");
+	Require(SparkSpeculationLookupIndexFind(&index,history,8u,8u,&match) == SPARK_STATUS_NOT_FOUND,"a history no longer than the gram has no earlier match");
+	Require(SparkSpeculationLookupIndexAppend(&index,history,2u) == SPARK_STATUS_INVALID_ARGUMENT,"history cannot shrink without a reset");
+	Require(SparkSpeculationLookupIndexAppend(&index,history,15u) == SPARK_STATUS_OK,"history appends");
+	Require(SparkSpeculationLookupIndexFind(&index,history,2u,8u,&match) == SPARK_STATUS_INVALID_ARGUMENT,"maximum match below the gram is refused");
+	Require(SparkSpeculationLookupIndexFind(&index,history,8u,8u,&match) == SPARK_STATUS_OK && match.match_length == 3u && match.source_end == 10u,"the most recent earlier occurrence wins a tie");
+	Require(SparkSpeculationLookupIndexFind(&index,history,8u,1u,&match) == SPARK_STATUS_NOT_FOUND,"a candidate limit of one only reaches the anchor itself");
+	Require(SparkSpeculationLookupIndexFind(&index,history,8u,2u,&match) == SPARK_STATUS_OK && match.source_end == 10u,"the second candidate is the most recent earlier occurrence");
+	SparkSpeculationLookupIndexReset(&index);
+	Require(index.length == 0u && SparkSpeculationLookupIndexFind(&index,history,8u,8u,&match) == SPARK_STATUS_NOT_FOUND,"reset forgets the history");
+}
+
 int main(void)
 {
 	uint32_t prompt[TEST_PROMPT],expected[TEST_GENERATE],index,depth,accepted,rounds;
 	TestBounds();
 	TestMatches();
+	TestIndexBounds();
+	TestIndexMatchesLinearScan(64u,4u,1u);
+	TestIndexMatchesLinearScan(1u,3u,7u);
+	TestIndexMatchesLinearScan(16u,6u,11u);
 	for (index=0u; index<TEST_PROMPT; index++)
 		prompt[index] = (index * 37u + 5u) % 61u;
 	Greedy(prompt,expected,TEST_GENERATE);
@@ -158,6 +215,6 @@ int main(void)
 		Require(accepted > 0u && rounds + accepted == TEST_GENERATE,"repetitive output accepts lookup drafts and every token is accounted");
 		printf("depth %u: %u rounds for %u tokens, %u drafts accepted\n",depth,rounds,TEST_GENERATE,accepted);
 	}
-	puts("PASS lookup drafts come from the most recent longest suffix match and speculative greedy output equals the greedy stream");
+	puts("PASS lookup drafts come from the most recent longest suffix match, the n-gram index finds the same match, and speculative greedy output equals the greedy stream");
 	return(0);
 }

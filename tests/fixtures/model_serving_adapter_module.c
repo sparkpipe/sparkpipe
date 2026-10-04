@@ -32,6 +32,14 @@
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE)
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 2u
+#elif defined(TEST_MODEL_SERVING_SPECULATIVE_VERIFY)
+#define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.speculative-verify.v1"
+#define TEST_MODEL_SERVING_CAPABILITIES \
+	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
+#define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 6u
+#define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 16u
 #elif defined(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_CHECKPOINTS)
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.speculative-deferred.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES \
@@ -42,6 +50,9 @@
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES TEST_MODEL_SERVING_DEFAULT_CAPABILITIES
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 0u
+#endif
+#ifndef TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT
+#define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 4u
 #endif
 
 typedef struct TestModelServingPrepared
@@ -112,7 +123,7 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.boundary_sideband_kinds = {1u,0u,0u},
 	.boundary_sideband_bytes_per_sequence = {16u,0u,0u},
 	.minimum_efficient_submission_row_count = 16u,
-	.cache_block_token_count = 4u
+	.cache_block_token_count = TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT
 };
 
 static SparkStatus TestModelServingValidateConfiguration(
@@ -270,6 +281,20 @@ static void TestModelServingBuildCompletion(
 	completion->tokens_per_sequence = submission->tokens_per_sequence;
 	completion->token_count = submission->active_sequence_count *
 		submission->tokens_per_sequence;
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+	{
+		uint32_t row,rows_seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
+		memset(rows_seen,0,sizeof(rows_seen));
+		for (token_index=0u; token_index<completion->token_count; token_index++)
+			completion->token_ids[token_index] = SPARK_MODEL_SERVING_NO_TOKEN;
+		for (row=0u; row<submission->row_count; row++)
+		{
+			lane = submission->row_lane_indices[row];
+			completion->token_ids[lane * submission->tokens_per_sequence + rows_seen[lane]] = 4200u + lane + rows_seen[lane];
+			rows_seen[lane]++;
+		}
+		return;
+	}
 	for (lane=0u; lane<submission->active_sequence_count; lane++)
 		for (step=0u; step<submission->tokens_per_sequence; step++)
 		{

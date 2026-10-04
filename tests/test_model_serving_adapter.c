@@ -949,9 +949,96 @@ static void TestDynamicLoader(void)
 	assert(library.dynamic_library == 0);
 }
 
+static void TestVerifySubmission(void)
+{
+	SparkModelServingAdapterDescriptor descriptor;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t token_ids[5] = {500u,501u,502u,503u,700u},row_lanes[5] = {0u,0u,0u,0u,1u};
+	uint64_t row_positions[5] = {40u,41u,42u,43u,9u},row_sequences[5] = {7u,7u,7u,7u,8u};
+	uint32_t lane;
+	TestBuildDescriptor(&descriptor);
+	descriptor.max_output_token_count = 16u;
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION;
+	descriptor.max_speculative_token_count = 3u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_OK);
+	descriptor.max_output_token_count = 3u;
+	assert(SparkModelServingAdapterValidateDescriptor(&descriptor) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.max_output_token_count = 16u;
+	memset(lanes,0,sizeof(lanes));
+	for (lane=0u; lane<2u; lane++)
+	{
+		lanes[lane].request_id = 6u + lane;
+		lanes[lane].request_generation = 1u;
+		lanes[lane].step_generation = 1u;
+		lanes[lane].sequence_id = 7u + lane;
+		lanes[lane].resident_sequence_slot = 9u + lane;
+		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	}
+	lanes[0].sequence_position = 40u;
+	lanes[0].context_token_count = 41u;
+	lanes[0].input_token_id = 500u;
+	lanes[1].sequence_position = 9u;
+	lanes[1].context_token_count = 10u;
+	lanes[1].input_token_id = 700u;
+	memset(&submission,0,sizeof(submission));
+	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY;
+	submission.tokens_per_sequence = 4u;
+	submission.submission_id = 9u;
+	submission.request_id = 6u;
+	submission.sequence_id = 7u;
+	submission.control_generation = 1u;
+	submission.transaction_id = 2u;
+	submission.dispatch_generation = 3u;
+	submission.request_generation = 1u;
+	submission.step_generation = 4u;
+	submission.active_sequence_count = 2u;
+	submission.lane_count = 2u;
+	submission.row_count = 5u;
+	submission.token_count = 5u;
+	submission.new_token_count = 5u;
+	submission.lanes = lanes;
+	submission.token_ids = token_ids;
+	submission.row_lane_indices = row_lanes;
+	submission.row_positions = row_positions;
+	submission.row_sequence_ids = row_sequences;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	submission.flags = UINT32_C(0x00000002);
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY;
+	submission.tokens_per_sequence = 5u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
+	submission.tokens_per_sequence = 3u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.tokens_per_sequence = 4u;
+	row_positions[2] = 43u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	row_positions[2] = 42u;
+	token_ids[0] = 499u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	token_ids[0] = 500u;
+	token_ids[3] = SPARK_MODEL_SERVING_NO_TOKEN;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	token_ids[3] = 503u;
+	submission.row_count = submission.token_count = submission.new_token_count = 4u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.row_count = submission.token_count = submission.new_token_count = 5u;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	descriptor.capability_flags &= ~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_UNSUPPORTED);
+}
+
 int main(void)
 {
 	TestDescriptor();
+	TestVerifySubmission();
 	TestHybridDescriptor();
 	TestRuntimeLimits();
 	TestIndependentPrefillCapacity();

@@ -20,6 +20,9 @@
  *   lease and never see a decision. */
 
 #define MOCK_INFLIGHT_CAPACITY 8u
+#define MOCK_SCRIPT_LANES 64u
+#define MOCK_SCRIPT_ROWS 512u
+#define MOCK_SCRIPT_TOKENS 4096u
 
 typedef struct MockInflight
 {
@@ -30,6 +33,10 @@ typedef struct MockInflight
 	uint32_t decision_kind;
 	uint32_t carries_prefix;
 	uint32_t carries_stale_prefix;
+	uint32_t row_count;
+	uint64_t lane_positions[MOCK_SCRIPT_LANES];
+	uint32_t row_lanes[MOCK_SCRIPT_ROWS];
+	uint64_t row_positions[MOCK_SCRIPT_ROWS];
 	SparkModelServingSubmission submission;
 } MockInflight;
 
@@ -91,6 +98,10 @@ static uint32_t mock_logprob_stride;
 static uint32_t mock_max_sequence_positions[64];
 static uint32_t mock_logprob_corrupt;
 static uint32_t mock_max_tokens_per_sequence;
+static uint32_t mock_script[MOCK_SCRIPT_TOKENS];
+static uint32_t mock_script_count;
+static uint32_t mock_verify_submissions;
+static uint32_t mock_verify_rows;
 
 static int MockTraceEnabled(void)
 {
@@ -376,6 +387,9 @@ void MockResidentClientReset(void)
 	mock_lane_log_count = 0u;
 	mock_identity_log_count = 0u;
 	mock_auto_tokens = 0u;
+	mock_script_count = 0u;
+	mock_verify_submissions = 0u;
+	mock_verify_rows = 0u;
 	mock_token_start = 11u;
 	mock_logprob_stride = 0u;
 	mock_logprob_corrupt = 0u;
@@ -497,6 +511,19 @@ static SparkStatus MockResidentClientEnqueue(
 	memset(slot,0,sizeof(*slot));
 	slot->submission_id = submission->submission_id;
 	slot->submission = *submission;
+	for (lane=0u; submission->lanes != 0 && lane<submission->lane_count && lane<MOCK_SCRIPT_LANES; lane++)
+		slot->lane_positions[lane] = submission->lanes[lane].sequence_position;
+	slot->row_count = submission->row_count < MOCK_SCRIPT_ROWS ? submission->row_count : MOCK_SCRIPT_ROWS;
+	for (lane=0u; lane<slot->row_count; lane++)
+	{
+		slot->row_lanes[lane] = submission->row_lane_indices[lane];
+		slot->row_positions[lane] = submission->row_positions[lane];
+	}
+	if ( client->stage_index == 0u && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+	{
+		mock_verify_submissions++;
+		mock_verify_rows += submission->row_count;
+	}
 	slot->committed = kind == MOCK_CALL_CONTINUE || kind == MOCK_CALL_SUBMIT;
 	slot->requires_decision = kind == MOCK_CALL_PREPARE;
 	client->last_submission_id = submission->submission_id;
@@ -696,6 +723,62 @@ void MockResidentClientSetAutoTokens(uint32_t count)
 	mock_auto_tokens = count;
 }
 
+static uint32_t MockScriptToken(uint64_t index)
+{
+	return(index < mock_script_count ? mock_script[index] : 0u);
+}
+
+static void MockScriptCompletion(const MockInflight *saved,SparkModelServingCompletion *completion)
+{
+	uint32_t lane,row,step,stride,seen[MOCK_SCRIPT_LANES];
+	uint64_t last[MOCK_SCRIPT_LANES];
+	const SparkModelServingSubmission *submission = &saved->submission;
+	stride = submission->tokens_per_sequence;
+	completion->tokens_per_sequence = stride;
+	completion->token_count = submission->active_sequence_count * stride;
+	completion->accepted_token_count = completion->token_count;
+	completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
+	memset(seen,0,sizeof(seen));
+	memset(last,0,sizeof(last));
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+	{
+		for (row=0u; row<completion->token_count; row++)
+			completion->token_ids[row] = SPARK_MODEL_SERVING_NO_TOKEN;
+		for (row=0u; row<saved->row_count; row++)
+		{
+			lane = saved->row_lanes[row];
+			completion->token_ids[lane * stride + seen[lane]++] = MockScriptToken(saved->row_positions[row] + 1u);
+		}
+		return;
+	}
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+	{
+		for (row=0u; row<saved->row_count; row++)
+			if ( saved->row_positions[row] >= last[saved->row_lanes[row]] )
+				last[saved->row_lanes[row]] = saved->row_positions[row];
+		for (lane=0u; lane<submission->active_sequence_count; lane++)
+			completion->token_ids[lane] = MockScriptToken(last[lane] + 1u);
+		return;
+	}
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		for (step=0u; step<stride; step++)
+			completion->token_ids[lane * stride + step] = MockScriptToken(saved->lane_positions[lane] + 1u + step);
+}
+
+void MockResidentClientSetScript(const uint32_t *tokens,uint32_t count)
+{
+	mock_script_count = count < MOCK_SCRIPT_TOKENS ? count : MOCK_SCRIPT_TOKENS;
+	memcpy(mock_script,tokens,(size_t)mock_script_count * sizeof(uint32_t));
+}
+
+void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows)
+{
+	*submissions = mock_verify_submissions;
+	*rows = mock_verify_rows;
+	mock_verify_submissions = 0u;
+	mock_verify_rows = 0u;
+}
+
 void MockResidentClientSetTokenStart(uint32_t first_token_id)
 {
 	mock_token_start = first_token_id;
@@ -791,7 +874,10 @@ uint32_t MockResidentClientDeliverEvent(uint32_t stage_index, uint64_t submissio
 				completion.request_generation = saved.submission.request_generation;
 				completion.step_generation = saved.submission.step_generation;
 				completion.residency = saved.submission.residency;
-				if ( c->is_final_rank != 0u && mock_auto_tokens != 0u &&
+				if ( c->is_final_rank != 0u && mock_script_count != 0u &&
+					saved.submission.work_kind < SPARK_MODEL_SERVING_WORK_KIND_RELEASE && status == SPARK_STATUS_OK )
+					MockScriptCompletion(&saved,&completion);
+				else if ( c->is_final_rank != 0u && mock_auto_tokens != 0u &&
 					saved.submission.work_kind < SPARK_MODEL_SERVING_WORK_KIND_RELEASE && status == SPARK_STATUS_OK )
 				{
 					completion.token_count = saved.submission.active_sequence_count * mock_auto_tokens;

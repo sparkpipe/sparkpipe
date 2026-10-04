@@ -916,33 +916,40 @@ Related common-code debt:
   it; they are gone too, so a DFlash2 request is refused as unavailable.
   Restore the capture inside the graph engine, with the ring and gate from
   `e60f690b`, when a GLM 5.3 Flash DFlash2 drafter is to be qualified.
-- Left out on purpose (2026-10-02): GLM Full (glm52) and K3 have no
-  context-lookup drafter; GLM Flash has one in its verify regime
-  (`SPARK_GLM5_NEXT_VERIFY_ROWS`, drafter `lookup`). On the other two, a
-  reply that re-emits text already in the request pays full decode cost for
-  every token. Prompt-lookup (n-gram) speculation is a proven technique. Its
-  target case is code and document edits, where the reply repeats most of the
-  input with small changes and drafts are accepted for long stretches. A
-  common, model-neutral draft source in the engine
-  (`runtime/model_batch_engine.c`) matches the longest suffix of the request's
-  own token history (prompt plus generated) and proposes the tokens that
-  followed it last time, with no drafter model and no GPU cost. The draft
-  length adapts: it grows while drafts are accepted and drops to none after a
-  miss. All k drafted tokens are verified in one multi-row wave, not serially.
-  The wave commits the longest prefix whose greedy tokens equal the draft,
-  plus the model's own token at the first mismatch, and rejected positions are
-  rolled back (free for attention KV; KDA and GDN state need the common
-  recurrent-state hook, I-05). It is built for the core drivers first (glm52,
-  glm5_next, k3) and shares the common speculation seam and the multi-row
-  verify head with the built-in MTP drafters. The verify math on closed PR
-  #1398 (k+1 certified rows, accepted-prefix commit) is the starting point.
-  Multi-row verify numerics differ from a 1-row decode step by the reordering
-  floor, so speculative output is judged against the floor like batched
-  output. Close it with a fleet session on GLM-5.3 Full of edit-style requests
-  (a long file re-emitted with small changes), reporting the acceptance-length
-  distribution, verify-wave cost and tok/s against plain decode, the accuracy
-  gate as excess over the floor, and plain prompts with no matches showing no
-  slowdown beyond noise.
+- The engine drafts from each request's own history, but no driver verifies
+  yet. `runtime/model_batch_engine.c` keeps a 3-gram chain index over the
+  request's prompt and generated tokens (`SparkSpeculationLookupIndex`). It
+  takes the most recent longest suffix match (up to 8 tokens) and proposes the
+  tokens that followed it, with the adaptive depth of
+  `spark_speculation_depth.h`. Only greedy lanes without logprobs draft, and a
+  draft never reaches the last position of a KV block, so the row that
+  completes a block is always a lane's first row and publishes as a plain
+  decode does. Every lane of the wave rides one decode submission flagged
+  `SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY` (adapter ABI 33), one row per
+  input token, and the completion returns the model's greedy token per row
+  with `SPARK_MODEL_SERVING_NO_TOKEN` padding. The engine commits the longest
+  prefix whose drafts equal the model's tokens plus the model's token at the
+  first mismatch. It counts verify lanes, drafted and accepted tokens in its
+  view (engine ABI 13) and in the API's `engine_measurements` line. The
+  engine sends verify waves only to an adapter that declares
+  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`, and none of the
+  production adapters does. Still to build:
+  - the verify head in glm52 (GLM Full): k+1 rows per lane with a certified
+    head on every row. KV rollback needs nothing beyond the engine's
+    position, because rejected rows sit past it in the same block and are
+    rewritten. The verify math on closed PR #1398 is the starting point;
+  - glm5_next (GLM Flash) and k3: the same head, plus restoring KDA state to
+    the accepted row (the common recurrent-state hook, I-05). glm5_next's
+    in-driver lookup regime (`SPARK_GLM5_NEXT_VERIFY_ROWS`) then goes away,
+    so drafting stays with the engine;
+  - multi-row verify numerics differ from a 1-row decode by the reordering
+    floor, so speculative output is judged against the floor like batched
+    output.
+  Close it with a fleet session on GLM-5.3 Full of edit-style requests (a long
+  file re-emitted with small changes). Report the acceptance-length
+  distribution, verify-wave cost and tok/s against plain decode, and the
+  accuracy gate as excess over the floor. Plain prompts with no matches must
+  show no slowdown beyond noise.
 
 ## Packaging and provenance
 
