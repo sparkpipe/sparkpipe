@@ -1230,31 +1230,25 @@ Related common-code debt:
   prefix field that raw residentd logs do not carry. Route ids and head
   tokens compare; streams need the dump brought back to the fixture's
   definition.
-- `text/tokenizer.c` knows split regexes only by exact string. It knows
-  the GLM digit-run pattern, the Qwen letter-and-mark pattern, the
-  DeepSeek digit/ideograph sequence (V4, V4.1 Flash, Hy4), and two
-  letter-class patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with
-  possessive quantifiers). Every other `Split` is skipped without an
-  error, and the text is BPE-encoded whole. A 2026-09-28 survey of
-  `/mnt/model-warm/*/tokenizer.json` found these unhandled:
+- `text/tokenizer.c` knows split regexes only by exact string: the GLM
+  digit-run pattern, the Qwen letter-and-mark pattern, the DeepSeek
+  digit/ideograph sequence (V4, V4.1 Flash, Hy4), and two letter-class
+  patterns (MiMo, Qwen3.8-27b nvfp4, Ling, the last with possessive
+  quantifiers). Any other pre-tokenizer fails the load with an error
+  naming the file. The 2026-09-28 survey of
+  `/mnt/model-warm/*/tokenizer.json` found two models that therefore do
+  not load:
   - laguna, whose newline split precedes the letter pattern;
-  - muse-glimmer's case-aware letters;
-  - gemma4's `Replace` plus `Split " "`.
+  - muse-glimmer's case-aware letters.
 
-  Implement them, then make an unknown `Split` a load error.
-- The four known letter-class splits classify code points by Unicode
-  class (`text/unicode_class_tables.h`, generated from Python
-  `unicodedata` 16.0 and checked range for range against the Oniguruma
-  classes of HF tokenizers 0.23.2 by
-  `tests/test_tokenizer_unicode_split.py`). The legacy GPT-2 `ByteLevel`
-  regex path (`use_regex: true` with no `Split`) still classifies by byte
-  and treats every byte >= 0x80 as a letter. Port it to the same
-  classifier before a model that uses it serves non-ASCII text.
-- The tokenizer applies an `NFC` normalizer (Ling, Qwen3.8, MiMo). It
-  skips any other normalizer without an error: gemma4's `Replace`, and
-  `Sequence`, `NFKC` and `Lowercase` if a model declares them. Implement
-  those, then make an unknown normalizer a load error. A tokenizer with
-  NFC cannot be saved in the compiled format, which has no field for it.
+  Implement both against their files (the Ceph mount holding them hung on
+  spark1 on 2026-10-04). gemma4's `Replace` plus `Split " "` loads: the
+  split is a no-op once the normalizer has replaced every space, but this
+  has not been checked against gemma4's own file.
+- The tokenizer implements the `NFC` normalizer (Ling, Qwen3.8, MiMo) and
+  the metaspace `Replace`. Any other normalizer (`Sequence`, `NFKC`,
+  `Lowercase`, another `Replace`) fails the load with an error. Implement
+  one when a model declares it.
 - Only GLM Full, GLM Flash and K3 sample (temperature, top-k, top-p) and
   return logprobs; the other adapters answer `400 sampling_unsupported`.
 - Sampled rows take the full-vocab BF16 head instead of the certified FP8

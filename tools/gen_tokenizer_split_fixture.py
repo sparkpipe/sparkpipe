@@ -18,6 +18,7 @@ PATTERNS = {
         "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",
     ],
     "letters_possessive": "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]*|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+",
+    "byte_level_regex": {"byte_level": "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+"},
 }
 
 HANDPICKED = [
@@ -45,6 +46,11 @@ HANDPICKED = [
     "東京タワーは333メートルです。ひらがなカタカナ漢字abc",
     "def f(x):\n    return x**2  # 平方\n\n\tprint(f(12))",
     "<b>bold</b> #tag @user .NET 'quote' \"dq\" ~/path_to/file.py",
+    "a   b",
+    "I'M you'RE we'll it's",
+    "x²³ y¹ z⁴",
+    "a\u3000b \u3000 c",
+    "!'s ?'t x'll",
 ]
 
 POOLS = [
@@ -105,6 +111,9 @@ def byte_ends(text, pieces):
 def tokenizer_for(pattern):
     vocabulary = {character: index for index, character in enumerate(sorted(ByteLevel.alphabet()))}
     tokenizer = Tokenizer(models.BPE(vocabulary, []))
+    if isinstance(pattern, dict):
+        tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=True)
+        return tokenizer
     patterns = pattern if isinstance(pattern, list) else [pattern]
     tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
         [pre_tokenizers.Split(Regex(item), "isolated") for item in patterns]
@@ -131,7 +140,7 @@ def main():
     for name, pattern in PATTERNS.items():
         tokenizer = tokenizer_for(pattern)
         document["patterns"][name] = {
-            "regex": pattern,
+            "regex": pattern["byte_level"] if isinstance(pattern, dict) else pattern,
             "tokenizer": json.loads(tokenizer.to_str()),
             "piece_ends": [byte_ends(text, tokenizer.pre_tokenizer.pre_tokenize_str(text)) for text in texts],
         }
