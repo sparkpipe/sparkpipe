@@ -493,6 +493,48 @@ static uint32_t TestLoopbackScanTokenArray(
 	return(count);
 }
 
+static int32_t TestLoopbackHealthStatus(uint32_t port)
+{
+	struct sockaddr_in address;
+	struct timeval timeout;
+	char response[256];
+	static const char request[] = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+	ssize_t got;
+	int32_t fd,status = 0;
+	fd = socket(AF_INET,SOCK_STREAM,0);
+	assert(fd >= 0);
+	timeout.tv_sec = 0;
+	timeout.tv_usec = 250000;
+	assert(setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)) == 0);
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(0x7f000001u);
+	address.sin_port = htons((uint16_t)port);
+	if ( connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0 && send(fd,request,sizeof(request) - 1u,0) == (ssize_t)(sizeof(request) - 1u) )
+	{
+		got = recv(fd,response,sizeof(response) - 1u,0);
+		if ( got > 12 )
+		{
+			response[got] = '\0';
+			if ( sscanf(response,"HTTP/1.1 %d",&status) != 1 )
+				status = 0;
+		}
+	}
+	close(fd);
+	return(status);
+}
+
+static void TestLoopbackWaitHealthy(uint32_t port,uint64_t deadline_ms)
+{
+	uint64_t started = TestLoopbackNowMs();
+	while ( TestLoopbackHealthStatus(port) != 200 )
+	{
+		struct timespec delay = { 0, 20000000L };
+		assert(TestLoopbackNowMs() - started < deadline_ms && "system loopback model_api never reported every rank ready");
+		(void)nanosleep(&delay,0);
+	}
+}
+
 static uint64_t TestLoopbackExpectServed(
 	const TestLoopbackStack *stack,
 	uint32_t max_tokens,
@@ -507,6 +549,7 @@ static uint64_t TestLoopbackExpectServed(
 	int32_t status;
 	assert(snprintf(body,sizeof(body),
 		"{\"prompt_token_ids\":[11,12],\"max_tokens\":%u}",max_tokens) > 0);
+	TestLoopbackWaitHealthy(stack->api_port,deadline_ms);
 	status = TestLoopbackHttpPost(stack->api_port,body,response,sizeof(response),
 		deadline_ms,&elapsed);
 	if ( status != 200 )
