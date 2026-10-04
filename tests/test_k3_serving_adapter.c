@@ -9,86 +9,7 @@
 #define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident.json"
 #endif
 
-SparkStatus SparkK3StageRunnerInitialize(SparkK3StageRunner *runner,
-	const SparkK3StageRunnerConfiguration *configuration)
-{
-	(void)runner;
-	(void)configuration;
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-static uint32_t test_dispatch_rows;
-static uint32_t test_dispatch_sequences;
-static uint32_t test_dispatch_row_begin[9];
-static uint32_t test_dispatch_state_index[8];
-static uint32_t test_dispatch_sequence_of_row[8];
-static uint32_t test_dispatch_context[4];
-static uint32_t test_dispatch_order[8];
-
-SparkStatus SparkK3StageRunnerSubmit(SparkK3StageRunner *runner,
-	const SparkK3StageRunnerDispatch *dispatch)
-{
-	(void)runner;
-	test_dispatch_rows = dispatch->row_count;
-	test_dispatch_sequences = dispatch->active_sequence_count;
-	memset(test_dispatch_row_begin, 0xff, sizeof(test_dispatch_row_begin));
-	memset(test_dispatch_state_index, 0xff, sizeof(test_dispatch_state_index));
-	if ( dispatch->row_count > 8u || dispatch->active_sequence_count > 8u ||
-		dispatch->sequence_row_begin == 0 || dispatch->kda_state_index == 0 ||
-		dispatch->sequence_of_row == 0 )
-		return(SPARK_STATUS_OK);
-	memcpy(test_dispatch_row_begin, dispatch->sequence_row_begin,
-		((size_t)dispatch->active_sequence_count + 1u) * sizeof(uint32_t));
-	memcpy(test_dispatch_state_index, dispatch->kda_state_index,
-		(size_t)dispatch->active_sequence_count * sizeof(uint32_t));
-	memcpy(test_dispatch_sequence_of_row, dispatch->sequence_of_row,
-		(size_t)dispatch->row_count * sizeof(uint32_t));
-	if ( dispatch->context_length != 0 )
-		memcpy(test_dispatch_context, dispatch->context_length, sizeof(test_dispatch_context));
-	memset(test_dispatch_order, 0xff, sizeof(test_dispatch_order));
-	if ( dispatch->sequence_row_indices != 0 )
-		memcpy(test_dispatch_order, dispatch->sequence_row_indices,
-			(size_t)dispatch->row_count * sizeof(uint32_t));
-	return(SPARK_STATUS_OK);
-}
-
-SparkStatus SparkK3StageRunnerGetStats(const SparkK3StageRunner *runner,
-	SparkK3StageRunnerStats *stats_out)
-{
-	(void)runner;
-	if ( stats_out != 0 )
-		memset(stats_out, 0, sizeof(*stats_out));
-	return(SPARK_STATUS_UNSUPPORTED);
-}
-
-void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
-{
-	(void)runner;
-}
-
-static uint32_t test_reset_slots[8];
-static uint32_t test_reset_count;
-static uint32_t test_reset_calls;
-static SparkStatus test_reset_status = SPARK_STATUS_OK;
-static uint32_t test_completions;
-
-SparkStatus SparkK3StageRunnerResetSlots(SparkK3StageRunner *runner,
-	const uint32_t *slots, uint32_t count)
-{
-	(void)runner;
-	test_reset_calls++;
-	test_reset_count = count;
-	for ( uint32_t index = 0u; index < count && index < 8u; index++ )
-		test_reset_slots[index] = slots[index];
-	return(test_reset_status);
-}
-
-static void TestK3Completion(void *context, const SparkModelServingCompletion *completion)
-{
-	(void)context;
-	(void)completion;
-	test_completions++;
-}
+#include "tests/test_k3_runner_stub.h"
 
 static int32_t TestK3Check(int32_t condition, const char *what)
 {
@@ -105,8 +26,10 @@ static int32_t TestK3Descriptor(void)
 	failures += TestK3Check(adapter != 0 && adapter->descriptor == descriptor,
 		"the adapter interface exports the K3 descriptor");
 	failures += TestK3Check(SparkModelServingAdapterValidateInterface(adapter,
-		0u) == SPARK_STATUS_UNSUPPORTED,
-		"the common validator refuses the K3 adapter: it cannot restore cached prompt prefixes (I23)");
+		0u) == SPARK_STATUS_OK &&
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) != 0u &&
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u,
+		"the common validator accepts the K3 adapter: it restores cached prefixes and serves publish frames (I23)");
 	failures += TestK3Check(descriptor->cache_block_token_count == SPARK_K3_KV_PAGE_SLOTS &&
 		descriptor->cache_block_token_count == K3_KV_PAGE_SLOTS,
 		"the cache block is one KV page of the kernel's slot count");
@@ -161,8 +84,8 @@ static int32_t TestK3Deployment(const char *path)
 		"residentd's loader parses the deployment") != 0 )
 		return(1);
 	failures += TestK3Check(SparkModelResidentDeploymentValidateForAdapter(&deployment,
-		&K3ServingDescriptor) == SPARK_STATUS_UNSUPPORTED,
-		"residentd refuses to serve the K3 deployment until the adapter restores cached prefixes (I23)");
+		&K3ServingDescriptor) == SPARK_STATUS_OK,
+		"residentd accepts the K3 deployment for the prefix-reusing adapter");
 	failures += TestK3Check(deployment.eos_token_count == 1u &&
 		deployment.eos_token_ids[0] == K3_EOS_TOKEN,
 		"the model EOS is the authoritative contract's end_of_text");
@@ -182,15 +105,15 @@ static int32_t TestK3Deployment(const char *path)
 	return(failures);
 }
 
-static int32_t TestK3Release(void)
+static int32_t TestK3ReleaseValidation(void)
 {
 	SparkK3ServingState state;
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lanes[3];
+	uint32_t slots[4];
 	int32_t failures = 0;
 	memset(&state, 0, sizeof(state));
 	state.runner_config.max_active_sequence_count = 4u;
-	state.completion_function = TestK3Completion;
 	memset(&submission, 0, sizeof(submission));
 	memset(lanes, 0, sizeof(lanes));
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
@@ -200,61 +123,59 @@ static int32_t TestK3Release(void)
 	lanes[0].resident_sequence_slot = 3u;
 	lanes[1].resident_sequence_slot = 1u;
 	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK &&
-		K3ServingSubmit(&state, &submission) == SPARK_STATUS_OK &&
-		test_reset_calls == 1u && test_reset_count == 2u &&
-		test_reset_slots[0] == 3u && test_reset_slots[1] == 1u && test_completions == 1u,
-		"RELEASE resets every released slot's KDA state before it completes");
-	test_reset_status = SPARK_STATUS_IO_ERROR;
-	failures += TestK3Check(K3ServingSubmit(&state, &submission) == SPARK_STATUS_IO_ERROR &&
-		test_reset_calls == 2u && test_completions == 1u,
-		"a failed slot reset fails the RELEASE and completes nothing");
-	test_reset_status = SPARK_STATUS_OK;
+		K3ServingReleaseSlots(&state, &submission, slots) == SPARK_STATUS_OK && slots[0] == 3u && slots[1] == 1u,
+		"a RELEASE names each released slot once");
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH;
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK,
+		"a publish-only frame is a rowless submission like a RELEASE");
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
 	lanes[1].resident_sequence_slot = 4u;
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
-		K3ServingSubmit(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
-		test_reset_calls == 2u && test_completions == 1u,
-		"a released slot outside the state pool is refused before any reset");
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+		"a released slot outside the state pool is refused");
 	lanes[1].resident_sequence_slot = 3u;
-	failures += TestK3Check(K3ServingSubmit(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
-		test_reset_calls == 2u,
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
 		"a slot released twice in one RELEASE is refused");
 	lanes[1].resident_sequence_slot = 1u;
 	submission.lanes = 0;
-	failures += TestK3Check(K3ServingSubmit(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
-		test_reset_calls == 2u,
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
 		"a RELEASE naming sequences without lanes is refused");
 	submission.lanes = lanes;
 	submission.row_count = 1u;
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT &&
-		K3ServingSubmit(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
 		"a RELEASE with rows is refused");
+	submission.row_count = 0u;
+	submission.control_generation = 4u;
+	atomic_store(&state.reset_generation, 5u);
+	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+		"a submission from before the last reset is refused");
 	return(failures);
 }
 
-static int32_t TestK3PrefillRuns(void)
+static const uint32_t *TestK3Host(const SparkMemoryBuffer *buffer)
 {
-	static const uint64_t positions[5] = { 0u, 1u, 2u, 7u, 8u };
+	return((const uint32_t *)buffer->pointer);
+}
+
+static int32_t TestK3Grouping(void)
+{
+	static const uint64_t positions[5] = { 0u, 1u, 2u, 0u, 1u };
 	static const uint32_t lane_of_row[5] = { 0u, 0u, 0u, 1u, 1u };
-	static const uint32_t tokens[5] = { 1008u, 10484u, 318u, 17374u, 13u };
+	static const uint64_t sequences[5] = { 7u, 7u, 7u, 9u, 9u };
 	SparkK3ServingState state;
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lanes[2];
 	SparkStatus status = SPARK_STATUS_OK;
 	SparkMemoryBuffer *host[] = { &state.positions_host, &state.context_host,
 		&state.state_host, &state.runs_host, &state.seqslot_host, &state.order_host };
-	SparkMemoryBuffer *device[] = { &state.positions_device, &state.context_device,
-		&state.state_device, &state.runs_device, &state.seqslot_device,
-		&state.order_device, &state.output_tokens, &state.output_scores };
+	uint32_t row_slots[8], index, active = 0u;
+	uint64_t row_sequences[8], row_positions[8];
 	int32_t failures = 0;
-	uint32_t index;
 	memset(&state, 0, sizeof(state));
 	state.max_rows = 8u;
 	state.runner_config.max_active_sequence_count = 4u;
 	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(host) / sizeof(host[0]); index++ )
 		status = SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t));
-	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(device) / sizeof(device[0]); index++ )
-		status = SparkMemoryBufferAllocate(device[index], SPARK_MEMORY_SPACE_DEVICE_PRIVATE, 9u * sizeof(uint32_t));
-	if ( TestK3Check(status == SPARK_STATUS_OK, "the submit buffers allocate") != 0 )
+	if ( TestK3Check(status == SPARK_STATUS_OK, "the grouping buffers allocate") != 0 )
 		return(1);
 	memset(&submission, 0, sizeof(submission));
 	memset(lanes, 0, sizeof(lanes));
@@ -267,27 +188,28 @@ static int32_t TestK3PrefillRuns(void)
 	submission.row_count = 5u;
 	submission.row_positions = positions;
 	submission.row_lane_indices = lane_of_row;
-	submission.token_ids = tokens;
-	status = K3ServingSubmit(&state, &submission);
-	failures += TestK3Check(status == SPARK_STATUS_OK && test_dispatch_rows == 5u &&
-		test_dispatch_sequences == 2u,
-		"a two-sequence prefill of five rows dispatches two sequences");
-	failures += TestK3Check(test_dispatch_row_begin[0] == 0u && test_dispatch_row_begin[1] == 3u &&
-		test_dispatch_row_begin[2] == 5u,
+	submission.row_sequence_ids = sequences;
+	status = K3ServingGroupRows(&state, &submission, 5u, &active);
+	failures += TestK3Check(status == SPARK_STATUS_OK && active == 2u,
+		"a two-sequence prefill of five rows groups into two sequences");
+	failures += TestK3Check(TestK3Host(&state.runs_host)[0] == 0u && TestK3Host(&state.runs_host)[1] == 3u &&
+		TestK3Host(&state.runs_host)[2] == 5u,
 		"the recurrent state walks each sequence's rows in order: row runs 0, 3, 5");
-	failures += TestK3Check(test_dispatch_state_index[0] == 2u && test_dispatch_state_index[1] == 0u,
+	failures += TestK3Check(TestK3Host(&state.seqslot_host)[0] == 2u && TestK3Host(&state.seqslot_host)[1] == 0u,
 		"the recurrent state is indexed per sequence: slots 2 then 0");
-	failures += TestK3Check(test_dispatch_sequence_of_row[0] == 2u && test_dispatch_sequence_of_row[2] == 2u &&
-		test_dispatch_sequence_of_row[3] == 0u && test_dispatch_sequence_of_row[4] == 0u,
+	failures += TestK3Check(TestK3Host(&state.state_host)[0] == 2u && TestK3Host(&state.state_host)[2] == 2u &&
+		TestK3Host(&state.state_host)[3] == 0u && TestK3Host(&state.state_host)[4] == 0u,
 		"attention KV stays indexed per row");
-	failures += TestK3Check(test_dispatch_context[2] == 3u && test_dispatch_context[0] == 9u &&
-		test_dispatch_context[1] == 0u && test_dispatch_context[3] == 0u,
-		"attention reads each sequence's context by its slot: slot 2 holds 3 tokens, slot 0 holds 9");
-	failures += TestK3Check(test_dispatch_order[0] == 0u && test_dispatch_order[2] == 2u &&
-		test_dispatch_order[4] == 4u,
-		"rows already grouped by sequence keep their order");
+	failures += TestK3Check(TestK3Host(&state.context_host)[2] == 3u && TestK3Host(&state.context_host)[0] == 2u &&
+		TestK3Host(&state.context_host)[1] == 0u && TestK3Host(&state.context_host)[3] == 0u,
+		"attention reads each sequence's context by its slot: slot 2 holds 3 tokens, slot 0 holds 2");
+	K3ServingContinuityRows(&state, &submission, 5u, active, row_slots, row_sequences, row_positions);
+	failures += TestK3Check(row_slots[0] == 2u && row_slots[1] == 0u && row_positions[0] == 0u && row_positions[1] == 0u &&
+		row_sequences[0] == 7u && row_sequences[1] == 9u && row_slots[2] == 2u && row_positions[2] == 1u &&
+		row_positions[3] == 2u && row_slots[4] == 0u && row_positions[4] == 1u,
+		"the continuity rows lead with each sequence's first row, then each sequence's remaining rows in order");
 	{
-		static const uint64_t wave_positions[5] = { 0u, 7u, 1u, 8u, 9u };
+		static const uint64_t wave_positions[5] = { 0u, 0u, 1u, 1u, 2u };
 		static const uint32_t wave_lane_of_row[5] = { 0u, 1u, 0u, 1u, 1u };
 		static const uint64_t decode_positions[2] = { 11u, 4u };
 		static const uint32_t decode_lanes[2] = { 1u, 0u };
@@ -295,57 +217,50 @@ static int32_t TestK3PrefillRuns(void)
 		static const uint32_t past_lanes[5] = { 0u, 1u, 2u, 1u, 1u };
 		submission.row_positions = wave_positions;
 		submission.row_lane_indices = wave_lane_of_row;
-		status = K3ServingSubmit(&state, &submission);
-		failures += TestK3Check(status == SPARK_STATUS_OK && test_dispatch_sequences == 2u &&
-			test_dispatch_row_begin[1] == 2u && test_dispatch_row_begin[2] == 5u &&
-			test_dispatch_order[0] == 0u && test_dispatch_order[1] == 2u &&
-			test_dispatch_order[2] == 1u && test_dispatch_order[3] == 3u && test_dispatch_order[4] == 4u,
+		status = K3ServingGroupRows(&state, &submission, 5u, &active);
+		failures += TestK3Check(status == SPARK_STATUS_OK && active == 2u &&
+			TestK3Host(&state.runs_host)[1] == 2u && TestK3Host(&state.runs_host)[2] == 5u &&
+			TestK3Host(&state.order_host)[0] == 0u && TestK3Host(&state.order_host)[1] == 2u &&
+			TestK3Host(&state.order_host)[2] == 1u && TestK3Host(&state.order_host)[3] == 3u && TestK3Host(&state.order_host)[4] == 4u,
 			"a wave prefill (rows interleaved across sequences) walks each sequence's own rows in order");
-		failures += TestK3Check(test_dispatch_sequence_of_row[0] == 2u && test_dispatch_sequence_of_row[1] == 0u &&
-			test_dispatch_sequence_of_row[2] == 2u && test_dispatch_context[2] == 2u && test_dispatch_context[0] == 10u,
+		failures += TestK3Check(TestK3Host(&state.state_host)[0] == 2u && TestK3Host(&state.state_host)[1] == 0u &&
+			TestK3Host(&state.state_host)[2] == 2u && TestK3Host(&state.context_host)[2] == 2u && TestK3Host(&state.context_host)[0] == 3u,
 			"a wave prefill keeps each row's slot and each slot's context");
-		test_dispatch_rows = 0u;
 		submission.row_lane_indices = one_lane;
-		status = K3ServingSubmit(&state, &submission);
-		failures += TestK3Check(status == SPARK_STATUS_VALIDATION_FAILED && test_dispatch_rows == 0u,
-			"a sequence with no rows is refused before dispatch");
+		failures += TestK3Check(K3ServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
+			"a sequence with no rows is refused before admission");
 		submission.row_lane_indices = past_lanes;
-		status = K3ServingSubmit(&state, &submission);
-		failures += TestK3Check(status == SPARK_STATUS_VALIDATION_FAILED && test_dispatch_rows == 0u,
-			"a row naming a sequence past the submission's lanes is refused before dispatch");
+		failures += TestK3Check(K3ServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
+			"a row naming a sequence past the submission's lanes is refused before admission");
 		submission.row_lane_indices = wave_lane_of_row;
 		lanes[0].resident_sequence_slot = 4u;
-		status = K3ServingSubmit(&state, &submission);
-		failures += TestK3Check(status == SPARK_STATUS_VALIDATION_FAILED && test_dispatch_rows == 0u,
-			"a row whose slot is outside the sequence pool is refused before dispatch");
+		failures += TestK3Check(K3ServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
+			"a row whose slot is outside the sequence pool is refused before admission");
 		lanes[0].resident_sequence_slot = 1u;
 		lanes[1].resident_sequence_slot = 1u;
-		status = K3ServingSubmit(&state, &submission);
-		failures += TestK3Check(status == SPARK_STATUS_VALIDATION_FAILED && test_dispatch_rows == 0u,
-			"two sequences on one slot are refused before dispatch");
+		failures += TestK3Check(K3ServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
+			"two sequences on one slot are refused before admission");
 		lanes[0].resident_sequence_slot = 2u;
 		submission.row_count = 2u;
 		submission.row_positions = decode_positions;
 		submission.row_lane_indices = decode_lanes;
-		status = K3ServingSubmit(&state, &submission);
-		failures += TestK3Check(status == SPARK_STATUS_OK && test_dispatch_context[1] == 12u &&
-			test_dispatch_context[2] == 5u && test_dispatch_context[0] == 0u &&
-			test_dispatch_state_index[0] == 2u && test_dispatch_state_index[1] == 1u &&
-			test_dispatch_order[0] == 1u && test_dispatch_order[1] == 0u,
+		status = K3ServingGroupRows(&state, &submission, 2u, &active);
+		failures += TestK3Check(status == SPARK_STATUS_OK && TestK3Host(&state.context_host)[1] == 12u &&
+			TestK3Host(&state.context_host)[2] == 5u && TestK3Host(&state.context_host)[0] == 0u &&
+			TestK3Host(&state.seqslot_host)[0] == 2u && TestK3Host(&state.seqslot_host)[1] == 1u &&
+			TestK3Host(&state.order_host)[0] == 1u && TestK3Host(&state.order_host)[1] == 0u,
 			"a decode whose rows are not in lane order gives each slot its own context and each lane its own row");
 	}
 	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
 		SparkMemoryBufferFree(host[index]);
-	for ( index = 0u; index < sizeof(device) / sizeof(device[0]); index++ )
-		SparkMemoryBufferFree(device[index]);
 	return(failures);
 }
 
 int main(int argc, char **argv)
 {
 	int32_t failures = TestK3Descriptor();
-	failures += TestK3Release();
-	failures += TestK3PrefillRuns();
+	failures += TestK3ReleaseValidation();
+	failures += TestK3Grouping();
 	int index;
 	if ( argc == 1 )
 		failures += TestK3Deployment(TEST_K3_DEPLOYMENT);

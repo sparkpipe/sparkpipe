@@ -67,6 +67,7 @@ typedef struct SparkK3Dispatch
 	uint32_t tp_degree;
 	uint32_t kda_rank_heads;
 	SparkK3RankStateBytes state_bytes;
+	uint32_t kv_attached;
 	int device;
 } SparkK3Dispatch;
 
@@ -74,6 +75,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
 	uint64_t kv_page_bytes, uint32_t tp_degree, int device);
 void SparkK3DispatchDestroy(SparkK3Dispatch *d);
+int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t layer_stride_bytes,
+	const uint32_t *page_table, uint32_t page_table_stride, uint32_t pool_page_count, uint32_t sequence_count);
 int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
 	uint32_t tp_degree, cudaStream_t stream);
 
