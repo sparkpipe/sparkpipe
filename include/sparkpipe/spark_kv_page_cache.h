@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 10u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 11u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS UINT32_C(0x00000002)
@@ -43,6 +43,8 @@ typedef struct SparkKvPageCacheEntry
 	uint32_t free_next;
 	uint32_t lru_prev;
 	uint32_t lru_next;
+	uint32_t priority;
+	uint32_t reserved0;
 	uint64_t last_used_epoch;
 	SparkModelDriverCacheIdentity identity;
 }
@@ -223,6 +225,8 @@ typedef struct SparkKvPageCache
 	SparkKvPageStore *state_store;
 	SparkKvPageCacheSnapshot *snapshot;
 	SparkKvWriteBudget *write_budget;
+	uint32_t admission_priority;
+	uint32_t reserved_priority;
 	SparkKvPageCacheEntry *entries;
 	SparkKvPageCacheSequence *sequences;
 	uint32_t *hash_bucket_heads;

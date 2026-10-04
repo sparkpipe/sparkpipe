@@ -401,25 +401,30 @@ static uint32_t SparkKvPageCacheDiscardIsSafe(const SparkKvPageCache *cache,uint
 
 static uint32_t SparkKvPageCacheSelectVictim(SparkKvPageCache *cache,const uint32_t *protected_pages,uint32_t protected_count)
 {
-	uint32_t entry,next,seen = 0u,fallback = SPARK_KV_PAGE_CACHE_NO_INDEX;
-	for (entry=cache->lru_head; entry != SPARK_KV_PAGE_CACHE_NO_INDEX; entry=next)
+	uint32_t candidates[SPARK_KV_PAGE_CACHE_DEMOTE_WINDOW],count = 0u,entry,index,best = SPARK_KV_PAGE_CACHE_NO_INDEX,best_safe = 0u,safe;
+	for (entry=cache->lru_head; entry != SPARK_KV_PAGE_CACHE_NO_INDEX && count < SPARK_KV_PAGE_CACHE_DEMOTE_WINDOW; entry=cache->entries[entry].lru_next)
+		if ( SparkKvPageCachePageCanDiscard(cache,cache->entries[entry].logical_page_index) != 0u &&
+			SparkKvPageCachePageIsProtected(protected_pages,protected_count,cache->entries[entry].logical_page_index) == 0u )
+			candidates[count++] = entry;
+	for (index=0u; index<count; index++)
 	{
-		next = cache->entries[entry].lru_next;
-		if ( SparkKvPageCachePageCanDiscard(cache,cache->entries[entry].logical_page_index) == 0u ||
-			SparkKvPageCachePageIsProtected(protected_pages,protected_count,cache->entries[entry].logical_page_index) != 0u )
-			continue;
-		if ( SparkKvPageCacheDiscardIsSafe(cache,entry) != 0u )
-			return(entry);
-		if ( fallback == SPARK_KV_PAGE_CACHE_NO_INDEX )
-			fallback = entry;
-		else if ( SparkKvPageCacheSaveIsPending(cache->snapshot,entry) == 0u && SparkKvPageCacheSavePush(cache,entry) == SPARK_STATUS_OK )
-			cache->snapshot->demote_queued_count++;
-		if ( ++seen == SPARK_KV_PAGE_CACHE_DEMOTE_WINDOW )
-			break;
+		safe = SparkKvPageCacheDiscardIsSafe(cache,candidates[index]);
+		if ( best == SPARK_KV_PAGE_CACHE_NO_INDEX || cache->entries[candidates[index]].priority < cache->entries[best].priority ||
+			(cache->entries[candidates[index]].priority == cache->entries[best].priority && safe != 0u && best_safe == 0u) )
+		{
+			best = candidates[index];
+			best_safe = safe;
+		}
 	}
-	if ( fallback != SPARK_KV_PAGE_CACHE_NO_INDEX )
+	if ( best == SPARK_KV_PAGE_CACHE_NO_INDEX )
+		return(best);
+	for (index=0u; index<count; index++)
+		if ( candidates[index] != best && SparkKvPageCacheDiscardIsSafe(cache,candidates[index]) == 0u &&
+			SparkKvPageCacheSaveIsPending(cache->snapshot,candidates[index]) == 0u && SparkKvPageCacheSavePush(cache,candidates[index]) == SPARK_STATUS_OK )
+			cache->snapshot->demote_queued_count++;
+	if ( best_safe == 0u )
 		cache->snapshot->evicted_unsaved_count++;
-	return(fallback);
+	return(best);
 }
 
 static uint32_t SparkKvPageCacheResidentVictim(const SparkKvPageCache *cache)
@@ -445,7 +450,8 @@ static uint32_t SparkKvPageCacheResidentVictim(const SparkKvPageCache *cache)
 		if ( (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) == 0u ||
 			entry->reference_count != 0u || SparkKvPageCachePageCanDiscard(cache,entry->logical_page_index) == 0u )
 			continue;
-		if ( victim == 0 || entry->last_used_epoch < victim->last_used_epoch )
+		if ( victim == 0 || entry->priority < victim->priority ||
+			(entry->priority == victim->priority && entry->last_used_epoch < victim->last_used_epoch) )
 		{
 			victim = entry;
 			victim_index = entry_index;
@@ -624,6 +630,8 @@ static SparkStatus SparkKvPageCacheResolveLanePrefix(
 	if ( entry_index == SPARK_KV_PAGE_CACHE_NO_INDEX ||
 		((cache->entries[entry_index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u && cache->state_store != 0) )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	if ( cache->entries[entry_index].priority < cache->admission_priority )
+		cache->entries[entry_index].priority = cache->admission_priority;
 	*entry_index_out = entry_index;
 	return(SPARK_STATUS_OK);
 }
@@ -1366,6 +1374,7 @@ static SparkStatus SparkKvPageCachePublishNewEntry(
 	entry->parent_entry_index = parent;
 	entry->logical_page_index = sequence->mutable_logical_page_index;
 	entry->reference_count = 1u;
+	entry->priority = cache->admission_priority;
 	if ( identity != 0 )
 		entry->identity = *identity;
 	else
@@ -2769,6 +2778,7 @@ SparkStatus SparkKvLaneTransactionsAdmit(SparkKvLaneTransactions *transactions,c
 		status = transactions->cache->device_copy.retire_copies(transactions->cache->device_copy.context,0u);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	transactions->cache->admission_priority = request->priority;
 	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 		return(request->admission_flags == 0u ? SparkKvLaneTransactionsRelease(transactions,request) : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE )
@@ -2863,6 +2873,7 @@ static SparkStatus SparkKvLaneTransactionFinish(SparkKvLaneTransactions *transac
 	if ( status == SPARK_STATUS_OK )
 	{
 		lane.context_token_count += extra_tokens;
+		transactions->cache->admission_priority = owner->request.priority;
 		status = SparkKvPageCacheCompleteLane(transactions->cache,&lane);
 		if ( status == SPARK_STATUS_OK && (lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u )
 			SparkKvPageCacheMarkSave(transactions->cache,resident_slot);
