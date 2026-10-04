@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FAMILIES = {
 	"glm52": {
-		"config": "common/common_glm_cuda_tree/spark_glm_cuda_config.h",
+		"config": "model-families/glm52/cuda_tree/spark_glm_cuda_config.h",
 		"host": "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
 		"module": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
 		"pairs": [],
@@ -95,7 +95,17 @@ FAMILIES = {
 
 
 def defines(path: Path) -> dict[str, str]:
-	return dict(re.findall(r"#define (\w+) (\d+)u", path.read_text(errors="surrogateescape")))
+	texts = [path.read_text(errors="surrogateescape")]
+	if (path.parent / "llm_defines.h").is_file():
+		texts.append((path.parent / "llm_defines.h").read_text(errors="surrogateescape"))
+	values = {}
+	for text in texts:
+		values.update(re.findall(r"#define (\w+) (\d+)u", text))
+	for text in texts:
+		for name, alias in re.findall(r"#define (\w+) (SPARK_LLM_\w+)\s*$", text, re.M):
+			if alias in values:
+				values[name] = values[alias]
+	return values
 
 
 def main() -> int:

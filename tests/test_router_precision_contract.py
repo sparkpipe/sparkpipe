@@ -15,7 +15,7 @@ def main():
     stream = (ROOT / "inference/kernels/stream_gemm.cuh").read_text()
     models = {
         "glm52": (
-            "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
+            "model-families/glm52/cuda_tree/spark_glm_cuda_layer.cuh"
         ),
         "kimi_k3": "inference/llms/kimi_k3/layer.cuh",
         "mimo_2_5": "inference/llms/mimo_2_5/layer.cuh",

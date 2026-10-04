@@ -38,19 +38,11 @@ MODEL_TOKEN = re.compile(
     re.MULTILINE,
 )
 FAMILY_TEMPLATE_TOKEN = re.compile(
-    r"glm(?:5[_-]?2|52)|kimi|(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)|"
+    r"glm(?:5[_-]?2|52)|glm5[_-]?next|g5n|laguna|(?<![a-z])ling(?![a-z])|kimi|(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)|"
     r"qwen|dsv4|deepseek|mimo25",
     re.IGNORECASE,
 )
-PENDING = (
-    "common/common_glm_cuda_tree",
-    "common/common_glm_stage_module",
-    "common/common_kv_geometry.h",
-    "common/glm_resident_stage_wrapper.mk",
-    "model-families/common/include/sparkpipe/spark_dspark_drafter.h",
-    "model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h",
-    "model-families/common/include/sparkpipe/spark_qwen38_serving_adapter_common.h",
-)
+PENDING = ()
 
 
 def pending_entry(relative):

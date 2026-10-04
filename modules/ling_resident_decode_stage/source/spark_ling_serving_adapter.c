@@ -394,7 +394,7 @@ static SparkStatus SparkLingServingLoadDriver(
 
 #include "sparkpipe/family/serving/spark_serving_validate_configuration.h"
 
-#include "sparkpipe/family/serving/spark_serving_destroy_laguna.h"
+#include "sparkpipe/family/serving/spark_serving_destroy_idle.h"
 
 static SparkStatus SparkLingServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,

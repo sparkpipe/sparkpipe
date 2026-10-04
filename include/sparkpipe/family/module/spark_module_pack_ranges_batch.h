@@ -79,7 +79,7 @@ static void SPARK_FAMILY(T1Wave)(const SPARK_FAMILY(CudaWave) *wave)
 	    wave->host_resident_slots == 0 || wave->host_token_ids == 0 ||
 	    wave->host_positions == 0 )
 		return;
-	fprintf(stderr,"G5N-T1 wave seq%u rows=%u",wave->host_resident_slots[0],wave->row_count);
+	fprintf(stderr,SPARK_FAMILY_CONST(T1_TAG) " wave seq%u rows=%u",wave->host_resident_slots[0],wave->row_count);
 	for ( i = 0u; i < wave->row_count; i++ )
 		fprintf(stderr," pos%u=%u",wave->host_positions[i],wave->host_token_ids[i]);
 	fputc('\n',stderr);

@@ -24,11 +24,11 @@ def main():
     resident = (ROOT / "node/model_residentd.c").read_text()
     makefile = (
         (ROOT / "modules/glm52_resident_decode_stage/Makefile").read_text()
-        + (ROOT / "common/glm_resident_stage_wrapper.mk").read_text()
+        + (ROOT / "modules/glm52_resident_decode_stage/glm_resident_stage_wrapper.mk").read_text()
     )
     unity = (
         ROOT
-        / "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
+        / "model-families/glm52/cuda_tree/spark_glm_cuda_unity.cu"
     ).read_text()
     adapter = (
         ROOT

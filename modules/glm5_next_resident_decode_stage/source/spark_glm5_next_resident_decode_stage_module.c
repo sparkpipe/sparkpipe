@@ -83,6 +83,7 @@ static int SparkGlm5NextProbeEnabled(void)
 #endif
 
 #define SPARK_GLM5_NEXT_MODULE_TAG "glm5_next_stage"
+#define SPARK_GLM5_NEXT_T1_TAG "G5N-T1"
 #define SPARK_GLM5_NEXT_STAGEPACK_MAX_TENSOR_COUNT 2048u
 #define SPARK_GLM5_NEXT_NO_INDEX_ORDINAL UINT32_MAX
 #define SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT 6u
@@ -673,9 +674,9 @@ static SparkStatus SparkGlm5NextAllocateBytes(
 	uint64_t element_bytes,
 	void **pointer);
 
-#include "sparkpipe/family/module/spark_module_glm5_next_lineage.h"
+#include "sparkpipe/family/module/spark_module_lineage_declarations.h"
 
-#include "sparkpipe/family/module/spark_module_glm5_next_laguna.h"
+#include "sparkpipe/family/module/spark_module_pack_ranges_batch.h"
 
 #include "sparkpipe/family/module/spark_module_manifest_check.h"
 

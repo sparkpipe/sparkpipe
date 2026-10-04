@@ -83,26 +83,26 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
 
-#define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkGemma4##name
-#define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkGemma4##name
-#define SPARK_QWEN38_SERVING_ADAPTER_CONST(name) SPARK_GEMMA4_##name
-#define SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION GEMMA4_MODEL_REVISION
-#define SPARK_QWEN38_SERVING_ADAPTER_CONTRACT_SHA256 GEMMA4_CONTRACT_SHA256
-#define SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
+#define SPARK_LANE_SERVING_ADAPTER_FN(name) SparkGemma4##name
+#define SPARK_LANE_SERVING_ADAPTER_TYPE(name) SparkGemma4##name
+#define SPARK_LANE_SERVING_ADAPTER_CONST(name) SPARK_GEMMA4_##name
+#define SPARK_LANE_SERVING_ADAPTER_MODEL_REVISION GEMMA4_MODEL_REVISION
+#define SPARK_LANE_SERVING_ADAPTER_CONTRACT_SHA256 GEMMA4_CONTRACT_SHA256
+#define SPARK_LANE_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
 	((tp_degree) == SPARK_GEMMA4_SERVING_PARALLEL_GROUP_SIZE)
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
+#define SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
 	(state)->pp_stage_count
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
+#define SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
 	SparkGemma4ServingPpStageIndex(state,(state)->stage_index)
-#define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) \
+#define SPARK_LANE_SERVING_ADAPTER_BIND_FAMILY(state) \
 	SparkGemma4ServingInitializeFamilyState(state)
-#define SPARK_QWEN38_SERVING_ADAPTER_PREFETCH SparkGemma4ServingPrefetch
-#define SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
+#define SPARK_LANE_SERVING_ADAPTER_PREFETCH SparkGemma4ServingPrefetch
+#define SPARK_LANE_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
 	((state)->max_input_row_count)
-#define SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH \
+#define SPARK_LANE_SERVING_ADAPTER_RESOLVE_PREFETCH \
 	SparkGemma4ServingResolvePrefetch
-#define SPARK_QWEN38_SERVING_ADAPTER_RESET SparkGemma4ServingReset
-#define SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE(state,submission) \
+#define SPARK_LANE_SERVING_ADAPTER_RESET SparkGemma4ServingReset
+#define SPARK_LANE_SERVING_ADAPTER_SUBMISSION_STALE(state,submission) \
 	SparkGemma4ServingSubmissionStale((state),(submission))
 
 typedef struct SparkGemma4ServingPending
@@ -179,9 +179,9 @@ typedef struct SparkGemma4ServingState
 	atomic_uint_fast64_t reset_generation;
 } SparkGemma4ServingState;
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateSubmission)(
 	void *adapter_state,const SparkModelServingSubmission *submission);
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingQuiesce)(
 	void *adapter_state,uint64_t deadline_time_ns);
 
 static _Thread_local SparkModelDriverCacheLane SparkGemma4ServingCacheScratch[SPARK_GEMMA4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -230,6 +230,6 @@ static const SparkModelServingAdapterDescriptor SparkGemma4ServingDescriptor =
 	.cache_block_token_count = SPARK_GEMMA4_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS
 };
 
-#define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 GEMMA4_MODEL_DESCRIPTION_SHA256
+#define SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 GEMMA4_MODEL_DESCRIPTION_SHA256
 
-#include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"
+#include "sparkpipe/spark_pp_serving_adapter_common.h"

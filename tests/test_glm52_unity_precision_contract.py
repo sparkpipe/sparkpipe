@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
-    cuda_source = ROOT / "common/common_glm_cuda_tree"
+    cuda_source = ROOT / "model-families/glm52/cuda_tree"
     unity = (cuda_source / "spark_glm_cuda_unity.cu").read_text()
     api = (cuda_source / "spark_glm_cuda_api.h").read_text()
     failures = []

@@ -38,9 +38,9 @@ RULES_MAKEFILE = os.path.join(
     ROOT, "modules/resident_decode_stage_rules.mk")
 GLM52_MODULE_MAKEFILE = os.path.join(
     ROOT, "modules/glm52_resident_decode_stage/Makefile")
-GLM_WRAPPER_MAKEFILE = os.path.join(ROOT, "common/glm_resident_stage_wrapper.mk")
+GLM_WRAPPER_MAKEFILE = os.path.join(ROOT, "modules/glm52_resident_decode_stage/glm_resident_stage_wrapper.mk")
 GLM_COMMON_TUNING_HEADER = os.path.join(
-    ROOT, "common/common_glm_cuda_tree", "spark_glm_batch_tuning.h")
+    ROOT, "model-families/glm52/cuda_tree", "spark_glm_batch_tuning.h")
 DSV4_MODULE_MAKEFILE = os.path.join(
     ROOT, "modules/dsv4_resident_decode_stage/Makefile")
 GLM52_TUNING_HEADER = os.path.join(

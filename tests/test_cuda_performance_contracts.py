@@ -245,10 +245,10 @@ def validate_quantizer_writes() -> None:
 
 def validate_model_precision_contracts() -> None:
     glm = read(
-        "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
+        "model-families/glm52/cuda_tree/spark_glm_cuda_layer.cuh"
     )
     glm_unity = read(
-        "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
+        "model-families/glm52/cuda_tree/spark_glm_cuda_unity.cu"
     )
     glm_codec = read("inference/kernels/weight_codec.cuh")
     glm_module = read(
@@ -367,7 +367,7 @@ def validate_grouped_moe_contract() -> None:
     gemm = read("inference/kernels/gemm.cuh")
     runtime = read("runtime/gemm.cuh")
     glm = read(
-        "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
+        "model-families/glm52/cuda_tree/spark_glm_cuda_layer.cuh"
     )
 
     require(route, "packed_rows != expected_packed_rows", "route cardinality validation")
@@ -435,7 +435,7 @@ def validate_stream_ordered_dispatch() -> None:
     )
 
     common_stage = read(
-        "common/common_glm_stage_module/spark_glm_stage_module.h"
+        "model-families/glm52/stage_module/spark_glm_stage_module.h"
     )
 
     require(module, "cudaHostAlloc(", "persistent pinned request metadata")
@@ -446,7 +446,7 @@ def validate_stream_ordered_dispatch() -> None:
     # the module under the contract marker.
     require(
         module,
-        "common/common_glm_stage_module/spark_glm_stage_module.h",
+        "model-families/glm52/stage_module/spark_glm_stage_module.h",
         "glm52 adopts the shared GLM stage enqueue",
     )
     require(

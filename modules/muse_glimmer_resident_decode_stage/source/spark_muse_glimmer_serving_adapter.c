@@ -56,25 +56,25 @@
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_FILE_TRANSPORT | \
 	 SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT)
 
-#define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkMuseGlimmer##name
-#define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkMuseGlimmer##name
-#define SPARK_QWEN38_SERVING_ADAPTER_CONST(name) SPARK_MUSE_GLIMMER_##name
-#define SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION MUSE_MODEL_REVISION
-#define SPARK_QWEN38_SERVING_ADAPTER_CONTRACT_SHA256 MUSE_CONTRACT_SHA256
-#define SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
+#define SPARK_LANE_SERVING_ADAPTER_FN(name) SparkMuseGlimmer##name
+#define SPARK_LANE_SERVING_ADAPTER_TYPE(name) SparkMuseGlimmer##name
+#define SPARK_LANE_SERVING_ADAPTER_CONST(name) SPARK_MUSE_GLIMMER_##name
+#define SPARK_LANE_SERVING_ADAPTER_MODEL_REVISION MUSE_MODEL_REVISION
+#define SPARK_LANE_SERVING_ADAPTER_CONTRACT_SHA256 MUSE_CONTRACT_SHA256
+#define SPARK_LANE_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
 	((tp_degree) != 0u && \
 	 SPARK_MUSE_GLIMMER_SERVING_STAGE_COUNT % (tp_degree) == 0u && \
 	 (tp_degree) <= SPARK_MUSE_GLIMMER_SERVING_STAGE_COUNT)
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
+#define SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
 	SPARK_MUSE_GLIMMER_SERVING_STAGE_COUNT
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) (state)->stage_index
-#define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) \
+#define SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_INDEX(state) (state)->stage_index
+#define SPARK_LANE_SERVING_ADAPTER_BIND_FAMILY(state) \
 	SparkMuseGlimmerServingInitializeFamilyState(state)
-#define SPARK_QWEN38_SERVING_ADAPTER_PREFETCH SparkMuseGlimmerServingPrefetch
-#define SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH \
+#define SPARK_LANE_SERVING_ADAPTER_PREFETCH SparkMuseGlimmerServingPrefetch
+#define SPARK_LANE_SERVING_ADAPTER_RESOLVE_PREFETCH \
 	SparkMuseGlimmerServingResolvePrefetch
-#define SPARK_QWEN38_SERVING_ADAPTER_RESET SparkMuseGlimmerServingReset
-#define SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE(state,submission) \
+#define SPARK_LANE_SERVING_ADAPTER_RESET SparkMuseGlimmerServingReset
+#define SPARK_LANE_SERVING_ADAPTER_SUBMISSION_STALE(state,submission) \
 	SparkMuseGlimmerServingSubmissionStale((state),(submission))
 
 typedef struct SparkMuseGlimmerServingPending
@@ -151,9 +151,9 @@ typedef struct SparkMuseGlimmerServingState
 	atomic_uint_fast64_t reset_generation;
 } SparkMuseGlimmerServingState;
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateSubmission)(
 	void *adapter_state,const SparkModelServingSubmission *submission);
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingQuiesce)(
 	void *adapter_state,uint64_t deadline_time_ns);
 
 static _Thread_local SparkModelDriverCacheLane SparkMuseGlimmerServingCacheScratch[SPARK_MUSE_GLIMMER_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -200,7 +200,7 @@ static const SparkModelServingAdapterDescriptor SparkMuseGlimmerServingDescripto
 };
 
 #define SPARK_MUSE_GLIMMER_MODEL_LAYER_IS_GDN(layer) 0
-#define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 MUSE_MODEL_DESCRIPTION_SHA256
-#define SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
+#define SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 MUSE_MODEL_DESCRIPTION_SHA256
+#define SPARK_LANE_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
 	((state)->max_active_sequence_count)
-#include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"
+#include "sparkpipe/spark_pp_serving_adapter_common.h"

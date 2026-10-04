@@ -63,18 +63,18 @@
 #define SPARK_QWEN4_FLASH_SERVING_SEAM_CONNECT_TIMEOUT_MS 1000u
 #define SPARK_QWEN4_FLASH_SERVING_SEAM_IO_TIMEOUT_MS 30000u
 
-#define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkQwen4Flash##name
-#define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkQwen4Flash##name
-#define SPARK_QWEN38_SERVING_ADAPTER_CONST(name) SPARK_QWEN4_FLASH_##name
-#define SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION QWEN4_FLASH_MODEL_REVISION
-#define SPARK_QWEN38_SERVING_ADAPTER_CONTRACT_SHA256 QWEN4_FLASH_CONTRACT_SHA256
-#define SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
+#define SPARK_LANE_SERVING_ADAPTER_FN(name) SparkQwen4Flash##name
+#define SPARK_LANE_SERVING_ADAPTER_TYPE(name) SparkQwen4Flash##name
+#define SPARK_LANE_SERVING_ADAPTER_CONST(name) SPARK_QWEN4_FLASH_##name
+#define SPARK_LANE_SERVING_ADAPTER_MODEL_REVISION QWEN4_FLASH_MODEL_REVISION
+#define SPARK_LANE_SERVING_ADAPTER_CONTRACT_SHA256 QWEN4_FLASH_CONTRACT_SHA256
+#define SPARK_LANE_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
 	((tp_degree) == SPARK_QWEN4_FLASH_SERVING_PARALLEL_GROUP_SIZE)
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
+#define SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
 	(state)->pp_stage_count
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
+#define SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
 	SparkQwen4FlashServingPpStageIndex(state,(state)->stage_index)
-#define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) SPARK_STATUS_OK
+#define SPARK_LANE_SERVING_ADAPTER_BIND_FAMILY(state) SPARK_STATUS_OK
 
 typedef struct SparkQwen4FlashServingPending
 {
@@ -181,10 +181,10 @@ static const SparkModelServingAdapterDescriptor SparkQwen4FlashServingDescriptor
 };
 
 #define SparkModelServingAdapterGetInterface SparkQwen4FlashServingTemplateGetInterface
-#define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 QWEN4_FLASH_MODEL_DESCRIPTION_SHA256
-#define SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
+#define SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 QWEN4_FLASH_MODEL_DESCRIPTION_SHA256
+#define SPARK_LANE_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
 	((state)->max_active_sequence_count)
-#include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"
+#include "sparkpipe/spark_pp_serving_adapter_common.h"
 #undef SparkModelServingAdapterGetInterface
 
 static SparkStatus SparkQwen4FlashServingInitializeSeam(
@@ -194,7 +194,7 @@ static SparkStatus SparkQwen4FlashServingInitializeSeam(
 	const char *control_value;
 	uint32_t enabled_source_mask;
 	SparkStatus status;
-	control_value = getenv(SPARK_QWEN38_SERVING_ADAPTER_ENV(SPECULATORS));
+	control_value = getenv(SPARK_LANE_SERVING_ADAPTER_ENV(SPECULATORS));
 	status = SparkSpeculationSeamParseControl(control_value,
 		SPARK_QWEN4_FLASH_SERVING_SEAM_AVAILABLE_SOURCES,&enabled_source_mask);
 	if ( status != SPARK_STATUS_OK )
@@ -233,34 +233,34 @@ static SparkStatus SparkQwen4FlashServingInitializeSeam(
 	return(SparkSpeculationSeamInitialize(&configuration,&state->seam));
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitializeWithSeam)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingInitializeWithSeam)(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
 {
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state;
 	SparkStatus status;
-	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitialize)(configuration,adapter_state);
+	status = SPARK_LANE_SERVING_ADAPTER_FN(ServingInitialize)(configuration,adapter_state);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)*adapter_state;
+	state = (SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *)*adapter_state;
 	status = SparkQwen4FlashServingInitializeSeam(state);
 	if ( status != SPARK_STATUS_OK )
 	{
-		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(state);
+		SPARK_LANE_SERVING_ADAPTER_FN(ServingDestroy)(state);
 		SPARK_RETURN(status);
 	}
 	return(SPARK_STATUS_OK);
 }
 
-static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroyWithSeam)(
+static void SPARK_LANE_SERVING_ADAPTER_FN(ServingDestroyWithSeam)(
 	void *adapter_state)
 {
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state;
 	SparkModelDriverRuntimeSnapshot snapshot;
-	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
+	state = (SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
 	if ( state == 0 )
 		return;
-	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAvailableSubmissionCount)(state) != state->pipeline_slot_count )
+	if ( SPARK_LANE_SERVING_ADAPTER_FN(ServingAvailableSubmissionCount)(state) != state->pipeline_slot_count )
 		return;
 	if ( state->driver.interface != 0 && state->driver.interface->snapshot != 0 && state->driver_instance != 0 && state->program != 0 )
 	{
@@ -270,25 +270,25 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroyWithSeam)(
 	}
 	SparkSpeculationSeamDestroy(state->seam);
 	state->seam = 0;
-	SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(adapter_state);
+	SPARK_LANE_SERVING_ADAPTER_FN(ServingDestroy)(adapter_state);
 }
 
-static const SparkModelServingAdapterInterface SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSeamInterface) =
+static const SparkModelServingAdapterInterface SPARK_LANE_SERVING_ADAPTER_FN(ServingSeamInterface) =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.interface_bytes = SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES,
-	.descriptor = &SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDescriptor),
-	.initialize = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitializeWithSeam),
-	.destroy = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroyWithSeam),
-	.validate_submission = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission),
-	.submit = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit),
-	.progress = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingProgress),
-	.quiesce = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce),
-	.snapshot = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSnapshot)
+	.descriptor = &SPARK_LANE_SERVING_ADAPTER_FN(ServingDescriptor),
+	.initialize = SPARK_LANE_SERVING_ADAPTER_FN(ServingInitializeWithSeam),
+	.destroy = SPARK_LANE_SERVING_ADAPTER_FN(ServingDestroyWithSeam),
+	.validate_submission = SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateSubmission),
+	.submit = SPARK_LANE_SERVING_ADAPTER_FN(ServingSubmit),
+	.progress = SPARK_LANE_SERVING_ADAPTER_FN(ServingProgress),
+	.quiesce = SPARK_LANE_SERVING_ADAPTER_FN(ServingQuiesce),
+	.snapshot = SPARK_LANE_SERVING_ADAPTER_FN(ServingSnapshot)
 };
 
 __attribute__((visibility("default")))
 const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
 {
-	return(&SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSeamInterface));
+	return(&SPARK_LANE_SERVING_ADAPTER_FN(ServingSeamInterface));
 }

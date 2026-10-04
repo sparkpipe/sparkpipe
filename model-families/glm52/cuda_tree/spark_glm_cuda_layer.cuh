@@ -19,7 +19,7 @@
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/weight_codec.cuh"
-#include "common/common_glm_cuda_tree/spark_glm_cuda_config.h"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_config.h"
 
 struct GlmKv
 {
@@ -44,7 +44,7 @@ using GlmIndexKv = LmKvLatent<
     GLM_KV_PAGE_SLOTS>;
 typedef LmKvGeometry<GLM_KV_SLOT_BYTES, 1u, true> GlmKvGathered;
 
-#include "common/common_glm_cuda_tree/spark_glm_cuda_launch_shape.h"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_launch_shape.h"
 
 #define GLM_LAYER_TILE_N SPARK_LLM_TILE_N
 #define GLM_LAYER_STAGES SPARK_LLM_TILE_STAGES

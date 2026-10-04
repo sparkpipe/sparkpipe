@@ -3,7 +3,7 @@
 #define __device__
 #define __forceinline__ inline
 #include "inference/kernels/kv.cuh"
-#include "common/common_glm_cuda_tree/spark_glm_cuda_config.h"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_config.h"
 
 using GlmKv      = LmKvLatent<GLM_KV_BITS, GLM_LATENT, GLM_ROPE_DIM, GLM_KV_PAGE_SLOTS>;
 using Mimo25Full = LmKvHeads<16u, 4u, 128u, 64u>;

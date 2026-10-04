@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "common/common_glm_cuda_tree/spark_glm_cuda_unity.cu"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_unity.cu"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_row_bucket.cuh"
 #include "spark_glm52_resident_decode_stage_internal.h"

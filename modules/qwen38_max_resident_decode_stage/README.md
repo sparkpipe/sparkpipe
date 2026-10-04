@@ -70,8 +70,8 @@ projections are replicated, so the linear fills the whole row.
   `model_description_sha256` to equal the driver descriptor's, which the
   driver compiler sets to `description->source_sha256`, the SHA-256 of the
   firmware model-description file. That file is not the package contract.
-- `spark_qwen38_pp_serving_adapter_common.h` has no default for this value.
-  The adapter defines `SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256`
+- `spark_pp_serving_adapter_common.h` has no default for this value.
+  The adapter defines `SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256`
   as `QWEN38_MAX_MODEL_DESCRIPTION_SHA256`.
 - The module `Makefile` computes that hash from
   `examples/model_descriptions/qwen38_max_resident_decode_stage_firmware.json`

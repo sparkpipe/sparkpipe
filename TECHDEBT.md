@@ -981,16 +981,6 @@ Related common-code debt:
   sequence (I02). The fix: run the continuity check in residentd or the engine
   for every adapter. It is closed by a fleet run in which a skipped-position
   submission to a GLM Full lane gets an explicit continuity error.
-- Left out on purpose (2026-10-02):
-  `include/sparkpipe/family/module/spark_module_glm5_next_laguna.h` is a
-  family template named after the two drivers that include it. It now holds
-  only pack-range and manifest checks, byte allocation, the host batch stage
-  and a T1 trace that prints `G5N-T1` for laguna too.
-  `tests/test_dry_law.py` checks family templates only for glm52, kimi, k3,
-  qwen, dsv4, deepseek and mimo25 tokens, so the file passes. Close it by
-  renaming it after its behaviour and adding `glm5_next`, `laguna` and `G5N` to
-  `FAMILY_TEMPLATE_TOKEN`. The proof is the dry-law test failing on the old
-  file and passing on the renamed one.
 - `build/libdsv4_pro_tp4_pp4_serving_adapter*` do not compile
   (`SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` undeclared), and
   `build/libdsv4_tp4_pp4_serving_adapter.so` cannot be opened on GPU hosts
@@ -1420,25 +1410,10 @@ Related common-code debt:
 
 ## Driver consolidation
 
-- Move the model-lineage code still filed under shared paths into its family
-  and rename driver-named family templates after what they do. The files are
-  the `PENDING` list in `tests/test_dry_law.py`: `common/common_glm_cuda_tree`,
-  `common/common_glm_stage_module`, `common/common_kv_geometry.h`,
-  `common/glm_resident_stage_wrapper.mk`, and the dspark drafter and qwen38
-  serving-adapter headers in `model-families/common`. Family templates under
-  `include/sparkpipe/family/` named after drivers (for example
-  `spark_module_glm5_next_laguna.h`) take the name of their behaviour.
 - Adopt the common parameterized modules in
   `docs/COMMON_MODULE_ARCHITECTURE.md` and delete the near-copy code they
   replace (estimated by the 2026-09-13 SEAM surveys at about 26,000 lines
   across the families), each migration proved by byte or behaviour identity.
-- Two copies of each model's constants: make `spark_<family>_model.h` a shim
-  that includes `llm_defines.h` for dsv41_flash, glm52, glm5_next,
-  muse_glimmer and qwen38_27b, or tie the copies together with
-  `_Static_assert`. glm5_next, for example, states hidden 4096 and 288
-  experts in both files. k3's model header includes
-  `spark_k3_llm_defines.h`, and nothing consumes k3's generic
-  `llm_defines.h`.
 - glm5_next assigns its combine wrappers field by field instead of calling
   `SPARK_FAMILY(ModuleRegisterCombines)`, and its `internal.h` re-declares
   the `SparkTpLaunch*` prototypes from `spark_tp_mesh_register.h`.

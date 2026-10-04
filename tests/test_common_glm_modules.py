@@ -17,13 +17,26 @@ INCLUDES = (
 CFLAGS = ("-std=c11", "-Wall", "-Wextra", "-Werror", "-O1")
 
 
+MODEL_HEADER = ROOT / "model-families/glm52/include/sparkpipe/spark_glm52_model.h"
+
+
 def parse_defines(path):
     values = {}
+    model = {}
+    for line in re.sub(r"\\\n\s*", " ", MODEL_HEADER.read_text()).splitlines():
+        match = re.match(r"^#define (SPARK_GLM52_MODEL_\w+) (.+)$", line)
+        if match:
+            model[match.group(1)] = match.group(2).strip()
     joined = re.sub(r"\\\n\s*", " ", path.read_text())
     for line in joined.splitlines():
         match = re.match(r"^#define SPARK_LLM_(\w+) (.+)$", line)
         if match:
-            values[match.group(1)] = match.group(2).strip()
+            text = match.group(2).strip()
+            for _ in range(8):
+                if text not in model:
+                    break
+                text = model[text]
+            values[match.group(1)] = text
     return values
 
 
@@ -117,10 +130,11 @@ def vector_flags(vectors_map, overrides=None):
 
 def main():
     original = DEFINES.read_text()
-    for key in ("SPARK_LLM_KV_BYTES_PER_SCALAR", "SPARK_LLM_MOE_TOP_K", "SPARK_LLM_KV_BLOCK_TOKEN_COUNT"):
+    for key in ("SPARK_LLM_KV_BYTES_PER_SCALAR", "SPARK_LLM_KV_BLOCK_TOKEN_COUNT"):
         assert re.search(rf"^#define {key} \d+u$", original, re.M), \
             f"{key} must stay a plain integer vector source"
     values = parse_defines(DEFINES)
+    assert re.fullmatch(r"\d+u", values["MOE_TOP_K"]), "SPARK_LLM_MOE_TOP_K must name a plain integer"
     vectors_original = vectors(values)
     flags_original = vector_flags(vectors_original)
     expect_pass("tests/test_common_glm_cuda_tree.c", flags_original,
