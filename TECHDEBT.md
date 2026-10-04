@@ -969,13 +969,12 @@ Related common-code debt:
   the whole first reply and tokens identical to an uncached run.
 - Left out on purpose (2026-10-02): residentd's slot claim checks slot
   ownership and the lane's request id, generation and sequence id
-  (`node/model_residentd.c:711-780`), not position continuity. Continuity is
-  checked only inside adapters: the common `SparkStageKvBindingContinuity`
-  (`runtime/stage_kv_binding.c:507`) has one caller, glm52
-  (`spark_glm52_resident_decode_stage_module.c:2223`). An adapter that skips
-  the call accepts a submission whose position jumps ahead in a resident
-  sequence (I02). The fix: run the continuity check in residentd or the engine
-  for every adapter. It is closed by a fleet run in which a skipped-position
+  (`node/model_residentd.c`), not position continuity. Continuity is checked
+  inside adapters by the common `SparkStageKvBindingContinuity`, which GLM
+  Full, GLM Flash and K3 call; families not yet on the KV binding accept a
+  submission whose position jumps ahead in a resident sequence (I02). The fix:
+  move those families onto the binding, or run the continuity check in
+  residentd for every adapter. It is closed by a fleet run in which a skipped-position
   submission to a GLM Full lane gets an explicit continuity error.
 - `build/libdsv4_pro_tp4_pp4_serving_adapter*` do not compile
   (`SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` undeclared), and
@@ -1549,11 +1548,12 @@ Related common-code debt:
   residentd so its unit restarts, because the driver's transaction state for
   those slots is unknown. Give the driver a per-slot reset so one slot can be
   recovered without restarting the unit.
-- Adapters map a weightd lease failure (`NO_LANE`, `EVICT_DENIED`) to
-  `CAPACITY_EXCEEDED` through `SparkModelServingCompletionStatus`, which
-  fails the request. A family whose lease failure provably comes before any
-  recurrent state advances could return `BUSY` instead, so the engine
-  retries the step.
+- glm5_next and K3 map a weightd lease failure (`NO_LANE`, `EVICT_DENIED`)
+  to `CAPACITY_EXCEEDED`, which fails the request: their KDA recurrent state
+  advances layer by layer and is restored only after a prefix attach, so a
+  retried frame would run on half-updated state. Restore the lanes' recurrent
+  state before a retried frame, then map the failure to `BUSY` as GLM Full
+  does.
 - Pipeline-parallel stages still wedge after a failure on another rank. When
   one rank fails a submission's COMMIT or frame, the next stage's route has
   already posted its hidden-transport receive and waits in WAIT_INPUT for data

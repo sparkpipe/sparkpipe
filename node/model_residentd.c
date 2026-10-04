@@ -185,6 +185,7 @@ typedef struct SparkModelResidentdRoute
 	uint32_t deadline_wait_state;
 	uint32_t failure_status;
 	uint32_t failure_delivered;
+	uint32_t driver_completed;
 	uint64_t message_id;
 	uint64_t submission_id;
 	uint64_t request_id;
@@ -809,6 +810,26 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkModelResidentdSettleRanSlotsLocked(SparkModelResidentdRuntime *runtime,const SparkModelResidentdRoute *route)
+{
+	SparkModelResidentdSequenceSlot *slot;
+	const SparkModelServingLane *lane;
+	uint32_t index,owner = route->slot_index + 1u;
+	for (index=0u; route->resident_slots_claimed != 0u && index<route->submission.active_sequence_count; index++)
+	{
+		lane = &route->submission.lanes[index];
+		if ( lane->resident_sequence_slot >= runtime->runtime_limits.resident_sequence_capacity )
+			continue;
+		slot = &runtime->sequence_slots[lane->resident_sequence_slot];
+		if ( slot->active_owner != owner )
+			continue;
+		slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 1u : 0u;
+		slot->request_id = slot->bound != 0u ? lane->request_id : 0u;
+		slot->request_generation = slot->bound != 0u ? lane->request_generation : 0u;
+		slot->sequence_id = slot->bound != 0u ? lane->sequence_id : 0u;
+	}
+}
+
 static void SparkModelResidentdDropClaimsLocked(SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route)
 {
 	uint32_t lane,owner,slot;
@@ -1151,6 +1172,7 @@ static void SparkModelResidentdAcceptCompletionLocked(const SparkModelResidentdR
 {
 	uint64_t completed_time_ns;
 	route->completion = *completion;
+	route->driver_completed = 1u;
 	if ( route->completion.service_time_ns == 0u && route->adapter_submit_time_ns != 0u )
 	{
 		completed_time_ns = SparkModelResidentdMonotonicTimeNs();
@@ -2749,6 +2771,8 @@ static SparkStatus SparkModelResidentdCloseFailedRouteLocked(SparkModelResidentd
 		return(SPARK_STATUS_OK);
 	if ( status != SPARK_STATUS_OK )
 		atomic_store(&runtime->failed_status,status);
+	if ( route->driver_completed != 0u )
+		SparkModelResidentdSettleRanSlotsLocked(runtime,route);
 	SparkModelResidentdDropClaimsLocked(runtime,route);
 	fprintf(stderr,"ROUTE-FAILED id=%llu kind=%u status=%s abort=%s delivered=%u abandoned=%u — route released\n",(unsigned long long)route->submission_id,route->submission.work_kind,SparkStatusToString((SparkStatus)route->failure_status),SparkStatusToString(abort_status),route->failure_delivered,route->abandoned);
 	route->active = 0u;

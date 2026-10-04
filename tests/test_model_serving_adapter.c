@@ -845,6 +845,16 @@ static void TestMaximumRoundMajorRowLayout(void)
 	assert(SparkRowLayoutValidateRoundMajor(SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT,dense.lane_count,row_lanes,SparkRowLayoutDenseLaneOrdinal,&dense,occurrences,last_rows) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void TestLeaseFailureMapping(void)
+{
+	assert(SparkModelServingCompletionStatus(SPARK_STATUS_NO_LANE) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkModelServingCompletionStatus(SPARK_STATUS_EVICT_DENIED) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkModelServingCompletionStatusStateless(SPARK_STATUS_NO_LANE) == SPARK_STATUS_BUSY);
+	assert(SparkModelServingCompletionStatusStateless(SPARK_STATUS_EVICT_DENIED) == SPARK_STATUS_BUSY);
+	assert(SparkModelServingCompletionStatusStateless(SPARK_STATUS_IO_ERROR) == SPARK_STATUS_IO_ERROR);
+	assert(SparkModelServingCompletionStatusStateless(SPARK_STATUS_OK) == SPARK_STATUS_OK);
+}
+
 static void TestCompletionValidation(void)
 {
 	SparkModelServingAdapterDescriptor descriptor;
@@ -956,6 +966,7 @@ int main(void)
 	TestEmitRowSelection();
 	TestMaximumRoundMajorRowLayout();
 	TestCompletionValidation();
+	TestLeaseFailureMapping();
 	TestHybridCompletionGroups();
 	TestDynamicLoader();
 	return(0);

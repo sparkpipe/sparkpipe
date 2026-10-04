@@ -101,6 +101,13 @@ static inline uint32_t SparkModelServingCompletionStatus(uint32_t status)
 	return(status);
 }
 
+static inline uint32_t SparkModelServingCompletionStatusStateless(uint32_t status)
+{
+	if ( status == (uint32_t)SPARK_STATUS_NO_LANE || status == (uint32_t)SPARK_STATUS_EVICT_DENIED )
+		return((uint32_t)SPARK_STATUS_BUSY);
+	return(status);
+}
+
 #define SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS UINT32_C(0x00000001)
 #define SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION \
 	UINT32_C(0x00000002)
