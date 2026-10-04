@@ -22,7 +22,7 @@
 #endif
 
 #define TEST_MESH_PEERS (SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u)
-#define TEST_MESH_MAGIC UINT64_C(0x4d45534830303036)
+#define TEST_MESH_MAGIC UINT64_C(0x4d45534830303037)
 #define TEST_MESH_LIVE_DIR "/tmp/weightd-mesh"
 
 typedef struct TestMeshRecord
@@ -40,6 +40,8 @@ typedef struct TestMeshRecord
     uint32_t pair_rkey;
     uint16_t pair_lid;
     uint8_t pair_gid[16];
+    uint64_t wire_generation;
+    uint64_t seen_generation[TEST_MESH_PEERS];
 } TestMeshRecord;
 
 static uint32_t test_rank_mask = 0xffffu;
@@ -811,6 +813,12 @@ static void test_mesh_hardware_wait(void)
     uint64_t *peer2 = test_peer_tail(band,2u,tag);
     uint64_t id,old_error,old_diag;
     uint32_t first,last,invalid;
+    _Static_assert(SPARK_WEIGHTD_IPC_ABI_VERSION != 11u || (SPARK_WEIGHTD_MESH_REGION_BYTES == UINT64_C(268632064) &&
+        SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == UINT64_C(268500992) && SPARK_WEIGHTD_MESH_SHIPPED_OFFSET == UINT64_C(268519424) &&
+        SPARK_WEIGHTD_MESH_WAIT_OFFSET == UINT64_C(268523520) && SPARK_WEIGHTD_MESH_SLOT_BYTES == 262208u &&
+        SPARK_WEIGHTD_MESH_STAGING_BYTES == UINT64_C(134217728) && SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES == 128u &&
+        SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES == 32u && sizeof(SparkWeightdMeshWaitRequest) == 128u),
+        "the mesh layout changed under IPC ABI 11: bump SPARK_WEIGHTD_IPC_ABI_VERSION and pin the new layout here");
     CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 11u && SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN == 8u &&
         SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == 22528u &&
         (uint8_t *)test_wait_request(SPARK_WEIGHTD_MESH_BANDS - 1u,SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u) + sizeof(*request) <=
@@ -1215,6 +1223,18 @@ static void test_mesh_lane_protocol(void)
         CHECK(SparkWeightdClientLaneAcquire(owner,7u,&topology,&out,timeout) == SPARK_STATUS_OK,
             "owner reserves explicit topology before lending bands");
         {
+            uint64_t band_bytes = (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
+            CHECK(SparkWeightdClientMeshBroadcast(owner,2u,0u,0u,64u,0u,0u,timeout) == SPARK_STATUS_INVALID_ARGUMENT &&
+                SparkWeightdClientMeshWrite(owner,1u,band_bytes * 3u,band_bytes * 3u,64u,timeout) == SPARK_STATUS_INVALID_ARGUMENT,
+                "a lane owner cannot write another lane's band");
+            CHECK(SparkWeightdClientMeshBroadcast(owner,2u,SPARK_WEIGHTD_MESH_REGION_BYTES - 32u,SPARK_WEIGHTD_MESH_REGION_BYTES - 32u,64u,0u,0u,timeout) == SPARK_STATUS_INVALID_ARGUMENT &&
+                SparkWeightdClientMeshBroadcast(owner,2u,band_bytes * 14u,band_bytes * 14u,0u,0u,0u,timeout) == SPARK_STATUS_INVALID_ARGUMENT &&
+                SparkWeightdClientMeshBroadcast(owner,2u,band_bytes * 14u,band_bytes * 14u,64u,1u,SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(3u,0u),timeout) == SPARK_STATUS_INVALID_ARGUMENT,
+                "a write past the registered region, an empty write and a sequence word outside the lane fail closed");
+            CHECK(SparkWeightdClientMeshBroadcast(owner,0u,band_bytes * 14u,band_bytes * 15u + 64u,64u,1u,SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(15u,1u),timeout) == SPARK_STATUS_BUSY,
+                "a write inside the owner's two bands passes the range check (an empty peer mask then posts nothing)");
+        }
+        {
             SparkWeightdMeshTopology wrong = topology;
             wrong.local_rank = 1u;
             CHECK(SparkWeightdClientLaneBind(owner,peer,0u,&wrong,&out) == SPARK_STATUS_INVALID_ARGUMENT,
@@ -1501,8 +1521,9 @@ static void test_mesh_activity_protocol(uint32_t pending_first)
     CHECK(test_shipped(0u,0u) == 2u,"terminal NIC completions release the source before idle");
     memset(&waiter,0,sizeof(waiter));
     assert(pthread_create(&wait_thread,0,test_mesh_wait,&waiter) == 0);
-    CHECK(SparkWeightdClientMeshWrite(second,1u,0u,0u,64u,timeout) == SPARK_STATUS_OK,
-        "explicit mesh RPC wakes idle progress without a GPU interval");
+    CHECK(SparkWeightdClientMeshWrite(second,1u,4u * SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND,
+        4u * SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND,64u,timeout) == SPARK_STATUS_OK,
+        "explicit mesh RPC inside the client's lane wakes idle progress without a GPU interval");
     test_mesh_join_waiter(wait_thread,&waiter);
     pthread_mutex_lock(&SparkWeightdMeshWireLock);
     {
@@ -1850,6 +1871,42 @@ static void test_mesh_record_addresses(uint32_t local_rank)
     spark_stub_ibv_fail_modify_qp_for_qpn(0u);
     SparkWeightdMeshTryWire();
     CHECK(SparkWeightdMeshReady() == 1u,"the same generation wires once the driver accepts it");
+    {
+        TestMeshRecord own,peer_record;
+        uint64_t generation;
+        CHECK(test_read_record(local_rank,&own) == 0,"the local record is readable before a repair");
+        generation = own.wire_generation;
+        spark_stub_ibv_set_qp_state(weightd_mesh.send_qps[0]->qp_num,IBV_QPS_ERR);
+        (void)snprintf(log_path,sizeof(log_path),"%s/capture-resync.log",SPARK_WEIGHTD_MESH_DIR);
+        test_capture_begin(log_path);
+        SparkWeightdMeshTryWire();
+        SparkWeightdMeshTryWire();
+        test_capture_end();
+        CHECK(spark_stub_ibv_qp_state(weightd_mesh.send_qps[0]->qp_num) == IBV_QPS_RTS,"the repaired queue pair is back in RTS");
+        CHECK(test_read_record(local_rank,&own) == 0 && own.wire_generation == generation + 1u,
+            "the repair bumps the wire generation and publishes it");
+        CHECK(SparkWeightdMeshReady() == 0u,"the mesh stays unready until the peer re-transitions to PSN 0 too");
+        CHECK(test_file_count(log_path,"WD-QP-REPAIR") == 1u && test_file_count(log_path,"WD-QP-RESYNC-DONE") == 0u,
+            "the repair is reported once and the resync is still open");
+        test_fill_record(&peer_record,rank,23u);
+        peer_record.seen_generation[my_index] = generation + 1u;
+        CHECK(test_write_record_raw(&peer_record) == 0,"the peer acknowledges the generation in its record");
+        test_capture_begin(log_path);
+        SparkWeightdMeshTryWire();
+        test_capture_end();
+        CHECK(SparkWeightdMeshReady() == 1u && test_file_count(log_path,"WD-QP-RESYNC-DONE") == 1u,
+            "the peer's acknowledgement completes the resync and the mesh is ready again");
+        peer_record.wire_generation = 5u;
+        CHECK(test_write_record_raw(&peer_record) == 0,"the peer repairs its own queue pairs");
+        modify_before = spark_stub_ibv_modify_qp_calls();
+        test_capture_begin(log_path);
+        SparkWeightdMeshTryWire();
+        test_capture_end();
+        CHECK(spark_stub_ibv_modify_qp_calls() > modify_before && SparkWeightdMeshReady() == 1u &&
+            test_file_count(log_path,"WD-QP-RESYNC rank=") == 1u,"a peer's repair re-transitions this side without a local repair");
+        CHECK(test_read_record(local_rank,&own) == 0 && own.seen_generation[0] == 5u && own.wire_generation == generation + 1u,
+            "this side echoes the peer's generation and keeps its own");
+    }
 
     (void)snprintf(log_path,sizeof(log_path),"%s/capture-address-wait.log",SPARK_WEIGHTD_MESH_DIR);
     spark_stub_ibv_empty_gids(3u);

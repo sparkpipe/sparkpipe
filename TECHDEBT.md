@@ -140,29 +140,24 @@ citations refer to that commit.
   can change the algorithm. Proof: with one rank on a weightd without the
   bits, attach fails on every rank; the matched fleet passes the hardware
   collective probe and GLM Full T1.
-- Left out on purpose (2026-10-02): weightd does not range-check the
-  client-supplied `source_offset`, `length`, `remote_offset` or `lkey` of
-  `MESH_WRITE` and `MESH_BROADCAST` requests (`runtime/spark_weightd.c`, the
-  `SPARK_WEIGHTD_IPC_KIND_MESH_WRITE` and `MESH_BROADCAST` handlers;
-  `node/weightd_mesh.c` post paths). A client bug or a stale request can
-  overwrite another lane's cells inside a peer's registered mesh region,
-  silently corrupting another engine's collective. Found by the spark8
-  incident investigation (2026-10-02); it cannot reach memory outside the
-  registration. Close it by validating every offset and length against the
-  requesting lane's band and the registered region and refusing the request
-  with a named error, proven by a weightd fault-injection run on two Sparks
-  whose out-of-range requests are refused while in-range rounds stay
-  bit-exact.
-- Left out on purpose (2026-10-02): weightd's QP repair moves an error-state
-  queue pair through RESET to RTS with PSN 0 (`node/weightd_mesh.c`, the
-  repair path around `IBV_QPS_RESET`), which can drop pending sends without
-  completions, and a sticky `transfers[].failed` then blocks `LaneConfigure`;
-  spark9 logged endless WD-STUCK after the 2026-10-01 incident. Close it by
-  draining or failing every outstanding transfer with a completion before
-  repair, resynchronizing PSNs with the peer, and clearing per-transfer
-  failure state on a successful rewire, proven by killing one rank's weightd
-  mid-collective on the fleet and seeing every peer complete or fail its
-  rounds and rewire without a restart.
+- weightd refuses a `MESH_WRITE` or `MESH_BROADCAST` whose source,
+  destination or sequence word lies outside the registered mesh region, and,
+  for a connection that declared its lane (mesh activity or a lane
+  acquisition), outside that lane's two bands, with a named log line
+  (`SparkWeightdMeshRangeAllowed`, `runtime/spark_weightd.c`). A connection
+  that has declared no lane gets only the region check; the dsv41 engram path
+  writes its staging rows from offset 0, inside lane 0's band, so it would be
+  refused under any other lane. Not yet fleet-proven: a weightd
+  fault-injection run on two Sparks whose out-of-range requests are refused
+  while in-range rounds stay bit-exact.
+- weightd's QP repair resynchronizes PSNs with the peer: a repaired queue pair
+  bumps the node's `wire_generation` in its mesh record, the peer re-transitions
+  its own queue pairs to PSN 0 and echoes the generation, and the mesh stays
+  unready until the echo arrives (`WD-QP-REPAIR`, `WD-QP-RESYNC`,
+  `WD-QP-RESYNC-DONE`; record magic MESH0007). Outstanding transfers to the
+  peer are failed with `PEER_RESET` before the rewire, and a lane reset clears
+  them. Not yet fleet-proven: kill one rank's weightd mid-collective and see
+  every peer complete or fail its rounds and rewire without a restart.
 - Recorded incident (2026-10-02; owner: treat as a one-off and act only if it
   recurs): on spark8 at 2026-10-01 16:00:49Z a PCIe completion timeout on CX-7
   function 0000:01:00.1 was followed within about 85 ms by a stalled SMMU0
@@ -1512,7 +1507,6 @@ and the multidev docs on 2026-09-28. Line numbers are in
   (`sparkpipe-weightd-shared.service`,
   `sparkpipe-glm-serving-dd3526b2.service`) that block `gpu-shared`
   admission. Untrack them.
-- Bump `SPARK_WEIGHTD_IPC_ABI_VERSION` whenever the mesh layout changes.
 - The family wrappers default to `/run/sparkpipe-weightd-shared/weightd.sock`,
   which no Spark provides.
 - `tools/devcycle/lane_assignments.json` and `lane_budget_calc.py` still

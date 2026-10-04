@@ -544,6 +544,13 @@ void spark_stub_ibv_poll_cq_inject(int status, uint32_t count)
     }
 }
 
+void spark_stub_ibv_set_qp_state(uint32_t qpn, int state)
+{
+    SparkStubIbvQp *qp = spark_stub_ibv_qp_find(qpn);
+    if (qp != 0)
+        qp->state = state;
+}
+
 int spark_stub_ibv_qp_state(uint32_t qpn)
 {
     SparkStubIbvQp *qp = spark_stub_ibv_qp_find(qpn);
