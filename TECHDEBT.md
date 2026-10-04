@@ -1158,8 +1158,13 @@ Related common-code debt:
   k3 and dsv4 headers together; no k3 build includes k3's header.
 ## Runtime completion
 
-- Add bounded cancellation and drain for terminal client I/O failures so every
-  resident sequence slot is released.
+- A client that hangs up mid-reply is cancelled and drained in the host tests
+  (`test_model_api_text` client disconnect: four abandoned streams reach zero
+  live requests within 10 s and the engine keeps serving); a release that a
+  missing rank cannot take is bounded by the engine's in-flight budget, and
+  that rank's slots are cleared by the session reset on its reconnect. Not yet
+  fleet-proven: drop clients mid-stream under load on a GLM Full lane and see
+  `live_requests` return to zero with every resident slot free.
 - A failed residentd route whose driver cache abort also fails resets the
   rank's session: residentd drops the client and resets every lane before the
   next hello, and only a failed reset stops it so its unit restarts. An abort

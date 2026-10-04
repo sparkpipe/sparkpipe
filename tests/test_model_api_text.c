@@ -1035,6 +1035,33 @@ static uint32_t TestApiWaitHealthBody(const TestApiStack *stack,int status,const
 	return(0u);
 }
 
+static void TestApiClientDisconnectDrains(TestApiStack *stack)
+{
+	const char *body = "{\"prompt_token_ids\":[11,12,13],\"max_tokens\":4096,\"stream\":true}";
+	struct sockaddr_in address;
+	char request[1024],response[4096];
+	uint32_t round;
+	int fd;
+	for (round=0u; round<4u; round++)
+	{
+		fd = socket(AF_INET,SOCK_STREAM,0);
+		assert(fd >= 0);
+		memset(&address,0,sizeof(address));
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(0x7f000001u);
+		address.sin_port = htons((uint16_t)stack->api_port);
+		assert(connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0);
+		(void)snprintf(request,sizeof(request),"POST /v1/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",strlen(body),body);
+		assert(send(fd,request,strlen(request),0) == (ssize_t)strlen(request));
+		(void)recv(fd,response,64u,0);
+		close(fd);
+	}
+	assert(TestApiWaitHealthBody(stack,200,"\"live_requests\":0",10u) != 0u);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions","{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: client disconnect OK (streams whose clients hang up mid-reply are cancelled and drained to zero live requests within 10 s, and the engine keeps serving)\n");
+}
+
 static void TestApiDegradedPath(TestApiStack *stack)
 {
 	const char *flag = getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE");
@@ -1231,6 +1258,7 @@ int main(void)
 	}
 	TestApiChatDeclaredStops(&stack);
 	TestApiSamplingOptions(&stack);
+	TestApiClientDisconnectDrains(&stack);
 	TestApiDegradedPath(&stack);
 	TestApiRankLoss(&stack);
 	TestApiStopStack(&stack);
