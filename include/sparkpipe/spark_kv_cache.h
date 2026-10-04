@@ -344,6 +344,9 @@ typedef struct SparkKvCacheBlock
     uint64_t last_used_epoch;
     uintptr_t key_device_address;
     uintptr_t value_device_address;
+    uint32_t keep_priority;
+    uint32_t keep_reserved;
+    uint64_t keep_deadline_ns;
 } SparkKvCacheBlock;
 
 typedef SparkStatus (*SparkKvCacheEvictFunction)(

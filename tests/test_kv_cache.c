@@ -162,6 +162,36 @@ static void SparkTestKvEvictionBackpressurePreservesResidentOwner(void)
 	assert(fixture.evict_count == 2u);
 }
 
+static uint32_t SparkTestKvParkedBetween(uint32_t priority0,uint64_t deadline0,uint32_t priority1,uint64_t deadline1)
+{
+	SparkTestKvFixture fixture;
+	uint32_t block0,block1,block2;
+	SparkTestKvInitialize(&fixture);
+	block0 = SparkTestKvAcquire(&fixture);
+	block1 = SparkTestKvAcquire(&fixture);
+	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block0) == SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block1) == SPARK_STATUS_OK);
+	fixture.blocks[block0].keep_priority = priority0;
+	fixture.blocks[block0].keep_deadline_ns = deadline0;
+	fixture.blocks[block1].keep_priority = priority1;
+	fixture.blocks[block1].keep_deadline_ns = deadline1;
+	block2 = SparkTestKvAcquire(&fixture);
+	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2) == SPARK_STATUS_OK);
+	assert(fixture.evict_count == 1u && (fixture.evicted_logical_block == block0 || fixture.evicted_logical_block == block1));
+	return(fixture.evicted_logical_block == block0 ? 0u : 1u);
+}
+
+static void SparkTestKvParkRanksPriorityThenDeadline(void)
+{
+	assert(SparkTestKvParkedBetween(0u,0u,0u,0u) == 0u);
+	assert(SparkTestKvParkedBetween(5u,0u,1u,0u) == 1u);
+	assert(SparkTestKvParkedBetween(1u,100u,5u,0u) == 0u);
+	assert(SparkTestKvParkedBetween(3u,100u,3u,200u) == 1u);
+	assert(SparkTestKvParkedBetween(3u,0u,3u,200u) == 0u);
+	assert(SparkTestKvParkedBetween(3u,200u,3u,0u) == 1u);
+	printf("PASS kv arena parks the lowest priority, then the latest deadline, before recency\n");
+}
+
 static void SparkTestKvParkFailureKeepsPage(void)
 {
 	SparkTestKvFixture fixture;
@@ -2912,6 +2942,32 @@ static void SparkTestKvParkStallDegradesToRecompute(void)
 	printf("PASS kv park stall degrades to recompute-only: unused prefix pages are discarded, new work waits, a successful park recovers\n");
 }
 
+static void SparkTestKvAdmissionStampsKeepRank(void)
+{
+	SparkTestKvTransactions fixture;
+	SparkModelDriverCacheLane lane;
+	uint32_t page;
+	SparkTestKvTransactionsInitialize(&fixture,1u);
+	SparkTestKvPageLane(&lane,1u,0u,0u,4u);
+	SparkTestKvPagePublish(&lane,4u,0x21u);
+	SparkTestKvWritePageWithoutStore(&fixture.pages,&lane);
+	SparkTestKvPageLane(&fixture.lanes[0],1u,0u,4u,5u);
+	fixture.lanes[0].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	fixture.lanes[0].prefix_token_count = 4u;
+	SparkTestKvIdentity(&fixture.lanes[0].prefix_identity,0x21u);
+	fixture.request.priority = 7u;
+	fixture.request.deadline_time_ns = 123456789u;
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	assert(fixture.owners[0].page_count == 2u);
+	for (page=0u; page<2u; page++)
+		assert(fixture.pages.kv.arena.blocks[fixture.logical[page]].keep_priority == 7u && fixture.pages.kv.arena.blocks[fixture.logical[page]].keep_deadline_ns == 123456789u);
+	assert(SparkTestKvAbortAdmission(&fixture) == SPARK_STATUS_OK);
+	page = fixture.logical[0];
+	assert(SparkKvPageCacheReleaseLane(&fixture.pages.cache,0u,1u) == SPARK_STATUS_OK);
+	assert(fixture.pages.kv.arena.blocks[page].keep_priority == 0u && fixture.pages.kv.arena.blocks[page].keep_deadline_ns == 0u);
+	printf("PASS kv admission stamps a lane's pages with its priority and deadline, and release clears them\n");
+}
+
 int main(void)
 {
 	int32_t status;
@@ -2955,6 +3011,7 @@ int main(void)
 	SparkTestKvLogicalBlocksReuseBoundedResidentSlots();
 	SparkTestKvEvictionBackpressurePreservesResidentOwner();
 	SparkTestKvParkFailureKeepsPage();
+	SparkTestKvParkRanksPriorityThenDeadline();
 	SparkTestKvEvictionInternalErrorStaysLoud();
 	SparkTestKvPageStoreFullDiskKeepsPagesAndRecovers();
 	SparkTestKvParkSupersededByWrite();
@@ -2965,6 +3022,7 @@ int main(void)
 	SparkTestKvBackingFullIsRelieved();
 	SparkTestKvBackingFullQueuesNewWork();
 	SparkTestKvParkStallDegradesToRecompute();
+	SparkTestKvAdmissionStampsKeepRank();
 	SparkTestKvPageStoreRetiredWriteFailureReachesEvictor();
 	SparkTestKvLogicalBlockFreeListReusesReleasedHead();
 	SparkTestKvFramePinProtectsResidentBlock();

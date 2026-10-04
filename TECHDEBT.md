@@ -500,14 +500,22 @@ citations refer to that commit.
   (`modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c:1327`)
   modules keep their own anonymous page stores, so their spilled KV still dies
   with the process until they move onto the binding (B07–B11).
-- Prefix-cache eviction ranks victims by the highest priority of the requests
-  that published or reused an entry, then prefers entries the snapshot store
-  holds, then age (`SparkKvPageCacheSelectVictim`,
-  `SparkKvPageCacheResidentVictim`), but deadlines are not considered and the
-  arena's choice of which resident page to park is still reuse value and
-  recency. Close it with deadline-aware ranking, proven on the fleet by an
-  oversubscribed run with two priority classes where the higher class keeps
-  its hits and its TTFT stays flat.
+- KV eviction follows request priority and deadline.
+  - Prefix-cache entries rank by the highest priority of the requests that
+    published or reused them, then by whether the snapshot store holds
+    them, then by age (`SparkKvPageCacheSelectVictim`,
+    `SparkKvPageCacheResidentVictim`).
+  - Each admission stamps its lanes' pages with the wave's priority and
+    deadline, and a sequence's release clears them.
+  - The arena parks the lowest priority first, then the latest deadline,
+    then by reuse value and recency
+    (`SparkKvCacheBlockIsBetterEvictionVictim`).
+
+  Two limits remain: a page shared across waves keeps the stamp of the
+  last admission that used it, and the deadline is the wave's latest.
+  Not yet fleet-proven: close it with an oversubscribed run with two
+  priority classes, where the higher class keeps its hits and its TTFT
+  stays flat.
 - A full backing store queues new work instead of failing it. The page
   cache first relieves backing: it releases an idle restored page's record
   or evicts an unused entry. If the store is still full (`KV-BACKING-FULL`)

@@ -760,6 +760,8 @@ SparkStatus SparkKvCacheArenaAcquireBlock(
     arena->epoch += 1u;
     block->flags = SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED;
     block->reference_count = 0u;
+    block->keep_priority = 0u;
+    block->keep_deadline_ns = 0u;
     block->free_next = SPARK_KV_CACHE_NO_BLOCK;
     block->generation += 1u;
     block->last_used_epoch = arena->epoch;
@@ -1102,6 +1104,16 @@ static uint32_t SparkKvCacheBlockIsBetterEvictionVictim(
 {
     int64_t keepness;
 
+    if (block->keep_priority != victim->keep_priority)
+    {
+        return block->keep_priority < victim->keep_priority;
+    }
+    if (block->keep_deadline_ns != victim->keep_deadline_ns)
+    {
+        return victim->keep_deadline_ns != 0u &&
+            (block->keep_deadline_ns == 0u ||
+             block->keep_deadline_ns > victim->keep_deadline_ns);
+    }
     if (block->reference_count != victim->reference_count)
     {
         return block->reference_count < victim->reference_count;
@@ -1669,6 +1681,8 @@ SparkStatus SparkKvCacheArenaFreeBlock(
     }
     arena->epoch += 1u;
     block->flags = 0u;
+    block->keep_priority = 0u;
+    block->keep_deadline_ns = 0u;
     block->generation += 1u;
     block->last_used_epoch = arena->epoch;
     block->free_next = arena->free_logical_block_head;

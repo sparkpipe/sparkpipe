@@ -134,6 +134,7 @@ SparkStatus SparkKvPageCacheInitialize(
 static SparkStatus SparkKvPageCacheRelieveBacking(SparkKvPageCache *cache,const uint32_t *protected_pages,uint32_t protected_count);
 static void SparkKvPageCacheBackingOutcome(SparkKvPageCache *cache,SparkStatus status,uint32_t backing_full);
 static uint32_t SparkKvPageCacheDiscardInsteadOfSpill(SparkKvPageCache *cache,uint64_t slots_needed);
+static void SparkKvPageCacheClearSequenceKeep(SparkKvPageCache *cache,const SparkKvPageCacheSequence *sequence);
 
 static SparkStatus SparkKvPageCachePrefetchRelieved(SparkKvPageCache *cache,const uint32_t *pages,uint32_t page_count,uint32_t page)
 {
@@ -1035,6 +1036,7 @@ SparkStatus SparkKvPageCacheReleaseLane(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( cache->live_sequence_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	SparkKvPageCacheClearSequenceKeep(cache,sequence);
 	status = SparkKvPageCacheReleaseMutable(cache,sequence);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -1677,6 +1679,40 @@ SparkStatus SparkKvPageCacheBuildLaneTable(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkKvPageCacheStampKeep(SparkKvPageCache *cache,const uint32_t *logical_pages,uint32_t page_count,uint32_t priority,uint64_t deadline_ns)
+{
+	uint32_t index;
+	for (index=0u; index<page_count; index++)
+		if ( logical_pages[index] < cache->kv_cache_arena->logical_block_count )
+		{
+			cache->kv_cache_arena->blocks[logical_pages[index]].keep_priority = priority;
+			cache->kv_cache_arena->blocks[logical_pages[index]].keep_deadline_ns = deadline_ns;
+		}
+}
+
+static void SparkKvPageCacheClearSequenceKeep(SparkKvPageCache *cache,const SparkKvPageCacheSequence *sequence)
+{
+	uint32_t entry_index,index,page;
+	for (entry_index=sequence->terminal_entry_index; entry_index < cache->entry_capacity; entry_index=cache->entries[entry_index].parent_entry_index)
+	{
+		page = cache->entries[entry_index].logical_page_index;
+		if ( page < cache->kv_cache_arena->logical_block_count )
+		{
+			cache->kv_cache_arena->blocks[page].keep_priority = 0u;
+			cache->kv_cache_arena->blocks[page].keep_deadline_ns = 0u;
+		}
+	}
+	for (index=0u; index<sequence->mutable_page_count; index++)
+	{
+		page = SparkKvPageCacheMutablePage(sequence,index);
+		if ( page < cache->kv_cache_arena->logical_block_count )
+		{
+			cache->kv_cache_arena->blocks[page].keep_priority = 0u;
+			cache->kv_cache_arena->blocks[page].keep_deadline_ns = 0u;
+		}
+	}
+}
+
 static SparkStatus SparkKvPageCacheRollbackPinnedLane(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane,
@@ -1739,6 +1775,7 @@ SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
 		status = SparkKvCacheArenaPinResidentTable(cache->kv_cache_arena,logical_pages + prepared_count,(page_count - prepared_count),physical_pages + prepared_count);
 	if ( status != SPARK_STATUS_OK )
 		return(SparkKvPageCacheRollbackPinnedLane(cache,lane,logical_pages,pinned_count,mutation_flags,status));
+	SparkKvPageCacheStampKeep(cache,logical_pages,page_count,cache->admission_priority,cache->admission_deadline_ns);
 	*page_count_out = page_count;
 	*mutation_flags_out = mutation_flags;
 	return(SPARK_STATUS_OK);
@@ -2914,6 +2951,7 @@ SparkStatus SparkKvLaneTransactionsAdmit(SparkKvLaneTransactions *transactions,c
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	transactions->cache->admission_priority = request->priority;
+	transactions->cache->admission_deadline_ns = request->deadline_time_ns;
 	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 		return(request->admission_flags == 0u ? SparkKvLaneTransactionsRelease(transactions,request) : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE )
@@ -3015,6 +3053,7 @@ static SparkStatus SparkKvLaneTransactionFinish(SparkKvLaneTransactions *transac
 	{
 		lane.context_token_count += extra_tokens;
 		transactions->cache->admission_priority = owner->request.priority;
+		transactions->cache->admission_deadline_ns = owner->request.deadline_time_ns;
 		status = SparkKvPageCacheCompleteLane(transactions->cache,&lane);
 		if ( status == SPARK_STATUS_OK && (lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u )
 			SparkKvPageCacheMarkSave(transactions->cache,resident_slot);
