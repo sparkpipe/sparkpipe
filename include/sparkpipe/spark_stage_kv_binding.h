@@ -108,6 +108,34 @@ typedef struct SparkStageKvLayoutIdentity
 	uint64_t state_page_bytes;
 } SparkStageKvLayoutIdentity;
 
+#define SPARK_STAGE_KV_RECURRENT_TO_BUFFER 1u
+#define SPARK_STAGE_KV_RECURRENT_FROM_BUFFER 2u
+#define SPARK_STAGE_KV_LANE_STATE_RESTORE_READY 0x1u
+#define SPARK_STAGE_KV_LANE_STATE_CAPTURED 0x2u
+#define SPARK_STAGE_KV_LANE_STATE_LOADING 0x4u
+
+typedef SparkStatus (*SparkStageKvRecurrentCopyFunction)(void *context,uint32_t direction,uint32_t resident_slot,void *buffer,uint64_t bytes,void *stream);
+
+typedef struct SparkStageKvRecurrent
+{
+	uint64_t lane_bytes;
+	SparkStageKvRecurrentCopyFunction copy;
+	void *context;
+} SparkStageKvRecurrent;
+
+typedef struct SparkStageKvRecurrentCounters
+{
+	uint64_t restores;
+	uint64_t restore_bytes;
+	uint64_t restore_ns;
+	uint64_t captures;
+	uint64_t capture_bytes;
+	uint64_t capture_ns;
+} SparkStageKvRecurrentCounters;
+
+typedef struct SparkStageKvBinding SparkStageKvBinding;
+typedef SparkStatus (*SparkStageKvInspectFunction)(void *context,const SparkStageKvBinding *binding);
+
 typedef struct SparkStageKvConfiguration
 {
 	SparkStageModuleLedger *ledger;
@@ -137,9 +165,10 @@ typedef struct SparkStageKvConfiguration
 	uint32_t expert_codec;
 	uint32_t kv_codec;
 	const void *driver_symbol;
+	SparkStageKvRecurrent recurrent;
 } SparkStageKvConfiguration;
 
-typedef struct SparkStageKvBinding
+struct SparkStageKvBinding
 {
 	const char *module_tag;
 	uint32_t block_token_count;
@@ -211,7 +240,22 @@ typedef struct SparkStageKvBinding
 	uint8_t *snapshot_page;
 	uint32_t *snapshot_pending;
 	SparkKvPageCacheSaveOrder *save_order;
-} SparkStageKvBinding;
+	SparkStageKvRecurrent recurrent;
+	SparkKvPageStore state_store;
+	uint8_t *state_staging;
+	uint8_t *lane_state;
+	uint8_t *lane_state_flags;
+	uint8_t *snapshot_state;
+	uint32_t state_slot_count;
+	uint32_t reserved_recurrent;
+	uint64_t page_store_backing_bytes;
+	atomic_ullong recurrent_restores;
+	atomic_ullong recurrent_restore_bytes;
+	atomic_ullong recurrent_restore_ns;
+	atomic_ullong recurrent_captures;
+	atomic_ullong recurrent_capture_bytes;
+	atomic_ullong recurrent_capture_ns;
+};
 
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration);
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding);
@@ -222,6 +266,13 @@ SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const ato
 SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *next_positions);
 SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
 SparkStatus SparkStageKvBindingFinishAsync(SparkStageKvBinding *binding,uint32_t dispatch_slot,const SparkStageKvBindingCompletion *completion);
+SparkStatus SparkStageKvBindingFinishWait(SparkStageKvBinding *binding,uint32_t dispatch_slot,const SparkStageKvBindingCompletion *completion);
+SparkStatus SparkStageKvBindingRecurrentRestore(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
+SparkStatus SparkStageKvBindingRecurrentCapture(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
+SparkStatus SparkStageKvBindingCopyPage(const SparkStageKvBinding *binding,uint32_t direction,uintptr_t device_address,void *host,uint64_t bytes);
+SparkStatus SparkStageKvBindingInspect(SparkStageKvBinding *binding,SparkStageKvInspectFunction inspect,void *context);
+uint32_t SparkStageKvBindingResetIsNew(SparkStageKvBinding *binding,uint64_t generation);
+void SparkStageKvBindingTakeRecurrentCounters(SparkStageKvBinding *binding,SparkStageKvRecurrentCounters *counters);
 SparkStatus SparkStageKvBindingFenceExecution(SparkStageKvBinding *binding,void *stream);
 SparkStatus SparkStageKvBindingQuiesce(SparkStageKvBinding *binding,uint64_t timeout_ns);
 void SparkStageKvBindingStop(SparkStageKvBinding *binding);

@@ -68,8 +68,19 @@ def main():
     if fence < 0 or upload < 0 or fence > upload:
         failures.append("SparkGlm52ExecuteBatch does not fence the execution stream before uploading page tables")
     glm5_next = GLM5_NEXT.read_text()
-    if "SparkKvDeviceCopierFence(" not in body(glm5_next, "SparkGlm5NextStartSlot"):
-        failures.append("SparkGlm5NextStartSlot does not fence the execution stream on the KV copier")
+    start_slot = body(glm5_next, "SparkGlm5NextStartSlot")
+    fence, start = start_slot.find("SparkStageKvBindingFenceExecution("), start_slot.find("SparkGlm5NextStartClaimedBatch(")
+    if fence < 0 or start < 0 or fence > start:
+        failures.append("SparkGlm5NextStartSlot does not fence the execution stream on the binding before starting the batch")
+    claimed = body(glm5_next, "SparkGlm5NextStartClaimedBatch")
+    order = [claimed.find(call) for call in ("SparkStageKvBindingClaim(", "SparkStageKvBindingRecurrentRestore(", "SparkStageKvBindingUploadPageTables(")]
+    if min(order) < 0 or order != sorted(order):
+        failures.append("SparkGlm5NextStartClaimedBatch does not claim, restore recurrent state and upload page tables in that order")
+    if "SparkStageKvBindingFinishWait(" not in body(glm5_next, "SparkGlm5NextFinishCacheLanes"):
+        failures.append("SparkGlm5NextFinishCacheLanes does not finish through SparkStageKvBindingFinishWait")
+    for private in ("SparkKvLaneTransactions", "SparkKvPageStore", "SparkKvDeviceCopier", "kv_mutex", "SparkKvBackendInitialize"):
+        if private in glm5_next:
+            failures.append(f"glm5_next still owns KV state: {private}")
     for path, text in ((GLM_STAGE, GLM_STAGE.read_text()), (GLM5_NEXT, glm5_next)):
         if "frame->execution_stream != state->execution_stream" not in text:
             failures.append(f"the frame stream check is missing from {path.relative_to(ROOT)}")

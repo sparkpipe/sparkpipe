@@ -94,6 +94,8 @@ typedef struct SparkGlm5NextResidentDecodeStageNodeContext
 	const char *tp_collective_backend_module_path;
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
+	const char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
 	uint32_t decode_split_context_threshold;
 	uint32_t flags;
 #ifdef SPARK_SCORE_DUMP
