@@ -1,6 +1,7 @@
 #include "cuda_runtime_api.h"
 #include "cuda.h"
 #include "sparkpipe/spark_tp_mesh_round_control.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1859,4 +1860,27 @@ cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,void *band,
     cuda_stub_mesh_hardware_operation = operation;
     cuda_stub_mesh_hardware_logical_rows = logical_rows;
     return cuda_stub_mesh_hardware_launch_result;
+}
+
+void SparkTpDeviceCollectiveRegisterLaunchers(const SparkTpMeshLaunchers *launchers) __attribute__((weak));
+
+static const SparkTpMeshLaunchers SparkTpMeshStubLaunchers =
+{
+    SPARK_TP_MESH_LAUNCHERS_ABI_VERSION,
+    (uint32_t)sizeof(SparkTpMeshLaunchers),
+    (SparkTpMeshCopyDownFunction)SparkTpLaunchMeshCopyDown,
+    (SparkTpMeshPublishFunction)SparkTpLaunchMeshPublish,
+    (SparkTpMeshTreeFunction)SparkTpLaunchMeshTree,
+    (SparkTpMeshHardwarePrepareFunction)SparkTpMeshHardwarePrepare,
+    (SparkTpMeshHardwareFunction)SparkTpLaunchMeshHardware,
+    (SparkTpMeshSeqPadFunction)SparkTpLaunchMeshSeqPad,
+    (SparkTpMeshGuardFunction)SparkTpLaunchMeshGuard,
+    (SparkTpMeshWaitFunction)SparkTpLaunchMeshWait,
+    (SparkTpMeshRoundLoopFunction)SparkTpLaunchMeshRoundLoop
+};
+
+__attribute__((constructor)) static void SparkTpMeshStubLaunchersInstall(void)
+{
+    if ( SparkTpDeviceCollectiveRegisterLaunchers != 0 )
+        SparkTpDeviceCollectiveRegisterLaunchers(&SparkTpMeshStubLaunchers);
 }

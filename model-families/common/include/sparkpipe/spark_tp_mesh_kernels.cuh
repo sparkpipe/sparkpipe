@@ -8,6 +8,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include <stdio.h>
 #include "sparkpipe/spark_tp_mesh_round_control.h"
+#include "sparkpipe/spark_tp_device_collective.h"
 #define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V14-WIDE-COPIES"
 #define SPARK_TP_MESH_ERROR_PARITY_MISMATCH 0xFFFFFFFFFF000000ull
 #define SPARK_TP_MESH_ERROR_CANCELLED 0xFFFFFFFFFE000000ull
@@ -1797,6 +1798,29 @@ extern "C" cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,
         }
     }
     return cudaSuccess;
+}
+
+extern "C" void SparkTpDeviceCollectiveRegisterLaunchers(const SparkTpMeshLaunchers *launchers) __attribute__((weak));
+
+static const SparkTpMeshLaunchers SparkTpMeshKernelLaunchers =
+{
+    SPARK_TP_MESH_LAUNCHERS_ABI_VERSION,
+    (uint32_t)sizeof(SparkTpMeshLaunchers),
+    reinterpret_cast<SparkTpMeshCopyDownFunction>(SparkTpLaunchMeshCopyDown),
+    reinterpret_cast<SparkTpMeshPublishFunction>(SparkTpLaunchMeshPublish),
+    reinterpret_cast<SparkTpMeshTreeFunction>(SparkTpLaunchMeshTree),
+    reinterpret_cast<SparkTpMeshHardwarePrepareFunction>(SparkTpMeshHardwarePrepare),
+    reinterpret_cast<SparkTpMeshHardwareFunction>(SparkTpLaunchMeshHardware),
+    reinterpret_cast<SparkTpMeshSeqPadFunction>(SparkTpLaunchMeshSeqPad),
+    reinterpret_cast<SparkTpMeshGuardFunction>(SparkTpLaunchMeshGuard),
+    reinterpret_cast<SparkTpMeshWaitFunction>(SparkTpLaunchMeshWait),
+    reinterpret_cast<SparkTpMeshRoundLoopFunction>(SparkTpLaunchMeshRoundLoop)
+};
+
+__attribute__((constructor)) static void SparkTpMeshKernelLaunchersInstall(void)
+{
+    if ( SparkTpDeviceCollectiveRegisterLaunchers != 0 )
+        SparkTpDeviceCollectiveRegisterLaunchers(&SparkTpMeshKernelLaunchers);
 }
 
 #endif
