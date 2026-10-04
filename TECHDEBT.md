@@ -236,10 +236,6 @@ citations refer to that commit.
   lane's block end is also still a separate publish frame. Publishing block
   checkpoints from inside a chain would keep chains at 8 steps and remove
   those frames.
-- glm5_next: a decode chain holds the rank for all of its steps, so a prefill
-  chunk that arrives mid-chain waits up to 8 decode steps. The engine picks K
-  without looking at queued prefill; shorten chains while prefill waits if
-  time to first token suffers.
 - Validation and admission fanout run on the per-frame path (perf-program
   rock R5, from the archived `PERF_PROGRAM2.md`): 12 + 9 `Validate` call
   sites remain on the client paths, and the engine SHA-probes inside
@@ -1131,8 +1127,6 @@ Related common-code debt:
 - Batch weight amortization (perf-program rock R4): take the WS/native path
   from two rows up, with k-tile pipelining, so a batch reads each weight
   once.
-- `SparkContinuousBatchStep` (`scheduler/continuous_batch.c`) has no caller
-  outside `tests/test_continuous_batch.c`. Delete it or wire it.
 - Select the smallest validated specialization for effective rows, including
   speculative verification rows, while preserving sequence and KV identity.
 - Qualify mixed arrivals, priorities, prompt lengths, shared prefixes, cache
@@ -1213,41 +1207,6 @@ Related common-code debt:
   spilled-prefix requests whose admitted restore bytes per second stay at or
   under the measured rate while the decode step time of running lanes is
   unchanged.
-- Left out on purpose (2026-10-02): `SparkModelBatchRefreshQueuedPrefix`
-  (`runtime/model_batch_engine.c:1578-1583`) fails a request with
-  `CAPACITY_EXCEEDED` when its cached prefix ends mid-block and the matched
-  pages, plus a copy page and a new page, exceed `kv_physical_page_capacity`.
-  It does not fall back to the block-aligned part of the match, or to
-  recomputation, so a request that fits the pool when computed is lost (I20,
-  I23). `tests/test_model_batch_engine_mock.c:760-791` asserts this failure as
-  expected. The fix: when the copy page does not fit, truncate the match to
-  whole blocks (or to zero), recompute the tail and report the smaller
-  `cached_tokens`. It is closed by a fleet run on a lane with a minimal
-  physical page pool in which every repeated partial-block prompt completes.
-- Left out on purpose (2026-10-02): When a rank rejects a submission with
-  `CAPACITY_EXCEEDED`, the batch engine fails every request in it
-  (`runtime/model_batch_engine.c:882-899`). Only `BUSY`, or `IO_ERROR` while
-  ranks are disconnected, is retried. The engine sizes prefill spans from the
-  block boundary and the `MULTI_BLOCK_PREFILL` bit alone
-  (`SparkModelBatchPrefillSpan`, `:1591-1602`). It never shrinks a refused
-  span or requeues it after an eviction, so a request that fits in smaller
-  spans is lost (I20). The fix: requeue a capacity-refused prefill with a
-  smaller span, and fail only a one-block span that cannot fit an empty pool.
-  It is closed by a fleet run with long prompts on a small physical pool in
-  which every request completes.
-- Left out on purpose (2026-10-02): `SparkModelBatchPrefillSpan`
-  (`runtime/model_batch_engine.c:1600-1602`) lets a descriptor bit choose
-  common chunking policy. With
-  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL`, a span grows
-  to `max_prefill_rows`. Without it, every prefill span stops at the next
-  cache block boundary. Only glm52 declares the bit
-  (`spark_glm52_serving_adapter.c:184`), so glm5_next prefills one block per
-  span whatever the deployment's prefill row bound (I02, I20). The fix: remove
-  the bit, size spans from `max_prefill_rows` and page demand for every
-  adapter, and require every adapter to execute multi-block spans. It is
-  closed by a glm5_next fleet run with output tokens identical to the
-  one-block baseline and TTFT recorded for both.
-
 ## Model contracts
 
 - Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`

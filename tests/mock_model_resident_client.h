@@ -40,6 +40,7 @@ uint32_t MockResidentClientLastLane(uint32_t stage_index,SparkModelServingLane *
 uint32_t MockResidentClientLaneLog(uint32_t index,SparkModelServingLane *lane);
 uint32_t MockResidentClientIdentityLog(uint32_t index,SparkModelServingCacheIdentity *identity);
 void MockResidentClientScriptSubmitStatus(uint32_t stage_index, SparkStatus status);
+void MockResidentClientScriptSubmitStatusOnce(uint32_t stage_index, SparkStatus status);
 void MockResidentClientScriptPrefixResult(uint32_t stage_index, SparkStatus status, uint32_t count);
 void MockResidentClientScriptStalePrefixRequest(uint32_t stage_index, uint64_t request_id);
 void MockResidentClientFireResult(uint32_t stage_index, uint64_t submission_id, SparkStatus status);

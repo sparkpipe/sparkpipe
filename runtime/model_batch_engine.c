@@ -45,6 +45,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t cancel_pending;
 	uint32_t resident_bound;
 	uint32_t busy_restore_count;
+	uint32_t prefill_span_limit;
 	uint32_t busy_retry_backoff_ms;
 	uint64_t busy_retry_not_before_ns;
 	uint32_t resident_sequence_slot;
@@ -602,6 +603,32 @@ static void SparkModelBatchEmit(
 	engine->event_function(engine->event_context,&event);
 }
 
+static uint32_t SparkModelBatchPrefillCanStart(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request)
+{
+	uint32_t pages;
+	if ( request->state != SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL )
+		return(0u);
+	if ( request->resident_sequence_slot != SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT )
+		return(1u);
+	if ( engine->free_resident_slot_head == SPARK_MODEL_BATCH_NO_SLOT )
+		return(0u);
+	if ( engine->kv_physical_page_capacity == 0u )
+		return(1u);
+	pages = SparkModelBatchSchedulerRequestPageCount(engine->cache_block_token_count,request->prompt_token_count,request->output_token_budget);
+	return(pages <= engine->kv_physical_page_capacity && engine->reserved_kv_page_count <= engine->kv_physical_page_capacity - pages ? 1u : 0u);
+}
+
+static uint32_t SparkModelBatchPrefillWaiting(const SparkModelBatchEngine *engine)
+{
+	uint32_t slot;
+	for (slot=0u; slot<engine->request_capacity; slot++)
+		if ( SparkModelBatchPrefillCanStart(engine,&engine->requests[slot]) != 0u )
+			return(1u);
+	return(0u);
+}
+
 static uint32_t SparkModelBatchBindResidentSlot(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request)
@@ -898,14 +925,28 @@ static void SparkModelBatchRejectedResidency(
 		request->resident_bound = 1u;
 }
 
+static uint32_t SparkModelBatchShrinkPrefillSpan(
+	const SparkModelBatchEngine *engine,
+	SparkModelBatchRequestState *request,
+	uint32_t refused_span)
+{
+	uint32_t block_remaining = engine->cache_block_token_count -
+		(request->computed_prompt_token_count % engine->cache_block_token_count);
+	if ( refused_span <= block_remaining )
+		return(0u);
+	request->prefill_span_limit = refused_span / 2u > block_remaining ? refused_span / 2u : block_remaining;
+	return(1u);
+}
+
 static void SparkModelBatchHandleRejected(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchSubmissionState *submission,
 	SparkStatus status)
 {
-	uint32_t *request_slots;
+	uint32_t *request_slots,*prefill_counts;
 	uint32_t lane;
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
+	prefill_counts = SparkModelBatchSubmissionPrefillCounts(engine,submission);
 	if ( (uint32_t)status >= SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT )
 	{
 		fprintf(stderr,"batch_rejected unknown status=%u submission=%llu\n",(uint32_t)status,(unsigned long long)submission->submission_id);
@@ -933,7 +974,14 @@ static void SparkModelBatchHandleRejected(
 		{
 		SparkModelBatchRequestState *request;
 		request = &engine->requests[request_slots[lane]];
-		if ( (status == SPARK_STATUS_BUSY || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) && request->busy_restore_count < 10000u )
+		if ( status == SPARK_STATUS_CAPACITY_EXCEEDED && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL &&
+			SparkModelBatchShrinkPrefillSpan(engine,request,prefill_counts[lane]) != 0u )
+		{
+			fprintf(stderr,"batch_prefill_span_shrunk request=%llu span=%u limit=%u\n",(unsigned long long)request->request_id,prefill_counts[lane],request->prefill_span_limit);
+			request->busy_retry_not_before_ns = 0u;
+			SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
+		}
+		else if ( (status == SPARK_STATUS_BUSY || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) && request->busy_restore_count < 10000u )
 		{
 			uint64_t now = SparkModelBatchNowNs();
 			request->busy_restore_count++;
@@ -1714,7 +1762,7 @@ static void SparkModelBatchRefreshQueuedPrefix(
 {
 	SparkPrefixCacheLookup lookup;
 	SparkStatus status;
-	uint32_t slot;
+	uint32_t aligned,slot;
 	if ( request->computed_prompt_token_count != 0u ||
 		request->cache_lookup_epoch == engine->cache_publication_epoch )
 		return;
@@ -1723,17 +1771,18 @@ static void SparkModelBatchRefreshQueuedPrefix(
 	status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
 		request->sequence_id,SparkModelBatchRequestTokens(engine,slot),
 		request->prompt_token_count,&lookup);
-	if ( status == SPARK_STATUS_OK )
+	while ( status == SPARK_STATUS_OK && lookup.matched_token_count % engine->cache_block_token_count != 0u &&
+		lookup.matched_token_count / engine->cache_block_token_count + 2u > engine->kv_physical_page_capacity )
 	{
-		if ( lookup.matched_token_count % engine->cache_block_token_count != 0u &&
-			lookup.matched_token_count / engine->cache_block_token_count + 2u > engine->kv_physical_page_capacity )
-		{
-			SparkModelBatchFailRequest(engine,request,SPARK_STATUS_CAPACITY_EXCEEDED);
-			return;
-		}
+		aligned = lookup.matched_token_count - lookup.matched_token_count % engine->cache_block_token_count;
+		memset(&lookup,0,sizeof(lookup));
+		if ( aligned != 0u )
+			status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
+				request->sequence_id,SparkModelBatchRequestTokens(engine,slot),aligned,&lookup);
+	}
+	if ( status == SPARK_STATUS_OK )
 		SparkModelBatchApplyPrefixLookup(engine,request,
 			SparkModelBatchRequestTokens(engine,slot),&lookup);
-	}
 	else
 		SparkModelBatchFailRequest(engine,request,status);
 }
@@ -1742,14 +1791,14 @@ static uint32_t SparkModelBatchPrefillSpan(
 	const SparkModelBatchEngine *engine,
 	const SparkModelBatchRequestState *request)
 {
-	uint32_t block_remaining,remaining,span;
+	uint32_t block_remaining,limit,remaining,span;
 	remaining = request->prompt_token_count - request->computed_prompt_token_count;
 	block_remaining = engine->cache_block_token_count -
 		(request->computed_prompt_token_count % engine->cache_block_token_count);
+	limit = request->prefill_span_limit != 0u && request->prefill_span_limit < engine->max_prefill_rows ? request->prefill_span_limit : engine->max_prefill_rows;
 	span = block_remaining;
-	if ( (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_MULTI_BLOCK_PREFILL) != 0u &&
-		engine->max_prefill_rows > block_remaining )
-		span += (engine->max_prefill_rows - block_remaining) / engine->cache_block_token_count * engine->cache_block_token_count;
+	if ( limit > block_remaining )
+		span += (limit - block_remaining) / engine->cache_block_token_count * engine->cache_block_token_count;
 	return(remaining < span ? remaining : span);
 }
 
@@ -2299,7 +2348,7 @@ static void SparkModelBatchBuildDecodeRows(
 	chain_tokens = 1u;
 	if ( (engine->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) != 0u &&
-		SparkModelBatchNeedsSingleStep(engine,lane_count) == 0u )
+		SparkModelBatchNeedsSingleStep(engine,lane_count) == 0u && SparkModelBatchPrefillWaiting(engine) == 0u )
 	{
 		chain_tokens = engine->adapter_descriptor->max_output_token_count /
 			lane_count;
