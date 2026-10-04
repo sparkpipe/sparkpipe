@@ -198,10 +198,10 @@ def prepare(spec, environment):
     require(all(any(first <= port <= last for first, last in reserved) for port in range(base, base + 3 * size + 1)), "queue does not reserve every listener")
     device = int(environment["SPARK_QUEUE_DEVICE_MEMORY_MIB"]) * 1024 * 1024
     limits = spec["budgets"]
-    require(all(isinstance(limits[key], int) and limits[key] > 0 for key in ("weightd_device_bytes", "model_device_bytes", "expert_pool_bytes", "spine_bytes")), "all device budgets must be finite and positive")
+    require(all(isinstance(limits[key], int) and limits[key] > 0 for key in ("weightd_device_bytes", "model_device_bytes", "expert_pool_bytes", "spine_bytes", "kv_reserve_bytes")), "all device budgets must be finite and positive")
     require(type(limits.get("weightd_overhead_bytes", 0)) is int and limits.get("weightd_overhead_bytes", 0) >= 0, "invalid daemon overhead budget")
     require(limits["weightd_device_bytes"] + limits.get("weightd_overhead_bytes", 0) + len(plans) * limits["model_device_bytes"] <= device, "device plan exceeds queue reservation")
-    require(limits["expert_pool_bytes"] + limits["spine_bytes"] <= limits["weightd_device_bytes"], "weightd working set exceeds ceiling")
+    require(limits["expert_pool_bytes"] + limits["spine_bytes"] + limits["kv_reserve_bytes"] <= limits["weightd_device_bytes"], "weightd working set and KV reserve exceed ceiling")
     deployment = json.loads(Path(spec["deployment"]).read_text())
     batch = json.loads(Path(spec["batch"]).read_text())
     reference = json.loads(Path(spec["reference"]).read_text())
@@ -343,7 +343,7 @@ def run(spec):
                SPARK_WEIGHTD_DEVICE_BYTES_MAX=str(limits["weightd_device_bytes"]),
                SPARK_WEIGHTD_EXPERT_POOL_BYTES=str(limits["expert_pool_bytes"]),
                SPARK_WEIGHTD_SPINE_BUDGET_BYTES=str(limits["spine_bytes"]),
-               SPARK_WEIGHTD_KV_RESERVE_BYTES="0", SPARK_WEIGHTD_MESH_DIR=str(root / "mesh"),
+               SPARK_WEIGHTD_KV_RESERVE_BYTES=str(limits["kv_reserve_bytes"]), SPARK_WEIGHTD_MESH_DIR=str(root / "mesh"),
                SPARK_WEIGHTD_LATCH_PORT=str(spec["port_base"] + 3 * len(hosts)))
     owned = {
         "SPARK_WEIGHTD_ATTACH", "SPARK_WEIGHTD_SOCKET", "SPARK_WEIGHTD_DEVICE_BYTES_MAX",

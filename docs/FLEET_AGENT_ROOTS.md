@@ -59,6 +59,20 @@ in the env files.
 A release that changes `agent.env`, `config/env_*.env` or
 `config/rank_index_*` restarts the root.
 
+## Node KV reserve
+
+weightd owns the KV device memory of every engine that uses the common KV
+binding (GLM Full, GLM Flash, K3): each engine maps one weightd KV pool, and
+weightd admits pools only inside `SPARK_WEIGHTD_KV_RESERVE_BYTES`, carved out
+of `SPARK_WEIGHTD_DEVICE_BYTES_MAX` (weight arenas get the rest). The agent
+passes every `SPARK_WEIGHTD_*` variable in its own environment to weightd, so
+set the reserve in the agent unit's environment on every node. Size it to at
+least the sum of the `device_bytes` that each resident engine logs on its
+`kv pool weightd` line. Without a reserve those engines refuse to load. A pool
+stays in weightd when its engine stops; a clean engine restart reattaches it
+and adopts the sealed resident prefix pages, and detached pools are evicted
+only when a new pool needs the room.
+
 ## Start gates
 
 Before a dev root starts (at boot, after a crash, after a release) the agent

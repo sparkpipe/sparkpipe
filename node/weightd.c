@@ -460,8 +460,10 @@ int main(int argument_count, char **arguments)
         }
     }
 
-    printf("spark_weightd ready unix=%s ceiling=%llu\n",
-        socket_path, (unsigned long long)device_bytes_max);
+    printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu\n",
+        socket_path, (unsigned long long)device_bytes_max,
+        (unsigned long long)kv_reserve_bytes,
+        (unsigned long long)(device_bytes_max - kv_reserve_bytes));
     fflush(stdout);
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);

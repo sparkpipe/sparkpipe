@@ -386,21 +386,6 @@ citations refer to that commit.
   Name the KV partition in the deployment (mount point or device) and refuse a
   backing or snapshot directory on any other filesystem, proven on one Spark
   by loading against a directory off the partition.
-- Left out on purpose (2026-10-02): weightd accepts a KV reserve and never
-  applies it. `--kv-reserve-bytes` and `SPARK_WEIGHTD_KV_RESERVE_BYTES` are
-  parsed (`node/weightd.c:175-186`, `:344-356`), checked only against the
-  ceiling (`:359-366`) and copied into
-  `SparkWeightdServerConfig.kv_reserve_bytes` (`:371`).
-  `runtime/spark_weightd.c` never reads that field: arena and expert-pool
-  admission compares against `device_bytes_max` alone
-  (`runtime/spark_weightd.c:961-962`, `:1399-1400`, `:1784-1785`). An operator
-  who sets a reserve expects device memory to be held back for KV, but weightd
-  can lease all of it to weights, and the engine's KV `cudaMalloc` then fails
-  or crowds out co-resident drivers. Close it by subtracting the reserve from
-  the admission ceiling, or by removing the flag until weightd owns KV pools.
-  The node proof is a weightd started with a reserve that refuses arena growth
-  past `device_bytes_max - kv_reserve_bytes` while the engine's KV allocation
-  succeeds.
 ## KV sharding
 
 - Left out on purpose (2026-10-02): GLM-5.3 Flash (glm5_next) requires
@@ -412,8 +397,11 @@ citations refer to that commit.
   README:268-274. Close it by extending the context split to degrees 2 and 4,
   proven by a TP4xPP4 fleet run with T1 parity. GLM-5.3 Full: see the glm52
   entry below.
-- Replace per-driver KV and index pools with one node-level pool shared by
-  all resident drivers, admitted against resident demand.
+- Each engine's KV pool lives in weightd under one node budget
+  (`--kv-reserve-bytes`), but the budget is a static carve-out and pages do not
+  move between engines: an idle engine's pool cannot lend pages to a busy one.
+  Admit pool growth and shrink against resident demand across drivers, proven
+  by two co-resident engines whose pools resize under load.
 - Left out on purpose (2026-10-03): GLM-5.3 Full (glm52) splits every
   sequence's latent KV and DSA index keys across the TP ranks by context
   (owner of position p is p % tp; `SparkGlm52ModuleConfigure`, binding
@@ -449,22 +437,15 @@ citations refer to that commit.
   multiple of the context-split degree (refused at allocation otherwise).
   Still open: fetching only the selected union's latents, once its size is
   measured on the fleet. Scatter waves are capped at 64 rows.
-- Left out on purpose (2026-10-02): KV memory is owned by each engine, not by
-  the node. `SparkStageKvBindingInitialize` allocates the KV regions and the
-  page table with `cudaMalloc` through the module's own ledger
-  (`runtime/stage_kv_binding.c:231`, `:234`;
-  `runtime/stage_module_common.c:744-786`). The backing directory reaches the
-  binding through the driver's adapter and module
-  (`spark_glm52_serving_adapter.c:666-667`,
-  `spark_glm52_resident_decode_stage_module.c:327-328`). weightd has no KV
-  pool, lease or prefix-share code (`runtime/spark_weightd.c`,
-  `node/weightd*.c`). The pools die with residentd, so a restart loses every
-  resident prefix, co-resident drivers cannot share KV memory, and no
-  node-wide KV budget is enforced across engines. Close it by having weightd
-  own KV pools, leases, refcounted prefix shares, copy-on-write forks and
-  per-node budgets, with the binding as its client. The fleet proof is a
-  residentd restart that reattaches the device pages and serves a prefix hit
-  with no NVMe reads, with the per-engine private KV bytes reported as zero.
+- Left out on purpose (2026-10-04): weightd owns each engine's KV pool
+  (`SparkWeightdKvPoolMap`, `runtime/spark_weightd_kv_pool.c`; the binding
+  carves its regions and page table from it), keeps it across an engine
+  restart and lets a clean restart adopt the sealed resident prefix pages, but
+  pools are private to one engine: there are no cross-engine leases,
+  refcounted prefix shares or copy-on-write forks, so two co-resident engines
+  serving the same model hold duplicate prefixes. Close it with shared pages
+  in weightd that several bindings map read-only, proven by two engines on one
+  node serving one prefix from one set of device pages.
 
 ## KV tiers
 
