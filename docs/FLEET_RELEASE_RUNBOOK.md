@@ -662,7 +662,8 @@ cd ~/g53-api-build-$SHA
 make -j8 build/sparkpipe_model_api
 make -C modules/glm5_next_resident_decode_stage adapter EXPERT_CODEC=fp8 \
     MODEL_REVISION=84c6a6aa9497188e15a635ba793b0f95a79b1033 \
-    CONTRACT_SHA256=$(sha256sum model_contracts/glm53_flash_authoritative.json | cut -d' ' -f1)
+    CONTRACT_SHA256=$(sha256sum model_contracts/glm53_flash_authoritative.json | cut -d' ' -f1) \
+    MODEL_DESCRIPTION=$PWD/examples/model_descriptions/glm5_next_resident_decode_stage_fp8_firmware.json
 ```
 
 `MODEL_REVISION` and `CONTRACT_SHA256` must be the values of the aarch64 build (`glm5_next_build_release.sh:7`,

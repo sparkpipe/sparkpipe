@@ -128,5 +128,6 @@ validate_mtp_parity: require_cuda_target $(MODULE_ARCHIVE)
 		$(VALIDATION_CONFIGURATION_SHA256) \
 		$(MODULE_ARCHIVE)
 
+MODEL_DESCRIPTION_SHA256 = $(if $(MODEL_DESCRIPTION),$(shell python3 -c 'import hashlib; print(hashlib.sha256(open("$(MODEL_DESCRIPTION)","rb").read()).hexdigest())'),$(error MODEL_DESCRIPTION is required to build the adapter: the firmware model description the driver is compiled from))
 ADAPTER_SOURCE := source/spark_glm5_next_serving_adapter.c
-ADAPTER_FLAGS = $(ADAPTER_VARIANT_FLAGS)
+ADAPTER_FLAGS = $(ADAPTER_VARIANT_FLAGS) -DGLM5_NEXT_MODEL_DESCRIPTION_SHA256=\"$(MODEL_DESCRIPTION_SHA256)\"

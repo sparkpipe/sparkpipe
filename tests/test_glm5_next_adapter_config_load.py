@@ -511,6 +511,7 @@ def main() -> int:
                "-DGLM5_NEXT_EXPERT_CODEC_NAME=\"fp8\"",
                "-DGLM5_NEXT_MODEL_REVISION=\"" + revision + "\"",
                "-DGLM5_NEXT_CONTRACT_SHA256=\"" + contract_sha + "\"",
+               "-DGLM5_NEXT_MODEL_DESCRIPTION_SHA256=\"" + hashlib.sha256((ROOT / "examples/model_descriptions/glm5_next_resident_decode_stage_fp8_firmware.json").read_bytes()).hexdigest() + "\"",
                str(harness),
                *[str(path) for path in archives],
                "-o", str(binary), "-ldl", "-lpthread"]

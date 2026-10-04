@@ -662,7 +662,8 @@ static SparkStatus SparkGlm5NextServingLoadDriver(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	descriptor = state->driver.interface->descriptor;
-	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM5_NEXT_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET) != 0 )
+	if ( descriptor == 0 || strcmp(descriptor->model_id,SPARK_GLM5_NEXT_SERVING_DRIVER_MODEL_ID) != 0 || strcmp(descriptor->model_revision,GLM5_NEXT_MODEL_REVISION) != 0 || strcmp(descriptor->stage_name,SPARK_GLM5_NEXT_SERVING_STAGE_NAME) != 0 || strcmp(descriptor->target,SPARK_GLM5_NEXT_SERVING_TARGET) != 0 ||
+		descriptor->model_description_sha256 == 0 || strcmp(descriptor->model_description_sha256,GLM5_NEXT_MODEL_DESCRIPTION_SHA256) != 0 )
 		return(SPARK_STATUS_TARGET_MISMATCH);
 	state->program = SparkFindLoadedModelDriverProgram(&state->driver,configuration->driver_program_name);
 	if ( state->program == 0 )
