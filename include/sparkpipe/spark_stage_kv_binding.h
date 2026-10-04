@@ -30,7 +30,14 @@
 #define SPARK_STAGE_KV_LOCK_SITE_FINISH 4u
 #define SPARK_STAGE_KV_LOCK_SITE_PUBLISH 5u
 #define SPARK_STAGE_KV_LOCK_SITE_SAVE 6u
-#define SPARK_STAGE_KV_LOCK_SITE_COUNT 7u
+#define SPARK_STAGE_KV_LOCK_SITE_RESTORE 7u
+#define SPARK_STAGE_KV_LOCK_SITE_COUNT 8u
+
+#define SPARK_STAGE_KV_RESTORE_SLOTS 16u
+#define SPARK_STAGE_KV_RESTORE_FREE 0u
+#define SPARK_STAGE_KV_RESTORE_QUEUED 1u
+#define SPARK_STAGE_KV_RESTORE_RUNNING 2u
+#define SPARK_STAGE_KV_RESTORE_DONE 3u
 
 typedef struct SparkStageKvLockSite
 {
@@ -149,6 +156,16 @@ typedef struct SparkStageKvPoolSeal
 	uint64_t page_bytes;
 } SparkStageKvPoolSeal;
 
+typedef struct SparkStageKvRestoreSlot
+{
+	SparkModelDriverCacheIdentity identity;
+	uint32_t token_count;
+	uint32_t state;
+	SparkStatus status;
+	uint32_t reserved0;
+	uint64_t done_ns;
+} SparkStageKvRestoreSlot;
+
 typedef struct SparkStageKvBinding SparkStageKvBinding;
 typedef SparkStatus (*SparkStageKvInspectFunction)(void *context,const SparkStageKvBinding *binding);
 
@@ -241,6 +258,17 @@ struct SparkStageKvBinding
 	pthread_cond_t save_idle;
 	pthread_t save_thread;
 	uint32_t save_started;
+	pthread_cond_t restore_ready;
+	pthread_t restore_thread;
+	uint32_t restore_started;
+	uint32_t restore_stop;
+	uint32_t restore_ready_initialized;
+	uint32_t reserved_restore;
+	SparkStageKvRestoreSlot restores[SPARK_STAGE_KV_RESTORE_SLOTS];
+	SparkKvPageCacheRestoreJob restore_job;
+	uint64_t restore_jobs;
+	uint64_t restore_busy_answers;
+	uint64_t restore_imported_pages;
 	uint32_t save_stop;
 	uint32_t save_running;
 	uint32_t sync_initialized;

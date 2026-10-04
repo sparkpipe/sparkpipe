@@ -479,10 +479,11 @@ static void SnapTestPageCacheRoundTrip(const char *directory)
 	CHECK(SparkKvSnapshotPath(&store,&key,path,sizeof(path)) == SPARK_STATUS_OK);
 	SnapFlip(path,SPARK_KV_SNAPSHOT_ALIGNMENT * 2u + 3u);
 	CHECK(SparkKvPageCacheRestorePrefix(&fresh.cache,&identity,9u) == SPARK_STATUS_NOT_FOUND);
-	CHECK(SnapEntryCount(&fresh) == 0u && SnapAllocatedPages(&fresh) == 0u && fresh.cache.lru_head == SPARK_KV_PAGE_CACHE_NO_INDEX && fresh.snapshot.restore_failure_count == 0u && fresh.snapshot.restore_corrupt_count == 1u && fresh.snapshot.restore_miss_count == 1u);
+	CHECK(SnapEntryCount(&fresh) == 1u && SnapAllocatedPages(&fresh) == 1u && fresh.cache.lru_head != SPARK_KV_PAGE_CACHE_NO_INDEX && fresh.entries[fresh.cache.lru_head].token_count == 4u);
+	CHECK(fresh.snapshot.restore_failure_count == 0u && fresh.snapshot.restore_corrupt_count == 1u && fresh.snapshot.restore_miss_count == 1u && fresh.snapshot.restore_page_count == 1u);
 	CHECK(access(path,F_OK) != 0 && store.checksum_failure_count == 1u);
 	CHECK(SparkKvPageCacheRestorePrefix(&fresh.cache,&identity,9u) == SPARK_STATUS_NOT_FOUND);
-	CHECK(SnapEntryCount(&fresh) == 0u && SnapAllocatedPages(&fresh) == 0u);
+	CHECK(SnapEntryCount(&fresh) == 1u && SnapAllocatedPages(&fresh) == 1u && fresh.cache.entries[fresh.cache.lru_head].reference_count == 0u);
 	SnapFixtureClose(&fresh);
 	SparkKvSnapshotStoreClose(&store);
 }

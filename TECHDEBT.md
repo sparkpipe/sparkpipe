@@ -590,12 +590,6 @@ citations refer to that commit.
   spent and reported in the wave timeline, proven on one Spark by a run with a
   small budget that reports the write rate, stops spilling at the limit and
   keeps serving.
-- A snapshot restore runs inline in the lane prepare while the KV binding lock
-  is held (`SparkKvPageCacheRestorePrefix`, called from the prepare in
-  `cache/kv_page_cache.c`), so a restore blocks every admission and the
-  completion thread for the length of its file reads. Close it by reading
-  restores on a worker outside the lock, with prepare answering `PENDING`
-  until the pages are in place.
 - Copy-on-write of a partial prefix page needs a device copier attached to
   the page cache (`SparkKvPageCacheAttachDeviceCopy`). glm52 (through the KV
   binding) and glm5_next attach one; dsv4, laguna and ling do not, so a
@@ -904,21 +898,17 @@ Related common-code debt:
   each other. Add a gate that replays a fixed prompt set sequentially and
   concurrently and requires byte-identical completions, and run it with
   every serving release until the batch kernels pass it.
-- JIT KV admission does not prefetch (the engine's BUSY wait is now bounded
-  by the in-flight budget instead of a retry count). The serving `prefetch` hook runs
-  cache-prepare admission only when residentd receives a submission
-  (`SparkModelServingAdapterPrepareSubmission` in `node/model_residentd.c`),
-  so a restore starts at dispatch, not when the engine queues the request.
-  A submission that cannot be prepared answers `BUSY`, and the batch engine
-  retries it with a 10 to 200 ms backoff until the in-flight budget passes
-  (`runtime/model_batch_engine.c`). The deadline-ordered restore in
-  `cache/kv_pager.c` (`SparkNvmeTierRequestDemandDeadline`, called at `:691`)
-  has no production consumer: `modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c`
-  is built only into `tests/test_jit_kv_wire.c` (`Makefile:1652-1653`), not
-  into the dsv4 module, and calls no pager function; glm5_next and the common
-  binding do not use the pager. Issue restore demand from enqueue, admit
-  against restore bandwidth, and dispatch a lane only after its restore
-  completes.
+- JIT KV admission does not prefetch. Restores now run on the binding's
+  restore worker with file reads outside the binding lock
+  (`SparkStageKvBindingRestoreMain`, `runtime/stage_kv_binding.c`): the first
+  prepare of a lane whose prefix is in the snapshot store queues a job and
+  answers `BUSY`, the engine retries within its in-flight budget, and the lane
+  is admitted once the pages are in place. The job still starts only when the
+  first submission reaches residentd, not when the engine queues the request,
+  and admission does not account for restore bandwidth. Close it by sending
+  the engine's queued prefixes to the ranks as restore hints at enqueue,
+  proven on the fleet by a queued restore whose TTFT drops by the restore
+  time against a run without hints.
 - A prefix-cache hit reuses KV and KDA state computed however the source
   request ran: one-row prefill for prompt tokens, batched decode rows for
   generated ones. Until batched rows equal B1, a warm and a cold run of the

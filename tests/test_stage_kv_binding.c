@@ -629,6 +629,7 @@ static void TestLockSitesMeasured(void)
 	TestFinished finished = {0};
 	SparkStageKvBindingCounters counters;
 	atomic_uint lane_states[TEST_LANES];
+	uint32_t attempt;
 	Open();
 	(void)PublishPrefix(3u,1u,2u,0x40u,0x55u);
 	StepInit(&x,1u,0u,0u,4u);
@@ -665,6 +666,11 @@ static void TestLockSitesMeasured(void)
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingSampleCounters(&BINDING,&counters) == SPARK_STATUS_OK);
+	for (attempt=0u; counters.lock_sites[SPARK_STAGE_KV_LOCK_SITE_SAVE].count == 0u && attempt<500u; attempt++)
+	{
+		SleepMs(2u);
+		assert(SparkStageKvBindingSampleCounters(&BINDING,&counters) == SPARK_STATUS_OK);
+	}
 	assert(counters.lock_sites[SPARK_STAGE_KV_LOCK_SITE_ADMIT].count > 0u);
 	assert(counters.lock_sites[SPARK_STAGE_KV_LOCK_SITE_CLAIM].count > 0u);
 	assert(counters.lock_sites[SPARK_STAGE_KV_LOCK_SITE_FINISH].count > 0u);
@@ -866,9 +872,15 @@ static SparkStatus RestorePrefix(uint64_t sequence,uint32_t slot,uint32_t tokens
 	uint8_t bytes[TEST_PAGE_BYTES];
 	uint32_t index;
 	SparkStatus status;
+	uint32_t attempt;
 	StepInit(&step,sequence,slot,tokens,tokens);
 	StepPrefix(&step,tokens,identity);
 	status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	for (attempt=0u; status == SPARK_STATUS_BUSY && attempt<500u; attempt++)
+	{
+		SleepMs(2u);
+		status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	for (index=0u; index<page_count; index++)
@@ -899,6 +911,7 @@ static void TestSnapshotRestartRestore(void)
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	assert(BINDING.kv_pool.reattached == 0u && BINDING.kv_pool_adopted_pages == 0u);
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	assert(BINDING.restore_jobs == 1u && BINDING.restore_busy_answers >= 1u && BINDING.restore_imported_pages == 2u && BINDING.transactions.restore_async == 1u);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.attached == 1u && counters.restore_count == 1u && counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
 	assert(counters.store_file_count == 2u && counters.store_foreign_layout_file_count == 0u && counters.store_used_bytes != 0u);
