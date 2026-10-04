@@ -24,6 +24,8 @@ HOSTS = [h for h in os.environ.get(
     ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
 TP = len(HOSTS)
 ROOT_NAME = os.environ.get("GLM5_NEXT_ROOT_NAME", "glm53flash.fp8.tp16")
+KV_BACKING_MAXIMUM_BYTES = 137438953472
+KV_SNAPSHOT_MAXIMUM_BYTES = 68719476736
 RUNTIME_ROOT = os.environ.get("GLM5_NEXT_RUNTIME_ROOT",
                               "/home/{host}/sparkdata/" + ROOT_NAME)
 CONTROL_BASE = int(os.environ.get("GLM5_NEXT_CONTROL_BASE", "19560"))
@@ -197,7 +199,9 @@ def resident_deployment() -> dict:
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory": "/home/%s/kvcache/" % host + ROOT_NAME,
-            "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.
+            "kv_backing_maximum_bytes": KV_BACKING_MAXIMUM_BYTES,
+            "kv_snapshot_directory": "/home/%s/kvsnapshot/" % host + ROOT_NAME,
+            "kv_snapshot_maximum_bytes": KV_SNAPSHOT_MAXIMUM_BYTES,
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,
