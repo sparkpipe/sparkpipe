@@ -53,6 +53,7 @@ typedef struct SparkPrefixIndexWriter
 
 void SparkPrefixIndexModelDigest(const char *adapter_id,const char *model_id,const char *model_revision,const char *artifact_sha256,uint8_t digest[SPARK_SHA256_DIGEST_BYTES]);
 SparkStatus SparkPrefixIndexFileRead(const char *path,const uint8_t model_sha256[SPARK_SHA256_DIGEST_BYTES],uint32_t block_token_count,SparkPrefixCacheCommittedRecord *records,uint32_t record_capacity,uint32_t *record_count_out,const char **reason_out);
+SparkStatus SparkPrefixIndexFileRemoveStale(const char *path,uint32_t *removed_out);
 SparkStatus SparkPrefixIndexFileWrite(const char *path,const uint8_t model_sha256[SPARK_SHA256_DIGEST_BYTES],uint32_t block_token_count,const SparkPrefixCacheCommittedRecord *records,uint32_t record_count);
 SparkStatus SparkPrefixIndexWriterStart(SparkPrefixIndexWriter *writer,const char *path,const uint8_t model_sha256[SPARK_SHA256_DIGEST_BYTES],uint32_t block_token_count,uint32_t record_capacity);
 uint32_t SparkPrefixIndexWriterIdle(SparkPrefixIndexWriter *writer);

@@ -1470,9 +1470,11 @@ static void SparkModelBatchPrefixIndexDigest(const SparkModelBatchEngine *engine
 static SparkStatus SparkModelBatchLoadPrefixIndex(SparkModelBatchEngine *engine)
 {
 	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-	uint32_t count = 0u,imported = 0u,skipped = 0u;
+	uint32_t count = 0u,imported = 0u,skipped = 0u,stale = 0u;
 	const char *reason = 0;
 	SparkStatus status;
+	if ( SparkPrefixIndexFileRemoveStale(engine->prefix_index_path,&stale) != SPARK_STATUS_OK )
+		fprintf(stderr,"batch engine prefix index cannot scan for stale temporaries path=%s\n",engine->prefix_index_path);
 	engine->prefix_index_scratch = (SparkPrefixCacheCommittedRecord *)calloc(engine->prefix_cache_entry_capacity,sizeof(engine->prefix_index_scratch[0]));
 	if ( engine->prefix_index_scratch == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1487,7 +1489,7 @@ static SparkStatus SparkModelBatchLoadPrefixIndex(SparkModelBatchEngine *engine)
 	}
 	if ( status == SPARK_STATUS_OK )
 		engine->prefix_index_loaded_record_count = imported;
-	fprintf(stderr,"batch engine prefix index load path=%s records=%u imported=%u skipped=%u status=%s\n",engine->prefix_index_path,count,imported,skipped,SparkStatusToString(status));
+	fprintf(stderr,"batch engine prefix index load path=%s records=%u imported=%u skipped=%u stale_temporaries_removed=%u status=%s\n",engine->prefix_index_path,count,imported,skipped,stale,SparkStatusToString(status));
 	status = SparkPrefixIndexWriterStart(&engine->prefix_index_writer,engine->prefix_index_path,digest,engine->cache_block_token_count,engine->prefix_cache_entry_capacity);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

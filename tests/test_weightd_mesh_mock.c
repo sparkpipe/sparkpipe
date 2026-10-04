@@ -811,12 +811,12 @@ static void test_mesh_hardware_wait(void)
     uint64_t *peer2 = test_peer_tail(band,2u,tag);
     uint64_t id,old_error,old_diag;
     uint32_t first,last,invalid;
-    CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 9u && SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN == 8u &&
+    CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 10u && SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN == 8u &&
         SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == 22528u &&
         (uint8_t *)test_wait_request(SPARK_WEIGHTD_MESH_BANDS - 1u,SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u) + sizeof(*request) <=
             (uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_REGION_BYTES &&
         sizeof(*request) == 128u && offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
-        "the ABI 8 gate geometry served under ABI 9 has separate producer and terminal cache lines within the registered region");
+        "the ABI 8 gate geometry served under ABI 10 has separate producer and terminal cache lines within the registered region");
     CHECK(SparkWeightdMeshSetActivity(band / 2u,1u) == SPARK_STATUS_OK,
         "hardware wait producer begins before publishing any GPU request");
     id = test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,0u);

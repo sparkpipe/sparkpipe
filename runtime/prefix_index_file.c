@@ -1,8 +1,10 @@
 #include "sparkpipe/spark_prefix_index_file.h"
 #include "sparkpipe/spark_error_site.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <libgen.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -155,6 +157,41 @@ static SparkStatus SparkPrefixIndexSyncDirectory(const char *path)
 	status = fsync(descriptor) == 0 ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 	(void)close(descriptor);
 	SPARK_RETURN(status);
+}
+
+SparkStatus SparkPrefixIndexFileRemoveStale(const char *path,uint32_t *removed_out)
+{
+	char directory_copy[SPARK_PREFIX_INDEX_FILE_PATH_BYTES],base_copy[SPARK_PREFIX_INDEX_FILE_PATH_BYTES],prefix[SPARK_PREFIX_INDEX_FILE_PATH_BYTES + 8u];
+	struct dirent *entry;
+	DIR *directory;
+	size_t prefix_bytes;
+	char *end;
+	long pid;
+	if ( path == 0 || removed_out == 0 || strlen(path) >= sizeof(directory_copy) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*removed_out = 0u;
+	strcpy(directory_copy,path);
+	strcpy(base_copy,path);
+	(void)snprintf(prefix,sizeof(prefix),"%s.tmp-",basename(base_copy));
+	prefix_bytes = strlen(prefix);
+	directory = opendir(dirname(directory_copy));
+	if ( directory == 0 )
+		return(errno == ENOENT ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
+	while ( (entry = readdir(directory)) != 0 )
+	{
+		if ( strncmp(entry->d_name,prefix,prefix_bytes) != 0 )
+			continue;
+		errno = 0;
+		pid = strtol(entry->d_name + prefix_bytes,&end,10);
+		if ( end == entry->d_name + prefix_bytes || *end != '\0' || pid <= 0 || errno != 0 )
+			continue;
+		if ( pid == (long)getpid() || kill((pid_t)pid,0) == 0 || errno == EPERM )
+			continue;
+		if ( unlinkat(dirfd(directory),entry->d_name,0) == 0 )
+			(*removed_out)++;
+	}
+	(void)closedir(directory);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkPrefixIndexFileWrite(const char *path,const uint8_t model_sha256[SPARK_SHA256_DIGEST_BYTES],uint32_t block_token_count,const SparkPrefixCacheCommittedRecord *records,uint32_t record_count)

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <time.h>
 
@@ -434,6 +435,31 @@ static void TestScenarioPrefixIndexSurvivesRestart(const SparkModelResidentDeplo
 	TestDriveUntilTerminal(engine,&state,2u,400u);
 	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"index restart: the request completes with four cached prompt tokens");
 	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioPrefixIndexRemovesStaleTemporaries(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	char stale[4200],live[4200];
+	FILE *file;
+	pid_t child = fork();
+	if ( child == 0 )
+		_exit(0);
+	CHECK(child > 0 && waitpid(child,0,0) == child,"index temporaries: a finished writer process exists");
+	(void)snprintf(stale,sizeof(stale),"%s.tmp-%d",TestPrefixIndexPath(),(int)child);
+	(void)snprintf(live,sizeof(live),"%s.tmp-%d",TestPrefixIndexPath(),(int)getppid());
+	file = fopen(stale,"w");
+	CHECK(file != 0 && fputs("partial",file) >= 0 && fclose(file) == 0,"index temporaries: a dead writer's temporary is written");
+	file = fopen(live,"w");
+	CHECK(file != 0 && fputs("partial",file) >= 0 && fclose(file) == 0,"index temporaries: a live writer's temporary is written");
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	CHECK(access(stale,F_OK) != 0 && access(live,F_OK) == 0,"index temporaries: start removes a dead writer's temporary and keeps a live writer's");
+	SparkModelBatchEngineDestroy(engine);
+	(void)unlink(live);
 }
 
 static void TestScenarioPrefixIndexRefusesCorruptFile(const SparkModelResidentDeployment *deployment,const char *runtime_root)
@@ -1681,6 +1707,7 @@ int main(void)
 	TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
 	TestScenarioPrefixIndexSurvivesRestart(&deployment,runtime_root);
 	TestScenarioPrefixIndexRefusesCorruptFile(&deployment,runtime_root);
+	TestScenarioPrefixIndexRemovesStaleTemporaries(&deployment,runtime_root);
 	TestScenarioStatusReport(&deployment,runtime_root);
 	TestScenarioPartialPrefixAppend(&deployment,runtime_root);
 	TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
