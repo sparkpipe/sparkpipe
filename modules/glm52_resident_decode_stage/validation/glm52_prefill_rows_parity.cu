@@ -537,10 +537,12 @@ static int RowsHeadMain(RowsRig *rig)
 	for (index=0u; index<sizeof(widths)/sizeof(widths[0]) && widths[index]<=ROWS_MAX; index++)
 	{
 		rig->row_head_certified = 1u;
+		rig->head_every_row = 1u;
 		if ( RowsRun(rig,widths[index],1u,rig->mode_boundary,rig->mode_kv,rig->mode_index,&waves) != 0 )
 			return(1);
+		rig->head_every_row = 0u;
 		differing = RowsTokenDiffer(rig,0u,rig->positions_total,&first);
-		printf("glm52_prefill_rows_parity head prefill rows<=%u row_certified=1 waves=%u differing_tokens=%u first=%d %s\n",widths[index],waves,differing,first == UINT32_MAX ? -1 : (int)first,
+		printf("glm52_prefill_rows_parity head prefill rows<=%u row_certified=1 every_row=1 waves=%u differing_tokens=%u first=%d %s\n",widths[index],waves,differing,first == UINT32_MAX ? -1 : (int)first,
 			differing == 0u ? "TOKEN-EXACT" : (widths[index] > SparkGlm52ExactWaveRows() && differing * ROWS_TOKEN_DIFFER_DIVISOR <= rig->positions_total ? "WITHIN-BOUND" : "DIFFER"));
 		failures += widths[index] <= SparkGlm52ExactWaveRows() && differing != 0u ? 1 : 0;
 		failures += widths[index] > SparkGlm52ExactWaveRows() && differing * ROWS_TOKEN_DIFFER_DIVISOR > rig->positions_total ? 1 : 0;
