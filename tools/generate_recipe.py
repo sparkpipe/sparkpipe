@@ -25,7 +25,10 @@ Reuse, per the tree's DRY law, instead of parallel machinery:
 - the k3 TP shard table is built from tools/k3_shard.py's own classification
   sets. tests/test_recipe_generation.py walks those sets against every recipe,
   so the planning table cannot drift from the offline pack slicer.
-- the glm52 TP shard table is derived here from the model contract. Routed
+- the GLM Full (glm52 family) TP shard table is derived here from the model
+  contract's geometry; the contract carries no rope convention, so the rope
+  theta and interleave flags come from the family header the module compiles
+  against, and a missing define fails the recipe. Routed
   expert tensors remain package-owned, so the planning recipe records them as
   PACKAGE_OWNED instead of inventing a split outside the stage pack.
 
@@ -225,7 +228,26 @@ def adapt_k3(c):
             "kv_geometry": kv_geometry, "shard_classes": shard_classes}
 
 
-def adapt_glm52(c):
+GLM_FULL_HEADER = ROOT / "model-families/glm52/include/sparkpipe/spark_glm52_model.h"
+GLM_FULL_HEADER_ROPE = {
+    "rope_theta": ("SPARK_GLM52_MODEL_ROPE_THETA", float),
+    "rope_interleave": ("SPARK_GLM52_MODEL_ROPE_INTERLEAVE", lambda v: int(v) != 0),
+    "dsa_rope_interleave": ("SPARK_GLM52_MODEL_DSA_ROPE_INTERLEAVE", lambda v: int(v) != 0),
+}
+
+
+def glm_full_geometry(c, header=GLM_FULL_HEADER):
+    geometry = dict(c["geometry"])
+    text = header.read_text(encoding="utf-8")
+    for key, (macro, convert) in GLM_FULL_HEADER_ROPE.items():
+        match = re.search(r"^#define\s+" + macro + r"\s+([0-9.]+)[uf]?\s*$", text, re.M)
+        if match is None:
+            raise RecipeFailure(f"glm53full: {header.relative_to(ROOT)} does not define {macro}")
+        geometry[key] = convert(match.group(1))
+    return geometry
+
+
+def adapt_glm_full(c):
     hidden, layers, vocab = (c["hidden_dimension"], c["layer_count"],
                              c["output_vocab_count"])
     first_routed = c["first_routed_layer"]
@@ -597,8 +619,8 @@ MODELS = {
              "adapter": lambda c: adapt_dsv4(c, "dsv4_flash")},
     "dsv4pro": {"contract": "dsv4_pro_authoritative.json", "family": "dsv4_pro",
                 "adapter": lambda c: adapt_dsv4(c, "dsv4_pro")},
-    "glm52": {"contract": "glm52.json", "family": "glm52",
-              "adapter": adapt_glm52},
+    "glm53full": {"contract": "glm53_full_authoritative.json", "family": "glm52",
+                  "adapter": lambda c: adapt_glm_full(glm_full_geometry(c))},
     "qwen38_27b": {"contract": "qwen38_27b_authoritative.json", "family": "qwen38_27b",
                "adapter": adapt_qwen38_27b},
     "mimo25": {"contract": "mimo25_authoritative.json", "family": "mimo25",
@@ -893,12 +915,13 @@ def render(recipe):
     return json.dumps(recipe, indent=2, sort_keys=True) + "\n"
 
 
-def managed_files(out_dir, tags):
+def managed_files(out_dir, tags, include_unknown=False):
     files = {}
     if out_dir.exists():
         for path in sorted(out_dir.iterdir()):
+            tag = path.name.split(".")[0]
             if path.is_file() and DATAFILE_RE.match(path.name) and \
-                    path.name.split(".")[0] in tags:
+                    (tag in tags or (include_unknown and tag not in MODELS)):
                 files[path.name] = path.read_text(encoding="utf-8")
     return files
 
@@ -981,7 +1004,7 @@ def main():
     expected = generate_set(tags, strategies, degrees, topology_path,
                             args.stage_profile)
     if args.check:
-        actual = managed_files(args.out_dir, tags)
+        actual = managed_files(args.out_dir, tags, args.model is None)
         stale = sorted(set(actual) ^ set(expected))
         stale += sorted(name for name in set(actual) & set(expected)
                         if actual[name] != expected[name])
@@ -992,7 +1015,7 @@ def main():
             return 1
         return 0
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    current = managed_files(args.out_dir, tags)
+    current = managed_files(args.out_dir, tags, args.model is None)
     for name in sorted(set(current) - set(expected)):
         (args.out_dir / name).unlink()
     for name, text in sorted(expected.items()):

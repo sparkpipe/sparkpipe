@@ -1,15 +1,15 @@
 {
-  "content_hash": "5f83fd0a9d5cdb24",
+  "content_hash": "06d7280e3ac104b9",
   "contract": {
     "path": "model_contracts/dsv4_pro_authoritative.json",
-    "sha256": "7624dd8c34d96636d46be1c265f1bdfc43a5d33cf08000e3e44cbc26ad181c55"
+    "sha256": "68099bee30b168676039dc1982390166f867bcdbee5fff2b7dee24686bd9109b"
   },
-  "datafile": "dsv4pro.TP16.5f83fd0a9d5cdb24.json",
-  "degree": 16,
+  "datafile": "dsv4pro.TP13.06d7280e3ac104b9.json",
+  "degree": 13,
   "family": "dsv4_pro",
-  "geometry_hash": "832ca3ef908912cc",
+  "geometry_hash": "5802952b6a26f9d0",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "dsv4pro.TP16.832ca3ef908912cc/",
+  "kv_entry_prefix": "dsv4pro.TP13.5802952b6a26f9d0/",
   "kv_geometry": {
     "compressed_rope_theta": 160000,
     "compression_ratios": [
@@ -74,6 +74,8 @@
       4,
       128,
       4,
+      0,
+      0,
       0
     ],
     "head_dimension": 512,
@@ -108,12 +110,9 @@
       "spark-09",
       "spark-10",
       "spark-11",
-      "spark-12",
-      "spark-13",
-      "spark-14",
-      "spark-15"
+      "spark-12"
     ],
-    "nodes": 16,
+    "nodes": 13,
     "source": "examples/topologies/dual_switch_16node_production.json"
   },
   "tp": {
@@ -125,31 +124,31 @@
         "slices": {
           "embed_and_head": [
             0,
-            8080
+            129280
           ],
           "expert_down": [
             0,
-            192
+            3072
           ],
           "expert_gate_up": [
             0,
-            192
+            3072
           ],
           "heads_in:o": [
             0,
-            4096
+            65536
           ],
           "heads_out:q_up": [
             0,
-            4608
+            73728
           ],
           "shared_down": [
             0,
-            192
+            3072
           ],
           "shared_gate_up": [
             0,
-            192
+            3072
           ]
         }
       },
@@ -158,32 +157,32 @@
         "rank": 1,
         "slices": {
           "embed_and_head": [
-            8080,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            192,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            192,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            4096,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            4608,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            192,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            192,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -192,32 +191,32 @@
         "rank": 2,
         "slices": {
           "embed_and_head": [
-            16160,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            384,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            384,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            8192,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            9216,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            384,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            384,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -226,32 +225,32 @@
         "rank": 3,
         "slices": {
           "embed_and_head": [
-            24240,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            576,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            576,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            12288,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            13824,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            576,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            576,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -260,32 +259,32 @@
         "rank": 4,
         "slices": {
           "embed_and_head": [
-            32320,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            768,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            768,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            16384,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            18432,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            768,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            768,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -294,32 +293,32 @@
         "rank": 5,
         "slices": {
           "embed_and_head": [
-            40400,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            960,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            960,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            20480,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            23040,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            960,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            960,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -328,32 +327,32 @@
         "rank": 6,
         "slices": {
           "embed_and_head": [
-            48480,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            1152,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            1152,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            24576,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            27648,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            1152,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            1152,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -362,32 +361,32 @@
         "rank": 7,
         "slices": {
           "embed_and_head": [
-            56560,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            1344,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            1344,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            28672,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            32256,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            1344,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            1344,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -396,32 +395,32 @@
         "rank": 8,
         "slices": {
           "embed_and_head": [
-            64640,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            1536,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            1536,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            32768,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            36864,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            1536,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            1536,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -430,32 +429,32 @@
         "rank": 9,
         "slices": {
           "embed_and_head": [
-            72720,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            1728,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            1728,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            36864,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            41472,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            1728,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            1728,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -464,32 +463,32 @@
         "rank": 10,
         "slices": {
           "embed_and_head": [
-            80800,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            1920,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            1920,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            40960,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            46080,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            1920,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            1920,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -498,32 +497,32 @@
         "rank": 11,
         "slices": {
           "embed_and_head": [
-            88880,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            2112,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            2112,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            45056,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            50688,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            2112,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            2112,
-            192
+            0,
+            3072
           ]
         }
       },
@@ -532,134 +531,32 @@
         "rank": 12,
         "slices": {
           "embed_and_head": [
-            96960,
-            8080
+            0,
+            129280
           ],
           "expert_down": [
-            2304,
-            192
+            0,
+            3072
           ],
           "expert_gate_up": [
-            2304,
-            192
+            0,
+            3072
           ],
           "heads_in:o": [
-            49152,
-            4096
+            0,
+            65536
           ],
           "heads_out:q_up": [
-            55296,
-            4608
+            0,
+            73728
           ],
           "shared_down": [
-            2304,
-            192
+            0,
+            3072
           ],
           "shared_gate_up": [
-            2304,
-            192
-          ]
-        }
-      },
-      {
-        "node": "spark-13",
-        "rank": 13,
-        "slices": {
-          "embed_and_head": [
-            105040,
-            8080
-          ],
-          "expert_down": [
-            2496,
-            192
-          ],
-          "expert_gate_up": [
-            2496,
-            192
-          ],
-          "heads_in:o": [
-            53248,
-            4096
-          ],
-          "heads_out:q_up": [
-            59904,
-            4608
-          ],
-          "shared_down": [
-            2496,
-            192
-          ],
-          "shared_gate_up": [
-            2496,
-            192
-          ]
-        }
-      },
-      {
-        "node": "spark-14",
-        "rank": 14,
-        "slices": {
-          "embed_and_head": [
-            113120,
-            8080
-          ],
-          "expert_down": [
-            2688,
-            192
-          ],
-          "expert_gate_up": [
-            2688,
-            192
-          ],
-          "heads_in:o": [
-            57344,
-            4096
-          ],
-          "heads_out:q_up": [
-            64512,
-            4608
-          ],
-          "shared_down": [
-            2688,
-            192
-          ],
-          "shared_gate_up": [
-            2688,
-            192
-          ]
-        }
-      },
-      {
-        "node": "spark-15",
-        "rank": 15,
-        "slices": {
-          "embed_and_head": [
-            121200,
-            8080
-          ],
-          "expert_down": [
-            2880,
-            192
-          ],
-          "expert_gate_up": [
-            2880,
-            192
-          ],
-          "heads_in:o": [
-            61440,
-            4096
-          ],
-          "heads_out:q_up": [
-            69120,
-            4608
-          ],
-          "shared_down": [
-            2880,
-            192
-          ],
-          "shared_gate_up": [
-            2880,
-            192
+            0,
+            3072
           ]
         }
       }
@@ -667,9 +564,9 @@
     "shard_classes": [
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 4608,
-          "status": "sharded"
+          "reason": "128 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 73728,
+          "status": "replicated"
         },
         "head_count": 128,
         "instances_per_model": null,
@@ -686,9 +583,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 4096,
-          "status": "sharded"
+          "reason": "128 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 65536,
+          "status": "replicated"
         },
         "head_count": 128,
         "instances_per_model": null,
@@ -725,9 +622,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 192,
-          "status": "sharded"
+          "reason": "3072 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3072,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": 23424,
@@ -745,9 +642,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 192,
-          "status": "sharded"
+          "reason": "3072 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3072,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": 23424,
@@ -764,9 +661,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 192,
-          "status": "sharded"
+          "reason": "3072 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3072,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -784,9 +681,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 192,
-          "status": "sharded"
+          "reason": "3072 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3072,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -803,9 +700,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 8080,
-          "status": "sharded"
+          "reason": "129280 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 129280,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,

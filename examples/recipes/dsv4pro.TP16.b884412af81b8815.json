@@ -1,69 +1,89 @@
 {
-  "content_hash": "28dd8d71ef616cfc",
+  "content_hash": "b884412af81b8815",
   "contract": {
-    "path": "model_contracts/dsv4_flash_authoritative.json",
-    "sha256": "1cae2ac1d6688d5eb7c6531871d6a730207c3d9c955e153d26f8b5ac410c1d4c"
+    "path": "model_contracts/dsv4_pro_authoritative.json",
+    "sha256": "68099bee30b168676039dc1982390166f867bcdbee5fff2b7dee24686bd9109b"
   },
-  "datafile": "dsv4.TP16.28dd8d71ef616cfc.json",
+  "datafile": "dsv4pro.TP16.b884412af81b8815.json",
   "degree": 16,
-  "family": "dsv4_flash",
-  "geometry_hash": "869f298990c9e903",
+  "family": "dsv4_pro",
+  "geometry_hash": "5802952b6a26f9d0",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "dsv4.TP16.869f298990c9e903/",
+  "kv_entry_prefix": "dsv4pro.TP16.5802952b6a26f9d0/",
   "kv_geometry": {
     "compressed_rope_theta": 160000,
     "compression_ratios": [
+      128,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
+      128,
+      4,
       0,
       0,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
-      128,
-      4,
       0
     ],
     "head_dimension": 512,
     "index_head_count": 64,
     "index_head_dimension": 128,
-    "index_top_k": 512,
+    "index_top_k": 1024,
     "kv_head_count": 1,
-    "layer_count": 43,
+    "layer_count": 61,
     "layout": "compressed_sparse_history",
     "qk_rope_head_dimension": 64,
     "rope_theta": 10000,
@@ -71,7 +91,7 @@
     "yarn_factor": 16,
     "yarn_original_context_tokens": 65536
   },
-  "model": "dsv4",
+  "model": "dsv4pro",
   "schema_version": 1,
   "strategy": "TP",
   "topology": {
@@ -111,27 +131,27 @@
           ],
           "expert_down": [
             0,
-            128
+            192
           ],
           "expert_gate_up": [
             0,
-            128
+            192
           ],
           "heads_in:o": [
             0,
-            2048
+            4096
           ],
           "heads_out:q_up": [
             0,
-            2304
+            4608
           ],
           "shared_down": [
             0,
-            128
+            192
           ],
           "shared_gate_up": [
             0,
-            128
+            192
           ]
         }
       },
@@ -144,28 +164,28 @@
             8080
           ],
           "expert_down": [
-            128,
-            128
+            192,
+            192
           ],
           "expert_gate_up": [
-            128,
-            128
+            192,
+            192
           ],
           "heads_in:o": [
-            2048,
-            2048
+            4096,
+            4096
           ],
           "heads_out:q_up": [
-            2304,
-            2304
+            4608,
+            4608
           ],
           "shared_down": [
-            128,
-            128
+            192,
+            192
           ],
           "shared_gate_up": [
-            128,
-            128
+            192,
+            192
           ]
         }
       },
@@ -178,28 +198,28 @@
             8080
           ],
           "expert_down": [
-            256,
-            128
+            384,
+            192
           ],
           "expert_gate_up": [
-            256,
-            128
+            384,
+            192
           ],
           "heads_in:o": [
-            4096,
-            2048
+            8192,
+            4096
           ],
           "heads_out:q_up": [
-            4608,
-            2304
+            9216,
+            4608
           ],
           "shared_down": [
-            256,
-            128
+            384,
+            192
           ],
           "shared_gate_up": [
-            256,
-            128
+            384,
+            192
           ]
         }
       },
@@ -212,28 +232,28 @@
             8080
           ],
           "expert_down": [
-            384,
-            128
+            576,
+            192
           ],
           "expert_gate_up": [
-            384,
-            128
+            576,
+            192
           ],
           "heads_in:o": [
-            6144,
-            2048
+            12288,
+            4096
           ],
           "heads_out:q_up": [
-            6912,
-            2304
+            13824,
+            4608
           ],
           "shared_down": [
-            384,
-            128
+            576,
+            192
           ],
           "shared_gate_up": [
-            384,
-            128
+            576,
+            192
           ]
         }
       },
@@ -246,28 +266,28 @@
             8080
           ],
           "expert_down": [
-            512,
-            128
+            768,
+            192
           ],
           "expert_gate_up": [
-            512,
-            128
+            768,
+            192
           ],
           "heads_in:o": [
-            8192,
-            2048
+            16384,
+            4096
           ],
           "heads_out:q_up": [
-            9216,
-            2304
+            18432,
+            4608
           ],
           "shared_down": [
-            512,
-            128
+            768,
+            192
           ],
           "shared_gate_up": [
-            512,
-            128
+            768,
+            192
           ]
         }
       },
@@ -280,28 +300,28 @@
             8080
           ],
           "expert_down": [
-            640,
-            128
+            960,
+            192
           ],
           "expert_gate_up": [
-            640,
-            128
+            960,
+            192
           ],
           "heads_in:o": [
-            10240,
-            2048
+            20480,
+            4096
           ],
           "heads_out:q_up": [
-            11520,
-            2304
+            23040,
+            4608
           ],
           "shared_down": [
-            640,
-            128
+            960,
+            192
           ],
           "shared_gate_up": [
-            640,
-            128
+            960,
+            192
           ]
         }
       },
@@ -314,28 +334,28 @@
             8080
           ],
           "expert_down": [
-            768,
-            128
+            1152,
+            192
           ],
           "expert_gate_up": [
-            768,
-            128
+            1152,
+            192
           ],
           "heads_in:o": [
-            12288,
-            2048
+            24576,
+            4096
           ],
           "heads_out:q_up": [
-            13824,
-            2304
+            27648,
+            4608
           ],
           "shared_down": [
-            768,
-            128
+            1152,
+            192
           ],
           "shared_gate_up": [
-            768,
-            128
+            1152,
+            192
           ]
         }
       },
@@ -348,28 +368,28 @@
             8080
           ],
           "expert_down": [
-            896,
-            128
+            1344,
+            192
           ],
           "expert_gate_up": [
-            896,
-            128
+            1344,
+            192
           ],
           "heads_in:o": [
-            14336,
-            2048
+            28672,
+            4096
           ],
           "heads_out:q_up": [
-            16128,
-            2304
+            32256,
+            4608
           ],
           "shared_down": [
-            896,
-            128
+            1344,
+            192
           ],
           "shared_gate_up": [
-            896,
-            128
+            1344,
+            192
           ]
         }
       },
@@ -382,28 +402,28 @@
             8080
           ],
           "expert_down": [
-            1024,
-            128
+            1536,
+            192
           ],
           "expert_gate_up": [
-            1024,
-            128
+            1536,
+            192
           ],
           "heads_in:o": [
-            16384,
-            2048
+            32768,
+            4096
           ],
           "heads_out:q_up": [
-            18432,
-            2304
+            36864,
+            4608
           ],
           "shared_down": [
-            1024,
-            128
+            1536,
+            192
           ],
           "shared_gate_up": [
-            1024,
-            128
+            1536,
+            192
           ]
         }
       },
@@ -416,28 +436,28 @@
             8080
           ],
           "expert_down": [
-            1152,
-            128
+            1728,
+            192
           ],
           "expert_gate_up": [
-            1152,
-            128
+            1728,
+            192
           ],
           "heads_in:o": [
-            18432,
-            2048
+            36864,
+            4096
           ],
           "heads_out:q_up": [
-            20736,
-            2304
+            41472,
+            4608
           ],
           "shared_down": [
-            1152,
-            128
+            1728,
+            192
           ],
           "shared_gate_up": [
-            1152,
-            128
+            1728,
+            192
           ]
         }
       },
@@ -450,28 +470,28 @@
             8080
           ],
           "expert_down": [
-            1280,
-            128
+            1920,
+            192
           ],
           "expert_gate_up": [
-            1280,
-            128
+            1920,
+            192
           ],
           "heads_in:o": [
-            20480,
-            2048
+            40960,
+            4096
           ],
           "heads_out:q_up": [
-            23040,
-            2304
+            46080,
+            4608
           ],
           "shared_down": [
-            1280,
-            128
+            1920,
+            192
           ],
           "shared_gate_up": [
-            1280,
-            128
+            1920,
+            192
           ]
         }
       },
@@ -484,28 +504,28 @@
             8080
           ],
           "expert_down": [
-            1408,
-            128
+            2112,
+            192
           ],
           "expert_gate_up": [
-            1408,
-            128
+            2112,
+            192
           ],
           "heads_in:o": [
-            22528,
-            2048
+            45056,
+            4096
           ],
           "heads_out:q_up": [
-            25344,
-            2304
+            50688,
+            4608
           ],
           "shared_down": [
-            1408,
-            128
+            2112,
+            192
           ],
           "shared_gate_up": [
-            1408,
-            128
+            2112,
+            192
           ]
         }
       },
@@ -518,28 +538,28 @@
             8080
           ],
           "expert_down": [
-            1536,
-            128
+            2304,
+            192
           ],
           "expert_gate_up": [
-            1536,
-            128
+            2304,
+            192
           ],
           "heads_in:o": [
-            24576,
-            2048
+            49152,
+            4096
           ],
           "heads_out:q_up": [
-            27648,
-            2304
+            55296,
+            4608
           ],
           "shared_down": [
-            1536,
-            128
+            2304,
+            192
           ],
           "shared_gate_up": [
-            1536,
-            128
+            2304,
+            192
           ]
         }
       },
@@ -552,28 +572,28 @@
             8080
           ],
           "expert_down": [
-            1664,
-            128
+            2496,
+            192
           ],
           "expert_gate_up": [
-            1664,
-            128
+            2496,
+            192
           ],
           "heads_in:o": [
-            26624,
-            2048
+            53248,
+            4096
           ],
           "heads_out:q_up": [
-            29952,
-            2304
+            59904,
+            4608
           ],
           "shared_down": [
-            1664,
-            128
+            2496,
+            192
           ],
           "shared_gate_up": [
-            1664,
-            128
+            2496,
+            192
           ]
         }
       },
@@ -586,28 +606,28 @@
             8080
           ],
           "expert_down": [
-            1792,
-            128
+            2688,
+            192
           ],
           "expert_gate_up": [
-            1792,
-            128
+            2688,
+            192
           ],
           "heads_in:o": [
-            28672,
-            2048
+            57344,
+            4096
           ],
           "heads_out:q_up": [
-            32256,
-            2304
+            64512,
+            4608
           ],
           "shared_down": [
-            1792,
-            128
+            2688,
+            192
           ],
           "shared_gate_up": [
-            1792,
-            128
+            2688,
+            192
           ]
         }
       },
@@ -620,28 +640,28 @@
             8080
           ],
           "expert_down": [
-            1920,
-            128
+            2880,
+            192
           ],
           "expert_gate_up": [
-            1920,
-            128
+            2880,
+            192
           ],
           "heads_in:o": [
-            30720,
-            2048
+            61440,
+            4096
           ],
           "heads_out:q_up": [
-            34560,
-            2304
+            69120,
+            4608
           ],
           "shared_down": [
-            1920,
-            128
+            2880,
+            192
           ],
           "shared_gate_up": [
-            1920,
-            128
+            2880,
+            192
           ]
         }
       }
@@ -650,10 +670,10 @@
       {
         "degree_resolution": {
           "reason": null,
-          "rows_per_rank": 2304,
+          "rows_per_rank": 4608,
           "status": "sharded"
         },
-        "head_count": 64,
+        "head_count": 128,
         "instances_per_model": null,
         "match": [
           "self_attn.q_up.weight"
@@ -664,15 +684,15 @@
         "scope": "per_layer",
         "shard_class": "OUTPUT_DIM_HEADS",
         "split": "output_heads",
-        "split_extent": 36864
+        "split_extent": 73728
       },
       {
         "degree_resolution": {
           "reason": null,
-          "rows_per_rank": 2048,
+          "rows_per_rank": 4096,
           "status": "sharded"
         },
-        "head_count": 64,
+        "head_count": 128,
         "instances_per_model": null,
         "match": [
           "self_attn.o_proj.weight"
@@ -683,7 +703,7 @@
         "scope": "per_layer",
         "shard_class": "INPUT_DIM_HEADS",
         "split": "input_heads",
-        "split_extent": 32768
+        "split_extent": 65536
       },
       {
         "degree_resolution": {
@@ -708,11 +728,11 @@
       {
         "degree_resolution": {
           "reason": null,
-          "rows_per_rank": 128,
+          "rows_per_rank": 192,
           "status": "sharded"
         },
         "head_count": null,
-        "instances_per_model": 11008,
+        "instances_per_model": 23424,
         "match": [
           "mlp.experts.gate_proj.weight",
           "mlp.experts.up_proj.weight"
@@ -723,16 +743,16 @@
         "scope": "per_expert_per_layer",
         "shard_class": "OUTPUT_DIM",
         "split": "output",
-        "split_extent": 2048
+        "split_extent": 3072
       },
       {
         "degree_resolution": {
           "reason": null,
-          "rows_per_rank": 128,
+          "rows_per_rank": 192,
           "status": "sharded"
         },
         "head_count": null,
-        "instances_per_model": 11008,
+        "instances_per_model": 23424,
         "match": [
           "mlp.experts.down_proj.weight"
         ],
@@ -742,12 +762,12 @@
         "scope": "per_expert_per_layer",
         "shard_class": "INPUT_DIM",
         "split": "input",
-        "split_extent": 2048
+        "split_extent": 3072
       },
       {
         "degree_resolution": {
           "reason": null,
-          "rows_per_rank": 128,
+          "rows_per_rank": 192,
           "status": "sharded"
         },
         "head_count": null,
@@ -762,12 +782,12 @@
         "scope": "per_layer",
         "shard_class": "OUTPUT_DIM",
         "split": "output",
-        "split_extent": 2048
+        "split_extent": 3072
       },
       {
         "degree_resolution": {
           "reason": null,
-          "rows_per_rank": 128,
+          "rows_per_rank": 192,
           "status": "sharded"
         },
         "head_count": null,
@@ -781,7 +801,7 @@
         "scope": "per_layer",
         "shard_class": "INPUT_DIM",
         "split": "input",
-        "split_extent": 2048
+        "split_extent": 3072
       },
       {
         "degree_resolution": {

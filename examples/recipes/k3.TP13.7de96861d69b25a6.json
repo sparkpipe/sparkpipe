@@ -1,10 +1,10 @@
 {
-  "content_hash": "11f922e14477a48c",
+  "content_hash": "7de96861d69b25a6",
   "contract": {
     "path": "model_contracts/k3_authoritative.json",
-    "sha256": "318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"
+    "sha256": "f9655b5bbeb298de9c6a7978f03aea5c9a2d930ff63fa2a12c82986dee284b0d"
   },
-  "datafile": "k3.TP13.11f922e14477a48c.json",
+  "datafile": "k3.TP13.7de96861d69b25a6.json",
   "degree": 13,
   "family": "k3",
   "geometry_hash": "a51181eba5d37614",
@@ -96,7 +96,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -116,7 +116,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -174,7 +174,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -194,7 +194,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -252,7 +252,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -272,7 +272,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -330,7 +330,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -350,7 +350,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -408,7 +408,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -428,7 +428,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -486,7 +486,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -506,7 +506,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -564,7 +564,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -584,7 +584,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -642,7 +642,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -662,7 +662,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -720,7 +720,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -740,7 +740,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -798,7 +798,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -818,7 +818,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -876,7 +876,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -896,7 +896,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -954,7 +954,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -974,7 +974,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -1032,7 +1032,7 @@
             0,
             12288
           ],
-          "heads_out:kda_gate_up_weight": [
+          "heads_out:kda_gate_weight": [
             0,
             12288
           ],
@@ -1052,7 +1052,7 @@
             0,
             12288
           ],
-          "heads_out:mla_gate_up_weight": [
+          "heads_out:mla_gate_weight": [
             0,
             12288
           ],
@@ -1089,10 +1089,9 @@
           "attnres_attn_weight",
           "attnres_mlp_weight",
           "kda_decay_bias",
-          "kda_decay_gate_down_weight",
+          "kda_decay_down_weight",
           "kda_head_log_scale",
           "kda_out_norm_weight",
-          "mla_gate_down_weight",
           "mla_kv_a_norm_weight",
           "mla_kv_a_weight",
           "mla_q_down_weight",
@@ -1160,9 +1159,9 @@
         "head_count": 96,
         "instances_per_model": null,
         "match": [
-          "kda_gate_up_weight"
+          "kda_gate_weight"
         ],
-        "name": "heads_out:kda_gate_up_weight",
+        "name": "heads_out:kda_gate_weight",
         "note": null,
         "quant_group": null,
         "scope": "per_layer",
@@ -1255,9 +1254,9 @@
         "head_count": 96,
         "instances_per_model": null,
         "match": [
-          "mla_gate_up_weight"
+          "mla_gate_weight"
         ],
-        "name": "heads_out:mla_gate_up_weight",
+        "name": "heads_out:mla_gate_weight",
         "note": null,
         "quant_group": null,
         "scope": "per_layer",

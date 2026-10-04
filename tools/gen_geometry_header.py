@@ -12,13 +12,12 @@ model geometry is recorded in FAMILY_POLICY below.
 
 Proof discipline (docs/HOUSECLEANING_PLAN.md W4.4): where a hand-written
 original exists, --check must reproduce it byte-identical before cutover.
-qwen38_27b is the byte-identity proof; glm5_next and qwen4_flash were cut
-over after diff review (see docs/AGENT_LANE_BRIEFS/reports/).
+Both families' headers are byte-identical to the output; tests/test_gen_geometry_header.py
+runs --check for every output.
 
 Usage:
     python3 tools/gen_geometry_header.py --family qwen38_27b [--check]
     python3 tools/gen_geometry_header.py --family glm5_next  [--check]
-    python3 tools/gen_geometry_header.py --family qwen4_flash [--check]
     python3 tools/gen_geometry_header.py --family qwen38_27b --emit-adapter-constants [--check]
 """
 from __future__ import annotations
@@ -38,10 +37,6 @@ FAMILIES = {
     "glm5_next": {
         "contract": "model_contracts/glm53_flash_authoritative.json",
         "header": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h",
-    },
-    "qwen4_flash": {
-        "contract": "model_contracts/qwen4_flash_authoritative.json",
-        "header": "model-families/qwen4_flash/include/sparkpipe/spark_qwen4_flash_model.h",
     },
 }
 
@@ -71,13 +66,9 @@ FAMILY_POLICY = {
         "kv_bits": 16,                            # glm52-lineage page policy
         "kv_page_slots": 64,
         "bf16_bytes": 2,
-    },
-    "qwen4_flash": {
-        "mxfp4_group_size": 32,      # format-4/6 MX plane geometry (pack codec)
-        "fp8_block": 128,            # fp8 block-128 scale plane
-        "swiglu_limit": 10.0,        # activation clamp (family activation silu)
-        "gdn_chunk_tokens": 64,      # module chunk width
-        "bf16_bytes": 2,
+        "replay_rows_max": 8,
+        "miss_pack_stride": 512,
+        "miss_ring_capacity": 1024,
     },
 }
 
@@ -252,6 +243,11 @@ def render_glm5_next(c: dict) -> str:
     pool = u(policy["kv_pool_tokens"])
     restricted = u(policy["restricted_vocab_count"])
     prefill = u(policy["max_prefill_tokens_per_dispatch"])
+    replay_rows = u(policy["replay_rows_max"])
+    miss_stride = u(policy["miss_pack_stride"])
+    miss_ring = u(policy["miss_ring_capacity"])
+    require(policy["miss_pack_stride"] >= moe["routed_expert_count"],
+            "glm5_next miss packing stride must cover the expert count")
 
     return f"""#ifndef SPARKPIPE_SPARK_GLM5_NEXT_MODEL_H
 #define SPARKPIPE_SPARK_GLM5_NEXT_MODEL_H
@@ -262,6 +258,7 @@ def render_glm5_next(c: dict) -> str:
 #define SPARK_GLM5_NEXT_MODEL_LAYER_COUNT {layers}
 #define SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX {mtp_index}
 #define SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT {vocab}
+#define SPARK_GLM5_NEXT_REPLAY_ROWS_MAX {replay_rows}
 #define SPARK_GLM5_NEXT_MODEL_MAXIMUM_CONTEXT_TOKENS {max_ctx}
 #define SPARK_GLM5_NEXT_MODEL_RMS_NORM_EPSILON {eps}f
 #define SPARK_GLM5_NEXT_MODEL_SWIGLU_LIMIT {swiglu}f
@@ -357,6 +354,15 @@ def render_glm5_next(c: dict) -> str:
 #define SPARK_GLM5_NEXT_MODEL_HC_SCALE_COUNT {hc_scales}
 
 #define SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT {experts}
+#define SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE {miss_stride}
+#define SPARK_GLM5_NEXT_MODEL_MISS_RING_CAPACITY {miss_ring}
+#define SPARK_GLM5_NEXT_MODEL_MISS_RING_BYTES \\
+    ((2u + SPARK_GLM5_NEXT_MODEL_MISS_RING_CAPACITY + 2u) * 4u)
+#define SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64 \\
+    ((2u + SPARK_GLM5_NEXT_MODEL_MISS_RING_CAPACITY) / 2u)
+#if SPARK_GLM5_NEXT_MODEL_MISS_PACK_STRIDE < SPARK_GLM5_NEXT_MODEL_MOE_EXPERT_COUNT
+#error "miss packing stride must exceed the expert count"
+#endif
 #define SPARK_GLM5_NEXT_MODEL_MOE_TOP_K {topk}
 #define SPARK_GLM5_NEXT_MODEL_MOE_SHARED_EXPERT_COUNT {shared}
 #define SPARK_GLM5_NEXT_MODEL_MOE_INTERMEDIATE_DIMENSION {inter}
@@ -430,137 +436,9 @@ def render_glm5_next(c: dict) -> str:
 """
 
 
-def render_qwen4_flash(c: dict) -> str:
-    model, hybrid, linear, attn = c["model"], c["hybrid_attention"], c["linear_attn"], c["attention"]
-    moe, hc, index, ple = c["moe"], c["hyper_connection"], c["indexer"], c["ple"]
-    policy = FAMILY_POLICY["qwen4_flash"]
-    require(hybrid["linear_layer_count"] + hybrid["full_layer_count"] == model["layer_count"],
-            "qwen4_flash hybrid layer partition must cover the stack")
-    require(moe["routed_expert_count"] == model["routed_expert_count"], "qwen4_flash expert count disagrees between sections")
-
-    hidden, layers, vocab = u(model["hidden_dimension"]), u(model["layer_count"]), u(model["vocabulary_size"])
-    heads, kv_heads, head_dim = u(model["attention_head_count"]), u(model["kv_head_count"]), u(model["head_dimension"])
-    gdn_key_heads, gdn_value_heads = u(linear["key_head_count"]), u(linear["value_head_count"])
-    max_ctx = u(model["maximum_context_tokens"])
-    eps = f"{model['rms_norm_epsilon']:.0e}"
-    mtp = u(model["mtp_layer_count"])
-    period, phase = u(hybrid["period"]), u(hybrid["full_phase"])
-    gdn_layers, full_layers = u(hybrid["linear_layer_count"]), u(hybrid["full_layer_count"])
-    gdn_key_dim, gdn_value_dim = u(linear["key_dimension"]), u(linear["value_dimension"])
-    conv = u(linear["short_conv_kernel"])
-    rope_dim = u(attn["rope_dimension"])
-    theta = repr(float(attn["rope_theta"]))
-    experts = u(moe["routed_expert_count"])
-    topk = u(moe["experts_per_token"])
-    shared = u(moe["shared_expert_count"])
-    inter = u(moe["expert_intermediate_dimension"])
-    shared_inter = u(moe["shared_expert_intermediate_dimension"])
-    mxfp4 = u(policy["mxfp4_group_size"])
-    fp8_block = u(policy["fp8_block"])
-    swiglu = repr(float(policy["swiglu_limit"]))
-    hc_streams = u(hc["stream_count"])
-    hc_lowrank = u(hc["lowrank_dimension"])
-    idx_heads = u(index["head_count"])
-    idx_kv_heads = u(index["kv_head_count"])
-    idx_dim = u(index["head_dimension"])
-    idx_budget = u(index["budget"])
-    idx_ratio = u(index["compress_ratio"])
-    ple_layer = u(ple["layer_index_weights"])
-    ple_ngram = u(ple["ngram_size"])
-    ple_heads = u(ple["heads_per_ngram"])
-    ple_shards = u(ple["shard_count"])
-    ple_conv = u(ple["conv_kernel"])
-    chunk = u(policy["gdn_chunk_tokens"])
-
-    return f"""#ifndef SPARKPIPE_SPARK_QWEN4_FLASH_MODEL_H
-#define SPARKPIPE_SPARK_QWEN4_FLASH_MODEL_H
-
-#define SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION {hidden}
-#define SPARK_QWEN4_FLASH_MODEL_LAYER_COUNT {layers}
-#define SPARK_QWEN4_FLASH_MODEL_VOCAB_COUNT {vocab}
-#define SPARK_QWEN4_FLASH_MODEL_ATTENTION_HEAD_COUNT {heads}
-#define SPARK_QWEN4_FLASH_MODEL_KV_HEAD_COUNT {kv_heads}
-#define SPARK_QWEN4_FLASH_MODEL_HEAD_DIMENSION {head_dim}
-#define SPARK_QWEN4_FLASH_MODEL_GDN_KEY_HEAD_COUNT {gdn_key_heads}
-#define SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEAD_COUNT {gdn_value_heads}
-
-#define SPARK_QWEN4_FLASH_MODEL_OUTPUT_VOCAB_COUNT SPARK_QWEN4_FLASH_MODEL_VOCAB_COUNT
-#define SPARK_QWEN4_FLASH_MODEL_MAXIMUM_CONTEXT_TOKENS {max_ctx}
-#define SPARK_QWEN4_FLASH_MODEL_RMS_NORM_EPSILON {eps}f
-#define SPARK_QWEN4_FLASH_MODEL_MTP_LAYER_COUNT {mtp}
-
-#define SPARK_QWEN4_FLASH_MODEL_ATTENTION_PERIOD {period}
-#define SPARK_QWEN4_FLASH_MODEL_FULL_ATTENTION_PHASE {phase}
-#define SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer_index) \\
-	(((layer_index) % SPARK_QWEN4_FLASH_MODEL_ATTENTION_PERIOD) != SPARK_QWEN4_FLASH_MODEL_FULL_ATTENTION_PHASE)
-#define SPARK_QWEN4_FLASH_MODEL_GDN_LAYER_COUNT {gdn_layers}
-#define SPARK_QWEN4_FLASH_MODEL_FULL_ATTENTION_LAYER_COUNT {full_layers}
-
-#define SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_KEY_DIMENSION {gdn_key_dim}
-#define SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_VALUE_DIMENSION {gdn_value_dim}
-#define SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEADS_PER_KEY_HEAD \\
-	(SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEAD_COUNT / SPARK_QWEN4_FLASH_MODEL_GDN_KEY_HEAD_COUNT)
-#define SPARK_QWEN4_FLASH_MODEL_GDN_CONV_KERNEL {conv}
-#define SPARK_QWEN4_FLASH_MODEL_GDN_QK_DIMENSION \\
-	(SPARK_QWEN4_FLASH_MODEL_GDN_KEY_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_KEY_DIMENSION)
-#define SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_DIMENSION \\
-	(SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_GDN_HEAD_VALUE_DIMENSION)
-#define SPARK_QWEN4_FLASH_MODEL_GDN_CONV_CHANNELS \\
-	((2u * SPARK_QWEN4_FLASH_MODEL_GDN_QK_DIMENSION) + SPARK_QWEN4_FLASH_MODEL_GDN_VALUE_DIMENSION)
-#define SPARK_QWEN4_FLASH_MODEL_GDN_CONV_TAIL_COLUMNS (SPARK_QWEN4_FLASH_MODEL_GDN_CONV_KERNEL - 1u)
-#define SPARK_QWEN4_FLASH_MODEL_GDN_CHUNK_TOKENS {chunk}
-
-#define SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_HEAD_COUNT SPARK_QWEN4_FLASH_MODEL_ATTENTION_HEAD_COUNT
-#define SPARK_QWEN4_FLASH_MODEL_ATTN_KV_HEAD_COUNT SPARK_QWEN4_FLASH_MODEL_KV_HEAD_COUNT
-#define SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION SPARK_QWEN4_FLASH_MODEL_HEAD_DIMENSION
-#define SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_DIMENSION {rope_dim}
-#define SPARK_QWEN4_FLASH_MODEL_ATTN_ROPE_THETA {theta}f
-#define SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_DIMENSION \\
-	(SPARK_QWEN4_FLASH_MODEL_ATTN_QUERY_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION)
-#define SPARK_QWEN4_FLASH_MODEL_ATTN_KV_DIMENSION \\
-	(SPARK_QWEN4_FLASH_MODEL_ATTN_KV_HEAD_COUNT * SPARK_QWEN4_FLASH_MODEL_ATTN_HEAD_DIMENSION)
-#define SPARK_QWEN4_FLASH_MODEL_ATTN_CACHE_TOKEN_ELEMENTS \\
-	(2u * SPARK_QWEN4_FLASH_MODEL_ATTN_KV_DIMENSION)
-
-#define SPARK_QWEN4_FLASH_MODEL_ROUTED_EXPERT_COUNT {experts}
-#define SPARK_QWEN4_FLASH_MODEL_EXPERTS_PER_TOKEN {topk}
-#define SPARK_QWEN4_FLASH_MODEL_SHARED_EXPERT_COUNT {shared}
-#define SPARK_QWEN4_FLASH_MODEL_EXPERT_INTERMEDIATE_DIMENSION {inter}
-#define SPARK_QWEN4_FLASH_MODEL_SHARED_EXPERT_INTERMEDIATE_DIMENSION {shared_inter}
-#define SPARK_QWEN4_FLASH_MODEL_MXFP4_GROUP_SIZE {mxfp4}
-#define SPARK_QWEN4_FLASH_MODEL_FP8_BLOCK {fp8_block}
-#define SPARK_QWEN4_FLASH_MODEL_SWIGLU_LIMIT {swiglu}f
-
-#define SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT {hc_streams}
-#define SPARK_QWEN4_FLASH_MODEL_HC_LOWRANK_DIMENSION {hc_lowrank}
-#define SPARK_QWEN4_FLASH_MODEL_HC_STREAM_WIDTH \\
-	(SPARK_QWEN4_FLASH_MODEL_HC_STREAM_COUNT * SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION)
-
-#define SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_COUNT {idx_heads}
-#define SPARK_QWEN4_FLASH_MODEL_INDEXER_KV_HEAD_COUNT {idx_kv_heads}
-#define SPARK_QWEN4_FLASH_MODEL_INDEXER_HEAD_DIMENSION {idx_dim}
-#define SPARK_QWEN4_FLASH_MODEL_INDEXER_BUDGET {idx_budget}
-#define SPARK_QWEN4_FLASH_MODEL_INDEXER_COMPRESS_RATIO {idx_ratio}
-
-#define SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX {ple_layer}
-#define SPARK_QWEN4_FLASH_MODEL_PLE_NGRAM_SIZE {ple_ngram}
-#define SPARK_QWEN4_FLASH_MODEL_PLE_HEADS_PER_NGRAM {ple_heads}
-#define SPARK_QWEN4_FLASH_MODEL_PLE_SHARD_COUNT {ple_shards}
-#define SPARK_QWEN4_FLASH_MODEL_PLE_EMBED_DIMENSION SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION
-#define SPARK_QWEN4_FLASH_MODEL_PLE_CONV_KERNEL {ple_conv}
-
-#define SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES 2u
-#define SPARK_QWEN4_FLASH_MODEL_HIDDEN_BF16_BYTES \\
-	(SPARK_QWEN4_FLASH_MODEL_HIDDEN_DIMENSION * SPARK_QWEN4_FLASH_MODEL_BF16_ELEMENT_BYTES)
-
-#endif
-"""
-
-
 RENDERERS = {
     "qwen38_27b": render_qwen38_27b,
     "glm5_next": render_glm5_next,
-    "qwen4_flash": render_qwen4_flash,
 }
 
 
