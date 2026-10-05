@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 15u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 16u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -258,6 +258,16 @@ typedef struct SparkModelDriverKvStoreCounters
     uint64_t store_write_failure_count;
     uint64_t store_queue_full_count;
     uint64_t store_queued_count;
+    uint64_t pool_resident_pages;
+    uint64_t pool_physical_pages;
+    uint64_t pool_logical_pages;
+    uint64_t pool_retained_pages;
+    uint64_t pool_evicted_entries;
+    uint64_t pool_resident_evictions;
+    uint64_t spill_write_bytes;
+    uint64_t spill_read_bytes;
+    uint64_t spill_digest_mismatches;
+    uint64_t spill_read_errors;
 } SparkModelDriverKvStoreCounters;
 
 typedef struct SparkModelDriverRuntimeSnapshot
