@@ -28,7 +28,7 @@ validation_hash_format_check=0
 validation_nvcc_splice=late
 
 validation_include_dirs() {
-    printf '%s\n' "model-families/glm5_next/include"
+    printf '%s\n' "model-families/glm5_next/include" "model-families/common/include"
 }
 
 validation_nvcc_extra_args() {
