@@ -18,7 +18,6 @@ describe() {
 	*/kernels/project.cuh) echo "low-rank projection, absorbed projection, fused QKV split" ;;
 	*/kernels/topk.cuh) echo "top-k both shapes: bitonic small, radix large" ;;
 	*/kernels/head.cuh) echo "sampling head: candidates, commit, softmax" ;;
-	*/kernels/speculate.cuh) echo "speculative verify and accept, greedy and sampled" ;;
 	*/kernels/linear_attn.cuh) echo "delta rule decode, causal conv; GDN and KDA" ;;
 	*/kernels/graph.cuh) echo "CUDA graph capture keyed by shape" ;;
 	*/kernels/tensor_map.cuh) echo "TMA descriptor geometry" ;;

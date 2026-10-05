@@ -12,7 +12,6 @@
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/route.cuh"
-#include "inference/kernels/speculate.cuh"
 #include "inference/kernels/topk.cuh"
 #include "modules/ling_resident_decode_stage/source/cuda/api.h"
 #include "modules/ling_resident_decode_stage/source/cuda/config.h"

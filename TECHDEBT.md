@@ -1098,15 +1098,6 @@ Related common-code debt:
   DFLASH2 as a remote tap source.
 - qwen38_27b remote drafting is synchronous: a decode frame, then a blocking
   20 ms `DraftRemoteChain`, then verify. Pipeline it one round ahead.
-- glm5_next accepts `draft_bridge_host`/`draft_bridge_port` and the tap-free
-  remote sources but has no `DraftRemoteChain` call site.
-- `inference/kernels/speculate.cuh` is included by four unity files and
-  launched nowhere.
-- `Makefile:791` passes a vestigial `-DSPARK_DSPARK_TARGET_GLM52=1` to
-  `spark_speculation_policy.o`, which no longer includes the header that
-  reads it.
-- The qwen38_max provider-slot shim is the only user of
-  `spark_speculation_provider.h`; move it onto the seam and delete the slot.
 - `tests/test_speculation_tree_resolve.c`,
   `tests/test_speculation_headers_coexist.c` and
   `tests/test_qwen38_27b_remote_spec.c` are not built by the Makefile.
@@ -1124,7 +1115,9 @@ Related common-code debt:
   it; they are gone too, so a DFlash2 request is refused as unavailable.
   Restore the capture inside the graph engine, with the ring and gate from
   `e60f690b`, when a GLM 5.3 Flash DFlash2 drafter is to be qualified.
-- Left out on purpose (2026-10-02): there is no context-lookup drafter, so a
+- Left out on purpose (2026-10-02): GLM Full (glm52) and K3 have no
+  context-lookup drafter; GLM Flash has one in its verify regime
+  (`SPARK_GLM5_NEXT_VERIFY_ROWS`, drafter `lookup`). On the other two, a
   reply that re-emits text already in the request pays full decode cost for
   every token. Prompt-lookup (n-gram) speculation is a proven technique. Its
   target case is code and document edits, where the reply repeats most of the
