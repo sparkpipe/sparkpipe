@@ -15,6 +15,7 @@
 
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_kv_page_cache.h"
+#include "sparkpipe/spark_kv_shared_index.h"
 #include "sparkpipe/spark_kv_page_store.h"
 #include "sparkpipe/spark_prefix_cache.h"
 #include "kv_device_copy_test_hook.h"
@@ -190,6 +191,41 @@ static void SparkTestKvParkRanksPriorityThenDeadline(void)
 	assert(SparkTestKvParkedBetween(3u,0u,3u,200u) == 0u);
 	assert(SparkTestKvParkedBetween(3u,200u,3u,0u) == 1u);
 	printf("PASS kv arena parks the lowest priority, then the latest deadline, before recency\n");
+}
+
+static void SparkTestKvSharedBlocksLiveOutsideTheSlots(void)
+{
+	SparkTestKvFixture fixture;
+	SparkKvCacheBlockView view;
+	uint32_t shared,block0,block1,block2,physical;
+	SparkTestKvInitialize(&fixture);
+	assert(SparkKvCacheArenaAdoptSharedBlock(&fixture.arena,0u,&shared) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkKvCacheArenaSetSharedWindow(&fixture.arena,SPARK_TEST_RESIDENT_SLOT_COUNT - 1u,2u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkKvCacheArenaSetSharedWindow(&fixture.arena,SPARK_TEST_RESIDENT_SLOT_COUNT,2u) == SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaAdoptSharedBlock(&fixture.arena,2u,&shared) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkKvCacheArenaAdoptSharedBlock(&fixture.arena,1u,&shared) == SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaSetSharedWindow(&fixture.arena,SPARK_TEST_RESIDENT_SLOT_COUNT,3u) == SPARK_STATUS_BUSY);
+	assert(SparkKvCacheArenaResolveBlock(&fixture.arena,shared,&view) == SPARK_STATUS_OK);
+	assert((view.flags & (SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT | SPARK_KV_CACHE_BLOCK_FLAG_SHARED)) == (SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT | SPARK_KV_CACHE_BLOCK_FLAG_SHARED));
+	assert(view.resident_slot_index == SPARK_TEST_RESIDENT_SLOT_COUNT + 1u);
+	assert(view.key_device_address == fixture.arena.key_device_base + (uintptr_t)((SPARK_TEST_RESIDENT_SLOT_COUNT + 1u) * SPARK_TEST_BLOCK_BYTES));
+	assert(fixture.arena.resident_block_count == 0u && fixture.arena.shared_block_count == 1u);
+	assert(SparkKvCacheArenaPinResidentTable(&fixture.arena,&shared,1u,&physical) == SPARK_STATUS_OK && physical == SPARK_TEST_RESIDENT_SLOT_COUNT + 1u);
+	assert(SparkKvCacheArenaUnpinResidentTable(&fixture.arena,&shared,1u) == SPARK_STATUS_OK);
+	block0 = SparkTestKvAcquire(&fixture);
+	block1 = SparkTestKvAcquire(&fixture);
+	block2 = SparkTestKvAcquire(&fixture);
+	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block0) == SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block1) == SPARK_STATUS_OK);
+	assert(SparkKvCacheArenaMarkBlockResident(&fixture.arena,block2) == SPARK_STATUS_OK);
+	assert(fixture.evict_count == 1u && fixture.evicted_logical_block == block0);
+	assert((fixture.blocks[shared].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+	assert(SparkKvCacheArenaParkResidentBlock(&fixture.arena,shared) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkKvCacheArenaMarkBlockNonResident(&fixture.arena,shared) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkKvCacheArenaFreeBlock(&fixture.arena,shared) == SPARK_STATUS_OK);
+	assert(fixture.arena.shared_block_count == 0u && fixture.arena.resident_block_count == SPARK_TEST_RESIDENT_SLOT_COUNT);
+	assert(fixture.resident_owners[0] != shared && fixture.resident_owners[1] != shared);
+	printf("PASS kv arena shared blocks: resident in the window past the slots, never parked or counted, freed without a slot\n");
 }
 
 static void SparkTestKvParkFailureKeepsPage(void)
@@ -2968,6 +3004,105 @@ static void SparkTestKvAdmissionStampsKeepRank(void)
 	printf("PASS kv admission stamps a lane's pages with its priority and deadline, and release clears them\n");
 }
 
+typedef struct SparkTestKvSharedSide
+{
+	SparkTestKvTransactions fixture;
+	SparkKvSharedIndex index;
+	uint64_t generations[SPARK_TEST_LOGICAL_BLOCK_COUNT];
+	uint32_t chain_slots[SPARK_TEST_LOGICAL_BLOCK_COUNT];
+	uint64_t chain_generations[SPARK_TEST_LOGICAL_BLOCK_COUNT];
+} SparkTestKvSharedSide;
+
+static void SparkTestKvSharedSideInitialize(SparkTestKvSharedSide *side,void *memory,uint64_t bytes,uint32_t holder)
+{
+	static const uint8_t layout[SPARK_KV_SHARED_INDEX_LAYOUT_BYTES] = {0x5au};
+	SparkTestKvTransactionsInitialize(&side->fixture,1u);
+	assert(SparkKvSharedIndexAttach(&side->index,memory,bytes,holder,SPARK_TEST_BLOCK_BYTES,layout) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheAttachShared(&side->fixture.pages.cache,&side->index,side->generations,side->chain_slots,side->chain_generations,SPARK_TEST_LOGICAL_BLOCK_COUNT) == SPARK_STATUS_VALIDATION_FAILED);
+	assert(SparkKvCacheArenaSetSharedWindow(&side->fixture.pages.kv.arena,SPARK_TEST_RESIDENT_SLOT_COUNT,side->index.slot_count) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheAttachShared(&side->fixture.pages.cache,&side->index,side->generations,side->chain_slots,side->chain_generations,SPARK_TEST_LOGICAL_BLOCK_COUNT) == SPARK_STATUS_OK);
+}
+
+static uint32_t SparkTestKvSharedWindowSlot(const SparkTestKvSharedSide *side,uint32_t entry_index)
+{
+	const SparkKvCacheBlock *block = &side->fixture.pages.kv.arena.blocks[side->fixture.pages.cache.entries[entry_index].logical_page_index];
+	assert((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) != 0u && block->resident_slot_index >= SPARK_TEST_RESIDENT_SLOT_COUNT);
+	return(block->resident_slot_index - SPARK_TEST_RESIDENT_SLOT_COUNT);
+}
+
+static uint32_t SparkTestKvFindEntry(const SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count)
+{
+	uint32_t index;
+	for (index=0u; index<cache->entry_capacity; index++)
+		if ( (cache->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && cache->entries[index].token_count == token_count &&
+			memcmp(cache->entries[index].identity.sha256,identity->sha256,sizeof(identity->sha256)) == 0 )
+			return(index);
+	assert(0);
+	return(SPARK_KV_PAGE_CACHE_NO_INDEX);
+}
+
+static void SparkTestKvSharedPrefixAcrossCaches(void)
+{
+	static const uint8_t layout[SPARK_KV_SHARED_INDEX_LAYOUT_BYTES] = {0x5au};
+	SparkTestKvSharedSide *a = (SparkTestKvSharedSide *)calloc(1u,sizeof(*a)),*b = (SparkTestKvSharedSide *)calloc(1u,sizeof(*b));
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverCacheIdentity first,second;
+	uint64_t bytes = SparkKvSharedIndexBytes(4u);
+	void *memory = malloc((size_t)bytes);
+	uint32_t a_first,a_second,b_first,b_second,slot_first,slot_second,unpublished;
+	uint64_t generation;
+	assert(a != 0 && b != 0 && memory != 0);
+	assert(SparkKvSharedIndexFormat(memory,bytes,4u,SPARK_TEST_BLOCK_BYTES,layout) == SPARK_STATUS_OK);
+	SparkTestKvSharedSideInitialize(a,memory,bytes,0u);
+	SparkTestKvSharedSideInitialize(b,memory,bytes,1u);
+	SparkTestKvIdentity(&first,0x31u);
+	SparkTestKvIdentity(&second,0x32u);
+	SparkTestKvPageLane(&lane,1u,0u,0u,4u);
+	SparkTestKvPagePublish(&lane,4u,0x31u);
+	SparkTestKvWritePageWithoutStore(&a->fixture.pages,&lane);
+	SparkTestKvPageLane(&lane,1u,0u,4u,8u);
+	SparkTestKvPagePublish(&lane,8u,0x32u);
+	SparkTestKvWritePageWithoutStore(&a->fixture.pages,&lane);
+	assert(a->fixture.pages.cache.shared_allocated_count == 2u && a->fixture.pages.cache.shared_published_count == 2u);
+	assert(a->fixture.pages.kv.arena.resident_block_count == 0u && a->fixture.pages.kv.arena.shared_block_count == 2u);
+	a_second = a->fixture.pages.cache.sequences[0].terminal_entry_index;
+	a_first = a->fixture.pages.cache.entries[a_second].parent_entry_index;
+	slot_first = SparkTestKvSharedWindowSlot(a,a_first);
+	slot_second = SparkTestKvSharedWindowSlot(a,a_second);
+	assert(atomic_load(&a->index.slots[slot_second].parent_slot) == slot_first);
+	assert(SparkKvPageCacheImportShared(&b->fixture.pages.cache,&second,7u) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkKvPageCacheImportShared(&b->fixture.pages.cache,&second,8u) == SPARK_STATUS_OK);
+	assert(b->fixture.pages.cache.shared_import_count == 1u && b->fixture.pages.cache.shared_imported_page_count == 2u);
+	b_second = SparkTestKvFindEntry(&b->fixture.pages.cache,&second,8u);
+	b_first = b->fixture.pages.cache.entries[b_second].parent_entry_index;
+	assert(SparkTestKvSharedWindowSlot(b,b_second) == slot_second && SparkTestKvSharedWindowSlot(b,b_first) == slot_first);
+	assert(atomic_load(&a->index.slots[slot_first].holders) == (SparkKvSharedIndexBit(0u) | SparkKvSharedIndexBit(1u)));
+	assert(atomic_load(&a->index.slots[slot_second].holders) == (SparkKvSharedIndexBit(0u) | SparkKvSharedIndexBit(1u)));
+	SparkTestKvPageLane(&b->fixture.lanes[0],9u,0u,8u,9u);
+	b->fixture.lanes[0].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	b->fixture.lanes[0].prefix_token_count = 8u;
+	b->fixture.lanes[0].prefix_identity = second;
+	assert(SparkKvLaneTransactionsAdmit(&b->fixture.transactions,&b->fixture.request) == SPARK_STATUS_OK);
+	assert(b->fixture.owners[0].page_count == 3u);
+	assert(b->fixture.physical[0] == SPARK_TEST_RESIDENT_SLOT_COUNT + slot_first && b->fixture.physical[1] == SPARK_TEST_RESIDENT_SLOT_COUNT + slot_second);
+	unpublished = b->fixture.physical[2];
+	assert(unpublished >= SPARK_TEST_RESIDENT_SLOT_COUNT && unpublished != SPARK_TEST_RESIDENT_SLOT_COUNT + slot_first && unpublished != SPARK_TEST_RESIDENT_SLOT_COUNT + slot_second);
+	assert(atomic_load(&b->index.slots[unpublished - SPARK_TEST_RESIDENT_SLOT_COUNT].state) == SPARK_KV_SHARED_SLOT_WRITING);
+	assert(SparkTestKvAbortAdmission(&b->fixture) == SPARK_STATUS_OK);
+	assert(atomic_load(&b->index.slots[unpublished - SPARK_TEST_RESIDENT_SLOT_COUNT].state) == SPARK_KV_SHARED_SLOT_FREE);
+	assert(SparkKvPageCacheReleaseLane(&a->fixture.pages.cache,0u,1u) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheReleaseAll(&a->fixture.pages.cache) == SPARK_STATUS_OK);
+	assert(a->fixture.pages.kv.arena.shared_block_count == 0u);
+	assert(atomic_load(&a->index.slots[slot_first].holders) == SparkKvSharedIndexBit(1u) && atomic_load(&a->index.slots[slot_first].state) == SPARK_KV_SHARED_SLOT_READY);
+	assert(SparkKvPageCacheReleaseAll(&b->fixture.pages.cache) == SPARK_STATUS_OK);
+	assert(atomic_load(&a->index.slots[slot_first].holders) == 0u && atomic_load(&a->index.slots[slot_second].holders) == 0u);
+	assert(SparkKvSharedIndexReserve(&a->index,&unpublished,&generation) == SPARK_STATUS_OK);
+	free(memory);
+	free(a);
+	free(b);
+	printf("PASS kv shared prefix: one cache publishes window pages, another imports the chain onto the same window slots, holders track both\n");
+}
+
 int main(void)
 {
 	int32_t status;
@@ -3012,6 +3147,7 @@ int main(void)
 	SparkTestKvEvictionBackpressurePreservesResidentOwner();
 	SparkTestKvParkFailureKeepsPage();
 	SparkTestKvParkRanksPriorityThenDeadline();
+	SparkTestKvSharedBlocksLiveOutsideTheSlots();
 	SparkTestKvEvictionInternalErrorStaysLoud();
 	SparkTestKvPageStoreFullDiskKeepsPagesAndRecovers();
 	SparkTestKvParkSupersededByWrite();
@@ -3023,6 +3159,7 @@ int main(void)
 	SparkTestKvBackingFullQueuesNewWork();
 	SparkTestKvParkStallDegradesToRecompute();
 	SparkTestKvAdmissionStampsKeepRank();
+	SparkTestKvSharedPrefixAcrossCaches();
 	SparkTestKvPageStoreRetiredWriteFailureReachesEvictor();
 	SparkTestKvLogicalBlockFreeListReusesReleasedHead();
 	SparkTestKvFramePinProtectsResidentBlock();

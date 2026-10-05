@@ -778,6 +778,11 @@ SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,const
 	return(mapping->metadata != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 cudaError_t cudaDeviceSynchronize(void) { return(cudaSuccess); }
+SparkStatus SparkWeightdKvSharedAttach(const SparkWeightdKvSharedRequest *request,uint64_t timeout,SparkWeightdKvSharedMapping *mapping) { (void)request;(void)timeout;memset(mapping,0,sizeof(*mapping));abort(); }
+SparkStatus SparkWeightdKvSharedMapChunks(SparkWeightdKvSharedMapping *mapping,void *base,const uint64_t *offsets,uint64_t timeout) { (void)mapping;(void)base;(void)offsets;(void)timeout;abort(); }
+void SparkWeightdKvSharedUnmap(SparkWeightdKvSharedMapping *mapping) { memset(mapping,0,sizeof(*mapping)); }
+SparkStatus SparkWeightdKvReserveAddress(uint64_t bytes,void **base) { (void)bytes;(void)base;abort(); }
+void SparkWeightdKvFreeAddress(void *base,uint64_t bytes) { assert(base == 0);(void)bytes; }
 SparkStatus SparkWeightdKvPoolGrow(SparkWeightdKvPoolMapping *mapping,uint32_t target,SparkWeightdKvPoolState *state,uint64_t timeout)
 {
 	(void)target;(void)timeout;

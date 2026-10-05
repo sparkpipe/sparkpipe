@@ -433,15 +433,25 @@ citations refer to that commit.
   multiple of the context-split degree (refused at allocation otherwise).
   Still open: fetching only the selected union's latents, once its size is
   measured on the fleet. Scatter waves are capped at 64 rows.
-- Left out on purpose (2026-10-04): weightd owns each engine's KV pool
-  (`SparkWeightdKvPoolMap`, `runtime/spark_weightd_kv_pool.c`; the binding
-  carves its regions and page table from it), keeps it across an engine
-  restart and lets a clean restart adopt the sealed resident prefix pages, but
-  pools are private to one engine: there are no cross-engine leases,
-  refcounted prefix shares or copy-on-write forks, so two co-resident engines
-  serving the same model hold duplicate prefixes. Close it with shared pages
-  in weightd that several bindings map read-only, proven by two engines on one
-  node serving one prefix from one set of device pages.
+- Cross-engine shared prefix pages are in code
+  ([`docs/KV_SHARED_PREFIX.md`](docs/KV_SHARED_PREFIX.md)):
+  - weightd's `--kv-shared-window-bytes` gives each KV layout a window
+    that every binding of that layout maps after its private pages;
+  - new pages come from the window, and published prefixes are found
+    through a shared index in weightd's memfd;
+  - engines read their peers' prefix indexes
+    (`model_api --peer-runtime-root`).
+
+  Still open:
+  - Bindings with recurrent state (GLM Flash, K3) keep their prefixes
+    private, because their prefix state lives in a per-engine state store.
+    Close it by keeping the state record in the window too.
+  - Window pages are never spilled. A reclaimed slot's prefix survives
+    only through its owners' snapshot saves.
+  - The window size is one node-wide byte count per layout.
+  - Fleet proof: two GLM Full lanes on one node, where the second lane's
+    prompt hits the first lane's prefix with no extra device pages and
+    identical tokens.
 
 ## KV tiers
 

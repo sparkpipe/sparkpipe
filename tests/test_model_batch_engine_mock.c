@@ -157,6 +157,7 @@ static void TestWriteDeployment(const char *path, const char *runtime_root, cons
 }
 
 static uint32_t TestKeepPrefixIndex;
+static const char *TestPeerPrefixIndex;
 
 static const char *TestPrefixIndexPath(void)
 {
@@ -189,6 +190,11 @@ static void TestConfigure(SparkModelBatchEngineConfiguration *configuration,cons
 	configuration->prefix_index_path = TestPrefixIndexPath();
 	if ( TestKeepPrefixIndex == 0u )
 		(void)unlink(configuration->prefix_index_path);
+	if ( TestPeerPrefixIndex != 0 )
+	{
+		configuration->peer_prefix_index_paths = &TestPeerPrefixIndex;
+		configuration->peer_prefix_index_count = 1u;
+	}
 	configuration->event_function = TestBatchEvent;
 	configuration->event_context = state;
 }
@@ -447,6 +453,56 @@ static void TestScenarioPrefixIndexSurvivesRestart(const SparkModelResidentDeplo
 	TestDriveUntilTerminal(engine,&state,2u,400u);
 	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"index restart: the request completes with four cached prompt tokens");
 	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioPeerPrefixIndex(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
+	static char peer[512];
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	SparkModelServingLane canonical = {0},imported = {0};
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,600u,1u);
+	CHECK(TestWaitLane(engine,1u,0u,&canonical) != 0u && canonical.cache_publish_token_count == 4u,"peer index: the peer engine publishes the first block");
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK,"peer index: the peer engine is destroyed and saves its index");
+	(void)snprintf(peer,sizeof(peer),"%s.peer",TestPrefixIndexPath());
+	CHECK(rename(TestPrefixIndexPath(),peer) == 0,"peer index: the peer's index file moves to its own path");
+	memset(&state,0,sizeof(state));
+	MockResidentClientReset();
+	{
+		SparkModelBatchEngineConfiguration configuration;
+		TestPeerPrefixIndex = TestPrefixIndexPath();
+		TestConfigure(&configuration,deployment,&state,runtime_root,4u,8u,0u);
+		engine = 0;
+		CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_INVALID_ARGUMENT && engine == 0,"peer index: an engine refuses its own index as a peer");
+	}
+	TestPeerPrefixIndex = peer;
+	engine = TestConnect(deployment,&state,runtime_root);
+	TestPeerPrefixIndex = 0;
+	if ( engine == 0 )
+		return;
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.prefix_index_loaded_record_count == 0u,"peer index: the engine's own index is empty");
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,2u,601u,1u,prompt,8u);
+	CHECK(TestWaitLane(engine,2u,4u,&imported) != 0u && SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK &&
+		view.peer_prefix_imported_record_count == 1u && view.peer_prefix_import_count == 1u,"peer index: the engine imports the peer's committed block before it schedules the prompt");
+	CHECK(imported.cache_prefix_token_count == 4u &&
+		(imported.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u &&
+		memcmp(&canonical.cache_publish_identity,&imported.cache_prefix_identity,sizeof(canonical.cache_publish_identity)) == 0,
+		"peer index: the engine sends the peer's block as a prefix lane, for the shared KV window to serve");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"peer index: the request completes with four cached prompt tokens");
+	SparkModelBatchEngineDestroy(engine);
+	(void)unlink(peer);
 }
 
 static void TestScenarioPrefixIndexRemovesStaleTemporaries(const SparkModelResidentDeployment *deployment,const char *runtime_root)
@@ -1895,6 +1951,7 @@ int main(void)
 	TestScenarioRankKilledAndRevived(&deployment,runtime_root);
 	TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
 	TestScenarioPrefixIndexSurvivesRestart(&deployment,runtime_root);
+	TestScenarioPeerPrefixIndex(&deployment,runtime_root);
 	TestScenarioPrefixIndexRefusesCorruptFile(&deployment,runtime_root);
 	TestScenarioPrefixIndexRemovesStaleTemporaries(&deployment,runtime_root);
 	TestScenarioStatusReport(&deployment,runtime_root);

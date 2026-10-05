@@ -1781,6 +1781,10 @@ static void *api_bringup(void *argument)
 int main(int argc, char **argv)
 {
 	const char *dep_path = 0, *root = 0, *port_s = "8080", *quant_arm_path = 0;
+	const char *peer_roots[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX];
+	static char peer_index_storage[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX][4200];
+	static const char *peer_indexes[SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX];
+	uint32_t peer_count = 0u, peer;
 	SparkModelResidentDeployment dep;
 	SparkModelBatchEngineConfiguration cfg;
 	pthread_t bringup;
@@ -1791,6 +1795,15 @@ int main(int argc, char **argv)
 			dep_path = argv[++i];
 		else if (!strcmp(argv[i], "--runtime-root") && i + 1 < argc)
 			root = argv[++i];
+		else if (!strcmp(argv[i], "--peer-runtime-root") && i + 1 < argc)
+		{
+			if (peer_count == SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX)
+			{
+				fprintf(stderr, "model_api: more than %u --peer-runtime-root values\n", SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX);
+				return 1;
+			}
+			peer_roots[peer_count++] = argv[++i];
+		}
 		else if (!strcmp(argv[i], "--port") && i + 1 < argc)
 			port_s = argv[++i];
 		else if (!strcmp(argv[i], "--quant-arm") && i + 1 < argc)
@@ -1798,7 +1811,7 @@ int main(int argc, char **argv)
 	}
 	if (dep_path == 0 || root == 0)
 	{
-		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--port N] [--quant-arm ARM_JSON]\n", argv[0]);
+		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--peer-runtime-root PATH]... [--port N] [--quant-arm ARM_JSON]\n", argv[0]);
 		return 1;
 	}
 	if (quant_arm_path != 0)
@@ -1835,6 +1848,17 @@ int main(int argc, char **argv)
 		root = resolved_root;
 		(void)snprintf(index_path, sizeof(index_path), "%s/prefix_index.spi", resolved_root);
 		S.prefix_index_path = index_path;
+		for (peer = 0u; peer < peer_count; peer++)
+		{
+			char resolved_peer[4096];
+			if (realpath(peer_roots[peer], resolved_peer) == 0)
+			{
+				fprintf(stderr, "model_api: --peer-runtime-root %s cannot be resolved errno=%d\n", peer_roots[peer], errno);
+				return 1;
+			}
+			(void)snprintf(peer_index_storage[peer], sizeof(peer_index_storage[peer]), "%s/prefix_index.spi", resolved_peer);
+			peer_indexes[peer] = peer_index_storage[peer];
+		}
 	}
 	api_logf("api_start pid=%d deployment=%s runtime_root=%s", (int)getpid(), dep_path, root);
 	S.runtime_root = root;
@@ -1851,6 +1875,8 @@ int main(int argc, char **argv)
 	cfg.deployment = &dep;
 	cfg.runtime_root = root;
 	cfg.prefix_index_path = S.prefix_index_path;
+	cfg.peer_prefix_index_paths = peer_count != 0u ? peer_indexes : 0;
+	cfg.peer_prefix_index_count = peer_count;
 	cfg.request_capacity = 64;
 	cfg.max_context_tokens = api_context_limit(&dep);
 	S.context_limit = cfg.max_context_tokens;

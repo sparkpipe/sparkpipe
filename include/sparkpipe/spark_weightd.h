@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 11u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 12u
 #define SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN 8u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
@@ -86,7 +86,9 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT_RESULT 48u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS 49u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS_RESULT 50u
-#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 11u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
+#define SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH 51u
+#define SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH_RESULT 52u
+#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH ? 12u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 11u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
@@ -820,6 +822,33 @@ typedef struct SparkWeightdIpcKvPoolStatusResult
     uint64_t kv_committed_bytes;
 } SparkWeightdIpcKvPoolStatusResult;
 
+typedef struct SparkWeightdIpcKvSharedAttach
+{
+    SparkWeightdIpcHeader header;
+    uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES];
+    uint8_t layout_sha256[32];
+    uint64_t chunk_bytes;
+    uint64_t page_bytes;
+    uint32_t alignment_pages;
+    uint32_t reserved0;
+    char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
+} SparkWeightdIpcKvSharedAttach;
+
+typedef struct SparkWeightdIpcKvSharedAttachResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t holder;
+    uint64_t pool_generation;
+    uint64_t chunk_bytes;
+    uint64_t device_bytes;
+    uint64_t metadata_bytes;
+    uint32_t chunk_count;
+    uint32_t metadata_fd_count;
+    uint32_t created;
+    uint32_t slot_count;
+} SparkWeightdIpcKvSharedAttachResult;
+
 #if !defined(__cplusplus)
 _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 104u &&
     sizeof(SparkWeightdIpcKvPoolResize) == 40u && sizeof(SparkWeightdIpcKvPoolResizeResult) == 48u &&
@@ -868,6 +897,7 @@ typedef struct SparkWeightdServerConfig
     uint64_t kv_reserve_bytes;
     uint64_t kv_write_budget_bytes_per_day;
     uint64_t load_pace_bytes_per_second;
+    uint64_t kv_shared_window_bytes;
 } SparkWeightdServerConfig;
 
 typedef struct SparkWeightdServer SparkWeightdServer;
@@ -1096,6 +1126,8 @@ typedef struct SparkWeightdKvPoolRequest
     uint64_t chunk_bytes;
     uint64_t metadata_bytes;
     const char *label;
+    void *device_base;
+    uint64_t reservation_bytes;
 } SparkWeightdKvPoolRequest;
 
 typedef struct SparkWeightdKvPoolGrant
@@ -1112,6 +1144,29 @@ typedef struct SparkWeightdKvPoolGrant
     uint32_t reattached;
     int metadata_fd;
 } SparkWeightdKvPoolGrant;
+
+typedef struct SparkWeightdKvSharedRequest
+{
+    uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES];
+    uint8_t layout_sha256[32];
+    uint64_t chunk_bytes;
+    uint64_t page_bytes;
+    uint32_t alignment_pages;
+    const char *label;
+} SparkWeightdKvSharedRequest;
+
+typedef struct SparkWeightdKvSharedGrant
+{
+    uint64_t pool_generation;
+    uint64_t chunk_bytes;
+    uint64_t device_bytes;
+    uint64_t metadata_bytes;
+    uint32_t chunk_count;
+    uint32_t holder;
+    uint32_t created;
+    uint32_t slot_count;
+    int metadata_fd;
+} SparkWeightdKvSharedGrant;
 
 typedef struct SparkWeightdKvPoolState
 {
@@ -1133,6 +1188,9 @@ SparkStatus SparkWeightdClientKvPoolResize(SparkWeightdClient *client,uint64_t p
     uint32_t target_chunks,SparkWeightdKvPoolState *state,uint64_t timeout_nanoseconds);
 SparkStatus SparkWeightdClientKvPoolStatus(SparkWeightdClient *client,uint64_t pool_generation,
     SparkWeightdKvPoolState *state,uint64_t timeout_nanoseconds);
+SparkStatus SparkWeightdClientKvSharedAttach(SparkWeightdClient *client,
+    const SparkWeightdKvSharedRequest *request,SparkWeightdKvSharedGrant *grant,
+    uint64_t timeout_nanoseconds);
 uint64_t SparkWeightdServerKvCommittedBytes(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerKvPoolCount(const SparkWeightdServer *server);
 
