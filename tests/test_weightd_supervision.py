@@ -314,7 +314,12 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("FORBIDDEN", result.stdout)
         self.assertNotIn("UNLINK", result.stdout)
-        self.assertIn("drain", result.stderr)
+        self.assertNotIn("KILL", result.stdout)
+        self.assertIn("waits for dependent engines to drain", result.stdout)
+        result = self.agent(changed=True, ready=True)
+        self.assertEqual(result.returncode, 0, "a pending update keeps the running weightd healthy, so roots keep converging")
+        self.assertNotIn("KILL", result.stdout)
+        self.assertIn("waits for dependent engines to drain", result.stdout)
 
     def test_owned_ready_daemon_needs_no_restart(self):
         result = self.agent(ready=True)

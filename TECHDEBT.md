@@ -907,8 +907,6 @@ Related common-code debt:
 - `tests/test_speculation_tree_resolve.c`,
   `tests/test_speculation_headers_coexist.c` and
   `tests/test_qwen38_27b_remote_spec.c` are not built by the Makefile.
-- `tools/fleet_serve.sh` defaults `SPARK_GLM5_NEXT_MTP=1` (`:66`, `:96`),
-  which fails glm5_next initialization at TP > 1.
 - glm5_next resident decode chains run no MTP draft: a frame of more than
   one step skips `SparkGlm5NextMtpDriveDraft`, and the engine asks for chains
   whenever the adapter offers them, so with MTP enabled drafts only run on
@@ -1461,50 +1459,17 @@ Found while verifying [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBO
 and the multidev docs on 2026-09-28. Line numbers are in
 `tools/fleet_node_agent.sh` unless another file is named.
 
-- `restart_scope` (`:311-316`) matches `config/model_resident.json`, but a
-  root's deployment file is the top-level `model_resident.json`, so a
-  deployment-only change never restarts the root.
-- An installed but unrecycled weightd makes `ensure_weightd` return 1 on
-  every pass while an engine runs (`:440-444`, `:565-569`), which stops all
-  root convergence.
-- `apply_manifest` never re-verifies on-disk files while the `MANIFEST` is
-  unchanged (`:279`), so an agent copied in by `fleet_sync.sh start`
-  persists.
-- Heartbeats are sent only on change (`:105-118`), so the epoch is not
-  liveness. Add a periodic report.
-- `fleet-agent.service` runs with the default `KillMode=control-group`, so
-  any agent stop, restart or exit kills weightd and the engine. Set
-  `KillMode=process` in the drop-in or record why not.
-- `fleet-agent.service` has no finite `MemoryMax`; give it one and track it
-  with `spark_queue.py track --scope user`.
-- `tools/publish_core.sh:4` ignores `SPARKPIPE_BUILD_TREE`, and
-  `tools/publish_local.sh:32` takes `model_driver.so` from `~/sparkdata/out`,
-  which the current build never writes. Fix or retire both.
-- The janitor's log message (`:410`) is inverted relative to what it kills.
-- The `install_core` and `tools/weightsd_announce.sh` messages still say
-  weightsd owns the restart.
-- `tools/fleet_release_hygiene.sh:16` defaults `HUB` to sparkf; the hub is
-  the rtx5090.
-- `tools/fleet_ready_poll.sh` reads heartbeats from sparkf instead of the
-  rtx5090 hub, waits on an `UPDATE` sentinel the agent no longer uses, and
-  miscounts ready nodes when it greps several files.
-- Neither the `20-serving.conf` drop-in (Production qualification) nor
-  `sparkpipe-hub-route.service` is in the repository or shipped by
-  `fleet_sync.sh`. Production GLM should also pin its lane with
-  `SPARK_WEIGHTD_LANE=0` in that drop-in.
-- The queue ledger holds 32 stale persistent owners
-  (`sparkpipe-weightd-shared.service`,
-  `sparkpipe-glm-serving-dd3526b2.service`) that block `gpu-shared`
-  admission. Untrack them.
-- The family wrappers default to `/run/sparkpipe-weightd-shared/weightd.sock`,
-  which no Spark provides.
+- Owner decision (2026-10-03): nothing SparkPipe-specific runs at boot.
+  After a reboot, `tools/fleet_post_reboot.sh HOST...` checks the node and its
+  mesh peers. The serving settings now in the hand-installed `20-serving.conf`
+  drop-in (and the lane pin `SPARK_WEIGHTD_LANE`) move into the deployment
+  contract (lane A06), and `sparkpipe-hub-route.service` stays a hub-side
+  runtime step listed in `docs/INCIDENT_RECOVERY_PLAYBOOK.md`.
 - `tools/devcycle/lane_assignments.json` and `lane_budget_calc.py` still
-  assume 8 lanes, and `lane_assignments.json` gives lane 0, which production
-  GLM should hold, to a GLM development lane. `tools/inference_smoke.py` accepts lanes
-  0-7 only.
-- A stale, idle `sparkpipe_weightsd` still runs on spark6.
-- Operations: linger is missing for the fleet user on spark8, spark9,
-  sparka to sparkd and sparkf. Run `sudo loginctl enable-linger` there.
+  assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
+  lane while production GLM runs on lane 6. Replace both with the lane
+  allocator of lane B04 (TD287/TD288).
+- Operations: confirm linger on all 16 nodes once they are up; `tools/fleet_post_reboot.sh` checks it on every rebooted node.
 
 ## Hardware independence
 
@@ -1614,19 +1579,6 @@ for seamless production multi-model.
 - Fleet tooling is single-model: the agent accepts multiple runtime roots
   but release sync, health, and measurement lanes are per-root; no
   multi-model deploy or update has been tested.
-- `tools/fleet_swap.sh` still drives the system unit
-  `sparkpipe_model_residentd` through sudo (`start_model`, `stop_model`),
-  not the `fleet-agent` user unit that serves. Running it writes `/etc`
-  drop-ins and starts a system-level residentd outside the fleet-agent
-  cgroup: a fleet-scope swap would start a second residentd beside the
-  agent's on all 16 nodes, which the agent's janitor does not reap because
-  it only matches its own roots. The registry it reads
-  (`tools/devcycle/fleet_registry.json`) has no GLM 5.3 Flash entry and
-  marks both DSV4 models removed. The fleet_swap procedure is obsolete:
-  delete the script and the registry, together with their remaining
-  callers `tools/devcycle/deploy_pro.sh` and
-  `tools/devcycle/first_decode_pro.sh`, or rebuild model swaps on the
-  agent's release roots.
 - Device allocation budgets are incomplete. GB10 `MemoryMax` does not
   contain every CUDA allocation, and the driver ledger omits some direct
   allocations and graph and context overhead. Enforce complete budgets

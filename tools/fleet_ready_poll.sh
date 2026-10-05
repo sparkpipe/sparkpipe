@@ -21,10 +21,8 @@ for path in glob.glob("current/*.json"):
 print(count)
 PY
 )
-    pending=$(ssh -o BatchMode=yes -o ConnectTimeout=4 "$VIEW_HOST" \
-        "test -f release/$ROOT/UPDATE && echo UPDATE-PENDING || echo no-update" 2>/dev/null)
-    echo "t=$((now - start))s $pending $ROOT ready=${ready:-0}/16"
-    if [ "$pending" = no-update ] && [ "${ready:-0}" -ge 16 ]; then
+    echo "t=$((now - start))s $ROOT ready=${ready:-0}/16"
+    if [ "${ready:-0}" -ge 16 ]; then
         echo "FLEET-READY t=$((now - start))s"
         exit 0
     fi

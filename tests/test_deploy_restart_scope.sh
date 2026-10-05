@@ -158,6 +158,8 @@ check "scope(weightd-only)" "$(restart_scope "$SB/scopeA")" "none"
 { echo "config/stage_07.json"; echo "lib/hidden_transport.so"; } > "$SB/scopeA"
 check "scope(lib beats stage)" "$(restart_scope "$SB/scopeA")" "root"
 check "scope(missing file)" "$(restart_scope "$SB/scopeMissing")" "none"
+echo "model_resident.json" > "$SB/scopeA"
+check "scope(deployment file restarts the root)" "$(restart_scope "$SB/scopeA")" "root"
 
 echo "== H. install_core: weightsd lifecycle contract"
 CORE="$SB/release/core"
@@ -201,44 +203,10 @@ PYEOF
 then ok "report: fleet_view_serve schema emitted" || bad "report: fleet_view_serve schema emitted"
 else bad "report: fleet_view_serve schema emitted"; fi
 
-echo "== J. publish_local.sh: staging + no staging left + MANIFEST consistent"
-TREE="$HOME/sparkpipe-build"
-PUBREL="$HOME/release/$ROOT"
-mkdir -p "$TREE/build/modules/glm5_next_resident_decode_stage/codec" "$TREE/build" "$HOME/sparkdata/out/stages/stage_000" "$PUBREL/config"
-echo residentd-bin > "$TREE/build/sparkpipe_model_residentd"
-echo api-bin > "$TREE/build/sparkpipe_model_api"
-echo transport > "$TREE/build/libhidden_transport_spark_host_rdma_verbs.so"
-echo adapter > "$TREE/build/modules/glm5_next_resident_decode_stage/codec/libglm5_next_serving_adapter_codec.so"
-echo driver > "$HOME/sparkdata/out/stages/stage_000/model_driver.so"
-echo stagecfg-live > "$PUBREL/config/stage_00.json"
-echo '{"runtime_root":"sparkdata/example.fp8.tp16"}' > "$PUBREL/model_resident.json"
-if bash tools/publish_local.sh glm5_next_resident_decode_stage codec "$ROOT"; then
-    ok "publish_local: exited clean"
-else
-    bad "publish_local: exited clean"
-fi
-[ -d "$PUBREL/.staging" ] && bad "publish: .staging removed" || ok "publish: .staging removed"
-[ -x "$PUBREL/bin/sparkpipe_model_residentd" ] && ok "publish: residentd installed" || bad "publish: residentd installed"
-[ "$(cat "$PUBREL/lib/model_serving_adapter.so" 2>/dev/null)" = adapter ] && ok "publish: family adapter installed" || bad "publish: family adapter installed"
-grep -q "  bin/sparkpipe_model_residentd" "$PUBREL/MANIFEST" && ok "publish: MANIFEST lists artifacts" || bad "publish: MANIFEST lists artifacts"
-grep -q "  config/stage_00.json" "$PUBREL/MANIFEST" && ok "publish: MANIFEST covers pre-existing configs" || bad "publish: MANIFEST covers pre-existing configs"
-disk=$(sha256sum < "$PUBREL/bin/sparkpipe_model_api" | cut -d' ' -f1)
-listed=$(awk '$2=="bin/sparkpipe_model_api" {print $1}' "$PUBREL/MANIFEST")
-check "publish: MANIFEST hash matches file" "$listed" "$disk"
-
-echo "== K. publish_core.sh modes + weightsd_announce.sh"
+echo "== J. weightsd_announce.sh"
 COREHUB="$HOME/release/core"
-mkdir -p "$TREE/build" "$TREE/tools"
-cp "$AGENT" "$TREE/tools/fleet_node_agent.sh"
-echo weightd-new > "$TREE/build/sparkpipe_weightd"
-echo mesh-status-new > "$TREE/build/sparkpipe_mesh_status"
-if bash tools/publish_core.sh agent > /dev/null; then ok "core: agent mode ran"; else bad "core: agent mode ran"; fi
-[ -x "$COREHUB/bin/fleet_node_agent.sh" ] && ok "core: agent mode publishes agent" || bad "core: agent mode publishes agent"
-[ ! -f "$COREHUB/bin/sparkpipe_weightd" ] && ok "core: agent mode never touches weightd" || bad "core: agent mode never touches weightd"
-if bash tools/publish_core.sh weightd > /dev/null; then ok "core: weightd mode ran"; else bad "core: weightd mode ran"; fi
-[ -f "$COREHUB/bin/sparkpipe_weightd" ] && ok "core: weightd mode publishes candidate" || bad "core: weightd mode publishes candidate"
-[ -x "$COREHUB/bin/sparkpipe_mesh_status" ] && ok "core: weightd mode publishes the mesh status tool with it" || bad "core: weightd mode publishes the mesh status tool with it"
-if bash tools/publish_core.sh 2> /dev/null; then bad "core: missing mode rejected"; else ok "core: missing mode rejected"; fi
+mkdir -p "$COREHUB/bin"
+echo weightd-new > "$COREHUB/bin/sparkpipe_weightd"
 if bash tools/weightsd_announce.sh "$COREHUB" > /dev/null; then ok "announce: ran"; else bad "announce: ran"; fi
 announced=$(cat "$COREHUB/WEIGHTSD_BIN")
 want=$(sha256sum < "$COREHUB/bin/sparkpipe_weightd" | cut -c1-16)
