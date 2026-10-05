@@ -54,7 +54,7 @@ join_ranks() {
 render() {
   python3 "$HERE/k3_multidev_lane.py" --lane "$K3_LANE" \
     --sequences "${K3_SEQUENCES:-16}" --kv-pages "${K3_KV_PAGES:-64}" \
-    --collective "${K3_COLLECTIVE:-device}" --topology "$K3_TOPOLOGY" \
+    --topology "$K3_TOPOLOGY" \
     --pipeline-transport "${K3_PIPELINE_TRANSPORT:-host-rdma}" \
     --kv-backing-bytes "${K3_KV_BACKING_BYTES:-1073741824}" \
     --kv-snapshot-bytes "${K3_KV_SNAPSHOT_BYTES:-8589934592}" \
