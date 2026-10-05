@@ -1,15 +1,15 @@
 {
-  "content_hash": "fc3590b53fbbc3c0",
+  "content_hash": "5f3e5bf72d2ab2a2",
   "contract": {
-    "path": "model_contracts/glm52.json",
-    "sha256": "7f5754c9f7e630bf5a9da39ee610b7349f02f6b9c6c49b10027841fb778e012a"
+    "path": "model_contracts/glm53_full_authoritative.json",
+    "sha256": "b2f151c8ca3896035f585fd6ab3492c3fffeec31343acb6e6aa622f90ec91ffd"
   },
-  "datafile": "glm52.TP13.fc3590b53fbbc3c0.json",
-  "degree": 13,
+  "datafile": "glm53full.TP16.5f3e5bf72d2ab2a2.json",
+  "degree": 16,
   "family": "glm52",
   "geometry_hash": "b4acf6a8d34afd3e",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "glm52.TP13.b4acf6a8d34afd3e/",
+  "kv_entry_prefix": "glm53full.TP16.b4acf6a8d34afd3e/",
   "kv_geometry": {
     "dsa_index_head_count": 32,
     "dsa_index_head_dimension": 128,
@@ -25,7 +25,7 @@
     "rope_theta": 8000000.0,
     "value_head_dimension": 256
   },
-  "model": "glm52",
+  "model": "glm53full",
   "schema_version": 1,
   "strategy": "TP",
   "topology": {
@@ -44,9 +44,12 @@
       "spark-09",
       "spark-10",
       "spark-11",
-      "spark-12"
+      "spark-12",
+      "spark-13",
+      "spark-14",
+      "spark-15"
     ],
-    "nodes": 13,
+    "nodes": 16,
     "source": "examples/topologies/dual_switch_16node_production.json"
   },
   "tp": {
@@ -58,31 +61,31 @@
         "slices": {
           "dense_down": [
             0,
-            12288
+            768
           ],
           "dense_gate_up": [
             0,
-            12288
+            768
           ],
           "heads_in:o": [
             0,
-            16384
+            1024
           ],
           "heads_out:kv_b": [
             0,
-            28672
+            1792
           ],
           "heads_out:q_b": [
             0,
-            16384
+            1024
           ],
           "shared_down": [
             0,
-            2048
+            128
           ],
           "shared_gate_up": [
             0,
-            2048
+            128
           ]
         }
       },
@@ -91,32 +94,32 @@
         "rank": 1,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            768,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            768,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            1024,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            1792,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            1024,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            128,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            128,
+            128
           ]
         }
       },
@@ -125,32 +128,32 @@
         "rank": 2,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            1536,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            1536,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            2048,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            3584,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            2048,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            256,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            256,
+            128
           ]
         }
       },
@@ -159,32 +162,32 @@
         "rank": 3,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            2304,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            2304,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            3072,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            5376,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            3072,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            384,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            384,
+            128
           ]
         }
       },
@@ -193,32 +196,32 @@
         "rank": 4,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            3072,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            3072,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            4096,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            7168,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            4096,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            512,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            512,
+            128
           ]
         }
       },
@@ -227,32 +230,32 @@
         "rank": 5,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            3840,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            3840,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            5120,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            8960,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            5120,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            640,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            640,
+            128
           ]
         }
       },
@@ -261,32 +264,32 @@
         "rank": 6,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            4608,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            4608,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            6144,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            10752,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            6144,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            768,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            768,
+            128
           ]
         }
       },
@@ -295,32 +298,32 @@
         "rank": 7,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            5376,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            5376,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            7168,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            12544,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            7168,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            896,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            896,
+            128
           ]
         }
       },
@@ -329,32 +332,32 @@
         "rank": 8,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            6144,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            6144,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            8192,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            14336,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            8192,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            1024,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            1024,
+            128
           ]
         }
       },
@@ -363,32 +366,32 @@
         "rank": 9,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            6912,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            6912,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            9216,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            16128,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            9216,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            1152,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            1152,
+            128
           ]
         }
       },
@@ -397,32 +400,32 @@
         "rank": 10,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            7680,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            7680,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            10240,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            17920,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            10240,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            1280,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            1280,
+            128
           ]
         }
       },
@@ -431,32 +434,32 @@
         "rank": 11,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            8448,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            8448,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            11264,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            19712,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            11264,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            1408,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            1408,
+            128
           ]
         }
       },
@@ -465,32 +468,134 @@
         "rank": 12,
         "slices": {
           "dense_down": [
-            0,
-            12288
+            9216,
+            768
           ],
           "dense_gate_up": [
-            0,
-            12288
+            9216,
+            768
           ],
           "heads_in:o": [
-            0,
-            16384
+            12288,
+            1024
           ],
           "heads_out:kv_b": [
-            0,
-            28672
+            21504,
+            1792
           ],
           "heads_out:q_b": [
-            0,
-            16384
+            12288,
+            1024
           ],
           "shared_down": [
-            0,
-            2048
+            1536,
+            128
           ],
           "shared_gate_up": [
-            0,
-            2048
+            1536,
+            128
+          ]
+        }
+      },
+      {
+        "node": "spark-13",
+        "rank": 13,
+        "slices": {
+          "dense_down": [
+            9984,
+            768
+          ],
+          "dense_gate_up": [
+            9984,
+            768
+          ],
+          "heads_in:o": [
+            13312,
+            1024
+          ],
+          "heads_out:kv_b": [
+            23296,
+            1792
+          ],
+          "heads_out:q_b": [
+            13312,
+            1024
+          ],
+          "shared_down": [
+            1664,
+            128
+          ],
+          "shared_gate_up": [
+            1664,
+            128
+          ]
+        }
+      },
+      {
+        "node": "spark-14",
+        "rank": 14,
+        "slices": {
+          "dense_down": [
+            10752,
+            768
+          ],
+          "dense_gate_up": [
+            10752,
+            768
+          ],
+          "heads_in:o": [
+            14336,
+            1024
+          ],
+          "heads_out:kv_b": [
+            25088,
+            1792
+          ],
+          "heads_out:q_b": [
+            14336,
+            1024
+          ],
+          "shared_down": [
+            1792,
+            128
+          ],
+          "shared_gate_up": [
+            1792,
+            128
+          ]
+        }
+      },
+      {
+        "node": "spark-15",
+        "rank": 15,
+        "slices": {
+          "dense_down": [
+            11520,
+            768
+          ],
+          "dense_gate_up": [
+            11520,
+            768
+          ],
+          "heads_in:o": [
+            15360,
+            1024
+          ],
+          "heads_out:kv_b": [
+            26880,
+            1792
+          ],
+          "heads_out:q_b": [
+            15360,
+            1024
+          ],
+          "shared_down": [
+            1920,
+            128
+          ],
+          "shared_gate_up": [
+            1920,
+            128
           ]
         }
       }
@@ -498,9 +603,9 @@
     "shard_classes": [
       {
         "degree_resolution": {
-          "reason": "64 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 16384,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 1024,
+          "status": "sharded"
         },
         "head_count": 64,
         "instances_per_model": null,
@@ -517,9 +622,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "64 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 28672,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 1792,
+          "status": "sharded"
         },
         "head_count": 64,
         "instances_per_model": null,
@@ -536,9 +641,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "64 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 16384,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 1024,
+          "status": "sharded"
         },
         "head_count": 64,
         "instances_per_model": null,
@@ -555,9 +660,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "12288 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -575,9 +680,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "2048 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 2048,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 128,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -595,9 +700,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "12288 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -614,9 +719,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "2048 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 2048,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 128,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,

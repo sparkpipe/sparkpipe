@@ -1,15 +1,15 @@
 {
-  "content_hash": "fb94a1fdb76ee497",
+  "content_hash": "153aeab7f9d68e41",
   "contract": {
     "path": "model_contracts/qwen38_27b_authoritative.json",
-    "sha256": "e162bb750570d6435697ac0f9da5b021cffb29f2f5480ffc937d11a9603aa577"
+    "sha256": "6446ef2415599d68bccaee1cd21ee19c2c2b5cd438c1ae2f308da9fd9ddd4a70"
   },
-  "datafile": "qwen38_27b.TP13.fb94a1fdb76ee497.json",
-  "degree": 13,
+  "datafile": "qwen38_27b.TP16.153aeab7f9d68e41.json",
+  "degree": 16,
   "family": "qwen38_27b",
-  "geometry_hash": "ff786ac12a1d6e13",
+  "geometry_hash": "304b1f77e9fff59f",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "qwen38_27b.TP13.ff786ac12a1d6e13/",
+  "kv_entry_prefix": "qwen38_27b.TP16.304b1f77e9fff59f/",
   "kv_geometry": {
     "attention_period": 4,
     "full_layer_count": 16,
@@ -52,9 +52,12 @@
       "spark-09",
       "spark-10",
       "spark-11",
-      "spark-12"
+      "spark-12",
+      "spark-13",
+      "spark-14",
+      "spark-15"
     ],
-    "nodes": 13,
+    "nodes": 16,
     "source": "examples/topologies/dual_switch_16node_production.json"
   },
   "tp": {
@@ -66,15 +69,15 @@
         "slices": {
           "dense_down": [
             0,
-            17408
+            1088
           ],
           "dense_gate_up": [
             0,
-            17408
+            1088
           ],
           "embed_and_head": [
             0,
-            248320
+            15520
           ],
           "heads_in:full_o": [
             0,
@@ -82,7 +85,7 @@
           ],
           "heads_in:gdn_out": [
             0,
-            6144
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -94,11 +97,11 @@
           ],
           "heads_out:gdn_qk": [
             0,
-            2048
+            128
           ],
           "heads_out:gdn_v": [
             0,
-            6144
+            384
           ]
         }
       },
@@ -107,24 +110,24 @@
         "rank": 1,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            1088,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            1088,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            15520,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            384,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -135,12 +138,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            128,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            384,
+            384
           ]
         }
       },
@@ -149,24 +152,24 @@
         "rank": 2,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            2176,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            2176,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            31040,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            768,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -177,12 +180,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            256,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            768,
+            384
           ]
         }
       },
@@ -191,24 +194,24 @@
         "rank": 3,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            3264,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            3264,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            46560,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            1152,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -219,12 +222,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            384,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            1152,
+            384
           ]
         }
       },
@@ -233,24 +236,24 @@
         "rank": 4,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            4352,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            4352,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            62080,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            1536,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -261,12 +264,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            512,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            1536,
+            384
           ]
         }
       },
@@ -275,24 +278,24 @@
         "rank": 5,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            5440,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            5440,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            77600,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            1920,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -303,12 +306,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            640,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            1920,
+            384
           ]
         }
       },
@@ -317,24 +320,24 @@
         "rank": 6,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            6528,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            6528,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            93120,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            2304,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -345,12 +348,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            768,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            2304,
+            384
           ]
         }
       },
@@ -359,24 +362,24 @@
         "rank": 7,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            7616,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            7616,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            108640,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            2688,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -387,12 +390,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            896,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            2688,
+            384
           ]
         }
       },
@@ -401,24 +404,24 @@
         "rank": 8,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            8704,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            8704,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            124160,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            3072,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -429,12 +432,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            1024,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            3072,
+            384
           ]
         }
       },
@@ -443,24 +446,24 @@
         "rank": 9,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            9792,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            9792,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            139680,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            3456,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -471,12 +474,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            1152,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            3456,
+            384
           ]
         }
       },
@@ -485,24 +488,24 @@
         "rank": 10,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            10880,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            10880,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            155200,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            3840,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -513,12 +516,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            1280,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            3840,
+            384
           ]
         }
       },
@@ -527,24 +530,24 @@
         "rank": 11,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            11968,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            11968,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            170720,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            4224,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -555,12 +558,12 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            1408,
+            128
           ],
           "heads_out:gdn_v": [
-            0,
-            6144
+            4224,
+            384
           ]
         }
       },
@@ -569,24 +572,24 @@
         "rank": 12,
         "slices": {
           "dense_down": [
-            0,
-            17408
+            13056,
+            1088
           ],
           "dense_gate_up": [
-            0,
-            17408
+            13056,
+            1088
           ],
           "embed_and_head": [
-            0,
-            248320
+            186240,
+            15520
           ],
           "heads_in:full_o": [
             0,
             6144
           ],
           "heads_in:gdn_out": [
-            0,
-            6144
+            4608,
+            384
           ],
           "heads_out:full_kv": [
             0,
@@ -597,12 +600,138 @@
             12288
           ],
           "heads_out:gdn_qk": [
-            0,
-            2048
+            1536,
+            128
           ],
           "heads_out:gdn_v": [
+            4608,
+            384
+          ]
+        }
+      },
+      {
+        "node": "spark-13",
+        "rank": 13,
+        "slices": {
+          "dense_down": [
+            14144,
+            1088
+          ],
+          "dense_gate_up": [
+            14144,
+            1088
+          ],
+          "embed_and_head": [
+            201760,
+            15520
+          ],
+          "heads_in:full_o": [
             0,
             6144
+          ],
+          "heads_in:gdn_out": [
+            4992,
+            384
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            1664,
+            128
+          ],
+          "heads_out:gdn_v": [
+            4992,
+            384
+          ]
+        }
+      },
+      {
+        "node": "spark-14",
+        "rank": 14,
+        "slices": {
+          "dense_down": [
+            15232,
+            1088
+          ],
+          "dense_gate_up": [
+            15232,
+            1088
+          ],
+          "embed_and_head": [
+            217280,
+            15520
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            5376,
+            384
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            1792,
+            128
+          ],
+          "heads_out:gdn_v": [
+            5376,
+            384
+          ]
+        }
+      },
+      {
+        "node": "spark-15",
+        "rank": 15,
+        "slices": {
+          "dense_down": [
+            16320,
+            1088
+          ],
+          "dense_gate_up": [
+            16320,
+            1088
+          ],
+          "embed_and_head": [
+            232800,
+            15520
+          ],
+          "heads_in:full_o": [
+            0,
+            6144
+          ],
+          "heads_in:gdn_out": [
+            5760,
+            384
+          ],
+          "heads_out:full_kv": [
+            0,
+            1024
+          ],
+          "heads_out:full_q": [
+            0,
+            12288
+          ],
+          "heads_out:gdn_qk": [
+            1920,
+            128
+          ],
+          "heads_out:gdn_v": [
+            5760,
+            384
           ]
         }
       }
@@ -610,7 +739,7 @@
     "shard_classes": [
       {
         "degree_resolution": {
-          "reason": "24 heads do not split 13 ways on whole head blocks",
+          "reason": "24 heads do not split 16 ways on whole head blocks",
           "rows_per_rank": 12288,
           "status": "replicated"
         },
@@ -629,7 +758,7 @@
       },
       {
         "degree_resolution": {
-          "reason": "4 heads do not split 13 ways on whole head blocks",
+          "reason": "4 heads do not split 16 ways on whole head blocks",
           "rows_per_rank": 1024,
           "status": "replicated"
         },
@@ -649,7 +778,7 @@
       },
       {
         "degree_resolution": {
-          "reason": "24 heads do not split 13 ways on whole head blocks",
+          "reason": "24 heads do not split 16 ways on whole head blocks",
           "rows_per_rank": 6144,
           "status": "replicated"
         },
@@ -668,9 +797,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "16 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 2048,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 128,
+          "status": "sharded"
         },
         "head_count": 16,
         "instances_per_model": null,
@@ -688,9 +817,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "48 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 6144,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 384,
+          "status": "sharded"
         },
         "head_count": 48,
         "instances_per_model": null,
@@ -707,9 +836,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "48 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 6144,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 384,
+          "status": "sharded"
         },
         "head_count": 48,
         "instances_per_model": null,
@@ -726,9 +855,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "17408 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 17408,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 1088,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -746,9 +875,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "17408 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 17408,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 1088,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -765,9 +894,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "248320 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 248320,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 15520,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,

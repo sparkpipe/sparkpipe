@@ -1,15 +1,15 @@
 {
-  "content_hash": "23026cbb0e98989a",
+  "content_hash": "367f8620fe948064",
   "contract": {
     "path": "model_contracts/dsv4_flash_authoritative.json",
-    "sha256": "1cae2ac1d6688d5eb7c6531871d6a730207c3d9c955e153d26f8b5ac410c1d4c"
+    "sha256": "d4cd90860e3c878f0dee247f0e209e52df3b079302c24bd5391191fa7efed021"
   },
-  "datafile": "dsv4.TP13.23026cbb0e98989a.json",
+  "datafile": "dsv4.TP13.367f8620fe948064.json",
   "degree": 13,
   "family": "dsv4_flash",
-  "geometry_hash": "869f298990c9e903",
+  "geometry_hash": "23bd87b5150b49e4",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "dsv4.TP13.869f298990c9e903/",
+  "kv_entry_prefix": "dsv4.TP13.23bd87b5150b49e4/",
   "kv_geometry": {
     "compressed_rope_theta": 160000,
     "compression_ratios": [
@@ -56,6 +56,8 @@
       4,
       128,
       4,
+      0,
+      0,
       0
     ],
     "head_dimension": 512,

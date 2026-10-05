@@ -867,23 +867,17 @@ Related common-code debt:
   has none.
 - Remove legacy model names from generated release inventories and operator
   surfaces when their replacement contracts land.
-- `tools/generate_recipe.py` (`MODELS`, via `glm52.json`) and
-  `examples/recipes` still generate GLM 5.2 (`zai-org/GLM-5.2`) recipes,
-  although the owner said on 2026-09-28 that GLM 5.2 weights are deprecated.
+- `model_contracts/glm53_full_authoritative.json` carries no rope theta or
+  interleave flags, so `tools/generate_recipe.py` reads them for the GLM Full
+  recipes from `spark_glm52_model.h`. Add them to the contract's geometry at
+  its next re-freeze (a contract edit changes the `CONTRACT_SHA256` every GLM
+  Full build pins) and read them from there.
 - Retain independent numerical, transport, memory, and performance gates for
   every model and precision route.
 - Complete and qualify the K3 BF16-activation/MXFP4-weight asymmetric GEMM,
   route gather, in-load E8M0 decode, and full expert-path comparison.
 - Bind GLM 5.2 dense gate, up, down, and router-logit tensor-core linear plans
   at startup before required-stage validation.
-- `tools/gen_geometry_header.py` has no `--check` gate: it is absent from
-  `Makefile` and `tools/gates.sh`. Its glm5_next and qwen4_flash outputs differ
-  from the tracked headers in code (the `REPLAY_ROWS_MAX` and `MISS_RING_*`
-  lines, and the `llm_defines.h` include), and only the two qwen38_27b outputs
-  are byte-identical, with nothing keeping them so. Close it in A02: make all
-  four outputs byte-identical and add a `--check` test for each; if the
-  generator moves or is renamed, keep `GENERATOR`, `FAMILIES` and
-  `ADAPTER_CONSTANTS` in `tests/test_no_source_comments.py` matching.
 
 ## Speculation
 
