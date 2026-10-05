@@ -8,8 +8,6 @@ static SparkStatus SPARK_FAMILY(LazyOpen)(SPARK_FAMILY(ModuleState) *state,const
 	const char *digest;
 	uint64_t spine_budget;
 	status = SparkWeightdAttachRequested();
-	if ( status == SPARK_STATUS_BUSY )
-		return(SPARK_STATUS_OK);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	memset(&request,0,sizeof(request));

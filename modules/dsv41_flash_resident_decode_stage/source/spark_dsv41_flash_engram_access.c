@@ -251,7 +251,7 @@ SparkStatus SparkDsv41FlashEngramAccessOpen(
 		SPARK_RETURN(status);
 	status = SparkWeightdAttachRequested();
 	if ( status != SPARK_STATUS_OK )
-		return(status == SPARK_STATUS_BUSY ? SPARK_STATUS_UNSUPPORTED : status);
+		return(status);
 	memset(&request,0,sizeof(request));
 	memcpy(request.identity.pack_sha256,shard_sha256,65u);
 	(void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",

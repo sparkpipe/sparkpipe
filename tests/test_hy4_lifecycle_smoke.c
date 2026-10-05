@@ -98,9 +98,21 @@ static void TestEnvironmentRangeEnforced(const char *name,
 	unsetenv(name);
 }
 
+static void TestValidConfigurationRefused(void)
+{
+	SparkFirmwareModuleConfiguration configuration = TestConfiguration();
+	SparkFirmwareModuleHostServices host_services = TestHostServices();
+	void *module_state = 0;
+	TestCheck(SparkHy4ResidentDecodeStageInitialize(&configuration,
+		&host_services,&module_state) == SPARK_STATUS_UNSUPPORTED,
+		"a valid configuration is refused while the driver cannot execute the model");
+	TestCheck(module_state == 0,"the refused driver leaves no state and no ready rank");
+}
+
 int main(void)
 {
 	TestNullArgumentsRejected();
+	TestValidConfigurationRefused();
 	TestSchemaRejected();
 	TestEnvironmentRangeEnforced("SPARK_HY4_TP_RANK","99");
 	TestEnvironmentRangeEnforced("SPARK_HY4_TP_DEGREE","0");

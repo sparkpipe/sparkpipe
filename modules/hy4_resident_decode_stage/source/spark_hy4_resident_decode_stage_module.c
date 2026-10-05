@@ -104,10 +104,9 @@ static SparkStatus SparkHy4ModulePrepare(void *module_state,
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	fprintf(stderr,
-		"%s ready tp=%u/%u slots=%u max_active=%u execute=UNSUPPORTED\n",
-		SPARK_HY4_MODULE_TAG,state->tp_rank,state->tp_degree,
-		state->pipeline_slot_count,state->max_active_sequence_count);
-	return(SPARK_STATUS_OK);
+		"%s refused tp=%u/%u: the hy4 driver does not execute the model yet, so it reports no ready rank\n",
+		SPARK_HY4_MODULE_TAG,state->tp_rank,state->tp_degree);
+	return(SPARK_STATUS_UNSUPPORTED);
 }
 
 static SparkStatus SparkHy4ModuleExecute(void *module_state,
@@ -122,13 +121,10 @@ static SparkStatus SparkHy4ModuleAdmit(void *module_state,
 	const SparkModelDriverAdmissionRequest *request,
 	SparkModelDriverAdmissionDecision *decision)
 {
-	SparkHy4ModuleState *state;
+	(void)module_state;
 	(void)request;
-	state = (SparkHy4ModuleState *)module_state;
-	SparkStageModuleAdmissionDecisionInitialize(decision,
-		state->max_active_sequence_count);
-	SparkStageModuleAdmissionDecisionAccept(decision);
-	return(SPARK_STATUS_OK);
+	(void)decision;
+	return(SPARK_STATUS_UNSUPPORTED);
 }
 
 #include "sparkpipe/family/module/spark_module_describe.h"

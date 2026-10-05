@@ -151,8 +151,6 @@ typedef struct SparkQwen4FlashModuleState
 	uint32_t multiprocessor_count;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
-	uint32_t debug_skip_gdn;
-	uint32_t debug_skip_moe;
 	SparkTpDeviceCollective tp_device_collective;
 	uint32_t tp_collective_initialized;
 	atomic_uint tp_completion_flag;
@@ -213,7 +211,6 @@ typedef struct SparkQwen4FlashModuleState
 	SparkQwen4FlashHcMixer readout_mixer;
 	SparkQwen4FlashPleWeights ple;
 	uint32_t owns_ple;
-	uint32_t allow_missing_ple;
 	SparkQwen4FlashIndexerWeights indexer_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	const void *attention_norm_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	const void *mlp_norm_by_layer[SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT];
@@ -258,8 +255,6 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 	status = SparkQwen4FlashModuleConfigureTp(state);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	state->debug_skip_gdn = getenv("SPARK_QWEN4_FLASH_STAGE_DEBUG_SKIP_GDN") != 0 ? 1u : 0u;
-	state->debug_skip_moe = getenv("SPARK_QWEN4_FLASH_STAGE_DEBUG_SKIP_MOE") != 0 ? 1u : 0u;
 	status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_COUNT",1u,SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT,&state->stage_count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_INDEX",0u,SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT - 1u,&state->stage_index);
@@ -275,13 +270,6 @@ static SparkStatus SparkQwen4FlashModuleConfigure(SparkQwen4FlashModuleState *st
 		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN4_FLASH_MODULE_TAG,"SPARK_QWEN4_FLASH_STAGE_KV_BLOCKS",1u,1u << 20u,&state->kv.block_count);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( state->first_layer_index <= SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && state->first_layer_index + state->layer_count > SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX )
-	{
-		const char *reason = getenv("SPARK_QWEN4_FLASH_STAGE_ALLOW_MISSING_PLE");
-		state->allow_missing_ple = reason != 0 ? 1u : 0u;
-		if ( state->allow_missing_ple != 0u )
-			fprintf(stderr,"%s ple_block_absent gate=%s (synthetic pack semantics; layer %u runs without the n-gram injection)\n",SPARK_QWEN4_FLASH_MODULE_TAG,reason,SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX);
-	}
 	if ( state->stage_index >= state->stage_count || state->first_layer_index + state->layer_count > SPARK_QWEN4_FLASH_RESIDENT_DECODE_STAGE_LAYER_COUNT )
 	{
 		fprintf(stderr,"%s config_slice_invalid stage=%u/%u slice=%u+%u\n",SPARK_QWEN4_FLASH_MODULE_TAG,state->stage_index,state->stage_count,state->first_layer_index,state->layer_count);
@@ -325,7 +313,7 @@ typedef SparkStagePackHeaderCommon SparkQwen4FlashStagePackHeader;
 #define SPARK_PACK_LOAD_LINEAR_VIEW 1
 #define SPARK_PACK_LOAD_BYTES_MATCH(entry) \
 	((entry)->payload_bytes == SparkStagePackFamilyPayloadBytes(&SparkLlmStagePackFamilySpec,(entry)->weight_format,(entry)->rows,(entry)->columns) && (entry)->scale_bytes == SparkStagePackFamilyScaleBytes(&SparkLlmStagePackFamilySpec,(entry)->weight_format,(entry)->rows,(entry)->columns))
-#define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkStagePackFamilyExpectedGeometry(&SparkLlmStagePackFamilySpec,(expected),(state)->first_layer_index,(state)->layer_count,(state)->allow_missing_ple == 0u ? 1u : 0u)
+#define SPARK_PACK_LOAD_EXPECT_GEOMETRY(state,expected) SparkStagePackFamilyExpectedGeometry(&SparkLlmStagePackFamilySpec,(expected),(state)->first_layer_index,(state)->layer_count,1u)
 #define SPARK_PACK_LOAD_GEOMETRY_MISMATCH(state,header,expected) (SparkStagePackHeaderMatches((header),(expected)) != 0 || (header)->directory_offset != SPARK_STAGEPACK_HEADER_BYTES)
 #define SPARK_PACK_LOAD_LOG_GEOMETRY_MISMATCH(state,header,expected) \
 	fprintf(stderr,"%s pack_geometry_mismatch code=%d slice=%u+%u tensor_count=%u/%u hidden=%u/%u layers=%u/%u first=%u/%u total=%u/%u mtp=%u/%u dir=%llu\n", \
@@ -418,8 +406,10 @@ static int SparkQwen4FlashModuleRegionHook(
 	SparkStatus status;
 
 	(void)file;
-	if ( pack == 0 || pack->ready == 0u )
+	if ( pack == 0 )
 		return 0;
+	if ( pack->ready == 0u )
+		return -1;
 	if ( entry->tensor_kind == SPARK_STAGEPACK_TENSOR_MOE_W1 ||
 		entry->tensor_kind == SPARK_STAGEPACK_TENSOR_MOE_W3 ||
 		entry->tensor_kind == SPARK_STAGEPACK_TENSOR_MOE_DOWN )
@@ -430,7 +420,7 @@ static int SparkQwen4FlashModuleRegionHook(
 	}
 	status = SparkWeightdLazyPackSlice(pack,entry->payload_offset,entry->payload_bytes,&slice);
 	if ( status != SPARK_STATUS_OK )
-		return 0;
+		return -1;
 	*payload = (void *)slice;
 	if ( entry->scale_bytes == 0u )
 	{
@@ -439,7 +429,7 @@ static int SparkQwen4FlashModuleRegionHook(
 	}
 	status = SparkWeightdLazyPackSlice(pack,entry->scale_offset,entry->scale_bytes,&slice);
 	if ( status != SPARK_STATUS_OK )
-		return 0;
+		return -1;
 	*scale = (void *)slice;
 	return 1;
 }
@@ -454,8 +444,6 @@ static SparkStatus SparkQwen4FlashModuleLazyOpen(SparkQwen4FlashModuleState *sta
 	SparkStatus status;
 
 	status = SparkWeightdAttachRequested();
-	if ( status == SPARK_STATUS_BUSY )
-		return(SPARK_STATUS_OK);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
@@ -662,12 +650,13 @@ static uint64_t SparkQwen4FlashModuleExpectedMtpBits(const SparkQwen4FlashModule
 
 static uint64_t SparkQwen4FlashModuleExpectedLayerBits(const SparkQwen4FlashModuleState *state, uint32_t layer)
 {
+	(void)state;
 	uint64_t bits = (1ull << SPARK_STAGEPACK_TENSOR_ATTENTION_NORM) | (1ull << SPARK_STAGEPACK_TENSOR_MLP_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_DOWN) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_UP) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_HC_INJECT) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_DOWN) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_UP) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_MLP_HC_INJECT) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_GATE) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_W1) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_W3) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_DOWN) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_UP) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_DOWN) | (1ull << SPARK_STAGEPACK_TENSOR_MOE_SHARED_GATE_WEIGHT);
 	if ( SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer) != 0u )
 		bits |= (1ull << SPARK_STAGEPACK_TENSOR_GDN_QKV) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_GATE) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_BETA) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_DECAY) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_OUTPUT) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_CONV_WEIGHT) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_A_LOG) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_DT_BIAS) | (1ull << SPARK_STAGEPACK_TENSOR_GDN_NORM);
 	else
 		bits |= (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_VALUE) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_ATTN_KEY_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_QK) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_Q_NORM) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_INDEXER_K_NORM);
-	if ( layer == SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX && state->allow_missing_ple == 0u )
+	if ( layer == SPARK_QWEN4_FLASH_MODEL_PLE_LAYER_INDEX )
 		bits |= (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_KEY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_VALUE) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_KEY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_QUERY) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_NORM_CONV) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_CONV) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_MULTIPLIERS) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_HEAD_VOCABS) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_HEAD_OFFSETS) | (1ull << SPARK_LLM_STAGEPACK_TENSOR_PLE_NGRAM);
 	return(bits);
 }
@@ -1462,7 +1451,7 @@ static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *sta
 			SPARK_RETURN(status);
 	}
 	status = SparkQwen4FlashModuleRunHcPrep(state,slot,&state->attn_hc_by_layer[layer],state->attention_norm_by_layer[layer],rows);
-	if ( status == SPARK_STATUS_OK && state->debug_skip_gdn == 0u )
+	if ( status == SPARK_STATUS_OK )
 		status = SPARK_QWEN4_FLASH_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen4FlashModuleRunGdnLayer(state,slot,layer,rows) : SparkQwen4FlashModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],&state->indexer_by_layer[layer],state->attn_ordinal_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
 	if ( status == SPARK_STATUS_OK && state->tp_degree > 1u )
 	{
@@ -1474,7 +1463,7 @@ static SparkStatus SparkQwen4FlashModuleRunLayer(SparkQwen4FlashModuleState *sta
 		status = SparkQwen4FlashModuleRunHcInject(state,slot,rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen4FlashModuleRunHcPrep(state,slot,&state->mlp_hc_by_layer[layer],state->mlp_norm_by_layer[layer],rows);
-	if ( status == SPARK_STATUS_OK && state->debug_skip_moe == 0u )
+	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen4FlashModuleRunMoe(state,slot,&state->moe_by_layer[layer],layer,rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen4FlashModuleRunHcInject(state,slot,rows);

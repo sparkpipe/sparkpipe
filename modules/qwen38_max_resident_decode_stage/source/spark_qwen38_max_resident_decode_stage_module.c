@@ -149,8 +149,6 @@ typedef struct SparkQwen38MaxModuleState
 	uint32_t multiprocessor_count;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
-	uint32_t debug_skip_gdn;
-	uint32_t debug_skip_moe;
 	SparkTpDeviceCollective tp_device_collective;
 	uint32_t tp_collective_initialized;
 	atomic_uint tp_completion_flag;
@@ -239,8 +237,6 @@ static SparkStatus SparkQwen38MaxModuleConfigure(SparkQwen38MaxModuleState *stat
 	status = SparkQwen38MaxModuleConfigureTp(state);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	state->debug_skip_gdn = getenv("SPARK_QWEN38_MAX_STAGE_DEBUG_SKIP_GDN") != 0 ? 1u : 0u;
-	state->debug_skip_moe = getenv("SPARK_QWEN38_MAX_STAGE_DEBUG_SKIP_MOE") != 0 ? 1u : 0u;
 	if ( getenv("SPARK_QWEN38_MAX_T1_DUMP") != 0 )
 	{
 		const char *t1_dump_dir;
@@ -413,8 +409,10 @@ static int SparkQwen38MaxModuleRegionHook(
 	SparkStatus status;
 
 	(void)file;
-	if ( pack == 0 || pack->ready == 0u )
+	if ( pack == 0 )
 		return 0;
+	if ( pack->ready == 0u )
+		return -1;
 	if ( entry->tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W1 ||
 		entry->tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_W3 ||
 		entry->tensor_kind == SPARK_QWEN38_MAX_STAGEPACK_TENSOR_MOE_DOWN )
@@ -425,7 +423,7 @@ static int SparkQwen38MaxModuleRegionHook(
 	}
 	status = SparkWeightdLazyPackSlice(pack,entry->payload_offset,entry->payload_bytes,&slice);
 	if ( status != SPARK_STATUS_OK )
-		return 0;
+		return -1;
 	*payload = (void *)slice;
 	if ( entry->scale_bytes == 0u )
 	{
@@ -434,7 +432,7 @@ static int SparkQwen38MaxModuleRegionHook(
 	}
 	status = SparkWeightdLazyPackSlice(pack,entry->scale_offset,entry->scale_bytes,&slice);
 	if ( status != SPARK_STATUS_OK )
-		return 0;
+		return -1;
 	*scale = (void *)slice;
 	return 1;
 }
@@ -449,8 +447,6 @@ static SparkStatus SparkQwen38MaxModuleLazyOpen(SparkQwen38MaxModuleState *state
 	SparkStatus status;
 
 	status = SparkWeightdAttachRequested();
-	if ( status == SPARK_STATUS_BUSY )
-		return(SPARK_STATUS_OK);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( state->mtp_seen_bits != 0u )
@@ -1129,9 +1125,9 @@ static SparkStatus SparkQwen38MaxModuleRunLayer(SparkQwen38MaxModuleState *state
 	rows_view.row_lane_indices = slot->row_lane_indices;
 	rows_view.context_lengths = slot->context_lengths;
 	status = SparkStageModuleCudaStatus(SPARK_QWEN38_MAX_MODULE_TAG,error,"attention_norm");
-	if ( status == SPARK_STATUS_OK && state->debug_skip_gdn == 0u )
+	if ( status == SPARK_STATUS_OK )
 		status = SPARK_QWEN38_MAX_MODEL_LAYER_IS_GDN(layer) != 0u ? SparkQwen38MaxModuleRunGdnLayer(state,slot,layer,rows) : SparkQwen38MaxModuleRunAttnLayer(state,slot,table,&state->attn_by_layer[layer],state->attn_ordinal_by_layer[layer],&rows_view,rows);
-	if ( status == SPARK_STATUS_OK && state->debug_skip_moe == 0u )
+	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38MaxModuleRunMoe(state,slot,state->mlp_norm_by_layer[layer],&state->moe_by_layer[layer],layer,rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen38MaxModuleT1DumpLayer(state,slot,layer);

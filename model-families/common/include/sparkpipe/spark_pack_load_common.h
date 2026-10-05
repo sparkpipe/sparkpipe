@@ -181,7 +181,13 @@ static SparkStatus SPARK_PACK_LOAD_FN(LoadEntry)(SPARK_PACK_LOAD_TYPE(ModuleStat
 #ifdef SPARK_PACK_LOAD_REGION_HOOK
 	{
 		void *hook_payload = 0,*hook_scale = 0;
-		if ( SPARK_PACK_LOAD_REGION_HOOK(state,entry,file,&hook_payload,&hook_scale) == 1u )
+		int hook = SPARK_PACK_LOAD_REGION_HOOK(state,entry,file,&hook_payload,&hook_scale);
+		if ( hook < 0 )
+		{
+			fprintf(stderr,"stage pack: the weightd lazy slice for tensor kind %u layer %u failed; no eager fallback\n",(unsigned)entry->tensor_kind,(unsigned)entry->layer_index);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+		if ( hook == 1 )
 		{
 			payload = hook_payload;
 			scale = hook_scale;

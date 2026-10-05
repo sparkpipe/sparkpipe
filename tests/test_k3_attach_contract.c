@@ -158,8 +158,8 @@ int main(void)
 		"a rank state plan over the budget is refused before any allocation");
 	setenv("SPARK_K3_STATE_BUDGET_BYTES", "1073741824", 1);
 	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
-		SPARK_STATUS_BUSY,
-		"weightd absent fails closed with BUSY (no direct load)");
+		SPARK_STATUS_UNSUPPORTED,
+		"weightd absent fails closed with a non-retryable UNSUPPORTED (no direct load)");
 	if ( runner.private_state != 0 )
 		failures += expect(0, "runner state leaked on failure");
 	snprintf(pool_env, sizeof(pool_env), "%ld", pack_bytes);
