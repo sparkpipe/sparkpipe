@@ -41,6 +41,7 @@
 #endif
 
 #define SPARK_LAGUNA_MODULE_TAG "laguna_stage"
+#define SPARK_LAGUNA_T1_TAG "LAGUNA-T1"
 #define SPARK_LAGUNA_STAGEPACK_MAX_TENSOR_COUNT 2048u
 #define SPARK_LAGUNA_HEAD_TILE 1024u
 #define SPARK_LAGUNA_NO_INDEX_ORDINAL UINT32_MAX
@@ -267,9 +268,9 @@ static SparkStatus SparkLagunaAllocateBytes(
 	uint64_t element_bytes,
 	void **pointer);
 
-#include "sparkpipe/family/module/spark_module_glm5_next_lineage.h"
+#include "sparkpipe/family/module/spark_module_lineage_declarations.h"
 
-#include "sparkpipe/family/module/spark_module_glm5_next_laguna.h"
+#include "sparkpipe/family/module/spark_module_pack_ranges_batch.h"
 
 static SparkStatus SPARK_FAMILY(DevicePageCopy)(
 	void *context,
@@ -317,7 +318,7 @@ static SparkStatus SPARK_FAMILY(UploadPageTables)(SPARK_FAMILY(ModuleState) *sta
 	return(SPARK_STATUS_OK);
 }
 
-#include "sparkpipe/family/module/spark_module_initialize_laguna.h"
+#include "sparkpipe/family/module/spark_module_initialize_slots.h"
 
 #include "sparkpipe/family/module/spark_module_validate_frame_buffers.h"
 
@@ -472,7 +473,7 @@ static int SparkLagunaModuleRegionHook(
 	return(status == SPARK_STATUS_OK ? 1 : 0);
 }
 
-#include "sparkpipe/family/module/spark_module_bind_laguna.h"
+#include "sparkpipe/family/module/spark_module_bind_global_mtp.h"
 
 static SparkStatus SparkLagunaModuleBindLayer(
 	SparkLagunaModuleState *state,
@@ -930,7 +931,7 @@ static uint32_t SparkLagunaRoundMajorWaveRows(
 
 #include "sparkpipe/family/module/spark_module_claimed_continuity_locked.h"
 
-#include "sparkpipe/family/module/spark_module_validate_frame_laguna.h"
+#include "sparkpipe/family/module/spark_module_validate_frame_round_major.h"
 
 #define SPARK_LAGUNA_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
 #define SPARK_LAGUNA_TP_CHAIN_OPERATIONS ((2u * SPARK_LAGUNA_MODEL_LAYER_COUNT + 16u) * SPARK_LAGUNA_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT)
@@ -1199,7 +1200,7 @@ static SparkStatus SparkLagunaModuleReduceHidden(SparkLagunaTpChain *chain,void 
 	}
 }
 
-#include "sparkpipe/family/module/spark_module_reduce_attention_out_laguna.h"
+#include "sparkpipe/family/module/spark_module_reduce_attention_out.h"
 
 static SparkStatus SparkLagunaModuleReduceHeadMax(SparkLagunaTpChain *chain)
 {
@@ -1655,7 +1656,7 @@ static SparkStatus SparkLagunaExecuteBatch(SparkLagunaModuleState *state,SparkMo
 	return(status);
 }
 
-#include "sparkpipe/family/module/spark_module_entry_execute_laguna.h"
+#include "sparkpipe/family/module/spark_module_entry_execute_batch.h"
 
 static SparkStatus SparkLagunaResetExecutionState(SparkLagunaModuleState *state)
 {
@@ -1780,7 +1781,7 @@ SparkStatus SparkLagunaResidentDecodeStageAdmit(
 	return(status);
 }
 
-#include "sparkpipe/family/module/spark_module_entry_snapshot_laguna.h"
+#include "sparkpipe/family/module/spark_module_entry_snapshot_runtime.h"
 
 static void SparkLagunaReleaseCaches(SparkLagunaModuleState *state)
 {
@@ -1919,4 +1920,4 @@ static SparkStatus SparkLagunaInitializeState(
 
 #include "sparkpipe/family/module/spark_module_expected_mtp_bits.h"
 
-#include "sparkpipe/family/module/spark_module_expected_global_bits_glm.h"
+#include "sparkpipe/family/module/spark_module_expected_global_bits_u64.h"

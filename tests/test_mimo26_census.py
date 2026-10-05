@@ -22,9 +22,17 @@ def census(tag):
 
 def header_macros(path, prefix):
     text = Path(path).read_text(encoding="utf-8")
+    llm = Path(path).parent / "llm_defines.h"
+    llm_values = {}
+    if llm.is_file():
+        for match in re.finditer(r"#define\s+(SPARK_LLM_[A-Z0-9_]+)\s+([0-9e\-.+]+)", llm.read_text(encoding="utf-8")):
+            llm_values[match.group(1)] = float(match.group(2))
     macros = {}
     for match in re.finditer(r"#define\s+(" + prefix + r"[A-Z0-9_]+)\s+([0-9e\-.+]+)", text):
         macros[match.group(1)] = float(match.group(2))
+    for match in re.finditer(r"#define\s+(" + prefix + r"[A-Z0-9_]+)\s+(SPARK_LLM_[A-Z0-9_]+)\s*$", text, re.M):
+        if match.group(2) in llm_values:
+            macros[match.group(1)] = llm_values[match.group(2)]
     kind_match = re.search(r"SPARK_MIMO26[A-Z_]*_MODEL_LAYER_KIND\[[^\]]*\]\s*=\s*\{(.*?)\};",
                            text, re.S)
     assert kind_match, path

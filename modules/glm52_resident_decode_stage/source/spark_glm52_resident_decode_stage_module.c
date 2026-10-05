@@ -281,7 +281,7 @@ static SparkStatus SparkGlm52AllocateSlotMetadata(SparkGlm52ModuleState *state,S
 static SparkStatus SparkGlm52AllocateSlotHidden(SparkGlm52ModuleState *state,SparkGlm52ExecutionSlot *slot);
 static SparkStatus SparkGlm52AllocateSlotMlp(SparkGlm52ModuleState *state,SparkGlm52ExecutionSlot *slot);
 
-#include "common/common_glm_stage_module/spark_glm_stage_module.h"
+#include "model-families/glm52/stage_module/spark_glm_stage_module.h"
 
 static uint32_t SparkGlm52BytesAreZero(const uint8_t *bytes,uint32_t count)
 {

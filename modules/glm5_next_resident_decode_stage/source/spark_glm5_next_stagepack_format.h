@@ -298,7 +298,7 @@ static const SparkGlm5NextStagePackShapeSpec SPARK_GLM5_NEXT_STAGEPACK_SHAPE_TAB
 
 #include "sparkpipe/family/stagepack/spark_stagepack_glm.h"
 
-#include "sparkpipe/family/stagepack/spark_stagepack_glm5_next_ling.h"
+#include "sparkpipe/family/stagepack/spark_stagepack_kda_mtp_kinds.h"
 
 #include "sparkpipe/family/stagepack/spark_stagepack_kind_is_hc.h"
 

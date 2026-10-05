@@ -32,9 +32,9 @@ module.
   compiler sets that value to the SHA-256 of the firmware model-description
   file it compiled (`description->source_sha256`). That file is not the
   package contract, so the package contract hash does not match.
-- `spark_qwen38_pp_serving_adapter_common.h` has no default for this value. It
+- `spark_pp_serving_adapter_common.h` has no default for this value. It
   fails to compile unless the including adapter defines
-  `SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256`.
+  `SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256`.
 - gemma4 defines it as `GEMMA4_MODEL_DESCRIPTION_SHA256`. The module
   `Makefile` computes it from
   `examples/model_descriptions/gemma4_resident_decode_stage_bf16_firmware.json`.

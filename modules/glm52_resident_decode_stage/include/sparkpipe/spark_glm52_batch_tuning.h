@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/common_glm_cuda_tree/spark_glm_batch_tuning.h"
+#include "model-families/glm52/cuda_tree/spark_glm_batch_tuning.h"
 
 #define SPARK_GLM52_BATCH_VARIANT_MODULE_ID_PREFIX \
 	SPARK_GLM_BATCH_VARIANT_MODULE_ID_PREFIX

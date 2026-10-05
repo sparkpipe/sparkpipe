@@ -44,7 +44,7 @@ typedef struct SparkLingSynthesizeContext
 
 #include "sparkpipe/family/synth/spark_synth_glm.h"
 
-#include "sparkpipe/family/synth/spark_synth_glm5_next_ling.h"
+#include "sparkpipe/family/synth/spark_synth_layer_append.h"
 
 int main(int argc, char **argv)
 {

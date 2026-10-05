@@ -8,7 +8,7 @@
 
 #include "sparkpipe/spark_glm52_graph_regime.h"
 #include "sparkpipe/llm_defines.h"
-#include "common/common_glm_cuda_tree/spark_glm_cuda_config.h"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_config.h"
 
 #define DB_LAYERS SPARK_GLM52_MODEL_LAYER_COUNT
 #define DB_MAX_ROWS SPARK_GLM52_VAL_MAX_ROWS

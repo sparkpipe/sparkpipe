@@ -40,7 +40,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	$(GLM52_SCORE_DUMP_SOURCES)
 MODULE_CUDA_SOURCE := source/spark_glm52_resident_decode_stage_cuda.cu
 
-include ../../common/glm_resident_stage_wrapper.mk
+include glm_resident_stage_wrapper.mk
 
 MODULE_POSIX_FLAGS := -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64
 MODEL_ARM ?= $(EXPERT_CODEC)

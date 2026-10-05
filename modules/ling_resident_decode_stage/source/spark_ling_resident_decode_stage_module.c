@@ -229,7 +229,7 @@ static SparkStatus SparkLingAllocateBytes(
 	void **pointer);
 static void CUDART_CB SparkLingCompleteAsync(void *context);
 
-#include "sparkpipe/family/module/spark_module_glm5_next_lineage.h"
+#include "sparkpipe/family/module/spark_module_lineage_declarations.h"
 
 static SparkStatus SparkLingPackValidateRanges(
 	const SparkLingStagePackEntry *entries,
@@ -381,7 +381,7 @@ static SparkStatus SparkLingModuleBindLayer(
 	return(SPARK_STATUS_OK);
 }
 
-#include "sparkpipe/family/module/spark_module_bind_laguna.h"
+#include "sparkpipe/family/module/spark_module_bind_global_mtp.h"
 
 static uint64_t SparkLingModuleExpectedLayerBits(
 	const SparkLingModuleState *state,
@@ -557,7 +557,7 @@ static SparkStatus SparkLingInitializeState(
 	const SparkFirmwareModuleHostServices *host_services,
 	SparkLingModuleState **state_out);
 
-#include "sparkpipe/family/module/spark_module_initialize_laguna.h"
+#include "sparkpipe/family/module/spark_module_initialize_slots.h"
 
 static SparkStatus SparkLingAllocateSlots(SparkLingModuleState *state)
 {
@@ -979,7 +979,7 @@ static SparkStatus SparkLingValidateFrameBuffers(
 	return(SPARK_STATUS_OK);
 }
 
-#include "sparkpipe/family/module/spark_module_validate_frame_laguna.h"
+#include "sparkpipe/family/module/spark_module_validate_frame_round_major.h"
 
 #define SPARK_LING_TP_COLLECTIVE_CREDITS_PER_SLOT 2u
 #define SPARK_LING_TP_COLLECTIVE_HC_PORT_STRIDE 512u
@@ -1252,7 +1252,7 @@ static SparkStatus SparkLingModuleReduceHidden(SparkLingTpChain *chain,void *dev
 	return(SparkTpDeviceCollectiveEnqueue(collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16));
 }
 
-#include "sparkpipe/family/module/spark_module_reduce_attention_out_laguna.h"
+#include "sparkpipe/family/module/spark_module_reduce_attention_out.h"
 
 static SparkStatus SparkLingModuleReduceHeadMax(SparkLingTpChain *chain)
 {
@@ -1637,7 +1637,7 @@ static SparkStatus SparkLingExecuteBatch(
 	return(SPARK_STATUS_OK);
 }
 
-#include "sparkpipe/family/module/spark_module_entry_execute_laguna.h"
+#include "sparkpipe/family/module/spark_module_entry_execute_batch.h"
 
 #include "sparkpipe/family/module/spark_module_reset_page_cache.h"
 
@@ -1684,7 +1684,7 @@ SparkStatus SparkLingResidentDecodeStageAdmit(
 	return(status);
 }
 
-#include "sparkpipe/family/module/spark_module_entry_snapshot_laguna.h"
+#include "sparkpipe/family/module/spark_module_entry_snapshot_runtime.h"
 
 void SparkLingResidentDecodeStageDestroy(void *module_state)
 {
@@ -1772,4 +1772,4 @@ static SparkStatus SparkLingInitializeState(
 	return(SPARK_STATUS_OK);
 }
 
-#include "sparkpipe/family/module/spark_module_expected_global_bits_glm.h"
+#include "sparkpipe/family/module/spark_module_expected_global_bits_u64.h"

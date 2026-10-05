@@ -14,17 +14,17 @@ or `HEAD_TILE`, and its Makefile includes only
 
 ## What exists on main
 
-- `common/common_glm_cuda_tree/` — `spark_glm_cuda_config.h`,
+- `model-families/glm52/cuda_tree/` — `spark_glm_cuda_config.h`,
   `spark_glm_cuda_launch_shape.h`, `spark_glm_cuda_layer.cuh`,
   `spark_glm_cuda_unity.cu`, `spark_glm_cuda_api.h`,
   `spark_glm_batch_tuning.h`. Everything is written against `SPARK_LLM_*`
   keys; nothing in the tree mentions glm52.
-- `common/common_glm_stage_module/spark_glm_stage_module.h` — the 16
+- `model-families/glm52/stage_module/spark_glm_stage_module.h` — the 16
   stage-module functions that are byte-identical between the glm52 and
   glm5_next module.c files, parameterized by `SPARK_GLM_STAGE_*` bindings.
 - `common/common_kv_geometry.h` — `SparkGlmKvFillCapacityRequest` plus
   `_Static_assert` invariants over `SPARK_GLM_KV_*` constants.
-- `common/glm_resident_stage_wrapper.mk` — the codec table, compile flags,
+- `modules/glm52_resident_decode_stage/glm_resident_stage_wrapper.mk` — the codec table, compile flags,
   include flags, archive paths and the adapter shared-library stanza shared
   by the glm pair, layered under `modules/resident_decode_stage_rules.mk`.
 - `model-families/glm52/include/sparkpipe/llm_defines.h` — the glm52
@@ -60,7 +60,7 @@ or `HEAD_TILE`, and its Makefile includes only
    asserts in the common header replace them.
 4. CUDA tree: delete `source/cuda/config.h`, `launch_shape.h`, `layer.cuh`,
    `unity.cu`, `api.h`. In `spark_glm5_next_resident_decode_stage_cuda.cu`
-   include `common/common_glm_cuda_tree/spark_glm_cuda_unity.cu` instead.
+   include `model-families/glm52/cuda_tree/spark_glm_cuda_unity.cu` instead.
    The KDA + HC sinkhorn + indexer-kv arms (~1,200 LOC that only exist in
    glm5_next's layer.cuh) move to a family-local
    `spark_glm5_next_cuda_layer_ext.cuh` included right after the common
@@ -72,7 +72,7 @@ or `HEAD_TILE`, and its Makefile includes only
    == 0`; keep that assert in the family shim, not the common tree.
 5. Stage module: define the `SPARK_GLM_STAGE_*` bindings against the
    glm5_next types and include
-   `common/common_glm_stage_module/spark_glm_stage_module.h` (glm52's
+   `model-families/glm52/stage_module/spark_glm_stage_module.h` (glm52's
    module.c binding block is the template). Delete the 16 identical
    function bodies. glm5_next keeps its superset functions (graph capture,
    MTP, KDA recurrent, page copy, worker completion).
@@ -86,7 +86,7 @@ or `HEAD_TILE`, and its Makefile includes only
    the `SparkTpLaunch*` prototypes that `spark_tp_mesh_register.h` provides.
 7. Makefile: set `GLM_FAMILY`, `GLM_EXPERT_CODECS` (no bf16),
    `MODULE_IDENTIFIER_PREFIX` (shape tag `h4096.l45.kda34.e288.k8`) and the
-   family sources, then `include ../../common/glm_resident_stage_wrapper.mk`
+   family sources, then `include glm_resident_stage_wrapper.mk`
    followed by `../resident_decode_stage_rules.mk`. The extra validator
    (mtp_parity) and the extra host sources stay in the family Makefile.
 8. Receipts: host `make contract` across the codec set, the sm_121a compile

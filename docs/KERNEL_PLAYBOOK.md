@@ -316,7 +316,7 @@ that disagrees on it fails to build. The consumers are:
 - the modules dsv4, gemma4, glm5_next, laguna, ling, muse_glimmer,
   qwen38_27b, qwen38_max and qwen4_flash;
 - `common/common_gdn_stage_kernels.cu`;
-- `common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh`, for glm52;
+- `model-families/glm52/cuda_tree/spark_glm_cuda_layer.cuh`, for glm52;
 - `spark_lm_certified_launch.h`.
 
 **Kernels.**

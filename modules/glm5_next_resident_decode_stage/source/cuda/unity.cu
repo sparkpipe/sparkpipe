@@ -133,6 +133,6 @@ extern "C" int32_t Glm5NextLayerAttentionBf16Graphed(
 
 #include "sparkpipe/family/glm/spark_glm_unity_gemm.cuh"
 
-#include "sparkpipe/family/glm/spark_glm_unity_glm5_next_ling.cuh"
+#include "sparkpipe/family/glm/spark_glm_unity_attention_head_entry.cuh"
 
 #include "sparkpipe/family/glm/spark_glm_unity_head_restricted.cuh"

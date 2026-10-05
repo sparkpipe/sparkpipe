@@ -71,20 +71,20 @@
 #define SPARK_QWEN38_MAX_SERVING_SEAM_MAX_COMMITTED_TOKENS \
 	(SPARK_QWEN38_MAX_MODEL_MTP_LAYER_COUNT + 2u)
 
-#define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkQwen38Max##name
-#define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkQwen38Max##name
-#define SPARK_QWEN38_SERVING_ADAPTER_CONST(name) SPARK_QWEN38_MAX_##name
-#define SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION QWEN38_MODEL_REVISION
-#define SPARK_QWEN38_SERVING_ADAPTER_CONTRACT_SHA256 QWEN38_CONTRACT_SHA256
-#define SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
+#define SPARK_LANE_SERVING_ADAPTER_FN(name) SparkQwen38Max##name
+#define SPARK_LANE_SERVING_ADAPTER_TYPE(name) SparkQwen38Max##name
+#define SPARK_LANE_SERVING_ADAPTER_CONST(name) SPARK_QWEN38_MAX_##name
+#define SPARK_LANE_SERVING_ADAPTER_MODEL_REVISION QWEN38_MODEL_REVISION
+#define SPARK_LANE_SERVING_ADAPTER_CONTRACT_SHA256 QWEN38_CONTRACT_SHA256
+#define SPARK_LANE_SERVING_ADAPTER_TP_DEGREE_VALID(tp_degree) \
 	((tp_degree) != 0u && (tp_degree) <= 16u)
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
+#define SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_COUNT(state) \
 	SparkQwen38MaxServingPpStageCount(state)
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
+#define SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_INDEX(state) \
 	SparkQwen38MaxServingPpStageIndex(state,(state)->stage_index)
-#define SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state) \
+#define SPARK_LANE_SERVING_ADAPTER_BIND_FAMILY(state) \
 	SparkQwen38MaxServingBindFamily(state)
-#define SPARK_QWEN38_SERVING_ADAPTER_UNBIND_FAMILY(state) \
+#define SPARK_LANE_SERVING_ADAPTER_UNBIND_FAMILY(state) \
 	SparkQwen38MaxServingUnbindFamily(state)
 
 typedef struct SparkQwen38MaxServingPending
@@ -461,13 +461,13 @@ static SparkStatus SparkQwen38MaxServingReset(void *adapter_state,uint64_t contr
 	return(status);
 }
 
-#define SPARK_QWEN38_SERVING_ADAPTER_PREFETCH SparkQwen38MaxServingPrefetch
-#define SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH SparkQwen38MaxServingResolvePrefetch
-#define SPARK_QWEN38_SERVING_ADAPTER_RESET SparkQwen38MaxServingReset
+#define SPARK_LANE_SERVING_ADAPTER_PREFETCH SparkQwen38MaxServingPrefetch
+#define SPARK_LANE_SERVING_ADAPTER_RESOLVE_PREFETCH SparkQwen38MaxServingResolvePrefetch
+#define SPARK_LANE_SERVING_ADAPTER_RESET SparkQwen38MaxServingReset
 
-#define SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 \
+#define SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 \
 	QWEN38_MAX_MODEL_DESCRIPTION_SHA256
 
-#define SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
+#define SPARK_LANE_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) \
 	((state)->max_active_sequence_count)
-#include "sparkpipe/spark_qwen38_pp_serving_adapter_common.h"
+#include "sparkpipe/spark_pp_serving_adapter_common.h"

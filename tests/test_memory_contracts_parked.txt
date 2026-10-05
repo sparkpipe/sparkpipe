@@ -25,11 +25,6 @@
 1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES is not derived from its wire type
 1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_SEQUENCE_STATE_DESCRIPTOR_BYTES is not derived from its wire type
 1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES is not derived from its wire type
-2 model-families/glm52/include/sparkpipe/llm_defines.h: GLM model literal 12288 is outside the model contract
-1 model-families/glm52/include/sparkpipe/llm_defines.h: GLM model literal 154880 is outside the model contract
-1 model-families/glm52/include/sparkpipe/llm_defines.h: GLM model literal 6144 is outside the model contract
-1 model-families/glm5_next/include/sparkpipe/llm_defines.h: GLM model literal 12288 is outside the model contract
-1 model-families/glm5_next/include/sparkpipe/llm_defines.h: GLM model literal 154880 is outside the model contract
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 12288 is outside the model contract
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 154880 is outside the model contract
 19 modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_engram_access.c: memcpy uses a direct size/count literal

@@ -20,7 +20,7 @@ def forbid(text: str, needle: str, label: str) -> None:
 
 
 def main() -> int:
-    cuda_source = ROOT / "common/common_glm_cuda_tree"
+    cuda_source = ROOT / "model-families/glm52/cuda_tree"
     layer = (cuda_source / "spark_glm_cuda_layer.cuh").read_text()
     unity = (cuda_source / "spark_glm_cuda_unity.cu").read_text()
     codec = (ROOT / "inference/kernels/weight_codec.cuh").read_text()

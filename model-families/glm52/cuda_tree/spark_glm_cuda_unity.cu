@@ -16,9 +16,9 @@
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/speculate.cuh"
 #include "inference/kernels/topk.cuh"
-#include "common/common_glm_cuda_tree/spark_glm_cuda_api.h"
-#include "common/common_glm_cuda_tree/spark_glm_cuda_config.h"
-#include "common/common_glm_cuda_tree/spark_glm_cuda_layer.cuh"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_api.h"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_config.h"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_layer.cuh"
 
 #define GLM_UNITY_TILE_N SPARK_LLM_TILE_N
 #define GLM_UNITY_TILE_K SPARK_LLM_TILE_K

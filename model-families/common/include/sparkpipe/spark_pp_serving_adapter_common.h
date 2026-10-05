@@ -1,19 +1,19 @@
-#ifndef SPARKPIPE_SPARK_QWEN38_PP_SERVING_ADAPTER_COMMON_H
-#define SPARKPIPE_SPARK_QWEN38_PP_SERVING_ADAPTER_COMMON_H
+#ifndef SPARKPIPE_SPARK_PP_SERVING_ADAPTER_COMMON_H
+#define SPARKPIPE_SPARK_PP_SERVING_ADAPTER_COMMON_H
 
-#ifndef SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256
-#error "SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 must name the model-description hash the driver compile embeds"
+#ifndef SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256
+#error "SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256 must name the model-description hash the driver compile embeds"
 #endif
 
-#include "sparkpipe/spark_qwen38_serving_adapter_common.h"
+#include "sparkpipe/spark_lane_serving_adapter_common.h"
 
-#define SPARK_QWEN38_SERVING_ADAPTER_STRINGIZE_TOKEN(token) #token
-#define SPARK_QWEN38_SERVING_ADAPTER_STRINGIZE(token) \
-	SPARK_QWEN38_SERVING_ADAPTER_STRINGIZE_TOKEN(token)
-#define SPARK_QWEN38_SERVING_ADAPTER_ENV(name) \
-	SPARK_QWEN38_SERVING_ADAPTER_STRINGIZE(SPARK_QWEN38_SERVING_ADAPTER_CONST(name))
+#define SPARK_LANE_SERVING_ADAPTER_STRINGIZE_TOKEN(token) #token
+#define SPARK_LANE_SERVING_ADAPTER_STRINGIZE(token) \
+	SPARK_LANE_SERVING_ADAPTER_STRINGIZE_TOKEN(token)
+#define SPARK_LANE_SERVING_ADAPTER_ENV(name) \
+	SPARK_LANE_SERVING_ADAPTER_STRINGIZE(SPARK_LANE_SERVING_ADAPTER_CONST(name))
 
-static const char *const SPARK_QWEN38_SERVING_ADAPTER_FN(ServingConfigurationMembers)[] =
+static const char *const SPARK_LANE_SERVING_ADAPTER_FN(ServingConfigurationMembers)[] =
 {
 	"schema_version",
 	"model_revision",
@@ -22,30 +22,30 @@ static const char *const SPARK_QWEN38_SERVING_ADAPTER_FN(ServingConfigurationMem
 	"tp_degree"
 };
 
-static uint32_t SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(const SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state, uint32_t world_rank)
+static uint32_t SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(const SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state, uint32_t world_rank)
 {
-	return(state->tp_degree != 0u ? world_rank / state->tp_degree : world_rank / SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_DEFAULT_TP_DEGREE));
+	return(state->tp_degree != 0u ? world_rank / state->tp_degree : world_rank / SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_DEFAULT_TP_DEGREE));
 }
 
-static uint32_t SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(const SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state)
+static uint32_t SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(const SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state)
 {
-	return(state->pp_stage_count != 0u ? state->pp_stage_count : SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_STAGE_COUNT) / SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_DEFAULT_TP_DEGREE));
+	return(state->pp_stage_count != 0u ? state->pp_stage_count : SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_STAGE_COUNT) / SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_DEFAULT_TP_DEGREE));
 }
 
-static uint32_t SPARK_QWEN38_SERVING_ADAPTER_FN(ServingFirstLayer)(const SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state, uint32_t stage_index)
+static uint32_t SPARK_LANE_SERVING_ADAPTER_FN(ServingFirstLayer)(const SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state, uint32_t stage_index)
 {
 	uint32_t index,first_layer,pp_stage;
 	first_layer = 0u;
-	pp_stage = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,stage_index);
+	pp_stage = SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,stage_index);
 	for (index=0u; index<pp_stage; index++)
 		first_layer += state->stage_layer_counts[index];
 	return(first_layer);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingLoadConfiguration)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingLoadConfiguration)(
 	const char *path,
 	const char *runtime_root,
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	uint32_t *max_sequence_positions)
 {
 	SparkJsonDocument document;
@@ -60,17 +60,17 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingLoadConfiguration)(
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(&document,root,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkJsonValidateObjectMembersExact(&document,root,SPARK_QWEN38_SERVING_ADAPTER_FN(ServingConfigurationMembers),(uint32_t)(sizeof(SPARK_QWEN38_SERVING_ADAPTER_FN(ServingConfigurationMembers)) / sizeof(SPARK_QWEN38_SERVING_ADAPTER_FN(ServingConfigurationMembers)[0])));
+		status = SparkJsonValidateObjectMembersExact(&document,root,SPARK_LANE_SERVING_ADAPTER_FN(ServingConfigurationMembers),(uint32_t)(sizeof(SPARK_LANE_SERVING_ADAPTER_FN(ServingConfigurationMembers)) / sizeof(SPARK_LANE_SERVING_ADAPTER_FN(ServingConfigurationMembers)[0])));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"schema_version",&schema_version);
-	if ( status == SPARK_STATUS_OK && schema_version != SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION) )
+	if ( status == SPARK_STATUS_OK && schema_version != SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_ADAPTER_CONFIGURATION_SCHEMA_VERSION) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"model_revision") : -1;
-	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION)) )
+	if ( status == SPARK_STATUS_OK && (token < 0 || !SparkJsonStringEquals(&document,token,SPARK_LANE_SERVING_ADAPTER_MODEL_REVISION)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkServingAdapterTemplateJsonUnsigned(&document,root,"tp_degree",&state->tp_degree);
-	if ( status == SPARK_STATUS_OK && !SPARK_QWEN38_SERVING_ADAPTER_TP_DEGREE_VALID(state->tp_degree) )
+	if ( status == SPARK_STATUS_OK && !SPARK_LANE_SERVING_ADAPTER_TP_DEGREE_VALID(state->tp_degree) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	token = status == SPARK_STATUS_OK ? SparkServingAdapterTemplateJsonMember(&document,root,"stage_pack_path") : -1;
 	if ( status == SPARK_STATUS_OK )
@@ -84,49 +84,49 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingLoadConfiguration)(
 	return(status);
 }
 
-#ifndef SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS
+#ifndef SPARK_LANE_SERVING_ADAPTER_PREFILL_FRAME_ROWS
 #error "a family adapter names the row count of its prefill frames"
 #endif
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSetEnvironment)(
-	const SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state)
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingSetEnvironment)(
+	const SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state)
 {
 	char value[32];
 #define SPARK_QWEN38_SERVING_SET_TEXT(name,text) \
 	do { if ( setenv(name,text,1) != 0 ) return(SPARK_STATUS_INTERNAL_ERROR); } while (0)
 #define SPARK_QWEN38_SERVING_SET_UNSIGNED(name,number) \
 	do { snprintf(value,sizeof(value),"%u",(uint32_t)(number)); SPARK_QWEN38_SERVING_SET_TEXT(name,value); } while (0)
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(ALLOW_UNQUALIFIED_EXECUTION),"1");
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_PACK_PATH),state->stage_pack_path);
-	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_COUNT),SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_COUNT(state));
-	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_INDEX),SPARK_QWEN38_SERVING_ADAPTER_ENV_STAGE_INDEX(state));
-	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_FIRST_LAYER),state->first_layer_index);
-	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_LAYER_COUNT),state->stage_layer_count);
-	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_MAX_ACTIVE_SEQUENCES),state->max_active_sequence_count);
-	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_MAX_INPUT_ROWS),SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state));
-	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_PIPELINE_SLOTS),state->pipeline_slot_count);
-	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_KV_BLOCKS),state->kv_block_count);
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_MTP),"0");
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_GDN_SNAPSHOT_SLOTS),"0");
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_KV_STORE),"none");
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_KV_SERVICE),"none");
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_KV_SOCKET),"none");
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_KV_POOL_BYTES),"0");
-	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_QWEN38_SERVING_ADAPTER_ENV(STAGE_KV_WORKERS),"0");
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(ALLOW_UNQUALIFIED_EXECUTION),"1");
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_PACK_PATH),state->stage_pack_path);
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_COUNT),SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_COUNT(state));
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_INDEX),SPARK_LANE_SERVING_ADAPTER_ENV_STAGE_INDEX(state));
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_FIRST_LAYER),state->first_layer_index);
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_LAYER_COUNT),state->stage_layer_count);
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_MAX_ACTIVE_SEQUENCES),state->max_active_sequence_count);
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_MAX_INPUT_ROWS),SPARK_LANE_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state));
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_PIPELINE_SLOTS),state->pipeline_slot_count);
+	SPARK_QWEN38_SERVING_SET_UNSIGNED(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_KV_BLOCKS),state->kv_block_count);
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_MTP),"0");
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_GDN_SNAPSHOT_SLOTS),"0");
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_KV_STORE),"none");
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_KV_SERVICE),"none");
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_KV_SOCKET),"none");
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_KV_POOL_BYTES),"0");
+	SPARK_QWEN38_SERVING_SET_TEXT(SPARK_LANE_SERVING_ADAPTER_ENV(STAGE_KV_WORKERS),"0");
 #undef SPARK_QWEN38_SERVING_SET_TEXT
 #undef SPARK_QWEN38_SERVING_SET_UNSIGNED
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateRowOrder)(
-	const SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateRowOrder)(
+	const SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingSubmission *submission)
 {
-	uint8_t seen[SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT)] = {0u};
-	uint8_t slot_seen[SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT)] = {0u};
-	uint64_t last_position[SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT)] = {0u};
+	uint8_t seen[SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT)] = {0u};
+	uint8_t slot_seen[SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT)] = {0u};
+	uint64_t last_position[SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT)] = {0u};
 	uint32_t lane,row,wave,maximum;
-	uint32_t counts[SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT)] = {0u};
+	uint32_t counts[SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT)] = {0u};
 	for (lane=0u; lane<submission->active_sequence_count; lane++)
 	{
 		uint32_t slot;
@@ -160,21 +160,21 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateRowOrder)(
 	return(row == submission->row_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateBoundaries)(
-	const SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateBoundaries)(
+	const SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingSubmission *submission)
 {
 	uint64_t boundary_bytes;
 	uint32_t pp_stage;
-	boundary_bytes = (uint64_t)submission->row_count * SPARK_QWEN38_SERVING_ADAPTER_CONST(MODEL_HIDDEN_BF16_BYTES);
-	pp_stage = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index);
-	if ( (pp_stage != 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes < boundary_bytes)) || (pp_stage == 0u && (submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u)) || (pp_stage + 1u < SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) && (submission->hidden_output_address == 0 || submission->hidden_output_bytes < boundary_bytes)) || (pp_stage + 1u == SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) && (submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u)) )
+	boundary_bytes = (uint64_t)submission->row_count * SPARK_LANE_SERVING_ADAPTER_CONST(MODEL_HIDDEN_BF16_BYTES);
+	pp_stage = SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index);
+	if ( (pp_stage != 0u && (submission->hidden_input_address == 0 || submission->hidden_input_bytes < boundary_bytes)) || (pp_stage == 0u && (submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u)) || (pp_stage + 1u < SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(state) && (submission->hidden_output_address == 0 || submission->hidden_output_bytes < boundary_bytes)) || (pp_stage + 1u == SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(state) && (submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u)) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmissionBase)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateSubmissionBase)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingSubmission *submission)
 {
 	SparkStatus status;
@@ -182,16 +182,16 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmissionBase
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( state->quiescing != 0u )
 		return(SPARK_STATUS_BUSY);
-#ifdef SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE
-	if ( SPARK_QWEN38_SERVING_ADAPTER_SUBMISSION_STALE(state,submission) != 0u )
+#ifdef SPARK_LANE_SERVING_ADAPTER_SUBMISSION_STALE
+	if ( SPARK_LANE_SERVING_ADAPTER_SUBMISSION_STALE(state,submission) != 0u )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 #endif
-	status = SparkModelServingAdapterValidateRuntimeSubmission(&SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDescriptor),&state->runtime_limits,submission);
+	status = SparkModelServingAdapterValidateRuntimeSubmission(&SPARK_LANE_SERVING_ADAPTER_FN(ServingDescriptor),&state->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateRowOrder)(state,submission);
+	status = SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateRowOrder)(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->model_extension_bytes != 0u )
@@ -199,15 +199,15 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmissionBase
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateSubmission)(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission)
 {
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state;
 	uint32_t emit_count;
 	SparkStatus status;
-	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
-	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmissionBase)(state,submission);
+	state = (SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
+	status = SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateSubmissionBase)(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
@@ -215,8 +215,8 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission)(
 	return(SparkModelServingAdapterSelectEmitRows(submission,0,0,0u,&emit_count));
 }
 
-static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReleaseLane)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static void SPARK_LANE_SERVING_ADAPTER_FN(ServingReleaseLane)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	uint32_t slot)
 {
 	uint32_t ordinal;
@@ -226,15 +226,15 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReleaseLane)(
 	state->lane_context_tokens[slot] = 0u;
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverLane)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingCoverLane)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	uint32_t slot,
 	uint64_t end_position)
 {
 	uint32_t required,ordinal;
 	if ( state->stage_attn_layer_count == 0u )
 		return(SPARK_STATUS_OK);
-	required = (uint32_t)((end_position + SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) - 1u) / SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
+	required = (uint32_t)((end_position + SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) - 1u) / SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
 	if ( required > state->blocks_per_lane )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for (ordinal=state->lane_block_counts[slot]; ordinal<required; ordinal++)
@@ -248,8 +248,8 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverLane)(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverSubmission)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingCoverSubmission)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingSubmission *submission)
 {
 	uint32_t lane,row;
@@ -271,19 +271,19 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverSubmission)(
 				end_position = submission->row_positions[row] + 1u;
 		}
 		if ( first_position == 0u && state->lane_context_tokens[slot] != 0u )
-			SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReleaseLane)(state,slot);
-		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverLane)(state,slot,end_position);
+			SPARK_LANE_SERVING_ADAPTER_FN(ServingReleaseLane)(state,slot);
+		status = SPARK_LANE_SERVING_ADAPTER_FN(ServingCoverLane)(state,slot,end_position);
 		if ( status != SPARK_STATUS_OK )
 		{
-			SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDropSubmission)(state,submission);
+			SPARK_LANE_SERVING_ADAPTER_FN(ServingDropSubmission)(state,submission);
 			return(status);
 		}
 	}
 	return(SPARK_STATUS_OK);
 }
 
-static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCommitSubmission)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static void SPARK_LANE_SERVING_ADAPTER_FN(ServingCommitSubmission)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingSubmission *submission)
 {
 	uint32_t lane,row;
@@ -297,8 +297,8 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCommitSubmission)(
 	}
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingUploadBlockTable)(
-	const SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingUploadBlockTable)(
+	const SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingSubmission *submission)
 {
 	cudaError_t error = cudaSuccess;
@@ -324,17 +324,17 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingUploadBlockTable)(
 	return(SPARK_STATUS_OK);
 }
 
-static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingBuildFrame)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static void SPARK_LANE_SERVING_ADAPTER_FN(ServingBuildFrame)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingSubmission *submission,
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingPending) *pending,
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingPending) *pending,
 	uint32_t prefill,
 	uint32_t lane,
 	uint32_t wave_base,
 	uint32_t frame_rows,
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(DecodeBatchView) *decode_batch,
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(PrefillFrameView) *prefill_view,
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ResidentDecodeStageFrameContext) *context,
+	SPARK_LANE_SERVING_ADAPTER_TYPE(DecodeBatchView) *decode_batch,
+	SPARK_LANE_SERVING_ADAPTER_TYPE(PrefillFrameView) *prefill_view,
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ResidentDecodeStageFrameContext) *context,
 	SparkModelDriverBuffer *buffers,
 	SparkModelDriverFrame *frame)
 {
@@ -344,24 +344,24 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingBuildFrame)(
 	slot = prefill != 0u ? pending->resident_slots[lane] : 0u;
 	base_position = 0u;
 	memset(context,0,sizeof(*context));
-	context->abi_version = SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION);
+	context->abi_version = SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION);
 	context->descriptor_bytes = sizeof(*context);
 	if ( state->stage_attn_layer_count != 0u )
 	{
-		context->flags |= SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE);
+		context->flags |= SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE);
 		context->kv_block_table = &state->block_table;
 	}
-	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) != 0u )
+	if ( SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) != 0u )
 	{
-		context->flags |= SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT);
+		context->flags |= SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT);
 		context->hidden_input_transport_session = (SparkHiddenTransportSession *)&state->shim;
-		context->hidden_input_post_receive_function = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPostReceive);
+		context->hidden_input_post_receive_function = SPARK_LANE_SERVING_ADAPTER_FN(ServingPostReceive);
 	}
-	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u < SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) )
+	if ( SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u < SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(state) )
 	{
-		context->flags |= SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT);
+		context->flags |= SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT);
 		context->hidden_output_transport_session = (SparkHiddenTransportSession *)&state->shim;
-		context->hidden_output_send_function = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSend);
+		context->hidden_output_send_function = SPARK_LANE_SERVING_ADAPTER_FN(ServingSend);
 	}
 	state->shim.input_base = submission->hidden_input_address;
 	state->shim.input_rows = frame_rows;
@@ -384,13 +384,13 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingBuildFrame)(
 		state->shim.input_row_map = pending->frame_row_flats;
 		state->shim.output_row_map = pending->frame_row_flats;
 		base_position = submission->row_positions[pending->frame_row_flats[0]];
-		prefill_view->abi_version = SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION);
+		prefill_view->abi_version = SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION);
 		prefill_view->descriptor_bytes = sizeof(*prefill_view);
 		prefill_view->lane_index = slot;
 		prefill_view->token_count = frame_rows;
 		prefill_view->base_position = base_position;
 		prefill_view->sequence_id = submission->row_sequence_ids[pending->frame_row_flats[0]];
-		context->flags |= SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW);
+		context->flags |= SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW);
 		context->prefill_frame = prefill_view;
 	}
 	else
@@ -400,26 +400,26 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingBuildFrame)(
 		memcpy(pending->frame_token_ids,submission->token_ids,(size_t)frame_rows * sizeof(uint32_t));
 		state->shim.input_row_map = 0;
 		state->shim.output_row_map = 0;
-		decode_batch->abi_version = SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION);
+		decode_batch->abi_version = SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION);
 		decode_batch->descriptor_bytes = sizeof(*decode_batch);
 		decode_batch->row_count = frame_rows;
 		decode_batch->row_lane_indices = pending->frame_row_slots;
 		decode_batch->row_positions = submission->row_positions;
 		decode_batch->row_sequence_ids = submission->row_sequence_ids;
-		context->flags |= SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW);
+		context->flags |= SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW);
 		context->decode_batch = decode_batch;
 	}
 	memset(buffers,0,sizeof(SparkModelDriverBuffer[2]));
-	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) == 0u )
+	if ( SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) == 0u )
 	{
 		buffers[0].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_READ;
 		buffers[0].address = pending->frame_token_ids;
 		buffers[0].bytes = (uint64_t)frame_rows * sizeof(uint32_t);
 	}
-	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) )
+	if ( SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(state) )
 	{
 		uint32_t out_index;
-		out_index = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) == 0u ? 1u : 0u;
+		out_index = SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) == 0u ? 1u : 0u;
 		buffers[out_index].slot = 1u;
 		buffers[out_index].flags = SPARK_MODEL_DRIVER_BUFFER_FLAG_WRITE;
 		buffers[out_index].address = pending->frame_output_ids;
@@ -438,38 +438,38 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingBuildFrame)(
 	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 	frame->program_id = state->program->program_id;
 	frame->execution_stream = state->execution_stream;
-	frame->buffers = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) == 0u || SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) ? buffers : 0;
-	frame->buffer_count = (SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) == 0u ? 1u : 0u) + (SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) ? 1u : 0u);
+	frame->buffers = SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) == 0u || SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(state) ? buffers : 0;
+	frame->buffer_count = (SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) == 0u ? 1u : 0u) + (SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(state) ? 1u : 0u);
 	frame->residency = submission->residency;
 	frame->user_context = context;
-	frame->completion_function = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDriverCompletion);
+	frame->completion_function = SPARK_LANE_SERVING_ADAPTER_FN(ServingDriverCompletion);
 	frame->completion_context = pending;
 	pending->frame_sequence_id = frame->sequence_id;
 	pending->frame_sequence_position = frame->sequence_position;
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingRunFrame)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingRunFrame)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingSubmission *submission,
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingPending) *pending,
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingPending) *pending,
 	uint32_t prefill,
 	uint32_t lane,
 	uint32_t wave_base,
 	uint32_t frame_rows)
 {
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(DecodeBatchView) decode_batch;
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(PrefillFrameView) prefill_view;
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ResidentDecodeStageFrameContext) context;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(DecodeBatchView) decode_batch;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(PrefillFrameView) prefill_view;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ResidentDecodeStageFrameContext) context;
 	SparkModelDriverBuffer buffers[2];
 	SparkModelDriverFrame frame;
 	SparkStatus status;
-	SPARK_QWEN38_SERVING_ADAPTER_FN(ServingBuildFrame)(state,submission,pending,prefill,lane,wave_base,frame_rows,&decode_batch,&prefill_view,&context,buffers,&frame);
-	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAdmit)(state,submission,&frame);
+	SPARK_LANE_SERVING_ADAPTER_FN(ServingBuildFrame)(state,submission,pending,prefill,lane,wave_base,frame_rows,&decode_batch,&prefill_view,&context,buffers,&frame);
+	status = SPARK_LANE_SERVING_ADAPTER_FN(ServingAdmit)(state,submission,&frame);
 	if ( status == SPARK_STATUS_OK )
 		status = state->program->submit(state->driver_instance,&frame);
 	if ( status == SPARK_STATUS_OK )
 		status = pending->frame_status;
-	if ( status == SPARK_STATUS_OK && SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) )
+	if ( status == SPARK_STATUS_OK && SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(state) )
 	{
 		if ( prefill != 0u )
 			pending->output_token_ids[lane] = (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ? pending->frame_output_ids[0] : 0u;
@@ -483,9 +483,9 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingRunFrame)(
 	return(status);
 }
 
-static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingComplete)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingPending) *pending,
+static void SPARK_LANE_SERVING_ADAPTER_FN(ServingComplete)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingPending) *pending,
 	SparkStatus status)
 {
 	SparkModelServingCompletion completion;
@@ -507,7 +507,7 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingComplete)(
 	completion.accepted_token_count = (uint32_t)(pending->accepted_token_count > UINT32_MAX ? UINT32_MAX : pending->accepted_token_count);
 	completion.queue_delay_ns = pending->queue_delay_ns;
 	completion.service_time_ns = pending->service_time_ns;
-	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageCount)(state) && status == SPARK_STATUS_OK && pending->common.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+	if ( SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,state->stage_index) + 1u == SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageCount)(state) && status == SPARK_STATUS_OK && pending->common.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		completion.tokens_per_sequence = 1u;
 		completion.token_count = pending->common.active_sequence_count;
@@ -519,35 +519,35 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingComplete)(
 	state->completion_function(state->completion_context,&completion);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingSubmit)(
 	void *adapter_state,
 	const SparkModelServingSubmission *submission)
 {
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingPending) *pending;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingPending) *pending;
 	SparkStatus status;
-	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
-	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmissionBase)(state,submission);
+	state = (SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
+	status = SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateSubmissionBase)(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateBoundaries)(state,submission);
+		status = SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateBoundaries)(state,submission);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	pending = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReservePending)(state,submission);
+	pending = SPARK_LANE_SERVING_ADAPTER_FN(ServingReservePending)(state,submission);
 	if ( pending == 0 )
 		return(SPARK_STATUS_BUSY);
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
 	{
 		for (uint32_t lane=0u; lane<submission->active_sequence_count; lane++)
-			SPARK_QWEN38_SERVING_ADAPTER_FN(ServingReleaseLane)(state,submission->lanes[lane].resident_sequence_slot);
+			SPARK_LANE_SERVING_ADAPTER_FN(ServingReleaseLane)(state,submission->lanes[lane].resident_sequence_slot);
 		pending->residency = submission->residency;
-		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingComplete)(state,pending,SPARK_STATUS_OK);
+		SPARK_LANE_SERVING_ADAPTER_FN(ServingComplete)(state,pending,SPARK_STATUS_OK);
 		return(SPARK_STATUS_OK);
 	}
-	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCoverSubmission)(state,submission);
+	status = SPARK_LANE_SERVING_ADAPTER_FN(ServingCoverSubmission)(state,submission);
 	if ( status == SPARK_STATUS_OK )
-		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingUploadBlockTable)(state,submission);
+		status = SPARK_LANE_SERVING_ADAPTER_FN(ServingUploadBlockTable)(state,submission);
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingRunFrame)(state,submission,pending,0u,0u,0u,submission->row_count);
+		status = SPARK_LANE_SERVING_ADAPTER_FN(ServingRunFrame)(state,submission,pending,0u,0u,0u,submission->row_count);
 	else if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 	{
 		uint32_t lane,wave,chunk_rows;
@@ -560,9 +560,9 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit)(
 			for (wave=0u; status == SPARK_STATUS_OK && wave<lane_rows; wave+=chunk_rows)
 			{
 				chunk_rows = lane_rows - wave;
-				if ( chunk_rows > SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) )
-					chunk_rows = SPARK_QWEN38_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state);
-				status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingRunFrame)(state,submission,pending,1u,lane,wave,chunk_rows);
+				if ( chunk_rows > SPARK_LANE_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state) )
+					chunk_rows = SPARK_LANE_SERVING_ADAPTER_PREFILL_FRAME_ROWS(state);
+				status = SPARK_LANE_SERVING_ADAPTER_FN(ServingRunFrame)(state,submission,pending,1u,lane,wave,chunk_rows);
 			}
 		}
 	}
@@ -570,23 +570,23 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit)(
 		status = SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status != SPARK_STATUS_OK )
 	{
-		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDropSubmission)(state,submission);
+		SPARK_LANE_SERVING_ADAPTER_FN(ServingDropSubmission)(state,submission);
 		pending->common.active = 0u;
 		return(status);
 	}
-	SPARK_QWEN38_SERVING_ADAPTER_FN(ServingCommitSubmission)(state,submission);
-	SPARK_QWEN38_SERVING_ADAPTER_FN(ServingComplete)(state,pending,SPARK_STATUS_OK);
+	SPARK_LANE_SERVING_ADAPTER_FN(ServingCommitSubmission)(state,submission);
+	SPARK_LANE_SERVING_ADAPTER_FN(ServingComplete)(state,pending,SPARK_STATUS_OK);
 	return(SPARK_STATUS_OK);
 }
 
-static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(void *adapter_state)
+static void SPARK_LANE_SERVING_ADAPTER_FN(ServingDestroy)(void *adapter_state)
 {
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state;
 	SparkModelDriverRuntimeSnapshot snapshot;
-	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
+	state = (SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *)adapter_state;
 	if ( state == 0 )
 		return;
-	if ( SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAvailableSubmissionCount)(state) != state->pipeline_slot_count )
+	if ( SPARK_LANE_SERVING_ADAPTER_FN(ServingAvailableSubmissionCount)(state) != state->pipeline_slot_count )
 		return;
 	if ( state->driver.interface != 0 && state->driver.interface->snapshot != 0 && state->driver_instance != 0 && state->program != 0 )
 	{
@@ -597,8 +597,8 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(void *adapter_state)
 	if ( state->driver.interface != 0 && state->driver.interface->destroy != 0 && state->driver_instance != 0 )
 		state->driver.interface->destroy(state->driver_instance);
 	SparkUnloadModelDriver(&state->driver);
-#ifdef SPARK_QWEN38_SERVING_ADAPTER_UNBIND_FAMILY
-	SPARK_QWEN38_SERVING_ADAPTER_UNBIND_FAMILY(state);
+#ifdef SPARK_LANE_SERVING_ADAPTER_UNBIND_FAMILY
+	SPARK_LANE_SERVING_ADAPTER_UNBIND_FAMILY(state);
 #endif
 	if ( state->device_block_indices != 0 )
 		(void)cudaFree(state->device_block_indices);
@@ -611,43 +611,43 @@ static void SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(void *adapter_state)
 	free(state);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAcceptsProgram)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingAcceptsProgram)(
 	const SparkModelDriverProgramDescriptor *program,
 	void *accept_context)
 {
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
-	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)accept_context;
-	if ( (program->flags & SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_REQUIRED_PROGRAM_FLAGS)) != SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_REQUIRED_PROGRAM_FLAGS) || program->max_inflight < state->pipeline_slot_count || program->profile == 0 || program->profile->max_active_slots < state->max_active_sequence_count || program->profile->max_new_tokens < state->max_input_row_count )
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state;
+	state = (SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *)accept_context;
+	if ( (program->flags & SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_REQUIRED_PROGRAM_FLAGS)) != SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_REQUIRED_PROGRAM_FLAGS) || program->max_inflight < state->pipeline_slot_count || program->profile == 0 || program->profile->max_active_slots < state->max_active_sequence_count || program->profile->max_new_tokens < state->max_input_row_count )
 		return(SPARK_STATUS_TARGET_MISMATCH);
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingLoadDriver)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state,
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingLoadDriver)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
 	SparkServingAdapterDriverRequest request;
 	const SparkModelDriverProgramDescriptor *program;
 	SparkStatus status;
-	request.contract.driver_model_id = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_DRIVER_MODEL_ID);
-	request.contract.driver_model_revision = SPARK_QWEN38_SERVING_ADAPTER_MODEL_REVISION;
-	request.contract.driver_stage_name = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_STAGE_NAME);
-	request.contract.driver_target = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_TARGET);
-	request.contract.model_description_sha256 = SPARK_QWEN38_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256;
+	request.contract.driver_model_id = SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_DRIVER_MODEL_ID);
+	request.contract.driver_model_revision = SPARK_LANE_SERVING_ADAPTER_MODEL_REVISION;
+	request.contract.driver_stage_name = SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_STAGE_NAME);
+	request.contract.driver_target = SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_TARGET);
+	request.contract.model_description_sha256 = SPARK_LANE_SERVING_ADAPTER_DRIVER_DESCRIPTION_SHA256;
 	request.node_context = 0;
 	request.completion_context = state;
-	request.completion_function = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingOrphanDriverCompletion);
-	request.wake_function = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDriverWake);
+	request.completion_function = SPARK_LANE_SERVING_ADAPTER_FN(ServingOrphanDriverCompletion);
+	request.wake_function = SPARK_LANE_SERVING_ADAPTER_FN(ServingDriverWake);
 	program = 0;
 	status = SparkServingAdapterTemplateLoadDriver(&request,configuration,
-		&state->driver,&program,SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAcceptsProgram),state,
+		&state->driver,&program,SPARK_LANE_SERVING_ADAPTER_FN(ServingAcceptsProgram),state,
 		&state->driver_instance);
 	state->program = program;
 	return(status);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAllocatePools)(
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state)
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingAllocatePools)(
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state)
 {
 	uint32_t block;
 	uint64_t indices;
@@ -659,16 +659,16 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAllocatePools)(
 	for (block=0u; block<state->kv_block_count; block++)
 		state->free_blocks[block] = state->kv_block_count - 1u - block;
 	state->free_block_count = state->kv_block_count;
-	if ( cudaMalloc(&state->gather_scratch,(size_t)((uint64_t)state->max_active_sequence_count * SPARK_QWEN38_SERVING_ADAPTER_CONST(MODEL_HIDDEN_BF16_BYTES))) != cudaSuccess )
+	if ( cudaMalloc(&state->gather_scratch,(size_t)((uint64_t)state->max_active_sequence_count * SPARK_LANE_SERVING_ADAPTER_CONST(MODEL_HIDDEN_BF16_BYTES))) != cudaSuccess )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( state->stage_attn_layer_count != 0u )
 	{
 		if ( cudaMalloc((void **)&state->device_block_indices,(size_t)(indices * sizeof(uint32_t))) != cudaSuccess || cudaMalloc((void **)&state->device_block_counts,(size_t)(state->max_active_sequence_count * sizeof(uint32_t))) != cudaSuccess )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	state->block_table.abi_version = SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION);
+	state->block_table.abi_version = SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION);
 	state->block_table.descriptor_bytes = sizeof(state->block_table);
-	state->block_table.block_token_count = SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+	state->block_table.block_token_count = SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 	state->block_table.lane_count = state->max_active_sequence_count;
 	state->block_table.lane_stride = state->blocks_per_lane;
 	state->block_table.lane_capacity = state->max_active_sequence_count;
@@ -679,24 +679,24 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAllocatePools)(
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitialize)(
+static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingInitialize)(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
 {
-	SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *state;
+	SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *state;
 	uint32_t max_sequence_positions;
 	SparkStatus status;
 	if ( adapter_state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	*adapter_state = 0;
-	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateConfiguration)(configuration);
+	status = SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateConfiguration)(configuration);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	state = (SPARK_QWEN38_SERVING_ADAPTER_TYPE(ServingState) *)calloc(1u,sizeof(*state));
+	state = (SPARK_LANE_SERVING_ADAPTER_TYPE(ServingState) *)calloc(1u,sizeof(*state));
 	if ( state == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->stage_index = configuration->stage_index;
-	state->tp_degree = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_DEFAULT_TP_DEGREE);
+	state->tp_degree = SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_DEFAULT_TP_DEGREE);
 	state->pipeline_slot_count = configuration->runtime_limits.max_inflight_submission_count;
 	state->max_active_sequence_count = configuration->runtime_limits.max_active_sequence_count;
 	state->max_input_row_count = configuration->runtime_limits.max_input_row_count;
@@ -708,68 +708,68 @@ static SparkStatus SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitialize)(
 	state->wake_context = configuration->wake_context;
 	state->execution_stream = configuration->execution_stream;
 	state->shim.execution_stream = configuration->execution_stream;
-	status = SPARK_QWEN38_SERVING_ADAPTER_BIND_FAMILY(state);
+	status = SPARK_LANE_SERVING_ADAPTER_BIND_FAMILY(state);
 	if ( status != SPARK_STATUS_OK )
 		{ free(state); return(status); }
-	status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingLoadConfiguration)(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
-	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_MAX_SEQUENCE_POSITIONS_CAP)) )
+	status = SPARK_LANE_SERVING_ADAPTER_FN(ServingLoadConfiguration)(configuration->adapter_configuration_path,configuration->runtime_root,state,&max_sequence_positions);
+	if ( status == SPARK_STATUS_OK && (max_sequence_positions == 0u || max_sequence_positions > SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_MAX_SEQUENCE_POSITIONS_CAP)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
 		uint32_t pp,base,extra;
-		state->pp_stage_count = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_STAGE_COUNT) / state->tp_degree;
-		if ( state->pp_stage_count > SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_MAX_PP_STAGE_COUNT) )
-			state->pp_stage_count = SPARK_QWEN38_SERVING_ADAPTER_CONST(SERVING_MAX_PP_STAGE_COUNT);
-		base = SPARK_QWEN38_SERVING_ADAPTER_CONST(MODEL_LAYER_COUNT) / state->pp_stage_count;
-		extra = SPARK_QWEN38_SERVING_ADAPTER_CONST(MODEL_LAYER_COUNT) % state->pp_stage_count;
+		state->pp_stage_count = SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_STAGE_COUNT) / state->tp_degree;
+		if ( state->pp_stage_count > SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_MAX_PP_STAGE_COUNT) )
+			state->pp_stage_count = SPARK_LANE_SERVING_ADAPTER_CONST(SERVING_MAX_PP_STAGE_COUNT);
+		base = SPARK_LANE_SERVING_ADAPTER_CONST(MODEL_LAYER_COUNT) / state->pp_stage_count;
+		extra = SPARK_LANE_SERVING_ADAPTER_CONST(MODEL_LAYER_COUNT) % state->pp_stage_count;
 		for (pp = 0u; pp < state->pp_stage_count; pp++)
 			state->stage_layer_counts[pp] = base + (pp < extra ? 1u : 0u);
-		state->first_layer_index = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingFirstLayer)(state,configuration->stage_index);
-		state->stage_layer_count = state->stage_layer_counts[SPARK_QWEN38_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,configuration->stage_index)];
-		state->stage_attn_layer_count = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingStageAttentionLayers)(state->first_layer_index,state->stage_layer_count);
+		state->first_layer_index = SPARK_LANE_SERVING_ADAPTER_FN(ServingFirstLayer)(state,configuration->stage_index);
+		state->stage_layer_count = state->stage_layer_counts[SPARK_LANE_SERVING_ADAPTER_FN(ServingPpStageIndex)(state,configuration->stage_index)];
+		state->stage_attn_layer_count = SPARK_LANE_SERVING_ADAPTER_FN(ServingStageAttentionLayers)(state->first_layer_index,state->stage_layer_count);
 		state->max_sequence_positions = max_sequence_positions;
-		state->blocks_per_lane = (max_sequence_positions + SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) - 1u) / SPARK_QWEN38_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
+		state->blocks_per_lane = (max_sequence_positions + SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) - 1u) / SPARK_LANE_SERVING_ADAPTER_CONST(RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS);
 		state->kv_block_count = state->resident_sequence_capacity * state->blocks_per_lane;
-		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingAllocatePools)(state);
+		status = SPARK_LANE_SERVING_ADAPTER_FN(ServingAllocatePools)(state);
 		state->shim.input_scratch = state->gather_scratch;
 	}
 	if ( status == SPARK_STATUS_OK )
-		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSetEnvironment)(state);
+		status = SPARK_LANE_SERVING_ADAPTER_FN(ServingSetEnvironment)(state);
 	if ( status == SPARK_STATUS_OK )
-		status = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingLoadDriver)(state,configuration);
+		status = SPARK_LANE_SERVING_ADAPTER_FN(ServingLoadDriver)(state,configuration);
 	if ( status != SPARK_STATUS_OK )
 	{
-		SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy)(state);
+		SPARK_LANE_SERVING_ADAPTER_FN(ServingDestroy)(state);
 		return(status);
 	}
 	*adapter_state = state;
 	return(SPARK_STATUS_OK);
 }
 
-static const SparkModelServingAdapterInterface SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInterface) =
+static const SparkModelServingAdapterInterface SPARK_LANE_SERVING_ADAPTER_FN(ServingInterface) =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
 	.interface_bytes = SPARK_MODEL_SERVING_ADAPTER_INTERFACE_BYTES,
-	.descriptor = &SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDescriptor),
-	.initialize = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInitialize),
-	.destroy = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingDestroy),
-	.validate_submission = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingValidateSubmission),
-	.submit = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSubmit),
-	.progress = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingProgress),
-	.quiesce = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingQuiesce),
-	.snapshot = SPARK_QWEN38_SERVING_ADAPTER_FN(ServingSnapshot),
-#ifdef SPARK_QWEN38_SERVING_ADAPTER_PREFETCH
-	.prefetch = SPARK_QWEN38_SERVING_ADAPTER_PREFETCH,
-	.resolve_prefetch = SPARK_QWEN38_SERVING_ADAPTER_RESOLVE_PREFETCH,
+	.descriptor = &SPARK_LANE_SERVING_ADAPTER_FN(ServingDescriptor),
+	.initialize = SPARK_LANE_SERVING_ADAPTER_FN(ServingInitialize),
+	.destroy = SPARK_LANE_SERVING_ADAPTER_FN(ServingDestroy),
+	.validate_submission = SPARK_LANE_SERVING_ADAPTER_FN(ServingValidateSubmission),
+	.submit = SPARK_LANE_SERVING_ADAPTER_FN(ServingSubmit),
+	.progress = SPARK_LANE_SERVING_ADAPTER_FN(ServingProgress),
+	.quiesce = SPARK_LANE_SERVING_ADAPTER_FN(ServingQuiesce),
+	.snapshot = SPARK_LANE_SERVING_ADAPTER_FN(ServingSnapshot),
+#ifdef SPARK_LANE_SERVING_ADAPTER_PREFETCH
+	.prefetch = SPARK_LANE_SERVING_ADAPTER_PREFETCH,
+	.resolve_prefetch = SPARK_LANE_SERVING_ADAPTER_RESOLVE_PREFETCH,
 #endif
-#ifdef SPARK_QWEN38_SERVING_ADAPTER_RESET
-	.reset = SPARK_QWEN38_SERVING_ADAPTER_RESET
+#ifdef SPARK_LANE_SERVING_ADAPTER_RESET
+	.reset = SPARK_LANE_SERVING_ADAPTER_RESET
 #endif
 };
 
 __attribute__((visibility("default")))
 const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
 {
-	return(&SPARK_QWEN38_SERVING_ADAPTER_FN(ServingInterface));
+	return(&SPARK_LANE_SERVING_ADAPTER_FN(ServingInterface));
 }
 #endif

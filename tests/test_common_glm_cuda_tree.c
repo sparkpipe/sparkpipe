@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
-#include "common/common_glm_cuda_tree/spark_glm_cuda_config.h"
-#include "common/common_glm_cuda_tree/spark_glm_cuda_launch_shape.h"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_config.h"
+#include "model-families/glm52/cuda_tree/spark_glm_cuda_launch_shape.h"
 
 #ifndef VECTOR_ROUTED_LAYERS
 #error "VECTOR_ROUTED_LAYERS must be injected from llm_defines.h"

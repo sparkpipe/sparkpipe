@@ -245,7 +245,7 @@ static const SparkLingStagePackShapeSpec SPARK_LING_STAGEPACK_SHAPE_TABLE[SPARK_
 
 #include "sparkpipe/family/stagepack/spark_stagepack_glm.h"
 
-#include "sparkpipe/family/stagepack/spark_stagepack_glm5_next_ling.h"
+#include "sparkpipe/family/stagepack/spark_stagepack_kda_mtp_kinds.h"
 
 static inline int32_t SparkLingStagePackCheckLayerKind(uint32_t layer_index,uint32_t tensor_kind)
 {

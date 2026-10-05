@@ -362,11 +362,11 @@ static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor
 	.minimum_efficient_submission_row_count = 0u
 };
 
-#define SPARK_QWEN38_SERVING_ADAPTER_FN(name) SparkQwen38_27b##name
-#define SPARK_QWEN38_SERVING_ADAPTER_TYPE(name) SparkQwen38_27b##name
-#define SPARK_QWEN38_SERVING_ADAPTER_CONST(name) SPARK_QWEN38_27B_##name
+#define SPARK_LANE_SERVING_ADAPTER_FN(name) SparkQwen38_27b##name
+#define SPARK_LANE_SERVING_ADAPTER_TYPE(name) SparkQwen38_27b##name
+#define SPARK_LANE_SERVING_ADAPTER_CONST(name) SPARK_QWEN38_27B_##name
 
-#include "sparkpipe/spark_qwen38_serving_adapter_common.h"
+#include "sparkpipe/spark_lane_serving_adapter_common.h"
 
 #if SPARK_QWEN38_27B_SERVING_TP_DEGREE > 1u
 static const SparkTpCollectiveConfigPolicy SparkQwen38_27bServingTpCollectivePolicy =

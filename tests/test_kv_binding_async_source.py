@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
 GLM52 = ROOT / "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c"
 GLM5_NEXT = ROOT / "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"
-GLM_STAGE = ROOT / "common/common_glm_stage_module/spark_glm_stage_module.h"
+GLM_STAGE = ROOT / "model-families/glm52/stage_module/spark_glm_stage_module.h"
 RUNTIME_FILES = [ROOT / "runtime/stage_kv_binding.c", ROOT / "runtime/kv_device_copy.c"]
 REMOVED = [
     r"SparkKvPageStoreCopyResidentPage",

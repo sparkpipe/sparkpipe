@@ -1,7 +1,6 @@
 #include <stdint.h>
 
-#define SPARK_DSPARK_TARGET_DSV4_PRO_0813
-#include "sparkpipe/spark_dspark_drafter.h"
+#include "sparkpipe/spark_dsv4_pro_dspark_target.h"
 
 #define PIN(expr) _Static_assert((expr), #expr)
 

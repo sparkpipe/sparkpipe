@@ -175,9 +175,7 @@ typedef struct TestChain
 #define SPARK_GLM_STAGE_LAZY_RECOVER_LEASE(state,slot,out) SPARK_STATUS_IO_ERROR
 #define SPARK_GLM_STAGE_TP_CHAIN_FAIL(chain,status) ((void)(chain),((void)(status)))
 
-#define SPARK_LLM_OUTPUT_VOCAB_COUNT 154880u
 #define SPARK_LLM_HEAD_TILE 1024u
-#define SPARK_LLM_HIDDEN_DIMENSION 6144u
 
 static int32_t TestExpectedShape(uint32_t kind,uint32_t layer_index,
 	uint32_t codec,uint32_t tp_degree,TestTensorShape *shape)
@@ -210,7 +208,7 @@ static uint32_t failures;
 		} \
 	} while (0)
 
-#include "common/common_glm_stage_module/spark_glm_stage_module.h"
+#include "model-families/glm52/stage_module/spark_glm_stage_module.h"
 
 int main(void)
 {

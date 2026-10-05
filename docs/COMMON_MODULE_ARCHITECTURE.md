@@ -144,7 +144,7 @@ header, fails.
 
 The launchers validate `tp_degree` and `tp_rank` before dividing by the degree. An FP8 block-128 view needs `rows_per_expert` and `input_dimension` to be multiples of 128, because its scales are stored per 128×128 block. An NVFP4 view needs `input_dimension` to be a multiple of 16. `tests/test_gdn_stage_launch_checks.cu` checks these refusals; it needs nvcc but no GPU.
 
-#### M-2 `common/common_glm_cuda_tree/`: GLM kernel tree
+#### M-2 `model-families/glm52/cuda_tree/`: GLM kernel tree
 
 - **Files.** `spark_glm_cuda_api.h`, `spark_glm_cuda_config.h`,
   `spark_glm_cuda_launch_shape.h`, `spark_glm_cuda_layer.cuh`,
@@ -226,7 +226,7 @@ before and after the move.
   `SparkRopePlanYarnTableIsValid`.
 - **Users.** gemma4 and laguna. `tests/test_rope_plan.c` covers it.
 
-#### M-11 `common/common_glm_stage_module/spark_glm_stage_module.h`: shared GLM module functions
+#### M-11 `model-families/glm52/stage_module/spark_glm_stage_module.h`: shared GLM module functions
 
 Users: glm52 only. `tests/test_common_glm_stage_module.c` covers it.
 
