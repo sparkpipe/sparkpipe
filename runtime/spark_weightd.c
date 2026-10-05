@@ -178,6 +178,7 @@ typedef struct SparkWeightdConnection
     uint32_t state;
     uint32_t hello_done;
     uint64_t owner;
+    uint64_t peer_pid;
     uint64_t mesh_generation;
     uint32_t mesh_active;
     _Atomic uint64_t serving_until_ns;
@@ -312,12 +313,32 @@ static void SparkWeightdPacerSleepNs(void *context, uint64_t nanoseconds)
         ;
 }
 
+static uint64_t SparkWeightdConnectionPeerPid(int fd)
+{
+#if defined(__linux__)
+    struct ucred credentials;
+    socklen_t length = sizeof(credentials);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length) == 0 && credentials.pid > 0)
+        return (uint64_t)credentials.pid;
+#elif defined(__APPLE__)
+    pid_t pid = 0;
+    socklen_t length = sizeof(pid);
+    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0 && pid > 0)
+        return (uint64_t)pid;
+#endif
+    return 0u;
+}
+
 static uint32_t SparkWeightdServerServingOther(SparkWeightdServer *server)
 {
     uint64_t now = SparkWeightdMonotonicTimeNs();
+    uint64_t requester = 0u;
     uint32_t index;
+    if (server->dispatch_connection < SPARK_WEIGHTD_CONNECTION_COUNT_MAX)
+        requester = server->connections[server->dispatch_connection].peer_pid;
     for (index = 0u; index < SPARK_WEIGHTD_CONNECTION_COUNT_MAX; index++)
         if (index != server->dispatch_connection &&
+            (requester == 0u || server->connections[index].peer_pid != requester) &&
             atomic_load_explicit(&server->connections[index].serving_until_ns, memory_order_acquire) > now)
             return 1u;
     return 0u;
@@ -3933,6 +3954,7 @@ static void SparkWeightdServerCloseConnection(SparkWeightdServer *server,
     }
     SparkWeightdServerCloseStagedFds(connection);
     connection->fd = -1;
+    connection->peer_pid = 0u;
     connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
     connection->hello_done = 0u;
     connection->abi_version = 0u;
@@ -4172,6 +4194,7 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
                     }
                     (void)fcntl(fd, F_SETFL, O_NONBLOCK);
                     connection->fd = fd;
+                    connection->peer_pid = SparkWeightdConnectionPeerPid(fd);
                     connection->state = SPARK_WEIGHTD_CONNECTION_OPEN;
                     connection->hello_done = 0u;
                     connection->abi_version = 0u;
