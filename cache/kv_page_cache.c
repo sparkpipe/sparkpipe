@@ -1897,6 +1897,21 @@ static uint32_t SparkKvPageCacheEntryUnsaved(const SparkKvPageCache *cache,uint3
 	return((flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && (flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u ? 1u : 0u);
 }
 
+uint32_t SparkKvPageCacheSaveParked(SparkKvPageCache *cache,uint32_t logical_page_index)
+{
+	uint32_t entry_index;
+	if ( SparkKvPageCacheIsValid(cache) == 0u || cache->snapshot == 0 || logical_page_index >= cache->kv_cache_arena->logical_block_count )
+		return(0u);
+	entry_index = cache->entry_indices_by_logical_page[logical_page_index];
+	if ( entry_index >= cache->entry_capacity || SparkKvPageCacheEntryUnsaved(cache,entry_index) == 0u ||
+		((cache->entries[entry_index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u && cache->state_store != 0) ||
+		SparkKvPageCacheSaveIsPending(cache->snapshot,entry_index) != 0u || SparkKvPageCacheSaveEligible(cache,entry_index) == 0u ||
+		cache->snapshot->pending_count == cache->snapshot->pending_capacity || SparkKvPageCacheSavePush(cache,entry_index) != SPARK_STATUS_OK )
+		return(0u);
+	cache->snapshot->park_save_queued_count++;
+	return(1u);
+}
+
 SparkStatus SparkKvPageCacheMarkAllUnsaved(SparkKvPageCache *cache,SparkKvPageCacheSaveOrder *order,uint32_t order_capacity,uint32_t *marked_out,uint32_t *deferred_out,uint32_t *ineligible_out)
 {
 	uint32_t entry,count = 0u,index,marked = 0u,deferred = 0u,ineligible = 0u;

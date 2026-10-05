@@ -223,6 +223,15 @@ static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,cons
 	return(SparkStageKvBindingStateBudget(binding,configuration,missing + in_flight));
 }
 
+static SparkStatus SparkStageKvBindingPark(void *context,uint32_t logical_page_index,uint32_t physical_page_index,uint64_t generation,uintptr_t key_device_address,uint64_t key_bytes,uintptr_t value_device_address,uint64_t value_bytes)
+{
+	SparkStageKvBinding *binding = (SparkStageKvBinding *)context;
+	SparkStatus status = SparkKvPageStoreWriteback(&binding->page_store,logical_page_index,physical_page_index,generation,key_device_address,key_bytes,value_device_address,value_bytes);
+	if ( status == SPARK_STATUS_OK && binding->sync_initialized != 0u && SparkKvPageCacheSaveParked(&binding->page_cache,logical_page_index) != 0u )
+		(void)pthread_cond_signal(&binding->save_ready);
+	return(status);
+}
+
 static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration,SparkKvModelTable *table)
 {
 	memset(table,0,sizeof(*table));
@@ -247,8 +256,8 @@ static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const Spar
 	}
 	table->arena_configuration.blocks = binding->blocks;
 	table->arena_configuration.resident_slot_logical_block_indices = binding->resident_slot_logical_block_indices;
-	table->arena_configuration.evict_function = SparkKvPageStoreWriteback;
-	table->arena_configuration.evict_context = &binding->page_store;
+	table->arena_configuration.evict_function = SparkStageKvBindingPark;
+	table->arena_configuration.evict_context = binding;
 	table->page_store_config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
 	table->page_store_config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
 	table->page_store_config.flags = SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS;
@@ -1212,10 +1221,11 @@ static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
 	if ( binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || binding->save_started == 0u )
 		return;
 	status = SparkStageKvBindingSaveAll(binding,SparkStageKvNowNs() + SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS,&saved,&unsaved,&ineligible);
-	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu status=%s\n",
+	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu park_saves_queued=%llu status=%s\n",
 		binding->module_tag,saved,unsaved,ineligible,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
 		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.save_deferred_count,
-		(unsigned long long)binding->snapshot.evicted_unsaved_count,(unsigned long long)binding->snapshot.demote_queued_count,SparkStatusToString(status));
+		(unsigned long long)binding->snapshot.evicted_unsaved_count,(unsigned long long)binding->snapshot.demote_queued_count,(unsigned long long)binding->snapshot.park_save_queued_count,
+		SparkStatusToString(status));
 }
 
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)

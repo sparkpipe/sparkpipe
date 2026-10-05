@@ -69,46 +69,6 @@ typedef struct SparkKvPageStoreWorker
 }
 SparkKvPageStoreWorker;
 
-static uint64_t SparkKvPageStoreHashText(uint64_t hash,const char *text)
-{
-	while ( text != 0 && text[0] != '\0' )
-	{
-		hash ^= (uint8_t)text[0];
-		hash *= UINT64_C(1099511628211);
-		text++;
-	}
-	hash ^= UINT8_C(0xff);
-	return(hash * UINT64_C(1099511628211));
-}
-
-SparkStatus SparkKvPageStoreBuildPath(
-	char *path,
-	uint32_t path_capacity,
-	const char *backing_directory,
-	const char *model_id,
-	const char *model_revision,
-	const char *node_id,
-	uint32_t stage_index)
-{
-	uint64_t hash;
-	int32_t written;
-	if ( path == 0 || path_capacity == 0u || backing_directory == 0 ||
-		backing_directory[0] == '\0' || model_id == 0 || model_id[0] == '\0' ||
-		model_revision == 0 || model_revision[0] == '\0' ||
-		node_id == 0 || node_id[0] == '\0' )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	hash = UINT64_C(1469598103934665603);
-	hash = SparkKvPageStoreHashText(hash,model_id);
-	hash = SparkKvPageStoreHashText(hash,model_revision);
-	hash = SparkKvPageStoreHashText(hash,node_id);
-	hash ^= stage_index;
-	hash *= UINT64_C(1099511628211);
-	written = snprintf(path,path_capacity,"%s/sparkpipe-kv-%016llx.bin",
-		backing_directory,(unsigned long long)hash);
-	return(written < 0 || (uint32_t)written >= path_capacity ?
-		SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_OK);
-}
-
 static uint32_t SparkKvPageStoreConfigurationIsValid(
 	const SparkKvPageStoreConfiguration *configuration)
 {

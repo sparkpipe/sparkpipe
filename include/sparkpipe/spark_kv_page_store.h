@@ -130,14 +130,6 @@ SparkKvPageStore;
 SparkStatus SparkKvPageStoreInitialize(
 	SparkKvPageStore *store,
 	const SparkKvPageStoreConfiguration *configuration);
-SparkStatus SparkKvPageStoreBuildPath(
-	char *path,
-	uint32_t path_capacity,
-	const char *backing_directory,
-	const char *model_id,
-	const char *model_revision,
-	const char *node_id,
-	uint32_t stage_index);
 void SparkKvPageStoreDestroy(SparkKvPageStore *store);
 SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store);
 SparkStatus SparkKvPageStoreWriteback(
