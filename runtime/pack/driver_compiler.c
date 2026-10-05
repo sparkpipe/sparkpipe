@@ -770,7 +770,7 @@ static void SparkWriteGeneratedAdmissionHelpers(FILE *file)
     fputs("}\n\n", file);
 
     fputs("static int SparkGeneratedRuntimeSnapshotIsValid(const SparkModelDriverRuntimeSnapshot *snapshot, uint32_t program_id)\n{\n", file);
-    fputs("    return snapshot->descriptor_bytes >= sizeof(*snapshot) && snapshot->program_id == program_id && snapshot->reserved == 0u;\n", file);
+    fputs("    return snapshot->descriptor_bytes >= sizeof(*snapshot) && snapshot->program_id == program_id && (snapshot->degraded_flags & ~SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH) == 0u;\n", file);
     fputs("}\n\n", file);
 
     fputs("static void SparkGeneratedMergeKvStoreCounters(SparkModelDriverKvStoreCounters *destination, const SparkModelDriverKvStoreCounters *source)\n{\n", file);
@@ -816,6 +816,7 @@ static void SparkWriteGeneratedAdmissionHelpers(FILE *file)
     fputs("    if (source->stale_admission_count > destination->stale_admission_count)\n    {\n        destination->stale_admission_count = source->stale_admission_count;\n    }\n", file);
     fputs("    if (source->private_queue_pressure > destination->private_queue_pressure)\n    {\n", file);
     fputs("        destination->private_queue_pressure = source->private_queue_pressure;\n    }\n", file);
+    fputs("    destination->degraded_flags |= source->degraded_flags;\n", file);
     fputs("    SparkGeneratedMergeKvStoreCounters(&destination->kv_store, &source->kv_store);\n", file);
     fputs("}\n\n", file);
 }

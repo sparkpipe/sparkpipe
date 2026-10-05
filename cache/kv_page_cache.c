@@ -2856,7 +2856,13 @@ SparkStatus SparkKvLaneTransactionsAdmit(SparkKvLaneTransactions *transactions,c
 		return(SparkKvLaneTransactionsPrepare(transactions,request));
 	phase = request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT ? SPARK_KV_LANE_TRANSACTION_PREPARED : SPARK_KV_LANE_TRANSACTION_COMMITTED;
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT )
+	{
+		for (index=0u; index<request->cache_lane_count && transactions->lanes[request->cache_lanes[index].resident_sequence_slot].phase == SPARK_KV_LANE_TRANSACTION_EMPTY; index++)
+			;
+		if ( index == request->cache_lane_count )
+			return(SPARK_STATUS_OK);
 		phase = transactions->lanes[request->cache_lanes[0].resident_sequence_slot].phase;
+	}
 	if ( phase != SPARK_KV_LANE_TRANSACTION_PREPARED && phase != SPARK_KV_LANE_TRANSACTION_COMMITTED )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	status = SparkKvLaneTransactionsRequire(transactions,request,phase);

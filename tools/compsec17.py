@@ -138,6 +138,10 @@ def require_text_endpoint(endpoint: str, timeout: int = 30) -> dict:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             health = json.loads(resp.read())
+    except urllib.error.HTTPError as error:
+        with error:
+            detail = error.read().decode("utf-8", "replace")
+        raise RunError(f"{url} answered HTTP {error.code}: {detail}") from error
     except (OSError, ValueError) as error:
         raise RunError(f"{url}: {error}") from error
     if not isinstance(health, dict) or health.get("tokenizer") is not True:
@@ -280,6 +284,11 @@ def run(args, prompt_builder, chat_template: str, decode, decode_output) -> int:
         print(f"FATAL: {error}", file=sys.stderr)
         return 2
     wall_s = time.monotonic() - started
+    try:
+        health_after = require_text_endpoint(args.endpoint, args.timeout)
+    except RunError as error:
+        print(f"FATAL: no verdict, the serving path was not healthy at the end of the run: {error}", file=sys.stderr)
+        return 2
 
     results = []
     for i, (c, prompt, r) in enumerate(zip(cases, prompts, replies), 1):
@@ -343,6 +352,7 @@ def run(args, prompt_builder, chat_template: str, decode, decode_output) -> int:
                        "pass_threshold": args.pass_threshold},
         "grading_rule": ("qualification/ds4_eval/compare_runs.py: last Answer: line after "
                          "</think>; PASS iff its line set is a non-empty subset of the expected lines"),
+        "health_after": health_after,
         "completed": len(results),
         "passed": passed_n,
         "results": results,

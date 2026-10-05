@@ -484,6 +484,42 @@ static SparkStatus HostStagedSend(void *transport_state,const SparkHiddenTranspo
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus HostStagedCancel(void *transport_state,const SparkHiddenTransportPacket *packet)
+{
+	HostStagedState *state = transport_state;
+	HostStagedFrame **link,*frame;
+	uint32_t index;
+	if ( state == 0 || packet == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( state->input == 0u )
+		return(SPARK_STATUS_OK);
+	pthread_mutex_lock(&state->lock);
+	for (index = 0u; index < state->posted_count; index++)
+		if ( state->posted[index].sequence_id == packet->sequence_id && state->posted[index].token_index == packet->token_index )
+			break;
+	if ( index < state->posted_count )
+	{
+		host_staged_complete(state,&state->posted[index],SPARK_STATUS_IO_ERROR);
+		state->posted[index] = state->posted[state->posted_count - 1u];
+		state->posted_count--;
+	}
+	for (link = &state->frames; *link != 0; )
+	{
+		if ( (*link)->header.sequence_id != packet->sequence_id || (*link)->header.token_index != packet->token_index )
+		{
+			link = &(*link)->next;
+			continue;
+		}
+		frame = *link;
+		*link = frame->next;
+		free(frame->payload);
+		free(frame);
+	}
+	pthread_mutex_unlock(&state->lock);
+	host_staged_signal(state);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus HostStagedPoll(void *transport_state,SparkHiddenTransportCompletion *completion)
 {
 	HostStagedState *state = transport_state;
@@ -557,6 +593,7 @@ const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
 	host_staged_interface.initialize = HostStagedInitialize;
 	host_staged_interface.destroy = HostStagedDestroy;
 	host_staged_interface.post_receive = HostStagedPostReceive;
+	host_staged_interface.cancel = HostStagedCancel;
 	host_staged_interface.send = HostStagedSend;
 	host_staged_interface.poll = HostStagedPoll;
 	host_staged_interface.post_receive_batch = HostStagedPostReceiveBatch;

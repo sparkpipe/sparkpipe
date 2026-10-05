@@ -1158,63 +1158,54 @@ Related common-code debt:
   k3 and dsv4 headers together; no k3 build includes k3's header.
 ## Runtime completion
 
-- Add bounded cancellation and drain for terminal client I/O failures so every
-  resident sequence slot is released.
-- `node/model_api.c` calls `SparkModelBatchEngineReopenAdmission` before
-  every submit. After a latched collective failure it keeps feeding the dead
-  collective instead of failing loudly.
-- A failed residentd route whose driver cache abort also fails stops the
-  residentd so its unit restarts, because the driver's transaction state for
-  those slots is unknown. Give the driver a per-slot reset so one slot can be
-  recovered without restarting the unit.
+- A client that hangs up mid-reply is cancelled and drained in the host tests
+  (`test_model_api_text` client disconnect: four abandoned streams reach zero
+  live requests within 10 s and the engine keeps serving); a release that a
+  missing rank cannot take is bounded by the engine's in-flight budget, and
+  that rank's slots are cleared by the session reset on its reconnect. Not yet
+  fleet-proven: drop clients mid-stream under load on a GLM Full lane and see
+  `live_requests` return to zero with every resident slot free.
+- A failed residentd route whose driver cache abort also fails resets the
+  rank's session: residentd drops the client and resets every lane before the
+  next hello, and only a failed reset stops it so its unit restarts. An abort
+  that finds the lanes already empty succeeds, and an abort answered BUSY is
+  retried for 5 s. Still open: a per-slot driver reset, so one slot recovers
+  without dropping the other live sequences on that rank.
 - glm5_next and K3 map a weightd lease failure (`NO_LANE`, `EVICT_DENIED`)
   to `CAPACITY_EXCEEDED`, which fails the request: their KDA recurrent state
   advances layer by layer and is restored only after a prefix attach, so a
   retried frame would run on half-updated state. Restore the lanes' recurrent
   state before a retried frame, then map the failure to `BUSY` as GLM Full
   does.
-- Pipeline-parallel stages still wedge after a failure on another rank. When
-  one rank fails a submission's COMMIT or frame, the next stage's route has
-  already posted its hidden-transport receive and waits in WAIT_INPUT for data
-  that never comes. Only a deadline moves it, and the engine sets none, so the
-  route keeps its slot claim and blocks the reset the reconnect needs. The
-  in-tree test transport completes receives without a peer, so no test sees
-  this. On client-generation change, cancel abandoned WAIT_INPUT/WAIT_OUTPUT
-  routes through the transport before releasing their boundary buffers, and
-  add a test transport that needs a real peer. Tensor-parallel deployments
-  (glm5_next TP16) post no inter-stage receives and are not affected.
-- A failed route that the driver had already run (for example a PP output
-  send that failed) releases its slot claims but leaves residentd's `bound`
-  flag as it was, so the driver and residentd can disagree about the slot
-  until the next session reset. Settle the slot the way an error completion
-  does.
+- Pipeline-parallel stages no longer wedge after a failure on another rank in
+  the host tests: the hidden transport has a `cancel` operation (ABI 6;
+  `host_staged_tcp` drops the posted receive and any queued frame), and
+  residentd cancels a route's transfer when the route is abandoned, its client
+  generation changed or its deadline expired. A route cancelled while waiting
+  for input fails through the failed-route path, which aborts its committed
+  cache transaction, so the session reset can run. The in-tree test transport
+  has a peer mode (`SPARK_TEST_TRANSPORT_PEER_DIRECTORY`) in which a receive
+  completes only after the peer sent, and `test_model_pipeline_client` proves
+  the reconnect with it. Not yet fleet-proven: fail one stage of a K3
+  TP4xPP4 lane mid-run and see the next stage log `ROUTE-TRANSPORT-CANCEL`
+  and the lane serve again after the engine reconnects.
 - Produce one immutable qualification bundle for a release candidate with
   `tools/qualification_bundle.py`: merged commit, release generation, package
   and driver hashes, all-rank identities, token stream, accuracy, performance,
   route counters and drained queue state. No release has one yet.
-- Left out on purpose (2026-10-02): When a glm5_next graph replay is stuck or
-  its wait times out, the module clears `graph_path_enabled`
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:4680`,
-  `:4728`), fails that frame, and runs every later wave eager until the
-  process restarts. The degraded state appears only as `graph_path=2` in the
-  `G5N-WAVE-TIMING` log line (`:2842-2847`, `:5922`); `degrade_graph_stuck` is
-  never read and readiness is unchanged, so the rank keeps serving on the slow
-  path while reporting ready (I22). Report the degraded path in the snapshot
-  and readiness, fail benchmark verdicts taken on a degraded rank, and prove
-  it by forcing a graph wait timeout on a Spark and seeing the rank leave the
-  ready set.
-- Left out on purpose (2026-10-02): While any rank is disconnected, the batch
-  engine retries an `IO_ERROR` rejection up to 10,000 times, with a backoff
-  capped at 200 ms, about 33 minutes (`runtime/model_batch_engine.c:874-892`).
-  The engine never sets a submission deadline, so nothing fails a request held
-  by a dead rank sooner. `GET /health` answers `{"status":"ok"}` from the
-  served count and tokenizer state alone (`node/model_api.c:1431-1437`), so
-  readiness never shows the missing rank (I17). The fix: report connected
-  ranks and request progress in `/health`, mark the engine not ready while a
-  rank is missing, and fail a held request at its deadline with an error
-  naming the rank. It is closed by a fleet run that stops one rank's residentd
-  mid-run: `/health` turns not-ready, held requests fail at their deadline,
-  and new requests complete once the rank returns.
+- A glm5_next rank whose graph replay got stuck or timed out keeps serving on
+  the eager path; its snapshot now carries `degraded_flags`, `/health` answers
+  503 with `degraded_rank` and `"degraded_path":"eager"`, and `compsec17.py`
+  gives no verdict when the API is not healthy at the end of a run. Not yet
+  fleet-proven: force a graph wait timeout on a Spark and see the rank named
+  in `/health` and the qualification bundle refused.
+- Rank loss is reported but not fleet-proven: `/health` answers 503
+  `degraded` with `connected_ranks` and `missing_rank` while a rank is gone or
+  a failure is latched, a held request retries only within the engine's
+  in-flight budget and fails naming the missing rank, and a latched failure
+  stays until the rank session changes. Close it with a fleet run that stops
+  one rank's residentd mid-run: `/health` turns degraded, held requests fail
+  at their deadline, and new requests complete once the rank returns.
 
 ## Serving API
 

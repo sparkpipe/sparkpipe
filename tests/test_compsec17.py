@@ -31,7 +31,10 @@ class TokenIdOnlyApi(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/health":
+        if self.path == "/health" and self.server.degrade and self.server.completions:
+            self.reply(503, {"status": "degraded", "served": len(self.server.completions), "tokenizer": True,
+                             "degraded_rank": 3, "degraded_path": "eager"})
+        elif self.path == "/health":
             self.reply(200, {"status": "ok", "served": 0, "tokenizer": self.server.tokenizer})
         else:
             self.reply(404, {"error": "not found"})
@@ -40,7 +43,7 @@ class TokenIdOnlyApi(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(length))
         self.server.completions.append(request)
-        if "prompt" in request:
+        if "prompt" in request and not self.server.degrade:
             self.reply(400, TOKENIZER_UNAVAILABLE)
         else:
             self.reply(200, {"choices": [{"text": "Answer: 1"}], "tokens": [1], "status": 0,
@@ -55,9 +58,10 @@ class FakeApiServer(ThreadingHTTPServer):
 
 
 @contextlib.contextmanager
-def fake_api(tokenizer):
+def fake_api(tokenizer, degrade=False):
     server = FakeApiServer(("127.0.0.1", 0), TokenIdOnlyApi)
     server.tokenizer = tokenizer
+    server.degrade = degrade
     server.completions = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -75,8 +79,8 @@ def run_arguments(endpoint, out):
 
 
 class TextEndpointPreflight(unittest.TestCase):
-    def run_gate(self, tokenizer):
-        with fake_api(tokenizer) as (server, endpoint), tempfile.TemporaryDirectory() as root:
+    def run_gate(self, tokenizer, degrade=False):
+        with fake_api(tokenizer, degrade) as (server, endpoint), tempfile.TemporaryDirectory() as root:
             out = Path(root) / "run"
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
@@ -98,6 +102,14 @@ class TextEndpointPreflight(unittest.TestCase):
         self.assertTrue(completions)
         self.assertIn("HTTP 400", stderr)
         self.assertIn('"code": "tokenizer_unavailable"', stderr)
+
+    def test_degraded_api_at_the_end_gives_no_verdict(self):
+        status, stderr, completions, _ = self.run_gate(True, degrade=True)
+        self.assertEqual(status, 2)
+        self.assertEqual(len(completions), 17)
+        self.assertIn("no verdict", stderr)
+        self.assertIn("HTTP 503", stderr)
+        self.assertIn('"degraded_path": "eager"', stderr)
 
     def test_unreachable_endpoint_fails_the_preflight(self):
         with self.assertRaises(compsec.RunError):

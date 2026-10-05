@@ -519,7 +519,8 @@ SparkStatus SparkHiddenTransportValidateInterface(
         transport_interface->destroy == 0 ||
         transport_interface->post_receive == 0 ||
         transport_interface->send == 0 ||
-        transport_interface->poll == 0)
+        transport_interface->poll == 0 ||
+        transport_interface->cancel == 0)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
@@ -730,6 +731,19 @@ SparkStatus SparkHiddenTransportSend(
         return status;
     }
     return session->transport_interface.send(
+        session->transport_state,
+        packet);
+}
+
+SparkStatus SparkHiddenTransportCancel(
+    SparkHiddenTransportSession *session,
+    const SparkHiddenTransportPacket *packet)
+{
+    if (session == 0 || packet == 0 || session->transport_interface.cancel == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    return session->transport_interface.cancel(
         session->transport_state,
         packet);
 }
@@ -1258,6 +1272,17 @@ static SparkStatus SparkHiddenTransportPersistentRingSend(
     return status;
 }
 
+static SparkStatus SparkHiddenTransportPersistentRingCancel(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packet)
+{
+    if (transport_state == 0 || packet == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkHiddenTransportPersistentRingPostReceiveBatch(
     void *transport_state,
     SparkHiddenTransportPacket *packets,
@@ -1347,6 +1372,7 @@ SparkStatus SparkHiddenTransportPersistentRingGetInterface(
     transport_interface->post_receive_batch =
         SparkHiddenTransportPersistentRingPostReceiveBatch;
     transport_interface->send_batch = SparkHiddenTransportPersistentRingSendBatch;
+    transport_interface->cancel = SparkHiddenTransportPersistentRingCancel;
     return SPARK_STATUS_OK;
 }
 
