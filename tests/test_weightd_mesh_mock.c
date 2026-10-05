@@ -14,6 +14,8 @@
 
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_ck128.h"
+#include "sparkpipe/spark_sha256.h"
 
 #include "../node/weightd_mesh.c"
 
@@ -1578,6 +1580,124 @@ static void test_mesh_activity_protocol(uint32_t pending_first)
     SparkWeightdServerDestroy(server.server);
 }
 
+#define TEST_PACE_CHUNK (2u * 1024u * 1024u)
+
+static uint64_t test_pace_now_ns(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC,&now);
+    return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
+}
+
+static void test_pace_write_pack(const char *path,const char *manifest_path,uint32_t salt)
+{
+    FILE *pack = fopen(path,"wb"),*manifest = fopen(manifest_path,"wb");
+    uint32_t header[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,2u,2u,0u},i;
+    uint8_t *data = malloc(TEST_PACE_CHUNK);
+    assert(pack != 0 && manifest != 0 && data != 0);
+    assert(fwrite(header,1u,sizeof(header),manifest) == sizeof(header));
+    for (i=0u; i<2u; i++)
+    {
+        uint8_t record[48] = {0},digest[16];
+        uint64_t offset = (uint64_t)i * TEST_PACE_CHUNK,bytes = TEST_PACE_CHUNK;
+        SparkCk128Context ck;
+        memset(data,(int)(0x40u + salt * 4u + i),TEST_PACE_CHUNK);
+        SparkCk128Initialize(&ck);
+        SparkCk128Update(&ck,data,TEST_PACE_CHUNK);
+        SparkCk128Finalize(&ck,digest);
+        memcpy(record + 4u,&i,4u);
+        memcpy(record + 16u,&offset,8u);
+        memcpy(record + 24u,&bytes,8u);
+        memcpy(record + 32u,digest,16u);
+        assert(fwrite(record,1u,sizeof(record),manifest) == sizeof(record));
+        assert(fwrite(data,1u,TEST_PACE_CHUNK,pack) == TEST_PACE_CHUNK);
+    }
+    free(data);
+    assert(fclose(pack) == 0 && fclose(manifest) == 0);
+}
+
+static SparkStatus test_pace_attach(SparkWeightdClient *client,const char *path,uint64_t *generation)
+{
+    SparkWeightdLazyAttachRequest request = {0};
+    SparkWeightdLazyAttachResult result;
+    SparkStatus status;
+    request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    request.identity.arena_bytes = 2u * TEST_PACE_CHUNK;
+    memcpy(request.identity.model,"pace-test",10u);
+    assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+    assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
+    snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
+    request.expert_pool_bytes = 2u * TEST_PACE_CHUNK;
+    status = SparkWeightdClientAttachLazy(client,&request,&result,UINT64_C(10000000000));
+    *generation = result.arena_generation;
+    return(status != SPARK_STATUS_OK ? status : (SparkStatus)result.status);
+}
+
+static void test_load_pace_while_serving(uint64_t pace)
+{
+    SparkWeightdServerConfig config;
+    SparkWeightdClient *serving = 0,*loading = 0;
+    SparkWeightdDetachResult detached;
+    TestMeshActivityThread server = {0};
+    pthread_t server_thread;
+    char path[128],pack[128],manifest[144],receipt[160],other[128],other_manifest[144],other_receipt[160];
+    uint32_t lane;
+    uint64_t generation = 0u,other_generation = 0u;
+    SparkWeightdMeshTopology topology = test_identity_topology(4u,0u);
+    const uint64_t timeout = UINT64_C(1000000000);
+    memset(&config,0,sizeof(config));
+    (void)snprintf(path,sizeof(path),"/tmp/spark-mesh-pace-%ld.sock",(long)getpid());
+    (void)snprintf(pack,sizeof(pack),"/tmp/spark-mesh-pace-%ld.pack",(long)getpid());
+    (void)snprintf(manifest,sizeof(manifest),"%s.experts",pack);
+    (void)snprintf(receipt,sizeof(receipt),"%s.verified",pack);
+    (void)snprintf(other,sizeof(other),"/tmp/spark-mesh-pace-%ld.other",(long)getpid());
+    (void)snprintf(other_manifest,sizeof(other_manifest),"%s.experts",other);
+    (void)snprintf(other_receipt,sizeof(other_receipt),"%s.verified",other);
+    test_pace_write_pack(pack,manifest,0u);
+    test_pace_write_pack(other,other_manifest,1u);
+    config.socket_path = path;
+    config.device_bytes_max = UINT64_C(1073741824);
+    config.load_pace_bytes_per_second = pace;
+    assert(SparkWeightdServerCreate(&config,&server.server) == SPARK_STATUS_OK);
+    assert(pthread_create(&server_thread,0,test_mesh_server_run,&server) == 0);
+    assert(SparkWeightdClientConnect(path,&serving,0) == SPARK_STATUS_OK);
+    assert(SparkWeightdClientConnect(path,&loading,0) == SPARK_STATUS_OK);
+    CHECK(SparkWeightdClientLaneAcquire(serving,0u,&topology,&lane,timeout) == SPARK_STATUS_OK && lane == 0u,
+        "pace: the serving engine owns a lane");
+    CHECK(SparkWeightdClientMeshActivity(serving,1u,1u,timeout) == SPARK_STATUS_OK,"pace: the serving engine is active");
+    if ( pace == 0u )
+    {
+        CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_CAPACITY_EXCEEDED,
+            "pace: a load while another lane serves is refused when weightd has no load cap");
+        CHECK(SparkWeightdClientMeshActivity(serving,1u,0u,timeout) == SPARK_STATUS_OK,"pace: the serving engine goes idle");
+        test_sleep_ns(UINT64_C(1200000000));
+        CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_OK,
+            "pace: once no lane has served for the linger, the same load runs unpaced");
+    }
+    else
+    {
+        uint64_t start = test_pace_now_ns();
+        CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_OK &&
+            test_pace_attach(loading,other,&other_generation) == SPARK_STATUS_OK,"pace: capped loads run while another lane serves");
+        CHECK((unsigned __int128)(test_pace_now_ns() - start) * pace >= (unsigned __int128)2u * TEST_PACE_CHUNK * UINT64_C(1000000000),
+            "pace: the second load waits until the first one's bytes have drained at the cap");
+        (void)SparkWeightdClientDetach(loading,other_generation,&detached,timeout);
+        CHECK(SparkWeightdClientMeshActivity(serving,1u,0u,timeout) == SPARK_STATUS_OK,"pace: the serving engine goes idle");
+    }
+    (void)SparkWeightdClientDetach(loading,generation,&detached,timeout);
+    SparkWeightdClientClose(loading);
+    SparkWeightdClientClose(serving);
+    __atomic_store_n(&server.stop,1,__ATOMIC_SEQ_CST);
+    assert(pthread_join(server_thread,0) == 0);
+    SparkWeightdServerDestroy(server.server);
+    (void)unlink(receipt);
+    (void)unlink(manifest);
+    (void)unlink(pack);
+    (void)unlink(other_receipt);
+    (void)unlink(other_manifest);
+    (void)unlink(other);
+}
+
 static void test_mesh_pair_link(uint32_t local_rank)
 {
     TestMeshRecord own_record,partner_record,other_record;
@@ -2207,6 +2327,8 @@ int main(void)
         "TP4 B1 posts payload and tail to three peers only");
     test_mesh_lane_protocol();
     test_mesh_activity_protocol(protocol_post_first);
+    test_load_pace_while_serving(0u);
+    test_load_pace_while_serving(UINT64_C(8388608));
     test_rank_mask = 0xffu;
     CHECK(test_write_record(1u,9u) == 0,"peer with inconsistent group published");
     SparkWeightdMeshTryWire();

@@ -640,6 +640,115 @@ static void check_map_eviction(void)
     puts("PASS partial map: actual eviction epoch, overlapping leases, failed unmap pin retention, 24 bounded reloads, 64-owner limit");
 }
 
+static void write_salted_chunk_fixture(const char *path,const char *manifest_path,uint8_t salt)
+{
+    FILE *pack = fopen(path,"wb"),*manifest = fopen(manifest_path,"wb");
+    uint32_t header[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,2u,3u,0u},i;
+    uint8_t *data = malloc(CHUNK);
+    assert(pack != 0 && manifest != 0 && data != 0);
+    assert(fwrite(header,1u,sizeof(header),manifest) == sizeof(header));
+    for (i=0u; i<3u; i++)
+    {
+        uint8_t record[48] = {0},digest[16];
+        uint64_t offset = (uint64_t)i * CHUNK,bytes = CHUNK;
+        SparkCk128Context ck;
+        memset(data,(int)(salt + i + 1u),CHUNK);
+        SparkCk128Initialize(&ck);
+        SparkCk128Update(&ck,data,CHUNK);
+        SparkCk128Finalize(&ck,digest);
+        memcpy(record + 4u,&i,4u);
+        memcpy(record + 16u,&offset,8u);
+        memcpy(record + 24u,&bytes,8u);
+        memcpy(record + 32u,digest,16u);
+        assert(fwrite(record,1u,sizeof(record),manifest) == sizeof(record));
+        assert(fwrite(data,1u,CHUNK,pack) == CHUNK);
+    }
+    free(data);
+    assert(fclose(pack) == 0 && fclose(manifest) == 0);
+}
+
+static void use_expert(SparkWeightdClient *client,uint64_t generation,uint32_t expert)
+{
+    SparkWeightdWorkingSetResult result = acquire(client,generation,expert,SPARK_STATUS_OK);
+    release(client,generation,result.lease_identifier);
+}
+
+static void detach(SparkWeightdClient *client,uint64_t generation)
+{
+    SparkWeightdDetachResult result;
+    assert(SparkWeightdClientDetach(client,generation,&result,TIMEOUT) == SPARK_STATUS_OK);
+}
+
+static uint32_t loads_expert(SparkWeightdClient *client,uint64_t generation,uint32_t expert)
+{
+    uint32_t before = spark_stub_cuda_outstanding_allocs(),grew;
+    SparkWeightdWorkingSetResult result = acquire(client,generation,expert,SPARK_STATUS_OK);
+    grew = spark_stub_cuda_outstanding_allocs() > before ? 1u : 0u;
+    release(client,generation,result.lease_identifier);
+    return(grew);
+}
+
+static void check_cold_reclaim_order(void)
+{
+    char root[] = "/tmp/weightd-cold-XXXXXX",paths[3][256],manifests[3][272],socket_path[256],extra[1024];
+    TestServer state = {0};
+    SparkWeightdServerConfig config = {0};
+    SparkWeightdClient *client;
+    pthread_t thread;
+    uint64_t base,first,second,third,again;
+    uint32_t pack;
+    assert(mkdtemp(root) != 0);
+    for (pack=0u; pack<3u; pack++)
+    {
+        snprintf(paths[pack],sizeof(paths[pack]),"%s/pack%u",root,pack);
+        snprintf(manifests[pack],sizeof(manifests[pack]),"%s.experts",paths[pack]);
+        write_salted_chunk_fixture(paths[pack],manifests[pack],(uint8_t)(pack * 16u));
+    }
+    snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
+    config.socket_path = socket_path;
+    config.device_bytes_max = 4u * CHUNK;
+    assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
+    assert(pthread_create(&thread,0,run_server,&state) == 0);
+    assert(SparkWeightdClientConnect(socket_path,&client,0) == SPARK_STATUS_OK);
+    first = attach_config(client,paths[0],3u * CHUNK,2u,3u,&base);
+    use_expert(client,first,0u);
+    detach(client,first);
+    second = attach_config(client,paths[1],3u * CHUNK,2u,3u,&base);
+    use_expert(client,second,0u);
+    use_expert(client,second,1u);
+    detach(client,second);
+    again = attach_config(client,paths[0],3u * CHUNK,2u,3u,&base);
+    assert(again == first);
+    use_expert(client,first,0u);
+    detach(client,first);
+    third = attach_config(client,paths[2],3u * CHUNK,2u,3u,&base);
+    assert(third != first && third != second);
+    detach(client,third);
+    again = attach_config(client,paths[0],3u * CHUNK,2u,3u,&base);
+    assert(again == first && loads_expert(client,first,0u) == 0u);
+    detach(client,first);
+    again = attach_config(client,paths[1],3u * CHUNK,2u,3u,&base);
+    assert(again == second);
+    assert(loads_expert(client,second,1u) == 0u);
+    assert(loads_expert(client,second,0u) == 1u);
+    detach(client,second);
+    SparkWeightdClientClose(client);
+    __atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
+    assert(pthread_join(thread,0) == 0);
+    SparkWeightdServerDestroy(state.server);
+    assert(spark_stub_cuda_outstanding_allocs() == 0u);
+    for (pack=0u; pack<3u; pack++)
+    {
+        snprintf(extra,sizeof(extra),"%s.verified",paths[pack]);
+        (void)unlink(extra);
+        snprintf(extra,sizeof(extra),"%s.wset",paths[pack]);
+        (void)unlink(extra);
+        assert(unlink(manifests[pack]) == 0 && unlink(paths[pack]) == 0);
+    }
+    assert(rmdir(root) == 0);
+    puts("PASS cold reclaim: the least recently used cold arena gives up its least recently used chunk and stays registered");
+}
+
 static void check_orphan(SparkWeightdClient *a,uint64_t generation,uint64_t base,const char *socket_path,const char *path)
 {
 	SparkWeightdWorkingSetResult pinned,result;
@@ -1171,6 +1280,7 @@ int main(int argc,char **argv)
 	(void)unlink(receipt);
 	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
 	check_map_eviction();
+	check_cold_reclaim_order();
 	check_many_exports();
 	check_pooled_attach();
 	check_shared_attach();

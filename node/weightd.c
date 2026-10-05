@@ -71,7 +71,8 @@ static void SparkWeightdUsage(const char *program)
         "  --mesh-sgid-index <n>    source GID index 0..255\n"
         "  --mesh-pair-interface <name> --mesh-pair-sgid-index <n>  verbs device and GID of the point-to-point link to partner rank (rank ^ 1); traffic to the partner uses it\n"
         "  --mesh-traffic-class <n> RoCE traffic class 0..255 of every mesh QP (DSCP << 2 plus ECN bits); selects the switch and NIC priority\n"
-        "  --mesh-dir <path>        record exchange dir (env SPARK_WEIGHTD_MESH_DIR, default /tmp/weightd-mesh; use a per-deployment dir when two weightd-line daemons share the host)\n",
+        "  --mesh-dir <path>        record exchange dir (env SPARK_WEIGHTD_MESH_DIR, default /tmp/weightd-mesh; use a per-deployment dir when two weightd-line daemons share the host)\n"
+        "  --load-pace-bytes-per-second <n>  pack, spine and expert load rate while another lane is serving (env SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND); without it such a load is refused\n",
         program,
         (unsigned long long)SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,
         (unsigned)SPARK_WEIGHTD_MESH_RANKS - 1u);
@@ -172,11 +173,14 @@ static int SparkWeightdKvByteCount(const char *text,const char *name,uint64_t *v
     return 0;
 }
 
-static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *reserve,uint64_t *write_budget)
+static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *reserve,uint64_t *write_budget,uint64_t *load_pace)
 {
     int index;
     for (index = 1; index + 1 < argument_count; index++)
     {
+        if (strcmp(arguments[index], "--load-pace-bytes-per-second") == 0 &&
+            SparkWeightdKvByteCount(arguments[index + 1], "--load-pace-bytes-per-second", load_pace) != 0)
+            return 2;
         if (strcmp(arguments[index], "--kv-reserve-bytes") == 0 &&
             SparkWeightdKvByteCount(arguments[index + 1], "--kv-reserve-bytes", reserve) != 0)
             return 2;
@@ -185,7 +189,8 @@ static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *
             return 2;
     }
     if (SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_RESERVE_BYTES"), "SPARK_WEIGHTD_KV_RESERVE_BYTES", reserve) != 0 ||
-        SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY"), "SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY", write_budget) != 0)
+        SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY"), "SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY", write_budget) != 0 ||
+        SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND"), "SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND", load_pace) != 0)
         return 2;
     return 0;
 }
@@ -196,6 +201,7 @@ int main(int argument_count, char **arguments)
     uint64_t device_bytes_max = SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT;
     uint64_t kv_reserve_bytes = 0ull;
     uint64_t kv_write_budget_bytes_per_day = 0ull;
+    uint64_t load_pace_bytes_per_second = 0ull;
     uint32_t mesh_fields = 0u;
     int ceiling_set_by_flag = 0;
     SparkWeightdServerConfig config;
@@ -229,7 +235,8 @@ int main(int argument_count, char **arguments)
             index++;
         }
         else if ((strcmp(arguments[index], "--kv-reserve-bytes") == 0 ||
-                strcmp(arguments[index], "--kv-write-budget-bytes-per-day") == 0) &&
+                strcmp(arguments[index], "--kv-write-budget-bytes-per-day") == 0 ||
+                strcmp(arguments[index], "--load-pace-bytes-per-second") == 0) &&
             index + 1 < argument_count)
         {
             index++;
@@ -391,7 +398,7 @@ int main(int argument_count, char **arguments)
         }
     }
 
-    if (SparkWeightdKvSettings(argument_count,arguments,&kv_reserve_bytes,&kv_write_budget_bytes_per_day) != 0)
+    if (SparkWeightdKvSettings(argument_count,arguments,&kv_reserve_bytes,&kv_write_budget_bytes_per_day,&load_pace_bytes_per_second) != 0)
         return 2;
     if (kv_reserve_bytes >= device_bytes_max)
     {
@@ -420,6 +427,7 @@ int main(int argument_count, char **arguments)
     config.device_bytes_max = device_bytes_max;
     config.kv_reserve_bytes = kv_reserve_bytes;
     config.kv_write_budget_bytes_per_day = kv_write_budget_bytes_per_day;
+    config.load_pace_bytes_per_second = load_pace_bytes_per_second;
 
     signal(SIGINT, SparkWeightdSignal);
     signal(SIGTERM, SparkWeightdSignal);
@@ -475,11 +483,12 @@ int main(int argument_count, char **arguments)
         }
     }
 
-    printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu kv_write_budget_per_day=%llu\n",
+    printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu kv_write_budget_per_day=%llu load_pace_per_second=%llu\n",
         socket_path, (unsigned long long)device_bytes_max,
         (unsigned long long)kv_reserve_bytes,
         (unsigned long long)(device_bytes_max - kv_reserve_bytes),
-        (unsigned long long)kv_write_budget_bytes_per_day);
+        (unsigned long long)kv_write_budget_bytes_per_day,
+        (unsigned long long)load_pace_bytes_per_second);
     fflush(stdout);
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);
