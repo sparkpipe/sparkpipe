@@ -341,6 +341,11 @@ struct SparkStageKvBinding
 	atomic_ullong recurrent_capture_ns;
 };
 
+static inline uint32_t SparkStageKvBindingAddressablePageCount(const SparkStageKvBinding *binding)
+{
+	return(binding->physical_page_count + binding->shared_page_count);
+}
+
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration);
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding);
 SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision);

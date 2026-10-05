@@ -590,7 +590,7 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	attach.layer_count = kv.regions[0].layer_count;
 	attach.page_table = state->kv.page_table;
 	attach.page_table_stride = state->kv.pages_per_sequence;
-	attach.pool_page_count = state->kv.physical_page_count;
+	attach.pool_page_count = SparkStageKvBindingAddressablePageCount(&state->kv);
 	attach.sequence_count = state->kv.resident_sequence_capacity;
 	return SparkK3StageRunnerAttachKv(&state->runner, &attach);
 }
