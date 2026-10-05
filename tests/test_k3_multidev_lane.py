@@ -273,6 +273,23 @@ def main() -> int:
         check(lane.MESH_RANKS == ",".join(str(i) for i in range(16)),
               failures, "mesh map must be the identity permutation")
 
+        limits = deployment["runtime_limits"]
+        record = lane.recurrent_page_bytes("tp4pp4")
+        check(record == 29638656 and lane.recurrent_page_bytes("tp16") == 28403712, failures,
+              "the KDA record per logical page is the KV binding's recurrent lane bytes")
+        check(all(node["kv_backing_maximum_bytes"] >= limits["kv_logical_page_capacity"] * record
+                  for node in deployment["nodes"]), failures,
+              "the default KV backing holds the KDA record of every logical page")
+        short = subprocess.run(
+            [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+             "--runtime-root", runtime_root,
+             "--weightd-socket", socket_path,
+             "--kv-backing-bytes", str(limits["kv_logical_page_capacity"] * record - 1),
+             "--output-dir", str(Path(temporary) / "short")],
+            capture_output=True, text=True)
+        check(short.returncode != 0 and "KDA record" in short.stderr, failures,
+              "a KV backing below the KDA records of the logical pages is refused")
+
         check_run = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
              "--runtime-root", runtime_root,

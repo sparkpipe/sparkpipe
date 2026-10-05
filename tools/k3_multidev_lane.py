@@ -53,6 +53,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -105,6 +106,37 @@ DEPLOYED_PACK_TEMPLATE = (
 
 NODE_TARGET = "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16"
 DEFAULT_KV_BACKING_BYTES = 8 * 1024 * 1024 * 1024
+KV_IN_FLIGHT_MARGIN_BYTES = 2 * 2 * 1024 * 1024
+K3_DEFINES = (Path(__file__).resolve().parents[1] / "model-families/k3/include/sparkpipe/spark_k3_llm_defines.h").read_text()
+
+
+def k3_constant(name: str) -> int:
+    return int(re.search(r"#define SPARK_K3_" + name + r" (\d+)u", K3_DEFINES).group(1))
+
+
+def recurrent_page_bytes(topology: str) -> int:
+    layers = k3_constant("MODEL_LAYER_COUNT")
+    period = k3_constant("MODEL_ATTENTION_PERIOD")
+    phase = k3_constant("MODEL_GLOBAL_ATTENTION_PHASE")
+    kernel = k3_constant("MODEL_KDA_CONV_KERNEL")
+    scalar = k3_constant("KV_BITS") // 8
+    if topology == "tp16":
+        tp, stages = 16, [(0, layers)]
+    else:
+        count = k3_constant("PP_STAGE_COUNT")
+        base, remainder = divmod(layers, count)
+        tp = 16 // count
+        stages = [(stage * base + min(stage, remainder), base + (1 if stage < remainder else 0)) for stage in range(count)]
+    heads = k3_constant("MODEL_KDA_HEAD_COUNT") // tp
+    key = k3_constant("MODEL_KDA_HEAD_KEY_DIMENSION")
+    value = k3_constant("MODEL_KDA_HEAD_VALUE_DIMENSION")
+    per_layer = heads * key * value * k3_constant("MODEL_KDA_STATE_ELEMENT_BYTES") + heads * (2 * key + value) * kernel * scalar
+    kda = [sum(1 for layer in range(first, first + count) if not (layer % period == phase or layer == layers - 1)) for first, count in stages]
+    return max(kda) * per_layer
+
+
+def kv_backing_minimum(topology: str, sequences: int, kv_pages: int) -> int:
+    return sequences * kv_pages * recurrent_page_bytes(topology) + KV_IN_FLIGHT_MARGIN_BYTES
 DEFAULT_KV_SNAPSHOT_BYTES = 8 * 1024 * 1024 * 1024
 KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS (64) tokens
 
@@ -313,9 +345,10 @@ def main() -> int:
                         help="directory receiving deployment.json and "
                              "adapter.json (created when missing)")
     parser.add_argument("--kv-backing-bytes", type=int,
-                        default=DEFAULT_KV_BACKING_BYTES,
-                        help="finite KV backing cap for the private root "
-                             "(default %(default)d)")
+                        default=None,
+                        help="finite KV backing cap for the private root; it "
+                             "must hold the KDA record of every logical page "
+                             "(default: exactly that plus the in-flight margin)")
     parser.add_argument("--kv-snapshot-bytes", type=int,
                         default=DEFAULT_KV_SNAPSHOT_BYTES,
                         help="finite KV snapshot store cap under the root; "
@@ -355,8 +388,13 @@ def main() -> int:
 
     select_topology(arguments.topology)
     select_lane(arguments.lane)
-    if arguments.kv_backing_bytes <= 0:
-        raise SystemExit("kv-backing-bytes must be positive and finite")
+    minimum = kv_backing_minimum(arguments.topology, arguments.sequences, arguments.kv_pages)
+    if arguments.kv_backing_bytes is None:
+        arguments.kv_backing_bytes = minimum
+    if arguments.kv_backing_bytes < minimum:
+        raise SystemExit(f"kv-backing-bytes {arguments.kv_backing_bytes} cannot hold the "
+                         f"{recurrent_page_bytes(arguments.topology)}-byte KDA record of each of "
+                         f"{arguments.sequences * arguments.kv_pages} logical pages; it needs {minimum}")
     if arguments.kv_snapshot_bytes <= 0:
         raise SystemExit("kv-snapshot-bytes must be positive and finite")
     if not 1 <= arguments.sequences <= 16:

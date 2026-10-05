@@ -58,7 +58,7 @@ render() {
     --sequences "${K3_SEQUENCES:-16}" --kv-pages "${K3_KV_PAGES:-64}" \
     --topology "$K3_TOPOLOGY" \
     --pipeline-transport "${K3_PIPELINE_TRANSPORT:-host-rdma}" \
-    --kv-backing-bytes "${K3_KV_BACKING_BYTES:-1073741824}" \
+    ${K3_KV_BACKING_BYTES:+--kv-backing-bytes "$K3_KV_BACKING_BYTES"} \
     --kv-snapshot-bytes "${K3_KV_SNAPSHOT_BYTES:-8589934592}" \
     --runtime-root "/home/{host}/k3-lanes/lane$K3_LANE/root" \
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"
