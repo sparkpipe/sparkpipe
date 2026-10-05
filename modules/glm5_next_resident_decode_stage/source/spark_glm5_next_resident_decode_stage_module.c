@@ -2183,19 +2183,9 @@ static SparkStatus SparkGlm5NextModuleInitializeTpCollective(
 		sizeof(configuration_hc.session_ports));
 	if ( configuration.backend_kind == SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
 	{
-		configuration.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
-		configuration.combine_fused_bf16_function = SparkGlm5NextModuleCombineFusedBf16;
-		configuration.combine_f32_seed_function = SparkGlm5NextModuleCombineF32Seed;
-		configuration.combine_f32_add_function = SparkGlm5NextModuleCombineF32Add;
-		configuration.round_f32_function = SparkGlm5NextModuleRoundF32;
-		configuration.combine_u64_max_function = SparkGlm5NextModuleCombineU64Max;
-		configuration.combine_gather_bf16_function = SparkGlm5NextModuleCombineGatherBf16;
+		SparkGlm5NextModuleRegisterCombines(&configuration);
 		configuration.combine_context = state;
-		configuration_hc.combine_fused_bf16_function = SparkGlm5NextModuleCombineFusedBf16;
-		configuration_hc.combine_f32_seed_function = SparkGlm5NextModuleCombineF32Seed;
-		configuration_hc.combine_f32_add_function = SparkGlm5NextModuleCombineF32Add;
-		configuration_hc.round_f32_function = SparkGlm5NextModuleRoundF32;
-		configuration_hc.combine_bf16_function = SparkGlm5NextModuleCombineBf16;
+		SparkGlm5NextModuleRegisterCombines(&configuration_hc);
 		configuration_hc.combine_context = state;
 	}
 	if ( configuration.connect_timeout_milli == 0u || configuration.operation_timeout_milli == 0u || configuration.backend_kind != SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )

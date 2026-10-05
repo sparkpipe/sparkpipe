@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix="glm-index-kv-") as directory:
     end = layer.index('\n#include "modules/', begin)
     (pathlib.Path(directory) / "glm_pool_kernels.h").write_text(layer[begin:end])
     subprocess.run([host_cuda_cxx(), "-std=c++17", "-O0", "-I.",
-                    "-Itests/host_cuda", "-Iinclude", "-I" + directory, "-Imodel-families/glm5_next/include",
+                    "-Itests/host_cuda", "-Iinclude", "-Imodel-families/common/include", "-I" + directory, "-Imodel-families/glm5_next/include",
                     "-x", "c++", "tests/host_cuda/glm_index_kv_host.cu",
                     "-o", binary], cwd=ROOT, check=True)
     subprocess.run([binary], check=True)

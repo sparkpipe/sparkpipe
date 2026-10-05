@@ -1042,9 +1042,6 @@ Related common-code debt:
   `docs/COMMON_MODULE_ARCHITECTURE.md` and delete the near-copy code they
   replace (estimated by the 2026-09-13 SEAM surveys at about 26,000 lines
   across the families), each migration proved by byte or behaviour identity.
-- glm5_next assigns its combine wrappers field by field instead of calling
-  `SPARK_FAMILY(ModuleRegisterCombines)`, and its `internal.h` re-declares
-  the `SparkTpLaunch*` prototypes from `spark_tp_mesh_register.h`.
 - K3 now resets every runner slot and the KV binding on a client reset and
   refuses stale-generation submissions, but no fleet run has proved it: run a
   client reconnect after a completed request, after which a request on the
@@ -1149,13 +1146,6 @@ Related common-code debt:
     serving adapter. None of their module Makefiles names an
     `ADAPTER_SOURCE`, nor does the gemma4 26B's `Makefile.moe`, so
     `make adapter` refuses and the script cannot release them.
-- glm5_next compares four driver descriptor fields in its own load
-  function and skips `model_description_sha256`, which
-  `serving_adapter_template.c` checks for the other adapters. Moving it
-  onto the template needs its build to pass its description hash, as the
-  ling module does through `MODEL_DESCRIPTION` and the laguna module through
-  `LAGUNA_MODEL_DESCRIPTION_SHA256`; the tree holds a glm5_next description
-  for fp8 only.
 - glm5_next still carries host code its driver never reaches: the per-layer
   attention graph wrapper `Glm5NextLayerAttentionBf16Graphed`, the
   `LayerAttentionBf16` entry in

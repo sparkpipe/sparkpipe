@@ -45,7 +45,7 @@ CASES = (
     module_case("minimax", TEMPLATE, "minimax_resident_decode_stage_bf16_firmware.json", []),
     module_case("qwen4_flash", TEMPLATE, "qwen4_flash_resident_decode_stage_firmware.json", ["EXPERT_CODEC=fp8"]),
     module_case("qwen38_max", TEMPLATE[:1] + (None,) + TEMPLATE[2:], "qwen38_max_resident_decode_stage_firmware.json", ["EXPERT_CODEC=fp8", *INVOKED]),
-    module_case("glm5_next", own("GLM5_NEXT", None, None), "glm5_next_resident_decode_stage_fp8_firmware.json", ["EXPERT_CODEC=fp8", *INVOKED]),
+    module_case("glm5_next", own("GLM5_NEXT", None, "GLM5_NEXT_MODEL_DESCRIPTION_SHA256"), "glm5_next_resident_decode_stage_fp8_firmware.json", ["EXPERT_CODEC=fp8", *INVOKED, "MODEL_DESCRIPTION=" + str(DESCRIPTIONS / "glm5_next_resident_decode_stage_fp8_firmware.json")]),
     *(glm52_case(codec) for codec in ("bf16", "int6", "int7", "int8", "fp8", "nvfp4", "mxfp4")),
 )
 
