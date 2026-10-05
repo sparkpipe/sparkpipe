@@ -5,6 +5,7 @@ Red cases reproduce the #1210 drift incident (each hand-pinned value that
 booted wrong or served wrong); green cases pin the B1 and B8 derivations
 and the verify() drift detector.
 """
+import json
 import pathlib
 import subprocess
 import sys
@@ -49,6 +50,33 @@ def main() -> int:
           all(sp.derive(n)["kv_physical_page_capacity"] <= sp.derive(n)["kv_logical_page_capacity"]
               for n in range(1, 17)))
 
+    # A recurrent model keeps one state record per logical page in its KV
+    # backing; the binding refuses a deployment whose backing cannot hold
+    # them, so the derivation caps the pages by the backing budget.
+    budget = 137438953472
+    record = 9330688
+    capped = sp.derive(16, 32768, record, budget)
+    check("recurrent pages capped by the backing budget",
+          capped["kv_logical_page_capacity"] == capped["kv_physical_page_capacity"] == (budget - 2 * sp.KV_PAGE_BYTES) // record)
+    check("recurrent pages still cover every resident sequence",
+          capped["kv_logical_page_capacity"] >= 16 * 32768 // sp.KV_PAGE_TOKENS)
+    check("recurrent budget fits the binding rule",
+          capped["kv_logical_page_capacity"] * record + 2 * sp.KV_PAGE_BYTES <= budget)
+    try:
+        sp.derive(16, 32768, record, 16 * 32768 // sp.KV_PAGE_TOKENS * record - 1)
+        check("a budget below the resident sequences is refused", False)
+    except ValueError:
+        check("a budget below the resident sequences is refused", True)
+    check("a model without recurrent state keeps the pool multiple",
+          sp.derive(16, 32768)["kv_logical_page_capacity"] == sp.KV_POOL_PAGES_PER_RESIDENT_PAGE * 16 * 32768 // sp.KV_PAGE_TOKENS)
+    sys.path.insert(0, str(ROOT / "tools"))
+    import glm5_next_gen_deployment as flash
+    committed = json.loads((ROOT / "deployment/glm5_next_tp16/model_resident.json").read_text())
+    pages = committed["runtime_limits"]["kv_logical_page_capacity"]
+    check("the committed GLM Flash deployment fits its recurrent records in every node's backing",
+          flash.recurrent_page_bytes() == record and
+          all(pages * flash.recurrent_page_bytes() + 2 * sp.KV_PAGE_BYTES <= node["kv_backing_maximum_bytes"] for node in committed["nodes"]))
+
     # Drift detector: the incident's actual drifted configs must be caught.
     drifted_limits = dict(b8)
     drifted_limits["kv_logical_page_capacity"] = 128  # hand-pinned leftover
@@ -60,7 +88,7 @@ def main() -> int:
         "max_sequence_positions": 512, "execution_row_capacity": b1["execution_row_capacity"]}) == [])
 
     # CLI smoke: verify mode exits 1 on drift.
-    import json, tempfile
+    import tempfile
     with tempfile.TemporaryDirectory() as td:
         dep = pathlib.Path(td) / "deployment.json"
         dep.write_text(json.dumps({"runtime_limits": drifted_limits}))

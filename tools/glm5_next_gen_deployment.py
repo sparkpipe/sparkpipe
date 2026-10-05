@@ -53,6 +53,22 @@ NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 FIRMWARE_HEADER = (Path(__file__).resolve().parents[1] / "modules"
                    / "glm5_next_resident_decode_stage/include/sparkpipe"
                    / "spark_glm5_next_resident_decode_stage_firmware.h")
+MODEL_HEADER = (Path(__file__).resolve().parents[1] / "model-families"
+                / "glm5_next/include/sparkpipe/spark_glm5_next_model.h").read_text()
+
+
+def model_constant(name: str) -> int:
+    return int(re.search(r"#define SPARK_GLM5_NEXT_MODEL_" + name + r" (\d+)u", MODEL_HEADER).group(1))
+
+
+def recurrent_page_bytes() -> int:
+    heads = model_constant("KDA_HEAD_COUNT")
+    key = model_constant("KDA_HEAD_KEY_DIMENSION")
+    state_layer = heads * key * model_constant("KDA_HEAD_VALUE_DIMENSION") * model_constant("KDA_STATE_ELEMENT_BYTES")
+    window_layer = 3 * heads * key * model_constant("KDA_SHORT_CONV_KERNEL") * 2
+    return (state_layer // TP + 3 * (window_layer // (3 * TP))) * model_constant("KDA_LAYER_COUNT")
+
+
 KV_SHARD_REQUIRED_DEGREE = int(re.search(
     r"#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_KV_SHARD_REQUIRED_DEGREE "
     r"(\d+)u", FIRMWARE_HEADER.read_text()).group(1))
@@ -189,7 +205,8 @@ def resident_deployment() -> dict:
     import spark_serving_profile
     sequences = int(os.environ.get("GLM5_NEXT_SEQUENCES", "16"))
     derived = spark_serving_profile.derive(
-        sequences, stage_config(0)["max_sequence_positions"])
+        sequences, stage_config(0)["max_sequence_positions"],
+        recurrent_page_bytes(), KV_BACKING_MAXIMUM_BYTES)
     derived_runtime_limits = {key: derived[key] for key in
                               spark_serving_profile.DEPLOYMENT_RUNTIME_MEMBERS}
     nodes = []

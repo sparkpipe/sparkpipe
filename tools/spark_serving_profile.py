@@ -49,11 +49,18 @@ PROFILES = {
 }
 
 
-def derive(sequences: int, positions: int = 512) -> dict:
+def derive(sequences: int, positions: int = 512, recurrent_page_bytes: int = 0, backing_bytes: int = 0) -> dict:
     if sequences < 1 or positions < 1:
         raise ValueError("sequences and positions must be positive")
     pages_per_sequence = (positions + KV_PAGE_TOKENS - 1) // KV_PAGE_TOKENS
-    kv_pages = KV_POOL_PAGES_PER_RESIDENT_PAGE * sequences * pages_per_sequence
+    resident_pages = sequences * pages_per_sequence
+    kv_pages = KV_POOL_PAGES_PER_RESIDENT_PAGE * resident_pages
+    if recurrent_page_bytes:
+        state_pages = (backing_bytes - 2 * KV_PAGE_BYTES) // recurrent_page_bytes if backing_bytes > 2 * KV_PAGE_BYTES else 0
+        if state_pages < resident_pages:
+            raise ValueError(f"a {backing_bytes}-byte KV backing budget holds the {recurrent_page_bytes}-byte recurrent "
+                             f"record of {state_pages} pages; the resident sequences need {resident_pages}")
+        kv_pages = min(kv_pages, state_pages)
     row_capacity = min(PROFILE_ROW_CAPACITY, MESH_MAX_BATCH_ROWS, FIRMWARE_MAX_INPUT_ROWS)
     return {
         "max_active_sequences": sequences,

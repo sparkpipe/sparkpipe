@@ -26,8 +26,8 @@
   "resident_sequence_capacity": 16,
   "max_inflight_submissions": 4,
   "max_input_rows": 16,
-  "kv_logical_page_capacity": 131072,
-  "kv_physical_page_capacity": 131072,
+  "kv_logical_page_capacity": 14729,
+  "kv_physical_page_capacity": 14729,
   "max_sequence_positions": 32768
  },
  "nodes": [
