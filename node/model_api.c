@@ -1192,10 +1192,11 @@ static int api_failure(const ApiRequest *req, char *body, size_t capacity)
 	const SparkModelServingAdapterDescriptor *adapter = S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
 	uint32_t capabilities = adapter != 0 ? adapter->capability_flags : 0u;
 	uint32_t missing = __atomic_load_n(&S.health_missing_rank,__ATOMIC_ACQUIRE);
+	uint32_t expired = req->deadline_expired != 0u || (req->status != 0u && req->deadline_ms != 0u && api_now_ms() >= req->deadline_ms) ? 1u : 0u;
 	int code = 500;
-	if ( req->deadline_expired != 0u && missing != UINT32_MAX )
+	if ( expired != 0u && missing != UINT32_MAX )
 		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded while rank %u is disconnected\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\",\"missing_rank\":%u}}",missing,missing);
-	else if ( req->deadline_expired != 0u )
+	else if ( expired != 0u )
 		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\"}}");
 	else if ( req->engine_latched != 0u )
 		code = 503, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"the engine latched %s; restart or reset the deployment's ranks\",\"type\":\"server_error\",\"code\":\"engine_failed\"}}",SparkStatusToString((SparkStatus)req->status));
