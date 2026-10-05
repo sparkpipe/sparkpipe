@@ -6987,8 +6987,6 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 	{
 		const char *record_limit_env =
 		    getenv("SPARK_GLM5_NEXT_GRAPH_RECORD_OPS");
-		state->graph_path_enabled = state->graph_path_requested;
-		fprintf(stderr,"GLM execution mode=%s\n",state->graph_path_enabled != 0u ? "graph" : "eager");
 		state->graph_record_limit = record_limit_env != 0 ?
 		    (uint32_t)strtoul(record_limit_env,0,10) : 0u;
 	}
@@ -7020,7 +7018,11 @@ static SparkStatus SparkGlm5NextInitializeState(
 		atomic_init(&state->lazy_retained[lane],0);
 	status = SparkGlm5NextModuleConfigure(state,configuration,host_services,&pack_path);
 	if ( status == SPARK_STATUS_OK )
+	{
+		state->graph_path_enabled = state->graph_path_requested;
+		fprintf(stderr,"GLM execution mode=%s\n",state->graph_path_enabled != 0u ? "graph" : "eager");
 		status = SparkStageModuleCudaWaitInitialize(&state->stream_wait,(cudaStream_t)state->execution_stream);
+	}
 	if ( status == SPARK_STATUS_OK && SparkGlm5NextConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )
