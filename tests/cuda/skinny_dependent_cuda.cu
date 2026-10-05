@@ -130,10 +130,10 @@ static void ProbeExpertsCase(uint32_t rows,cudaStream_t stream)
 	ProbeFillKernel<<<256,256>>>(weight,(uint64_t)PROBE_EXPERTS * PROBE_EXPERT_OUTPUT * PROBE_EXPERT_INPUT,11u,1u);
 	ProbeFillKernel<<<64,256>>>(activation,(uint64_t)rows * PROBE_EXPERT_INPUT,5u,0u);
 	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_OK((LmRouteBuild<256u,PROBE_EXPERTS>(device_route,rows,pairs,PROBE_TOP_K,offset,packed,source,PROBE_EXPERT_OUTPUT,PROBE_EXPERT_INPUT,64u,64u,prefix_up,prefix_down,stream)));
 	for (path=0u; path<2u; path++)
 	{
-		PROBE_CUDA(cudaMemset(output,0,(uint64_t)pairs * PROBE_EXPERT_OUTPUT * 2u));
-		PROBE_OK((LmRouteBuild<256u,PROBE_EXPERTS>(device_route,rows,pairs,PROBE_TOP_K,offset,packed,source,PROBE_EXPERT_OUTPUT,PROBE_EXPERT_INPUT,64u,64u,prefix_up,prefix_down,stream)));
+		PROBE_CUDA(cudaMemsetAsync(output,0,(uint64_t)pairs * PROBE_EXPERT_OUTPUT * 2u,stream));
 		if ( path == 0u )
 			PROBE_OK(LmSkinnyExperts<LmFp8>(weight,LmScaleTensorNone(),activation,output,device_route,packed,pairs,PROBE_TOP_K,0u,PROBE_EXPERT_INPUT,PROBE_EXPERT_OUTPUT,stream));
 		else
