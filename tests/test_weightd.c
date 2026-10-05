@@ -1318,7 +1318,7 @@ static void SparkTestKvSharedPools(void)
     SparkTestServerThread context;
     pthread_t thread;
     SparkWeightdClient *first = 0,*second = 0,*third = 0;
-    SparkWeightdKvSharedGrant grant,joined,refused;
+    SparkWeightdKvSharedGrant grant,joined,refused,again;
     SparkWeightdKvPoolGrant private_grant;
     SparkWeightdKvPoolState state;
     SparkKvSharedIndex owner,member;
@@ -1378,10 +1378,17 @@ static void SparkTestKvSharedPools(void)
     assert(SparkWeightdServerKvCommittedBytes(context.server) == 2u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkWeightdClientClose(first);
     first = 0;
-    SparkTestAwait(SparkWeightdServerKvPoolCount(context.server) == 0u);
+    SparkTestAwait(SparkWeightdServerKvPoolCount(context.server) == 1u && SparkWeightdServerKvCommittedBytes(context.server) == 2u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkTestConnect(&first,socket_path,0ull);
-    assert(SparkTestKvAttach(first,0x52,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,0u,&private_grant) == SPARK_STATUS_OK);
-    assert(SparkWeightdServerKvPoolCount(context.server) == 1u && SparkWeightdServerKvCommittedBytes(context.server) == SPARK_TEST_KV_CHUNK_BYTES);
+    assert(SparkTestKvSharedAttach(first,0x51,0x6c,page_bytes,&again) == SPARK_STATUS_OK && again.created == 0u && again.pool_generation == grant.pool_generation);
+    assert(atomic_load(&owner.slots[ready].state) == SPARK_KV_SHARED_SLOT_READY);
+    (void)close(again.metadata_fd);
+    SparkWeightdClientClose(first);
+    first = 0;
+    SparkTestAwait(SparkWeightdServerKvPoolCount(context.server) == 1u);
+    SparkTestConnect(&first,socket_path,0ull);
+    assert(SparkTestKvAttach(first,0x52,3u * SPARK_TEST_KV_CHUNK_BYTES,3u * SPARK_TEST_KV_CHUNK_BYTES,0u,&private_grant) == SPARK_STATUS_OK);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 1u && SparkWeightdServerKvCommittedBytes(context.server) == 3u * SPARK_TEST_KV_CHUNK_BYTES);
     (void)munmap(owner_map,(size_t)grant.metadata_bytes);
     (void)munmap(member_map,(size_t)joined.metadata_bytes);
     (void)close(grant.metadata_fd);
@@ -1392,7 +1399,7 @@ static void SparkTestKvSharedPools(void)
     SparkTestStopServer(&context,thread);
     spark_test_kv_shared_window_bytes = 0u;
     (void)unlink(socket_path);
-    printf("weightd kv shared pools: no window refuses, the window is sized in whole alignment groups, the first holder creates the whole pool and formats the index, later holders join with the same page and layout only, holders export but never resize, a private key cannot collide, a leaving holder's bits and writing slots are cleared, the last holder frees the pool\n");
+    printf("weightd kv shared pools: no window refuses, the window is sized in whole alignment groups, the first holder creates the whole pool and formats the index, later holders join with the same page and layout only, holders export but never resize, a private key cannot collide, a leaving holder's bits and writing slots are cleared, the pool outlives its last holder with its published slots for the next attach, and a private pool that needs the room evicts it\n");
 }
 
 int main(void)

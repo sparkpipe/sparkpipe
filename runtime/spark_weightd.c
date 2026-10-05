@@ -3006,7 +3006,8 @@ static uint32_t SparkWeightdKvPoolOldestDetached(const SparkWeightdServer *serve
 {
 	uint32_t index,oldest = SPARK_WEIGHTD_KV_POOL_COUNT_MAX;
 	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
-		if ( server->kv_pools[index].generation != 0u && &server->kv_pools[index] != keep && server->kv_pools[index].owner_connection == 0u && server->kv_pools[index].shared == 0u &&
+		if ( server->kv_pools[index].generation != 0u && &server->kv_pools[index] != keep && server->kv_pools[index].owner_connection == 0u &&
+			(server->kv_pools[index].shared == 0u || server->kv_pools[index].holder_mask == 0u) &&
 			(oldest == SPARK_WEIGHTD_KV_POOL_COUNT_MAX || server->kv_pools[index].detached_ns < server->kv_pools[oldest].detached_ns) )
 			oldest = index;
 	return(oldest);
@@ -3226,7 +3227,11 @@ static void SparkWeightdKvPoolDetachConnection(SparkWeightdServer *server,uint32
 		fprintf(stderr,"weightd kv shared pool holder left label=%s generation=%llu holder=%u writing_slots_freed=%u holders_left=%u\n",pool->label,
 			(unsigned long long)pool->generation,holder,freed,(unsigned)__builtin_popcountll(pool->holder_mask));
 		if ( pool->holder_mask == 0u )
-			SparkWeightdKvPoolRelease(server,index,"last_holder_left");
+		{
+			pool->detached_ns = SparkWeightdMonotonicTimeNs();
+			fprintf(stderr,"weightd kv shared pool detached label=%s generation=%llu bytes=%llu; kept for reattach\n",pool->label,
+				(unsigned long long)pool->generation,(unsigned long long)(pool->chunk_bytes * pool->chunk_count));
+		}
 	}
 	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_COUNT_MAX && connection->kv_pool_count != 0u; index++)
 	{

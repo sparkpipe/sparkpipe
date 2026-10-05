@@ -64,7 +64,10 @@ Drivers read the stride from the binding, so no kernel changes.
 - **Detach and crash.** When a connection closes, weightd clears that
   holder's bits in every slot, and frees every slot that holder left
   `WRITING`. A crashed engine therefore never pins window pages.
-- **Lifetime.** The pool is freed when its last holder detaches.
+- **Lifetime.** The pool outlives its last holder: weightd keeps it detached
+  with its published slots, so a restarted engine of the layout imports them
+  instead of restoring from the snapshot store. A detached window is evicted,
+  oldest first like a detached private pool, when a pool needs its bytes.
 - **Caps.** At most 63 holders per pool: bit 63 of the mask is the
   reclaim lock.
 - **Export.** Chunks are exported with `KV_POOL_EXPORT` like a private
