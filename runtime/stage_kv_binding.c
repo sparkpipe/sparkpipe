@@ -118,8 +118,12 @@ static SparkStatus SparkStageKvBindingAllocateHost(SparkStageKvBinding *binding,
 	binding->lane_bound = (atomic_uchar *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_bound));
 	binding->lane_sequence_ids = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_sequence_ids));
 	binding->lane_next_positions = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_next_positions));
+	binding->lane_rewind_floors = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_rewind_floors));
+	binding->lane_rewind_ceilings = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_rewind_ceilings));
+	binding->lane_pending_floors = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_pending_floors));
 	if ( binding->blocks == 0 || binding->resident_slot_logical_block_indices == 0 || binding->entries == 0 || binding->sequences == 0 || binding->hash_bucket_heads == 0 || binding->entry_indices_by_logical_page == 0 ||
-		binding->lanes == 0 || binding->logical_pages == 0 || binding->page_table_shadow == 0 || binding->lane_bound == 0 || binding->lane_sequence_ids == 0 || binding->lane_next_positions == 0 )
+		binding->lanes == 0 || binding->logical_pages == 0 || binding->page_table_shadow == 0 || binding->lane_bound == 0 || binding->lane_sequence_ids == 0 || binding->lane_next_positions == 0 ||
+		binding->lane_rewind_floors == 0 || binding->lane_rewind_ceilings == 0 || binding->lane_pending_floors == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( cudaHostAlloc((void **)&binding->physical_pages,(size_t)lane_entries * sizeof(uint32_t),cudaHostAllocPortable) != cudaSuccess )
 	{
@@ -137,6 +141,9 @@ static SparkStatus SparkStageKvBindingAllocateHost(SparkStageKvBinding *binding,
 		atomic_init(&binding->lane_bound[index],0u);
 		atomic_init(&binding->lane_sequence_ids[index],0u);
 		atomic_init(&binding->lane_next_positions[index],0u);
+		atomic_init(&binding->lane_rewind_floors[index],0u);
+		atomic_init(&binding->lane_rewind_ceilings[index],0u);
+		atomic_init(&binding->lane_pending_floors[index],UINT64_MAX);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1294,6 +1301,9 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->lane_bound);
 	free(binding->lane_sequence_ids);
 	free(binding->lane_next_positions);
+	free(binding->lane_rewind_floors);
+	free(binding->lane_rewind_ceilings);
+	free(binding->lane_pending_floors);
 	if ( binding->mutex_initialized != 0u )
 		(void)pthread_mutex_destroy(&binding->mutex);
 	if ( binding->sync_initialized != 0u )
@@ -1366,6 +1376,9 @@ SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t gener
 			atomic_store_explicit(&binding->lane_bound[lane],0u,memory_order_release);
 			atomic_store_explicit(&binding->lane_sequence_ids[lane],0u,memory_order_release);
 			atomic_store_explicit(&binding->lane_next_positions[lane],0u,memory_order_release);
+			atomic_store_explicit(&binding->lane_rewind_floors[lane],0u,memory_order_release);
+			atomic_store_explicit(&binding->lane_rewind_ceilings[lane],0u,memory_order_release);
+			atomic_store_explicit(&binding->lane_pending_floors[lane],UINT64_MAX,memory_order_release);
 		}
 		binding->reset_generation = generation;
 		binding->control_generation = 0u;
@@ -1439,7 +1452,7 @@ SparkStatus SparkStageKvBindingAdmitReset(SparkStageKvBinding *binding,const Spa
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkStageKvBindingLoadContinuity(const SparkStageKvBinding *binding,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+static SparkStatus SparkStageKvBindingLoadContinuity(const SparkStageKvBinding *binding,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions,uint64_t *floors)
 {
 	const SparkKvLaneTransaction *owner;
 	uint32_t lane,slot;
@@ -1451,6 +1464,9 @@ static SparkStatus SparkStageKvBindingLoadContinuity(const SparkStageKvBinding *
 		bound[lane] = atomic_load_explicit(&binding->lane_bound[slot],memory_order_acquire);
 		sequence_ids[lane] = atomic_load_explicit(&binding->lane_sequence_ids[slot],memory_order_acquire);
 		next_positions[lane] = atomic_load_explicit(&binding->lane_next_positions[slot],memory_order_acquire);
+		floors[lane] = atomic_load_explicit(&binding->lane_rewind_ceilings[slot],memory_order_acquire) == next_positions[lane] &&
+			atomic_load_explicit(&binding->lane_rewind_floors[slot],memory_order_acquire) <= next_positions[lane] ?
+			atomic_load_explicit(&binding->lane_rewind_floors[slot],memory_order_acquire) : next_positions[lane];
 		owner = &binding->lanes[slot];
 		if ( SparkKvLaneTransactionPrefixRestorePending(owner) == 0u )
 			continue;
@@ -1459,11 +1475,12 @@ static SparkStatus SparkStageKvBindingLoadContinuity(const SparkStageKvBinding *
 		bound[lane] = 1u;
 		sequence_ids[lane] = owner->lane.sequence_id;
 		next_positions[lane] = owner->lane.sequence_position;
+		floors[lane] = next_positions[lane];
 	}
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions,const uint64_t *floors)
 {
 	uint8_t *touched;
 	uint32_t lane,row,slot;
@@ -1485,7 +1502,9 @@ static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *b
 			bound[lane] = 1u;
 			sequence_ids[lane] = row_sequence_ids[row];
 		}
-		else if ( row_positions[row] == 0u || bound[lane] == 0u || sequence_ids[lane] != row_sequence_ids[row] || next_positions[lane] != row_positions[row] )
+		else if ( row_positions[row] == 0u || bound[lane] == 0u || sequence_ids[lane] != row_sequence_ids[row] ||
+			(touched[lane] != 0u && next_positions[lane] != row_positions[row]) ||
+			(touched[lane] == 0u && (row_positions[row] > next_positions[lane] || row_positions[row] < floors[lane])) )
 		{
 			status = SPARK_STATUS_SCHEMA_ERROR;
 			break;
@@ -1507,16 +1526,23 @@ uint64_t SparkStageKvBindingLaneSequence(const SparkStageKvBinding *binding,uint
 SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	SparkStatus status;
-	uint64_t held;
+	uint64_t held,*floors;
 	if ( binding == 0 || lane_states == 0 || row_resident_slots == 0 || row_sequence_ids == 0 || row_positions == 0 || bound == 0 || sequence_ids == 0 || next_positions == 0 || row_count < active_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	floors = (uint64_t *)calloc(active_count != 0u ? active_count : 1u,sizeof(*floors));
+	if ( floors == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkStageKvBindingLock(binding,&held);
 	if ( status != SPARK_STATUS_OK )
+	{
+		free(floors);
 		SPARK_RETURN(status);
-	status = SparkStageKvBindingLoadContinuity(binding,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
+	}
+	status = SparkStageKvBindingLoadContinuity(binding,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions,floors);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageKvBindingRowContinuity(binding,lane_states,row_count,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
+		status = SparkStageKvBindingRowContinuity(binding,lane_states,row_count,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions,floors);
 	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_CONTINUITY,held);
+	free(floors);
 	SPARK_RETURN(status);
 }
 
@@ -1530,8 +1556,12 @@ SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkMod
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	for (lane=0u; lane<active_count; lane++)
 		if ( frame->cache_lanes[lane].resident_sequence_slot != row_resident_slots[lane] || frame->cache_lanes[lane].sequence_id != row_sequence_ids[lane] ||
-			frame->cache_lanes[lane].sequence_position != row_positions[lane] || frame->cache_lanes[lane].context_token_count != next_positions[lane] )
+			frame->cache_lanes[lane].sequence_position != row_positions[lane] || frame->cache_lanes[lane].context_token_count != next_positions[lane] ||
+			((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY) != 0u) != ((frame->cache_lanes[lane].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u) )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	for (lane=0u; lane<active_count; lane++)
+		atomic_store_explicit(&binding->lane_pending_floors[row_resident_slots[lane]],
+			(frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY) != 0u ? row_positions[lane] + 1u : next_positions[lane],memory_order_release);
 	{
 		uint64_t held;
 		status = SparkStageKvBindingLock(binding,&held);
@@ -2055,6 +2085,9 @@ static SparkStatus SparkStageKvBindingApplyCompletion(SparkStageKvBinding *bindi
 		{
 			atomic_store_explicit(&binding->lane_sequence_ids[resident],sequence_ids[lane],memory_order_release);
 			atomic_store_explicit(&binding->lane_next_positions[resident],next_positions[lane],memory_order_release);
+			uint64_t floor = atomic_exchange_explicit(&binding->lane_pending_floors[resident],UINT64_MAX,memory_order_acq_rel);
+			atomic_store_explicit(&binding->lane_rewind_floors[resident],floor < next_positions[lane] ? floor : next_positions[lane],memory_order_release);
+			atomic_store_explicit(&binding->lane_rewind_ceilings[resident],floor < next_positions[lane] ? next_positions[lane] : 0u,memory_order_release);
 		}
 		else
 			memset(binding->page_table_shadow + (uint64_t)resident * binding->pages_per_sequence,0xff,(size_t)binding->pages_per_sequence * sizeof(uint32_t));
@@ -2102,7 +2135,10 @@ static SparkStatus SparkStageKvBindingPublishLanes(SparkStageKvBinding *binding,
 			cache_lane->sequence_position != cache_lane->publish_token_count || cache_lane->context_token_count != cache_lane->publish_token_count ||
 			atomic_load_explicit(&binding->lane_bound[resident],memory_order_acquire) == 0u ||
 			atomic_load_explicit(&binding->lane_sequence_ids[resident],memory_order_acquire) != cache_lane->sequence_id ||
-			atomic_load_explicit(&binding->lane_next_positions[resident],memory_order_acquire) != cache_lane->sequence_position )
+			(atomic_load_explicit(&binding->lane_next_positions[resident],memory_order_acquire) != cache_lane->sequence_position &&
+			 (atomic_load_explicit(&binding->lane_rewind_ceilings[resident],memory_order_acquire) != atomic_load_explicit(&binding->lane_next_positions[resident],memory_order_acquire) ||
+			  atomic_load_explicit(&binding->lane_next_positions[resident],memory_order_acquire) < cache_lane->sequence_position ||
+			  atomic_load_explicit(&binding->lane_rewind_floors[resident],memory_order_acquire) > cache_lane->sequence_position)) )
 			status = SPARK_STATUS_VALIDATION_FAILED;
 	}
 	if ( status == SPARK_STATUS_OK )

@@ -56,6 +56,8 @@ void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt);
 void MockResidentClientSetMaxSequencePositions(uint32_t stage_index, uint32_t positions);
 uint32_t MockResidentClientTakeMaxTokensPerSequence(void);
 void MockResidentClientSetTokenStart(uint32_t first_token_id);
+void MockResidentClientSetScript(const uint32_t *tokens,uint32_t count);
+void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows);
 void MockResidentClientSetFinalRank(uint32_t stage_index, uint32_t is_final);
 uint32_t MockResidentClientDriveAll(void);
 uint32_t MockResidentClientDriveResults(void);

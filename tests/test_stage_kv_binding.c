@@ -321,7 +321,7 @@ static SparkStatus StepClaim(TestStep *step)
 	step->frame.driver_dispatch_generation = step->request.control_generation;
 	step->frame.driver_dispatch_cookie0 = step->request.transaction_id;
 	step->frame.driver_dispatch_cookie1 = step->request.submission_id;
-	step->frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID;
+	step->frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID | step->request.frame_flags;
 	return(SparkStageKvBindingClaim(&BINDING,&step->frame,1u,&step->slot,&step->sequence,&step->position,&step->next));
 }
 
@@ -569,6 +569,41 @@ static void TestFinishAndReleaseOnlyMark(void)
 	assert(bytes == TEST_PAGE_BYTES && memcmp(saved,expected,sizeof(saved)) == 0);
 	Close();
 	printf("T4 finish and release only mark: ok\n");
+}
+
+static void StepRun(TestStep *step)
+{
+	TestFinished finished = {0};
+	StepStart(step);
+	assert(StepFinish(step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	assert(atomic_load(&finished.count) == 1u && finished.status == SPARK_STATUS_OK);
+}
+
+static void TestVerifyRewind(void)
+{
+	TestStep step;
+	Open();
+	StepInit(&step,7u,0u,0u,1u);
+	StepRun(&step);
+	assert(atomic_load(&BINDING.lane_next_positions[0]) == 1u && atomic_load(&BINDING.lane_rewind_ceilings[0]) == 0u);
+	StepInit(&step,7u,0u,1u,3u);
+	step.lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY;
+	step.request.new_token_count = 2u;
+	step.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_INVALID_ARGUMENT);
+	step.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL | SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY;
+	StepRun(&step);
+	assert(atomic_load(&BINDING.lane_next_positions[0]) == 3u && atomic_load(&BINDING.lane_rewind_floors[0]) == 2u && atomic_load(&BINDING.lane_rewind_ceilings[0]) == 3u);
+	StepInit(&step,7u,0u,1u,2u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_INVALID_ARGUMENT);
+	StepInit(&step,7u,0u,2u,3u);
+	StepRun(&step);
+	assert(atomic_load(&BINDING.lane_next_positions[0]) == 3u && atomic_load(&BINDING.lane_rewind_ceilings[0]) == 0u);
+	StepInit(&step,7u,0u,2u,3u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_INVALID_ARGUMENT);
+	Close();
+	printf("verify rewind: a verified lane resumes anywhere in its accepted window, nowhere else: ok\n");
 }
 
 static void TestParkCopiesAreAsync(void)
@@ -1335,6 +1370,7 @@ int main(void)
 	TestCopyOnWriteIsOneDeviceCopyPerRegion();
 	TestCopyOnWriteDuringAPark();
 	TestFinishAndReleaseOnlyMark();
+	TestVerifyRewind();
 	TestParkCopiesAreAsync();
 	TestLockSitesMeasured();
 	TestQuiesceOrderStop();

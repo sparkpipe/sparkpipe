@@ -563,7 +563,7 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 		uint32_t rank_offset,row;
 		SparkGlm52BindLayer(wave,wave->layer_count - 1u,&buffers);
 		rank_offset = wave->tp_rank * buffers.head_vocabulary;
-		if ( wave->row_head_certified != 0u && wave->prefill_block_table != 0 && SPARK_GLM52_SCORE_EVERY_ROW == 0u &&
+		if ( wave->row_head_certified != 0u && wave->prefill_block_table != 0 && SPARK_GLM52_SCORE_EVERY_ROW == 0u && wave->head_every_row == 0u &&
 			wave->head_certified_fp8_payload != 0 && SparkGlm52T1Enabled() == 0 )
 		{
 			SparkGlm52HeadGatherKernel<<<SPARK_GLM52_PREFILL_WAVE_SPANS,SPARK_GLM_CUDA_THREADS,0,stream>>>(slot->head_rows,buffers.hidden_bf16,buffers.residual_bf16,slot->head_hidden_bf16,slot->head_residual_bf16);
@@ -588,7 +588,7 @@ static int32_t SparkGlm52RunHead(const SparkGlm52CudaWave *wave)
 			SparkGlm52T1Enabled() == 0 )
 		{
 			status = LM_LAUNCH_OK;
-			for (row=wave->row_head_certified != 0u && SPARK_GLM52_SCORE_EVERY_ROW == 0u ? wave->row_count - 1u : 0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
+			for (row=wave->row_head_certified != 0u && SPARK_GLM52_SCORE_EVERY_ROW == 0u && wave->head_every_row == 0u ? wave->row_count - 1u : 0u; status == LM_LAUNCH_OK && row<wave->row_count; row++)
 			{
 				row_buffers = buffers;
 				row_buffers.hidden_bf16 = buffers.hidden_bf16 + (uint64_t)row * GLM_HIDDEN;

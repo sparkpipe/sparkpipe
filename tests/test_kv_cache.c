@@ -1685,6 +1685,45 @@ static int32_t SparkTestKvTransactionsChunkedPrefill(uint32_t chunk)
 	return(status);
 }
 
+static void SparkTestKvPageCacheVerifyRewind(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane lane;
+	uint32_t page,again;
+	SparkTestKvPageInitialize(&fixture);
+	SparkTestKvPageLane(&lane,1u,0u,0u,1u);
+	page = SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[0].next_token_position == 1u && fixture.cache.sequences[0].rewind_floor == 1u);
+	SparkTestKvPageLane(&lane,1u,0u,1u,3u);
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY;
+	again = SparkTestKvPageBegin(&fixture,&lane);
+	assert(again == page);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[0].next_token_position == 3u && fixture.cache.sequences[0].rewind_floor == 2u && fixture.cache.sequences[0].rewind_ceiling == 3u);
+	fixture.cache.sequences[0].next_token_position = 4u;
+	SparkTestKvPageLane(&lane,1u,0u,2u,3u);
+	assert(SparkKvPageCacheBeginLane(&fixture.cache,&lane,&again) == SPARK_STATUS_INVALID_ARGUMENT);
+	fixture.cache.sequences[0].next_token_position = 3u;
+	SparkTestKvPageLane(&lane,1u,0u,1u,2u);
+	assert(SparkKvPageCacheBeginLane(&fixture.cache,&lane,&again) == SPARK_STATUS_INVALID_ARGUMENT);
+	SparkTestKvPageLane(&lane,1u,0u,4u,5u);
+	assert(SparkKvPageCacheBeginLane(&fixture.cache,&lane,&again) == SPARK_STATUS_INVALID_ARGUMENT);
+	SparkTestKvPageLane(&lane,1u,0u,2u,3u);
+	again = SparkTestKvPageBegin(&fixture,&lane);
+	assert(again == page);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[0].next_token_position == 3u && fixture.cache.sequences[0].rewind_floor == 3u);
+	SparkTestKvPageLane(&lane,1u,0u,2u,3u);
+	assert(SparkKvPageCacheBeginLane(&fixture.cache,&lane,&again) == SPARK_STATUS_INVALID_ARGUMENT);
+	SparkTestKvPageLane(&lane,1u,0u,3u,4u);
+	SparkTestKvPagePublish(&lane,4u,83u);
+	again = SparkTestKvPageBegin(&fixture,&lane);
+	assert(again == page);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[0].next_token_position == 4u && fixture.cache.sequences[0].rewind_floor == 4u);
+}
+
 static void SparkTestKvPageCachePublishesPartialPrefix(void)
 {
 	SparkTestKvPageFixture fixture;
@@ -2781,6 +2820,7 @@ int main(void)
 		fprintf(stderr,"kv transaction test status=%d\n",(int)status);
 	if ( status != 0 )
 		return(-status);
+	SparkTestKvPageCacheVerifyRewind();
 	SparkTestKvPageCachePublishesPartialPrefix();
 	SparkTestKvPageCachePartialBranches(1u);
 	SparkTestKvPageCachePartialBranches(2u);

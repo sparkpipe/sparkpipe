@@ -41,6 +41,7 @@ typedef struct RowsRig
 	uint32_t head;
 	uint32_t tp_degree;
 	uint32_t row_head_certified;
+	uint32_t head_every_row;
 	uint32_t wave_first;
 	SparkGlm52ValMatrix lm_head;
 	SparkGlm52ValMatrix final_norm;
@@ -218,6 +219,7 @@ static void RowsWave(RowsRig *rig,uint32_t first_position,uint32_t rows,const ui
 	wave->tp_degree = rig->tp_degree;
 	wave->tp_rank = 0u;
 	wave->row_head_certified = rig->row_head_certified;
+	wave->head_every_row = rig->head_every_row;
 	wave->final_norm_bf16 = rig->head != 0u ? rig->final_norm.device : 0;
 	wave->lm_head_bf16 = rig->head != 0u ? rig->lm_head.device : 0;
 	wave->head_certified_fp8_payload = rig->head != 0u ? rig->certified_payload : 0;
@@ -499,13 +501,21 @@ static int RowsVerifyHead(RowsRig *rig,uint32_t anchor,uint32_t depth,uint32_t a
 		return(300);
 	memcpy(rig->mode_tokens,rig->reference_tokens,rig->positions_total * sizeof(uint32_t));
 	for (row=0u; row<depth; row++)
+		rig->mode_tokens[anchor + row] = UINT32_MAX;
+	if ( cudaMemset(rig->fixture.slot.output_token,0xff,ROWS_MAX * sizeof(uint32_t)) != cudaSuccess ||
+		cudaMemset(rig->fixture.slot.output_score,0xff,ROWS_MAX * sizeof(float)) != cudaSuccess ||
+		cudaMemset(rig->fixture.slot.head_maxloc_u64,0xff,ROWS_MAX * sizeof(uint64_t)) != cudaSuccess )
+		return(302);
+	for (row=0u; row<depth; row++)
 		tokens[row] = adversary != 0u && row != 0u ? (RowsToken(anchor + row) + 1u + row) % SPARK_GLM52_VALIDATION_EMBED_ROWS : RowsToken(anchor + row);
 	rig->row_head_certified = 1u;
+	rig->head_every_row = 1u;
 	RowsWave(rig,anchor,depth,tokens);
 	if ( RowsWalk(rig) != 0 )
 		return(301);
+	rig->head_every_row = 0u;
 	differing = RowsTokenDiffer(rig,anchor,adversary != 0u ? 1u : depth,&first);
-	printf("glm52_prefill_rows_parity head verify=%s anchor=%u depth=%u differing_tokens=%u first=%d %s\n",adversary != 0u ? "adversary-anchor" : "oracle",anchor,depth,differing,first == UINT32_MAX ? -1 : (int)first,differing == 0u ? "TOKEN-EXACT" : "DIFFER");
+	printf("glm52_prefill_rows_parity head verify=%s anchor=%u depth=%u every_row=1 differing_tokens=%u first=%d %s\n",adversary != 0u ? "adversary-anchor" : "oracle",anchor,depth,differing,first == UINT32_MAX ? -1 : (int)first,differing == 0u ? "TOKEN-EXACT" : "DIFFER");
 	return(differing == 0u ? 0 : 1);
 }
 
@@ -527,10 +537,12 @@ static int RowsHeadMain(RowsRig *rig)
 	for (index=0u; index<sizeof(widths)/sizeof(widths[0]) && widths[index]<=ROWS_MAX; index++)
 	{
 		rig->row_head_certified = 1u;
+		rig->head_every_row = 1u;
 		if ( RowsRun(rig,widths[index],1u,rig->mode_boundary,rig->mode_kv,rig->mode_index,&waves) != 0 )
 			return(1);
+		rig->head_every_row = 0u;
 		differing = RowsTokenDiffer(rig,0u,rig->positions_total,&first);
-		printf("glm52_prefill_rows_parity head prefill rows<=%u row_certified=1 waves=%u differing_tokens=%u first=%d %s\n",widths[index],waves,differing,first == UINT32_MAX ? -1 : (int)first,
+		printf("glm52_prefill_rows_parity head prefill rows<=%u row_certified=1 every_row=1 waves=%u differing_tokens=%u first=%d %s\n",widths[index],waves,differing,first == UINT32_MAX ? -1 : (int)first,
 			differing == 0u ? "TOKEN-EXACT" : (widths[index] > SparkGlm52ExactWaveRows() && differing * ROWS_TOKEN_DIFFER_DIVISOR <= rig->positions_total ? "WITHIN-BOUND" : "DIFFER"));
 		failures += widths[index] <= SparkGlm52ExactWaveRows() && differing != 0u ? 1 : 0;
 		failures += widths[index] > SparkGlm52ExactWaveRows() && differing * ROWS_TOKEN_DIFFER_DIVISOR > rig->positions_total ? 1 : 0;

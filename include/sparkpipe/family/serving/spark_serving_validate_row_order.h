@@ -24,9 +24,10 @@ static SparkStatus SPARK_FAMILY(ServingValidateRowOrder)(
 		last_position[lane] = submission->row_positions[row];
 		counts[lane]++;
 	}
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->row_count != submission->active_sequence_count )
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) == 0u &&
+		submission->row_count != submission->active_sequence_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) == 0u )
 		return(SPARK_STATUS_OK);
 	maximum = 0u;
 	for (lane=0u; lane<submission->active_sequence_count; lane++)

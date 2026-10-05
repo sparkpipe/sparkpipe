@@ -689,6 +689,15 @@ static SparkStatus SparkKvPageCacheResolveLanePrefix(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkKvPageCacheSequenceAt(
+	const SparkKvPageCacheSequence *sequence,
+	uint64_t position)
+{
+	return(position == sequence->next_token_position ||
+		(sequence->rewind_ceiling != 0u && sequence->rewind_ceiling == sequence->next_token_position &&
+		 position >= sequence->rewind_floor && position < sequence->next_token_position) ? 1u : 0u);
+}
+
 static SparkStatus SparkKvPageCacheValidateExistingSequence(
 	const SparkKvPageCache *cache,
 	const SparkKvPageCacheSequence *sequence,
@@ -696,7 +705,7 @@ static SparkStatus SparkKvPageCacheValidateExistingSequence(
 	uint32_t prefix_entry_index)
 {
 	if ( sequence->sequence_id != lane->sequence_id ||
-		sequence->next_token_position != lane->sequence_position )
+		SparkKvPageCacheSequenceAt(sequence,lane->sequence_position) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( prefix_entry_index != SPARK_KV_PAGE_CACHE_NO_INDEX &&
 		SparkKvPageCacheEntryIsAncestor(cache,sequence->terminal_entry_index,
@@ -1059,6 +1068,8 @@ static SparkStatus SparkKvPageCacheBindLane(
 		sequence->generation = 1u;
 	sequence->sequence_id = lane->sequence_id;
 	sequence->next_token_position = (uint32_t)lane->sequence_position;
+	sequence->rewind_floor = (uint32_t)lane->sequence_position;
+	sequence->rewind_ceiling = 0u;
 	sequence->terminal_entry_index = prefix_entry_index;
 	sequence->mutable_logical_page_index = SPARK_KV_CACHE_NO_BLOCK;
 	sequence->mutable_page_count = 0u;
@@ -1364,7 +1375,7 @@ SparkStatus SparkKvPageCacheRollbackLaneTransaction(
 		return(SPARK_STATUS_OK);
 	sequence = &cache->sequences[lane->resident_sequence_slot];
 	if ( sequence->sequence_id != lane->sequence_id ||
-		sequence->next_token_position != lane->sequence_position )
+		SparkKvPageCacheSequenceAt(sequence,lane->sequence_position) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (mutation_flags & SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE) != 0u )
 		return(SparkKvPageCacheReleaseLane(cache,
@@ -1575,7 +1586,7 @@ SparkStatus SparkKvPageCacheCompleteLane(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	sequence = &cache->sequences[lane->resident_sequence_slot];
 	if ( sequence->sequence_id != lane->sequence_id ||
-		sequence->next_token_position != lane->sequence_position )
+		SparkKvPageCacheSequenceAt(sequence,lane->sequence_position) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( lane->context_token_count != lane->sequence_position &&
 		sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK )
@@ -1610,6 +1621,10 @@ SparkStatus SparkKvPageCacheCompleteLane(
 			SPARK_RETURN(status);
 	}
 	sequence->next_token_position = lane->context_token_count;
+	sequence->rewind_floor = (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u &&
+		lane->context_token_count > lane->sequence_position ?
+		(uint32_t)lane->sequence_position + 1u : lane->context_token_count;
+	sequence->rewind_ceiling = (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u ? lane->context_token_count : 0u;
 	return(SPARK_STATUS_OK);
 }
 

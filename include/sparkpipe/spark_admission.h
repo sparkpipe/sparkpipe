@@ -17,10 +17,12 @@ typedef uint32_t SparkAdmissionPolicyFlags;
 #define SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT 0x00000001u
 #define SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS  0x00000002u
 #define SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG  0x00000004u
+#define SPARK_ADMISSION_POLICY_FLAG_ALLOW_VERIFY  0x00000008u
 #define SPARK_ADMISSION_POLICY_KNOWN_FLAGS \
     (SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT | \
      SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS | \
-     SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG)
+     SPARK_ADMISSION_POLICY_FLAG_ALLOW_DISPATCH_FLAG | \
+     SPARK_ADMISSION_POLICY_FLAG_ALLOW_VERIFY)
 
 typedef void (*SparkAdmissionCostFunction)(
     void *context,
@@ -120,6 +122,10 @@ static inline SparkStatus SparkAdmissionEvaluateShape(
     {
         known_frame_flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID;
     }
+    if ((table->flags & SPARK_ADMISSION_POLICY_FLAG_ALLOW_VERIFY) != 0u)
+    {
+        known_frame_flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY;
+    }
 
     if ((request->frame_flags & ~known_frame_flags) != 0u ||
         request->active_slot_count == 0u ||
@@ -129,7 +135,8 @@ static inline SparkStatus SparkAdmissionEvaluateShape(
         (table->max_input_row_count != 0u &&
          request->new_token_count > table->max_input_row_count) ||
         ((table->flags & SPARK_ADMISSION_POLICY_FLAG_PREFILL_SINGLE_SLOT) != 0u &&
-         is_prefill != 0u && request->active_slot_count != 1u) ||
+         is_prefill != 0u && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY) == 0u &&
+         request->active_slot_count != 1u) ||
         ((table->flags & SPARK_ADMISSION_POLICY_FLAG_DECODE_EQUALS_SLOTS) != 0u &&
          is_prefill == 0u && request->new_token_count != request->active_slot_count))
     {

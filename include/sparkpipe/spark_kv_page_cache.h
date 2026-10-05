@@ -55,6 +55,8 @@ typedef struct SparkKvPageCacheSequence
 	uint64_t sequence_id;
 	uint64_t generation;
 	uint32_t next_token_position;
+	uint32_t rewind_floor;
+	uint32_t rewind_ceiling;
 	uint32_t terminal_entry_index;
 	uint32_t mutable_logical_page_index;
 	uint32_t mutable_first_token_index;

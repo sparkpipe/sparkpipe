@@ -28,11 +28,27 @@ typedef struct SparkSpeculationLookupMatch
 	uint32_t source_end;
 } SparkSpeculationLookupMatch;
 
+#define SPARK_SPECULATION_LOOKUP_NO_POSITION UINT32_MAX
+
+typedef struct SparkSpeculationLookupIndex
+{
+	uint32_t gram;
+	uint32_t bucket_mask;
+	uint32_t capacity;
+	uint32_t length;
+	uint32_t *heads;
+	uint32_t *chain;
+} SparkSpeculationLookupIndex;
+
 SparkStatus SparkSpeculationLookupDraftInitialize(SparkSpeculationLookupDraft *draft,uint32_t lane_count,uint32_t lane_capacity,uint32_t min_match,uint32_t max_match);
 void SparkSpeculationLookupDraftDestroy(SparkSpeculationLookupDraft *draft);
 SparkStatus SparkSpeculationLookupDraftObserve(SparkSpeculationLookupDraft *draft,uint32_t lane,uint64_t sequence_id,uint64_t position,const uint32_t *token_ids,uint32_t token_count);
 SparkStatus SparkSpeculationLookupDraftFind(const SparkSpeculationLookupDraft *draft,uint32_t lane,uint64_t anchor_position,SparkSpeculationLookupMatch *match_out);
 SparkStatus SparkSpeculationLookupDraftTokens(void *context,const SparkSpeculationPolicyDraftRequest *request,SparkSpeculationPolicyDraftResult *result);
+SparkStatus SparkSpeculationLookupIndexBind(SparkSpeculationLookupIndex *index,uint32_t *heads,uint32_t bucket_count,uint32_t *chain,uint32_t capacity,uint32_t gram);
+void SparkSpeculationLookupIndexReset(SparkSpeculationLookupIndex *index);
+SparkStatus SparkSpeculationLookupIndexAppend(SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t length);
+SparkStatus SparkSpeculationLookupIndexFind(const SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t max_match,uint32_t candidate_limit,SparkSpeculationLookupMatch *match_out);
 
 #ifdef __cplusplus
 }

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 12u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 13u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
@@ -143,6 +143,9 @@ typedef struct SparkModelBatchEngineView
 	uint64_t prefix_index_loaded_record_count;
 	uint64_t prefix_index_refused_count;
 	uint64_t prefix_index_reimported_record_count;
+	uint64_t speculative_verify_lane_count;
+	uint64_t speculative_draft_token_count;
+	uint64_t speculative_accepted_token_count;
 	SparkModelPipelineClientView pipeline;
 } SparkModelBatchEngineView;
 
