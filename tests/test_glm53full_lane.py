@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -84,16 +85,15 @@ def api_host_problems():
         fake = Path(directory)
         log = fake / "remote.log"
         for tool in ("ssh", "scp"):
-            (fake / tool).write_text(f'#!/bin/sh\nprintf \'{tool}\' >> "{log}"\nfor a in "$@"; do printf \' [%s]\' "$a" >> "{log}"; done\necho >> "{log}"\n')
+            (fake / tool).write_text(f'#!/bin/sh\nmkdir -p "{log}"\nline=\'{tool}\'\nfor a in "$@"; do line="$line [$a]"; done\nprintf \'%s\\n\' "$line" > "{log}/$$"\n')
             (fake / tool).chmod(0o755)
         path = f"{fake}:{Path(sys.executable).parent}:/usr/bin:/bin"
 
         def lane(command, extra):
-            if log.exists():
-                log.unlink()
+            shutil.rmtree(log, ignore_errors=True)
             result = subprocess.run(["bash", str(ROOT / "tools/glm53full_lane.sh"), *command], capture_output=True, text=True,
                                     env={"PATH": path, "HOME": directory, **settings, **extra})
-            return result, (log.read_text().splitlines() if log.exists() else [])
+            return result, [line for call in sorted(log.glob("*")) for line in call.read_text().splitlines()] if log.exists() else []
 
         for command in (["api"], ["api-stop"], ["decode", "1,2", "3"]):
             for host in ("sparkf", "spark0", "sparka"):

@@ -7,6 +7,9 @@ set -euo pipefail
 : "${LING_WEIGHTD_SOCKET:?LING_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${LING_MEMORY_MAX:?LING_MEMORY_MAX is the residentd unit MemoryMax, e.g. 12G}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+LANE_TOOL=ling_lane
+LANE_RANKS=16
+. "$HERE/lane_run_log.sh"
 HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-ling-rd$LING_LANE"
@@ -64,11 +67,13 @@ setup() {
 }
 
 start() {
-  local rank host root
+  local rank host root run_id
+  run_id="$(lane_run_id "${LING_RUN_ID:-}")" || exit 2
+  echo "ling_lane: run $run_id; rank logs are $(lane_log_file "$run_id") under each lane root"
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
-    $SSH "$host" "cd $root && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$LING_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$LING_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$LING_LANE -E SPARK_TP_MESH_RANKS=$MESH_RANKS -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$LING_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) bash -c 'exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $rank > residentd.log 2>&1'" &
+    $SSH "$host" "cd $root && $(lane_log_prelude "$host" "$run_id") && systemctl --user reset-failed $UNIT 2>/dev/null; systemd-run --user --unit=$UNIT -p MemoryMax=$LING_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$LING_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$LING_LANE -E SPARK_TP_MESH_RANKS=$MESH_RANKS -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$LING_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) bash -c 'exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $rank > $(lane_log_file "$run_id") 2>&1'" &
     PIDS[$rank]=$!
   done
   join_ranks start
@@ -124,5 +129,6 @@ case "${1:-}" in
   stop) stop ;;
   api) api ;;
   decode) decode "${2:?decode TOKEN_IDS_CSV NEW_TOKENS}" "${3:?decode TOKEN_IDS_CSV NEW_TOKENS}" ;;
-  *) echo "usage: $0 render DIR|setup|start|status|stop|api|decode IDS NEW" >&2; exit 2 ;;
+  archive) lane_archive "${2:?archive RUN_ID DESTINATION}" "${3:?archive RUN_ID DESTINATION}" ;;
+  *) echo "usage: $0 render DIR|setup|start|status|stop|api|decode IDS NEW|archive RUN_ID DEST" >&2; exit 2 ;;
 esac
