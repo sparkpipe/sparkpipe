@@ -72,32 +72,6 @@ static SparkStatus SPARK_FAMILY(AllocateBytes)(
 	return(SparkStageModuleDeviceAllocate(&state->ledger,bytes,pointer));
 }
 
-static SparkStatus SPARK_FAMILY(DevicePageCopy)(
-	void *context,
-	uint32_t direction,
-	uintptr_t device_address,
-	void *host_address,
-	uint64_t bytes)
-{
-	SPARK_FAMILY(ModuleState) *state;
-	cudaError_t error;
-	state = (SPARK_FAMILY(ModuleState) *)context;
-	if ( state == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST )
-		error = cudaMemcpy(host_address,(const void *)device_address,(size_t)bytes,cudaMemcpyDeviceToHost);
-	else if ( direction == SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE )
-		error = cudaMemcpy((void *)device_address,host_address,(size_t)bytes,cudaMemcpyHostToDevice);
-	else
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"kv_page_copy"));
-}
-
-static uint32_t SPARK_FAMILY(PrefixRestorePending)(const SparkKvLaneTransaction *owner)
-{
-	return(owner != 0 && (owner->mutation_flags & SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE) != 0u && (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u && owner->lane.sequence_position != 0u);
-}
-
 static void SPARK_FAMILY(T1Wave)(const SPARK_FAMILY(CudaWave) *wave)
 {
 	uint32_t i;
@@ -129,25 +103,5 @@ static SparkStatus SPARK_FAMILY(StageHostBatch)(
 			slot->host_token_ids[row] = batch->token_ids[row];
 	}
 	memset(slot->host_kv_access_error,0,SPARK_FAMILY_CONST(KV_ACCESS_ERROR_WORD_COUNT) * sizeof(uint32_t));
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SPARK_FAMILY(UploadPageTables)(SPARK_FAMILY(ModuleState) *state,const SPARK_FAMILY(AsyncCompletion) *async,void *stream)
-{
-	uint32_t lane,resident;
-	uint64_t offset,bytes;
-	cudaError_t error;
-	for (lane=0u; lane<async->lane_count; lane++)
-	{
-		resident = async->lane_indices[lane];
-		offset = ((uint64_t)resident * state->pages_per_sequence);
-		bytes = ((uint64_t)state->kv_lane_transactions[resident].page_count * sizeof(uint32_t));
-		if ( memcmp(state->page_table_shadow + offset,state->kv_lane_physical_pages + offset,bytes) == 0 )
-			continue;
-		error = cudaMemcpyAsync(state->page_table + offset,state->kv_lane_physical_pages + offset,bytes,cudaMemcpyHostToDevice,(cudaStream_t)stream);
-		if ( error != cudaSuccess )
-			return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"page_table_update"));
-		memcpy(state->page_table_shadow + offset,state->kv_lane_physical_pages + offset,bytes);
-	}
 	return(SPARK_STATUS_OK);
 }

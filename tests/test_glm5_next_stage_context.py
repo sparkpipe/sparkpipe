@@ -12,6 +12,7 @@ WAVE_TIMING = ROOT / "tests/fixtures/glm5_next_wave_timing.txt"
 HARNESS = r'''
 #include <assert.h>
 #include <errno.h>
+#include <ftw.h>
 #include "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"
 #include "cache/kv_page_store.c"
 #include "src/spark_speculation_policy.c"
@@ -64,21 +65,25 @@ typedef struct PendingCopy2D
 } PendingCopy2D;
 static PendingCopy2D PENDING_2D[8];
 static uint32_t PENDING_2D_COUNT;
+static pthread_mutex_t PENDING_2D_LOCK = PTHREAD_MUTEX_INITIALIZER;
 
 static void pending_2d_land(void)
 {
 	uint32_t index;
 	size_t row;
+	pthread_mutex_lock(&PENDING_2D_LOCK);
 	for (index=0u; index<PENDING_2D_COUNT; index++)
 		for (row=0u; row<PENDING_2D[index].height; row++)
 			memcpy((uint8_t *)PENDING_2D[index].destination + row * PENDING_2D[index].destination_pitch,(const uint8_t *)PENDING_2D[index].source + row * PENDING_2D[index].source_pitch,PENDING_2D[index].width);
 	PENDING_2D_COUNT = 0u;
+	pthread_mutex_unlock(&PENDING_2D_LOCK);
 }
 
 cudaError_t cudaMemcpy2DAsync(void *destination,size_t destination_pitch,const void *source,size_t source_pitch,size_t width,size_t height,cudaMemcpyKind kind,cudaStream_t stream)
 {
 	(void)kind;
 	(void)stream;
+	pthread_mutex_lock(&PENDING_2D_LOCK);
 	assert(PENDING_2D_COUNT < 8u);
 	PENDING_2D[PENDING_2D_COUNT].destination = destination;
 	PENDING_2D[PENDING_2D_COUNT].source = source;
@@ -87,6 +92,7 @@ cudaError_t cudaMemcpy2DAsync(void *destination,size_t destination_pitch,const v
 	PENDING_2D[PENDING_2D_COUNT].width = width;
 	PENDING_2D[PENDING_2D_COUNT].height = height;
 	PENDING_2D_COUNT++;
+	pthread_mutex_unlock(&PENDING_2D_LOCK);
 	return(cudaSuccess);
 }
 
@@ -134,8 +140,6 @@ cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,c
 	return(cudaErrorInvalidValue);
 }
 
-static uint32_t REAL_BACKEND;
-static uint64_t ARENA_KEY_STRIDE_SKEW;
 static int32_t ALLOCATIONS_BEFORE_FAILURE = -1;
 
 static uint32_t HEALTH_DEAD_MASK,HEALTH_CALLS;
@@ -611,7 +615,7 @@ static void check_graph_epoch_ownership(void)
 	memset(&state,0,sizeof(state));
 	memset(EPOCH_WORDS,0,sizeof(EPOCH_WORDS));
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	state.slots[0].stream = state.execution_stream;
 	state.slots[0].graph_exec_a = (void *)(uintptr_t)9u;
 	state.slots[0].host_output_token_ids = &output;
@@ -677,7 +681,7 @@ static void check_working_set_recover(void)
 	memset(&state,0,sizeof(state));
 	memset(ring,0,sizeof(ring));
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	state.slots[0].stream = state.execution_stream;
 	state.slots[0].miss_ring = ring;
 	state.slots[0].snapshot = snapshot;
@@ -887,7 +891,7 @@ static void check_mtp_callback_handoff(SparkStatus submit_status,uint32_t releas
 	state.completion_worker = (SparkWeightdWorker *)(uintptr_t)1u;
 	state.pipeline_slot_count = 1u;
 	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	state.mtp_lane_hidden_bf16 = saved;
 	state.completions[0].state = &state;
@@ -1267,7 +1271,7 @@ static void check_verify_rounds(uint32_t drafter)
 	memset(&context,0,sizeof(context));
 	state.pipeline_slot_count = 1u;
 	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	state.verify_rows_max = 8u;
 	state.max_sequence_positions = VERIFY_CAPACITY;
@@ -1502,7 +1506,7 @@ static void check_verify_mtp_rounds(uint32_t drafter,uint32_t tp)
 		hc_mean[(uint64_t)index * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] = (uint16_t)(1000u + index);
 	state.pipeline_slot_count = 1u;
 	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	state.verify_rows_max = 8u;
 	state.max_sequence_positions = VERIFY_CAPACITY;
@@ -2184,7 +2188,7 @@ static void check_chain_ownership(void)
 	uint32_t reason = SPARK_GLM5_NEXT_BUSY_REASONS;
 	memset(&state,0,sizeof(state));
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	DRAIN_STATUS = cudaErrorNotReady;
 	STREAM_QUERY_COUNT = 0u;
 	assert(SparkGlm5NextClaimTpChain(&state,&reason) == SPARK_STATUS_BUSY && reason == SPARK_GLM5_NEXT_BUSY_STREAM);
@@ -2210,6 +2214,115 @@ static void check_chain_ownership(void)
 	HOST_MODE = 0u;
 }
 
+static char KV_DIRECTORY[64],KV_SNAPSHOT_DIRECTORY[64];
+static SparkWeightdLazyPack KV_PACK;
+
+SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCacheArena *arena,SparkKvPageCache *cache,SparkKvPageStore *store)
+{
+	uint32_t shard_divisor = state.kv_shard != 0u ? state.tp_degree : 1u;
+	assert(table->arena_configuration.logical_block_count == state.page_count);
+	assert(table->arena_configuration.resident_block_capacity == state.physical_page_count);
+	assert(table->arena_configuration.layer_count == state.kv_layer_count && table->capacity_request.layer_count == state.kv_layer_count);
+	assert(table->arena_configuration.block_token_count == SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT && table->arena_configuration.kv_head_count == 1u && table->arena_configuration.bytes_per_scalar == 2u);
+	assert(table->arena_configuration.value_block_stride_bytes * shard_divisor == (uint64_t)state.index_layer_count * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
+	assert(table->page_store_config.page_bytes == (uint64_t)64u * state.kv_layer_count * (SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION / shard_divisor) * 2u + table->arena_configuration.value_block_stride_bytes);
+	assert(strcmp(table->page_store_config.backing_path,state.kv_backing_directory) == 0);
+	return(SparkTestRealKvBackendInitialize(table,arena,cache,store));
+}
+
+static void kv_directory(void)
+{
+	strcpy(KV_DIRECTORY,"/tmp/glm5-next-kv-XXXXXX");
+	assert(mkdtemp(KV_DIRECTORY) != 0);
+	strcpy(KV_SNAPSHOT_DIRECTORY,"/tmp/glm5-next-snapshot-XXXXXX");
+	assert(mkdtemp(KV_SNAPSHOT_DIRECTORY) != 0);
+	state.kv_backing_directory = KV_DIRECTORY;
+	state.kv_snapshot_directory = KV_SNAPSHOT_DIRECTORY;
+	state.kv_snapshot_maximum_bytes = UINT64_C(1) << 26;
+	if ( state.kv_backing_maximum_bytes == 0u )
+		state.kv_backing_maximum_bytes = UINT64_C(1) << 30;
+	if ( state.lazy_pack == 0 )
+		state.lazy_pack = &KV_PACK;
+	if ( state.lazy_pack->pack_sha256[0] == 0u )
+		memset(state.lazy_pack->pack_sha256,0x5a,sizeof(state.lazy_pack->pack_sha256));
+	if ( state.execution_row_capacity == 0u )
+		state.execution_row_capacity = 8u;
+	if ( state.pipeline_slot_count == 0u )
+		state.pipeline_slot_count = 1u;
+	if ( state.tp_degree == 0u )
+		state.tp_degree = 1u;
+	state.expert_weight_codec = GLM5_NEXT_EXPERT_WEIGHT_CODEC;
+	state.model_id = "glm5-next-fixture";
+	(void)snprintf(state.model_revision,sizeof(state.model_revision),"fixture");
+}
+
+static int kv_remove_entry(const char *path,const struct stat *info,int flag,struct FTW *walk)
+{
+	(void)info;
+	(void)flag;
+	(void)walk;
+	return(remove(path));
+}
+
+static void kv_remove_directories(void)
+{
+	assert(rmdir(KV_DIRECTORY) == 0);
+	assert(nftw(KV_SNAPSHOT_DIRECTORY,kv_remove_entry,16,FTW_DEPTH | FTW_PHYS) == 0);
+}
+
+static void kv_bind(uint32_t lanes,uint32_t slots,uint32_t logical,uint32_t physical)
+{
+	state.ledger.module_tag = SPARK_GLM5_NEXT_MODULE_TAG;
+	if ( state.max_sequence_positions == 0u )
+		state.max_sequence_positions = 64u;
+	state.kv_layer_count = state.index_layer_count = 1u;
+	state.resident_sequence_capacity = lanes;
+	state.pipeline_slot_count = slots;
+	state.page_count = logical;
+	state.physical_page_count = physical;
+	kv_directory();
+	assert(SparkGlm5NextBindKv(&state) == SPARK_STATUS_OK);
+	assert(state.kv.mutex_initialized != 0u && state.kv.copier_initialized != 0u);
+}
+
+static void kv_recurrent(uint8_t (*pools)[96],uint32_t lanes)
+{
+	state.kda_layer_count = 3u;
+	state.kda_state_layer_stride_bytes = 8u * lanes;
+	state.kda_window_layer_stride_bytes = 4u * lanes;
+	state.kda_state_pools = pools[0];
+	state.kda_q_window_pool = pools[1];
+	state.kda_k_window_pool = pools[2];
+	state.kda_v_window_pool = pools[3];
+}
+
+static void kv_unbind(void)
+{
+	SparkStageKvBindingDestroy(&state.kv);
+	assert(state.kv.mutex_initialized == 0u && state.kv.copier_initialized == 0u);
+	SparkStageModuleLedgerRollback(&state.ledger,0u);
+	kv_remove_directories();
+}
+
+static void kv_admit(SparkModelDriverAdmissionRequest *request,uint32_t flags,SparkModelDriverAdmissionDecision *decision)
+{
+	SparkModelDriverInitializeAdmissionDecision(decision);
+	request->admission_flags = flags;
+	assert(SparkGlm5NextAdmissionPredicate(&state,request,decision) == SPARK_STATUS_OK);
+}
+
+static SparkModelDriverFrame kv_admitted_frame(SparkModelDriverAdmissionRequest *request)
+{
+	SparkModelDriverAdmissionDecision decision;
+	SparkModelDriverFrame frame;
+	kv_admit(request,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,&decision);
+	kv_admit(request,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT,&decision);
+	kv_admit(request,0u,&decision);
+	frame = SparkTestKvTransactionFrame(request);
+	assert(SparkModelDriverApplyAdmissionDecision(&decision,&frame) == SPARK_STATUS_OK);
+	return(frame);
+}
+
 static int32_t check_cache_transactions(SparkStatus completion_status,SparkStatus verify_status,SparkStatus end_status,cudaError_t drain_status,uint32_t steps)
 {
 	SparkStatus expected = completion_status != SPARK_STATUS_OK ? completion_status : verify_status;
@@ -2218,59 +2331,51 @@ static int32_t check_cache_transactions(SparkStatus completion_status,SparkStatu
 	SparkModelDriverAdmissionDecision decision;
 	SparkModelDriverFrame frame;
 	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
-	uint32_t slots[2] = {0,1},device_table[16],shadow[16],errors[6] = {0};
+	uint32_t slots[2] = {0,1},errors[6] = {0},lane;
 	uint64_t positions[2] = {0,0},sequences[2] = {1,2},next[2] = {1,1};
 	SparkTestKvTransactionsInitialize(&fixture,2u);
-	(void)SparkTestKvAcquire(&fixture.pages.kv);
 	memset(&state,0,sizeof(state));
-	memset(device_table,0xff,sizeof(device_table));
-	memset(shadow,0xff,sizeof(shadow));
-	state.pipeline_slot_count = 2u;
+	state.execution_row_capacity = 2u;
+	kv_bind(4u,2u,8u,4u);
 	state.execution_row_capacity = 1u;
-	state.resident_sequence_capacity = 4u;
-	state.pages_per_sequence = 4u;
-	state.kv_transactions = fixture.transactions;
-	state.kv_lane_transactions = fixture.owners;
-	state.kv_lane_physical_pages = fixture.physical;
-	state.page_table = device_table;
-	state.page_table_shadow = shadow;
-	if ( pthread_mutex_init(&state.kv_mutex,0) != 0 )
-		return(-20);
 	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&fixture.request,&decision) == SPARK_STATUS_OK);
 	assert(decision.accepted == 0u && decision.rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
-	assert(fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && fixture.owners[1].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
+	assert(state.kv.lanes[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && state.kv.lanes[1].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
 	state.execution_row_capacity = 2u;
-	SparkModelDriverInitializeAdmissionDecision(&decision);
-	if ( SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) != SPARK_STATUS_OK || SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u )
-		return(-21);
-	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
-	if ( SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) != SPARK_STATUS_OK )
-		return(-22);
-	fixture.request.admission_flags = 0u;
-	frame = SparkTestKvTransactionFrame(&fixture.request);
-	if ( SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) != SPARK_STATUS_OK || SparkModelDriverApplyAdmissionDecision(&decision,&frame) != SPARK_STATUS_OK )
-		return(-23);
-	batch.active_sequence_count = 2u;
+	frame = kv_admitted_frame(&fixture.request);
+	batch.active_sequence_count = batch.row_count = 2u;
 	batch.row_resident_slots = slots;
 	batch.row_positions = positions;
 	batch.row_sequence_ids = sequences;
-	if ( SparkGlm5NextClaimCacheFrame(&state,&frame,&batch,next) != SPARK_STATUS_OK )
+	frame.driver_dispatch_cookie0++;
+	if ( SparkStageKvBindingClaim(&state.kv,&frame,2u,slots,sequences,positions,next) != SPARK_STATUS_VALIDATION_FAILED )
 		return(-24);
-	state.completions[0].state = &state;
-	state.completions[0].lane_count = 2u;
-	state.completions[0].lane_indices[1] = 1u;
+	frame.driver_dispatch_cookie0--;
+	if ( SparkStageKvBindingClaim(&state.kv,&frame,2u,slots,sequences,positions,next) != SPARK_STATUS_OK )
+		return(-24);
 	COPY_COUNT = 0u;
-	if ( SparkGlm5NextUploadPageTables(&state,&state.completions[0],0) != SPARK_STATUS_OK || COPY_COUNT != 2u || device_table[0] != fixture.physical[0] || device_table[4] != fixture.physical[4] || device_table[0] == fixture.logical[0] )
+	if ( SparkStageKvBindingUploadPageTables(&state.kv,slots,2u,0) != SPARK_STATUS_OK || COPY_COUNT != 2u )
 		return(-25);
-	if ( SparkGlm5NextUploadPageTables(&state,&state.completions[0],0) != SPARK_STATUS_OK || COPY_COUNT != 2u )
+	for (lane=0u; lane<2u; lane++)
+		if ( state.kv.page_table[lane * state.kv.pages_per_sequence] != state.kv.physical_pages[lane * state.kv.pages_per_sequence] || state.kv.page_table[lane * state.kv.pages_per_sequence] >= state.kv.physical_page_count )
+			return(-25);
+	if ( SparkStageKvBindingUploadPageTables(&state.kv,slots,2u,0) != SPARK_STATUS_OK || COPY_COUNT != 2u )
 		return(-26);
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	assert(pthread_mutex_init(&state.completion_queue_lock,0) == 0);
 	state.slots[0].miss_ring = (uint32_t *)EPOCH_WORDS;
 	memset(EPOCH_WORDS,0,sizeof(EPOCH_WORDS));
 	EPOCH_WORDS[SPARK_GLM5_NEXT_MODEL_MISS_EPOCH_WORD_U64] = 42u;
+	state.completions[0].state = &state;
+	state.completions[0].lane_count = 2u;
+	for (lane=0u; lane<2u; lane++)
+	{
+		state.completions[0].lane_indices[lane] = lane;
+		state.completions[0].lane_bound[lane] = 1u;
+		state.completions[0].lane_sequence_ids[lane] = sequences[lane];
+		state.completions[0].lane_next_positions[lane] = next[lane];
+	}
 	state.completions[0].completion.status = completion_status;
 	state.completions[0].completion_function = observe_completion;
 	state.completions[0].steps = steps;
@@ -2292,13 +2397,13 @@ static int32_t check_cache_transactions(SparkStatus completion_status,SparkStatu
 	COMPLETION_WORK = 0;
 	WORK_STATUS = SPARK_STATUS_BUSY;
 	SparkGlm5NextCompleteAsync(&state.completions[0]);
-	if ( COMPLETION_WORK != 0 || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_CLAIMED || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
+	if ( COMPLETION_WORK != 0 || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_CLAIMED || state.kv.lanes[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
 		return(-28);
 	WORK_STATUS = SPARK_STATUS_OK;
 	pthread_mutex_lock(&state.completion_queue_lock);
 	SparkGlm5NextDrainParkedCompletions(&state);
 	pthread_mutex_unlock(&state.completion_queue_lock);
-	if ( COMPLETION_WORK == 0 || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_CLAIMED || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
+	if ( COMPLETION_WORK == 0 || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_CLAIMED || state.kv.lanes[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
 		return(-29);
 	COMPLETION_WORK(COMPLETION_CONTEXT);
 	VERIFY_STATUS = SPARK_STATUS_OK;
@@ -2309,62 +2414,27 @@ static int32_t check_cache_transactions(SparkStatus completion_status,SparkStatu
 		assert(atomic_load(&state.slot_states[0]) == SPARK_STAGE_MODULE_SLOT_CLAIMED);
 		assert(atomic_load(&state.lane_states[0]) == SPARK_STAGE_MODULE_SLOT_CLAIMED);
 		assert(END_COUNT == (drain_status != cudaSuccess ? 0u : 1u));
-		assert(fixture.owners[0].phase == (drain_status != cudaSuccess ? SPARK_KV_LANE_TRANSACTION_EXECUTING : SPARK_KV_LANE_TRANSACTION_EMPTY));
+		assert(state.kv.lanes[0].phase == (drain_status != cudaSuccess ? SPARK_KV_LANE_TRANSACTION_EXECUTING : SPARK_KV_LANE_TRANSACTION_EMPTY));
 		assert(atomic_load(&state.terminal_status) != SPARK_STATUS_OK);
 		DRAIN_STATUS = cudaSuccess;
 		assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 		assert(pthread_mutex_destroy(&state.completion_queue_lock) == 0);
-		pthread_mutex_destroy(&state.kv_mutex);
+		kv_unbind();
 		memset(&state,0,sizeof(state));
 		return(0);
 	}
 	assert(END_COUNT == 2u);
 	if ( COMPLETION_REUSED == 0u )
 		return(-30);
-	if ( (expected == SPARK_STATUS_OK && (fixture.pages.cache.sequences[0].next_token_position != steps || fixture.pages.cache.sequences[1].next_token_position != steps || state.completions[0].burst_token_count != (steps > 1u ? 2u * steps : 0u))) )
+	if ( expected == SPARK_STATUS_OK && (state.kv.page_cache.sequences[0].next_token_position != steps || state.kv.page_cache.sequences[1].next_token_position != steps || state.completions[0].burst_token_count != (steps > 1u ? 2u * steps : 0u) || atomic_load(&state.kv.lane_next_positions[0]) != steps) )
 		return(-31);
-	if ( COMPLETION_STATUS != expected || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE || atomic_load(&state.lane_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE || atomic_load(&state.lane_states[1]) != SPARK_STAGE_MODULE_SLOT_FREE || (expected != SPARK_STATUS_OK && (fixture.pages.cache.sequences[0].sequence_id != 0u || fixture.pages.cache.sequences[1].sequence_id != 0u || shadow[0] != UINT32_MAX)) )
+	if ( COMPLETION_STATUS != expected || atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE || atomic_load(&state.lane_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE || atomic_load(&state.lane_states[1]) != SPARK_STAGE_MODULE_SLOT_FREE || state.kv.lanes[0].phase != SPARK_KV_LANE_TRANSACTION_EMPTY || (expected != SPARK_STATUS_OK && (state.kv.page_cache.sequences[0].sequence_id != 0u || state.kv.page_cache.sequences[1].sequence_id != 0u || atomic_load(&state.kv.lane_bound[0]) != 0u)) )
 		return(-27);
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
 	assert(pthread_mutex_destroy(&state.completion_queue_lock) == 0);
-	pthread_mutex_destroy(&state.kv_mutex);
+	kv_unbind();
 	memset(&state,0,sizeof(state));
 	return(0);
-}
-
-SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCacheArena *arena,SparkKvPageCache *cache,SparkKvPageStore *store)
-{
-	assert(table->arena_configuration.logical_block_count == state.page_count);
-	assert(table->arena_configuration.resident_block_capacity == state.physical_page_count);
-	(void)arena;
-	(void)cache;
-	(void)store;
-	assert(SparkKvPageStoreConfigurationIsValid(&table->page_store_config) != 0u);
-	assert(table->page_store_config.transfer_capacity <= 2u);
-	assert(table->page_store_config.page_bytes == table->page_store_config.staging_bytes);
-	assert(table->page_store_config.maximum_backing_bytes == state.page_count * table->page_store_config.page_bytes);
-	assert(table->arena_configuration.value_device_base == state.index_cache);
-	uint32_t shard_divisor = state.kv_shard != 0u ? state.tp_degree : 1u;
-	assert(table->arena_configuration.value_block_stride_bytes * shard_divisor == (uint64_t)state.index_layer_count * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
-	assert(table->arena_configuration.layer_count == state.kv_layer_count && table->capacity_request.layer_count == state.kv_layer_count);
-	assert(table->arena_configuration.block_token_count == SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT && table->arena_configuration.kv_head_count == 1u);
-	assert(table->arena_configuration.head_dim * shard_divisor == SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION && table->arena_configuration.bytes_per_scalar == 2u);
-	assert(table->page_store_config.page_bytes == (uint64_t)SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT * state.kv_layer_count * (SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION / shard_divisor) * 2u + table->arena_configuration.value_block_stride_bytes);
-	if ( ARENA_KEY_STRIDE_SKEW != 0u )
-	{
-		arena->key_block_stride_bytes = table->page_store_config.page_bytes - table->arena_configuration.value_block_stride_bytes + ARENA_KEY_STRIDE_SKEW;
-		arena->value_block_stride_bytes = table->arena_configuration.value_block_stride_bytes;
-		arena->logical_block_count = table->arena_configuration.logical_block_count;
-		arena->resident_block_capacity = table->arena_configuration.resident_block_capacity;
-		return(SPARK_STATUS_OK);
-	}
-	if ( REAL_BACKEND != 0u )
-	{
-		SparkKvModelTable named_store = *table;
-		named_store.page_store_config.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
-		return(SparkTestRealKvBackendInitialize(&named_store,arena,cache,store));
-	}
-	return(SPARK_STATUS_PENDING);
 }
 
 static int32_t check_cache_release(void)
@@ -2372,32 +2442,36 @@ static int32_t check_cache_release(void)
 	SparkTestKvTransactions fixture;
 	SparkModelDriverFrame frame;
 	SparkModelDriverAdmissionDecision decision;
+	uint32_t slots[2] = {0u,1u};
+	uint64_t positions[2] = {0u,0u},sequences[2] = {1u,2u},next[2] = {1u,1u};
+	uint8_t bound[2] = {1u,1u};
+	SparkStageKvBindingCompletion completion = {0};
 	SparkTestKvTransactionsInitialize(&fixture,2u);
 	memset(&state,0,sizeof(state));
-	state.kv_transactions = fixture.transactions;
-	state.pipeline_slot_count = 1u;
-	if ( pthread_mutex_init(&state.kv_mutex,0) != 0 )
-		return(-30);
-	if ( SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) != SPARK_STATUS_OK )
-		return(-31);
-	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
-	if ( SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) != SPARK_STATUS_OK )
-		return(-32);
-	frame = SparkTestKvTransactionFrame(&fixture.request);
-	if ( SparkKvLaneTransactionsClaim(&fixture.transactions,&frame) != SPARK_STATUS_OK || SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){0u,1u},2u,SPARK_STATUS_OK,0u) != SPARK_STATUS_OK )
+	kv_bind(4u,1u,8u,4u);
+	state.mtp_lane_armed = (uint8_t[4]){1u,1u,1u,1u};
+	frame = kv_admitted_frame(&fixture.request);
+	if ( SparkStageKvBindingClaim(&state.kv,&frame,2u,slots,sequences,positions,next) != SPARK_STATUS_OK )
 		return(-33);
-	atomic_store(&state.lane_bound[0],1u);
-	atomic_store(&state.lane_bound[1],1u);
-	fixture.request.admission_flags = 0u;
+	completion.lane_count = 2u;
+	completion.resident_slots = slots;
+	completion.bound = bound;
+	completion.sequence_ids = sequences;
+	completion.next_positions = next;
+	if ( SparkStageKvBindingFinishWait(&state.kv,0u,&completion) != SPARK_STATUS_OK || SparkStageKvBindingResidentCount(&state.kv) != 2u )
+		return(-33);
+	fixture.request.request_id = fixture.request.submission_id = fixture.request.transaction_id = 2u;
 	fixture.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
 	fixture.request.new_token_count = 0u;
 	fixture.lanes[0].sequence_position = fixture.lanes[1].sequence_position = 1u;
 	fixture.lanes[0].flags = fixture.lanes[1].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
+	fixture.request.admission_flags = 0u;
 	if ( SparkGlm5NextResidentDecodeStageAdmit(&state,&fixture.request,&decision) != SPARK_STATUS_OK || SparkModelDriverAdmissionDecisionIsValid(&decision) == 0u )
 		return(-34);
-	if ( fixture.pages.cache.live_sequence_count != 0u || atomic_load(&state.lane_bound[0]) != 0u || atomic_load(&state.lane_bound[1]) != 0u )
+	if ( state.kv.page_cache.live_sequence_count != 0u || SparkStageKvBindingResidentCount(&state.kv) != 0u || state.mtp_lane_armed[0] != 0u || state.mtp_lane_armed[1] != 0u || state.mtp_lane_armed[2] != 1u )
 		return(-35);
-	pthread_mutex_destroy(&state.kv_mutex);
+	state.mtp_lane_armed = 0;
+	kv_unbind();
 	memset(&state,0,sizeof(state));
 	return(0);
 }
@@ -2463,39 +2537,10 @@ static void free_cache_fixture(void)
 	SparkStageModuleLedgerRollback(&state.ledger,0u);
 }
 
-static void check_cache_worker_cleanup(void)
-{
-	SparkKvPageStoreConfiguration config = {0};
-	uint8_t source[32] = {1u};
-	char path[] = "/tmp/glm-cache-cleanup-XXXXXX";
-	int32_t descriptor;
-	memset(&state,0,sizeof(state));
-	descriptor = mkstemp(path);
-	assert(descriptor >= 0 && close(descriptor) == 0 && unlink(path) == 0);
-	state.kv_page_staging = malloc(sizeof(source));
-	assert(state.kv_page_staging != 0 && pthread_mutex_init(&state.kv_mutex,0) == 0);
-	state.kv_mutex_initialized = 1u;
-	config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
-	config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
-	config.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
-	config.logical_page_capacity = config.transfer_capacity = 1u;
-	config.page_bytes = config.maximum_backing_bytes = config.staging_bytes = sizeof(source);
-	config.staging_address = state.kv_page_staging;
-	config.backing_path = path;
-	assert(SparkKvPageStoreInitialize(&state.kv_page_store,&config) == SPARK_STATUS_OK);
-	descriptor = state.kv_page_store.file_descriptor;
-	assert(SparkKvPageStoreWriteback(&state.kv_page_store,0u,0u,1u,(uintptr_t)source,sizeof(source),0u,0u) == SPARK_STATUS_BUSY);
-	SparkGlm5NextReleaseCaches(&state);
-	assert(state.kv_page_store.worker_state == 0 && state.kv_page_store.file_descriptor == -1);
-	errno = 0;
-	assert(fcntl(descriptor,F_GETFD) == -1 && errno == EBADF);
-	assert(unlink(path) == 0);
-}
-
 static int32_t check_rank_state(void)
 {
 	uint32_t degrees[3] = {1u,4u,16u},index,allocation;
-	uint64_t state_bytes,window_bytes,actual_state = 0u,actual_window = 0u;
+	uint64_t state_bytes,window_bytes,actual_state = 0u,actual_window = 0u,lane_bytes,page_store_bytes;
 	for (index=0u; index<3u; index++)
 	{
 		memset(&state,0,sizeof(state));
@@ -2506,12 +2551,12 @@ static int32_t check_rank_state(void)
 		state.max_sequence_positions = 64u;
 		state.page_count = 7u;
 		state.physical_page_count = 2u;
-		state.kv_backing_directory = "/unused-host-fixture";
-		if ( SparkGlm5NextAllocateCaches(&state) != SPARK_STATUS_PENDING || state.kda_layer_count != 3u )
+		kv_directory();
+		if ( SparkGlm5NextAllocateCaches(&state) != SPARK_STATUS_OK || state.kda_layer_count != 3u )
 			return(-8);
-		assert(state.page_count == 7u && state.physical_page_count == 2u);
-		assert(state.kv_layer_stride_bytes == 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
-		assert(state.index_layer_stride_bytes == 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
+		assert(state.page_count == 7u && state.physical_page_count == 2u && state.kv.region_count == 2u);
+		assert(state.kv.region_layer_stride_bytes[0] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
+		assert(state.kv.region_layer_stride_bytes[1] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
 		state_bytes = (uint64_t)(64u / degrees[index]) * 128u * 128u * sizeof(float);
 		window_bytes = (uint64_t)(64u / degrees[index]) * 128u * 4u * sizeof(uint16_t);
 		if ( state.kda_state_layer_stride_bytes != 3u * state_bytes || state.kda_window_layer_stride_bytes != 3u * window_bytes )
@@ -2527,145 +2572,25 @@ static int32_t check_rank_state(void)
 			return(-10);
 		if ( state.kda_k_window_pool != state.kda_q_window_pool + 9u * window_bytes || state.kda_v_window_pool != state.kda_k_window_pool + 9u * window_bytes )
 			return(-11);
-		assert(state.recurrent_page_bytes == 3u * (state_bytes + 3u * window_bytes));
-		state.kv_backing_maximum_bytes = state.page_count * (state.recurrent_page_bytes + 128u);
-		assert(SparkGlm5NextBackingCapacity(&state,128u) == SPARK_STATUS_OK);
+		lane_bytes = 3u * (state_bytes + 3u * window_bytes);
+		assert(state.kv.recurrent.lane_bytes == lane_bytes && state.kv.state_slot_count == 7u);
+		page_store_bytes = state.kv.page_store_backing_bytes;
+		assert(page_store_bytes >= 5u * state.kv.page_bytes);
+		free_cache_fixture();
+		kv_remove_directories();
+		state.kv_backing_maximum_bytes = page_store_bytes + 7u * lane_bytes;
+		kv_directory();
+		assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_OK && state.kv.page_store_backing_bytes == page_store_bytes);
+		free_cache_fixture();
+		kv_remove_directories();
 		state.kv_backing_maximum_bytes--;
-		assert(SparkGlm5NextBackingCapacity(&state,128u) == SPARK_STATUS_CAPACITY_EXCEEDED);
+		kv_directory();
+		assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_CAPACITY_EXCEEDED && state.kv.mutex_initialized == 0u);
 		free_cache_fixture();
-	}
-	return(0);
-}
-
-
-static SparkStatus make_resident(uint32_t page,uint32_t restore)
-{
-	SparkStatus status;
-	uint32_t attempt;
-	for (attempt=0u; attempt<16u; attempt++)
-	{
-		status = restore != 0u ? SparkKvPageStorePrefetch(&state.kv_page_store,&state.kv_arena,page) : SparkKvCacheArenaMarkBlockResident(&state.kv_arena,page);
-		if ( status != SPARK_STATUS_BUSY )
-			return(status);
-		assert(SparkKvPageStoreWaitForTransfers(&state.kv_page_store) == SPARK_STATUS_OK);
-		assert(SparkKvPageStoreProgress(&state.kv_page_store,&state.kv_arena,2u) == SPARK_STATUS_OK);
-	}
-	return(SPARK_STATUS_BUSY);
-}
-
-static void check_physical_budget(void)
-{
-	char path[] = "/tmp/glm-physical-budget-XXXXXX";
-	uint32_t pages[3],physical[2],i,first_slot;
-	uint64_t key_bytes,value_bytes;
-	uint8_t *expected,*actual;
-	int32_t failure,descriptor = mkstemp(path);
-	assert(descriptor >= 0 && close(descriptor) == 0 && unlink(path) == 0);
-	for (failure=0; failure<4; failure++)
-	{
-		memset(&state,0,sizeof(state));
-		state.ledger.module_tag = "physical-budget-test";
-		state.tp_degree = 16u;
-		state.layer_count = 4u;
-		state.resident_sequence_capacity = 3u;
-		state.max_sequence_positions = 128u;
-		state.page_count = 7u;
-		state.physical_page_count = 2u;
-		state.kv_backing_directory = path;
-		ALLOCATIONS_BEFORE_FAILURE = failure;
-		assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_CAPACITY_EXCEEDED);
-		ALLOCATIONS_BEFORE_FAILURE = -1;
-		free_cache_fixture();
-		assert(state.ledger.device_allocation_count == 0u);
+		kv_remove_directories();
 	}
 	memset(&state,0,sizeof(state));
-	state.ledger.module_tag = "physical-budget-test";
-	state.tp_degree = 16u;
-	state.first_layer_index = 3u;
-	state.layer_count = 1u;
-	state.resident_sequence_capacity = 3u;
-	state.max_sequence_positions = 128u;
-	state.page_count = 7u;
-	state.physical_page_count = 2u;
-	state.kv_backing_directory = path;
-	REAL_BACKEND = 1u;
-	assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_OK);
-	assert(state.kv_arena.logical_block_count == 7u && state.kv_arena.resident_block_capacity == 2u);
-	for (i=0u; i<3u; i++)
-		assert(SparkKvCacheArenaAcquireBlock(&state.kv_arena,&pages[i]) == SPARK_STATUS_OK);
-	assert(make_resident(pages[2],0u) == SPARK_STATUS_OK);
-	assert(make_resident(pages[0],0u) == SPARK_STATUS_OK);
-	assert(SparkKvCacheArenaPinResidentTable(&state.kv_arena,(uint32_t[]){pages[2],pages[0]},2u,physical) == SPARK_STATUS_OK);
-	assert(physical[0] != pages[2] && physical[0] != physical[1]);
-	first_slot = physical[0];
-	key_bytes = state.kv_arena.key_block_stride_bytes;
-	value_bytes = state.kv_arena.value_block_stride_bytes;
-	expected = malloc(key_bytes + value_bytes);
-	actual = malloc(key_bytes + value_bytes);
-	assert(expected != 0 && actual != 0);
-	for (i=0u; i<key_bytes + value_bytes; i++)
-		expected[i] = (uint8_t)(i * 37u + i / 113u);
-	assert(SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,state.kv_blocks[pages[2]].key_device_address,expected,key_bytes) == SPARK_STATUS_OK);
-	assert(SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,state.kv_blocks[pages[2]].value_device_address,expected + key_bytes,value_bytes) == SPARK_STATUS_OK);
-	assert(SparkKvCacheArenaMarkBlockDirty(&state.kv_arena,pages[2]) == SPARK_STATUS_OK);
-	assert(make_resident(pages[1],0u) == SPARK_STATUS_CAPACITY_EXCEEDED);
-	assert(state.kv_blocks[pages[2]].resident_slot_index == first_slot && state.kv_blocks[pages[0]].resident_slot_index == physical[1]);
-	assert(SparkKvCacheArenaUnpinResidentBlock(&state.kv_arena,pages[2]) == SPARK_STATUS_OK);
-	assert(make_resident(pages[1],0u) == SPARK_STATUS_OK);
-	assert(state.kv_page_store.write_count == 1u && state.kv_blocks[pages[2]].resident_slot_index == SPARK_KV_CACHE_NO_RESIDENT_SLOT);
-	assert(state.kv_blocks[pages[0]].resident_slot_index == physical[1] && state.kv_blocks[pages[0]].residency_reference_count == 1u);
-	assert(SparkKvCacheArenaPinResidentBlock(&state.kv_arena,pages[1]) == SPARK_STATUS_OK);
-	assert(SparkKvCacheArenaUnpinResidentBlock(&state.kv_arena,pages[0]) == SPARK_STATUS_OK);
-	assert(make_resident(pages[2],1u) == SPARK_STATUS_OK);
-	assert(state.kv_blocks[pages[2]].resident_slot_index != first_slot && state.kv_page_store.read_count == 1u);
-	assert(SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,state.kv_blocks[pages[2]].key_device_address,actual,key_bytes) == SPARK_STATUS_OK);
-	assert(SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,state.kv_blocks[pages[2]].value_device_address,actual + key_bytes,value_bytes) == SPARK_STATUS_OK);
-	assert(memcmp(expected,actual,key_bytes + value_bytes) == 0);
-	{
-		SparkGlm5NextStateCaptureLane lane;
-		uint32_t logical[2],mapped[2];
-		uint64_t hidden_bytes = (uint64_t)SPARK_GLM5_NEXT_MODEL_HC_MULT * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t);
-		float scores[2] = {3.5f,1.25f};
-		uint32_t capture_slots[2] = {0u,0u};
-		uint8_t *hidden = malloc(2u * hidden_bytes),*payload = malloc(2u * (key_bytes + value_bytes) + hidden_bytes);
-		SparkGlm5NextStateCapture capture = {.abi_version=SPARK_GLM5_NEXT_STATE_CAPTURE_ABI_VERSION,.descriptor_bytes=sizeof(capture),.lane_capacity=1u,.pages_per_lane_capacity=2u,.payload_capacity=2u * (key_bytes + value_bytes) + hidden_bytes,.lanes=&lane,.logical_pages=logical,.physical_pages=mapped,.payload=payload};
-		SparkGlm5NextResidentDecodeStageBatchView batch = {.row_count=2u,.active_sequence_count=1u};
-		SparkGlm5NextResidentDecodeStageFrameContext context = {.batch=&batch,.state_capture=&capture};
-		SparkGlm5NextAsyncCompletion completion = {.state=&state,.lane_count=1u,.row_count=2u,.lane_next_positions={64u},.lane_sequence_ids={1u},.state_capture=&capture};
-		assert(hidden != 0 && payload != 0);
-		memset(hidden,0x35,hidden_bytes);
-		memset(hidden + hidden_bytes,0x65,hidden_bytes);
-		state.owns_final_head = 1u;
-		assert(SparkGlm5NextValidateStateCapture(&state,&context) == SPARK_STATUS_OK);
-		capture.payload_capacity--;
-		assert(SparkGlm5NextValidateStateCapture(&state,&context) == SPARK_STATUS_CAPACITY_EXCEEDED);
-		capture.payload_capacity++;
-		capture.abi_version++;
-		assert(SparkGlm5NextValidateStateCapture(&state,&context) == SPARK_STATUS_ABI_MISMATCH);
-		capture.abi_version--;
-		state.slots[0].hidden_bf16 = (uint16_t *)hidden;
-		state.slots[0].output_score = scores;
-		state.slots[0].host_resident_slots = capture_slots;
-		state.kv_lane_transactions[0].phase = SPARK_KV_LANE_TRANSACTION_EXECUTING;
-		state.kv_lane_transactions[0].page_count = 1u;
-		state.kv_lane_logical_pages[0] = pages[2];
-		state.kv_lane_physical_pages[0] = state.kv_blocks[pages[2]].resident_slot_index;
-		assert(SparkKvCacheArenaPinResidentBlock(&state.kv_arena,pages[2]) == SPARK_STATUS_OK);
-		assert(SparkGlm5NextCaptureState(&completion) == SPARK_STATUS_OK);
-		assert(capture.payload_bytes == key_bytes + value_bytes + hidden_bytes && capture.backing_write_count == state.kv_page_store.write_count && capture.backing_read_count == 1u);
-		assert(lane.next_position == 64u && lane.page_count == 1u && lane.output_score == scores[1] && logical[0] == pages[2] && mapped[0] == state.kv_blocks[pages[2]].resident_slot_index);
-		assert(memcmp(payload,expected,key_bytes + value_bytes) == 0 && memcmp(payload + key_bytes + value_bytes,hidden + hidden_bytes,hidden_bytes) == 0);
-		assert(SparkKvCacheArenaUnpinResidentBlock(&state.kv_arena,pages[2]) == SPARK_STATUS_OK);
-		assert(SparkGlm5NextCaptureState(&completion) == SPARK_STATUS_INTERNAL_ERROR && capture.payload_bytes == 0u);
-		free(hidden);
-		free(payload);
-	}
-	assert(SparkKvCacheArenaUnpinResidentBlock(&state.kv_arena,pages[1]) == SPARK_STATUS_OK);
-	free(expected);
-	free(actual);
-	free_cache_fixture();
-	REAL_BACKEND = 0u;
-	assert(unlink(path) == 0);
+	return(0);
 }
 
 static int32_t check_recurrent_copy(void)
@@ -2681,13 +2606,17 @@ static int32_t check_recurrent_copy(void)
 	state.kda_q_window_pool = pools[1];
 	state.kda_k_window_pool = pools[2];
 	state.kda_v_window_pool = pools[3];
+	assert(SparkGlm5NextRecurrentLaneBytes(&state) == sizeof(packed));
 	for (part=0u; part<4u; part++)
 		for (byte=0u; byte<72u; byte++)
 			pools[part][byte] = (uint8_t)(part * 73u + byte);
 	memcpy(saved,pools,sizeof(saved));
 	for (slot=0u; slot<3u; slot++)
 	{
-		assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,slot,packed,sizeof(packed)) == SPARK_STATUS_OK);
+		memset(packed,0,sizeof(packed));
+		assert(SparkGlm5NextRecurrentHookCopy(&state,SPARK_STAGE_KV_RECURRENT_TO_BUFFER,slot,packed,sizeof(packed),(void *)(uintptr_t)7u) == SPARK_STATUS_OK);
+		assert(PENDING_2D_COUNT == 4u && packed[0] == 0u);
+		pending_2d_land();
 		offset = 0u;
 		for (part=0u; part<4u; part++)
 		{
@@ -2699,109 +2628,22 @@ static int32_t check_recurrent_copy(void)
 				offset += width;
 			}
 		}
-		assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,slot,packed,sizeof(packed)) == SPARK_STATUS_OK);
-		assert(memcmp(pools,saved,sizeof(pools)) == 0);
+		assert(SparkGlm5NextRecurrentHookCopy(&state,SPARK_STAGE_KV_RECURRENT_FROM_BUFFER,slot,packed,sizeof(packed),0) == SPARK_STATUS_OK);
+		assert(PENDING_2D_COUNT == 0u && memcmp(pools,saved,sizeof(pools)) == 0);
 	}
 	memset(packed,0xa5,sizeof(packed));
 	memcpy(before,packed,sizeof(before));
-	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,3u,packed,sizeof(packed)) != SPARK_STATUS_OK);
-	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,packed,sizeof(packed) - 1u) != SPARK_STATUS_OK);
+	assert(SparkGlm5NextRecurrentHookCopy(&state,SPARK_STAGE_KV_RECURRENT_TO_BUFFER,3u,packed,sizeof(packed),0) != SPARK_STATUS_OK);
+	assert(SparkGlm5NextRecurrentHookCopy(&state,SPARK_STAGE_KV_RECURRENT_TO_BUFFER,0u,packed,sizeof(packed) - 1u,0) != SPARK_STATUS_OK);
+	assert(SparkGlm5NextRecurrentHookCopy(&state,3u,0u,packed,sizeof(packed),0) != SPARK_STATUS_OK);
 	state.kda_v_window_pool = 0;
-	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,packed,sizeof(packed)) != SPARK_STATUS_OK);
-	assert(memcmp(packed,before,sizeof(packed)) == 0);
+	assert(SparkGlm5NextRecurrentHookCopy(&state,SPARK_STAGE_KV_RECURRENT_TO_BUFFER,0u,packed,sizeof(packed),0) != SPARK_STATUS_OK);
+	assert(PENDING_2D_COUNT == 0u && memcmp(packed,before,sizeof(packed)) == 0);
 	assert(memcmp(pools,saved,sizeof(pools)) == 0);
+	state.kda_layer_count = 0u;
+	assert(SparkGlm5NextRecurrentLaneBytes(&state) == 0u);
+	memset(&state,0,sizeof(state));
 	return(0);
-}
-
-static void open_recurrent_fixture(SparkKvPageStore *store,char *path,void *staging,uint64_t bytes)
-{
-	SparkKvPageStoreConfiguration config = {0};
-	int32_t descriptor = mkstemp(path);
-	assert(descriptor >= 0 && close(descriptor) == 0 && unlink(path) == 0);
-	config.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
-	config.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
-	config.flags = SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE;
-	config.logical_page_capacity = state.page_count;
-	config.transfer_capacity = 1u;
-	config.page_bytes = config.staging_bytes = bytes;
-	config.maximum_backing_bytes = config.page_bytes * config.logical_page_capacity;
-	config.staging_address = staging;
-	config.backing_path = path;
-	assert(SparkKvPageStoreInitialize(store,&config) == SPARK_STATUS_OK);
-}
-
-static SparkTestKvDeviceCopy CHECKPOINT_COPY;
-
-static void check_checkpoint_restore(SparkTestKvTransactions *fixture,const uint8_t *expected,uint32_t prefix_tokens)
-{
-	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
-	SparkGlm5NextClaimedContinuityContext continuity = {0};
-	SparkGlm5NextAsyncCompletion completion = {0};
-	SparkModelDriverFrame frame;
-	uint32_t resident = 1u;
-	uint64_t sequence = 2u,position = prefix_tokens,next = 0u,simulated = 0u;
-	uint8_t bound = 0u,restored[60];
-	assert(SparkKvPageCacheReleaseLane(&fixture->pages.cache,0u,1u) == SPARK_STATUS_OK);
-	SparkTestKvPageLane(&fixture->lanes[0],sequence,resident,position,prefix_tokens + 1u);
-	SparkTestKvPagePrefix(&fixture->lanes[0],prefix_tokens,81u);
-	fixture->request.request_id++;
-	fixture->request.new_token_count = 1u;
-	fixture->request.frame_flags = 0u;
-	fixture->request.sequence_position = 0u;
-	fixture->request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
-	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture->request) == SPARK_STATUS_OK);
-	fixture->request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
-	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture->request) == SPARK_STATUS_OK);
-	batch.active_sequence_count = batch.row_count = 1u;
-	batch.row_resident_slots = &resident;
-	batch.row_sequence_ids = &sequence;
-	batch.row_positions = &position;
-	state.max_sequence_positions = 64u;
-	atomic_store(&state.lane_bound[resident],1u);
-	atomic_store(&state.lane_sequence_ids[resident],99u);
-	atomic_store(&state.lane_next_positions[resident],100u);
-	continuity.state = &state;
-	continuity.batch = &batch;
-	continuity.bound = &bound;
-	continuity.sequence_ids = &simulated;
-	continuity.next_positions = &next;
-	assert(SparkStageModuleIndexSetClaimAndPrepare(state.lane_states,4u,&resident,1u,SparkGlm5NextPrepareClaimedContinuity,&continuity) == SPARK_STATUS_OK);
-	assert(bound == 1u && simulated == sequence && next == prefix_tokens + 1u);
-	frame = SparkTestKvTransactionFrame(&fixture->request);
-	frame.driver_dispatch_cookie0++;
-	assert(SparkKvLaneTransactionsClaim(&state.kv_transactions,&frame) == SPARK_STATUS_VALIDATION_FAILED);
-	frame.driver_dispatch_cookie0--;
-	assert(SparkKvLaneTransactionsClaim(&state.kv_transactions,&frame) == SPARK_STATUS_OK);
-	completion.state = &state;
-	completion.lane_count = 1u;
-	completion.lane_indices[0] = resident;
-	if ( prefix_tokens % SPARK_TEST_BLOCK_TOKENS != 0u )
-	{
-		uint32_t entry = fixture->pages.cache.sequences[resident].terminal_entry_index;
-		uint32_t source = fixture->pages.cache.entries[entry].logical_page_index;
-		uint32_t copied = fixture->pages.cache.sequences[resident].mutable_logical_page_index;
-		assert(state.kv_blocks[source].residency_reference_count == 1u && CHECKPOINT_COPY.copies == 1u);
-		SparkTestKvDeviceCopySettle(&CHECKPOINT_COPY);
-		assert(source != copied && state.kv_blocks[source].residency_reference_count == 0u && fixture->pages.cache.entries[entry].reference_count != 0u);
-		assert(SparkKvCacheArenaUnpinResidentBlock(&fixture->pages.kv.arena,copied) == SPARK_STATUS_OK);
-		assert(SparkGlm5NextRestoreCacheLanes(&state,&completion) == SPARK_STATUS_VALIDATION_FAILED);
-		assert(SparkKvCacheArenaPinResidentBlock(&fixture->pages.kv.arena,copied) == SPARK_STATUS_OK);
-	}
-	assert(atomic_load(&state.kda_restore[SPARK_GLM5_NEXT_KDA_COUNT]) == 0u);
-	assert(SparkGlm5NextRestoreCacheLanes(&state,&completion) == SPARK_STATUS_OK);
-	assert(atomic_load(&state.kda_restore[SPARK_GLM5_NEXT_KDA_COUNT]) == 1u && atomic_load(&state.kda_restore[SPARK_GLM5_NEXT_KDA_BYTES]) == sizeof(restored));
-	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,resident,restored,sizeof(restored)) == SPARK_STATUS_OK);
-	assert(memcmp(restored,expected,sizeof(restored)) == 0);
-	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,restored,sizeof(restored)) == SPARK_STATUS_OK);
-	assert(memcmp(restored,expected,sizeof(restored)) == 0);
-	{
-		uint32_t entry = fixture->pages.cache.sequences[resident].terminal_entry_index;
-		uint32_t page = fixture->pages.cache.entries[entry].logical_page_index;
-		assert(SparkKvPageStoreInvalidate(&state.recurrent_store,page,state.kv_blocks[page].generation) == SPARK_STATUS_OK);
-		assert(SparkGlm5NextRestoreCacheLanes(&state,&completion) == SPARK_STATUS_NOT_FOUND);
-	}
-	assert(SparkKvLaneTransactionsFinish(&state.kv_transactions,&resident,1u,SPARK_STATUS_IO_ERROR,0u) == SPARK_STATUS_IO_ERROR);
-	SparkStageModuleIndexSetRelease(state.lane_states,4u,&resident,1u);
 }
 
 static uint32_t PUBLISH_CALLBACKS;
@@ -2814,70 +2656,114 @@ static void publish_complete(void *context,const SparkModelDriverCompletion *com
 	assert(completion->accepted_token_count == 0u && completion->tokens_per_sequence == 0u);
 }
 
+static void checkpoint_lane_bytes(uint32_t lane,uint8_t *packed)
+{
+	assert(SparkGlm5NextRecurrentHookCopy(&state,SPARK_STAGE_KV_RECURRENT_TO_BUFFER,lane,packed,60u,0) == SPARK_STATUS_OK);
+}
+
+static void check_checkpoint_restore(SparkTestKvTransactions *fixture,const uint8_t *expected,uint32_t prefix_tokens)
+{
+	SparkGlm5NextClaimedContinuityContext continuity = {0};
+	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
+	SparkGlm5NextAsyncCompletion completion = {0};
+	SparkStageKvRecurrentCounters counters;
+	SparkModelDriverFrame frame;
+	uint32_t resident = 1u;
+	uint64_t sequence = 2u,position = prefix_tokens,next = 0u,simulated = 0u;
+	uint8_t bound = 0u,restored[60];
+	SparkTestKvPageLane(&fixture->lanes[0],sequence,resident,position,prefix_tokens + 1u);
+	SparkTestKvPagePrefix(&fixture->lanes[0],prefix_tokens,81u);
+	fixture->request.request_id = fixture->request.submission_id = fixture->request.transaction_id = 9u;
+	fixture->request.new_token_count = 1u;
+	fixture->request.frame_flags = 0u;
+	fixture->request.sequence_position = 0u;
+	SparkStageKvBindingTakeRecurrentCounters(&state.kv,&counters);
+	frame = kv_admitted_frame(&fixture->request);
+	assert(state.kv.lanes[resident].phase == SPARK_KV_LANE_TRANSACTION_COMMITTED && SparkKvLaneTransactionPrefixRestorePending(&state.kv.lanes[resident]) != 0u);
+	assert((state.kv.lane_state_flags[resident] & SPARK_STAGE_KV_LANE_STATE_RESTORE_READY) != 0u);
+	batch.active_sequence_count = batch.row_count = 1u;
+	batch.row_resident_slots = &resident;
+	batch.row_sequence_ids = &sequence;
+	batch.row_positions = &position;
+	atomic_store(&state.kv.lane_bound[resident],1u);
+	atomic_store(&state.kv.lane_sequence_ids[resident],99u);
+	atomic_store(&state.kv.lane_next_positions[resident],100u);
+	continuity.state = &state;
+	continuity.batch = &batch;
+	continuity.bound = &bound;
+	continuity.sequence_ids = &simulated;
+	continuity.next_positions = &next;
+	assert(SparkStageModuleIndexSetClaimAndPrepare(state.lane_states,4u,&resident,1u,SparkGlm5NextPrepareClaimedContinuity,&continuity) == SPARK_STATUS_OK);
+	assert(bound == 1u && simulated == sequence && next == prefix_tokens + 1u);
+	frame.driver_dispatch_cookie0++;
+	assert(SparkStageKvBindingClaim(&state.kv,&frame,1u,&resident,&sequence,&position,&next) == SPARK_STATUS_VALIDATION_FAILED);
+	frame.driver_dispatch_cookie0--;
+	assert(SparkStageKvBindingClaim(&state.kv,&frame,1u,&resident,&sequence,&position,&next) == SPARK_STATUS_OK);
+	memset(state.kda_state_pools,0,96u);
+	memset(state.kda_q_window_pool,0,96u);
+	memset(state.kda_k_window_pool,0,96u);
+	memset(state.kda_v_window_pool,0,96u);
+	assert(SparkStageKvBindingRecurrentRestore(&state.kv,&resident,1u,(void *)(uintptr_t)7u) == SPARK_STATUS_OK);
+	assert(cudaStreamSynchronize((cudaStream_t)(uintptr_t)7u) == cudaSuccess);
+	checkpoint_lane_bytes(resident,restored);
+	assert(memcmp(restored,expected,sizeof(restored)) == 0);
+	checkpoint_lane_bytes(0u,restored);
+	assert(restored[0] == 0u && restored[59] == 0u);
+	SparkStageKvBindingTakeRecurrentCounters(&state.kv,&counters);
+	assert(counters.restores == 1u && counters.restore_bytes == sizeof(restored));
+	completion.state = &state;
+	completion.lane_count = 1u;
+	completion.lane_indices[0] = resident;
+	completion.lane_bound[0] = 1u;
+	completion.lane_sequence_ids[0] = sequence;
+	completion.lane_next_positions[0] = next;
+	completion.completion.status = SPARK_STATUS_IO_ERROR;
+	assert(SparkGlm5NextFinishCacheLanes(&completion) == SPARK_STATUS_IO_ERROR);
+	assert(state.kv.lanes[resident].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && atomic_load(&state.kv.lane_bound[resident]) == 0u);
+	SparkStageModuleIndexSetRelease(state.lane_states,4u,&resident,1u);
+}
+
 static void check_checkpoint_finish(uint32_t fail_copy,uint32_t prefix_tokens,uint32_t post_publish)
 {
 	SparkTestKvTransactions fixture;
 	SparkGlm5NextAsyncCompletion completion = {0};
+	SparkStageKvRecurrentCounters counters;
 	SparkModelDriverFrame frame;
-	uint8_t pools[4][96],staging[180],expected[60],restored[60];
-	uint32_t page,part,byte,shadow[16];
-	uint64_t generation;
-	char path[] = "/tmp/glm-checkpoint-finish-XXXXXX",kv_path[] = "/tmp/glm-checkpoint-kv-XXXXXX";
+	uint8_t pools[4][96],expected[60];
+	uint32_t part,byte,resident = 0u;
+	uint64_t sequence = 1u,position = 0u,next = prefix_tokens;
+	SparkStatus capture;
 	SparkTestKvTransactionsInitialize(&fixture,1u);
 	fixture.lanes[0].context_token_count = fixture.request.new_token_count = prefix_tokens;
 	if ( post_publish == 0u ) SparkTestKvPagePublish(&fixture.lanes[0],prefix_tokens,81u);
 	memset(&state,0,sizeof(state));
-	state.resident_sequence_capacity = 4u;
-	state.page_count = SPARK_TEST_LOGICAL_BLOCK_COUNT;
-	state.pages_per_sequence = 4u;
-	state.page_table_shadow = shadow;
-	state.kv_transactions = fixture.transactions;
-	state.kv_lane_transactions = fixture.owners;
-	state.kv_blocks = fixture.pages.kv.blocks;
-	state.kda_layer_count = 3u;
-	state.kda_state_layer_stride_bytes = 32u;
-	state.kda_window_layer_stride_bytes = 16u;
-	state.kda_state_pools = pools[0];
-	state.kda_q_window_pool = pools[1];
-	state.kda_k_window_pool = pools[2];
-	state.kda_v_window_pool = pools[3];
-	state.recurrent_page_bytes = sizeof(expected);
-	state.recurrent_staging = staging;
-	assert(pthread_mutex_init(&state.kv_mutex,0) == 0);
-	open_recurrent_fixture(&state.recurrent_store,path,staging + 60u,60u);
-	open_recurrent_fixture(&state.kv_page_store,kv_path,staging + 120u,SPARK_TEST_BLOCK_BYTES);
-	fixture.pages.cache.page_store = &state.kv_page_store;
-	SparkTestKvAttachDeviceCopy(&fixture.pages.cache,&CHECKPOINT_COPY,&fixture.pages.kv.arena);
-	assert(SparkKvPageCacheAttachStateStore(&fixture.pages.cache,&state.recurrent_store) == SPARK_STATUS_OK);
-	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture.request) == SPARK_STATUS_OK);
-	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
-	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture.request) == SPARK_STATUS_OK);
-	frame = SparkTestKvTransactionFrame(&fixture.request);
-	assert(SparkKvLaneTransactionsClaim(&state.kv_transactions,&frame) == SPARK_STATUS_OK);
-
+	kv_recurrent(pools,4u);
+	state.execution_row_capacity = 128u;
+	state.max_sequence_positions = 192u;
+	kv_bind(4u,1u,12u,6u);
+	assert(state.kv.recurrent.lane_bytes == sizeof(expected) && state.kv.state_slot_count == 12u);
+	frame = kv_admitted_frame(&fixture.request);
+	assert(SparkStageKvBindingClaim(&state.kv,&frame,1u,&resident,&sequence,&position,&next) == SPARK_STATUS_OK);
 	for (part=0u; part<4u; part++)
 		for (byte=0u; byte<96u; byte++)
 			pools[part][byte] = (uint8_t)(part * 73u + byte);
-	assert(SparkGlm5NextRecurrentCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,0u,expected,sizeof(expected)) == SPARK_STATUS_OK);
-	page = fixture.pages.cache.sequences[0].mutable_logical_page_index;
-	generation = fixture.pages.kv.blocks[page].generation;
+	checkpoint_lane_bytes(0u,expected);
 	completion.state = &state;
 	completion.lane_count = 1u;
+	completion.lane_indices[0] = resident;
 	completion.lane_bound[0] = 1u;
-	completion.lane_sequence_ids[0] = 1u;
+	completion.lane_sequence_ids[0] = sequence;
 	completion.lane_next_positions[0] = prefix_tokens;
 	if ( post_publish != 0u )
 	{
 		SparkModelDriverAdmissionDecision decision;
 		SparkGeneratedDriverInstance instance = {&state};
 		SparkModelDriverInterface driver = {.admit = SparkGeneratedDriverAdmit};
-		PUBLISH_CALLBACKS = 0u;
+		assert(SparkStageKvBindingRecurrentCapture(&state.kv,&resident,1u,(void *)(uintptr_t)7u) == SPARK_STATUS_OK);
+		assert(cudaStreamSynchronize((cudaStream_t)(uintptr_t)7u) == cudaSuccess);
 		assert(SparkGlm5NextFinishCacheLanes(&completion) == SPARK_STATUS_OK);
-		assert(fixture.pages.cache.published_page_count == 0u);
-		state.pipeline_slot_count = 1u;
-		fixture.request.request_id++;
-		fixture.request.submission_id++;
-		fixture.request.transaction_id++;
+		assert(state.kv.page_cache.published_page_count == 0u);
+		fixture.request.request_id = fixture.request.submission_id = fixture.request.transaction_id = 2u;
 		fixture.request.new_token_count = 0u;
 		fixture.request.sequence_position = prefix_tokens;
 		fixture.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH;
@@ -2890,7 +2776,7 @@ static void check_checkpoint_finish(uint32_t fail_copy,uint32_t prefix_tokens,ui
 		fixture.request.admission_flags = 0u;
 		atomic_store(&state.slot_states[0],SPARK_STAGE_MODULE_SLOT_CLAIMED);
 		assert(SparkModelDriverEvaluateAdmission(&driver,&instance,&fixture.request,&decision) == SPARK_STATUS_BUSY);
-		assert(fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_COMMITTED && PUBLISH_CALLBACKS == 0u);
+		assert(state.kv.lanes[0].phase == SPARK_KV_LANE_TRANSACTION_COMMITTED);
 		atomic_store(&state.slot_states[0],SPARK_STAGE_MODULE_SLOT_FREE);
 		assert(SparkModelDriverEvaluateAdmission(&driver,&instance,&fixture.request,&decision) == SPARK_STATUS_OK);
 		assert(decision.available_dispatch_slot_count == 1u);
@@ -2899,38 +2785,39 @@ static void check_checkpoint_finish(uint32_t fail_copy,uint32_t prefix_tokens,ui
 		frame.flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH;
 		frame.sequence_position = prefix_tokens;
 		frame.completion_function = publish_complete;
+		frame.execution_stream = state.execution_stream;
 		PUBLISH_CALLBACKS = 0u;
-		atomic_store(&state.lane_next_positions[0],prefix_tokens + 1u);
+		atomic_store(&state.kv.lane_next_positions[0],prefix_tokens + 1u);
 		assert(SparkGlm5NextPublishCache(&state,&frame) == SPARK_STATUS_VALIDATION_FAILED && PUBLISH_CALLBACKS == 0u);
-		assert(fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_COMMITTED);
-		atomic_store(&state.lane_next_positions[0],prefix_tokens);
+		assert(state.kv.lanes[0].phase == SPARK_KV_LANE_TRANSACTION_COMMITTED);
+		atomic_store(&state.kv.lane_next_positions[0],prefix_tokens);
 		if ( fail_copy != 0u ) state.kda_v_window_pool = 0;
-		assert(SparkGlm5NextPublishCache(&state,&frame) == SPARK_STATUS_OK);
-		assert(PUBLISH_CALLBACKS == 1u && PUBLISH_STATUS == (fail_copy != 0u ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK));
+		capture = SparkGlm5NextPublishCache(&state,&frame);
+		assert(capture == (fail_copy != 0u ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK));
+		assert(PUBLISH_CALLBACKS == (fail_copy != 0u ? 0u : 1u) && (fail_copy != 0u || PUBLISH_STATUS == SPARK_STATUS_OK));
 		assert(atomic_load(&state.slot_states[0]) == SPARK_STAGE_MODULE_SLOT_FREE && atomic_load(&state.lane_states[0]) == SPARK_STAGE_MODULE_SLOT_FREE);
 	}
 	else
 	{
 		if ( fail_copy != 0u ) state.kda_v_window_pool = 0;
-		assert(SparkGlm5NextFinishCacheLanes(&completion) == (fail_copy != 0u ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK));
+		capture = SparkStageKvBindingRecurrentCapture(&state.kv,&resident,1u,(void *)(uintptr_t)7u);
+		assert(capture == (fail_copy != 0u ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK));
+		assert(cudaStreamSynchronize((cudaStream_t)(uintptr_t)7u) == cudaSuccess);
+		completion.completion.status = capture;
+		assert(SparkGlm5NextFinishCacheLanes(&completion) == capture);
 	}
-	assert(fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
-	assert(fixture.pages.kv.blocks[page].residency_reference_count == 0u);
-	assert(fixture.pages.cache.published_page_count == (fail_copy != 0u ? 0u : 1u));
-	assert(atomic_load(&state.kda_capture[SPARK_GLM5_NEXT_KDA_COUNT]) == (fail_copy != 0u ? 0u : 1u) && atomic_load(&state.kda_capture[SPARK_GLM5_NEXT_KDA_BYTES]) == (fail_copy != 0u ? 0u : sizeof(expected)));
+	state.kda_v_window_pool = pools[3];
+	assert(state.kv.lanes[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
+	assert(state.kv.page_cache.published_page_count == (fail_copy != 0u ? 0u : SparkCeilDivU32(prefix_tokens,SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT)));
+	SparkStageKvBindingTakeRecurrentCounters(&state.kv,&counters);
+	assert(counters.captures == (fail_copy != 0u ? 0u : 1u));
+	assert(counters.capture_bytes == counters.captures * sizeof(expected));
 	if ( fail_copy == 0u )
-	{
-		assert(SparkKvPageStoreReadback(&state.recurrent_store,page,generation,(uintptr_t)restored,sizeof(restored)) == SPARK_STATUS_BUSY);
-		assert(SparkKvPageStoreWaitForTransfers(&state.recurrent_store) == SPARK_STATUS_OK);
-		assert(SparkKvPageStoreReadback(&state.recurrent_store,page,generation,(uintptr_t)restored,sizeof(restored)) == SPARK_STATUS_OK);
-		assert(memcmp(restored,expected,sizeof(expected)) == 0);
 		check_checkpoint_restore(&fixture,expected,prefix_tokens);
-	}
-	else
-		assert(fixture.pages.cache.sequences[0].sequence_id == 0u);
-	SparkKvPageStoreDestroy(&state.recurrent_store);
-	SparkKvPageStoreDestroy(&state.kv_page_store);
-	assert(pthread_mutex_destroy(&state.kv_mutex) == 0 && unlink(path) == 0 && unlink(kv_path) == 0);
+	else if ( post_publish == 0u )
+		assert(state.kv.page_cache.sequences[0].sequence_id == 0u);
+	kv_unbind();
+	memset(&state,0,sizeof(state));
 }
 
 static void check_execution_environment(void)
@@ -3034,28 +2921,24 @@ static void check_module_reset(void)
 	SparkTestKvTransactions fixture;
 	SparkModelDriverAdmissionRequest request = {0};
 	SparkModelDriverAdmissionDecision decision;
-	uint8_t recurrent[96],windows[144];
-	uint32_t shadow[16],index,slot = 0u;
+	uint8_t pools[4][96],windows[144],armed[4] = {1u,1u,1u,1u};
+	uint32_t index,slot = 0u;
 	SparkTestKvTransactionsInitialize(&fixture,2u);
-	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));
-	memset(recurrent,0xa5,sizeof(recurrent));
+	memset(pools,0xa5,sizeof(pools));
 	memset(windows,0xa5,sizeof(windows));
-	memset(shadow,0,sizeof(shadow));
-	state.kv_transactions = fixture.transactions;
-	state.kv_lane_transactions = fixture.owners;
-	state.pipeline_slot_count = 2u;
-	state.execution_row_capacity = 1u;
-	state.resident_sequence_capacity = 4u;
-	state.pages_per_sequence = 4u;
-	state.page_table_shadow = shadow;
-	state.kda_layer_count = 3u;
-	state.kda_state_layer_stride_bytes = 32u;
-	state.kda_window_layer_stride_bytes = 16u;
-	state.kda_state_pools = recurrent;
+	kv_recurrent(pools,4u);
 	state.kda_window_pools = windows;
-	state.control_generation = UINT64_MAX - 1u;
-	assert(pthread_mutex_init(&state.kv_mutex,0) == 0);
+	state.kda_q_window_pool = windows;
+	state.kda_k_window_pool = windows + 48u;
+	state.kda_v_window_pool = windows + 96u;
+	state.execution_row_capacity = 2u;
+	kv_bind(4u,2u,8u,4u);
+	state.mtp_lane_armed = armed;
+	state.execution_stream = (void *)(uintptr_t)7u;
+	(void)kv_admitted_frame(&fixture.request);
+	assert(state.kv.lanes[0].phase == SPARK_KV_LANE_TRANSACTION_COMMITTED);
+	assert(state.kv.control_generation == fixture.request.control_generation);
 	request.descriptor_bytes = sizeof(request);
 	request.program_id = 1u;
 	request.control_generation = 3u;
@@ -3066,112 +2949,35 @@ static void check_module_reset(void)
 	request.new_token_count = 0u;
 	assert(SparkStageModuleIndexSetClaim(state.slot_states,2u,&slot,1u) == SPARK_STATUS_OK);
 	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&request,&decision) == SPARK_STATUS_BUSY);
-	assert(state.reset_generation == 0u && fixture.owners[0].phase == SPARK_KV_LANE_TRANSACTION_PREPARED);
+	assert(state.kv.reset_generation == 0u && state.kv.lanes[0].phase == SPARK_KV_LANE_TRANSACTION_COMMITTED && pools[0][0] == 0xa5u);
 	SparkStageModuleIndexSetRelease(state.slot_states,2u,&slot,1u);
 	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&request,&decision) == SPARK_STATUS_OK && decision.accepted != 0u);
-	assert(state.reset_generation == 3u && state.control_generation == 0u && fixture.pages.cache.live_sequence_count == 0u);
-	for (index=0u; index<sizeof(recurrent); index++)
-		assert(recurrent[index] == 0u);
+	assert(state.kv.reset_generation == 3u && state.kv.control_generation == 0u && state.kv.page_cache.live_sequence_count == 0u);
+	assert(state.kv.lanes[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && SparkStageKvBindingResidentCount(&state.kv) == 0u);
+	for (index=0u; index<3u * 32u; index++)
+		assert(pools[0][index] == 0u);
 	for (index=0u; index<sizeof(windows); index++)
 		assert(windows[index] == 0u);
-	for (index=0u; index<16u; index++)
-		assert(shadow[index] == UINT32_MAX);
+	for (index=0u; index<4u * state.kv.pages_per_sequence; index++)
+		assert(state.kv.page_table_shadow[index] == UINT32_MAX);
+	for (index=0u; index<4u; index++)
+		assert(armed[index] == 0u && state.kv.lane_state_flags[index] == 0u);
 	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&request,&decision) == SPARK_STATUS_VALIDATION_FAILED);
+	fixture.request.control_generation = 4u;
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
 	assert(SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) == SPARK_STATUS_OK);
-	assert(state.control_generation == fixture.request.control_generation);
-	fixture.request.control_generation = UINT64_MAX - 2u;
+	assert(state.kv.control_generation == fixture.request.control_generation);
+	fixture.request.control_generation = 2u;
 	assert(SparkGlm5NextAdmissionPredicate(&state,&fixture.request,&decision) == SPARK_STATUS_VALIDATION_FAILED);
-	assert(state.control_generation != fixture.request.control_generation);
-	request.control_generation = 4u;
+	assert(state.kv.control_generation == 4u);
+	request.control_generation = 5u;
 	DRAIN_STATUS = cudaErrorInvalidValue;
 	assert(SparkGlm5NextResidentDecodeStageAdmit(&state,&request,&decision) == SPARK_STATUS_PENDING);
-	assert(state.reset_generation == 3u && atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE && atomic_load(&state.lane_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE);
+	assert(state.kv.reset_generation == 3u && atomic_load(&state.slot_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE && atomic_load(&state.lane_states[0]) != SPARK_STAGE_MODULE_SLOT_FREE);
 	DRAIN_STATUS = cudaSuccess;
-	assert(pthread_mutex_destroy(&state.kv_mutex) == 0);
-}
-
-static void small_kv_state(uint32_t kv_layers,uint32_t pages)
-{
-	static uint8_t index_pool[3u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u];
+	state.mtp_lane_armed = 0;
+	kv_unbind();
 	memset(&state,0,sizeof(state));
-	state.layer_count = SPARK_GLM5_NEXT_MODEL_LAYER_COUNT;
-	state.kv_layer_count = kv_layers;
-	state.index_layer_count = 1u;
-	state.index_cache = index_pool;
-	state.page_count = pages;
-	state.physical_page_count = pages;
-	state.pages_per_sequence = pages;
-	state.resident_sequence_capacity = 1u;
-	state.kv_layer_stride_bytes = (uint64_t)pages * SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT * SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION * 2u;
-	state.index_layer_stride_bytes = (uint64_t)pages * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
-	state.kv_cache = (void *)(uintptr_t)0x1000u;
-	state.kv_backing_directory = "/unused-host-fixture";
-}
-
-static void check_small_kv(void)
-{
-	uint32_t pages,kv_layers;
-	for (kv_layers=1u; kv_layers<=2u; kv_layers++)
-		for (pages=1u; pages<=3u; pages++)
-		{
-			small_kv_state(kv_layers,pages);
-			assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_PENDING);
-			free_cache_fixture();
-		}
-	small_kv_state(0u,2u);
-	assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_CAPACITY_EXCEEDED);
-	free_cache_fixture();
-	small_kv_state(2u,2u);
-	ARENA_KEY_STRIDE_SKEW = 256u;
-	assert(SparkGlm5NextKvInitialize(&state) == SPARK_STATUS_INTERNAL_ERROR);
-	ARENA_KEY_STRIDE_SKEW = 0u;
-	free_cache_fixture();
-	memset(&state,0,sizeof(state));
-}
-
-static int32_t check_layered_page_copy(void)
-{
-	uint8_t kv[3u * 5u * 8u],index[3u * 5u * 6u],packed[3u * 8u];
-	uint8_t *pool;
-	uint32_t region,page,layer,i,per_page;
-	uintptr_t address;
-	memset(&state,0,sizeof(state));
-	state.kv_cache = kv;
-	state.index_cache = index;
-	state.page_count = 11u;
-	state.physical_page_count = 5u;
-	state.kv_layer_count = state.index_layer_count = 3u;
-	state.kv_layer_stride_bytes = 5u * 8u;
-	state.index_layer_stride_bytes = 5u * 6u;
-	for (region=0u; region<2u; region++)
-	{
-		pool = region == 0u ? kv : index;
-		per_page = region == 0u ? 8u : 6u;
-		for (page=0u; page<5u; page++)
-		{
-			memset(kv,0x7e,sizeof(kv));
-			memset(index,0x7e,sizeof(index));
-			for (layer=0u; layer<3u; layer++)
-				memset(pool + (layer * 5u + page) * per_page,(int)(layer + page + 1u),per_page);
-			address = (uintptr_t)pool + page * 3u * per_page;
-			if ( SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,address,packed,3u * per_page) != SPARK_STATUS_OK )
-				return(-1);
-			for (layer=0u; layer<3u; layer++)
-				for (i=0u; i<per_page; i++)
-					if ( packed[layer * per_page + i] != layer + page + 1u )
-						return(-2);
-			memset(pool,0x7e,3u * 5u * per_page);
-			if ( SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE,address,packed,3u * per_page) != SPARK_STATUS_OK )
-				return(-3);
-			for (i=0u; i<3u * 5u * per_page; i++)
-				if ( pool[i] != (i / per_page % 5u == page ? i / (5u * per_page) + page + 1u : 0x7eu) )
-					return(-4);
-		}
-	}
-	if ( SparkGlm5NextPageCopy(&state,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,(uintptr_t)kv + 1u,packed,sizeof(packed)) == SPARK_STATUS_OK )
-		return(-5);
-	memset(&state,0,sizeof(state));
-	return(0);
 }
 
 static void check_pack_identity(void)
@@ -3262,7 +3068,7 @@ static void check_linear_walk(void)
 	state.tp_device_collective_initialized = 1u;
 	state.tp_device_collective_hc_initialized = 1u;
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	state.slots[0].stream = state.execution_stream;
 	state.slots[0].hidden_bf16 = hidden;
 	state.slots[0].attention_out_bf16 = hidden;
@@ -3425,7 +3231,7 @@ static SparkGlm5NextTpChain *linear_chain_fixture(void)
 	state.completion_worker = (SparkWeightdWorker *)(uintptr_t)1u;
 	state.tp_device_collective_initialized = state.tp_device_collective_hc_initialized = 1u;
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	state.completions[0].state = &state;
 	linear_slot_fixture(&state.slots[0]);
 	LINEAR_POSITIONS[0] = 3u;
@@ -3645,7 +3451,7 @@ static void check_kv_shard_rank_state(void)
 	uint32_t degrees[2] = {8u,16u},index;
 	for (index=0u; index<2u; index++)
 	{
-		char path[] = "/tmp/g5n_kv_bytes_XXXXXX",text[512] = {0},expected[512];
+		char path[] = "/tmp/g5n_kv_bytes_XXXXXX",text[8192] = {0},expected[512];
 		int descriptor = mkstemp(path),saved = dup(2);
 		assert(descriptor >= 0 && saved >= 0 && dup2(descriptor,2) == 2);
 		memset(&state,0,sizeof(state));
@@ -3658,8 +3464,8 @@ static void check_kv_shard_rank_state(void)
 		state.max_sequence_positions = 64u;
 		state.page_count = 7u;
 		state.physical_page_count = 2u;
-		state.kv_backing_directory = "/unused-host-fixture";
-		assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_PENDING);
+		kv_directory();
+		assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_OK);
 		fflush(stderr);
 		assert(dup2(saved,2) == 2 && close(saved) == 0);
 		assert(pread(descriptor,text,sizeof(text) - 1u,0) > 0 && close(descriptor) == 0 && unlink(path) == 0);
@@ -3672,9 +3478,10 @@ static void check_kv_shard_rank_state(void)
 		if ( strstr(text,expected) == 0 )
 			fprintf(stderr,"kv bytes line:\n%swant:\n%s",text,expected);
 		assert(state.kv_layer_count != 0u && state.index_layer_count != 0u && strstr(text,expected) != 0);
-		assert(state.kv_layer_stride_bytes * degrees[index] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
-		assert(state.index_layer_stride_bytes * degrees[index] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
+		assert(state.kv.region_layer_stride_bytes[0] * degrees[index] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES);
+		assert(state.kv.region_layer_stride_bytes[1] * degrees[index] == 2u * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
 		free_cache_fixture();
+		kv_remove_directories();
 	}
 	puts("PASS kv shard rank state: latent KV and indexer key pools are 1/tp of the replicated pools at TP8 and TP16, and GLM-KV-BYTES reports both");
 }
@@ -4040,8 +3847,8 @@ static void check_ws_snapshot_layout(void)
 	state.max_sequence_positions = 64u;
 	state.page_count = 7u;
 	state.physical_page_count = 2u;
-	state.kv_backing_directory = "/unused-host-fixture";
-	assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_PENDING && state.kda_layer_count == 3u);
+	kv_directory();
+	assert(SparkGlm5NextAllocateCaches(&state) == SPARK_STATUS_OK && state.kda_layer_count == 3u);
 	pools[0] = state.kda_state_pools;pools[1] = state.kda_q_window_pool;pools[2] = state.kda_k_window_pool;pools[3] = state.kda_v_window_pool;
 	strides[0] = state.kda_state_layer_stride_bytes;strides[1] = strides[2] = strides[3] = state.kda_window_layer_stride_bytes;
 	assert(SparkGlm5NextWsSnapshotEnsure(&state,&state.slots[0]) == SPARK_STATUS_OK);
@@ -4069,12 +3876,13 @@ static void check_ws_snapshot_layout(void)
 	assert(SparkGlm5NextWsSnapshotEnsure(&state,&state.slots[0]) == SPARK_STATUS_OK && state.ledger.device_allocation_count == allocation);
 	assert(SparkGlm5NextWsSnapshotEnsure(&state,&state.slots[1]) == SPARK_STATUS_OK && state.slots[1].snapshot != state.slots[0].snapshot);
 	free_cache_fixture();
+	kv_remove_directories();
 	memset(&state,0,sizeof(state));
 	state.ledger.module_tag = "ws-snapshot-test";
 	assert(SparkGlm5NextWsSnapshotEnsure(&state,&state.slots[0]) == SPARK_STATUS_UNSUPPORTED && state.slots[0].snapshot == 0);
 }
 
-static uint32_t SEQ_TOKENS[8],SEQ_POSITIONS[8],SEQ_SLOTS[8],SEQ_OUTPUT[8],SEQ_HOST_OUTPUT[64],SEQ_CHAIN[64],SEQ_BEGIN[9],SEQ_INDICES[8],SEQ_RUNS[8],SEQ_ERRORS[SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT],SEQ_HOST_ERRORS[SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT],SEQ_TABLE[16],SEQ_SHADOW[16],SEQ_BUFFER[64],SEQ_DONE_COUNT;
+static uint32_t SEQ_TOKENS[8],SEQ_POSITIONS[8],SEQ_SLOTS[8],SEQ_OUTPUT[8],SEQ_HOST_OUTPUT[64],SEQ_CHAIN[64],SEQ_BEGIN[9],SEQ_INDICES[8],SEQ_RUNS[8],SEQ_ERRORS[SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT],SEQ_HOST_ERRORS[SPARK_GLM5_NEXT_KV_ACCESS_ERROR_WORD_COUNT],SEQ_BUFFER[64],SEQ_DONE_COUNT;
 static uint64_t SEQ_MAXLOC[8],SEQ_REQUEST = 10u;
 static uint8_t SEQ_SIDEBAND[8u * SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_DSA_SIDEBAND_BYTES_PER_ROW];
 static SparkRowSampling SEQ_SAMPLING[8],SEQ_ROW_SAMPLING[8];
@@ -4100,20 +3908,16 @@ static void sequence_fixture(void)
 {
 	memset(&state,0,sizeof(state));
 	SparkTestKvTransactionsInitialize(&SEQ_KV,1u);
-	state.pipeline_slot_count = 1u;state.execution_row_capacity = 8u;state.resident_sequence_capacity = 2u;state.pages_per_sequence = 4u;state.max_sequence_positions = 64u;
+	state.execution_row_capacity = 8u;state.max_sequence_positions = 64u;
 	state.tp_degree = 16u;state.layer_count = 5u;state.owns_embedding = state.owns_final_head = 1u;
 	state.lazy_pack = &LINEAR_PACK;state.completion_worker = (SparkWeightdWorker *)(uintptr_t)1u;
+	kv_bind(2u,1u,4u,4u);
 	state.tp_device_collective_initialized = state.tp_device_collective_hc_initialized = 1u;
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
-	state.kv_transactions = SEQ_KV.transactions;state.kv_lane_transactions = SEQ_KV.owners;state.kv_lane_physical_pages = SEQ_KV.physical;
-	memset(SEQ_TABLE,0xff,sizeof(SEQ_TABLE));
-	memset(SEQ_SHADOW,0xff,sizeof(SEQ_SHADOW));
-	state.page_table = SEQ_TABLE;state.page_table_shadow = SEQ_SHADOW;
 	state.completions[0].state = &state;
 	sequence_slot(&state.slots[0]);
 	pin_fixture_experts();
-	assert(pthread_mutex_init(&state.completion_queue_lock,0) == 0 && pthread_mutex_init(&state.kv_mutex,0) == 0);
+	assert(pthread_mutex_init(&state.completion_queue_lock,0) == 0);
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	STREAM_ORDERED = 1u;HOST_MODE = 0u;HOST_COUNT = 0u;CANCEL_COUNT = EXPECTED_CANCEL_COUNT = 0u;WORK_STATUS = SPARK_STATUS_OK;DRAIN_STATUS = cudaSuccess;VERIFY_STATUS = SPARK_STATUS_OK;
 	WALK_LENGTH = 0u;WALK_TRACE[0] = 0;WALK_GATHER_LAYER = 99u;WALK_FAIL_CODE = 0u;UNPACK_COUNT = 0u;SEQ_DONE_COUNT = 0u;
@@ -4225,8 +4029,8 @@ static SparkStatus sequence_publish(uint64_t sequence,uint64_t at)
 static void sequence_idle(uint64_t next)
 {
 	assert(atomic_load(&state.tp_chain_active) == 0u && atomic_load(&state.slot_states[0]) == SPARK_STAGE_MODULE_SLOT_FREE);
-	assert(atomic_load(&state.lane_states[0]) == SPARK_STAGE_MODULE_SLOT_FREE && SEQ_KV.owners[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
-	assert(atomic_load(&state.lane_next_positions[0]) == next && SEQ_KV.pages.cache.sequences[0].next_token_position == next);
+	assert(atomic_load(&state.lane_states[0]) == SPARK_STAGE_MODULE_SLOT_FREE && state.kv.lanes[0].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
+	assert(atomic_load(&state.kv.lane_next_positions[0]) == next && state.kv.page_cache.sequences[0].next_token_position == next);
 }
 
 static void sequence_release(uint64_t sequence,uint64_t at)
@@ -4237,14 +4041,15 @@ static void sequence_release(uint64_t sequence,uint64_t at)
 	SEQ_KV.request.new_token_count = 0u;
 	SEQ_KV.request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
 	sequence_admit(0u,&decision);
-	assert(atomic_load(&state.lane_bound[0]) == 0u && SEQ_KV.pages.cache.sequences[0].sequence_id == 0u);
+	assert(atomic_load(&state.kv.lane_bound[0]) == 0u && state.kv.page_cache.sequences[0].sequence_id == 0u);
 	SEQ_KV.request.frame_flags = 0u;
 }
 
 static void sequence_teardown(void)
 {
 	assert(SparkStageModuleCudaWaitDestroy(&state.stream_wait) == SPARK_STATUS_OK);
-	assert(pthread_mutex_destroy(&state.completion_queue_lock) == 0 && pthread_mutex_destroy(&state.kv_mutex) == 0);
+	assert(pthread_mutex_destroy(&state.completion_queue_lock) == 0);
+	kv_unbind();
 	STREAM_ORDERED = 0u;UNPACK_ROWS = ENQUEUE_ROWS = ENQUEUE_SEQUENCES = 2u;
 	memset(&state,0,sizeof(state));
 }
@@ -4508,7 +4313,7 @@ static void check_frame_chain_validation(void)
 	memset(&state,0,sizeof(state));
 	state.owns_embedding = state.owns_final_head = 1u;
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	state.execution_row_capacity = 8u;
 	state.resident_sequence_capacity = 4u;
 	state.max_sequence_positions = 128u;
@@ -4584,7 +4389,7 @@ static void check_verify_deferred(void)
 	memset(&state,0,sizeof(state));
 	memset(&async,0,sizeof(async));
 	state.execution_stream = (void *)(uintptr_t)7u;
-	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
+	state.kv.copier.fence_event = &TEST_FENCE_EVENT;state.kv.copier_initialized = 1u;
 	state.tp_device_collective_initialized = 1u;
 	state.tp_device_collective_hc_initialized = 1u;
 	DRAIN_STATUS = cudaSuccess;
@@ -4724,17 +4529,19 @@ static void check_kda_timing(void)
 	const char *expected = "G5N-KDA-TIMING rank=5 restores=2 restore_bytes=120 restore_us=0 captures=1 capture_bytes=60 capture_us=0\n";
 	char path[] = "/tmp/g5n_kda_timing_XXXXXX",text[512] = {0};
 	int descriptor = mkstemp(path),saved = dup(2);
-	uint64_t start = UINT64_C(5000000000),now = SparkGlm5NextNowNs() + UINT64_C(1000000000);
-	uint32_t field;
+	uint64_t start = UINT64_C(5000000000);
 	memset(&state,0,sizeof(state));
 	state.tp_rank = 5u;
-	SparkGlm5NextKdaCount(state.kda_restore,60u,now);
-	SparkGlm5NextKdaCount(state.kda_restore,60u,now);
-	SparkGlm5NextKdaCount(state.kda_capture,60u,now);
+	atomic_store(&state.kv.recurrent_restores,2u);
+	atomic_store(&state.kv.recurrent_restore_bytes,120u);
+	atomic_store(&state.kv.recurrent_restore_ns,500u);
+	atomic_store(&state.kv.recurrent_captures,1u);
+	atomic_store(&state.kv.recurrent_capture_bytes,60u);
+	atomic_store(&state.kv.recurrent_capture_ns,700u);
 	assert(descriptor >= 0 && saved >= 0 && dup2(descriptor,2) == 2);
 	SparkGlm5NextKdaTimingReport(&state,start);
 	SparkGlm5NextKdaTimingReport(&state,start + SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS - 1u);
-	assert(atomic_load(&state.kda_restore[SPARK_GLM5_NEXT_KDA_COUNT]) == 2u);
+	assert(atomic_load(&state.kv.recurrent_restores) == 2u);
 	SparkGlm5NextKdaTimingReport(&state,start + SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS);
 	SparkGlm5NextKdaTimingReport(&state,start + 3u * SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS);
 	fflush(stderr);
@@ -4743,9 +4550,10 @@ static void check_kda_timing(void)
 	if ( strcmp(text,expected) != 0 )
 		fprintf(stderr,"kda timing line:\n%s",text);
 	assert(strcmp(text,expected) == 0);
-	for (field=0u; field<SPARK_GLM5_NEXT_KDA_FIELDS; field++)
-		assert(atomic_load(&state.kda_restore[field]) == 0u && atomic_load(&state.kda_capture[field]) == 0u);
+	assert(atomic_load(&state.kv.recurrent_restores) == 0u && atomic_load(&state.kv.recurrent_restore_bytes) == 0u && atomic_load(&state.kv.recurrent_restore_ns) == 0u);
+	assert(atomic_load(&state.kv.recurrent_captures) == 0u && atomic_load(&state.kv.recurrent_capture_bytes) == 0u && atomic_load(&state.kv.recurrent_capture_ns) == 0u);
 	assert(atomic_load(&state.kda_window_ns) == start + 3u * SPARK_GLM5_NEXT_WAVE_TIMING_WINDOW_NS);
+	memset(&state,0,sizeof(state));
 }
 
 int32_t main(void)
@@ -4831,21 +4639,16 @@ int32_t main(void)
 		return(-status);
 	if ( check_batch_waves() != 0 )
 		return(1);
-	if ( check_layered_page_copy() != 0 )
-		return(2);
 	assert(check_recurrent_copy() == 0);
-	check_cache_worker_cleanup();
-	check_checkpoint_finish(0u,4u,0u);
-	check_checkpoint_finish(0u,3u,0u);
-	check_checkpoint_finish(1u,4u,0u);
-	check_checkpoint_finish(0u,4u,1u);
-	check_checkpoint_finish(0u,3u,1u);
-	check_checkpoint_finish(1u,3u,1u);
+	check_checkpoint_finish(0u,64u,0u);
+	check_checkpoint_finish(0u,63u,0u);
+	check_checkpoint_finish(1u,64u,0u);
+	check_checkpoint_finish(0u,64u,1u);
+	check_checkpoint_finish(0u,63u,1u);
+	check_checkpoint_finish(1u,63u,1u);
 	check_module_reset();
 	check_execution_environment();
 	check_l2_prefetch_environment();
-	check_small_kv();
-	check_physical_budget();
 	if ( check_rank_state() != 0 )
 		return(3);
 	context.abi_version = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
@@ -4918,6 +4721,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sanitize', action='store_true')
     args = parser.parse_args()
+    if not sys.platform.startswith("linux"):
+        raise SystemExit("FAIL: the KV binding backs pages and recurrent records with O_TMPFILE files, so this harness runs on Linux")
     wave = WAVE_TIMING.read_text().strip()
     assert wave.startswith("G5N-WAVE-TIMING ") and '"' not in wave and "\\" not in wave
     harness = HARNESS.replace('EXPECTED_WAVE_TIMING', '"' + wave + '"')
@@ -4932,8 +4737,8 @@ def main():
         subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-O2", "-ffunction-sections", "-fdata-sections",
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                         *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=1024u", "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
-                        '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
-                        str(source), "runtime/stage_module_common.c", "runtime/kv_device_copy.c", "src/spark_status.c", "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_snapshot.c",
+                        '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"',
+                        str(source), "runtime/stage_module_common.c", "runtime/kv_device_copy.c", "runtime/stage_kv_binding.c", "src/spark_status.c", "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_snapshot.c",
                         "-o", str(binary), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitize else [])], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS actual module context/cache ownership, global epoch independence, retained attach ownership, terminal CUDA receipts, step verdicts and route trace")

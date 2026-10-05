@@ -83,6 +83,7 @@ MODULE_ADDITIONAL_HOST_SOURCES := \
 	../../cache/kv_snapshot.c \
 	../../cache/kv_model_table.c \
 	../../runtime/kv_device_copy.c \
+	../../runtime/stage_kv_binding.c \
 	$(GLM5_NEXT_SCORE_DUMP_SOURCES)
 MODULE_CUDA_SOURCE := source/spark_glm5_next_resident_decode_stage_cuda.cu
 MODULE_COMPILE_FLAGS := -DSPARK_BATCH_BUCKET=1024u -DGLM5_NEXT_EXPERT_WEIGHT_CODEC=$(GLM5_NEXT_EXPERT_CODEC_ID) -DGLM5_NEXT_EXPERT_CODEC_NAME=\"$(EXPERT_CODEC)\" -DGLM5_NEXT_MODEL_REVISION=\"$(MODEL_REVISION)\" -DGLM5_NEXT_CONTRACT_SHA256=\"$(CONTRACT_SHA256)\" $(GLM5_NEXT_SCORE_DUMP_FLAGS)

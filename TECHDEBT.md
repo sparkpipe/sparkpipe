@@ -682,9 +682,7 @@ citations refer to that commit.
   run whose write-backs are counted by the pager's statistics, not the page
   store's.
 - Left out on purpose (2026-10-02): A deployment node with no
-  `kv_backing_directory` still spills KV under `/tmp` in three drivers:
-  glm5_next
-  (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1672-1680`),
+  `kv_backing_directory` still spills KV under `/tmp` in two drivers:
   laguna
   (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c:782-790`)
   and ling
@@ -694,12 +692,11 @@ citations refer to that commit.
   accepts a missing directory (`runtime/model_resident_deployment.c:204-206`,
   `:656`), so these drivers silently put KV outside the KV partition. Close it
   by making `kv_backing_directory` required in the deployment loader and
-  deleting the three fallbacks, proven by a residentd load on a Spark with the
-  field removed that fails with a named error for every driver. glm5_next and
-  laguna also size that backing to `page_count * payload_bytes` and ignore
+  deleting the two fallbacks, proven by a residentd load on a Spark with the
+  field removed that fails with a named error for every driver. laguna also
+  sizes that backing to `page_count * payload_bytes` and ignores
   `kv_backing_maximum_bytes`
-  (`spark_glm5_next_resident_decode_stage_module.c:1681`,
-  `spark_laguna_resident_decode_stage_module.c:791`), so spilled pages land
+  (`spark_laguna_resident_decode_stage_module.c:791`), so spilled pages land
   outside the deployment's declared storage path and budget.
 - Left out on purpose (2026-10-02): Every production page store is anonymous:
   the common binding (`runtime/stage_kv_binding.c:176`) and the glm5_next
@@ -987,18 +984,12 @@ Related common-code debt:
   submission to a GLM Full lane gets an explicit continuity error.
 - Left out on purpose (2026-10-02):
   `include/sparkpipe/family/module/spark_module_glm5_next_laguna.h` is a
-  family template named after the two drivers that include it
-  (`spark_glm5_next_resident_decode_stage_module.c:702`,
-  `spark_laguna_resident_decode_stage_module.c:270`). Besides pack-range and
-  manifest checks, it carries a second copy of KV code that
-  `runtime/stage_kv_binding.c` now owns: `PrefixRestorePending` (`:96-99`, the
-  predicate at `stage_kv_binding.c:421-424`) and `UploadPageTables`
-  (`:135-152`, the upload at `stage_kv_binding.c:546-570`). Its T1 trace
-  prints `G5N-T1` for laguna too (`:108`). `tests/test_dry_law.py:40-44`
-  checks family templates only for glm52, kimi, k3, qwen, dsv4, deepseek and
-  mimo25 tokens, so the file passes. Close it with the glm5_next and laguna
-  move onto the binding: delete the two duplicated functions, rename what
-  remains after its behaviour, and add `glm5_next`, `laguna` and `G5N` to
+  family template named after the two drivers that include it. It now holds
+  only pack-range and manifest checks, byte allocation, the host batch stage
+  and a T1 trace that prints `G5N-T1` for laguna too.
+  `tests/test_dry_law.py` checks family templates only for glm52, kimi, k3,
+  qwen, dsv4, deepseek and mimo25 tokens, so the file passes. Close it by
+  renaming it after its behaviour and adding `glm5_next`, `laguna` and `G5N` to
   `FAMILY_TEMPLATE_TOKEN`. The proof is the dry-law test failing on the old
   file and passing on the renamed one.
 - `build/libdsv4_pro_tp4_pp4_serving_adapter*` do not compile
@@ -1101,27 +1092,19 @@ Related common-code debt:
   a lane binds a new sequence at a non-zero position. The proof is a fleet
   score-dump run that restores a prefix onto a slot last used by a different
   sequence, with the end record counting those rows as keyless.
-- Left out on purpose (2026-10-02): glm5_next and laguna were not moved onto
-  `runtime/stage_kv_binding.c`, so each keeps a private copy of the KV
-  plumbing. That copy covers model table, arena and page store setup
-  (`spark_glm5_next_resident_decode_stage_module.c:1591-1719`,
-  `spark_laguna_resident_decode_stage_module.c:718-821`), page-table builds
-  (`:1418-1440`, `:648-669`), lane transactions (glm5_next `:1867`, `:5855`,
-  `:6508`, `:6616`; laguna `:852`, `:1459`, `:1644`) and the upload in the
-  driver-named family header. Fixes made in the binding do not reach these
-  copies. Both drivers still fall back silently to
-  `/tmp/sparkpipe_<model>_kv_<revision>` when the deployment leaves
-  `kv_backing_directory` null (glm5_next `:1672-1680`, laguna `:782-790`; ling
-  the same at `spark_ling_resident_decode_stage_module.c:648-656`), which
-  `runtime/model_resident_deployment.c:205-206` allows. The glm5_next module
-  also sizes its backing quota from its page count (`:1681`) instead of the
-  stored deployment `kv_backing_maximum_bytes` (`:464`). The binding has no
-  hook for per-prefix recurrent state
-  (`include/sparkpipe/spark_stage_kv_binding.h:20-46`), and glm5_next's KDA
-  layers need one before it can move. Close it by adding that hook, moving
-  both drivers onto the binding and deleting the private copies; the proof is
-  each driver refusing a deployment with no `kv_backing_directory` and passing
-  its TP fleet I27 run (cold vs warm token parity at B1 and B16).
+- Left out on purpose (2026-10-02): laguna was not moved onto
+  `runtime/stage_kv_binding.c`, so it keeps a private copy of the KV plumbing:
+  model table, arena and page store setup, page-table builds, lane
+  transactions, and the device page copy, prefix-restore predicate and
+  page-table upload in its own module source
+  (`modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c`).
+  Fixes made in the binding do not reach this copy. laguna and ling still fall
+  back silently to `/tmp/sparkpipe_<model>_kv_<revision>` when the deployment
+  leaves `kv_backing_directory` null, which
+  `runtime/model_resident_deployment.c` allows. Close it by moving laguna onto
+  the binding and deleting the private copy; the proof is laguna refusing a
+  deployment with no `kv_backing_directory` and passing its TP fleet I27 run
+  (cold vs warm token parity at B1 and B16).
 - Left out on purpose (2026-10-02): `SPEC.md:223` says the orchestrator does
   not understand KV layout or JIT-KV policy and that both belong inside model
   firmware. `SPEC.md:157-159` lets a module own resident KV pages, and

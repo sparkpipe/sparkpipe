@@ -966,6 +966,134 @@ static void TestSnapshotDestroySavesAll(void)
 	printf("A10 destroy saves every published chain: ok\n");
 }
 
+#define TEST_RECURRENT_BYTES 48u
+
+typedef struct TestRecurrent
+{
+	uint8_t lanes[TEST_LANES][TEST_RECURRENT_BYTES];
+	uint32_t to_buffer;
+	uint32_t from_buffer;
+	void *last_stream;
+	SparkStatus fail;
+} TestRecurrent;
+
+static TestRecurrent RECURRENT;
+
+static SparkStatus TestRecurrentCopy(void *context,uint32_t direction,uint32_t slot,void *buffer,uint64_t bytes,void *stream)
+{
+	TestRecurrent *recurrent = context;
+	assert(recurrent == &RECURRENT && slot < TEST_LANES && bytes == TEST_RECURRENT_BYTES && buffer != 0);
+	if ( recurrent->fail != SPARK_STATUS_OK )
+		return(recurrent->fail);
+	recurrent->last_stream = stream;
+	if ( direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER )
+	{
+		recurrent->to_buffer++;
+		memcpy(buffer,recurrent->lanes[slot],TEST_RECURRENT_BYTES);
+	}
+	else
+	{
+		assert(direction == SPARK_STAGE_KV_RECURRENT_FROM_BUFFER);
+		recurrent->from_buffer++;
+		memcpy(recurrent->lanes[slot],buffer,TEST_RECURRENT_BYTES);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static void ConfigureRecurrent(SparkStageKvConfiguration *configuration)
+{
+	Configure(configuration);
+	configuration->recurrent.lane_bytes = TEST_RECURRENT_BYTES;
+	configuration->recurrent.copy = TestRecurrentCopy;
+	configuration->recurrent.context = &RECURRENT;
+	configuration->backing_maximum_bytes += (uint64_t)TEST_LOGICAL * TEST_RECURRENT_BYTES;
+	memset(&RECURRENT,0,sizeof(RECURRENT));
+}
+
+static void TestRecurrentRoundTrip(void)
+{
+	TestStep step,other;
+	TestFinished finished = {0},other_finished = {0};
+	SparkStageKvRecurrentCounters counters;
+	void *stream = (void *)(uintptr_t)0x51u;
+	uint64_t published;
+	uint32_t index;
+	MakeDirectories();
+	ConfigureRecurrent(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK && BINDING.state_slot_count == TEST_LOGICAL);
+	StepInit(&step,1u,0u,0u,4u);
+	StepPublish(&step,4u,0x90u);
+	StepStart(&step);
+	StepInit(&other,5u,1u,0u,3u);
+	StepStart(&other);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+		RECURRENT.lanes[0][index] = (uint8_t)(0xc0u + index);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&other.slot,1u,stream) == SPARK_STATUS_OK && RECURRENT.to_buffer == 0u);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(RECURRENT.to_buffer == 1u && RECURRENT.last_stream == stream && (BINDING.lane_state_flags[0] & SPARK_STAGE_KV_LANE_STATE_CAPTURED) != 0u);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(StepFinish(&other,SPARK_STATUS_OK,&other_finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	assert(finished.status == SPARK_STATUS_OK && other_finished.status == SPARK_STATUS_OK && BINDING.lane_state_flags[0] == 0u);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.captures == 1u && counters.capture_bytes == TEST_RECURRENT_BYTES && counters.restores == 0u);
+	ReleaseSequence(1u,0u);
+	ReleaseSequence(5u,1u);
+	StepInit(&step,2u,1u,4u,5u);
+	StepPrefix(&step,4u,0x90u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
+	assert((BINDING.lane_state_flags[1] & SPARK_STAGE_KV_LANE_STATE_RESTORE_READY) != 0u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
+	assert(StepClaim(&step) == SPARK_STATUS_OK);
+	memset(RECURRENT.lanes[1],0,TEST_RECURRENT_BYTES);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(RECURRENT.from_buffer == 1u && RECURRENT.last_stream == stream && memcmp(RECURRENT.lanes[1],RECURRENT.lanes[0],TEST_RECURRENT_BYTES) == 0);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.restores == 1u && counters.restore_bytes == TEST_RECURRENT_BYTES);
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_IO_ERROR);
+	assert(BINDING.lanes[1].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && BINDING.lane_state_flags[1] == 0u);
+	StepInit(&step,3u,0u,4u,5u);
+	StepPrefix(&step,4u,0x90u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK && BINDING.lane_state_flags[0] != 0u);
+	assert(SparkStageKvBindingReset(&BINDING,2u) == SPARK_STATUS_OK);
+	for (index=0u; index<TEST_LANES; index++)
+		assert(BINDING.lane_state_flags[index] == 0u && BINDING.lanes[index].phase == SPARK_KV_LANE_TRANSACTION_EMPTY);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.restores == 1u && counters.captures == 0u);
+	published = BINDING.page_cache.published_page_count;
+	StepInit(&step,4u,0u,0u,4u);
+	StepPublish(&step,4u,0x91u);
+	StepStart(&step);
+	RECURRENT.fail = SPARK_STATUS_IO_ERROR;
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_IO_ERROR);
+	RECURRENT.fail = SPARK_STATUS_OK;
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_IO_ERROR);
+	assert(BINDING.page_cache.published_page_count == published && BINDING.lane_state_flags[0] == 0u);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.captures == 0u && counters.restores == 0u);
+	Close();
+	printf("A11 recurrent state: captured only for publishing lanes, recorded at finish, restored on a prefix hit at claim, cleared by reset and by a failed finish: ok\n");
+}
+
+static void TestRecurrentRefusals(void)
+{
+	SparkStageKvConfiguration configuration;
+	MakeDirectories();
+	ConfigureRecurrent(&configuration);
+	configuration.recurrent.copy = 0;
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	ConfigureRecurrent(&configuration);
+	configuration.recurrent.lane_bytes = 0u;
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	ConfigureRecurrent(&configuration);
+	configuration.backing_maximum_bytes = (uint64_t)TEST_LOGICAL * TEST_RECURRENT_BYTES;
+	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+	RemoveDirectories();
+	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size and a backing budget short of one record per logical page refuse: ok\n");
+}
+
 int main(void)
 {
 	setvbuf(stdout,0,_IONBF,0);
@@ -981,6 +1109,8 @@ int main(void)
 	TestSnapshotRestartRestore();
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
+	TestRecurrentRoundTrip();
+	TestRecurrentRefusals();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
 	return(0);
 }
