@@ -139,7 +139,7 @@ static void TestSequencePositions(void)
 	assert(SparkModelResidentDeploymentLoad("deployment/glm5_next_tp16/model_resident.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.node_count == 16u);
 	assert(deployment.max_sequence_positions == 32768u);
-	assert(deployment.runtime_limits.kv_physical_page_capacity == 131072u);
+	assert(deployment.runtime_limits.kv_logical_page_capacity == 14729u && deployment.runtime_limits.kv_physical_page_capacity == 14729u);
 	SparkModelResidentDeploymentDestroy(&deployment);
 }
 
