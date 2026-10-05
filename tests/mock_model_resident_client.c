@@ -70,6 +70,7 @@ struct SparkModelResidentClient
 	uint32_t pending_decision_count;
 	uint32_t is_final_rank;
 	SparkStatus scripted_submit_status;
+	uint32_t scripted_submit_once;
 	SparkStatus scripted_call_status[MOCK_CALL_COUNT];
 	SparkStatus scripted_prefix_result_status;
 	uint32_t scripted_prefix_result_count;
@@ -159,6 +160,16 @@ void MockResidentClientScriptSubmitStatus(uint32_t stage_index, SparkStatus stat
 	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
 	if ( c != 0 )
 		c->scripted_submit_status = status;
+}
+
+void MockResidentClientScriptSubmitStatusOnce(uint32_t stage_index, SparkStatus status)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	if ( c != 0 )
+	{
+		c->scripted_submit_status = status;
+		c->scripted_submit_once = 1u;
+	}
 }
 
 void MockResidentClientScriptPrefixResult(uint32_t stage_index,SparkStatus status,uint32_t count)
@@ -455,7 +466,15 @@ static SparkStatus MockResidentClientEnqueue(
 	if ( client->scripted_call_status[kind] != SPARK_STATUS_OK )
 		return(client->scripted_call_status[kind]);
 	if ( client->scripted_submit_status != SPARK_STATUS_OK )
-		return(client->scripted_submit_status);
+	{
+		SparkStatus scripted = client->scripted_submit_status;
+		if ( client->scripted_submit_once != 0u )
+		{
+			client->scripted_submit_once = 0u;
+			client->scripted_submit_status = SPARK_STATUS_OK;
+		}
+		return(scripted);
+	}
 	if ( client->inflight_count >= MOCK_INFLIGHT_CAPACITY )
 		return(SPARK_STATUS_BUSY);
 	slot = &client->inflight[client->inflight_count++];

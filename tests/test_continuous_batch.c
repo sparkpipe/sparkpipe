@@ -12,79 +12,14 @@ static void expect(int condition, const char *label)
 		++failures;
 }
 
-#define PROOF_MAX_LANES 8u
 #define PROOF_MAX_QUEUE 32u
-#define PROOF_MAX_STEPS 32u
 
-typedef struct ProofLog
+static uint32_t Boundary(SparkContinuousBatch *controller,uint64_t *released)
 {
-	uint32_t rows_spent[PROOF_MAX_STEPS];
-	uint32_t finished_count[PROOF_MAX_STEPS];
-	uint32_t event_count[PROOF_MAX_STEPS];
-	struct
-	{
-		uint64_t request_id;
-		uint32_t slot;
-		uint32_t token_index;
-	} events[PROOF_MAX_STEPS][PROOF_MAX_LANES];
-	uint32_t steps;
-}
-ProofLog;
-
-static void ProofLogReset(ProofLog *log)
-{
-	memset(log,0,sizeof(*log));
-}
-
-static void Round(
-	SparkContinuousBatch *controller,
-	ProofLog *log,
-	uint32_t max_input_rows,
-	uint64_t *released,
-	uint32_t released_capacity,
-	uint32_t *released_count)
-{
-	SparkContinuousBatchStepEvent events[PROOF_MAX_LANES];
-	SparkContinuousBatchStepReport report;
-	if ( SparkContinuousBatchStep(controller,events,PROOF_MAX_LANES,&report) !=
-		SPARK_STATUS_OK )
-	{
-		expect(0,"step status");
-		return;
-	}
-	expect(report.rows_spent <= max_input_rows,
-		"the row budget law held at this step");
-	if ( log->steps < PROOF_MAX_STEPS )
-	{
-		log->rows_spent[log->steps] = report.rows_spent;
-		log->finished_count[log->steps] = report.finished_count;
-		log->event_count[log->steps] = report.event_count;
-		memcpy(log->events[log->steps],events,
-			report.event_count * sizeof(events[0]));
-	}
-	log->steps += 1u;
-	if ( SparkContinuousBatchBoundary(controller,released,released_capacity,
-		released_count) != SPARK_STATUS_OK )
+	uint32_t released_count = 0u;
+	if ( SparkContinuousBatchBoundary(controller,released,PROOF_MAX_QUEUE,&released_count) != SPARK_STATUS_OK )
 		expect(0,"boundary status");
-}
-
-static uint32_t FlattenEmissionStream(
-	const ProofLog *log,
-	uint64_t request_id,
-	uint64_t *out,
-	uint32_t out_capacity)
-{
-	uint32_t step,index,written;
-	written = 0u;
-	for ( step = 0u; step < log->steps && step < PROOF_MAX_STEPS; ++step )
-		for ( index = 0u; index < log->event_count[step]; ++index )
-			if ( log->events[step][index].request_id == request_id &&
-				written + 2u <= out_capacity )
-			{
-				out[written++] = log->events[step][index].token_index;
-				out[written++] = step;
-			}
-	return(written);
+	return(released_count);
 }
 
 static SparkContinuousBatch *MakeController(
@@ -158,95 +93,16 @@ static void TestPolicyPick(void)
 		"excluded entries leave the pick");
 }
 
-static void TestInterleavingBitExact(void)
-{
-	SparkContinuousBatch *baseline,*joined;
-	SparkContinuousBatchDecision decision;
-	SparkContinuousBatchStatistics stats;
-	ProofLog baseline_log,joined_log;
-	uint64_t released[PROOF_MAX_QUEUE];
-	uint64_t stream_base[64],stream_join[64];
-	uint32_t released_count,words,step;
-	printf("L1 interleaving: a mid-flight join is invisible to residents\n");
-	baseline = MakeController(8u,8u,4u,16u);
-	joined = MakeController(8u,8u,4u,16u);
-	ProofLogReset(&baseline_log);
-	ProofLogReset(&joined_log);
-	expect(Offer(baseline,101u,2u,3u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
-		"baseline r101 joins the idle deployment");
-	expect(Offer(baseline,102u,4u,3u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
-		"baseline r102 joins beside r101");
-	expect(Offer(joined,101u,2u,3u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
-		"joined run r101 joins identically");
-	expect(Offer(joined,102u,4u,3u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
-		"joined run r102 joins identically");
-	Round(baseline,&baseline_log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(released_count == 0u,"baseline round 1 releases nothing");
-	Round(baseline,&baseline_log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	Round(joined,&joined_log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	Round(joined,&joined_log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(joined_log.steps == 2u && baseline_log.steps == 2u,
-		"both runs are at step 2 when the join arrives");
-	expect(Offer(joined,103u,3u,2u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED &&
-		decision.queue_reason == SPARK_CONTINUOUS_BATCH_QUEUE_NONE,
-		"the mid-flight join is granted (2 resident + 3 rows <= 8)");
-	while ( baseline_log.steps < 8u )
-		Round(baseline,&baseline_log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	while ( joined_log.steps < 8u )
-		Round(joined,&joined_log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	words = FlattenEmissionStream(&baseline_log,101u,stream_base,64u);
-	expect(words == 6u,"baseline r101 emitted three tokens");
-	expect(FlattenEmissionStream(&joined_log,101u,stream_join,64u) == words,
-		"joined r101 emitted three tokens too");
-	expect(memcmp(stream_base,stream_join,words * sizeof(*stream_base)) == 0,
-		"r101's stream is bit-exact across the join");
-	words = FlattenEmissionStream(&baseline_log,102u,stream_base,64u);
-	expect(words == 6u,"baseline r102 emitted three tokens");
-	expect(FlattenEmissionStream(&joined_log,102u,stream_join,64u) == words,
-		"joined r102 emitted three tokens too");
-	expect(memcmp(stream_base,stream_join,words * sizeof(*stream_base)) == 0,
-		"r102's stream is bit-exact across the join");
-	expect(baseline_log.event_count[3] == 2u,
-		"baseline residents finish together at round 4");
-	expect(joined_log.event_count[3] == 3u,
-		"joined round 4 carries both final resident tokens plus the joiner's");
-	expect(FlattenEmissionStream(&baseline_log,103u,stream_base,64u) == 0u,
-		"the joiner is absent from the baseline");
-	words = FlattenEmissionStream(&joined_log,103u,stream_join,64u);
-	expect(words == 4u,"the joiner emits its own two tokens after joining");
-	for ( step = 0u; step < 8u; ++step )
-	{
-		expect(baseline_log.rows_spent[step] <= 8u,"baseline row law");
-		expect(joined_log.rows_spent[step] <= 8u,"joined row law");
-	}
-	expect(SparkContinuousBatchGetStatistics(baseline,&stats) == SPARK_STATUS_OK &&
-		stats.resident_lane_count == 0u && stats.queued_offer_count == 0u,
-		"baseline drained clean");
-	expect(SparkContinuousBatchGetStatistics(joined,&stats) == SPARK_STATUS_OK &&
-		stats.resident_lane_count == 0u && stats.queued_offer_count == 0u &&
-		stats.admission_accepted == 3u,
-		"joined run accepted exactly the three offers");
-	SparkContinuousBatchDestroy(baseline);
-	SparkContinuousBatchDestroy(joined);
-}
-
 static void TestRefusalQueueNotWedge(void)
 {
 	SparkContinuousBatch *controller;
 	SparkContinuousBatchDecision decision;
 	SparkContinuousBatchStatistics stats;
 	SparkContinuousBatchLaneView lane;
-	ProofLog log;
 	uint64_t released[PROOF_MAX_QUEUE];
 	uint32_t released_count;
-	printf("L2/L3 refusals queue, never wedge; slots reclaim next boundary\n");
+	printf("L2/L3 refusals queue, never wedge; retired slots reclaim at the next boundary\n");
 	controller = MakeController(8u,2u,0u,8u);
-	ProofLogReset(&log);
 	expect(Offer(controller,201u,1u,2u,&decision) == SPARK_STATUS_OK &&
 		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
 		"r201 takes the first lane");
@@ -258,78 +114,29 @@ static void TestRefusalQueueNotWedge(void)
 		decision.queue_reason == SPARK_CONTINUOUS_BATCH_QUEUE_LANES &&
 		decision.queue_position == 0u,
 		"r203 is refused by name (lanes full) and KEPT");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(released_count == 0u,"round 1 releases nothing (lanes still full)");
+	expect(Boundary(controller,released) == 0u,"a boundary with both residents live releases nothing");
 	expect(SparkContinuousBatchGetStatistics(controller,&stats) == SPARK_STATUS_OK &&
 		stats.admission_queued_lanes == 1u,
-		"the lane refusal is counted at the round-1 boundary");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(released_count == 0u,"round 2 releases nothing");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(log.finished_count[2] == 2u,"both residents finish at step 3");
-	expect(log.event_count[2] == 2u,"step 3 carries the final two tokens");
+		"the lane refusal is counted at the boundary");
+	expect(SparkContinuousBatchRetire(controller,201u) == SPARK_STATUS_OK &&
+		SparkContinuousBatchRetire(controller,202u) == SPARK_STATUS_OK,
+		"the engine's terminal events retire both residents");
+	released_count = Boundary(controller,released);
 	expect(released_count == 1u && released[0] == 203u,
-		"the finished lanes' slots free at the very next boundary");
+		"the retired lanes' slots free at the very next boundary");
 	expect(SparkContinuousBatchGetStatistics(controller,&stats) == SPARK_STATUS_OK &&
-		stats.slot_reclaims == 2u && stats.admission_queued_lanes == 2u &&
+		stats.slot_reclaims == 2u && stats.admission_queued_lanes == 1u &&
 		stats.resident_lane_count == 1u,
-		"two reclaims, two named lane refusals, r203 resident");
+		"two reclaims, one named lane refusal, r203 resident");
 	expect(SparkContinuousBatchGetLane(controller,0u,&lane) == SPARK_STATUS_OK &&
-		lane.request_id == 203u && lane.phase == SPARK_CONTINUOUS_BATCH_LANE_PREFILL,
-		"r203 took reclaimed slot 0, prefill ahead of it");
-	while ( log.steps < 8u )
-		Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
+		lane.request_id == 203u && lane.phase == SPARK_CONTINUOUS_BATCH_LANE_RESIDENT && lane.prompt_row_count == 2u,
+		"r203 took reclaimed slot 0");
+	expect(SparkContinuousBatchRetire(controller,203u) == SPARK_STATUS_OK && Boundary(controller,released) == 0u,
+		"r203 retires");
 	expect(SparkContinuousBatchGetStatistics(controller,&stats) == SPARK_STATUS_OK &&
 		stats.resident_lane_count == 0u && stats.queued_offer_count == 0u &&
 		stats.slot_reclaims == 3u && stats.admission_accepted == 3u,
 		"every offer admitted, every slot reclaimed - no wedge, no drop");
-	SparkContinuousBatchDestroy(controller);
-}
-
-static void TestRowArithmeticAndChunking(void)
-{
-	SparkContinuousBatch *controller;
-	SparkContinuousBatchDecision decision;
-	SparkContinuousBatchStatistics stats;
-	ProofLog log;
-	uint64_t released[PROOF_MAX_QUEUE];
-	uint32_t released_count,step;
-	printf("C1 arithmetic: the row budget binds exactly, chunked prefill shares it\n");
-	controller = MakeController(4u,4u,0u,8u);
-	ProofLogReset(&log);
-	expect(Offer(controller,301u,3u,2u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
-		"r301 (3 rows) joins the empty deployment");
-	expect(Offer(controller,302u,2u,2u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
-		"r302 (2 rows) fits beside it (1+2 <= 4)");
-	expect(Offer(controller,303u,2u,2u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
-		"r303 (2 rows) still fits (2+2 <= 4)");
-	expect(Offer(controller,304u,2u,2u,&decision) == SPARK_STATUS_OK &&
-		decision.outcome == SPARK_CONTINUOUS_BATCH_QUEUED &&
-		decision.queue_reason == SPARK_CONTINUOUS_BATCH_QUEUE_ROWS,
-		"r304 is refused by name (3 resident + 2 rows > 4) and KEPT");
-	Round(controller,&log,4u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(log.rows_spent[0] == 4u,"round 1 spends exactly max_input_rows");
-	expect(released_count == 0u,"nothing releases while the budget is full");
-	Round(controller,&log,4u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(log.rows_spent[1] == 4u,"round 2 spends exactly max_input_rows again");
-	expect(SparkContinuousBatchGetStatistics(controller,&stats) == SPARK_STATUS_OK &&
-		stats.admission_queued_rows == 2u && stats.queued_offer_count == 1u,
-		"r304 queued behind the row arithmetic at both boundaries");
-	while ( (stats.resident_lane_count != 0u || stats.queued_offer_count != 0u) &&
-		log.steps < PROOF_MAX_STEPS )
-	{
-		Round(controller,&log,4u,released,PROOF_MAX_QUEUE,&released_count);
-		if ( SparkContinuousBatchGetStatistics(controller,&stats) != SPARK_STATUS_OK )
-			break;
-	}
-	expect(stats.resident_lane_count == 0u && stats.queued_offer_count == 0u,
-		"r304 admitted and drained once the residents freed their rows");
-	expect(stats.slot_reclaims == 4u,"all four lanes reclaimed exactly once");
-	for ( step = 0u; step < log.steps && step < PROOF_MAX_STEPS; ++step )
-		expect(log.rows_spent[step] <= 4u,"the row law held at every step");
 	SparkContinuousBatchDestroy(controller);
 }
 
@@ -373,12 +180,10 @@ static void TestStarvationBoundAndReservation(void)
 	SparkContinuousBatchDecision decision;
 	SparkContinuousBatchStatistics stats;
 	SparkContinuousBatchLaneView lane;
-	ProofLog log;
 	uint64_t released[PROOF_MAX_QUEUE];
-	uint32_t released_count,round,index;
+	uint32_t released_count,index;
 	printf("L4 starvation bound: aging wins the boundary and holds it\n");
 	controller = MakeController(8u,8u,2u,16u);
-	ProofLogReset(&log);
 	for ( index = 0u; index < 5u; ++index )
 		expect(Offer(controller,400u + index,1u,4u,&decision) == SPARK_STATUS_OK &&
 			decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
@@ -387,37 +192,30 @@ static void TestStarvationBoundAndReservation(void)
 		decision.outcome == SPARK_CONTINUOUS_BATCH_QUEUED &&
 		decision.queue_reason == SPARK_CONTINUOUS_BATCH_QUEUE_ROWS,
 		"S queues behind the resident rows");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(released_count == 0u,"round 1 releases nothing");
+	expect(Boundary(controller,released) == 0u,"boundary 1 releases nothing");
 	expect(Offer(controller,500u,1u,2u,&decision) == SPARK_STATUS_OK &&
 		decision.outcome == SPARK_CONTINUOUS_BATCH_QUEUED &&
 		decision.queue_reason == SPARK_CONTINUOUS_BATCH_QUEUE_AHEAD,
 		"t1 queues behind S (arrivals never cut ahead)");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(released_count == 0u,
+	expect(Boundary(controller,released) == 0u,
 		"the aged offer's refusal keeps the boundary closed to t1");
 	expect(SparkContinuousBatchGetStatistics(controller,&stats) == SPARK_STATUS_OK &&
 		stats.queued_offer_count == 2u,
 		"t1 is still queued - the reservation held");
-	for ( round = 0u; round < 3u; ++round )
-		Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(log.finished_count[4] == 5u,"the five residents finish at step 5");
+	for ( index = 0u; index < 5u; ++index )
+		expect(SparkContinuousBatchRetire(controller,400u + index) == SPARK_STATUS_OK,"a resident retires");
+	released_count = Boundary(controller,released);
 	expect(released_count == 2u && released[0] == 999u && released[1] == 500u,
 		"S admits at the first boundary that fits it, t1 follows");
 	expect(SparkContinuousBatchGetLane(controller,0u,&lane) == SPARK_STATUS_OK &&
 		lane.request_id == 999u && lane.admitted_via_aging == 1u,
 		"S's lane carries the aging flag");
 	expect(SparkContinuousBatchGetStatistics(controller,&stats) == SPARK_STATUS_OK &&
-		stats.starvation_jumps == 2u && stats.admission_queued_rows == 4u,
-		"two aging wins (S and t1 both waited past the bound); four refusals");
-	while ( (stats.resident_lane_count != 0u || stats.queued_offer_count != 0u) &&
-		log.steps < PROOF_MAX_STEPS )
-	{
-		Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-		if ( SparkContinuousBatchGetStatistics(controller,&stats) != SPARK_STATUS_OK )
-			break;
-	}
-	expect(stats.resident_lane_count == 0u && stats.queued_offer_count == 0u,
+		stats.starvation_jumps == 2u && stats.admission_queued_rows == 2u,
+		"two aging wins (S and t1 both waited past the bound); two refusals");
+	expect(SparkContinuousBatchRetire(controller,999u) == SPARK_STATUS_OK && SparkContinuousBatchRetire(controller,500u) == SPARK_STATUS_OK &&
+		Boundary(controller,released) == 0u && SparkContinuousBatchGetStatistics(controller,&stats) == SPARK_STATUS_OK &&
+		stats.resident_lane_count == 0u && stats.queued_offer_count == 0u,
 		"the aged run drains clean");
 	SparkContinuousBatchDestroy(controller);
 }
@@ -428,12 +226,10 @@ static void TestEngineRetirementSeam(void)
 	SparkContinuousBatchDecision decision;
 	SparkContinuousBatchStatistics stats;
 	SparkContinuousBatchLaneView lane;
-	ProofLog log;
 	uint64_t released[PROOF_MAX_QUEUE];
 	uint32_t released_count;
 	printf("L3 seam path: an engine-side retirement frees the slot next boundary\n");
 	controller = MakeController(8u,2u,0u,8u);
-	ProofLogReset(&log);
 	expect(Offer(controller,601u,1u,100u,&decision) == SPARK_STATUS_OK &&
 		decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED,
 		"r601 resident");
@@ -444,29 +240,22 @@ static void TestEngineRetirementSeam(void)
 		decision.outcome == SPARK_CONTINUOUS_BATCH_QUEUED &&
 		decision.queue_reason == SPARK_CONTINUOUS_BATCH_QUEUE_LANES,
 		"r603 queues (lanes full)");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
+	expect(Boundary(controller,released) == 0u,"no slot frees while both residents run");
 	expect(SparkContinuousBatchRetire(controller,601u) == SPARK_STATUS_OK,
 		"the engine's terminal report retires r601");
 	expect(SparkContinuousBatchRetire(controller,601u) == SPARK_STATUS_OK,
 		"a repeated retirement stays healthy");
 	expect(SparkContinuousBatchRetire(controller,603u) == SPARK_STATUS_NOT_FOUND,
 		"retiring a QUEUED id is NOT_FOUND (withdraw instead)");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
+	released_count = Boundary(controller,released);
 	expect(released_count == 1u && released[0] == 603u,
 		"the retired lane's slot frees at the very next boundary");
 	expect(SparkContinuousBatchGetLane(controller,0u,&lane) == SPARK_STATUS_OK &&
-		lane.request_id == 603u && lane.phase == SPARK_CONTINUOUS_BATCH_LANE_PREFILL,
+		lane.request_id == 603u && lane.phase == SPARK_CONTINUOUS_BATCH_LANE_RESIDENT && lane.retired == 0u,
 		"r603 took the reclaimed slot 0");
 	expect(SparkContinuousBatchGetLane(controller,1u,&lane) == SPARK_STATUS_OK &&
-		lane.request_id == 602u && lane.phase == SPARK_CONTINUOUS_BATCH_LANE_DECODE,
-		"r602 keeps its slot and phase across the seam reclaim");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(log.event_count[2] == 1u && log.events[2][0].request_id == 602u,
-		"r602 emitted on cadence at step 3");
-	Round(controller,&log,8u,released,PROOF_MAX_QUEUE,&released_count);
-	expect(log.event_count[3] == 2u,"both decode lanes emit at step 4");
-	expect(log.events[3][0].request_id == 603u && log.events[3][1].request_id == 602u,
-		"emission stays in slot order");
+		lane.request_id == 602u && lane.phase == SPARK_CONTINUOUS_BATCH_LANE_RESIDENT,
+		"r602 keeps its slot across the seam reclaim");
 	expect(SparkContinuousBatchWithdraw(controller,603u) == SPARK_STATUS_NOT_FOUND,
 		"r603 is no longer queued (it is resident)");
 	expect(SparkContinuousBatchGetStatistics(controller,&stats) == SPARK_STATUS_OK &&
@@ -551,9 +340,7 @@ int main(void)
 {
 	printf("continuous-batching step-boundary contract (host proofs)\n");
 	TestPolicyPick();
-	TestInterleavingBitExact();
 	TestRefusalQueueNotWedge();
-	TestRowArithmeticAndChunking();
 	TestOversizeAndQueueFull();
 	TestStarvationBoundAndReservation();
 	TestEngineRetirementSeam();
