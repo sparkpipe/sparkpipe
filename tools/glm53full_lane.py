@@ -114,13 +114,16 @@ def stage_config(rank, lane, arm, max_sequence_positions, execution_row_capacity
     }
 
 
+KV_BACKING_IN_FLIGHT_PAGES = 2
+
+
 def kv_pages(sequences, max_sequence_positions, kv_backing_bytes, kv_physical_bytes):
     lane_pages = (max_sequence_positions + BLOCK_TOKENS - 1) // BLOCK_TOKENS
     covered = sequences * lane_pages
     physical = covered if kv_physical_bytes is None else min(covered, kv_physical_bytes // KV_PAGE_BYTES)
     if physical < lane_pages:
         raise SystemExit(f"kv physical budget holds {physical} pages; one lane needs {lane_pages}")
-    spill = kv_backing_bytes // KV_PAGE_BYTES
+    spill = kv_backing_bytes // KV_PAGE_BYTES - KV_BACKING_IN_FLIGHT_PAGES
     if spill < covered - physical:
         raise SystemExit(f"kv backing holds {spill} pages; lanes beyond the physical pool need {covered - physical}")
     return physical, physical + spill

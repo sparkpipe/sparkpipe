@@ -182,13 +182,17 @@ def main():
     page = glm53full_lane.KV_PAGE_BYTES
     if page * glm53full_lane.WORLD != 64 * (78 * (512 + 64) + 21 * 128) * 2 or page != 380928:
         failures.append(f"each rank stores 1/16 of every 64-token KV page: per-rank page bytes {page}")
-    spill = (4 << 30) // page
+    spill = (4 << 30) // page - 2
     for budget, physical in ((100 * page, 100), (64 * page, 64), (10000 * page, 8 * 64)):
         limits = rendered(6, kv_physical_bytes=budget)["model_resident.json"]["runtime_limits"]
         if limits["kv_physical_page_capacity"] != physical or limits["kv_logical_page_capacity"] != physical + spill:
             failures.append(f"kv physical budget {budget // page} pages rendered {limits['kv_physical_page_capacity']} physical, "
                             f"{limits['kv_logical_page_capacity']} logical")
-    for budget, backing in ((63 * page, 4 << 30), (100 * page, 411 * page)):
+    limits = rendered(6, kv_physical_bytes=100 * page, kv_backing_bytes=414 * page)["model_resident.json"]["runtime_limits"]
+    if limits["kv_logical_page_capacity"] != 100 + 412:
+        failures.append("the KV binding needs backing for every spill page plus two in-flight pages: "
+                        f"414 backing pages rendered {limits['kv_logical_page_capacity'] - 100} spill pages")
+    for budget, backing in ((63 * page, 4 << 30), (100 * page, 411 * page), (100 * page, 413 * page)):
         try:
             rendered(6, kv_physical_bytes=budget, kv_backing_bytes=backing)
             failures.append(f"kv physical {budget // page} pages with {backing // page} backing pages rendered")
@@ -210,7 +214,7 @@ def main():
         failures.append("the committed production lane tree drifted from its render.json; re-render deployment/glm53full_tp16_lane6")
     limits = json.loads((production / "model_resident.json").read_text())["runtime_limits"]
     if limits["max_sequence_positions"] != 262144 or limits["resident_sequence_capacity"] != 2 or limits["max_input_rows"] != 1024 or \
-            limits["kv_physical_page_capacity"] != 2 * 262144 // 64 or limits["kv_logical_page_capacity"] != limits["kv_physical_page_capacity"] + settings["kv_backing_bytes"] // page:
+            limits["kv_physical_page_capacity"] != 2 * 262144 // 64 or limits["kv_logical_page_capacity"] != limits["kv_physical_page_capacity"] + settings["kv_backing_bytes"] // page - 2:
         failures.append(f"production lane limits {limits}")
         stage = Path(directory) / "config/stage_03.json"
         stage.write_text(stage.read_text().replace('"tp_rank": 3', '"tp_rank": 4'))

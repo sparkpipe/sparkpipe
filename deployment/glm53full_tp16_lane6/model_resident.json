@@ -26,7 +26,7 @@
   "max_active_sequences": 2,
   "max_input_rows": 1024,
   "resident_sequence_capacity": 2,
-  "kv_logical_page_capacity": 64567,
+  "kv_logical_page_capacity": 64565,
   "kv_physical_page_capacity": 8192,
   "max_sequence_positions": 262144
  },
