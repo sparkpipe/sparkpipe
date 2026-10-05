@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -861,6 +862,12 @@ SparkStatus SparkKvPageStoreWriteback(
 		store->valid_pages[logical_page_index] =
 			SPARK_KV_PAGE_STORE_PAGE_RESERVED;
 		store->backing_page_count++;
+	}
+	if ( store->write_budget != 0 )
+	{
+		struct timespec now;
+		(void)clock_gettime(CLOCK_MONOTONIC,&now);
+		SparkKvWriteBudgetCharge(store->write_budget,store->page_bytes,(uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
 	}
 	SparkKvPageStoreQueueJob(worker,job);
 	(void)pthread_mutex_unlock(&worker->mutex);

@@ -1183,6 +1183,17 @@ static SparkStatus K3ServingPrefetch(void *adapter_state,
 		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
 }
 
+static SparkStatus K3ServingCacheHint(void *adapter_state,
+	const SparkModelServingCacheIdentity *identity, uint32_t token_count)
+{
+	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
+	SparkServingCacheAdmission cache;
+	if ( state == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	cache = K3ServingCacheContext(state, state->prefetch_lanes);
+	return SparkServingCacheHintRun(&cache, identity, token_count);
+}
+
 static SparkStatus K3ServingResolvePrefetch(void *adapter_state,
 	const SparkModelServingSubmission *submission, uint32_t resolution)
 {
@@ -1323,6 +1334,7 @@ static const SparkModelServingAdapterInterface K3ServingInterface =
 	.validate_submission = K3ServingValidateSubmission,
 	.submit = K3ServingSubmit,
 	.prefetch = K3ServingPrefetch,
+	.cache_hint = K3ServingCacheHint,
 	.resolve_prefetch = K3ServingResolvePrefetch,
 	.progress = K3ServingProgress,
 	.quiesce = K3ServingQuiesce,

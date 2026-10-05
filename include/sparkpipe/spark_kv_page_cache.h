@@ -106,8 +106,32 @@ typedef struct SparkKvPageCacheSnapshot
 	uint64_t save_mark_count;
 	uint64_t save_skipped_count;
 	uint64_t save_cancelled_count;
+	uint64_t evicted_unsaved_count;
+	uint64_t demote_queued_count;
 }
 SparkKvPageCacheSnapshot;
+
+#define SPARK_KV_PAGE_CACHE_RESTORE_DONE 0u
+#define SPARK_KV_PAGE_CACHE_RESTORE_NEED_PAGE 1u
+#define SPARK_KV_PAGE_CACHE_RESTORE_NEED_STATE 2u
+
+typedef struct SparkKvPageCacheRestoreJob
+{
+	SparkModelDriverCacheIdentity identity;
+	uint32_t token_count;
+	uint32_t page_count;
+	uint32_t next_page;
+	uint32_t parent;
+	uint32_t need;
+	uint32_t imported_pages;
+	uint32_t read_errors;
+	uint32_t reserved0;
+	uint64_t start_ns;
+	SparkKvPageCacheSnapshotLink *links;
+	uint8_t *page;
+	uint8_t *state;
+}
+SparkKvPageCacheRestoreJob;
 
 typedef struct SparkKvPageCacheResidentRecord
 {
@@ -198,6 +222,7 @@ typedef struct SparkKvPageCache
 	SparkKvPageStore *page_store;
 	SparkKvPageStore *state_store;
 	SparkKvPageCacheSnapshot *snapshot;
+	SparkKvWriteBudget *write_budget;
 	SparkKvPageCacheEntry *entries;
 	SparkKvPageCacheSequence *sequences;
 	uint32_t *hash_bucket_heads;
@@ -238,6 +263,13 @@ void SparkKvPageCacheSaveCancelAll(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCacheMarkAllUnsaved(SparkKvPageCache *cache,SparkKvPageCacheSaveOrder *order,uint32_t order_capacity,uint32_t *marked_out,uint32_t *deferred_out,uint32_t *ineligible_out);
 SparkStatus SparkKvPageCacheCountUnsaved(const SparkKvPageCache *cache,uint32_t *unsaved_out,uint32_t *ineligible_out);
 SparkStatus SparkKvPageCacheRestorePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
+SparkStatus SparkKvPageCacheRestoreBegin(SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
+uint32_t SparkKvPageCachePrefixReady(const SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
+SparkStatus SparkKvPageCacheRestoreReadChain(const SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job);
+SparkStatus SparkKvPageCacheRestoreAdvance(SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job);
+SparkStatus SparkKvPageCacheRestoreRead(const SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job);
+SparkStatus SparkKvPageCacheRestoreApply(SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job);
+SparkStatus SparkKvPageCacheRestoreFinish(SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job,SparkStatus status);
 SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKvPageCacheResidentRecord *records,uint32_t capacity,uint32_t *count_out);
 SparkStatus SparkKvPageCacheAdoptResident(SparkKvPageCache *cache,const SparkKvPageCacheResidentRecord *records,uint32_t count,uint32_t *adopted_out);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
@@ -320,6 +352,7 @@ typedef struct SparkKvLaneTransactions
 	uint32_t *logical_pages;
 	uint32_t *physical_pages;
 	uint32_t page_capacity;
+	uint32_t restore_async;
 	uint64_t validation_epoch;
 } SparkKvLaneTransactions;
 

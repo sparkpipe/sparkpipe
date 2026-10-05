@@ -1061,6 +1061,16 @@ SparkStatus SparkModelPipelineClientRequestStatus(SparkModelPipelineClient *pipe
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkModelPipelineClientCacheHint(SparkModelPipelineClient *pipeline,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	uint32_t rank,sent = 0u;
+	if ( pipeline == 0 || identity == 0 || token_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+		sent += SparkModelResidentClientCacheHint(pipeline->clients[rank],identity,token_count) == SPARK_STATUS_OK ? 1u : 0u;
+	return(sent == pipeline->rank_count ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
+}
+
 SparkStatus SparkModelPipelineClientGetRankStatus(
 	const SparkModelPipelineClient *pipeline,
 	uint32_t rank_index,

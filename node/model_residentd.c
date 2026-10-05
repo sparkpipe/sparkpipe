@@ -219,6 +219,9 @@ typedef struct SparkModelResidentdRuntime
 	SparkPipelineRuntimeRankPlan rank_plan;
 	SparkModelServingRuntimeLimits runtime_limits;
 	uint32_t adapter_max_sequence_positions;
+	uint64_t cache_hint_count;
+	uint64_t cache_hint_unsupported_count;
+	uint64_t cache_hint_failure_count;
 	SparkModelResidentdClient client;
 	SparkModelResidentdRoute *routes;
 	SparkModelResidentdSlot *slots;
@@ -2128,7 +2131,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 			(uint32_t)status,(unsigned long long)submission.submission_id,submission.work_kind,
 			submission.row_count,submission.active_sequence_count,
 			(unsigned long long)runtime->client.last_submission_id);
-	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_DUPLICATE )
+	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_PENDING && status != SPARK_STATUS_DUPLICATE )
 		SparkModelResidentdLogSubmission("SUBMISSION-REJECTED",&submission,status);
 	pthread_mutex_lock(&runtime->mutex);
 	if ( route != 0 && status == SPARK_STATUS_OK && cache_committed != 0u &&
@@ -2367,6 +2370,32 @@ static SparkStatus SparkModelResidentdProcessStatusRequest(
 	SPARK_RETURN(status);
 }
 
+static SparkStatus SparkModelResidentdProcessCacheHint(
+	SparkModelResidentdRuntime *runtime,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcCacheHint *hint = (const SparkModelResidentIpcCacheHint *)message;
+	SparkStatus status;
+	status = SparkModelResidentIpcValidateCacheHint(message,message_bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	runtime->cache_hint_count++;
+	if ( runtime->adapter_state == 0 || runtime->adapter_library.adapter_interface.cache_hint == 0 )
+	{
+		runtime->cache_hint_unsupported_count++;
+		return(SPARK_STATUS_OK);
+	}
+	status = runtime->adapter_library.adapter_interface.cache_hint(runtime->adapter_state,&hint->identity,hint->token_count);
+	if ( status != SPARK_STATUS_OK )
+	{
+		runtime->cache_hint_failure_count++;
+		if ( (runtime->cache_hint_failure_count & (runtime->cache_hint_failure_count - 1u)) == 0u )
+			fprintf(stderr,"model_residentd cache_hint status=%s tokens=%u failures=%llu\n",SparkStatusToString(status),hint->token_count,(unsigned long long)runtime->cache_hint_failure_count);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelResidentdProcessMessage(
 	SparkModelResidentdRuntime *runtime,
 	const void *message,
@@ -2408,6 +2437,8 @@ static SparkStatus SparkModelResidentdProcessMessage(
 		status = SparkModelResidentdProcessDecision(runtime,(const SparkModelResidentIpcDecision *)message,message_bytes);
 	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST )
 		status = SparkModelResidentdProcessStatusRequest(runtime,message,message_bytes);
+	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT )
+		status = SparkModelResidentdProcessCacheHint(runtime,message,message_bytes);
 	else
 		status = SPARK_STATUS_UNSUPPORTED;
 	if ( status == SPARK_STATUS_OK )

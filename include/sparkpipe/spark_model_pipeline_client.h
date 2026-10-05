@@ -120,6 +120,7 @@ SparkStatus SparkModelPipelineClientGetView(
 const SparkModelServingAdapterDescriptor *SparkModelPipelineClientGetAdapterDescriptor(
 	const SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientRequestStatus(SparkModelPipelineClient *pipeline);
+SparkStatus SparkModelPipelineClientCacheHint(SparkModelPipelineClient *pipeline,const SparkModelServingCacheIdentity *identity,uint32_t token_count);
 SparkStatus SparkModelPipelineClientGetRankStatus(
 	const SparkModelPipelineClient *pipeline,
 	uint32_t rank_index,

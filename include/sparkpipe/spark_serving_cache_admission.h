@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string.h>
+
 #include "sparkpipe/spark_admission.h"
 
 typedef struct SparkServingCacheAdmission
@@ -56,4 +58,24 @@ static inline SparkStatus SparkServingCacheAdmissionRun(const SparkServingCacheA
 			return(status);
 	}
 	return(SPARK_STATUS_OK);
+}
+
+static inline SparkStatus SparkServingCacheHintRun(const SparkServingCacheAdmission *cache,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	SparkModelDriverCacheLane lane;
+	if ( cache == 0 || cache->driver == 0 || cache->program_id == 0u || identity == 0 || token_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(&lane,0,sizeof(lane));
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	lane.prefix_token_count = token_count;
+	memcpy(lane.prefix_identity.sha256,identity->sha256,sizeof(lane.prefix_identity.sha256));
+	memset(&request,0,sizeof(request));
+	request.descriptor_bytes = (uint32_t)sizeof(request);
+	request.program_id = cache->program_id;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT;
+	request.cache_lanes = &lane;
+	request.cache_lane_count = 1u;
+	return(SparkAdmissionEvaluate(cache->driver,cache->driver_instance,&request,&decision));
 }

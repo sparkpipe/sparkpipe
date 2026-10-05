@@ -158,11 +158,44 @@ static int SparkWeightdParseByte(const char *program, const char *flag,
     return 1;
 }
 
+static int SparkWeightdKvByteCount(const char *text,const char *name,uint64_t *value)
+{
+    char *parse_end = 0;
+    if (text == 0 || text[0] == '\0')
+        return 0;
+    *value = strtoull(text, &parse_end, 10);
+    if (parse_end == text || *parse_end != '\0')
+    {
+        fprintf(stderr, "weightd: bad %s '%s'\n", name, text);
+        return 2;
+    }
+    return 0;
+}
+
+static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *reserve,uint64_t *write_budget)
+{
+    int index;
+    for (index = 1; index + 1 < argument_count; index++)
+    {
+        if (strcmp(arguments[index], "--kv-reserve-bytes") == 0 &&
+            SparkWeightdKvByteCount(arguments[index + 1], "--kv-reserve-bytes", reserve) != 0)
+            return 2;
+        if (strcmp(arguments[index], "--kv-write-budget-bytes-per-day") == 0 &&
+            SparkWeightdKvByteCount(arguments[index + 1], "--kv-write-budget-bytes-per-day", write_budget) != 0)
+            return 2;
+    }
+    if (SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_RESERVE_BYTES"), "SPARK_WEIGHTD_KV_RESERVE_BYTES", reserve) != 0 ||
+        SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY"), "SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY", write_budget) != 0)
+        return 2;
+    return 0;
+}
+
 int main(int argument_count, char **arguments)
 {
     const char *socket_path = "/tmp/spark_weightd.sock";
     uint64_t device_bytes_max = SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT;
     uint64_t kv_reserve_bytes = 0ull;
+    uint64_t kv_write_budget_bytes_per_day = 0ull;
     uint32_t mesh_fields = 0u;
     int ceiling_set_by_flag = 0;
     SparkWeightdServerConfig config;
@@ -195,18 +228,10 @@ int main(int argument_count, char **arguments)
             ceiling_set_by_flag = 1;
             index++;
         }
-        else if (strcmp(arguments[index], "--kv-reserve-bytes") == 0 &&
+        else if ((strcmp(arguments[index], "--kv-reserve-bytes") == 0 ||
+                strcmp(arguments[index], "--kv-write-budget-bytes-per-day") == 0) &&
             index + 1 < argument_count)
         {
-            char *parse_end = 0;
-            kv_reserve_bytes = strtoull(arguments[index + 1], &parse_end, 10);
-            if (parse_end == arguments[index + 1] || *parse_end != '\0')
-            {
-                fprintf(stderr, "weightd: bad --kv-reserve-bytes '%s'\n",
-                    arguments[index + 1]);
-                SparkWeightdUsage(arguments[0]);
-                return 2;
-            }
             index++;
         }
         else if (strcmp(arguments[index], "--mesh-rank") == 0 &&
@@ -324,7 +349,6 @@ int main(int argument_count, char **arguments)
     {
         const char *env_socket = getenv("SPARK_WEIGHTD_SOCKET");
         const char *env_ceiling = getenv("SPARK_WEIGHTD_DEVICE_BYTES_MAX");
-        const char *env_reserve = getenv("SPARK_WEIGHTD_KV_RESERVE_BYTES");
         const char *env_mesh_dir = getenv("SPARK_WEIGHTD_MESH_DIR");
         const char *env_doorbell_cpu = getenv("SPARK_WEIGHTD_MESH_DOORBELL_CPU");
         weightd_mesh_launch.doorbell_cpu = -1;
@@ -365,20 +389,10 @@ int main(int argument_count, char **arguments)
                 device_bytes_max = parsed;
             }
         }
-        if (env_reserve != 0 && env_reserve[0] != '\0')
-        {
-            char *parse_end = 0;
-            uint64_t parsed = strtoull(env_reserve, &parse_end, 10);
-            if (parse_end == env_reserve || *parse_end != '\0')
-            {
-                fprintf(stderr, "weightd: bad SPARK_WEIGHTD_KV_RESERVE_BYTES '%s'\n",
-                    env_reserve);
-                return 2;
-            }
-            kv_reserve_bytes = parsed;
-        }
     }
 
+    if (SparkWeightdKvSettings(argument_count,arguments,&kv_reserve_bytes,&kv_write_budget_bytes_per_day) != 0)
+        return 2;
     if (kv_reserve_bytes >= device_bytes_max)
     {
         fprintf(stderr,
@@ -405,6 +419,7 @@ int main(int argument_count, char **arguments)
     config.socket_path = socket_path;
     config.device_bytes_max = device_bytes_max;
     config.kv_reserve_bytes = kv_reserve_bytes;
+    config.kv_write_budget_bytes_per_day = kv_write_budget_bytes_per_day;
 
     signal(SIGINT, SparkWeightdSignal);
     signal(SIGTERM, SparkWeightdSignal);
@@ -460,10 +475,11 @@ int main(int argument_count, char **arguments)
         }
     }
 
-    printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu\n",
+    printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu kv_write_budget_per_day=%llu\n",
         socket_path, (unsigned long long)device_bytes_max,
         (unsigned long long)kv_reserve_bytes,
-        (unsigned long long)(device_bytes_max - kv_reserve_bytes));
+        (unsigned long long)(device_bytes_max - kv_reserve_bytes),
+        (unsigned long long)kv_write_budget_bytes_per_day);
     fflush(stdout);
 
     status = SparkWeightdServerRun(server, &SparkWeightdStop);

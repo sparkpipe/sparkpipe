@@ -202,12 +202,15 @@ def main() -> int:
             if outcome.returncode == 0 or (target / "config").exists():
                 failures.append(f"glm5_next: the generator accepted the {label} score-dump configuration")
 
-        # --- glm52: no committed tree; the generator's output must still
-        # satisfy the adapter's exact-member list (r3-flashdecode drift) ---
         glm52_gen = scratch / "glm52"
-        run(["python3", "tools/glm52_gen_deployment.py", str(glm52_gen)])
-        stage = json.loads(
-            (glm52_gen / "spark8/config/glm52_stage.json").read_text())
+        run(["python3", "tools/glm53full_lane.py", "--lane", "6", "--codec", "fp8", "--socket", "/tmp/weightd.sock",
+             "--kv-backing-bytes", str(1 << 30), "--max-sequence-positions", "4096", "--execution-row-capacity", "16",
+             "--sequences", "8", "--inflight", "1", "--output", str(glm52_gen)])
+        stage = json.loads((glm52_gen / "config/stage_08.json").read_text())
+        resident = json.loads((glm52_gen / "model_resident.json").read_text())
+        limits = resident["runtime_limits"]
+        if limits["kv_logical_page_capacity"] <= limits["kv_physical_page_capacity"]:
+            failures.append("glm52: the lane renderer leaves no spill pages (logical <= physical)")
         check_member_list(failures, "glm52",
                           "modules/glm52_resident_decode_stage/source/"
                           "spark_glm52_serving_adapter.c",

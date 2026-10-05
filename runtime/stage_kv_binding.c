@@ -16,7 +16,7 @@
 
 static const char *const SparkStageKvLockSiteNames[SPARK_STAGE_KV_LOCK_SITE_COUNT] =
 {
-	"admit","reset","continuity","claim","finish","publish","save"
+	"admit","reset","continuity","claim","finish","publish","save","restore"
 };
 
 static uint64_t SparkStageKvNowNs(void)
@@ -346,6 +346,185 @@ static void *SparkStageKvBindingCompletionMain(void *context);
 static SparkStatus SparkStageKvBindingRecurrentAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,uint64_t *held);
 static void *SparkStageKvBindingSaveMain(void *context);
 
+static SparkStageKvRestoreSlot *SparkStageKvBindingRestoreFind(SparkStageKvBinding *binding,const SparkModelDriverCacheIdentity *identity,uint32_t token_count)
+{
+	uint32_t index;
+	for (index=0u; index<SPARK_STAGE_KV_RESTORE_SLOTS; index++)
+		if ( binding->restores[index].state != SPARK_STAGE_KV_RESTORE_FREE && binding->restores[index].token_count == token_count &&
+			memcmp(&binding->restores[index].identity,identity,sizeof(*identity)) == 0 )
+			return(&binding->restores[index]);
+	return(0);
+}
+
+static SparkStageKvRestoreSlot *SparkStageKvBindingRestoreFree(SparkStageKvBinding *binding)
+{
+	SparkStageKvRestoreSlot *oldest = 0;
+	uint32_t index;
+	for (index=0u; index<SPARK_STAGE_KV_RESTORE_SLOTS; index++)
+	{
+		if ( binding->restores[index].state == SPARK_STAGE_KV_RESTORE_FREE )
+			return(&binding->restores[index]);
+		if ( binding->restores[index].state == SPARK_STAGE_KV_RESTORE_DONE && (oldest == 0 || binding->restores[index].done_ns < oldest->done_ns) )
+			oldest = &binding->restores[index];
+	}
+	return(oldest);
+}
+
+static uint32_t SparkStageKvBindingRestoreWanted(SparkStageKvBinding *binding,const SparkModelDriverCacheLane *lane)
+{
+	SparkStageKvRestoreSlot *slot,*free_slot;
+	uint32_t consumed = 0u;
+	if ( (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) == 0u || lane->prefix_token_count == 0u ||
+		binding->page_cache.sequences[lane->resident_sequence_slot].sequence_id == lane->sequence_id )
+		return(0u);
+	slot = SparkStageKvBindingRestoreFind(binding,&lane->prefix_identity,lane->prefix_token_count);
+	if ( slot != 0 && slot->state == SPARK_STAGE_KV_RESTORE_DONE )
+	{
+		slot->state = SPARK_STAGE_KV_RESTORE_FREE;
+		consumed = 1u;
+		slot = 0;
+	}
+	if ( consumed != 0u || SparkKvPageCachePrefixReady(&binding->page_cache,&lane->prefix_identity,lane->prefix_token_count) != 0u )
+		return(0u);
+	if ( slot != 0 )
+		return(1u);
+	free_slot = SparkStageKvBindingRestoreFree(binding);
+	if ( free_slot == 0 )
+		return(1u);
+	memset(free_slot,0,sizeof(*free_slot));
+	free_slot->identity = lane->prefix_identity;
+	free_slot->token_count = lane->prefix_token_count;
+	free_slot->state = SPARK_STAGE_KV_RESTORE_QUEUED;
+	binding->restore_jobs++;
+	(void)pthread_cond_signal(&binding->restore_ready);
+	return(1u);
+}
+
+static void SparkStageKvBindingRestoreQueue(SparkStageKvBinding *binding,const SparkModelDriverCacheIdentity *identity,uint32_t token_count)
+{
+	SparkStageKvRestoreSlot *slot;
+	if ( SparkKvPageCachePrefixReady(&binding->page_cache,identity,token_count) != 0u || SparkStageKvBindingRestoreFind(binding,identity,token_count) != 0 )
+		return;
+	slot = SparkStageKvBindingRestoreFree(binding);
+	if ( slot == 0 )
+		return;
+	memset(slot,0,sizeof(*slot));
+	slot->identity = *identity;
+	slot->token_count = token_count;
+	slot->state = SPARK_STAGE_KV_RESTORE_QUEUED;
+	binding->restore_jobs++;
+	binding->restore_hinted_jobs++;
+	(void)pthread_cond_signal(&binding->restore_ready);
+}
+
+static SparkStatus SparkStageKvBindingHint(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
+{
+	uint64_t held;
+	uint32_t lane;
+	SparkStatus status;
+	SparkModelDriverInitializeAdmissionDecision(decision);
+	if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkStageKvBindingLock(binding,&held);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	binding->restore_hints++;
+	if ( binding->page_cache.snapshot != 0 && binding->restore_started != 0u )
+		for (lane=0u; lane<request->cache_lane_count; lane++)
+			SparkStageKvBindingRestoreQueue(binding,&request->cache_lanes[lane].prefix_identity,request->cache_lanes[lane].prefix_token_count);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_RESTORE,held);
+	decision->accepted = 1u;
+	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkStageKvBindingRestoreGate(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t lane,waiting = 0u;
+	if ( request->admission_flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE || binding->page_cache.snapshot == 0 || binding->restore_started == 0u )
+		return(SPARK_STATUS_OK);
+	for (lane=0u; lane<request->cache_lane_count; lane++)
+		if ( binding->transactions.lanes[request->cache_lanes[lane].resident_sequence_slot].phase == SPARK_KV_LANE_TRANSACTION_EMPTY )
+			waiting += SparkStageKvBindingRestoreWanted(binding,&request->cache_lanes[lane]);
+	if ( waiting == 0u )
+		return(SPARK_STATUS_OK);
+	binding->restore_pending_answers++;
+	return(SPARK_STATUS_PENDING);
+}
+
+static SparkStatus SparkStageKvBindingRestoreRun(SparkStageKvBinding *binding,SparkStageKvRestoreSlot *slot)
+{
+	SparkKvPageCacheRestoreJob *job = &binding->restore_job;
+	SparkStatus status;
+	status = SparkKvPageCacheRestoreBegin(&binding->page_cache,job,&slot->identity,slot->token_count);
+	if ( status != SPARK_STATUS_PENDING )
+		return(status);
+	(void)pthread_mutex_unlock(&binding->mutex);
+	status = SparkKvPageCacheRestoreReadChain(&binding->page_cache,job);
+	(void)pthread_mutex_lock(&binding->mutex);
+	while ( status == SPARK_STATUS_OK )
+	{
+		status = SparkKvPageCacheRestoreAdvance(&binding->page_cache,job);
+		if ( status != SPARK_STATUS_OK || job->need == SPARK_KV_PAGE_CACHE_RESTORE_DONE || binding->restore_stop != 0u )
+			break;
+		(void)pthread_mutex_unlock(&binding->mutex);
+		status = SparkKvPageCacheRestoreRead(&binding->page_cache,job);
+		(void)pthread_mutex_lock(&binding->mutex);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkKvPageCacheRestoreApply(&binding->page_cache,job);
+	}
+	binding->restore_imported_pages += job->imported_pages;
+	return(SparkKvPageCacheRestoreFinish(&binding->page_cache,job,status));
+}
+
+static void *SparkStageKvBindingRestoreMain(void *context)
+{
+	SparkStageKvBinding *binding = (SparkStageKvBinding *)context;
+	SparkStageKvRestoreSlot *slot;
+	uint32_t index;
+	(void)pthread_mutex_lock(&binding->mutex);
+	while ( binding->restore_stop == 0u )
+	{
+		slot = 0;
+		for (index=0u; slot == 0 && index<SPARK_STAGE_KV_RESTORE_SLOTS; index++)
+			if ( binding->restores[index].state == SPARK_STAGE_KV_RESTORE_QUEUED )
+				slot = &binding->restores[index];
+		if ( slot == 0 )
+		{
+			(void)pthread_cond_wait(&binding->restore_ready,&binding->mutex);
+			continue;
+		}
+		slot->state = SPARK_STAGE_KV_RESTORE_RUNNING;
+		slot->status = SparkStageKvBindingRestoreRun(binding,slot);
+		slot->done_ns = SparkStageKvNowNs();
+		slot->state = SPARK_STAGE_KV_RESTORE_DONE;
+	}
+	(void)pthread_mutex_unlock(&binding->mutex);
+	return(0);
+}
+
+static SparkStatus SparkStageKvBindingStartRestore(SparkStageKvBinding *binding)
+{
+	binding->restore_job.links = (SparkKvPageCacheSnapshotLink *)calloc(binding->pages_per_sequence,sizeof(*binding->restore_job.links));
+	if ( cudaHostAlloc((void **)&binding->restore_job.page,(size_t)binding->page_bytes,cudaHostAllocPortable) != cudaSuccess )
+		binding->restore_job.page = 0;
+	if ( binding->page_cache.state_store != 0 )
+		binding->restore_job.state = (uint8_t *)malloc((size_t)binding->page_cache.state_store->page_bytes);
+	if ( binding->restore_job.links == 0 || binding->restore_job.page == 0 || (binding->page_cache.state_store != 0 && binding->restore_job.state == 0) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( pthread_cond_init(&binding->restore_ready,0) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	binding->restore_ready_initialized = 1u;
+	binding->transactions.restore_async = 1u;
+	if ( pthread_create(&binding->restore_thread,0,SparkStageKvBindingRestoreMain,binding) != 0 )
+	{
+		binding->transactions.restore_async = 0u;
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	binding->restore_started = 1u;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkStageKvBindingStartAsync(SparkStageKvBinding *binding)
 {
 	SparkStatus status;
@@ -366,7 +545,10 @@ static SparkStatus SparkStageKvBindingStartAsync(SparkStageKvBinding *binding)
 	if ( pthread_create(&binding->save_thread,0,SparkStageKvBindingSaveMain,binding) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	binding->save_started = 1u;
-	fprintf(stderr,"%s kv binding async completion_records=%u copy_on_write=device copy_stream=nonblocking\n",binding->module_tag,binding->pipeline_slot_count);
+	status = SparkStageKvBindingStartRestore(binding);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	fprintf(stderr,"%s kv binding async completion_records=%u copy_on_write=device copy_stream=nonblocking restore=worker\n",binding->module_tag,binding->pipeline_slot_count);
 	return(SPARK_STATUS_OK);
 }
 
@@ -774,6 +956,22 @@ static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count);
 }
 
+static SparkStatus SparkStageKvBindingAttachWriteBudget(SparkStageKvBinding *binding)
+{
+	if ( SparkKvWriteBudgetInitialize(&binding->write_budget,binding->kv_pool.write_budget_bytes_per_day,SparkStageKvNowNs()) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv binding refused: the weightd pool grants no NVMe write budget\n",binding->module_tag);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	binding->page_store.write_budget = &binding->write_budget;
+	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
+		binding->state_store.write_budget = &binding->write_budget;
+	binding->page_cache.write_budget = &binding->write_budget;
+	fprintf(stderr,"%s kv write budget bytes_per_day=%llu: spill and snapshot writes past it are discarded or skipped and recomputed\n",binding->module_tag,
+		(unsigned long long)binding->write_budget.bytes_per_day);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *configuration)
 {
 	const char *missing;
@@ -859,6 +1057,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	status = SparkKvBackendInitialize(&table,&binding->arena,&binding->page_cache,&binding->page_store);
 	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u )
 		status = SparkStageKvBindingAttachStates(binding,configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingAttachWriteBudget(binding);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( pthread_mutex_init(&binding->mutex,0) != 0 )
@@ -895,6 +1095,9 @@ static void SparkStageKvBindingLogCounters(const SparkStageKvBinding *binding)
 		(unsigned long long)binding->arena.park_backing_full_count,(unsigned long long)binding->arena.park_stall_count,
 		(unsigned long long)binding->page_store.write_count,(unsigned long long)binding->page_store.read_count,
 		binding->page_store.backing_page_count,(unsigned long long)binding->page_cache.backing_reclaim_count);
+	fprintf(stderr,"%s kv binding restore worker jobs=%llu hints=%llu hinted_jobs=%llu pending_answers=%llu imported_pages=%llu\n",binding->module_tag,
+		(unsigned long long)binding->restore_jobs,(unsigned long long)binding->restore_hints,(unsigned long long)binding->restore_hinted_jobs,
+		(unsigned long long)binding->restore_pending_answers,(unsigned long long)binding->restore_imported_pages);
 }
 
 static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
@@ -904,9 +1107,10 @@ static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
 	if ( binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || binding->save_started == 0u )
 		return;
 	status = SparkStageKvBindingSaveAll(binding,SparkStageKvNowNs() + SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS,&saved,&unsaved,&ineligible);
-	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu save_deferred=%llu status=%s\n",
+	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu status=%s\n",
 		binding->module_tag,saved,unsaved,ineligible,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
-		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.save_deferred_count,SparkStatusToString(status));
+		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.save_deferred_count,
+		(unsigned long long)binding->snapshot.evicted_unsaved_count,(unsigned long long)binding->snapshot.demote_queued_count,SparkStatusToString(status));
 }
 
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
@@ -947,6 +1151,10 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->save_order);
 	if ( binding->snapshot_page != 0 )
 		(void)cudaFreeHost(binding->snapshot_page);
+	free(binding->restore_job.links);
+	free(binding->restore_job.state);
+	if ( binding->restore_job.page != 0 )
+		(void)cudaFreeHost(binding->restore_job.page);
 	if ( binding->module_tag != 0 && binding->mutex_initialized != 0u )
 		SparkStageKvBindingLogCounters(binding);
 	SparkStageKvBindingFreeCompletions(binding);
@@ -975,6 +1183,8 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 		(void)pthread_cond_destroy(&binding->completion_idle);
 		(void)pthread_cond_destroy(&binding->save_ready);
 		(void)pthread_cond_destroy(&binding->save_idle);
+		if ( binding->restore_ready_initialized != 0u )
+			(void)pthread_cond_destroy(&binding->restore_ready);
 	}
 	memset(binding,0,sizeof(*binding));
 }
@@ -986,11 +1196,15 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 	uint64_t held;
 	if ( binding == 0 || request == 0 || decision == 0 || binding->mutex_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT )
+		return(SparkStageKvBindingHint(binding,request,decision));
 	status = SparkStageKvBindingLock(binding,&held);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	status = binding->control_generation != 0u && binding->control_generation != request->control_generation ?
-		SPARK_STATUS_VALIDATION_FAILED : SparkKvLaneTransactionsAdmit(&binding->transactions,request);
+		SPARK_STATUS_VALIDATION_FAILED : SparkStageKvBindingRestoreGate(binding,request);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvLaneTransactionsAdmit(&binding->transactions,request);
 	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u )
 		status = SparkStageKvBindingRecurrentAdmit(binding,request,&held);
 	if ( status == SPARK_STATUS_OK )
@@ -2051,6 +2265,15 @@ void SparkStageKvBindingStop(SparkStageKvBinding *binding)
 	if ( binding->save_started != 0u )
 		(void)pthread_join(binding->save_thread,0);
 	binding->save_started = 0u;
+	(void)pthread_mutex_lock(&binding->mutex);
+	binding->restore_stop = 1u;
+	if ( binding->restore_ready_initialized != 0u )
+		(void)pthread_cond_broadcast(&binding->restore_ready);
+	(void)pthread_mutex_unlock(&binding->mutex);
+	if ( binding->restore_started != 0u )
+		(void)pthread_join(binding->restore_thread,0);
+	binding->restore_started = 0u;
+	binding->transactions.restore_async = 0u;
 }
 
 static SparkStatus SparkStageKvBindingSaveDrain(SparkStageKvBinding *binding,uint64_t deadline_ns)
@@ -2143,6 +2366,12 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 	counters->pool_generation = binding->kv_pool.pool_generation;
 	counters->pool_reattached = binding->kv_pool.reattached;
 	counters->pool_adopted_pages = binding->kv_pool_adopted_pages;
+	SparkKvWriteBudgetRefill(&binding->write_budget,SparkStageKvNowNs());
+	counters->write_budget_bytes_per_day = binding->write_budget.bytes_per_day;
+	counters->write_budget_available_bytes = binding->write_budget.available_bytes;
+	counters->write_budget_overrun_bytes = binding->write_budget.overrun_bytes;
+	counters->write_budget_refused_saves = binding->write_budget.refused_saves;
+	counters->write_budget_discarded_pages = binding->write_budget.discarded_pages;
 	snapshot = binding->page_cache.snapshot;
 	if ( snapshot == 0 )
 	{

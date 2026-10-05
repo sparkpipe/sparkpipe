@@ -432,6 +432,12 @@ static void TestScenarioPrefixIndexSurvivesRestart(const SparkModelResidentDeplo
 		(restored.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u &&
 		memcmp(&canonical.cache_publish_identity,&restored.cache_prefix_identity,sizeof(canonical.cache_publish_identity)) == 0,
 		"index restart: the restarted engine sends the saved block as a prefix lane");
+	{
+		uint32_t rank,hints = 0u;
+		for (rank=0u; rank<TEST_RANKS; rank++)
+			hints += MockResidentClientCalls(rank,MOCK_CALL_CACHE_HINT) == 1u ? 1u : 0u;
+		CHECK(hints == TEST_RANKS,"index restart: the engine hints the queued prefix to every rank once so restores start before dispatch");
+	}
 	TestDriveUntilTerminal(engine,&state,2u,400u);
 	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"index restart: the request completes with four cached prompt tokens");
 	SparkModelBatchEngineDestroy(engine);
@@ -1312,6 +1318,38 @@ static void TestScenarioBusyRestoreDeadline(const SparkModelResidentDeployment *
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioPendingRestoreRetries(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine = 0;
+	struct timespec start,now;
+	uint64_t elapsed_ns = 0u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,8u,0u);
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"pending restore: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientScriptSubmitStatusOnce(1u,SPARK_STATUS_PENDING);
+	TestSubmit(engine,1u,520u,2u);
+	clock_gettime(CLOCK_MONOTONIC,&start);
+	while ( state.total_terminals == 0u && elapsed_ns < UINT64_C(5000000000) )
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveAll();
+		usleep(1000);
+		clock_gettime(CLOCK_MONOTONIC,&now);
+		elapsed_ns = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - (uint64_t)start.tv_nsec;
+	}
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u,"pending restore: a rank answering PENDING while it restores is retried and the request completes");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_PENDING] == 1u,"pending restore: the PENDING answer is counted once");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRankBusyBackpressure(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -1730,6 +1768,7 @@ int main(void)
 	TestScenarioVerificationFailureIsFatal(&deployment,runtime_root);
 	TestScenarioRankBusyBackpressure(&deployment,runtime_root);
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);
+	TestScenarioPendingRestoreRetries(&deployment,runtime_root);
 	TestScenarioDriverIoError(&deployment,runtime_root);
 	TestScenarioEosEarlyStop(&deployment,runtime_root);
 	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);

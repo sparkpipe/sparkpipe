@@ -753,10 +753,11 @@ typedef struct SparkWeightdIpcKvPoolAttachResult
     uint64_t metadata_bytes;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
+    uint64_t write_budget_bytes_per_day;
 } SparkWeightdIpcKvPoolAttachResult;
 
 #if !defined(__cplusplus)
-_Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 136u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 88u,"kv pool frames are fixed for ABI 10");
+_Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 136u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 96u,"kv pool frames are fixed for ABI 10");
 #endif
 
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
@@ -798,6 +799,7 @@ typedef struct SparkWeightdServerConfig
     const char *socket_path;
     uint64_t device_bytes_max;
     uint64_t kv_reserve_bytes;
+    uint64_t kv_write_budget_bytes_per_day;
 } SparkWeightdServerConfig;
 
 typedef struct SparkWeightdServer SparkWeightdServer;
@@ -1034,6 +1036,7 @@ typedef struct SparkWeightdKvPoolGrant
     uint64_t metadata_bytes;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
+    uint64_t write_budget_bytes_per_day;
     uint32_t chunk_count;
     uint32_t reattached;
     int chunk_fds[SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX];

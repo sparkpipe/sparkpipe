@@ -1047,6 +1047,32 @@ SparkStatus SparkModelResidentClientRequestStatus(SparkModelResidentClient *clie
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkModelResidentClientCacheHint(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	SparkModelResidentClientOutput *output;
+	uint32_t index;
+	SparkStatus status;
+	if ( client == 0 || identity == 0 || token_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->connected == 0u )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( client->output_count >= client->queue_capacity )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	if ( client->output_message_capacity < SPARK_MODEL_RESIDENT_IPC_CACHE_HINT_BYTES )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	index = (client->output_head + client->output_count) % client->queue_capacity;
+	output = &client->outputs[index];
+	status = SparkModelResidentIpcInitializeCacheHint((SparkModelResidentIpcCacheHint *)(client->output_storage + ((uint64_t)index * client->output_message_capacity)),client->next_message_id,identity,token_count);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	client->next_message_id++;
+	output->message_bytes = SPARK_MODEL_RESIDENT_IPC_CACHE_HINT_BYTES;
+	output->sent_bytes = 0u;
+	client->output_count++;
+	(void)SparkModelResidentClientFlush(client);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelResidentClientGetStatus(const SparkModelResidentClient *client,SparkModelResidentStatusReport *report)
 {
 	if ( client == 0 || report == 0 )

@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 30u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 32u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -340,6 +340,11 @@ typedef SparkStatus (*SparkModelServingAdapterResetFunction)(
 	void *adapter_state,
 	uint64_t control_generation);
 
+typedef SparkStatus (*SparkModelServingAdapterCacheHintFunction)(
+	void *adapter_state,
+	const SparkModelServingCacheIdentity *identity,
+	uint32_t token_count);
+
 typedef struct SparkModelServingAdapterInterface
 {
 	uint32_t abi_version;
@@ -355,6 +360,7 @@ typedef struct SparkModelServingAdapterInterface
 	SparkModelServingAdapterQuiesceFunction quiesce;
 	SparkModelServingAdapterSnapshotFunction snapshot;
 	SparkModelServingAdapterResetFunction reset;
+	SparkModelServingAdapterCacheHintFunction cache_hint;
 } SparkModelServingAdapterInterface;
 
 typedef const SparkModelServingAdapterInterface *

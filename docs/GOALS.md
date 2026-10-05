@@ -264,10 +264,10 @@ target. No new work builds against 5.2 sources.
 
 The operator confirmed this on 2026-09-28: GLM 5.2 weights are not
 considered for anything. Five of the glm52 firmware descriptions (fp8,
-int6, int7, int8, mxfp4) name GLM 5.3 revision `935644c0`. The generators
-and packer still pass GLM 5.2 revision `b4734de4`
-(`tools/glm52_gen_deployment.py`, `tools/glm53full_gen_deployment.py`,
-`tools/glm52_resident_stagepack.py`), and they have to move to GLM 5.3.
+int6, int7, int8, mxfp4) name GLM 5.3 revision `935644c0`. The packer
+still passes GLM 5.2 revision `b4734de4`
+(`tools/glm52_resident_stagepack.py`) and has to move to GLM 5.3; the old
+TP8 deployment generators are gone in favour of `tools/glm53full_lane.py`.
 
 ## SPECULATOR PORTFOLIO (operator)
 

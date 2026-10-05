@@ -3128,6 +3128,8 @@ static SparkStatus SparkGlm52ModuleAdmit(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET )
 		return(SparkStageKvBindingAdmitReset(&state->kv,request,decision,state->slot_states,state->lane_states,state->execution_stream));
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT )
+		return(SparkStageKvBindingAdmit(&state->kv,request,decision));
 	available = SparkStageModuleSlotCountFree(state->slot_states,state->pipeline_slot_count);
 	if ( (request->frame_flags & (SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE | SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH)) != 0u )
 	{

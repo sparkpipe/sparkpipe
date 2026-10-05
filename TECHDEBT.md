@@ -248,13 +248,12 @@ citations refer to that commit.
   cache. B16 decode at 16K context reads 5.2 GB of bf16 index keys per step.
   With the context split, each rank scores its own 1/tp of the context and
   the ranks merge their top-k candidates.
-- KV admission answers `BUSY` while a park or restore is in flight: nothing
-  answers `PENDING` with a completion signal, so the engine polls with a 10 to
-  200 ms backoff (`runtime/stage_kv_binding.c`, `SparkStageKvBindingAdmit`).
-  The JIT-KV pager's queued park (`cache/kv_pager.c`) still drops a block whose
-  write fails and answers RECOMPUTE, unlike the arena, which keeps the page.
-  Close both: prepare answers `PENDING` until the pages are in place and the
-  pager keeps a failed park's page resident.
+- A prepare waiting on its snapshot restore answers `PENDING` and the engine
+  polls it every 2 ms within the in-flight budget, but there is still no
+  completion signal, and a prepare that waits on a park or a full slot table
+  answers `BUSY` with the 10 to 200 ms backoff. Close it with a
+  restore-complete and park-complete notification from residentd to the
+  engine, so a lane is dispatched as soon as its pages are in place.
 - Left out on purpose (2026-10-02): glm52 graph regimes key long contexts on
   4,096-token buckets to 16K and four buckets per octave above, in the fixed
   72-regime table (`spark_glm52_graph_regime.h`): a 1,048,576-position
@@ -449,116 +448,44 @@ citations refer to that commit.
 
 ## KV tiers
 
-- Left out on purpose (2026-10-02): JIT-KV W3
-  (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is open. The tree holds five KV
-  stores and two unwired residency layers: the anonymous page store
-  `cache/kv_page_store.c`, the slot file `runtime/spark_kv_backing.c`, the
-  digest-checked slot index `cache/nvme_tier.c` (no file I/O of its own,
-  `include/sparkpipe/spark_nvme_tier.h:57-64`), the prefix snapshot files
-  `cache/kv_snapshot.c`, the external provider client `cache/store/kv_store.c`
-  with `cache/store/stage_kv_client.c`, plus the pager `cache/kv_pager.c` and
-  the header-only `LmCache` in `cache/cache.h` that only `tests/test_cache.c`
-  includes. `kv_snapshot.c` is linked but `SparkKvPageCacheAttachSnapshot`
-  (`cache/kv_page_cache.c:1480`) has no production caller, and the provider
-  store stays off unless `SPARK_<FAMILY>_STAGE_KV_STORE` names one
-  (`include/sparkpipe/family/module/spark_module_open_kv_tier.h:27-31`), so
-  production spills only to the page store, the one with no persistence and no
-  integrity check. Close it by building one store on the `kv_snapshot.c`
-  format behind the pager and the binding and deleting the rest, proven on the
-  fleet by a spill, residentd restart and restore run that hits through that
-  store alone.
-- Left out on purpose (2026-10-02): The pager and its stores have no
-  production caller. `cache/kv_pager.c` is in no library (`sources.mk:72-81`)
-  and is built only into the `test_jit_kv_*` targets (`Makefile:1646-1667`);
-  `cache/nvme_tier.c` is linked into the model common library
-  (`sources.mk:81`) but is called only by `kv_pager.c` and
-  `scheduler/topology_switch.c`, which only `test_topology_switch` builds
-  (`Makefile:1671-1672`); `runtime/spark_kv_backing.c` is built only into
-  `tools/spark_kv_backing_test.c` (`Makefile:1267-1268`); and
-  `modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c` is not a
-  dsv4 module source (`modules/dsv4_resident_decode_stage/Makefile:15-31`).
-  Whole-lane park and restore, the park budget and restore-bandwidth admission
-  run only in host tests, so no served model can park a lane. Close it by
-  wiring one pager into the common KV binding (`runtime/stage_kv_binding.c`)
-  and deleting the unwired copies, proven by a fleet backpressure run at 2x
-  device pages where parked lanes restore bit-exact at B1 and B16.
-- Left out on purpose (2026-10-02): No production code attaches a KV snapshot
-  store, so GLM-5.3 Full keeps no prefix across a residentd restart or a model
-  unload (req 15). `SparkKvPageCacheAttachSnapshot`
-  (`cache/kv_page_cache.c:1480`) and `SparkKvSnapshotStoreOpen`
-  (`cache/kv_snapshot.c:530`) are called only from `tests/test_kv_snapshot.c`
-  and `tests/test_kv_snapshot_cuda.c`, and `SparkStageKvBindingInitialize`
-  (`runtime/stage_kv_binding.c:198-259`) opens only the anonymous `O_TMPFILE`
-  spill store (`runtime/stage_kv_binding.c:176`,
-  `cache/kv_page_store.c:179-185`), which disappears with the process. The
-  PREPARE restore (`cache/kv_page_cache.c:2006-2014`) and the saves at
-  completion and release (`cache/kv_page_cache.c:2184`, `:2072`) are gated on
-  `cache->snapshot` and never run. Close it by opening the store and attaching
-  it in `SparkStageKvBindingInitialize` from a required deployment field whose
-  absence fails the load, after saves move off the CUDA host callback and the
-  engine can find stored prefixes after a restart (both below). Fleet proof:
-  send a 4K prompt, restart residentd on all 16 ranks, resend it, and see
-  `cached_tokens > 0`, `restore_count > 0`, `restore_failure_count == 0` and
-  tokens identical to the first run.
-- Left out on purpose (2026-10-02): Crash recovery of the KV snapshot store
-  has never run in production. The store writes each file to a `.kvs-writing-`
-  temporary opened with `O_EXCL` and mode 0600, fsyncs it, renames it and
-  fsyncs the directory (`cache/kv_snapshot.c:331-358`), and
-  `SparkKvSnapshotStoreOpen` deletes leftover temporaries before indexing the
-  store (`cache/kv_snapshot.c:501-505`, `:563`). Nothing outside the tests
-  opens the store, so this path is unreachable on the fleet and no
-  kill-during-write case has run. Close it with the production store
-  attachment, then run the crash case on the fleet: kill -9 residentd on one
-  rank while saves are queued, restart it, and check that no `.kvs-writing-`
-  file remains, `removed_temporary_count` equals the leftovers, and the resent
-  prompt restores with tokens identical to an uninterrupted run.
-- Left out on purpose (2026-10-02): `tools/glm52_gen_deployment.py:112-113`
-  renders `kv_logical_page_capacity` equal to `kv_physical_page_capacity` (16
-  x 512 pages), so a GLM Full deployment rendered by it has zero spill pages
-  (`runtime/stage_kv_binding.c:138`) and every eviction under device pressure
-  discards cached KV. The lane renderer already adds `kv_backing_bytes //
-  KV_PAGE_BYTES` spill pages (`tools/glm53full_lane.py:133-134`, c7edad09e)
-  and refuses a non-positive backing size (`:164-165`); the TP8 generator was
-  never updated. Close it by rendering logical > physical in
-  `glm52_gen_deployment.py` the same way, or by deleting it in favour of the
-  lane renderer, proven by the binding load line
-  (`runtime/stage_kv_binding.c:256-257`) showing logical_pages >
-  physical_pages on every rank of the rendered deployment.
-- Left out on purpose (2026-10-02): Evicting a prefix-cache entry destroys it
-  in every tier: `SparkKvPageCacheEvictEntry`
-  (`cache/kv_page_cache.c:395-432`) calls `SparkKvPageCacheDiscardLogicalPage`
-  (`:326-352`), which invalidates the page-store copy (`:334-345`) and frees
-  the logical page. It runs when logical pages or entries run out (`:434-441`,
-  `:443-460`) and when a page cannot be made resident (`:899-910`); the only
-  demotion is the arena's per-page write-back into the process-lifetime page
-  store (`cache/kv_cache.c:1186-1229`). Once logical pages are exhausted an
-  evicted prefix is gone and its next request recomputes it. Required:
-  eviction demotes an entry to the next tier and discards only from the last
-  one. Close it by moving entry eviction onto the tier chain, proven on the
-  fleet by a run at 2x device pages where a prompt evicted from the device and
-  logical pools is restored from the lower tier with `cached_tokens` covering
-  it and tokens equal to an uninterrupted run.
-- Left out on purpose (2026-10-02): There is no host-memory KV tier. The
-  binding's only host KV memory is one pinned staging page
-  (`runtime/stage_kv_binding.c:87-91`, `:182-183`), and a page leaving the
-  device pool goes straight to the page-store file (`:172-176`), while
-  `README.md:261-263` says pages move between GPU memory, host memory, NVMe
-  and an external store. Pages that fit in host DRAM go to disk or are
-  discarded, and README describes a tier that does not exist. Close it with a
-  bounded host DRAM tier between the device pool and the NVMe store, sized by
-  a deployment field whose absence fails the load, proven on the fleet by a
-  spill run whose demoted pages are restored from host memory with the
-  page-store read count unchanged and tokens equal to an uninterrupted run.
-- Left out on purpose (2026-10-02): The arena has one evict hook and two
-  owners: the common binding installs the page store's
-  `SparkKvPageStoreWriteback` (`runtime/stage_kv_binding.c:172-173`), and
-  `SparkKvPagerInitialize` refuses with `BUSY` when any other hook is set
-  (`cache/kv_pager.c:340-344`) before installing its own (`:371-372`). The
-  pager therefore cannot attach to any binding arena, and wiring it means
-  choosing one owner of eviction. Close it by making the pager the only evict
-  hook with the surviving store as its backing, proven on the fleet by a spill
-  run whose write-backs are counted by the pager's statistics, not the page
-  store's.
+- Left out on purpose (2026-10-04): JIT-KV W3
+  (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done: the slot file, the
+  lane pager with its dsv4 frame ops and the header-only `LmCache` are
+  deleted, and the binding uses two stores, the per-engine spill page store
+  (`cache/kv_page_store.c`, digest-checked, quota reserved at open) and the
+  persistent snapshot store (`cache/kv_snapshot.c`). Still left: the spill
+  store is anonymous, so a parked page that was never saved does not survive
+  the process; `cache/nvme_tier.c` remains for the unwired topology switch;
+  and the external provider client (`cache/store/`, `common/common_kv_frame.h`)
+  stays inside the qwen38_max, qwen38_27b, qwen4_flash and muse_glimmer
+  modules until they move onto the binding. Close it by making the spill
+  store write the snapshot format and moving those families onto the
+  binding, proven on the fleet by a spill, residentd restart and restore run
+  that hits through the snapshot store alone.
+- Left out on purpose (2026-10-04): The unwired lane pager is deleted and
+  nothing replaces its whole-lane park, park budget or restore-bandwidth
+  admission: the binding parks per page through the arena's evict hook.
+  Close it with lane park and restore-bandwidth admission in the binding,
+  proven by a fleet backpressure run at 2x device pages where parked lanes
+  restore bit-exact at B1 and B16.
+- Crash recovery of the KV snapshot store has not run on the fleet. The store
+  writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
+  the directory, and its open deletes leftover temporaries; the binding opens
+  it in production, but no kill-during-write case has run. Close it on the
+  fleet: kill -9 residentd on one rank while saves are queued, restart it, and
+  check that no `.kvs-writing-` file remains, `removed_temporary_count`
+  equals the leftovers, and the resent prompt restores with tokens identical
+  to an uninterrupted run.
+- Eviction now prefers entries the snapshot store already holds (or cannot
+  hold), and queues a save for the older unsaved entries it passes over
+  (`SparkKvPageCacheSelectVictim`, `cache/kv_page_cache.c`), so a saved prefix
+  evicted from the device and logical pools restores from the snapshot store.
+  When no safe entry is in the scan window the oldest unsaved entry is still
+  discarded (counted as `evicted_unsaved` in the store close line) rather than
+  stalling admission on the save thread. Close it on the fleet with a run at
+  2x device pages where `evicted_unsaved` stays zero and an evicted prompt
+  restores with `cached_tokens` covering it and tokens equal to an
+  uninterrupted run.
 - Left out on purpose (2026-10-02): Every production page store is anonymous:
   the common binding (`runtime/stage_kv_binding.c:176`) and the glm5_next
   (`modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c:1577`,
@@ -595,23 +522,15 @@ citations refer to that commit.
   and logs `KV-BACKING-FULL` (`cache/kv_page_cache.c`,
   `SparkKvPageCacheBackingOutcome`). Close it by feeding store occupancy into
   engine admission so a full store queues new work instead of failing it.
-- Left out on purpose (2026-10-02): No code budgets or reports NVMe write
-  endurance. The page store and snapshot store count written bytes
-  (`cache/kv_page_store.c:439`, `cache/kv_snapshot.c:390`), but nothing reads
-  those counters and no limit stops spill writes once they pass the
-  drive-writes-per-day budget (`docs/archive/JIT_KV_RESPONSE.md:26-28` sets
-  0.1-0.3 DWPD). A thrashing workload wears out the KV NVMe with no signal.
-  Close it with a per-drive write budget in the deployment, enforced by
-  refusing further spill writes (recompute instead) once the rolling budget is
-  spent and reported in the wave timeline, proven on one Spark by a run with a
-  small budget that reports the write rate, stops spilling at the limit and
-  keeps serving.
-- A snapshot restore runs inline in the lane prepare while the KV binding lock
-  is held (`SparkKvPageCacheRestorePrefix`, called from the prepare in
-  `cache/kv_page_cache.c`), so a restore blocks every admission and the
-  completion thread for the length of its file reads. Close it by reading
-  restores on a worker outside the lock, with prepare answering `PENDING`
-  until the pages are in place.
+- The KV NVMe write budget covers only the engines on the common binding. weightd
+  hands each KV pool a share of `--kv-write-budget-bytes-per-day`, and the
+  binding stops snapshot saves and discards parked pages for recompute once
+  its share is spent (`cache/kv_page_cache.c`, `SparkKvPageCacheDiscardForBudget`),
+  reported in `kv_store_report`. The non-core families' own page stores
+  (laguna, ling, dsv4) write unbudgeted until they move onto the binding, and
+  the budget has not run on a Spark. Close it with those families on the
+  binding and a one-Spark run with a small budget that reports the write
+  rate, stops spilling at the limit and keeps serving.
 - Copy-on-write of a partial prefix page needs a device copier attached to
   the page cache (`SparkKvPageCacheAttachDeviceCopy`). glm52 (through the KV
   binding) and glm5_next attach one; dsv4, laguna and ling do not, so a
@@ -920,21 +839,14 @@ Related common-code debt:
   each other. Add a gate that replays a fixed prompt set sequentially and
   concurrently and requires byte-identical completions, and run it with
   every serving release until the batch kernels pass it.
-- JIT KV admission does not prefetch (the engine's BUSY wait is now bounded
-  by the in-flight budget instead of a retry count). The serving `prefetch` hook runs
-  cache-prepare admission only when residentd receives a submission
-  (`SparkModelServingAdapterPrepareSubmission` in `node/model_residentd.c`),
-  so a restore starts at dispatch, not when the engine queues the request.
-  A submission that cannot be prepared answers `BUSY`, and the batch engine
-  retries it with a 10 to 200 ms backoff until the in-flight budget passes
-  (`runtime/model_batch_engine.c`). The deadline-ordered restore in
-  `cache/kv_pager.c` (`SparkNvmeTierRequestDemandDeadline`, called at `:691`)
-  has no production consumer: `modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c`
-  is built only into `tests/test_jit_kv_wire.c` (`Makefile:1652-1653`), not
-  into the dsv4 module, and calls no pager function; glm5_next and the common
-  binding do not use the pager. Issue restore demand from enqueue, admit
-  against restore bandwidth, and dispatch a lane only after its restore
-  completes.
+- Restore hints are fleet-unproven. When the engine first finds a cached
+  prefix for a queued request it sends every rank a `CACHE_HINT` (resident
+  IPC 22); residentd hands it to the adapter's `cache_hint`, and the core
+  drivers pass it to the binding as a `CACHE_HINT` admission, which queues the
+  restore so it runs while the request waits for dispatch. Non-core adapters
+  have no hook and count the hint as unsupported. Close it on the fleet: a
+  queued request whose prefix was evicted to the snapshot store shows a TTFT
+  that drops by the restore time against a run with hints dropped.
 - A prefix-cache hit reuses KV and KDA state computed however the source
   request ran: one-row prefill for prompt tokens, batched decode rows for
   generated ones. Until batched rows equal B1, a warm and a cold run of the
@@ -953,19 +865,12 @@ Related common-code debt:
   DSA selection, pool expansion) and run the selection kernels. Add the
   logits comparison to the CUDA validation at contexts 63, 64, 2,048, 2,049
   and 4,099.
-- Left out on purpose (2026-10-02): Admission does not account for restore
-  bandwidth. The engine bounds lanes by physical pages and in-flight page
-  demand only (`runtime/model_batch_engine.c:1758-1786`); the rule that admits
-  work only while queued restore bytes over measured drive bandwidth fit the
-  slack (`docs/archive/JIT_KV_RESPONSE.md:21-24`) exists only in the unwired
-  pager (`cache/kv_pager.c:474-493`, bandwidth estimate at `:78-94`), where a
-  zero `restore_slack_microseconds` also switches it off. Nothing bounds how
-  many restore bytes are admitted at once. Close it by measuring the backing
-  drive's sustained read rate at startup and admitting against it in the
-  common engine with no off switch, proven on the fleet by a burst of
-  spilled-prefix requests whose admitted restore bytes per second stay at or
-  under the measured rate while the decode step time of running lanes is
-  unchanged.
+- Restore bandwidth is bounded only by construction: one binding worker reads
+  restores one job at a time, so restore reads never exceed one sequential
+  stream per engine, but nothing measures the drive or admits against it.
+  Close it on the fleet with a burst of spilled-prefix requests whose restore
+  bytes per second stay at or under the drive's measured rate while the decode
+  step time of running lanes is unchanged.
 ## Model contracts
 
 - Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`
@@ -1105,19 +1010,13 @@ Related common-code debt:
   `:133-134`). The renderer is driven by `tools/glm53full_lane.sh`, which
   requires `GLMFULL_POSITIONS`, `GLMFULL_ROWS`, `GLMFULL_SEQUENCES` and
   `GLMFULL_INFLIGHT` from the environment (`:10-13`), so the deployed context
-  limit is recorded nowhere in the repository. Two older generators remain:
-  `tools/glm52_gen_deployment.py` (TP8 band by default at `:15-18`, `tp8` pack
-  and backing names at `:57` and `:81` whatever the TP) and
-  `tools/glm53full_gen_deployment.py`. Both write `max_sequence_positions`
-  4096 (`:58`, `:98`) but size the pool for 32768 positions with logical =
-  physical (`:112-113`, `:152-153`). That is eight times the pages 4096
-  positions can address, with no spill headroom.
-  `tests/test_deployment_config_drift.py:205-213` covers only the TP8
-  generator. Close it by deleting the two older generators (or deriving their
-  pages from positions), checking in the TP16 lane deployment and pinning it
-  in the drift test. The proof is the drift test passing on the checked-in
-  tree and a fleet load of that tree logging the expected `kv binding
-  logical_pages= physical_pages=` line.
+  limit is recorded nowhere in the repository. The two older generators are
+  gone and the drift test renders a lane tree and requires spill pages
+  (logical > physical), but no production tree is pinned. Close it by checking
+  in the TP16 lane deployment rendered with the production positions, rows,
+  sequences and inflight, and pinning it in the drift test, proven by a fleet
+  load of that tree logging the expected `kv binding logical_pages=
+  physical_pages=` line.
 
 ## Driver consolidation
 

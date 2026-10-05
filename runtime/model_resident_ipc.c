@@ -61,7 +61,7 @@ static uint32_t SparkModelResidentIpcTextMatches(
 	return(terminator != 0 && strcmp(wire_text,expected) == 0 ? 1u : 0u);
 }
 
-_Static_assert(sizeof(SparkModelDriverKvStoreCounters) == 296u,"SparkModelDriverKvStoreCounters is embedded in the driver, adapter and resident IPC ABIs");
+_Static_assert(sizeof(SparkModelDriverKvStoreCounters) == 336u,"SparkModelDriverKvStoreCounters is embedded in the driver, adapter and resident IPC ABIs");
 _Static_assert(sizeof(SparkModelResidentIpcStatusReport) == 56u + sizeof(SparkModelServingAdapterSnapshot),"status report wire layout");
 
 static void SparkModelResidentIpcInitializeHeader(
@@ -291,6 +291,35 @@ SparkStatus SparkModelResidentIpcInitializeStatusRequest(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(request,0,sizeof(*request));
 	SparkModelResidentIpcInitializeHeader(&request->header,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST,SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES,SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES,message_id);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcInitializeCacheHint(
+	SparkModelResidentIpcCacheHint *hint,
+	uint64_t message_id,
+	const SparkModelServingCacheIdentity *identity,
+	uint32_t token_count)
+{
+	if ( hint == 0 || message_id == 0u || identity == 0 || token_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(hint,0,sizeof(*hint));
+	SparkModelResidentIpcInitializeHeader(&hint->header,SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT,SPARK_MODEL_RESIDENT_IPC_CACHE_HINT_BYTES,SPARK_MODEL_RESIDENT_IPC_CACHE_HINT_BYTES,message_id);
+	hint->identity = *identity;
+	hint->token_count = token_count;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcValidateCacheHint(
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcCacheHint *hint = (const SparkModelResidentIpcCacheHint *)message;
+	SparkStatus status;
+	status = SparkModelResidentIpcValidateHeader(hint != 0 ? &hint->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT,SPARK_MODEL_RESIDENT_IPC_CACHE_HINT_BYTES);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( hint->token_count == 0u || hint->reserved0 != 0u )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
 

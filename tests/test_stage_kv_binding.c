@@ -13,6 +13,7 @@
 
 #include "cuda_runtime_api.h"
 #include "sparkpipe/spark_kv_snapshot.h"
+#include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_weight_codec.h"
 #include "tests/test_weightd_kv_server.h"
@@ -629,6 +630,7 @@ static void TestLockSitesMeasured(void)
 	TestFinished finished = {0};
 	SparkStageKvBindingCounters counters;
 	atomic_uint lane_states[TEST_LANES];
+	uint32_t attempt;
 	Open();
 	(void)PublishPrefix(3u,1u,2u,0x40u,0x55u);
 	StepInit(&x,1u,0u,0u,4u);
@@ -665,6 +667,11 @@ static void TestLockSitesMeasured(void)
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingSampleCounters(&BINDING,&counters) == SPARK_STATUS_OK);
+	for (attempt=0u; counters.lock_sites[SPARK_STAGE_KV_LOCK_SITE_SAVE].count == 0u && attempt<500u; attempt++)
+	{
+		SleepMs(2u);
+		assert(SparkStageKvBindingSampleCounters(&BINDING,&counters) == SPARK_STATUS_OK);
+	}
 	assert(counters.lock_sites[SPARK_STAGE_KV_LOCK_SITE_ADMIT].count > 0u);
 	assert(counters.lock_sites[SPARK_STAGE_KV_LOCK_SITE_CLAIM].count > 0u);
 	assert(counters.lock_sites[SPARK_STAGE_KV_LOCK_SITE_FINISH].count > 0u);
@@ -866,9 +873,15 @@ static SparkStatus RestorePrefix(uint64_t sequence,uint32_t slot,uint32_t tokens
 	uint8_t bytes[TEST_PAGE_BYTES];
 	uint32_t index;
 	SparkStatus status;
+	uint32_t attempt;
 	StepInit(&step,sequence,slot,tokens,tokens);
 	StepPrefix(&step,tokens,identity);
 	status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	for (attempt=0u; status == SPARK_STATUS_PENDING && attempt<500u; attempt++)
+	{
+		SleepMs(2u);
+		status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	for (index=0u; index<page_count; index++)
@@ -899,6 +912,7 @@ static void TestSnapshotRestartRestore(void)
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	assert(BINDING.kv_pool.reattached == 0u && BINDING.kv_pool_adopted_pages == 0u);
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	assert(BINDING.restore_jobs == 1u && BINDING.restore_pending_answers >= 1u && BINDING.restore_imported_pages == 2u && BINDING.transactions.restore_async == 1u);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.attached == 1u && counters.restore_count == 1u && counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
 	assert(counters.store_file_count == 2u && counters.store_foreign_layout_file_count == 0u && counters.store_used_bytes != 0u);
@@ -941,6 +955,82 @@ static void TestRestartAdoptsDevicePages(void)
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_NOT_FOUND);
 	Close();
 	printf("restart adopts device pages: a clean shutdown seals the resident prefix pages in the weightd pool, the restart serves them with no snapshot reads, an unsealed pool adopts nothing\n");
+}
+
+static void WaitSavesIdle(void)
+{
+	uint32_t attempt;
+	for (attempt=0u; attempt<500u; attempt++)
+	{
+		uint32_t pending;
+		assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+		pending = SparkKvPageCacheSavePending(&BINDING.page_cache);
+		assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+		if ( pending == 0u )
+			return;
+		SleepMs(2u);
+	}
+	assert(0);
+}
+
+static void TestWriteBudgetDiscardsAndSkips(void)
+{
+	SparkModelDriverKvStoreCounters counters;
+	uint8_t page[TEST_PAGE_BYTES];
+	uint64_t writes;
+	uint32_t chain;
+	Open();
+	assert(BINDING.write_budget.bytes_per_day == BINDING.kv_pool.write_budget_bytes_per_day && BINDING.write_budget.bytes_per_day == (uint64_t)(((unsigned __int128)(UINT64_C(1) << 40) * BINDING.kv_pool.device_bytes) / (UINT64_C(64) << 20)) && BINDING.page_store.write_budget == &BINDING.write_budget && BINDING.page_cache.write_budget == &BINDING.write_budget);
+	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+	BINDING.write_budget.bytes_per_day = 1u;
+	BINDING.write_budget.available_bytes = 0u;
+	writes = BINDING.page_store.write_count;
+	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+	for (chain=0u; chain<TEST_PHYSICAL + 2u; chain++)
+	{
+		PublishStep(30u + chain,0u,0u,4u,(uint8_t)(0x90u + chain),(uint8_t)(0x20u + chain),page);
+		ReleaseSequence(30u + chain,0u);
+		WaitSavesIdle();
+	}
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.write_budget_bytes_per_day == 1u && counters.write_budget_discarded_pages >= 2u && counters.write_budget_refused_saves >= TEST_PHYSICAL + 2u);
+	assert(BINDING.page_store.write_count == writes && counters.save_page_count == 0u && counters.store_file_count == 0u);
+	Close();
+	printf("write budget: once spent, snapshot saves are refused and new pages displace unreferenced resident entries instead of spilling\n");
+}
+
+static void TestRestoreHintStartsEarly(void)
+{
+	TestStep hint;
+	SparkModelDriverCacheLane lane;
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	uint32_t attempt;
+	Open();
+	PublishTwoPageChain(pages);
+	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	memset(&hint,0,sizeof(hint));
+	memset(&lane,0,sizeof(lane));
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	lane.prefix_token_count = 8u;
+	Identity(&lane.prefix_identity,0x71u);
+	hint.request.descriptor_bytes = (uint32_t)sizeof(hint.request);
+	hint.request.program_id = 1u;
+	hint.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT;
+	hint.request.cache_lanes = &lane;
+	hint.request.cache_lane_count = 1u;
+	assert(SparkStageKvBindingAdmit(&BINDING,&hint.request,&hint.decision) == SPARK_STATUS_OK && hint.decision.accepted == 1u &&
+		SparkModelDriverAdmissionDecisionStatus(&hint.decision) == SPARK_STATUS_OK);
+	assert(BINDING.restore_hints == 1u && BINDING.restore_hinted_jobs == 1u);
+	for (attempt=0u; BINDING.restore_imported_pages < 2u && attempt<500u; attempt++)
+		SleepMs(2u);
+	assert(BINDING.restore_imported_pages == 2u);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK && BINDING.restore_pending_answers == 0u && BINDING.restore_jobs == 1u);
+	assert(SparkStageKvBindingAdmit(&BINDING,&hint.request,&hint.decision) == SPARK_STATUS_OK && BINDING.restore_hinted_jobs == 1u);
+	Close();
+	printf("restore hint: a hinted prefix restores before its prepare, which is admitted without waiting; a resident prefix queues nothing\n");
 }
 
 static void ExpectForeignLayout(const SparkStageKvConfiguration *configuration,uint8_t pages[2][TEST_PAGE_BYTES])
@@ -1167,6 +1257,8 @@ int main(void)
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
 	TestRestartAdoptsDevicePages();
+	TestRestoreHintStartsEarly();
+	TestWriteBudgetDiscardsAndSkips();
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();

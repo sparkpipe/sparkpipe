@@ -26,6 +26,7 @@
 #define SPARK_MODEL_BATCH_NO_SLOT UINT32_MAX
 #define SPARK_MODEL_BATCH_PREFIX_INDEX_SAVE_INTERVAL_NS UINT64_C(10000000000)
 #define SPARK_MODEL_BATCH_STATUS_INTERVAL_NS UINT64_C(1000000000)
+#define SPARK_MODEL_BATCH_RESTORE_POLL_MS 2u
 #define SPARK_MODEL_BATCH_SELECT_AGED 1u
 #define SPARK_MODEL_BATCH_SELECT_PRIORITY 2u
 #define SPARK_MODEL_BATCH_SELECT_FILL 3u
@@ -69,6 +70,7 @@ typedef struct SparkModelBatchRequestState
 	uint64_t request_id;
 	uint64_t sequence_id;
 	SparkModelServingCacheIdentity cache_prefix_identity;
+	uint32_t restore_hint_sent;
 	SparkModelServingCacheIdentity cache_published_identity;
 	SparkSha256Context cache_published_digest_context;
 	uint32_t model_extension_kind;
@@ -192,6 +194,8 @@ struct SparkModelBatchEngine
 	uint64_t rejected_lane_count;
 	uint64_t prefix_hit_count;
 	uint64_t prefix_miss_count;
+	uint64_t restore_hint_count;
+	uint64_t restore_hint_dropped_count;
 	uint64_t prefix_hit_token_count;
 	uint64_t stale_prefix_recompute_count;
 	uint64_t stale_prefix_isolation_count;
@@ -885,6 +889,7 @@ static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *en
 	memset(&request->cache_published_identity,0,sizeof(request->cache_published_identity));
 	SparkSha256Initialize(&request->cache_published_digest_context);
 	request->prefix_isolated = 0u;
+	request->restore_hint_sent = 0u;
 	request->stale_prefix_recompute_count++;
 	engine->stale_prefix_recompute_count++;
 	return(SPARK_STATUS_OK);
@@ -987,14 +992,16 @@ static void SparkModelBatchHandleRejected(
 			request->busy_retry_not_before_ns = 0u;
 			SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
 		}
-		else if ( (status == SPARK_STATUS_BUSY || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) &&
+		else if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) &&
 			(request->busy_since_ns == 0u || SparkModelBatchNowNs() - request->busy_since_ns < engine->inflight_budget_ns) )
 		{
 			uint64_t now = SparkModelBatchNowNs();
 			if ( request->busy_since_ns == 0u )
 				request->busy_since_ns = now;
 			request->busy_restore_count++;
-			if ( request->busy_retry_backoff_ms == 0u )
+			if ( status == SPARK_STATUS_PENDING )
+				request->busy_retry_backoff_ms = SPARK_MODEL_BATCH_RESTORE_POLL_MS;
+			else if ( request->busy_retry_backoff_ms == 0u )
 				request->busy_retry_backoff_ms = 10u;
 			else if ( request->busy_retry_backoff_ms < 200u )
 				request->busy_retry_backoff_ms *= 2u;
@@ -1005,7 +1012,7 @@ static void SparkModelBatchHandleRejected(
 		}
 		else
 		{
-			if ( status == SPARK_STATUS_BUSY )
+			if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 				fprintf(stderr,"batch_retry_deadline request=%llu restores=%u waited_ns=%llu budget_ns=%llu; failing\n",
 					(unsigned long long)request->request_id,
 					(unsigned)request->busy_restore_count,
@@ -1798,8 +1805,17 @@ static void SparkModelBatchRefreshQueuedPrefix(
 				request->sequence_id,SparkModelBatchRequestTokens(engine,slot),aligned,&lookup);
 	}
 	if ( status == SPARK_STATUS_OK )
+	{
 		SparkModelBatchApplyPrefixLookup(engine,request,
 			SparkModelBatchRequestTokens(engine,slot),&lookup);
+		if ( request->cache_prefix_token_count != 0u && request->restore_hint_sent == 0u )
+		{
+			request->restore_hint_sent = 1u;
+			engine->restore_hint_count++;
+			if ( SparkModelPipelineClientCacheHint(engine->pipeline,&request->cache_prefix_identity,request->cache_prefix_token_count) != SPARK_STATUS_OK )
+				engine->restore_hint_dropped_count++;
+		}
+	}
 	else
 		SparkModelBatchFailRequest(engine,request,status);
 }

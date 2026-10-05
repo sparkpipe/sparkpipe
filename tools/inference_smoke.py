@@ -198,7 +198,7 @@ def prepare(spec, environment):
     require(all(any(first <= port <= last for first, last in reserved) for port in range(base, base + 3 * size + 1)), "queue does not reserve every listener")
     device = int(environment["SPARK_QUEUE_DEVICE_MEMORY_MIB"]) * 1024 * 1024
     limits = spec["budgets"]
-    require(all(isinstance(limits[key], int) and limits[key] > 0 for key in ("weightd_device_bytes", "model_device_bytes", "expert_pool_bytes", "spine_bytes", "kv_reserve_bytes")), "all device budgets must be finite and positive")
+    require(all(isinstance(limits[key], int) and limits[key] > 0 for key in ("weightd_device_bytes", "model_device_bytes", "expert_pool_bytes", "spine_bytes", "kv_reserve_bytes", "kv_write_budget_bytes_per_day")), "all device budgets must be finite and positive")
     require(type(limits.get("weightd_overhead_bytes", 0)) is int and limits.get("weightd_overhead_bytes", 0) >= 0, "invalid daemon overhead budget")
     require(limits["weightd_device_bytes"] + limits.get("weightd_overhead_bytes", 0) + len(plans) * limits["model_device_bytes"] <= device, "device plan exceeds queue reservation")
     require(limits["expert_pool_bytes"] + limits["spine_bytes"] + limits["kv_reserve_bytes"] <= limits["weightd_device_bytes"], "weightd working set and KV reserve exceed ceiling")
@@ -343,12 +343,13 @@ def run(spec):
                SPARK_WEIGHTD_DEVICE_BYTES_MAX=str(limits["weightd_device_bytes"]),
                SPARK_WEIGHTD_EXPERT_POOL_BYTES=str(limits["expert_pool_bytes"]),
                SPARK_WEIGHTD_SPINE_BUDGET_BYTES=str(limits["spine_bytes"]),
-               SPARK_WEIGHTD_KV_RESERVE_BYTES=str(limits["kv_reserve_bytes"]), SPARK_WEIGHTD_MESH_DIR=str(root / "mesh"),
+               SPARK_WEIGHTD_KV_RESERVE_BYTES=str(limits["kv_reserve_bytes"]),
+               SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY=str(limits["kv_write_budget_bytes_per_day"]), SPARK_WEIGHTD_MESH_DIR=str(root / "mesh"),
                SPARK_WEIGHTD_LATCH_PORT=str(spec["port_base"] + 3 * len(hosts)))
     owned = {
         "SPARK_WEIGHTD_ATTACH", "SPARK_WEIGHTD_SOCKET", "SPARK_WEIGHTD_DEVICE_BYTES_MAX",
         "SPARK_WEIGHTD_EXPERT_POOL_BYTES", "SPARK_WEIGHTD_SPINE_BUDGET_BYTES",
-        "SPARK_WEIGHTD_KV_RESERVE_BYTES", "SPARK_WEIGHTD_MESH_DIR", "SPARK_WEIGHTD_LATCH_PORT", "SPARK_WEIGHTD_LANE"}
+        "SPARK_WEIGHTD_KV_RESERVE_BYTES", "SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY", "SPARK_WEIGHTD_MESH_DIR", "SPARK_WEIGHTD_LATCH_PORT", "SPARK_WEIGHTD_LANE"}
     require(all((key.startswith("SPARK_") and not key.startswith("SPARK_QUEUE_") or key in {"CUDA_MODULE_LOADING", "CUDA_MODULE_DATA_LOADING", "CUDA_DEVICE_MAX_CONNECTIONS", "CUDA_VISIBLE_DEVICES"}) and key not in owned and isinstance(value, str) for key, value in spec["environment"].items()), "model environment overrides owned job configuration")
     env.update(spec["environment"])
     receipt.update(effective_deployment_sha256=digest(root / "deployment.json"),

@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 20u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 22u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -26,6 +26,7 @@ extern "C" {
 #define SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE 9u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST 10u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT 11u
+#define SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT 12u
 
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT 1u
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT 2u
@@ -137,6 +138,14 @@ typedef struct SparkModelResidentIpcStatusRequest
 	SparkModelResidentIpcHeader header;
 } SparkModelResidentIpcStatusRequest;
 
+typedef struct SparkModelResidentIpcCacheHint
+{
+	SparkModelResidentIpcHeader header;
+	SparkModelServingCacheIdentity identity;
+	uint32_t token_count;
+	uint32_t reserved0;
+} SparkModelResidentIpcCacheHint;
+
 typedef struct SparkModelResidentIpcStatusReport
 {
 	SparkModelResidentIpcHeader header;
@@ -149,6 +158,7 @@ typedef struct SparkModelResidentIpcStatusReport
 } SparkModelResidentIpcStatusReport;
 
 #define SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES ((uint32_t)sizeof(SparkModelResidentIpcStatusRequest))
+#define SPARK_MODEL_RESIDENT_IPC_CACHE_HINT_BYTES ((uint32_t)sizeof(SparkModelResidentIpcCacheHint))
 #define SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES ((uint32_t)sizeof(SparkModelResidentIpcStatusReport))
 
 typedef struct SparkModelResidentIpcDecision
@@ -273,6 +283,14 @@ SparkStatus SparkModelResidentIpcValidateSubmitResult(
 SparkStatus SparkModelResidentIpcInitializeStatusRequest(
 	SparkModelResidentIpcStatusRequest *request,
 	uint64_t message_id);
+SparkStatus SparkModelResidentIpcInitializeCacheHint(
+	SparkModelResidentIpcCacheHint *hint,
+	uint64_t message_id,
+	const SparkModelServingCacheIdentity *identity,
+	uint32_t token_count);
+SparkStatus SparkModelResidentIpcValidateCacheHint(
+	const void *message,
+	uint32_t message_bytes);
 SparkStatus SparkModelResidentIpcInitializeStatusReport(
 	SparkModelResidentIpcStatusReport *report,
 	const SparkModelResidentIpcStatusRequest *request,

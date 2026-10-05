@@ -68,7 +68,13 @@ of `SPARK_WEIGHTD_DEVICE_BYTES_MAX` (weight arenas get the rest). The agent
 passes every `SPARK_WEIGHTD_*` variable in its own environment to weightd, so
 set the reserve in the agent unit's environment on every node. Size it to at
 least the sum of the `device_bytes` that each resident engine logs on its
-`kv pool weightd` line. Without a reserve those engines refuse to load. A pool
+`kv pool weightd` line. Set `SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY` too:
+the KV NVMe write budget for the node (drive endurance times capacity per
+day). Each pool gets a share proportional to its size; once an engine spends
+its share, its snapshot saves are skipped and parked pages are discarded and
+recomputed instead of written, and `kv_store_report` shows the budget, the
+remaining bytes, refused saves and discarded pages. Without a reserve or a
+write budget those engines refuse to load. A pool
 stays in weightd when its engine stops; a clean engine restart reattaches it
 and adopts the sealed resident prefix pages, and detached pools are evicted
 only when a new pool needs the room.

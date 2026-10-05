@@ -60,6 +60,8 @@ struct SparkModelResidentClient
 	uint32_t commit_calls;
 	uint32_t abort_calls;
 	uint32_t status_request_calls;
+	uint32_t cache_hint_calls;
+	uint32_t last_cache_hint_tokens;
 	uint32_t status_outstanding;
 	SparkModelResidentStatusReport status_report;
 	uint64_t last_submission_id;
@@ -121,6 +123,7 @@ uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind)
 		case MOCK_CALL_COMMIT: return(c->commit_calls);
 		case MOCK_CALL_ABORT: return(c->abort_calls);
 		case MOCK_CALL_STATUS_REQUEST: return(c->status_request_calls);
+		case MOCK_CALL_CACHE_HINT: return(c->cache_hint_calls);
 	}
 	return(0u);
 }
@@ -310,6 +313,17 @@ SparkStatus SparkModelResidentClientRequestStatus(SparkModelResidentClient *clie
 		return(SPARK_STATUS_DUPLICATE);
 	client->status_request_calls++;
 	client->status_outstanding = 1u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentClientCacheHint(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	if ( client == 0 || identity == 0 || token_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->connected == 0u )
+		return(SPARK_STATUS_IO_ERROR);
+	client->cache_hint_calls++;
+	client->last_cache_hint_tokens = token_count;
 	return(SPARK_STATUS_OK);
 }
 
