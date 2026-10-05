@@ -25,6 +25,7 @@ cudaError_t cudaStreamSynchronize(cudaStream_t stream) { (void)stream; SYNC_CALL
 uint32_t SparkKvPageCacheSavePending(const SparkKvPageCache *cache) { (void)cache; return(0u); }
 uint32_t SparkKvPageCachePrefixReady(const SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count) { (void)cache; (void)identity; (void)token_count; assert(0); return(0u); }
 SparkStatus SparkKvPageStoreWaitForTransfers(SparkKvPageStore *store) { (void)store; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
+SparkStatus SparkKvPageCacheImportShared(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count) { (void)cache; (void)identity; (void)token_count; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 SparkStatus SparkKvPageStoreReadback(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation,uintptr_t destination,uint64_t bytes) { (void)store; (void)logical_page_index; (void)generation; (void)destination; (void)bytes; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 cudaError_t cudaGetLastError(void) { return(cudaSuccess); }
 const char *cudaGetErrorString(cudaError_t error) { (void)error; return("stub"); }
