@@ -987,6 +987,15 @@ static void TestScenarioLogprobs(const SparkModelResidentDeployment *deployment,
 	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"logprobs: a second logprob request is admitted");
 	TestDriveUntilTerminal(engine,&state,3u,400u);
 	CHECK(state.error_events[3] == 1u && state.token_events[3] == 0u,"logprobs: entries that do not lead with the emitted token fail the request");
+	CHECK(SparkModelBatchEngineReopenAdmission(engine) == SPARK_STATUS_VALIDATION_FAILED,"latch: a protocol failure stays latched while the rank session is unchanged");
+	request.request_id = 4u;
+	request.sequence_id = 904u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) != SPARK_STATUS_OK,"latch: a latched engine admits nothing");
+	MockResidentClientKill(1u);
+	TestDrive(engine,5u);
+	MockResidentClientRevive(1u);
+	TestDrive(engine,50u);
+	CHECK(SparkModelBatchEngineReopenAdmission(engine) == SPARK_STATUS_OK,"latch: a new rank session clears the latched failure");
 	SparkModelBatchEngineDestroy(engine);
 }
 

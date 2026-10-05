@@ -152,6 +152,7 @@ struct SparkModelBatchEngine
 	uint32_t live_request_count;
 	uint32_t inflight_submission_count;
 	uint32_t failed_status;
+	uint64_t failed_session_fingerprint;
 	uint32_t consecutive_pipeline_failures;
 	uint64_t circuit_open_until_ns;
 	uint64_t observed_control_generation;
@@ -805,7 +806,10 @@ static void SparkModelBatchSetFailed(
 	SparkStatus status)
 {
 	if ( engine->failed_status == SPARK_STATUS_OK )
+	{
 		engine->failed_status = status;
+		engine->failed_session_fingerprint = engine->pipeline != 0 ? SparkModelPipelineClientSessionFingerprint(engine->pipeline) : 0u;
+	}
 	engine->admission_open = 0u;
 }
 
@@ -2819,6 +2823,9 @@ SparkStatus SparkModelBatchEngineReopenAdmission(
 {
 	if ( engine == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( engine->failed_status != SPARK_STATUS_OK && engine->failed_status != SPARK_STATUS_IO_ERROR && engine->pipeline != 0 &&
+		SparkModelPipelineClientSessionFingerprint(engine->pipeline) == engine->failed_session_fingerprint )
+		return((SparkStatus)engine->failed_status);
 	engine->admission_open = 1u;
 	engine->failed_status = SPARK_STATUS_OK;
 	if ( engine->pipeline != 0 )

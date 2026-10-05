@@ -1018,6 +1018,51 @@ static void TestApiChatDeclaredStops(TestApiStack *stack)
 		"(the same sampling without messages emits the marker token)\n");
 }
 
+static uint32_t TestApiWaitHealthBody(const TestApiStack *stack,int status,const char *needle,uint32_t seconds)
+{
+	char response[4096];
+	struct timespec delay;
+	uint32_t attempt;
+	delay.tv_sec = 0;
+	delay.tv_nsec = 100000000;
+	for (attempt=0u; attempt<seconds * 10u; attempt++)
+	{
+		TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+		if ( TestApiResponseStatus(response) == status && TestApiBodyContains(response,needle) )
+			return(1u);
+		nanosleep(&delay,0);
+	}
+	return(0u);
+}
+
+static void TestApiRankLoss(TestApiStack *stack)
+{
+	char response[65536];
+	int32_t child_status;
+	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(TestApiBodyContains(response,"\"status\":\"ok\"") && TestApiBodyContains(response,"\"ranks\":3") &&
+		TestApiBodyContains(response,"\"connected_ranks\":3") && TestApiBodyContains(response,"\"missing_rank\":-1"));
+	assert(kill(stack->residents[2],SIGTERM) == 0);
+	assert(waitpid(stack->residents[2],&child_status,0) == stack->residents[2]);
+	unlink(stack->paths[2]);
+	assert(TestApiWaitHealthBody(stack,503,"\"missing_rank\":2",20u) != 0u);
+	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+	assert(TestApiBodyContains(response,"\"status\":\"degraded\"") && TestApiBodyContains(response,"\"connected_ranks\":2"));
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"deadline_ms\":1500}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 504);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"missing_rank\":2"));
+	stack->residents[2] = TestApiStartResident(stack->deployment_path,2u);
+	TestApiWaitForSockets(stack->paths);
+	assert(TestApiWaitHealthBody(stack,200,"\"missing_rank\":-1",60u) != 0u);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: rank loss OK (/health names the missing rank and answers 503, a held request fails at its "
+		"deadline naming the rank, the rank's return restores health and service)\n");
+}
+
 static void TestApiSamplingOptions(TestApiStack *stack)
 {
 	char response[65536],expected[64];
@@ -1170,6 +1215,7 @@ int main(void)
 	}
 	TestApiChatDeclaredStops(&stack);
 	TestApiSamplingOptions(&stack);
+	TestApiRankLoss(&stack);
 	TestApiStopStack(&stack);
 
 	TestApiStartsBeforeEngines();

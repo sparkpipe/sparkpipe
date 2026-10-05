@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION 9u
+#define SPARK_MODEL_PIPELINE_CLIENT_ABI_VERSION 10u
 #define SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX UINT32_MAX
 #define SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_ELAPSED_VALID \
 	UINT32_C(0x00000001)
@@ -72,7 +72,7 @@ typedef struct SparkModelPipelineClientView
 	uint32_t failed_status;
 	uint32_t failed_stage_index;
 	uint32_t active_continue_lease_count;
-	uint32_t reserved0;
+	uint32_t first_disconnected_rank;
 	uint64_t submitted_count;
 	uint64_t continued_count;
 	uint64_t admitted_count;

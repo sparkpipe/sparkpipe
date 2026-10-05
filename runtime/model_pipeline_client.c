@@ -52,6 +52,7 @@ typedef struct SparkModelPipelineRankContext
 {
 	struct SparkModelPipelineClient *pipeline;
 	uint32_t stage_index;
+	uint32_t rank_index;
 } SparkModelPipelineRankContext;
 
 struct SparkModelPipelineClient
@@ -694,6 +695,7 @@ static SparkStatus SparkModelPipelineClientConnectRank(
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	pipeline->rank_contexts[stage].pipeline = pipeline;
 	pipeline->rank_contexts[stage].stage_index = stage;
+	pipeline->rank_contexts[stage].rank_index = node->rank_index;
 	memset(&client_configuration,0,sizeof(client_configuration));
 	client_configuration.abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;
 	client_configuration.descriptor_bytes = SPARK_MODEL_RESIDENT_CLIENT_CONFIGURATION_BYTES;
@@ -1093,9 +1095,12 @@ SparkStatus SparkModelPipelineClientGetView(
 	view->admitted_count = pipeline->admitted_count;
 	view->rejected_count = pipeline->rejected_count;
 	view->completed_count = pipeline->completed_count;
+	view->first_disconnected_rank = UINT32_MAX;
 	for (rank=0u; rank<pipeline->rank_count; rank++)
 		if ( SparkModelResidentClientGetView(pipeline->clients[rank],&client_view) == SPARK_STATUS_OK && client_view.connected != 0u )
 			view->connected_rank_count++;
+		else if ( view->first_disconnected_rank == UINT32_MAX )
+			view->first_disconnected_rank = pipeline->rank_contexts[rank].rank_index;
 	return(SPARK_STATUS_OK);
 }
 

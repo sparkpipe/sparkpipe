@@ -88,6 +88,7 @@ typedef struct ApiRequest
 	uint32_t priority;
 	uint32_t stream;
 	uint32_t deadline_expired;
+	uint32_t engine_latched;
 	uint64_t deadline_ms;
 	float temperature;
 	uint64_t seed;
@@ -116,6 +117,11 @@ typedef struct ApiState
 	uint32_t context_limit;
 	volatile int ready;
 	volatile uint32_t bringup_status;
+	uint32_t health_rank_count;
+	uint32_t health_connected_rank_count;
+	uint32_t health_missing_rank;
+	uint32_t health_failed_status;
+	uint32_t health_live_requests;
 	volatile uint32_t bringup_attempts;
 	const char *volatile bringup_phase;
 	uint64_t bringup_started_ms;
@@ -437,8 +443,10 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.output_token_budget = r->max_tokens;
 	sub.prompt_token_ids = r->prompt_tokens;
 	sub.prompt_token_count = r->prompt_count;
-	(void)SparkModelBatchEngineReopenAdmission(S.engine);
-	st = SparkModelBatchEngineSubmit(S.engine,&sub,&h);
+	st = SparkModelBatchEngineReopenAdmission(S.engine);
+	r->engine_latched = st != SPARK_STATUS_OK ? 1u : 0u;
+	if ( st == SPARK_STATUS_OK )
+		st = SparkModelBatchEngineSubmit(S.engine,&sub,&h);
 	pthread_mutex_lock(&S.queue_mutex);
 	if ( st == SPARK_STATUS_OK )
 	{
@@ -581,6 +589,18 @@ static void api_log_status_reports(void)
 	}
 }
 
+static void api_publish_health(void)
+{
+	SparkModelBatchEngineView view;
+	if ( S.engine == 0 || SparkModelBatchEngineGetView(S.engine,&view) != SPARK_STATUS_OK )
+		return;
+	__atomic_store_n(&S.health_rank_count,view.pipeline.rank_count,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_connected_rank_count,view.pipeline.connected_rank_count,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_missing_rank,view.pipeline.first_disconnected_rank,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_failed_status,view.failed_status,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_live_requests,view.live_request_count,__ATOMIC_RELEASE);
+}
+
 static void *api_worker(void *arg)
 {
 	uint32_t busy;
@@ -592,6 +612,7 @@ static void *api_worker(void *arg)
 		api_reap_orphans();
 		busy = api_submit_pending();
 		(void)SparkModelBatchEngineProgress(S.engine,4u);
+		api_publish_health();
 		api_log_engine_measurements();
 		api_log_status_reports();
 		api_save_sequence();
@@ -1138,9 +1159,14 @@ static int api_failure(const ApiRequest *req, char *body, size_t capacity)
 {
 	const SparkModelServingAdapterDescriptor *adapter = S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
 	uint32_t capabilities = adapter != 0 ? adapter->capability_flags : 0u;
+	uint32_t missing = __atomic_load_n(&S.health_missing_rank,__ATOMIC_ACQUIRE);
 	int code = 500;
-	if ( req->deadline_expired != 0u )
+	if ( req->deadline_expired != 0u && missing != UINT32_MAX )
+		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded while rank %u is disconnected\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\",\"missing_rank\":%u}}",missing,missing);
+	else if ( req->deadline_expired != 0u )
 		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\"}}");
+	else if ( req->engine_latched != 0u )
+		code = 503, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"the engine latched %s; restart or reset the deployment's ranks\",\"type\":\"server_error\",\"code\":\"engine_failed\"}}",SparkStatusToString((SparkStatus)req->status));
 	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED )
 		code = 400, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"prompt plus max_tokens exceeds the deployment's context or KV capacity\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}");
 	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_UNSUPPORTED && req->logprob_count != 0u && (capabilities & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u )
@@ -1580,11 +1606,18 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
-		char b[128];
+		char b[384];
+		uint32_t ranks = __atomic_load_n(&S.health_rank_count, __ATOMIC_ACQUIRE);
+		uint32_t connected = __atomic_load_n(&S.health_connected_rank_count, __ATOMIC_ACQUIRE);
+		uint32_t missing = __atomic_load_n(&S.health_missing_rank, __ATOMIC_ACQUIRE);
+		uint32_t failed = __atomic_load_n(&S.health_failed_status, __ATOMIC_ACQUIRE);
+		uint32_t degraded = connected < ranks || (failed != 0u && failed != (uint32_t)SPARK_STATUS_IO_ERROR) ? 1u : 0u;
 		(void)snprintf(b, sizeof(b),
-			"{\"status\":\"ok\",\"served\":%llu,\"tokenizer\":%s}",
-			(unsigned long long)S.served, HaveSidecar ? "true" : "false");
-		send_response(fd, 200, b);
+			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"engine_status\":\"%s\",\"live_requests\":%u}",
+			degraded != 0u ? "degraded" : "ok", (unsigned long long)S.served, HaveSidecar ? "true" : "false", ranks, connected,
+			missing != UINT32_MAX ? (int)missing : -1, SparkStatusToString((SparkStatus)failed),
+			__atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE));
+		send_response(fd, degraded != 0u ? 503 : 200, b);
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
 	{
@@ -1699,6 +1732,7 @@ static void *api_bringup(void *argument)
 		(unsigned long long)(api_now_ms() - S.bringup_started_ms));
 	api_seed_submission_ids();
 	S.running = 1;
+	S.health_missing_rank = UINT32_MAX;
 	if (pthread_create(&ApiWorker, 0, api_worker, 0) != 0)
 	{
 		api_logf("api_exit reason=worker_create_failed");

@@ -63,7 +63,7 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /health` | — | `{"status":"ok","served":N,"tokenizer":bool}` |
+| `GET /health` | — | `200 {"status":"ok","served":N,"tokenizer":bool,"ranks":R,"connected_ranks":R,"missing_rank":-1,"engine_status":"OK","live_requests":L}`; `503` with `"status":"degraded"` while a rank is disconnected (`missing_rank` names the first one) or the engine has latched a failure |
 | `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is `SPARK_MODEL_ID`, default `sparkpipe-model` |
 | `POST /v1/completions` | `prompt` (text) or `prompt_token_ids` | `text_completion` with `choices[0].text`, `finish_reason`, `usage`, `tokens` |
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
@@ -161,6 +161,13 @@ deployment's context or KV pages cannot hold is a `400
 context_length_exceeded`; the batch engine's own admission check decides, so
 the API never duplicates the limits. Without a tokenizer sidecar the
 response carries `tokens` only; with one it carries both text and `tokens`.
+
+A request that reaches its `deadline_ms` while a rank is disconnected
+answers `504 deadline_exceeded` with `missing_rank`. When the engine has
+latched a failure other than a disconnect (a rank or adapter protocol
+failure), every request answers `503 engine_failed` naming the status until
+the ranks restart or reset; the API no longer reopens a failed engine for
+each request.
 
 A stream opens only after the engine has accepted the request, so every
 admission failure is an ordinary status code. Failures after admission
