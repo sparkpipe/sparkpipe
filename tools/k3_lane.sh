@@ -19,7 +19,7 @@ SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-k3-rd$K3_LANE"
 PACK_DIR=sparkdata/k3.mxfp4.$K3_TOPOLOGY/packs
 host_of() { echo "spark${HEX:$1:1}"; }
-root_of() { echo "/dev/shm/k3-lane$K3_LANE-$1/root"; }
+root_of() { echo "/home/$1/k3-lanes/lane$K3_LANE/root"; }
 pack_of() {
   if [ "$K3_TOPOLOGY" = tp16 ]; then
     printf '/home/%s/%s/k3.stage0.rank%02d.pack\n' "$(host_of "$1")" "$PACK_DIR" "$1"
@@ -57,7 +57,8 @@ render() {
     --collective "${K3_COLLECTIVE:-device}" --topology "$K3_TOPOLOGY" \
     --pipeline-transport "${K3_PIPELINE_TRANSPORT:-host-rdma}" \
     --kv-backing-bytes "${K3_KV_BACKING_BYTES:-1073741824}" \
-    --runtime-root "/dev/shm/k3-lane$K3_LANE-{host}/root" \
+    --kv-snapshot-bytes "${K3_KV_SNAPSHOT_BYTES:-8589934592}" \
+    --runtime-root "/home/{host}/k3-lanes/lane$K3_LANE/root" \
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"
 }
 
@@ -70,7 +71,7 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "test -f $pack -a -f $pack.experts -a -f $pack.sha256 && mkdir -p $root/bin $root/lib $root/config $root/packs $root/kvcache && find $root/packs $root/kvcache -mindepth 1 -delete"
+      $SSH "$host" "test -f $pack -a -f $pack.experts -a -f $pack.sha256 && mkdir -p $root/bin $root/lib $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
       scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
       scp -q "$K3_FIRMWARE/libk3_serving_adapter.so" "$host:$root/lib/"
       scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
@@ -139,7 +140,7 @@ clean() {
   local rank host
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
-    $SSH "$host" "systemctl --user is-active -q $UNIT && { echo $host: $UNIT still active; exit 1; }; rm -rf /dev/shm/k3-lane$K3_LANE-$host" &
+    $SSH "$host" "systemctl --user is-active -q $UNIT && { echo $host: $UNIT still active; exit 1; }; rm -rf /home/$host/k3-lanes/lane$K3_LANE" &
     PIDS[$rank]=$!
   done
   join_ranks clean

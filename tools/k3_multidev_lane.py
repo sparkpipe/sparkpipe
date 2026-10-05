@@ -105,6 +105,7 @@ DEPLOYED_PACK_TEMPLATE = (
 
 NODE_TARGET = "cuda.sm121.k3.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16"
 DEFAULT_KV_BACKING_BYTES = 8 * 1024 * 1024 * 1024
+DEFAULT_KV_SNAPSHOT_BYTES = 8 * 1024 * 1024 * 1024
 KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS (64) tokens
 
 # The batch engine refuses a deployment with no EOS tokens (SCHEMA_ERROR at
@@ -212,6 +213,7 @@ def chat_template() -> dict:
 
 def resident_deployment(runtime_root: str, weightd_socket: str,
                         kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES,
+                        kv_snapshot_bytes: int = DEFAULT_KV_SNAPSHOT_BYTES,
                         sequences: int = 16,
                         kv_pages: int = KV_PAGES_PER_SEQUENCE,
                         pipeline_transport: str = "host-rdma",
@@ -229,6 +231,8 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "kv_backing_directory": os.path.join(root, "kvcache"),
             "kv_partition": "/",
             "kv_backing_maximum_bytes": kv_backing_bytes,
+            "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
+            "kv_snapshot_maximum_bytes": kv_snapshot_bytes,
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,
@@ -312,6 +316,11 @@ def main() -> int:
                         default=DEFAULT_KV_BACKING_BYTES,
                         help="finite KV backing cap for the private root "
                              "(default %(default)d)")
+    parser.add_argument("--kv-snapshot-bytes", type=int,
+                        default=DEFAULT_KV_SNAPSHOT_BYTES,
+                        help="finite KV snapshot store cap under the root; "
+                             "the KV binding refuses a deployment without "
+                             "one (default %(default)d)")
     parser.add_argument("--rank", type=int, choices=range(WORLD), default=None,
                         help="emit only this rank's adapter.json "
                              "(default: all sixteen)")
@@ -348,6 +357,8 @@ def main() -> int:
     select_lane(arguments.lane)
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv-backing-bytes must be positive and finite")
+    if arguments.kv_snapshot_bytes <= 0:
+        raise SystemExit("kv-snapshot-bytes must be positive and finite")
     if not 1 <= arguments.sequences <= 16:
         raise SystemExit("sequences must be within 1..16")
     if not 1 <= arguments.kv_pages <= 64:
@@ -359,7 +370,7 @@ def main() -> int:
 
     deployment = render(resident_deployment(
         arguments.runtime_root, arguments.weightd_socket,
-        arguments.kv_backing_bytes, arguments.sequences, arguments.kv_pages,
+        arguments.kv_backing_bytes, arguments.kv_snapshot_bytes, arguments.sequences, arguments.kv_pages,
         arguments.pipeline_transport, arguments.tokenizer_sha256))
     wrote = write_or_check(output / "deployment.json", deployment,
                            arguments.check)

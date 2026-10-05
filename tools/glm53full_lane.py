@@ -126,7 +126,8 @@ def kv_pages(sequences, max_sequence_positions, kv_backing_bytes, kv_physical_by
     return physical, physical + spill
 
 
-def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions, sequences, row_capacity, inflight, root=None, kv_physical_bytes=None):
+def deployment(lane, arm, socket_path, kv_backing_bytes, kv_snapshot_bytes, max_sequence_positions, sequences, row_capacity, inflight, root=None,
+               kv_physical_bytes=None):
     ports = lane_ports(lane)
     pages, logical_pages = kv_pages(sequences, max_sequence_positions, kv_backing_bytes, kv_physical_bytes)
     nodes = []
@@ -142,6 +143,8 @@ def deployment(lane, arm, socket_path, kv_backing_bytes, max_sequence_positions,
             "kv_backing_directory": f"{root_path}/kvcache",
             "kv_partition": "/",
             "kv_backing_maximum_bytes": kv_backing_bytes,
+            "kv_snapshot_directory": f"{root_path}/kvsnapshot",
+            "kv_snapshot_maximum_bytes": kv_snapshot_bytes,
             "control_endpoint": {"kind": "tcp", "host": host, "port": ports["control"] + rank},
         })
     return {
@@ -190,10 +193,12 @@ def render(arguments):
         raise SystemExit("weightd socket must be an absolute .sock path")
     if arguments.kv_backing_bytes <= 0:
         raise SystemExit("kv backing must be a finite positive byte count")
+    if arguments.kv_snapshot_bytes <= 0:
+        raise SystemExit("kv snapshot store must be a finite positive byte count")
     if not 1 <= arguments.sequences <= 1024 or not 1 <= arguments.inflight <= 4:
         raise SystemExit("sequences must be 1..1024 (the serving adapter's active-sequence ceiling) and inflight 1..4")
     files = {"model_resident.json": deployment(arguments.lane, arm, arguments.socket, arguments.kv_backing_bytes,
-                                               arguments.max_sequence_positions, arguments.sequences,
+                                               arguments.kv_snapshot_bytes, arguments.max_sequence_positions, arguments.sequences,
                                                arguments.execution_row_capacity, arguments.inflight,
                                                getattr(arguments, "node_root", None), arguments.kv_physical_bytes)}
     score = score_members(arguments)
@@ -211,6 +216,7 @@ def main():
     parser.add_argument("--arm", choices=tuple(REVISIONS))
     parser.add_argument("--socket", required=True)
     parser.add_argument("--kv-backing-bytes", type=int, required=True)
+    parser.add_argument("--kv-snapshot-bytes", type=int, required=True)
     parser.add_argument("--kv-physical-bytes", type=int)
     parser.add_argument("--max-sequence-positions", type=int, required=True)
     parser.add_argument("--execution-row-capacity", type=int, required=True)

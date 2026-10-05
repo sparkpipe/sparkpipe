@@ -204,7 +204,7 @@ def main() -> int:
 
         glm52_gen = scratch / "glm52"
         run(["python3", "tools/glm53full_lane.py", "--lane", "6", "--codec", "fp8", "--socket", "/tmp/weightd.sock",
-             "--kv-backing-bytes", str(1 << 30), "--max-sequence-positions", "4096", "--execution-row-capacity", "16",
+             "--kv-backing-bytes", str(1 << 30), "--kv-snapshot-bytes", str(1 << 30), "--max-sequence-positions", "4096", "--execution-row-capacity", "16",
              "--sequences", "8", "--inflight", "1", "--output", str(glm52_gen)])
         stage = json.loads((glm52_gen / "config/stage_08.json").read_text())
         resident = json.loads((glm52_gen / "model_resident.json").read_text())

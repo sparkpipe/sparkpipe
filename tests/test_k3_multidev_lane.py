@@ -99,6 +99,10 @@ def deployment_gates(deployment, runtime_root, socket, failures):
               f"node {i}: kv backing {backing} escapes the private root")
         check(0 < node["kv_backing_maximum_bytes"] < 1 << 40, failures,
               f"node {i}: kv backing cap must be finite")
+        check(node.get("kv_snapshot_directory") == runtime_root + "/kvsnapshot", failures,
+              f"node {i}: the KV binding refuses a deployment without a snapshot store under the root")
+        check(0 < node.get("kv_snapshot_maximum_bytes", 0) < 1 << 40, failures,
+              f"node {i}: kv snapshot cap must be finite")
         endpoint = node["control_endpoint"]
         host = f"spark{HEX[i]}"
         check(endpoint["host"] == host, failures,

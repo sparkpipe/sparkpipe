@@ -64,6 +64,8 @@
    "kv_backing_directory": "/home/spark0/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark0/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark0",
@@ -80,6 +82,8 @@
    "kv_backing_directory": "/home/spark1/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark1/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark1",
@@ -96,6 +100,8 @@
    "kv_backing_directory": "/home/spark2/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark2/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark2",
@@ -112,6 +118,8 @@
    "kv_backing_directory": "/home/spark3/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark3/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark3",
@@ -128,6 +136,8 @@
    "kv_backing_directory": "/home/spark4/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark4/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark4",
@@ -144,6 +154,8 @@
    "kv_backing_directory": "/home/spark5/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark5/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark5",
@@ -160,6 +172,8 @@
    "kv_backing_directory": "/home/spark6/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark6/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark6",
@@ -176,6 +190,8 @@
    "kv_backing_directory": "/home/spark7/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark7/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark7",
@@ -192,6 +208,8 @@
    "kv_backing_directory": "/home/spark8/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark8/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark8",
@@ -208,6 +226,8 @@
    "kv_backing_directory": "/home/spark9/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/spark9/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "spark9",
@@ -224,6 +244,8 @@
    "kv_backing_directory": "/home/sparka/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/sparka/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "sparka",
@@ -240,6 +262,8 @@
    "kv_backing_directory": "/home/sparkb/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/sparkb/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "sparkb",
@@ -256,6 +280,8 @@
    "kv_backing_directory": "/home/sparkc/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/sparkc/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "sparkc",
@@ -272,6 +298,8 @@
    "kv_backing_directory": "/home/sparkd/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/sparkd/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "sparkd",
@@ -288,6 +316,8 @@
    "kv_backing_directory": "/home/sparke/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/sparke/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "sparke",
@@ -304,6 +334,8 @@
    "kv_backing_directory": "/home/sparkf/glmfull-lane6/root/kvcache",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": 21474836480,
+   "kv_snapshot_directory": "/home/sparkf/glmfull-lane6/root/kvsnapshot",
+   "kv_snapshot_maximum_bytes": 68719476736,
    "control_endpoint": {
     "kind": "tcp",
     "host": "sparkf",

@@ -51,7 +51,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = pathlib.Path(tmp)
         subprocess.run([sys.executable, str(ROOT / "tools/glm53full_lane.py"), "--lane", "6", "--codec", "fp8",
-                        "--socket", "/tmp/unused.sock", "--kv-backing-bytes", "1073741824",
+                        "--socket", "/tmp/unused.sock", "--kv-backing-bytes", "1073741824", "--kv-snapshot-bytes", "1073741824",
                         "--max-sequence-positions", "2048", "--execution-row-capacity", "16", "--sequences", "16",
                         "--inflight", "1", "--output", str(tmpdir / "lane")], check=True, capture_output=True)
         base = json.loads((tmpdir / "lane/config/stage_00.json").read_text())
