@@ -656,6 +656,7 @@ PYTHON_TESTS := \
 	tests/test_timing_reports.py \
 	tests/test_glm5_next_bench_wrap.py \
 	tests/test_i27_session.py \
+	tests/test_qualification_bundle.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \
 	tests/test_glm5_next_pack_header_codec.py \
@@ -2072,6 +2073,10 @@ test: all $(TEST_BINARIES) $(PYTHON_TEST_BINARIES)
 # skipped by `make test` with the same notice contract.
 # =====================================================
 OFFLINE_GATES := build-all run-tests package-manifest
+
+.PHONY: fleet-test
+fleet-test:
+	bash tools/run_fleet_tests.sh
 
 .PHONY: offline-gates
 offline-gates:
