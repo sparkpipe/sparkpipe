@@ -222,6 +222,7 @@ uint64_t spark_stub_ibv_post_send_calls(void);
 void spark_stub_ibv_fail_modify_qp_for_qpn(uint32_t remote_qpn);
 void spark_stub_ibv_poll_cq_inject(int status, uint32_t count);
 int spark_stub_ibv_qp_state(uint32_t qpn);
+void spark_stub_ibv_set_qp_state(uint32_t qpn, int state);
 int spark_stub_ibv_qp_remote_qpn(uint32_t qpn);
 
 #ifdef __cplusplus

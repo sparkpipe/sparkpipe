@@ -22,7 +22,7 @@
     (SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u)
 #define SPARK_WEIGHTD_MESH_CQ_ENTRIES 16384u
 #define SPARK_WEIGHTD_MESH_SEND_CAPACITY 64u
-#define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303036)
+#define SPARK_WEIGHTD_MESH_MAGIC UINT64_C(0x4d45534830303037)
 #define SPARK_WEIGHTD_MESH_DORMANT_AFTER_NS UINT64_C(20000000)
 #define SPARK_WEIGHTD_MESH_DORMANT_POLL_NS 200000L
 #define SPARK_WEIGHTD_MESH_FULL_SCAN_NS UINT64_C(1000000)
@@ -66,6 +66,8 @@ typedef struct SparkWeightdMeshRecord
     uint32_t pair_rkey;
     uint16_t pair_lid;
     uint8_t pair_gid[16];
+    uint64_t wire_generation;
+    uint64_t seen_generation[SPARK_WEIGHTD_MESH_PEERS];
 } SparkWeightdMeshRecord;
 
 #define SPARK_WEIGHTD_MESH_TRANSFER_ID (UINT64_C(1) << 63u)
@@ -128,6 +130,10 @@ typedef struct SparkWeightdMesh
     uint16_t lid;
     uint8_t gid[16];
     uint64_t wired_boot_ns[SPARK_WEIGHTD_MESH_PEERS];
+    uint64_t wire_generation;
+    uint64_t peer_generation_seen[SPARK_WEIGHTD_MESH_PEERS];
+    uint64_t resync_generation[SPARK_WEIGHTD_MESH_PEERS];
+    uint64_t stat_resyncs;
     uint64_t invalid_boot_ns[SPARK_WEIGHTD_MESH_PEERS];
     uint64_t failed_boot_ns[SPARK_WEIGHTD_MESH_PEERS];
     uint32_t send_pending[SPARK_WEIGHTD_MESH_PEERS];
@@ -238,10 +244,12 @@ static void SparkWeightdMeshFillRecord(SparkWeightdMeshRecord *record)
     record->pair_rkey = weightd_mesh.pair_recv_mr != 0 ? weightd_mesh.pair_recv_mr->rkey : 0u;
     record->pair_lid = weightd_mesh.pair_lid;
     memcpy(record->pair_gid,weightd_mesh.pair_gid,sizeof(record->pair_gid));
+    record->wire_generation = weightd_mesh.wire_generation;
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         record->send_qpn[peer] = weightd_mesh.send_qps[peer] != 0 ? weightd_mesh.send_qps[peer]->qp_num : 0u;
         record->recv_qpn[peer] = weightd_mesh.recv_qps[peer] != 0 ? weightd_mesh.recv_qps[peer]->qp_num : 0u;
+        record->seen_generation[peer] = weightd_mesh.peer_generation_seen[peer];
     }
 }
 
@@ -958,6 +966,7 @@ typedef struct SparkWeightdMeshWirePlan
 {
     SparkWeightdMeshRecord records[SPARK_WEIGHTD_MESH_PEERS];
     uint32_t force_wire[SPARK_WEIGHTD_MESH_PEERS];
+    uint32_t repair[SPARK_WEIGHTD_MESH_PEERS];
     uint32_t changed, wired;
 }
 SparkWeightdMeshWirePlan;
@@ -1002,8 +1011,10 @@ static uint32_t SparkWeightdMeshRecordUsable(uint32_t peer,const SparkWeightdMes
 static void SparkWeightdMeshWireScanPeer(SparkWeightdMeshWirePlan *plan, uint32_t peer)
 {
     uint32_t peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u, send_in_rts, recv_in_rts;
+    uint32_t mine = weightd_mesh.local_rank < peer_rank ? weightd_mesh.local_rank : weightd_mesh.local_rank - 1u;
     SparkStatus status;
     plan->force_wire[peer] = 0u;
+    plan->repair[peer] = 0u;
     if ( (weightd_mesh.rank_mask & (1u << peer_rank)) == 0u )
         return;
     status = SparkWeightdMeshReadPeerRecord(peer_rank,&plan->records[peer]);
@@ -1029,19 +1040,39 @@ static void SparkWeightdMeshWireScanPeer(SparkWeightdMeshWirePlan *plan, uint32_
         plan->force_wire[peer] = 1u;
         return;
     }
+    if ( weightd_mesh.resync_generation[peer] != 0u && plan->records[peer].seen_generation[mine] >= weightd_mesh.resync_generation[peer] )
+    {
+        fprintf(stderr,"WD-QP-RESYNC-DONE rank=%u peer=%u generation=%llu — the peer re-transitioned its queue pairs; both sides restart at PSN 0\n",
+            weightd_mesh.local_rank,peer,(unsigned long long)weightd_mesh.resync_generation[peer]);
+        weightd_mesh.resync_generation[peer] = 0u;
+        plan->changed = 1u;
+    }
     send_in_rts = SparkWeightdMeshQpInRts(weightd_mesh.send_qps[peer]);
     recv_in_rts = SparkWeightdMeshQpInRts(weightd_mesh.recv_qps[peer]);
     weightd_mesh.peer_qp_flags[peer] = send_in_rts * SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS | recv_in_rts * SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS |
         SparkWeightdMeshIsPairPeer(peer) * SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK;
     plan->force_wire[peer] = SparkWeightdMeshRewireNeeded(plan->records[peer].boot_ns,weightd_mesh.wired_boot_ns[peer],send_in_rts,recv_in_rts);
+    plan->repair[peer] = plan->force_wire[peer];
+    if ( plan->records[peer].wire_generation != weightd_mesh.peer_generation_seen[peer] )
+    {
+        plan->force_wire[peer] = 1u;
+        fprintf(stderr,"WD-QP-RESYNC rank=%u peer=%u generation=%llu — the peer repaired its queue pairs; re-transitioning ours so both restart at PSN 0\n",
+            weightd_mesh.local_rank,peer,(unsigned long long)plan->records[peer].wire_generation);
+    }
     if ( plan->force_wire[peer] == 0u )
     {
+        if ( weightd_mesh.resync_generation[peer] != 0u )
+        {
+            plan->wired = 0u;
+            plan->changed = 1u;
+            return;
+        }
         SparkWeightdMeshPeerSet(peer,SPARK_WEIGHTD_MESH_PEER_WIRED,SPARK_STATUS_OK);
         return;
     }
     plan->changed = 1u;
-    if ( send_in_rts == 0u || recv_in_rts == 0u )
-        fprintf(stderr,"WD-QP-REPAIR rank=%u peer=%u — qp left RTS after errors; re-transitioning on the same record\n",weightd_mesh.local_rank,peer);
+    if ( plan->repair[peer] != 0u )
+        fprintf(stderr,"WD-QP-REPAIR rank=%u peer=%u — qp left RTS after errors; re-transitioning on the same record and asking the peer to resynchronize\n",weightd_mesh.local_rank,peer);
 }
 
 static uint32_t SparkWeightdMeshWirePeerLocked(const SparkWeightdMeshWirePlan *plan, uint32_t peer)
@@ -1160,7 +1191,7 @@ static void SparkWeightdMeshPeerResetLocked(uint32_t peer,const char *reason,uin
 static void SparkWeightdMeshTryWire(void)
 {
     SparkWeightdMeshWirePlan plan;
-    uint32_t peer,repair;
+    uint32_t peer,repair,republish,bumped = 0u;
     plan.changed = weightd_mesh.mesh_ready == 0u;
     plan.wired = 1u;
     weightd_mesh.stat_trywire++;
@@ -1170,13 +1201,47 @@ static void SparkWeightdMeshTryWire(void)
         return;
     SparkWeightdMeshWireAcquire();
     repair = SparkWeightdMeshDrainCqLocked(SparkWeightdMeshMonotonicNs());
+    republish = 0u;
+    for ( peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++ )
+        if ( plan.repair[peer] != 0u && plan.records[peer].boot_ns == weightd_mesh.wired_boot_ns[peer] )
+            bumped = 1u;
+    if ( bumped != 0u )
+        weightd_mesh.wire_generation++;
     for ( peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++ )
     {
+        uint32_t booted;
         if ( plan.force_wire[peer] == 0u )
             continue;
-        SparkWeightdMeshPeerResetLocked(peer,plan.records[peer].boot_ns != weightd_mesh.wired_boot_ns[peer] ? "record" : "qp-repair",plan.records[peer].boot_ns);
+        booted = plan.records[peer].boot_ns != weightd_mesh.wired_boot_ns[peer] ? 1u : 0u;
+        SparkWeightdMeshPeerResetLocked(peer,booted != 0u ? "record" : plan.repair[peer] != 0u ? "qp-repair" : "peer-resync",plan.records[peer].boot_ns);
         if ( SparkWeightdMeshWirePeerLocked(&plan,peer) == 0u )
+        {
             plan.wired = 0u;
+            continue;
+        }
+        if ( weightd_mesh.peer_generation_seen[peer] != plan.records[peer].wire_generation )
+        {
+            weightd_mesh.peer_generation_seen[peer] = plan.records[peer].wire_generation;
+            republish = 1u;
+        }
+        if ( booted != 0u )
+            weightd_mesh.resync_generation[peer] = 0u;
+        else if ( plan.repair[peer] != 0u )
+        {
+            weightd_mesh.resync_generation[peer] = weightd_mesh.wire_generation;
+            weightd_mesh.stat_resyncs++;
+            republish = 1u;
+        }
+    }
+    for ( peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++ )
+        if ( weightd_mesh.resync_generation[peer] != 0u )
+            plan.wired = 0u;
+    if ( republish != 0u || bumped != 0u )
+    {
+        SparkWeightdMeshRecord own_record;
+        SparkWeightdMeshFillRecord(&own_record);
+        if ( SparkWeightdMeshWriteRecord(&own_record) != SPARK_STATUS_OK )
+            fprintf(stderr,"WD-QP-RESYNC-PUBLISH-FAILED rank=%u generation=%llu; peers keep their old view until the next scan\n",weightd_mesh.local_rank,(unsigned long long)weightd_mesh.wire_generation);
     }
     SparkWeightdMeshWireReadyLocked(plan.wired);
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
@@ -1970,14 +2035,15 @@ static void SparkWeightdMeshRepairAndReport(void)
     if ( now - weightd_mesh.stat_logged_ns < SPARK_WEIGHTD_MESH_STATS_NS )
         return;
     weightd_mesh.stat_logged_ns = now;
-    fprintf(stderr,"WD-MESH-STATS trywire=%llu record_failures=%llu record_invalid=%llu wire_failures=%llu rewires=%llu unready=%llu repairs=%llu cq_ok=%llu cq_err=%llu ready=%u peer_resets=%llu peer_reset_bits=%llu lane_resets=%llu\n",
+    fprintf(stderr,"WD-MESH-STATS trywire=%llu record_failures=%llu record_invalid=%llu wire_failures=%llu rewires=%llu unready=%llu repairs=%llu cq_ok=%llu cq_err=%llu ready=%u peer_resets=%llu peer_reset_bits=%llu lane_resets=%llu resyncs=%llu wire_generation=%llu\n",
         (unsigned long long)weightd_mesh.stat_trywire,(unsigned long long)weightd_mesh.stat_record_failures,
         (unsigned long long)weightd_mesh.stat_record_invalid,(unsigned long long)weightd_mesh.stat_wire_failures,
         (unsigned long long)weightd_mesh.stat_rewires,(unsigned long long)weightd_mesh.stat_unready,
         (unsigned long long)weightd_mesh.stat_repairs,(unsigned long long)weightd_mesh.send_ok,
         (unsigned long long)weightd_mesh.send_err,weightd_mesh.mesh_ready,
         (unsigned long long)weightd_mesh.stat_peer_resets,(unsigned long long)weightd_mesh.stat_peer_reset_bits,
-        (unsigned long long)weightd_mesh.stat_lane_resets);
+        (unsigned long long)weightd_mesh.stat_lane_resets,(unsigned long long)weightd_mesh.stat_resyncs,
+        (unsigned long long)weightd_mesh.wire_generation);
     SparkWeightdMeshTimingReport();
 }
 
@@ -2018,6 +2084,7 @@ void SparkWeightdMeshPoll(void)
                         (ssize_t)sizeof(existing) &&
                     existing.magic == SPARK_WEIGHTD_MESH_MAGIC &&
                     existing.boot_ns == weightd_mesh.boot_ns &&
+                    existing.wire_generation == weightd_mesh.wire_generation &&
                     existing.recv_addr ==
                         (uint64_t)(uintptr_t)weightd_mesh.recv_buffer)
                     stale = 0u;

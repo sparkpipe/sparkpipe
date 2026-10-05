@@ -2719,14 +2719,62 @@ static uint32_t SparkWeightdServerOnMeshStatus(SparkWeightdServer *server, const
     return sizeof(*result);
 }
 
-static uint32_t SparkWeightdServerOnMeshWrite(const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+static uint32_t SparkWeightdMeshRangeInside(uint64_t offset,uint64_t length,uint64_t first,uint64_t end)
+{
+    return(offset >= first && length <= end - first && offset - first <= end - first - length ? 1u : 0u);
+}
+
+static uint32_t SparkWeightdMeshRangeInBand(uint64_t offset,uint64_t length,uint32_t band)
+{
+    uint64_t slots = (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
+    uint64_t cells = SPARK_WEIGHTD_MESH_DOORBELL_OFFSET + (uint64_t)(SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE + 2u * band) * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES;
+    return(SparkWeightdMeshRangeInside(offset,length,(uint64_t)band * slots,(uint64_t)(band + 1u) * slots) != 0u ||
+        SparkWeightdMeshRangeInside(offset,length,SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band,0u),SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band,SPARK_WEIGHTD_MESH_RANKS_PER_BAND)) != 0u ||
+        SparkWeightdMeshRangeInside(offset,length,cells,cells + 2u * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES) != 0u ||
+        SparkWeightdMeshRangeInside(offset,length,SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,0u),SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(band,SPARK_WEIGHTD_MESH_RANKS_PER_BAND)) != 0u ||
+        SparkWeightdMeshRangeInside(offset,length,SPARK_WEIGHTD_MESH_WAIT_ENTRY(band,0u),SPARK_WEIGHTD_MESH_WAIT_ENTRY(band,SPARK_WEIGHTD_MESH_RANKS_PER_BAND)) != 0u ? 1u : 0u);
+}
+
+static SparkStatus SparkWeightdMeshRangeAllowed(const SparkWeightdConnection *connection,const char *what,uint64_t offset,uint64_t length)
+{
+    uint32_t lane = SPARK_WEIGHTD_MESH_MAX_LANES;
+    if (connection->mesh_active != 0u)
+        lane = connection->mesh_lane;
+    else if (connection->lane_mask != 0u && (connection->lane_mask & (connection->lane_mask - 1u)) == 0u)
+        lane = (uint32_t)__builtin_ctz(connection->lane_mask);
+    if (length == 0u || SparkWeightdMeshRangeInside(offset,length,0u,SPARK_WEIGHTD_MESH_REGION_BYTES) == 0u)
+    {
+        fprintf(stderr,"weightd mesh request refused: %s offset=%llu length=%llu lies outside the %llu-byte registered region\n",what,
+            (unsigned long long)offset,(unsigned long long)length,(unsigned long long)SPARK_WEIGHTD_MESH_REGION_BYTES);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    if (lane < SPARK_WEIGHTD_MESH_MAX_LANES && SparkWeightdMeshRangeInBand(offset,length,2u * lane) == 0u &&
+        SparkWeightdMeshRangeInBand(offset,length,2u * lane + 1u) == 0u)
+    {
+        fprintf(stderr,"weightd mesh request refused: %s offset=%llu length=%llu lies outside lane %u's bands\n",what,
+            (unsigned long long)offset,(unsigned long long)length,lane);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkWeightdServerOnMeshWrite(const SparkWeightdConnection *connection, const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
 {
     SparkWeightdIpcMeshWriteResult *result =
         (SparkWeightdIpcMeshWriteResult *)response;
     const SparkWeightdIpcMeshWrite *write =
         (const SparkWeightdIpcMeshWrite *)request;
+    SparkStatus status;
     memset(result, 0, sizeof(*result));
     SparkWeightdBuildHeader(response, result_kind, request_id);
+    status = SparkWeightdMeshRangeAllowed(connection,"write source",write->source_offset,write->length);
+    if (status == SPARK_STATUS_OK)
+        status = SparkWeightdMeshRangeAllowed(connection,"write destination",write->remote_offset,write->length);
+    if (status != SPARK_STATUS_OK)
+    {
+        result->status = (uint32_t)status;
+        return(sizeof(*result));
+    }
     result->status = (uint32_t)SparkWeightdMeshPostWrite(
         write->peer_rank,
         SparkWeightdMeshBufferAddress() + write->source_offset,
@@ -2736,14 +2784,25 @@ static uint32_t SparkWeightdServerOnMeshWrite(const uint8_t *request, uint8_t *r
     return(sizeof(*result));
 }
 
-static uint32_t SparkWeightdServerOnMeshBroadcast(const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+static uint32_t SparkWeightdServerOnMeshBroadcast(const SparkWeightdConnection *connection, const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
 {
     SparkWeightdIpcMeshBroadcastResult *result =
         (SparkWeightdIpcMeshBroadcastResult *)response;
     const SparkWeightdIpcMeshBroadcast *broadcast =
         (const SparkWeightdIpcMeshBroadcast *)request;
+    SparkStatus status;
     memset(result, 0, sizeof(*result));
     SparkWeightdBuildHeader(response, result_kind, request_id);
+    status = SparkWeightdMeshRangeAllowed(connection,"broadcast source",broadcast->source_offset,broadcast->length);
+    if (status == SPARK_STATUS_OK)
+        status = SparkWeightdMeshRangeAllowed(connection,"broadcast destination",broadcast->remote_offset,broadcast->length);
+    if (status == SPARK_STATUS_OK && broadcast->seq_remote_offset != 0u)
+        status = SparkWeightdMeshRangeAllowed(connection,"broadcast sequence",broadcast->seq_remote_offset,sizeof(uint64_t));
+    if (status != SPARK_STATUS_OK)
+    {
+        result->status = (uint32_t)status;
+        return(sizeof(*result));
+    }
     result->posted_count = SparkWeightdMeshBroadcast(
         broadcast->peer_mask,
         broadcast->source_offset,
@@ -3458,9 +3517,9 @@ static uint32_t SparkWeightdServerDispatchKind(SparkWeightdServer *server, Spark
         case SPARK_WEIGHTD_IPC_KIND_MESH_STATUS:
             return(SparkWeightdServerOnMeshStatus(server,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_MESH_WRITE:
-            return(SparkWeightdServerOnMeshWrite(request,response,result_kind,request_id));
+            return(SparkWeightdServerOnMeshWrite(connection,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_MESH_BROADCAST:
-            return(SparkWeightdServerOnMeshBroadcast(request,response,result_kind,request_id));
+            return(SparkWeightdServerOnMeshBroadcast(connection,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_DETACH:
             return(SparkWeightdServerOnDetach(server,connection,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_MESH_MAP:
