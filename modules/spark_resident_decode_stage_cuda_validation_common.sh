@@ -73,6 +73,22 @@ spark_cuda_validation_begin() {
 	    fi
 	}
 
+	require_validator_digest() {
+	    local expected="$1"
+	    local path="$2"
+	    local label="$3"
+	    local actual
+	    if [[ ! "${expected}" =~ ^[0-9a-f]{64}$ ]]; then
+	        echo "${label} expected SHA-256 is invalid" >&2
+	        exit 2
+	    fi
+	    actual=$(python3 "${script_directory}/../../../tools/validator_digest.py" "${path}") || exit 2
+	    if [[ "${actual}" != "${expected}" ]]; then
+	        echo "${label} SHA-256 mismatch (the digest covers the validator and the validation templates it includes)" >&2
+	        exit 2
+	    fi
+	}
+
 	require_configuration_value() {
 	    local name="$1"
 	    local expected="$2"
@@ -123,7 +139,7 @@ spark_cuda_validation_check_pack() {
 
 spark_cuda_validation_check_source_digests() {
 	local validator_env="${validation_env_prefix}_CUDA_VALIDATOR_SHA256"
-	require_source_digest "${!validator_env:-}" "${cuda_validator}" "${validation_digest_label} CUDA validator"
+	require_validator_digest "${!validator_env:-}" "${cuda_validator}" "${validation_digest_label} CUDA validator"
 	if [[ -n "${validation_oracle_file}" ]]; then
 		local oracle_env="${validation_env_prefix}_CPU_ORACLE_SHA256"
 		require_source_digest "${!oracle_env:-}" "${cpu_oracle}" "${validation_digest_label} CPU oracle"

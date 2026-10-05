@@ -11,7 +11,7 @@ ARCHIVE="${2:?}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 export NVCC="${NVCC:-/usr/local/cuda/bin/nvcc}"
 export CUDA_ARCH="${CUDA_ARCH:-sm_121a}"
-export SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256="$(sha256sum "${ROOT}/modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu" | cut -d' ' -f1)"
+export SPARK_QWEN38_MAX_CUDA_VALIDATOR_SHA256="$(python3 "${ROOT}/tools/validator_digest.py" "${ROOT}/modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu")"
 
 exec "${ROOT}/modules/qwen38_max_resident_decode_stage/validation/validate_qwen38_max_resident_decode_stage_cuda.sh" \
     "${CONFIGURATION_SHA}" "${ARCHIVE}"

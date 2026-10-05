@@ -69,7 +69,7 @@ ARM="ling.$EXPERT_CODEC.tp16"
 # refuses a drifted build.
 MODEL_REVISION="e0dfe7cd0f6e3b572bbbc0a8a84947469e428cc3"
 CONTRACT="model_contracts/ling_authoritative.json"
-FIRMWARE="examples/model_descriptions/ling_resident_decode_stage_firmware.json"
+FIRMWARE="examples/model_descriptions/ling_resident_decode_stage_bf16_firmware.json"
 MODULE="modules/ling_resident_decode_stage"
 
 # Lane port math (tools/devcycle/lane_assignments.json): lane 9 owns

@@ -471,7 +471,7 @@ def main() -> None:
 	for target in ("DSV4_SERVING_ADAPTER", "DSV4_TP16_SERVING_ADAPTER", "DSV4_TP4_SERVING_ADAPTER", "DSV4_TP4_B1_SERVING_ADAPTER", "DSV4_TP4_PP4_SERVING_ADAPTER", "DSV4_TP4_PP4_B1_SERVING_ADAPTER", "TEST_DSV4_SERVING_DRIVER_MODULE", "TEST_DSV4_TP16_SERVING_DRIVER_MODULE", "TEST_DSV4_TP4_PP4_SERVING_DRIVER_MODULE"):
 		require(" ".join(sorted(rules.get(variables[target], ()))), variables["DSV4_MODEL_HEADER"], f"{target} generated-header rebuild dependency")
 	require(validation_common, 'validator_env="${validation_env_prefix}_CUDA_VALIDATOR_SHA256"', "CUDA validator digest env composition (DRY wave 1, 61d6edc)")
-	require(validation_common, 'require_source_digest "${!validator_env:-}" "${cuda_validator}"', "CUDA validator source binding (shared driver)")
+	require(validation_common, 'require_validator_digest "${!validator_env:-}" "${cuda_validator}"', "CUDA validator source binding (shared driver)")
 	require(validator_script, 'validation_env_prefix="SPARK_DSV4"', "dsv4 validator digest prefix binding")
 	require(validator_script, 'require_source_digest "${SPARK_DSV4_REFERENCE_VERIFIER_SHA256:-}"', "reference verifier source binding")
 	digest_line = next(line for line in module_makefile.splitlines() if line.startswith("override DSV4_GA_STAGE0_REFERENCE_MANIFEST_SHA256 :="))
