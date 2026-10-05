@@ -2310,35 +2310,35 @@ static void FuzzSourceLifetime(void)
     memset(destination,0xa5,sizeof(destination));
     control.epoch = 8u;
     control.round_seq = (UINT64_C(8) << 32u) | 1u;
-    CHECK(SparkTpLaunchMeshCopyDown(0,destination,source,sizeof(source),
+    CHECK(SparkTpMeshLaunchersRegistered->copy_down(0,destination,source,sizeof(source),
         &shipped,&control,&cancel,1000000u) == 0,
         "source gate records asynchronous timeout in control");
     CHECK(control.error_word == control.round_seq && destination[0] == 0xa5u,
         "same low sequence from stale epoch cannot overwrite a live source");
-    CHECK(SparkTpLaunchMeshPublish(0,entry,&control.seq,&control.epoch,
+    CHECK(SparkTpMeshLaunchersRegistered->publish(0,entry,&control.seq,&control.epoch,
         &control.round_seq,sizeof(source),0u,2u,&tail,&control.error_word,2u) == 0 &&
         control.seq == 0u && entry[0] == 0u && tail == 0u,
         "failed source gate cannot publish a payload or advance sequence");
     {
         uint64_t guarded[2] = {17u,29u};
-        CHECK(SparkTpLaunchMeshGuard(0,&control.error_word,guarded) == 0 &&
+        CHECK(SparkTpMeshLaunchersRegistered->guard(0,&control.error_word,guarded) == 0 &&
             guarded[0] == UINT64_MAX && guarded[1] == 29u,
             "failed mesh guard poisons only the output word");
         control.error_word = 0u;
         guarded[0] = 17u;
-        CHECK(SparkTpLaunchMeshGuard(0,&control.error_word,guarded) == 0 &&
+        CHECK(SparkTpMeshLaunchersRegistered->guard(0,&control.error_word,guarded) == 0 &&
             guarded[0] == 17u && guarded[1] == 29u,
             "successful mesh guard preserves output");
     }
     shipped = control.round_seq;
-    CHECK(SparkTpLaunchMeshCopyDown(0,destination,source,sizeof(source),
+    CHECK(SparkTpMeshLaunchersRegistered->copy_down(0,destination,source,sizeof(source),
         &shipped,&control,&cancel,1000000u) == 0 &&
         memcmp(destination,source,sizeof(source)) == 0 &&
         destination[7] == 0xa5u && destination[8] == 0xa5u,
         "full tag release copies exact odd byte extent without changing guards");
     cancel = 1u;
     memset(destination,0xa5,sizeof(destination));
-    CHECK(SparkTpLaunchMeshCopyDown(0,destination,source,sizeof(source),
+    CHECK(SparkTpMeshLaunchersRegistered->copy_down(0,destination,source,sizeof(source),
         &shipped,&control,&cancel,1000000u) == 0 && destination[0] == 0xa5u &&
         control.error_word != 0u,
         "cancellation prevents source overwrite and subsequent publication after shipment");

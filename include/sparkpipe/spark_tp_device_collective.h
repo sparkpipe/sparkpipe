@@ -307,6 +307,46 @@ typedef struct SparkTpDeviceCollective
     void *implementation;
 } SparkTpDeviceCollective;
 
+#define SPARK_TP_MESH_LAUNCHERS_ABI_VERSION 1u
+
+typedef int (*SparkTpMeshCopyDownFunction)(void *stream,volatile void *destination,const void *source,uint64_t bytes,
+    const volatile void *shipped,void *round_control,const volatile void *cancel,uint64_t timeout_ns);
+typedef int (*SparkTpMeshPublishFunction)(void *stream,volatile void *entry,void *seq_cell,const void *epoch_cell,
+    void *round_seq,uint64_t bytes,uint64_t slot_index,uint64_t slots_per_rank,volatile void *slot_tail,
+    void *error_word,uint32_t peer_mask);
+typedef int (*SparkTpMeshTreeFunction)(void *stream,void *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,
+    const volatile void *shipped,const volatile void *cancel,void *round_control,uint32_t rank,uint32_t degree,const void *local,
+    void *output,void *scratch,uint64_t elements,uint32_t operation,uint32_t rounds,uint64_t timeout_ns);
+typedef int (*SparkTpMeshHardwarePrepareFunction)(void *host,void **device);
+typedef int (*SparkTpMeshHardwareFunction)(void *stream,void *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,
+    void *gate,void *round_control,uint32_t rank,uint32_t degree,const void *local,void *output,void *scratch,uint64_t elements,
+    uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,uint64_t timeout_ns);
+typedef int (*SparkTpMeshSeqPadFunction)(void *stream,void *seq_cell);
+typedef int (*SparkTpMeshGuardFunction)(void *stream,volatile void *error_word,void *output);
+typedef int (*SparkTpMeshWaitFunction)(void *stream,volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
+    uint64_t slots_per_rank,uint32_t rank,uint32_t degree,void *error_word,unsigned long long deadline_ns,void *diag_word,
+    volatile void *cancel_cell,const void *cancel_expected,void *arrival_ring);
+typedef int (*SparkTpMeshRoundLoopFunction)(void *stream,volatile void *band_base,uint64_t slot_bytes,uint64_t slots_per_rank,
+    volatile void *entry,void *shipped_cell,volatile void *cancel_cell,void *round_control,uint32_t rank,uint32_t degree,
+    const void *local_device,void *full_device,uint64_t bytes);
+
+typedef struct SparkTpMeshLaunchers
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    SparkTpMeshCopyDownFunction copy_down;
+    SparkTpMeshPublishFunction publish;
+    SparkTpMeshTreeFunction tree;
+    SparkTpMeshHardwarePrepareFunction hardware_prepare;
+    SparkTpMeshHardwareFunction hardware;
+    SparkTpMeshSeqPadFunction seq_pad;
+    SparkTpMeshGuardFunction guard;
+    SparkTpMeshWaitFunction wait;
+    SparkTpMeshRoundLoopFunction round_loop;
+} SparkTpMeshLaunchers;
+
+void SparkTpDeviceCollectiveRegisterLaunchers(const SparkTpMeshLaunchers *launchers);
+
 SparkStatus SparkTpDeviceCollectiveCreate(
     const SparkTpDeviceCollectiveConfig *config,
     SparkTpDeviceCollective *collective_out);

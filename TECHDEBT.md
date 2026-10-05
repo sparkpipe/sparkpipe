@@ -1378,17 +1378,6 @@ door and the static pages and playground in `site/`.
   marker the module build already verifies. `test_graph_replay_correctness`
   is a GPU rig with private kernel prototypes and no build rule; it needs an
   nvcc-gated rule on the shared kernel headers and a Spark runner.
-- `make test` fails on a host with a CUDA toolkit. There the model-common
-  library carries no CUDA stub, but `ring/transport/tp_device_collective.c`
-  calls the mesh launchers (`SparkTpLaunchMesh*`), which only a module's
-  CUDA object (`spark_tp_mesh_kernels.cuh`) or the stub defines. An adapter
-  that pulls the transport from the library is left with them undefined: on
-  the x86 hub at main `bbf5432`, `build/libdsv4_tp4_pp4_serving_adapter.so`
-  fails `dlopen` with `undefined symbol: SparkTpLaunchMeshHardware`, and
-  `make test` stops at `test_dsv4_tp4_pp4_serving_adapter`. Move the
-  launcher calls behind the module boundary, or give host links one object
-  that defines them, rather than linking the stub case by case (#1258 did
-  that for two tests).
 - Left out on purpose (2026-10-02): The dsv4 GPU validator compares against
   reference outputs only for stage 0 with the three-layer slice starting at
   layer 0
