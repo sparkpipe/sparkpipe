@@ -529,23 +529,6 @@ citations refer to that commit.
   send a 4K prompt, restart residentd on all 16 ranks, resend it, and see
   `cached_tokens > 0`, `restore_count > 0`, `restore_failure_count == 0` and
   tokens identical to the first run.
-- Left out on purpose (2026-10-02): PR #1278 (`5815cf10f`, merge base
-  `30cccaaf7`, 2026-09-28) holds the only snapshot wiring and prefetch-join
-  code, is not in this tree, and cannot be merged as is. It puts the store
-  open, the layout digest and the snapshot directory in glm5_next driver code
-  (`SparkGlm5NextSnapshotLayout` and `SparkGlm5NextSnapshotInitialize` in the
-  module, `kv_snapshot_directory` and `kv_snapshot_maximum_bytes` in the
-  adapter), against central KV ownership. Its adapter treats both keys as
-  optional and serves with `kv_snapshot=off` when they are absent, which is an
-  opt-out of required persistence. Its PENDING retry
-  (`SparkModelBatchRequeuePrefetchWave`) doubles a 10 ms backoff up to 200 ms
-  for at most 10,000 tries instead of waiting on a restore deadline. Close it
-  by porting only `cache/kv_snapshot.c`, the `cache/kv_page_cache.c` prefetch
-  and join, and the engine PENDING path onto `runtime/stage_kv_binding.c` and
-  `runtime/model_batch_engine.c`, with a required snapshot field, a
-  deadline-bounded wait and no driver snapshot code. Fleet proof: GLM-5.3 Full
-  restores a saved prefix with no glm52 snapshot code, and the engine log
-  shows each PENDING wait ending at the restore's completion or its deadline.
 - Left out on purpose (2026-10-02): Crash recovery of the KV snapshot store
   has never run in production. The store writes each file to a `.kvs-writing-`
   temporary opened with `O_EXCL` and mode 0600, fsyncs it, renames it and
@@ -887,24 +870,12 @@ Related common-code debt:
   abort mid-prefill, eviction and recompute, residentd restart and a failed
   write-back, each against an uninterrupted control with identical tokens and
   `cached_tokens` above zero on every expected hit, plus exact T1.
-- Left out on purpose (2026-10-02): A reconnect or restart of residentd throws
-  away the engine's prefix index, and nothing rebuilds it from a durable
-  store. residentd gives each client connection a new generation
-  (`node/model_residentd.c:1229`), the pipeline folds it into the session
-  fingerprint (`runtime/model_pipeline_client.c:716-728`), and the engine
-  resets its prefix index when the fingerprint changes
-  (`runtime/model_batch_engine.c:2483-2497`, `SparkPrefixCacheReset` at
-  `:2494`); a restarted engine also starts empty (`:1256`), and
-  `cache/prefix_cache.c` has no load or rebuild path. The engine marks a lane
-  PREFIX only from its own index lookup
-  (`runtime/model_batch_engine.c:767-770`, `:2046-2051`), and PREPARE restores
-  only PREFIX lanes (`cache/kv_page_cache.c:2009`), so after a restart no
-  request reaches the snapshot store and every prompt is recomputed. Close it
-  by rebuilding the engine index from the ranks' snapshot store keys after a
-  reconnect, or by letting an index miss probe the store with the same
-  token-chain identity. Fleet proof: publish a 4K prompt, restart residentd on
-  all ranks, resend it, and see `cached_tokens` equal to the published prefix
-  with tokens identical to the first run.
+- Left out on purpose (2026-10-02): the engine keeps its prefix index across
+  rank-session changes and reloads it from `prefix_index_path` at start, but
+  no fleet run has shown a restored prefix after a residentd restart. Fleet
+  proof: publish a 4K prompt, restart residentd on all ranks, resend it, and
+  see `cached_tokens` equal to the published prefix with tokens identical to
+  the first run.
 - Left out on purpose (2026-10-02): `SparkQwen38_27bServingPrefixPublish`
   (`modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c:901-958`)
   returns OK without storing when the prefix spans no block, more than 64
@@ -1010,12 +981,13 @@ Related common-code debt:
   each other. Add a gate that replays a fixed prompt set sequentially and
   concurrently and requires byte-identical completions, and run it with
   every serving release until the batch kernels pass it.
-- JIT KV admission does not prefetch. The serving `prefetch` hook runs
+- JIT KV admission does not prefetch (the engine's BUSY wait is now bounded
+  by the in-flight budget instead of a retry count). The serving `prefetch` hook runs
   cache-prepare admission only when residentd receives a submission
   (`SparkModelServingAdapterPrepareSubmission` in `node/model_residentd.c`),
   so a restore starts at dispatch, not when the engine queues the request.
   A submission that cannot be prepared answers `BUSY`, and the batch engine
-  retries it with a 10 to 200 ms backoff, up to 10,000 times
+  retries it with a 10 to 200 ms backoff until the in-flight budget passes
   (`runtime/model_batch_engine.c`). The deadline-ordered restore in
   `cache/kv_pager.c` (`SparkNvmeTierRequestDemandDeadline`, called at `:691`)
   has no production consumer: `modules/dsv4_resident_decode_stage/source/spark_dsv4_jit_kv.c`
