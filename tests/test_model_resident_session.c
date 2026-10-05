@@ -71,6 +71,7 @@ static void TestInitialize(TestSession *test)
 	runtime->runtime_limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	runtime->runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
 	runtime->runtime_limits.max_inflight_submission_count = 1u;
+	runtime->adapter_max_sequence_positions = 4096u;
 	runtime->runtime_limits.max_active_sequence_count = 1u;
 	runtime->runtime_limits.max_input_row_count = 1u;
 	runtime->runtime_limits.resident_sequence_capacity = 1u;

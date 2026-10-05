@@ -61,8 +61,12 @@ static void TestHello(void)
 	assert(SparkModelResidentIpcValidateHello(&hello,sizeof(hello),1u,1u,&descriptor) == SPARK_STATUS_TARGET_MISMATCH);
 	hello.session_epoch = 0x1234u;
 	assert(SparkModelResidentIpcInitializeHelloAck(&ack,7u,SPARK_STATUS_OK,1u,
-		1u,13u,0x1234u,&descriptor,&limits) == SPARK_STATUS_OK);
+		1u,13u,0x1234u,&descriptor,&limits,0u) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),7u,1u,1u,0x1234u,&descriptor,&limits) == SPARK_STATUS_TARGET_MISMATCH);
+	assert(SparkModelResidentIpcInitializeHelloAck(&ack,7u,SPARK_STATUS_OK,1u,
+		1u,13u,0x1234u,&descriptor,&limits,8192u) == SPARK_STATUS_OK);
 	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),7u,1u,1u,0x1234u,&descriptor,&limits) == SPARK_STATUS_OK);
+	assert(ack.max_sequence_positions == 8192u);
 	assert(ack.header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_HELLO_ACK);
 	assert(ack.client_generation == 13u);
 	assert(ack.max_inflight_submission_count == 2u);

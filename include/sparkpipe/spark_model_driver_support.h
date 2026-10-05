@@ -38,6 +38,10 @@ static inline uint32_t SparkModelDriverCreateRequestIsValid(
          request->kv_backing_maximum_bytes != 0u) ||
         (request->kv_backing_directory != 0 &&
          request->kv_backing_directory[0] == '\0') ||
+        ((request->kv_snapshot_directory == 0) !=
+         (request->kv_snapshot_maximum_bytes == 0u)) ||
+        (request->kv_snapshot_directory != 0 &&
+         request->kv_snapshot_directory[0] == '\0') ||
         request->reserved[0] != 0u)
     {
         return 0u;

@@ -365,10 +365,10 @@ static SparkStatus SparkGlm52ModuleConfigure(
 	state->expert_weight_codec = context->expert_weight_codec;
 	state->tp_degree = context->tp_degree;
 	state->tp_rank = context->tp_rank;
-	state->kv_backing_directory = context->kv_backing_directory;
-	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
-	state->kv_snapshot_directory = context->kv_snapshot_directory;
-	state->kv_snapshot_maximum_bytes = context->kv_snapshot_maximum_bytes;
+	state->kv_backing_directory = host_services->kv_backing_directory;
+	state->kv_backing_maximum_bytes = host_services->kv_backing_maximum_bytes;
+	state->kv_snapshot_directory = host_services->kv_snapshot_directory;
+	state->kv_snapshot_maximum_bytes = host_services->kv_snapshot_maximum_bytes;
 	state->kv_logical_page_capacity = host_services->kv_logical_page_capacity;
 	state->kv_physical_page_capacity = host_services->kv_physical_page_capacity;
 	if ( SparkModuleTpCollectiveIdentifier(SPARK_GLM52_MODULE_TAG,context->tp_degree,context->tp_collective_identifier,&state->tp_collective_disabled) != SPARK_STATUS_OK )

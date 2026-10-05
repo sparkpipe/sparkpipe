@@ -73,7 +73,7 @@ def tp_environment(rank: int, tp_degree: int) -> dict:
         "SPARK_GEMMA4_TP_RANK": str(rank),
         "SPARK_GEMMA4_TP_STANDALONE": "0",
         "SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS": "30000",
-        "SPARK_TP_WAIT_MODE": "hardware",
+        "SPARK_GEMMA4_TP_WAIT_MODE": "hardware",
     }
 
 

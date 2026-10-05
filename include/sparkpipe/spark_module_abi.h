@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 #define SPARK_FIRMWARE_MODULE_ABI_VERSION 5u
-#define SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION 4u
+#define SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION 5u
 
 typedef struct SparkFirmwareModuleConfiguration
 {
@@ -43,6 +43,8 @@ typedef struct SparkFirmwareModuleHostServices
     uint32_t kv_physical_page_capacity;
     const char *kv_backing_directory;
     uint64_t kv_backing_maximum_bytes;
+    const char *kv_snapshot_directory;
+    uint64_t kv_snapshot_maximum_bytes;
     void *execution_stream;
     uint64_t reserved[1];
 } SparkFirmwareModuleHostServices;

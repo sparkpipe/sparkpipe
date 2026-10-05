@@ -28,8 +28,8 @@
     "runtime_dataset": "qwen38.bf16.tp4",
     "node_target": "cuda.sm121.qwen38_27b.resident_decode_stage.bf16",
     "adapter_configuration_path_template": "config/qwen38_27b_tp4_rank{rank}.json",
-    "kv_backing_dataset": null,
-    "kv_backing_maximum_bytes": 0,
+    "kv_backing_dataset": "qwen38/tp4.q27b.bf16",
+    "kv_backing_maximum_bytes": 8589934592,
     "control_endpoint": {
       "kind": "tcp",
       "host_template": "{host}",

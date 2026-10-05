@@ -338,6 +338,7 @@ struct SparkGlm5NextModuleState
 	uint32_t wave_attempt_retries;
 	uint32_t wave_attempt_busy[SPARK_GLM5_NEXT_BUSY_REASONS];
 	uint32_t graph_path_requested;
+	uint32_t pin_experts;
 	uint32_t distribution_wave_capacity;
 	uint32_t distribution_chunk_rows;
 	uint32_t distribution_sub_rows;
@@ -441,10 +442,12 @@ static SparkStatus SparkGlm5NextModuleConfigure(
 	state->expert_weight_codec = context->expert_weight_codec;
 	state->tp_degree = context->tp_degree;
 	state->tp_rank = context->tp_rank;
-	state->kv_backing_directory = context->kv_backing_directory;
-	state->kv_backing_maximum_bytes = context->kv_backing_maximum_bytes;
-	state->kv_snapshot_directory = context->kv_snapshot_directory;
-	state->kv_snapshot_maximum_bytes = context->kv_snapshot_maximum_bytes;
+	state->graph_path_requested = (context->flags & SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_GRAPH_PATH) != 0u ? 1u : 0u;
+	state->pin_experts = (context->flags & SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIN_EXPERTS) != 0u ? 1u : 0u;
+	state->kv_backing_directory = host_services->kv_backing_directory;
+	state->kv_backing_maximum_bytes = host_services->kv_backing_maximum_bytes;
+	state->kv_snapshot_directory = host_services->kv_snapshot_directory;
+	state->kv_snapshot_maximum_bytes = host_services->kv_snapshot_maximum_bytes;
 	state->model_id = configuration->model_id;
 	if ( SparkModuleTpCollectiveIdentifier(SPARK_GLM5_NEXT_MODULE_TAG,context->tp_degree,context->tp_collective_identifier,&state->tp_collective_disabled) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -767,8 +770,7 @@ static SparkStatus SparkGlm5NextLazyOpen(SparkGlm5NextModuleState *state,const c
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
-		const char *pin_env = getenv("SPARK_GLM5_NEXT_PIN_EXPERTS");
-		if ( pin_env != 0 && pin_env[0] == '1' && state->lazy_pack != 0 &&
+		if ( state->pin_experts != 0u && state->lazy_pack != 0 &&
 		     state->lazy_pack->map != 0 )
 		{
 			SparkStatus pin_status = SparkGlm5NextPinAllExperts(state);
@@ -3215,14 +3217,14 @@ static SparkStatus SparkGlm5NextWsLoad(const char *path,const char *digest,uint3
 
 static SparkStatus SparkGlm5NextWsOpen(SparkGlm5NextModuleState *state)
 {
-	const char *path = getenv("SPARK_GLM5_NEXT_EXPERT_WSET"),*digest = getenv("SPARK_GLM5_NEXT_EXPERT_WSET_SHA256"),*pin = getenv("SPARK_GLM5_NEXT_PIN_EXPERTS");
+	const char *path = getenv("SPARK_GLM5_NEXT_EXPERT_WSET"),*digest = getenv("SPARK_GLM5_NEXT_EXPERT_WSET_SHA256");
 	uint32_t first = SparkGlm5NextFirstRoutedLayer(state),end = state->first_layer_index + state->layer_count,*keys = 0,count = 0u,index,missing = 0u;
 	SparkStatus status;
 	if ( path == 0 || path[0] == '\0' )
 		return(SPARK_STATUS_OK);
-	if ( pin != 0 && pin[0] == '1' )
+	if ( state->pin_experts != 0u )
 	{
-		fprintf(stderr,"SPARK_GLM5_NEXT_EXPERT_WSET and SPARK_GLM5_NEXT_PIN_EXPERTS=1 are exclusive residency modes\n");
+		fprintf(stderr,"SPARK_GLM5_NEXT_EXPERT_WSET and pin_experts are exclusive residency modes\n");
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( state->owns_embedding == 0u || state->owns_final_head == 0u || state->lazy_pack == 0 || state->lazy_pack->map == 0 || end <= first )
@@ -6640,13 +6642,12 @@ static SparkStatus SparkGlm5NextReleaseCollectives(SparkGlm5NextModuleState *sta
 static SparkStatus SparkGlm5NextRouteTraceOpen(SparkGlm5NextModuleState *state)
 {
 	const char *prefix = getenv("SPARK_GLM5_NEXT_ROUTE_TRACE");
-	const char *pin = getenv("SPARK_GLM5_NEXT_PIN_EXPERTS");
 	char path[4096];
 	if ( prefix == 0 || prefix[0] == '\0' )
 		return(SPARK_STATUS_OK);
-	if ( state->graph_path_requested != 0u || (pin != 0 && pin[0] == '1') || state->lazy_pack == 0 )
+	if ( state->graph_path_requested != 0u || state->pin_experts != 0u || state->lazy_pack == 0 )
 	{
-		fprintf(stderr,"SPARK_GLM5_NEXT_ROUTE_TRACE requires lazy eager decode: SPARK_GLM5_NEXT_GRAPH_PATH=0, experts not pinned, a lazy expert pack\n");
+		fprintf(stderr,"SPARK_GLM5_NEXT_ROUTE_TRACE requires lazy eager decode: graph_path 0, pin_experts 0, a lazy expert pack\n");
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( snprintf(path,sizeof(path),"%s.stage%02u.rank%02u.trace",prefix,state->stage_index,state->tp_rank) >= (int)sizeof(path) )
@@ -6747,7 +6748,7 @@ static SparkStatus SparkGlm5NextConfigureVerify(SparkGlm5NextModuleState *state)
 {
 	if ( SparkGlm5NextVerifyRowsParse(getenv(SPARK_GLM5_NEXT_VERIFY_ROWS_ENV),&state->verify_rows_max) != SPARK_STATUS_OK || (state->verify_rows_max != 0u && state->graph_path_enabled == 0u) )
 	{
-		fprintf(stderr,"%s must be 0 or %u..%u, and a nonzero value needs SPARK_GLM5_NEXT_GRAPH_PATH=1\n",SPARK_GLM5_NEXT_VERIFY_ROWS_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_MIN,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX);
+		fprintf(stderr,"%s must be 0 or %u..%u, and a nonzero value needs graph_path 1\n",SPARK_GLM5_NEXT_VERIFY_ROWS_ENV,SPARK_GLM5_NEXT_VERIFY_ROWS_MIN,SPARK_GLM5_NEXT_VERIFY_ROWS_MAX);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( SparkGlm5NextVerifyDrafterParse(getenv(SPARK_GLM5_NEXT_VERIFY_DRAFTER_ENV),state->verify_rows_max,&state->verify_drafter,&state->verify_drafter_path) != SPARK_STATUS_OK )
@@ -6992,16 +6993,9 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 			SPARK_RETURN(l2_status);
 	}
 	{
-		const char *graph_env = getenv("SPARK_GLM5_NEXT_GRAPH_PATH");
 		const char *record_limit_env =
 		    getenv("SPARK_GLM5_NEXT_GRAPH_RECORD_OPS");
-		if ( graph_env == 0 || (strcmp(graph_env,"0") != 0 && strcmp(graph_env,"1") != 0) )
-		{
-			fprintf(stderr,"SPARK_GLM5_NEXT_GRAPH_PATH must be 0 or 1\n");
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		}
-		state->graph_path_enabled = strcmp(graph_env,"1") == 0 ? 1u : 0u;
-		state->graph_path_requested = state->graph_path_enabled;
+		state->graph_path_enabled = state->graph_path_requested;
 		fprintf(stderr,"GLM execution mode=%s\n",state->graph_path_enabled != 0u ? "graph" : "eager");
 		state->graph_record_limit = record_limit_env != 0 ?
 		    (uint32_t)strtoul(record_limit_env,0,10) : 0u;

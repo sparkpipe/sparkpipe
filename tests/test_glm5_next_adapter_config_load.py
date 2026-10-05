@@ -422,6 +422,8 @@ int main(int argc, char **argv)
 #endif
     if ( argc != 5 || TestDeployment(argv[3],msp) != 0 || TestDeployment(argv[4],msp) != 0 )
         return(9);
+    if ( rc == 0 && (state.graph_path != 1u || state.pin_experts != 1u || state.tp_collective_topology.wait_mode != SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE) )
+        return(10);
     return rc == 0 ? 0 : 1;
 }
 """

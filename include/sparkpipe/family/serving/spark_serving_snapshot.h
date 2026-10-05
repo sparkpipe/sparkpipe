@@ -32,5 +32,6 @@ static SparkStatus SPARK_FAMILY(ServingSnapshot)(
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
 	snapshot->device_memcpy_bytes_per_submit = driver_snapshot.device_memcpy_bytes_per_submit;
 	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
+	snapshot->max_sequence_positions = state->node_context.max_sequence_positions;
 	return(SPARK_STATUS_OK);
 }

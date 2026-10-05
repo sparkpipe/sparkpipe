@@ -80,8 +80,14 @@ def profile(family, version):
             config["execution_row_capacity"] = 1
         if "decode_split_context_threshold" in config:
             config["decode_split_context_threshold"] = 512
+        if "tp_collective" in config:
+            config["tp_collective"]["wait_mode"] = "hardware"
+        if "device_collective" in config:
+            config["device_collective"]["wait_mode"] = "hardware"
+        if family in ("gemma4", "qmax", "minimax"):
+            envs[r]["SPARK_" + {"gemma4": "GEMMA4", "qmax": "QWEN38_MAX", "minimax": "MINIMAX"}[family] + "_TP_WAIT_MODE"] = "hardware"
         mesh = list(range((r // 4) * 4, (r // 4 + 1) * 4)) if family == "k3" else list(range((r // 8) * 8, (r // 8 + 1) * 8)) if family == "laguna" else [int(h[-1], 16) for h in nodes]
-        envs[r].update(SPARK_WEIGHTD_ATTACH="1", SPARK_WEIGHTD_SOCKET=SOCKET, SPARK_WEIGHTD_LANE=str(LANES[family]), SPARK_TP_MESH_RANKS=",".join(map(str, mesh)), SPARK_TP_WAIT_MODE="hardware", CUDA_MODULE_LOADING="LAZY", CUDA_MODULE_DATA_LOADING="LAZY", CUDA_DEVICE_MAX_CONNECTIONS="32")
+        envs[r].update(SPARK_WEIGHTD_ATTACH="1", SPARK_WEIGHTD_SOCKET=SOCKET, SPARK_WEIGHTD_LANE=str(LANES[family]), SPARK_TP_MESH_RANKS=",".join(map(str, mesh)), CUDA_MODULE_LOADING="LAZY", CUDA_MODULE_DATA_LOADING="LAZY", CUDA_DEVICE_MAX_CONNECTIONS="32")
     return dict(family=family, version=version, deployment=deployment, ranks=[dict(host=h, pack=p, adapter=c, environment=e) for h, p, c, e in zip(nodes, packs, configs, envs)])
 
 

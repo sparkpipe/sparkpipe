@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 27u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 28u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -305,6 +305,8 @@ typedef struct SparkModelServingAdapterSnapshot
 	uint64_t device_memcpy_bytes_per_submit;
 	uint64_t host_staging_bytes_per_submit;
 	SparkModelDriverKvStoreCounters kv_store;
+	uint32_t max_sequence_positions;
+	uint32_t reserved0;
 } SparkModelServingAdapterSnapshot;
 
 typedef SparkStatus (*SparkModelServingAdapterInitializeFunction)(

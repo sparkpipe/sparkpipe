@@ -89,7 +89,7 @@ def test_generator(output: Path) -> dict:
     check(limits["max_input_rows"] <= 512, "input rows within adapter cap")
     env0 = json.loads((output / "config" / "env_00.json").read_text())
     check(limits["max_input_rows"] * 5376 * 2 + 16 <= 8 * 32768 + 64 or
-          env0["SPARK_TP_WAIT_MODE"] == "hardware",
+          env0["SPARK_GEMMA4_TP_WAIT_MODE"] == "hardware",
           "prefill frames wider than one mesh slot need the device-round (hardware) collective")
     check(limits["max_input_rows"] >= limits["max_active_sequences"],
           "input rows cover the active sequences")
@@ -138,11 +138,11 @@ def test_generator(output: Path) -> dict:
         check(env["SPARK_GEMMA4_TP_DEGREE"] == "16", f"rank {rank} env tp degree")
         check(env["SPARK_GEMMA4_TP_RANK"] == str(rank), f"rank {rank} env tp rank")
         check(env["SPARK_GEMMA4_TP_STANDALONE"] == "0", f"rank {rank} standalone")
-        check(env["SPARK_TP_WAIT_MODE"] == "hardware",
+        check(env["SPARK_GEMMA4_TP_WAIT_MODE"] == "hardware",
               f"rank {rank} collective waits on the device like the fleet stations")
         check(set(env) == {"SPARK_GEMMA4_TP_DEGREE", "SPARK_GEMMA4_TP_RANK",
                            "SPARK_GEMMA4_TP_STANDALONE", "SPARK_GEMMA4_STAGE_TP_TIMEOUT_MS",
-                           "SPARK_TP_WAIT_MODE"},
+                           "SPARK_GEMMA4_TP_WAIT_MODE"},
               f"rank {rank} env names only what the module reads: {sorted(env)}")
     return deployment
 

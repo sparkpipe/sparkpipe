@@ -31,9 +31,9 @@ fleet-agent drop-in `20-serving.conf` sets on every Spark:
 
 | Setting | Effect |
 | --- | --- |
-| `G5_GRAPH_PATH=1` | The agent passes it as `SPARK_GLM5_NEXT_GRAPH_PATH`, which is mandatory. The module fails with `INVALID_ARGUMENT` unless it is `0` or `1`, so deleting the drop-in stops the engines. Use `G5_GRAPH_PATH=0` for eager runs. |
-| `G5_PIN_EXPERTS=1` | Passed as `SPARK_GLM5_NEXT_PIN_EXPERTS`. Pins all 12096 routed experts per rank. Graphs and linear chains run only with it. |
-| `SPARK_TP_WAIT_MODE=hardware` | The collectives use hardware waits and chunked direct rounds. Unset or `spin` makes the GPU poll peer tails itself. |
+| `G5_GRAPH_PATH=1` | No longer read. The stage config's required `graph_path` (0 or 1) selects graph or eager chains. |
+| `G5_PIN_EXPERTS=1` | No longer read. The stage config's required `pin_experts` pins all 12096 routed experts per rank. Graphs and linear chains run only with it. |
+| `SPARK_TP_WAIT_MODE=hardware` | No longer read. The stage config's `tp_collective.wait_mode` (`hardware` or the default `spin`) selects hardware waits and chunked direct rounds. |
 | `G5_API_DISABLED=1` | Inert since #1261: the agent never starts an API. The API is `g53-api` on the rtx5090, port 8433. |
 | `G5_WARMUP=0` | The agent's warmup hook does not run. |
 

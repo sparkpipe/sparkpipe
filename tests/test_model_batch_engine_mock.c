@@ -947,6 +947,28 @@ static void TestScenarioChainYieldsToPrefill(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioAdapterContextLimit(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	uint32_t prompt[2] = {11u,12u};
+	MockResidentClientReset();
+	MockResidentClientSetMaxSequencePositions(0u,64u);
+	MockResidentClientSetMaxSequencePositions(TEST_RANKS - 1u,40u);
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	TestDrive(engine,3u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.context_limit == 40u,"context limit: the engine takes the smallest adapter limit across ranks");
+	CHECK(TestSubmitPromptStatus(engine,1u,951u,39u,prompt,2u) == SPARK_STATUS_CAPACITY_EXCEEDED,"context limit: a request past the smallest adapter limit is refused at admission");
+	CHECK(TestSubmitPromptStatus(engine,2u,952u,38u,prompt,2u) == SPARK_STATUS_OK,"context limit: a request that fits the smallest adapter limit is admitted");
+	MockResidentClientSetMaxSequencePositions(TEST_RANKS - 1u,0u);
+	TestDrive(engine,3u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.context_limit == 64u,"context limit: the limit follows the ranks' current adapters");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioLogprobs(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -1640,6 +1662,7 @@ int main(void)
 	TestScenarioPartialCopyCapacity(&deployment,runtime_root);
 	TestScenarioSamplingValidation(&deployment,runtime_root);
 	TestScenarioLogprobs(&deployment,runtime_root);
+	TestScenarioAdapterContextLimit(&deployment,runtime_root);
 	TestScenarioChainYieldsToPrefill(&deployment,runtime_root);
 	TestScenarioMeasurements(&deployment,runtime_root);
 	TestScenarioStalePrefixRecomputes(&deployment,runtime_root);

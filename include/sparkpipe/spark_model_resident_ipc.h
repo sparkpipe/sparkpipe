@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 17u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 18u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -80,6 +80,7 @@ typedef struct SparkModelResidentIpcHelloAck
 	uint32_t input_sideband_bytes_per_sequence;
 	uint32_t output_sideband_kind;
 	uint32_t output_sideband_bytes_per_sequence;
+	uint32_t max_sequence_positions;
 	char adapter_id[SPARK_MODEL_RESIDENT_IPC_ID_BYTES];
 	char model_id[SPARK_MODEL_RESIDENT_IPC_ID_BYTES];
 	char model_revision[SPARK_MODEL_RESIDENT_IPC_REVISION_BYTES];
@@ -248,7 +249,8 @@ SparkStatus SparkModelResidentIpcInitializeHelloAck(
 	uint64_t client_generation,
 	uint64_t session_epoch,
 	const SparkModelServingAdapterDescriptor *descriptor,
-	const SparkModelServingRuntimeLimits *runtime_limits);
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	uint32_t max_sequence_positions);
 SparkStatus SparkModelResidentIpcValidateHelloAck(
 	const SparkModelResidentIpcHelloAck *ack,
 	uint32_t message_bytes,

@@ -352,6 +352,7 @@ int main(void)
 	assert(test_state.completion.token_count == 0u);
 	assert(library.adapter_interface.snapshot(adapter_state,&snapshot) == SPARK_STATUS_OK);
 	assert(snapshot.submitted_count == 5u);
+	assert(snapshot.max_sequence_positions == 4096u);
 	assert(snapshot.completed_count == 5u);
 	assert(TestDsv4DriverCudaGraphCount(TEST_DSV4_SERVING_DRIVER_PATH) == 0u);
 	assert(library.adapter_interface.quiesce(adapter_state,UINT64_MAX) == SPARK_STATUS_OK);

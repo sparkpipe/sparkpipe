@@ -248,6 +248,13 @@ class SmokePreparation(unittest.TestCase):
 
 
 class SharedSmokePreparation(SmokePreparation):
+    def set_execution_mode(self, value):
+        path = self.source / "config/model.json"
+        config = json.loads(path.read_text())
+        config.update(graph_path=value, pin_experts=value)
+        path.write_text(json.dumps(config))
+        self.reference["ranks"][0]["assets"]["config/model.json"] = smoke.digest(path)
+
     def shared(self, count=4):
         self.deployment["runtime_limits"] = dict(max_inflight_submissions=1, max_active_sequences=1,
                                                 max_input_rows=1, resident_sequence_capacity=1)
@@ -259,7 +266,8 @@ class SharedSmokePreparation(SmokePreparation):
         (self.source / working).write_bytes(bytes(8))
         self.reference["ranks"][0]["assets"][working] = smoke.digest(self.source / working)
         self.reference["executables"]["build/weightd_warm"] = "b" * 64
-        self.spec["environment"] = {"SPARK_GLM5_NEXT_GRAPH_PATH": "1", "SPARK_GLM5_NEXT_PIN_EXPERTS": "1", "CUDA_MODULE_LOADING": "LAZY", "CUDA_MODULE_DATA_LOADING": "LAZY", "CUDA_DEVICE_MAX_CONNECTIONS": "32"}
+        self.set_execution_mode(1)
+        self.spec["environment"] = {"CUDA_MODULE_LOADING": "LAZY", "CUDA_MODULE_DATA_LOADING": "LAZY", "CUDA_DEVICE_MAX_CONNECTIONS": "32"}
         self.reference["environment"] = self.spec["environment"]
         self.spec["working_set"] = dict(mode="full", path=working)
         self.spec["replicas"] = [dict(lane=index, port_base=30000 + 100 * index,
@@ -373,11 +381,11 @@ class SharedSmokePreparation(SmokePreparation):
         self.spec["working_set"]["mode"] = "partial"
         with self.assertRaisesRegex(ValueError, "match explicit working set mode"):
             self.prepare()
-        self.spec["environment"].update(SPARK_GLM5_NEXT_GRAPH_PATH="0", SPARK_GLM5_NEXT_PIN_EXPERTS="0")
+        self.set_execution_mode(0)
         with self.assertRaisesRegex(ValueError, "must not premap full pack"):
             self.prepare()
         self.spec["working_set"]["mode"] = "full"
-        self.spec["environment"].update(SPARK_GLM5_NEXT_GRAPH_PATH="1", SPARK_GLM5_NEXT_PIN_EXPERTS="1")
+        self.set_execution_mode(1)
         self.spec["budgets"]["expert_pool_bytes"] = 1
         with self.assertRaisesRegex(ValueError, "full pack budget"):
             self.prepare()

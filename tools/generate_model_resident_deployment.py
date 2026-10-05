@@ -282,19 +282,15 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
     adapter_template = text_value(
         topology["adapter_configuration_path_template"],
         "topology.adapter_configuration_path_template")
-    backing_dataset = topology["kv_backing_dataset"]
-    if backing_dataset is not None:
-        backing_dataset = cache_dataset_name(
-            backing_dataset,"topology.kv_backing_dataset")
+    if topology["kv_backing_dataset"] is None:
+        raise DeploymentError(
+            "topology.kv_backing_dataset is required: KV backing lives on the "
+            "KV partition")
+    backing_dataset = cache_dataset_name(
+        topology["kv_backing_dataset"],"topology.kv_backing_dataset")
     backing_maximum_bytes = integer_value(
         topology["kv_backing_maximum_bytes"],
-        "topology.kv_backing_maximum_bytes",0,9223372036854775807)
-    if backing_dataset is None and backing_maximum_bytes != 0:
-        raise DeploymentError(
-            "topology KV backing bytes require a cache dataset")
-    if backing_dataset is not None and backing_maximum_bytes == 0:
-        raise DeploymentError(
-            "topology KV cache dataset requires a finite byte limit")
+        "topology.kv_backing_maximum_bytes",1,9223372036854775807)
     node_target = text_value(topology["node_target"], "topology.node_target")
     endpoint_value = topology["control_endpoint"]
     if not isinstance(endpoint_value, dict):
@@ -313,8 +309,7 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
             adapter_template, host, rank, stage,
             "topology.adapter_configuration_path_template"), False,
             "rendered adapter configuration path")
-        backing_path = None if backing_dataset is None else posixpath.join(
-            roots["kvcache"],backing_dataset)
+        backing_path = posixpath.join(roots["kvcache"],backing_dataset)
         nodes.append({
             "rank_index": rank,
             "stage_index": stage,

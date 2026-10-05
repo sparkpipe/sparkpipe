@@ -154,9 +154,9 @@ SparkStatus ModuleSnapshot(
 void ModuleDestroy(void *module_state);
 ```
 
-Only `ModuleExecute` is required. Initialization runs once per driver instance. Destruction runs once after the instance is quiescent. `ModuleAdmit` and `ModuleSnapshot` are optional direct symbols for firmware that owns private queues, resident KV, CUDA streams, graph instances, or expert scheduling pressure.
+Only `ModuleExecute` is required. Initialization runs once per driver instance. Destruction runs once after the instance is quiescent. `ModuleAdmit` and `ModuleSnapshot` are optional direct symbols for firmware that owns private queues, CUDA streams, graph instances, or expert scheduling pressure.
 
-The ABI constrains only the scheduler boundary. A module may own resident weights, KV pages, CUDA graphs, streams, events, workspaces, persistent kernels, transport queues, expert queues, and completion production. It may specialize for exact model revision, tensor shapes, quantization, layout, GPU, stage placement, and deployment profile. Model-specific device resources may be bound once through `node_context`; submissions should carry only genuinely dynamic request data. For an LLM decode firmware module, SparkPipe can ask for admission, dispatch-slot choice, dispatch-ticket integrity, zero-copy/no-staging counters, private queue pressure, graph replay/capture counts, stale-admission counts, and a runtime snapshot without learning the KV layout, MoE queue topology, CUDA graph structure, or token-selection internals.
+The ABI constrains only the scheduler boundary. A module may own CUDA graphs, streams, events, workspaces, persistent kernels, transport queues, expert queues, and completion production. KV pages, cache transactions, prefix reuse and JIT-KV policy belong to common code (`runtime/stage_kv_binding.c`, `cache/`), as do resident weights (weightd); a module computes on the pages the binding hands it (sparkpipe_invariants.md I02, I23). It may specialize for exact model revision, tensor shapes, quantization, layout, GPU, stage placement, and deployment profile. Model-specific device resources may be bound once through `node_context`; submissions should carry only genuinely dynamic request data. For an LLM decode firmware module, SparkPipe can ask for admission, dispatch-slot choice, dispatch-ticket integrity, zero-copy/no-staging counters, private queue pressure, graph replay/capture counts, stale-admission counts, and a runtime snapshot without learning the KV layout, MoE queue topology, CUDA graph structure, or token-selection internals.
 
 ## 4. Offline model compilation
 
@@ -220,7 +220,7 @@ One-time binding checks cover mutable deployment facts:
 
 The orchestrator resolves a numeric route to cached program pointers and replica instances. Request submission asks candidate replicas for a neutral admission decision and chooses among accepted endpoints by cost, queue delay, private pressure, zero-copy/no-staging counters, and route capacity. If a driver returns an opaque dispatch slot, the orchestrator writes it into the frame and marks that slot valid; it does not interpret the slot.
 
-The orchestrator does not understand attention, MoE, MTP, KV layout, quantization, CUDA graph topology, expert placement, or JIT-KV policy. Those details belong inside model firmware. The shared boundary is limited to route handles, program descriptors, admission decisions, opaque dispatch slots, dispatch generations/cookies, runtime snapshots, request frames, and completions.
+The orchestrator does not understand attention, MoE, MTP, quantization, CUDA graph topology, or expert placement. Those details belong inside model firmware. KV pages, cache transactions and JIT-KV policy are common code shared by every driver: the driver declares its page geometry and computes on the pages it is handed. The shared boundary is limited to route handles, program descriptors, admission decisions, opaque dispatch slots, dispatch generations/cookies, runtime snapshots, request frames, and completions.
 
 ## 7. Validation meaning
 
@@ -249,5 +249,5 @@ The active architecture must not add:
 - overlapping readiness, gate, blocker, or plan authorities;
 - broad synchronization used to rescue a generic path;
 - compatibility wrappers that prevent profitable model-specific CUDA fusion;
-- artificial LLM-driver compatibility code that forces KV, MoE, CUDA graph, sparse-index, MTP, sampler, or transport internals into the SparkPipe orchestrator;
+- artificial LLM-driver compatibility code that forces MoE, CUDA graph, sparse-index, MTP, sampler, or transport internals into the SparkPipe orchestrator;
 - compiler or validator machinery linked into the serving process.

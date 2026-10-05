@@ -109,6 +109,7 @@ def stage_config(rank, lane, arm, max_sequence_positions, execution_row_capacity
             "step_rail_indices": [0] + [1] * (WORLD - 1),
             "session_ports": session_matrix(ports["session"]),
             "session_ports_hc": session_matrix(ports["session"] + 16),
+            "wait_mode": "hardware",
         },
     }
 

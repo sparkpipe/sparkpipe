@@ -152,7 +152,8 @@ SparkStatus SparkModelResidentIpcInitializeHelloAck(
 	uint64_t client_generation,
 	uint64_t session_epoch,
 	const SparkModelServingAdapterDescriptor *descriptor,
-	const SparkModelServingRuntimeLimits *runtime_limits)
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	uint32_t max_sequence_positions)
 {
 	SparkStatus copy_status;
 	copy_status = SparkModelServingAdapterValidateRuntimeLimits(descriptor,runtime_limits);
@@ -198,6 +199,7 @@ SparkStatus SparkModelResidentIpcInitializeHelloAck(
 	ack->linear_weight_codec = descriptor->linear_weight_codec;
 	ack->expert_weight_codec = descriptor->expert_weight_codec;
 	ack->kv_cache_codec = descriptor->kv_cache_codec;
+	ack->max_sequence_positions = max_sequence_positions;
 	if ( stage_index != 0u )
 	{
 		ack->input_sideband_kind = descriptor->boundary_sideband_kinds[stage_index - 1u];
@@ -242,7 +244,7 @@ SparkStatus SparkModelResidentIpcValidateHelloAck(
 			(unsigned)descriptor->stage_count);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	if ( ack->status > SPARK_STATUS_UNSUPPORTED || ack->client_generation == 0u || ack->session_epoch != session_epoch || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->kv_logical_page_capacity != runtime_limits->kv_logical_page_capacity || ack->kv_physical_page_capacity != runtime_limits->kv_physical_page_capacity || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes || ack->linear_weight_codec != descriptor->linear_weight_codec || ack->expert_weight_codec != descriptor->expert_weight_codec || ack->kv_cache_codec != descriptor->kv_cache_codec )
+	if ( ack->status > SPARK_STATUS_UNSUPPORTED || ack->client_generation == 0u || ack->session_epoch != session_epoch || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->kv_logical_page_capacity != runtime_limits->kv_logical_page_capacity || ack->kv_physical_page_capacity != runtime_limits->kv_physical_page_capacity || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes || ack->linear_weight_codec != descriptor->linear_weight_codec || ack->expert_weight_codec != descriptor->expert_weight_codec || ack->kv_cache_codec != descriptor->kv_cache_codec || (ack->status == SPARK_STATUS_OK && ack->max_sequence_positions == 0u) )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	if ( ack->input_sideband_kind != (stage_index != 0u ? descriptor->boundary_sideband_kinds[stage_index - 1u] : 0u) || ack->input_sideband_bytes_per_sequence != (stage_index != 0u ? descriptor->boundary_sideband_bytes_per_sequence[stage_index - 1u] : 0u) || ack->output_sideband_kind != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_kinds[stage_index] : 0u) || ack->output_sideband_bytes_per_sequence != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_bytes_per_sequence[stage_index] : 0u) )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);

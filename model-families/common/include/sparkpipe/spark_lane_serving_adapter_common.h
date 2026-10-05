@@ -224,6 +224,7 @@ static SparkStatus SPARK_LANE_SERVING_ADAPTER_FN(ServingSnapshot)(
 	snapshot->device_memcpy_bytes_per_submit = driver_snapshot.device_memcpy_bytes_per_submit;
 	snapshot->host_staging_bytes_per_submit = driver_snapshot.host_staging_bytes_per_submit;
 	snapshot->kv_store = driver_snapshot.kv_store;
+	snapshot->max_sequence_positions = state->max_sequence_positions;
 	return(SPARK_STATUS_OK);
 }
 

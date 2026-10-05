@@ -62,7 +62,10 @@ def stage_config(rank):
             "step_rail_indices": [0] + [1] * (TP - 1),
             "session_ports": session_table(group, SESSION_BASE),
             "session_ports_hc": session_table(group, SESSION_HC_BASE),
+            "wait_mode": "hardware",
         },
+        "graph_path": 1,
+        "pin_experts": 1,
     }
 
 

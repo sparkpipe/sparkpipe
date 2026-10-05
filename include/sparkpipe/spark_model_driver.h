@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 14u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 15u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -296,6 +296,8 @@ typedef struct SparkModelDriverCreateRequest
     uint32_t kv_physical_page_capacity;
     const char *kv_backing_directory;
     uint64_t kv_backing_maximum_bytes;
+    const char *kv_snapshot_directory;
+    uint64_t kv_snapshot_maximum_bytes;
     void *execution_stream;
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;

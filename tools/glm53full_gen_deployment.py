@@ -83,6 +83,7 @@ def tp_collective(collective_base):
         "session_ports_hc": [
             [COLLECTIVE_SESSION_HC_BASE + a * TP + b if a != b else 0
              for b in range(TP)] for a in range(TP)],
+        "wait_mode": "hardware",
     }
 
 

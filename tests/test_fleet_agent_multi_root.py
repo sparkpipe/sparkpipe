@@ -182,8 +182,8 @@ class FleetAgentMultiRoot(unittest.TestCase):
         env = dict(os.environ, HOME=str(self.home), TEST_AGENT_HEAD=str(self.home / "agent_head.sh"),
                    TEST_ROOTS=roots, TEST_MEM=str(self.mem), TEST_UPTIME=str(self.uptime), TEST_LOG_DIR=str(self.home),
                    PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
-        for key in ("FLEET_AGENT_ROOTS_FILE", "FLEET_AGENT_HEADROOM_GIB", "G5_PIN_EXPERTS",
-                    "G5_GRAPH_PATH", "G5_LAUNCH_BLOCKING", "G5_EXPERT_POOL_BYTES"):
+        for key in ("FLEET_AGENT_ROOTS_FILE", "FLEET_AGENT_HEADROOM_GIB",
+                    "G5_LAUNCH_BLOCKING", "G5_EXPERT_POOL_BYTES"):
             env.pop(key, None)
         return subprocess.run(["bash", "-c", PRELUDE + body], env=env, capture_output=True,
                               text=True, cwd=str(self.home), timeout=120)

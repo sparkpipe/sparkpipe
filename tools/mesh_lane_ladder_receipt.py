@@ -125,7 +125,7 @@ def run(profile, output, iters, timeout):
         for lane in profile["lanes"]:
             for rank, physical in enumerate(lane["physical_ranks"]):
                 arguments = [profile["binary"], profile["socket"], "mesh", str(rank), str(len(lane["physical_ranks"])), str(iters), str(lane["rows"]), str(lane["lane"]), profile["pack"], ",".join(map(str, lane["physical_ranks"]))]
-                remote = shlex.join(["sha256sum", "--", profile["binary"]]) + " && exec " + shlex.join(["env", "SPARK_TP_WAIT_MODE=hardware", *arguments])
+                remote = shlex.join(["sha256sum", "--", profile["binary"]]) + " && exec " + shlex.join(arguments)
                 command = ["ssh", "-T", "-oBatchMode=yes", "-oConnectTimeout=10", profile["hosts"][physical], remote]
                 records.append({**lane, "rank": rank, "host": profile["hosts"][physical], "command": command, "rounds": {}})
                 process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)

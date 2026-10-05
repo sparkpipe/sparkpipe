@@ -463,7 +463,7 @@ int main(int argc,char **argv)
 	assert(node != 0);
 	assert(node->stage_index == 2u);
 	assert(strcmp(node->transport_host,"spark1") == 0);
-	assert(node->kv_backing_directory == 0);
+	assert(strcmp(node->kv_backing_directory,"/tmp/test-runtime-1/kvcache") == 0);
 	assert(node->kv_backing_maximum_bytes == 0u);
 	assert(node->control_endpoint.kind == SPARK_MODEL_RESIDENT_ENDPOINT_KIND_UNIX);
 	assert(strcmp(node->control_endpoint.unix_socket_path,"/tmp/test-model-resident-1.sock") == 0);
@@ -479,6 +479,7 @@ int main(int argc,char **argv)
 	assert(SparkModelResidentDeploymentValidateForAdapter(&deployment,&descriptor) == SPARK_STATUS_TARGET_MISMATCH);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_unknown.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_no_backing.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_duplicate_rank.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("examples/deployments/dsv4_flash_pp13_host_rdma.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.node_count == 13u);

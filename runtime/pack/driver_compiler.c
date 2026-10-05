@@ -592,6 +592,8 @@ static void SparkWriteGeneratedCreate(FILE *file, const SparkDriverBuildImage *d
     fputs("    instance->host_services.kv_physical_page_capacity = request->kv_physical_page_capacity;\n", file);
     fputs("    instance->host_services.kv_backing_directory = request->kv_backing_directory;\n", file);
     fputs("    instance->host_services.kv_backing_maximum_bytes = request->kv_backing_maximum_bytes;\n", file);
+    fputs("    instance->host_services.kv_snapshot_directory = request->kv_snapshot_directory;\n", file);
+    fputs("    instance->host_services.kv_snapshot_maximum_bytes = request->kv_snapshot_maximum_bytes;\n", file);
     fputs("    instance->host_services.execution_stream = request->execution_stream;\n", file);
     fputs("    status = SPARK_STATUS_OK;\n", file);
 

@@ -126,7 +126,9 @@ static const char *const SparkGlm5NextServingConfigurationMembers[] =
 	"decode_split_context_threshold",
 	"tp_degree",
 	"tp_rank",
-	"tp_collective"
+	"tp_collective",
+	"graph_path",
+	"pin_experts"
 };
 
 #define SPARK_GLM5_NEXT_SERVING_CONFIGURATION_MEMBERS_BASE (sizeof(SparkGlm5NextServingConfigurationMembers) / sizeof(SparkGlm5NextServingConfigurationMembers[0]))
@@ -217,6 +219,8 @@ typedef struct SparkGlm5NextServingState
 	uint32_t mtp_enabled;
 	uint32_t index_cp;
 	uint32_t kv_shard;
+	uint32_t graph_path;
+	uint32_t pin_experts;
 	SparkSpeculationSeam *speculation_seam;
 	char *bridge_host;
 	uint32_t bridge_port;
@@ -430,6 +434,12 @@ static SparkStatus SparkGlm5NextServingLoadConfiguration(
 	if ( status == SPARK_STATUS_OK && kv_shard_token >= 0 )
 		status = SparkJsonGetUInt32(&document,kv_shard_token,&state->kv_shard);
 	if ( status == SPARK_STATUS_OK && state->kv_shard > 1u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextServingJsonUnsigned(&document,root,"graph_path",&state->graph_path);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkGlm5NextServingJsonUnsigned(&document,root,"pin_experts",&state->pin_experts);
+	if ( status == SPARK_STATUS_OK && (state->graph_path > 1u || state->pin_experts > 1u) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkGlm5NextServingJsonUnsigned(&document,root,"schema_version",&schema_version);
@@ -698,6 +708,9 @@ static SparkStatus SparkGlm5NextServingLoadDriver(
 	request.kv_backing_directory = configuration->kv_backing_directory;
 	request.kv_backing_maximum_bytes =
 		configuration->kv_backing_maximum_bytes;
+	request.kv_snapshot_directory = configuration->kv_snapshot_directory;
+	request.kv_snapshot_maximum_bytes =
+		configuration->kv_snapshot_maximum_bytes;
 	request.execution_stream = configuration->execution_stream;
 	request.completion_function = SparkGlm5NextServingOrphanDriverCompletion;
 	request.completion_context = state;
@@ -777,6 +790,10 @@ static SparkStatus SparkGlm5NextServingInitialize(
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_INDEX_CP;
 		if ( state->kv_shard != 0u )
 			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_KV_SHARD;
+		if ( state->graph_path != 0u )
+			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_GRAPH_PATH;
+		if ( state->pin_experts != 0u )
+			state->node_context.flags |= SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_NODE_CONTEXT_FLAG_PIN_EXPERTS;
 		state->node_context.stage_pack_path = state->stage_pack_path;
 		state->node_context.model_revision = GLM5_NEXT_MODEL_REVISION;
 		state->node_context.tp_collective_backend_kind = state->tp_collective_backend_kind;
@@ -786,10 +803,6 @@ static SparkStatus SparkGlm5NextServingInitialize(
 		state->node_context.tp_collective_control_port_base = state->tp_collective_control_port_base;
 		state->node_context.tp_collective_topology = state->tp_collective_topology;
 		state->node_context.tp_collective_backend_module_path = state->tp_collective_backend_path;
-		state->node_context.kv_backing_directory = configuration->kv_backing_directory;
-		state->node_context.kv_backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
-		state->node_context.kv_snapshot_directory = configuration->kv_snapshot_directory;
-		state->node_context.kv_snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
 #ifdef SPARK_SCORE_DUMP
 		state->node_context.score_dump_directory = (state->score_present & 1u) != 0u ? state->score_paths[0] : 0;
 		state->node_context.score_probe_path = (state->score_present & 2u) != 0u ? state->score_paths[1] : 0;

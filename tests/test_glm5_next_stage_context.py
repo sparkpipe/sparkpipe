@@ -769,7 +769,6 @@ static void check_lazy_open_retained_owner(void)
 {
 	setenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256,"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",1);
 	setenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES","4096",1);
-	unsetenv("SPARK_GLM5_NEXT_PIN_EXPERTS");
 	for (uint32_t mode=0u; mode<2u; mode++)
 	{
 		memset(&state,0,sizeof(state));
@@ -2867,15 +2866,9 @@ static void check_execution_environment(void)
 	assert(unsetenv("SPARK_WEIGHTD_LANE") == 0);
 	const char *invalid[] = {"", "0", "-1", "18446744073709551615", "invalid"};
 	assert(unsetenv("SPARK_GLM5_NEXT_PREFETCH") == 0);
-	assert(unsetenv("SPARK_GLM5_NEXT_GRAPH_PATH") == 0);
-	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_INVALID_ARGUMENT);
-	assert(setenv("SPARK_GLM5_NEXT_GRAPH_PATH","",1) == 0);
-	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_INVALID_ARGUMENT);
-	assert(setenv("SPARK_GLM5_NEXT_GRAPH_PATH","2",1) == 0);
-	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_INVALID_ARGUMENT);
-	assert(setenv("SPARK_GLM5_NEXT_GRAPH_PATH","0",1) == 0);
+	state.graph_path_requested = 0u;
 	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.graph_path_enabled == 0u);
-	assert(setenv("SPARK_GLM5_NEXT_GRAPH_PATH","1",1) == 0);
+	state.graph_path_requested = 1u;
 	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.graph_path_enabled == 1u);
 	assert(setenv("SPARK_GLM5_NEXT_PREFETCH","1",1) == 0);
 	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_UNSUPPORTED);
@@ -2896,7 +2889,7 @@ static void check_l2_prefetch_environment(void)
 {
 	const char *invalid_bytes[] = {"", "0", "16", "65537", "12648448", "-65536", "4194304x", " 4194304", "+4194304", "4294967296", "18446744073709551616"};
 	const char *invalid_blocks[] = {"", "0", "193", "x", "-1", "16 "};
-	assert(setenv("SPARK_GLM5_NEXT_GRAPH_PATH","1",1) == 0);
+	state.graph_path_requested = 1u;
 	assert(unsetenv("SPARK_GLM5_NEXT_PREFETCH") == 0);
 	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH") == 0);
 	assert(unsetenv("SPARK_GLM5_NEXT_L2_PREFETCH_BYTES") == 0);
@@ -3676,15 +3669,15 @@ static void check_ws_open(void)
 	state.owns_embedding = 1u;
 	LINEAR_PACK.map = (SparkWeightdMap *)(uintptr_t)1u;
 	ws_state_reset();
-	unsetenv("SPARK_GLM5_NEXT_EXPERT_WSET");unsetenv("SPARK_GLM5_NEXT_EXPERT_WSET_SHA256");unsetenv("SPARK_GLM5_NEXT_PIN_EXPERTS");
+	unsetenv("SPARK_GLM5_NEXT_EXPERT_WSET");unsetenv("SPARK_GLM5_NEXT_EXPERT_WSET_SHA256");state.pin_experts = 0u;
 	assert(SparkGlm5NextWsOpen(&state) == SPARK_STATUS_OK && state.ws_enabled == 0u && state.expert_ws.cover == 0);
 	ws_write(outside,2u,other);
 	ws_write(anchors,3u,hex);
 	setenv("SPARK_GLM5_NEXT_EXPERT_WSET",WS_PATH,1);
-	setenv("SPARK_GLM5_NEXT_PIN_EXPERTS","1",1);
+	state.pin_experts = 1u;
 	setenv("SPARK_GLM5_NEXT_EXPERT_WSET_SHA256",hex,1);
 	assert(SparkGlm5NextWsOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.ws_enabled == 0u);
-	unsetenv("SPARK_GLM5_NEXT_PIN_EXPERTS");
+	state.pin_experts = 0u;
 	setenv("SPARK_GLM5_NEXT_EXPERT_WSET_SHA256","abc",1);
 	assert(SparkGlm5NextWsOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.ws_enabled == 0u);
 	setenv("SPARK_GLM5_NEXT_EXPERT_WSET_SHA256",other,1);
@@ -4515,7 +4508,7 @@ static void check_route_trace(void)
 	char directory[] = "/tmp/g5n-route-XXXXXX",prefix[128],path[160],line[256];
 	FILE *file;
 	memset(&state,0,sizeof(state));
-	assert(unsetenv("SPARK_GLM5_NEXT_ROUTE_TRACE") == 0 && unsetenv("SPARK_GLM5_NEXT_PIN_EXPERTS") == 0);
+	assert(unsetenv("SPARK_GLM5_NEXT_ROUTE_TRACE") == 0);
 	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_OK && state.route_trace == 0);
 	assert(mkdtemp(directory) != 0);
 	(void)snprintf(prefix,sizeof(prefix),"%s/run",directory);
@@ -4523,9 +4516,9 @@ static void check_route_trace(void)
 	state.lazy_pack = &OPEN_PACK;state.graph_path_requested = 1u;
 	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.route_trace == 0);
 	state.graph_path_requested = 0u;
-	assert(setenv("SPARK_GLM5_NEXT_PIN_EXPERTS","1",1) == 0);
+	state.pin_experts = 1u;
 	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.route_trace == 0);
-	assert(unsetenv("SPARK_GLM5_NEXT_PIN_EXPERTS") == 0);
+	state.pin_experts = 0u;
 	state.lazy_pack = 0;
 	assert(SparkGlm5NextRouteTraceOpen(&state) == SPARK_STATUS_INVALID_ARGUMENT && state.route_trace == 0);
 	state.lazy_pack = &OPEN_PACK;state.stage_index = 1u;state.tp_rank = 7u;

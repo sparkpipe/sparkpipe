@@ -91,6 +91,7 @@ TP_COLLECTIVE = {
     "session_ports_hc": [
         [COLLECTIVE_SESSION_HC_BASE + a * TP + b if a != b else 0
          for b in range(TP)] for a in range(TP)],
+    "wait_mode": "hardware",
 }
 
 
@@ -134,6 +135,8 @@ def stage_config(rank: int) -> dict:
         "tp_degree": TP,
         "tp_rank": rank,
         "tp_collective": dict(TP_COLLECTIVE, listen_port=COLLECTIVE_BASE + rank),
+        "graph_path": 1,
+        "pin_experts": 1,
     }
     if TP >= KV_SHARD_REQUIRED_DEGREE:
         configuration["dsa_index_context_parallel"] = 1

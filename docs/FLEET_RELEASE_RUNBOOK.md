@@ -87,9 +87,9 @@ Environment=SPARK_TP_WAIT_MODE=hardware
 
 | Variable | Effect |
 | --- | --- |
-| `G5_GRAPH_PATH=1` | Passed to the engine as `SPARK_GLM5_NEXT_GRAPH_PATH` (`:199`): CUDA-graph chains. |
-| `G5_PIN_EXPERTS=1` | Passed as `SPARK_GLM5_NEXT_PIN_EXPERTS` (`:198`). The module pins every expert at boot (`spark_glm5_next_resident_decode_stage_module.c:664`). Graphs require full pinning since `78c2c21`. |
-| `SPARK_TP_WAIT_MODE=hardware` | Inherited by the engine and read by the device collective (`ring/transport/tp_device_collective.c:1420`). |
+| `G5_GRAPH_PATH=1` | No longer read. GLM Flash takes `graph_path` from its stage config (`tools/glm5_next_gen_deployment.py`). |
+| `G5_PIN_EXPERTS=1` | No longer read. GLM Flash takes `pin_experts` from its stage config. Graphs require full pinning since `78c2c21`. |
+| `SPARK_TP_WAIT_MODE=hardware` | No longer read. The device collective takes `wait_mode` from the stage config's `tp_collective` (default `spin`). |
 | `G5_API_DISABLED=1` | No longer read. Since #1261 the agent has no `ensure_api` and never starts an API; the API is `g53-api` on the hub. The line is inert and can leave the drop-in. |
 | `G5_WARMUP=0` | Rank 0 does not send its warmup completion to `G5_API_HOST`, which defaults to `100.123.97.61:8433` (`:529`, `:550`). |
 
@@ -610,13 +610,11 @@ these units is a hub system change and needs the owner's approval. Once
 approved, deploys call `systemctl --user restart <unit>` instead of
 `systemd-run`, and the stale `g53-api` unit is disabled.
 
-The serving API runs on the hub, not on spark0. The unit on 2026-09-28
-(excerpt):
+The serving API runs on the hub, not on spark0. The unit (excerpt):
 
 ```ini
 WorkingDirectory=/home/spec/g53-api-channel
 Environment=SPARK_BATCH_INFLIGHT_BUDGET_NS=900000000000
-Environment=SPARK_MODEL_API_MAX_PREFILL_ROWS=8
 ExecStart=/home/spec/g53-api-channel/bin/sparkpipe_model_api --deployment /home/spec/g53-api-channel/model_resident.json --runtime-root /home/spec/g53-api-channel/runtime --port 8433
 Restart=no
 MemoryMax=2G
