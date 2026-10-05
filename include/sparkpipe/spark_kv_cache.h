@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_CACHE_ABI_VERSION 6u
+#define SPARK_KV_CACHE_ABI_VERSION 7u
 #define SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkKvCacheConfiguration))
 #define SPARK_KV_CACHE_ARENA_DESCRIPTOR_BYTES \
@@ -26,6 +26,7 @@ extern "C" {
 #define SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED 0x00000004u
 #define SPARK_KV_CACHE_BLOCK_FLAG_DIRTY 0x00000008u
 #define SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID 0x00000010u
+#define SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED 0x00000020u
 
 #define SPARK_KV_CACHE_NO_BLOCK 0xffffffffu
 #define SPARK_KV_CACHE_NO_RESIDENT_SLOT 0xffffffffu
@@ -434,7 +435,9 @@ typedef struct SparkKvCacheArena
     uint32_t next_resident_slot_scan;
     uint32_t eviction_policy;
     atomic_uint unassigned_resident_block_count;
-    uint32_t write_back_degraded_block_count;
+    uint64_t park_failure_count;
+    uint64_t park_backing_full_count;
+    uint64_t park_stall_count;
     uint64_t epoch;
     uint64_t allocated_block_count;
     uint64_t recycled_block_count;

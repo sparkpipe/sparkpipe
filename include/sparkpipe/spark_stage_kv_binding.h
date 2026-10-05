@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_kv_cache.h"
+#include "sparkpipe/spark_kv_device_copy.h"
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_kv_page_cache.h"
 #include "sparkpipe/spark_kv_page_store.h"
@@ -17,6 +18,68 @@
 #define SPARK_STAGE_KV_REGION_LAYER_MAJOR 2u
 #define SPARK_STAGE_KV_MAX_REGIONS 2u
 #define SPARK_STAGE_KV_FINGERPRINT_BYTES 160u
+
+#define SPARK_STAGE_KV_LOCK_SITE_ADMIT 0u
+#define SPARK_STAGE_KV_LOCK_SITE_RESET 1u
+#define SPARK_STAGE_KV_LOCK_SITE_CONTINUITY 2u
+#define SPARK_STAGE_KV_LOCK_SITE_CLAIM 3u
+#define SPARK_STAGE_KV_LOCK_SITE_FINISH 4u
+#define SPARK_STAGE_KV_LOCK_SITE_PUBLISH 5u
+#define SPARK_STAGE_KV_LOCK_SITE_SAVE 6u
+#define SPARK_STAGE_KV_LOCK_SITE_COUNT 7u
+
+typedef struct SparkStageKvLockSite
+{
+	uint64_t count;
+	uint64_t total_ns;
+	uint64_t max_ns;
+} SparkStageKvLockSite;
+
+typedef struct SparkStageKvBindingCounters
+{
+	SparkStageKvLockSite lock_sites[SPARK_STAGE_KV_LOCK_SITE_COUNT];
+	uint64_t entry_count;
+	uint64_t entry_total_ns;
+	uint64_t entry_max_ns;
+	uint64_t completion_count;
+	uint64_t completion_queue_total_ns;
+	uint64_t completion_queue_max_ns;
+	uint64_t copy_on_write_count;
+	uint64_t copy_on_write_bytes;
+	uint64_t save_worker_page_count;
+	uint64_t save_worker_failure_count;
+} SparkStageKvBindingCounters;
+
+typedef void (*SparkStageKvBindingFinishedFunction)(void *context,SparkStatus status);
+
+typedef struct SparkStageKvBindingCompletion
+{
+	uint32_t lane_count;
+	uint32_t extra_tokens;
+	SparkStatus status;
+	uint32_t reserved0;
+	const uint32_t *resident_slots;
+	const uint8_t *bound;
+	const uint64_t *sequence_ids;
+	const uint64_t *next_positions;
+	SparkStageKvBindingFinishedFunction finished_function;
+	void *finished_context;
+} SparkStageKvBindingCompletion;
+
+typedef struct SparkStageKvBindingCompletionRecord
+{
+	uint32_t state;
+	uint32_t lane_count;
+	uint32_t extra_tokens;
+	SparkStatus status;
+	uint64_t queued_ns;
+	uint32_t *resident_slots;
+	uint8_t *bound;
+	uint64_t *sequence_ids;
+	uint64_t *next_positions;
+	SparkStageKvBindingFinishedFunction finished_function;
+	void *finished_context;
+} SparkStageKvBindingCompletionRecord;
 
 typedef struct SparkStageKvRegion
 {
@@ -91,6 +154,28 @@ typedef struct SparkStageKvBinding
 	uint32_t mutex_initialized;
 	uint64_t control_generation;
 	uint64_t reset_generation;
+	void *copy_stream;
+	SparkKvDeviceCopier copier;
+	uint32_t copier_initialized;
+	SparkStageKvBindingCompletionRecord *completion_records;
+	uint32_t *completion_queue;
+	uint32_t completion_head;
+	uint32_t completion_count;
+	uint32_t completion_running;
+	uint32_t completion_stop;
+	pthread_mutex_t completion_mutex;
+	pthread_cond_t completion_ready;
+	pthread_cond_t completion_idle;
+	pthread_t completion_thread;
+	uint32_t completion_started;
+	pthread_cond_t save_ready;
+	pthread_cond_t save_idle;
+	pthread_t save_thread;
+	uint32_t save_started;
+	uint32_t save_stop;
+	uint32_t save_running;
+	uint32_t sync_initialized;
+	SparkStageKvBindingCounters counters;
 } SparkStageKvBinding;
 
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration);
@@ -101,7 +186,11 @@ SparkStatus SparkStageKvBindingAdmitReset(SparkStageKvBinding *binding,const Spa
 SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions);
 SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *next_positions);
 SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
-SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkStatus status,uint32_t extra_tokens,const uint8_t *bound,const uint64_t *sequence_ids,const uint64_t *next_positions);
+SparkStatus SparkStageKvBindingFinishAsync(SparkStageKvBinding *binding,uint32_t dispatch_slot,const SparkStageKvBindingCompletion *completion);
+SparkStatus SparkStageKvBindingFenceExecution(SparkStageKvBinding *binding,void *stream);
+SparkStatus SparkStageKvBindingQuiesce(SparkStageKvBinding *binding,uint64_t timeout_ns);
+void SparkStageKvBindingStop(SparkStageKvBinding *binding);
+SparkStatus SparkStageKvBindingSampleCounters(SparkStageKvBinding *binding,SparkStageKvBindingCounters *counters);
 SparkStatus SparkStageKvBindingPublishFrame(SparkStageKvBinding *binding,SparkModelDriverFrame *frame,atomic_uint *lane_states);
 uint32_t SparkStageKvBindingResidentCount(const SparkStageKvBinding *binding);
 

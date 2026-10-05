@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 8u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 9u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS UINT32_C(0x00000002)
@@ -93,8 +93,42 @@ typedef struct SparkKvPageCacheSnapshot
 	uint64_t restore_failure_count;
 	SparkStatus last_save_status;
 	SparkStatus last_restore_status;
+	uint32_t *pending_terminals;
+	uint32_t pending_capacity;
+	uint32_t pending_head;
+	uint32_t pending_count;
+	uint32_t in_flight;
+	uint32_t full_logged;
+	uint32_t head_saved_pages;
+	uint32_t reserved1;
+	uint64_t head_start_ns;
+	uint64_t save_mark_count;
+	uint64_t save_skipped_count;
+	uint64_t save_cancelled_count;
 }
 SparkKvPageCacheSnapshot;
+
+#define SPARK_KV_PAGE_CACHE_SAVE_DEVICE 1u
+#define SPARK_KV_PAGE_CACHE_SAVE_BACKING 2u
+
+typedef struct SparkKvPageCacheSaveWork
+{
+	uint32_t terminal_entry_index;
+	uint32_t entry_index;
+	uint32_t logical_page_index;
+	uint32_t source;
+	uint32_t pinned;
+	uint32_t reserved0;
+	uint64_t generation;
+	uintptr_t key_device_address;
+	uint64_t key_bytes;
+	uintptr_t value_device_address;
+	uint64_t value_bytes;
+	uint8_t *page;
+	uint8_t *state;
+	SparkKvSnapshotWriteTicket ticket;
+}
+SparkKvPageCacheSaveWork;
 
 typedef struct SparkKvPageCacheConfiguration
 {
@@ -112,6 +146,21 @@ typedef struct SparkKvPageCacheConfiguration
 	uint32_t *entry_indices_by_logical_page;
 }
 SparkKvPageCacheConfiguration;
+
+typedef SparkStatus (*SparkKvPageCacheCopyPageFunction)(void *context,uint32_t source_logical_page,uint32_t destination_logical_page);
+typedef SparkStatus (*SparkKvPageCacheRetireCopiesFunction)(void *context,uint32_t require_all);
+typedef uint32_t (*SparkKvPageCacheCopyPinsFunction)(void *context,uint32_t logical_page);
+typedef SparkStatus (*SparkKvPageCacheDeferFreeFunction)(void *context,uint32_t logical_page);
+
+typedef struct SparkKvPageCacheDeviceCopy
+{
+	SparkKvPageCacheCopyPageFunction copy_page;
+	SparkKvPageCacheRetireCopiesFunction retire_copies;
+	SparkKvPageCacheCopyPinsFunction destination_pins;
+	SparkKvPageCacheDeferFreeFunction defer_free;
+	void *context;
+}
+SparkKvPageCacheDeviceCopy;
 
 typedef struct SparkKvPageCache
 {
@@ -139,6 +188,11 @@ typedef struct SparkKvPageCache
 	uint64_t deduplicated_page_count;
 	uint64_t evicted_entry_count;
 	uint64_t released_sequence_count;
+	SparkKvPageCacheDeviceCopy device_copy;
+	uint32_t copy_unavailable_logged;
+	uint32_t backing_full_logged;
+	uint64_t backing_reclaim_count;
+	uint64_t backing_full_count;
 }
 SparkKvPageCache;
 
@@ -152,7 +206,14 @@ SparkStatus SparkKvPageCacheInitialize(
 	const SparkKvPageCacheConfiguration *configuration);
 SparkStatus SparkKvPageCacheAttachStateStore(SparkKvPageCache *cache,SparkKvPageStore *store);
 SparkStatus SparkKvPageCacheAttachSnapshot(SparkKvPageCache *cache,SparkKvPageCacheSnapshot *snapshot);
+SparkStatus SparkKvPageCacheAttachDeviceCopy(SparkKvPageCache *cache,const SparkKvPageCacheDeviceCopy *copy);
 SparkStatus SparkKvPageCacheSavePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
+SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSaveWork *work);
+SparkStatus SparkKvPageCacheSaveFinish(SparkKvPageCache *cache,SparkKvPageCacheSaveWork *work,SparkStatus copy_status);
+SparkStatus SparkKvPageCacheSaveCopy(SparkKvPageCache *cache,SparkKvPageCacheSaveWork *work);
+SparkStatus SparkKvPageCacheSaveDrain(SparkKvPageCache *cache);
+uint32_t SparkKvPageCacheSavePending(const SparkKvPageCache *cache);
+void SparkKvPageCacheSaveCancelAll(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCacheRestorePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCachePrepareLane(

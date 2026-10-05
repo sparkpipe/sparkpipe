@@ -22,6 +22,7 @@ SparkStatus SparkKvPageCachePrepareLane(SparkKvPageCache *cache,const SparkModel
 SparkStatus SparkKvPageCacheBeginLaneTransaction(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane,uint32_t *page,uint32_t *flags) { (void)cache; (void)lane; (void)page; (void)flags; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 SparkStatus SparkKvPageCacheRollbackLaneTransaction(SparkKvPageCache *cache,const SparkModelDriverCacheLane *lane,uint32_t flags) { (void)cache; (void)lane; (void)flags; assert(0); return(SPARK_STATUS_INTERNAL_ERROR); }
 cudaError_t cudaStreamSynchronize(cudaStream_t stream) { (void)stream; SYNC_CALLS++; return(SYNC_STATUS); }
+uint32_t SparkKvPageCacheSavePending(const SparkKvPageCache *cache) { (void)cache; return(0u); }
 cudaError_t cudaGetLastError(void) { return(cudaSuccess); }
 const char *cudaGetErrorString(cudaError_t error) { (void)error; return("stub"); }
 const char *cudaGetErrorName(cudaError_t error) { (void)error; return("stub"); }
@@ -103,7 +104,7 @@ static void TestResetClearsEveryLane(void)
 	Bind();
 	assert(Admit(&request,&decision) == SPARK_STATUS_OK);
 	assert(decision.accepted == 1u && decision.rejection_reason == SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED);
-	assert(SYNC_CALLS == 1u && RELEASE_ALL_CALLS == 1u && Bound() == 0u && Claimed() == 0u);
+	assert(SYNC_CALLS == MODULE_RESET_SYNCS && RELEASE_ALL_CALLS == 1u && Bound() == 0u && Claimed() == 0u);
 	request = ResetRequest(2u);
 	Bind();
 	assert(Admit(&request,&decision) == SPARK_STATUS_OK && decision.accepted == 1u && Bound() == 0u && Claimed() == 0u);
@@ -178,6 +179,7 @@ MODULES = {
         "identity": ("GLM_MODEL_REVISION", "GLM_CONTRACT_SHA256", ["tools/glm52_model_contract.py", "--print-build-identity", "fp8"]),
         "lanes": "(s).kv",
         "setup": "BindingSetup()",
+        "reset_syncs": 2,
         "sources": ["runtime/stage_kv_binding.c"],
     },
     "ling": {
@@ -188,6 +190,7 @@ MODULES = {
         "identity": None,
         "lanes": "(s)",
         "setup": "(void)0",
+        "reset_syncs": 1,
         "sources": [],
     },
 }
@@ -206,7 +209,7 @@ def run_module(name, module, directory):
                     "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                     *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=16u", *defines,
                     f'-DMODULE_SOURCE="{module["source"]}"', f'-DMODULE_STATE={module["state"]}', f'-DMODULE_ADMIT={module["admit"]}',
-                    f'-DMODULE_NAME="{name}"', f'-DMODULE_LANES(s)={module["lanes"]}', f'-DMODULE_SETUP()={module["setup"]}',
+                    f'-DMODULE_NAME="{name}"', f'-DMODULE_LANES(s)={module["lanes"]}', f'-DMODULE_SETUP()={module["setup"]}', f'-DMODULE_RESET_SYNCS={module["reset_syncs"]}u',
                     str(source), "runtime/stage_module_common.c", *module["sources"], "src/spark_status.c", "-o", str(binary), "-pthread"],
                    cwd=ROOT, check=True)
     subprocess.run([str(binary)], check=True)

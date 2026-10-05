@@ -30,6 +30,7 @@ HARNESS = r'''
 #define main SparkUnusedKvTestMain
 #include "tests/test_kv_cache.c"
 #undef main
+static uint8_t TEST_FENCE_EVENT;
 typedef struct { void *operation_0_state; } SparkGeneratedDriverInstance;
 #include "generated_admission.inc"
 static SparkGlm5NextModuleState state;
@@ -610,6 +611,7 @@ static void check_graph_epoch_ownership(void)
 	memset(&state,0,sizeof(state));
 	memset(EPOCH_WORDS,0,sizeof(EPOCH_WORDS));
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	state.slots[0].stream = state.execution_stream;
 	state.slots[0].graph_exec_a = (void *)(uintptr_t)9u;
 	state.slots[0].host_output_token_ids = &output;
@@ -675,6 +677,7 @@ static void check_working_set_recover(void)
 	memset(&state,0,sizeof(state));
 	memset(ring,0,sizeof(ring));
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	state.slots[0].stream = state.execution_stream;
 	state.slots[0].miss_ring = ring;
 	state.slots[0].snapshot = snapshot;
@@ -884,6 +887,7 @@ static void check_mtp_callback_handoff(SparkStatus submit_status,uint32_t releas
 	state.completion_worker = (SparkWeightdWorker *)(uintptr_t)1u;
 	state.pipeline_slot_count = 1u;
 	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	state.mtp_lane_hidden_bf16 = saved;
 	state.completions[0].state = &state;
@@ -1263,6 +1267,7 @@ static void check_verify_rounds(uint32_t drafter)
 	memset(&context,0,sizeof(context));
 	state.pipeline_slot_count = 1u;
 	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	state.verify_rows_max = 8u;
 	state.max_sequence_positions = VERIFY_CAPACITY;
@@ -1497,6 +1502,7 @@ static void check_verify_mtp_rounds(uint32_t drafter,uint32_t tp)
 		hc_mean[(uint64_t)index * SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION] = (uint16_t)(1000u + index);
 	state.pipeline_slot_count = 1u;
 	state.execution_stream = state.slots[0].stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	state.verify_rows_max = 8u;
 	state.max_sequence_positions = VERIFY_CAPACITY;
@@ -2022,7 +2028,45 @@ void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome)
 
 cudaError_t cudaEventDestroy(cudaEvent_t event)
 {
-	(void)event;
+	free(event);
+	return(cudaSuccess);
+}
+
+cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event,unsigned int flags)
+{
+	(void)flags;
+	*event = malloc(1u);
+	return(*event != 0 ? cudaSuccess : cudaErrorMemoryAllocation);
+}
+
+cudaError_t cudaEventRecord(cudaEvent_t event,cudaStream_t stream)
+{
+	(void)stream;
+	return(event != 0 ? cudaSuccess : cudaErrorInvalidValue);
+}
+
+cudaError_t cudaEventQuery(cudaEvent_t event)
+{
+	return(event != 0 ? cudaSuccess : cudaErrorInvalidValue);
+}
+
+cudaError_t cudaStreamWaitEvent(cudaStream_t stream,cudaEvent_t event,unsigned int flags)
+{
+	(void)stream;
+	(void)flags;
+	return(event != 0 ? cudaSuccess : cudaErrorInvalidValue);
+}
+
+cudaError_t cudaStreamCreateWithFlags(cudaStream_t *stream,unsigned int flags)
+{
+	(void)flags;
+	*stream = malloc(1u);
+	return(*stream != 0 ? cudaSuccess : cudaErrorMemoryAllocation);
+}
+
+cudaError_t cudaStreamDestroy(cudaStream_t stream)
+{
+	free(stream);
 	return(cudaSuccess);
 }
 
@@ -2140,6 +2184,7 @@ static void check_chain_ownership(void)
 	uint32_t reason = SPARK_GLM5_NEXT_BUSY_REASONS;
 	memset(&state,0,sizeof(state));
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	DRAIN_STATUS = cudaErrorNotReady;
 	STREAM_QUERY_COUNT = 0u;
 	assert(SparkGlm5NextClaimTpChain(&state,&reason) == SPARK_STATUS_BUSY && reason == SPARK_GLM5_NEXT_BUSY_STREAM);
@@ -2220,6 +2265,7 @@ static int32_t check_cache_transactions(SparkStatus completion_status,SparkStatu
 	if ( SparkGlm5NextUploadPageTables(&state,&state.completions[0],0) != SPARK_STATUS_OK || COPY_COUNT != 2u )
 		return(-26);
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	assert(SparkStageModuleCudaWaitInitialize(&state.stream_wait,(cudaStream_t)state.execution_stream) == SPARK_STATUS_OK);
 	assert(pthread_mutex_init(&state.completion_queue_lock,0) == 0);
 	state.slots[0].miss_ring = (uint32_t *)EPOCH_WORDS;
@@ -2687,6 +2733,8 @@ static void open_recurrent_fixture(SparkKvPageStore *store,char *path,void *stag
 	assert(SparkKvPageStoreInitialize(store,&config) == SPARK_STATUS_OK);
 }
 
+static SparkTestKvDeviceCopy CHECKPOINT_COPY;
+
 static void check_checkpoint_restore(SparkTestKvTransactions *fixture,const uint8_t *expected,uint32_t prefix_tokens)
 {
 	SparkGlm5NextResidentDecodeStageBatchView batch = {0};
@@ -2735,6 +2783,8 @@ static void check_checkpoint_restore(SparkTestKvTransactions *fixture,const uint
 		uint32_t entry = fixture->pages.cache.sequences[resident].terminal_entry_index;
 		uint32_t source = fixture->pages.cache.entries[entry].logical_page_index;
 		uint32_t copied = fixture->pages.cache.sequences[resident].mutable_logical_page_index;
+		assert(state.kv_blocks[source].residency_reference_count == 1u && CHECKPOINT_COPY.copies == 1u);
+		SparkTestKvDeviceCopySettle(&CHECKPOINT_COPY);
 		assert(source != copied && state.kv_blocks[source].residency_reference_count == 0u && fixture->pages.cache.entries[entry].reference_count != 0u);
 		assert(SparkKvCacheArenaUnpinResidentBlock(&fixture->pages.kv.arena,copied) == SPARK_STATUS_OK);
 		assert(SparkGlm5NextRestoreCacheLanes(&state,&completion) == SPARK_STATUS_VALIDATION_FAILED);
@@ -2800,6 +2850,7 @@ static void check_checkpoint_finish(uint32_t fail_copy,uint32_t prefix_tokens,ui
 	open_recurrent_fixture(&state.recurrent_store,path,staging + 60u,60u);
 	open_recurrent_fixture(&state.kv_page_store,kv_path,staging + 120u,SPARK_TEST_BLOCK_BYTES);
 	fixture.pages.cache.page_store = &state.kv_page_store;
+	SparkTestKvAttachDeviceCopy(&fixture.pages.cache,&CHECKPOINT_COPY,&fixture.pages.kv.arena);
 	assert(SparkKvPageCacheAttachStateStore(&fixture.pages.cache,&state.recurrent_store) == SPARK_STATUS_OK);
 	assert(SparkKvLaneTransactionsAdmit(&state.kv_transactions,&fixture.request) == SPARK_STATUS_OK);
 	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
@@ -3055,6 +3106,8 @@ static void small_kv_state(uint32_t kv_layers,uint32_t pages)
 	state.pages_per_sequence = pages;
 	state.resident_sequence_capacity = 1u;
 	state.kv_layer_stride_bytes = (uint64_t)pages * SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT * SPARK_GLM5_NEXT_MODEL_MLA_KV_A_DIMENSION * 2u;
+	state.index_layer_stride_bytes = (uint64_t)pages * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u;
+	state.kv_cache = (void *)(uintptr_t)0x1000u;
 	state.kv_backing_directory = "/unused-host-fixture";
 }
 
@@ -3212,6 +3265,7 @@ static void check_linear_walk(void)
 	state.tp_device_collective_initialized = 1u;
 	state.tp_device_collective_hc_initialized = 1u;
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	state.slots[0].stream = state.execution_stream;
 	state.slots[0].hidden_bf16 = hidden;
 	state.slots[0].attention_out_bf16 = hidden;
@@ -3374,6 +3428,7 @@ static SparkGlm5NextTpChain *linear_chain_fixture(void)
 	state.completion_worker = (SparkWeightdWorker *)(uintptr_t)1u;
 	state.tp_device_collective_initialized = state.tp_device_collective_hc_initialized = 1u;
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	state.completions[0].state = &state;
 	linear_slot_fixture(&state.slots[0]);
 	LINEAR_POSITIONS[0] = 3u;
@@ -4053,6 +4108,7 @@ static void sequence_fixture(void)
 	state.lazy_pack = &LINEAR_PACK;state.completion_worker = (SparkWeightdWorker *)(uintptr_t)1u;
 	state.tp_device_collective_initialized = state.tp_device_collective_hc_initialized = 1u;
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	state.kv_transactions = SEQ_KV.transactions;state.kv_lane_transactions = SEQ_KV.owners;state.kv_lane_physical_pages = SEQ_KV.physical;
 	memset(SEQ_TABLE,0xff,sizeof(SEQ_TABLE));
 	memset(SEQ_SHADOW,0xff,sizeof(SEQ_SHADOW));
@@ -4455,6 +4511,7 @@ static void check_frame_chain_validation(void)
 	memset(&state,0,sizeof(state));
 	state.owns_embedding = state.owns_final_head = 1u;
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	state.execution_row_capacity = 8u;
 	state.resident_sequence_capacity = 4u;
 	state.max_sequence_positions = 128u;
@@ -4530,6 +4587,7 @@ static void check_verify_deferred(void)
 	memset(&state,0,sizeof(state));
 	memset(&async,0,sizeof(async));
 	state.execution_stream = (void *)(uintptr_t)7u;
+	state.kv_copier.fence_event = &TEST_FENCE_EVENT;
 	state.tp_device_collective_initialized = 1u;
 	state.tp_device_collective_hc_initialized = 1u;
 	DRAIN_STATUS = cudaSuccess;
@@ -4878,7 +4936,7 @@ def main():
                         "-Wl,-dead_strip" if sys.platform == "darwin" else "-Wl,--gc-sections",
                         *["-I" + p for p in includes], "-DSPARK_BATCH_BUCKET=1024u", "-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5",
                         '-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"', '-DGLM5_NEXT_CONTRACT_SHA256="fixture"',
-                        str(source), "runtime/stage_module_common.c", "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_snapshot.c",
+                        str(source), "runtime/stage_module_common.c", "runtime/kv_device_copy.c", "src/spark_status.c", "cache/kv_cache.c", "cache/kv_page_cache.c", "cache/kv_snapshot.c",
                         "-o", str(binary), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitize else [])], cwd=ROOT, check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS actual module context/cache ownership, global epoch independence, retained attach ownership, terminal CUDA receipts, step verdicts and route trace")

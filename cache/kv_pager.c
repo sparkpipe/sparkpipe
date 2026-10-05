@@ -235,12 +235,6 @@ static void SparkKvPagerPublishCompletion(SparkKvPager *pager,
 			&completion->reservation);
 		block->flags &= (uint32_t)~SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
 		block->flags &= (uint32_t)~SPARK_KV_CACHE_BLOCK_FLAG_DIRTY;
-		if ( pager->configuration.arena->write_back_degraded_block_count !=
-			UINT32_MAX )
-		{
-			pager->configuration.arena->write_back_degraded_block_count +=
-				1u;
-		}
 		pager->statistics.park_write_failures += 1u;
 	}
 	if ( completion->write_elapsed_microseconds != 0u )

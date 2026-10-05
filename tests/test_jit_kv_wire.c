@@ -618,7 +618,7 @@ int main(void)
 		}
 		expect(staging_untouched,
 			"the pager staging is untouched: the refused op never copied");
-		expect(fixture.arena.write_back_degraded_block_count == 0u &&
+		expect(fixture.arena.park_failure_count == 0u &&
 			fixture.pager.statistics.page_out_count == 0u &&
 			fixture.tier.statistics.slots_in_use == 0u,
 			"UNSUPPORTED is not degradation: nothing dropped, nothing"
@@ -778,7 +778,7 @@ int main(void)
 		}
 		expect(fixture.pager.statistics.dispatch_queued == 11u &&
 			fixture.pager.statistics.page_in_count == 0u &&
-			fixture.arena.write_back_degraded_block_count == 0u,
+			fixture.arena.park_failure_count == 0u,
 			"eleven waits, zero page-ins, zero drops: nothing poisoned");
 		expect(SparkNvmeTierPin(&fixture.tier,WireFoldDigest(digest0),
 			digest0,0) == SPARK_STATUS_OK,"one record unpins");
@@ -798,12 +798,12 @@ int main(void)
 		WireCheckBudget(&fixture,"scenario 4 end");
 	}
 
-	printf("\nscenario 5: C2 - a degraded block answers RECOMPUTE\n");
+	printf("\nscenario 5: a transient park failure loses nothing\n");
 	{
 		WireFixture fixture;
 		SparkKvPagerAdmissionDecision decision;
 		SparkKvPagerDispatchDecision dispatch;
-		uint32_t index;
+		uint32_t index,parked;
 		expect(WireOpen(&fixture,6u,2u,4u,4u,
 			SPARK_DSV4_KV_FRAMES_BACKEND_TERM_COPY) == SPARK_STATUS_OK,
 			"the fixture opens (capacity 2, horizon 4)");
@@ -813,26 +813,30 @@ int main(void)
 		fixture.backing_failures_left = 1u;
 		expect(WireAdmit(&fixture,2u,&decision) &&
 			decision.outcome == SPARK_KV_PAGER_ADMITTED,
-			"lane T admits; the armed backing failure hits the park");
+			"lane T admits: the failed park keeps its page and the"
+			" last-resort retry parks it");
+		expect(fixture.arena.park_failure_count == 1u,
+			"exactly one park failed");
+		parked = 1u;
+		for ( index = 0u; index < 2u; ++index )
+			parked &= !WireBlockIsResident(&fixture,index) &&
+				(fixture.blocks[index].flags &
+					SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID) != 0u &&
+				(fixture.blocks[index].flags &
+					SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED) == 0u;
+		expect(parked,
+			"both of lane R's blocks are parked with valid backing");
+		expect(fixture.tier.statistics.slots_in_use == 2u,
+			"both blocks hold a tier record");
 		for ( index = 2u; index < 4u; ++index )
 			WireFillBlock(&fixture,index);
-		expect(fixture.arena.write_back_degraded_block_count == 1u,
-			"the IO-class failure DEGRADED its block (B1: drop +"
-			" recompute, never a wedge)");
-		expect(fixture.tier.statistics.slots_in_use == 1u,
-			"only the healthy block holds a tier record");
-		expect(WireDispatchOffer(&fixture,0u,&dispatch) &&
-			dispatch.outcome == SPARK_KV_PAGER_DISPATCH_RECOMPUTE &&
-			dispatch.resident == 0u,
-			"the degraded block's dispatch answers RECOMPUTE");
-		expect(!WireBlockIsResident(&fixture,0u) &&
-			fixture.pager.statistics.dispatch_recompute == 1u &&
-			fixture.pager.statistics.page_in_count == 0u,
-			"dispatch never runs on partial state: the caller recomputes");
-		expect(WireDispatchUntilReady(&fixture,1u,&dispatch),
-			"the healthy parked block still dispatches READY");
-		expect(WirePlanesMatchGolden(&fixture,1u),
-			"BIT-EXACT on the healthy path");
+		expect(WireDispatchUntilReady(&fixture,0u,&dispatch) &&
+			dispatch.resident == 1u,
+			"the block whose first park failed dispatches READY");
+		expect(WirePlanesMatchGolden(&fixture,0u),
+			"BIT-EXACT: the retried park restored the original planes");
+		expect(fixture.pager.statistics.dispatch_recompute == 0u,
+			"no block answered RECOMPUTE");
 		WireCheckBudget(&fixture,"scenario 5 end");
 	}
 

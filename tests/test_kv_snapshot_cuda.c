@@ -47,6 +47,7 @@ typedef struct CudaEngine
 	uint32_t by_page[CUDA_PAGES];
 	SparkKvPageCacheSnapshot snapshot;
 	SparkKvPageCacheSnapshotLink links[CUDA_PAGES];
+	uint32_t pending[CUDA_PAGES];
 	uint8_t *snapshot_page;
 	uint8_t *snapshot_state;
 	SparkKvLaneTransaction owners[4];
@@ -152,6 +153,8 @@ static int32_t CudaEngineOpen(CudaEngine *engine,SparkKvSnapshotStore *store)
 	engine->snapshot.links = engine->links;
 	engine->snapshot.page = engine->snapshot_page;
 	engine->snapshot.state = engine->snapshot_state;
+	engine->snapshot.pending_terminals = engine->pending;
+	engine->snapshot.pending_capacity = CUDA_PAGES;
 	engine->transactions.cache = &engine->cache;
 	engine->transactions.lanes = engine->owners;
 	engine->transactions.logical_pages = engine->logical;
@@ -379,7 +382,7 @@ int main(int argc,char **argv)
 	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
 	CHECK(CudaEngineOpen(&source,&store) == 0);
 	result = CudaPrefillPrompt(&source,logits_source,&prefill_ns);
-	CHECK(result == 0 && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
+	CHECK(result == 0 && SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
 	CHECK(source.snapshot.save_page_count == CUDA_PROMPT_PAGES && source.snapshot.save_failure_count == 0u && store.file_count == CUDA_PROMPT_PAGES && store.write_failure_count == 0u);
 	CudaEngineClose(&source);
 	SparkKvSnapshotStoreClose(&store);

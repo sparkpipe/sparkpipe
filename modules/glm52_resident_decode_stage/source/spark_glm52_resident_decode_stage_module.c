@@ -2202,19 +2202,15 @@ static void SparkGlm52TpChainAdvance(void *chain_context,SparkStatus status)
 	}
 }
 
-static void CUDART_CB SparkGlm52CompleteAsync(void *context)
+static void SparkGlm52FinishedAsync(void *context,SparkStatus status)
 {
 	SparkGlm52AsyncCompletion *async;
 	SparkGlm52ModuleState *state;
 	SparkGlm52ExecutionSlot *slot;
 	async = (SparkGlm52AsyncCompletion *)context;
-	state = async != 0 ? async->state : 0;
-	if ( state == 0 || async->slot_index >= state->pipeline_slot_count )
-		return;
+	state = async->state;
 	slot = &state->slots[async->slot_index];
-	if ( slot->host_kv_access_error[0] != 0u )
-		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
-	async->completion.status = SparkStageKvBindingFinish(&state->kv,async->lane_indices,async->lane_count,async->completion.status,0u,async->lane_bound,async->lane_sequence_ids,async->lane_next_positions);
+	async->completion.status = status;
 	if ( async->completion.status == SPARK_STATUS_OK )
 	{
 		if ( async->output_token_destination != 0 )
@@ -2225,6 +2221,36 @@ static void CUDART_CB SparkGlm52CompleteAsync(void *context)
 		atomic_fetch_add_explicit(&state->failed_count,1u,memory_order_relaxed);
 	atomic_fetch_add_explicit(&state->host_callback_completion_count,1u,memory_order_relaxed);
 	SparkStageModuleCompleteAndReleaseClaims(async->completion_function,async->completion_context,&async->completion,state->lane_states,state->resident_sequence_capacity,async->lane_indices,async->lane_count,state->slot_states,async->slot_index);
+}
+
+static void CUDART_CB SparkGlm52CompleteAsync(void *context)
+{
+	SparkGlm52AsyncCompletion *async;
+	SparkGlm52ModuleState *state;
+	SparkStageKvBindingCompletion completion;
+	SparkStatus status;
+	async = (SparkGlm52AsyncCompletion *)context;
+	state = async != 0 ? async->state : 0;
+	if ( state == 0 || async->slot_index >= state->pipeline_slot_count )
+		return;
+	if ( state->slots[async->slot_index].host_kv_access_error[0] != 0u )
+		async->completion.status = SPARK_STATUS_INTERNAL_ERROR;
+	memset(&completion,0,sizeof(completion));
+	completion.lane_count = async->lane_count;
+	completion.extra_tokens = 0u;
+	completion.status = async->completion.status;
+	completion.resident_slots = async->lane_indices;
+	completion.bound = async->lane_bound;
+	completion.sequence_ids = async->lane_sequence_ids;
+	completion.next_positions = async->lane_next_positions;
+	completion.finished_function = SparkGlm52FinishedAsync;
+	completion.finished_context = async;
+	status = SparkStageKvBindingFinishAsync(&state->kv,async->slot_index,&completion);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"GLM52-COMPLETION-REFUSED slot=%u status=%s\n",async->slot_index,SparkStatusToString(status));
+		SparkGlm52FinishedAsync(async,status);
+	}
 }
 
 #define SPARK_GLM52_CHAIN_SETTLE_TIMEOUT_NS UINT64_C(35000000000)
@@ -2699,7 +2725,9 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	}
 	SparkGlmStagePrepareAsyncCompletion(state,frame,batch,simulated_bound,simulated_sequence,simulated_next,slot_index);
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	status = SparkStageKvBindingUploadPageTables(&state->kv,batch->row_resident_slots,batch->active_sequence_count,slot->stream);
+	status = SparkStageKvBindingFenceExecution(&state->kv,slot->stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingUploadPageTables(&state->kv,batch->row_resident_slots,batch->active_sequence_count,slot->stream);
 	if ( status == SPARK_STATUS_OK )
 	{
 		error = cudaMemsetAsync(slot->kv_access_error,0,SPARK_GLM52_KV_ACCESS_ERROR_WORD_COUNT * sizeof(uint32_t),(cudaStream_t)slot->stream);
@@ -2718,6 +2746,7 @@ static SparkStatus SparkGlm52ExecuteBatch(
 	{
 		(void)cudaStreamSynchronize((cudaStream_t)slot->stream);
 		state->completions[slot_index].completion.status = status;
+		atomic_store_explicit(&state->chain_busy,0u,memory_order_release);
 		SparkGlm52CompleteAsync(&state->completions[slot_index]);
 		return(SPARK_STATUS_OK);
 	}
@@ -2878,6 +2907,11 @@ static SparkStatus SparkGlm52ModuleStateTeardown(void *module_state)
 	for (slot=0u; slot<state->pipeline_slot_count; slot++)
 		if ( __atomic_load_n(&state->lazy_retained[slot],__ATOMIC_ACQUIRE) != 0 )
 			return(SPARK_STATUS_BUSY);
+	{
+		SparkStatus status = SparkStageKvBindingQuiesce(&state->kv,SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	if ( atomic_load_explicit(&state->chain_busy,memory_order_acquire) != 0u )
 		return(SPARK_STATUS_BUSY);
 #ifdef SPARK_SCORE_DUMP

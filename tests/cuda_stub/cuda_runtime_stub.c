@@ -219,19 +219,86 @@ cudaError_t cudaMemsetAsync(
     return cudaMemset(pointer, value, bytes);
 }
 
-cudaError_t cudaMemcpy(
+static uint32_t cuda_stub_sync_copy_calls;
+static uint32_t cuda_stub_async_copy_calls;
+static uint32_t cuda_stub_stream_wait_calls;
+static cudaStream_t cuda_stub_last_wait_stream;
+static cudaEvent_t cuda_stub_last_wait_event;
+static spark_stub_cuda_copy_hook_t cuda_stub_copy_hook;
+static void *cuda_stub_copy_hook_context;
+
+void spark_stub_cuda_set_copy_hook(spark_stub_cuda_copy_hook_t hook, void *context)
+{
+    __atomic_store_n(&cuda_stub_copy_hook_context, context, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&cuda_stub_copy_hook, hook, __ATOMIC_SEQ_CST);
+}
+
+uint32_t spark_stub_cuda_sync_copy_calls(void)
+{
+    return __atomic_load_n(&cuda_stub_sync_copy_calls, __ATOMIC_SEQ_CST);
+}
+
+uint32_t spark_stub_cuda_async_copy_calls(void)
+{
+    return __atomic_load_n(&cuda_stub_async_copy_calls, __ATOMIC_SEQ_CST);
+}
+
+void spark_stub_cuda_reset_copy_calls(void)
+{
+    __atomic_store_n(&cuda_stub_sync_copy_calls, 0u, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&cuda_stub_async_copy_calls, 0u, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&cuda_stub_stream_wait_calls, 0u, __ATOMIC_SEQ_CST);
+}
+
+uint32_t spark_stub_cuda_stream_wait_calls(void)
+{
+    return __atomic_load_n(&cuda_stub_stream_wait_calls, __ATOMIC_SEQ_CST);
+}
+
+cudaStream_t spark_stub_cuda_last_wait_stream(void)
+{
+    return __atomic_load_n(&cuda_stub_last_wait_stream, __ATOMIC_SEQ_CST);
+}
+
+cudaEvent_t spark_stub_cuda_last_wait_event(void)
+{
+    return __atomic_load_n(&cuda_stub_last_wait_event, __ATOMIC_SEQ_CST);
+}
+
+static void cuda_stub_count_copy(uint32_t asynchronous, cudaMemcpyKind kind, cudaStream_t stream)
+{
+    spark_stub_cuda_copy_hook_t hook;
+
+    if (asynchronous != 0u)
+        __atomic_fetch_add(&cuda_stub_async_copy_calls, 1u, __ATOMIC_SEQ_CST);
+    else
+        __atomic_fetch_add(&cuda_stub_sync_copy_calls, 1u, __ATOMIC_SEQ_CST);
+    hook = __atomic_load_n(&cuda_stub_copy_hook, __ATOMIC_SEQ_CST);
+    if (hook != 0)
+        hook(__atomic_load_n(&cuda_stub_copy_hook_context, __ATOMIC_SEQ_CST), asynchronous, kind, stream);
+}
+
+static cudaError_t cuda_stub_copy(
     void *destination,
     const void *source,
-    size_t bytes,
-    cudaMemcpyKind kind)
+    size_t bytes)
 {
-    (void)kind;
     if ((destination == 0 || source == 0) && bytes != 0u)
     {
         return cudaErrorMemoryAllocation;
     }
     memcpy(destination, source, bytes);
     return cudaSuccess;
+}
+
+cudaError_t cudaMemcpy(
+    void *destination,
+    const void *source,
+    size_t bytes,
+    cudaMemcpyKind kind)
+{
+    cuda_stub_count_copy(0u, kind, 0);
+    return cuda_stub_copy(destination, source, bytes);
 }
 
 cudaError_t cudaMemcpyAsync(
@@ -241,8 +308,8 @@ cudaError_t cudaMemcpyAsync(
     cudaMemcpyKind kind,
     cudaStream_t stream)
 {
-    (void)stream;
-    return cudaMemcpy(destination, source, bytes, kind);
+    cuda_stub_count_copy(1u, kind, stream);
+    return cuda_stub_copy(destination, source, bytes);
 }
 
 cudaError_t cudaMemcpy2DAsync(
@@ -257,8 +324,7 @@ cudaError_t cudaMemcpy2DAsync(
 {
     size_t row_index;
 
-    (void)kind;
-    (void)stream;
+    cuda_stub_count_copy(1u, kind, stream);
     if ((destination == 0 || source == 0) && width != 0u && height != 0u)
     {
         return cudaErrorMemoryAllocation;
@@ -279,7 +345,7 @@ cudaError_t cudaStreamCreate(cudaStream_t *stream)
     {
         return cudaErrorMemoryAllocation;
     }
-    *stream = malloc(1u);
+    *stream = calloc(1u, sizeof(unsigned int));
     return *stream != 0 ? cudaSuccess : cudaErrorMemoryAllocation;
 }
 
@@ -287,8 +353,16 @@ cudaError_t cudaStreamCreateWithFlags(
     cudaStream_t *stream,
     unsigned int flags)
 {
-    (void)flags;
-    return cudaStreamCreate(stream);
+    cudaError_t error = cudaStreamCreate(stream);
+
+    if (error == cudaSuccess)
+        *(unsigned int *)*stream = flags;
+    return error;
+}
+
+unsigned int spark_stub_cuda_stream_flags(cudaStream_t stream)
+{
+    return stream != 0 ? *(unsigned int *)stream : 0u;
 }
 
 cudaError_t cudaStreamDestroy(cudaStream_t stream)
@@ -319,8 +393,10 @@ cudaError_t cudaStreamWaitEvent(
     cudaEvent_t event,
     unsigned int flags)
 {
-    (void)stream;
     (void)flags;
+    __atomic_fetch_add(&cuda_stub_stream_wait_calls, 1u, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&cuda_stub_last_wait_stream, stream, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&cuda_stub_last_wait_event, event, __ATOMIC_SEQ_CST);
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 

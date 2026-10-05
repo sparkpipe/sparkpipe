@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_error_site.h"
 
+#include <stdio.h>
 #include <string.h>
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/types.h>
@@ -953,6 +954,8 @@ SparkStatus SparkKvCacheArenaMarkBlockDirty(
         SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_DIRTY;
+    block->flags &= ~(SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID |
+        SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED);
     arena->epoch += 1u;
     block->last_used_epoch = arena->epoch;
     return SPARK_STATUS_OK;
@@ -1119,7 +1122,8 @@ static SparkKvCacheBlock *SparkKvCacheArenaSelectResidentEvictionVictim(
     SparkKvCacheArena *arena,
     const SparkKvCachePrefetchPlan *prefetch_plan,
     const uint32_t *protected_logical_block_indices,
-    uint32_t protected_logical_block_count)
+    uint32_t protected_logical_block_count,
+    uint32_t park_failed)
 {
     SparkKvCacheBlock *victim;
     uint32_t logical_block_index,resident_slot_index;
@@ -1148,6 +1152,7 @@ static SparkKvCacheBlock *SparkKvCacheArenaSelectResidentEvictionVictim(
             (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
             (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENCY_RESERVED) != 0u ||
             block->residency_reference_count != 0u ||
+            ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED) != 0u) != (park_failed != 0u) ||
             (arena->evict_function == 0 && block->reference_count != 0u) ||
             SparkKvCacheBlockIsProtectedFromResidentEviction(
                 prefetch_plan,
@@ -1196,28 +1201,28 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
             arena->key_block_stride_bytes,
             block->value_device_address,
             arena->value_block_stride_bytes);
+        if (status == SPARK_STATUS_IO_ERROR)
+        {
+            block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED;
+            arena->park_failure_count += 1u;
+            fprintf(stderr, "KV-PARK-FAILED page=%u generation=%llu failures=%llu\n",
+                block->logical_block_index,
+                (unsigned long long)block->generation,
+                (unsigned long long)arena->park_failure_count);
+            return status;
+        }
+        if (status == SPARK_STATUS_CAPACITY_EXCEEDED)
+        {
+            arena->park_backing_full_count += 1u;
+            return status;
+        }
         if (status != SPARK_STATUS_OK)
         {
-            if (status == SPARK_STATUS_IO_ERROR ||
-                status == SPARK_STATUS_CAPACITY_EXCEEDED)
-            {
-                if (arena->write_back_degraded_block_count != UINT32_MAX)
-                {
-                    arena->write_back_degraded_block_count += 1u;
-                }
-                block->flags &= ~SPARK_KV_CACHE_BLOCK_FLAG_DIRTY;
-                block->flags &= ~SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
-            }
-            else
-            {
-                return status;
-            }
+            return status;
         }
-        else
-        {
-            block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
-            block->flags &= ~SPARK_KV_CACHE_BLOCK_FLAG_DIRTY;
-        }
+        block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
+        block->flags &= ~(SPARK_KV_CACHE_BLOCK_FLAG_DIRTY |
+            SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED);
     }
     status = SparkKvCacheArenaReleaseResidentSlot(arena, block);
     if (status != SPARK_STATUS_OK)
@@ -1233,6 +1238,28 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
     block->last_used_epoch = arena->epoch;
     arena->resident_evicted_block_count += 1u;
     return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkKvCacheArenaParkFailedCount(const SparkKvCacheArena *arena)
+{
+    uint32_t resident_slot_index,count;
+
+    count = 0u;
+    for (resident_slot_index = 0u;
+         resident_slot_index < arena->resident_block_capacity;
+         ++resident_slot_index)
+    {
+        uint32_t logical_block_index;
+
+        logical_block_index =
+            arena->resident_slot_logical_block_indices[resident_slot_index];
+        if (logical_block_index < arena->logical_block_count &&
+            (arena->blocks[logical_block_index].flags & SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED) != 0u)
+        {
+            count += 1u;
+        }
+    }
+    return count;
 }
 
 static SparkStatus SparkKvCacheArenaTrimResidentBlocksWithPrefetchProtection(
@@ -1262,12 +1289,25 @@ static SparkStatus SparkKvCacheArenaTrimResidentBlocksWithPrefetchProtection(
     while (arena->resident_block_count > target_resident_block_count)
     {
         SparkKvCacheBlock *victim;
+        uint32_t last_resort;
 
         victim = SparkKvCacheArenaSelectResidentEvictionVictim(
             arena,
             prefetch_plan,
             protected_logical_block_indices,
-            protected_logical_block_count);
+            protected_logical_block_count,
+            0u);
+        last_resort = 0u;
+        if (victim == 0 && arena->evict_function != 0)
+        {
+            victim = SparkKvCacheArenaSelectResidentEvictionVictim(
+                arena,
+                prefetch_plan,
+                protected_logical_block_indices,
+                protected_logical_block_count,
+                1u);
+            last_resort = victim != 0 ? 1u : 0u;
+        }
         if (victim == 0)
         {
             arena->resident_capacity_stall_count += 1u;
@@ -1278,6 +1318,18 @@ static SparkStatus SparkKvCacheArenaTrimResidentBlocksWithPrefetchProtection(
             SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         status = SparkKvCacheArenaEvictResidentBlock(arena, victim);
+        if (status == SPARK_STATUS_IO_ERROR && last_resort == 0u)
+        {
+            continue;
+        }
+        if (status == SPARK_STATUS_IO_ERROR)
+        {
+            arena->park_stall_count += 1u;
+            fprintf(stderr, "KV-PARK-STALLED page=%u park_failed=%u stalls=%llu\n",
+                victim->logical_block_index,
+                SparkKvCacheArenaParkFailedCount(arena),
+                (unsigned long long)arena->park_stall_count);
+        }
         if (status != SPARK_STATUS_OK)
         {
             if (evicted_block_count_out != 0)
@@ -2175,6 +2227,7 @@ static uint32_t SparkKvCacheSelectResidentEvictionVictim(
         block = &arena->blocks[logical_block_index];
         if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
             (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
+            (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_PARK_FAILED) != 0u ||
             block->residency_reference_count != 0u ||
             (arena->evict_function == 0 && block->reference_count != 0u) ||
             SparkKvCacheLogicalBlockIsProtected(
@@ -2233,6 +2286,10 @@ SparkStatus SparkKvCacheArenaEvictResidentBlocksToLimit(
         status = SparkKvCacheArenaMarkBlockNonResident(
             arena,
             victim_logical_block_index);
+        if (status == SPARK_STATUS_IO_ERROR)
+        {
+            continue;
+        }
         if (status != SPARK_STATUS_OK)
         {
             return status;
