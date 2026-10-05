@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_model_driver.h"
+#include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_tp_collective.h"
 #include "sparkpipe/spark_tp_device_collective.h"
@@ -13,7 +14,7 @@ extern "C" {
 #endif
 
 
-#define SPARK_K3_STAGE_RUNNER_ABI_VERSION 3u
+#define SPARK_K3_STAGE_RUNNER_ABI_VERSION 4u
 #define SPARK_K3_STAGE_RUNNER_CONFIGURATION_BYTES \
     ((uint32_t)sizeof(SparkK3StageRunnerConfiguration))
 #define SPARK_K3_STAGE_RUNNER_DISPATCH_BYTES \
@@ -80,6 +81,11 @@ typedef struct SparkK3StageRunnerDispatch
     uint64_t residual_bank_output_bytes;
     uint32_t *output_token_ids;
     float *output_scores;
+    uint32_t distribution_count;
+    const uint32_t *distribution_rows;
+    const uint32_t *distribution_positions;
+    const SparkRowSampling *distribution_rules;
+    SparkSamplingLogprob *distribution_logprobs;
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;
 } SparkK3StageRunnerDispatch;

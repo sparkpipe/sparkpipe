@@ -84,6 +84,9 @@ static uint32_t mock_lane_log_count;
 static SparkModelServingCacheIdentity mock_identity_log[256];
 static uint32_t mock_identity_log_count;
 static uint32_t mock_token_start = 11u;
+static uint32_t mock_logprob_stride;
+static uint32_t mock_logprob_corrupt;
+static uint32_t mock_max_tokens_per_sequence;
 
 static int MockTraceEnabled(void)
 {
@@ -348,6 +351,9 @@ void MockResidentClientReset(void)
 	mock_identity_log_count = 0u;
 	mock_auto_tokens = 0u;
 	mock_token_start = 11u;
+	mock_logprob_stride = 0u;
+	mock_logprob_corrupt = 0u;
+	mock_max_tokens_per_sequence = 0u;
 	memset(mock_registry,0,sizeof(mock_registry));
 }
 
@@ -444,6 +450,8 @@ static SparkStatus MockResidentClientEnqueue(
 		return(connect_status);
 	if ( submission->submission_id <= client->last_submission_id )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->tokens_per_sequence > mock_max_tokens_per_sequence )
+		mock_max_tokens_per_sequence = submission->tokens_per_sequence;
 	if ( client->scripted_call_status[kind] != SPARK_STATUS_OK )
 		return(client->scripted_call_status[kind]);
 	if ( client->scripted_submit_status != SPARK_STATUS_OK )
@@ -627,6 +635,19 @@ SparkStatus SparkModelResidentClientGetView(
 	return(SPARK_STATUS_OK);
 }
 
+void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt)
+{
+	mock_logprob_stride = stride;
+	mock_logprob_corrupt = corrupt;
+}
+
+uint32_t MockResidentClientTakeMaxTokensPerSequence(void)
+{
+	uint32_t maximum = mock_max_tokens_per_sequence;
+	mock_max_tokens_per_sequence = 0u;
+	return(maximum);
+}
+
 void MockResidentClientSetAutoTokens(uint32_t count)
 {
 	mock_auto_tokens = count;
@@ -736,6 +757,13 @@ uint32_t MockResidentClientDeliverEvent(uint32_t stage_index, uint64_t submissio
 					completion.accepted_token_count = completion.token_count;
 					for (t=0u; t<completion.token_count && t<(uint32_t)(sizeof(completion.token_ids)/sizeof(completion.token_ids[0])); t++)
 						completion.token_ids[t] = mock_token_start + t;
+					completion.logprob_stride = mock_logprob_stride;
+					completion.logprob_entry_count = completion.token_count * mock_logprob_stride;
+					for (t=0u; t<completion.logprob_entry_count; t++)
+					{
+						completion.logprobs[t].token = t % mock_logprob_stride == 0u ? completion.token_ids[t / mock_logprob_stride] + mock_logprob_corrupt : 1000u + t % mock_logprob_stride;
+						completion.logprobs[t].logprob = -0.25f * (float)(t % mock_logprob_stride + 1u);
+					}
 				}
 				c->inflight[k] = c->inflight[--c->inflight_count];
 				if ( deliver != 0u && c->completion_function != 0 )

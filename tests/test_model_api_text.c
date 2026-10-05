@@ -1018,6 +1018,51 @@ static void TestApiChatDeclaredStops(TestApiStack *stack)
 		"(the same sampling without messages emits the marker token)\n");
 }
 
+static void TestApiSamplingOptions(TestApiStack *stack)
+{
+	char response[65536],expected[64];
+	uint32_t tokens[16];
+	uint32_t token_count,index;
+	const char *body,*cursor;
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"logprobs\":2}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	token_count = TestApiScanTokenArray(body,tokens,16u);
+	assert(token_count == 2u);
+	cursor = strstr(body,"\"token_logprobs\":[");
+	assert(cursor != 0);
+	for (index=0u; index<token_count; index++)
+	{
+		(void)snprintf(expected,sizeof(expected),"[[%u,-0.25],[1001,-0.5],[1002,-0.75]]",tokens[index]);
+		cursor = strstr(cursor,expected);
+		assert(cursor != 0);
+		cursor += strlen(expected);
+	}
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stream\":true,\"logprobs\":0}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(response,"\"token_logprobs\":[[[") != 0 && strstr(response,",-0.25]]") != 0 && strstr(response,"1001") == 0);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"temperature\":1,\"seed\":3,\"top_p\":0.9,\"top_k\":4}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(TestApiResponseJsonBody(response),"token_logprobs") == 0);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"temperature\":0,\"top_p\":0.5,\"top_k\":3}",
+		response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"temperature\":1,\"top_p\":0}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"temperature\":1,\"top_p\":1.5}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"temperature\":1,\"top_k\":-1}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"logprobs\":21}");
+	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"logprobs\":true}");
+	printf("test_model_api_text: sampling options OK (logprobs return the emitted token and its top alternatives "
+		"in order, streamed or not; top-p and top-k reach a truncating adapter; out-of-range options are 400)\n");
+}
+
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)
 {
 	TestApiStack stack;
@@ -1124,6 +1169,7 @@ int main(void)
 		SparkTokenizerSidecarUnload(&sidecar);
 	}
 	TestApiChatDeclaredStops(&stack);
+	TestApiSamplingOptions(&stack);
 	TestApiStopStack(&stack);
 
 	TestApiStartsBeforeEngines();

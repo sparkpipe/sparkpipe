@@ -1698,10 +1698,8 @@ Related common-code debt:
   `Sequence`, `NFKC` and `Lowercase` if a model declares them. Implement
   those, then make an unknown normalizer a load error. A tokenizer with
   NFC cannot be saved in the compiled format, which has no field for it.
-- Sampling is temperature-only and only glm5_next implements it; other
-  adapters answer `400 sampling_unsupported`. Add top-k/top-p and logprobs,
-  which need a cross-rank log-sum-exp, and port the sampled head
-  (`LmHeadSampledCandidate*Kernel`) to the other families.
+- Only GLM Full, GLM Flash and K3 sample (temperature, top-k, top-p) and
+  return logprobs; the other adapters answer `400 sampling_unsupported`.
 - Sampled rows take the full-vocab BF16 head instead of the certified FP8
   B1 head, run eagerly instead of replaying a CUDA graph, and get no MTP
   drafts: the certified screen prunes with un-noised bounds, graphs freeze
@@ -1797,8 +1795,6 @@ door and the static pages and playground in `site/`.
   bitwise equal to B1 (see Dynamic batching). Until the batch kernels agree
   bitwise, replays of batched requests can only compare logprobs within a
   tolerance, which is weaker against mild quantization.
-- **Logprobs do not exist yet** (see Serving API), so sampled traffic cannot
-  be audited.
 - **Every driver update splits audit cohorts.** Replays compare only against
   the same driver hash, so the router must track each provider's build, and
   releases need per-model cohort changeovers.

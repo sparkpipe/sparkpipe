@@ -12,6 +12,10 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "inference/llms/kimi_k3/layer.cuh"
+#include "inference/kernels/sample.cuh"
+
+#define K3_SAMPLE_THREADS 1024u
+#define K3_DISTRIBUTION_HEAD_ROWS 4u
 
 typedef struct SparkK3RunnerState SparkK3RunnerState;
 
@@ -309,7 +313,32 @@ typedef struct SparkK3RunnerState
 	uint32_t max_context;
 	uint32_t multiprocessors;
 	uint64_t kv_page_bytes;
+	uint32_t distribution_capacity;
+	uint32_t distribution_sub_rows;
+	uint32_t distribution_chunk_rows;
+	uint32_t *distribution_rows;
+	uint32_t *distribution_positions;
+	SparkRowSampling *distribution_rules;
+	SparkSamplingLogprob *distribution_logprobs;
+	uint16_t *distribution_hidden;
+	uint16_t *distribution_normed;
+	float *distribution_logits;
+	float *distribution_gathered;
+	float *distribution_host_values;
+	float *distribution_host_scratch;
 } SparkK3RunnerState;
+
+static SparkStatus K3RunnerAllocateDistribution(SparkK3RunnerState *state,
+	const SparkK3StageRunner *runner, const SparkK3StageRunnerConfiguration *configuration);
+static SparkStatus K3RunnerSeedIndices(SparkK3RunnerState *state,
+	const SparkK3StageRunnerConfiguration *configuration);
+
+static SparkStatus K3RunnerPrepareOutputs(SparkK3RunnerState *state,
+	const SparkK3StageRunner *runner, const SparkK3StageRunnerConfiguration *configuration)
+{
+	SparkStatus status = K3RunnerSeedIndices(state, configuration);
+	return status != SPARK_STATUS_OK ? status : K3RunnerAllocateDistribution(state, runner, configuration);
+}
 
 #define K3_STRAY_BIT_INDEX(layer, expert) \
 	((uint64_t)(layer) * K3_EXPERTS + (uint64_t)(expert))
@@ -1478,11 +1507,189 @@ SparkStatus SparkK3StageRunnerInitialize(
 	cudaMalloc(&state->context_length, 4u);
 	cudaMalloc(&state->sequence_of_row, 4u);
 	cudaMalloc(&state->kda_state_index, 4u);
-	status = K3RunnerSeedIndices(state, configuration);
+	status = K3RunnerPrepareOutputs(state, runner, configuration);
 	if ( status != SPARK_STATUS_OK )
 		{ SparkK3StageRunnerDestroy(runner); SPARK_FAIL(status); }
 	state->output_token_host = new uint32_t[configuration->max_input_row_count];
 	state->output_score_host = new float[configuration->max_input_row_count];
+	return SPARK_STATUS_OK;
+}
+
+static __global__ void K3DistributionGatherKernel(const uint32_t *rows,
+	const uint16_t *hidden_bf16, uint16_t *out_bf16)
+{
+	const uint64_t source = (uint64_t)rows[blockIdx.x] * K3_HIDDEN, target = (uint64_t)blockIdx.x * K3_HIDDEN;
+	for ( uint32_t k = threadIdx.x; k < K3_HIDDEN; k += blockDim.x )
+		out_bf16[target + k] = hidden_bf16[source + k];
+}
+
+static SparkStatus K3RunnerAllocateDistribution(SparkK3RunnerState *state,
+	const SparkK3StageRunner *runner, const SparkK3StageRunnerConfiguration *configuration)
+{
+	uint64_t rows = configuration->max_input_row_count, slice = state->vocab_slice_rows, full;
+	uint32_t elements, sub_rows;
+	state->distribution_capacity = 0u;
+	if ( runner->owns_final_head == 0u || state->head_weight == 0 )
+		return SPARK_STATUS_OK;
+	if ( slice == 0u || (uint64_t)state->vocab > slice * runner->tp_degree )
+	{
+		fprintf(stderr, "sparkpipe_k3: distribution refused: vocab %u exceeds %u ranks of %llu head rows\n",
+			state->vocab, runner->tp_degree, (unsigned long long)slice);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	state->distribution_sub_rows = 1u;
+	state->distribution_chunk_rows = (uint32_t)rows;
+	if ( runner->tp_degree > 1u && state->device_collective_created != 0 )
+	{
+		elements = 2u * (uint32_t)slice;
+		for ( sub_rows = 1u; sub_rows <= elements && (elements % sub_rows != 0u || elements / sub_rows > K3_HIDDEN); ++sub_rows )
+			;
+		state->distribution_sub_rows = sub_rows;
+		state->distribution_chunk_rows = sub_rows <= elements ? (uint32_t)rows / sub_rows : 0u;
+		if ( state->distribution_chunk_rows == 0u )
+		{
+			fprintf(stderr, "sparkpipe_k3: distribution refused: a %llu-token logit row needs %u collective rows and %llu are configured\n",
+				(unsigned long long)slice, sub_rows, (unsigned long long)rows);
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		}
+	}
+	full = runner->tp_degree > 1u && state->device_collective_created == 0 ? rows * slice * runner->tp_degree :
+		(uint64_t)runner->tp_degree * state->distribution_chunk_rows * slice;
+	if ( cudaMalloc(&state->distribution_rows, rows * sizeof(uint32_t)) != cudaSuccess ||
+		cudaMalloc(&state->distribution_positions, rows * sizeof(uint32_t)) != cudaSuccess ||
+		cudaMalloc(&state->distribution_rules, rows * sizeof(SparkRowSampling)) != cudaSuccess ||
+		cudaMalloc(&state->distribution_logprobs, rows * SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob)) != cudaSuccess ||
+		cudaMalloc(&state->distribution_hidden, rows * K3_HIDDEN * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc(&state->distribution_normed, rows * K3_HIDDEN * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc(&state->distribution_logits, rows * slice * sizeof(float)) != cudaSuccess ||
+		cudaMalloc(&state->distribution_gathered, full * sizeof(float)) != cudaSuccess )
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( runner->tp_degree > 1u && state->device_collective_created == 0 )
+	{
+		state->distribution_host_values = new float[full];
+		state->distribution_host_scratch = new float[full];
+	}
+	state->distribution_capacity = (uint32_t)rows;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3RunnerValidateDistribution(const SparkK3RunnerState *state,
+	const SparkK3StageRunner *runner, const SparkK3StageRunnerDispatch *dispatch)
+{
+	uint32_t entry, other, logprobs = 0u;
+	if ( dispatch->distribution_count == 0u )
+		return SPARK_STATUS_OK;
+	if ( runner->owns_final_head == 0u || state->distribution_capacity == 0u ||
+		dispatch->distribution_count > dispatch->active_sequence_count ||
+		dispatch->distribution_rows == 0 || dispatch->distribution_positions == 0 || dispatch->distribution_rules == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for ( entry = 0u; entry < dispatch->distribution_count; ++entry )
+	{
+		if ( dispatch->distribution_rows[entry] >= dispatch->row_count ||
+			SparkSamplingRuleValid(&dispatch->distribution_rules[entry]) == 0u ||
+			SparkSamplingRuleNeedsDistribution(&dispatch->distribution_rules[entry]) == 0u )
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		for ( other = 0u; other < entry; ++other )
+			if ( dispatch->distribution_rows[other] == dispatch->distribution_rows[entry] )
+				return SPARK_STATUS_INVALID_ARGUMENT;
+		logprobs |= dispatch->distribution_rules[entry].logprobs;
+	}
+	return logprobs != 0u && dispatch->distribution_logprobs == 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK;
+}
+
+static SparkStatus K3RunnerSampleDistribution(SparkK3RunnerState *state,
+	const float *logits, uint64_t shard_stride, uint32_t row_stride, uint32_t shard_tokens,
+	uint32_t first, uint32_t rows, cudaStream_t stream)
+{
+	LmSampleVocab vocab;
+	LmSampleRows sample;
+	vocab.logits = logits;
+	vocab.shard_stride = shard_stride;
+	vocab.row_stride = row_stride;
+	vocab.shard_tokens = shard_tokens;
+	vocab.vocabulary = state->vocab;
+	sample.rules = state->distribution_rules + first;
+	sample.positions = state->distribution_positions + first;
+	sample.source_rows = state->distribution_rows + first;
+	sample.greedy_tokens = state->output_token;
+	sample.logprob_rows = 0;
+	sample.token_out = state->output_token;
+	sample.logit_out = 0;
+	sample.logprobs_out = state->distribution_logprobs + (uint64_t)first * SPARK_SAMPLING_MAX_LOGPROBS;
+	sample.rows = rows;
+	LM_LAUNCH((LmSampleRowsKernel<K3_SAMPLE_THREADS>), rows, K3_SAMPLE_THREADS, 0, stream, vocab, sample);
+	return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+static SparkStatus K3RunnerDistribution(SparkK3RunnerState *state,
+	const SparkK3StageRunner *runner, const SparkK3StageRunnerDispatch *dispatch,
+	const K3LayerBuffers *b, cudaStream_t stream)
+{
+	const uint32_t count = dispatch->distribution_count, slice = state->vocab_slice_rows, tp = runner->tp_degree;
+	uint32_t first, rows, row;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( count == 0u )
+		return SPARK_STATUS_OK;
+	if ( cudaMemcpyAsync(state->distribution_rows, dispatch->distribution_rows, (uint64_t)count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess ||
+		cudaMemcpyAsync(state->distribution_positions, dispatch->distribution_positions, (uint64_t)count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess ||
+		cudaMemcpyAsync(state->distribution_rules, dispatch->distribution_rules, (uint64_t)count * sizeof(SparkRowSampling), cudaMemcpyHostToDevice, stream) != cudaSuccess )
+		return SPARK_STATUS_IO_ERROR;
+	if ( tp > 1u && state->device_collective_created == 0 &&
+		cudaMemcpyAsync(state->output_token, state->output_token_host, (uint64_t)dispatch->row_count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess )
+		return SPARK_STATUS_IO_ERROR;
+	K3DistributionGatherKernel<<<count, K3_LAYER_THREADS, 0, stream>>>(state->distribution_rows, b->hidden_bf16, state->distribution_hidden);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), count, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
+		state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, K3_HIDDEN, K3_HIDDEN, K3_RMS_EPSILON);
+	LM_LAUNCH((LmHeadLogitsRowsKernel<K3_LAYER_THREADS,K3_HEAD_TILE,K3_DISTRIBUTION_HEAD_ROWS>),
+		dim3((slice + K3_HEAD_TILE - 1u) / K3_HEAD_TILE, (count + K3_DISTRIBUTION_HEAD_ROWS - 1u) / K3_DISTRIBUTION_HEAD_ROWS), K3_LAYER_THREADS, 0, stream,
+		state->distribution_normed, state->head_weight, state->distribution_logits, count, K3_HIDDEN, slice, slice);
+	if ( cudaPeekAtLastError() != cudaSuccess )
+		return SPARK_STATUS_INTERNAL_ERROR;
+	if ( tp == 1u )
+		status = K3RunnerSampleDistribution(state, state->distribution_logits, (uint64_t)count * slice, slice, slice, 0u, count, stream);
+	else if ( state->device_collective_created != 0 )
+		for ( first = 0u; status == SPARK_STATUS_OK && first < count; first += rows )
+		{
+			SparkTpDeviceCollectiveSubmission submission;
+			rows = count - first < state->distribution_chunk_rows ? count - first : state->distribution_chunk_rows;
+			memset(&submission, 0, sizeof(submission));
+			submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+			submission.descriptor_bytes = sizeof(submission);
+			submission.active_sequence_count = rows * state->distribution_sub_rows;
+			submission.logical_sequence_count = state->logical_sequence_count;
+			submission.row_elements = 2u * slice / state->distribution_sub_rows;
+			submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+			submission.ordinal = state->tp_next_ordinal++;
+			submission.local_device = state->distribution_logits + (uint64_t)first * slice;
+			submission.full_device = state->distribution_gathered;
+			submission.cuda_stream = stream;
+			submission.completion_function = K3RunnerEmbedCompletion;
+			status = SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER);
+			if ( status == SPARK_STATUS_OK )
+				status = K3RunnerSampleDistribution(state, state->distribution_gathered, (uint64_t)rows * slice, slice, slice, first, rows, stream);
+		}
+	else
+	{
+		const uint64_t width = (uint64_t)tp * slice, values = (uint64_t)count * width;
+		memset(state->distribution_host_values, 0, values * sizeof(float));
+		for ( row = 0u; row < count; ++row )
+			if ( cudaMemcpyAsync(state->distribution_host_values + row * width + (uint64_t)runner->tp_rank * slice,
+				state->distribution_logits + (uint64_t)row * slice, (uint64_t)slice * sizeof(float), cudaMemcpyDeviceToHost, stream) != cudaSuccess )
+				return SPARK_STATUS_IO_ERROR;
+		if ( cudaStreamSynchronize(stream) != cudaSuccess )
+			return SPARK_STATUS_IO_ERROR;
+		status = SparkTpCollectiveAllReduceSumF32(&state->collective, state->distribution_host_values, values, state->distribution_host_scratch);
+		if ( status == SPARK_STATUS_OK && cudaMemcpyAsync(state->distribution_gathered, state->distribution_host_values, values * sizeof(float), cudaMemcpyHostToDevice, stream) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = K3RunnerSampleDistribution(state, state->distribution_gathered, 0u, (uint32_t)width, (uint32_t)width, 0u, count, stream);
+	}
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( K3RunnerCopy(state->output_token_host, state->output_token, (uint64_t)dispatch->row_count * sizeof(uint32_t), stream) != cudaSuccess ||
+		(dispatch->output_token_ids != 0 && K3RunnerCopy(dispatch->output_token_ids, state->output_token, (uint64_t)dispatch->row_count * sizeof(uint32_t), stream) != cudaSuccess) ||
+		(dispatch->distribution_logprobs != 0 && K3RunnerCopy(dispatch->distribution_logprobs, state->distribution_logprobs, (uint64_t)count * SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob), stream) != cudaSuccess) )
+		state->copy_failed = 1u;
 	return SPARK_STATUS_OK;
 }
 
@@ -1574,6 +1781,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 		fprintf(stderr, "sparkpipe_k3: submit refused: the KV binding pool is not attached\n");
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
+	exchange_status = K3RunnerValidateDistribution(state, runner, dispatch);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
 	stream = state->stream;
 	exchange_status = K3RunnerChainBegin(state, dispatch->request_id);
 	if ( exchange_status != SPARK_STATUS_OK )
@@ -1718,6 +1928,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 					(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
 					state->copy_failed = 1u;
 		}
+		exchange_status = K3RunnerDistribution(state, runner, dispatch, b, stream);
+		if ( exchange_status != SPARK_STATUS_OK )
+			return exchange_status;
 	}
 	else if ( dispatch->hidden_output_bf16 != 0 )
 	{
@@ -1936,6 +2149,16 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	free(state->group_offset_host);
 	delete[] state->staging_scratch;
 	delete[] state->head_slots_host;
+	delete[] state->distribution_host_values;
+	delete[] state->distribution_host_scratch;
+	cudaFree(state->distribution_rows);
+	cudaFree(state->distribution_positions);
+	cudaFree(state->distribution_rules);
+	cudaFree(state->distribution_logprobs);
+	cudaFree(state->distribution_hidden);
+	cudaFree(state->distribution_normed);
+	cudaFree(state->distribution_logits);
+	cudaFree(state->distribution_gathered);
 	delete[] state->output_token_host;
 	delete[] state->output_score_host;
 	cudaFree(state->head_slots_device);

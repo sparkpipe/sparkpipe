@@ -28,6 +28,15 @@ cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,c
 	(void)element_count;
 	return(cudaErrorUnknown);
 }
+cudaError_t SparkTpLaunchGatherRanks(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t elements_per_rank)
+{
+	(void)stream;
+	(void)destination;
+	(void)sources;
+	(void)source_count;
+	(void)elements_per_rank;
+	return(cudaErrorUnknown);
+}
 static SparkLingModuleState state;
 static SparkTestKvPageFixture pages;
 static SparkModelDriverCacheLane remembered[4];

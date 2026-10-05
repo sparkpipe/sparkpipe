@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_kv_shard.h"
+#include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_status.h"
 
 typedef struct SparkGlm52LayerWeights
@@ -128,6 +129,20 @@ typedef struct SparkGlm52ExecutionSlot
 	uint32_t *kv_gather_rows_zero;
 	uint32_t *kv_gather_plan;
 	unsigned long long *kv_gather_digest;
+	uint32_t *distribution_wave_rows;
+	uint32_t *distribution_positions;
+	SparkRowSampling *distribution_rules;
+	SparkSamplingLogprob *distribution_logprobs;
+	uint16_t *distribution_hidden_bf16;
+	uint16_t *distribution_residual_bf16;
+	uint16_t *distribution_normed_bf16;
+	float *distribution_logits_f32;
+	float *distribution_gathered_f32;
+	void *distribution_host;
+	uint32_t *host_distribution_wave_rows;
+	uint32_t *host_distribution_positions;
+	SparkRowSampling *host_distribution_rules;
+	SparkSamplingLogprob *host_distribution_logprobs;
 } SparkGlm52ExecutionSlot;
 
 typedef struct SparkGlm52CudaWave
@@ -199,6 +214,8 @@ typedef struct SparkGlm52CudaWave
 	uint32_t shard_indexing_units;
 	uint32_t shard_partial_units;
 	uint64_t shard_candidate_offset;
+	uint32_t distribution_first;
+	uint32_t distribution_count;
 } SparkGlm52CudaWave;
 
 #define SPARK_GLM52_SHARD_SCATTER_ROWS 64u
@@ -245,6 +262,8 @@ int32_t SparkGlm52LaunchCudaWaveHead(const SparkGlm52CudaWave *wave);
 cudaError_t SparkGlm52LaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlmLaunchHeadCertifiedQuantize(cudaStream_t stream,const void *head_bf16,uint8_t *certified_payload,float *certified_scale_f32,float *certified_norm_f32,uint32_t vocabulary,uint32_t hidden_dimension);
 cudaError_t SparkGlm52LaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
+int32_t SparkGlm52LaunchDistributionLogits(const SparkGlm52CudaWave *wave);
+int32_t SparkGlm52LaunchDistributionSample(const SparkGlm52CudaWave *wave,uint32_t first,uint32_t rows);
 #ifdef SPARK_SCORE_DUMP
 struct SparkScoreDumpStats;
 cudaError_t SparkGlm52LaunchHeadScore(cudaStream_t stream,const uint16_t *normed_bf16,const void *head_bf16,float *logits,uint32_t rows,uint32_t width,uint32_t id_base,const uint32_t *probe_offsets,const uint32_t *probe_local,float *probe_logits,struct SparkScoreDumpStats *stats);

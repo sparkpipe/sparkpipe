@@ -15,7 +15,10 @@ from tokenizers import Tokenizer
 from tokenizers.decoders import DecodeStream
 
 ROLE_ALIASES = {"developer": "system"}
-UNSUPPORTED_FIELDS = ("n", "logprobs", "top_logprobs", "logit_bias", "best_of", "echo", "suffix")
+UNSUPPORTED_FIELDS = ("n", "logit_bias", "best_of", "echo", "suffix")
+NEUTRAL_FIELDS = {"frequency_penalty": 0, "presence_penalty": 0, "repetition_penalty": 1, "min_p": 0}
+MAX_TOP_LOGPROBS = 20
+MAX_TOP_K = 1048576
 
 
 class RequestError(Exception):
@@ -81,6 +84,10 @@ class Model:
         self.tool_calls = spec["tool_calls"]
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
 
+    def logprob(self, pair):
+        text = self.tokenizer.decode([pair[0]], skip_special_tokens=False)
+        return {"token": text, "logprob": -9999.0 if pair[1] is None else pair[1], "bytes": list(text.encode("utf-8"))}
+
     def token_id(self, text):
         token = self.tokenizer.token_to_id(text)
         if token is None:
@@ -134,6 +141,45 @@ def normalize_messages(messages):
             entry["tool_calls"] = calls
         normalized.append(entry)
     return normalized
+
+
+def number(body, name, low, high, integer=False):
+    value = body.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or (integer and not isinstance(value, int)) or not low <= value <= high:
+        kind = "an integer" if integer else "a number"
+        raise RequestError(400, "invalid_request", f"{name} must be {kind} between {low} and {high}")
+    return value
+
+
+def sampling_fields(body):
+    fields = {}
+    temperature = number(body, "temperature", 0, 2)
+    if temperature is not None and temperature != 0 and temperature < 0.0001:
+        raise RequestError(400, "invalid_request", "temperature must be 0 or between 0.0001 and 2")
+    top_p = number(body, "top_p", 0, 1)
+    if top_p is not None and top_p <= 0:
+        raise RequestError(400, "invalid_request", "top_p must be above 0 and at most 1")
+    top_k = number(body, "top_k", -1, MAX_TOP_K, integer=True)
+    seed = number(body, "seed", 0, 2 ** 64 - 1, integer=True)
+    if temperature:
+        fields["temperature"] = temperature
+        if top_p is not None:
+            fields["top_p"] = top_p
+        if top_k is not None and top_k > 0:
+            fields["top_k"] = top_k
+        if seed is not None:
+            fields["seed"] = seed
+    logprobs = body.get("logprobs")
+    if logprobs not in (None, True, False):
+        raise RequestError(400, "invalid_request", "logprobs must be a boolean")
+    top_logprobs = number(body, "top_logprobs", 0, MAX_TOP_LOGPROBS, integer=True)
+    if top_logprobs is not None and not logprobs:
+        raise RequestError(400, "invalid_request", "top_logprobs needs logprobs true")
+    if logprobs:
+        fields["logprobs"] = top_logprobs or 0
+    return fields
 
 
 def tool_parameter_types(tools):
@@ -294,6 +340,9 @@ class Frontend:
         for field in UNSUPPORTED_FIELDS:
             if field in body and body[field] not in (None, False, 1):
                 raise RequestError(400, "unsupported_parameter", f"{field} is not supported by this server")
+        for field, neutral in NEUTRAL_FIELDS.items():
+            if body.get(field) not in (None, neutral):
+                raise RequestError(400, "unsupported_parameter", f"{field} is not supported by this server; send {neutral} or leave it out")
         response_format = body.get("response_format")
         if response_format not in (None, {"type": "text"}):
             raise RequestError(400, "unsupported_parameter", "response_format other than text is not supported by this server")
@@ -324,6 +373,7 @@ class Frontend:
         reasoning_open = prompt.rstrip().endswith(model.reasoning["start"])
         parser = OutputParser(model, tools, reasoning_open, stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
+        engine_body.update(sampling_fields(body))
         return engine_body, parser, len(prompt_ids)
 
     async def engine_events(self, model, engine_body):
@@ -347,13 +397,34 @@ class Frontend:
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
+    def logprob_entries(self, model, chunk, expected):
+        tokens = chunk.get("tokens", [])
+        rows = chunk.get("token_logprobs")
+        if rows is None or len(rows) != len(tokens):
+            raise RequestError(502, "engine_error", "the engine returned tokens without their logprobs")
+        entries = []
+        for token, row in zip(tokens, rows):
+            if len(row) != expected or row[0][0] != token:
+                raise RequestError(502, "engine_error", "the engine returned logprobs that do not match its tokens")
+            if token in model.stop_token_ids:
+                continue
+            entry = model.logprob(row[0])
+            entry["top_logprobs"] = [model.logprob(pair) for pair in row[1:]]
+            entries.append(entry)
+        return entries
+
     async def generate(self, model, engine_body, parser):
         decoder = DecodeStream(skip_special_tokens=False)
         finish = None
         usage = None
+        logprobs = engine_body.get("logprobs")
         async for chunk in self.engine_events(model, engine_body):
             if "error" in chunk:
                 raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+            if logprobs is not None:
+                entries = self.logprob_entries(model, chunk, logprobs + 1)
+                if entries:
+                    yield ("logprobs", entries)
             text = []
             for token in chunk.get("tokens", []):
                 if token in model.stop_token_ids:
@@ -402,12 +473,14 @@ class Frontend:
             engine_body, parser, prompt_tokens = self.prepare(model, body)
             if body.get("stream"):
                 return await self.chat_stream(request, model, body, engine_body, parser, prompt_tokens, started)
-            content, reasoning, calls = [], [], []
+            content, reasoning, calls, logprobs = [], [], [], []
             result = {}
             first = None
             async for kind, value in self.generate(model, engine_body, parser):
                 first = first or time.monotonic()
-                if kind == "content":
+                if kind == "logprobs":
+                    logprobs.extend(value)
+                elif kind == "content":
                     content.append(value)
                 elif kind == "reasoning":
                     reasoning.append(value)
@@ -423,9 +496,9 @@ class Frontend:
         if calls:
             message["tool_calls"] = calls
         self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"))
+        choice = {"index": 0, "message": message, "logprobs": {"content": logprobs} if "logprobs" in engine_body else None, "finish_reason": result.get("finish_reason")}
         return web.json_response({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion", "created": int(time.time()),
-                                  "model": model.id, "choices": [{"index": 0, "message": message, "finish_reason": result.get("finish_reason")}],
-                                  "usage": self.usage_block(result.get("usage"), prompt_tokens)})
+                                  "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens)})
 
     async def chat_stream(self, request, model, body, engine_body, parser, prompt_tokens, started):
         identifier = "chatcmpl-" + uuid.uuid4().hex
@@ -436,9 +509,11 @@ class Frontend:
         calls = 0
         result = {}
 
-        def chunk(delta, finish_reason=None, usage=None):
-            payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id,
-                       "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]}
+        def chunk(delta, finish_reason=None, usage=None, logprobs=None):
+            choice = {"index": 0, "delta": delta, "finish_reason": finish_reason}
+            if logprobs is not None:
+                choice["logprobs"] = {"content": logprobs}
+            payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id, "choices": [choice]}
             if usage is not None:
                 payload["usage"] = usage
             return ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode()
@@ -450,7 +525,9 @@ class Frontend:
                     await response.prepare(request)
                     await response.write(chunk({"role": "assistant", "content": ""}))
                     first = time.monotonic()
-                if kind == "content" and value:
+                if kind == "logprobs":
+                    await response.write(chunk({}, logprobs=value))
+                elif kind == "content" and value:
                     await response.write(chunk({"content": value}))
                 elif kind == "reasoning" and value:
                     await response.write(chunk({"reasoning_content": value}))

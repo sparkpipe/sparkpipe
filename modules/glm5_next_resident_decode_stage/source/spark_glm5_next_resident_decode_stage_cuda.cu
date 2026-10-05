@@ -718,6 +718,69 @@ static int32_t SparkGlm5NextRunHead(const SparkGlm5NextCudaWave *wave)
 		error = cudaMemsetAsync((uint32_t *)wave->sideband_output_u32 + sideband_offset,0,(uint64_t)wave->row_count * SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH * sizeof(uint32_t),stream);
 	return(SparkGlm5NextCudaStatus(error));
 }
+#include "inference/kernels/sample.cuh"
+
+#define SPARK_GLM5_NEXT_SAMPLE_THREADS 1024u
+#define SPARK_GLM5_NEXT_DISTRIBUTION_HEAD_ROWS (GLM5_NEXT_HEAD_ROWS / 4u)
+
+static __global__ void SparkGlm5NextDistributionGatherKernel(const uint32_t *rows,const uint16_t *normed_bf16,uint16_t *out_bf16)
+{
+	uint64_t source = (uint64_t)rows[blockIdx.x] * GLM5_NEXT_HIDDEN,target = (uint64_t)blockIdx.x * GLM5_NEXT_HIDDEN;
+	uint32_t index;
+	for (index=threadIdx.x; index<GLM5_NEXT_HIDDEN; index+=blockDim.x)
+		out_bf16[target + index] = normed_bf16[source + index];
+}
+
+extern "C" int32_t SparkGlm5NextLaunchDistributionLogits(const SparkGlm5NextCudaWave *wave)
+{
+	SparkGlm5NextExecutionSlot *slot;
+	cudaStream_t stream;
+	uint32_t first,rows,width;
+	if ( wave == 0 || wave->owns_final_head == 0u || wave->distribution_count == 0u || wave->slot == 0 || wave->tp_degree == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	slot = wave->slot;
+	stream = (cudaStream_t)slot->stream;
+	first = wave->distribution_first;
+	rows = wave->distribution_count;
+	width = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT / wave->tp_degree;
+	if ( cudaMemcpyAsync(slot->distribution_wave_rows + first,slot->host_distribution_wave_rows + first,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	SparkGlm5NextDistributionGatherKernel<<<rows,SPARK_GLM5_NEXT_CUDA_THREADS,0,stream>>>(slot->distribution_wave_rows + first,slot->normed_bf16,slot->distribution_normed_bf16);
+	LM_LAUNCH((LmHeadLogitsRowsKernel<GLM5_NEXT_LAYER_THREADS,GLM5_NEXT_HEAD_TILE,SPARK_GLM5_NEXT_DISTRIBUTION_HEAD_ROWS>),
+		dim3((width + GLM5_NEXT_HEAD_TILE - 1u) / GLM5_NEXT_HEAD_TILE,(rows + SPARK_GLM5_NEXT_DISTRIBUTION_HEAD_ROWS - 1u) / SPARK_GLM5_NEXT_DISTRIBUTION_HEAD_ROWS),GLM5_NEXT_LAYER_THREADS,0,stream,
+		slot->distribution_normed_bf16,(const uint16_t *)wave->lm_head_bf16,slot->distribution_logits_f32,rows,GLM5_NEXT_HIDDEN,width,width);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+extern "C" int32_t SparkGlm5NextLaunchDistributionSample(const SparkGlm5NextCudaWave *wave,uint32_t first,uint32_t rows)
+{
+	SparkGlm5NextExecutionSlot *slot;
+	LmSampleVocab vocab;
+	LmSampleRows sample;
+	uint32_t width,entry;
+	if ( wave == 0 || wave->slot == 0 || rows == 0u || first + rows > wave->distribution_count || wave->tp_degree == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	slot = wave->slot;
+	width = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT / wave->tp_degree;
+	entry = wave->distribution_first + first;
+	vocab.logits = wave->tp_degree > 1u ? slot->distribution_gathered_f32 : slot->distribution_logits_f32 + (uint64_t)first * width;
+	vocab.shard_stride = (uint64_t)rows * width;
+	vocab.row_stride = width;
+	vocab.shard_tokens = width;
+	vocab.vocabulary = SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT;
+	sample.rules = slot->distribution_rules + entry;
+	sample.positions = slot->distribution_positions + entry;
+	sample.source_rows = slot->distribution_wave_rows + entry;
+	sample.greedy_tokens = slot->output_token;
+	sample.logprob_rows = 0;
+	sample.token_out = slot->output_token;
+	sample.logit_out = 0;
+	sample.logprobs_out = slot->distribution_logprobs + (uint64_t)entry * SPARK_SAMPLING_MAX_LOGPROBS;
+	sample.rows = rows;
+	LM_LAUNCH((LmSampleRowsKernel<SPARK_GLM5_NEXT_SAMPLE_THREADS>),rows,SPARK_GLM5_NEXT_SAMPLE_THREADS,0,(cudaStream_t)slot->stream,vocab,sample);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
 static int32_t SparkGlm5NextValidateCover(const SparkGlm5NextCudaWave *wave)
 {
 	if ( wave->expert_cover != 0 && (wave->expert_miss == 0 || wave->expert_cover_stride != SPARK_GLM5_NEXT_COVER_STRIDE || (wave->expert_route_log != 0 && wave->row_count > SPARK_GLM5_NEXT_GRAPH_ROWS_MAX)) )

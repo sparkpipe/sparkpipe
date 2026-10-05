@@ -1,0 +1,2 @@
++1713
+Sampling and logprobs for the core models: one exact full-vocab sampling kernel (top-k, top-p, Gumbel draw, log-softmax and top alternatives) shared by GLM Full, GLM Flash and K3; each driver recomputes the head logits of its output rows, all-gathers them across the TP ranks in collective-sized chunks and samples there; the serving ABI, resident IPC, batch engine and HTTP API carry top-p, top-k and per-token logprobs end to end, and the chat layer maps them to the OpenAI format.

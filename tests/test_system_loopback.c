@@ -557,7 +557,9 @@ static void TestLoopbackSampling(const TestLoopbackStack *stack)
 	TestLoopbackTokens(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.8}",other);
 	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":3}",400,response,sizeof(response));
 	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":\"0.5\"}",400,response,sizeof(response));
-	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_p\":0.9}",400,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_p\":0.9}",200,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_p\":0}",400,response,sizeof(response));
+	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"temperature\":0.5,\"top_k\":1048577}",400,response,sizeof(response));
 	TestLoopbackExpectStatus(stack,"{\"prompt_token_ids\":[11,12],\"max_tokens\":4,\"seed\":-1}",400,response,sizeof(response));
 }
 

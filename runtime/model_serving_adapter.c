@@ -463,17 +463,24 @@ static SparkStatus SparkModelServingAdapterValidateSampling(
 	const SparkModelServingSubmission *submission)
 {
 	const SparkRowSampling *rule;
-	uint32_t lane;
+	uint32_t lane,stride = 0u;
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
 		rule = &submission->lanes[lane].sampling;
 		if ( SparkSamplingRuleValid(rule) == 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( rule->inverse_temperature != 0.0f && (lane >= submission->active_sequence_count || SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u) )
+		if ( SparkSamplingRuleNeedsDistribution(rule) != 0u && (lane >= submission->active_sequence_count || SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( rule->inverse_temperature != 0.0f && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING) == 0u )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		if ( SparkSamplingRuleTruncates(rule) != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION) == 0u )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		if ( rule->logprobs != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		stride = rule->logprobs > stride ? rule->logprobs : stride;
 	}
+	if ( stride != 0u && (uint64_t)submission->active_sequence_count * (submission->tokens_per_sequence > 1u ? submission->tokens_per_sequence : 1u) * stride > SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
 
@@ -683,7 +690,11 @@ SparkStatus SparkModelServingAdapterValidateCompletion(
 	has_extension = (completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION) != 0u;
 	if ( has_tokens != (completion->token_count != 0u) || has_tokens != (completion->tokens_per_sequence != 0u) || (completion->tokens_per_sequence != 0u && completion->token_count % completion->tokens_per_sequence != 0u) || has_extension != (completion->model_extension_bytes != 0u) || (completion->model_extension_bytes == 0u && completion->model_extension_kind != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( completion->status != SPARK_STATUS_OK && (completion->completion_flags != 0u || completion->accepted_token_count != 0u) )
+	if ( completion->logprob_stride > SPARK_SAMPLING_MAX_LOGPROBS || completion->logprob_entry_count > SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES ||
+		completion->logprob_entry_count != completion->token_count * completion->logprob_stride ||
+		(completion->logprob_stride != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( completion->status != SPARK_STATUS_OK && (completion->completion_flags != 0u || completion->accepted_token_count != 0u || completion->logprob_stride != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }

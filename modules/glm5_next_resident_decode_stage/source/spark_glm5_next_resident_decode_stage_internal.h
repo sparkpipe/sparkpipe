@@ -210,6 +210,18 @@ typedef struct SparkGlm5NextExecutionSlot
 	uint8_t *kda_replay_pool;
 	uint32_t *replay_committed_host;
 	void *replay_fold_exec[SPARK_GLM5_NEXT_REPLAY_ROWS_MAX];
+	uint32_t *distribution_wave_rows;
+	uint32_t *distribution_positions;
+	SparkRowSampling *distribution_rules;
+	SparkSamplingLogprob *distribution_logprobs;
+	uint16_t *distribution_normed_bf16;
+	float *distribution_logits_f32;
+	float *distribution_gathered_f32;
+	void *distribution_host;
+	uint32_t *host_distribution_wave_rows;
+	uint32_t *host_distribution_positions;
+	SparkRowSampling *host_distribution_rules;
+	SparkSamplingLogprob *host_distribution_logprobs;
 } SparkGlm5NextExecutionSlot;
 
 typedef struct SparkGlm5NextCudaWave
@@ -299,6 +311,8 @@ typedef struct SparkGlm5NextCudaWave
 	const void *mtp_hnorm_bf16;
 	const void *mtp_shared_norm_bf16;
 	uint64_t kda_replay_layer_bytes;
+	uint32_t distribution_first;
+	uint32_t distribution_count;
 } SparkGlm5NextCudaWave;
 
 #define SPARK_GLM5_NEXT_L2_SITE_ATTENTION_REDUCE 0u
@@ -357,6 +371,8 @@ int32_t SparkGlm5NextLaunchCudaWaveHead(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextL2PrefetchAfterRound(const SparkGlm5NextCudaWave *wave,uint32_t local_layer,uint32_t site,const SparkGlm5NextL2PrefetchShape *shape,uint32_t *placed);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocPack(cudaStream_t stream,const float *scores,const uint32_t *token_ids,uint64_t *maxloc,uint32_t row_count,uint32_t rank_offset);
 cudaError_t SparkGlm5NextLaunchHeadMaxlocUnpack(cudaStream_t stream,const uint64_t *maxloc,uint32_t *token_ids,uint32_t row_count);
+int32_t SparkGlm5NextLaunchDistributionLogits(const SparkGlm5NextCudaWave *wave);
+int32_t SparkGlm5NextLaunchDistributionSample(const SparkGlm5NextCudaWave *wave,uint32_t first,uint32_t rows);
 cudaError_t SparkGlm5NextLaunchHeadMissPoison(cudaStream_t stream,const uint32_t *miss,uint64_t *maxloc,uint32_t row_count);
 cudaError_t SparkGlm5NextLaunchStateSnapshot(cudaStream_t stream,const void *spans,uint32_t span_count,uint32_t row_words,uint8_t *snapshot,const uint32_t *state_index,uint32_t rows,uint32_t restore);
 cudaError_t SparkGlm5NextLaunchEpochSample(cudaStream_t stream,const void *epoch_device,void *seen);
@@ -367,6 +383,7 @@ cudaError_t SparkTpLaunchSeedF32(cudaStream_t stream,float *destination_f32,cons
 cudaError_t SparkTpLaunchAddF32(cudaStream_t stream,float *destination_f32,const void *source_bf16,uint32_t element_count);
 cudaError_t SparkTpLaunchRoundF32(cudaStream_t stream,void *destination_bf16,const float *source_f32,uint32_t element_count);
 cudaError_t SparkTpLaunchAccumU64Max(cudaStream_t stream,uint64_t *destination,const uint64_t *source,uint32_t element_count);
+cudaError_t SparkTpLaunchGatherRanks(cudaStream_t stream,void *destination,const void *const *sources,uint32_t source_count,uint32_t elements_per_rank);
 int32_t SparkGlm5NextLaunchCudaMtpDraft(const SparkGlm5NextCudaWave *wave,const SparkGlm5NextMtpDraftOps *ops,uint16_t *committed_hidden_bf16,uint32_t first_token,uint32_t *host_draft_tokens);
 int32_t SparkGlm5NextPrepareCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t rows);
 int32_t SparkGlm5NextLaunchCudaReplayFold(const SparkGlm5NextCudaWave *wave,uint32_t committed_steps);
