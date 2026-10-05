@@ -2841,7 +2841,8 @@ SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKv
 			if ( (depth == 1u) != (parent == SPARK_KV_PAGE_CACHE_NO_INDEX) || (parent != SPARK_KV_PAGE_CACHE_NO_INDEX && (parent >= cache->entry_capacity || record_of[parent] == SPARK_KV_PAGE_CACHE_NO_INDEX)) )
 				continue;
 			block = &cache->kv_cache_arena->blocks[entry->logical_page_index];
-			if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u || block->resident_slot_index == SPARK_KV_CACHE_NO_RESIDENT_SLOT )
+			if ( (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u || (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_SHARED) != 0u ||
+				block->resident_slot_index == SPARK_KV_CACHE_NO_RESIDENT_SLOT )
 				continue;
 			memset(&records[count],0,sizeof(records[count]));
 			records[count].identity = entry->identity;

@@ -3064,7 +3064,8 @@ static void SparkTestKvSharedPrefixAcrossCaches(void)
 	SparkModelDriverCacheIdentity first,second;
 	uint64_t bytes = SparkKvSharedIndexBytes(4u);
 	void *memory = malloc((size_t)bytes);
-	uint32_t a_first,a_second,b_first,b_second,slot_first,slot_second,unpublished;
+	SparkKvPageCacheResidentRecord sealed[SPARK_TEST_RESIDENT_SLOT_COUNT];
+	uint32_t a_first,a_second,b_first,b_second,slot_first,slot_second,unpublished,sealed_count = 1u;
 	uint64_t generation;
 	assert(a != 0 && b != 0 && memory != 0);
 	assert(SparkKvSharedIndexFormat(memory,bytes,4u,SPARK_TEST_BLOCK_BYTES,layout) == SPARK_STATUS_OK);
@@ -3085,6 +3086,7 @@ static void SparkTestKvSharedPrefixAcrossCaches(void)
 	slot_first = SparkTestKvSharedWindowSlot(a,a_first);
 	slot_second = SparkTestKvSharedWindowSlot(a,a_second);
 	assert(atomic_load(&a->index.slots[slot_second].parent_slot) == slot_first);
+	assert(SparkKvPageCacheExportResident(&a->fixture.pages.cache,sealed,SPARK_TEST_RESIDENT_SLOT_COUNT,&sealed_count) == SPARK_STATUS_OK && sealed_count == 0u);
 	assert(SparkKvPageCacheImportShared(&b->fixture.pages.cache,&second,7u) == SPARK_STATUS_NOT_FOUND);
 	assert(SparkKvPageCacheImportShared(&b->fixture.pages.cache,&second,8u) == SPARK_STATUS_OK);
 	assert(b->fixture.pages.cache.shared_import_count == 1u && b->fixture.pages.cache.shared_imported_page_count == 2u);
@@ -3115,7 +3117,7 @@ static void SparkTestKvSharedPrefixAcrossCaches(void)
 	free(memory);
 	free(a);
 	free(b);
-	printf("PASS kv shared prefix: one cache publishes window pages, another imports the chain onto the same window slots, holders track both\n");
+	printf("PASS kv shared prefix: one cache publishes window pages, another imports the chain onto the same window slots, holders track both, and the private pool seal leaves window pages to the window\n");
 }
 
 int main(void)
