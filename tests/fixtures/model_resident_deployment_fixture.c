@@ -84,6 +84,11 @@ static int32_t TestModelResidentWriteNode(
 	if ( status == 0 )
 		status = TestModelResidentWriteText(stream,fixture->kv_backing_directory != 0 ?
 			fixture->kv_backing_directory : fixture->runtime_roots[rank]);
+	if ( status == 0 && fputs(",\"kv_partition\":",stream) == EOF )
+		status = -6;
+	if ( status == 0 )
+		status = TestModelResidentWriteText(stream,fixture->kv_partition != 0 ? fixture->kv_partition :
+			fixture->kv_backing_directory != 0 ? fixture->kv_backing_directory : fixture->runtime_roots[rank]);
 	if ( status == 0 && fprintf(stream,
 		",\"kv_backing_maximum_bytes\":%llu,\"control_endpoint\":",
 		(unsigned long long)fixture->kv_backing_maximum_bytes) < 0 )

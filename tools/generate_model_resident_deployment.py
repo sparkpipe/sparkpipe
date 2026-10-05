@@ -318,6 +318,7 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
             "transport_host": transport_hosts[rank],
             "adapter_configuration_path": adapter_path,
             "kv_backing_directory": backing_path,
+            "kv_partition": roots["kvcache"],
             "kv_backing_maximum_bytes": backing_maximum_bytes,
             "control_endpoint": build_endpoint(
                 endpoint_template, host, rank, stage),

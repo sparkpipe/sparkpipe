@@ -68,6 +68,7 @@ print(token)' "$ROOT/model_contracts/k3_authoritative.json")
     echo '      "transport_host": "'$host'",'
     echo '      "adapter_configuration_path": "config/adapter.json",'
     echo '      "kv_backing_directory": "/home/'$host'/sparkdata/k3.mxfp4.'$RT'/kvcache",'
+    echo '      "kv_partition": "/",'
     echo '      "kv_backing_maximum_bytes": 137438953472,'
     echo '      "kv_snapshot_directory": "/home/'$host'/sparkdata/k3.mxfp4.'$RT'/kvsnapshot",'
     echo '      "kv_snapshot_maximum_bytes": 68719476736,'

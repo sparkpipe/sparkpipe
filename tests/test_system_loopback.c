@@ -62,6 +62,8 @@ typedef struct TestLoopbackStack
 	pid_t api_child;
 	uint32_t control_tcp_port;
 	uint32_t api_port;
+	const char *kv_backing_directory;
+	const char *kv_partition;
 } TestLoopbackStack;
 
 static uint32_t TestLoopbackSendChunk;
@@ -194,6 +196,8 @@ static void TestLoopbackWriteDeployment(TestLoopbackStack *stack)
 	fixture.transport_mode = "host-rdma";
 	fixture.node_target = "test.model.serving.target";
 	fixture.adapter_configuration_path = "tests/fixtures/model_serving_adapter_config.json";
+	fixture.kv_backing_directory = stack->kv_backing_directory;
+	fixture.kv_partition = stack->kv_partition;
 	fixture.runtime_roots = runtime_roots;
 	fixture.transport_hosts = TestLoopbackTransportHosts;
 	fixture.stage_indices = stage_indices;
@@ -930,6 +934,65 @@ static void TestLoopbackBoot(TestLoopbackStack *stack)
 	TestLoopbackStartApi(stack);
 }
 
+static void TestLoopbackExpectResidentRefused(TestLoopbackStack *stack,const char *expected)
+{
+	char log_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES],text[8192];
+	pid_t child,probe = 0;
+	int32_t child_status = 0;
+	uint32_t attempt;
+	FILE *log;
+	size_t got;
+	TestLoopbackWriteDeployment(stack);
+	child = TestLoopbackStartResident(stack,1u);
+	for (attempt=0u; attempt<1000u && probe == 0; attempt++)
+	{
+		struct timespec delay = { 0, 10000000L };
+		probe = waitpid(child,&child_status,WNOHANG);
+		if ( probe == 0 )
+			(void)nanosleep(&delay,0);
+	}
+	if ( probe == 0 )
+	{
+		(void)kill(child,SIGKILL);
+		(void)waitpid(child,&child_status,0);
+	}
+	assert(probe == child && WIFEXITED(child_status) && WEXITSTATUS(child_status) != 0);
+	assert(snprintf(log_path,sizeof(log_path),"%s/rank1.log",stack->root) > 0);
+	log = fopen(log_path,"r");
+	assert(log != 0);
+	got = fread(text,1u,sizeof(text) - 1u,log);
+	text[got] = '\0';
+	(void)fclose(log);
+	assert(strstr(text,expected) != 0);
+}
+
+static void TestLoopbackKvPartitionRefusals(TestLoopbackStack *stack)
+{
+#if defined(__linux__)
+	char shm[] = "/dev/shm/sparkpipe-kv-partition-XXXXXX",root[] = "/tmp/sparkpipe-kv-partition-root-XXXXXX",path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	if ( mkdtemp(shm) == 0 )
+		return;
+	assert(mkdtemp(root) != 0);
+	assert(snprintf(stack->root,sizeof(stack->root),"%s",root) > 0);
+	stack->kv_backing_directory = shm;
+	stack->kv_partition = shm;
+	TestLoopbackExpectResidentRefused(stack,"tmpfs filesystem");
+	stack->kv_partition = stack->root;
+	TestLoopbackExpectResidentRefused(stack,"is not on kv_partition");
+	stack->kv_backing_directory = 0;
+	stack->kv_partition = 0;
+	assert(rmdir(shm) == 0);
+	assert(snprintf(path,sizeof(path),"%s/deployment.json",root) > 0 && unlink(path) == 0);
+	assert(snprintf(path,sizeof(path),"%s/rank1.log",root) > 0 && unlink(path) == 0);
+	(void)snprintf(path,sizeof(path),"%s/rank1.sock",root);
+	(void)unlink(path);
+	assert(rmdir(root) == 0);
+	printf("test_system_loopback: KV on tmpfs or off the named kv_partition refused at load OK\n");
+#else
+	(void)stack;
+#endif
+}
+
 int main(int argc,char **argv)
 {
 	TestLoopbackStack stack;
@@ -971,6 +1034,7 @@ int main(int argc,char **argv)
 	TestLoopbackResurrectApi(&stack);
 	TestLoopbackResurrectMidFlight(&stack);
 	TestLoopbackStopStack(&stack);
+	TestLoopbackKvPartitionRefusals(&stack);
 	printf("test_system_loopback: ALL OK\n");
 	return(0);
 }

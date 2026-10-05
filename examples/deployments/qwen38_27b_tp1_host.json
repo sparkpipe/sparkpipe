@@ -30,6 +30,7 @@
       "transport_host": "spark5",
       "adapter_configuration_path": "config/qwen38_27b_tp1_rank0.json",
       "kv_backing_directory": "/home/spark5/kvcache/qwen38/tp1.q27b.bf16",
+      "kv_partition": "/",
       "kv_backing_maximum_bytes": 8589934592,
       "control_endpoint": {
         "kind": "tcp",

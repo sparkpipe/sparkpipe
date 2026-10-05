@@ -30,6 +30,7 @@
       "transport_host": "spark0",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark0/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark0/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -45,6 +46,7 @@
       "transport_host": "spark1",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark1/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark1/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -60,6 +62,7 @@
       "transport_host": "spark2",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark2/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark2/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -75,6 +78,7 @@
       "transport_host": "spark3",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark3/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark3/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -90,6 +94,7 @@
       "transport_host": "spark4",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark4/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark4/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -105,6 +110,7 @@
       "transport_host": "spark5",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark5/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark5/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -120,6 +126,7 @@
       "transport_host": "spark6",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark6/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark6/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -135,6 +142,7 @@
       "transport_host": "spark7",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark7/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark7/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -150,6 +158,7 @@
       "transport_host": "spark8",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark8/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark8/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -165,6 +174,7 @@
       "transport_host": "spark9",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/spark9/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/spark9/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -180,6 +190,7 @@
       "transport_host": "sparka",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/sparka/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/sparka/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -195,6 +206,7 @@
       "transport_host": "sparkb",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/sparkb/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/sparkb/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
@@ -210,6 +222,7 @@
       "transport_host": "sparkc",
       "adapter_configuration_path": "config/qwen38_27b_flash_stage.json",
       "kv_backing_directory": "/home/sparkc/kvcache/qwen36/pp13.bf16",
+      "kv_partition": "/home/sparkc/kvcache",
       "kv_backing_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",

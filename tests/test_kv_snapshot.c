@@ -722,6 +722,26 @@ static void SnapTestEvictionQueuesDemotion(const char *directory)
 	SparkKvSnapshotStoreClose(&store);
 }
 
+static void SnapTestEvictionPrefersLowPriority(const char *directory)
+{
+	static SnapFixture source;
+	SparkKvSnapshotStore store;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1u << 24u,1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SnapFixtureOpen(&source,&store,0x6au) == 0);
+	source.cache.admission_priority = 7u;
+	SnapPublishOne(&source,2u,1u,90u,0x3cu);
+	source.cache.admission_priority = 1u;
+	SnapPublishOne(&source,3u,2u,91u,0x4du);
+	source.cache.admission_priority = 0u;
+	CHECK(SparkKvPageCacheReleaseLane(&source.cache,1u,2u) == SPARK_STATUS_OK && SparkKvPageCacheReleaseLane(&source.cache,2u,3u) == SPARK_STATUS_OK);
+	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_OK && SnapIdentityValid(&source,90u) != 0u && SnapIdentityValid(&source,91u) == 0u);
+	CHECK(source.snapshot.evicted_unsaved_count == 1u && source.snapshot.demote_queued_count == 1u);
+	CHECK(SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && source.snapshot.save_count == 1u);
+	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_OK && SnapEntryCount(&source) == 0u && source.snapshot.evicted_unsaved_count == 1u);
+	SnapFixtureClose(&source);
+	SparkKvSnapshotStoreClose(&store);
+}
+
 static void SnapTestQueueFullSkips(const char *directory)
 {
 	static SnapFixture source;
@@ -937,6 +957,10 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestEvictionQueuesDemotion(directory);
+	SnapRemoveTree(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestEvictionPrefersLowPriority(directory);
 	SnapRemoveTree(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);

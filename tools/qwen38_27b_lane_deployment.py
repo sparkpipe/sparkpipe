@@ -232,6 +232,7 @@ def resident_deployment(hosts: list[str], runtime_root: str, kv_root: str,
             "transport_host": host,
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory": kv_root,
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": kv_maximum_bytes,
             "control_endpoint": {
                 "kind": "tcp",

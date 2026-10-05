@@ -74,6 +74,7 @@ document = {
       'transport_host': f'spark{format(r, \"x\")}-fabric',
       'adapter_configuration_path': 'config/dsv4_pro_tp4_pp4_stage.json',
       'kv_backing_directory': f'/home/spark{format(r, \"x\")}/kvcache/dsv4_pro/tp4_pp4.bf16',
+      'kv_partition': '/',
       'kv_backing_maximum_bytes': 4398046511104,
       'control_endpoint': {'kind': 'tcp', 'host': f'spark{format(r, \"x\")}', 'port': 20480},
     } for r in range(16)

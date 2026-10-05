@@ -36,6 +36,7 @@
    "transport_host": "spark0-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark0/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -51,6 +52,7 @@
    "transport_host": "spark1-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark1/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -66,6 +68,7 @@
    "transport_host": "spark2-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark2/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -81,6 +84,7 @@
    "transport_host": "spark3-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark3/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -96,6 +100,7 @@
    "transport_host": "spark4-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark4/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -111,6 +116,7 @@
    "transport_host": "spark5-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark5/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -126,6 +132,7 @@
    "transport_host": "spark6-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark6/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -141,6 +148,7 @@
    "transport_host": "spark7-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark7/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -156,6 +164,7 @@
    "transport_host": "spark8-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark8/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -171,6 +180,7 @@
    "transport_host": "spark9-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/spark9/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -186,6 +196,7 @@
    "transport_host": "sparka-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/sparka/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -201,6 +212,7 @@
    "transport_host": "sparkb-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/sparkb/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -216,6 +228,7 @@
    "transport_host": "sparkc-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/sparkc/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -231,6 +244,7 @@
    "transport_host": "sparkd-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/sparkd/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -246,6 +260,7 @@
    "transport_host": "sparke-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/sparke/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",
@@ -261,6 +276,7 @@
    "transport_host": "sparkf-fabric",
    "adapter_configuration_path": "config/dsv4_pro_tp4_pp4_stage.json",
    "kv_backing_directory": "/home/sparkf/kvcache/dsv4_pro/tp4_pp4.bf16",
+   "kv_partition": "/",
    "kv_backing_maximum_bytes": 17179869184,
    "control_endpoint": {
     "kind": "tcp",

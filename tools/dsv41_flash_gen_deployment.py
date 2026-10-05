@@ -141,6 +141,7 @@ def resident_deployment() -> dict:
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory":
                 RUNTIME_ROOT.format(host=host) + "/kvcache",
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": 0,
             "control_endpoint": {
                 "kind": "tcp",

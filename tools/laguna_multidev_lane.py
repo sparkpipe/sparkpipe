@@ -224,6 +224,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "transport_host": host,
             "adapter_configuration_path": "config/adapter.json",
             "kv_backing_directory": os.path.join(runtime_root, "kvcache"),
+            "kv_partition": "/",
             "kv_backing_maximum_bytes": kv_backing_bytes,
             "control_endpoint": {
                 "kind": "tcp",
