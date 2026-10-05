@@ -1,0 +1,2 @@
++126
+KV pager tiers: a full backing store queues new work behind sequences outside the wave instead of failing it, a store whose parks fail degrades to recompute-only prefix reuse with logged transitions, and the arena parks pages by request priority and deadline before recency.

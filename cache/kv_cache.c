@@ -760,6 +760,8 @@ SparkStatus SparkKvCacheArenaAcquireBlock(
     arena->epoch += 1u;
     block->flags = SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED;
     block->reference_count = 0u;
+    block->keep_priority = 0u;
+    block->keep_deadline_ns = 0u;
     block->free_next = SPARK_KV_CACHE_NO_BLOCK;
     block->generation += 1u;
     block->last_used_epoch = arena->epoch;
@@ -1102,6 +1104,16 @@ static uint32_t SparkKvCacheBlockIsBetterEvictionVictim(
 {
     int64_t keepness;
 
+    if (block->keep_priority != victim->keep_priority)
+    {
+        return block->keep_priority < victim->keep_priority;
+    }
+    if (block->keep_deadline_ns != victim->keep_deadline_ns)
+    {
+        return victim->keep_deadline_ns != 0u &&
+            (block->keep_deadline_ns == 0u ||
+             block->keep_deadline_ns > victim->keep_deadline_ns);
+    }
     if (block->reference_count != victim->reference_count)
     {
         return block->reference_count < victim->reference_count;
@@ -1219,6 +1231,12 @@ static SparkStatus SparkKvCacheArenaEvictResidentBlock(
         if (status != SPARK_STATUS_OK)
         {
             return status;
+        }
+        if (arena->park_degraded != 0u)
+        {
+            arena->park_degraded = 0u;
+            fprintf(stderr, "KV-STORE-RECOVERED page=%u: parks succeed again and prefix pages spill again\n",
+                block->logical_block_index);
         }
         block->flags |= SPARK_KV_CACHE_BLOCK_FLAG_BACKING_VALID;
         block->flags &= ~(SPARK_KV_CACHE_BLOCK_FLAG_DIRTY |
@@ -1344,6 +1362,12 @@ static SparkStatus SparkKvCacheArenaTrimResidentBlocksWithPrefetchProtection(
                 victim->logical_block_index,
                 SparkKvCacheArenaParkFailedCount(arena),
                 (unsigned long long)arena->park_stall_count);
+            if (arena->park_degraded == 0u)
+            {
+                arena->park_degraded = 1u;
+                arena->park_degraded_count += 1u;
+                fprintf(stderr, "KV-STORE-DEGRADED parks fail with an I/O error: unused prefix pages are discarded instead of spilled and new work waits for running sequences until a park succeeds\n");
+            }
         }
         if (status != SPARK_STATUS_OK)
         {
@@ -1657,6 +1681,8 @@ SparkStatus SparkKvCacheArenaFreeBlock(
     }
     arena->epoch += 1u;
     block->flags = 0u;
+    block->keep_priority = 0u;
+    block->keep_deadline_ns = 0u;
     block->generation += 1u;
     block->last_used_epoch = arena->epoch;
     block->free_next = arena->free_logical_block_head;

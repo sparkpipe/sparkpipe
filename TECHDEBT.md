@@ -500,20 +500,35 @@ citations refer to that commit.
   (`modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c:1327`)
   modules keep their own anonymous page stores, so their spilled KV still dies
   with the process until they move onto the binding (B07–B11).
-- Prefix-cache eviction ranks victims by the highest priority of the requests
-  that published or reused an entry, then prefers entries the snapshot store
-  holds, then age (`SparkKvPageCacheSelectVictim`,
-  `SparkKvPageCacheResidentVictim`), but deadlines are not considered and the
-  arena's choice of which resident page to park is still reuse value and
-  recency. Close it with deadline-aware ranking, proven on the fleet by an
-  oversubscribed run with two priority classes where the higher class keeps
-  its hits and its TTFT stays flat.
-- A full backing store fails the admission: after the page cache relieves
-  backing (releasing an idle restored page's record or evicting an unused
-  entry) and still finds no slot, the admission answers `CAPACITY_EXCEEDED`
-  and logs `KV-BACKING-FULL` (`cache/kv_page_cache.c`,
-  `SparkKvPageCacheBackingOutcome`). Close it by feeding store occupancy into
-  engine admission so a full store queues new work instead of failing it.
+- KV eviction follows request priority and deadline.
+  - Prefix-cache entries rank by the highest priority of the requests that
+    published or reused them, then by whether the snapshot store holds
+    them, then by age (`SparkKvPageCacheSelectVictim`,
+    `SparkKvPageCacheResidentVictim`).
+  - Each admission stamps its lanes' pages with the wave's priority and
+    deadline, and a sequence's release clears them.
+  - The arena parks the lowest priority first, then the latest deadline,
+    then by reuse value and recency
+    (`SparkKvCacheBlockIsBetterEvictionVictim`).
+
+  Two limits remain: a page shared across waves keeps the stamp of the
+  last admission that used it, and the deadline is the wave's latest.
+  Not yet fleet-proven: close it with an oversubscribed run with two
+  priority classes, where the higher class keeps its hits and its TTFT
+  stays flat.
+- A full backing store queues new work instead of failing it. The page
+  cache first relieves backing: it releases an idle restored page's record
+  or evicts an unused entry. If the store is still full (`KV-BACKING-FULL`)
+  for an admission whose lanes are all new sequences, and a live sequence
+  outside the wave could free backing, the lane transactions answer `BUSY`
+  (`SparkKvLaneTransactionsPrepare`, `cache/kv_page_cache.c`). The engine
+  then retries with backoff inside the in-flight budget; the binding's
+  arena line counts these as `backing_full_queued`. Two cases still answer
+  `CAPACITY_EXCEEDED`: nothing outside the wave is live, or a running lane
+  needs backing for its growth or restore. Waiting there could leave waves
+  stalled on each other for the whole budget. Not yet fleet-proven: close
+  it with a one-Spark run on a small backing quota where new requests wait
+  and complete as running ones finish, and no running request fails.
 - The KV NVMe write budget covers only the engines on the common binding. weightd
   hands each KV pool a share of `--kv-write-budget-bytes-per-day`, and the
   binding stops snapshot saves and discards parked pages for recompute once
@@ -536,13 +551,23 @@ citations refer to that commit.
   its completion to the KV binding's completion thread
   (`SparkStageKvBindingFinishAsync`). Close it by moving glm5_next onto the KV
   binding.
-- A page whose park keeps failing stays resident with `PARK_FAILED`
-  (`cache/kv_cache.c`, `SparkKvCacheArenaEvictResidentBlock`); once every
-  resident page has failed, the last-resort retry also fails and the
-  admission answers `IO_ERROR` with `KV-PARK-STALLED`. A persistent disk
-  error therefore stops admissions that need a park. Close it by failing the
-  backing store over to a second path or degrading to recompute-only prefix
-  reuse with a logged transition.
+- A store whose parks fail degrades to recompute-only prefix reuse.
+  - The first last-resort park failure (`KV-PARK-STALLED`) logs
+    `KV-STORE-DEGRADED` (`cache/kv_cache.c`).
+  - From then on, the page cache discards unused prefix pages instead of
+    spilling them (`SparkKvPageCacheDiscardInsteadOfSpill`), so they are
+    recomputed on their next use.
+  - New work whose admission still stalls waits for running sequences
+    (`BUSY`).
+  - The next successful park logs `KV-STORE-RECOVERED`.
+  - The binding's arena line reports `degraded`, `degraded_entries`,
+    `degraded_discards` and `park_stall_queued`.
+
+  A running lane that needs a park still fails with `IO_ERROR`, and
+  snapshot saves to the same disk fail on their own. Not yet
+  fleet-proven: close it on one Spark by remounting the backing directory
+  read-only mid-run; requests should keep completing through recompute,
+  and the log should show the degrade and the recovery.
 - Left out on purpose (2026-10-02):
   `include/sparkpipe/family/module/spark_module_open_kv_tier.h:27-31` treats
   an unset `SPARK_<FAMILY>_STAGE_KV_STORE` as provider `none`: it opens a

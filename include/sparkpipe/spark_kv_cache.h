@@ -344,6 +344,9 @@ typedef struct SparkKvCacheBlock
     uint64_t last_used_epoch;
     uintptr_t key_device_address;
     uintptr_t value_device_address;
+    uint32_t keep_priority;
+    uint32_t keep_reserved;
+    uint64_t keep_deadline_ns;
 } SparkKvCacheBlock;
 
 typedef SparkStatus (*SparkKvCacheEvictFunction)(
@@ -447,6 +450,8 @@ typedef struct SparkKvCacheArena
     uint64_t resident_capacity_stall_count;
     uint64_t retained_block_count;
     uint64_t released_reference_count;
+    uint32_t park_degraded;
+    uint64_t park_degraded_count;
 } SparkKvCacheArena;
 
 SparkStatus SparkKvCacheEstimateCapacity(

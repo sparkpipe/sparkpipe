@@ -229,6 +229,7 @@ typedef struct SparkKvPageCache
 	SparkKvPageCacheSnapshot *snapshot;
 	SparkKvWriteBudget *write_budget;
 	uint32_t admission_priority;
+	uint64_t admission_deadline_ns;
 	uint32_t reserved_priority;
 	SparkKvPageCacheEntry *entries;
 	SparkKvPageCacheSequence *sequences;
@@ -246,6 +247,9 @@ typedef struct SparkKvPageCache
 	uint32_t backing_full_logged;
 	uint64_t backing_reclaim_count;
 	uint64_t backing_full_count;
+	uint64_t backing_full_queued_count;
+	uint64_t park_stall_queued_count;
+	uint64_t degraded_discard_count;
 }
 SparkKvPageCache;
 

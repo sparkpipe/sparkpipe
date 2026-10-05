@@ -133,10 +133,12 @@ SparkStatus SparkKvPageCacheInitialize(
 
 static SparkStatus SparkKvPageCacheRelieveBacking(SparkKvPageCache *cache,const uint32_t *protected_pages,uint32_t protected_count);
 static void SparkKvPageCacheBackingOutcome(SparkKvPageCache *cache,SparkStatus status,uint32_t backing_full);
+static uint32_t SparkKvPageCacheDiscardInsteadOfSpill(SparkKvPageCache *cache,uint64_t slots_needed);
+static void SparkKvPageCacheClearSequenceKeep(SparkKvPageCache *cache,const SparkKvPageCacheSequence *sequence);
 
 static SparkStatus SparkKvPageCachePrefetchRelieved(SparkKvPageCache *cache,const uint32_t *pages,uint32_t page_count,uint32_t page)
 {
-	uint64_t before = cache->kv_cache_arena->park_backing_full_count;
+	uint64_t before = cache->kv_cache_arena->park_backing_full_count,stalls = cache->kv_cache_arena->park_stall_count;
 	uint32_t backing_full = 0u;
 	SparkStatus status;
 	status = SparkKvPageStorePrefetch(cache->page_store,cache->kv_cache_arena,pages[page]);
@@ -148,6 +150,9 @@ static SparkStatus SparkKvPageCachePrefetchRelieved(SparkKvPageCache *cache,cons
 			break;
 		status = SparkKvPageStorePrefetch(cache->page_store,cache->kv_cache_arena,pages[page]);
 	}
+	if ( status == SPARK_STATUS_IO_ERROR && cache->kv_cache_arena->park_stall_count != stalls &&
+		SparkKvPageCacheDiscardInsteadOfSpill(cache,1u) != 0u )
+		status = SparkKvPageStorePrefetch(cache->page_store,cache->kv_cache_arena,pages[page]);
 	SparkKvPageCacheBackingOutcome(cache,status,backing_full);
 	return(status);
 }
@@ -1031,6 +1036,7 @@ SparkStatus SparkKvPageCacheReleaseLane(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( cache->live_sequence_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	SparkKvPageCacheClearSequenceKeep(cache,sequence);
 	status = SparkKvPageCacheReleaseMutable(cache,sequence);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -1088,14 +1094,13 @@ static SparkStatus SparkKvPageCacheAcquireLogicalPage(SparkKvPageCache *cache,ui
 	return(status);
 }
 
-static void SparkKvPageCacheDiscardForBudget(SparkKvPageCache *cache,uint64_t slots_needed);
 
 static SparkStatus SparkKvPageCacheMarkPageResident(SparkKvPageCache *cache,uint32_t logical_page_index)
 {
-	uint64_t before = cache->kv_cache_arena->park_backing_full_count;
+	uint64_t before = cache->kv_cache_arena->park_backing_full_count,stalls = cache->kv_cache_arena->park_stall_count;
 	uint32_t victim,backing_full = 0u;
 	SparkStatus status;
-	SparkKvPageCacheDiscardForBudget(cache,1u);
+	(void)SparkKvPageCacheDiscardInsteadOfSpill(cache,1u);
 	status = SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,logical_page_index);
 	while ( status == SPARK_STATUS_CAPACITY_EXCEEDED && cache->kv_cache_arena->park_backing_full_count != before )
 	{
@@ -1105,6 +1110,9 @@ static SparkStatus SparkKvPageCacheMarkPageResident(SparkKvPageCache *cache,uint
 			break;
 		status = SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,logical_page_index);
 	}
+	if ( status == SPARK_STATUS_IO_ERROR && cache->kv_cache_arena->park_stall_count != stalls &&
+		SparkKvPageCacheDiscardInsteadOfSpill(cache,1u) != 0u )
+		status = SparkKvCacheArenaMarkBlockResident(cache->kv_cache_arena,logical_page_index);
 	SparkKvPageCacheBackingOutcome(cache,status,backing_full);
 	if ( status != SPARK_STATUS_CAPACITY_EXCEEDED || backing_full != 0u )
 		return(status);
@@ -1130,22 +1138,28 @@ static uint32_t SparkKvPageCacheResidentLivePages(const SparkKvPageCache *cache)
 
 static uint64_t SparkKvPageCacheNowNs(void);
 
-static void SparkKvPageCacheDiscardForBudget(SparkKvPageCache *cache,uint64_t slots_needed)
+static uint32_t SparkKvPageCacheDiscardInsteadOfSpill(SparkKvPageCache *cache,uint64_t slots_needed)
 {
 	SparkKvCacheArena *arena = cache->kv_cache_arena;
 	uint64_t free_slots;
-	uint32_t victim;
-	if ( cache->write_budget == 0 )
-		return;
+	uint32_t victim,discarded = 0u;
+	if ( cache->write_budget == 0 && arena->park_degraded == 0u )
+		return(0u);
 	for (;;)
 	{
 		free_slots = arena->resident_block_capacity > arena->resident_block_count ? arena->resident_block_capacity - arena->resident_block_count : 0u;
-		if ( free_slots >= slots_needed || SparkKvWriteBudgetAllows(cache->write_budget,cache->page_store->page_bytes,SparkKvPageCacheNowNs()) != 0u )
-			return;
+		if ( free_slots >= slots_needed )
+			return(discarded);
+		if ( arena->park_degraded == 0u && SparkKvWriteBudgetAllows(cache->write_budget,cache->page_store->page_bytes,SparkKvPageCacheNowNs()) != 0u )
+			return(discarded);
 		victim = SparkKvPageCacheResidentVictim(cache);
 		if ( victim == SPARK_KV_PAGE_CACHE_NO_INDEX || SparkKvPageCacheEvictEntry(cache,victim) != SPARK_STATUS_OK )
-			return;
-		cache->write_budget->discarded_pages++;
+			return(discarded);
+		discarded++;
+		if ( arena->park_degraded != 0u )
+			cache->degraded_discard_count++;
+		else
+			cache->write_budget->discarded_pages++;
 	}
 }
 
@@ -1161,12 +1175,12 @@ static SparkStatus SparkKvPageCacheSpanRoom(SparkKvPageCache *cache,const SparkK
 	}
 	if ( fixed + arena->resident_block_count <= arena->resident_block_capacity )
 		return(SPARK_STATUS_OK);
-	uint64_t before = arena->park_backing_full_count;
+	uint64_t before = arena->park_backing_full_count,stalls = arena->park_stall_count;
 	uint32_t backing_full = 0u;
 	SparkStatus status;
 	for (index=0u; index<sequence->mutable_page_count; index++)
 		held[index] = SparkKvPageCacheMutablePage(sequence,index);
-	SparkKvPageCacheDiscardForBudget(cache,fixed);
+	(void)SparkKvPageCacheDiscardInsteadOfSpill(cache,fixed);
 	status = SparkKvCacheArenaTrimResidentBlocks(arena,held,sequence->mutable_page_count,
 		(uint32_t)(arena->resident_block_capacity - fixed),0);
 	while ( status == SPARK_STATUS_CAPACITY_EXCEEDED && arena->park_backing_full_count != before )
@@ -1178,6 +1192,10 @@ static SparkStatus SparkKvPageCacheSpanRoom(SparkKvPageCache *cache,const SparkK
 		status = SparkKvCacheArenaTrimResidentBlocks(arena,held,sequence->mutable_page_count,
 			(uint32_t)(arena->resident_block_capacity - fixed),0);
 	}
+	if ( status == SPARK_STATUS_IO_ERROR && arena->park_stall_count != stalls &&
+		SparkKvPageCacheDiscardInsteadOfSpill(cache,fixed) != 0u )
+		status = SparkKvCacheArenaTrimResidentBlocks(arena,held,sequence->mutable_page_count,
+			(uint32_t)(arena->resident_block_capacity - fixed),0);
 	SparkKvPageCacheBackingOutcome(cache,status,backing_full);
 	return(status);
 }
@@ -1661,6 +1679,40 @@ SparkStatus SparkKvPageCacheBuildLaneTable(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkKvPageCacheStampKeep(SparkKvPageCache *cache,const uint32_t *logical_pages,uint32_t page_count,uint32_t priority,uint64_t deadline_ns)
+{
+	uint32_t index;
+	for (index=0u; index<page_count; index++)
+		if ( logical_pages[index] < cache->kv_cache_arena->logical_block_count )
+		{
+			cache->kv_cache_arena->blocks[logical_pages[index]].keep_priority = priority;
+			cache->kv_cache_arena->blocks[logical_pages[index]].keep_deadline_ns = deadline_ns;
+		}
+}
+
+static void SparkKvPageCacheClearSequenceKeep(SparkKvPageCache *cache,const SparkKvPageCacheSequence *sequence)
+{
+	uint32_t entry_index,index,page;
+	for (entry_index=sequence->terminal_entry_index; entry_index < cache->entry_capacity; entry_index=cache->entries[entry_index].parent_entry_index)
+	{
+		page = cache->entries[entry_index].logical_page_index;
+		if ( page < cache->kv_cache_arena->logical_block_count )
+		{
+			cache->kv_cache_arena->blocks[page].keep_priority = 0u;
+			cache->kv_cache_arena->blocks[page].keep_deadline_ns = 0u;
+		}
+	}
+	for (index=0u; index<sequence->mutable_page_count; index++)
+	{
+		page = SparkKvPageCacheMutablePage(sequence,index);
+		if ( page < cache->kv_cache_arena->logical_block_count )
+		{
+			cache->kv_cache_arena->blocks[page].keep_priority = 0u;
+			cache->kv_cache_arena->blocks[page].keep_deadline_ns = 0u;
+		}
+	}
+}
+
 static SparkStatus SparkKvPageCacheRollbackPinnedLane(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane,
@@ -1723,6 +1775,7 @@ SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
 		status = SparkKvCacheArenaPinResidentTable(cache->kv_cache_arena,logical_pages + prepared_count,(page_count - prepared_count),physical_pages + prepared_count);
 	if ( status != SPARK_STATUS_OK )
 		return(SparkKvPageCacheRollbackPinnedLane(cache,lane,logical_pages,pinned_count,mutation_flags,status));
+	SparkKvPageCacheStampKeep(cache,logical_pages,page_count,cache->admission_priority,cache->admission_deadline_ns);
 	*page_count_out = page_count;
 	*mutation_flags_out = mutation_flags;
 	return(SPARK_STATUS_OK);
@@ -2769,7 +2822,7 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvLaneTransactionsPrepare(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
 {
 	SparkKvLaneTransaction *owner;
 	const SparkModelDriverCacheLane *lane;
@@ -2830,6 +2883,39 @@ static SparkStatus SparkKvLaneTransactionsPrepare(SparkKvLaneTransactions *trans
 	SPARK_RETURN(status);
 }
 
+static uint32_t SparkKvLaneTransactionsNewWorkCanWait(const SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t slot,index,member;
+	for (index=0u; index<request->cache_lane_count; index++)
+		if ( transactions->cache->sequences[request->cache_lanes[index].resident_sequence_slot].sequence_id == request->cache_lanes[index].sequence_id )
+			return(0u);
+	for (slot=0u; slot<transactions->cache->sequence_capacity; slot++)
+	{
+		if ( transactions->cache->sequences[slot].sequence_id == 0u )
+			continue;
+		for (member=0u,index=0u; index<request->cache_lane_count; index++)
+			member |= request->cache_lanes[index].resident_sequence_slot == slot ? 1u : 0u;
+		if ( member == 0u )
+			return(1u);
+	}
+	return(0u);
+}
+
+static SparkStatus SparkKvLaneTransactionsPrepare(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+{
+	uint64_t backing_full_before = transactions->cache->backing_full_count,stalls_before = transactions->cache->kv_cache_arena->park_stall_count;
+	SparkStatus status = SparkKvLaneTransactionsPrepareLanes(transactions,request);
+	uint32_t backing_full = status == SPARK_STATUS_CAPACITY_EXCEEDED && transactions->cache->backing_full_count != backing_full_before ? 1u : 0u;
+	uint32_t stalled = status == SPARK_STATUS_IO_ERROR && transactions->cache->kv_cache_arena->park_stall_count != stalls_before ? 1u : 0u;
+	if ( (backing_full == 0u && stalled == 0u) || SparkKvLaneTransactionsNewWorkCanWait(transactions,request) == 0u )
+		return(status);
+	if ( backing_full != 0u )
+		transactions->cache->backing_full_queued_count++;
+	else
+		transactions->cache->park_stall_queued_count++;
+	return(SPARK_STATUS_BUSY);
+}
+
 static SparkStatus SparkKvLaneTransactionsRelease(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
 {
 	const SparkModelDriverCacheLane *lane;
@@ -2865,6 +2951,7 @@ SparkStatus SparkKvLaneTransactionsAdmit(SparkKvLaneTransactions *transactions,c
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	transactions->cache->admission_priority = request->priority;
+	transactions->cache->admission_deadline_ns = request->deadline_time_ns;
 	if ( (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 		return(request->admission_flags == 0u ? SparkKvLaneTransactionsRelease(transactions,request) : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE )
@@ -2966,6 +3053,7 @@ static SparkStatus SparkKvLaneTransactionFinish(SparkKvLaneTransactions *transac
 	{
 		lane.context_token_count += extra_tokens;
 		transactions->cache->admission_priority = owner->request.priority;
+		transactions->cache->admission_deadline_ns = owner->request.deadline_time_ns;
 		status = SparkKvPageCacheCompleteLane(transactions->cache,&lane);
 		if ( status == SPARK_STATUS_OK && (lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u )
 			SparkKvPageCacheMarkSave(transactions->cache,resident_slot);
