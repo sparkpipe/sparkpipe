@@ -1256,7 +1256,7 @@ static SparkStatus SparkStageKvBindingAdoptPool(SparkStageKvBinding *binding)
 static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 {
 	SparkStageKvPoolSeal *seal = (SparkStageKvPoolSeal *)binding->kv_pool.metadata;
-	uint32_t count = 0u;
+	uint32_t count = 0u,entry,valid = 0u,private_entries = 0u,nonresident = 0u;
 	SparkStatus status;
 	if ( seal == 0 || binding->mutex_initialized == 0u || binding->kv_pool_seal_cleared == 0u )
 		return;
@@ -1280,7 +1280,21 @@ static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 	seal->record_count = count;
 	__atomic_store_n(&seal->sealed,1u,__ATOMIC_RELEASE);
 	binding->kv_pool_sealed_pages = count;
-	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count);
+	for (entry=0u; entry<binding->page_cache.entry_capacity; entry++)
+	{
+		const SparkKvPageCacheEntry *candidate = &binding->page_cache.entries[entry];
+		if ( (candidate->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) == 0u )
+			continue;
+		valid++;
+		if ( (candidate->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u )
+			private_entries++;
+		else if ( candidate->logical_page_index >= binding->arena.logical_block_count ||
+			(binding->arena.blocks[candidate->logical_page_index].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
+			binding->arena.blocks[candidate->logical_page_index].resident_slot_index == SPARK_KV_CACHE_NO_RESIDENT_SLOT )
+			nonresident++;
+	}
+	fprintf(stderr,"%s kv pool sealed generation=%llu resident_pages=%u entries=%u private=%u nonresident=%u orphaned=%u\n",binding->module_tag,(unsigned long long)binding->kv_pool.pool_generation,count,
+		valid,private_entries,nonresident,valid - private_entries - nonresident - count);
 }
 
 static SparkStatus SparkStageKvBindingAttachWriteBudget(SparkStageKvBinding *binding)

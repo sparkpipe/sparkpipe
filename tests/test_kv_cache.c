@@ -2350,7 +2350,9 @@ static int32_t SparkTestKvPairedEviction(SparkKvPageStore *stores,uint8_t *sourc
 	}
 	if ( status != SPARK_STATUS_OK || memcmp(source,output,SPARK_TEST_BLOCK_BYTES) != 0 || SparkKvCacheArenaUnpinResidentTable(&fixture.kv.arena,&page,1u) != SPARK_STATUS_OK || SparkKvLaneTransactionsReset(&transactions) != SPARK_STATUS_OK )
 		return(-72);
-	if ( fixture.cache.evicted_entry_count != 1u || stores[0].backing_page_count != 0u || stores[1].backing_page_count != 0u || SparkKvPageStoreReadback(&stores[0],page,generation,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_NOT_FOUND || SparkKvPageStoreReadback(&stores[1],page,generation,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_NOT_FOUND )
+	if ( fixture.cache.evicted_entry_count != 0u || fixture.cache.live_sequence_count != 0u || SparkKvPageCachePrefixReady(&fixture.cache,&lane.publish_identity,4u) != 1u )
+		return(-78);
+	if ( SparkKvPageCacheReleaseAll(&fixture.cache) != SPARK_STATUS_OK || fixture.cache.evicted_entry_count != 1u || stores[0].backing_page_count != 0u || stores[1].backing_page_count != 0u || SparkKvPageStoreReadback(&stores[0],page,generation,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_NOT_FOUND || SparkKvPageStoreReadback(&stores[1],page,generation,(uintptr_t)output,SPARK_TEST_BLOCK_BYTES) != SPARK_STATUS_NOT_FOUND )
 		return(-73);
 	return(0);
 }
@@ -2468,7 +2470,8 @@ static void SparkTestKvResetPrefixChains(void)
 {
 	SparkTestKvTransactions fixture;
 	SparkModelDriverCacheLane lane;
-	uint32_t root,physical,index;
+	SparkModelDriverCacheIdentity identity;
+	uint32_t root,physical,index,valid = 0u;
 	SparkTestKvTransactionsInitialize(&fixture,1u);
 	SparkTestKvPageLane(&lane,10u,0u,0u,4u);
 	SparkTestKvPagePublish(&lane,4u,31u);
@@ -2484,17 +2487,29 @@ static void SparkTestKvResetPrefixChains(void)
 	SparkTestKvPagePublish(&lane,8u,33u);
 	(void)SparkTestKvPageBegin(&fixture.pages,&lane);
 	assert(SparkKvPageCacheCompleteLane(&fixture.pages.cache,&lane) == SPARK_STATUS_OK);
-	assert(SparkKvLaneTransactionsReset(&fixture.transactions) == SPARK_STATUS_BUSY);
+	assert(SparkKvLaneTransactionsReset(&fixture.transactions) == SPARK_STATUS_OK);
 	assert(fixture.pages.kv.blocks[root].reference_count == 1u);
 	assert(SparkKvCacheArenaUnpinResidentTable(&fixture.pages.kv.arena,&root,1u) == SPARK_STATUS_OK);
-	assert(SparkKvLaneTransactionsReset(&fixture.transactions) == SPARK_STATUS_OK);
+	assert(fixture.pages.cache.live_sequence_count == 0u);
 	for (index=0u; index<SPARK_TEST_LOGICAL_BLOCK_COUNT; index++)
+		if ( (fixture.pages.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+		{
+			assert(fixture.pages.entries[index].reference_count == (fixture.pages.entries[index].page_count == 1u ? 2u : 0u));
+			assert((fixture.pages.kv.blocks[fixture.pages.entries[index].logical_page_index].flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u);
+			valid++;
+		}
+	assert(valid == 3u);
+	for (index=0u; index<3u; index++)
 	{
-		assert((fixture.pages.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) == 0u);
-		assert((fixture.pages.kv.blocks[index].flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u);
+		SparkTestKvIdentity(&identity,(uint8_t)(31u + index));
+		assert(SparkKvPageCachePrefixReady(&fixture.pages.cache,&identity,index == 0u ? 4u : 8u) == 1u);
 	}
-	assert(fixture.pages.cache.live_sequence_count == 0u && fixture.pages.kv.arena.resident_block_count == 0u);
 	assert(SparkKvLaneTransactionsReset(&fixture.transactions) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,30u,2u,8u,9u);
+	SparkTestKvPagePrefix(&lane,8u,32u);
+	(void)SparkTestKvPageBegin(&fixture.pages,&lane);
+	assert(fixture.pages.cache.live_sequence_count == 1u);
+	printf("a session reset releases every lane and keeps the published prefix chains allocated and findable\n");
 }
 
 

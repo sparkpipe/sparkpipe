@@ -771,7 +771,7 @@ static void SnapTestQueueFullSkips(const char *directory)
 	SparkKvSnapshotStoreClose(&store);
 }
 
-static void SnapTestResetCancelsPending(const char *directory)
+static void SnapTestResetKeepsPublishedSaves(const char *directory)
 {
 	static SnapFixture source;
 	SparkKvSnapshotStore store;
@@ -781,7 +781,7 @@ static void SnapTestResetCancelsPending(const char *directory)
 	SparkModelDriverAdmissionRequest request;
 	SparkKvPageCacheSaveWork work;
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
-	uint32_t logical[16],physical[16];
+	uint32_t logical[16],physical[16],entries,allocated;
 	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1u << 24u,1u << 20u) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x68u) == 0);
 	SnapPrefill(&source,pages,states);
@@ -791,19 +791,16 @@ static void SnapTestResetCancelsPending(const char *directory)
 	lanes[0].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
 	SnapReleaseRequest(&request,lanes,1u,1u);
 	CHECK(SparkKvLaneTransactionsAdmit(&transactions,&request) == SPARK_STATUS_OK && SparkKvPageCacheSavePending(&source.cache) == 1u);
-	CHECK(SparkKvLaneTransactionsReset(&transactions) == SPARK_STATUS_OK);
-	CHECK(source.snapshot.save_cancelled_count == 1u && SparkKvPageCacheSavePending(&source.cache) == 0u && source.snapshot.save_count == 0u);
-	CHECK(SnapEntryCount(&source) == 0u && SnapAllocatedPages(&source) == 0u);
-	SnapPrefill(&source,pages,states);
-	SnapReleaseRequest(&request,lanes,1u,2u);
-	CHECK(SparkKvLaneTransactionsAdmit(&transactions,&request) == SPARK_STATUS_OK && SparkKvPageCacheSavePending(&source.cache) == 1u);
+	entries = SnapEntryCount(&source);
+	allocated = SnapAllocatedPages(&source);
+	CHECK(entries != 0u && allocated != 0u);
 	CHECK(SparkKvPageCacheSaveTake(&source.cache,&work) == SPARK_STATUS_OK && source.snapshot.in_flight == 1u);
-	CHECK(SparkKvLaneTransactionsReset(&transactions) == SPARK_STATUS_BUSY && source.snapshot.save_cancelled_count == 1u);
+	CHECK(SparkKvLaneTransactionsReset(&transactions) == SPARK_STATUS_BUSY && source.snapshot.save_cancelled_count == 0u);
 	CHECK(SparkKvPageCacheSaveFinish(&source.cache,&work,SparkKvPageCacheSaveCopy(&source.cache,&work)) == SPARK_STATUS_OK);
-	CHECK(source.snapshot.in_flight == 0u && SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK);
-	CHECK(source.snapshot.in_flight == 0u && SparkKvPageCacheSavePending(&source.cache) == 0u && source.snapshot.save_count == 1u);
-	CHECK(SparkKvLaneTransactionsReset(&transactions) == SPARK_STATUS_OK && source.snapshot.save_cancelled_count == 1u);
-	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 3u);
+	CHECK(SparkKvLaneTransactionsReset(&transactions) == SPARK_STATUS_OK && source.snapshot.save_cancelled_count == 0u);
+	CHECK(source.cache.live_sequence_count == 0u && SnapEntryCount(&source) == entries && SnapAllocatedPages(&source) == allocated);
+	CHECK(SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && source.snapshot.in_flight == 0u && SparkKvPageCacheSavePending(&source.cache) == 0u && source.snapshot.save_count == 1u);
+	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count != 0u && store.write_count == source.snapshot.save_page_count);
 	SnapFixtureClose(&source);
 	SparkKvSnapshotStoreClose(&store);
 }
@@ -964,7 +961,7 @@ int main(void)
 	SnapRemoveTree(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
-	SnapTestResetCancelsPending(directory);
+	SnapTestResetKeepsPublishedSaves(directory);
 	SnapRemoveTree(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);

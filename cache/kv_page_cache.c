@@ -3402,7 +3402,7 @@ static SparkStatus SparkKvPageCacheEvictUnreferencedChains(SparkKvPageCache *cac
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkKvPageCacheReleaseAll(SparkKvPageCache *cache)
+SparkStatus SparkKvPageCacheReleaseSequences(SparkKvPageCache *cache)
 {
 	SparkStatus status;
 	uint32_t slot;
@@ -3415,6 +3415,14 @@ SparkStatus SparkKvPageCacheReleaseAll(SparkKvPageCache *cache)
 			if ( status != SPARK_STATUS_OK )
 				SPARK_RETURN(status);
 		}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvPageCacheReleaseAll(SparkKvPageCache *cache)
+{
+	SparkStatus status = SparkKvPageCacheReleaseSequences(cache);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	return(SparkKvPageCacheEvictUnreferencedChains(cache));
 }
 
@@ -3446,6 +3454,5 @@ SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions)
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}
-	SparkKvPageCacheSaveCancelAll(cache);
-	return(SparkKvPageCacheReleaseAll(cache));
+	return(SparkKvPageCacheReleaseSequences(cache));
 }
