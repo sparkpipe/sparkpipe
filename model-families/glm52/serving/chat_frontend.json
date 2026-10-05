@@ -5,6 +5,7 @@
       "model_dir": "model",
       "engine": "http://127.0.0.1:8446",
       "context_tokens": 65536,
+      "warm_queue": {"depth": 64, "wait_seconds": 600, "activation_url": null},
       "stop_tokens": ["<|endoftext|>", "<|user|>", "<|observation|>"],
       "template_defaults": {},
       "template_kwargs": ["reasoning_effort", "clear_thinking"],

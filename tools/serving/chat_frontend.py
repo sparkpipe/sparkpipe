@@ -63,6 +63,70 @@ def longest_marker_prefix(text, markers):
     return longest
 
 
+class WarmGate:
+    POLL_SECONDS = 1.0
+
+    def __init__(self, model_id, engine, spec):
+        if not isinstance(spec, dict) or set(spec) != {"depth", "wait_seconds", "activation_url"}:
+            raise SystemExit(f"chat_frontend: {model_id} needs warm_queue with exactly depth, wait_seconds and activation_url (null when an operator starts the engine)")
+        self.model_id = model_id
+        self.engine = engine
+        self.depth = int(spec["depth"])
+        self.wait_seconds = float(spec["wait_seconds"])
+        self.activation_url = spec["activation_url"]
+        if self.depth <= 0 or self.wait_seconds <= 0 or (self.activation_url is not None and not isinstance(self.activation_url, str)):
+            raise SystemExit(f"chat_frontend: {model_id} warm_queue depth and wait_seconds must be positive and activation_url a URL or null")
+        self.event = asyncio.Event()
+        self.poller = None
+        self.waiting = 0
+        self.activations = 0
+        self.released = 0
+        self.overflowed = 0
+        self.expired = 0
+
+    def state(self):
+        return {"waiting": self.waiting, "depth": self.depth, "wait_seconds": self.wait_seconds, "activations": self.activations,
+                "released": self.released, "overflowed": self.overflowed, "expired": self.expired}
+
+    async def poll(self, session):
+        if self.activation_url is not None:
+            self.activations += 1
+            try:
+                async with session.post(self.activation_url, json={"model": self.model_id}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    await response.read()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+                print(json.dumps({"event": "warm_activation_failed", "model": self.model_id, "error": str(error)}), file=sys.stderr, flush=True)
+        while True:
+            try:
+                async with session.get(self.engine + "/health", timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 200:
+                        self.event.set()
+                        return
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                pass
+            await asyncio.sleep(self.POLL_SECONDS)
+
+    async def wait_ready(self, session, timeout):
+        if timeout <= 0:
+            self.expired += 1
+            raise RequestError(503, "warm_queue_expired", f"the {self.model_id} engine did not become ready within {self.wait_seconds:g} s")
+        if self.waiting >= self.depth:
+            self.overflowed += 1
+            raise RequestError(503, "warm_queue_full", f"the {self.model_id} engine is not ready and {self.waiting} requests already wait for it")
+        if self.poller is None or self.poller.done():
+            self.event.clear()
+            self.poller = asyncio.ensure_future(self.poll(session))
+        self.waiting += 1
+        try:
+            await asyncio.wait_for(asyncio.shield(self.event.wait()), timeout)
+        except asyncio.TimeoutError:
+            self.expired += 1
+            raise RequestError(503, "warm_queue_expired", f"the {self.model_id} engine did not become ready within {self.wait_seconds:g} s")
+        finally:
+            self.waiting -= 1
+        self.released += 1
+
+
 class Model:
     def __init__(self, spec, base):
         directory = (base / spec["model_dir"]).resolve()
@@ -83,6 +147,7 @@ class Model:
         self.reasoning = spec["reasoning"]
         self.tool_calls = spec["tool_calls"]
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
+        self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
 
     def logprob(self, pair):
         text = self.tokenizer.decode([pair[0]], skip_special_tokens=False)
@@ -324,6 +389,7 @@ class Frontend:
                     states[model.id] = {"status": response.status, "engine": await response.json(content_type=None)}
             except (aiohttp.ClientError, TimeoutError) as error:
                 states[model.id] = {"status": 0, "error": str(error)}
+            states[model.id]["warm_queue"] = model.gate.state()
         healthy = all(state["status"] == 200 for state in states.values())
         return web.json_response({"ok": healthy, "models": states}, status=200 if healthy else 503)
 
@@ -385,6 +451,8 @@ class Frontend:
                         payload = json.loads(text)
                     except json.JSONDecodeError:
                         payload = error_body("engine_error", text.strip() or f"engine status {response.status}")
+                    if response.status == 503 and payload.get("status") == "starting":
+                        raise RequestError(503, "engine_starting", f"the {model.id} engine is starting: {text}")
                     raise RequestError(response.status, payload.get("error", {}).get("code", "engine_error"), payload.get("error", {}).get("message", text))
                 async for raw in response.content:
                     line = raw.decode("utf-8", "replace").strip()
@@ -396,6 +464,22 @@ class Frontend:
                     yield json.loads(data)
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
+
+    async def engine_stream(self, model, engine_body):
+        deadline = None
+        while True:
+            started = False
+            try:
+                async for chunk in self.engine_events(model, engine_body):
+                    started = True
+                    yield chunk
+                return
+            except RequestError as error:
+                if started or error.code not in ("engine_starting", "engine_unavailable"):
+                    raise
+            now = asyncio.get_running_loop().time()
+            deadline = deadline if deadline is not None else now + model.gate.wait_seconds
+            await model.gate.wait_ready(self.session, deadline - now)
 
     def logprob_entries(self, model, chunk, expected):
         tokens = chunk.get("tokens", [])
@@ -418,7 +502,7 @@ class Frontend:
         finish = None
         usage = None
         logprobs = engine_body.get("logprobs")
-        async for chunk in self.engine_events(model, engine_body):
+        async for chunk in self.engine_stream(model, engine_body):
             if "error" in chunk:
                 raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
             if logprobs is not None:
