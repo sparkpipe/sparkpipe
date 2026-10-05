@@ -24,7 +24,9 @@ static __device__ float LmBlockSum(float value, float *shared)
 	if ( threadIdx.x == 0u )
 		shared[0] = value;
 	__syncthreads();
-	return(shared[0]);
+	value = shared[0];
+	__syncthreads();
+	return(value);
 }
 
 template<uint32_t THREADS>
@@ -45,7 +47,9 @@ static __device__ float LmBlockMax(float value, float *shared)
 	if ( threadIdx.x == 0u )
 		shared[0] = value;
 	__syncthreads();
-	return(shared[0]);
+	value = shared[0];
+	__syncthreads();
+	return(value);
 }
 
 template<uint32_t THREADS, class Weight>
