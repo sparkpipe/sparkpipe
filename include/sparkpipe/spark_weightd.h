@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 10u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 11u
 #define SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN 8u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
@@ -80,7 +80,13 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT 42u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH 43u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH_RESULT 44u
-#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 10u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE 45u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE_RESULT 46u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT 47u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_EXPORT_RESULT 48u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS 49u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS_RESULT 50u
+#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 11u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
@@ -267,7 +273,8 @@ _Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
 #define SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX 65536u
 
 #define SPARK_WEIGHTD_KV_POOL_COUNT_MAX 32u
-#define SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX (SPARK_WEIGHTD_EXPORT_BATCH_MAX - 1u)
+#define SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX 4096u
+#define SPARK_WEIGHTD_KV_POOL_EXPORT_MAX SPARK_WEIGHTD_EXPORT_BATCH_MAX
 #define SPARK_WEIGHTD_KV_POOL_KEY_BYTES 32u
 #define SPARK_WEIGHTD_KV_POOL_LABEL_BYTES 64u
 #define SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX (256ull * 1024ull * 1024ull)
@@ -736,6 +743,8 @@ typedef struct SparkWeightdIpcKvPoolAttach
     SparkWeightdIpcHeader header;
     uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES];
     uint64_t device_bytes;
+    uint64_t minimum_bytes;
+    uint64_t chunk_bytes;
     uint64_t metadata_bytes;
     char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
 } SparkWeightdIpcKvPoolAttach;
@@ -747,8 +756,10 @@ typedef struct SparkWeightdIpcKvPoolAttachResult
     uint32_t reattached;
     uint64_t pool_generation;
     uint64_t chunk_bytes;
+    uint32_t chunk_capacity;
     uint32_t chunk_count;
     uint32_t metadata_fd_count;
+    uint32_t reserved0;
     uint64_t device_bytes;
     uint64_t metadata_bytes;
     uint64_t kv_reserve_bytes;
@@ -756,8 +767,64 @@ typedef struct SparkWeightdIpcKvPoolAttachResult
     uint64_t write_budget_bytes_per_day;
 } SparkWeightdIpcKvPoolAttachResult;
 
+typedef struct SparkWeightdIpcKvPoolResize
+{
+    SparkWeightdIpcHeader header;
+    uint64_t pool_generation;
+    uint32_t target_chunks;
+    uint32_t reserved0;
+} SparkWeightdIpcKvPoolResize;
+
+typedef struct SparkWeightdIpcKvPoolResizeResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t chunk_count;
+    uint32_t wanted_chunks;
+    uint32_t reserved0;
+    uint64_t kv_committed_bytes;
+} SparkWeightdIpcKvPoolResizeResult;
+
+typedef struct SparkWeightdIpcKvPoolExport
+{
+    SparkWeightdIpcHeader header;
+    uint64_t pool_generation;
+    uint32_t first_chunk;
+    uint32_t chunk_count;
+} SparkWeightdIpcKvPoolExport;
+
+typedef struct SparkWeightdIpcKvPoolExportResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t first_chunk;
+    uint32_t chunk_count;
+    uint32_t reserved0;
+} SparkWeightdIpcKvPoolExportResult;
+
+typedef struct SparkWeightdIpcKvPoolStatus
+{
+    SparkWeightdIpcHeader header;
+    uint64_t pool_generation;
+} SparkWeightdIpcKvPoolStatus;
+
+typedef struct SparkWeightdIpcKvPoolStatusResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t chunk_count;
+    uint32_t chunk_capacity;
+    uint32_t wanted_chunks;
+    uint64_t reclaim_wanted_bytes;
+    uint64_t kv_reserve_bytes;
+    uint64_t kv_committed_bytes;
+} SparkWeightdIpcKvPoolStatusResult;
+
 #if !defined(__cplusplus)
-_Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 136u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 96u,"kv pool frames are fixed for ABI 10");
+_Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 104u &&
+    sizeof(SparkWeightdIpcKvPoolResize) == 40u && sizeof(SparkWeightdIpcKvPoolResizeResult) == 48u &&
+    sizeof(SparkWeightdIpcKvPoolExport) == 40u && sizeof(SparkWeightdIpcKvPoolExportResult) == 40u &&
+    sizeof(SparkWeightdIpcKvPoolStatus) == 32u && sizeof(SparkWeightdIpcKvPoolStatusResult) == 64u,"kv pool frames are fixed for ABI 11");
 #endif
 
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
@@ -1024,6 +1091,8 @@ typedef struct SparkWeightdKvPoolRequest
 {
     uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES];
     uint64_t device_bytes;
+    uint64_t minimum_bytes;
+    uint64_t chunk_bytes;
     uint64_t metadata_bytes;
     const char *label;
 } SparkWeightdKvPoolRequest;
@@ -1037,16 +1106,32 @@ typedef struct SparkWeightdKvPoolGrant
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
     uint64_t write_budget_bytes_per_day;
+    uint32_t chunk_capacity;
     uint32_t chunk_count;
     uint32_t reattached;
-    int chunk_fds[SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX];
     int metadata_fd;
 } SparkWeightdKvPoolGrant;
+
+typedef struct SparkWeightdKvPoolState
+{
+    uint32_t chunk_count;
+    uint32_t chunk_capacity;
+    uint32_t wanted_chunks;
+    uint32_t reserved0;
+    uint64_t reclaim_wanted_bytes;
+    uint64_t kv_reserve_bytes;
+    uint64_t kv_committed_bytes;
+} SparkWeightdKvPoolState;
 
 SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,
     const SparkWeightdKvPoolRequest *request,SparkWeightdKvPoolGrant *grant,
     uint64_t timeout_nanoseconds);
-void SparkWeightdKvPoolGrantClose(SparkWeightdKvPoolGrant *grant);
+SparkStatus SparkWeightdClientKvPoolExport(SparkWeightdClient *client,uint64_t pool_generation,
+    uint32_t first_chunk,uint32_t chunk_count,int *fds,uint64_t timeout_nanoseconds);
+SparkStatus SparkWeightdClientKvPoolResize(SparkWeightdClient *client,uint64_t pool_generation,
+    uint32_t target_chunks,SparkWeightdKvPoolState *state,uint64_t timeout_nanoseconds);
+SparkStatus SparkWeightdClientKvPoolStatus(SparkWeightdClient *client,uint64_t pool_generation,
+    SparkWeightdKvPoolState *state,uint64_t timeout_nanoseconds);
 uint64_t SparkWeightdServerKvCommittedBytes(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerKvPoolCount(const SparkWeightdServer *server);
 

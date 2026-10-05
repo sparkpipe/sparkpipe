@@ -944,7 +944,7 @@ static void TestRestartAdoptsDevicePages(void)
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.restore_page_count == 0u && counters.store_file_count == 0u);
-	assert(counters.pool_reattached == 1u && counters.pool_adopted_pages == 2u && counters.pool_generation == generation && counters.pool_device_bytes == BINDING.kv_pool.device_bytes);
+	assert(counters.pool_reattached == 1u && counters.pool_adopted_pages == 2u && counters.pool_generation == generation && counters.pool_device_bytes == (uint64_t)BINDING.kv_pool.mapped_count * BINDING.kv_pool.chunk_bytes);
 	Unload();
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	assert(BINDING.kv_pool_adopted_pages == 2u);
@@ -1225,9 +1225,10 @@ static void TestWeightdOwnsPool(void)
 	committed = SparkWeightdServerKvCommittedBytes(TestKvServer);
 	lane_bytes = (uint64_t)TEST_LANES * BINDING.pages_per_sequence * sizeof(uint32_t);
 	assert(generation != 0u && BINDING.kv_pool.reattached == 0u && BINDING.kv_pool.client != 0);
-	assert(BINDING.region_base[0] == (uint8_t *)BINDING.kv_pool.device_base);
-	assert(BINDING.region_base[1] > BINDING.region_base[0] && (uint8_t *)BINDING.page_table > BINDING.region_base[1]);
-	assert((uint8_t *)BINDING.page_table + lane_bytes <= (uint8_t *)BINDING.kv_pool.device_base + BINDING.kv_pool.device_bytes);
+	assert((uint8_t *)BINDING.page_table == (uint8_t *)BINDING.kv_pool.device_base && BINDING.region_base[0] >= (uint8_t *)BINDING.page_table + lane_bytes);
+	assert(BINDING.region_base[1] >= BINDING.region_base[0] + (uint64_t)TEST_PHYSICAL * BINDING.region_packed_page_bytes[0]);
+	assert(BINDING.region_base[1] + (uint64_t)TEST_PHYSICAL * BINDING.region_packed_page_bytes[1] <= (uint8_t *)BINDING.kv_pool.device_base + BINDING.kv_pool.device_bytes);
+	assert(BINDING.kv_pool.mapped_count == BINDING.kv_pool.chunk_capacity && BINDING.kv_pool_minimum_chunks == BINDING.kv_pool.chunk_capacity && BINDING.arena.resident_block_capacity == TEST_PHYSICAL);
 	assert(committed >= BINDING.kv_pool.device_bytes && SparkWeightdServerKvPoolCount(TestKvServer) >= 1u);
 	Unload();
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);

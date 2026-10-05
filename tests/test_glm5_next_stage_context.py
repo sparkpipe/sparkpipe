@@ -757,14 +757,20 @@ static uint32_t LAZY_OPEN_CALLS,LAZY_OPEN_MODE;
 static SparkWeightdLazyPack OPEN_PACK;
 SparkStatus SparkWeightdAttachRequested(void) { return(SPARK_STATUS_OK); }
 static uint64_t KV_POOL_GENERATION;
-SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,uint64_t timeout,SparkWeightdKvPoolMapping *mapping)
+SparkStatus SparkWeightdKvPoolGranularity(uint64_t *bytes) { *bytes = 65536u; return(SPARK_STATUS_OK); }
+SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,const uint64_t *chunk_offsets,uint64_t timeout,SparkWeightdKvPoolMapping *mapping)
 {
 	(void)timeout;
-	assert(request != 0 && mapping != 0 && request->device_bytes != 0u && request->label != 0);
+	assert(request != 0 && chunk_offsets != 0 && mapping != 0 && request->device_bytes != 0u && request->label != 0);
+	assert(request->chunk_bytes != 0u && request->device_bytes % request->chunk_bytes == 0u && request->minimum_bytes <= request->device_bytes);
 	memset(mapping,0,sizeof(*mapping));
 	if ( cudaMalloc(&mapping->device_base,(size_t)request->device_bytes) != cudaSuccess )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	mapping->device_bytes = request->device_bytes;
+	mapping->chunk_bytes = request->chunk_bytes;
+	mapping->chunk_capacity = (uint32_t)(request->device_bytes / request->chunk_bytes);
+	mapping->chunk_count = mapping->chunk_capacity;
+	mapping->mapped_count = mapping->chunk_capacity;
 	mapping->metadata = (uint8_t *)calloc(1u,(size_t)request->metadata_bytes);
 	mapping->metadata_bytes = request->metadata_bytes;
 	mapping->write_budget_bytes_per_day = UINT64_C(1) << 40;
@@ -772,6 +778,26 @@ SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,uint6
 	return(mapping->metadata != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 cudaError_t cudaDeviceSynchronize(void) { return(cudaSuccess); }
+SparkStatus SparkWeightdKvPoolGrow(SparkWeightdKvPoolMapping *mapping,uint32_t target,SparkWeightdKvPoolState *state,uint64_t timeout)
+{
+	(void)target;(void)timeout;
+	memset(state,0,sizeof(*state));
+	state->chunk_count = mapping->mapped_count;
+	return(SPARK_STATUS_OK);
+}
+SparkStatus SparkWeightdKvPoolShrink(SparkWeightdKvPoolMapping *mapping,uint32_t target,SparkWeightdKvPoolState *state,uint64_t timeout)
+{
+	(void)mapping;(void)target;(void)state;(void)timeout;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+SparkStatus SparkWeightdKvPoolStatus(SparkWeightdKvPoolMapping *mapping,SparkWeightdKvPoolState *state,uint64_t timeout)
+{
+	(void)timeout;
+	memset(state,0,sizeof(*state));
+	state->chunk_count = mapping->mapped_count;
+	state->chunk_capacity = mapping->chunk_capacity;
+	return(SPARK_STATUS_OK);
+}
 void SparkWeightdKvPoolUnmap(SparkWeightdKvPoolMapping *mapping)
 {
 	if ( mapping->device_base != 0 )

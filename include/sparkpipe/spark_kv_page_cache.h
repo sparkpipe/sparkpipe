@@ -277,6 +277,7 @@ SparkStatus SparkKvPageCacheRestoreFinish(SparkKvPageCache *cache,SparkKvPageCac
 SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKvPageCacheResidentRecord *records,uint32_t capacity,uint32_t *count_out);
 SparkStatus SparkKvPageCacheAdoptResident(SparkKvPageCache *cache,const SparkKvPageCacheResidentRecord *records,uint32_t count,uint32_t *adopted_out);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
+SparkStatus SparkKvPageCacheVacateResident(SparkKvPageCache *cache,uint32_t limit,uint32_t *kept_limit,uint32_t *vacated_pages);
 SparkStatus SparkKvPageCachePrepareLane(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane,

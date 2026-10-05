@@ -66,9 +66,18 @@ binding (GLM Full, GLM Flash, K3): each engine maps one weightd KV pool, and
 weightd admits pools only inside `SPARK_WEIGHTD_KV_RESERVE_BYTES`, carved out
 of `SPARK_WEIGHTD_DEVICE_BYTES_MAX` (weight arenas get the rest). The agent
 passes every `SPARK_WEIGHTD_*` variable in its own environment to weightd, so
-set the reserve in the agent unit's environment on every node. Size it to at
-least the sum of the `device_bytes` that each resident engine logs on its
-`kv pool weightd` line. Set `SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY` too:
+set the reserve in the agent unit's environment on every node. Pools resize
+inside the reserve by chunk: an engine attaches with its full size when the
+reserve is free and with at least its minimum (one full-length sequence)
+otherwise, waiting while idle engines give chunks back. An engine whose pool
+evicts or refuses for capacity grows it (`kv pool grew`), and weightd records
+the chunks it could not grant; an engine without that pressure for four 50 ms
+ticks sees those wanted chunks, vacates its top pages (discarding saved prefix
+pages, parking the rest) and shrinks (`kv pool shrank`). Each engine logs
+`chunks=granted/total minimum_chunks=` and `pages=limit/physical` on its
+`kv pool weightd` line; size the reserve to at least the sum of the minimums
+for the engines a node runs, and to the sum of the totals for them to run
+unshared. Set `SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY` too:
 the KV NVMe write budget for the node (drive endurance times capacity per
 day). Each pool gets a share proportional to its size; once an engine spends
 its share, its snapshot saves are skipped and parked pages are discarded and
