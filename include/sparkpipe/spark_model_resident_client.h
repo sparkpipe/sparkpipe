@@ -79,6 +79,18 @@ typedef struct SparkModelResidentClientView
 	uint64_t completed_count;
 } SparkModelResidentClientView;
 
+typedef struct SparkModelResidentStatusReport
+{
+	uint64_t generation;
+	uint64_t received_ns;
+	uint64_t client_generation;
+	uint32_t status;
+	uint32_t rank_index;
+	uint32_t stage_index;
+	uint32_t residentd_pid;
+	SparkModelServingAdapterSnapshot adapter_snapshot;
+} SparkModelResidentStatusReport;
+
 #define SPARK_MODEL_RESIDENT_CLIENT_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkModelResidentClientConfiguration))
 #define SPARK_MODEL_RESIDENT_CLIENT_POLL_DESCRIPTOR_BYTES \
@@ -124,6 +136,8 @@ SparkStatus SparkModelResidentClientGetPollDescriptor(
 SparkStatus SparkModelResidentClientGetView(
 	const SparkModelResidentClient *client,
 	SparkModelResidentClientView *view);
+SparkStatus SparkModelResidentClientRequestStatus(SparkModelResidentClient *client);
+SparkStatus SparkModelResidentClientGetStatus(const SparkModelResidentClient *client,SparkModelResidentStatusReport *report);
 
 #ifdef __cplusplus
 }

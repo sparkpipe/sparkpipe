@@ -27,6 +27,7 @@ static SparkStatus SPARK_FAMILY(ServingSnapshot)(
 	snapshot->completed_count = driver_snapshot.completed_count;
 	snapshot->rejected_count = driver_snapshot.rejected_count + SPARK_FAMILY(ServingOrphanCompletionCount)(state);
 	snapshot->resident_sequence_count = driver_snapshot.resident_sequence_count;
+	snapshot->kv_store = driver_snapshot.kv_store;
 	snapshot->resident_token_count = driver_snapshot.resident_token_count;
 	snapshot->kv_token_capacity = driver_snapshot.kv_token_capacity;
 	snapshot->device_memcpy_bytes_per_submit = driver_snapshot.device_memcpy_bytes_per_submit;

@@ -29,6 +29,7 @@ void SparkSha256DigestToHex(const uint8_t digest[SPARK_SHA256_DIGEST_BYTES], cha
 SparkStatus SparkSha256Bytes(const void *data, size_t data_bytes, char hex[SPARK_SHA256_HEX_BYTES]);
 SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES]);
 bool SparkSha256HexIsValid(const char *hex);
+SparkStatus SparkSha256HexToDigest(const char *hex, uint8_t digest[SPARK_SHA256_DIGEST_BYTES]);
 
 #ifdef __cplusplus
 }

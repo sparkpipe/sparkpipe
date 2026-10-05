@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_model_driver_support.h"
+#include "sparkpipe/spark_weight_codec.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -240,9 +241,6 @@ static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const Spar
 	table->sequences = binding->sequences;
 	table->hash_bucket_heads = binding->hash_bucket_heads;
 	table->entry_indices_by_logical_page = binding->entry_indices_by_logical_page;
-	table->model_id = configuration->model_id;
-	table->model_revision = configuration->model_revision;
-	table->cache_layout_fingerprint = binding->layout_fingerprint;
 }
 
 static SparkStatus SparkStageKvBindingAttachCopier(SparkStageKvBinding *binding)
@@ -343,23 +341,286 @@ static SparkStatus SparkStageKvBindingStartAsync(SparkStageKvBinding *binding)
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
+static void SparkStageKvDigestU32(SparkSha256Context *context,uint32_t value)
 {
-	SparkKvModelTable table;
-	uint64_t lane_entries;
+	uint8_t bytes[sizeof(uint32_t)];
+	uint32_t index;
+	for (index=0u; index<sizeof(bytes); index++)
+		bytes[index] = (uint8_t)(value >> (8u * index));
+	SparkSha256Update(context,bytes,sizeof(bytes));
+}
+
+static void SparkStageKvDigestU64(SparkSha256Context *context,uint64_t value)
+{
+	uint8_t bytes[sizeof(uint64_t)];
+	uint32_t index;
+	for (index=0u; index<sizeof(bytes); index++)
+		bytes[index] = (uint8_t)(value >> (8u * index));
+	SparkSha256Update(context,bytes,sizeof(bytes));
+}
+
+static void SparkStageKvDigestText(SparkSha256Context *context,const char *text)
+{
+	size_t length = strlen(text);
+	SparkStageKvDigestU32(context,(uint32_t)length);
+	SparkSha256Update(context,text,length);
+}
+
+static uint32_t SparkStageKvDigestIsZero(const uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
+{
+	uint32_t index;
+	uint8_t any = 0u;
+	for (index=0u; index<SPARK_SHA256_DIGEST_BYTES; index++)
+		any |= digest[index];
+	return(any == 0u ? 1u : 0u);
+}
+
+static const char *SparkStageKvLayoutInvalid(const SparkStageKvLayoutIdentity *identity)
+{
 	uint32_t region;
-	int written;
-	SparkStatus status;
-	cudaError_t error;
-	if ( binding == 0 || configuration == 0 || configuration->ledger == 0 || configuration->module_tag == 0 || configuration->block_token_count == 0u || configuration->region_count == 0u ||
-		configuration->region_count > SPARK_STAGE_KV_MAX_REGIONS || configuration->resident_sequence_capacity == 0u || configuration->max_sequence_positions == 0u || configuration->pipeline_slot_count == 0u ||
-		configuration->model_id == 0 || configuration->model_revision == 0 || configuration->layout_fingerprint == 0 || configuration->physical_page_count == 0u )
+	if ( identity->model_id == 0 || identity->model_id[0] == '\0' )
+		return("model_id");
+	if ( identity->model_revision == 0 || identity->model_revision[0] == '\0' )
+		return("model_revision");
+	if ( SparkStageKvDigestIsZero(identity->pack_sha256) != 0u )
+		return("pack_sha256");
+	if ( SparkStageKvDigestIsZero(identity->contract_sha256) != 0u )
+		return("contract_sha256");
+	if ( SparkStageKvDigestIsZero(identity->driver_sha256) != 0u )
+		return("driver_sha256");
+	if ( SparkWeightCodecIsKnown(identity->expert_codec) == 0u )
+		return("expert_codec");
+	if ( SparkWeightCodecIsKnown(identity->kv_codec) == 0u )
+		return("kv_codec");
+	if ( identity->context_shard.degree > 1u && identity->context_shard.rank >= identity->context_shard.degree )
+		return("context_shard");
+	if ( identity->block_token_count == 0u )
+		return("block_token_count");
+	if ( identity->region_count == 0u || identity->region_count > SPARK_STAGE_KV_MAX_REGIONS )
+		return("region_count");
+	for (region=0u; region<identity->region_count; region++)
+		if ( identity->regions[region].layer_count == 0u || identity->regions[region].layer_page_bytes == 0u )
+			return("region");
+	return(identity->page_bytes == 0u ? "page_bytes" : 0);
+}
+
+SparkStatus SparkStageKvLayoutDigest(const SparkStageKvLayoutIdentity *identity,uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],const char **invalid_input)
+{
+	static const char tag[] = "sparkpipe-kv-layout-v1";
+	SparkSha256Context context;
+	const char *invalid;
+	uint32_t region,sharded;
+	if ( invalid_input != 0 )
+		*invalid_input = 0;
+	invalid = identity == 0 || layout_sha256 == 0 ? "identity" : SparkStageKvLayoutInvalid(identity);
+	if ( invalid != 0 )
+	{
+		if ( invalid_input != 0 )
+			*invalid_input = invalid;
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	sharded = identity->context_shard.degree > 1u ? 1u : 0u;
+	SparkSha256Initialize(&context);
+	SparkSha256Update(&context,tag,sizeof(tag) - 1u);
+	SparkStageKvDigestText(&context,identity->model_id);
+	SparkStageKvDigestText(&context,identity->model_revision);
+	SparkSha256Update(&context,identity->pack_sha256,SPARK_SHA256_DIGEST_BYTES);
+	SparkSha256Update(&context,identity->contract_sha256,SPARK_SHA256_DIGEST_BYTES);
+	SparkSha256Update(&context,identity->driver_sha256,SPARK_SHA256_DIGEST_BYTES);
+	SparkStageKvDigestU32(&context,identity->expert_codec);
+	SparkStageKvDigestU32(&context,identity->kv_codec);
+	SparkStageKvDigestU32(&context,sharded != 0u ? identity->context_shard.degree : 1u);
+	SparkStageKvDigestU32(&context,sharded != 0u ? identity->context_shard.rank : 0u);
+	SparkStageKvDigestU32(&context,sharded != 0u ? identity->context_shard.grain : 0u);
+	SparkStageKvDigestU32(&context,identity->block_token_count);
+	SparkStageKvDigestU32(&context,identity->region_count);
+	for (region=0u; region<identity->region_count; region++)
+	{
+		SparkStageKvDigestU32(&context,identity->regions[region].layout);
+		SparkStageKvDigestU32(&context,identity->regions[region].layer_count);
+		SparkStageKvDigestU64(&context,identity->regions[region].layer_page_bytes);
+	}
+	SparkStageKvDigestU64(&context,identity->page_bytes);
+	SparkStageKvDigestU64(&context,identity->state_page_bytes);
+	SparkSha256Finalize(&context,layout_sha256);
+	return(SPARK_STATUS_OK);
+}
+
+static uint64_t SparkStageKvAlign(uint64_t bytes)
+{
+	return((bytes + SPARK_KV_SNAPSHOT_ALIGNMENT - 1u) / SPARK_KV_SNAPSHOT_ALIGNMENT * SPARK_KV_SNAPSHOT_ALIGNMENT);
+}
+
+static SparkStatus SparkStageKvBindingLayout(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
+{
+	SparkStageKvLayoutIdentity identity;
+	const char *invalid = 0;
+	SparkStatus status;
+	memset(&identity,0,sizeof(identity));
+	status = SparkKvSnapshotBinaryDigest(configuration->driver_symbol,identity.driver_sha256,binding->driver_path,sizeof(binding->driver_path));
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv binding refused: cannot hash the driver binary status=%s\n",binding->module_tag,SparkStatusToString(status));
+		SPARK_RETURN(status);
+	}
+	identity.model_id = configuration->model_id;
+	identity.model_revision = configuration->model_revision;
+	memcpy(identity.pack_sha256,configuration->pack_sha256,SPARK_SHA256_DIGEST_BYTES);
+	memcpy(identity.contract_sha256,configuration->contract_sha256,SPARK_SHA256_DIGEST_BYTES);
+	identity.expert_codec = configuration->expert_codec;
+	identity.kv_codec = configuration->kv_codec;
+	identity.context_shard = configuration->context_shard;
+	identity.block_token_count = binding->block_token_count;
+	identity.region_count = binding->region_count;
+	memcpy(identity.regions,binding->regions,sizeof(identity.regions));
+	identity.page_bytes = binding->page_bytes;
+	identity.state_page_bytes = binding->page_cache.state_store != 0 ? binding->page_cache.state_store->page_bytes : 0u;
+	status = SparkStageKvLayoutDigest(&identity,binding->layout_sha256,&invalid);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv binding refused: layout digest input %s is invalid\n",binding->module_tag,invalid != 0 ? invalid : "identity");
+		SPARK_RETURN(status);
+	}
+	SparkSha256DigestToHex(binding->layout_sha256,binding->layout_hex);
+	binding->snapshot_page_file_bytes = SparkStageKvAlign(sizeof(SparkKvSnapshotFileHeader)) +
+		SparkStageKvAlign((uint64_t)binding->pages_per_sequence * sizeof(SparkKvPageCacheSnapshotLink)) +
+		SparkStageKvAlign(binding->page_bytes) + (identity.state_page_bytes != 0u ? SparkStageKvAlign(identity.state_page_bytes) : 0u);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkStageKvBindingOpenStore(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
+{
+	SparkStatus status;
+	if ( binding->snapshot_page_file_bytes > configuration->snapshot_maximum_bytes )
+	{
+		fprintf(stderr,"%s kv binding refused: kv_snapshot_maximum_bytes %llu cannot hold one %llu-byte page file\n",binding->module_tag,
+			(unsigned long long)configuration->snapshot_maximum_bytes,(unsigned long long)binding->snapshot_page_file_bytes);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	status = SparkKvSnapshotStoreOpen(&binding->snapshot_store,configuration->snapshot_directory,configuration->snapshot_maximum_bytes,
+		binding->snapshot_page_file_bytes * SPARK_STAGE_KV_SNAPSHOT_QUEUE_PAGES);
+	if ( status != SPARK_STATUS_OK )
+		memset(&binding->snapshot_store,0,sizeof(binding->snapshot_store));
+	if ( status == SPARK_STATUS_BUSY )
+	{
+		fprintf(stderr,"%s kv binding refused: snapshot directory %s is locked by another engine\n",binding->module_tag,configuration->snapshot_directory);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv binding refused: snapshot store %s open status=%s\n",binding->module_tag,configuration->snapshot_directory,SparkStatusToString(status));
+		SPARK_RETURN(status);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkStageKvBindingAttachSnapshot(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration,uint64_t start_ns)
+{
+	uint64_t matching = 0u,foreign = 0u;
+	SparkStatus status;
+	binding->snapshot_links = (SparkKvPageCacheSnapshotLink *)calloc(binding->pages_per_sequence,sizeof(*binding->snapshot_links));
+	binding->snapshot_pending = (uint32_t *)calloc(binding->logical_page_count,sizeof(*binding->snapshot_pending));
+	binding->save_order = (SparkKvPageCacheSaveOrder *)calloc(binding->logical_page_count,sizeof(*binding->save_order));
+	if ( cudaHostAlloc((void **)&binding->snapshot_page,(size_t)binding->page_bytes,cudaHostAllocPortable) != cudaSuccess )
+		binding->snapshot_page = 0;
+	if ( binding->snapshot_links == 0 || binding->snapshot_pending == 0 || binding->save_order == 0 || binding->snapshot_page == 0 )
+	{
+		fprintf(stderr,"%s kv binding refused: cannot allocate snapshot buffers\n",binding->module_tag);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	memset(&binding->snapshot,0,sizeof(binding->snapshot));
+	binding->snapshot.store = &binding->snapshot_store;
+	memcpy(binding->snapshot.layout_sha256,binding->layout_sha256,SPARK_SHA256_DIGEST_BYTES);
+	binding->snapshot.page_capacity = binding->pages_per_sequence;
+	binding->snapshot.links = binding->snapshot_links;
+	binding->snapshot.page = binding->snapshot_page;
+	binding->snapshot.pending_terminals = binding->snapshot_pending;
+	binding->snapshot.pending_capacity = binding->logical_page_count;
+	status = SparkKvPageCacheAttachSnapshot(&binding->page_cache,&binding->snapshot);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv binding refused: snapshot attach status=%s\n",binding->module_tag,SparkStatusToString(status));
+		SPARK_RETURN(status);
+	}
+	(void)SparkKvSnapshotCountLayout(&binding->snapshot_store,binding->layout_sha256,&matching,&foreign);
+	fprintf(stderr,"%s kv snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu page_file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu evicted_at_open=%llu removed_temporaries=%llu driver=%s identity_us=%llu layout=%s\n",
+		binding->module_tag,configuration->snapshot_directory,(unsigned long long)binding->snapshot_store.maximum_bytes,(unsigned long long)binding->snapshot_store.queue_maximum_bytes,
+		(unsigned long long)binding->snapshot_page_file_bytes,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
+		(unsigned long long)matching,(unsigned long long)foreign,(unsigned long long)binding->snapshot_store.eviction_count,
+		(unsigned long long)binding->snapshot_store.removed_temporary_count,binding->driver_path,(unsigned long long)((SparkStageKvNowNs() - start_ns) / 1000u),binding->layout_hex);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkStageKvBindingOpenSnapshot(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
+{
+	uint64_t start_ns = SparkStageKvNowNs();
+	SparkStatus status;
+	status = SparkStageKvBindingLayout(binding,configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingOpenStore(binding,configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingAttachSnapshot(binding,configuration,start_ns);
+	SPARK_RETURN(status);
+}
+
+static const char *SparkStageKvBindingMissingIdentity(const SparkStageKvConfiguration *configuration)
+{
+	if ( configuration->model_id == 0 || configuration->model_id[0] == '\0' )
+		return("model_id");
+	if ( configuration->model_revision == 0 || configuration->model_revision[0] == '\0' )
+		return("model_revision");
+	if ( SparkStageKvDigestIsZero(configuration->pack_sha256) != 0u )
+		return("pack_sha256");
+	if ( SparkStageKvDigestIsZero(configuration->contract_sha256) != 0u )
+		return("contract_sha256");
+	if ( configuration->expert_codec == 0u )
+		return("expert_codec");
+	if ( configuration->kv_codec == 0u )
+		return("kv_codec");
+	return(configuration->driver_symbol == 0 ? "driver_symbol" : 0);
+}
+
+static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *configuration)
+{
+	const char *missing;
 	if ( configuration->backing_directory == 0 || configuration->backing_directory[0] == '\0' )
 	{
 		fprintf(stderr,"%s kv binding refused: the deployment names no kv_backing_directory\n",configuration->module_tag);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	missing = SparkStageKvBindingMissingIdentity(configuration);
+	if ( missing != 0 )
+	{
+		fprintf(stderr,"%s kv binding refused: layout identity input %s is missing\n",configuration->module_tag,missing);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( configuration->snapshot_directory == 0 || configuration->snapshot_directory[0] == '\0' )
+	{
+		fprintf(stderr,"%s kv binding refused: the deployment names no kv_snapshot_directory\n",configuration->module_tag);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( configuration->snapshot_maximum_bytes == 0u )
+	{
+		fprintf(stderr,"%s kv binding refused: kv_snapshot_maximum_bytes is zero\n",configuration->module_tag);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
+{
+	SparkKvModelTable table;
+	uint64_t lane_entries;
+	uint32_t region;
+	SparkStatus status;
+	cudaError_t error;
+	if ( binding == 0 || configuration == 0 || configuration->ledger == 0 || configuration->module_tag == 0 || configuration->block_token_count == 0u || configuration->region_count == 0u ||
+		configuration->region_count > SPARK_STAGE_KV_MAX_REGIONS || configuration->resident_sequence_capacity == 0u || configuration->max_sequence_positions == 0u || configuration->pipeline_slot_count == 0u ||
+		configuration->physical_page_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkStageKvBindingRefuse(configuration);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	memset(binding,0,sizeof(*binding));
 	binding->module_tag = configuration->module_tag;
 	binding->block_token_count = configuration->block_token_count;
@@ -370,11 +631,6 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->max_sequence_positions = configuration->max_sequence_positions;
 	binding->pipeline_slot_count = configuration->pipeline_slot_count;
 	binding->context_shard = configuration->context_shard;
-	written = SparkStageKvBindingContextSharded(configuration) != 0u ?
-		snprintf(binding->layout_fingerprint,sizeof(binding->layout_fingerprint),"%s-shard%ur%u",configuration->layout_fingerprint,configuration->context_shard.degree,configuration->context_shard.rank) :
-		snprintf(binding->layout_fingerprint,sizeof(binding->layout_fingerprint),"%s",configuration->layout_fingerprint);
-	if ( written < 0 || (size_t)written >= sizeof(binding->layout_fingerprint) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageKvBindingGeometry(binding,configuration);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -411,12 +667,14 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	if ( pthread_mutex_init(&binding->mutex,0) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	binding->mutex_initialized = 1u;
-	status = SparkStageKvBindingStartAsync(binding);
+	status = SparkStageKvBindingOpenSnapshot(binding,configuration);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingStartAsync(binding);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	fprintf(stderr,"%s kv binding logical_pages=%u physical_pages=%u pages_per_sequence=%u page_bytes=%llu regions=%u context_shard=%u/%u layout=%s\n",
 		binding->module_tag,binding->logical_page_count,binding->physical_page_count,binding->pages_per_sequence,(unsigned long long)binding->page_bytes,binding->region_count,
-		binding->context_shard.degree > 1u ? binding->context_shard.rank : 0u,binding->context_shard.degree > 1u ? binding->context_shard.degree : 1u,binding->layout_fingerprint);
+		binding->context_shard.degree > 1u ? binding->context_shard.rank : 0u,binding->context_shard.degree > 1u ? binding->context_shard.degree : 1u,binding->layout_hex);
 	return(SPARK_STATUS_OK);
 }
 
@@ -440,10 +698,23 @@ static void SparkStageKvBindingLogCounters(const SparkStageKvBinding *binding)
 		binding->page_store.backing_page_count,(unsigned long long)binding->page_cache.backing_reclaim_count);
 }
 
+static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
+{
+	uint32_t saved = 0u,unsaved = 0u,ineligible = 0u;
+	SparkStatus status;
+	if ( binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || binding->save_started == 0u )
+		return;
+	status = SparkStageKvBindingSaveAll(binding,SparkStageKvNowNs() + SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS,&saved,&unsaved,&ineligible);
+	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu save_deferred=%llu status=%s\n",
+		binding->module_tag,saved,unsaved,ineligible,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
+		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.save_deferred_count,SparkStatusToString(status));
+}
+
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 {
 	if ( binding == 0 )
 		return;
+	SparkStageKvBindingSaveAtDestroy(binding);
 	SparkStageKvBindingStop(binding);
 	if ( binding->page_cache.snapshot != 0 )
 	{
@@ -461,6 +732,13 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	}
 	if ( binding->copy_stream != 0 )
 		(void)cudaStreamDestroy((cudaStream_t)binding->copy_stream);
+	if ( binding->snapshot_store.runtime != 0 )
+		SparkKvSnapshotStoreClose(&binding->snapshot_store);
+	free(binding->snapshot_links);
+	free(binding->snapshot_pending);
+	free(binding->save_order);
+	if ( binding->snapshot_page != 0 )
+		(void)cudaFreeHost(binding->snapshot_page);
 	if ( binding->module_tag != 0 && binding->mutex_initialized != 0u )
 		SparkStageKvBindingLogCounters(binding);
 	SparkStageKvBindingFreeCompletions(binding);
@@ -1056,6 +1334,114 @@ void SparkStageKvBindingStop(SparkStageKvBinding *binding)
 	if ( binding->save_started != 0u )
 		(void)pthread_join(binding->save_thread,0);
 	binding->save_started = 0u;
+}
+
+static SparkStatus SparkStageKvBindingSaveDrain(SparkStageKvBinding *binding,uint64_t deadline_ns)
+{
+	struct timespec wake;
+	SparkStatus status = SPARK_STATUS_OK;
+	(void)pthread_mutex_lock(&binding->mutex);
+	while ( SparkKvPageCacheSavePending(&binding->page_cache) != 0u || binding->save_running != 0u )
+	{
+		if ( binding->snapshot_store.failed_status != SPARK_STATUS_OK )
+		{
+			status = binding->snapshot_store.failed_status;
+			break;
+		}
+		if ( SparkStageKvNowNs() >= deadline_ns )
+		{
+			status = SPARK_STATUS_BUSY;
+			break;
+		}
+		(void)pthread_cond_signal(&binding->save_ready);
+		SparkStageKvBindingDeadline(10000000u,&wake);
+		(void)pthread_cond_timedwait(&binding->save_idle,&binding->mutex,&wake);
+	}
+	(void)pthread_mutex_unlock(&binding->mutex);
+	SPARK_RETURN(status);
+}
+
+SparkStatus SparkStageKvBindingSaveAll(SparkStageKvBinding *binding,uint64_t deadline_ns,uint32_t *saved_out,uint32_t *unsaved_out,uint32_t *ineligible_out)
+{
+	uint32_t unsaved_start = 0u,unsaved = 0u,ineligible = 0u,marked,deferred,skipped;
+	SparkStatus status = SPARK_STATUS_OK,drain = SPARK_STATUS_OK;
+	if ( binding == 0 || binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || saved_out == 0 || unsaved_out == 0 || ineligible_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	(void)pthread_mutex_lock(&binding->mutex);
+	status = SparkKvPageCacheCountUnsaved(&binding->page_cache,&unsaved_start,&ineligible);
+	(void)pthread_mutex_unlock(&binding->mutex);
+	unsaved = unsaved_start;
+	while ( status == SPARK_STATUS_OK && unsaved != 0u )
+	{
+		(void)pthread_mutex_lock(&binding->mutex);
+		status = SparkKvPageCacheMarkAllUnsaved(&binding->page_cache,binding->save_order,binding->logical_page_count,&marked,&deferred,&skipped);
+		SparkStageKvBindingWakeSaver(binding);
+		(void)pthread_mutex_unlock(&binding->mutex);
+		if ( status != SPARK_STATUS_OK )
+			break;
+		drain = SparkStageKvBindingSaveDrain(binding,deadline_ns);
+		(void)pthread_mutex_lock(&binding->mutex);
+		status = SparkKvPageCacheCountUnsaved(&binding->page_cache,&unsaved,&ineligible);
+		(void)pthread_mutex_unlock(&binding->mutex);
+		if ( drain != SPARK_STATUS_OK || SparkStageKvNowNs() >= deadline_ns || binding->snapshot_store.failed_status != SPARK_STATUS_OK || (marked == 0u && deferred == 0u) )
+			break;
+	}
+	(void)SparkKvSnapshotFlush(&binding->snapshot_store);
+	*saved_out = unsaved_start >= unsaved ? unsaved_start - unsaved : 0u;
+	*unsaved_out = unsaved;
+	*ineligible_out = ineligible;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( unsaved == 0u )
+		return(SPARK_STATUS_OK);
+	if ( binding->snapshot_store.failed_status != SPARK_STATUS_OK )
+		SPARK_RETURN(binding->snapshot_store.failed_status);
+	if ( drain != SPARK_STATUS_OK )
+		SPARK_RETURN(drain);
+	SPARK_FAIL(SPARK_STATUS_BUSY);
+}
+
+void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelDriverKvStoreCounters *counters)
+{
+	const SparkKvPageCacheSnapshot *snapshot;
+	SparkKvSnapshotStore sample;
+	uint64_t matching = 0u,foreign = 0u;
+	if ( counters == 0 )
+		return;
+	memset(counters,0,sizeof(*counters));
+	if ( binding == 0 || binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 )
+		return;
+	(void)pthread_mutex_lock(&binding->mutex);
+	snapshot = binding->page_cache.snapshot;
+	counters->save_count = snapshot->save_count;
+	counters->save_page_count = snapshot->save_page_count;
+	counters->save_ns = snapshot->save_ns;
+	counters->save_failure_count = snapshot->save_failure_count;
+	counters->save_deferred_count = snapshot->save_deferred_count + snapshot->save_skipped_count;
+	counters->restore_count = snapshot->restore_count;
+	counters->restore_page_count = snapshot->restore_page_count;
+	counters->restore_ns = snapshot->restore_ns;
+	counters->restore_miss_count = snapshot->restore_miss_count;
+	counters->restore_corrupt_count = snapshot->restore_corrupt_count;
+	counters->restore_read_error_count = snapshot->restore_read_error_count;
+	counters->restore_failure_count = snapshot->restore_failure_count;
+	if ( SparkKvSnapshotStoreSample(&binding->snapshot_store,&sample) == SPARK_STATUS_OK )
+	{
+		counters->store_failed_status = (uint32_t)sample.failed_status;
+		counters->store_used_bytes = sample.used_bytes;
+		counters->store_maximum_bytes = sample.maximum_bytes;
+		counters->store_file_count = sample.file_count;
+		counters->store_checksum_failure_count = sample.checksum_failure_count;
+		counters->store_removed_temporary_count = sample.removed_temporary_count;
+		counters->store_eviction_count = sample.eviction_count;
+		counters->store_write_failure_count = sample.write_failure_count;
+		counters->store_queue_full_count = sample.queue_full_count;
+		counters->store_queued_count = sample.queued_count;
+	}
+	if ( SparkKvSnapshotCountLayout(&binding->snapshot_store,binding->layout_sha256,&matching,&foreign) == SPARK_STATUS_OK )
+		counters->store_foreign_layout_file_count = foreign;
+	counters->attached = 1u;
+	(void)pthread_mutex_unlock(&binding->mutex);
 }
 
 SparkStatus SparkStageKvBindingSampleCounters(SparkStageKvBinding *binding,SparkStageKvBindingCounters *counters)

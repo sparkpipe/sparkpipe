@@ -252,7 +252,6 @@ struct SparkGlm5NextModuleState
 	uint32_t index_cp;
 	uint32_t kv_shard;
 	uint32_t kv_shard_scatter_only;
-	char kv_layout_fingerprint[96];
 	uint16_t *mtp_lane_hidden_bf16;
 	uint8_t *mtp_lane_armed;
 	uint64_t kda_replay_layer_bytes;
@@ -1742,15 +1741,6 @@ static SparkStatus SparkGlm5NextKvInitialize(SparkGlm5NextModuleState *state)
 	table.sequences = state->kv_sequences;
 	table.hash_bucket_heads = state->kv_hash_bucket_heads;
 	table.entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
-	table.model_id = "glm5_next";
-	table.model_revision = state->model_revision;
-	if ( state->kv_shard != 0u )
-	{
-		(void)snprintf(state->kv_layout_fingerprint,sizeof(state->kv_layout_fingerprint),"kv-bf16-index-packed-layer-major-gather-v1-shard%ur%u",state->tp_degree,state->tp_rank);
-		table.cache_layout_fingerprint = state->kv_layout_fingerprint;
-	}
-	else
-		table.cache_layout_fingerprint = "kv-bf16-index-packed-layer-major-gather-v1";
 
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
 	if ( status != SPARK_STATUS_OK )

@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static uint32_t SparkPrefixCacheMinimumU32(
@@ -3072,5 +3073,132 @@ SparkStatus SparkPrefixCacheReset(
     cache->lookahead_protection_epoch = 0u;
     cache->lookahead_protected_block_count = 0u;
     cache->lookahead_protected_eviction_skip_count = 0u;
+    return SPARK_STATUS_OK;
+}
+
+static int SparkPrefixCacheRecordCompare(const void *left, const void *right)
+{
+    const SparkPrefixCacheCommittedRecord *a = left;
+    const SparkPrefixCacheCommittedRecord *b = right;
+    return a->first_token_index < b->first_token_index ? -1 : (a->first_token_index > b->first_token_index ? 1 : 0);
+}
+
+SparkStatus SparkPrefixCacheExportCommitted(
+    const SparkPrefixCache *cache,
+    SparkPrefixCacheCommittedRecord *records,
+    uint32_t record_capacity,
+    uint32_t *record_count_out)
+{
+    uint32_t entry_index;
+    uint32_t count = 0u;
+
+    if (cache == 0 || record_count_out == 0 || (record_capacity != 0u && records == 0))
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    *record_count_out = 0u;
+    for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
+    {
+        const SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
+        if (SparkPrefixCacheEntryIsReusable(cache, entry) == 0u ||
+            (entry->flags & (SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY | SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE)) != 0u)
+        {
+            continue;
+        }
+        if (count == record_capacity)
+        {
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+        }
+        records[count].first_token_index = entry->first_token_index;
+        records[count].token_count = entry->token_count;
+        records[count].parent_hash = entry->parent_hash;
+        records[count].block_hash = entry->block_hash;
+        records[count].content_hash = entry->content_hash;
+        memcpy(records[count].content_digest, entry->content_digest, SPARK_SHA256_DIGEST_BYTES);
+        count++;
+    }
+    if (count != 0u)
+    {
+        qsort(records, count, sizeof(records[0]), SparkPrefixCacheRecordCompare);
+    }
+    *record_count_out = count;
+    return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkPrefixCacheHasParent(
+    const SparkPrefixCache *cache,
+    const SparkPrefixCacheCommittedRecord *record)
+{
+    uint32_t entry_index;
+
+    if (record->first_token_index == 0u)
+    {
+        return 1u;
+    }
+    for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
+    {
+        const SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
+        if (SparkPrefixCacheEntryIsReusable(cache, entry) != 0u &&
+            entry->token_count == cache->block_token_count &&
+            entry->block_hash == record->parent_hash &&
+            entry->first_token_index + cache->block_token_count == record->first_token_index)
+        {
+            return 1u;
+        }
+    }
+    return 0u;
+}
+
+SparkStatus SparkPrefixCacheImportCommitted(
+    SparkPrefixCache *cache,
+    const SparkPrefixCacheCommittedRecord *records,
+    uint32_t record_count,
+    uint32_t *imported_out,
+    uint32_t *skipped_out)
+{
+    uint32_t index;
+    uint32_t imported = 0u;
+    uint32_t skipped = 0u;
+    uint64_t epoch;
+    SparkStatus status;
+
+    status = SparkPrefixCacheValidate(cache);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if ((record_count != 0u && records == 0) || imported_out == 0 || skipped_out == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    for (index = 0u; index < record_count; ++index)
+    {
+        const SparkPrefixCacheCommittedRecord *record = &records[index];
+        SparkPrefixCacheEntry *entry;
+        if (record->token_count == 0u || record->token_count > cache->block_token_count ||
+            record->first_token_index % cache->block_token_count != 0u ||
+            SparkPrefixCacheFindEntry(cache, record->parent_hash, record->block_hash, record->content_hash,
+                record->content_digest, record->first_token_index, record->token_count, 0u) != 0 ||
+            SparkPrefixCacheHasParent(cache, record) == 0u ||
+            cache->free_entry_head == SPARK_PREFIX_CACHE_NO_ENTRY)
+        {
+            skipped++;
+            continue;
+        }
+        entry = &cache->entries[cache->free_entry_head];
+        epoch = ++cache->operation_epoch;
+        status = SparkPrefixCacheInstallEntry(cache, entry, SPARK_PREFIX_CACHE_ENTRY_FLAG_REUSABLE,
+            record->parent_hash, record->block_hash, record->content_hash, record->content_digest,
+            record->first_token_index, record->token_count, epoch);
+        if (status != SPARK_STATUS_OK)
+        {
+            skipped++;
+            continue;
+        }
+        entry->committed_epoch = epoch;
+        imported++;
+    }
+    *imported_out = imported;
+    *skipped_out = skipped;
     return SPARK_STATUS_OK;
 }

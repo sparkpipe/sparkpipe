@@ -321,6 +321,19 @@ citations refer to that commit.
 
 ## Model residency and storage
 
+- Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
+  al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
+  8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
+  every decoded weight stays bit-identical. The spine is replicated on all 16
+  ranks, so each GB saved per rank frees 16 GB of fleet memory for KV and
+  expert residency. Write our own encoder (pack time) and GPU decoder (a
+  lookup-table decode into the layer's BF16 working buffer just before its
+  GEMM/GEMV, overlapped with the previous layer), reading only the paper;
+  no code from the repository. Gate: weights decode bit-exact against the
+  BF16 pack, logits identical, and B1/B16 decode tok/s within noise of the
+  uncompressed spine. An unfused decode adds a write and read of each layer's
+  BF16 weights per step, which can cost more than the bytes saved on
+  memory-bound decode. If the gate fails, try decoding inside the GEMV.
 - Relocatable expert graphs (saved graphs) are designed but not built. `8adebc6`
   proposed capturing a graph once, recording which kernel arguments are
   expert pointers and patching them on load, as a dynamic linker does, and
@@ -571,51 +584,6 @@ citations refer to that commit.
   send a 4K prompt, restart residentd on all 16 ranks, resend it, and see
   `cached_tokens > 0`, `restore_count > 0`, `restore_failure_count == 0` and
   tokens identical to the first run.
-- Left out on purpose (2026-10-02): The KV snapshot key carries no model,
-  pack, codec or shard identity for GLM-5.3 Full. The binding's
-  `layout_fingerprint` is the constant string
-  `latent-bf16-page-major-index-bf16-layer-major-v1`
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:749`),
-  and nothing reads it: `SparkStageKvBindingFillTable` copies it with
-  `model_id` and `model_revision` into `SparkKvModelTable`
-  (`runtime/stage_kv_binding.c:193-195`), and `SparkKvBackendInitialize`
-  (`cache/kv_model_table.c:40-90`) ignores all three. The snapshot key is
-  `layout_sha256` plus a SHA-256 of the prompt tokens alone
-  (`cache/kv_page_cache.c:1557-1563`, `runtime/model_batch_engine.c:447-452`),
-  and `layout_sha256` is whatever the attacher writes into
-  `SparkKvPageCacheSnapshot` (`include/sparkpipe/spark_kv_page_cache.h:77`),
-  so once a store is attached, files written under a different pack, contract,
-  expert or KV codec, driver binary, TP rank or owner count restore as hits
-  with wrong KV. Close it by computing `layout_sha256` in the common binding
-  from model id and revision, pack SHA-256, contract SHA-256
-  (`GLM_CONTRACT_SHA256`), expert and KV codecs, driver binary SHA-256,
-  `owner_rank`, `owner_count`, block size and page geometry, and deleting the
-  unused string fields. Fleet proof: save a prefix, restart with a different
-  expert codec or rank-to-node assignment and see the resent prompt miss the
-  store (`restore_miss_count` rises, tokens exact by recompute), then restart
-  on the original build and see it hit.
-- Left out on purpose (2026-10-02): Attaching a snapshot store to the GLM-5.3
-  Full binding would run synchronous CUDA copies inside a CUDA host function.
-  `SparkGlmStageEnqueueAsyncCompletion` queues `SparkGlm52CompleteAsync` with
-  `cudaLaunchHostFunc`
-  (`common/common_glm_stage_module/spark_glm_stage_module.h:161`, called from
-  `modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c:1821`);
-  the callback calls `SparkStageKvBindingFinish`
-  (`spark_glm52_resident_decode_stage_module.c:1849`), which for a PUBLISH
-  lane reaches `SparkKvPageCacheSaveSequence` (`cache/kv_page_cache.c:2184`),
-  `SaveChain` (`:1658`), `SaveEntry` (`:1635`), `SnapshotPage` (`:1609`) and
-  the binding's `cudaMemcpy` (`runtime/stage_kv_binding.c:17-19`). CUDA does
-  not permit CUDA API calls in a host function, so the first save after
-  attachment breaks the execution stream's completion path. The release-path
-  save (`cache/kv_page_cache.c:2072`) also copies device to host synchronously
-  on the admission thread while holding the binding mutex
-  (`runtime/stage_kv_binding.c:315`), which every completion needs. Close it
-  by having the callback and the release path only mark the terminal entry for
-  saving, and a common binding worker copy it with an event and
-  `cudaMemcpyAsync` into the snapshot ticket outside the callback and the
-  mutex. Fleet proof: with the store attached, a B16 run of published prompts
-  ends with `save_count > 0` and `save_failure_count == 0`, and B1 decode step
-  time stays within run-to-run noise of the build before the change.
 - Left out on purpose (2026-10-02): PR #1278 (`5815cf10f`, merge base
   `30cccaaf7`, 2026-09-28) holds the only snapshot wiring and prefetch-join
   code, is not in this tree, and cannot be merged as is. It puts the store
@@ -633,19 +601,6 @@ citations refer to that commit.
   deadline-bounded wait and no driver snapshot code. Fleet proof: GLM-5.3 Full
   restores a saved prefix with no glm52 snapshot code, and the engine log
   shows each PENDING wait ending at the restore's completion or its deadline.
-- Left out on purpose (2026-10-02): No report shows whether a snapshot restore
-  or save happened or what it cost. `SparkKvPageCacheSnapshot` keeps save,
-  restore, miss, corrupt and failure counts and nanosecond totals
-  (`include/sparkpipe/spark_kv_page_cache.h:83-93`, updated at
-  `cache/kv_page_cache.c:1644-1645` and `:1865-1881`), but nothing in
-  `runtime/`, `node/` or the glm52 module reads them; the one reporter,
-  `55a9241a6`, prints them from the glm5_next module and is not in this tree.
-  A restart benchmark therefore has no `restore_count` or save time to check.
-  Close it by exporting the snapshot counters through the common binding into
-  the driver runtime snapshot and the engine measurement view that
-  `node/model_api.c` reports. Fleet proof: the restart run's report shows
-  `restore_count > 0`, `restore_failure_count == 0`, and save and restore time
-  per page on every rank.
 - Left out on purpose (2026-10-02): Crash recovery of the KV snapshot store
   has never run in production. The store writes each file to a `.kvs-writing-`
   temporary opened with `O_EXCL` and mode 0600, fsyncs it, renames it and

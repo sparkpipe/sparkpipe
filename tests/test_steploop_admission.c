@@ -304,6 +304,7 @@ int main(void)
 	struct timespec delay;
 	char deployment_path[108];
 	char runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	char index_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES + 32u];
 	char stderr_paths[TEST_STEPLOOP_RANK_COUNT][108];
 	char paths[TEST_STEPLOOP_RANK_COUNT][108];
 	pid_t children[TEST_STEPLOOP_RANK_COUNT];
@@ -352,6 +353,9 @@ int main(void)
 	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 	configuration.deployment = &deployment;
 	configuration.runtime_root = runtime_root;
+	(void)snprintf(index_path,sizeof(index_path),"%s/build/steploop-%d.spi",runtime_root,(int)getpid());
+	(void)unlink(index_path);
+	configuration.prefix_index_path = index_path;
 	configuration.event_function = TestSteploopEvent;
 	configuration.event_context = &state;
 	assert(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK);

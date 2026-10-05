@@ -1,6 +1,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -101,6 +102,11 @@ static int32_t probe_open(probe_state_t *state,const char *driver,const char *pa
 	node->model_revision = state->driver.interface->descriptor->model_revision;
 	node->tp_collective_identifier = 0u;
 	node->kv_backing_directory = "/tmp/prefixprobe/kv";
+	node->kv_snapshot_directory = "/tmp/prefixprobe/snapshot";
+	node->kv_snapshot_maximum_bytes = 1ull << 30;
+	(void)mkdir("/tmp/prefixprobe",0700);
+	(void)mkdir(node->kv_backing_directory,0700);
+	(void)mkdir(node->kv_snapshot_directory,0700);
 	SparkModelDriverInitializeCreateRequest(&request);
 	request.node_id = "glm52-local-prefix-probe";
 	request.node_target = PROBE_TARGET;

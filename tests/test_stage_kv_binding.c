@@ -8,11 +8,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <ftw.h>
 #include <unistd.h>
 
 #include "cuda_runtime_api.h"
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
+#include "sparkpipe/spark_weight_codec.h"
 
 #define TEST_BLOCK 4u
 #define TEST_POSITIONS 8u
@@ -65,6 +67,8 @@ typedef struct TestHook
 static SparkStageModuleLedger LEDGER;
 static SparkStageKvBinding BINDING;
 static char DIRECTORY[64];
+static char SNAPSHOT_DIRECTORY[64];
+static SparkStageKvConfiguration CONFIGURATION;
 static uint64_t NEXT_ID = 1u;
 static TestHook HOOK = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
 static atomic_uint ORDER;
@@ -153,54 +157,98 @@ static void SleepMs(uint32_t milliseconds)
 	(void)nanosleep(&delay,0);
 }
 
-static void Open(void)
+static void Configure(SparkStageKvConfiguration *configuration)
 {
-	SparkStageKvConfiguration configuration;
+	memset(configuration,0,sizeof(*configuration));
+	configuration->ledger = &LEDGER;
+	configuration->module_tag = "kvtest";
+	configuration->block_token_count = TEST_BLOCK;
+	configuration->region_count = 2u;
+	configuration->regions[0].layout = SPARK_STAGE_KV_REGION_PAGE_MAJOR;
+	configuration->regions[0].layer_count = TEST_LAYERS;
+	configuration->regions[0].layer_page_bytes = TEST_REGION0_LAYER;
+	configuration->regions[1].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
+	configuration->regions[1].layer_count = TEST_LAYERS;
+	configuration->regions[1].layer_page_bytes = TEST_REGION1_LAYER;
+	configuration->arena_kv_head_count = 1u;
+	configuration->arena_head_dim = TEST_REGION0_LAYER / TEST_BLOCK;
+	configuration->arena_bytes_per_scalar = 1u;
+	configuration->capacity_request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	configuration->capacity_request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
+	configuration->model_id = "kvtest";
+	configuration->model_revision = "fixture";
+	configuration->resident_sequence_capacity = TEST_LANES;
+	configuration->max_sequence_positions = TEST_POSITIONS;
+	configuration->max_input_row_count = TEST_POSITIONS;
+	configuration->logical_page_count = TEST_LOGICAL;
+	configuration->physical_page_count = TEST_PHYSICAL;
+	configuration->pipeline_slot_count = TEST_SLOTS;
+	configuration->backing_directory = DIRECTORY;
+	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
+	configuration->snapshot_directory = SNAPSHOT_DIRECTORY;
+	configuration->snapshot_maximum_bytes = 1ull << 26;
+	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));
+	memset(configuration->contract_sha256,0x22,sizeof(configuration->contract_sha256));
+	configuration->expert_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+	configuration->kv_codec = SPARK_WEIGHT_CODEC_BF16;
+	configuration->driver_symbol = (const void *)&Configure;
+}
+
+static SparkStatus OpenWith(const SparkStageKvConfiguration *configuration)
+{
+	SparkStatus status;
 	memset(&LEDGER,0,sizeof(LEDGER));
 	LEDGER.module_tag = "kvtest";
-	strcpy(DIRECTORY,"/tmp/sparkpipe-kv-binding-XXXXXX");
-	assert(mkdtemp(DIRECTORY) != 0);
-	memset(&configuration,0,sizeof(configuration));
-	configuration.ledger = &LEDGER;
-	configuration.module_tag = "kvtest";
-	configuration.block_token_count = TEST_BLOCK;
-	configuration.region_count = 2u;
-	configuration.regions[0].layout = SPARK_STAGE_KV_REGION_PAGE_MAJOR;
-	configuration.regions[0].layer_count = TEST_LAYERS;
-	configuration.regions[0].layer_page_bytes = TEST_REGION0_LAYER;
-	configuration.regions[1].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
-	configuration.regions[1].layer_count = TEST_LAYERS;
-	configuration.regions[1].layer_page_bytes = TEST_REGION1_LAYER;
-	configuration.arena_kv_head_count = 1u;
-	configuration.arena_head_dim = TEST_REGION0_LAYER / TEST_BLOCK;
-	configuration.arena_bytes_per_scalar = 1u;
-	configuration.capacity_request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
-	configuration.capacity_request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
-	configuration.model_id = "kvtest";
-	configuration.model_revision = "fixture";
-	configuration.layout_fingerprint = "kvtest-v1";
-	configuration.resident_sequence_capacity = TEST_LANES;
-	configuration.max_sequence_positions = TEST_POSITIONS;
-	configuration.max_input_row_count = TEST_POSITIONS;
-	configuration.logical_page_count = TEST_LOGICAL;
-	configuration.physical_page_count = TEST_PHYSICAL;
-	configuration.pipeline_slot_count = TEST_SLOTS;
-	configuration.backing_directory = DIRECTORY;
-	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
 	HookReset();
 	spark_stub_cuda_event_pending(0u);
 	spark_stub_cuda_event_record_failure(0u);
 	spark_stub_cuda_set_copy_hook(TestHookCopy,&HOOK);
-	assert(SparkStageKvBindingInitialize(&BINDING,&configuration) == SPARK_STATUS_OK);
-	assert(BINDING.page_bytes == TEST_PAGE_BYTES && BINDING.pages_per_sequence == 2u && BINDING.copier_initialized != 0u);
+	status = SparkStageKvBindingInitialize(&BINDING,configuration);
+	if ( status == SPARK_STATUS_OK )
+		assert(BINDING.page_bytes == TEST_PAGE_BYTES && BINDING.pages_per_sequence == 2u && BINDING.copier_initialized != 0u && BINDING.page_cache.snapshot != 0);
+	return(status);
 }
 
-static void Close(void)
+static void MakeDirectories(void)
+{
+	strcpy(DIRECTORY,"/tmp/sparkpipe-kv-binding-XXXXXX");
+	assert(mkdtemp(DIRECTORY) != 0);
+	strcpy(SNAPSHOT_DIRECTORY,"/tmp/sparkpipe-kv-snapshot-XXXXXX");
+	assert(mkdtemp(SNAPSHOT_DIRECTORY) != 0);
+}
+
+static int RemoveEntry(const char *path,const struct stat *info,int flag,struct FTW *walk)
+{
+	(void)info;
+	(void)flag;
+	(void)walk;
+	return(remove(path));
+}
+
+static void RemoveDirectories(void)
+{
+	assert(rmdir(DIRECTORY) == 0);
+	assert(nftw(SNAPSHOT_DIRECTORY,RemoveEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
+}
+
+static void Open(void)
+{
+	MakeDirectories();
+	Configure(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+}
+
+static void Unload(void)
 {
 	SparkStageKvBindingDestroy(&BINDING);
 	SparkStageModuleLedgerRollback(&LEDGER,0u);
 	spark_stub_cuda_set_copy_hook(0,0);
-	assert(rmdir(DIRECTORY) == 0);
+}
+
+static void Close(void)
+{
+	Unload();
+	RemoveDirectories();
 }
 
 static void Identity(SparkModelDriverCacheIdentity *identity,uint8_t seed)
@@ -485,30 +533,15 @@ static void TestCopyOnWriteDuringAPark(void)
 
 static void TestFinishAndReleaseOnlyMark(void)
 {
-	SparkKvSnapshotStore store;
-	SparkKvPageCacheSnapshot snapshot;
-	SparkKvPageCacheSnapshotLink links[TEST_LOGICAL];
+	SparkKvPageCacheSnapshot *snapshot;
 	SparkKvSnapshotKey key;
 	TestStep x,release;
 	TestFinished finished = {0};
-	uint8_t page[TEST_PAGE_BYTES],expected[TEST_PAGE_BYTES],saved[TEST_PAGE_BYTES];
-	uint32_t pending[4],logical;
+	uint8_t expected[TEST_PAGE_BYTES],saved[TEST_PAGE_BYTES];
+	uint32_t logical;
 	uint64_t bytes;
-	char directory[] = "/tmp/sparkpipe-kv-binding-snap-XXXXXX";
 	Open();
-	assert(mkdtemp(directory) != 0);
-	assert(SparkKvSnapshotStoreOpen(&store,directory,1u << 24u,1u << 20u) == SPARK_STATUS_OK);
-	memset(&snapshot,0,sizeof(snapshot));
-	snapshot.store = &store;
-	memset(snapshot.layout_sha256,0x5au,sizeof(snapshot.layout_sha256));
-	snapshot.page_capacity = TEST_LOGICAL;
-	snapshot.links = links;
-	snapshot.page = page;
-	snapshot.pending_terminals = pending;
-	snapshot.pending_capacity = 4u;
-	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
-	assert(SparkKvPageCacheAttachSnapshot(&BINDING.page_cache,&snapshot) == SPARK_STATUS_OK);
-	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+	snapshot = BINDING.page_cache.snapshot;
 	StepInit(&x,1u,0u,0u,3u);
 	StepPublish(&x,3u,0x60u);
 	StepStart(&x);
@@ -526,24 +559,18 @@ static void TestFinishAndReleaseOnlyMark(void)
 	assert(StepAdmit(&release,0u) == SPARK_STATUS_OK);
 	HookWaitActive();
 	assert(HOOK.other_thread_copies == 0u && HOOK.save_thread_copies == 1u);
-	assert(snapshot.in_flight == 1u && snapshot.save_count == 0u);
+	assert(snapshot->in_flight == 1u && snapshot->save_count == 0u);
 	HookRelease();
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
-	assert(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
-	assert(snapshot.save_count == 1u && snapshot.save_page_count == 1u && HOOK.other_thread_copies == 0u);
+	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK);
+	assert(snapshot->save_count == 1u && snapshot->save_page_count == 1u && HOOK.other_thread_copies == 0u);
 	memset(&key,0,sizeof(key));
-	memcpy(key.layout_sha256,snapshot.layout_sha256,sizeof(key.layout_sha256));
+	memcpy(key.layout_sha256,BINDING.layout_sha256,sizeof(key.layout_sha256));
 	Identity((SparkModelDriverCacheIdentity *)key.identity_sha256,0x60u);
 	key.token_count = 3u;
-	assert(SparkKvSnapshotReadSegment(&store,&key,1u,SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_PAGES,saved,sizeof(saved),&bytes) == SPARK_STATUS_OK);
+	assert(SparkKvSnapshotReadSegment(&BINDING.snapshot_store,&key,1u,SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_PAGES,saved,sizeof(saved),&bytes) == SPARK_STATUS_OK);
 	assert(bytes == TEST_PAGE_BYTES && memcmp(saved,expected,sizeof(saved)) == 0);
-	SparkStageKvBindingStop(&BINDING);
-	SparkKvPageCacheSaveCancelAll(&BINDING.page_cache);
-	BINDING.page_cache.snapshot = 0;
 	Close();
-	assert(SparkKvSnapshotRemove(&store,&key) == SPARK_STATUS_OK);
-	SparkKvSnapshotStoreClose(&store);
-	(void)rmdir(directory);
 	printf("T4 finish and release only mark: ok\n");
 }
 
@@ -762,6 +789,183 @@ static void TestCopierContract(void)
 	printf("T20 copier contract: ok\n");
 }
 
+static void ExpectRefused(const SparkStageKvConfiguration *configuration,SparkStatus expected)
+{
+	assert(OpenWith(configuration) == expected);
+	Unload();
+}
+
+static void TestSnapshotRefusals(void)
+{
+	SparkStageKvConfiguration configuration;
+	SparkStageKvBinding other;
+	SparkStageModuleLedger other_ledger;
+	int on_stack = 0;
+	MakeDirectories();
+	Configure(&configuration);
+	memset(configuration.pack_sha256,0,sizeof(configuration.pack_sha256));
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
+	memset(configuration.contract_sha256,0,sizeof(configuration.contract_sha256));
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
+	configuration.model_id = "";
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
+	configuration.expert_codec = 0u;
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
+	configuration.driver_symbol = 0;
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
+	configuration.snapshot_directory = 0;
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
+	configuration.snapshot_maximum_bytes = 0u;
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
+	configuration.snapshot_maximum_bytes = 4096u;
+	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+	Configure(&configuration);
+	configuration.expert_codec = 999u;
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	Configure(&configuration);
+	configuration.driver_symbol = &on_stack;
+	ExpectRefused(&configuration,SPARK_STATUS_NOT_FOUND);
+	Configure(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	configuration = CONFIGURATION;
+	memset(&other_ledger,0,sizeof(other_ledger));
+	other_ledger.module_tag = "kvtest";
+	configuration.ledger = &other_ledger;
+	memset(&other,0,sizeof(other));
+	assert(SparkStageKvBindingInitialize(&other,&configuration) == SPARK_STATUS_INVALID_ARGUMENT);
+	SparkStageKvBindingDestroy(&other);
+	SparkStageModuleLedgerRollback(&other_ledger,0u);
+	Close();
+	printf("A10 snapshot refusals: ok\n");
+}
+
+static void PublishStep(uint64_t sequence,uint32_t slot,uint32_t position,uint32_t context,uint8_t identity,uint8_t seed,uint8_t *bytes)
+{
+	TestStep step;
+	TestFinished finished = {0};
+	uint32_t page;
+	StepInit(&step,sequence,slot,position,context);
+	StepPublish(&step,context,identity);
+	StepStart(&step);
+	page = LanePage(slot,position / TEST_BLOCK);
+	FillPage(page,seed);
+	PageBytes(page,bytes);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	assert(atomic_load(&finished.count) == 1u && finished.status == SPARK_STATUS_OK);
+}
+
+static void ReleaseSequence(uint64_t sequence,uint32_t slot)
+{
+	TestStep release;
+	StepRelease(&release,sequence,slot);
+	assert(StepAdmit(&release,0u) == SPARK_STATUS_OK);
+}
+
+static SparkStatus RestorePrefix(uint64_t sequence,uint32_t slot,uint32_t tokens,uint8_t identity,uint8_t pages[][TEST_PAGE_BYTES],uint32_t page_count)
+{
+	TestStep step;
+	uint8_t bytes[TEST_PAGE_BYTES];
+	uint32_t index;
+	SparkStatus status;
+	StepInit(&step,sequence,slot,tokens,tokens);
+	StepPrefix(&step,tokens,identity);
+	status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	for (index=0u; index<page_count; index++)
+	{
+		PageBytes(LanePage(slot,index),bytes);
+		assert(memcmp(bytes,pages[index],TEST_PAGE_BYTES) == 0);
+	}
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
+	return(SPARK_STATUS_OK);
+}
+
+static void PublishTwoPageChain(uint8_t pages[2][TEST_PAGE_BYTES])
+{
+	PublishStep(1u,0u,0u,4u,0x70u,0x31u,pages[0]);
+	PublishStep(1u,0u,4u,8u,0x71u,0x32u,pages[1]);
+	ReleaseSequence(1u,0u);
+}
+
+static void TestSnapshotRestartRestore(void)
+{
+	SparkModelDriverKvStoreCounters counters;
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	Open();
+	PublishTwoPageChain(pages);
+	Unload();
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.attached == 1u && counters.restore_count == 1u && counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
+	assert(counters.store_file_count == 2u && counters.store_foreign_layout_file_count == 0u && counters.store_used_bytes != 0u);
+	Close();
+	printf("A10 restart restore: ok\n");
+}
+
+static void ExpectForeignLayout(const SparkStageKvConfiguration *configuration,uint8_t pages[2][TEST_PAGE_BYTES])
+{
+	SparkModelDriverKvStoreCounters counters;
+	assert(OpenWith(configuration) == SPARK_STATUS_OK);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_NOT_FOUND);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.restore_miss_count == 1u && counters.store_foreign_layout_file_count == 2u && counters.store_file_count == 2u);
+	Unload();
+}
+
+static void TestSnapshotLayoutSeparation(void)
+{
+	SparkStageKvConfiguration configuration;
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	Open();
+	PublishTwoPageChain(pages);
+	Unload();
+	configuration = CONFIGURATION;
+	configuration.expert_codec = SPARK_WEIGHT_CODEC_BF16;
+	ExpectForeignLayout(&configuration,pages);
+	configuration = CONFIGURATION;
+	configuration.pack_sha256[7] ^= 1u;
+	ExpectForeignLayout(&configuration,pages);
+	configuration = CONFIGURATION;
+	configuration.contract_sha256[3] ^= 1u;
+	ExpectForeignLayout(&configuration,pages);
+	configuration = CONFIGURATION;
+	configuration.model_revision = "fixture-2";
+	ExpectForeignLayout(&configuration,pages);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	Close();
+	printf("A10 layout separation: ok\n");
+}
+
+static void TestSnapshotDestroySavesAll(void)
+{
+	uint8_t pages[3][1][TEST_PAGE_BYTES];
+	uint32_t chain;
+	Open();
+	for (chain=0u; chain<3u; chain++)
+	{
+		PublishStep(10u + chain,0u,0u,4u,(uint8_t)(0x80u + chain),(uint8_t)(0x40u + chain),pages[chain][0]);
+		ReleaseSequence(10u + chain,0u);
+	}
+	Unload();
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	for (chain=0u; chain<3u; chain++)
+		assert(RestorePrefix(20u + chain,1u,4u,(uint8_t)(0x80u + chain),pages[chain],1u) == SPARK_STATUS_OK);
+	assert(BINDING.page_cache.snapshot->restore_count == 3u);
+	Close();
+	printf("A10 destroy saves every published chain: ok\n");
+}
+
 int main(void)
 {
 	setvbuf(stdout,0,_IONBF,0);
@@ -773,6 +977,10 @@ int main(void)
 	TestLockSitesMeasured();
 	TestQuiesceOrderStop();
 	TestCopierContract();
+	TestSnapshotRefusals();
+	TestSnapshotRestartRestore();
+	TestSnapshotLayoutSeparation();
+	TestSnapshotDestroySavesAll();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
 	return(0);
 }

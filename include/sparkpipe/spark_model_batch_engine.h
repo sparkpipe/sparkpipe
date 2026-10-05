@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 8u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 9u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
@@ -75,6 +75,7 @@ typedef struct SparkModelBatchEngineConfiguration
 	uint64_t inflight_budget_ns;
 	const SparkModelResidentDeployment *deployment;
 	const char *runtime_root;
+	const char *prefix_index_path;
 	SparkModelBatchEventFunction event_function;
 	void *event_context;
 	SparkModelPipelineStageCompletionFunction stage_completion_function;
@@ -126,6 +127,14 @@ typedef struct SparkModelBatchEngineView
 	uint64_t prefill_ns_total;
 	uint64_t ttft_ns_total;
 	uint64_t ttft_ns_maximum;
+	uint64_t prefix_index_save_count;
+	uint64_t prefix_index_save_failure_count;
+	uint64_t prefix_index_write_ns_total;
+	uint64_t prefix_index_write_ns_maximum;
+	uint64_t prefix_index_export_ns_maximum;
+	uint64_t prefix_index_loaded_record_count;
+	uint64_t prefix_index_refused_count;
+	uint64_t prefix_index_reimported_record_count;
 	SparkModelPipelineClientView pipeline;
 } SparkModelBatchEngineView;
 
@@ -171,6 +180,10 @@ SparkStatus SparkModelBatchEngineGetPollDescriptors(
 SparkStatus SparkModelBatchEngineGetView(
 	const SparkModelBatchEngine *engine,
 	SparkModelBatchEngineView *view);
+SparkStatus SparkModelBatchEngineGetRankStatus(
+	const SparkModelBatchEngine *engine,
+	uint32_t rank_index,
+	SparkModelResidentStatusReport *report);
 const SparkModelServingAdapterDescriptor *SparkModelBatchEngineGetAdapterDescriptor(
 	const SparkModelBatchEngine *engine);
 void SparkModelBatchEngineSeedSubmissionId(

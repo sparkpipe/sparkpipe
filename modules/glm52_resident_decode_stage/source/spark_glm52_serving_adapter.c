@@ -665,6 +665,8 @@ static SparkStatus SparkGlm52ServingInitialize(
 		state->node_context.tp_collective_backend_module_path = state->tp_collective_backend_path;
 		state->node_context.kv_backing_directory = configuration->kv_backing_directory;
 		state->node_context.kv_backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
+		state->node_context.kv_snapshot_directory = configuration->kv_snapshot_directory;
+		state->node_context.kv_snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
 #ifdef SPARK_SCORE_DUMP
 		state->node_context.score_dump_directory = (state->score_present & 1u) != 0u ? state->score_paths[0] : 0;
 		state->node_context.score_probe_path = (state->score_present & 2u) != 0u ? state->score_paths[1] : 0;

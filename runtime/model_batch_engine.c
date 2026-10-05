@@ -1,12 +1,16 @@
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_error_site.h"
 
+#include <libgen.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #include "model_batch_scheduler.h"
 #include "sparkpipe/spark_prefix_cache.h"
+#include "sparkpipe/spark_prefix_index_file.h"
 #include "sparkpipe/spark_sha256.h"
 
 #define SPARK_MODEL_BATCH_REQUEST_FREE 0u
@@ -20,6 +24,8 @@
 #define SPARK_MODEL_BATCH_REQUEST_QUEUED_PUBLISH 8u
 #define SPARK_MODEL_BATCH_REQUEST_PUBLISH_INFLIGHT 9u
 #define SPARK_MODEL_BATCH_NO_SLOT UINT32_MAX
+#define SPARK_MODEL_BATCH_PREFIX_INDEX_SAVE_INTERVAL_NS UINT64_C(10000000000)
+#define SPARK_MODEL_BATCH_STATUS_INTERVAL_NS UINT64_C(1000000000)
 #define SPARK_MODEL_BATCH_SELECT_AGED 1u
 #define SPARK_MODEL_BATCH_SELECT_PRIORITY 2u
 #define SPARK_MODEL_BATCH_SELECT_FILL 3u
@@ -148,6 +154,17 @@ struct SparkModelBatchEngine
 	uint32_t consecutive_pipeline_failures;
 	uint64_t circuit_open_until_ns;
 	uint64_t observed_control_generation;
+	char prefix_index_path[SPARK_PREFIX_INDEX_FILE_PATH_BYTES];
+	SparkPrefixIndexWriter prefix_index_writer;
+	SparkPrefixCacheCommittedRecord *prefix_index_scratch;
+	uint32_t prefix_index_dirty;
+	uint32_t prefix_index_loaded;
+	uint64_t prefix_index_next_save_ns;
+	uint64_t prefix_index_export_ns_maximum;
+	uint64_t prefix_index_loaded_record_count;
+	uint64_t prefix_index_refused_count;
+	uint64_t prefix_index_reimported_record_count;
+	uint64_t next_status_ns;
 	uint32_t next_work_kind;
 	uint32_t work_kind_bypass_counts[5];
 	uint32_t cache_block_token_count;
@@ -807,6 +824,8 @@ static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *en
 	status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkPrefixCacheTombstonePrompt(&engine->prefix_cache,SparkModelBatchRequestTokens(engine,(uint32_t)(request - engine->requests)),request->cache_prefix_token_count);
+	if ( status == SPARK_STATUS_OK )
+		engine->prefix_index_dirty = 1u;
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
 		SPARK_RETURN(status);
 	request->computed_prompt_token_count = 0u;
@@ -951,6 +970,7 @@ static SparkStatus SparkModelBatchPublishCompletedPrefix(
 		&committed);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	engine->prefix_index_dirty = 1u;
 	request->cache_published_token_count = committed.matched_token_count;
 	request->cache_published_digest_context = published_context;
 	SparkModelBatchFinalizeIdentity(
@@ -1183,6 +1203,24 @@ static void SparkModelBatchCompletion(
 	SparkModelBatchReleaseSubmission(engine,submission);
 }
 
+static SparkStatus SparkModelBatchValidateIndexPath(const char *path)
+{
+	char parent[SPARK_PREFIX_INDEX_FILE_PATH_BYTES];
+	struct stat info;
+	if ( path == 0 || path[0] != '/' || strlen(path) >= sizeof(parent) )
+	{
+		fprintf(stderr,"batch engine refused: prefix_index_path %s is missing, relative, or has no parent directory\n",path != 0 ? path : "(null)");
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	strcpy(parent,path);
+	if ( stat(dirname(parent),&info) != 0 || S_ISDIR(info.st_mode) == 0 )
+	{
+		fprintf(stderr,"batch engine refused: prefix_index_path %s is missing, relative, or has no parent directory\n",path);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelBatchValidateConfiguration(
 	const SparkModelBatchEngineConfiguration *configuration)
 {
@@ -1209,7 +1247,7 @@ static SparkStatus SparkModelBatchValidateConfiguration(
 			if ( configuration->deployment->eos_token_ids[left] == configuration->deployment->eos_token_ids[right] )
 				SPARK_FAIL(SPARK_STATUS_DUPLICATE);
 	}
-	return(SPARK_STATUS_OK);
+	return(SparkModelBatchValidateIndexPath(configuration->prefix_index_path));
 }
 
 static SparkStatus SparkModelBatchAllocate(
@@ -1342,6 +1380,57 @@ static void SparkModelBatchLogCacheMode(const SparkModelBatchEngine *engine)
 		decode_mode);
 }
 
+static void SparkModelBatchPrefixIndexDigest(const SparkModelBatchEngine *engine,uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
+{
+	const SparkModelServingAdapterDescriptor *descriptor = engine->adapter_descriptor;
+	SparkPrefixIndexModelDigest(descriptor->adapter_id,descriptor->model_id,descriptor->model_revision,descriptor->artifact_sha256,digest);
+}
+
+static SparkStatus SparkModelBatchLoadPrefixIndex(SparkModelBatchEngine *engine)
+{
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+	uint32_t count = 0u,imported = 0u,skipped = 0u;
+	const char *reason = 0;
+	SparkStatus status;
+	engine->prefix_index_scratch = (SparkPrefixCacheCommittedRecord *)calloc(engine->prefix_cache_entry_capacity,sizeof(engine->prefix_index_scratch[0]));
+	if ( engine->prefix_index_scratch == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	SparkModelBatchPrefixIndexDigest(engine,digest);
+	status = SparkPrefixIndexFileRead(engine->prefix_index_path,digest,engine->cache_block_token_count,engine->prefix_index_scratch,engine->prefix_cache_entry_capacity,&count,&reason);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&imported,&skipped);
+	else if ( status != SPARK_STATUS_NOT_FOUND )
+	{
+		engine->prefix_index_refused_count++;
+		fprintf(stderr,"batch engine prefix index refused path=%s reason=%s\n",engine->prefix_index_path,reason != 0 ? reason : "io");
+	}
+	if ( status == SPARK_STATUS_OK )
+		engine->prefix_index_loaded_record_count = imported;
+	fprintf(stderr,"batch engine prefix index load path=%s records=%u imported=%u skipped=%u status=%s\n",engine->prefix_index_path,count,imported,skipped,SparkStatusToString(status));
+	status = SparkPrefixIndexWriterStart(&engine->prefix_index_writer,engine->prefix_index_path,digest,engine->cache_block_token_count,engine->prefix_cache_entry_capacity);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	engine->prefix_index_loaded = 1u;
+	engine->next_status_ns = SparkModelBatchNowNs() + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkModelBatchSavePrefixIndex(SparkModelBatchEngine *engine,uint64_t now_ns)
+{
+	uint64_t start,elapsed;
+	uint32_t count = 0u;
+	if ( engine->prefix_index_loaded == 0u || engine->prefix_index_dirty == 0u || SparkPrefixIndexWriterIdle(&engine->prefix_index_writer) == 0u )
+		return;
+	start = now_ns;
+	if ( SparkPrefixCacheExportCommitted(&engine->prefix_cache,SparkPrefixIndexWriterBuffer(&engine->prefix_index_writer),engine->prefix_cache_entry_capacity,&count) != SPARK_STATUS_OK )
+		return;
+	elapsed = SparkModelBatchNowNs() - start;
+	if ( elapsed > engine->prefix_index_export_ns_maximum )
+		engine->prefix_index_export_ns_maximum = elapsed;
+	engine->prefix_index_dirty = 0u;
+	SparkPrefixIndexWriterSubmit(&engine->prefix_index_writer,count);
+}
+
 static SparkStatus SparkModelBatchInitialize(
 	const SparkModelBatchEngineConfiguration *configuration,
 	SparkModelBatchEngine *engine)
@@ -1393,7 +1482,8 @@ static SparkStatus SparkModelBatchInitialize(
 		SparkModelBatchInitializeFreeList(engine);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	return(SPARK_STATUS_OK);
+	strcpy(engine->prefix_index_path,configuration->prefix_index_path);
+	return(SparkModelBatchLoadPrefixIndex(engine));
 }
 
 SparkStatus SparkModelBatchEngineConnect(
@@ -1437,6 +1527,15 @@ SparkStatus SparkModelBatchEngineDestroy(SparkModelBatchEngine *engine)
 		if ( status != SPARK_STATUS_OK || pipeline_view.active_transaction_count != 0u )
 			return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_BUSY);
 	}
+	if ( engine->prefix_index_loaded != 0u )
+	{
+		SparkPrefixIndexWriterWaitIdle(&engine->prefix_index_writer);
+		engine->prefix_index_dirty = 1u;
+		SparkModelBatchSavePrefixIndex(engine,SparkModelBatchNowNs());
+		SparkPrefixIndexWriterStop(&engine->prefix_index_writer);
+		engine->prefix_index_loaded = 0u;
+	}
+	free(engine->prefix_index_scratch);
 	SparkModelPipelineClientDestroy(engine->pipeline);
 	free(engine->scratch_prefill_counts);
 	free(engine->scratch_request_slots);
@@ -2459,6 +2558,22 @@ static void SparkModelBatchFailIdleRequests(
 	}
 }
 
+static SparkStatus SparkModelBatchKeepPrefixIndex(SparkModelBatchEngine *engine)
+{
+	uint32_t count = 0u,imported = 0u,skipped = 0u;
+	SparkStatus status;
+	if ( engine->prefix_index_scratch != 0 && SparkPrefixCacheExportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,engine->prefix_cache_entry_capacity,&count) != SPARK_STATUS_OK )
+		count = 0u;
+	status = SparkPrefixCacheReset(&engine->prefix_cache);
+	if ( status == SPARK_STATUS_OK && count != 0u )
+		status = SparkPrefixCacheImportCommitted(&engine->prefix_cache,engine->prefix_index_scratch,count,&imported,&skipped);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	engine->prefix_index_reimported_record_count += imported;
+	fprintf(stderr,"batch engine prefix index kept records=%u reimported=%u\n",count,imported);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine *engine)
 {
 	uint32_t index;
@@ -2491,7 +2606,22 @@ static SparkStatus SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine 
 		request->inflight_since_ns = 0ull;
 		request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
 	}
-	return(SparkPrefixCacheReset(&engine->prefix_cache));
+	return(SparkModelBatchKeepPrefixIndex(engine));
+}
+
+static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
+{
+	uint64_t now = SparkModelBatchNowNs();
+	if ( now >= engine->next_status_ns )
+	{
+		(void)SparkModelPipelineClientRequestStatus(engine->pipeline);
+		engine->next_status_ns = now + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
+	}
+	if ( now >= engine->prefix_index_next_save_ns && engine->prefix_index_dirty != 0u )
+	{
+		SparkModelBatchSavePrefixIndex(engine,now);
+		engine->prefix_index_next_save_ns = now + SPARK_MODEL_BATCH_PREFIX_INDEX_SAVE_INTERVAL_NS;
+	}
 }
 
 SparkStatus SparkModelBatchEngineProgress(
@@ -2510,7 +2640,7 @@ SparkStatus SparkModelBatchEngineProgress(
 		engine->observed_control_generation = session_fingerprint;
 	if ( session_fingerprint != engine->observed_control_generation )
 	{
-		fprintf(stderr,"batch engine session changed %llu -> %llu; prefix cache, resident bindings, and pipeline transactions invalidated\n",
+		fprintf(stderr,"batch engine session changed %llu -> %llu; resident bindings and pipeline transactions invalidated\n",
 			(unsigned long long)engine->observed_control_generation,
 			(unsigned long long)session_fingerprint);
 		status = SparkModelBatchInvalidateEngineSession(engine);
@@ -2539,6 +2669,7 @@ SparkStatus SparkModelBatchEngineProgress(
 	}
 	SparkModelBatchExpireStalledRequests(engine);
 	SparkModelBatchRefreshInflightKvPageCount(engine);
+	SparkModelBatchPeriodicWork(engine);
 	step = 0u;
 	misses = 0u;
 	while ( step < maximum_new_submission_count && engine->inflight_submission_count < engine->submission_capacity && misses < 3u )
@@ -2722,8 +2853,23 @@ SparkStatus SparkModelBatchEngineGetView(
 	view->emitted_token_count = engine->emitted_token_count;
 	SparkModelBatchCopyMeasurements(engine,view);
 	SparkModelBatchCountStates(engine,view);
+	SparkPrefixIndexWriterSample((SparkPrefixIndexWriter *)&engine->prefix_index_writer,&view->prefix_index_save_count,&view->prefix_index_save_failure_count,&view->prefix_index_write_ns_total,&view->prefix_index_write_ns_maximum);
+	view->prefix_index_export_ns_maximum = engine->prefix_index_export_ns_maximum;
+	view->prefix_index_loaded_record_count = engine->prefix_index_loaded_record_count;
+	view->prefix_index_refused_count = engine->prefix_index_refused_count;
+	view->prefix_index_reimported_record_count = engine->prefix_index_reimported_record_count;
 	status = SparkModelPipelineClientGetView(engine->pipeline,&view->pipeline);
 	SPARK_RETURN(status);
+}
+
+SparkStatus SparkModelBatchEngineGetRankStatus(
+	const SparkModelBatchEngine *engine,
+	uint32_t rank_index,
+	SparkModelResidentStatusReport *report)
+{
+	if ( engine == 0 || report == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkModelPipelineClientGetRankStatus(engine->pipeline,rank_index,report));
 }
 
 const SparkModelServingAdapterDescriptor *SparkModelBatchEngineGetAdapterDescriptor(

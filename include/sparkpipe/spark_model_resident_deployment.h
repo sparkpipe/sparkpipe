@@ -48,6 +48,8 @@ typedef struct SparkModelResidentDeploymentNode
 	char *adapter_configuration_path;
 	char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
+	char *kv_snapshot_directory;
+	uint64_t kv_snapshot_maximum_bytes;
 	SparkModelResidentEndpoint control_endpoint;
 } SparkModelResidentDeploymentNode;
 

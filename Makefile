@@ -417,7 +417,8 @@ TEST_NAMES := \
     test_qwen38_math_kernels \
     test_gdn_stage_launch_checks \
     test_llm_module_contract \
-    test_llm_stagepack_format
+    test_llm_stagepack_format \
+    test_stage_kv_layout_digest
 
 ifneq ($(UNAME_S),Darwin)
 TEST_NAMES += test_stage_kv_binding
@@ -430,6 +431,7 @@ SHELL_TESTS := \
 PYTHON_TESTS := \
 	tests/test_stray_fixture_processes.py \
 	tests/test_kv_binding_async_source.py \
+	tests/test_kv_snapshot_law.py \
 	tests/test_ab_stats.py \
 	tests/test_ab_verdict.py \
 	tests/test_ab_arm.py \
@@ -1834,6 +1836,10 @@ build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY)
 
 build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES := tests/test_stage_kv_layout_digest.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c
+build/test_stage_kv_layout_digest: $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 STAGE_KV_BINDING_TEST_SOURCES := tests/test_stage_kv_binding.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c
 build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build

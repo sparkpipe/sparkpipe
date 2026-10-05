@@ -1049,6 +1049,28 @@ SparkStatus SparkModelPipelineClientGetPollDescriptors(
 	SPARK_RETURN(status);
 }
 
+SparkStatus SparkModelPipelineClientRequestStatus(SparkModelPipelineClient *pipeline)
+{
+	uint32_t rank;
+	if ( pipeline == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+		(void)SparkModelResidentClientRequestStatus(pipeline->clients[rank]);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelPipelineClientGetRankStatus(
+	const SparkModelPipelineClient *pipeline,
+	uint32_t rank_index,
+	SparkModelResidentStatusReport *report)
+{
+	if ( pipeline == 0 || report == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( rank_index >= pipeline->rank_count )
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	return(SparkModelResidentClientGetStatus(pipeline->clients[rank_index],report));
+}
+
 SparkStatus SparkModelPipelineClientGetView(
 	const SparkModelPipelineClient *pipeline,
 	SparkModelPipelineClientView *view)

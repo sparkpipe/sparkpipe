@@ -841,6 +841,8 @@ static void TestLoopbackRemoveTree(const TestLoopbackStack *stack)
 	unlink(stack->deployment_path);
 	assert(snprintf(path,sizeof(path),"%s/api_submission.seq",stack->root) > 0);
 	unlink(path);
+	assert(snprintf(path,sizeof(path),"%s/prefix_index.spi",stack->root) > 0);
+	unlink(path);
 	assert(snprintf(path,sizeof(path),"%s/%s",stack->root,TEST_MODEL_SERVING_ADAPTER_PATH) > 0);
 	unlink(path);
 	assert(snprintf(path,sizeof(path),"%s/%s",stack->root,TEST_MODEL_RESIDENT_TRANSPORT_PATH) > 0);

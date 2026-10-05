@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 9u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 10u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS UINT32_C(0x00000002)
@@ -90,6 +90,7 @@ typedef struct SparkKvPageCacheSnapshot
 	uint64_t restore_ns;
 	uint64_t restore_miss_count;
 	uint64_t restore_corrupt_count;
+	uint64_t restore_read_error_count;
 	uint64_t restore_failure_count;
 	SparkStatus last_save_status;
 	SparkStatus last_restore_status;
@@ -107,6 +108,14 @@ typedef struct SparkKvPageCacheSnapshot
 	uint64_t save_cancelled_count;
 }
 SparkKvPageCacheSnapshot;
+
+typedef struct SparkKvPageCacheSaveOrder
+{
+	uint64_t last_used_epoch;
+	uint32_t entry_index;
+	uint32_t reserved0;
+}
+SparkKvPageCacheSaveOrder;
 
 #define SPARK_KV_PAGE_CACHE_SAVE_DEVICE 1u
 #define SPARK_KV_PAGE_CACHE_SAVE_BACKING 2u
@@ -214,6 +223,8 @@ SparkStatus SparkKvPageCacheSaveCopy(SparkKvPageCache *cache,SparkKvPageCacheSav
 SparkStatus SparkKvPageCacheSaveDrain(SparkKvPageCache *cache);
 uint32_t SparkKvPageCacheSavePending(const SparkKvPageCache *cache);
 void SparkKvPageCacheSaveCancelAll(SparkKvPageCache *cache);
+SparkStatus SparkKvPageCacheMarkAllUnsaved(SparkKvPageCache *cache,SparkKvPageCacheSaveOrder *order,uint32_t order_capacity,uint32_t *marked_out,uint32_t *deferred_out,uint32_t *ineligible_out);
+SparkStatus SparkKvPageCacheCountUnsaved(const SparkKvPageCache *cache,uint32_t *unsaved_out,uint32_t *ineligible_out);
 SparkStatus SparkKvPageCacheRestorePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCachePrepareLane(

@@ -76,9 +76,6 @@ static void SparkTestFillTable(
 	table->hash_bucket_heads = hash_heads;
 	table->entry_indices_by_logical_page = entry_indices;
 
-	table->model_id = "test-model";
-	table->model_revision = "test-revision";
-	table->cache_layout_fingerprint = "test-layout";
 }
 
 static void SparkTestBackendInitializesFromTable(void)

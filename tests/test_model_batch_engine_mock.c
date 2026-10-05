@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
 
@@ -141,6 +142,22 @@ static void TestWriteDeployment(const char *path, const char *runtime_root, cons
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
 
+static uint32_t TestKeepPrefixIndex;
+
+static const char *TestPrefixIndexPath(void)
+{
+	static char path[1024];
+	char directory[900];
+	if ( path[0] == '\0' )
+	{
+		assert(getcwd(directory,sizeof(directory)) != 0);
+		(void)snprintf(path,sizeof(path),"%s/build/engine-mock-%d",directory,(int)getpid());
+		(void)mkdir(path,0700);
+		(void)snprintf(path,sizeof(path),"%s/build/engine-mock-%d/prefix_index.spi",directory,(int)getpid());
+	}
+	return(path);
+}
+
 static void TestConfigure(SparkModelBatchEngineConfiguration *configuration,const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,uint32_t prefill_rows,uint32_t request_capacity,uint32_t flags)
 {
 	memset(configuration,0,sizeof(*configuration));
@@ -155,6 +172,9 @@ static void TestConfigure(SparkModelBatchEngineConfiguration *configuration,cons
 	configuration->inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 	configuration->deployment = deployment;
 	configuration->runtime_root = runtime_root;
+	configuration->prefix_index_path = TestPrefixIndexPath();
+	if ( TestKeepPrefixIndex == 0u )
+		(void)unlink(configuration->prefix_index_path);
 	configuration->event_function = TestBatchEvent;
 	configuration->event_context = state;
 }
@@ -356,15 +376,131 @@ static void TestScenarioCachedPrefixSessionReset(const SparkModelResidentDeploym
 		"prefix reset: next request actually uses cached prefix");
 	CHECK(state.token_events[2] == 0u,"prefix reset: session dies before emitted token");
 	MockResidentClientDisconnect(1u);
-	CHECK(TestWaitLane(engine,2u,0u,&rebuilt) != 0u &&
-		rebuilt.cache_prefix_token_count == 0u && rebuilt.cache_publish_token_count == 4u,
-		"prefix reset: recovered session recomputes first block");
-	CHECK(memcmp(&canonical.cache_publish_identity,&rebuilt.cache_publish_identity,
+	CHECK(TestWaitLane(engine,2u,4u,&rebuilt) != 0u &&
+		rebuilt.cache_prefix_token_count == 4u && (rebuilt.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u,
+		"prefix reset: the kept prefix index sends the first block as a prefix after the session change");
+	CHECK(memcmp(&canonical.cache_publish_identity,&rebuilt.cache_prefix_identity,
 		sizeof(canonical.cache_publish_identity)) == 0,
-		"prefix reset: rebuilt digest equals canonical prompt digest");
+		"prefix reset: the kept prefix identity equals the canonical prompt digest");
 	TestDriveUntilTerminal(engine,&state,2u,400u);
 	CHECK(state.completed_events[2] == 1u && state.error_events[2] == 0u &&
 		state.token_events[2] == 1u,"prefix reset: recovered request completes exactly once");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioPrefixIndexSurvivesRestart(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t prompt[8] = {11u,12u,13u,14u,15u,16u,17u,18u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	SparkModelServingLane canonical = {0},restored = {0};
+	struct stat info;
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,500u,1u);
+	CHECK(TestWaitLane(engine,1u,0u,&canonical) != 0u && canonical.cache_publish_token_count == 4u,"index restart: the first engine publishes the first block");
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	CHECK(state.completed_events[1] == 1u,"index restart: the first engine completes the warm request");
+	CHECK(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK,"index restart: the first engine is destroyed");
+	CHECK(stat(TestPrefixIndexPath(),&info) == 0 && info.st_size > 0,"index restart: destroy wrote the prefix index file");
+	memset(&state,0,sizeof(state));
+	MockResidentClientReset();
+	TestKeepPrefixIndex = 1u;
+	engine = TestConnect(deployment,&state,runtime_root);
+	TestKeepPrefixIndex = 0u;
+	if ( engine == 0 )
+		return;
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.prefix_index_loaded_record_count == 1u && view.prefix_index_refused_count == 0u,"index restart: the second engine loads one record");
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,2u,501u,1u,prompt,8u);
+	CHECK(TestWaitLane(engine,2u,4u,&restored) != 0u && restored.cache_prefix_token_count == 4u &&
+		(restored.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) != 0u &&
+		memcmp(&canonical.cache_publish_identity,&restored.cache_prefix_identity,sizeof(canonical.cache_publish_identity)) == 0,
+		"index restart: the restarted engine sends the saved block as a prefix lane");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"index restart: the request completes with four cached prompt tokens");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioPrefixIndexRefusesCorruptFile(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	SparkModelServingLane lane = {0};
+	uint8_t byte;
+	FILE *file;
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,500u,1u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	SparkModelBatchEngineDestroy(engine);
+	file = fopen(TestPrefixIndexPath(),"r+b");
+	CHECK(file != 0,"index corrupt: the index file exists");
+	if ( file == 0 )
+		return;
+	CHECK(fseek(file,-1L,SEEK_END) == 0 && fread(&byte,1u,1u,file) == 1u,"index corrupt: read the last record byte");
+	byte ^= 0x5au;
+	CHECK(fseek(file,-1L,SEEK_END) == 0 && fwrite(&byte,1u,1u,file) == 1u,"index corrupt: flip the last record byte");
+	fclose(file);
+	memset(&state,0,sizeof(state));
+	MockResidentClientReset();
+	TestKeepPrefixIndex = 1u;
+	engine = TestConnect(deployment,&state,runtime_root);
+	TestKeepPrefixIndex = 0u;
+	if ( engine == 0 )
+		return;
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.prefix_index_refused_count == 1u && view.prefix_index_loaded_record_count == 0u,"index corrupt: the digest mismatch refuses the file");
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,2u,501u,1u);
+	CHECK(TestWaitLane(engine,2u,0u,&lane) != 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == 0u,"index corrupt: no prefix lane comes from a refused file");
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	CHECK(state.completed_events[2] == 1u,"index corrupt: the request completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioStatusReport(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingAdapterSnapshot snapshot;
+	SparkModelResidentStatusReport report;
+	uint32_t step;
+	MockResidentClientReset();
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	(void)SparkModelBatchEngineProgress(engine,1u);
+	CHECK(MockResidentClientCalls(TEST_RANKS - 1u,MOCK_CALL_STATUS_REQUEST) == 0u,"status: no status request before the first interval");
+	CHECK(SparkModelBatchEngineNextProgressNs(engine) == 0u,"status: polling adds no wake-up deadline");
+	for (step=0u; step<120u && MockResidentClientCalls(TEST_RANKS - 1u,MOCK_CALL_STATUS_REQUEST) == 0u; step++)
+	{
+		struct timespec delay = {0,10000000};
+		(void)nanosleep(&delay,0);
+		(void)SparkModelBatchEngineProgress(engine,1u);
+	}
+	CHECK(MockResidentClientCalls(TEST_RANKS - 1u,MOCK_CALL_STATUS_REQUEST) > 0u,"status: progress requests rank status after one interval");
+	memset(&snapshot,0,sizeof(snapshot));
+	snapshot.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	snapshot.descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
+	snapshot.kv_store.attached = 1u;
+	snapshot.kv_store.restore_count = 7u;
+	MockResidentClientDeliverStatus(TEST_RANKS - 1u,&snapshot);
+	CHECK(SparkModelBatchEngineGetRankStatus(engine,TEST_RANKS - 1u,&report) == SPARK_STATUS_OK && report.generation == 1u &&
+		report.adapter_snapshot.kv_store.attached == 1u && report.adapter_snapshot.kv_store.restore_count == 7u,"status: the engine returns the delivered report");
+	CHECK(SparkModelBatchEngineGetRankStatus(engine,0u,&report) == SPARK_STATUS_OK && report.generation == 0u,"status: a rank with no report reads generation zero");
+	CHECK(SparkModelBatchEngineGetRankStatus(engine,TEST_RANKS,&report) == SPARK_STATUS_NOT_FOUND,"status: an unknown rank is not found");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -1348,6 +1484,9 @@ int main(void)
 	TestScenarioRankDiesMidDecode(&deployment,runtime_root);
 	TestScenarioRankKilledAndRevived(&deployment,runtime_root);
 	TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
+	TestScenarioPrefixIndexSurvivesRestart(&deployment,runtime_root);
+	TestScenarioPrefixIndexRefusesCorruptFile(&deployment,runtime_root);
+	TestScenarioStatusReport(&deployment,runtime_root);
 	TestScenarioPartialPrefixAppend(&deployment,runtime_root);
 	TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
 	TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);

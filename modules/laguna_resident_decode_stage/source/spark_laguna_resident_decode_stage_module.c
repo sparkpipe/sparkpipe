@@ -803,9 +803,6 @@ static SparkStatus SparkLagunaKvInitialize(SparkLagunaModuleState *state)
 	table.sequences = state->kv_sequences;
 	table.hash_bucket_heads = state->kv_hash_bucket_heads;
 	table.entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
-	table.model_id = "laguna";
-	table.model_revision = state->model_revision;
-	table.cache_layout_fingerprint = "kv-bf16-full-gqa-layer-major-gather-v1";
 
 	status = SparkKvBackendInitialize(&table,&state->kv_arena,&state->kv_page_cache,&state->kv_page_store);
 	if ( status != SPARK_STATUS_OK )

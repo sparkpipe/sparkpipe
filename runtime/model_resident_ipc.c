@@ -61,6 +61,9 @@ static uint32_t SparkModelResidentIpcTextMatches(
 	return(terminator != 0 && strcmp(wire_text,expected) == 0 ? 1u : 0u);
 }
 
+_Static_assert(sizeof(SparkModelDriverKvStoreCounters) == 184u,"SparkModelDriverKvStoreCounters is embedded in the driver, adapter and resident IPC ABIs");
+_Static_assert(sizeof(SparkModelResidentIpcStatusReport) == 56u + sizeof(SparkModelServingAdapterSnapshot),"status report wire layout");
+
 static void SparkModelResidentIpcInitializeHeader(
 	SparkModelResidentIpcHeader *header,
 	uint32_t kind,
@@ -274,6 +277,58 @@ SparkStatus SparkModelResidentIpcValidateSubmitResult(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( result->header.message_id != message_id || result->submission_id != submission_id || result->status > SPARK_STATUS_UNSUPPORTED || result->reserved0 != 0u )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcInitializeStatusRequest(
+	SparkModelResidentIpcStatusRequest *request,
+	uint64_t message_id)
+{
+	if ( request == 0 || message_id == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(request,0,sizeof(*request));
+	SparkModelResidentIpcInitializeHeader(&request->header,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST,SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES,SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES,message_id);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcInitializeStatusReport(
+	SparkModelResidentIpcStatusReport *report,
+	const SparkModelResidentIpcStatusRequest *request,
+	SparkStatus status,
+	uint64_t client_generation,
+	uint32_t rank_index,
+	uint32_t stage_index,
+	uint32_t residentd_pid,
+	const SparkModelServingAdapterSnapshot *adapter_snapshot)
+{
+	if ( report == 0 || request == 0 || request->header.message_id == 0u || adapter_snapshot == 0 || status > SPARK_STATUS_UNSUPPORTED )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(report,0,sizeof(*report));
+	SparkModelResidentIpcInitializeHeader(&report->header,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES,request->header.message_id);
+	report->client_generation = client_generation;
+	report->status = (uint32_t)status;
+	report->rank_index = rank_index;
+	report->stage_index = stage_index;
+	report->residentd_pid = residentd_pid;
+	report->adapter_snapshot = *adapter_snapshot;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcValidateStatusReport(
+	const SparkModelResidentIpcStatusReport *report,
+	uint32_t message_bytes,
+	uint64_t message_id,
+	uint32_t rank_index,
+	uint32_t stage_index)
+{
+	SparkStatus status;
+	status = SparkModelResidentIpcValidateHeader(report != 0 ? &report->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( report->header.message_id != message_id || report->rank_index != rank_index || report->stage_index != stage_index || report->status > SPARK_STATUS_UNSUPPORTED )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	if ( report->status == (uint32_t)SPARK_STATUS_OK && (report->adapter_snapshot.abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || report->adapter_snapshot.descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }

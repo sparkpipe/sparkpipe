@@ -59,6 +59,9 @@ struct SparkModelResidentClient
 	uint32_t continue_calls;
 	uint32_t commit_calls;
 	uint32_t abort_calls;
+	uint32_t status_request_calls;
+	uint32_t status_outstanding;
+	SparkModelResidentStatusReport status_report;
 	uint64_t last_submission_id;
 	SparkModelServingLane last_lane;
 	MockInflight inflight[MOCK_INFLIGHT_CAPACITY];
@@ -112,6 +115,7 @@ uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind)
 		case MOCK_CALL_CONTINUE: return(c->continue_calls);
 		case MOCK_CALL_COMMIT: return(c->commit_calls);
 		case MOCK_CALL_ABORT: return(c->abort_calls);
+		case MOCK_CALL_STATUS_REQUEST: return(c->status_request_calls);
 	}
 	return(0u);
 }
@@ -266,12 +270,49 @@ static void MockResidentClientDropInflight(SparkModelResidentClient *c)
 	c->pending_decision_count = 0u;
 }
 
+void MockResidentClientDeliverStatus(uint32_t stage_index, const SparkModelServingAdapterSnapshot *snapshot)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	if ( c == 0 || snapshot == 0 )
+		return;
+	c->status_report.generation++;
+	c->status_report.client_generation = c->client_generation;
+	c->status_report.status = SPARK_STATUS_OK;
+	c->status_report.rank_index = c->rank_index;
+	c->status_report.stage_index = c->stage_index;
+	c->status_report.residentd_pid = 4242u;
+	c->status_report.adapter_snapshot = *snapshot;
+	c->status_outstanding = 0u;
+}
+
+SparkStatus SparkModelResidentClientRequestStatus(SparkModelResidentClient *client)
+{
+	if ( client == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->connected == 0u )
+		return(SPARK_STATUS_IO_ERROR);
+	if ( client->status_outstanding != 0u )
+		return(SPARK_STATUS_DUPLICATE);
+	client->status_request_calls++;
+	client->status_outstanding = 1u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentClientGetStatus(const SparkModelResidentClient *client,SparkModelResidentStatusReport *report)
+{
+	if ( client == 0 || report == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*report = client->status_report;
+	return(SPARK_STATUS_OK);
+}
+
 void MockResidentClientDisconnect(uint32_t stage_index)
 {
 	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
 	if ( c != 0 )
 	{
 		c->connected = 0u;
+		c->status_outstanding = 0u;
 		c->detected = 0u;
 		MockResidentClientDropInflight(c);
 	}

@@ -671,9 +671,6 @@ static void SparkLingKvFillTable(SparkLingModuleState *state,SparkKvModelTable *
 	table->sequences = state->kv_sequences;
 	table->hash_bucket_heads = state->kv_hash_bucket_heads;
 	table->entry_indices_by_logical_page = state->kv_entry_indices_by_logical_page;
-	table->model_id = "ling";
-	table->model_revision = state->model_revision;
-	table->cache_layout_fingerprint = "compressed-key-value-bf16-block-major";
 }
 
 static SparkStatus SparkLingKvInitialize(SparkLingModuleState *state)

@@ -2345,9 +2345,6 @@ SparkStatus SparkKvBackendInitialize(const SparkKvModelTable *table,SparkKvCache
 	assert(table->page_store_config.maximum_backing_bytes == state.page_count * table->page_store_config.page_bytes);
 	assert(table->arena_configuration.value_device_base == state.index_cache);
 	uint32_t shard_divisor = state.kv_shard != 0u ? state.tp_degree : 1u;
-	char shard_fingerprint[96];
-	(void)snprintf(shard_fingerprint,sizeof(shard_fingerprint),"kv-bf16-index-packed-layer-major-gather-v1-shard%ur%u",state.tp_degree,state.tp_rank);
-	assert(strcmp(table->cache_layout_fingerprint,state.kv_shard != 0u ? shard_fingerprint : "kv-bf16-index-packed-layer-major-gather-v1") == 0);
 	assert(table->arena_configuration.value_block_stride_bytes * shard_divisor == (uint64_t)state.index_layer_count * 64u * SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u);
 	assert(table->arena_configuration.layer_count == state.kv_layer_count && table->capacity_request.layer_count == state.kv_layer_count);
 	assert(table->arena_configuration.block_token_count == SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT && table->arena_configuration.kv_head_count == 1u);

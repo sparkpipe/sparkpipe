@@ -15,6 +15,7 @@ enum
 	MOCK_CALL_CAN_CONTINUE,
 	MOCK_CALL_CAN_COMMIT,
 	MOCK_CALL_CAN_ABORT,
+	MOCK_CALL_STATUS_REQUEST,
 	MOCK_CALL_COUNT
 };
 
@@ -45,6 +46,7 @@ void MockResidentClientFireResult(uint32_t stage_index, uint64_t submission_id, 
 void MockResidentClientFireDecision(uint32_t stage_index, uint64_t submission_id, uint32_t decision_kind, SparkStatus status);
 void MockResidentClientFireCompletion(uint32_t stage_index, const SparkModelServingCompletion *completion);
 void MockResidentClientDisconnect(uint32_t stage_index);
+void MockResidentClientDeliverStatus(uint32_t stage_index, const SparkModelServingAdapterSnapshot *snapshot);
 void MockResidentClientKill(uint32_t stage_index);
 void MockResidentClientRevive(uint32_t stage_index);
 void MockResidentClientSetAutoTokens(uint32_t count);

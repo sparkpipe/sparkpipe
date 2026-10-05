@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 13u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 14u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -232,6 +232,34 @@ typedef struct SparkModelDriverAdmissionDecision
     uint64_t driver_dispatch_cookie1;
 } SparkModelDriverAdmissionDecision;
 
+typedef struct SparkModelDriverKvStoreCounters
+{
+    uint32_t attached;
+    uint32_t store_failed_status;
+    uint64_t save_count;
+    uint64_t save_page_count;
+    uint64_t save_ns;
+    uint64_t save_failure_count;
+    uint64_t save_deferred_count;
+    uint64_t restore_count;
+    uint64_t restore_page_count;
+    uint64_t restore_ns;
+    uint64_t restore_miss_count;
+    uint64_t restore_corrupt_count;
+    uint64_t restore_read_error_count;
+    uint64_t restore_failure_count;
+    uint64_t store_used_bytes;
+    uint64_t store_maximum_bytes;
+    uint64_t store_file_count;
+    uint64_t store_foreign_layout_file_count;
+    uint64_t store_checksum_failure_count;
+    uint64_t store_removed_temporary_count;
+    uint64_t store_eviction_count;
+    uint64_t store_write_failure_count;
+    uint64_t store_queue_full_count;
+    uint64_t store_queued_count;
+} SparkModelDriverKvStoreCounters;
+
 typedef struct SparkModelDriverRuntimeSnapshot
 {
     uint32_t descriptor_bytes;
@@ -252,6 +280,7 @@ typedef struct SparkModelDriverRuntimeSnapshot
     uint64_t stale_admission_count;
     uint32_t private_queue_pressure;
     uint32_t reserved;
+    SparkModelDriverKvStoreCounters kv_store;
 } SparkModelDriverRuntimeSnapshot;
 
 typedef struct SparkModelDriverCreateRequest

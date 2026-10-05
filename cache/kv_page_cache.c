@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_kv_page_cache.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -1757,6 +1758,89 @@ static SparkStatus SparkKvPageCacheSaveCheck(const SparkKvPageCache *cache,uint3
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkKvPageCacheSaveEligible(const SparkKvPageCache *cache,uint32_t entry_index)
+{
+	const SparkKvPageCacheEntry *entry = &cache->entries[entry_index];
+	uint32_t index;
+	if ( (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u && cache->state_store != 0 )
+		return(0u);
+	for (index=entry_index; index != SPARK_KV_PAGE_CACHE_NO_INDEX && index < cache->entry_capacity; index=cache->entries[index].parent_entry_index)
+		if ( (cache->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u )
+			return(0u);
+	return(entry->page_count != 0u && entry->page_count <= cache->snapshot->page_capacity ? 1u : 0u);
+}
+
+static int SparkKvPageCacheSaveOrderCompare(const void *left,const void *right)
+{
+	const SparkKvPageCacheSaveOrder *a = left,*b = right;
+	if ( a->last_used_epoch != b->last_used_epoch )
+		return(a->last_used_epoch > b->last_used_epoch ? -1 : 1);
+	return(a->entry_index < b->entry_index ? -1 : (a->entry_index > b->entry_index ? 1 : 0));
+}
+
+static uint32_t SparkKvPageCacheEntryUnsaved(const SparkKvPageCache *cache,uint32_t entry_index)
+{
+	uint32_t flags = cache->entries[entry_index].flags;
+	return((flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && (flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u ? 1u : 0u);
+}
+
+SparkStatus SparkKvPageCacheMarkAllUnsaved(SparkKvPageCache *cache,SparkKvPageCacheSaveOrder *order,uint32_t order_capacity,uint32_t *marked_out,uint32_t *deferred_out,uint32_t *ineligible_out)
+{
+	uint32_t entry,count = 0u,index,marked = 0u,deferred = 0u,ineligible = 0u;
+	SparkStatus status;
+	if ( SparkKvPageCacheIsValid(cache) == 0u || cache->snapshot == 0 || order == 0 || order_capacity < cache->entry_capacity || marked_out == 0 || deferred_out == 0 || ineligible_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (entry=0u; entry<cache->entry_capacity; entry++)
+	{
+		if ( SparkKvPageCacheEntryUnsaved(cache,entry) == 0u || SparkKvPageCacheSaveIsPending(cache->snapshot,entry) != 0u )
+			continue;
+		if ( SparkKvPageCacheSaveEligible(cache,entry) == 0u )
+		{
+			ineligible++;
+			continue;
+		}
+		order[count++] = (SparkKvPageCacheSaveOrder){.last_used_epoch=cache->entries[entry].last_used_epoch,.entry_index=entry};
+	}
+	qsort(order,count,sizeof(order[0]),SparkKvPageCacheSaveOrderCompare);
+	for (index=0u; index<count; index++)
+	{
+		if ( SparkKvPageCacheSaveIsPending(cache->snapshot,order[index].entry_index) != 0u || SparkKvPageCacheEntryUnsaved(cache,order[index].entry_index) == 0u )
+			continue;
+		if ( cache->snapshot->pending_count == cache->snapshot->pending_capacity )
+		{
+			deferred += count - index;
+			break;
+		}
+		status = SparkKvPageCacheSavePush(cache,order[index].entry_index);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+		marked++;
+	}
+	*marked_out = marked;
+	*deferred_out = deferred;
+	*ineligible_out = ineligible;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvPageCacheCountUnsaved(const SparkKvPageCache *cache,uint32_t *unsaved_out,uint32_t *ineligible_out)
+{
+	uint32_t entry,unsaved = 0u,ineligible = 0u;
+	if ( SparkKvPageCacheIsValid(cache) == 0u || cache->snapshot == 0 || unsaved_out == 0 || ineligible_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (entry=0u; entry<cache->entry_capacity; entry++)
+	{
+		if ( SparkKvPageCacheEntryUnsaved(cache,entry) == 0u )
+			continue;
+		if ( SparkKvPageCacheSaveEligible(cache,entry) != 0u )
+			unsaved++;
+		else
+			ineligible++;
+	}
+	*unsaved_out = unsaved;
+	*ineligible_out = ineligible;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkKvPageCacheSaveLinks(const SparkKvPageCache *cache,uint32_t entry_index,SparkKvPageCacheSnapshotLink *links)
 {
 	uint32_t cursor = cache->entries[entry_index].page_count,index;
@@ -2095,6 +2179,20 @@ static SparkStatus SparkKvPageCacheImportPage(SparkKvPageCache *cache,const Spar
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkKvPageCacheSnapshotReadOutcome(SparkKvPageCache *cache,const SparkKvSnapshotKey *key,SparkStatus status)
+{
+	SparkKvPageCacheSnapshot *snapshot = cache->snapshot;
+	if ( status == SPARK_STATUS_OK || status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_HASH_MISMATCH )
+		return(status);
+	(void)SparkKvSnapshotRemove(snapshot->store,key);
+	if ( status != SPARK_STATUS_IO_ERROR )
+		return(SPARK_STATUS_HASH_MISMATCH);
+	snapshot->restore_read_error_count++;
+	if ( (snapshot->restore_read_error_count & (snapshot->restore_read_error_count - 1u)) == 0u )
+		fprintf(stderr,"KV-SNAPSHOT restore read_error tokens=%u read_errors=%llu\n",key->token_count,(unsigned long long)snapshot->restore_read_error_count);
+	return(SPARK_STATUS_NOT_FOUND);
+}
+
 static SparkStatus SparkKvPageCacheReadSnapshotPage(SparkKvPageCache *cache,const SparkKvPageCacheSnapshotLink *link,uint32_t with_state)
 {
 	SparkKvPageCacheSnapshot *snapshot = cache->snapshot;
@@ -2111,7 +2209,7 @@ static SparkStatus SparkKvPageCacheReadSnapshotPage(SparkKvPageCache *cache,cons
 		if ( status == SPARK_STATUS_OK && bytes != cache->state_store->page_bytes )
 			status = SPARK_STATUS_VALIDATION_FAILED;
 	}
-	return(status);
+	return(SparkKvPageCacheSnapshotReadOutcome(cache,&key,status));
 }
 
 static SparkStatus SparkKvPageCacheImportChain(SparkKvPageCache *cache,uint32_t page_count)
@@ -2189,11 +2287,14 @@ SparkStatus SparkKvPageCacheRestorePrefix(SparkKvPageCache *cache,const SparkMod
 	page_count = (uint32_t)(bytes / sizeof(snapshot->links[0]));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvPageCacheValidateChain(cache,snapshot->links,page_count,identity,token_count);
+	status = SparkKvPageCacheSnapshotReadOutcome(cache,&key,status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvPageCacheImportChain(cache,page_count);
 	if ( status == SPARK_STATUS_HASH_MISMATCH )
 	{
 		snapshot->restore_corrupt_count++;
+		if ( (snapshot->restore_corrupt_count & (snapshot->restore_corrupt_count - 1u)) == 0u )
+			fprintf(stderr,"KV-SNAPSHOT restore corrupt tokens=%u corrupt=%llu\n",token_count,(unsigned long long)snapshot->restore_corrupt_count);
 		status = SPARK_STATUS_NOT_FOUND;
 	}
 	if ( status == SPARK_STATUS_NOT_FOUND )
