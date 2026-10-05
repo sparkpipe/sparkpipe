@@ -67,7 +67,6 @@ SPARKPIPE_TRANSPORT_SOURCES := \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
     ring/transport/memlink.c \
-    ring/transport/tp_collective.c \
     ring/transport/tp_device_collective.c
 
 SPARKPIPE_CACHE_SOURCES := \

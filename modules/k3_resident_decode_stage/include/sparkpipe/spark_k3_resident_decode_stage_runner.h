@@ -6,7 +6,6 @@
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_status.h"
-#include "sparkpipe/spark_tp_collective.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 
 #ifdef __cplusplus
@@ -45,7 +44,6 @@ typedef struct SparkK3StageRunnerConfiguration
     const char *rank_pack_path;
     uint32_t multiprocessors;
     void *execution_stream;
-    const SparkTpCollectiveConfig *tp_collective;
     const SparkTpDeviceCollectiveConfig *device_collective;
     const SparkTpDeviceCollectiveConfig *device_collective_wide;
     void (*layer_collective_override)(void *context, void *stream,

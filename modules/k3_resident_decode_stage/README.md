@@ -42,11 +42,10 @@ adapter), which the root `Makefile` links into
   when `device_collective->local_hidden_dimension` is not `K3_HIDDEN` or
   `device_collective_wide->local_hidden_dimension` is not
   `K3_RUNNER_GATE_UP_WIDTH`.
-- `SparkK3StageRunnerConfiguration.device_collective_wide` may be null at
-  any TP degree. The serving adapter always sets it when it creates a device
-  collective. With `tp_degree > 1`, a device collective, no wide collective
-  and no host collective (`tp_collective`), `K3RunnerLayerCollective` skips
-  the phase 2 and phase 3 reduces without reporting an error.
+- With `tp_degree > 1`, `SparkK3StageRunnerInitialize` requires both
+  `device_collective` and `device_collective_wide`; the host TCP collective
+  is gone. A tensor-parallel layer reduce that reaches no device collective
+  fails the step.
 
 ### Shared mesh lane (serving adapter)
 

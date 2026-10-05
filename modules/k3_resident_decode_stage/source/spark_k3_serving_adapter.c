@@ -90,8 +90,6 @@ typedef struct SparkK3ServingState
 {
 	SparkK3StageRunner runner;
 	SparkK3StageRunnerConfiguration runner_config;
-	SparkTpCollectiveConfig collective_config;
-	SparkTpCollectivePeer peers[SPARK_TP_COLLECTIVE_MAX_STEPS];
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;
 	char *pack_path;
@@ -351,48 +349,11 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	state->runner_config.rank_pack_path = state->pack_path;
 	state->runner_config.execution_stream = configuration->execution_stream;
 	state->runner_config.multiprocessors = 48u;
-	if ( state->runner_config.tp_degree > 1u )
+	if ( state->runner_config.tp_degree > 1u && state->device_collective_present == 0 )
 	{
-		int32_t coll = SparkJsonFindObjectMember(&doc, root, "tp_collective");
-		if ( coll < 0 )
-			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
-		memset(&state->collective_config, 0, sizeof(state->collective_config));
-		state->collective_config.abi_version = SPARK_TP_COLLECTIVE_ABI_VERSION;
-		state->collective_config.tp_degree = state->runner_config.tp_degree;
-		state->collective_config.tp_rank = state->runner_config.tp_rank;
-		state->collective_config.listen_port = (uint16_t)K3ServingJsonU32(&doc, coll, "listen_port", 0u);
-		state->collective_config.connect_timeout_milli = K3ServingJsonU32(&doc, coll, "connect_timeout_milli", 5000u);
-		state->collective_config.operation_timeout_milli = K3ServingJsonU32(&doc, coll, "operation_timeout_milli", 30000u);
-		state->collective_config.collective_identifier = 0u;
-		{
-			uint64_t id64 = 0u;
-			int32_t id_token = SparkJsonFindObjectMember(&doc, coll, "collective_identifier");
-			if ( id_token >= 0 )
-				SparkJsonGetUInt64(&doc, id_token, &id64);
-			state->collective_config.collective_identifier = id64;
-		}
-		int32_t peers_token = SparkJsonFindObjectMember(&doc, coll, "peers");
-		uint32_t peer_count = peers_token >= 0 ?
-			SparkJsonGetArrayElementCount(&doc, peers_token) : 0u;
-		if ( peer_count == 0u || peer_count > SPARK_TP_COLLECTIVE_MAX_STEPS ||
-			(1u << peer_count) != state->runner_config.tp_degree )
-			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
-		for ( uint32_t i = 0u; i < peer_count; ++i )
-		{
-			int32_t peer = SparkJsonGetArrayElement(&doc, peers_token, i);
-			char *text = 0;
-			if ( peer < 0 || SparkJsonCopyString(&doc, peer, &text) != SPARK_STATUS_OK )
-				{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
-			char *colon = strrchr(text, ':');
-			if ( colon == 0 )
-				{ free(text); SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
-			*colon = '\0';
-			strncpy(state->peers[i].host_name, text, SPARK_TP_COLLECTIVE_HOST_NAME_BYTES - 1u);
-			state->peers[i].port = (uint16_t)atoi(colon + 1);
-			free(text);
-		}
-		memcpy(state->collective_config.peers, state->peers, sizeof(state->peers));
-		state->runner_config.tp_collective = &state->collective_config;
+		fprintf(stderr, "k3 adapter: tp_degree %u needs a device_collective\n", state->runner_config.tp_degree);
+		SparkJsonDocumentDestroy(&doc);
+		return SPARK_STATUS_SCHEMA_ERROR;
 	}
 	if ( state->device_collective_present != 0 )
 	{

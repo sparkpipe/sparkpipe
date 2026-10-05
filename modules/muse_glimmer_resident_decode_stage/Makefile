@@ -13,7 +13,6 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/cache/store/kv_store.c \
 	$(REPOSITORY_ROOT)/model-families/muse_glimmer/src/spark_muse_glimmer_work_control.c \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
 # Provenance pins: the pinned HF modeling-source revision and the exact
 # package contract, checked at adapter compile time.

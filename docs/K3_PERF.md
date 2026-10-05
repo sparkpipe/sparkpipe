@@ -71,10 +71,7 @@ fp32 KDA state becomes the dominant term at large batch. TP16 gives
 - **CUDA graphs were removed.** a29ea53 deleted the capture machinery
   (`graphs[4]`, `LaunchSliceGraph`, `CAPTURE_GRAPHS`, `capture_graphs`)
   because exclusive lazy loading makes capture ineligible. The 2026-08-16
-  replay result (54.2 ms vs 55.5 ms eager) no longer applies. The
-  `capture_graphs` keys still emitted by `tools/k3_gen_adapter_configs.sh`,
-  `tools/k3_multidev_lane.py` and `modules/k3_resident_decode_stage/configs/`
-  are not read by the adapter. GLM regained graphs by pinning every expert
+  replay result (54.2 ms vs 55.5 ms eager) no longer applies. GLM regained graphs by pinning every expert
   (78c2c21); K3 needs the same, or relocatable graphs.
 - **TILE_K=32 landed** (837fe89, 2026-08-16): `layer.cuh` takes the
   INTERLEAVED_B path when `expert_tile_k == 32u`; `tools/k3_pack.py` packs

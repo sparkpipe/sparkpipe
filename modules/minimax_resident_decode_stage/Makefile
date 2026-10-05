@@ -14,7 +14,6 @@ MODULE_ADDITIONAL_HOST_SOURCES = \
 	$(REPOSITORY_ROOT)/src/spark_sha256.c \
 	$(REPOSITORY_ROOT)/src/spark_ck128.c \
 	$(REPOSITORY_ROOT)/ring/transport/hidden_transport.c \
-	$(REPOSITORY_ROOT)/ring/transport/tp_collective.c \
 	$(REPOSITORY_ROOT)/ring/transport/tp_device_collective.c
 MINIMAX_MODEL_REVISION ?= minimax-h3-text-bf16-h5120-l64-mrope24-20-20-tp4-v1
 # The package contract is the firmware description the driver compiles from:
