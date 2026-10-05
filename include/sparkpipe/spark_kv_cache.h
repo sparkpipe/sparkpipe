@@ -507,6 +507,11 @@ SparkStatus SparkKvCacheArenaMarkBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);
 
+SparkStatus SparkKvCacheArenaAdoptResidentSlot(
+    SparkKvCacheArena *arena,
+    uint32_t logical_block_index,
+    uint32_t resident_slot_index);
+
 SparkStatus SparkKvCacheArenaMarkParkedBlockResident(
     SparkKvCacheArena *arena,
     uint32_t logical_block_index);

@@ -709,8 +709,43 @@ typedef struct cuda_stub_vmm_phys
     uint32_t mapped_count;
     uint64_t bytes;
     CUmemAllocationProp prop;
-    uint8_t *image;
+    struct cuda_stub_vmm_backing *backing;
 } cuda_stub_vmm_phys;
+
+#define CUDA_STUB_BACKING_MAGIC UINT32_C(0x564D4D42)
+
+typedef struct cuda_stub_vmm_backing
+{
+    uint32_t magic;
+    uint32_t refs;
+    uint64_t bytes;
+} cuda_stub_vmm_backing;
+
+static uint8_t *cuda_stub_backing_data(cuda_stub_vmm_backing *backing)
+{
+    return (uint8_t *)(backing + 1);
+}
+
+static cuda_stub_vmm_backing *cuda_stub_backing_create(uint64_t bytes)
+{
+    cuda_stub_vmm_backing *backing = 0;
+    if (cuda_stub_alloc((void **)&backing, sizeof(*backing) + (size_t)bytes) != cudaSuccess)
+        return 0;
+    memset(backing, 0, sizeof(*backing) + (size_t)bytes);
+    backing->magic = CUDA_STUB_BACKING_MAGIC;
+    backing->refs = 1u;
+    backing->bytes = bytes;
+    return backing;
+}
+
+static void cuda_stub_backing_release(cuda_stub_vmm_backing *backing)
+{
+    if (__atomic_sub_fetch(&backing->refs, 1u, __ATOMIC_ACQ_REL) == 0u)
+    {
+        backing->magic = 0u;
+        (void)cuda_stub_free(backing);
+    }
+}
 
 typedef struct cuda_stub_vmm_reservation
 {
@@ -782,13 +817,15 @@ CUresult cuMemGetAllocationGranularity(size_t *granularity,
 
 
 #define CUDA_STUB_SHARE_MAGIC UINT32_C(0x53505846)
-#define CUDA_STUB_SHARE_VERSION 1u
+#define CUDA_STUB_SHARE_VERSION 2u
 
 typedef struct cuda_stub_share_header
 {
     uint32_t magic;
     uint32_t version;
     uint64_t bytes;
+    uint64_t process;
+    uint64_t backing;
 } cuda_stub_share_header;
 
 static int cuda_stub_vmm_single_mapping(const cuda_stub_vmm_phys *phys,
@@ -852,9 +889,13 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    if (phys->image == 0 && !cuda_stub_vmm_single_mapping(phys, &mapped_at))
+    if (!cuda_stub_vmm_single_mapping(phys, &mapped_at))
     {
-        return CUDA_ERROR_INVALID_VALUE;
+        mapped_at = 0;
+        if (phys->backing == 0 && phys->mapped_count != 0u)
+            return CUDA_ERROR_INVALID_VALUE;
+        if (phys->backing == 0 && (phys->backing = cuda_stub_backing_create(phys->bytes)) == 0)
+            return CUDA_ERROR_OUT_OF_MEMORY;
     }
     tmp_dir = getenv("TMPDIR");
     if (tmp_dir == 0 || tmp_dir[0] == '\0')
@@ -885,6 +926,8 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     header.magic = CUDA_STUB_SHARE_MAGIC;
     header.version = CUDA_STUB_SHARE_VERSION;
     header.bytes = phys->bytes;
+    header.process = (uint64_t)getpid();
+    header.backing = mapped_at == 0 ? (uint64_t)(uintptr_t)phys->backing : 0u;
     cursor = (uint8_t *)&header;
     remaining = sizeof(header);
     while (remaining != 0u)
@@ -902,7 +945,7 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
         cursor += written;
         remaining -= (size_t)written;
     }
-    cursor = phys->image != 0 ? phys->image : (uint8_t *)(uintptr_t)mapped_at;
+    cursor = mapped_at != 0 ? (uint8_t *)(uintptr_t)mapped_at : cuda_stub_backing_data(phys->backing);
     remaining = (size_t)phys->bytes;
     while (remaining != 0u)
     {
@@ -963,6 +1006,8 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     cuda_stub_vmm_phys *phys;
     cuda_stub_share_header header;
     uint8_t *image = 0;
+    cuda_stub_vmm_backing *backing = 0;
+    cuda_stub_vmm_backing *shared;
     struct stat status;
     uint8_t *cursor;
     uint8_t *header_cursor;
@@ -1016,13 +1061,23 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     {
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
-    if (cuda_stub_alloc((void **)&image, (size_t)header.bytes) != cudaSuccess)
+    shared = (cuda_stub_vmm_backing *)(uintptr_t)header.backing;
+    if (header.process == (uint64_t)getpid() && shared != 0 &&
+        shared->magic == CUDA_STUB_BACKING_MAGIC && shared->bytes == header.bytes)
+    {
+        __atomic_add_fetch(&shared->refs, 1u, __ATOMIC_ACQ_REL);
+        backing = shared;
+        remaining = 0u;
+    }
+    else if ((backing = cuda_stub_backing_create(header.bytes)) == 0)
     {
         (void)cuda_stub_free(phys);
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
+    else
+        remaining = (size_t)header.bytes;
+    image = cuda_stub_backing_data(backing);
     cursor = image;
-    remaining = (size_t)header.bytes;
     while (remaining != 0u)
     {
         received = (int)pread(fd, cursor, remaining,
@@ -1033,7 +1088,7 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
             {
                 continue;
             }
-            (void)cuda_stub_free(image);
+            cuda_stub_backing_release(backing);
             (void)cuda_stub_free(phys);
             return CUDA_ERROR_INVALID_VALUE;
         }
@@ -1047,7 +1102,7 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     phys->prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     phys->prop.location.id = 0;
     phys->prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-    phys->image = image;
+    phys->backing = backing;
     *handle = (CUmemGenericAllocationHandle)phys;
     return CUDA_SUCCESS;
 }
@@ -1075,7 +1130,7 @@ CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
     phys->mapped_count = 0u;
     phys->bytes = (uint64_t)bytes;
     phys->prop = *prop;
-    phys->image = 0;
+    phys->backing = 0;
     *handle = (CUmemGenericAllocationHandle)phys;
     return CUDA_SUCCESS;
 }
@@ -1142,9 +1197,9 @@ CUresult cuMemMap(CUdeviceptr pointer,
     reservation->mapped_count++;
     reservation->mapped_bytes += (uint64_t)bytes;
     phys->mapped_count++;
-    if (phys->image != 0)
+    if (phys->backing != 0)
     {
-        memcpy((void *)(uintptr_t)pointer, phys->image, bytes);
+        memcpy((void *)(uintptr_t)pointer, cuda_stub_backing_data(phys->backing), bytes);
     }
     return CUDA_SUCCESS;
 }
@@ -1262,6 +1317,9 @@ CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
             if (mapped_at >= pointer &&
                 mapped_at + mapped_bytes <= pointer + (uint64_t)bytes)
             {
+                if (reservation->mappings[mapping_index].phys->backing != 0)
+                    memcpy(cuda_stub_backing_data(reservation->mappings[mapping_index].phys->backing),
+                        (const void *)(uintptr_t)mapped_at, (size_t)mapped_bytes);
                 reservation->mappings[mapping_index].phys->mapped_count--;
                 reservation->mapped_bytes -= mapped_bytes;
                 reservation->mappings[mapping_index] =
@@ -1293,10 +1351,10 @@ CUresult cuMemRelease(CUmemGenericAllocationHandle handle)
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    if (phys->image != 0)
+    if (phys->backing != 0)
     {
-        (void)cuda_stub_free(phys->image);
-        phys->image = 0;
+        cuda_stub_backing_release(phys->backing);
+        phys->backing = 0;
     }
     return cuda_stub_free(phys);
 }

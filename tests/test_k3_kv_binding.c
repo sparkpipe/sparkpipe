@@ -1,5 +1,6 @@
 #include "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c"
 #include "tests/test_k3_runner_stub.h"
+#include "tests/test_weightd_kv_server.h"
 
 #include <assert.h>
 #include <ftw.h>
@@ -322,10 +323,12 @@ static void TestK3Refusals(void)
 int main(void)
 {
 	setvbuf(stdout, 0, _IONBF, 0);
+	TestKvServerStart(UINT64_C(64) << 20);
 	TestK3PrefillDecodeRelease();
 	TestK3PrefixRestore();
 	TestK3Reset();
 	TestK3Refusals();
+	TestKvServerFinish();
 	printf("PASS k3 kv binding: K3 admits, claims, restores and finishes through the common KV binding with its KDA state as the recurrent record\n");
 	return(0);
 }

@@ -538,7 +538,6 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	SparkStatus status;
 	memset(&kv, 0, sizeof(kv));
 	state->ledger.module_tag = SPARK_K3_SERVING_MODULE_TAG;
-	kv.ledger = &state->ledger;
 	kv.module_tag = SPARK_K3_SERVING_MODULE_TAG;
 	kv.block_token_count = SPARK_K3_KV_PAGE_SLOTS;
 	kv.region_count = 1u;

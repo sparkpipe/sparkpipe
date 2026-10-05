@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 9u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 10u
 #define SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN 8u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
@@ -78,7 +78,9 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP_RESULT 40u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_STATUS 41u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT 42u
-#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH 43u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH_RESULT 44u
+#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 10u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
@@ -263,6 +265,12 @@ _Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
 #endif
 
 #define SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX 65536u
+
+#define SPARK_WEIGHTD_KV_POOL_COUNT_MAX 32u
+#define SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX (SPARK_WEIGHTD_EXPORT_BATCH_MAX - 1u)
+#define SPARK_WEIGHTD_KV_POOL_KEY_BYTES 32u
+#define SPARK_WEIGHTD_KV_POOL_LABEL_BYTES 64u
+#define SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX (256ull * 1024ull * 1024ull)
 
 typedef struct SparkWeightdIdentity
 {
@@ -723,6 +731,34 @@ typedef struct SparkWeightdIpcExportLeaseResult
 _Static_assert(sizeof(SparkWeightdIpcAcquire) <= SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX,"working set request exceeds IPC frame");
 #endif
 
+typedef struct SparkWeightdIpcKvPoolAttach
+{
+    SparkWeightdIpcHeader header;
+    uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES];
+    uint64_t device_bytes;
+    uint64_t metadata_bytes;
+    char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
+} SparkWeightdIpcKvPoolAttach;
+
+typedef struct SparkWeightdIpcKvPoolAttachResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t reattached;
+    uint64_t pool_generation;
+    uint64_t chunk_bytes;
+    uint32_t chunk_count;
+    uint32_t metadata_fd_count;
+    uint64_t device_bytes;
+    uint64_t metadata_bytes;
+    uint64_t kv_reserve_bytes;
+    uint64_t kv_committed_bytes;
+} SparkWeightdIpcKvPoolAttachResult;
+
+#if !defined(__cplusplus)
+_Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 136u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 88u,"kv pool frames are fixed for ABI 10");
+#endif
+
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
 #define SPARK_WEIGHTD_IPC_HELLO_BYTES ((uint32_t)sizeof(SparkWeightdIpcHello))
 #define SPARK_WEIGHTD_IPC_HELLO_ACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcHelloAck))
@@ -981,6 +1017,35 @@ SparkStatus SparkWeightdClientMeshMap(SparkWeightdClient *client,
 
 SparkStatus SparkWeightdClientMeshStagingMap(SparkWeightdClient *client,
     void **mapping,uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdKvPoolRequest
+{
+    uint8_t key[SPARK_WEIGHTD_KV_POOL_KEY_BYTES];
+    uint64_t device_bytes;
+    uint64_t metadata_bytes;
+    const char *label;
+} SparkWeightdKvPoolRequest;
+
+typedef struct SparkWeightdKvPoolGrant
+{
+    uint64_t pool_generation;
+    uint64_t chunk_bytes;
+    uint64_t device_bytes;
+    uint64_t metadata_bytes;
+    uint64_t kv_reserve_bytes;
+    uint64_t kv_committed_bytes;
+    uint32_t chunk_count;
+    uint32_t reattached;
+    int chunk_fds[SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX];
+    int metadata_fd;
+} SparkWeightdKvPoolGrant;
+
+SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,
+    const SparkWeightdKvPoolRequest *request,SparkWeightdKvPoolGrant *grant,
+    uint64_t timeout_nanoseconds);
+void SparkWeightdKvPoolGrantClose(SparkWeightdKvPoolGrant *grant);
+uint64_t SparkWeightdServerKvCommittedBytes(const SparkWeightdServer *server);
+uint32_t SparkWeightdServerKvPoolCount(const SparkWeightdServer *server);
 
 SparkStatus SparkWeightdClientLaneAcquire(SparkWeightdClient *client,
     uint32_t requested_lane,

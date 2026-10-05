@@ -1537,7 +1537,6 @@ static SparkStatus SparkGlm5NextBindKv(SparkGlm5NextModuleState *state)
 	if ( state->kv_layer_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(&configuration,0,sizeof(configuration));
-	configuration.ledger = &state->ledger;
 	configuration.module_tag = SPARK_GLM5_NEXT_MODULE_TAG;
 	configuration.block_token_count = SPARK_GLM5_NEXT_KV_BLOCK_TOKEN_COUNT;
 	configuration.region_count = state->index_layer_count != 0u ? 2u : 1u;

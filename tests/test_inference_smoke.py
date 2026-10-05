@@ -195,7 +195,7 @@ class SmokePreparation(unittest.TestCase):
         self.reference_path = self.source / "reference.json"
         self.spec = dict(hosts=["spark0"], port_base=30000, port_map={"19000": 30002}, environment={},
                          deployment=str(self.deployment_path), batch=str(self.batch_path), reference=str(self.reference_path),
-                         budgets=dict(weightd_device_bytes=4096, model_device_bytes=1024, expert_pool_bytes=2048, spine_bytes=2048))
+                         budgets=dict(weightd_device_bytes=8192, model_device_bytes=1024, expert_pool_bytes=2048, spine_bytes=2048, kv_reserve_bytes=4096))
         self.environment = dict(SPARK_QUEUE_ATTEMPT=self.attempt, SPARK_QUEUE_RUNTIME_ROOT=str(self.root),
                                 SPARK_QUEUE_RANK="0", SPARK_QUEUE_SIZE="1", SPARK_QUEUE_PORTS="30000:30010",
                                 SPARK_QUEUE_DEVICE_MEMORY_MIB="1")
@@ -244,6 +244,13 @@ class SmokePreparation(unittest.TestCase):
         self.spec["budgets"]["model_device_bytes"] = 1024
         self.environment["SPARK_QUEUE_PORTS"] = "30000:30001"
         with self.assertRaisesRegex(ValueError, "reserve every listener"):
+            self.prepare()
+        self.environment["SPARK_QUEUE_PORTS"] = "30000:30010"
+        del self.spec["budgets"]["kv_reserve_bytes"]
+        with self.assertRaises((KeyError, ValueError)):
+            self.prepare()
+        self.spec["budgets"]["kv_reserve_bytes"] = 4097
+        with self.assertRaisesRegex(ValueError, "KV reserve exceed ceiling"):
             self.prepare()
 
 
