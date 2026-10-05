@@ -136,7 +136,7 @@ static void TestApiWriteTokenizerFixture(const char *path)
 		"    \"type\": \"Sequence\",\n"
 		"    \"pretokenizers\": [\n"
 		"      {\"type\": \"Split\", \"pattern\": {\"Regex\": \"%s\"}, \"behavior\": \"Isolated\", \"invert\": false},\n"
-		"      {\"type\": \"ByteLevel\", \"add_prefix_space\": false}\n"
+		"      {\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"use_regex\": false}\n"
 		"    ]\n"
 		"  },\n"
 		"  \"added_tokens\": [\n"
