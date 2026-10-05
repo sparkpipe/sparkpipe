@@ -1931,10 +1931,7 @@ int main(int argc, char **argv)
 #if SPARK_GEMMA4_MODEL_MOE_BLOCK
 	if (result == 0) result = SparkGemma4ValCheckRouter();
 #endif
-	if (result == 0 && getenv("SPARK_GEMMA4_VALIDATION_CHAIN") != 0
-		&& strcmp(getenv("SPARK_GEMMA4_VALIDATION_CHAIN"),"0") == 0)
-		printf("gemma4_validation check=chain_skipped per env\n");
-	else if (result == 0)
+	if (result == 0)
 		result = SparkGemma4ValCheckChainSliding();
 	if (result == 0)
 		printf("gemma4_validation PASS arm=%s sites=%u\n",SPARK_GEMMA4_MODEL_MODULE_ID,gemma4_val_sites);

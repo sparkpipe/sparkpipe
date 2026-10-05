@@ -74,6 +74,7 @@ int main(int argc, char **argv)
 	configuration.stage_name = "qwen38";
 	configuration.program_name = "resident_decode";
 	configuration.operation_name = "initialize";
+	configuration.validated_artifact_sha256 = T1_VALIDATED_ARTIFACT_SHA256;
 	memset(&services,0,sizeof(services));
 	services.abi_version = SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
 	services.descriptor_bytes = sizeof(services);

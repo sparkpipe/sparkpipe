@@ -144,13 +144,10 @@ static int SparkQwen38_27bValCheckModule(void)
 		if (decode_token != prefill_token)
 			return(SparkQwen38_27bValFail("module_decode_vs_prefill","token_mismatch"));
 	}
-	{
-		const char *mtp_env = getenv("SPARK_QWEN38_27B_STAGE_MTP");
-		if (module.head_stage != 0u &&
-			(mtp_env == 0 || mtp_env[0] != '0') &&
-			SparkQwen38_27bValCheckMtpDraft(&module) != 0)
-			return(1);
-	}
+#if SPARK_QWEN38_27B_MODEL_MTP_LAYER_COUNT != 0
+	if (module.head_stage != 0u && SparkQwen38_27bValCheckMtpDraft(&module) != 0)
+		return(1);
+#endif
 	SparkQwen38_27bResidentDecodeStageDestroy(module.state);
 	cudaFree(module.device_blocks);
 	cudaFree(module.device_counts);

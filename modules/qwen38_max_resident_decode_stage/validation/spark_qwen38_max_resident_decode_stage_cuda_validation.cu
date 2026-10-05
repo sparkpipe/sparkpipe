@@ -760,6 +760,7 @@ static int SparkQwen38MaxValModuleInitialize(SparkQwen38MaxValModule *module)
 	configuration.operation_name = "qwen38_max_resident_decode_stage";
 	configuration.configuration_json = "{}";
 	configuration.configuration_json_bytes = 2u;
+	configuration.validated_artifact_sha256 = getenv("SPARK_VALIDATION_CANDIDATE_SHA256");
 	memset(&host_services,0,sizeof(host_services));
 	host_services.abi_version = SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
 	host_services.descriptor_bytes = sizeof(host_services);

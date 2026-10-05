@@ -38,7 +38,6 @@ spark_cuda_validation_check_source_digests
 # validates the whole-stack tier instead: rank 0 in standalone collective
 # mode (the build host has no peer group), so consistency and determinism
 # gate here while cross-rank numerics gate at the band E2E run.
-require_configuration_value SPARK_QWEN4_FLASH_ALLOW_UNQUALIFIED_EXECUTION 1
 require_configuration_value SPARK_QWEN4_FLASH_STAGE_INDEX 0
 require_configuration_value SPARK_QWEN4_FLASH_STAGE_FIRST_LAYER 0
 # The harness block table spans MAX_ACTIVE_SEQUENCES lanes (the -D plumbing

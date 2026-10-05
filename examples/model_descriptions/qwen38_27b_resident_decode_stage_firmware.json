@@ -75,7 +75,7 @@
       "controlled_bring_up_only": true
     },
     "runtime_contract": {
-      "firmware_module_abi": 4,
+      "firmware_module_abi": 5,
       "firmware_host_services_abi": 2,
       "model_driver_abi": 7,
       "completion": "submit_return",
@@ -85,7 +85,6 @@
       "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
       "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
       "required_environment": [
-        "SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION",
         "SPARK_QWEN38_27B_STAGE_PACK_PATH",
         "SPARK_QWEN38_27B_STAGE_COUNT",
         "SPARK_QWEN38_27B_STAGE_INDEX",

@@ -1,12 +1,13 @@
-"""The qwen38_max rank verifier against both placed generations.
+"""The qwen38_max rank verifier accepts only the current-packer form.
 
 The current-packer form carries the codec-8 nvfp4 experts with per-expert
-f32 tails and a plan-shaped directory; the placed tp4pp4 form (pre codec
-split) stamps codec 4 with the tail-less per-16 plane and rides the
-late-binding defect: every directory entry repeats the LAST inventory
-ref's packed shape. Byte math is proven from the tp plan on both.
+f32 tails and a plan-shaped directory. The placed tp4pp4 form stamps codec 4
+and repeats the last inventory ref's packed shape in every directory entry;
+it is refused. A named receipt must exist and carry every recomputed field.
 """
 
+import hashlib
+import json
 import struct
 import sys
 import tempfile
@@ -182,8 +183,23 @@ def build_pack(tables, tp_degree: int, tp_rank: int, expert_fmt: int,
     return header + directory + b"\0" * cursor
 
 
-def run_verify(pack: Path, tp_degree: int, tp_rank: int, tables):
-    return V.verify(pack, tp_degree, tp_rank, None, None, False, tables=tables)
+def run_verify(pack: Path, tp_degree: int, tp_rank: int, tables, receipt=None):
+    return V.verify(pack, tp_degree, tp_rank, None, receipt, False, tables=tables)
+
+
+def full_receipt(pack: Path, tp_degree: int, tp_rank: int) -> dict:
+    body = pack.read_bytes()
+    header = struct.unpack_from("<28I2Q", body, 0)
+    return {
+        "tensor_count": header[4],
+        "bytes": len(body),
+        "first_layer_index": header[7],
+        "layer_count": header[6],
+        "tp_degree": tp_degree,
+        "tp_rank": tp_rank,
+        "output_sha256": hashlib.sha256(body).hexdigest(),
+        "source_index_sha256": "0" * 64,
+    }
 
 
 def test_current_packer_form_passes():
@@ -195,29 +211,74 @@ def test_current_packer_form_passes():
         assert ok, verdict["errors"]
 
 
-def test_placed_legacy_form_passes():
+def test_placed_legacy_form_refused():
     with tempfile.TemporaryDirectory() as tmp:
         tables = mini_tables()
         pack = Path(tmp) / "placed.spstage"
         pack.write_bytes(build_pack(tables, 4, 3, tables.WEIGHT_FP8_F32B128, True,
                                     mtp_count=1))
         ok, verdict = run_verify(pack, 4, 3, tables)
-        assert ok, verdict["errors"]
-        assert verdict["placed_stale_shape_directory"]
+        assert not ok
+        assert verdict["verdict"] == "FAIL"
+        assert any("repack with the current packer" in e for e in verdict["errors"])
 
 
-def test_stale_signature_mismatch_fails():
+def test_stale_shape_directory_refused():
     with tempfile.TemporaryDirectory() as tmp:
         tables = mini_tables()
-        body = bytearray(build_pack(tables, 4, 3, tables.WEIGHT_FP8_F32B128, True,
-                                    mtp_count=1))
+        pack = Path(tmp) / "stale.spstage"
+        pack.write_bytes(build_pack(tables, 4, 3, tables.WEIGHT_NVFP4_PACKED, True))
+        ok, verdict = run_verify(pack, 4, 3, tables)
+        assert not ok
+        assert any("expected rank shard" in e for e in verdict["errors"])
+
+
+def test_one_off_plan_shape_refused():
+    with tempfile.TemporaryDirectory() as tmp:
+        tables = mini_tables()
+        body = bytearray(build_pack(tables, 4, 3, tables.WEIGHT_NVFP4_PACKED, False))
         struct.pack_into("<II", body, HEADER_BYTES + ENTRY_BYTES + 12, 7, 7)
         pack = Path(tmp) / "bad.spstage"
         pack.write_bytes(bytes(body))
         ok, verdict = run_verify(pack, 4, 3, tables)
         assert not ok
-        assert any("stale signature" in e or "mixes plan-shaped" in e
-                   for e in verdict["errors"])
+        assert any("shape 7x7, expected rank shard" in e for e in verdict["errors"])
+
+
+def test_receipt_must_exist():
+    with tempfile.TemporaryDirectory() as tmp:
+        tables = mini_tables()
+        pack = Path(tmp) / "current.spstage"
+        pack.write_bytes(build_pack(tables, 4, 3, tables.WEIGHT_NVFP4_PACKED, False))
+        ok, verdict = run_verify(pack, 4, 3, tables, Path(tmp) / "absent.json")
+        assert not ok
+        assert any("does not exist" in e for e in verdict["errors"])
+
+
+def test_full_receipt_passes_and_every_field_is_required():
+    with tempfile.TemporaryDirectory() as tmp:
+        tables = mini_tables()
+        pack = Path(tmp) / "current.spstage"
+        pack.write_bytes(build_pack(tables, 4, 3, tables.WEIGHT_NVFP4_PACKED, False))
+        receipt_path = Path(tmp) / "receipt.json"
+        receipt = full_receipt(pack, 4, 3)
+        receipt_path.write_text(json.dumps(receipt))
+        ok, verdict = run_verify(pack, 4, 3, tables, receipt_path)
+        assert ok, verdict["errors"]
+        for name in receipt:
+            partial = dict(receipt)
+            del partial[name]
+            receipt_path.write_text(json.dumps(partial))
+            ok, verdict = run_verify(pack, 4, 3, tables, receipt_path)
+            assert not ok, name
+            assert any(f"receipt is missing {name}" in e for e in verdict["errors"]), name
+        for name in ("tensor_count", "bytes", "tp_rank", "output_sha256"):
+            wrong = dict(receipt)
+            wrong[name] = "f" * 64 if name == "output_sha256" else receipt[name] + 1
+            receipt_path.write_text(json.dumps(wrong))
+            ok, verdict = run_verify(pack, 4, 3, tables, receipt_path)
+            assert not ok, name
+            assert any(f"receipt {name}=" in e for e in verdict["errors"]), name
 
 
 def test_corrupt_byte_math_fails():
@@ -254,22 +315,6 @@ def test_header_rank_mismatch_fails():
         ok, verdict = run_verify(pack, 4, 1, tables)
         assert not ok
         assert any("tp_rank" in e for e in verdict["errors"])
-
-
-def test_placed_legacy_form_rejects_codec8_math_drift():
-    with tempfile.TemporaryDirectory() as tmp:
-        tables = mini_tables()
-        body = bytearray(build_pack(tables, 4, 3, tables.WEIGHT_FP8_F32B128, True,
-                                    mtp_count=1))
-        fields = list(struct.unpack_from("<6I4Q", body, HEADER_BYTES + 2 * ENTRY_BYTES))
-        fields[9] += 8
-        body[HEADER_BYTES + 2 * ENTRY_BYTES:HEADER_BYTES + 3 * ENTRY_BYTES] = \
-            struct.pack("<6I4Q", *fields)
-        pack = Path(tmp) / "drift.spstage"
-        pack.write_bytes(bytes(body))
-        ok, verdict = run_verify(pack, 4, 3, tables)
-        assert not ok
-        assert any("scale_bytes" in e for e in verdict["errors"])
 
 
 if __name__ == "__main__":

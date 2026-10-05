@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_FIRMWARE_MODULE_ABI_VERSION 4u
+#define SPARK_FIRMWARE_MODULE_ABI_VERSION 5u
 #define SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION 4u
 
 typedef struct SparkFirmwareModuleConfiguration
@@ -25,6 +25,7 @@ typedef struct SparkFirmwareModuleConfiguration
     const char *configuration_json;
     uint32_t configuration_json_bytes;
     uint32_t reserved1;
+    const char *validated_artifact_sha256;
 } SparkFirmwareModuleConfiguration;
 
 typedef struct SparkFirmwareModuleHostServices

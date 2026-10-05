@@ -98,7 +98,7 @@ static SparkStatus TestQwen38_27bServingDriverCreate(
 	if ( request->node_context != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	pack_path = getenv("SPARK_QWEN38_27B_STAGE_PACK_PATH");
-	if ( pack_path == 0 || strstr(pack_path,"qwen38_27b-stage") == 0 || getenv("SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION") == 0 || getenv("SPARK_QWEN38_27B_ALLOW_UNQUALIFIED_EXECUTION")[0] != '1' )
+	if ( pack_path == 0 || strstr(pack_path,"qwen38_27b-stage") == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( TestQwen38_27bServingDriverEnvironmentUnsigned("SPARK_QWEN38_27B_STAGE_COUNT",&stage_count) == 0u || stage_count != TEST_QWEN38_27B_DRIVER_STAGE_COUNT || TestQwen38_27bServingDriverEnvironmentUnsigned("SPARK_QWEN38_27B_STAGE_INDEX",&stage_index) == 0u || stage_index >= stage_count || TestQwen38_27bServingDriverEnvironmentUnsigned("SPARK_QWEN38_27B_STAGE_KV_BLOCKS",&kv_blocks) == 0u || kv_blocks == 0u || TestQwen38_27bServingDriverEnvironmentUnsigned("SPARK_QWEN38_27B_STAGE_PIPELINE_SLOTS",&pipeline_slots) == 0u || pipeline_slots == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);

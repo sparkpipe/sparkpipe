@@ -99,7 +99,7 @@ static SparkStatus TestMuseGlimmerServingDriverCreate(
 	if ( request->node_context != 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	pack_path = getenv("SPARK_MUSE_GLIMMER_STAGE_PACK_PATH");
-	if ( pack_path == 0 || strstr(pack_path,"muse") == 0 || getenv("SPARK_MUSE_GLIMMER_ALLOW_UNQUALIFIED_EXECUTION") == 0 || getenv("SPARK_MUSE_GLIMMER_ALLOW_UNQUALIFIED_EXECUTION")[0] != '1' )
+	if ( pack_path == 0 || strstr(pack_path,"muse") == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( TestMuseGlimmerServingDriverEnvironmentUnsigned("SPARK_MUSE_GLIMMER_STAGE_COUNT",&stage_count) == 0u || stage_count != TEST_MUSE_GLIMMER_DRIVER_STAGE_COUNT || TestMuseGlimmerServingDriverEnvironmentUnsigned("SPARK_MUSE_GLIMMER_STAGE_INDEX",&stage_index) == 0u || stage_index >= stage_count || TestMuseGlimmerServingDriverEnvironmentUnsigned("SPARK_MUSE_GLIMMER_STAGE_KV_BLOCKS",&kv_blocks) == 0u || kv_blocks == 0u || TestMuseGlimmerServingDriverEnvironmentUnsigned("SPARK_MUSE_GLIMMER_STAGE_PIPELINE_SLOTS",&pipeline_slots) == 0u || pipeline_slots == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);

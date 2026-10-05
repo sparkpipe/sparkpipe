@@ -42,13 +42,13 @@ configured stage pack through Initialize/Execute and drives prefill-then-decode
 on two lanes with a capture transport, checking decode-vs-prefill agreement
 and fresh-instance determinism. It requires a mid-pipeline stage-0 slice
 (STAGE_COUNT >= 2, FIRST_LAYER 0, 4 <= LAYER_COUNT < 64),
-MAX_ACTIVE_SEQUENCES=8 and ALLOW_UNQUALIFIED_EXECUTION=1, e.g.:
+and MAX_ACTIVE_SEQUENCES=8, e.g.:
 
 ```
 make validate NVCC=/usr/local/cuda/bin/nvcc \
   STAGE_PACK_PATH=/path/stage0.qwen38_27bsp STAGE_COUNT=13 STAGE_INDEX=0 \
   STAGE_FIRST_LAYER=0 STAGE_LAYER_COUNT=5 MAX_ACTIVE_SEQUENCES=8 \
-  KV_BLOCK_COUNT=8 ALLOW_UNQUALIFIED_EXECUTION=1
+  KV_BLOCK_COUNT=8
 ```
 
 Run green on a GB10 against both the synthetic slice pack and the real

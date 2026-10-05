@@ -125,6 +125,7 @@ MID="$(date +%s)"
 
 python3 "$CHECKOUT/tools/qwen38max_tp16_rank_verify.py" \
   --pack "$PARTIAL" --tp-degree "$WORLD" --tp-rank "$RANK" \
+  --checkpoint "$CHECKPOINT" \
   --receipt "$PARTIAL.receipt.json" --recompute-file-hash
 
 bash "$CHECKOUT/tools/qwen38max_multidev_experts_manifest.sh" "$PARTIAL"

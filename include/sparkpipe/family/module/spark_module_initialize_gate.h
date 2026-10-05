@@ -1,10 +1,18 @@
 #pragma once
 
-static SparkStatus SPARK_FAMILY(ModuleInitializeGate)(void)
+static SparkStatus SPARK_FAMILY(ModuleInitializeGate)(const SparkFirmwareModuleConfiguration *configuration)
 {
-	uint32_t allow_unqualified_execution;
-	allow_unqualified_execution = 0u;
-	if ( SparkStageModuleEnvironmentUnsigned(SPARK_FAMILY_CONST(MODULE_TAG),"SPARK_" SPARK_FAMILY_STRING(SPARK_FAMILY_UPPER) "_ALLOW_UNQUALIFIED_EXECUTION",1u,1u,&allow_unqualified_execution) != SPARK_STATUS_OK || allow_unqualified_execution != 1u )
+	const char *receipt;
+	uint32_t index;
+	receipt = configuration->validated_artifact_sha256;
+	if ( receipt == 0 )
+		SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
+	for (index = 0u; index < 64u; index++)
+	{
+		if ( !((receipt[index] >= '0' && receipt[index] <= '9') || (receipt[index] >= 'a' && receipt[index] <= 'f')) )
+			SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
+	}
+	if ( receipt[64] != '\0' )
 		SPARK_FAIL(SPARK_STATUS_MODULE_NOT_VALIDATED);
 	return(SPARK_STATUS_OK);
 }

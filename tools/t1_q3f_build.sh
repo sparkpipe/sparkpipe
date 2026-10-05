@@ -13,12 +13,23 @@ ARCHIVE=$(find build -name "libqwen4_flash_resident_decode_stage.a" | head -1)
 G5N_ARCHIVE=$(find build -path "*glm5_next*" -name "*.a" | head -1)
 [ -n "$ARCHIVE" ] || { echo "module archive missing" >&2; exit 1; }
 [ -n "$G5N_ARCHIVE" ] || { echo "glm5_next mesh-kernel archive missing" >&2; exit 1; }
+require_passed_record() {
+	python3 - "$1" build/module_library/active <<'PY' || { echo "no passed module library record for $1" >&2; exit 1; }
+import json, pathlib, sys
+sha, root = sys.argv[1], pathlib.Path(sys.argv[2])
+records = [json.loads(path.read_text()) for path in sorted(root.glob("*.json"))]
+sys.exit(0 if any(r.get("artifact_sha256") == sha and r.get("validation_state") == "passed" for r in records) else 1)
+PY
+}
+ARCHIVE_SHA256=$(sha256sum "$ARCHIVE" | cut -d' ' -f1)
+require_passed_record "$ARCHIVE_SHA256"
 nvcc -std=c++17 -O3 -arch=sm_121a \
 	-I. -Iinclude -Imodel-families/common/include -Imodel-families/qwen4_flash/include \
 	-Imodules/qwen4_flash_resident_decode_stage/include \
 	-Imodules/qwen4_flash_resident_decode_stage/source \
 	-DSPARK_QWEN4_FLASH_MODULE_BUILD=1 \
 	-DSPARK_LLM_MTP_LAYER_COUNT=0u \
+	-DT1_VALIDATED_ARTIFACT_SHA256="\"$ARCHIVE_SHA256\"" \
 	tools/t1_q3f_harness.c \
 	"$ARCHIVE" \
 	"$G5N_ARCHIVE" \

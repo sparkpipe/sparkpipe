@@ -1770,58 +1770,6 @@ door and the static pages and playground in `site/`.
   runs; with only `G5_GRAPH_PATH=0`, the node falls to eager chains, spin
   wait and unpinned experts. Move these settings into the deployment contract as validated
   fields (I04) and record their hash in every receipt (I33).
-- Left out on purpose (2026-10-02):
-  `include/sparkpipe/family/module/spark_module_initialize_gate.h:3-10`
-  qualifies the gemma4, minimax, muse_glimmer, qwen4_flash, qwen38_max and
-  qwen38_27b modules by one environment variable,
-  `SPARK_<FAMILY>_ALLOW_UNQUALIFIED_EXECUTION=1`, with no validation receipt
-  behind it. Every serving adapter for those modules sets the variable
-  unconditionally before it loads the driver:
-  `modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c:641`
-  (called at `:2209`) and
-  `model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h:99`
-  (called at `:737`) for gemma4, minimax, muse_glimmer, qwen4_flash and
-  qwen38_max. The gate therefore never returns `MODULE_NOT_VALIDATED` in
-  serving, and a module build that never passed validation loads and serves
-  (I03, I39). The GPU validators also demand the bypass:
-  `modules/qwen38_27b_resident_decode_stage/validation/validate_qwen38_27b_resident_decode_stage_cuda.sh:45`,
-  `modules/qwen38_max_resident_decode_stage/validation/validate_qwen38_max_resident_decode_stage_cuda.sh:38`,
-  `modules/muse_glimmer_resident_decode_stage/validation/validate_muse_glimmer_resident_decode_stage_cuda.sh:49`
-  and
-  `modules/qwen4_flash_resident_decode_stage/validation/validate_qwen4_flash_resident_decode_stage_cuda.sh:41`.
-  The fix: bind the gate to a pinned validation receipt for the module hash,
-  and delete both `setenv` calls together with the Makefile and validator
-  plumbing. Prove it on a Spark: initializing a module without a receipt
-  returns `MODULE_NOT_VALIDATED`, and the receipted build loads and passes its
-  T1 gate.
-- Left out on purpose (2026-10-02): The gemma4 GPU validator skips
-  `SparkGemma4ValCheckChainSliding`, its only chained-layer check, when
-  `SPARK_GEMMA4_VALIDATION_CHAIN=0`
-  (`modules/gemma4_resident_decode_stage/validation/spark_gemma4_resident_decode_stage_cuda_validation.cu:1934-1938`),
-  and still prints PASS and exits 0 (`:1939-1941`). `make publish`
-  (`modules/resident_decode_stage_rules.mk:203-222`) treats exit 0 as
-  validation (`runtime/pack/module_library.c:938-954`), so a gemma4 module can
-  be published with a validation receipt for a layer chain that never ran.
-  Delete the switch so the chain check always runs, and prove it with a gemma4
-  publish on a Spark whose validator log shows the chain check.
-- Left out on purpose (2026-10-02): The muse_glimmer GPU validator runs its
-  module tier (`SparkMuseGlimmerValCheckModule`, the only check that executes
-  driver decode) only when `SPARK_MUSE_GLIMMER_VALIDATION_MODULE_TIER` is set
-  (`modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu:529-534`),
-  and nothing in the tree sets it. The validator then prints PASS after the
-  kernel-level norm, window and gate checks alone (`:540`), so every
-  muse_glimmer publish is accepted without one decoded token. Make the module
-  tier unconditional and fail when weightd attach is unavailable, and prove it
-  with a Spark validator run that attaches through weightd and prints the
-  `module_decode` check.
-- Left out on purpose (2026-10-02): The qwen4_flash GPU validator turns a
-  decode-versus-prefill token mismatch into a log line and continues when
-  `SPARK_QWEN4_FLASH_VALIDATION_TOKEN_PARITY=warn`
-  (`modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu:154-160`),
-  then prints PASS (`:718-719`). A qwen4_flash module whose decode disagrees
-  with its own prefill passes validation and can be published (I03, I40).
-  Delete the warn mode so a mismatch always fails, and prove it with a Spark
-  validator run on a qwen4_flash rank pack that reports `bit_exact=1`.
 - Left out on purpose (2026-10-02): The dsv4 GPU validator compares against
   reference outputs only for stage 0 with the three-layer slice starting at
   layer 0
@@ -1869,27 +1817,14 @@ door and the static pages and playground in `site/`.
   accept any row count up to the execution capacity, make the test assert the
   real module's acceptance rules, and prove it with a probe receipt from a
   Spark run.
-- Left out on purpose (2026-10-02): `tools/qwen38max_tp16_rank_verify.py`
-  accepts the placed tp4pp4 legacy form, whose directory repeats the last
-  inventory tensor's shape (`:183-184`, `:241-255`), and prints `verdict=PASS`
-  (`:359`) after a structure check; the content pass refuses that form
-  (`:276-280`) but runs only with `--checkpoint`, which
-  `tools/qwen38max_multidev_pack_emit.sh:126-128` never passes. A `--receipt`
-  path that does not exist is skipped (`:339`) and absent receipt fields are
-  not compared (`:353`), so a defective pack verifies (I05, I28). Refuse the
-  stale-shape form and repack, require the receipt file and every receipt
-  field when `--receipt` is given, and prove it with the verifier rejecting a
-  placed legacy rank pack and passing a repacked one with `--checkpoint`.
 - Left out on purpose (2026-10-02): The qwen38_27b GPU validator's module tier
-  compares decode only with its own prefill
-  (`modules/qwen38_27b_resident_decode_stage/validation/spark_qwen38_27b_resident_decode_stage_cuda_validation.cu:124-145`)
-  and a fresh instance with itself (`:155-184`), skips the MTP draft check
-  when `SPARK_QWEN38_27B_STAGE_MTP` starts with `0` (`:148-152`), and prints
-  PASS (`:213-214`). A module that is consistently wrong passes and can be
-  published (I40). Add a pinned external reference (tokens and boundary hidden
-  state from the checkpoint) to the module tier, run the MTP check whenever
-  the pack carries an MTP layer, and prove it with a Spark validator run on
-  the qwen38_27b rank pack.
+  compares decode only with its own prefill and a fresh instance with itself
+  (`modules/qwen38_27b_resident_decode_stage/validation/spark_qwen38_27b_resident_decode_stage_cuda_validation.cu`,
+  `SparkQwen38_27bValCheckModule`), then prints PASS. A module that is
+  consistently wrong passes and can be published (I40). Add a pinned external
+  reference (tokens and boundary hidden state from the checkpoint) to the
+  module tier, and prove it with a Spark validator run on the qwen38_27b rank
+  pack.
 - The hy4 driver refuses initialization (`UNSUPPORTED`) because Execute
   does not run the model. Implement Execute, register
   `test_hy4_driver_acceptance` with the real driver, and prove it with an hy4
