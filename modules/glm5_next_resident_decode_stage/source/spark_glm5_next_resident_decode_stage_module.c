@@ -6969,6 +6969,12 @@ static SparkStatus SparkGlm5NextConfigureL2Prefetch(SparkGlm5NextModuleState *st
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkGlm5NextApplyExecutionMode(SparkGlm5NextModuleState *state)
+{
+	state->graph_path_enabled = state->graph_path_requested;
+	fprintf(stderr,"GLM execution mode=%s\n",state->graph_path_enabled != 0u ? "graph" : "eager");
+}
+
 static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *state)
 {
 	{
@@ -7019,8 +7025,7 @@ static SparkStatus SparkGlm5NextInitializeState(
 	status = SparkGlm5NextModuleConfigure(state,configuration,host_services,&pack_path);
 	if ( status == SPARK_STATUS_OK )
 	{
-		state->graph_path_enabled = state->graph_path_requested;
-		fprintf(stderr,"GLM execution mode=%s\n",state->graph_path_enabled != 0u ? "graph" : "eager");
+		SparkGlm5NextApplyExecutionMode(state);
 		status = SparkStageModuleCudaWaitInitialize(&state->stream_wait,(cudaStream_t)state->execution_stream);
 	}
 	if ( status == SPARK_STATUS_OK && SparkGlm5NextConfigureCudaModule(&state->multiprocessor_count) != 0 )

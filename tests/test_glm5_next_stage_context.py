@@ -2921,9 +2921,14 @@ static void check_execution_environment(void)
 	const char *invalid[] = {"", "0", "-1", "18446744073709551615", "invalid"};
 	assert(unsetenv("SPARK_GLM5_NEXT_PREFETCH") == 0);
 	state.graph_path_requested = 0u;
-	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.graph_path_enabled == 0u);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK);
+	SparkGlm5NextApplyExecutionMode(&state);
+	assert(state.graph_path_enabled == 0u);
 	state.graph_path_requested = 1u;
-	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.graph_path_enabled == 1u);
+	state.graph_path_enabled = 0u;
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.graph_path_enabled == 0u);
+	SparkGlm5NextApplyExecutionMode(&state);
+	assert(state.graph_path_enabled == 1u);
 	assert(setenv("SPARK_GLM5_NEXT_PREFETCH","1",1) == 0);
 	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_UNSUPPORTED);
 	assert(unsetenv("SPARK_GLM5_NEXT_PREFETCH") == 0);
