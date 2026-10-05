@@ -652,7 +652,12 @@ static void SparkTestServedAbiVersions(void)
     assert(SparkWeightdIpcAbiServed(10u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
     assert(SparkWeightdIpcAbiServed(11u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
     assert(SparkWeightdIpcAbiServed(12u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
-    assert(SparkWeightdIpcAbiServed(13u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 0u);
+    assert(SparkWeightdIpcAbiServed(13u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
+    assert(SparkWeightdIpcAbiServed(14u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 0u);
+    assert(SparkWeightdIpcAbiServed(12u, SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT) == 0u);
+    assert(SparkWeightdIpcAbiServed(13u, SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT) == 1u);
+    assert(SparkWeightdIpcAbiServed(12u, SPARK_WEIGHTD_IPC_KIND_LEASE_SLOTS) == 0u);
+    assert(SparkWeightdIpcAbiServed(13u, SPARK_WEIGHTD_IPC_KIND_LEASE_SLOTS) == 1u);
     assert(SparkWeightdIpcAbiServed(11u, SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH) == 0u);
     assert(SparkWeightdIpcAbiServed(12u, SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH) == 1u);
     assert(SparkWeightdIpcAbiServed(8u, SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP) == 0u);
