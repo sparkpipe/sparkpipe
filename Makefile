@@ -464,6 +464,7 @@ PYTHON_TESTS := \
 	tests/test_laguna_reference_fixture.py \
 	tests/test_laguna_smoke_experts.py \
 	tests/test_api_stress.py \
+	tests/test_e2e_harness.py \
 	tests/test_batch_variants.py \
 	tests/test_common_glm_modules.py \
 	tests/test_code_size.py \

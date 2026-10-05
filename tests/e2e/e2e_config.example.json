@@ -1,0 +1,34 @@
+{
+  "models": {
+    "glmfull": {
+      "host": "hub",
+      "port": 8446,
+      "chat": true,
+      "ssh_host": "hub",
+      "api_log": "glmfull-lane6-api/api.log",
+      "ranks": 16,
+      "long_context": 262144,
+      "logprobs_supported": true
+    },
+    "flash": {
+      "host": "hub",
+      "port": 8433,
+      "chat": true,
+      "ssh_host": "hub",
+      "api_log": "g53-api/api.log",
+      "ranks": 16,
+      "long_context": 131072
+    }
+  },
+  "rotation": {
+    "host": "rtx5090",
+    "tool": "python3 tools/fleet_rotation.py",
+    "slot": "glmfull",
+    "away_slot": "flash"
+  },
+  "speculation": {
+    "on": {"host": "hub", "port": 8446, "chat": true},
+    "off": {"host": "hub", "port": 8433, "chat": true},
+    "extreme_args": {}
+  }
+}
