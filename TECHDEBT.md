@@ -605,17 +605,6 @@ citations refer to that commit.
   Close it by spilling into the persistent store, proven on the fleet by a
   prompt spilled before a residentd restart that hits after it with tokens
   equal to an uninterrupted run.
-- Left out on purpose (2026-10-02): The page store verifies nothing it reads
-  back: a page counts as valid when its flag and generation match
-  (`cache/kv_page_store.c:1131-1136`), and the write path records only the
-  generation (`:424-440`), with no per-page digest. A torn write, bad sector
-  or stray write to the backing file restores wrong KV that attention consumes
-  without error. `cache/kv_snapshot.c` already hashes each segment with
-  SHA-256 on write (`:323`) and checks it on read (`:945-946`, `:985-986`),
-  and `cache/nvme_tier.c:1272-1291` checks a SHA-256 on landing. Close it by
-  storing a SHA-256 per spilled page and answering NOT_FOUND on mismatch,
-  proven on one Spark by corrupting a spilled page and observing a counted
-  digest mismatch followed by a recompute with correct tokens.
 - Left out on purpose (2026-10-02): Eviction ignores request priority and
   deadline. Victims are the least recently used entry
   (`cache/kv_page_cache.c:354-361`), the oldest resident entry (`:363-393`),
@@ -672,25 +661,6 @@ citations refer to that commit.
   error therefore stops admissions that need a park. Close it by failing the
   backing store over to a second path or degrading to recompute-only prefix
   reuse with a logged transition.
-- Left out on purpose (2026-10-02): The rule for a missing, corrupt or
-  unreadable KV page is not written down (JIT KV plan owner decision 5), and
-  the spill store GLM Full uses cannot detect corruption. A missing prefix
-  answers `NOT_FOUND`, and the engine tombstones the prompt and recomputes it
-  (`runtime/model_batch_engine.c:772-835`); the snapshot path turns a SHA-256
-  mismatch into `NOT_FOUND` (`cache/kv_page_cache.c:1863-1867`), but no
-  production code attaches a snapshot. The page store keeps no digest:
-  `SparkKvPageStoreExecuteRead` (`cache/kv_page_store.c:332-350`) copies
-  whatever `pread` returns into the KV pool, so a corrupt spill page is
-  attended as valid KV. A spill read error returns `IO_ERROR`, the engine
-  fails the request while every rank is connected (`model_batch_engine.c:882`,
-  `:901-902`), and the page keeps its backing record
-  (`kv_page_store.c:424-456`), so every later request whose chain matches it
-  reads the same page and fails again. Close it once the owner confirms the
-  rule: a per-page digest in the spill store whose mismatch evicts the entry
-  and its descendants and answers `NOT_FOUND`, plus the confirmed treatment of
-  read errors applied to the entry; the fleet proof injects a corrupt page and
-  a read error and shows recompute or failure exactly as the rule says, with
-  no later request reusing the bad page.
 - Left out on purpose (2026-10-02):
   `include/sparkpipe/family/module/spark_module_open_kv_tier.h:27-31` treats
   an unset `SPARK_<FAMILY>_STAGE_KV_STORE` as provider `none`: it opens a
