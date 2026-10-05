@@ -21,6 +21,8 @@
 
 void spark_stub_cuda_set_create_delay(uint32_t delay);
 uint32_t spark_stub_cuda_outstanding_allocs(void);
+uint32_t spark_stub_cuda_map_calls(void);
+void spark_stub_cuda_set_map_delay(uint32_t delay);
 
 static uint32_t test_failures;
 
@@ -218,7 +220,7 @@ static void check_concurrent_same_expert(void)
 	TestServer state;
 	ConcurrentAcquire acquirers[2];
 	pthread_t threads[2];
-	uint32_t arrived = 0u,baseline,index,expert = 2u;
+	uint32_t arrived = 0u,baseline,maps,index,expert = 2u;
 	uint64_t generations[2] = {0u,0u};
 	server_start(&state);
 	memset(acquirers,0,sizeof(acquirers));
@@ -231,17 +233,18 @@ static void check_concurrent_same_expert(void)
 	}
 	CHECK( generations[0] == generations[1],"concurrent: both clients attach the same arena");
 	baseline = spark_stub_cuda_outstanding_allocs();
-	spark_stub_cuda_set_create_delay(50000u);
+	maps = spark_stub_cuda_map_calls();
+	spark_stub_cuda_set_map_delay(50000u);
 	for (index=0u; index<2u; index++)
 		assert(pthread_create(&threads[index],0,acquire_together,&acquirers[index]) == 0);
 	for (index=0u; index<2u; index++)
 		assert(pthread_join(threads[index],0) == 0);
-	spark_stub_cuda_set_create_delay(0u);
+	spark_stub_cuda_set_map_delay(0u);
 	for (index=0u; index<2u; index++)
 		CHECK( acquirers[index].status == SPARK_STATUS_OK && acquirers[index].result.status == SPARK_STATUS_OK,
 			"concurrent: both acquires of one expert succeed");
-	CHECK( spark_stub_cuda_outstanding_allocs() == baseline + 1u,
-		"concurrent: two simultaneous acquirers of one expert create its chunk once");
+	CHECK( spark_stub_cuda_outstanding_allocs() == baseline && spark_stub_cuda_map_calls() == maps + 1u,
+		"concurrent: two simultaneous acquirers of one expert bind its chunk to a pool slot once and allocate nothing");
 	for (index=0u; index<2u; index++)
 	{
 		if ( acquirers[index].status != SPARK_STATUS_OK )
@@ -262,7 +265,7 @@ static void check_mid_acquire_death(void)
 	SparkWeightdWorkingSetResult result;
 	const uint32_t dying[2] = {1u,2u},other[2] = {0u,3u};
 	uint64_t generation = 0u;
-	uint32_t baseline,waited,attempt;
+	uint32_t baseline,maps,waited,attempt;
 	SparkStatus status = SPARK_STATUS_IO_ERROR;
 	pid_t pid;
 	int wstatus = 0;
@@ -270,7 +273,8 @@ static void check_mid_acquire_death(void)
 	assert(SparkWeightdClientConnect(state.socket_path,&a,0) == SPARK_STATUS_OK);
 	assert(attach(a,state.path,&generation) == SPARK_STATUS_OK);
 	baseline = spark_stub_cuda_outstanding_allocs();
-	spark_stub_cuda_set_create_delay(200000u);
+	maps = spark_stub_cuda_map_calls();
+	spark_stub_cuda_set_map_delay(200000u);
 	pid = TestChildGuardFork();
 	assert(pid >= 0);
 	if ( pid == 0 )
@@ -285,14 +289,14 @@ static void check_mid_acquire_death(void)
 		(void)acquire(child,generation,dying,2u,&held);
 		_exit(4);
 	}
-	for (waited=0u; waited<5000u && spark_stub_cuda_outstanding_allocs() == baseline; waited++)
+	for (waited=0u; waited<5000u && spark_stub_cuda_map_calls() == maps; waited++)
 		usleep(1000);
 	CHECK( waited < 5000u,"mid-acquire death: the child's expert load is in flight");
 	assert(kill(pid,SIGKILL) == 0);
 	assert(waitpid(pid,&wstatus,0) == pid);
 	CHECK( WIFSIGNALED(wstatus) && WTERMSIG(wstatus) == SIGKILL,
 		"mid-acquire death: the child dies by SIGKILL inside its acquire");
-	spark_stub_cuda_set_create_delay(0u);
+	spark_stub_cuda_set_map_delay(0u);
 	for (attempt=0u; attempt<2000u; attempt++)
 	{
 		status = acquire(a,generation,other,2u,&result);
@@ -308,8 +312,8 @@ static void check_mid_acquire_death(void)
 			"mid-acquire death: experts evicting the dead client's chunks map byte-exact");
 		release(a,generation,result.lease_identifier);
 	}
-	CHECK( spark_stub_cuda_outstanding_allocs() == baseline + POOL_CHUNKS,
-		"mid-acquire death: the pool holds exactly its budget of chunks");
+	CHECK( spark_stub_cuda_outstanding_allocs() == baseline,
+		"mid-acquire death: the pool holds exactly the slots it reserved at attach");
 	status = acquire(a,generation,dying,2u,&result);
 	CHECK( status == SPARK_STATUS_OK && result.status == SPARK_STATUS_OK,
 		"mid-acquire death: the dead client's experts reload");
@@ -330,7 +334,7 @@ static void check_eviction_reload(void)
 	SparkWeightdWorkingSetResult result;
 	const uint32_t order[6] = {0u,1u,2u,3u,0u,1u};
 	uint64_t generation = 0u;
-	uint32_t baseline,step,resident;
+	uint32_t baseline,step;
 	server_start(&state);
 	assert(SparkWeightdClientConnect(state.socket_path,&a,0) == SPARK_STATUS_OK);
 	assert(attach(a,state.path,&generation) == SPARK_STATUS_OK);
@@ -345,9 +349,8 @@ static void check_eviction_reload(void)
 		CHECK( lease_serves(a,generation,result.lease_identifier,&order[step],1u),
 			"eviction: loaded and reloaded experts map byte-exact");
 		release(a,generation,result.lease_identifier);
-		resident = step + 1u < POOL_CHUNKS ? step + 1u : POOL_CHUNKS;
-		CHECK( spark_stub_cuda_outstanding_allocs() == baseline + resident,
-			"eviction: the pool never holds more than its budget of chunks");
+		CHECK( spark_stub_cuda_outstanding_allocs() == baseline,
+			"eviction: the pool never holds more than the slots it reserved at attach");
 	}
 	SparkWeightdClientClose(a);
 	server_stop(&state,"eviction: the daemon releases every chunk at shutdown");

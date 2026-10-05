@@ -1579,8 +1579,9 @@ for seamless production multi-model.
   unaffected.
 - Load bandwidth fairness is enforced but not yet configured or measured.
   weightd paces pack streams, spine preloads and expert lease loads with one
-  token bucket (`runtime/spark_weightd_pacer.c`) while another connection's
-  lane has been active within the last second, at
+  token bucket (`runtime/spark_weightd_pacer.c`) while a connection of
+  another process has had its lane active within the last second (an engine's
+  own transport connection never paces its own expert loads), at
   `--load-pace-bytes-per-second` (`SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND`).
   Without the setting such a load is refused, so the fleet agent's
   environment must carry the value before a second model loads beside a

@@ -27,10 +27,13 @@ void spark_stub_cuda_fail_import_after(uint32_t calls);
 void spark_stub_cuda_fail_next_unmap(void);
 void spark_stub_cuda_fail_event_destroy_after(uint32_t calls);
 void spark_stub_cuda_set_import_delay(uint32_t delay);
+void spark_stub_cuda_set_map_delay(uint32_t delay);
 void spark_stub_cuda_fail_next_alloc(void);
 void spark_stub_cuda_fail_alloc_after(uint32_t calls);
 void spark_stub_cuda_fail_export_after(uint32_t calls);
 uint32_t spark_stub_cuda_outstanding_allocs(void);
+uint32_t spark_stub_cuda_map_calls(void);
+uint32_t spark_stub_cuda_unmap_calls(void);
 
 typedef struct TestServer
 {
@@ -290,10 +293,10 @@ static void check_two_clients(SparkWeightdClient *a,SparkWeightdClient *b,uint64
 	SparkWeightdWorkingSetResult first,second,result;
 	SparkWeightdDetachResult detached;
 	uint32_t allocations = spark_stub_cuda_outstanding_allocs();
-	spark_stub_cuda_fail_next_alloc();
-	result = acquire(a,generation,2u,SPARK_STATUS_CAPACITY_EXCEEDED);
-	assert(result.resident_bytes == 0u);
+	result = acquire(a,generation,2u,SPARK_STATUS_OK);
+	assert(result.resident_bytes == (2u * CHUNK));
 	assert(spark_stub_cuda_outstanding_allocs() == allocations);
+	release(a,generation,result.lease_identifier);
 	first = acquire(a,generation,0u,SPARK_STATUS_OK);
 	assert(SparkWeightdClientDetach(a,generation,&detached,TIMEOUT) == SPARK_STATUS_OK);
 	assert(detached.status == SPARK_STATUS_BUSY);
@@ -329,7 +332,7 @@ static void check_transaction(SparkWeightdClient *client,uint64_t generation,uin
 	release(client,generation,result.lease_identifier);
 	(void)acquire(client,generation,3u,SPARK_STATUS_HASH_MISMATCH);
 	result = acquire(client,generation,2u,SPARK_STATUS_OK);
-	assert(result.resident_bytes == CHUNK);
+	assert(result.resident_bytes == (2u * CHUNK));
 	check_ranges(base,2u);
 	release(client,generation,result.lease_identifier);
 }
@@ -444,6 +447,7 @@ static void check_map_lifetime(SparkWeightdClient *client,uint64_t generation,ui
 	SparkWeightdMap *map;
 	SparkWeightdExpertKey key = {0u,0u};
 	uint64_t first,second;
+	uint32_t allocations;
 	void *address,*other;
 	attached.status = SPARK_STATUS_OK;
 	attached.arena_generation = generation;
@@ -476,21 +480,17 @@ static void check_map_lifetime(SparkWeightdClient *client,uint64_t generation,ui
 	assert(SparkWeightdMapRelease(map,second,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);
+	allocations = spark_stub_cuda_outstanding_allocs();
 	spark_stub_cuda_fail_export_after(2u);
-	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
-	assert(first == 0u);
-	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);
-	assert(SparkWeightdMapCreate(client,&attached,-1,-1,&map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreate(client,&attached,-1,-1,&map) == SPARK_STATUS_IO_ERROR && map == 0);
 	spark_stub_cuda_fail_import_after(2u);
-	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_IO_ERROR);
-	assert(first == 0u);
-	assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
-	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
-	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_OK);
+	assert(SparkWeightdMapCreate(client,&attached,-1,-1,&map) == SPARK_STATUS_IO_ERROR && map == 0);
+	assert(spark_stub_cuda_outstanding_allocs() == allocations);
 	assert(SparkWeightdMapCreate(client,&attached,-1,-1,&map) == SPARK_STATUS_OK);
-	spark_stub_cuda_set_import_delay(200000u);
+	spark_stub_cuda_set_map_delay(200000u);
 	assert(SparkWeightdMapAcquire(map,&key,1u,&first,UINT64_C(100000000)) == SPARK_STATUS_BUSY);
-	spark_stub_cuda_set_import_delay(0u);
+	spark_stub_cuda_set_map_delay(0u);
 	assert(first != 0u);
 	assert(SparkWeightdMapDestroy(map) == SPARK_STATUS_BUSY);
 	assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
@@ -548,7 +548,7 @@ static void check_map_eviction(void)
     SparkWeightdExpertKey key = {0u,0u},pair[2] = {{0u,1u},{0u,2u}};
     pthread_t thread;
     uint64_t generation,base,other,first,second,leases[64],epoch;
-    uint32_t i,allocations;
+    uint32_t i,allocations,unmaps,maps;
     int epoch_fd = -1;
     void *address,*second_address;
     assert(mkdtemp(root) != 0);
@@ -594,11 +594,11 @@ static void check_map_eviction(void)
     assert(spark_stub_cuda_outstanding_allocs() == allocations);
     check_full_chunk(second_address,0u);
     assert(SparkWeightdMapRecordCompletion(map,second,0) == SPARK_STATUS_OK);
-    spark_stub_cuda_fail_next_unmap();
-    assert(SparkWeightdMapRelease(map,second,TIMEOUT) == SPARK_STATUS_IO_ERROR);
     assert(SparkWeightdClientAcquire(b,generation,pair,2u,&result,TIMEOUT) == SPARK_STATUS_CAPACITY_EXCEEDED);
-    assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_BUSY && first == 0u);
+    allocations = spark_stub_cuda_outstanding_allocs();
+    unmaps = spark_stub_cuda_unmap_calls();
     assert(SparkWeightdMapRelease(map,second,TIMEOUT) == SPARK_STATUS_OK);
+    assert(spark_stub_cuda_outstanding_allocs() == allocations && spark_stub_cuda_unmap_calls() == unmaps);
     assert(SparkWeightdClientAcquire(b,generation,pair,2u,&result,TIMEOUT) == SPARK_STATUS_OK);
     release(b,generation,result.lease_identifier);
     allocations = spark_stub_cuda_outstanding_allocs();
@@ -613,6 +613,19 @@ static void check_map_eviction(void)
         assert(spark_stub_cuda_outstanding_allocs() == allocations);
     }
     key.expert = 0u;
+    assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
+    assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
+    maps = spark_stub_cuda_map_calls();
+    unmaps = spark_stub_cuda_unmap_calls();
+    for (i=0u; i<8u; i++)
+    {
+        assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_OK);
+        assert(SparkWeightdMapBeginUse(map,first,&address) == SPARK_STATUS_OK);
+        check_full_chunk(address,0u);
+        assert(SparkWeightdMapRecordCompletion(map,first,0) == SPARK_STATUS_OK);
+        assert(SparkWeightdMapRelease(map,first,TIMEOUT) == SPARK_STATUS_OK);
+    }
+    assert(spark_stub_cuda_map_calls() == maps && spark_stub_cuda_unmap_calls() == unmaps);
     for (i=0u; i<64u; i++)
         assert(SparkWeightdMapAcquire(map,&key,1u,&leases[i],TIMEOUT) == SPARK_STATUS_OK);
     assert(SparkWeightdMapAcquire(map,&key,1u,&first,TIMEOUT) == SPARK_STATUS_BUSY && first == 0u);
@@ -637,7 +650,7 @@ static void check_map_eviction(void)
     	(void)unlink(verified);
     }
     assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(wset) == 0 && rmdir(root) == 0);
-    puts("PASS partial map: actual eviction epoch, overlapping leases, failed unmap pin retention, 24 bounded reloads, 64-owner limit");
+    puts("PASS slot map: actual eviction epoch, overlapping leases, a held lease pins its slot, release unmaps nothing, 24 reloads through reassigned slots, a bound chunk re-leases without a map call, 64-owner limit");
 }
 
 static void write_salted_chunk_fixture(const char *path,const char *manifest_path,uint8_t salt)
@@ -681,11 +694,11 @@ static void detach(SparkWeightdClient *client,uint64_t generation)
 
 static uint32_t loads_expert(SparkWeightdClient *client,uint64_t generation,uint32_t expert)
 {
-    uint32_t before = spark_stub_cuda_outstanding_allocs(),grew;
+    uint32_t before = spark_stub_cuda_map_calls(),loaded;
     SparkWeightdWorkingSetResult result = acquire(client,generation,expert,SPARK_STATUS_OK);
-    grew = spark_stub_cuda_outstanding_allocs() > before ? 1u : 0u;
+    loaded = spark_stub_cuda_map_calls() > before ? 1u : 0u;
     release(client,generation,result.lease_identifier);
-    return(grew);
+    return(loaded);
 }
 
 static void check_cold_reclaim_order(void)
@@ -746,7 +759,7 @@ static void check_cold_reclaim_order(void)
         assert(unlink(manifests[pack]) == 0 && unlink(paths[pack]) == 0);
     }
     assert(rmdir(root) == 0);
-    puts("PASS cold reclaim: the least recently used cold arena gives up its least recently used chunk and stays registered");
+    puts("PASS cold reclaim: free pool slots go first, then the least recently used cold arena gives up its least recently used chunk and stays registered, and a reattach restores the full pool");
 }
 
 static void check_orphan(SparkWeightdClient *a,uint64_t generation,uint64_t base,const char *socket_path,const char *path)
@@ -1128,7 +1141,7 @@ static void check_lazy_pack(const char *socket_path,const char *path,const char 
 	assert(change_manifest_after_parse(0,(void *)manifest_path) == SPARK_STATUS_OK);
 	snprintf(request.identity.model,sizeof(request.identity.model),"lazy-pack-test");
 	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
-	assert(pack != 0 && pack->attached.resident_bytes == 0u);
+	assert(pack != 0 && pack->attached.resident_bytes == (4u * CHUNK));
 	assert(SparkWeightdLazyPackSlice(pack,512u,1u,&pointer) == SPARK_STATUS_OK);
 	assert(*(const uint8_t *)pointer == 255u);
 	assert(SparkWeightdLazyPackSlice(pack,0u,64u,&pointer) == SPARK_STATUS_NOT_FOUND && pointer == 0);
@@ -1206,7 +1219,7 @@ static void check_spine_residency_modes(const char *path,const char *manifest_pa
 		assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
 		assert(pthread_create(&thread,0,run_server,&state) == 0);
 		assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
-		assert(pack->attached.resident_bytes == (full ? 4u * CHUNK : 0u));
+		assert(pack->attached.resident_bytes == (full ? 4u * CHUNK : 2u * CHUNK));
 		assert(SparkWeightdManifestLoad(manifest_path,PACK_BYTES,&manifest) == SPARK_STATUS_OK);
 		for (uint32_t i=0u; i<manifest.spine_count; i++)
 		{

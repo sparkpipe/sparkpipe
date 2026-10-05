@@ -815,18 +815,18 @@ static void test_mesh_hardware_wait(void)
     uint64_t *peer2 = test_peer_tail(band,2u,tag);
     uint64_t id,old_error,old_diag;
     uint32_t first,last,invalid;
-    _Static_assert(SPARK_WEIGHTD_IPC_ABI_VERSION != 12u || (SPARK_WEIGHTD_MESH_REGION_BYTES == UINT64_C(268632064) &&
+    _Static_assert(SPARK_WEIGHTD_IPC_ABI_VERSION != 13u || (SPARK_WEIGHTD_MESH_REGION_BYTES == UINT64_C(268632064) &&
         SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == UINT64_C(268500992) && SPARK_WEIGHTD_MESH_SHIPPED_OFFSET == UINT64_C(268519424) &&
         SPARK_WEIGHTD_MESH_WAIT_OFFSET == UINT64_C(268523520) && SPARK_WEIGHTD_MESH_SLOT_BYTES == 262208u &&
         SPARK_WEIGHTD_MESH_STAGING_BYTES == UINT64_C(134217728) && SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES == 128u &&
         SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES == 32u && sizeof(SparkWeightdMeshWaitRequest) == 128u),
-        "the mesh layout changed under IPC ABI 12: bump SPARK_WEIGHTD_IPC_ABI_VERSION and pin the new layout here");
-    CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 12u && SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN == 8u &&
+        "the mesh layout changed under IPC ABI 13: bump SPARK_WEIGHTD_IPC_ABI_VERSION and pin the new layout here");
+    CHECK(SPARK_WEIGHTD_IPC_ABI_VERSION == 13u && SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN == 8u &&
         SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET == 22528u &&
         (uint8_t *)test_wait_request(SPARK_WEIGHTD_MESH_BANDS - 1u,SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u) + sizeof(*request) <=
             (uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_REGION_BYTES &&
         sizeof(*request) == 128u && offsetof(SparkWeightdMeshWaitRequest,ready) == 64u,
-        "the ABI 8 gate geometry served under ABI 12 has separate producer and terminal cache lines within the registered region");
+        "the ABI 8 gate geometry served under ABI 13 has separate producer and terminal cache lines within the registered region");
     CHECK(SparkWeightdMeshSetActivity(band / 2u,1u) == SPARK_STATUS_OK,
         "hardware wait producer begins before publishing any GPU request");
     id = test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,0u);

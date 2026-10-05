@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -720,19 +721,54 @@ typedef struct cuda_stub_vmm_backing
     uint32_t magic;
     uint32_t refs;
     uint64_t bytes;
+    int fd;
+    uint8_t *data;
 } cuda_stub_vmm_backing;
+
+static size_t cuda_stub_page_bytes(void)
+{
+    long page = sysconf(_SC_PAGESIZE);
+    return page > 0 ? (size_t)page : (size_t)4096u;
+}
+
+static int cuda_stub_page_aligned(CUdeviceptr pointer, uint64_t bytes)
+{
+    size_t page = cuda_stub_page_bytes();
+    return (pointer % page) == 0u && (bytes % page) == 0u;
+}
 
 static uint8_t *cuda_stub_backing_data(cuda_stub_vmm_backing *backing)
 {
-    return (uint8_t *)(backing + 1);
+    return backing->data;
 }
 
 static cuda_stub_vmm_backing *cuda_stub_backing_create(uint64_t bytes)
 {
-    cuda_stub_vmm_backing *backing = 0;
-    if (cuda_stub_alloc((void **)&backing, sizeof(*backing) + (size_t)bytes) != cudaSuccess)
+    cuda_stub_vmm_backing *backing = (cuda_stub_vmm_backing *)calloc(1u, sizeof(*backing));
+    const char *tmp_dir = getenv("TMPDIR");
+    char path[1024];
+    void *data;
+    if (backing == 0)
         return 0;
-    memset(backing, 0, sizeof(*backing) + (size_t)bytes);
+    if (tmp_dir == 0 || tmp_dir[0] == '\0')
+        tmp_dir = "/tmp";
+    snprintf(path, sizeof(path), "%s/sp_cuda_stub_phys.XXXXXX", tmp_dir);
+    backing->fd = mkstemp(path);
+    if (backing->fd < 0)
+    {
+        free(backing);
+        return 0;
+    }
+    (void)unlink(path);
+    (void)fcntl(backing->fd, F_SETFD, FD_CLOEXEC);
+    if (ftruncate(backing->fd, (off_t)bytes) != 0 ||
+        (data = mmap(0, (size_t)bytes, PROT_READ | PROT_WRITE, MAP_SHARED, backing->fd, 0)) == MAP_FAILED)
+    {
+        (void)close(backing->fd);
+        free(backing);
+        return 0;
+    }
+    backing->data = (uint8_t *)data;
     backing->magic = CUDA_STUB_BACKING_MAGIC;
     backing->refs = 1u;
     backing->bytes = bytes;
@@ -744,7 +780,9 @@ static void cuda_stub_backing_release(cuda_stub_vmm_backing *backing)
     if (__atomic_sub_fetch(&backing->refs, 1u, __ATOMIC_ACQ_REL) == 0u)
     {
         backing->magic = 0u;
-        (void)cuda_stub_free(backing);
+        (void)munmap(backing->data, (size_t)backing->bytes);
+        (void)close(backing->fd);
+        free(backing);
     }
 }
 
@@ -752,6 +790,8 @@ typedef struct cuda_stub_vmm_reservation
 {
     uint32_t magic;
     uint32_t mapped_count;
+    CUdeviceptr va_base;
+    uint64_t va_region;
     uint64_t bytes;
     uint64_t mapped_bytes;
     unsigned int granted_access;
@@ -789,8 +829,8 @@ static cuda_stub_vmm_reservation *cuda_stub_vmm_reservation_for_va(
         cuda_stub_vmm_reservation *reservation = cuda_stub_vmm_reservation_at(
             cuda_stub_tracked[index]);
         if (reservation != 0 &&
-            (CUdeviceptr)(reservation + 1) <= pointer &&
-            pointer < (CUdeviceptr)(reservation + 1) + reservation->bytes)
+            reservation->va_base <= pointer &&
+            pointer < reservation->va_base + reservation->bytes)
         {
             found = reservation;
             break;
@@ -890,14 +930,11 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    if (!cuda_stub_vmm_single_mapping(phys, &mapped_at))
-    {
+    if (!cuda_stub_vmm_single_mapping(phys, &mapped_at) ||
+        cuda_stub_page_aligned(mapped_at, phys->bytes))
         mapped_at = 0;
-        if (phys->backing == 0 && phys->mapped_count != 0u)
-            return CUDA_ERROR_INVALID_VALUE;
-        if (phys->backing == 0 && (phys->backing = cuda_stub_backing_create(phys->bytes)) == 0)
-            return CUDA_ERROR_OUT_OF_MEMORY;
-    }
+    if (phys->backing == 0)
+        return CUDA_ERROR_INVALID_VALUE;
     tmp_dir = getenv("TMPDIR");
     if (tmp_dir == 0 || tmp_dir[0] == '\0')
     {
@@ -928,7 +965,7 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     header.version = CUDA_STUB_SHARE_VERSION;
     header.bytes = phys->bytes;
     header.process = (uint64_t)getpid();
-    header.backing = mapped_at == 0 ? (uint64_t)(uintptr_t)phys->backing : 0u;
+    header.backing = (uint64_t)(uintptr_t)phys->backing;
     cursor = (uint8_t *)&header;
     remaining = sizeof(header);
     while (remaining != 0u)
@@ -979,6 +1016,24 @@ static void cuda_stub_sleep_microseconds(uint32_t microseconds)
 
 static uint32_t cuda_stub_import_delay_us;
 static uint32_t cuda_stub_create_delay_us;
+static uint32_t cuda_stub_map_delay_us;
+static uint32_t cuda_stub_map_calls;
+static uint32_t cuda_stub_unmap_calls;
+
+uint32_t spark_stub_cuda_map_calls(void)
+{
+    return __atomic_load_n(&cuda_stub_map_calls, __ATOMIC_ACQUIRE);
+}
+
+uint32_t spark_stub_cuda_unmap_calls(void)
+{
+    return __atomic_load_n(&cuda_stub_unmap_calls, __ATOMIC_ACQUIRE);
+}
+
+void spark_stub_cuda_set_map_delay(uint32_t delay)
+{
+    cuda_stub_map_delay_us = delay;
+}
 
 void spark_stub_cuda_set_import_delay(uint32_t delay)
 {
@@ -1131,7 +1186,13 @@ CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
     phys->mapped_count = 0u;
     phys->bytes = (uint64_t)bytes;
     phys->prop = *prop;
-    phys->backing = 0;
+    phys->backing = cuda_stub_backing_create((uint64_t)bytes);
+    if (phys->backing == 0)
+    {
+        phys->magic = 0u;
+        (void)cuda_stub_free(phys);
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
     *handle = (CUmemGenericAllocationHandle)phys;
     return CUDA_SUCCESS;
 }
@@ -1155,15 +1216,24 @@ CUresult cuMemAddressReserve(CUdeviceptr *pointer,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    if (cuda_stub_alloc((void **)&reservation,
-            sizeof(*reservation) + bytes) != cudaSuccess)
     {
-        return CUDA_ERROR_OUT_OF_MEMORY;
+        size_t page = cuda_stub_page_bytes();
+        size_t region = (bytes + page - 1u) / page * page;
+        void *va = mmap(0, region, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (va == MAP_FAILED)
+            return CUDA_ERROR_OUT_OF_MEMORY;
+        if (cuda_stub_alloc((void **)&reservation, sizeof(*reservation)) != cudaSuccess)
+        {
+            (void)munmap(va, region);
+            return CUDA_ERROR_OUT_OF_MEMORY;
+        }
+        memset(reservation, 0, sizeof(*reservation));
+        reservation->magic = CUDA_STUB_RESERVATION_MAGIC;
+        reservation->bytes = (uint64_t)bytes;
+        reservation->va_base = (CUdeviceptr)va;
+        reservation->va_region = (uint64_t)region;
+        *pointer = reservation->va_base;
     }
-    memset(reservation, 0, sizeof(*reservation) + bytes);
-    reservation->magic = CUDA_STUB_RESERVATION_MAGIC;
-    reservation->bytes = (uint64_t)bytes;
-    *pointer = (CUdeviceptr)(reservation + 1);
     return CUDA_SUCCESS;
 }
 
@@ -1175,6 +1245,7 @@ CUresult cuMemMap(CUdeviceptr pointer,
 {
     cuda_stub_vmm_reservation *reservation;
     cuda_stub_vmm_phys *phys = (cuda_stub_vmm_phys *)handle;
+    __atomic_add_fetch(&cuda_stub_map_calls, 1u, __ATOMIC_ACQ_REL);
     if (phys == 0 || ((cuda_stub_alloc_header *)phys - 1)->magic !=
                          CUDA_STUB_ALLOC_MAGIC ||
         phys->magic != CUDA_STUB_VMM_MAGIC || offset != (size_t)0u ||
@@ -1192,13 +1263,21 @@ CUresult cuMemMap(CUdeviceptr pointer,
     {
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
+    if (cuda_stub_map_delay_us != 0u)
+        cuda_stub_sleep_microseconds(cuda_stub_map_delay_us);
+    if (phys->backing != 0 && cuda_stub_page_aligned(pointer, (uint64_t)bytes) &&
+        mmap((void *)(uintptr_t)pointer, bytes, PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_FIXED, phys->backing->fd, 0) == MAP_FAILED)
+    {
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
     reservation->mappings[reservation->mapped_count].pointer = pointer;
     reservation->mappings[reservation->mapped_count].bytes = bytes;
     reservation->mappings[reservation->mapped_count].phys = phys;
     reservation->mapped_count++;
     reservation->mapped_bytes += (uint64_t)bytes;
     phys->mapped_count++;
-    if (phys->backing != 0)
+    if (phys->backing != 0 && !cuda_stub_page_aligned(pointer, (uint64_t)bytes))
     {
         memcpy((void *)(uintptr_t)pointer, cuda_stub_backing_data(phys->backing), bytes);
     }
@@ -1224,7 +1303,7 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    span_start = (CUdeviceptr)(reservation + 1);
+    span_start = reservation->va_base;
     offset = pointer - span_start;
     if (offset > reservation->bytes ||
         (uint64_t)bytes > reservation->bytes - offset)
@@ -1250,7 +1329,7 @@ CUresult cuMemcpyDtoD(CUdeviceptr destination, CUdeviceptr source,
         return CUDA_SUCCESS;
     if ( target != 0 )
     {
-        CUdeviceptr span_start = (CUdeviceptr)(target + 1);
+        CUdeviceptr span_start = target->va_base;
         uint64_t offset = destination - span_start;
         if ( offset > target->bytes ||
             (uint64_t)bytes > target->bytes - offset ||
@@ -1259,7 +1338,7 @@ CUresult cuMemcpyDtoD(CUdeviceptr destination, CUdeviceptr source,
     }
     if ( origin != 0 )
     {
-        CUdeviceptr span_start = (CUdeviceptr)(origin + 1);
+        CUdeviceptr span_start = origin->va_base;
         uint64_t offset = source - span_start;
         if ( offset > origin->bytes ||
             (uint64_t)bytes > origin->bytes - offset )
@@ -1282,7 +1361,7 @@ CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    span_start = (CUdeviceptr)(reservation + 1);
+    span_start = reservation->va_base;
     offset = pointer - span_start;
     if (offset > reservation->bytes ||
         (uint64_t)count > reservation->bytes - offset)
@@ -1299,6 +1378,7 @@ CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
 
 CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
 {
+    __atomic_add_fetch(&cuda_stub_unmap_calls, 1u, __ATOMIC_ACQ_REL);
     if (cuda_stub_unmap_fail != 0u)
     {
         cuda_stub_unmap_fail = 0u;
@@ -1318,7 +1398,14 @@ CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes)
             if (mapped_at >= pointer &&
                 mapped_at + mapped_bytes <= pointer + (uint64_t)bytes)
             {
-                if (reservation->mappings[mapping_index].phys->backing != 0)
+                if (reservation->mappings[mapping_index].phys->backing != 0 &&
+                    cuda_stub_page_aligned(mapped_at, mapped_bytes))
+                {
+                    if (mmap((void *)(uintptr_t)mapped_at, (size_t)mapped_bytes, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED)
+                        return CUDA_ERROR_OUT_OF_MEMORY;
+                }
+                else if (reservation->mappings[mapping_index].phys->backing != 0)
                     memcpy(cuda_stub_backing_data(reservation->mappings[mapping_index].phys->backing),
                         (const void *)(uintptr_t)mapped_at, (size_t)mapped_bytes);
                 reservation->mappings[mapping_index].phys->mapped_count--;
@@ -1366,7 +1453,7 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
         cuda_stub_vmm_reservation_for_va(pointer);
     (void)bytes;
     if (reservation == 0 ||
-        (CUdeviceptr)(reservation + 1) != pointer)
+        reservation->va_base != pointer)
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
@@ -1374,6 +1461,7 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
+    (void)munmap((void *)(uintptr_t)reservation->va_base, (size_t)reservation->va_region);
     return cuda_stub_free(reservation);
 }
 
