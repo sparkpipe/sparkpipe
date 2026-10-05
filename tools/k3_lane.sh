@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 : "${K3_LANE:?K3_LANE is the weightd mesh lane (1..15, never 0)}"
-: "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_serving_adapter.so, libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
+: "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_serving_adapter.so (TP4xPP4) or libk3_tp16_serving_adapter.so (TP16), libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
 : "${K3_WEIGHTD_SOCKET:?K3_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${K3_EXPERT_POOL_BYTES:?K3_EXPERT_POOL_BYTES is the per-rank routed expert pool}"
 : "${K3_MEMORY_MAX:?K3_MEMORY_MAX is the residentd unit MemoryMax, e.g. 10G}"
@@ -17,6 +17,8 @@ CHECKOUT="$(cd "$HERE/.." && pwd)"
 HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-k3-rd$K3_LANE"
+ADAPTER_FILE=libk3_serving_adapter.so
+[ "$K3_TOPOLOGY" = tp16 ] && ADAPTER_FILE=libk3_tp16_serving_adapter.so
 PACK_DIR=sparkdata/k3.mxfp4.$K3_TOPOLOGY/packs
 host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/home/$1/k3-lanes/lane$K3_LANE/root"; }
@@ -73,7 +75,7 @@ setup() {
     (
       $SSH "$host" "test -f $pack -a -f $pack.experts -a -f $pack.sha256 && mkdir -p $root/bin $root/lib $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
       scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
-      scp -q "$K3_FIRMWARE/libk3_serving_adapter.so" "$host:$root/lib/"
+      scp -q "$K3_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/libk3_serving_adapter.so"
       scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
       if [ "${K3_PIPELINE_TRANSPORT:-host-rdma}" = host-staged ]; then
         scp -q "$K3_FIRMWARE/libhidden_transport_host_staged_tcp.so" "$host:$root/lib/hidden_pipeline.so"
