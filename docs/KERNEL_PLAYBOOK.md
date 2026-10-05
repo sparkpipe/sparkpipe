@@ -377,6 +377,88 @@ that disagrees on it fails to build. The consumers are:
 
 ---
 
+### 2.6.1 NVFP4 layout, staging warps and TP windows
+
+- **Format codes are kernel selectors.** The `SPARK_LM_WEIGHT_FORMAT_*`
+  values pick a decoder. They are not stage-pack wire codes, and callers
+  that hold a wire code translate it explicitly. Examples are
+  `LmGdnStageExpertCodec` and `LmGdnStageLaunchGroupedExpertLinear` in
+  `common/common_gdn_stage_kernels.cu`, and the qwen4_flash module.
+  - Several values equal a wire code: BF16 0, F32 1, U32 2, MXFP4 3
+    (`SPARK_STAGEPACK_FORMAT_WEIGHT_MXFP4_E2M1` in
+    `common/common_stagepack_format_ext.h`), FP8 with E8M0 block-128 scales
+    6, and `SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1` 8
+    (`SPARK_STAGEPACK_FORMAT_WEIGHT_NVFP4_PACKED`).
+  - FP8 block-128 with F32 scales is 5 here and 4 on the wire. Code 4 here
+    is `SPARK_LM_WEIGHT_FORMAT_FP8_E4M3`.
+  - The wire's `SPARK_STAGEPACK_FORMAT_WEIGHT_MXFP4_E2M1_E8M0G32` (9) has no
+    code here.
+  - No static assertion ties any pair together.
+- **NVFP4 decode.** NVFP4 here is the ModelOpt layout.
+  `SparkLmDotRowNvfp4`, `SparkLmDotRowNvfp4Pair` and `SparkLmTileDecodeRun`
+  decode one weight as e2m1 × e4m3 × global.
+  - Payload: packed like MXFP4, eight e2m1 values per 32-bit word.
+  - Scales: one e4m3 byte per 16 inputs, where MXFP4 has one E8M0 byte per
+    `GROUP_SIZE` inputs. `SparkLmTileDecodeRun` indexes the plane by its
+    template `GROUP_SIZE`, so `SparkLmHostLaunchBatchedLinear` and
+    `SparkLmHostLaunchGroupedExpertTileMloop` instantiate the tile kernels
+    with 16 for NVFP4.
+  - Global: one F32 `weight_scale_2` per dense weight or per expert segment.
+  - Besides `SparkLmValidateLinearContract` (Part 1),
+    `SparkLmHostLaunchGroupedScalarLinear` also refuses NVFP4 when
+    `input_dimension % 16 != 0`.
+- **Where the NVFP4 global sits.**
+  - Dense weights: the scale buffer is `[e4m3 plane][F32 global]`. These
+    kernels read the global at byte offset
+    `output_dimension * (input_dimension / 16)`, directly after the plane:
+    `SparkLmLinearKernel`, `SparkLmGatherLinearKernel`,
+    `SparkLmExpertTileBodyAllWarps` and
+    `SparkLmExpertTileBodySoftwarePipelined`.
+  - Expert segments: each expert's scale segment is
+    `[e4m3 plane][F32 input scale][F32 weight_scale_2]`, that is, the plane
+    plus `SPARK_STAGEPACK_NVFP4_GLOBAL_SCALE_BYTES` (8). The weight global is
+    the last 4 bytes:
+    - `SparkLmGroupedScalarLinearKernel` reads it at
+      `scale_group_stride_bytes - 4`;
+    - `SparkLmExpertTileAllMloopKernel` reads it at
+      `scale_expert_stride_bytes - 4`;
+    - `SparkLmSm121B1ExpertW13Task` and `SparkLmSm121B1ExpertW2Task` read it
+      at plane + 4. They place each group's segment at
+      `group * output_dimension * (input_dimension / 32)`, the MXFP4 stride.
+      An NVFP4 segment is `output_dimension * (input_dimension / 16) + 8`
+      bytes, so with NVFP4 every group after group 0 reads its plane and
+      global from the wrong offset.
+
+    The 4 bytes at plane + 0 are the input scale, not the weight global.
+    `SparkLmExpertTileAllKernel` reaches the dense bodies through
+    `SparkLmExpertTileDispatch`, so with NVFP4 it would read the input scale
+    as the global. Nothing in the tree launches it.
+- **Mloop warp roles.** `SparkLmExpertTileAllMloopKernel` runs 256 threads
+  and works through each K tile in two phases.
+  - Warps 0-3 run WMMA on the current buffers while warps 4-7 (threads
+    128-255) stage the next input tile and the first half of the next weight
+    tile.
+  - Warps 4-7 then run WMMA while warps 0-3 stage the second half of the
+    next weight tile.
+  - Only warps 4-7 stage input. Their loop indexes the 16 × 64 tile from
+    `threadIdx.x - 128` with stride 128. Indexing from `threadIdx.x` would
+    start at entry 128, so rows 0-1 of every staged input tile would never
+    be written.
+- **TP-windowed grouped launch.** `SparkLmGroupedScalarLinearKernel` works
+  on a window of the global route table.
+  - `LmGdnStageLaunchGroupedExpertLinear` offsets `group_tile_prefix` and
+    `group_row_offset` by `tp_rank * experts_per_rank` and passes
+    `group_count = experts_per_rank`.
+  - So `group_tile_prefix[0]` is this rank's first global tile index, and
+    the rank's tasks are
+    `[group_tile_prefix[0], group_tile_prefix[group_count])`. The task loop
+    starts at `group_tile_prefix[0] + blockIdx.x` for this reason.
+  - For a task below the window, `SparkLmGroupedScalarGroupOfTile` returns
+    group 0 and the unsigned `in_group` underflows, so the kernel can read
+    rows outside the group.
+  - A window that starts at tile 0, as rank 0's does, cannot show this
+    fault.
+
 # Part 3 — Finding kernels and their numbers
 
 - **Kernel inventory.** Generate it instead of keeping a list by hand:

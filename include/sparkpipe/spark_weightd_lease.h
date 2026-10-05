@@ -32,23 +32,14 @@ typedef struct SparkWeightdLeaseTable
 extern "C" {
 #endif
 
-// Startup allocation; the manifest must outlive the table. Calls are serialized
-// by the daemon thread. Owner identifiers must not be reused for new connections.
 SparkStatus SparkWeightdLeaseTableCreate(const SparkWeightdManifest *manifest,SparkWeightdLeaseTable **out);
 SparkStatus SparkWeightdLeaseTableDestroy(SparkWeightdLeaseTable *table);
 SparkStatus SparkWeightdLeaseAcquire(SparkWeightdLeaseTable *table,uint64_t owner,uint32_t lane,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier);
 SparkStatus SparkWeightdLeaseReleaseForLane(SparkWeightdLeaseTable *table,uint32_t lane,uint32_t *released_count);
 const SparkWeightdLease *SparkWeightdLeaseFind(const SparkWeightdLeaseTable *table,uint64_t owner,uint64_t identifier);
-// Release only after consumer GPU completion and unmapping are established.
-// Connection loss alone is not permission to release an in-flight lease.
 SparkStatus SparkWeightdLeaseRelease(SparkWeightdLeaseTable *table,uint64_t owner,uint64_t identifier);
-// Dead-consumer recovery: a closed connection can never signal completion,
-// and its mesh endpoints die with the consumer process, so nothing can still
-// reference the pooled bytes. Called from connection teardown only.
 SparkStatus SparkWeightdLeaseReleaseOwner(SparkWeightdLeaseTable *table,uint64_t owner);
 
-// Completed host routing offsets, length expert_count + 1. Validate the full
-// prefix before emitting keys. No allocation; failures leave count zero.
 SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_t expert_count,uint32_t packed_rows,SparkWeightdExpertKey *keys,uint32_t capacity,uint32_t *count);
 
 #ifdef __cplusplus

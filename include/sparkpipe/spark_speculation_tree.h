@@ -41,12 +41,6 @@ typedef struct SparkSpeculationTreeNode
 	uint8_t child_count;
 } SparkSpeculationTreeNode;
 
-/* The RUNTIME plan form (the composition program's step 1): the five
- * shape constants and the topology table become fields, so a host-side
- * compositor can build a plan that no includer predicted. The macro API
- * below delegates to the plan-taking functions via one static plan, so
- * every existing consumer compiles unchanged and resolves identically
- * (the bit-identity gate: tests/test_speculation_tree_oracle.c). */
 #define SPARK_SPECULATION_TREE_MAX_PLAN_ROWS 64u
 
 typedef struct SparkSpeculationTreePlan
@@ -258,11 +252,6 @@ static inline SparkStatus SparkSpeculationTreeResolve(
 	return SPARK_STATUS_OK;
 }
 
-/* ===== The runtime-plan form (composition step 1): same semantics,
- * parameterized on a SparkSpeculationTreePlan instead of the includer's
- * macros. The macro API above stays; the oracle pin
- * (tests/test_speculation_tree_oracle.c) proves the two forms resolve
- * identically on the includer's topology. ===== */
 
 static inline const SparkSpeculationTreeNode *SparkSpeculationTreePlanNodeAt(
 	const SparkSpeculationTreePlan *plan, uint32_t row_index)

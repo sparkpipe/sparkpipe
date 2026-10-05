@@ -601,6 +601,16 @@ cudaError_t cudaGetLastError(void)
     return cudaSuccess;
 }
 
+int cuda_stub_pageable_coherent = 1;
+
+cudaError_t cudaDeviceGetAttribute(int *value,int attribute,int device)
+{
+    if ( value == 0 || device != 0 )
+        return cudaErrorInvalidValue;
+    *value = attribute == 88 || attribute == 100 ? cuda_stub_pageable_coherent : 0;
+    return cudaSuccess;
+}
+
 cudaError_t cudaGetDevice(int *device)
 {
     if (device == 0)

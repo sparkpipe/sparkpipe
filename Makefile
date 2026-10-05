@@ -267,7 +267,8 @@ TOOL_NAMES := \
     spark_pmtu_characterize \
     sparkpipe_registrar \
     sparkpipe_weightd \
-    sparkpipe_weightsd
+    sparkpipe_weightsd \
+    sparkpipe_mesh_status
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -470,6 +471,8 @@ PYTHON_TESTS := \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_cuda_math_policy.py \
 	tests/test_dry_law.py \
+	tests/test_no_source_comments.py \
+	tests/test_third_party_notices.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_dsv4_contracts.py \
@@ -625,7 +628,9 @@ PYTHON_TESTS := \
 	tests/test_skinny_mxfp4_host.py \
 	tests/test_skinny_mxfp4_cuda.py \
 	tests/test_kv_shard_host.py \
+	tests/test_index_shard_host.py \
 	tests/test_kv_shard_cuda.py \
+	tests/test_index_shard_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
 	tests/test_project_chain_cuda.py \
 	tests/test_topk_warp_cuda.py \
@@ -713,6 +718,7 @@ PYTHON_TESTS := \
 	tests/test_mimo26_census.py \
 	tests/test_mimo26_model_inputs.py \
 	tests/test_mimo26_stagepack.py \
+	tests/test_mimo26_stagepack_windows.py \
 	tests/test_mimo26_stagepack_format.py \
 	tests/test_model_api_queue_lifetime.py \
 	tests/test_module_build_release_adapter_gate.py \
@@ -749,9 +755,12 @@ PYTHON_TESTS := \
 	tests/test_tp_standalone_configuration.py \
 	tests/test_weightd_map_fd_ownership.py \
 	tests/test_weightd_mesh_source.py \
+	tests/test_mesh_status_tool.py \
 	tests/test_weightd_warm_family.py
 PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
 	build/weightd_lazy_consumer \
+	build/sparkpipe_weightd \
+	build/sparkpipe_mesh_status \
 	build/dsv41_flash_pack_synthesize \
 	build/dsv41_flash_experts_manifest \
 	build/test_dsv41_flash_pack_contract
@@ -1875,6 +1884,9 @@ build/weightd_lazy_consumer: tools/weightd_lazy_consumer.c $(RUNTIME_LIBRARY) $(
 
 build/weightd_receipt: tools/weightd_receipt.c runtime/spark_weightd_receipt.c $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+build/sparkpipe_mesh_status: tools/mesh_status.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@
 
 build/weightdctl: tools/weightdctl.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@

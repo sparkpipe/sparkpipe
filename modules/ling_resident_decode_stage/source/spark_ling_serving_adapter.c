@@ -176,7 +176,6 @@ static SparkStatus SparkLingServingLoadTpCollective(
 	SparkTpCollectiveAdapterConfig config;
 	SparkStatus status;
 	policy.peer_count = tp_degree;
-	policy.allow_zero_collective_identifier = 1u;
 	policy.require_contiguous_peer_ports = 1u;
 	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL;

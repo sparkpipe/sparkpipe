@@ -128,4 +128,4 @@ static inline uint32_t SparkDsv4ModelLayerKind(uint32_t layer_index)
 	return(SPARK_DSV4_MODEL_LAYER_KIND_INVALID);
 }
 
-#endif /* SPARK_DSV4_PRO_BUILD */
+#endif

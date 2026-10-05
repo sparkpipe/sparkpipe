@@ -73,11 +73,8 @@ static SparkStatus SparkStageKvBindingAllocateHost(SparkStageKvBinding *binding,
 	binding->lane_bound = (atomic_uchar *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_bound));
 	binding->lane_sequence_ids = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_sequence_ids));
 	binding->lane_next_positions = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_next_positions));
-	binding->owned_lanes = (SparkModelDriverCacheLane *)calloc(binding->resident_sequence_capacity,sizeof(*binding->owned_lanes));
-	binding->owned_slots = (uint32_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->owned_slots));
 	if ( binding->blocks == 0 || binding->resident_slot_logical_block_indices == 0 || binding->entries == 0 || binding->sequences == 0 || binding->hash_bucket_heads == 0 || binding->entry_indices_by_logical_page == 0 ||
-		binding->lanes == 0 || binding->logical_pages == 0 || binding->page_table_shadow == 0 || binding->lane_bound == 0 || binding->lane_sequence_ids == 0 || binding->lane_next_positions == 0 ||
-		binding->owned_lanes == 0 || binding->owned_slots == 0 )
+		binding->lanes == 0 || binding->logical_pages == 0 || binding->page_table_shadow == 0 || binding->lane_bound == 0 || binding->lane_sequence_ids == 0 || binding->lane_next_positions == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( cudaHostAlloc((void **)&binding->physical_pages,(size_t)lane_entries * sizeof(uint32_t),cudaHostAllocPortable) != cudaSuccess )
 	{
@@ -101,18 +98,16 @@ static SparkStatus SparkStageKvBindingAllocateHost(SparkStageKvBinding *binding,
 
 static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
 {
-	uint64_t packed,missing;
-	uint32_t region,owned;
+	uint64_t packed,missing,layer_page;
+	uint32_t region,shards;
 	binding->pages_per_sequence = (configuration->max_sequence_positions + configuration->block_token_count - 1u) / configuration->block_token_count;
 	if ( binding->pages_per_sequence == 0u || configuration->resident_sequence_capacity > UINT32_MAX / binding->pages_per_sequence )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	owned = configuration->owner_count <= 1u ? configuration->resident_sequence_capacity :
-		(configuration->resident_sequence_capacity + configuration->owner_count - 1u) / configuration->owner_count;
-	if ( configuration->physical_page_count < binding->pages_per_sequence || configuration->logical_page_count < owned * binding->pages_per_sequence ||
+	if ( configuration->physical_page_count < binding->pages_per_sequence || configuration->logical_page_count < configuration->resident_sequence_capacity * binding->pages_per_sequence ||
 		configuration->logical_page_count < configuration->physical_page_count )
 	{
-		fprintf(stderr,"%s kv binding refused: physical pages %u must hold one lane's %u pages and logical pages %u must cover %u owned lanes x %u pages and be >= physical\n",
-			configuration->module_tag,configuration->physical_page_count,binding->pages_per_sequence,configuration->logical_page_count,owned,binding->pages_per_sequence);
+		fprintf(stderr,"%s kv binding refused: physical pages %u must hold one lane's %u pages and logical pages %u must cover %u lanes x %u pages and be >= physical\n",
+			configuration->module_tag,configuration->physical_page_count,binding->pages_per_sequence,configuration->logical_page_count,configuration->resident_sequence_capacity,binding->pages_per_sequence);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	if ( configuration->max_input_row_count > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES * configuration->block_token_count )
@@ -121,19 +116,29 @@ static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,cons
 			configuration->module_tag,configuration->max_input_row_count,SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES,configuration->block_token_count);
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
+	shards = SparkStageKvBindingContextSharded(configuration) != 0u ? configuration->context_shard.degree : 1u;
+	if ( shards > 1u && (SparkKvShardValid(configuration->context_shard,configuration->block_token_count) == 0u ||
+		configuration->arena_head_dim % shards != 0u) )
+	{
+		fprintf(stderr,"%s kv binding refused: context shard degree %u rank %u grain %u cannot split %u-token pages (arena head %u)\n",
+			configuration->module_tag,configuration->context_shard.degree,configuration->context_shard.rank,configuration->context_shard.grain,configuration->block_token_count,configuration->arena_head_dim);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	binding->page_bytes = 0u;
 	for (region=0u; region<configuration->region_count; region++)
 	{
 		const SparkStageKvRegion *declared = &configuration->regions[region];
 		if ( (declared->layout != SPARK_STAGE_KV_REGION_PAGE_MAJOR && declared->layout != SPARK_STAGE_KV_REGION_LAYER_MAJOR) || declared->layer_count == 0u || declared->layer_page_bytes == 0u ||
-			declared->layer_page_bytes > UINT64_MAX / declared->layer_count )
+			declared->layer_page_bytes % shards != 0u || declared->layer_page_bytes > UINT64_MAX / declared->layer_count )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		packed = declared->layer_page_bytes * declared->layer_count;
+		layer_page = declared->layer_page_bytes / shards;
+		packed = layer_page * declared->layer_count;
 		if ( packed > UINT64_MAX / configuration->physical_page_count || packed > UINT64_MAX - binding->page_bytes )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		binding->regions[region] = *declared;
+		binding->regions[region].layer_page_bytes = layer_page;
 		binding->region_packed_page_bytes[region] = packed;
-		binding->region_layer_stride_bytes[region] = declared->layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? declared->layer_page_bytes : (uint64_t)configuration->physical_page_count * declared->layer_page_bytes;
+		binding->region_layer_stride_bytes[region] = declared->layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? layer_page : (uint64_t)configuration->physical_page_count * layer_page;
 		binding->page_bytes += packed;
 	}
 	missing = (uint64_t)(configuration->logical_page_count - configuration->physical_page_count);
@@ -159,7 +164,7 @@ static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const Spar
 	table->arena_configuration.resident_block_capacity = binding->physical_page_count;
 	table->arena_configuration.layer_count = binding->regions[0].layer_count;
 	table->arena_configuration.kv_head_count = configuration->arena_kv_head_count;
-	table->arena_configuration.head_dim = configuration->arena_head_dim;
+	table->arena_configuration.head_dim = configuration->arena_head_dim / (SparkStageKvBindingContextSharded(configuration) != 0u ? configuration->context_shard.degree : 1u);
 	table->arena_configuration.bytes_per_scalar = configuration->arena_bytes_per_scalar;
 	table->arena_configuration.key_device_base = binding->region_base[0];
 	table->arena_configuration.key_block_stride_bytes = binding->region_packed_page_bytes[0];
@@ -193,7 +198,7 @@ static void SparkStageKvBindingFillTable(SparkStageKvBinding *binding,const Spar
 	table->entry_indices_by_logical_page = binding->entry_indices_by_logical_page;
 	table->model_id = configuration->model_id;
 	table->model_revision = configuration->model_revision;
-	table->cache_layout_fingerprint = configuration->layout_fingerprint;
+	table->cache_layout_fingerprint = binding->layout_fingerprint;
 }
 
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
@@ -201,6 +206,7 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	SparkKvModelTable table;
 	uint64_t lane_entries;
 	uint32_t region;
+	int written;
 	SparkStatus status;
 	cudaError_t error;
 	if ( binding == 0 || configuration == 0 || configuration->ledger == 0 || configuration->module_tag == 0 || configuration->block_token_count == 0u || configuration->region_count == 0u ||
@@ -221,9 +227,11 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->resident_sequence_capacity = configuration->resident_sequence_capacity;
 	binding->max_sequence_positions = configuration->max_sequence_positions;
 	binding->pipeline_slot_count = configuration->pipeline_slot_count;
-	binding->owner_rank = configuration->owner_rank;
-	binding->owner_count = configuration->owner_count;
-	if ( binding->owner_count > 1u && binding->owner_rank >= binding->owner_count )
+	binding->context_shard = configuration->context_shard;
+	written = SparkStageKvBindingContextSharded(configuration) != 0u ?
+		snprintf(binding->layout_fingerprint,sizeof(binding->layout_fingerprint),"%s-shard%ur%u",configuration->layout_fingerprint,configuration->context_shard.degree,configuration->context_shard.rank) :
+		snprintf(binding->layout_fingerprint,sizeof(binding->layout_fingerprint),"%s",configuration->layout_fingerprint);
+	if ( written < 0 || (size_t)written >= sizeof(binding->layout_fingerprint) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageKvBindingGeometry(binding,configuration);
 	if ( status != SPARK_STATUS_OK )
@@ -254,8 +262,9 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	if ( pthread_mutex_init(&binding->mutex,0) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	binding->mutex_initialized = 1u;
-	fprintf(stderr,"%s kv binding logical_pages=%u physical_pages=%u pages_per_sequence=%u page_bytes=%llu regions=%u\n",
-		binding->module_tag,binding->logical_page_count,binding->physical_page_count,binding->pages_per_sequence,(unsigned long long)binding->page_bytes,binding->region_count);
+	fprintf(stderr,"%s kv binding logical_pages=%u physical_pages=%u pages_per_sequence=%u page_bytes=%llu regions=%u context_shard=%u/%u layout=%s\n",
+		binding->module_tag,binding->logical_page_count,binding->physical_page_count,binding->pages_per_sequence,(unsigned long long)binding->page_bytes,binding->region_count,
+		binding->context_shard.degree > 1u ? binding->context_shard.rank : 0u,binding->context_shard.degree > 1u ? binding->context_shard.degree : 1u,binding->layout_fingerprint);
 	return(SPARK_STATUS_OK);
 }
 
@@ -281,46 +290,21 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->lane_bound);
 	free(binding->lane_sequence_ids);
 	free(binding->lane_next_positions);
-	free(binding->owned_lanes);
-	free(binding->owned_slots);
 	if ( binding->mutex_initialized != 0u )
 		(void)pthread_mutex_destroy(&binding->mutex);
 	memset(binding,0,sizeof(*binding));
 }
 
-static uint32_t SparkStageKvBindingFilterLanes(SparkStageKvBinding *binding,const SparkModelDriverCacheLane *lanes,uint32_t count)
-{
-	uint32_t lane,owned = 0u;
-	for (lane=0u; lane<count && owned<binding->resident_sequence_capacity; lane++)
-		if ( SparkStageKvBindingOwns(binding,lanes[lane].resident_sequence_slot) != 0u )
-			binding->owned_lanes[owned++] = lanes[lane];
-	return(owned);
-}
-
-static uint32_t SparkStageKvBindingFilterSlots(SparkStageKvBinding *binding,const uint32_t *slots,uint32_t count)
-{
-	uint32_t lane,owned = 0u;
-	for (lane=0u; lane<count && owned<binding->resident_sequence_capacity; lane++)
-		if ( SparkStageKvBindingOwns(binding,slots[lane]) != 0u )
-			binding->owned_slots[owned++] = slots[lane];
-	return(owned);
-}
-
 SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
 {
-	SparkModelDriverAdmissionRequest owned;
 	SparkStatus status;
 	uint32_t lane;
 	if ( binding == 0 || request == 0 || decision == 0 || binding->mutex_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pthread_mutex_lock(&binding->mutex) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	owned = *request;
-	owned.cache_lanes = binding->owned_lanes;
-	owned.cache_lane_count = SparkStageKvBindingFilterLanes(binding,request->cache_lanes,request->cache_lane_count);
-	owned.active_slot_count = owned.cache_lane_count;
-	status = binding->control_generation != 0u && binding->control_generation != request->control_generation ? SPARK_STATUS_VALIDATION_FAILED :
-		owned.cache_lane_count == 0u && request->cache_lane_count != 0u ? SPARK_STATUS_OK : SparkKvLaneTransactionsAdmit(&binding->transactions,&owned);
+	status = binding->control_generation != 0u && binding->control_generation != request->control_generation ?
+		SPARK_STATUS_VALIDATION_FAILED : SparkKvLaneTransactionsAdmit(&binding->transactions,request);
 	if ( status == SPARK_STATUS_OK )
 		binding->control_generation = request->control_generation;
 	if ( status == SPARK_STATUS_OK && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
@@ -424,20 +408,7 @@ static uint32_t SparkStageKvPrefixRestorePending(const SparkKvLaneTransaction *o
 	return(owner != 0 && (owner->mutation_flags & SPARK_KV_PAGE_CACHE_MUTATION_BOUND_SEQUENCE) != 0u && (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u && owner->lane.sequence_position != 0u);
 }
 
-static uint32_t SparkStageKvFrameRestores(const SparkModelDriverFrame *frame,uint32_t slot,uint64_t sequence_id,uint64_t position)
-{
-	uint32_t lane;
-	for (lane=0u; frame != 0 && frame->cache_lanes != 0 && lane<frame->cache_lane_count; lane++)
-	{
-		const SparkModelDriverCacheLane *cache_lane = &frame->cache_lanes[lane];
-		if ( cache_lane->resident_sequence_slot == slot )
-			return((cache_lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) != 0u && cache_lane->prefix_token_count != 0u &&
-				cache_lane->sequence_id == sequence_id && cache_lane->sequence_position == position && position != 0u ? 1u : 0u);
-	}
-	return(0u);
-}
-
-static SparkStatus SparkStageKvBindingLoadContinuity(const SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+static SparkStatus SparkStageKvBindingLoadContinuity(const SparkStageKvBinding *binding,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	const SparkKvLaneTransaction *owner;
 	uint32_t lane,slot;
@@ -450,16 +421,6 @@ static SparkStatus SparkStageKvBindingLoadContinuity(const SparkStageKvBinding *
 		sequence_ids[lane] = atomic_load_explicit(&binding->lane_sequence_ids[slot],memory_order_acquire);
 		next_positions[lane] = atomic_load_explicit(&binding->lane_next_positions[slot],memory_order_acquire);
 		owner = &binding->lanes[slot];
-		if ( SparkStageKvBindingOwns(binding,slot) == 0u )
-		{
-			if ( SparkStageKvFrameRestores(frame,slot,row_sequence_ids[lane],row_positions[lane]) != 0u )
-			{
-				bound[lane] = 1u;
-				sequence_ids[lane] = row_sequence_ids[lane];
-				next_positions[lane] = row_positions[lane];
-			}
-			continue;
-		}
 		if ( SparkStageKvPrefixRestorePending(owner) == 0u )
 			continue;
 		if ( owner->phase != SPARK_KV_LANE_TRANSACTION_COMMITTED || owner->lane.sequence_id != row_sequence_ids[lane] || owner->lane.sequence_position != row_positions[lane] )
@@ -505,14 +466,14 @@ static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *b
 	SPARK_RETURN(status);
 }
 
-SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,const SparkModelDriverFrame *frame,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	SparkStatus status;
 	if ( binding == 0 || lane_states == 0 || row_resident_slots == 0 || row_sequence_ids == 0 || row_positions == 0 || bound == 0 || sequence_ids == 0 || next_positions == 0 || row_count < active_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pthread_mutex_lock(&binding->mutex) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	status = SparkStageKvBindingLoadContinuity(binding,frame,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
+	status = SparkStageKvBindingLoadContinuity(binding,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingRowContinuity(binding,lane_states,row_count,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
 	(void)pthread_mutex_unlock(&binding->mutex);
@@ -533,13 +494,7 @@ SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkMod
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	if ( pthread_mutex_lock(&binding->mutex) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	{
-		SparkModelDriverFrame owned = *frame;
-		owned.cache_lanes = binding->owned_lanes;
-		owned.cache_lane_count = SparkStageKvBindingFilterLanes(binding,frame->cache_lanes,frame->cache_lane_count);
-		owned.active_slot_count = owned.cache_lane_count;
-		status = owned.cache_lane_count == 0u ? SPARK_STATUS_OK : SparkKvLaneTransactionsClaim(&binding->transactions,&owned);
-	}
+	status = SparkKvLaneTransactionsClaim(&binding->transactions,frame);
 	(void)pthread_mutex_unlock(&binding->mutex);
 	SPARK_RETURN(status);
 }
@@ -556,8 +511,6 @@ SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,con
 		resident = resident_slots[lane];
 		if ( resident >= binding->resident_sequence_capacity || binding->lanes[resident].page_count > binding->pages_per_sequence )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( SparkStageKvBindingOwns(binding,resident) == 0u )
-			continue;
 		offset = (uint64_t)resident * binding->pages_per_sequence;
 		bytes = (uint64_t)binding->lanes[resident].page_count * sizeof(uint32_t);
 		if ( memcmp(binding->page_table_shadow + offset,binding->physical_pages + offset,(size_t)bytes) == 0 )
@@ -578,10 +531,7 @@ SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pthread_mutex_lock(&binding->mutex) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	{
-		uint32_t owned = SparkStageKvBindingFilterSlots(binding,resident_slots,lane_count);
-		result = owned == 0u ? status : SparkKvLaneTransactionsFinish(&binding->transactions,binding->owned_slots,owned,status,extra_tokens);
-	}
+	result = SparkKvLaneTransactionsFinish(&binding->transactions,resident_slots,lane_count,status,extra_tokens);
 	for (lane=0u; lane<lane_count; lane++)
 	{
 		resident = resident_slots[lane];
@@ -602,9 +552,8 @@ SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_
 
 static SparkStatus SparkStageKvBindingPublishLanes(SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,const uint32_t *indices)
 {
-	SparkModelDriverFrame owned;
 	SparkStatus status = SPARK_STATUS_OK;
-	uint32_t lane,resident,owned_slots;
+	uint32_t lane,resident;
 	if ( pthread_mutex_lock(&binding->mutex) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for (lane=0u; lane<frame->cache_lane_count && status==SPARK_STATUS_OK; lane++)
@@ -619,19 +568,9 @@ static SparkStatus SparkStageKvBindingPublishLanes(SparkStageKvBinding *binding,
 			status = SPARK_STATUS_VALIDATION_FAILED;
 	}
 	if ( status == SPARK_STATUS_OK )
-	{
-		owned = *frame;
-		owned.cache_lanes = binding->owned_lanes;
-		owned.cache_lane_count = SparkStageKvBindingFilterLanes(binding,frame->cache_lanes,frame->cache_lane_count);
-		owned.active_slot_count = owned.cache_lane_count;
-		owned_slots = SparkStageKvBindingFilterSlots(binding,indices,frame->cache_lane_count);
-		if ( owned.cache_lane_count != 0u )
-		{
-			status = SparkKvLaneTransactionsClaim(&binding->transactions,&owned);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkKvLaneTransactionsFinish(&binding->transactions,binding->owned_slots,owned_slots,SPARK_STATUS_OK,0u);
-		}
-	}
+		status = SparkKvLaneTransactionsClaim(&binding->transactions,frame);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvLaneTransactionsFinish(&binding->transactions,indices,frame->cache_lane_count,SPARK_STATUS_OK,0u);
 	(void)pthread_mutex_unlock(&binding->mutex);
 	SPARK_RETURN(status);
 }

@@ -386,7 +386,6 @@ static const SparkModelServingAdapterDescriptor SparkDsv4ServingDescriptor =
 static const SparkTpCollectiveConfigPolicy SparkDsv4ServingTpCollectivePolicy =
 {
 	.peer_count = SPARK_DSV4_SERVING_STAGE_COUNT,
-	.allow_zero_collective_identifier = 0u,
 	.require_contiguous_peer_ports = 1u,
 	.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_FULL_KNOWN_SET,
 	.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ORDERED_NONZERO

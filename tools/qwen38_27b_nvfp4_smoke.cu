@@ -1,14 +1,3 @@
-// NVFP4 dense-linear smoke gate for the qwen38_27b module paths.
-//
-// Loads the FFN gate entry from a wire-8 TP4 rank pack and runs the
-// shared SparkLmHostLaunchBatchedLinear path at two batch sizes (the
-// small GEMV kernel at rows<16 and the tile pipeline at rows>=16),
-// comparing both against a host dequant of the SAME pack bytes:
-//   W = e2m1(nibble) * e4m3(plane_byte) * weight_global(segment tail - 4)
-// Verdict is the exit code. Build on an sm_121 node:
-//   nvcc -std=c++17 -O3 --expt-relaxed-constexpr -gencode arch=compute_121a,code=sm_121a \
-//     -I<repo> -I<repo>/model-families/common/include \
-//     tools/qwen38_27b_nvfp4_smoke.cu -o /tmp/q27b_nvfp4_smoke
 
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
@@ -160,12 +149,9 @@ int main(int argc, char **argv)
 		fprintf(stderr,"SMOKE segment read failed\\n");
 		return(2);
 	}
-	// Host dequant of the first neurons' rows + the reference dots.
 	{
 		uint64_t plane_bytes = (uint64_t)gate_rows * (gate_cols / 16u);
 		float weight_global;
-		/* the dense segment = [plane][global F32]: the global is the
-		 * LAST 4 bytes (no input scale in the a16 layout). */
 		memcpy(&weight_global,scale_host + plane_bytes,4u);
 		printf("SMOKE weight_global = %.6g\\n",weight_global);
 		gate_matrix = (float *)malloc((uint64_t)gate_rows * gate_cols * sizeof(float));
@@ -204,7 +190,6 @@ int main(int argc, char **argv)
 		cudaMemcpy(input_dev,input_bf16,(uint64_t)rows * gate_cols * 2u,cudaMemcpyHostToDevice);
 		free(input_bf16);
 	}
-	// LEG 1: the small GEMV kernel (rows < SPARK_LM_TILE).
 	{
 		__nv_bfloat16 *saved = (__nv_bfloat16 *)malloc((uint64_t)rows * gate_cols * 2u);
 		cudaMemcpy(saved,input_dev,(uint64_t)rows * gate_cols * 2u,cudaMemcpyDeviceToHost);
@@ -227,7 +212,6 @@ int main(int argc, char **argv)
 		free(saved);
 		free(four);
 	}
-	// LEG 2: the tile pipeline (rows >= SPARK_LM_TILE).
 	{
 		error = SparkLmHostLaunchBatchedLinear<32u>(0,SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1,
 			payload_dev,scale_dev,input_dev,output_dev,rows,gate_cols,gate_rows);

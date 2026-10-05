@@ -372,7 +372,6 @@ static const SparkModelServingAdapterDescriptor SparkQwen38_27bServingDescriptor
 static const SparkTpCollectiveConfigPolicy SparkQwen38_27bServingTpCollectivePolicy =
 {
 	.peer_count = SPARK_QWEN38_27B_SERVING_TP_DEGREE,
-	.allow_zero_collective_identifier = 1u,
 	.require_contiguous_peer_ports = 1u,
 	.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_TREE_ONLY,
 	.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_ZERO_REQUIRED,

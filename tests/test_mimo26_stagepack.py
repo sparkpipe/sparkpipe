@@ -7,8 +7,9 @@ packer test does), then drives emit -> assemble -> verify for both ranks of
 TP2 and checks the properties a shape table cannot see:
 
   * every payload and scale plane is byte-exact against the source (verify),
-    including the fused-qkv q/k/v section split, the upstream scale-grid row
-    padding (fixture pads the grid like the real pro arm), kv replication,
+    including the fused-qkv rank segments of the TP-interleaved source and
+    their per-rank padded scale blocks (the real grids: 4 x 27 = 108 flash
+    full rows), and a fused-order grid failing closed,
     vocab row slicing and the per-rank disjoint expert slabs
   * the two ranks' expert slabs cover disjoint expert ids and together cover
     every expert exactly once
@@ -33,14 +34,15 @@ sys.path.insert(0, str(ROOT / "tools"))
 import mimo26_stagepack as packer  # noqa: E402
 
 MINI = dict(
-    hidden=256, layers=5, heads=8, head_dim=64, v_head_dim=64,
+    hidden=256, layers=5, heads=4, head_dim=64, v_head_dim=128,
     kv_full=2, kv_swa=2, vocab=512, dense_inter=512,
     experts=8, experts_per_token=2, expert_inter=128,
-    swa_window=8, default_tp=2,
+    swa_window=8, default_tp=2, qkv_interleave=2,
 )
 HYBRID = [0, 1, 1, 0, 1]     # full at 0 and 3
 MOE_FREQ = [0, 1, 1, 1, 1]   # dense layer 0
-GRID_PAD_ROWS = 2            # the fixture pads fused scale grids (pro: 212->216)
+RANK_ROWS = 2 * 64 + 1 * (64 + 128)
+RANK_BLOCKS = -(-RANK_ROWS // 128)
 
 
 def kv_heads(layer: int) -> int:
@@ -58,10 +60,10 @@ def build_checkpoint(directory: Path) -> dict:
     for layer in range(g["layers"]):
         kv = kv_heads(layer)
         qkv_rows = g["heads"] * g["head_dim"] + kv * g["head_dim"] + kv * g["v_head_dim"]
+        assert qkv_rows == 2 * RANK_ROWS
         module = f"model.layers.{layer}.self_attn.qkv_proj"
         add(module + ".weight", "F8_E4M3", [qkv_rows, g["hidden"]])
-        add(module + ".weight_scale_inv", "F32",
-            [qkv_rows // 128 + GRID_PAD_ROWS, g["hidden"] // 128])
+        add(module + ".weight_scale_inv", "F32", [2 * RANK_BLOCKS, g["hidden"] // 128])
         add(f"model.layers.{layer}.self_attn.o_proj.weight", "BF16",
             [g["hidden"], g["heads"] * g["v_head_dim"]])
         add(f"model.layers.{layer}.input_layernorm.weight", "BF16", [g["hidden"]])
@@ -171,6 +173,24 @@ def check_dense_slices(checkpoint: Path, pack: Path, rank: int, entries: list) -
         assert scale == source_bytes(checkpoint, name + "_scale_inv", rank * blocks * 4, entry[9])
 
 
+def check_qkv_segments(checkpoint: Path, pack: Path, rank: int, entries: list) -> None:
+    assert 2 * RANK_BLOCKS != -(-2 * RANK_ROWS // 128)
+    grid_columns = MINI["hidden"] // 128
+    qkv = [e for e in entries if e[0] == packer.KIND_QKV]
+    assert [e[1] for e in qkv] == list(range(MINI["layers"])), qkv
+    for entry in qkv:
+        assert entry[2:5] == (packer.WEIGHT_FP8_E4M3_F32B128, RANK_ROWS, MINI["hidden"]), entry
+        assert (entry[7], entry[9]) == (RANK_ROWS * MINI["hidden"], RANK_BLOCKS * grid_columns * 4), entry
+        name = f"model.layers.{entry[1]}.self_attn.qkv_proj.weight"
+        with open(pack, "rb") as file:
+            file.seek(entry[6])
+            payload = file.read(entry[7])
+            file.seek(entry[8])
+            scale = file.read(entry[9])
+        assert payload == source_bytes(checkpoint, name, rank * RANK_ROWS * MINI["hidden"], entry[7])
+        assert scale == source_bytes(checkpoint, name + "_scale_inv", rank * RANK_BLOCKS * grid_columns * 4, entry[9])
+
+
 class Args:
     def __init__(self, **kw):
         self.arm = "pro"
@@ -227,6 +247,7 @@ def main() -> int:
                             else MINI["hidden"]) for e in slabs)
             assert (packer.KIND_SINK_BIAS, ) not in kinds
             check_dense_slices(tmp / "ckpt", out, rank, entries)
+            check_qkv_segments(tmp / "ckpt", out, rank, entries)
             expert_bytes.append(sum(e[3] * e[4] // 2 for e in entries
                                     if e[0] in (packer.KIND_EXPERT_GATE,
                                                 packer.KIND_EXPERT_UP,
@@ -275,6 +296,29 @@ def main() -> int:
                                    out=str(packs[0]), stage_dir=str(stage))) == 0
         assert victim.exists() and victim.stat().st_size > 0
         assert survivor.stat().st_mtime_ns == before
+
+        fused_grid = tmp / "ckpt_fused_grid"
+        shutil.copytree(ckpt, fused_grid)
+        index = json.loads((fused_grid / "model.safetensors.index.json").read_text())
+        scale_name = "model.layers.0.self_attn.qkv_proj.weight_scale_inv"
+        with open(fused_grid / index["weight_map"][scale_name], "r+b") as file:
+            (n,) = struct.unpack("<Q", file.read(8))
+            header = json.loads(file.read(n))
+            header[scale_name]["shape"] = [-(-2 * RANK_ROWS // 128), MINI["hidden"] // 128]
+            blob = json.dumps(header).encode().ljust(n)
+            file.seek(8)
+            file.write(blob)
+        try:
+            packer.do_verify(Args(checkpoint=str(fused_grid), tp=2, rank=0, out=str(packs[0])))
+            raise AssertionError("a fused-order qkv scale grid verified")
+        except packer.PackFailure as failure:
+            assert "rank segments" in str(failure), failure
+
+        try:
+            packer.build_plan("pro", json.loads((ckpt / "config.json").read_text()), 4, 0)
+            raise AssertionError("a tp that is not the qkv interleave planned")
+        except packer.PackFailure:
+            pass
 
         index = json.loads((ckpt / "model.safetensors.index.json").read_text())
         expert = "model.layers.1.mlp.experts.0.gate_proj.weight"

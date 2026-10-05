@@ -1,0 +1,2 @@
++16
+mimo26 packer: column-window planes (o_proj of all 48 layers, dense down payload and scale) are copied row by row at their stride with a scale-window bound check, and --repair-windows rewrites those records of an existing pack in place and re-verifies them.

@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_hybrid_state.h"
 #include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/family/module/spark_module_tp_collective_required.h"
 #include "sparkpipe/spark_stage_module_lifecycle.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_tp_mesh_register.h"
@@ -178,7 +179,7 @@ static SparkStatus SparkGemma4ModuleConfigureTp(SparkGemma4ModuleState *state)
 #endif
 	state->sliding_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_SLIDING_KV_HEAD_COUNT,state->tp_degree);
 	state->full_kv_heads_per_rank = SparkGemma4StagePackKvHeadsPerRank(SPARK_GEMMA4_MODEL_FULL_KV_HEAD_COUNT,state->tp_degree);
-	status = SparkStageModuleEnvironmentUnsignedOrDefault(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",0u,1u,0u,&state->tp_standalone);
+	status = SparkModuleTpStandalone(SPARK_GEMMA4_MODULE_TAG,"SPARK_GEMMA4_TP_STANDALONE",state->tp_degree,&state->tp_standalone);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	{
@@ -613,11 +614,6 @@ static SparkStatus SparkGemma4ModuleAllocateSlot(SparkGemma4ModuleState *state, 
 	uint64_t rows = state->max_input_row_count;
 	uint64_t hidden_bytes = rows * SPARK_GEMMA4_MODEL_HIDDEN_DIMENSION * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t sliding_query_bytes = rows * ((SPARK_GEMMA4_MODEL_SLIDING_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
-	/* sliding K and V live in SEPARATE buffers (rows x kv_per_rank x dim each):
-	   the fused per-row [K|V] layout cannot be head-normed, roped or stored by
-	   the head-strided kernels - the head-norm/store row stride is
-	   heads*head_dimension, which addressed row r's V (and roped it) as row
-	   r+1's K, corrupting every decode row past the first. */
 	uint64_t sliding_kv_bytes = rows * (state->sliding_kv_heads_per_rank * SPARK_GEMMA4_MODEL_SLIDING_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t full_query_bytes = rows * ((SPARK_GEMMA4_MODEL_FULL_QUERY_HEAD_COUNT / state->tp_degree) * SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;
 	uint64_t full_kv_bytes = rows * (state->full_kv_heads_per_rank * SPARK_GEMMA4_MODEL_FULL_HEAD_DIMENSION) * SPARK_GEMMA4_MODEL_BF16_ELEMENT_BYTES;

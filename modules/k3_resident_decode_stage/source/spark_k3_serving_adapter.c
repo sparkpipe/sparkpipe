@@ -84,10 +84,6 @@ typedef struct SparkK3ServingState
 	char *pack_path;
 	uint32_t max_rows;
 	SparkTpDeviceCollectiveConfig device_config;
-	/* Shared mesh-lane owner: ONE connection acquires the lane, then BOTH
-	 * width-matched collectives LaneBind to it (band 0 / band 1). A lane
-	 * has a single owner connection on the daemon, so two independent
-	 * acquires of the same lane are NO_LANE (the cold19 finding). */
 	SparkWeightdClient *lane_client;
 	SparkTpDeviceCollectiveConfig device_config_wide;
 	SparkTpDeviceCollectiveTopology device_topology;
@@ -270,9 +266,6 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 			state->device_config.operation_kind =
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 			state->device_config.credit_count = 8u;
-			/* Band-0 "hidden" collective: every ALL_REDUCE on it moves
-			 * rows x this width, so it must be exactly the hidden width
-			 * (the old 3x setting was the cold16 width-contract bug). */
 			state->device_config.local_hidden_dimension = hidden;
 			state->device_config.max_active_sequence_count =
 				state->runner_config.max_input_row_count;
@@ -382,10 +375,6 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 		if ( SparkTpDeviceCollectiveApplyTopology(&state->device_topology,
 			&state->device_config) != SPARK_STATUS_OK )
 			{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
-		/* One shared lane owner for BOTH collectives (glm5_next pattern):
-		 * acquire the mesh lane once here, then each collective binds to
-		 * its own band of that lane at create. Two independent acquires
-		 * of the same lane are NO_LANE on the daemon (cold19). */
 		{
 			const char *socket = getenv("SPARK_WEIGHTD_SOCKET");
 			const char *lane_text = getenv("SPARK_WEIGHTD_LANE");
@@ -431,12 +420,6 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 			state->device_config.mesh_lane_client = state->lane_client;
 		}
 		state->runner_config.device_collective = &state->device_config;
-		/* Band-1 "wide" collective for the fused gate_up reduce: same
-		 * topology and shared lane owner, its own width (rows x top_k x 2
-		 * x expert intermediate per reduce), its own mesh band, control
-		 * port and collective identity. glm5_next established the
-		 * derived-second-config pattern; the widths are cross-checked
-		 * fail-closed in SparkK3StageRunnerInitialize. */
 		state->device_config_wide = state->device_config;
 		state->device_config_wide.local_hidden_dimension =
 			SPARK_K3_MODEL_MOE_TOP_K *

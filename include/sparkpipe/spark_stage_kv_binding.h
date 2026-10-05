@@ -8,6 +8,7 @@
 #include "sparkpipe/spark_kv_model_table.h"
 #include "sparkpipe/spark_kv_page_cache.h"
 #include "sparkpipe/spark_kv_page_store.h"
+#include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_status.h"
@@ -15,6 +16,7 @@
 #define SPARK_STAGE_KV_REGION_PAGE_MAJOR 1u
 #define SPARK_STAGE_KV_REGION_LAYER_MAJOR 2u
 #define SPARK_STAGE_KV_MAX_REGIONS 2u
+#define SPARK_STAGE_KV_FINGERPRINT_BYTES 160u
 
 typedef struct SparkStageKvRegion
 {
@@ -43,8 +45,7 @@ typedef struct SparkStageKvConfiguration
 	uint32_t logical_page_count;
 	uint32_t physical_page_count;
 	uint32_t pipeline_slot_count;
-	uint32_t owner_rank;
-	uint32_t owner_count;
+	SparkKvShard context_shard;
 	const char *backing_directory;
 	uint64_t backing_maximum_bytes;
 } SparkStageKvConfiguration;
@@ -60,10 +61,8 @@ typedef struct SparkStageKvBinding
 	uint32_t resident_sequence_capacity;
 	uint32_t max_sequence_positions;
 	uint32_t pipeline_slot_count;
-	uint32_t owner_rank;
-	uint32_t owner_count;
-	SparkModelDriverCacheLane *owned_lanes;
-	uint32_t *owned_slots;
+	SparkKvShard context_shard;
+	char layout_fingerprint[SPARK_STAGE_KV_FINGERPRINT_BYTES];
 	SparkStageKvRegion regions[SPARK_STAGE_KV_MAX_REGIONS];
 	uint8_t *region_base[SPARK_STAGE_KV_MAX_REGIONS];
 	uint64_t region_packed_page_bytes[SPARK_STAGE_KV_MAX_REGIONS];
@@ -99,14 +98,14 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding);
 SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision);
 SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t generation);
 SparkStatus SparkStageKvBindingAdmitReset(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision,atomic_uint *slot_states,atomic_uint *lane_states,void *stream);
-SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,const SparkModelDriverFrame *frame,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions);
+SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions);
 SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *next_positions);
 SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
 SparkStatus SparkStageKvBindingFinish(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkStatus status,uint32_t extra_tokens,const uint8_t *bound,const uint64_t *sequence_ids,const uint64_t *next_positions);
 SparkStatus SparkStageKvBindingPublishFrame(SparkStageKvBinding *binding,SparkModelDriverFrame *frame,atomic_uint *lane_states);
 uint32_t SparkStageKvBindingResidentCount(const SparkStageKvBinding *binding);
 
-static inline uint32_t SparkStageKvBindingOwns(const SparkStageKvBinding *binding,uint32_t resident_slot)
+static inline uint32_t SparkStageKvBindingContextSharded(const SparkStageKvConfiguration *configuration)
 {
-	return(binding->owner_count <= 1u || resident_slot % binding->owner_count == binding->owner_rank ? 1u : 0u);
+	return(configuration->context_shard.degree > 1u ? 1u : 0u);
 }

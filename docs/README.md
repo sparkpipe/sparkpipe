@@ -33,8 +33,14 @@ current authority.
 
 ## Implementation contracts
 
+- [`INTERFACE_CONTRACTS.md`](INTERFACE_CONTRACTS.md): caller-visible
+  contracts of the shared headers (hidden transport, KV cache, page cache
+  and page store, serving adapter, stagepack formats, TP chain ordinals,
+  device collective) and of the host RDMA capability set and the batch
+  engine failure circuit.
 - [`WEIGHTD_DESIGN.md`](WEIGHTD_DESIGN.md): weightd daemon, production
-  ownership, lanes, expert residency. Its
+  ownership, lanes, expert residency, client API contracts, daemon
+  internals and operator tools. Its
   [Mesh substrate and rendezvous](WEIGHTD_DESIGN.md#mesh-substrate-and-rendezvous)
   section is the TP transport contract.
 - [`WEIGHTD_SUPERVISED_STARTUP.md`](WEIGHTD_SUPERVISED_STARTUP.md):
@@ -95,6 +101,9 @@ current authority.
 
 ## Operations and development
 
+- [`TOOL_REFERENCE.md`](TOOL_REFERENCE.md): purpose, usage and exit codes
+  of the standalone C and CUDA tools (hy4 host references and GPU tests,
+  mesh registration repros, NVFP4 smokes).
 - [`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md): the single
   production fleet guide (hub, fleet-agent, releases, g53-api, bootstrap,
   triage). This is the release and operations procedure.

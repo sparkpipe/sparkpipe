@@ -395,7 +395,6 @@ static SparkStatus SparkTpCollectiveLoadBackend(
 	const SparkJsonDocument *document,
 	int32_t object,
 	const char *runtime_root,
-	const SparkTpCollectiveConfigPolicy *policy,
 	SparkTpCollectiveAdapterConfig *config)
 {
 	int32_t token;
@@ -432,8 +431,7 @@ static SparkStatus SparkTpCollectiveLoadBackend(
 		"collective_identifier");
 	status = token < 0 ? SPARK_STATUS_SCHEMA_ERROR :
 		SparkJsonGetUInt64(document,token,&collective_identifier);
-	if ( status != SPARK_STATUS_OK || (collective_identifier == 0u &&
-		policy->allow_zero_collective_identifier == 0u) )
+	if ( status != SPARK_STATUS_OK || collective_identifier == 0u )
 		return(status == SPARK_STATUS_OK ? SPARK_STATUS_SCHEMA_ERROR : status);
 	config->collective_identifier = collective_identifier;
 	status = SparkServingAdapterTemplateJsonUnsigned(document,object,
@@ -493,7 +491,7 @@ SparkStatus SparkServingAdapterTemplateLoadTpCollective(
 		!SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	status = SparkTpCollectiveLoadBackend(document,object,runtime_root,
-		policy,config);
+		config);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpCollectiveLoadPeerHosts(document,object,policy,config);
 	if ( status == SPARK_STATUS_OK )

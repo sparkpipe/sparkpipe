@@ -1,5 +1,3 @@
-// Synthetic fixture probe, not a model pack producer. Failure terminates the
-// consumer process; never release an uncertain GPU lease merely to clean up.
 #define _POSIX_C_SOURCE 200809L
 #include <stdint.h>
 #include <stdio.h>

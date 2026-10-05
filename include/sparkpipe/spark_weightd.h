@@ -76,6 +76,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED_RESULT 38u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP 39u
 #define SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP_RESULT 40u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_STATUS 41u
+#define SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT 42u
 #define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
@@ -126,6 +128,7 @@ extern "C" {
 #define SPARK_WEIGHTD_MESH_WAIT_SHIPPED 1u
 #define SPARK_WEIGHTD_MESH_WAIT_PEERS 2u
 #define SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED UINT64_C(0xFFFFFFFFFE000000)
+#define SPARK_WEIGHTD_MESH_WAIT_ERROR_PEER_RESET UINT64_C(0xFFFFFFFFFD000000)
 #define SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES 128u
 #define SPARK_WEIGHTD_MESH_WAIT_OFFSET \
     (SPARK_WEIGHTD_MESH_SHIPPED_OFFSET + \
@@ -537,6 +540,119 @@ typedef struct SparkWeightdIpcMeshBroadcastResult
     uint32_t posted_count;
 } SparkWeightdIpcMeshBroadcastResult;
 
+#define SPARK_WEIGHTD_MESH_STATUS_LAYOUT 1u
+#define SPARK_WEIGHTD_MESH_STATUS_LAYOUT_COMPAT 1u
+#define SPARK_WEIGHTD_MESH_STATUS_COUNTERS 12u
+#define SPARK_WEIGHTD_MESH_STATE_DISABLED 0u
+#define SPARK_WEIGHTD_MESH_STATE_WIRING 1u
+#define SPARK_WEIGHTD_MESH_STATE_READY 2u
+#define SPARK_WEIGHTD_MESH_PEER_ABSENT 0u
+#define SPARK_WEIGHTD_MESH_PEER_SELF 1u
+#define SPARK_WEIGHTD_MESH_PEER_NO_RECORD 2u
+#define SPARK_WEIGHTD_MESH_PEER_RECORD_REJECTED 3u
+#define SPARK_WEIGHTD_MESH_PEER_RECORD_INVALID 4u
+#define SPARK_WEIGHTD_MESH_PEER_WIRE_FAILED 5u
+#define SPARK_WEIGHTD_MESH_PEER_WIRED 6u
+#define SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS 1u
+#define SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS 2u
+#define SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK 4u
+#define SPARK_WEIGHTD_MESH_LANE_CONFIGURED 1u
+#define SPARK_WEIGHTD_MESH_LANE_OWNED 2u
+#define SPARK_WEIGHTD_MESH_LANE_QUARANTINED 4u
+#define SPARK_WEIGHTD_MESH_LANE_BUSY_ACTIVITY 1u
+#define SPARK_WEIGHTD_MESH_LANE_BUSY_RPC 2u
+#define SPARK_WEIGHTD_MESH_LANE_BUSY_BUFFER 3u
+#define SPARK_WEIGHTD_MESH_LANE_BUSY_PENDING 4u
+#define SPARK_WEIGHTD_MESH_LANE_BUSY_WAIT 5u
+#define SPARK_WEIGHTD_MESH_LANE_BUSY_DOORBELL 6u
+#define SPARK_WEIGHTD_MESH_QUERY_ANSWERED 0u
+#define SPARK_WEIGHTD_MESH_QUERY_ABSENT 1u
+#define SPARK_WEIGHTD_MESH_QUERY_UNRESPONSIVE 2u
+#define SPARK_WEIGHTD_MESH_QUERY_UNSERVED 3u
+#define SPARK_WEIGHTD_MESH_QUERY_INCOMPATIBLE 4u
+#define SPARK_WEIGHTD_MESH_QUERY_FAULT 5u
+
+typedef struct SparkWeightdIpcMeshStatus
+{
+    SparkWeightdIpcHeader header;
+    uint32_t layout;
+    uint32_t reserved;
+} SparkWeightdIpcMeshStatus;
+
+typedef struct SparkWeightdMeshPeerStatus
+{
+    uint64_t wired_boot_ns;
+    uint64_t record_boot_ns;
+    uint64_t since_mono_ns;
+    uint64_t last_ok_mono_ns;
+    uint64_t last_err_mono_ns;
+    uint32_t state;
+    uint32_t record_status;
+    uint32_t qp_flags;
+    uint32_t send_pending;
+    uint32_t rpc_pending;
+    uint32_t cq_err_since_ok;
+} SparkWeightdMeshPeerStatus;
+
+typedef struct SparkWeightdMeshLaneStatus
+{
+    uint64_t packed_ranks;
+    uint32_t flags;
+    uint32_t rank_count;
+    uint32_t local_rank;
+    uint32_t physical_mask;
+    uint32_t activity;
+    uint32_t failed_cells;
+    uint32_t pending_cells;
+    uint32_t configure_status;
+    uint32_t busy_reason;
+    uint32_t busy_index;
+} SparkWeightdMeshLaneStatus;
+
+typedef struct SparkWeightdIpcMeshStatusResult
+{
+    SparkWeightdIpcHeader header;
+    uint32_t status;
+    uint32_t layout;
+    uint32_t layout_compat;
+    uint32_t mesh_state;
+    uint32_t pid;
+    uint32_t local_rank;
+    uint32_t rank_mask;
+    uint32_t wired_mask;
+    uint32_t pair_rank;
+    uint32_t reserved0;
+    uint64_t daemon_generation;
+    uint64_t boot_ns;
+    uint64_t mesh_generation;
+    uint64_t now_mono_ns;
+    uint64_t ready_since_mono_ns;
+    uint64_t counters[SPARK_WEIGHTD_MESH_STATUS_COUNTERS];
+    SparkWeightdMeshPeerStatus peers[SPARK_WEIGHTD_MESH_RANKS];
+    SparkWeightdMeshLaneStatus lanes[SPARK_WEIGHTD_MESH_MAX_LANES];
+    uint8_t reserved_tail[2104];
+} SparkWeightdIpcMeshStatusResult;
+
+#if !defined(__cplusplus)
+_Static_assert(sizeof(SparkWeightdIpcMeshStatus) == 32u &&
+    sizeof(SparkWeightdMeshPeerStatus) == 64u &&
+    sizeof(SparkWeightdMeshLaneStatus) == 48u &&
+    sizeof(SparkWeightdIpcMeshStatusResult) == 4096u &&
+    sizeof(SparkWeightdIpcMeshStatusResult) <= SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX,"mesh status frame sizes are fixed for layout 1");
+_Static_assert(offsetof(SparkWeightdIpcMeshStatusResult,status) == 24u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,layout) == 28u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,layout_compat) == 32u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,mesh_state) == 36u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,pid) == 40u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,daemon_generation) == 64u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,boot_ns) == 72u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,mesh_generation) == 80u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,counters) == 104u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,peers) == 200u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,lanes) == 1224u &&
+    offsetof(SparkWeightdIpcMeshStatusResult,reserved_tail) == 1992u,"mesh status layout 1 offsets are fixed");
+#endif
+
 typedef struct SparkWeightdIpcEnsure
 {
     SparkWeightdIpcHeader header;
@@ -652,6 +768,11 @@ typedef struct SparkWeightdServer SparkWeightdServer;
 
 SparkStatus SparkWeightdServerCreate(const SparkWeightdServerConfig *config,
     SparkWeightdServer **server);
+SparkStatus SparkWeightdServerCreateUnbound(const SparkWeightdServerConfig *config,
+    SparkWeightdServer **server);
+SparkStatus SparkWeightdServerListen(SparkWeightdServer *server);
+SparkStatus SparkWeightdMeshStatusFill(SparkWeightdIpcMeshStatusResult *result);
+void SparkWeightdMeshStop(void);
 
 SparkStatus SparkWeightdServerStep(SparkWeightdServer *server);
 
@@ -756,6 +877,17 @@ typedef struct SparkWeightdEnsureResult
 SparkStatus SparkWeightdClientConnect(const char *socket_path,
     SparkWeightdClient **client,
     SparkWeightdHelloResult *hello_out);
+SparkStatus SparkWeightdClientConnectWithin(const char *socket_path,
+    uint64_t timeout_nanoseconds,
+    SparkWeightdClient **client,
+    SparkWeightdHelloResult *hello_out);
+SparkStatus SparkWeightdClientMeshStatus(SparkWeightdClient *client,
+    SparkWeightdIpcMeshStatusResult *result,
+    uint64_t timeout_nanoseconds);
+SparkStatus SparkWeightdMeshStatusQuery(const char *socket_path,
+    uint64_t timeout_nanoseconds,
+    SparkWeightdIpcMeshStatusResult *result,
+    uint32_t *outcome);
 
 void SparkWeightdClientClose(SparkWeightdClient *client);
 uint32_t SparkWeightdClientAlive(const SparkWeightdClient *client);

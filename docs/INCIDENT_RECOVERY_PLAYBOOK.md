@@ -226,7 +226,7 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
 
 **After any single node reboots**
 - The other nodes' weightd keep wiring to its old queue pair: `WD-WIRE-FAIL ... RTR failed errno=22`. Engines then fail with BUSY at collective attach.
-- Fix: run `systemctl --user restart fleet-agent` on all 16 nodes. Wait for `WD-MESH-STATS ... unready=0 ... ready=1` on all of them, then start the engines.
+- Fix: stop the engines, then run `systemctl --user restart sparkpipe-weightd` on the surviving nodes (restarting `fleet-agent` no longer restarts weightd; it runs in its own unit). On every node, wait until `~/sparkdata/core/bin/sparkpipe_mesh_status --socket /tmp/spark_weightd.sock --wait-lane-peers 0xffff --timeout 300` exits 0, then start the engines. Exit 3 lists the ranks still missing.
 
 **IOMMU passthrough on the Lenovo nodes**
 - spark7, spark8 and spark9 boot with `iommu.passthrough=1`, from `/etc/default/grub.d/zz-spark-iommu-passthrough.cfg`. It sorts after the DGX OS `iommu.cfg`, and the kernel uses the last value.

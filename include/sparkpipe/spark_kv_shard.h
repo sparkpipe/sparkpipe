@@ -101,6 +101,40 @@ SPARK_KV_SHARD_FN uint32_t SparkKvShardGatherKeys(SparkKvShard shard,uint32_t ke
 	return(span == 0u ? 0u : (uint32_t)(((uint64_t)keys + span - 1u) / span) * shard.grain);
 }
 
+typedef struct SparkKvShardSectionLayout
+{
+	uint64_t keys;
+	uint64_t slot_bytes;
+	uint64_t chunk_bytes;
+	uint32_t chunk_units;
+	uint32_t chunks;
+}
+SparkKvShardSectionLayout;
+
+SPARK_KV_SHARD_FN SparkKvShardSectionLayout SparkKvShardSectionLayoutBuild(uint64_t keys,uint64_t slot_bytes,uint64_t unit_bytes,uint32_t align_units,uint32_t cap_units)
+{
+	SparkKvShardSectionLayout layout = {keys,slot_bytes,0u,0u,0u};
+	uint64_t units,cap,per;
+	if ( keys == 0u || slot_bytes == 0u || unit_bytes == 0u || align_units == 0u || cap_units < align_units ||
+		((uint64_t)align_units * unit_bytes) % slot_bytes != 0u )
+		return(layout);
+	cap = (uint64_t)cap_units / align_units * align_units;
+	units = (keys * slot_bytes + unit_bytes - 1u) / unit_bytes;
+	units = (units + align_units - 1u) / align_units * align_units;
+	layout.chunks = (uint32_t)((units + cap - 1u) / cap);
+	per = (units + layout.chunks - 1u) / layout.chunks;
+	layout.chunk_units = (uint32_t)((per + align_units - 1u) / align_units * align_units);
+	layout.chunk_bytes = (uint64_t)layout.chunk_units * unit_bytes;
+	return(layout);
+}
+
+SPARK_KV_SHARD_FN uint64_t SparkKvShardSectionSlot(SparkKvShard shard,SparkKvShardSectionLayout layout,uint32_t position)
+{
+	uint64_t byte = (uint64_t)SparkKvShardLocalIndex(shard,position) * layout.slot_bytes;
+	return(((byte / layout.chunk_bytes) * shard.degree + SparkKvShardOwner(shard,position)) * (layout.chunk_bytes / layout.slot_bytes) +
+		byte % layout.chunk_bytes / layout.slot_bytes);
+}
+
 SPARK_KV_SHARD_FN uint32_t SparkKvShardGatherPlan(
 	SparkKvShard shard,
 	const uint32_t *row_sequence,

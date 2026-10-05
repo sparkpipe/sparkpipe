@@ -307,7 +307,6 @@ static SparkStatus SparkGlm5NextServingLoadTpCollective(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&policy,0,sizeof(policy));
 	policy.peer_count = tp_degree;
-	policy.allow_zero_collective_identifier = 1u;
 	policy.require_contiguous_peer_ports = 1u;
 	policy.algorithms = SPARK_TP_COLLECTIVE_ALGORITHMS_ADAPTIVE_COMBOS;
 	policy.thresholds = SPARK_TP_COLLECTIVE_THRESHOLDS_MASK_CONDITIONAL;

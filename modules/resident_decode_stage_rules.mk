@@ -42,6 +42,12 @@ GPU_VALIDATOR ?=
 GPU_VALIDATOR_ARGUMENTS ?=
 
 BUILD_DIRECTORY ?= $(REPOSITORY_ROOT)/build/modules/$(MODULE_FAMILY)_resident_decode_stage
+TP_STANDALONE ?= 0
+MODULE_STANDALONE_DEBUG := $(if $(filter 1,$(TP_STANDALONE)),$(if $(filter 1,$(TP_DEGREE)),,1),)
+ifeq ($(MODULE_STANDALONE_DEBUG),1)
+override BUILD_DIRECTORY := $(BUILD_DIRECTORY)-debug
+override MODULE_COMPILE_FLAGS += -DDEBUG
+endif
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/lib$(MODULE_FAMILY)_resident_decode_stage.a
 MODULE_COMMON_HOST_SOURCES ?= \
 	$(REPOSITORY_ROOT)/runtime/stage_module_common.c
@@ -60,7 +66,7 @@ MODULE_CUDA_OBJECT := $(BUILD_DIRECTORY)/$(subst /,_,$(basename $(MODULE_CUDA_SO
 VALIDATION_CONFIGURATION_SHA256 := $(shell printf '%s\n' '$(RUNTIME_CONFIGURATION)' | sha256sum | awk '{print $$1}')
 VALIDATION_RECIPE ?= $(MODULE_FAMILY).resident_decode_stage.$(CUDA_ARCH).gpu.config_$(VALIDATION_CONFIGURATION_SHA256).v1
 
-.PHONY: all archive contract validate publish adapter clean require_cuda_target require_gpu_validator require_stage_pack variants cold_variants publish_variants
+.PHONY: all archive contract validate publish adapter clean require_release_build require_cuda_target require_gpu_validator require_stage_pack variants cold_variants publish_variants
 
 all: contract
 
@@ -152,7 +158,7 @@ cold_variants:
 # by design: the unflagged archive IS the b1024 build and already publishes
 # under the unbucketed MODULE_IDENTIFIER via the publish target - a second
 # identity for the same bits is noise.
-publish_variants: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_BATCH_VARIANT_ARCHIVES)
+publish_variants: require_release_build require_cuda_target require_stage_pack require_gpu_validator $(MODULE_BATCH_VARIANT_ARCHIVES)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
 	@set -e; \
 		for bucket in $(filter-out 1024,$(MODULE_BATCH_VARIANT_BUCKETS)); do \
@@ -194,13 +200,18 @@ contract:
 
 archive: require_cuda_target $(MODULE_ARCHIVE)
 
+require_release_build:
+	@if [ "$(MODULE_STANDALONE_DEBUG)" = 1 ]; then \
+		echo "MODULE-PUBLISH-REFUSED: TP_STANDALONE=1 at TP_DEGREE=$(TP_DEGREE) is a DEBUG build whose ranks skip the collective; a TP>1 release module is validated with its collective open" >&2; exit 2; \
+	fi
+
 validate: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
 	SPARK_MODULE_BATCH_BUCKET=$(if $(MODULE_BATCH_VARIANT_BUCKETS),1024,0) $(RUNTIME_CONFIGURATION) \
 		$(GPU_VALIDATOR) \
 		$(VALIDATION_CONFIGURATION_SHA256) \
 		$(MODULE_ARCHIVE)
 
-publish: require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
+publish: require_release_build require_cuda_target require_stage_pack require_gpu_validator $(MODULE_ARCHIVE)
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
 	@if test -n "$(MODULE_MESH_KERNELS_MARKER)" && strings $(MODULE_ARCHIVE) 2>/dev/null | grep -Fxq "$(MODULE_MESH_KERNELS_MARKER)"; then \
 		echo "mesh-kernels marker OK"; \

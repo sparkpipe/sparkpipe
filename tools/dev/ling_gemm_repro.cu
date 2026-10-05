@@ -1,5 +1,3 @@
-// standalone dense-GEMM hang repro: rows sweep over the real ling shapes,
-// driving the prebuilt module archive's LingGemmBf16 entry (no device code here)
 #include "inference/kernels/scale.cuh"
 #include <chrono>
 #include <cstdio>

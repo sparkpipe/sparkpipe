@@ -1,16 +1,3 @@
-/* mesh-register EINVAL reproduction (lane 0, glm5_next M3 blocker).
- *
- * a7 failed: cudaHostRegister(mesh memfd mmap, 134283264, PORTABLE|MAPPED)
- * -> cudaErrorInvalidValue, inside SparkTpDeviceCollectivePrepareReceiveBf16
- * (ring/transport/tp_device_collective.c:2061) against the shared release
- * weightd's exported mesh memfd. The PR #1082 campaign passed the same call
- * against a private daemon, so the trigger is environmental. This probe
- * isolates the registration itself: mmap a memfd (the same size/alignment
- * discipline the client uses) and try every alignment/flag combination.
- *
- * build: cc -O2 -I include tools/mesh_register_repro.c -o repro \
- *            -L/usr/local/cuda/lib64 -lcudart
- */
 #include <cuda_runtime.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -20,7 +7,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define REGION_BYTES 134283264ull     /* SPARK_WEIGHTD_MESH_REGION_BYTES */
+#define REGION_BYTES 134283264ull
 
 int memfd = -1;
 

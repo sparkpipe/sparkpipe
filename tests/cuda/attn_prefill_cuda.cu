@@ -212,6 +212,62 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 		printf("FAIL %s: prefill attention error %.2e exceeds the split kernel's %.2e\n",label,worst_prefill,worst_split);
 		probe_failures++;
 	}
+	{
+		typedef LmKvGeometry<ProbeKv::kSlotBytes,1u,true> Remap;
+		const uint32_t total = context * sequence_count,per = (context + 15u) / 16u;
+		std::vector<uint32_t> remap((uint64_t)sequence_count * context);
+		std::vector<uint16_t> remapped_out(query_count * PROBE_LATENT);
+		uint32_t *remap_device;
+		uint8_t *pool_device;
+		LmKvView remap_view;
+		float remap_ms = 0.0f,paged_ms = 0.0f;
+		for (index=0u; index<sequence_count; index++)
+			for (uint32_t key=0u; key<context; key++)
+				remap[(uint64_t)index * context + key] = index * 16u * per + (key % 16u) * per + key / 16u;
+		remap_device = ProbeDevice(remap);
+		PROBE_CUDA(cudaMalloc((void **)&pool_device,(uint64_t)sequence_count * 16u * per * ProbeKv::kSlotBytes));
+		for (index=0u; index<total; index++)
+		{
+			uint32_t owner_sequence = index / context,key = index % context,page_slot = table[owner_sequence * sequence_pages + key / PROBE_PAGE];
+			PROBE_CUDA(cudaMemcpy(pool_device + (uint64_t)remap[index] * ProbeKv::kSlotBytes,cache_device + (uint64_t)page_slot * ProbeKv::kPageBytes + (uint64_t)(key % PROBE_PAGE) * ProbeKv::kSlotBytes,ProbeKv::kSlotBytes,cudaMemcpyDeviceToDevice));
+		}
+		if ( LmKvViewInitialize(&remap_view,pool_device,remap_device,context,sequence_count,sequence_count * 16u * per,error_device) != 0 )
+		{
+			printf("FAIL %s: remap view\n",label);
+			probe_failures++;
+		}
+		PROBE_CUDA((LmLatentAttentionPrefillLaunch<Remap,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,remap_view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0,0u,0)));
+		PROBE_CUDA(cudaDeviceSynchronize());
+		PROBE_CUDA(cudaMemcpy(remapped_out.data(),out_device,remapped_out.size() * 2u,cudaMemcpyDeviceToHost));
+		if ( memcmp(remapped_out.data(),prefill.data(),prefill.size() * 2u) != 0 )
+		{
+			printf("FAIL %s: prefill attention through an owner-interleaved per-position remap differs from the paged result\n",label);
+			probe_failures++;
+		}
+		if ( timing != 0u )
+		{
+			cudaEvent_t a,b;
+			PROBE_CUDA(cudaEventCreate(&a));
+			PROBE_CUDA(cudaEventCreate(&b));
+			PROBE_CUDA(cudaEventRecord(a));
+			for (index=0u; index<PROBE_REPEATS; index++)
+				PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0,0u,0)));
+			PROBE_CUDA(cudaEventRecord(b));
+			PROBE_CUDA(cudaEventSynchronize(b));
+			PROBE_CUDA(cudaEventElapsedTime(&paged_ms,a,b));
+			PROBE_CUDA(cudaEventRecord(a));
+			for (index=0u; index<PROBE_REPEATS; index++)
+				PROBE_CUDA((LmLatentAttentionPrefillLaunch<Remap,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,remap_view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0,0u,0)));
+			PROBE_CUDA(cudaEventRecord(b));
+			PROBE_CUDA(cudaEventSynchronize(b));
+			PROBE_CUDA(cudaEventElapsedTime(&remap_ms,a,b));
+			printf("REMAP %s: prefill us paged %.1f remap %.1f (%+.1f%%)\n",label,paged_ms * 1000.0f / PROBE_REPEATS,remap_ms * 1000.0f / PROBE_REPEATS,100.0f * (remap_ms - paged_ms) / paged_ms);
+			cudaEventDestroy(a);
+			cudaEventDestroy(b);
+		}
+		cudaFree(remap_device);
+		cudaFree(pool_device);
+	}
 	if ( timing != 0u )
 	{
 		PROBE_CUDA(cudaEventCreate(&begin));
@@ -253,6 +309,6 @@ int main(int argc,char **argv)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS latent prefill attention on the device: one sequence of 9..1024 causal rows after 0..1024 cached positions matches the f64 reference at least as closely as the split decode kernel, and a row's bits do not depend on the wave it runs in\n");
+	printf("PASS latent prefill attention on the device: one sequence of 9..1024 causal rows after 0..1024 cached positions matches the f64 reference at least as closely as the split decode kernel, and a row's bits do not depend on the wave it runs in or on whether keys are read through pages or a per-position remap\n");
 	return 0;
 }

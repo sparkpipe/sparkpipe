@@ -258,7 +258,6 @@ typedef struct SparkGlm5NextCudaWave
 	const float *head_certified_fp8_scale_f32;
 	const float *head_certified_fp8_norm_f32;
 	const SparkGlm5NextLayerWeights *layers;
-	// A lazy wave must bind its current layer lease before expert submission.
 	uint32_t lazy_experts;
 	uint32_t expert_lease_local_layer;
 	uint32_t expert_lease_all;
@@ -351,14 +350,8 @@ int32_t SparkGlm5NextLaunchCudaLayerAttentionShardMerge(const SparkGlm5NextCudaW
 int32_t SparkGlm5NextLaunchCudaLayerAttentionShardGatherPack(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionShardGatherPartial(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlp(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
-// Split path: Route completes dense layers; routed layers require Experts after
-// route readiness and working-set acquisition on the same slot/stream. Route
-// queues group offsets into slot host_group_row_offset; record/wait an event
-// on that stream before inspecting them or calling SparkWeightdRouteKeys.
 int32_t SparkGlm5NextLaunchCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerMlpRouteResident(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
-// cudaSuccess means the current routing readback is complete; cudaErrorNotReady
-// means pending. Calling before a successful Route returns cudaErrorInvalidValue.
 cudaError_t SparkGlm5NextPollCudaLayerMlpRoute(const SparkGlm5NextCudaWave *wave);
 int32_t SparkGlm5NextLaunchCudaLayerMlpExperts(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);
 int32_t SparkGlm5NextLaunchCudaLayerAttentionPost(const SparkGlm5NextCudaWave *wave,uint32_t local_layer);

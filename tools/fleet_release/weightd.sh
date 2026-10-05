@@ -65,8 +65,8 @@ case "$step" in
         read -r announced core <<< "$(core_state)"
         [ "$announced $core" = "$OLD_WEIGHTD $OLD_WEIGHTD" ] || die "hub core is WEIGHTSD_BIN=$announced bin=$core, want $OLD_WEIGHTD for both"
         hub "mkdir -p ~/release-staging/weightd-rollback && r=~/$ROLLBACK_COPY && { [ -f \$r ] || cp ~/release/core/bin/sparkpipe_weightd \$r; } && test \"\$(sha256sum < \$r | cut -c1-16)\" = $OLD_WEIGHTD && echo rollback copy \$r ok" || die "no verified $OLD_WEIGHTD rollback copy on $RELEASE_HUB"
-        $RELEASE_SSH "$BUILD_HOST" "scp -q $WEIGHTD_BUNDLE_BUILD/build/sparkpipe_weightd $RELEASE_HUB:release/core/bin/sparkpipe_weightd.new" || die "copy to the hub failed"
-        hub "cd ~/release/core && exec 9>\$HOME/release/.core.publish.lock && flock 9 && test \"\$(sha256sum < bin/sparkpipe_weightd.new | cut -c1-16)\" = $NEW_WEIGHTD && chmod 755 bin/sparkpipe_weightd.new && mv bin/sparkpipe_weightd.new bin/sparkpipe_weightd && find bin -type f | sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST && echo core bin \$(sha256sum < bin/sparkpipe_weightd | cut -c1-16) WEIGHTSD_BIN still \$(cat WEIGHTSD_BIN)" || die "core publish failed"
+        $RELEASE_SSH "$BUILD_HOST" "scp -q $WEIGHTD_BUNDLE_BUILD/build/sparkpipe_weightd $RELEASE_HUB:release/core/bin/sparkpipe_weightd.new && scp -q $WEIGHTD_BUNDLE_BUILD/build/sparkpipe_mesh_status $RELEASE_HUB:release/core/bin/sparkpipe_mesh_status.new" || die "copy to the hub failed"
+        hub "cd ~/release/core && exec 9>\$HOME/release/.core.publish.lock && flock 9 && test \"\$(sha256sum < bin/sparkpipe_weightd.new | cut -c1-16)\" = $NEW_WEIGHTD && chmod 755 bin/sparkpipe_weightd.new bin/sparkpipe_mesh_status.new && mv bin/sparkpipe_mesh_status.new bin/sparkpipe_mesh_status && mv bin/sparkpipe_weightd.new bin/sparkpipe_weightd && find bin -type f | sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST && echo core bin \$(sha256sum < bin/sparkpipe_weightd | cut -c1-16) WEIGHTSD_BIN still \$(cat WEIGHTSD_BIN)" || die "core publish failed"
         echo "WEIGHTD PUBLISHED (not announced). Next: weightd.sh announce"
         ;;
     announce)
