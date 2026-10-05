@@ -904,9 +904,7 @@ Related common-code debt:
   DFLASH2 as a remote tap source.
 - qwen38_27b remote drafting is synchronous: a decode frame, then a blocking
   20 ms `DraftRemoteChain`, then verify. Pipeline it one round ahead.
-- `tests/test_speculation_tree_resolve.c`,
-  `tests/test_speculation_headers_coexist.c` and
-  `tests/test_qwen38_27b_remote_spec.c` are not built by the Makefile.
+- `tests/test_qwen38_27b_remote_spec.c` is not built by the Makefile.
 - glm5_next resident decode chains run no MTP draft: a frame of more than
   one step skips `SparkGlm5NextMtpDriveDraft`, and the engine asks for chains
   whenever the adapter offers them, so with MTP enabled drafts only run on
@@ -1365,17 +1363,9 @@ door and the static pages and playground in `site/`.
 - `test_hy4_driver_acceptance` has a build rule but stays out of
   `TEST_NAMES`: it holds the behaviour a complete hy4 driver must show and
   fails on the current stub module. Register it with the hy4 driver.
-- Eleven C tests are neither registered nor run anywhere. Ten should be
-  deleted: `test_cache`, `test_sideband`, `test_group_gemm_workspace` and
-  `test_state_pool` test headers no product includes (`cache/cache.h`,
-  `ring/sideband.h` and `runtime/workspace.h` go with them;
-  `spark_state_pool.h` is still used by `test_k3_kv_cache`);
-  `test_continuous_batch_decode`, `test_multi_row_prefill`, `test_pack`,
-  `test_dequant` and `test_reference` (with `tests/reference.h`) test local
-  reimplementations; `test_graph_replay_kernel_abi` checks a mesh-kernel
-  marker the module build already verifies. `test_graph_replay_correctness`
-  is a GPU rig with private kernel prototypes and no build rule; it needs an
-  nvcc-gated rule on the shared kernel headers and a Spark runner.
+- `test_graph_replay_correctness` is a GPU rig with private kernel prototypes
+  and no build rule; it needs an nvcc-gated rule on the shared kernel headers
+  and a Spark runner.
 - Left out on purpose (2026-10-02): The dsv4 GPU validator compares against
   reference outputs only for stage 0 with the three-layer slice starting at
   layer 0

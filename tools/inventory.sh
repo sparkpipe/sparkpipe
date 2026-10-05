@@ -39,7 +39,6 @@ describe() {
 	text/tokenizer.c) echo "generic compiled byte-level BPE tokenizer" ;;
 	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c) echo "DSpark dispatch policy" ;;
 	cache/store/*) echo "KV block store and client" ;;
-	ring/sideband.h) echo "cross-rank payloads: index share, hidden tap, prefix indices" ;;
 	ring/transport/hidden_transport.*) echo "hidden state between ranks" ;;
 	ring/transport/tp_collective.*) echo "tensor-parallel collectives" ;;
 	ring/transport/memlink.*) echo "shared memory link" ;;
@@ -47,7 +46,6 @@ describe() {
 	ring/transport/tcp.cu) echo "TCP backend" ;;
 	runtime/launch.h) echo "launch planning: tile height, shared bytes, grid" ;;
 	runtime/gemm.cuh) echo "the four CUDA calls a GEMM needs" ;;
-	runtime/workspace.h) echo "workspace pool layout" ;;
 	runtime/tensor_map.h) echo "cuTensorMapEncodeTiled" ;;
 	runtime/linear_plan.cu) echo "linear plan binding" ;;
 	runtime/json.c) echo "JSON parser" ;;
