@@ -998,20 +998,13 @@ Related common-code debt:
   validates a pack without changing the digest its receipt records. Hash the
   `.cu` together with the templates it includes, in one helper every pin
   calls.
-- Left out on purpose (2026-10-02): No GLM-5.3 Full TP16 deployment is checked
-  in. The fleet lane renders its tree at run time from
-  `tools/glm53full_lane.py` (TP16 at `:8`; pages derived from
-  `--max-sequence-positions` at `:104`; logical = physical + backing spill at
-  `:133-134`). The renderer is driven by `tools/glm53full_lane.sh`, which
-  requires `GLMFULL_POSITIONS`, `GLMFULL_ROWS`, `GLMFULL_SEQUENCES` and
-  `GLMFULL_INFLIGHT` from the environment (`:10-13`), so the deployed context
-  limit is recorded nowhere in the repository. The two older generators are
-  gone and the drift test renders a lane tree and requires spill pages
-  (logical > physical), but no production tree is pinned. Close it by checking
-  in the TP16 lane deployment rendered with the production positions, rows,
-  sequences and inflight, and pinning it in the drift test, proven by a fleet
-  load of that tree logging the expected `kv binding logical_pages=
-  physical_pages=` line.
+- The production GLM-5.3 Full TP16 lane tree is checked in at
+  `deployment/glm53full_tp16_lane6/`, rendered by `tools/glm53full_lane.py`
+  from the arguments in its `render.json` (lane 6, fp8, 262,144 positions,
+  1,024 rows, 2 sequences, 1 in flight, a 32 GiB physical and 20 GiB backing
+  KV budget), and `tests/test_glm53full_lane.py` fails when the tree drifts
+  from that render. Not yet fleet-proven: load that tree and see the
+  `kv binding logical_pages=64567 physical_pages=8192` line on every rank.
 
 ## Driver consolidation
 
@@ -1283,10 +1276,12 @@ Related common-code debt:
   (seed, absolute position, token id), as TensorFold's exact sampler does, so
   a seeded sampled stream replays exactly and a draft is accepted exactly
   when it equals the serial draw.
-- Positions are sized for every resident sequence at full length
+- GLM Flash positions are sized for every resident sequence at full length
   (`tools/spark_serving_profile.py`: B8 is 8 × 512 positions in 1,024
-  pages). A request cannot use the pages its neighbours leave idle. Size
-  positions for one long sequence and let paged admission share the pool.
+  pages), so a request cannot use the pages its neighbours leave idle. GLM
+  Full already sizes its physical pool by a byte budget its lanes share
+  (`tools/glm53full_lane.py --kv-physical-bytes`). Size GLM Flash the same
+  way and let paged admission share the pool.
 ## Provider network
 
 Of the provider network in `README.md`, the tree has only the LiteLLM front
