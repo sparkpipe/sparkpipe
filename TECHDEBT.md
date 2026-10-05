@@ -800,8 +800,11 @@ Related common-code debt:
   speculative verification rows, while preserving sequence and KV identity.
 - Qualify mixed arrivals, priorities, prompt lengths, shared prefixes, cache
   pressure, cancellation, and starvation bounds.
-- Make priority and deadline enforcement span admission, prefill, decode,
-  speculation, gang scheduling, model promotion, and storage I/O.
+- Priority and deadline reach admission, prefill and decode scheduling (the
+  batch engine selects by priority, then earliest `deadline_ms`, and a prefill
+  or decode submission carries its latest lane deadline to residentd as
+  remaining time) and KV eviction ranks by request priority. Still open:
+  speculation, gang scheduling, model promotion and storage I/O ignore both.
 - `LmSkinnyGroupedExperts` (grouped FP8 gate/up experts) does not match the
   per-pair expert kernel bit for bit at 8 rows on a GB10:
   `tests/test_skinny_dependent_cuda.py` fails with "rows8: grouped experts
@@ -1280,9 +1283,6 @@ Related common-code debt:
   (seed, absolute position, token id), as TensorFold's exact sampler does, so
   a seeded sampled stream replays exactly and a draft is accepted exactly
   when it equals the serial draw.
-- Carry `deadline_ms` into the batch engine and the serving submission
-  (`deadline_time_ns` exists but is not populated) so the scheduler, not
-  only the API, orders work by deadline.
 - Positions are sized for every resident sequence at full length
   (`tools/spark_serving_profile.py`: B8 is 8 × 512 positions in 1,024
   pages). A request cannot use the pages its neighbours leave idle. Size

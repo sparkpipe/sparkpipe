@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <string.h>
+#include <time.h>
 
 #include "runtime/model_continuation_lease.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
@@ -191,6 +192,26 @@ static void TestSubmissionRoundTrip(void)
 	assert(((const uint8_t *)decoded.model_extension)[2] == 6u);
 	assert(memcmp(&decoded.residency,&submission.residency,
 		sizeof(decoded.residency)) == 0);
+	assert(decoded.deadline_time_ns == 0u && ((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns == 0u);
+	{
+		struct timespec now;
+		uint64_t before,after;
+		assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+		before = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+		submission.deadline_time_ns = before + UINT64_C(5000000000);
+		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+		assert(((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns != 0u && ((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns <= UINT64_C(5000000000));
+		((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns = UINT64_C(2000000000);
+		assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_OK);
+		assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+		after = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+		assert(decoded.deadline_time_ns >= before + UINT64_C(2000000000) && decoded.deadline_time_ns <= after + UINT64_C(2000000000));
+		submission.deadline_time_ns = before - 1u;
+		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+		assert(((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns == 1u);
+		submission.deadline_time_ns = 0u;
+		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+	}
 	wire = (SparkModelResidentIpcSubmit *)buffer;
 	wire->header.abi_version--;
 	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_ABI_MISMATCH);

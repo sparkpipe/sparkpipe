@@ -437,6 +437,7 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.request_id = r->id;
 	sub.sequence_id = r->id;
 	sub.priority = r->priority;
+	sub.deadline_ns = r->deadline_ms != 0u ? r->deadline_ms * UINT64_C(1000000) : 0u;
 	sub.temperature = r->temperature;
 	sub.seed = r->seed;
 	sub.top_p = r->top_p;

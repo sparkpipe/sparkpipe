@@ -934,14 +934,15 @@ static SparkModelBatchEngine *TestModelBatchConnect(
 	return(TestModelBatchConnectCapacity(deployment,state,stop_token_count,stop_token_id,max_prefill_rows,3u));
 }
 
-static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
+static SparkModelBatchRequestHandle TestModelBatchSubmitDeadline(
 	SparkModelBatchEngine *engine,
 	uint64_t request_id,
 	uint64_t sequence_id,
 	const uint32_t *tokens,
 	uint32_t token_count,
 	uint32_t output_budget,
-	uint32_t priority)
+	uint32_t priority,
+	uint64_t deadline_ns)
 {
 	SparkModelBatchSubmitRequest request;
 	SparkModelBatchRequestHandle handle;
@@ -950,6 +951,7 @@ static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
 	request.descriptor_bytes = SPARK_MODEL_BATCH_SUBMIT_REQUEST_BYTES;
 	request.top_p = 1.0f;
 	request.priority = priority;
+	request.deadline_ns = deadline_ns;
 	request.output_token_budget = output_budget;
 	request.request_id = request_id;
 	request.sequence_id = sequence_id;
@@ -959,6 +961,18 @@ static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
 	assert(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK);
 	assert(handle != SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE);
 	return(handle);
+}
+
+static SparkModelBatchRequestHandle TestModelBatchSubmitPriority(
+	SparkModelBatchEngine *engine,
+	uint64_t request_id,
+	uint64_t sequence_id,
+	const uint32_t *tokens,
+	uint32_t token_count,
+	uint32_t output_budget,
+	uint32_t priority)
+{
+	return(TestModelBatchSubmitDeadline(engine,request_id,sequence_id,tokens,token_count,output_budget,priority,0u));
 }
 
 static SparkModelBatchRequestHandle TestModelBatchSubmit(
@@ -1186,6 +1200,36 @@ static void TestModelBatchEnginePriority(
 	assert(state.completed_count == 16u);
 	assert(state.cancelled_count == 1u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+}
+
+static void TestModelBatchEngineDeadlineOrder(
+	const SparkModelResidentDeployment *deployment)
+{
+	SparkModelBatchRequestHandle urgent,relaxed;
+	SparkModelBatchEngine *engine;
+	TestModelBatchState state;
+	struct timespec now;
+	uint64_t now_ns;
+	uint32_t index,prompt[1] = {43u};
+	assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+	now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
+	memset(&state,0,sizeof(state));
+	engine = TestModelBatchConnectCapacity(deployment,&state,0u,0u,32u,18u);
+	relaxed = TestModelBatchSubmitDeadline(engine,1401u,2401u,prompt,1u,1u,10u,now_ns + UINT64_C(600000000000));
+	for (index=0u; index<15u; index++)
+		(void)TestModelBatchSubmitPriority(engine,1402u + index,2402u + index,prompt,1u,1u,10u);
+	urgent = TestModelBatchSubmitDeadline(engine,1499u,2499u,prompt,1u,1u,10u,now_ns + UINT64_C(60000000000));
+	(void)TestModelBatchSubmitPriority(engine,1498u,2498u,prompt,1u,1u,10u);
+	assert(SparkModelBatchEngineProgress(engine,1u) == SPARK_STATUS_OK);
+	assert(SparkModelBatchEngineCancel(engine,urgent) == SPARK_STATUS_PENDING);
+	assert(SparkModelBatchEngineCancel(engine,relaxed) == SPARK_STATUS_PENDING);
+	assert(SparkModelBatchEngineCloseAdmission(engine) == SPARK_STATUS_OK);
+	TestModelBatchWaitIdle(engine,16u);
+	assert(state.accepted_count == 18u);
+	assert(state.first_prefill_lane_count == 16u);
+	assert(state.cancelled_count == 2u && state.completed_count == 16u);
+	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+	printf("test_model_pipeline_client: within one priority the earliest deadlines dispatch first (both deadline requests ride the first 16-lane wave ahead of a request submitted before the urgent one)\n");
 }
 
 static void TestModelBatchEngineAggregatePrefill(
@@ -2099,6 +2143,7 @@ int main(void)
 		assert(kill(children[rank],0) == 0);
 	TestModelBatchEngineRun(&deployment);
 	TestModelBatchEnginePriority(&deployment);
+	TestModelBatchEngineDeadlineOrder(&deployment);
 	TestModelBatchEngineAggregatePrefill(&deployment);
 	TestModelBatchEngineResidentQueue(&deployment);
 	TestModelBatchEngineDeepQueue(&deployment);
