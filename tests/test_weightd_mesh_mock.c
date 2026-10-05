@@ -9,6 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include <infiniband/verbs.h>
 
@@ -1633,14 +1634,58 @@ static SparkStatus test_pace_attach(SparkWeightdClient *client,const char *path,
     return(status != SPARK_STATUS_OK ? status : (SparkStatus)result.status);
 }
 
+static pid_t test_pace_serving_process(const char *path,const int commands[2],const int replies[2])
+{
+    pid_t pid = fork();
+    int command_fd = commands[0],reply_fd = replies[1];
+    if ( pid != 0 )
+    {
+        (void)close(commands[0]);
+        (void)close(replies[1]);
+        return(pid);
+    }
+    (void)close(commands[1]);
+    (void)close(replies[0]);
+    {
+        SparkWeightdClient *serving = 0;
+        SparkWeightdMeshTopology topology = test_identity_topology(4u,0u);
+        const uint64_t timeout = UINT64_C(1000000000);
+        uint32_t lane = 0u;
+        uint8_t status,command;
+        status = SparkWeightdClientConnect(path,&serving,0) == SPARK_STATUS_OK &&
+            SparkWeightdClientLaneAcquire(serving,0u,&topology,&lane,timeout) == SPARK_STATUS_OK && lane == 0u &&
+            SparkWeightdClientMeshActivity(serving,1u,1u,timeout) == SPARK_STATUS_OK ? 1u : 0u;
+        if ( write(reply_fd,&status,1u) != 1 )
+            _exit(2);
+        while ( read(command_fd,&command,1u) == 1 && command == 'i' )
+        {
+            status = SparkWeightdClientMeshActivity(serving,1u,0u,timeout) == SPARK_STATUS_OK ? 1u : 0u;
+            if ( write(reply_fd,&status,1u) != 1 )
+                _exit(2);
+        }
+        SparkWeightdClientClose(serving);
+        _exit(0);
+    }
+}
+
+static uint8_t test_pace_command(int command_fd,int reply_fd,uint8_t command)
+{
+    uint8_t reply = 0u;
+    if ( command != 0u && write(command_fd,&command,1u) != 1 )
+        return(0u);
+    return(read(reply_fd,&reply,1u) == 1 ? reply : 0u);
+}
+
 static void test_load_pace_while_serving(uint64_t pace)
 {
     SparkWeightdServerConfig config;
-    SparkWeightdClient *serving = 0,*loading = 0;
+    SparkWeightdClient *own = 0,*loading = 0;
     SparkWeightdDetachResult detached;
     TestMeshActivityThread server = {0};
     pthread_t server_thread;
     char path[128],pack[128],manifest[144],receipt[160],other[128],other_manifest[144],other_receipt[160];
+    int commands[2],replies[2],wait_status = 0;
+    pid_t child;
     uint32_t lane;
     uint64_t generation = 0u,other_generation = 0u;
     SparkWeightdMeshTopology topology = test_identity_topology(4u,0u);
@@ -1660,16 +1705,26 @@ static void test_load_pace_while_serving(uint64_t pace)
     config.load_pace_bytes_per_second = pace;
     assert(SparkWeightdServerCreate(&config,&server.server) == SPARK_STATUS_OK);
     assert(pthread_create(&server_thread,0,test_mesh_server_run,&server) == 0);
-    assert(SparkWeightdClientConnect(path,&serving,0) == SPARK_STATUS_OK);
+    assert(SparkWeightdClientConnect(path,&own,0) == SPARK_STATUS_OK);
     assert(SparkWeightdClientConnect(path,&loading,0) == SPARK_STATUS_OK);
-    CHECK(SparkWeightdClientLaneAcquire(serving,0u,&topology,&lane,timeout) == SPARK_STATUS_OK && lane == 0u,
-        "pace: the serving engine owns a lane");
-    CHECK(SparkWeightdClientMeshActivity(serving,1u,1u,timeout) == SPARK_STATUS_OK,"pace: the serving engine is active");
+    if ( pace == 0u )
+    {
+        CHECK(SparkWeightdClientLaneAcquire(own,1u,&topology,&lane,timeout) == SPARK_STATUS_OK && lane == 1u &&
+            SparkWeightdClientMeshActivity(own,1u,1u,timeout) == SPARK_STATUS_OK,"pace: this process serves a lane on one connection");
+        CHECK(test_pace_attach(loading,other,&other_generation) == SPARK_STATUS_OK,
+            "pace: a process's own serving lane never paces its own loads on another connection");
+        (void)SparkWeightdClientDetach(loading,other_generation,&detached,timeout);
+        CHECK(SparkWeightdClientMeshActivity(own,1u,0u,timeout) == SPARK_STATUS_OK,"pace: this process's lane goes idle");
+    }
+    assert(pipe(commands) == 0 && pipe(replies) == 0);
+    child = test_pace_serving_process(path,commands,replies);
+    assert(child > 0);
+    CHECK(test_pace_command(commands[1],replies[0],0u) == 1u,"pace: another process owns an active serving lane");
     if ( pace == 0u )
     {
         CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_CAPACITY_EXCEEDED,
-            "pace: a load while another lane serves is refused when weightd has no load cap");
-        CHECK(SparkWeightdClientMeshActivity(serving,1u,0u,timeout) == SPARK_STATUS_OK,"pace: the serving engine goes idle");
+            "pace: a load while another process's lane serves is refused when weightd has no load cap");
+        CHECK(test_pace_command(commands[1],replies[0],'i') == 1u,"pace: the serving process goes idle");
         test_sleep_ns(UINT64_C(1200000000));
         CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_OK,
             "pace: once no lane has served for the linger, the same load runs unpaced");
@@ -1678,15 +1733,19 @@ static void test_load_pace_while_serving(uint64_t pace)
     {
         uint64_t start = test_pace_now_ns();
         CHECK(test_pace_attach(loading,pack,&generation) == SPARK_STATUS_OK &&
-            test_pace_attach(loading,other,&other_generation) == SPARK_STATUS_OK,"pace: capped loads run while another lane serves");
+            test_pace_attach(loading,other,&other_generation) == SPARK_STATUS_OK,"pace: capped loads run while another process's lane serves");
         CHECK((unsigned __int128)(test_pace_now_ns() - start) * pace >= (unsigned __int128)2u * TEST_PACE_CHUNK * UINT64_C(1000000000),
             "pace: the second load waits until the first one's bytes have drained at the cap");
         (void)SparkWeightdClientDetach(loading,other_generation,&detached,timeout);
-        CHECK(SparkWeightdClientMeshActivity(serving,1u,0u,timeout) == SPARK_STATUS_OK,"pace: the serving engine goes idle");
+        CHECK(test_pace_command(commands[1],replies[0],'i') == 1u,"pace: the serving process goes idle");
     }
+    (void)close(commands[1]);
+    CHECK(waitpid(child,&wait_status,0) == child && WIFEXITED(wait_status) && WEXITSTATUS(wait_status) == 0,
+        "pace: the serving process exits cleanly");
+    (void)close(replies[0]);
     (void)SparkWeightdClientDetach(loading,generation,&detached,timeout);
     SparkWeightdClientClose(loading);
-    SparkWeightdClientClose(serving);
+    SparkWeightdClientClose(own);
     __atomic_store_n(&server.stop,1,__ATOMIC_SEQ_CST);
     assert(pthread_join(server_thread,0) == 0);
     SparkWeightdServerDestroy(server.server);

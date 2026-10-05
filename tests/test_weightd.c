@@ -693,7 +693,7 @@ static void SparkTestServedAbiVersions(void)
     (void)close(fd);
     SparkTestRawFrame(&request, 7u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
     SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
-    SparkTestRawFrame(&request, 13u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    SparkTestRawFrame(&request, 14u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
     SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
     SparkTestConnect(&client, socket_path, 0ull);
     assert(SparkWeightdClientMeshStagingMap(client, &mapping, SPARK_TEST_TIMEOUT_NS) ==
