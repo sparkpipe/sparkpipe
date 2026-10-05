@@ -1966,7 +1966,7 @@ static void SparkGlm52ScoreClose(SparkGlm52ModuleState *state)
 	state->score = 0;
 }
 
-static SparkStatus SparkGlm52ScorePlan(SparkGlm52Score *score,const SparkGlm52ExecutionSlot *slot,uint32_t first,uint32_t rows,uint32_t *probe_count)
+static SparkStatus SparkGlm52ScorePlan(SparkGlm52Score *score,const SparkStageKvBinding *kv,const SparkGlm52ExecutionSlot *slot,uint32_t first,uint32_t rows,uint32_t *probe_count)
 {
 	const uint32_t *ids;
 	uint32_t row,index,count,id_count,position;
@@ -1976,7 +1976,7 @@ static SparkStatus SparkGlm52ScorePlan(SparkGlm52Score *score,const SparkGlm52Ex
 	{
 		position = slot->host_positions[first + row];
 		key = 0u;
-		score->host_flags[row] = SparkScoreDumpKeysAdvance(&score->writer.keys,slot->host_resident_slots[first + row],position,slot->host_token_ids[first + row],&key) != 0u ? SPARK_SCORE_DUMP_ROW_KEY_VALID : 0u;
+		score->host_flags[row] = SparkScoreDumpKeysAdvance(&score->writer.keys,slot->host_resident_slots[first + row],SparkStageKvBindingLaneSequence(kv,slot->host_resident_slots[first + row]),position,slot->host_token_ids[first + row],&key) != 0u ? SPARK_SCORE_DUMP_ROW_KEY_VALID : 0u;
 		score->host_keys[row] = key;
 		score->host_offsets[row] = count;
 		id_count = 0u;
@@ -2052,7 +2052,7 @@ static SparkStatus SparkGlm52ScoreWaveLocked(SparkGlm52TpChain *chain)
 	first = chain->first_row;
 	if ( rows == 0u || rows > score->rows_capacity )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkGlm52ScorePlan(score,slot,first,rows,&count);
+	status = SparkGlm52ScorePlan(score,&chain->state->kv,slot,first,rows,&count);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	error = cudaMemcpyAsync(score->probe_offsets,score->host_offsets,(uint64_t)(rows + 1u) * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);

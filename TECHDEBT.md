@@ -830,21 +830,6 @@ check reads only the `PREFIX_REUSE` descriptor bit
 (`runtime/model_serving_adapter.c:195-199`) and asks for no I27 proof. Each
 adapter below lacks real restore, an I27 proof, or both:
 
-- Left out on purpose (2026-10-02): glm52 (GLM-5.3 Full) has restored prefixes
-  through the common binding since `c7edad09e` (branch `kv/sequence-shard`).
-  Lanes get real page tables (`SparkStageKvBindingClaim` and
-  `SparkStageKvBindingUploadPageTables` at
-  `spark_glm52_resident_decode_stage_module.c:2274` and `:2283`, read by the
-  wave at `:861`), and the DSA index keys are page payload region 1
-  (`:737-739`). A lane restored mid-sequence on a fresh slot passes continuity
-  (`runtime/stage_kv_binding.c:462-469`). The adapter declares `PREFIX_REUSE`
-  (`spark_glm52_serving_adapter.c:185`), so it loads without the I27 proof
-  this section requires. The only proof is `tools/glm52_prefix_probe.c`, a
-  single-GPU rank-0 run with collectives off that prints `rank-local
-  computation only` (`:345`). Until a TP16 fleet I27 run passes, restored
-  GLM-5.3 Full prefixes are unproven on the real lane. That run needs cold vs
-  warm token parity at B1 and B16, a copy-on-write mid-block prefix, abort,
-  reset, and an evicted prefix that comes back NOT_FOUND and is recomputed.
 - qwen38_27b has a GDN snapshot borrow for prompt checkpoints
   (`SparkQwen38_27bServingPrefixBorrow`), but a borrow miss logs `recomputing`
   and prefills over unrestored KV blocks and GDN state; decode-lane
@@ -899,22 +884,17 @@ Related common-code debt:
   (`SPARK_DSV4_MODEL_DSPARK_SPEC_STEP` undeclared), and
   `build/libdsv4_tp4_pp4_serving_adapter.so` cannot be opened on GPU hosts
   (undefined `SparkTpLaunchMeshHardware`).
-- Left out on purpose (2026-10-02): GLM Full declares prefix reuse on this
-  branch
-  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c:185`)
-  but has no fleet I27 proof. Its only restore evidence is
-  `tools/glm52_prefix_probe.c`. The probe runs the rank-0 pack on one GPU with
-  collectives disabled (`:98-114`), uses two lanes, and sets logical pages
-  equal to physical so nothing spills (`:109-110`). It prints "rank-local
-  computation only" (`:345`), prints its swapped-prefix sensitivity control
-  without failing when no lane changes (`:300-309`), and no Makefile target or
-  gate builds or runs it. The tree has no I27 session, scorecard or
-  `sessions/` file, so nothing compares restored with uninterrupted execution
-  at TP16 for B1 and B16, spill eviction and readback, a failed write-back,
-  abort mid-prefill, reset or residentd restart. Close it with a fleet I27
-  session on the 16-node lane that runs each case against an uninterrupted
-  control and requires identical tokens, `cached_tokens` above zero on every
-  expected hit, and exact T1.
+- Left out on purpose (2026-10-02): GLM Full declares prefix reuse
+  (`modules/glm52_resident_decode_stage/source/spark_glm52_serving_adapter.c`,
+  `PREFIX_REUSE`) and restores prefixes through the common binding, but no
+  fleet I27 session has passed at TP16; the only restore evidence is the
+  single-GPU, collectives-off `tools/glm52_prefix_probe.c`. Run
+  `tools/i27_session.py` against the GLM Full TP16 API with
+  `--restart-command` and `--writeback-fault-command` hooks and pin its PASS
+  receipt: B1 and B16 cold/warm parity, a copy-on-write mid-block prefix,
+  abort mid-prefill, eviction and recompute, residentd restart and a failed
+  write-back, each against an uninterrupted control with identical tokens and
+  `cached_tokens` above zero on every expected hit, plus exact T1.
 - Left out on purpose (2026-10-02): A reconnect or restart of residentd throws
   away the engine's prefix index, and nothing rebuilds it from a durable
   store. residentd gives each client connection a new generation
@@ -965,36 +945,6 @@ Related common-code debt:
   already turns into a full prefill (`runtime/model_batch_engine.c:772-800`),
   and prove it with a fleet I27 run that evicts a snapshot entry the engine
   still indexes and checks tokens against a cold run.
-- Left out on purpose (2026-10-02): `tools/glm5_next_bench_wrap.py --api-log`
-  computes `all_requests_have_prefix_hits`
-  (`tools/glm5_next_bench_wrap.py:164`) but never uses it: `valid` comes from
-  the stream checks (`:58`, `:132-174`) and the exit code follows `valid`
-  (`:191`). A run in which every request missed the prefix cache
-  (`cached_prompt_tokens` 0) reports valid and exits 0, so a warm-cache
-  measurement silently becomes a cold one, against I23 (a benchmark requiring
-  a hit fails on a miss). Close it with a required-hit mode that sets `valid`
-  false and names every request with `cached_prompt_tokens == 0`, used by
-  every warm-cache session, and prove it with a fleet warm session against a
-  freshly restarted engine that fails and names the missed requests.
-- Left out on purpose (2026-10-02): Score-dump row keys are not forgotten when
-  a lane is restored. `SparkScoreDumpKeysAdvance`
-  (`src/spark_score_dump.c:67-87`) keeps one key chain per resident slot and
-  continues it for any position up to the slot's known length. No function
-  resets a slot (`include/sparkpipe/spark_score_dump.h:103-144`), and neither
-  caller tells it that a restored prefix now owns the slot
-  (`spark_glm52_resident_decode_stage_module.c:1540`,
-  `spark_glm5_next_resident_decode_stage_module.c:4384`). A restored lane
-  whose first row is at position P can land on a slot that last held a
-  different sequence of at least P tokens. That row gets a key chained from
-  the other sequence and the KEY_VALID flag, although
-  `docs/SCORE_DUMP.md:31-33` says it is written keyless. The end record then
-  undercounts keyless rows, and the probe lookup uses a wrong key; A/B runs
-  are safe only because the corpus rule prevents hits and
-  `tools/ab_receipt.py:129-133` refuses cached tokens. Close it by keying the
-  chain on the sequence id as well as the slot, or by forgetting the slot when
-  a lane binds a new sequence at a non-zero position. The proof is a fleet
-  score-dump run that restores a prefix onto a slot last used by a different
-  sequence, with the end record counting those rows as keyless.
 - Left out on purpose (2026-10-02): laguna was not moved onto
   `runtime/stage_kv_binding.c`, so it keeps a private copy of the KV plumbing:
   model table, arena and page store setup, page-table builds, lane
@@ -1696,21 +1646,15 @@ door and the static pages and playground in `site/`.
   validated (I40). Compare every stage's boundary hidden state and the final
   tokens with pinned reference outputs within a qualified tolerance, and prove
   it with a per-stage validator run on a DSV4 pack before DSV4 serves again.
-- Left out on purpose (2026-10-02):
-  `modules/glm52_resident_decode_stage/validation/glm52_prefill_rows_parity.cu:590-596`
-  labels every `regime_split=0` wave and every wave wider than
-  `SparkGlm52ExactWaveRows()` (8 rows) DIFFER-EXPECTED and prints `max_abs`
-  without bounding it, and `:520-523` does the same for head tokens. The
-  exact-row limit comes from the module under test
-  (`spark_glm52_resident_decode_stage_cuda.cu:18-21`), so GLM-5.3 Full prefill
-  waves above 8 rows, which the module accepts up to its execution row
-  capacity (`spark_glm52_resident_decode_stage_module.c:2160-2172`), pass the
-  rig with any error. The rig can also be downgraded by argument: `argv[2]` of
-  0 drops the exact checks and a negative value returns 0 after the reference
-  run (`:548`, `:582-583`). Pin a qualified per-width max_abs and token
-  tolerance in the rig, fail any wave above it, remove the argument downgrade,
-  and prove it with `run_glm52_prefill_rows_parity.sh` on a Spark covering the
-  widest wave GLM-5.3 Full serves.
+- Left out on purpose (2026-10-02): `glm52_prefill_rows_parity.cu` now fails
+  any wave above the exact-row limit, or without the regime split, whose
+  boundary `max_abs` exceeds 1/64 of the reference's largest magnitude, and any
+  head run whose differing tokens exceed 1/64 of the positions; it covers
+  widths up to the build's `SPARK_BATCH_BUCKET` and has no argument
+  downgrade. The bounds are not qualified: run
+  `run_glm52_prefill_rows_parity.sh` on a Spark at the serving bucket, record
+  the measured `max_abs` and token differences, and pin the qualified bounds
+  with that receipt.
 - Left out on purpose (2026-10-02): The glm5_next GPU validator checks DSA
   attention only for run-to-run determinism
   (`modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_cuda_validation.cu:1668-1670`),

@@ -34,6 +34,19 @@ class BenchTests(unittest.TestCase):
         bad[0]['tokens'][1][1] = 1
         self.assertFalse(bench.summarize_api_measurements(bad)['valid'])
 
+    def test_required_prefix_hits_fail_and_name_missed_requests(self):
+        records = [dict(boot_pid=7,request_id=i,status=0,engine_completed=1,
+                        accepted_ns=1000000000,prompt_tokens=69,cached_prompt_tokens=cached,
+                        tokens=[[i*10,2000000000],[i*10+1,3000000000]])
+                   for i,cached in ((1,64),(2,0),(3,0))]
+        self.assertTrue(bench.summarize_api_measurements(records)['valid'])
+        result = bench.summarize_api_measurements(records, require_prefix_hits=True)
+        self.assertFalse(result['valid'])
+        self.assertFalse(result['all_requests_have_prefix_hits'])
+        self.assertIn('prefix cache miss on requests [2, 3]', result['errors'])
+        records[1]['cached_prompt_tokens'] = records[2]['cached_prompt_tokens'] = 64
+        self.assertTrue(bench.summarize_api_measurements(records, require_prefix_hits=True)['valid'])
+
     def test_decode_window_excludes_remaining_prefill_and_completion_tail(self):
         events = [(1., event("token", 1, 0)), (2., event("token", 1, 1)),
                   (10., event("token", 2, 0)), (11., event("token", 1, 2)),

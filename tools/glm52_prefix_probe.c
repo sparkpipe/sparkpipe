@@ -101,13 +101,14 @@ static int32_t probe_open(probe_state_t *state,const char *driver,const char *pa
 	node->stage_pack_path = pack;
 	node->model_revision = state->driver.interface->descriptor->model_revision;
 	node->tp_collective_identifier = 0u;
-	node->kv_backing_directory = "/tmp/prefixprobe/kv";
-	node->kv_snapshot_directory = "/tmp/prefixprobe/snapshot";
-	node->kv_snapshot_maximum_bytes = 1ull << 30;
 	(void)mkdir("/tmp/prefixprobe",0700);
-	(void)mkdir(node->kv_backing_directory,0700);
-	(void)mkdir(node->kv_snapshot_directory,0700);
+	(void)mkdir("/tmp/prefixprobe/kv",0700);
+	(void)mkdir("/tmp/prefixprobe/snapshot",0700);
 	SparkModelDriverInitializeCreateRequest(&request);
+	request.kv_backing_directory = "/tmp/prefixprobe/kv";
+	request.kv_backing_maximum_bytes = 1ull << 30;
+	request.kv_snapshot_directory = "/tmp/prefixprobe/snapshot";
+	request.kv_snapshot_maximum_bytes = 1ull << 30;
 	request.node_id = "glm52-local-prefix-probe";
 	request.node_target = PROBE_TARGET;
 	request.node_context = node;
@@ -311,6 +312,8 @@ static int32_t probe_run(probe_state_t *state)
 			differ += expected[0][lane] != state->outputs[lane] ? 1u : 0u;
 		}
 		printf("SENSITIVITY swapped-prefix lanes-changed=%u of %u\n",differ,PROBE_LANES);
+		if ( result == 0 && differ == 0u )
+			result = -16;
 		if ( result == 0 )
 			result = probe_release(state,2u,PROBE_PREFIX + 1u);
 	}
