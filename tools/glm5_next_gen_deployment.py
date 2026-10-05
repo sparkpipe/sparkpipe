@@ -24,7 +24,7 @@ HOSTS = [h for h in os.environ.get(
     ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
 TP = len(HOSTS)
 ROOT_NAME = os.environ.get("GLM5_NEXT_ROOT_NAME", "glm53flash.fp8.tp16")
-KV_BACKING_MAXIMUM_BYTES = 137438953472
+KV_BACKING_MAXIMUM_BYTES = int(os.environ.get("GLM5_NEXT_KV_BACKING_BYTES", "137438953472"))
 KV_SNAPSHOT_MAXIMUM_BYTES = 68719476736
 RUNTIME_ROOT = os.environ.get("GLM5_NEXT_RUNTIME_ROOT",
                               "/home/{host}/sparkdata/" + ROOT_NAME)
