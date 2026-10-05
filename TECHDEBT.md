@@ -949,8 +949,7 @@ adapter below lacks real restore, an I27 proof, or both:
   `model-families/common/include/sparkpipe/spark_qwen38_pp_serving_adapter_common.h:218-249`,
   which gives each lane private blocks from a pool sized to resident capacity
   x blocks per lane (`:731-732`, logical = physical); they have no borrow
-  path, and the same header forces the JIT KV tier off (`:111-115`). k3 has no
-  borrow path either.
+  path, and the same header forces the JIT KV tier off (`:111-115`).
 
 Related common-code debt:
 
@@ -1446,21 +1445,10 @@ Related common-code debt:
 - k3 has no TP16 adapter descriptor: `K3ServingDescriptor` is `k3-tp4pp4`
   only, so a TP16 PP1 deployment cannot load
   ([`docs/K3_PERF.md`](docs/K3_PERF.md)).
-- Left out on purpose (2026-10-02): `K3ServingReset`
-  (`modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c:904-909`)
-  returns OK without touching the stage runner, and `K3ServingPrefetch`,
-  `K3ServingResolvePrefetch`, `K3ServingProgress` and `K3ServingQuiesce`
-  (`:855-885`) are also success-returning no-ops (I01). On a client reset
-  residentd calls `reset`, takes OK as done, zeroes its own slot table and
-  sets `reset_done` (`node/model_residentd.c:2995-3011`), while nothing clears
-  the K3 runner's slots, so their KDA and KV state from the previous client
-  stays in place (I16). k3 is refused at load today (no PREFIX_REUSE,
-  `:26-30`, `:49-51`). Close it by having reset release every runner slot
-  through `SparkK3StageRunnerResetSlots` (used today only for RELEASE at
-  `:763`) and refuse stale-generation submissions, and by making each other
-  hook do its work or return `UNSUPPORTED` naming itself; prove it on the
-  fleet with a client reconnect after a completed request, after which a
-  request on the same slot matches a fresh-process run token for token.
+- K3 now resets every runner slot and the KV binding on a client reset and
+  refuses stale-generation submissions, but no fleet run has proved it: run a
+  client reconnect after a completed request, after which a request on the
+  same slot matches a fresh-process run token for token.
 - The `capture_graphs` keys that `tools/k3_gen_adapter_configs.sh`,
   `tools/k3_multidev_lane.py` and
   `modules/k3_resident_decode_stage/configs/*.json` emit have been read by

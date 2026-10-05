@@ -83,6 +83,27 @@ int main(int argc, char **argv)
 		printf("INIT FAIL %d\n", (int)status);
 		return 1;
 	}
+	{
+		SparkK3StageRunnerKv kv;
+		uint32_t layers = SparkK3StageRunnerKvLayerCount(&runner), table[2] = {0u, 1u};
+		memset(&kv, 0, sizeof(kv));
+		kv.layer_count = layers;
+		kv.layer_page_bytes = K3GlobalKv::kPageBytes;
+		kv.layer_stride_bytes = 2u * (uint64_t)K3GlobalKv::kPageBytes;
+		kv.page_table_stride = 2u;
+		kv.pool_page_count = 2u;
+		kv.sequence_count = 1u;
+		cudaMalloc(&kv.pool, (layers != 0u ? layers : 1u) * kv.layer_stride_bytes);
+		cudaMemset(kv.pool, 0, (layers != 0u ? layers : 1u) * kv.layer_stride_bytes);
+		cudaMalloc((void **)&kv.page_table, sizeof(table));
+		cudaMemcpy((void *)kv.page_table, table, sizeof(table), cudaMemcpyHostToDevice);
+		status = SparkK3StageRunnerAttachKv(&runner, &kv);
+		if ( status != SPARK_STATUS_OK )
+		{
+			printf("KV ATTACH FAIL %d\n", (int)status);
+			return 1;
+		}
+	}
 	g_probe_buffers = (K3LayerBuffers *)SparkK3StageRunnerProbeBuffers(&runner);
 	g_rows = 1u;
 	cudaMalloc(&g_snapshots_device, (uint64_t)24u * K3_HIDDEN * 2u);

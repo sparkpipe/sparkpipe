@@ -1569,6 +1569,11 @@ SparkStatus SparkK3StageRunnerSubmit(
 	if ( rows == 0u || rows > state->max_rows || dispatch->active_sequence_count == 0u || dispatch->active_sequence_count > rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( state->dispatch.mla_count != 0u && state->dispatch.kv_attached == 0u )
+	{
+		fprintf(stderr, "sparkpipe_k3: submit refused: the KV binding pool is not attached\n");
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	stream = state->stream;
 	exchange_status = K3RunnerChainBegin(state, dispatch->request_id);
 	if ( exchange_status != SPARK_STATUS_OK )
@@ -1789,6 +1794,96 @@ SparkStatus SparkK3StageRunnerGetStats(
 	if ( runner == 0 || stats_out == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	*stats_out = runner->stats;
+	return SPARK_STATUS_OK;
+}
+
+uint32_t SparkK3StageRunnerKvLayerCount(const SparkK3StageRunner *runner)
+{
+	if ( runner == 0 || runner->private_state == 0 )
+		return 0u;
+	return ((const SparkK3RunnerState *)runner->private_state)->dispatch.mla_count;
+}
+
+SparkStatus SparkK3StageRunnerAttachKv(SparkK3StageRunner *runner, const SparkK3StageRunnerKv *kv)
+{
+	SparkK3RunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 || kv == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (SparkK3RunnerState *)runner->private_state;
+	if ( kv->layer_count != state->dispatch.mla_count || kv->layer_page_bytes != K3GlobalKv::kPageBytes )
+	{
+		fprintf(stderr, "sparkpipe_k3: KV attach refused: binding has %u layers of %llu-byte pages, the slice needs %u of %u\n",
+			kv->layer_count, (unsigned long long)kv->layer_page_bytes, state->dispatch.mla_count, (unsigned)K3GlobalKv::kPageBytes);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	if ( SparkK3DispatchAttachKv(&state->dispatch, kv->pool, kv->layer_stride_bytes, kv->page_table, kv->page_table_stride,
+		kv->pool_page_count, kv->sequence_count) != SPARK_K3_DISPATCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return SPARK_STATUS_OK;
+}
+
+uint64_t SparkK3StageRunnerRecurrentBytes(const SparkK3StageRunner *runner)
+{
+	const SparkK3RunnerState *state;
+	SparkK3KdaRankLayout layout;
+	if ( runner == 0 || runner->private_state == 0 )
+		return 0u;
+	state = (const SparkK3RunnerState *)runner->private_state;
+	if ( state->dispatch.kda_count == 0u || SparkK3KdaRankLayoutFor(state->dispatch.tp_degree, &layout) == 0u )
+		return 0u;
+	return (uint64_t)state->dispatch.kda_count * (layout.state_slot_bytes + 2u * layout.qk_window_slot_bytes + layout.v_window_slot_bytes);
+}
+
+SparkStatus SparkK3StageRunnerRecurrentCopy(SparkK3StageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
+{
+	SparkK3RunnerState *state;
+	SparkK3KdaRankLayout layout;
+	uint8_t *pools[SPARK_K3_SLOT_POOLS], *packed = (uint8_t *)buffer;
+	uint64_t widths[SPARK_K3_SLOT_POOLS];
+	cudaError_t error = cudaSuccess;
+	uint32_t part;
+	if ( runner == 0 || runner->private_state == 0 || buffer == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (SparkK3RunnerState *)runner->private_state;
+	if ( slot >= state->dispatch.sequences || bytes != SparkK3StageRunnerRecurrentBytes(runner) ||
+		SparkK3KdaRankLayoutFor(state->dispatch.tp_degree, &layout) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	pools[SPARK_K3_SLOT_POOL_STATE] = state->dispatch.kda_state_pool;
+	pools[SPARK_K3_SLOT_POOL_Q_WINDOW] = (uint8_t *)state->dispatch.kda_q_window_pool;
+	pools[SPARK_K3_SLOT_POOL_K_WINDOW] = (uint8_t *)state->dispatch.kda_k_window_pool;
+	pools[SPARK_K3_SLOT_POOL_V_WINDOW] = (uint8_t *)state->dispatch.kda_v_window_pool;
+	widths[SPARK_K3_SLOT_POOL_STATE] = layout.state_slot_bytes;
+	widths[SPARK_K3_SLOT_POOL_Q_WINDOW] = layout.qk_window_slot_bytes;
+	widths[SPARK_K3_SLOT_POOL_K_WINDOW] = layout.qk_window_slot_bytes;
+	widths[SPARK_K3_SLOT_POOL_V_WINDOW] = layout.v_window_slot_bytes;
+	for ( part = 0u; part < SPARK_K3_SLOT_POOLS && error == cudaSuccess; part++ )
+	{
+		uint8_t *pool = pools[part] + (uint64_t)slot * widths[part];
+		size_t pitch = (size_t)(widths[part] * state->dispatch.sequences);
+		error = to_buffer != 0u ?
+			cudaMemcpy2DAsync(packed, (size_t)widths[part], pool, pitch, (size_t)widths[part], state->dispatch.kda_count, cudaMemcpyDefault, (cudaStream_t)stream) :
+			cudaMemcpy2DAsync(pool, pitch, packed, (size_t)widths[part], (size_t)widths[part], state->dispatch.kda_count, cudaMemcpyDefault, (cudaStream_t)stream);
+		packed += widths[part] * state->dispatch.kda_count;
+	}
+	if ( error == cudaSuccess && stream == 0 )
+		error = cudaStreamSynchronize(0);
+	if ( error != cudaSuccess )
+	{
+		fprintf(stderr, "sparkpipe_k3: KDA record copy failed slot=%u cuda=%s\n", slot, cudaGetErrorString(error));
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkK3StageRunnerPackIdentity(const SparkK3StageRunner *runner, uint8_t *digest, uint32_t digest_bytes)
+{
+	const SparkK3RunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 || digest == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (const SparkK3RunnerState *)runner->private_state;
+	if ( state->lazy_pack == 0 || digest_bytes != sizeof(state->lazy_pack->pack_sha256) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memcpy(digest, state->lazy_pack->pack_sha256, digest_bytes);
 	return SPARK_STATUS_OK;
 }
 

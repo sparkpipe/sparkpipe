@@ -32,6 +32,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark0/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark0/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark0",
@@ -47,6 +49,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark1/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark1/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark1",
@@ -62,6 +66,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark2/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark2/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark2",
@@ -77,6 +83,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark3/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark3/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark3",
@@ -92,6 +100,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark4/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark4/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark4",
@@ -107,6 +117,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark5/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark5/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark5",
@@ -122,6 +134,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark6/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark6/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark6",
@@ -137,6 +151,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark7/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark7/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark7",
@@ -152,6 +168,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark8/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark8/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark8",
@@ -167,6 +185,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/spark9/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/spark9/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "spark9",
@@ -182,6 +202,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/sparka/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/sparka/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparka",
@@ -197,6 +219,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/sparkb/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/sparkb/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparkb",
@@ -212,6 +236,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/sparkc/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/sparkc/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparkc",
@@ -227,6 +253,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/sparkd/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/sparkd/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparkd",
@@ -242,6 +270,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/sparke/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/sparke/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparke",
@@ -257,6 +287,8 @@
       "adapter_configuration_path": "config/adapter.json",
       "kv_backing_directory": "/home/sparkf/sparkdata/k3.mxfp4.tp4pp4/kvcache",
       "kv_backing_maximum_bytes": 137438953472,
+      "kv_snapshot_directory": "/home/sparkf/sparkdata/k3.mxfp4.tp4pp4/kvsnapshot",
+      "kv_snapshot_maximum_bytes": 68719476736,
       "control_endpoint": {
         "kind": "tcp",
         "host": "sparkf",

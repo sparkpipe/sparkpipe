@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include "sparkpipe/spark_error_site.h"
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,12 @@
 #include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_speculation_seam.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_admission.h"
+#include "sparkpipe/spark_serving_cache_admission.h"
+#include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_stage_kv_binding.h"
+#include "sparkpipe/spark_stage_module_common.h"
+#include "sparkpipe/spark_k3_kv_geometry.h"
 
 #include "spark_k3_dspark_format.h"
 #include "inference/llms/kimi_k3/spec_verify.h"
@@ -57,6 +64,12 @@
 #else
 #error "SPARK_K3_SERVING_TOPOLOGY must be 404 (TP4xPP4) or 16 (TP16)"
 #endif
+
+#define SPARK_K3_SERVING_CONTRACT_SHA256 "318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"
+#define SPARK_K3_SERVING_MODULE_TAG "k3_stage"
+#define SPARK_K3_SERVING_MAX_LANES 16u
+#define SPARK_K3_SERVING_MAX_ROWS 16u
+#define SPARK_K3_SERVING_PROGRAM_ID 1u
 
 #define SPARK_K3_SEAM_DRAFT_TIME_BUDGET_MS 20u
 #define SPARK_K3_SEAM_DRAFT_MAX_DEPTH 16u
@@ -106,6 +119,14 @@ typedef struct SparkK3ServingState
 	SparkMemoryBuffer output_tokens;
 	SparkMemoryBuffer output_scores;
 	SparkSpeculationSeam *speculation_seam;
+	SparkStageModuleLedger ledger;
+	SparkStageKvBinding kv;
+	SparkModelDriverCacheLane cache_lanes[SPARK_K3_SERVING_MAX_LANES];
+	SparkModelDriverCacheLane prefetch_lanes[SPARK_K3_SERVING_MAX_LANES];
+	atomic_uint lane_states[SPARK_K3_SERVING_MAX_LANES];
+	atomic_ullong reset_generation;
+	SparkModelDriverCompletion publish_completion;
+	uint32_t publish_completed;
 } SparkK3ServingState;
 
 static uint32_t K3ServingJsonU32(SparkJsonDocument *doc, int32_t root,
@@ -514,6 +535,186 @@ static SparkStatus K3ServingInitializeSpeculationSeam(SparkK3ServingState *state
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus K3ServingRecurrentCopy(void *context, uint32_t direction,
+	uint32_t slot, void *buffer, uint64_t bytes, void *stream)
+{
+	SparkK3ServingState *state = (SparkK3ServingState *)context;
+	if ( state == 0 || (direction != SPARK_STAGE_KV_RECURRENT_TO_BUFFER &&
+		direction != SPARK_STAGE_KV_RECURRENT_FROM_BUFFER) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return SparkK3StageRunnerRecurrentCopy(&state->runner,
+		direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER ? 1u : 0u,
+		slot, buffer, bytes, stream);
+}
+
+static SparkStatus K3ServingDriverAdmit(void *driver_instance,
+	const SparkModelDriverAdmissionRequest *request,
+	SparkModelDriverAdmissionDecision *decision)
+{
+	SparkK3ServingState *state = (SparkK3ServingState *)driver_instance;
+	return SparkStageKvBindingAdmit(&state->kv, request, decision);
+}
+
+static const SparkModelDriverInterface K3ServingDriver =
+{
+	.abi_version = SPARK_MODEL_DRIVER_ABI_VERSION,
+	.interface_bytes = (uint32_t)sizeof(SparkModelDriverInterface),
+	.admit = K3ServingDriverAdmit,
+};
+
+static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
+	const SparkModelServingAdapterConfiguration *configuration)
+{
+	SparkStageKvConfiguration kv;
+	SparkK3StageRunnerKv attach;
+	SparkStatus status;
+	memset(&kv, 0, sizeof(kv));
+	state->ledger.module_tag = SPARK_K3_SERVING_MODULE_TAG;
+	kv.ledger = &state->ledger;
+	kv.module_tag = SPARK_K3_SERVING_MODULE_TAG;
+	kv.block_token_count = SPARK_K3_KV_PAGE_SLOTS;
+	kv.region_count = 1u;
+	kv.regions[0].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
+	kv.regions[0].layer_count = SparkK3StageRunnerKvLayerCount(&state->runner);
+	kv.regions[0].layer_page_bytes = (uint64_t)SPARK_K3_KV_PAGE_SLOTS *
+		SPARK_K3_MODEL_MLA_KV_A_DIMENSION * SPARK_K3_KV_BYTES_PER_SCALAR;
+	kv.arena_kv_head_count = 1u;
+	kv.arena_head_dim = SPARK_K3_MODEL_MLA_KV_A_DIMENSION;
+	kv.arena_bytes_per_scalar = SPARK_K3_KV_BYTES_PER_SCALAR;
+	SparkK3KvFillCapacityRequest(&kv.capacity_request);
+	kv.capacity_request.layer_count = kv.regions[0].layer_count;
+	kv.model_id = SPARK_K3_MODEL_SOURCE_ID;
+	kv.model_revision = SPARK_K3_SERVING_ADAPTER_ID;
+	kv.resident_sequence_capacity = state->runner_config.resident_sequence_capacity;
+	kv.max_sequence_positions = state->runner_config.kv_pages_per_sequence * SPARK_K3_KV_PAGE_SLOTS;
+	kv.max_input_row_count = state->max_rows;
+	kv.logical_page_count = configuration->runtime_limits.kv_logical_page_capacity;
+	kv.physical_page_count = configuration->runtime_limits.kv_physical_page_capacity;
+	kv.pipeline_slot_count = 1u;
+	kv.backing_directory = configuration->kv_backing_directory;
+	kv.backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
+	kv.snapshot_directory = configuration->kv_snapshot_directory;
+	kv.snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
+	status = SparkK3StageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "%s kv binding refused: the runner has no weightd pack, so the KV layout has no pack identity\n",
+			SPARK_K3_SERVING_MODULE_TAG);
+		SPARK_RETURN(status);
+	}
+	if ( SparkSha256HexToDigest(SPARK_K3_SERVING_CONTRACT_SHA256, kv.contract_sha256) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
+	kv.expert_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
+	kv.kv_codec = SPARK_WEIGHT_CODEC_BF16;
+	kv.driver_symbol = (const void *)&K3ServingBindKv;
+	kv.recurrent.lane_bytes = SparkK3StageRunnerRecurrentBytes(&state->runner);
+	if ( kv.recurrent.lane_bytes != 0u )
+	{
+		kv.recurrent.copy = K3ServingRecurrentCopy;
+		kv.recurrent.context = state;
+	}
+	status = SparkStageKvBindingInitialize(&state->kv, &kv);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&attach, 0, sizeof(attach));
+	attach.pool = state->kv.region_base[0];
+	attach.layer_stride_bytes = state->kv.region_layer_stride_bytes[0];
+	attach.layer_page_bytes = kv.regions[0].layer_page_bytes;
+	attach.layer_count = kv.regions[0].layer_count;
+	attach.page_table = state->kv.page_table;
+	attach.page_table_stride = state->kv.pages_per_sequence;
+	attach.pool_page_count = state->kv.physical_page_count;
+	attach.sequence_count = state->kv.resident_sequence_capacity;
+	return SparkK3StageRunnerAttachKv(&state->runner, &attach);
+}
+
+static SparkServingCacheAdmission K3ServingCacheContext(SparkK3ServingState *state,
+	SparkModelDriverCacheLane *lanes)
+{
+	SparkServingCacheAdmission cache;
+	memset(&cache, 0, sizeof(cache));
+	cache.program_id = SPARK_K3_SERVING_PROGRAM_ID;
+	cache.lane_capacity = SPARK_K3_SERVING_MAX_LANES;
+	cache.lanes = lanes;
+	cache.driver = &K3ServingDriver;
+	cache.driver_instance = state;
+	cache.adapter_state = state;
+	return cache;
+}
+
+typedef struct SparkK3ServingContinuity
+{
+	SparkK3ServingState *state;
+	uint32_t rows;
+	uint32_t active;
+	const uint32_t *row_slots;
+	const uint64_t *row_sequence_ids;
+	const uint64_t *row_positions;
+	uint8_t *bound;
+	uint64_t *sequence_ids;
+	uint64_t *next_positions;
+} SparkK3ServingContinuity;
+
+static SparkStatus K3ServingPrepareContinuity(void *context)
+{
+	SparkK3ServingContinuity *continuity = (SparkK3ServingContinuity *)context;
+	return SparkStageKvBindingContinuity(&continuity->state->kv, continuity->state->lane_states,
+		continuity->rows, continuity->active, continuity->row_slots, continuity->row_sequence_ids,
+		continuity->row_positions, continuity->bound, continuity->sequence_ids, continuity->next_positions);
+}
+
+static void K3ServingPublishCompletion(void *context, const SparkModelDriverCompletion *completion)
+{
+	SparkK3ServingState *state = (SparkK3ServingState *)context;
+	state->publish_completion = *completion;
+	state->publish_completed = 1u;
+}
+
+static void K3ServingBuildFrame(const SparkModelServingSubmission *submission,
+	SparkModelDriverCacheLane *lanes, uint32_t lane_count, void *stream,
+	SparkModelDriverFrame *frame)
+{
+	memset(frame, 0, sizeof(*frame));
+	frame->program_id = SPARK_K3_SERVING_PROGRAM_ID;
+	frame->request_id = submission->request_id;
+	frame->sequence_id = submission->sequence_id;
+	frame->sequence_position = submission->sequence_position;
+	frame->deadline_time_ns = submission->deadline_time_ns;
+	frame->active_slot_count = submission->active_sequence_count;
+	frame->new_token_count = submission->row_count;
+	frame->tokens_per_sequence = submission->tokens_per_sequence;
+	frame->priority = submission->priority;
+	frame->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL :
+		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_PUBLISH :
+		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE : 0u;
+	frame->driver_dispatch_slot = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
+	frame->execution_stream = stream;
+	frame->residency = submission->residency;
+	frame->cache_lane_count = lane_count;
+	frame->cache_lanes = lanes;
+}
+
+static SparkStatus K3ServingAdmitFrame(SparkK3ServingState *state,
+	const SparkModelServingSubmission *submission, SparkModelDriverFrame *frame)
+{
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	uint32_t lane_count = 0u;
+	SparkStatus status;
+	status = SparkModelServingAdapterBuildDriverCacheLanes(submission, state->cache_lanes,
+		SPARK_K3_SERVING_MAX_LANES, &lane_count);
+	if ( status == SPARK_STATUS_OK && lane_count != submission->active_sequence_count )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkAdmissionRequestFromSubmission(SPARK_K3_SERVING_PROGRAM_ID, submission,
+			state->cache_lanes, 0u, &request);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	K3ServingBuildFrame(submission, state->cache_lanes, lane_count,
+		state->runner_config.execution_stream, frame);
+	return SparkAdmissionEvaluateAndApply(&K3ServingDriver, state, &request, frame, &decision);
+}
+
 static SparkStatus K3ServingInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
 	void **adapter_state)
@@ -529,6 +730,12 @@ static SparkStatus K3ServingInitialize(
 	if ( status != SPARK_STATUS_OK )
 		{ free(state); return status; }
 	state->max_rows = state->runner_config.max_input_row_count;
+	if ( state->max_rows == 0u || state->max_rows > SPARK_K3_SERVING_MAX_ROWS ||
+		state->runner_config.max_active_sequence_count == 0u ||
+		state->runner_config.max_active_sequence_count > SPARK_K3_SERVING_MAX_LANES )
+		{ free(state->pack_path); free(state); SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
+	SparkStageModuleAtomicStateArrayInitialize(state->lane_states, SPARK_K3_SERVING_MAX_LANES);
+	atomic_init(&state->reset_generation, 0u);
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
 	status = SparkMemoryBufferAllocate(&state->positions_host,
@@ -588,6 +795,9 @@ static SparkStatus K3ServingInitialize(
 	status = SparkK3StageRunnerInitialize(&state->runner, &state->runner_config);
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status; }
+	status = K3ServingBindKv(state, configuration);
+	if ( status != SPARK_STATUS_OK )
+		{ K3ServingDestroy(state); return status; }
 	status = K3ServingInitializeSpeculationSeam(state);
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status; }
@@ -600,6 +810,8 @@ static void K3ServingDestroy(void *adapter_state)
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
 	if ( state == 0 )
 		return;
+	SparkStageKvBindingDestroy(&state->kv);
+	SparkStageModuleLedgerRelease(&state->ledger);
 	SparkK3StageRunnerDestroy(&state->runner);
 	if ( state->lane_client != 0 )
 	{
@@ -653,14 +865,19 @@ static SparkStatus K3ServingValidateSubmission(void *adapter_state,
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
 	if ( state == 0 || submission == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( submission->control_generation < atomic_load_explicit(&state->reset_generation, memory_order_acquire) )
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 	{
-		if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE &&
+			submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
 			return SPARK_STATUS_UNSUPPORTED;
 		return K3ServingReleaseSlots(state, submission, 0);
 	}
 	if ( submission->row_count == 0u || submission->row_count > state->max_rows )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( submission->row_sequence_ids == 0 || submission->lanes == 0 || submission->lane_count < submission->active_sequence_count )
+		return SPARK_STATUS_VALIDATION_FAILED;
 	return SPARK_STATUS_OK;
 }
 
@@ -742,87 +959,193 @@ static SparkStatus K3ServingGroupRows(SparkK3ServingState *state,
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus K3ServingSubmitNonRow(SparkK3ServingState *state,
+	const SparkModelServingSubmission *submission)
+{
+	SparkModelServingCompletion completion;
+	SparkModelDriverFrame frame;
+	uint32_t slots[SPARK_K3_SERVING_MAX_LANES];
+	SparkStatus status;
+	status = K3ServingReleaseSlots(state, submission, slots);
+	if ( status == SPARK_STATUS_OK )
+		status = K3ServingAdmitFrame(state, submission, &frame);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
+	{
+		frame.completion_function = K3ServingPublishCompletion;
+		frame.completion_context = state;
+		state->publish_completed = 0u;
+		status = SparkStageKvBindingPublishFrame(&state->kv, &frame, state->lane_states);
+		if ( status == SPARK_STATUS_OK && (state->publish_completed == 0u || state->publish_completion.status != SPARK_STATUS_OK) )
+			status = state->publish_completed == 0u ? SPARK_STATUS_INTERNAL_ERROR : state->publish_completion.status;
+	}
+	else
+		status = SparkK3StageRunnerResetSlots(&state->runner, slots, submission->active_sequence_count);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( state->completion_function != 0 )
+	{
+		K3ServingCompletionHeader(submission, 0u, &completion);
+		state->completion_function(state->completion_context, &completion);
+	}
+	return SPARK_STATUS_OK;
+}
+
+static void K3ServingContinuityRows(SparkK3ServingState *state,
+	const SparkModelServingSubmission *submission, uint32_t rows, uint32_t active,
+	uint32_t *row_slots, uint64_t *row_sequence_ids, uint64_t *row_positions)
+{
+	const uint32_t *begin = (const uint32_t *)state->runs_host.pointer;
+	const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+	const uint32_t *slots = (const uint32_t *)state->seqslot_host.pointer;
+	uint32_t lane, cursor, out = active, row;
+	for ( lane = 0u; lane < active; ++lane )
+	{
+		row = order[begin[lane]];
+		row_slots[lane] = slots[lane];
+		row_sequence_ids[lane] = submission->row_sequence_ids[row];
+		row_positions[lane] = submission->row_positions[row];
+	}
+	for ( lane = 0u; lane < active; ++lane )
+		for ( cursor = begin[lane] + 1u; cursor < begin[lane + 1u] && out < rows; ++cursor, ++out )
+		{
+			row = order[cursor];
+			row_slots[out] = slots[lane];
+			row_sequence_ids[out] = submission->row_sequence_ids[row];
+			row_positions[out] = submission->row_positions[row];
+		}
+}
+
+static SparkStatus K3ServingFinish(SparkK3ServingState *state, uint32_t active,
+	const uint32_t *lane_slots, uint8_t *bound, uint64_t *sequence_ids,
+	uint64_t *next_positions, SparkStatus status)
+{
+	SparkStageKvBindingCompletion completion;
+	memset(&completion, 0, sizeof(completion));
+	completion.lane_count = active;
+	completion.status = status;
+	completion.resident_slots = lane_slots;
+	completion.bound = bound;
+	completion.sequence_ids = sequence_ids;
+	completion.next_positions = next_positions;
+	return SparkStageKvBindingFinishWait(&state->kv, 0u, &completion);
+}
+
 static SparkStatus K3ServingSubmit(void *adapter_state,
 	const SparkModelServingSubmission *submission)
 {
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
 	SparkK3StageRunnerDispatch dispatch;
+	SparkModelDriverFrame frame;
+	SparkK3ServingContinuity continuity;
+	uint32_t row_slots[SPARK_K3_SERVING_MAX_ROWS];
+	uint64_t row_sequence_ids[SPARK_K3_SERVING_MAX_ROWS], row_positions[SPARK_K3_SERVING_MAX_ROWS];
+	uint8_t bound[SPARK_K3_SERVING_MAX_LANES];
+	uint64_t sequence_ids[SPARK_K3_SERVING_MAX_LANES], next_positions[SPARK_K3_SERVING_MAX_LANES];
 	uint32_t rows, active = 0u;
-	SparkStatus status;
-	if ( state == 0 || submission == 0 )
-		return SPARK_STATUS_INVALID_ARGUMENT;
+	SparkStatus status, finished;
+	void *stream;
+	status = K3ServingValidateSubmission(state, submission);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
-	{
-		SparkModelServingCompletion completion;
-		uint32_t slots[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
-		if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-			return SPARK_STATUS_INVALID_ARGUMENT;
-		status = K3ServingReleaseSlots(state, submission, slots);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		status = SparkK3StageRunnerResetSlots(&state->runner, slots,
-			submission->active_sequence_count);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		if ( state->completion_function != 0 )
-		{
-			K3ServingCompletionHeader(submission, 0u, &completion);
-			state->completion_function(state->completion_context, &completion);
-		}
-		return SPARK_STATUS_OK;
-	}
+		return K3ServingSubmitNonRow(state, submission);
+	stream = state->runner_config.execution_stream;
 	rows = submission->row_count;
 	status = K3ServingGroupRows(state, submission, rows, &active);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( SparkMemoryBufferCopy(&state->positions_device, &state->positions_host,
-			(uint64_t)rows * sizeof(uint32_t), state->runner_config.execution_stream) != SPARK_STATUS_OK ||
-		SparkMemoryBufferCopy(&state->context_device, &state->context_host,
-			(uint64_t)state->runner_config.max_active_sequence_count * sizeof(uint32_t),
-			state->runner_config.execution_stream) != SPARK_STATUS_OK ||
-		SparkMemoryBufferCopy(&state->state_device, &state->state_host,
-			(uint64_t)rows * sizeof(uint32_t), state->runner_config.execution_stream) != SPARK_STATUS_OK ||
-		SparkMemoryBufferCopy(&state->runs_device, &state->runs_host,
-			((uint64_t)active + 1u) * sizeof(uint32_t),
-			state->runner_config.execution_stream) != SPARK_STATUS_OK ||
-		SparkMemoryBufferCopy(&state->seqslot_device, &state->seqslot_host,
-			(uint64_t)active * sizeof(uint32_t),
-			state->runner_config.execution_stream) != SPARK_STATUS_OK ||
-		SparkMemoryBufferCopy(&state->order_device, &state->order_host,
-			(uint64_t)rows * sizeof(uint32_t),
-			state->runner_config.execution_stream) != SPARK_STATUS_OK )
-		return SPARK_STATUS_IO_ERROR;
-	memset(&dispatch, 0, sizeof(dispatch));
-	dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
-	dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
-	dispatch.request_id = submission->request_id;
-	dispatch.sequence_id = submission->sequence_id;
-	dispatch.sequence_position = submission->sequence_position;
-	dispatch.deadline_time_ns = submission->deadline_time_ns;
-	dispatch.row_count = rows;
-	dispatch.active_sequence_count = active;
-	dispatch.token_ids = submission->token_ids;
-	dispatch.positions = state->positions_device.pointer;
-	dispatch.context_length = state->context_device.pointer;
-	dispatch.sequence_of_row = state->state_device.pointer;
-	dispatch.sequence_row_begin = state->runs_device.pointer;
-	dispatch.sequence_row_indices = state->order_device.pointer;
-	dispatch.kda_state_index = state->seqslot_device.pointer;
-	dispatch.hidden_input_bf16 = submission->hidden_input_address;
-	dispatch.hidden_input_bytes = submission->hidden_input_bytes;
-	dispatch.hidden_output_bf16 = submission->hidden_output_address;
-	dispatch.hidden_output_bytes = submission->hidden_output_bytes;
-	dispatch.residual_bank_input = submission->boundary_sideband_input_address;
-	dispatch.residual_bank_input_bytes = submission->boundary_sideband_input_bytes;
-	dispatch.residual_bank_output = submission->boundary_sideband_output_address;
-	dispatch.residual_bank_output_bytes = submission->boundary_sideband_output_bytes;
-	dispatch.output_token_ids = state->output_tokens.pointer;
-	dispatch.output_scores = state->output_scores.pointer;
-	dispatch.completion_function = 0;
-	dispatch.completion_context = 0;
-	status = SparkK3StageRunnerSubmit(&state->runner, &dispatch);
+	status = K3ServingAdmitFrame(state, submission, &frame);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	K3ServingContinuityRows(state, submission, rows, active, row_slots, row_sequence_ids, row_positions);
+	continuity.state = state;
+	continuity.rows = rows;
+	continuity.active = active;
+	continuity.row_slots = row_slots;
+	continuity.row_sequence_ids = row_sequence_ids;
+	continuity.row_positions = row_positions;
+	continuity.bound = bound;
+	continuity.sequence_ids = sequence_ids;
+	continuity.next_positions = next_positions;
+	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states, SPARK_K3_SERVING_MAX_LANES,
+		row_slots, active, K3ServingPrepareContinuity, &continuity);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = SparkStageKvBindingClaim(&state->kv, &frame, active, row_slots, row_sequence_ids, row_positions, next_positions);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkStageModuleIndexSetRelease(state->lane_states, SPARK_K3_SERVING_MAX_LANES, row_slots, active);
+		return status;
+	}
+	status = SparkStageKvBindingFenceExecution(&state->kv, stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingRecurrentRestore(&state->kv, row_slots, active, stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingUploadPageTables(&state->kv, row_slots, active, stream);
+	if ( status == SPARK_STATUS_OK )
+	{
+		if ( SparkMemoryBufferCopy(&state->positions_device, &state->positions_host,
+				(uint64_t)rows * sizeof(uint32_t), state->runner_config.execution_stream) != SPARK_STATUS_OK ||
+			SparkMemoryBufferCopy(&state->context_device, &state->context_host,
+				(uint64_t)state->runner_config.max_active_sequence_count * sizeof(uint32_t),
+				state->runner_config.execution_stream) != SPARK_STATUS_OK ||
+			SparkMemoryBufferCopy(&state->state_device, &state->state_host,
+				(uint64_t)rows * sizeof(uint32_t), state->runner_config.execution_stream) != SPARK_STATUS_OK ||
+			SparkMemoryBufferCopy(&state->runs_device, &state->runs_host,
+				((uint64_t)active + 1u) * sizeof(uint32_t),
+				state->runner_config.execution_stream) != SPARK_STATUS_OK ||
+			SparkMemoryBufferCopy(&state->seqslot_device, &state->seqslot_host,
+				(uint64_t)active * sizeof(uint32_t),
+				state->runner_config.execution_stream) != SPARK_STATUS_OK ||
+			SparkMemoryBufferCopy(&state->order_device, &state->order_host,
+				(uint64_t)rows * sizeof(uint32_t),
+				state->runner_config.execution_stream) != SPARK_STATUS_OK )
+				status = SPARK_STATUS_IO_ERROR;
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		memset(&dispatch, 0, sizeof(dispatch));
+		dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
+		dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
+		dispatch.request_id = submission->request_id;
+		dispatch.sequence_id = submission->sequence_id;
+		dispatch.sequence_position = submission->sequence_position;
+		dispatch.deadline_time_ns = submission->deadline_time_ns;
+		dispatch.row_count = rows;
+		dispatch.active_sequence_count = active;
+		dispatch.token_ids = submission->token_ids;
+		dispatch.positions = state->positions_device.pointer;
+		dispatch.context_length = state->context_device.pointer;
+		dispatch.sequence_of_row = state->state_device.pointer;
+		dispatch.sequence_row_begin = state->runs_device.pointer;
+		dispatch.sequence_row_indices = state->order_device.pointer;
+		dispatch.kda_state_index = state->seqslot_device.pointer;
+		dispatch.hidden_input_bf16 = submission->hidden_input_address;
+		dispatch.hidden_input_bytes = submission->hidden_input_bytes;
+		dispatch.hidden_output_bf16 = submission->hidden_output_address;
+		dispatch.hidden_output_bytes = submission->hidden_output_bytes;
+		dispatch.residual_bank_input = submission->boundary_sideband_input_address;
+		dispatch.residual_bank_input_bytes = submission->boundary_sideband_input_bytes;
+		dispatch.residual_bank_output = submission->boundary_sideband_output_address;
+		dispatch.residual_bank_output_bytes = submission->boundary_sideband_output_bytes;
+		dispatch.output_token_ids = state->output_tokens.pointer;
+		dispatch.output_scores = state->output_scores.pointer;
+		dispatch.completion_function = 0;
+		dispatch.completion_context = 0;
+		status = SparkK3StageRunnerSubmit(&state->runner, &dispatch);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, stream);
+	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+		status = SPARK_STATUS_IO_ERROR;
+	finished = K3ServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, status);
+	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_K3_SERVING_MAX_LANES, row_slots, active);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( finished != SPARK_STATUS_OK )
+		return finished;
 	if ( state->completion_function != 0 )
 	{
 		SparkModelServingCompletion completion;
@@ -855,19 +1178,29 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 static SparkStatus K3ServingPrefetch(void *adapter_state,
 	const SparkModelServingSubmission *submissions, uint32_t submission_count)
 {
-	(void)adapter_state;
-	(void)submissions;
-	(void)submission_count;
-	return SPARK_STATUS_OK;
+	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
+	SparkServingCacheAdmission cache;
+	if ( state == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	cache = K3ServingCacheContext(state, state->prefetch_lanes);
+	cache.validate = K3ServingValidateSubmission;
+	return SparkServingCacheAdmissionRun(&cache, submissions, submission_count,
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
 }
 
 static SparkStatus K3ServingResolvePrefetch(void *adapter_state,
 	const SparkModelServingSubmission *submission, uint32_t resolution)
 {
-	(void)adapter_state;
-	(void)submission;
-	(void)resolution;
-	return SPARK_STATUS_OK;
+	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
+	SparkServingCacheAdmission cache;
+	if ( state == 0 || (resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT &&
+		resolution != SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT) )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	cache = K3ServingCacheContext(state, state->prefetch_lanes);
+	cache.validate = K3ServingValidateSubmission;
+	return SparkServingCacheAdmissionRun(&cache, submission, 1u,
+		resolution == SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT ?
+		SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT : SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT);
 }
 
 static SparkStatus K3ServingProgress(void *adapter_state, uint32_t maximum_step_count)
@@ -898,14 +1231,40 @@ static SparkStatus K3ServingSnapshot(void *adapter_state,
 	SparkK3StageRunnerGetStats(&state->runner, &stats);
 	snapshot->submitted_count = stats.submitted_count;
 	snapshot->completed_count = stats.completed_count;
+	snapshot->resident_sequence_count = SparkStageKvBindingResidentCount(&state->kv);
+	snapshot->kv_token_capacity = (uint64_t)state->kv.logical_page_count * SPARK_K3_KV_PAGE_SLOTS;
+	SparkStageKvBindingKvStoreCounters(&state->kv, &snapshot->kv_store);
 	return SPARK_STATUS_OK;
 }
 
 static SparkStatus K3ServingReset(void *adapter_state, uint64_t control_generation)
 {
-	(void)adapter_state;
-	(void)control_generation;
-	return SPARK_STATUS_OK;
+	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
+	uint32_t slots[SPARK_K3_SERVING_MAX_LANES], slot, count;
+	SparkStatus status;
+	if ( state == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkStageKvBindingResetIsNew(&state->kv, control_generation) == 0u )
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	count = state->kv.resident_sequence_capacity;
+	for ( slot = 0u; slot < count; ++slot )
+		slots[slot] = slot;
+	status = SparkStageModuleIndexSetClaim(state->lane_states, SPARK_K3_SERVING_MAX_LANES, slots, count);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( cudaStreamSynchronize((cudaStream_t)state->runner_config.execution_stream) != cudaSuccess ||
+		(state->kv.copy_stream != 0 && cudaStreamSynchronize((cudaStream_t)state->kv.copy_stream) != cudaSuccess) )
+	{
+		fprintf(stderr, "%s reset: execution stream failed; lanes stay claimed\n", SPARK_K3_SERVING_MODULE_TAG);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	status = SparkK3StageRunnerResetSlots(&state->runner, slots, count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingReset(&state->kv, control_generation);
+	if ( status == SPARK_STATUS_OK )
+		atomic_store_explicit(&state->reset_generation, control_generation, memory_order_release);
+	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_K3_SERVING_MAX_LANES, slots, count);
+	SPARK_RETURN(status);
 }
 
 static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
@@ -915,8 +1274,10 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 		SPARK_K3_MODEL_SOURCE_ID,
 		SPARK_K3_SERVING_ADAPTER_ID,
 		"k3",
-		"318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"),
-	.capability_flags = SPARK_K3_SERVING_CAPABILITIES,
+		SPARK_K3_SERVING_CONTRACT_SHA256),
+	.capability_flags = SPARK_K3_SERVING_CAPABILITIES |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH,
 	.stage_count = 16u,
 	.layer_count = SPARK_K3_MODEL_LAYER_COUNT,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,

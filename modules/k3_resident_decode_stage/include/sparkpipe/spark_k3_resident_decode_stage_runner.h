@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 
-#define SPARK_K3_STAGE_RUNNER_ABI_VERSION 2u
+#define SPARK_K3_STAGE_RUNNER_ABI_VERSION 3u
 #define SPARK_K3_STAGE_RUNNER_CONFIGURATION_BYTES \
     ((uint32_t)sizeof(SparkK3StageRunnerConfiguration))
 #define SPARK_K3_STAGE_RUNNER_DISPATCH_BYTES \
@@ -84,6 +84,18 @@ typedef struct SparkK3StageRunnerDispatch
     void *completion_context;
 } SparkK3StageRunnerDispatch;
 
+typedef struct SparkK3StageRunnerKv
+{
+    uint8_t *pool;
+    uint64_t layer_stride_bytes;
+    uint64_t layer_page_bytes;
+    uint32_t layer_count;
+    const uint32_t *page_table;
+    uint32_t page_table_stride;
+    uint32_t pool_page_count;
+    uint32_t sequence_count;
+} SparkK3StageRunnerKv;
+
 typedef struct SparkK3StageRunnerStats
 {
     uint32_t abi_version;
@@ -127,6 +139,12 @@ SparkStatus SparkK3StageRunnerGetStats(
     SparkK3StageRunnerStats *stats_out);
 
 void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner);
+
+uint32_t SparkK3StageRunnerKvLayerCount(const SparkK3StageRunner *runner);
+SparkStatus SparkK3StageRunnerAttachKv(SparkK3StageRunner *runner, const SparkK3StageRunnerKv *kv);
+uint64_t SparkK3StageRunnerRecurrentBytes(const SparkK3StageRunner *runner);
+SparkStatus SparkK3StageRunnerRecurrentCopy(SparkK3StageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream);
+SparkStatus SparkK3StageRunnerPackIdentity(const SparkK3StageRunner *runner, uint8_t *digest, uint32_t digest_bytes);
 
 const void *SparkK3StageRunnerProbeBuffers(const SparkK3StageRunner *runner);
 
