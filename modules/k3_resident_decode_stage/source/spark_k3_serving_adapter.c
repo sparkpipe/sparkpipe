@@ -69,7 +69,7 @@
 #define SPARK_K3_SERVING_CONTRACT_SHA256 "318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"
 #define SPARK_K3_SERVING_MODULE_TAG "k3_stage"
 #define SPARK_K3_SERVING_MAX_LANES 16u
-#define SPARK_K3_SERVING_MAX_ROWS 16u
+#define SPARK_K3_SERVING_MAX_ROWS 64u
 #define SPARK_K3_SERVING_PROGRAM_ID 1u
 
 #define SPARK_K3_SEAM_DRAFT_TIME_BUDGET_MS 20u
@@ -1302,7 +1302,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = 16u,
-	.max_input_row_count = 16u,
+	.max_input_row_count = SPARK_K3_SERVING_MAX_ROWS,
 	.max_resident_sequence_count = 16u,
 	.max_output_token_count = 16u,
 	.max_speculative_token_count = SPARK_K3_DSPARK_MAX_DRAFT_TOKEN_COUNT,
