@@ -1265,6 +1265,59 @@ static void SparkTestPrefixCacheReusesCommittedLogicalBlocks(void)
 	assert(cache.hit_count == 1u);
 }
 
+static void SparkTestPrefixCacheResumeOpen(SparkTestKvFixture *fixture,SparkPrefixCache *cache,SparkPrefixCacheEntry *entries,SparkPrefixCacheSequenceBinding *bindings)
+{
+	SparkPrefixCacheConfiguration configuration;
+	SparkTestKvInitialize(fixture);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	configuration.block_token_count = SPARK_TEST_BLOCK_TOKENS;
+	configuration.entry_count = 8u;
+	configuration.logical_block_count = SPARK_TEST_LOGICAL_BLOCK_COUNT;
+	configuration.sequence_binding_count = 16u;
+	configuration.entries = entries;
+	configuration.sequence_bindings = bindings;
+	configuration.kv_cache_arena = &fixture->arena;
+	assert(SparkPrefixCacheInitialize(cache,&configuration) == SPARK_STATUS_OK);
+}
+
+static void SparkTestPrefixCacheResumePoints(void)
+{
+	SparkTestKvFixture fixture,imported_fixture;
+	SparkPrefixCache cache,imported;
+	SparkPrefixCacheEntry entries[8u],imported_entries[8u];
+	SparkPrefixCacheSequenceBinding bindings[16u],imported_bindings[16u];
+	SparkPrefixCacheCommittedRecord records[8u];
+	SparkPrefixCacheLookup lookup;
+	uint32_t tokens[16u],other[16u],index,count,resume_records,added,skipped;
+	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
+	for (index=0u; index<16u; index++)
+		tokens[index] = other[index] = 2000u + index;
+	other[10] = 7u;
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,8u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,8u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,16u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,4u) == 0u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,12u) == 8u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,other,12u) == 8u);
+	assert(SparkPrefixCacheMarkResume(&cache,other,12u) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,16u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,16u) == 16u);
+	assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK && count == 4u);
+	for (index=0u,resume_records=0u; index<count; index++)
+		resume_records += records[index].flags == SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME ? 1u : 0u;
+	assert(resume_records == 2u);
+	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
+	records[0].flags |= 0x40u;
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
+	records[0].flags &= ~0x40u;
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+	assert(SparkPrefixCacheResumeTokenCount(&imported,tokens,16u) == 16u);
+	assert(SparkPrefixCacheResumeTokenCount(&imported,tokens,12u) == 8u);
+	printf("prefix cache resume points: only marked publication ends resume, a lookup truncates to the last one, and the marks survive export and import: ok\n");
+}
+
 static void SparkTestPrefixCachePartialPublication(void)
 {
 	for (uint32_t hashed=0u; hashed<2u; hashed++)
@@ -3192,6 +3245,7 @@ int main(void)
 	SparkTestKvPageStoreDirectIoContract();
 	SparkTestKvPageStoreFailedPrefetchCancelsReservation();
 	SparkTestPrefixCacheReusesCommittedLogicalBlocks();
+	SparkTestPrefixCacheResumePoints();
 	SparkTestPrefixCachePartialPublication();
 	SparkTestPrefixCacheTombstone(0u);
 	SparkTestPrefixCacheTombstone(1u);

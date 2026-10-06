@@ -150,7 +150,7 @@ static SparkStatus SparkStageKvBindingAllocateHost(SparkStageKvBinding *binding,
 
 static SparkStatus SparkStageKvBindingStateBudget(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration,uint64_t spill_pages)
 {
-	uint64_t lane_bytes = configuration->recurrent.lane_bytes,kv_cap,need;
+	uint64_t lane_bytes = configuration->recurrent.lane_bytes,kv_cap,slots,minimum;
 	if ( lane_bytes == 0u )
 	{
 		binding->page_store_backing_bytes = configuration->backing_maximum_bytes > binding->page_bytes ? configuration->backing_maximum_bytes : binding->page_bytes;
@@ -159,18 +159,19 @@ static SparkStatus SparkStageKvBindingStateBudget(SparkStageKvBinding *binding,c
 	kv_cap = spill_pages * binding->page_bytes;
 	if ( kv_cap < binding->page_bytes )
 		kv_cap = binding->page_bytes;
-	if ( lane_bytes > UINT64_MAX / configuration->logical_page_count )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	need = lane_bytes * configuration->logical_page_count;
-	if ( configuration->backing_maximum_bytes < kv_cap || configuration->backing_maximum_bytes - kv_cap < need )
+	minimum = 2u * (uint64_t)configuration->resident_sequence_capacity + 2u;
+	slots = configuration->backing_maximum_bytes > kv_cap ? (configuration->backing_maximum_bytes - kv_cap) / lane_bytes : 0u;
+	if ( slots > configuration->logical_page_count )
+		slots = configuration->logical_page_count;
+	if ( slots < minimum )
 	{
-		fprintf(stderr,"%s kv binding refused: %u pages of recurrent state at %llu bytes need %llu backing bytes beyond %llu page-store bytes, %llu configured\n",
-			configuration->module_tag,configuration->logical_page_count,(unsigned long long)lane_bytes,(unsigned long long)need,(unsigned long long)kv_cap,
-			(unsigned long long)configuration->backing_maximum_bytes);
+		fprintf(stderr,"%s kv binding refused: recurrent checkpoints of %llu bytes need %llu slots (two per resident lane and two in flight) beyond %llu page-store bytes, %llu backing bytes configured hold %llu\n",
+			configuration->module_tag,(unsigned long long)lane_bytes,(unsigned long long)minimum,(unsigned long long)kv_cap,
+			(unsigned long long)configuration->backing_maximum_bytes,(unsigned long long)slots);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	binding->page_store_backing_bytes = kv_cap;
-	binding->state_slot_count = configuration->logical_page_count;
+	binding->state_slot_count = (uint32_t)slots;
 	return(SPARK_STATUS_OK);
 }
 
@@ -2068,6 +2069,11 @@ static SparkStatus SparkStageKvBindingRecurrentAdmit(SparkStageKvBinding *bindin
 	SPARK_RETURN(status);
 }
 
+static uint32_t SparkStageKvLaneKeepsState(uint32_t flags)
+{
+	return((flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS)) == SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH ? 1u : 0u);
+}
+
 static SparkStatus SparkStageKvCollectWrites(SparkStageKvBinding *binding,const uint32_t *slots,uint32_t lane_count,SparkStageKvStateJob *jobs,uint32_t *count_out)
 {
 	const SparkKvLaneTransaction *owner;
@@ -2079,7 +2085,7 @@ static SparkStatus SparkStageKvCollectWrites(SparkStageKvBinding *binding,const 
 		if ( slot >= binding->resident_sequence_capacity )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		owner = &binding->lanes[slot];
-		if ( (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u && (binding->lane_state_flags[slot] & SPARK_STAGE_KV_LANE_STATE_CAPTURED) == 0u )
+		if ( SparkStageKvLaneKeepsState(owner->lane.flags) != 0u && (binding->lane_state_flags[slot] & SPARK_STAGE_KV_LANE_STATE_CAPTURED) == 0u )
 		{
 			fprintf(stderr,"%s kv binding refused: lane %u publishes without captured recurrent state\n",binding->module_tag,slot);
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
@@ -2089,7 +2095,7 @@ static SparkStatus SparkStageKvCollectWrites(SparkStageKvBinding *binding,const 
 			fprintf(stderr,"%s kv binding refused: lane %u finished without applying its restored recurrent state\n",binding->module_tag,slot);
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		}
-		if ( (owner->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u )
+		if ( SparkStageKvLaneKeepsState(owner->lane.flags) == 0u )
 			continue;
 		page = SparkStageKvTerminalMutablePage(&binding->page_cache.sequences[slot]);
 		if ( page >= binding->logical_page_count )
@@ -2108,7 +2114,9 @@ static SparkStatus SparkStageKvWriteJob(SparkStageKvBinding *binding,const Spark
 	while ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 	{
 		(void)SparkStageKvBindingLock(binding,held);
-		evicted = SparkKvPageCacheEvictUnused(&binding->page_cache);
+		evicted = SparkKvPageCacheDemoteState(&binding->page_cache);
+		if ( evicted == SPARK_STATUS_CAPACITY_EXCEEDED )
+			evicted = SparkKvPageCacheEvictUnused(&binding->page_cache);
 		SparkStageKvBindingUnlock(binding,site,*held);
 		if ( evicted != SPARK_STATUS_OK )
 		{
@@ -2223,7 +2231,7 @@ SparkStatus SparkStageKvBindingRecurrentCapture(SparkStageKvBinding *binding,con
 		slot = resident_slots[index];
 		if ( slot >= binding->resident_sequence_capacity )
 			status = SPARK_STATUS_INVALID_ARGUMENT;
-		else if ( binding->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EXECUTING && (binding->lanes[slot].lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u )
+		else if ( binding->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EXECUTING && SparkStageKvLaneKeepsState(binding->lanes[slot].lane.flags) != 0u )
 		{
 			binding->lane_state_flags[slot] |= SPARK_STAGE_KV_LANE_STATE_CAPTURED;
 			slots[count++] = slot;
@@ -2391,7 +2399,7 @@ static SparkStatus SparkStageKvBindingPublishLanes(SparkStageKvBinding *binding,
 	{
 		const SparkModelDriverCacheLane *cache_lane = &frame->cache_lanes[lane];
 		resident = indices[lane];
-		if ( cache_lane->flags != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH || cache_lane->publish_token_count == 0u ||
+		if ( (cache_lane->flags & ~SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS) != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH || cache_lane->publish_token_count == 0u ||
 			cache_lane->sequence_position != cache_lane->publish_token_count || cache_lane->context_token_count != cache_lane->publish_token_count ||
 			atomic_load_explicit(&binding->lane_bound[resident],memory_order_acquire) == 0u ||
 			atomic_load_explicit(&binding->lane_sequence_ids[resident],memory_order_acquire) != cache_lane->sequence_id ||

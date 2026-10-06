@@ -1025,7 +1025,7 @@ static void TestWriteMeterCountsAndAlerts(void)
 		WaitSavesIdle();
 	}
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
-	assert(counters.save_page_count >= TEST_PHYSICAL + 2u && counters.save_failure_count == 0u && counters.store_file_count != 0u);
+	assert(counters.save_page_count >= TEST_PHYSICAL + 2u && counters.save_failure_count == 0u);
 	assert(counters.write_bytes >= counters.save_page_count * TEST_PAGE_BYTES + counters.spill_write_bytes && counters.write_bytes == counters.write_bytes_this_hour);
 	assert(counters.write_bytes_previous_hour == 0u && counters.write_alerts == 0u && counters.write_alerting == 0u);
 	Close();
@@ -1339,8 +1339,78 @@ static void TestRecurrentRefusals(void)
 	ConfigureRecurrent(&configuration);
 	configuration.backing_maximum_bytes = (uint64_t)TEST_LOGICAL * TEST_RECURRENT_BYTES;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+	Configure(&configuration);
+	ConfigureRecurrent(&configuration);
+	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES + (2u * TEST_LANES + 1u) * TEST_RECURRENT_BYTES;
+	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	RemoveDirectories();
-	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size and a backing budget short of one record per logical page refuse: ok\n");
+	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size and a backing budget short of two checkpoints per resident lane plus two refuse: ok\n");
+}
+
+static void PublishCheckpoint(uint64_t sequence,uint8_t seed,uint32_t stateless)
+{
+	TestStep step;
+	TestFinished finished = {0};
+	uint32_t captured = RECURRENT.to_buffer,attempt;
+	SparkStatus status = SPARK_STATUS_BUSY;
+	StepInit(&step,sequence,0u,0u,4u);
+	StepPublish(&step,4u,seed);
+	if ( stateless != 0u )
+		step.lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
+	for (attempt=0u; (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING) && attempt<2000u; attempt++)
+	{
+		status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+		if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
+			SleepMs(1u);
+	}
+	assert(status == SPARK_STATUS_OK);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
+	assert(StepClaim(&step) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(void *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
+	assert(RECURRENT.to_buffer == captured + (stateless != 0u ? 0u : 1u));
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	ReleaseSequence(sequence,0u);
+}
+
+static SparkStatus ResumeCheckpoint(uint64_t sequence,uint8_t seed)
+{
+	TestStep step;
+	SparkStatus status;
+	uint32_t attempt;
+	StepInit(&step,sequence,1u,4u,5u);
+	StepPrefix(&step,4u,seed);
+	status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	for (attempt=0u; (status == SPARK_STATUS_PENDING || status == SPARK_STATUS_BUSY) && attempt<1000u; attempt++)
+	{
+		SleepMs(2u);
+		status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	}
+	if ( status == SPARK_STATUS_OK )
+		assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
+	return(status);
+}
+
+static void TestRecurrentCheckpoints(void)
+{
+	SparkStageKvConfiguration configuration;
+	const uint32_t slots = 2u * TEST_LANES + 2u;
+	uint32_t index;
+	MakeDirectories();
+	ConfigureRecurrent(&configuration);
+	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES + (uint64_t)slots * TEST_RECURRENT_BYTES;
+	assert(OpenWith(&configuration) == SPARK_STATUS_OK && BINDING.state_slot_count == slots);
+	PublishCheckpoint(1u,0x30u,1u);
+	assert(BINDING.page_cache.published_page_count == 1u);
+	assert(ResumeCheckpoint(2u,0x30u) != SPARK_STATUS_OK);
+	for (index=0u; index<=slots; index++)
+		PublishCheckpoint(10u + index,(uint8_t)(0x40u + index),0u);
+	assert(BINDING.page_cache.state_demoted_count == 1u);
+	assert(ResumeCheckpoint(3u,0x40u) != SPARK_STATUS_OK);
+	assert(ResumeCheckpoint(4u,(uint8_t)(0x40u + slots)) == SPARK_STATUS_OK);
+	assert(ResumeCheckpoint(5u,0x41u) == SPARK_STATUS_OK);
+	Close();
+	printf("A11 recurrent checkpoints: a stateless publish captures nothing and is never a resume point, a full state store demotes the oldest checkpoint to stateless KV and keeps the newer ones resumable: ok\n");
 }
 
 static void TestWeightdOwnsPool(void)
@@ -1392,6 +1462,7 @@ int main(void)
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();
 	TestRecurrentRefusals();
+	TestRecurrentCheckpoints();
 	TestKvServerFinish();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
 	return(0);

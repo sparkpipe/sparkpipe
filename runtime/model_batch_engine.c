@@ -66,6 +66,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t cache_prefix_token_count;
 	uint32_t cache_published_token_count;
 	uint32_t cache_pending_token_count;
+	uint32_t cache_pending_resume;
 	uint32_t cache_deferred_publication;
 	uint32_t cache_decode_publication_closed;
 	uint64_t cache_lookup_epoch;
@@ -1081,6 +1082,8 @@ static SparkStatus SparkModelBatchPublishCompletedPrefix(
 		tokens,
 		completed_token_count,
 		&committed);
+	if ( status == SPARK_STATUS_OK && request->cache_pending_resume != 0u )
+		status = SparkPrefixCacheMarkResume(&engine->prefix_cache,tokens,completed_token_count);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	engine->prefix_index_dirty = 1u;
@@ -1923,7 +1926,7 @@ static void SparkModelBatchRefreshQueuedPrefix(
 {
 	SparkPrefixCacheLookup lookup;
 	SparkStatus status;
-	uint32_t aligned,slot;
+	uint32_t aligned,slot,resume;
 	if ( request->computed_prompt_token_count != 0u ||
 		request->cache_lookup_epoch == engine->cache_publication_epoch )
 		return;
@@ -1941,6 +1944,18 @@ static void SparkModelBatchRefreshQueuedPrefix(
 			status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
 				request->sequence_id,SparkModelBatchRequestTokens(engine,slot),aligned,&lookup);
 	}
+	if ( status == SPARK_STATUS_OK && engine->adapter_descriptor->cache_checkpoint_token_count != 0u && lookup.matched_token_count != 0u )
+	{
+		resume = SparkPrefixCacheResumeTokenCount(&engine->prefix_cache,SparkModelBatchRequestTokens(engine,slot),lookup.matched_token_count);
+		if ( resume != lookup.matched_token_count )
+		{
+			status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
+			memset(&lookup,0,sizeof(lookup));
+			if ( status == SPARK_STATUS_OK && resume != 0u )
+				status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
+					request->sequence_id,SparkModelBatchRequestTokens(engine,slot),resume,&lookup);
+		}
+	}
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkModelBatchApplyPrefixLookup(engine,request,
@@ -1957,6 +1972,28 @@ static void SparkModelBatchRefreshQueuedPrefix(
 		SparkModelBatchFailRequest(engine,request,status);
 }
 
+static uint32_t SparkModelBatchPromptCheckpoint(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request)
+{
+	if ( engine->adapter_descriptor->cache_checkpoint_token_count == 0u || request->prompt_token_count < 2u )
+		return(0u);
+	return((request->prompt_token_count - 1u) / engine->cache_block_token_count * engine->cache_block_token_count);
+}
+
+static uint32_t SparkModelBatchPublishKeepsState(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request,
+	uint32_t publish_token_count,
+	uint32_t work_kind)
+{
+	uint32_t checkpoint = engine->adapter_descriptor->cache_checkpoint_token_count;
+	if ( checkpoint == 0u || publish_token_count % checkpoint == 0u )
+		return(1u);
+	return(work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL &&
+		publish_token_count == SparkModelBatchPromptCheckpoint(engine,request) ? 1u : 0u);
+}
+
 static uint32_t SparkModelBatchPrefillSpan(
 	const SparkModelBatchEngine *engine,
 	const SparkModelBatchRequestState *request)
@@ -1969,7 +2006,17 @@ static uint32_t SparkModelBatchPrefillSpan(
 	span = block_remaining;
 	if ( limit > block_remaining )
 		span += (limit - block_remaining) / engine->cache_block_token_count * engine->cache_block_token_count;
-	return(remaining < span ? remaining : span);
+	span = remaining < span ? remaining : span;
+	if ( engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
+	{
+		uint32_t computed = request->computed_prompt_token_count,checkpoint = engine->adapter_descriptor->cache_checkpoint_token_count;
+		uint32_t prompt_checkpoint = SparkModelBatchPromptCheckpoint(engine,request),next = (computed / checkpoint + 1u) * checkpoint;
+		if ( prompt_checkpoint > computed && prompt_checkpoint < computed + span )
+			span = prompt_checkpoint - computed;
+		if ( next < computed + span )
+			span = next - computed;
+	}
+	return(span);
 }
 
 static uint32_t SparkModelBatchCanonicalPrefillSpan(const SparkModelBatchEngine *engine,const SparkModelBatchRequestState *request)
@@ -2492,6 +2539,8 @@ static void SparkModelBatchInitializeLane(
 	}
 	SparkModelBatchDigestTokens(&publish_context,&tokens[digested],publish_token_count - digested);
 	lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	if ( SparkModelBatchPublishKeepsState(engine,request,publish_token_count,work_kind) == 0u )
+		lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS;
 	lane->cache_publish_token_count = publish_token_count;
 	SparkModelBatchFinalizeIdentity(&publish_context,&lane->cache_publish_identity);
 }
@@ -2768,6 +2817,8 @@ static void SparkModelBatchRecordSubmission(
 		prefill_counts[lane] = state->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL || state->verify != 0u ? engine->scratch_prefill_counts[lane] : 0u;
 		engine->requests[request_slots[lane]].state = inflight_state;
 		engine->requests[request_slots[lane]].cache_pending_token_count = engine->scratch_lanes[lane].cache_publish_token_count;
+		engine->requests[request_slots[lane]].cache_pending_resume = (engine->scratch_lanes[lane].flags &
+			(SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS)) == SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH ? 1u : 0u;
 		engine->requests[request_slots[lane]].busy_retry_backoff_ms = 0u;
 		engine->requests[request_slots[lane]].busy_retry_not_before_ns = 0u;
 		engine->requests[request_slots[lane]].inflight_since_ns = now_ns;

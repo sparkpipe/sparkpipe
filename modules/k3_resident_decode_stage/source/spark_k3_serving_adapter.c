@@ -1322,6 +1322,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 	.minimum_efficient_submission_row_count = 1u,
 	.cache_block_token_count = SPARK_K3_KV_PAGE_SLOTS,
 	.parallel_group_size = SPARK_K3_SERVING_PARALLEL_GROUP_SIZE,
+	.cache_checkpoint_token_count = SPARK_K3_KV_CHECKPOINT_TOKENS,
 };
 
 #if SPARK_K3_SERVING_TOPOLOGY == 16

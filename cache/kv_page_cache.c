@@ -606,6 +606,32 @@ SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache)
 	return(SparkKvPageCacheEvictUnusedExcept(cache,0,0u));
 }
 
+SparkStatus SparkKvPageCacheDemoteState(SparkKvPageCache *cache)
+{
+	SparkKvPageCacheEntry *candidate;
+	uint32_t entry;
+	SparkStatus status;
+	if ( SparkKvPageCacheIsValid(cache) == 0u || cache->state_store == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (entry=cache->lru_head; entry != SPARK_KV_PAGE_CACHE_NO_INDEX; entry=cache->entries[entry].lru_next)
+	{
+		candidate = &cache->entries[entry];
+		if ( (candidate->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u ||
+			(cache->snapshot != 0 && SparkKvPageCacheSaveIsPending(cache->snapshot,entry) != 0u) )
+			continue;
+		status = SparkKvPageStoreInvalidate(cache->state_store,candidate->logical_page_index,cache->kv_cache_arena->blocks[candidate->logical_page_index].generation);
+		if ( status == SPARK_STATUS_BUSY )
+			continue;
+		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
+			SPARK_RETURN(status);
+		candidate->flags |= SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS;
+		cache->state_demoted_count++;
+		if ( status == SPARK_STATUS_OK )
+			return(SPARK_STATUS_OK);
+	}
+	SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+}
+
 static SparkStatus SparkKvPageCacheRelieveBacking(SparkKvPageCache *cache,const uint32_t *protected_pages,uint32_t protected_count)
 {
 	SparkKvCacheArena *arena = cache->kv_cache_arena;
@@ -1613,12 +1639,13 @@ static SparkStatus SparkKvPageCachePublishMutable(
 	SparkKvPageCacheSequence *sequence,
 	const SparkModelDriverCacheLane *lane)
 {
-	uint32_t entry_index,expected_parent_count,parent;
+	uint32_t entry_index,expected_parent_count,parent,stateless;
 	SparkStatus status;
 	if ( sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK ||
 		lane->publish_token_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cache->state_store != 0 )
+	stateless = cache->state_store != 0 && (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS) != 0u ? 1u : 0u;
+	if ( cache->state_store != 0 && stateless == 0u )
 	{
 		status = SparkKvPageStoreValidateRecord(cache->state_store,sequence->mutable_logical_page_index,cache->kv_cache_arena->blocks[sequence->mutable_logical_page_index].generation);
 		if ( status != SPARK_STATUS_OK )
@@ -1634,8 +1661,15 @@ static SparkStatus SparkKvPageCachePublishMutable(
 	entry_index = SparkKvPageCacheFindEntry(cache,&lane->publish_identity,
 		lane->publish_token_count,0u);
 	if ( entry_index != SPARK_KV_PAGE_CACHE_NO_INDEX )
+	{
+		if ( stateless == 0u && cache->state_store != 0 && (cache->entries[entry_index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u )
+			cache->stateful_dedup_lost_count++;
 		return(SparkKvPageCachePublishDeduplicated(cache,sequence,entry_index));
-	return(SparkKvPageCachePublishNewEntry(cache,sequence,lane->publish_token_count,&lane->publish_identity));
+	}
+	status = SparkKvPageCachePublishNewEntry(cache,sequence,lane->publish_token_count,&lane->publish_identity);
+	if ( status == SPARK_STATUS_OK && stateless != 0u )
+		cache->entries[sequence->terminal_entry_index].flags |= SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS;
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkKvPageCacheSealDeduplicated(
@@ -1667,14 +1701,17 @@ static SparkStatus SparkKvPageCacheSealMutable(
 	SparkKvPageCacheSequence *sequence)
 {
 	const SparkModelDriverCacheIdentity *identity;
-	uint32_t sealed,token_count,entry_index;
+	uint32_t sealed,token_count,entry_index,stateless;
 	SparkStatus status;
 	for (sealed=0u; sequence->mutable_page_count > 1u; sealed++)
 	{
+		stateless = 0u;
 		if ( cache->state_store != 0 )
 		{
 			status = SparkKvPageStoreValidateRecord(cache->state_store,sequence->mutable_logical_page_index,cache->kv_cache_arena->blocks[sequence->mutable_logical_page_index].generation);
-			if ( status != SPARK_STATUS_OK )
+			if ( status == SPARK_STATUS_NOT_FOUND )
+				stateless = 1u;
+			else if ( status != SPARK_STATUS_OK )
 				SPARK_RETURN(status);
 		}
 		token_count = sequence->mutable_first_token_index + cache->kv_cache_arena->block_token_count;
@@ -1685,6 +1722,8 @@ static SparkStatus SparkKvPageCacheSealMutable(
 			SparkKvPageCachePublishNewEntry(cache,sequence,token_count,identity);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
+		if ( entry_index == SPARK_KV_PAGE_CACHE_NO_INDEX && stateless != 0u )
+			cache->entries[sequence->terminal_entry_index].flags |= SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS;
 	}
 	sequence->mutable_block_identity_count = 0u;
 	return(SPARK_STATUS_OK);
