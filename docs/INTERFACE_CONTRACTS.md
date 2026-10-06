@@ -49,7 +49,7 @@ One call does the following:
 
 ### State store
 
-`SparkKvPageCacheAttachStateStore(cache, store)` attaches a second page store that holds one state record per logical page.
+`SparkKvPageCacheAttachStateStore(cache, store)` attaches a second page store that holds recurrent state records, keyed by logical page. A page has a record only when a stateful publish ended on it; its backing may hold fewer records than there are logical pages.
 
 - The call returns `SPARK_STATUS_INVALID_ARGUMENT` unless all of these hold:
   - the cache already has a page store and no state store;
@@ -58,6 +58,11 @@ One call does the following:
   - `store->logical_page_capacity` is at least the arena's logical block count.
 - Attach before admitting any lane. The call returns `SPARK_STATUS_BUSY` once a sequence is live, a page has been published, or the store already holds backing pages.
 - A page's state record is keyed by the page's current arena generation. Hold the page's residency pin for the whole of a state transfer, so that the page cannot be evicted or freed during the transfer.
+- A publish whose lane carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS` needs no record and creates a stateless entry. A page sealed without a record also becomes a stateless entry. A stateless entry holds valid KV and can be shared, deduplicated and parked, but it is never a prefix: resolving a lane prefix that ends on it returns `SPARK_STATUS_NOT_FOUND`, and it is never saved to the snapshot store.
+
+### State demotion
+
+`SparkKvPageCacheDemoteState` frees one state record. It walks the LRU list from the oldest entry, skips stateless entries and entries with a snapshot save pending, invalidates the first record it can, and marks that entry stateless. The KV page stays cached. It returns `SPARK_STATUS_CAPACITY_EXCEEDED` when no record can be freed, and `SPARK_STATUS_INVALID_ARGUMENT` when no state store is attached. The stage KV binding calls it before `SparkKvPageCacheEvictUnused` when a state record write finds the store full.
 
 ### Eviction
 

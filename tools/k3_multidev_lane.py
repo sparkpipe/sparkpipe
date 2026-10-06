@@ -135,8 +135,26 @@ def recurrent_page_bytes(topology: str) -> int:
     return max(kda) * per_layer
 
 
-def kv_backing_minimum(topology: str, sequences: int, kv_pages: int) -> int:
-    return sequences * kv_pages * recurrent_page_bytes(topology) + KV_IN_FLIGHT_MARGIN_BYTES
+def kv_page_bytes(topology: str) -> int:
+    layers = k3_constant("MODEL_LAYER_COUNT")
+    period = k3_constant("MODEL_ATTENTION_PERIOD")
+    phase = k3_constant("MODEL_GLOBAL_ATTENTION_PHASE")
+    slot = (k3_constant("MODEL_MLA_LATENT_DIMENSION") + k3_constant("MODEL_MLA_UNROTATED_DIMENSION")) * (k3_constant("KV_BITS") // 8)
+    if topology == "tp16":
+        tp, stages = 16, [(0, layers)]
+    else:
+        count = k3_constant("PP_STAGE_COUNT")
+        base, remainder = divmod(layers, count)
+        tp = 16 // count
+        stages = [(stage * base + min(stage, remainder), base + (1 if stage < remainder else 0)) for stage in range(count)]
+    mla = [sum(1 for layer in range(first, first + count) if layer % period == phase or layer == layers - 1) for first, count in stages]
+    return max(mla) * k3_constant("KV_PAGE_SLOTS") * slot // tp
+
+
+def kv_backing_minimum(topology: str, sequences: int, physical_pages: int, logical_pages: int) -> int:
+    spill = logical_pages - physical_pages + 2
+    checkpoints = 2 * sequences + 2
+    return spill * kv_page_bytes(topology) + checkpoints * recurrent_page_bytes(topology) + KV_IN_FLIGHT_MARGIN_BYTES
 DEFAULT_KV_SNAPSHOT_BYTES = 8 * 1024 * 1024 * 1024
 KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS (64) tokens
 
@@ -204,7 +222,7 @@ def group_hosts(rank: int) -> list[str]:
 
 
 def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
-                   sequences: int = 16) -> dict:
+                   sequences: int = 16, rows: int | None = None) -> dict:
     tp = tp_rank_of(rank)
     config = {
         "stage_pack_path": deployed_pack(rank),
@@ -212,7 +230,7 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
         "tp_rank": tp,
         "world_size": WORLD,
         "max_sequences": sequences,
-        "max_rows": sequences,
+        "max_rows": rows if rows is not None else sequences,
         "resident_capacity": sequences,
         "kv_pages": kv_pages,
         "hidden": 7168,
@@ -249,7 +267,10 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
                         sequences: int = 16,
                         kv_pages: int = KV_PAGES_PER_SEQUENCE,
                         pipeline_transport: str = "host-rdma",
-                        tokenizer_sha256: str | None = None) -> dict:
+                        tokenizer_sha256: str | None = None,
+                        rows: int | None = None,
+                        physical_pages: int | None = None,
+                        logical_pages: int | None = None) -> dict:
     nodes = []
     for rank, host in enumerate(HOSTS):
         root = runtime_root.format(host=host)
@@ -303,10 +324,10 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
         "runtime_limits": {
             "max_inflight_submissions": sequences,
             "max_active_sequences": sequences,
-            "max_input_rows": sequences,
+            "max_input_rows": rows if rows is not None else sequences,
             "resident_sequence_capacity": sequences,
-            "kv_logical_page_capacity": sequences * kv_pages,
-            "kv_physical_page_capacity": sequences * kv_pages,
+            "kv_logical_page_capacity": logical_pages if logical_pages is not None else sequences * kv_pages,
+            "kv_physical_page_capacity": physical_pages if physical_pages is not None else sequences * kv_pages,
         },
         "chat_template": chat_template(),
         **({"tokenizer": {"path": TOKENIZER_ASSET, "sha256": tokenizer_sha256,
@@ -347,7 +368,8 @@ def main() -> int:
     parser.add_argument("--kv-backing-bytes", type=int,
                         default=None,
                         help="finite KV backing cap for the private root; it "
-                             "must hold the KDA record of every logical page "
+                             "must hold the spilled KV pages and two KDA "
+                             "checkpoints per sequence plus two "
                              "(default: exactly that plus the in-flight margin)")
     parser.add_argument("--kv-snapshot-bytes", type=int,
                         default=DEFAULT_KV_SNAPSHOT_BYTES,
@@ -366,6 +388,15 @@ def main() -> int:
     parser.add_argument("--kv-pages", type=int, default=KV_PAGES_PER_SEQUENCE,
                         help="64-token KV pages per sequence "
                              "(default %(default)d)")
+    parser.add_argument("--rows", type=int, default=None,
+                        help="input rows per submission, the prefill wave "
+                             "width (default: --sequences)")
+    parser.add_argument("--kv-physical-pages", type=int, default=None,
+                        help="resident KV pages per rank (default: "
+                             "sequences x kv-pages)")
+    parser.add_argument("--kv-logical-pages", type=int, default=None,
+                        help="KV pages per rank including the NVMe tier "
+                             "(default: the physical pages)")
     parser.add_argument("--pipeline-transport",
                         choices=("host-rdma", "host-staged"),
                         default="host-rdma",
@@ -388,19 +419,29 @@ def main() -> int:
 
     select_topology(arguments.topology)
     select_lane(arguments.lane)
-    minimum = kv_backing_minimum(arguments.topology, arguments.sequences, arguments.kv_pages)
+    if arguments.kv_physical_pages is None:
+        arguments.kv_physical_pages = arguments.sequences * arguments.kv_pages
+    if arguments.kv_logical_pages is None:
+        arguments.kv_logical_pages = arguments.kv_physical_pages
+    if arguments.kv_physical_pages < arguments.sequences or arguments.kv_logical_pages < arguments.kv_physical_pages:
+        raise SystemExit("kv pages: physical must cover the sequences and logical must cover physical")
+    if arguments.rows is not None and not 1 <= arguments.rows <= 512:
+        raise SystemExit("rows must be within 1..512")
+    minimum = kv_backing_minimum(arguments.topology, arguments.sequences, arguments.kv_physical_pages, arguments.kv_logical_pages)
     if arguments.kv_backing_bytes is None:
         arguments.kv_backing_bytes = minimum
     if arguments.kv_backing_bytes < minimum:
-        raise SystemExit(f"kv-backing-bytes {arguments.kv_backing_bytes} cannot hold the "
-                         f"{recurrent_page_bytes(arguments.topology)}-byte KDA record of each of "
-                         f"{arguments.sequences * arguments.kv_pages} logical pages; it needs {minimum}")
+        raise SystemExit(f"kv-backing-bytes {arguments.kv_backing_bytes} cannot hold "
+                         f"{arguments.kv_logical_pages - arguments.kv_physical_pages + 2} spilled "
+                         f"{kv_page_bytes(arguments.topology)}-byte KV pages and "
+                         f"{2 * arguments.sequences + 2} {recurrent_page_bytes(arguments.topology)}-byte "
+                         f"KDA checkpoints; it needs {minimum}")
     if arguments.kv_snapshot_bytes <= 0:
         raise SystemExit("kv-snapshot-bytes must be positive and finite")
     if not 1 <= arguments.sequences <= 16:
         raise SystemExit("sequences must be within 1..16")
-    if not 1 <= arguments.kv_pages <= 64:
-        raise SystemExit("kv-pages must be within 1..64")
+    if not 1 <= arguments.kv_pages <= 16384:
+        raise SystemExit("kv-pages must be within 1..16384")
 
     output = Path(arguments.output_dir)
     if not arguments.check:
@@ -409,14 +450,15 @@ def main() -> int:
     deployment = render(resident_deployment(
         arguments.runtime_root, arguments.weightd_socket,
         arguments.kv_backing_bytes, arguments.kv_snapshot_bytes, arguments.sequences, arguments.kv_pages,
-        arguments.pipeline_transport, arguments.tokenizer_sha256))
+        arguments.pipeline_transport, arguments.tokenizer_sha256,
+        arguments.rows, arguments.kv_physical_pages, arguments.kv_logical_pages))
     wrote = write_or_check(output / "deployment.json", deployment,
                            arguments.check)
 
     ranks = range(WORLD) if arguments.rank is None else [arguments.rank]
     for rank in ranks:
         text = render(adapter_config(rank, arguments.kv_pages,
-                                     arguments.sequences))
+                                     arguments.sequences, arguments.rows))
         name = f"adapter.{host_of(rank)}.json" if arguments.rank is None \
             else "adapter.json"
         wrote = write_or_check(output / name, text, arguments.check) or wrote

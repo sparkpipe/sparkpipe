@@ -277,18 +277,22 @@ def main() -> int:
         record = lane.recurrent_page_bytes("tp4pp4")
         check(record == 29638656 and lane.recurrent_page_bytes("tp16") == 28403712, failures,
               "the KDA record per logical page is the KV binding's recurrent lane bytes")
-        check(all(node["kv_backing_maximum_bytes"] >= limits["kv_logical_page_capacity"] * record
+        minimum = lane.kv_backing_minimum("tp4pp4", limits["resident_sequence_capacity"],
+                                          limits["kv_physical_page_capacity"], limits["kv_logical_page_capacity"])
+        check(lane.kv_page_bytes("tp16") == 24 * 64 * 576 * 2 // 16, failures,
+              "a TP16 rank holds one sixteenth of every MLA layer's page")
+        check(all(node["kv_backing_maximum_bytes"] >= minimum >= (2 * limits["resident_sequence_capacity"] + 2) * record
                   for node in deployment["nodes"]), failures,
-              "the default KV backing holds the KDA record of every logical page")
+              "the default KV backing holds the spilled pages and two KDA checkpoints per sequence plus two")
         short = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
              "--runtime-root", runtime_root,
              "--weightd-socket", socket_path,
-             "--kv-backing-bytes", str(limits["kv_logical_page_capacity"] * record - 1),
+             "--kv-backing-bytes", str(minimum - 1),
              "--output-dir", str(Path(temporary) / "short")],
             capture_output=True, text=True)
-        check(short.returncode != 0 and "KDA record" in short.stderr, failures,
-              "a KV backing below the KDA records of the logical pages is refused")
+        check(short.returncode != 0 and "KDA checkpoints" in short.stderr, failures,
+              "a KV backing below the spilled pages and the KDA checkpoints is refused")
 
         check_run = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),

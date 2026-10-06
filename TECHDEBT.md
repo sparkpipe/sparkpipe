@@ -548,6 +548,19 @@ citations refer to that commit.
   nothing forwards the alert beyond the API yet. Close it with those families on
   the binding and a Spark run that writes past the threshold and shows the alert
   line, the report fields and the health rank.
+- Recurrent state is checkpointed sparsely (`cache_checkpoint_token_count` in
+  the adapter descriptor; K3 every 16384 tokens). The engine publishes every
+  block as KV but keeps state only at stride multiples and at the last block
+  boundary of a prompt, and resumes only at those points. Three gaps remain.
+  A stateful publish that deduplicates onto an existing stateless entry keeps
+  the stateless entry, so that checkpoint is lost and the next resume
+  recomputes (`stateful_dedup_lost_count`); the store has no record move
+  between logical pages. Decode keeps state only at stride multiples, so a
+  follow-up turn resumes before the previous reply and recomputes it. GLM
+  Flash still records state on every page. Close it with a record move in
+  `SparkKvPageStore`, a decode checkpoint at the last full block of a
+  finished reply, GLM Flash on a stride, and a K3 fleet run where repeated
+  and follow-up prompts resume at the expected checkpoints.
 - Copy-on-write of a partial prefix page needs a device copier attached to
   the page cache (`SparkKvPageCacheAttachDeviceCopy`). glm52 (through the KV
   binding) and glm5_next attach one; dsv4, laguna and ling do not, so a
