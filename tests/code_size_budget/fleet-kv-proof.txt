@@ -1,0 +1,2 @@
++1172
+KV fleet proof: weightd slot pools (IPC ABI 13) and per-process serving, the KV write meter that replaces the daily write budget, K3 MLA KV split 1/16 across the TP ranks through the shared shard kernels, and sparse recurrent checkpoints (adapter checkpoint stride, stateless publishes, resumable prefix-cache entries, state demotion).
