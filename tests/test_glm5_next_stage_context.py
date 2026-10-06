@@ -773,7 +773,6 @@ SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,const
 	mapping->mapped_count = mapping->chunk_capacity;
 	mapping->metadata = (uint8_t *)calloc(1u,(size_t)request->metadata_bytes);
 	mapping->metadata_bytes = request->metadata_bytes;
-	mapping->write_budget_bytes_per_day = UINT64_C(1) << 40;
 	mapping->pool_generation = ++KV_POOL_GENERATION;
 	return(mapping->metadata != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
 }

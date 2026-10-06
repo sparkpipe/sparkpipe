@@ -315,7 +315,7 @@ struct SparkStageKvBinding
 	uint64_t pool_grow_count;
 	uint64_t pool_shrink_count;
 	uint64_t pool_vacated_pages;
-	SparkKvWriteBudget write_budget;
+	SparkKvWriteMeter write_meter;
 	uint32_t kv_pool_adopted_pages;
 	uint32_t kv_pool_sealed_pages;
 	uint32_t kv_pool_seal_cleared;

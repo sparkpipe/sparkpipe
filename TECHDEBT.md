@@ -463,8 +463,8 @@ citations refer to that commit.
   persistent snapshot store (`cache/kv_snapshot.c`). A parked prefix page
   whose entry is not yet saved queues its snapshot save when the arena parks
   it (`SparkStageKvBindingPark`, `SparkKvPageCacheSaveParked`), and the save
-  reads the spill copy, so spilled prefixes reach the persistent store
-  within the write budget. Still left: the spill store itself stays anonymous
+  reads the spill copy, so spilled prefixes reach the persistent store.
+  Still left: the spill store itself stays anonymous
   for pages of running sequences (not reusable after a restart);
   `cache/nvme_tier.c` remains for the unwired topology switch;
   and the external provider client (`cache/store/`, `common/common_kv_frame.h`)
@@ -539,15 +539,15 @@ citations refer to that commit.
   stalled on each other for the whole budget. Not yet fleet-proven: close
   it with a one-Spark run on a small backing quota where new requests wait
   and complete as running ones finish, and no running request fails.
-- The KV NVMe write budget covers only the engines on the common binding. weightd
-  hands each KV pool a share of `--kv-write-budget-bytes-per-day`, and the
-  binding stops snapshot saves and discards parked pages for recompute once
-  its share is spent (`cache/kv_page_cache.c`, `SparkKvPageCacheDiscardForBudget`),
-  reported in `kv_store_report`. The non-core families' own page stores
-  (laguna, ling, dsv4) write unbudgeted until they move onto the binding, and
-  the budget has not run on a Spark. Close it with those families on the
-  binding and a one-Spark run with a small budget that reports the write
-  rate, stops spilling at the limit and keeps serving.
+- KV NVMe writes are metered, not limited, and only on the common binding.
+  Each engine on it counts every spill, recurrent-state and snapshot write and
+  raises one `KV-WRITE-ALERT` per hour above 20 GiB/hour
+  (`include/sparkpipe/spark_kv_write_meter.h`), shown in `kv_store_report` and
+  as `kv_write_alert_rank` on `/health`. The non-core families' own page stores
+  (laguna, ling, dsv4) write unmetered until they move onto the binding, and
+  nothing forwards the alert beyond the API yet. Close it with those families on
+  the binding and a Spark run that writes past the threshold and shows the alert
+  line, the report fields and the health rank.
 - Copy-on-write of a partial prefix page needs a device copier attached to
   the page cache (`SparkKvPageCacheAttachDeviceCopy`). glm52 (through the KV
   binding) and glm5_next attach one; dsv4, laguna and ling do not, so a

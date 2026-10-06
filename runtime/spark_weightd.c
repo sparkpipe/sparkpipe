@@ -3486,11 +3486,6 @@ static SparkStatus SparkWeightdKvPoolAdmit(SparkWeightdServer *server,SparkWeigh
 	status = SparkWeightdKvPoolRequestValid(request);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( server->config.kv_write_budget_bytes_per_day == 0u )
-	{
-		fprintf(stderr,"weightd kv pool refused label=%s: weightd runs without --kv-write-budget-bytes-per-day, so KV spill and snapshot writes would be unbounded\n",request->label);
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
 	slot = SparkWeightdKvPoolFind(server,request->key);
 	if ( slot != SPARK_WEIGHTD_KV_POOL_COUNT_MAX && (server->kv_pools[slot].owner_connection != 0u || server->kv_pools[slot].shared != 0u) )
 	{
@@ -3626,10 +3621,7 @@ static uint32_t SparkWeightdServerOnKvPoolAttach(SparkWeightdServer *server,Spar
 	result->metadata_fd_count = pool->metadata_fd >= 0 ? 1u : 0u;
 	result->device_bytes = pool->chunk_bytes * pool->chunk_capacity;
 	result->metadata_bytes = pool->metadata_bytes;
-	result->write_budget_bytes_per_day = (uint64_t)((unsigned __int128)server->config.kv_write_budget_bytes_per_day *
-		(pool->requested_bytes < server->config.kv_reserve_bytes ? pool->requested_bytes : server->config.kv_reserve_bytes) / server->config.kv_reserve_bytes);
-	if ( result->write_budget_bytes_per_day == 0u )
-		result->write_budget_bytes_per_day = 1u;
+	result->legacy_write_budget_bytes_per_day = UINT64_MAX;
 	return(sizeof(*result));
 }
 
@@ -5956,7 +5948,7 @@ SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,const Spar
 	if ( status == SPARK_STATUS_OK && (response.header.request_id != wire.header.request_id || received != expected ||
 		(response.status == SPARK_STATUS_OK && (response.chunk_bytes != request->chunk_bytes || response.chunk_capacity == 0u || response.chunk_capacity > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX ||
 		response.chunk_count > response.chunk_capacity || response.metadata_fd_count != (request->metadata_bytes != 0u ? 1u : 0u) || response.metadata_bytes != request->metadata_bytes ||
-		response.device_bytes != response.chunk_bytes * response.chunk_capacity || response.device_bytes < request->device_bytes || response.write_budget_bytes_per_day == 0u))) )
+		response.device_bytes != response.chunk_bytes * response.chunk_capacity || response.device_bytes < request->device_bytes))) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdStatusFromWire(response.status);
@@ -5973,7 +5965,6 @@ SparkStatus SparkWeightdClientKvPoolAttach(SparkWeightdClient *client,const Spar
 	grant->device_bytes = response.device_bytes;
 	grant->metadata_bytes = response.metadata_bytes;
 	grant->reattached = response.reattached;
-	grant->write_budget_bytes_per_day = response.write_budget_bytes_per_day;
 	grant->metadata_fd = response.metadata_fd_count != 0u ? fds[0] : -1;
 	return(SPARK_STATUS_OK);
 }

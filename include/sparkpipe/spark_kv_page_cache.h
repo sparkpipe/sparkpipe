@@ -229,7 +229,7 @@ typedef struct SparkKvPageCache
 	SparkKvPageStore *page_store;
 	SparkKvPageStore *state_store;
 	SparkKvPageCacheSnapshot *snapshot;
-	SparkKvWriteBudget *write_budget;
+	SparkKvWriteMeter *write_meter;
 	uint32_t admission_priority;
 	uint64_t admission_deadline_ns;
 	uint32_t reserved_priority;

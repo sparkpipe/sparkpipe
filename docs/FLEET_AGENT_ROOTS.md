@@ -77,13 +77,14 @@ pages, parking the rest) and shrinks (`kv pool shrank`). Each engine logs
 `chunks=granted/total minimum_chunks=` and `pages=limit/physical` on its
 `kv pool weightd` line; size the reserve to at least the sum of the minimums
 for the engines a node runs, and to the sum of the totals for them to run
-unshared. Set `SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY` too:
-the KV NVMe write budget for the node (drive endurance times capacity per
-day). Each pool gets a share proportional to its size; once an engine spends
-its share, its snapshot saves are skipped and parked pages are discarded and
-recomputed instead of written, and `kv_store_report` shows the budget, the
-remaining bytes, refused saves and discarded pages. Without a reserve or a
-write budget those engines refuse to load. A pool
+unshared. Without a reserve those engines refuse to load. KV writes to NVMe
+are never limited or refused: each engine counts every spill, recurrent-state
+and snapshot write (`kv write meter` line at load), `kv_store_report` shows
+`write_bytes`, `write_bytes_this_hour`, `write_bytes_previous_hour`,
+`write_alerts` and `write_alerting`, and an engine that writes more than
+20 GiB within an hour (about 0.5 TB/day, a quarter of a 4 TB Spark drive's
+five-year endurance pace) logs one `KV-WRITE-ALERT` line per hour and is named
+in the API's `/health` as `kv_write_alert_rank`. A pool
 stays in weightd when its engine stops; a clean engine restart reattaches it
 and adopts the sealed resident prefix pages, and detached pools are evicted
 only when a new pool needs the room.

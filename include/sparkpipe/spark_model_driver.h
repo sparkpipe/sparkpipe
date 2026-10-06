@@ -277,11 +277,11 @@ typedef struct SparkModelDriverKvStoreCounters
     uint64_t pool_generation;
     uint64_t pool_reattached;
     uint64_t pool_adopted_pages;
-    uint64_t write_budget_bytes_per_day;
-    uint64_t write_budget_available_bytes;
-    uint64_t write_budget_overrun_bytes;
-    uint64_t write_budget_refused_saves;
-    uint64_t write_budget_discarded_pages;
+    uint64_t write_bytes;
+    uint64_t write_bytes_this_hour;
+    uint64_t write_bytes_previous_hour;
+    uint64_t write_alerts;
+    uint64_t write_alerting;
 } SparkModelDriverKvStoreCounters;
 
 #define SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH 0x00000001u

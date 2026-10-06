@@ -4,7 +4,7 @@
 
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_status.h"
-#include "sparkpipe/spark_kv_write_budget.h"
+#include "sparkpipe/spark_kv_write_meter.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -123,7 +123,7 @@ typedef struct SparkKvPageStore
 	uint64_t read_bytes;
 	uint64_t read_digest_mismatch_count;
 	uint64_t read_error_count;
-	SparkKvWriteBudget *write_budget;
+	SparkKvWriteMeter *write_meter;
 }
 SparkKvPageStore;
 

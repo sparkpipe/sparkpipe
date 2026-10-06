@@ -122,6 +122,7 @@ typedef struct ApiState
 	uint32_t health_connected_rank_count;
 	uint32_t health_missing_rank;
 	uint32_t health_degraded_rank;
+	uint32_t health_write_alert_rank;
 	uint32_t health_failed_status;
 	uint32_t health_live_requests;
 	volatile uint32_t bringup_attempts;
@@ -583,7 +584,7 @@ static void api_log_status_reports(void)
 			continue;
 		logged[rank] = report;
 		kv = &report.adapter_snapshot.kv_store;
-		fprintf(stderr,"{\"event\":\"kv_store_report\",\"boot_pid\":%d,\"rank\":%u,\"stage\":%u,\"residentd_pid\":%u,\"client_generation\":%llu,\"status\":%u,\"generation\":%llu,\"attached\":%u,\"save_count\":%llu,\"save_pages\":%llu,\"save_ns\":%llu,\"save_ns_per_page\":%llu,\"save_failures\":%llu,\"save_deferred\":%llu,\"restore_count\":%llu,\"restore_pages\":%llu,\"restore_ns\":%llu,\"restore_ns_per_page\":%llu,\"restore_misses\":%llu,\"restore_corrupt\":%llu,\"restore_read_errors\":%llu,\"restore_failures\":%llu,\"store_used_bytes\":%llu,\"store_maximum_bytes\":%llu,\"store_files\":%llu,\"store_foreign_layout_files\":%llu,\"store_checksum_failures\":%llu,\"store_removed_temporaries\":%llu,\"store_evictions\":%llu,\"store_write_failures\":%llu,\"store_queue_full\":%llu,\"store_queued\":%llu,\"store_failed_status\":%u,\"pool_resident_pages\":%llu,\"pool_physical_pages\":%llu,\"pool_logical_pages\":%llu,\"pool_retained_pages\":%llu,\"pool_evicted_entries\":%llu,\"pool_resident_evictions\":%llu,\"spill_write_bytes\":%llu,\"spill_read_bytes\":%llu,\"spill_digest_mismatches\":%llu,\"spill_read_errors\":%llu,\"pool_device_bytes\":%llu,\"pool_generation\":%llu,\"pool_reattached\":%llu,\"pool_adopted_pages\":%llu,\"write_budget_bytes_per_day\":%llu,\"write_budget_available_bytes\":%llu,\"write_budget_overrun_bytes\":%llu,\"write_budget_refused_saves\":%llu,\"write_budget_discarded_pages\":%llu}\n",
+		fprintf(stderr,"{\"event\":\"kv_store_report\",\"boot_pid\":%d,\"rank\":%u,\"stage\":%u,\"residentd_pid\":%u,\"client_generation\":%llu,\"status\":%u,\"generation\":%llu,\"attached\":%u,\"save_count\":%llu,\"save_pages\":%llu,\"save_ns\":%llu,\"save_ns_per_page\":%llu,\"save_failures\":%llu,\"save_deferred\":%llu,\"restore_count\":%llu,\"restore_pages\":%llu,\"restore_ns\":%llu,\"restore_ns_per_page\":%llu,\"restore_misses\":%llu,\"restore_corrupt\":%llu,\"restore_read_errors\":%llu,\"restore_failures\":%llu,\"store_used_bytes\":%llu,\"store_maximum_bytes\":%llu,\"store_files\":%llu,\"store_foreign_layout_files\":%llu,\"store_checksum_failures\":%llu,\"store_removed_temporaries\":%llu,\"store_evictions\":%llu,\"store_write_failures\":%llu,\"store_queue_full\":%llu,\"store_queued\":%llu,\"store_failed_status\":%u,\"pool_resident_pages\":%llu,\"pool_physical_pages\":%llu,\"pool_logical_pages\":%llu,\"pool_retained_pages\":%llu,\"pool_evicted_entries\":%llu,\"pool_resident_evictions\":%llu,\"spill_write_bytes\":%llu,\"spill_read_bytes\":%llu,\"spill_digest_mismatches\":%llu,\"spill_read_errors\":%llu,\"pool_device_bytes\":%llu,\"pool_generation\":%llu,\"pool_reattached\":%llu,\"pool_adopted_pages\":%llu,\"write_bytes\":%llu,\"write_bytes_this_hour\":%llu,\"write_bytes_previous_hour\":%llu,\"write_alerts\":%llu,\"write_alerting\":%llu}\n",
 			(int)getpid(),rank,report.stage_index,report.residentd_pid,(unsigned long long)report.client_generation,report.status,(unsigned long long)report.generation,kv->attached,
 			(unsigned long long)kv->save_count,(unsigned long long)kv->save_page_count,(unsigned long long)kv->save_ns,(unsigned long long)api_per_page(kv->save_ns,kv->save_page_count),
 			(unsigned long long)kv->save_failure_count,(unsigned long long)kv->save_deferred_count,(unsigned long long)kv->restore_count,(unsigned long long)kv->restore_page_count,
@@ -595,8 +596,8 @@ static void api_log_status_reports(void)
 			(unsigned long long)kv->pool_evicted_entries,(unsigned long long)kv->pool_resident_evictions,(unsigned long long)kv->spill_write_bytes,(unsigned long long)kv->spill_read_bytes,
 			(unsigned long long)kv->spill_digest_mismatches,(unsigned long long)kv->spill_read_errors,(unsigned long long)kv->pool_device_bytes,
 			(unsigned long long)kv->pool_generation,(unsigned long long)kv->pool_reattached,(unsigned long long)kv->pool_adopted_pages,
-			(unsigned long long)kv->write_budget_bytes_per_day,(unsigned long long)kv->write_budget_available_bytes,(unsigned long long)kv->write_budget_overrun_bytes,
-			(unsigned long long)kv->write_budget_refused_saves,(unsigned long long)kv->write_budget_discarded_pages);
+			(unsigned long long)kv->write_bytes,(unsigned long long)kv->write_bytes_this_hour,(unsigned long long)kv->write_bytes_previous_hour,
+			(unsigned long long)kv->write_alerts,(unsigned long long)kv->write_alerting);
 	}
 }
 
@@ -614,6 +615,20 @@ static uint32_t api_degraded_rank(void)
 	return(UINT32_MAX);
 }
 
+static uint32_t api_write_alert_rank(void)
+{
+	SparkModelResidentStatusReport report;
+	uint32_t rank;
+	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
+	{
+		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
+			break;
+		if ( report.generation != 0u && report.adapter_snapshot.kv_store.write_alerting != 0u )
+			return(rank);
+	}
+	return(UINT32_MAX);
+}
+
 static void api_publish_health(void)
 {
 	SparkModelBatchEngineView view;
@@ -625,6 +640,7 @@ static void api_publish_health(void)
 	__atomic_store_n(&S.health_failed_status,view.failed_status,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_live_requests,view.live_request_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_degraded_rank,api_degraded_rank(),__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_write_alert_rank,api_write_alert_rank(),__ATOMIC_RELEASE);
 	if ( view.context_limit != 0u && view.context_limit != __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE) )
 	{
 		__atomic_store_n(&S.context_limit,view.context_limit,__ATOMIC_RELEASE);
@@ -1639,18 +1655,20 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
-		char b[384];
+		char b[448];
 		uint32_t ranks = __atomic_load_n(&S.health_rank_count, __ATOMIC_ACQUIRE);
+		uint32_t write_alert = __atomic_load_n(&S.health_write_alert_rank, __ATOMIC_ACQUIRE);
 		uint32_t connected = __atomic_load_n(&S.health_connected_rank_count, __ATOMIC_ACQUIRE);
 		uint32_t missing = __atomic_load_n(&S.health_missing_rank, __ATOMIC_ACQUIRE);
 		uint32_t failed = __atomic_load_n(&S.health_failed_status, __ATOMIC_ACQUIRE);
 		uint32_t eager = __atomic_load_n(&S.health_degraded_rank, __ATOMIC_ACQUIRE);
 		uint32_t degraded = connected < ranks || eager != UINT32_MAX || (failed != 0u && failed != (uint32_t)SPARK_STATUS_IO_ERROR) ? 1u : 0u;
 		(void)snprintf(b, sizeof(b),
-			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u}",
+			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"kv_write_alert_rank\":%d}",
 			degraded != 0u ? "degraded" : "ok", (unsigned long long)S.served, HaveSidecar ? "true" : "false", ranks, connected,
 			missing != UINT32_MAX ? (int)missing : -1, eager != UINT32_MAX ? (int)eager : -1, eager != UINT32_MAX ? "eager" : "none",
-			SparkStatusToString((SparkStatus)failed), __atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE));
+			SparkStatusToString((SparkStatus)failed), __atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE),
+			write_alert != UINT32_MAX ? (int)write_alert : -1);
 		send_response(fd, degraded != 0u ? 503 : 200, b);
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
@@ -1768,6 +1786,7 @@ static void *api_bringup(void *argument)
 	S.running = 1;
 	S.health_missing_rank = UINT32_MAX;
 	S.health_degraded_rank = UINT32_MAX;
+	S.health_write_alert_rank = UINT32_MAX;
 	if (pthread_create(&ApiWorker, 0, api_worker, 0) != 0)
 	{
 		api_logf("api_exit reason=worker_create_failed");

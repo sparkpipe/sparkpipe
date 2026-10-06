@@ -1300,20 +1300,15 @@ static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 		valid,shared,private_entries,nonresident,valid - shared - private_entries - nonresident - count);
 }
 
-static SparkStatus SparkStageKvBindingAttachWriteBudget(SparkStageKvBinding *binding)
+static void SparkStageKvBindingAttachWriteMeter(SparkStageKvBinding *binding)
 {
-	if ( SparkKvWriteBudgetInitialize(&binding->write_budget,binding->kv_pool.write_budget_bytes_per_day,SparkStageKvNowNs()) != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"%s kv binding refused: the weightd pool grants no NVMe write budget\n",binding->module_tag);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	}
-	binding->page_store.write_budget = &binding->write_budget;
+	SparkKvWriteMeterInitialize(&binding->write_meter,binding->module_tag,SparkStageKvNowNs());
+	binding->page_store.write_meter = &binding->write_meter;
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
-		binding->state_store.write_budget = &binding->write_budget;
-	binding->page_cache.write_budget = &binding->write_budget;
-	fprintf(stderr,"%s kv write budget bytes_per_day=%llu: spill and snapshot writes past it are discarded or skipped and recomputed\n",binding->module_tag,
-		(unsigned long long)binding->write_budget.bytes_per_day);
-	return(SPARK_STATUS_OK);
+		binding->state_store.write_meter = &binding->write_meter;
+	binding->page_cache.write_meter = &binding->write_meter;
+	fprintf(stderr,"%s kv write meter: every spill, state and snapshot write is counted; KV-WRITE-ALERT above %llu bytes in an hour\n",binding->module_tag,
+		(unsigned long long)SPARK_KV_WRITE_ALERT_BYTES_PER_WINDOW);
 }
 
 static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *configuration)
@@ -1428,7 +1423,7 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u )
 		status = SparkStageKvBindingAttachStates(binding,configuration);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageKvBindingAttachWriteBudget(binding);
+		SparkStageKvBindingAttachWriteMeter(binding);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( pthread_mutex_init(&binding->mutex,0) != 0 )
@@ -2930,12 +2925,11 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 	counters->pool_generation = binding->kv_pool.pool_generation;
 	counters->pool_reattached = binding->kv_pool.reattached;
 	counters->pool_adopted_pages = binding->kv_pool_adopted_pages;
-	SparkKvWriteBudgetRefill(&binding->write_budget,SparkStageKvNowNs());
-	counters->write_budget_bytes_per_day = binding->write_budget.bytes_per_day;
-	counters->write_budget_available_bytes = binding->write_budget.available_bytes;
-	counters->write_budget_overrun_bytes = binding->write_budget.overrun_bytes;
-	counters->write_budget_refused_saves = binding->write_budget.refused_saves;
-	counters->write_budget_discarded_pages = binding->write_budget.discarded_pages;
+	counters->write_alerting = SparkKvWriteMeterAlerting(&binding->write_meter,SparkStageKvNowNs());
+	counters->write_bytes = __atomic_load_n(&binding->write_meter.written_bytes,__ATOMIC_ACQUIRE);
+	counters->write_bytes_this_hour = __atomic_load_n(&binding->write_meter.window_bytes,__ATOMIC_ACQUIRE);
+	counters->write_bytes_previous_hour = __atomic_load_n(&binding->write_meter.previous_window_bytes,__ATOMIC_ACQUIRE);
+	counters->write_alerts = __atomic_load_n(&binding->write_meter.alert_count,__ATOMIC_ACQUIRE);
 	snapshot = binding->page_cache.snapshot;
 	if ( snapshot == 0 )
 	{

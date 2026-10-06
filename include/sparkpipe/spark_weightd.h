@@ -817,7 +817,7 @@ typedef struct SparkWeightdIpcKvPoolAttachResult
     uint64_t metadata_bytes;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
-    uint64_t write_budget_bytes_per_day;
+    uint64_t legacy_write_budget_bytes_per_day;
 } SparkWeightdIpcKvPoolAttachResult;
 
 typedef struct SparkWeightdIpcKvPoolResize
@@ -946,7 +946,6 @@ typedef struct SparkWeightdServerConfig
     const char *socket_path;
     uint64_t device_bytes_max;
     uint64_t kv_reserve_bytes;
-    uint64_t kv_write_budget_bytes_per_day;
     uint64_t load_pace_bytes_per_second;
     uint64_t kv_shared_window_bytes;
 } SparkWeightdServerConfig;
@@ -1213,7 +1212,6 @@ typedef struct SparkWeightdKvPoolGrant
     uint64_t metadata_bytes;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
-    uint64_t write_budget_bytes_per_day;
     uint32_t chunk_capacity;
     uint32_t chunk_count;
     uint32_t reattached;

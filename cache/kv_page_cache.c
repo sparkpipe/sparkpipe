@@ -1170,23 +1170,18 @@ static uint32_t SparkKvPageCacheDiscardInsteadOfSpill(SparkKvPageCache *cache,ui
 	SparkKvCacheArena *arena = cache->kv_cache_arena;
 	uint64_t free_slots;
 	uint32_t victim,discarded = 0u;
-	if ( cache->write_budget == 0 && arena->park_degraded == 0u )
+	if ( arena->park_degraded == 0u )
 		return(0u);
 	for (;;)
 	{
 		free_slots = arena->resident_block_capacity > arena->resident_block_count ? arena->resident_block_capacity - arena->resident_block_count : 0u;
 		if ( free_slots >= slots_needed )
 			return(discarded);
-		if ( arena->park_degraded == 0u && SparkKvWriteBudgetAllows(cache->write_budget,cache->page_store->page_bytes,SparkKvPageCacheNowNs()) != 0u )
-			return(discarded);
 		victim = SparkKvPageCacheResidentVictim(cache);
 		if ( victim == SPARK_KV_PAGE_CACHE_NO_INDEX || SparkKvPageCacheEvictEntry(cache,victim) != SPARK_STATUS_OK )
 			return(discarded);
 		discarded++;
-		if ( arena->park_degraded != 0u )
-			cache->degraded_discard_count++;
-		else
-			cache->write_budget->discarded_pages++;
+		cache->degraded_discard_count++;
 	}
 }
 
@@ -2248,12 +2243,6 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 			SparkKvPageCacheSaveDropHead(cache,status);
 			continue;
 		}
-		if ( cache->write_budget != 0 && SparkKvWriteBudgetAllows(cache->write_budget,cache->page_store->page_bytes,SparkKvPageCacheNowNs()) == 0u )
-		{
-			cache->write_budget->refused_saves++;
-			SparkKvPageCacheSavePop(cache);
-			continue;
-		}
 		memset(work,0,sizeof(*work));
 		status = SparkKvPageCacheSaveBegin(cache,entry_index,work);
 		if ( status == SPARK_STATUS_DUPLICATE )
@@ -2285,8 +2274,8 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 		}
 		work->page = (uint8_t *)work->ticket.segments[1].data;
 		work->state = cache->state_store != 0 ? (uint8_t *)work->ticket.segments[2].data : 0;
-		if ( cache->write_budget != 0 )
-			SparkKvWriteBudgetCharge(cache->write_budget,work->ticket.file_bytes,SparkKvPageCacheNowNs());
+		if ( cache->write_meter != 0 )
+			SparkKvWriteMeterRecord(cache->write_meter,work->ticket.file_bytes,SparkKvPageCacheNowNs());
 		snapshot->in_flight = 1u;
 		return(SPARK_STATUS_OK);
 	}

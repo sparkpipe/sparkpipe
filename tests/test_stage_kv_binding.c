@@ -1008,19 +1008,15 @@ static void WaitSavesIdle(void)
 	assert(0);
 }
 
-static void TestWriteBudgetDiscardsAndSkips(void)
+static void TestWriteMeterCountsAndAlerts(void)
 {
 	SparkModelDriverKvStoreCounters counters;
+	SparkKvWriteMeter meter;
 	uint8_t page[TEST_PAGE_BYTES];
-	uint64_t writes;
+	const uint64_t now = UINT64_C(5000000000);
 	uint32_t chain;
 	Open();
-	assert(BINDING.write_budget.bytes_per_day == BINDING.kv_pool.write_budget_bytes_per_day && BINDING.write_budget.bytes_per_day == (uint64_t)(((unsigned __int128)(UINT64_C(1) << 40) * BINDING.kv_pool.device_bytes) / (UINT64_C(64) << 20)) && BINDING.page_store.write_budget == &BINDING.write_budget && BINDING.page_cache.write_budget == &BINDING.write_budget);
-	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
-	BINDING.write_budget.bytes_per_day = 1u;
-	BINDING.write_budget.available_bytes = 0u;
-	writes = BINDING.page_store.write_count;
-	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+	assert(BINDING.page_store.write_meter == &BINDING.write_meter && BINDING.page_cache.write_meter == &BINDING.write_meter);
 	for (chain=0u; chain<TEST_PHYSICAL + 2u; chain++)
 	{
 		PublishStep(30u + chain,0u,0u,4u,(uint8_t)(0x90u + chain),(uint8_t)(0x20u + chain),page);
@@ -1028,10 +1024,22 @@ static void TestWriteBudgetDiscardsAndSkips(void)
 		WaitSavesIdle();
 	}
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
-	assert(counters.write_budget_bytes_per_day == 1u && counters.write_budget_discarded_pages >= 2u && counters.write_budget_refused_saves >= TEST_PHYSICAL + 2u);
-	assert(BINDING.page_store.write_count == writes && counters.save_page_count == 0u && counters.store_file_count == 0u);
+	assert(counters.save_page_count >= TEST_PHYSICAL + 2u && counters.store_file_count >= TEST_PHYSICAL + 2u);
+	assert(counters.write_bytes >= counters.save_page_count * TEST_PAGE_BYTES + counters.spill_write_bytes && counters.write_bytes == counters.write_bytes_this_hour);
+	assert(counters.write_bytes_previous_hour == 0u && counters.write_alerts == 0u && counters.write_alerting == 0u);
 	Close();
-	printf("write budget: once spent, snapshot saves are refused and new pages displace unreferenced resident entries instead of spilling\n");
+	SparkKvWriteMeterInitialize(&meter,"test",now);
+	SparkKvWriteMeterRecord(&meter,SPARK_KV_WRITE_ALERT_BYTES_PER_WINDOW,now + 1u);
+	assert(meter.alert_count == 0u && SparkKvWriteMeterAlerting(&meter,now + 2u) == 0u);
+	SparkKvWriteMeterRecord(&meter,1u,now + 3u);
+	assert(meter.alert_count == 1u && SparkKvWriteMeterAlerting(&meter,now + 4u) == 1u);
+	SparkKvWriteMeterRecord(&meter,UINT64_C(1) << 30,now + 5u);
+	assert(meter.alert_count == 1u);
+	SparkKvWriteMeterRecord(&meter,SPARK_KV_WRITE_ALERT_BYTES_PER_WINDOW + 1u,now + SPARK_KV_WRITE_METER_WINDOW_NS + 6u);
+	assert(meter.alert_count == 2u && meter.previous_window_bytes == SPARK_KV_WRITE_ALERT_BYTES_PER_WINDOW + 1u + (UINT64_C(1) << 30));
+	assert(meter.write_count == 4u && meter.written_bytes == 2u * SPARK_KV_WRITE_ALERT_BYTES_PER_WINDOW + 2u + (UINT64_C(1) << 30));
+	assert(SparkKvWriteMeterAlerting(&meter,now + 2u * SPARK_KV_WRITE_METER_WINDOW_NS + 7u) == 0u && meter.window_bytes == 0u);
+	printf("write meter: every snapshot save and spill goes through and is counted; above the hourly threshold one KV-WRITE-ALERT per hour is raised and nothing is refused\n");
 }
 
 static void PublishStepRetry(uint64_t sequence,uint8_t identity,uint8_t seed,uint8_t *bytes)
@@ -1078,21 +1086,19 @@ static void TestParkedPrefixSaves(void)
 {
 	SparkModelDriverKvStoreCounters counters;
 	uint8_t page[TEST_PAGE_BYTES],first[1][TEST_PAGE_BYTES];
-	uint64_t rate;
+	uint64_t maximum;
 	uint32_t chain,flags,attempt;
 	Open();
 	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
-	rate = BINDING.write_budget.bytes_per_day;
-	BINDING.write_budget.bytes_per_day = 1u;
-	BINDING.write_budget.available_bytes = 0u;
+	maximum = BINDING.snapshot_store.maximum_bytes;
+	BINDING.snapshot_store.maximum_bytes = 1u;
 	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
 	PublishStepRetry(60u,0xa0u,0x31u,first[0]);
 	WaitSavesIdle();
 	flags = EntryFlags(0xa0u);
 	assert((flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && (flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u && (flags & 0x80000000u) != 0u);
 	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
-	BINDING.write_budget.bytes_per_day = rate;
-	BINDING.write_budget.available_bytes = rate;
+	BINDING.snapshot_store.maximum_bytes = maximum;
 	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
 	for (chain=0u; chain<TEST_PHYSICAL + 1u && (EntryFlags(0xa0u) & 0x80000000u) != 0u; chain++)
 	{
@@ -1107,7 +1113,7 @@ static void TestParkedPrefixSaves(void)
 	flags = EntryFlags(0xa0u);
 	assert((flags & 0x80000000u) == 0u && (flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) != 0u && BINDING.snapshot.park_save_queued_count >= 1u);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
-	assert(counters.save_page_count >= 2u && counters.write_budget_refused_saves >= 1u);
+	assert(counters.save_page_count >= 2u && counters.save_failure_count >= 1u);
 	Unload();
 	TestKvServerFinish();
 	TestKvServerStart(64ull << 20);
@@ -1115,7 +1121,7 @@ static void TestParkedPrefixSaves(void)
 	assert(BINDING.kv_pool.reattached == 0u);
 	assert(RestorePrefix(70u,1u,4u,0xa0u,first,1u) == SPARK_STATUS_OK);
 	Close();
-	printf("parked prefix saves: a prefix page whose save was refused is saved when the arena parks it, from the spill copy, so it restores after a restart with a fresh pool\n");
+	printf("parked prefix saves: a prefix page whose save failed is saved when the arena parks it, from the spill copy, so it restores after a restart with a fresh pool\n");
 }
 
 static void TestRestoreHintStartsEarly(void)
@@ -1379,7 +1385,7 @@ int main(void)
 	TestSnapshotRestartRestore();
 	TestRestartAdoptsDevicePages();
 	TestRestoreHintStartsEarly();
-	TestWriteBudgetDiscardsAndSkips();
+	TestWriteMeterCountsAndAlerts();
 	TestParkedPrefixSaves();
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
