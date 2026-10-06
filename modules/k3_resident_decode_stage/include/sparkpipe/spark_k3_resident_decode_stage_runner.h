@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_status.h"
@@ -98,6 +99,7 @@ typedef struct SparkK3StageRunnerKv
     uint32_t page_table_stride;
     uint32_t pool_page_count;
     uint32_t sequence_count;
+    SparkKvShard context_shard;
 } SparkK3StageRunnerKv;
 
 typedef struct SparkK3StageRunnerStats

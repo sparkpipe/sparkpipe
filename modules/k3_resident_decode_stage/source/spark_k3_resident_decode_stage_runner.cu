@@ -6,6 +6,7 @@
 
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
+#include "sparkpipe/spark_k3_kv_shard.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_weightd_include.h"
@@ -597,6 +598,37 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 	return state->dispatch.buffers->tp_sharded != 0u ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_OK;
 }
 
+static void K3RunnerShardExchange(SparkK3RunnerState *state, K3LayerBuffers *b,
+	cudaStream_t stream, uint32_t phase)
+{
+	SparkTpDeviceCollectiveSubmission submission;
+	uint32_t degree = b->kv_shard.degree;
+	uint32_t partials = phase == K3_COLLECTIVE_MLA_PARTIALS ? 1u : 0u;
+	if ( state->device_collective_created == 0 || degree < 2u )
+	{
+		state->tp_collective_failed = 1u;
+		return;
+	}
+	memset(&submission, 0, sizeof(submission));
+	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	submission.descriptor_bytes = sizeof(submission);
+	submission.slot_index = 0u;
+	submission.active_sequence_count = partials != 0u
+		? SparkK3KvShardPartialSequences(state->rows, degree)
+		: SparkK3KvShardQuerySequences(state->rows, degree);
+	submission.logical_sequence_count = state->logical_sequence_count;
+	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+	submission.ordinal = state->tp_next_ordinal++;
+	submission.local_device = partials != 0u ? (void *)b->shard_partials_f32 : (void *)b->query_bf16;
+	submission.full_device = partials != 0u ? (void *)b->shard_partials_received_f32 : (void *)b->shard_query_gathered_bf16;
+	submission.cuda_stream = stream;
+	submission.completion_function = K3RunnerEmbedCompletion;
+	submission.completion_context = 0;
+	if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
+		partials != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER) != SPARK_STATUS_OK )
+		state->tp_collective_failed = 1u;
+}
+
 static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t layer, uint32_t phase)
 {
@@ -612,6 +644,11 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			? b->hidden_bf16 : b->attention_out_bf16;
 	if ( b->tp_sharded == 0u )
 		return;
+	if ( phase == K3_COLLECTIVE_MLA_QUERY || phase == K3_COLLECTIVE_MLA_PARTIALS )
+	{
+		K3RunnerShardExchange(state, b, stream, phase);
+		return;
+	}
 	if ( phase == 2u || phase == 3u )
 	{
 		const uint32_t gate_up_elements = phase == 2u
@@ -949,7 +986,7 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3RunnerState *state,
 		configuration->max_active_sequence_count,
 		configuration->max_input_row_count,
 		configuration->kv_pages_per_sequence,
-		state->kv_page_bytes, configuration->tp_degree, 0) != SPARK_K3_DISPATCH_OK )
+		state->kv_page_bytes, configuration->tp_degree, configuration->tp_rank, 0) != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: dispatch create failed tp_degree=%u\n",
 			configuration->tp_degree);
@@ -1046,7 +1083,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->max_context = configuration->resident_sequence_capacity;
 	state->multiprocessors = configuration->multiprocessors;
 	if ( configuration->kv_page_bytes == 0u )
-		state->kv_page_bytes = K3GlobalKv::kPageBytes;
+		state->kv_page_bytes = K3GlobalKv::kPageBytes / (configuration->tp_degree > 1u ? configuration->tp_degree : 1u);
 	else
 		state->kv_page_bytes = configuration->kv_page_bytes;
 	runner->stats.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
@@ -1879,6 +1916,18 @@ SparkStatus SparkK3StageRunnerAttachKv(SparkK3StageRunner *runner, const SparkK3
 			kv->layer_count, (unsigned long long)kv->layer_page_bytes, state->dispatch.mla_count, (unsigned)K3GlobalKv::kPageBytes);
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
+	{
+		SparkKvShard want = state->dispatch.buffers->kv_shard;
+		uint32_t sharded = want.degree > 1u ? 1u : 0u;
+		if ( sharded != (kv->context_shard.degree > 1u ? 1u : 0u) || (sharded != 0u &&
+			(kv->context_shard.degree != want.degree || kv->context_shard.rank != want.rank || kv->context_shard.grain != want.grain)) )
+		{
+			fprintf(stderr, "sparkpipe_k3: KV attach refused: binding splits context %u/%u grain %u, the slice needs %u/%u grain %u\n",
+				kv->context_shard.rank, kv->context_shard.degree, kv->context_shard.grain,
+				sharded != 0u ? want.rank : 0u, sharded != 0u ? want.degree : 1u, sharded != 0u ? want.grain : 0u);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+		}
+	}
 	if ( SparkK3DispatchAttachKv(&state->dispatch, kv->pool, kv->layer_stride_bytes, kv->page_table, kv->page_table_stride,
 		kv->pool_page_count, kv->sequence_count) != SPARK_K3_DISPATCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -2055,6 +2104,9 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	rows = 1u;
 	sequences = 1u;
 	packed_rows = rows * K3_TOP_K;
+	state->rows = rows;
+	if ( SparkK3DispatchShardRows(d, rows) != SPARK_K3_DISPATCH_OK )
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ( phase == 0u && K3RunnerCopy(b->hidden_bf16, hidden_input_bf16,
 			(uint64_t)rows * K3_HIDDEN * sizeof(uint16_t), stream) != cudaSuccess )
 		state->copy_failed = 1u;

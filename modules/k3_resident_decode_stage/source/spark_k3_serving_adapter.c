@@ -22,6 +22,7 @@
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_k3_kv_geometry.h"
+#include "sparkpipe/spark_k3_kv_shard.h"
 
 #include "spark_k3_dspark_format.h"
 #include "inference/llms/kimi_k3/spec_verify.h"
@@ -562,6 +563,8 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	kv.backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 	kv.snapshot_directory = configuration->kv_snapshot_directory;
 	kv.snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
+	if ( state->runner_config.tp_degree > 1u )
+		kv.context_shard = SparkK3KvShardContext(state->runner_config.tp_rank, state->runner_config.tp_degree);
 	status = SparkK3StageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -592,6 +595,7 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	attach.page_table_stride = state->kv.pages_per_sequence;
 	attach.pool_page_count = SparkStageKvBindingAddressablePageCount(&state->kv);
 	attach.sequence_count = state->kv.resident_sequence_capacity;
+	attach.context_shard = state->kv.context_shard;
 	return SparkK3StageRunnerAttachKv(&state->runner, &attach);
 }
 

@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
+#include "sparkpipe/spark_k3_kv_shard.h"
 #include "sparkpipe/spark_k3_weightd_include.h"
 
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
@@ -130,7 +131,7 @@ static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
 
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
-	uint64_t kv_page_bytes, uint32_t tp_degree, int device)
+	uint64_t kv_page_bytes, uint32_t tp_degree, uint32_t tp_rank, int device)
 {
 	SparkK3KdaRankLayout layout;
 	SparkK3RankStateBytes state_plan;
@@ -141,6 +142,12 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 			sizing->mla_layer_count, sequences, tp_degree,
 			kv_pages_per_view, kv_page_bytes, &state_plan) == 0u )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	if ( tp_degree > 1u && (tp_rank >= tp_degree || SparkK3KvShardFits(tp_degree, max_rows) == 0u) )
+	{
+		fprintf(stderr, "sparkpipe_k3: the MLA context split cannot run at tp_degree %u rank %u with %u rows\n",
+			tp_degree, tp_rank, max_rows);
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	}
 	memset(d, 0, sizeof(*d));
 	d->tp_degree = tp_degree;
 	d->kda_rank_heads = layout.heads;
@@ -227,6 +234,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->scratch_bytes += (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u;
 	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u;
 	d->scratch_bytes += (size_t)max_rows * K3_EXPERTS * 4u;
+	if ( tp_degree > 1u )
+		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(max_rows, tp_degree) + 48u;
 	d->scratch_bytes += 256u;
 	if ( cudaMalloc(&d->scratch, d->scratch_bytes) != cudaSuccess )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
@@ -254,6 +263,16 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	b->intermediate_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u);
 	b->kda_retention = (float *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u);
 	b->router_logits = (float *)k3_carve(d, &off, (size_t)max_rows * K3_EXPERTS * 4u);
+	if ( tp_degree > 1u )
+	{
+		b->kv_shard = SparkK3KvShardContext(tp_rank, tp_degree);
+		b->shard_query_gathered_bf16 = (uint16_t *)k3_carve(d, &off,
+			(size_t)tp_degree * SparkK3KvShardQueryStride(max_rows, tp_degree) * sizeof(uint16_t));
+		b->shard_partials_f32 = (float *)k3_carve(d, &off,
+			(size_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree) * sizeof(float));
+		b->shard_partials_received_f32 = (float *)k3_carve(d, &off,
+			(size_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree) * sizeof(float));
+	}
 	return SPARK_K3_DISPATCH_OK;
 }
 
@@ -477,12 +496,26 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	return status;
 }
 
+int32_t SparkK3DispatchShardRows(SparkK3Dispatch *d, uint32_t rows)
+{
+	K3LayerBuffers *b;
+	if ( d == 0 || d->buffers_host == 0 || rows == 0u || rows > d->max_rows )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	b = d->buffers_host;
+	if ( b->kv_shard.degree < 2u )
+		return SPARK_K3_DISPATCH_OK;
+	b->shard_query_rank_stride = SparkK3KvShardQueryStride(rows, b->kv_shard.degree);
+	b->shard_partial_rank_stride = SparkK3KvShardPartialStride(rows, b->kv_shard.degree);
+	return SPARK_K3_DISPATCH_OK;
+}
+
 int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows,
 	uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	if ( d == 0 || in == 0 || rows == 0u || rows > d->max_rows ||
-		sequences == 0u || sequences > d->sequences )
+		sequences == 0u || sequences > d->sequences ||
+		SparkK3DispatchShardRows(d, rows) != SPARK_K3_DISPATCH_OK )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	cudaSetDevice(d->device);
 	K3LayerBuffers *b = d->buffers_host;

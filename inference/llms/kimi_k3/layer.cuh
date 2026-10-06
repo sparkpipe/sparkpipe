@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_lm_certified_launch.h"
 #include "inference/kernels/kv.cuh"
+#include "inference/kernels/attn_shard.cuh"
 #include "inference/llms/kimi_k3/config.h"
 #include "inference/llms/kimi_k3/generated_config.h"
 
@@ -178,6 +179,13 @@ struct K3LayerBuffers
 	float *kda_retention;
 
 	LmKvView cache;
+	SparkKvShard kv_shard;
+	LmKvShardView cache_shard;
+	uint16_t *shard_query_gathered_bf16;
+	float *shard_partials_f32;
+	float *shard_partials_received_f32;
+	uint64_t shard_query_rank_stride;
+	uint64_t shard_partial_rank_stride;
 	const uint32_t *sequence_of_row;
 	const uint32_t *context_length;
 	const uint32_t *positions;
@@ -397,7 +405,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 }
 
 template<class Format, class Geometry>
-static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t context, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerMlaQuery(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
@@ -419,11 +427,19 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		return(status);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_KV_LORA_RANK + 8u) * sizeof(float), stream,
 		b->kv_slot_bf16,0,(const uint16_t *)b->mla_kv_a_norm_weight, 0,b->kv_slot_bf16,K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_LORA_RMS_EPSILON);
-	LM_LAUNCH((LmKvStoreKernel<Geometry,K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
-	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,K3_ATTN_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS)), K3_ATTN_THREADS, 0, stream,
-		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),K3_MLA_QK_SCALE,b->attention_out_bf16,b->positions);
-	(void)context;
+	if ( b->kv_shard.degree > 1u )
+		LM_LAUNCH((LmKvShardStoreKernel<Geometry,K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
+			b->cache_shard,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
+	else
+		LM_LAUNCH((LmKvStoreKernel<Geometry,K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
+			b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
+	return(LM_LAUNCH_OK);
+}
+
+template<class Format>
+static int32_t K3LayerMlaOutput(const K3LayerBuffers *b, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status;
 	LM_LAUNCH((LmPerHeadProjectKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(rows,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS)), K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->value_bf16,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),rows);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,0,
@@ -436,6 +452,54 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	return(K3Project<LmBf16Format>(b,b->value_bf16,b->mla_out_weight,b->mla_out_scale,
 		b->attention_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : partial_accumulate,
 		rows,K3_RANK_DIM(b,mla_out_input,K3_MLA_OUT_DIM),K3_HIDDEN,multiprocessors,stream));
+}
+
+template<class Format, class Geometry>
+static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t context, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status;
+	if ( b->kv_shard.degree > 1u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	status = K3LayerMlaQuery<Format,Geometry>(b,rows,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,K3_ATTN_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS)), K3_ATTN_THREADS, 0, stream,
+		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),K3_MLA_QK_SCALE,b->attention_out_bf16,b->positions);
+	(void)context;
+	return(K3LayerMlaOutput<Format>(b,rows,partial_accumulate,multiprocessors,stream));
+}
+
+static uint32_t K3LayerMlaShardReady(const K3LayerBuffers *b, uint32_t rows)
+{
+	uint32_t heads = K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS);
+	return(b->kv_shard.degree > 1u && heads * b->kv_shard.degree == K3_MLA_HEADS &&
+		SparkKvShardValid(b->kv_shard,K3_KV_PAGE_SLOTS) != 0u &&
+		b->cache_shard.shard.degree == b->kv_shard.degree && b->cache_shard.shard.rank == b->kv_shard.rank &&
+		LmKvViewIsConfigured(b->cache_shard.pages) &&
+		b->shard_query_gathered_bf16 != 0 && b->shard_partials_f32 != 0 && b->shard_partials_received_f32 != 0 &&
+		b->shard_query_rank_stride >= (uint64_t)rows * heads * K3_MLA_KV_A_DIM &&
+		b->shard_partial_rank_stride >= (uint64_t)rows * heads * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK) ? 1u : 0u);
+}
+
+template<class Geometry>
+static int32_t K3LayerMlaShardPartials(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+{
+	if ( K3LayerMlaShardReady(b,rows) == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(LmLatentShardPartialLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(
+		b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride,
+		K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,
+		0,0u,0u,K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == cudaSuccess
+		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static int32_t K3LayerMlaShardMerge(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+{
+	if ( K3LayerMlaShardReady(b,rows) == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(LmLatentShardMergeLaunch<K3_KV_LORA_RANK>(b->shard_partials_received_f32,b->shard_partial_rank_stride,
+		b->kv_shard.degree,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->attention_out_bf16,rows,stream) == cudaSuccess
+		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 template<class Format>

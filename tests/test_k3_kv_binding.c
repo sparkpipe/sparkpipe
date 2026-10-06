@@ -320,6 +320,44 @@ static void TestK3Refusals(void)
 	printf("K3 on the KV binding: no pack identity or too few logical pages refuse the binding: ok\n");
 }
 
+static void TestK3ContextShard(void)
+{
+	SparkK3ServingState *state = (SparkK3ServingState *)calloc(1u, sizeof(*state));
+	const uint64_t page = (uint64_t)SPARK_K3_KV_PAGE_SLOTS * SPARK_K3_MODEL_MLA_KV_A_DIMENSION * SPARK_K3_KV_BYTES_PER_SCALAR;
+	uint32_t rows;
+	assert(state != 0);
+	state->max_rows = 8u;
+	state->runner_config.max_input_row_count = 8u;
+	state->runner_config.max_active_sequence_count = 4u;
+	state->runner_config.resident_sequence_capacity = 4u;
+	state->runner_config.kv_pages_per_sequence = 2u;
+	state->runner_config.tp_degree = 16u;
+	state->runner_config.tp_rank = 5u;
+	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
+	assert(mkdtemp(DIRECTORY) != 0);
+	strcpy(SNAPSHOT_DIRECTORY, "/tmp/sparkpipe-k3-snapshot-XXXXXX");
+	assert(mkdtemp(SNAPSHOT_DIRECTORY) != 0);
+	test_attach_calls = 0u;
+	assert(BindWith(state, 16u, 8u) == SPARK_STATUS_OK && test_attach_calls == 1u);
+	assert(state->kv.context_shard.degree == 16u && state->kv.context_shard.rank == 5u && state->kv.context_shard.grain == 1u);
+	assert(test_attached_kv.context_shard.degree == 16u && test_attached_kv.context_shard.rank == 5u && test_attached_kv.context_shard.grain == 1u);
+	assert(test_attached_kv.layer_page_bytes == page);
+	assert(state->kv.region_packed_page_bytes[0] == (uint64_t)test_kv_layers * page / 16u);
+	assert(test_attached_kv.layer_stride_bytes == state->kv.region_layer_stride_bytes[0] &&
+		test_attached_kv.layer_stride_bytes == (uint64_t)test_attached_kv.pool_page_count * page / 16u);
+	for ( rows = 1u; rows <= 512u; rows++ )
+		assert(SparkK3KvShardFits(16u, rows) == 1u &&
+			SparkK3KvShardQueryStride(rows, 16u) >= (uint64_t)rows * 6u * (SPARK_K3_MODEL_MLA_LATENT_DIMENSION + SPARK_K3_MODEL_MLA_UNROTATED_DIMENSION) &&
+			SparkK3KvShardPartialStride(rows, 16u) >= (uint64_t)rows * 6u * (SPARK_K3_MODEL_MLA_LATENT_DIMENSION + 2u));
+	assert(SparkK3KvShardFits(1u, 1u) == 0u && SparkK3KvShardFits(32u, 1u) == 0u && SparkK3KvShardFits(5u, 1u) == 0u);
+	SparkStageKvBindingDestroy(&state->kv);
+	SparkStageModuleLedgerRelease(&state->ledger);
+	free(state);
+	assert(rmdir(DIRECTORY) == 0);
+	assert(nftw(SNAPSHOT_DIRECTORY, RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) == 0);
+	printf("K3 on the KV binding: at TP16 rank 5 the binding splits context 5/16 and the runner gets 1/16 pages: ok\n");
+}
+
 int main(void)
 {
 	setvbuf(stdout, 0, _IONBF, 0);
@@ -328,6 +366,7 @@ int main(void)
 	TestK3PrefixRestore();
 	TestK3Reset();
 	TestK3Refusals();
+	TestK3ContextShard();
 	TestKvServerFinish();
 	printf("PASS k3 kv binding: K3 admits, claims, restores and finishes through the common KV binding with its KDA state as the recurrent record\n");
 	return(0);

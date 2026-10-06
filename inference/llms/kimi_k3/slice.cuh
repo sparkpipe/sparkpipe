@@ -58,6 +58,9 @@ struct K3LayerWeights
 	const void *attnres_mlp_weight;
 };
 
+#define K3_COLLECTIVE_MLA_QUERY 4u
+#define K3_COLLECTIVE_MLA_PARTIALS 5u
+
 struct K3SliceState
 {
 	uint8_t *kda_state;
@@ -173,11 +176,35 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 	buffers->replay_write_gate = state->replay_write_gate == 0 ? 0 : state->replay_write_gate
 		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_HEADS);
 	if ( K3_LAYER_KIND(layer) == LM_LAYER_LATENT )
+	{
 		buffers->cache = state->mla_cache[mla_index];
+		buffers->cache_shard.pages = buffers->cache;
+		buffers->cache_shard.shard = buffers->kv_shard;
+	}
 }
 
 template<class Format, class Geometry>
-static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LaunchMlaShard(const K3SliceState *state, const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status;
+	if ( state->layer_collective == 0 )
+		return(LM_LAUNCH_ERR_SHAPE);
+	status = K3LayerMlaQuery<Format,Geometry>(buffers,rows,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_QUERY);
+	status = K3LayerMlaShardPartials<Geometry>(buffers,rows,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_PARTIALS);
+	status = K3LayerMlaShardMerge(buffers,rows,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(K3LayerMlaOutput<Format>(buffers,rows,partial_accumulate,multiprocessors,stream));
+}
+
+template<class Format, class Geometry>
+static int32_t K3LaunchAttentionHalf(const K3SliceState *state, const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	enum LmLayerKind kind = (enum LmLayerKind)K3_LAYER_KIND(layer);
 	switch (kind)
@@ -185,6 +212,8 @@ static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t lay
 	case LM_LAYER_RECURRENT:
 		return(K3LayerKda<Format>(buffers,rows,sequences,commit,partial_accumulate,multiprocessors,stream));
 	case LM_LAYER_LATENT:
+		if ( buffers->kv_shard.degree > 1u )
+			return(K3LaunchMlaShard<Format,Geometry>(state,buffers,layer,rows,partial_accumulate,multiprocessors,stream));
 		return(K3LayerMla<Format,Geometry>(buffers,rows,context,partial_accumulate,multiprocessors,stream));
 	case LM_LAYER_FULL:
 	case LM_LAYER_WINDOW:
@@ -225,7 +254,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
 		}
-		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,sequences,commit,
+		status = K3LaunchAttentionHalf<Format,Geometry>(state,buffers,layer,rows,sequences,commit,
 			boundary != 0u ? (uint16_t *)0 : buffers->attnres_partial_bf16,context,
 			multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
@@ -328,7 +357,7 @@ static int32_t K3LaunchSliceHalf(const K3LayerWeights *weights, const K3SliceSta
 				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
 		}
-		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,sequences,commit,
+		status = K3LaunchAttentionHalf<Format,Geometry>(state,buffers,layer,rows,sequences,commit,
 			boundary != 0u ? (uint16_t *)0 : buffers->attnres_partial_bf16,context,
 			multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
