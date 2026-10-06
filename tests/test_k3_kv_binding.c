@@ -228,8 +228,10 @@ static void TestK3PrefillDecodeRelease(void)
 	test_dispatch_status = SPARK_STATUS_OK;
 	assert(state->kv.lanes[3].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && atomic_load(&state->kv.lane_bound[3]) == 0u);
 	assert(SparkStageKvBindingResidentCount(&state->kv) == 0u && atomic_load(&state->lane_states[3]) == SPARK_STAGE_MODULE_SLOT_FREE);
+	Release(state, 5u, 3u);
+	assert(state->kv.lanes[3].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && SparkStageKvBindingResidentCount(&state->kv) == 0u);
 	Close(state);
-	printf("K3 on the KV binding: prefill publishes and captures KDA state, decode continues, a position jump or a failed run binds nothing, release resets the slot: ok\n");
+	printf("K3 on the KV binding: prefill publishes and captures KDA state, decode continues, a position jump or a failed run binds nothing, release resets the slot and succeeds after a failed run: ok\n");
 }
 
 static void TestK3PrefixRestore(void)

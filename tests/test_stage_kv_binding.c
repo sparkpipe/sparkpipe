@@ -902,6 +902,26 @@ static void ReleaseSequence(uint64_t sequence,uint32_t slot)
 	assert(StepAdmit(&release,0u) == SPARK_STATUS_OK);
 }
 
+static void TestReleaseAfterFailedRun(void)
+{
+	TestStep step,release;
+	TestFinished finished = {0};
+	Open();
+	StepInit(&step,41u,0u,0u,4u);
+	StepStart(&step);
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_IO_ERROR);
+	StepRelease(&release,41u,0u);
+	assert(StepAdmit(&release,0u) == SPARK_STATUS_OK);
+	StepInit(&step,42u,0u,0u,4u);
+	StepRun(&step);
+	StepRelease(&release,43u,0u);
+	assert(StepAdmit(&release,0u) == SPARK_STATUS_NOT_FOUND);
+	ReleaseSequence(42u,0u);
+	Close();
+	printf("release after a failed run: the failed run already freed the slot, so its release succeeds and the slot takes a new sequence; releasing another sequence's slot is refused: ok\n");
+}
+
 static SparkStatus RestorePrefix(uint64_t sequence,uint32_t slot,uint32_t tokens,uint8_t identity,uint8_t pages[][TEST_PAGE_BYTES],uint32_t page_count)
 {
 	TestStep step;
@@ -1463,6 +1483,7 @@ int main(void)
 	TestRecurrentRoundTrip();
 	TestRecurrentRefusals();
 	TestRecurrentCheckpoints();
+	TestReleaseAfterFailedRun();
 	TestKvServerFinish();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
 	return(0);

@@ -3213,12 +3213,15 @@ static SparkStatus SparkKvLaneTransactionsRelease(SparkKvLaneTransactions *trans
 		lane = &request->cache_lanes[index];
 		if ( transactions->lanes[lane->resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
-		if ( transactions->cache->sequences[lane->resident_sequence_slot].sequence_id != lane->sequence_id )
+		if ( transactions->cache->sequences[lane->resident_sequence_slot].sequence_id != lane->sequence_id &&
+			transactions->cache->sequences[lane->resident_sequence_slot].sequence_id != 0u )
 			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
 	for (index=0u; index<request->cache_lane_count; index++)
 	{
 		lane = &request->cache_lanes[index];
+		if ( transactions->cache->sequences[lane->resident_sequence_slot].sequence_id == 0u )
+			continue;
 		SparkKvPageCacheMarkSave(transactions->cache,lane->resident_sequence_slot);
 		status = SparkKvPageCacheReleaseLane(transactions->cache,lane->resident_sequence_slot,lane->sequence_id);
 		if ( status != SPARK_STATUS_OK )
