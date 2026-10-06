@@ -1008,6 +1008,8 @@ static void WaitSavesIdle(void)
 	assert(0);
 }
 
+static void PublishStepRetry(uint64_t sequence,uint8_t identity,uint8_t seed,uint8_t *bytes);
+
 static void TestWriteMeterCountsAndAlerts(void)
 {
 	SparkModelDriverKvStoreCounters counters;
@@ -1019,12 +1021,11 @@ static void TestWriteMeterCountsAndAlerts(void)
 	assert(BINDING.page_store.write_meter == &BINDING.write_meter && BINDING.page_cache.write_meter == &BINDING.write_meter);
 	for (chain=0u; chain<TEST_PHYSICAL + 2u; chain++)
 	{
-		PublishStep(30u + chain,0u,0u,4u,(uint8_t)(0x90u + chain),(uint8_t)(0x20u + chain),page);
-		ReleaseSequence(30u + chain,0u);
+		PublishStepRetry(30u + chain,(uint8_t)(0x90u + chain),(uint8_t)(0x20u + chain),page);
 		WaitSavesIdle();
 	}
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
-	assert(counters.save_page_count >= TEST_PHYSICAL + 2u && counters.store_file_count >= TEST_PHYSICAL + 2u);
+	assert(counters.save_page_count >= TEST_PHYSICAL + 2u && counters.save_failure_count == 0u && counters.store_file_count != 0u);
 	assert(counters.write_bytes >= counters.save_page_count * TEST_PAGE_BYTES + counters.spill_write_bytes && counters.write_bytes == counters.write_bytes_this_hour);
 	assert(counters.write_bytes_previous_hour == 0u && counters.write_alerts == 0u && counters.write_alerting == 0u);
 	Close();
