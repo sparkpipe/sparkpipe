@@ -227,6 +227,9 @@ static SparkStatus K3RunnerCombineU64Max(void *combine_context,
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
+#define K3_RUNNER_LEASES_PER_LAYER \
+	((K3_EXPERTS + 1u + SPARK_WEIGHTD_LEASE_GROUPS_MAX - 1u) / SPARK_WEIGHTD_LEASE_GROUPS_MAX)
+
 enum
 {
 	SPARK_K3_LEASE_ACQUIRED = 1u,
@@ -243,8 +246,8 @@ typedef struct SparkK3RunnerState
 	SparkTpDeviceCollective device_collective_wide;
 	int device_collective_wide_created;
 	SparkWeightdLazyPack *lazy_pack;
-	uint64_t lease_identifier;
-	uint32_t lease_phase;
+	uint64_t lease_identifier[K3_RUNNER_LEASES_PER_LAYER];
+	uint32_t lease_phase[K3_RUNNER_LEASES_PER_LAYER];
 	void *lease_address;
 	uint32_t *group_offset_host;
 	uint64_t layer_w1_offset[K3_LAYERS];
@@ -823,29 +826,43 @@ static SparkStatus SparkK3ManifestCheck(const SparkWeightdManifest *manifest,
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkK3RunnerReleaseLease(SparkK3RunnerState *state)
+static SparkStatus SparkK3RunnerReleaseOneLease(SparkK3RunnerState *state, uint32_t index)
 {
 	SparkStatus status;
-	if ( state->lease_identifier == 0u )
-		return(state->lease_phase == 0u ? SPARK_STATUS_OK : SPARK_STATUS_VALIDATION_FAILED);
+	if ( state->lease_identifier[index] == 0u )
+		return(state->lease_phase[index] == 0u ? SPARK_STATUS_OK : SPARK_STATUS_VALIDATION_FAILED);
 	if ( state->lazy_pack == 0 || state->lazy_pack->map == 0 ||
-		state->lease_phase < SPARK_K3_LEASE_ACQUIRED || state->lease_phase > SPARK_K3_LEASE_RECORDED )
+		state->lease_phase[index] < SPARK_K3_LEASE_ACQUIRED || state->lease_phase[index] > SPARK_K3_LEASE_RECORDED )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( state->lease_phase == SPARK_K3_LEASE_BEGUN )
+	if ( state->lease_phase[index] == SPARK_K3_LEASE_BEGUN )
 	{
-		status = SparkWeightdMapRecordCompletion(state->lazy_pack->map,state->lease_identifier,state->stream);
+		status = SparkWeightdMapRecordCompletion(state->lazy_pack->map,state->lease_identifier[index],state->stream);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
-		state->lease_phase = SPARK_K3_LEASE_RECORDED;
+		state->lease_phase[index] = SPARK_K3_LEASE_RECORDED;
 	}
-	status = SparkWeightdMapRelease(state->lazy_pack->map,state->lease_identifier,SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	status = SparkWeightdMapRelease(state->lazy_pack->map,state->lease_identifier[index],SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
 	if ( status == SPARK_STATUS_OK )
 	{
-		state->lease_identifier = 0u;
-		state->lease_phase = 0u;
-		state->lease_address = 0;
+		state->lease_identifier[index] = 0u;
+		state->lease_phase[index] = 0u;
 	}
 	return(status);
+}
+
+static SparkStatus SparkK3RunnerReleaseLease(SparkK3RunnerState *state)
+{
+	SparkStatus status,result = SPARK_STATUS_OK;
+	uint32_t index;
+	for (index=0u; index<K3_RUNNER_LEASES_PER_LAYER; index++)
+	{
+		status = SparkK3RunnerReleaseOneLease(state, index);
+		if ( status != SPARK_STATUS_OK && result == SPARK_STATUS_OK )
+			result = status;
+	}
+	if ( result == SPARK_STATUS_OK )
+		state->lease_address = 0;
+	return(result);
 }
 
 static SparkStatus K3RunnerLeaseTensorBase(SparkK3RunnerState *state,
@@ -853,7 +870,7 @@ static SparkStatus K3RunnerLeaseTensorBase(SparkK3RunnerState *state,
 {
 	if ( state->lease_tensor_base == 0u || (*count != 0u && keys[0].expert == 0u) )
 		return SPARK_STATUS_OK;
-	if ( *count >= SPARK_WEIGHTD_LEASE_GROUPS_MAX )
+	if ( *count >= K3_EXPERTS + 1u )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memmove(&keys[1], &keys[0], (size_t)*count * sizeof(keys[0]));
 	keys[0].layer = layer;
@@ -868,8 +885,8 @@ static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 	SparkK3RunnerState *state = (SparkK3RunnerState *)context;
 	K3LayerBuffers *buffers = (K3LayerBuffers *)buffers_void;
 	SparkWeightdMap *map;
-	SparkWeightdExpertKey keys[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
-	uint32_t count = 0u;
+	SparkWeightdExpertKey keys[K3_EXPERTS + 1u];
+	uint32_t count = 0u,first,chunk,index;
 	cudaError_t error;
 	SparkStatus status;
 	if ( state == 0 || state->lazy_pack == 0 || buffers == 0 ||
@@ -890,29 +907,38 @@ static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = SparkWeightdRouteKeys(layer, state->group_offset_host,
 		K3_EXPERTS, state->rows * K3_TOP_K, keys,
-		SPARK_WEIGHTD_LEASE_GROUPS_MAX, &count);
+		K3_EXPERTS, &count);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	status = K3RunnerLeaseTensorBase(state, layer, keys, &count);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	SparkK3RunnerStrayAccount(state, keys, count);
-	status = SparkWeightdMapAcquire(map, keys, count,
-		&state->lease_identifier, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
-	if ( state->lease_identifier != 0u )
-		state->lease_phase = SPARK_K3_LEASE_ACQUIRED;
-	if ( status != SPARK_STATUS_OK )
+	for (first=0u,index=0u; first<count; first+=chunk,index++)
 	{
-		(void)SparkK3RunnerReleaseLease(state);
-		SPARK_FAIL(status);
+		chunk = count - first < SPARK_WEIGHTD_LEASE_GROUPS_MAX ? count - first : SPARK_WEIGHTD_LEASE_GROUPS_MAX;
+		if ( index >= K3_RUNNER_LEASES_PER_LAYER )
+		{
+			(void)SparkK3RunnerReleaseLease(state);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		status = SparkWeightdMapAcquire(map, keys + first, chunk,
+			&state->lease_identifier[index], SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+		if ( state->lease_identifier[index] != 0u )
+			state->lease_phase[index] = SPARK_K3_LEASE_ACQUIRED;
+		if ( status == SPARK_STATUS_OK && state->lease_identifier[index] == 0u )
+			status = SPARK_STATUS_VALIDATION_FAILED;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkWeightdMapBeginUse(map,
+				state->lease_identifier[index], &state->lease_address);
+		if ( status == SPARK_STATUS_OK )
+			state->lease_phase[index] = SPARK_K3_LEASE_BEGUN;
+		if ( status != SPARK_STATUS_OK )
+		{
+			(void)SparkK3RunnerReleaseLease(state);
+			SPARK_FAIL(status);
+		}
 	}
-	if ( state->lease_identifier == 0u )
-		return SPARK_STATUS_VALIDATION_FAILED;
-	status = SparkWeightdMapBeginUse(map,
-		state->lease_identifier, &state->lease_address);
-	if ( status != SPARK_STATUS_OK )
-		return status;
-	state->lease_phase = SPARK_K3_LEASE_BEGUN;
 	buffers->expert_w1_weight = (const uint8_t *)state->lease_address +
 		state->layer_w1_offset[layer];
 	buffers->expert_w2_weight = (const uint8_t *)state->lease_address +

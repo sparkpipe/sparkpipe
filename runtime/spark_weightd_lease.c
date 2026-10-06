@@ -218,7 +218,7 @@ SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *offsets,uint32_
 		if ( offsets[i] != offsets[i + 1u] )
 			needed++;
 	}
-	if ( needed > capacity || needed > SPARK_WEIGHTD_LEASE_GROUPS_MAX )
+	if ( needed > capacity )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for (i=0u; i<expert_count; i++)
 		if ( offsets[i] != offsets[i + 1u] )

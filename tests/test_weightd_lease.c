@@ -41,6 +41,17 @@ static void check_arbitrary_working_sets(void)
 	assert(SparkWeightdLeaseTableDestroy(table) == SPARK_STATUS_OK);
 }
 
+static void check_route_keys_beyond_one_lease(void)
+{
+	SparkWeightdExpertKey keys[896];
+	uint32_t offsets[897],i,count;
+	for (i=0u; i<=896u; i++)
+		offsets[i] = i;
+	assert(SparkWeightdRouteKeys(5u,offsets,896u,896u,keys,896u,&count) == SPARK_STATUS_OK && count == 896u && count > SPARK_WEIGHTD_LEASE_GROUPS_MAX);
+	assert(keys[0].expert == 0u && keys[895].expert == 895u && keys[600].layer == 5u);
+	assert(SparkWeightdRouteKeys(5u,offsets,896u,896u,keys,895u,&count) == SPARK_STATUS_CAPACITY_EXCEEDED && count == 0u);
+}
+
 static void check_route_keys(void)
 {
 	SparkWeightdExpertKey keys[288];
@@ -86,6 +97,7 @@ int main(void)
 	uint32_t i;
 	check_arbitrary_working_sets();
 	check_route_keys();
+	check_route_keys_beyond_one_lease();
 	assert(SparkWeightdLeaseTableCreate(&manifest,&table) == SPARK_STATUS_OK);
 	assert(SparkWeightdLeaseAcquire(table,1u,SPARK_WEIGHTD_LANE_NONE,a,3u,&first) == SPARK_STATUS_OK);
 	assert(table->pins[0] == 1u && table->pins[1] == 1u && table->pins[2] == 0u);
