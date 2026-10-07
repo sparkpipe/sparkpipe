@@ -5,6 +5,7 @@
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/skinny.cuh"
+#include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/head.cuh"
@@ -133,6 +134,7 @@ struct K3LayerBuffers
 	uint16_t *shared_out_bf16;
 	uint16_t *attnres_bank_bf16;
 	uint16_t *attnres_partial_bf16;
+	float *attnres_score_f32;
 	const void *attnres_attn_weight;
 	const void *attnres_mlp_weight;
 	const void *attnres_out_weight;
@@ -256,6 +258,17 @@ static void K3AttnRes(const K3LayerBuffers *b, const void *score_weight, uint32_
 {
 	if ( sources > K3_ATTNRES_MAX_SOURCES )
 		sources = K3_ATTNRES_MAX_SOURCES;
+	if ( b->attnres_score_f32 != 0 )
+	{
+		LM_LAUNCH((LmAttnResScoreKernel<K3_LAYER_THREADS>), dim3(rows,sources), K3_LAYER_THREADS, 0, stream,
+			b->attnres_bank_bf16,b->attnres_partial_bf16,(const uint16_t *)score_weight,b->attnres_score_f32,
+			sources,rows,K3_HIDDEN,K3_ATTNRES_MAX_SOURCES,K3_RMS_EPSILON);
+		LM_LAUNCH((LmAttnResMixKernel<K3_LAYER_THREADS,K3_ATTNRES_MAX_SOURCES>),
+			dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->attnres_bank_bf16,b->attnres_partial_bf16,b->attnres_score_f32,b->hidden_bf16,
+			sources,rows,K3_HIDDEN,K3_ATTNRES_MAX_SOURCES);
+		return;
+	}
 	LM_LAUNCH((LmAttnResKernel<K3_LAYER_THREADS,K3_ATTNRES_MAX_SOURCES>),
 		rows, K3_LAYER_THREADS, 0, stream,
 		b->attnres_bank_bf16,b->attnres_partial_bf16,
@@ -544,8 +557,9 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 			K3_HIDDEN,K3_EXPERTS,multiprocessors,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LM_LAUNCH((LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true,1u,1u,LM_TOPK_SCORE_SIGMOID>), rows, K3_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
-		b->router_logits,K3_EXPERTS,b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE);
+	if ( LmTopkRouteLaunch<K3_LAYER_THREADS,K3_TOP_K,true,LM_TOPK_SCORE_SIGMOID>(rows,b->router_logits,K3_EXPERTS,
+		b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,stream) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
 	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
 	return(LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(
 		b->route_expert,rows,packed_rows,K3_TOP_K,b->group_row_offset,

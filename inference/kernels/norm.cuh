@@ -587,6 +587,64 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 }
 
 template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS) void LmAttnResScoreKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, float *__restrict__ score_f32, uint32_t sources, uint32_t rows, uint32_t dimension, uint32_t score_stride, float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	const uint32_t row = blockIdx.x, source = blockIdx.y;
+	const uint16_t *values = source + 1u == sources
+		? partial_bf16 + ((uint64_t)row * dimension)
+		: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
+	float square = 0.0f,dot = 0.0f,inverse;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float value = LmBf16ToFloat(values[index]);
+		square += value * value;
+	}
+	square = LmBlockSum<THREADS>(square,reduction);
+	inverse = rsqrtf((square / (float)dimension) + epsilon);
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+		dot += LmBf16ToFloat(values[index]) * inverse
+			* LmBf16ToFloat(score_weight_bf16[index]);
+	dot = LmBlockSum<THREADS>(dot,reduction);
+	if ( threadIdx.x == 0u )
+		score_f32[((uint64_t)row * score_stride) + source] = dot;
+}
+
+template<uint32_t THREADS, uint32_t MAX_SOURCES>
+__global__ __launch_bounds__(THREADS) void LmAttnResMixKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const float *__restrict__ score_f32, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t rows, uint32_t dimension, uint32_t score_stride)
+{
+	__shared__ float weight[MAX_SOURCES];
+	const uint32_t row = blockIdx.y, index = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t source;
+	float running_max = -INFINITY,running_sum = 0.0f,total = 0.0f;
+	if ( threadIdx.x == 0u )
+	{
+		const float *score = score_f32 + ((uint64_t)row * score_stride);
+		for (source = 0u; source < sources; ++source)
+			running_max = fmaxf(running_max,score[source]);
+		for (source = 0u; source < sources; ++source)
+		{
+			weight[source] = __expf(score[source] - running_max);
+			running_sum += weight[source];
+		}
+		for (source = 0u; source < sources; ++source)
+			weight[source] /= running_sum;
+	}
+	__syncthreads();
+	if ( index >= dimension )
+		return;
+	for (source = 0u; source < sources; ++source)
+	{
+		const uint16_t *values = source + 1u == sources
+			? partial_bf16 + ((uint64_t)row * dimension)
+			: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
+		total += weight[source] * LmBf16ToFloat(values[index]);
+	}
+	output_bf16[((uint64_t)row * dimension) + index] = LmFloatToBf16(total);
+}
+
+template<uint32_t THREADS>
 __global__ void LmGatherRowsKernel(const uint16_t *__restrict__ source_bf16, const uint32_t *__restrict__ source_row_map, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension)
 {
 	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
