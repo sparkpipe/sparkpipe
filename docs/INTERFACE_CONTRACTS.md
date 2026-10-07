@@ -212,6 +212,25 @@ Caller contract:
 - A non-OK return delivers no completion. During an uncaptured host round, a cancel or a missed deadline returns `SPARK_STATUS_BUSY`. The deadline is the smaller of the configured `operation_timeout_milli` and 120 s. If the collective's `SparkWeightdClient` connection is dead while that round waits, it returns `SPARK_STATUS_IO_ERROR`.
 - Once `SparkTpDeviceCollectiveDestroy` has begun stopping the completion thread, the call returns `SPARK_STATUS_BUSY`. That thread delivers every completion already queued before it exits.
 
+### Deferred verification
+
+A submission is deferred when graph capture is not armed, the collective uses hardware waits, the submission sets `SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION` and it has no `completion_function`.
+
+- The call queues the round on `cuda_stream` and returns without synchronizing the stream or checking the round. It counts the round as deferred.
+- `SparkTpDeviceCollectiveVerifyDeferred(collective, stream)` checks every round deferred since the last check. It synchronizes `stream` once and returns `SPARK_STATUS_IO_ERROR` unless the device completed all of them without an error word. It returns `SPARK_STATUS_OK` at once when nothing is deferred.
+- A caller must verify before the host reads any result that depends on a deferred round, and before it starts the next chain. A failed round leaves the values it wrote undefined, so a result read before verification can be wrong without any error.
+
+## include/sparkpipe/spark_weightd.h
+
+### Residency
+
+`SparkWeightdClientResidency(client, arena_generation, residency, timeout)` reports one lazy arena that the connection is attached to: `group_count`, `present_count`, `present_bytes`, `epoch` and `fixed_pool`.
+
+- It returns `SPARK_STATUS_NOT_FOUND` when the connection is not attached to that generation or the arena is not lazy. An arena with a sticky failure returns that failure.
+- `fixed_pool` is 1 when one allocation holds the whole arena. A fixed pool never evicts a present group, and weightd frees an arena only when no client is attached and no lease is held. So while the caller stays attached, a group reported present stays present at the same offset.
+- `SparkWeightdMapResident(map, timeout, resident)` sets `*resident` to 1 only when the arena has a fixed pool, every group is present and the map holds the whole pool mapping. A consumer that sees 1 may address any group at the map base plus its offset without a lease, for as long as it stays attached.
+- An acquire whose groups are all present pins them and returns. It does not budget, load or synchronize the device.
+
 ## Host RDMA capability set
 
 The deployment's `transport.mode` selects the capability mask that `node/model_residentd.c` passes to `SparkHiddenTransportLoadInterfaceFromSharedObject`. `SparkModelResidentdTransportContract` builds the mask; the module must declare every bit in it. An adapter that declares `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT` without `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP` loads no transport at all.
