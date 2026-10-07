@@ -16,6 +16,7 @@ SparkPipe's side of the comparison from this file.
 | TP16 PP1 decode at GLM's measured all-reduce latency | ~78 ms (~12.9 tok/s) | arithmetic, below | this file |
 | TP16 PP1 B1 decode on the fleet, no speculation | 95 ms p50 (10.3 tok/s) | measured 2026-10-07, 54-token decodes after a 448-token cached prefix, resident experts, graph replay | `kvdecode.py` against lane 8, adapter 51f705dc5 |
 | TP16 PP1 cold prefill, 470 tokens | 8.1 s | measured 2026-10-07 | `mt.py` against lane 8, adapter 9ac3e9633 |
+| TP16 PP1 batched decode, no speculation, 8 sequence slots | B1 10.3 (95 ms) / B2 15.8 agg (123 ms) / B4 25.1 agg (155 ms) / B8 32.8-34.9 agg (218-244 ms) | measured 2026-10-07, 46-token prompts, 160-token answers, overlap window only | `kvbatch.py` against lane 8, adapter 51f705dc5 |
 
 The 55.5 ms step was measured before a29ea53 (2026-09-10) moved every K3
 weight behind weightd, and has not been measured since.
@@ -105,6 +106,12 @@ CUPTI kernel trace of rank 0 during graph replay, single stream, ms per token:
 | MXFP4 experts (`LmSkinnyCellExperts`) | 8.6 | floor 6.6 (1.6 GB per rank) |
 | Other kernels | ~6 | publish/combine kernels, delta rule, route build |
 | Host between steps | ~2 | |
+
+Memory roofline by batch (spine 9.16 GB plus 101 MB per distinct expert per
+layer slot, expected distinct experts for 16-of-896 routing): B1 47%, B2 41%,
+B4 41%, B8 ~37%. At B4 the step adds 25 ms of collective waits (payloads
+cross into the two-phase path) and 28 ms of experts (about 62 distinct
+experts per layer), and the rows>1 head skips the FP8 certified screen.
 
 roofline: memory 47% (10.8 GB per rank per token at 243 GB/s = 44 ms) |
 compute <1% | transport bandwidth <5%, latency floor ~4 ms (about 420
