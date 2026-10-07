@@ -2123,6 +2123,9 @@ static SparkStatus SparkWeightdPreloadSpine(SparkWeightdServer *server,
             if ( cudaMemcpy((uint8_t *)arena->device_base + span_offset,
                     arena->staging,moved,cudaMemcpyHostToDevice) != cudaSuccess )
                 return(SPARK_STATUS_IO_ERROR);
+#ifdef POSIX_FADV_DONTNEED
+            (void)posix_fadvise(fd,(off_t)span_offset,(off_t)moved,POSIX_FADV_DONTNEED);
+#endif
             span_offset += (uint64_t)moved;
         }
     }
