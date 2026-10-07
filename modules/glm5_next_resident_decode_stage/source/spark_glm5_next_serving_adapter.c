@@ -5,6 +5,7 @@
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_glm5_next_kv_geometry.h"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm5_next_serving_adapter.h"
 #include "sparkpipe/spark_json.h"
@@ -261,6 +262,7 @@ static const SparkModelServingAdapterDescriptor SparkGlm5NextServingDescriptor =
 	.expert_weight_codec = GLM5_NEXT_EXPERT_WEIGHT_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.cache_block_token_count = SPARK_GLM5_NEXT_MODEL_KV_PAGE_SLOTS,
+	.cache_checkpoint_token_count = SPARK_GLM5_NEXT_KV_CHECKPOINT_TOKENS,
 	.max_inflight_submission_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,
 	.max_active_sequence_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT,
 	.max_input_row_count = SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MAX_INPUT_ROW_COUNT,
