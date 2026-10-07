@@ -388,7 +388,6 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 {
 	uint32_t layer;
 	uint64_t replay_capacity;
-	int32_t status;
 	(void)multiprocessors;
 	if ( weights == 0 || state == 0 || buffers == 0
 		|| verify_row_begin == 0 || accepted == 0
@@ -406,9 +405,6 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( state->kda_rank_heads != K3_KDA_HEADS )
 		return(LM_LAUNCH_ERR_SHAPE);
-	status = K3DeltaRuleOptIn((uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)));
-	if ( status != LM_LAUNCH_OK )
-		return(status);
 	for (layer = first_layer; layer < first_layer + layer_count; ++layer)
 	{
 		if ( K3_LAYER_KIND(layer) != LM_LAYER_RECURRENT )
@@ -423,7 +419,7 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 			buffers->kda_v_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_v,buffers->kda_v_conv_weight,buffers->value_bf16,K3_KDA_V_DIM,sequences,1u);
 		LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(slab_rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
 			buffers->key_bf16,K3_KDA_HEADS,slab_rows,K3_RMS_EPSILON);
-		LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_KDA_HEADS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)), stream,
+		LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float,K3_KDA_DELTA_COLUMNS>), dim3(sequences,K3_KDA_HEADS,K3_KDA_VALUE_DIM / K3_KDA_DELTA_COLUMNS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS * sizeof(float)), stream,
 			buffers->kda_state_pool,state->kda_state_bf16 != 0u ? K3_KDA_STATE_SLOT_BYTES_BF16 : K3_KDA_STATE_SLOT_BYTES,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16, buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16, K3_KDA_HEADS,1u,sequences,1u);
 	}
 	return(LM_LAUNCH_OK);

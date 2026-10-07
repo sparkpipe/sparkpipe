@@ -474,6 +474,51 @@ void LmPerHeadProjectKernel(const uint16_t *__restrict__ input_bf16, const uint1
 	}
 }
 
+#define LM_PER_HEAD_SPLIT_OUTPUTS 16u
+
+template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u>
+__global__ __launch_bounds__(THREADS)
+void LmPerHeadProjectSplitKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
+{
+	constexpr uint32_t words = IN_DIM / 2u, stride = words + 1u, vectors = IN_DIM / 8u;
+	static_assert((OUT_DIM % LM_PER_HEAD_SPLIT_OUTPUTS) == 0u && (IN_DIM % 8u) == 0u,
+		"the split covers whole output slices and 16-byte weight vectors");
+	static_assert(INPUT_OFFSET + IN_DIM <= INPUT_HEAD_DIM, "per-head input slice exceeds its source head");
+	__shared__ float shared_input[IN_DIM];
+	__shared__ uint32_t tile[LM_PER_HEAD_SPLIT_OUTPUTS * stride];
+	const uint32_t row = blockIdx.x, head = blockIdx.y, first = blockIdx.z * LM_PER_HEAD_SPLIT_OUTPUTS;
+	uint32_t index, element, word;
+	uint64_t input_base, output_base;
+	const uint4 *weight;
+	float total = 0.0f;
+	if ( row >= rows || head >= heads )
+		return;
+	input_base = ((((uint64_t)row * heads) + head) * INPUT_HEAD_DIM) + INPUT_OFFSET;
+	output_base = (((uint64_t)row * heads) + head) * OUT_DIM + first;
+	weight = (const uint4 *)(weight_bf16 + (uint64_t)head * OUT_DIM * IN_DIM + (uint64_t)first * IN_DIM);
+	for (index = threadIdx.x; index < IN_DIM; index += THREADS)
+		shared_input[index] = LmBf16ToFloat(input_bf16[input_base + index]);
+	for (index = threadIdx.x; index < LM_PER_HEAD_SPLIT_OUTPUTS * vectors; index += THREADS)
+	{
+		uint4 packed = weight[index];
+		uint32_t *destination = &tile[(index / vectors) * stride + (index % vectors) * 4u];
+		destination[0] = packed.x;
+		destination[1] = packed.y;
+		destination[2] = packed.z;
+		destination[3] = packed.w;
+	}
+	__syncthreads();
+	if ( threadIdx.x >= LM_PER_HEAD_SPLIT_OUTPUTS )
+		return;
+	for (element = 0u; element < words; ++element)
+	{
+		word = tile[threadIdx.x * stride + element];
+		total += shared_input[2u * element] * LmBf16ToFloat((uint16_t)(word & 0xffffu));
+		total += shared_input[2u * element + 1u] * LmBf16ToFloat((uint16_t)(word >> 16u));
+	}
+	output_bf16[output_base + threadIdx.x] = LmFloatToBf16(total);
+}
+
 template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t ROWS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmPerHeadProjectRowsKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
