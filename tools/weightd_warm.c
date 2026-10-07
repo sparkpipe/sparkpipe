@@ -474,11 +474,9 @@ int main(int argument_count,char **arguments)
         for (first=0u; first<manifest.group_count; first=index)
         {
             count = 0u;
-            for (index=first; index<manifest.group_count &&
+            for (index=first; index<manifest.group_count && count < SPARK_WEIGHTD_LEASE_GROUPS_MAX &&
                  manifest.groups[index].layer == manifest.groups[first].layer; index++)
             {
-                if ( count >= SPARK_WEIGHTD_LEASE_GROUPS_MAX )
-                    goto done;
                 keys[count].layer = manifest.groups[index].layer;
                 keys[count++].expert = manifest.groups[index].expert;
             }
