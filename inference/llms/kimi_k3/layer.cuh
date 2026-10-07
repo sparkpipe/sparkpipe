@@ -926,7 +926,7 @@ static int32_t K3Embedding(const uint16_t *embed_weight,
 }
 
 
-static int32_t K3HeadCertifiedB1(
+static int32_t K3HeadCertifiedRows(
     const K3LayerBuffers *b,
     const void *head_norm_weight,
     const void *head_weight,
@@ -938,6 +938,7 @@ static int32_t K3HeadCertifiedB1(
     uint32_t *screened_count,
     uint32_t rank_offset,
     uint32_t vocabulary,
+    uint32_t rows,
     cudaStream_t stream)
 {
     cudaError_t status;
@@ -949,13 +950,13 @@ static int32_t K3HeadCertifiedB1(
         b->output_token == 0 || b->output_score == 0)
         return LM_LAUNCH_ERR_SHAPE;
     LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>),
-        1u, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
+        rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
         b->hidden_bf16,0,(const uint16_t *)head_norm_weight, 0,
         b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
-    status = SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
+    status = SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
         stream, b->normed_bf16, head_weight, certified_payload,
         certified_scale, certified_norm, certified_scratch, candidate_ids,
         screened_count, b->output_token, b->output_score,
-        rank_offset, 1u, vocabulary, K3_HIDDEN);
+        rank_offset, rows, vocabulary, K3_HIDDEN);
     return status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
