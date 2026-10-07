@@ -352,6 +352,18 @@ static void TestK3ContextShard(void)
 			SparkK3KvShardQueryStride(rows, 16u) >= (uint64_t)rows * 6u * (SPARK_K3_MODEL_MLA_LATENT_DIMENSION + SPARK_K3_MODEL_MLA_UNROTATED_DIMENSION) &&
 			SparkK3KvShardPartialStride(rows, 16u) >= (uint64_t)rows * 6u * (SPARK_K3_MODEL_MLA_LATENT_DIMENSION + 2u));
 	assert(SparkK3KvShardFits(1u, 1u) == 0u && SparkK3KvShardFits(32u, 1u) == 0u && SparkK3KvShardFits(5u, 1u) == 0u);
+	for ( rows = 1u; rows <= 64u; rows++ )
+	{
+		uint32_t degree;
+		assert(SparkK3KvShardSequenceCapacity(rows, 16u) == rows);
+		for ( degree = 2u; degree <= 16u; degree *= 2u )
+			assert(SparkK3KvShardFits(degree, rows) == 1u &&
+				SparkK3KvShardSequenceCapacity(rows, degree) >= rows &&
+				SparkK3KvShardSequenceCapacity(rows, degree) >= SparkK3KvShardQuerySequences(rows, degree) &&
+				SparkK3KvShardSequenceCapacity(rows, degree) >= SparkK3KvShardPartialSequences(rows, degree) &&
+				SparkK3KvShardQueryStride(rows, degree) >= (uint64_t)rows * (96u / degree) * (SPARK_K3_MODEL_MLA_LATENT_DIMENSION + SPARK_K3_MODEL_MLA_UNROTATED_DIMENSION));
+	}
+	assert(SparkK3KvShardQuerySequences(64u, 4u) > 64u && SparkK3KvShardSequenceCapacity(64u, 4u) == SparkK3KvShardPartialSequences(64u, 4u));
 	SparkStageKvBindingDestroy(&state->kv);
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);

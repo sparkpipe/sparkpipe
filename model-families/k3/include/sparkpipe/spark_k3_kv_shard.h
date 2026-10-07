@@ -58,7 +58,18 @@ SPARK_K3_KV_SHARD_FN uint32_t SparkK3KvShardFits(uint32_t degree,uint32_t rows)
 		SPARK_K3_MODEL_MLA_HEAD_COUNT % degree != 0u ||
 		SparkKvShardValid(SparkK3KvShardContext(0u,degree),SPARK_K3_KV_PAGE_SLOTS) == 0u )
 		return(0u);
-	return(SparkK3KvShardQuerySequences(rows,degree) <= rows && SparkK3KvShardPartialSequences(rows,degree) <= rows ? 1u : 0u);
+	return(1u);
+}
+
+SPARK_K3_KV_SHARD_FN uint32_t SparkK3KvShardSequenceCapacity(uint32_t rows,uint32_t degree)
+{
+	uint32_t query,partial;
+	if ( SparkK3KvShardFits(degree,rows) == 0u )
+		return(rows);
+	query = SparkK3KvShardQuerySequences(rows,degree);
+	partial = SparkK3KvShardPartialSequences(rows,degree);
+	query = query > rows ? query : rows;
+	return(partial > query ? partial : query);
 }
 
 SPARK_K3_KV_SHARD_FN uint64_t SparkK3KvShardScratchBytes(uint32_t rows,uint32_t degree)

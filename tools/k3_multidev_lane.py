@@ -157,6 +157,7 @@ def kv_backing_minimum(topology: str, sequences: int, physical_pages: int, logic
     return spill * kv_page_bytes(topology) + checkpoints * recurrent_page_bytes(topology) + KV_IN_FLIGHT_MARGIN_BYTES
 DEFAULT_KV_SNAPSHOT_BYTES = 8 * 1024 * 1024 * 1024
 KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS (64) tokens
+MAX_ROWS = 64
 
 # The batch engine refuses a deployment with no EOS tokens (SCHEMA_ERROR at
 # SparkModelBatchValidateConfiguration — cold14: status=6, tokens=0, the
@@ -422,11 +423,16 @@ def main() -> int:
     if arguments.kv_physical_pages is None:
         arguments.kv_physical_pages = arguments.sequences * arguments.kv_pages
     if arguments.kv_logical_pages is None:
-        arguments.kv_logical_pages = arguments.kv_physical_pages
-    if arguments.kv_physical_pages < arguments.sequences or arguments.kv_logical_pages < arguments.kv_physical_pages:
-        raise SystemExit("kv pages: physical must cover the sequences and logical must cover physical")
-    if arguments.rows is not None and not 1 <= arguments.rows <= 512:
-        raise SystemExit("rows must be within 1..512")
+        arguments.kv_logical_pages = max(arguments.kv_physical_pages, arguments.sequences * arguments.kv_pages)
+    if arguments.kv_physical_pages < arguments.kv_pages:
+        raise SystemExit(f"kv-physical-pages {arguments.kv_physical_pages} must hold one sequence's "
+                         f"{arguments.kv_pages} kv-pages")
+    if arguments.kv_logical_pages < max(arguments.kv_physical_pages, arguments.sequences * arguments.kv_pages):
+        raise SystemExit(f"kv-logical-pages {arguments.kv_logical_pages} must cover the physical pages and "
+                         f"{arguments.sequences} sequences x {arguments.kv_pages} kv-pages")
+    if arguments.rows is not None and not arguments.sequences <= arguments.rows <= MAX_ROWS:
+        raise SystemExit(f"rows must be within sequences..{MAX_ROWS}: a decode wave carries one row per sequence "
+                         f"and the K3 adapter takes at most {MAX_ROWS} rows")
     minimum = kv_backing_minimum(arguments.topology, arguments.sequences, arguments.kv_physical_pages, arguments.kv_logical_pages)
     if arguments.kv_backing_bytes is None:
         arguments.kv_backing_bytes = minimum

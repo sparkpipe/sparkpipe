@@ -294,6 +294,35 @@ def main() -> int:
         check(short.returncode != 0 and "KDA checkpoints" in short.stderr, failures,
               "a KV backing below the spilled pages and the KDA checkpoints is refused")
 
+        for arguments, message, refusal in (
+                (["--sequences", "4", "--rows", "65"], "within sequences..64",
+                 "a wave wider than the adapter's 64 rows is refused"),
+                (["--sequences", "4", "--rows", "3"], "within sequences..64",
+                 "a wave narrower than one row per sequence is refused"),
+                (["--sequences", "4", "--kv-pages", "4096", "--kv-physical-pages", "256"], "must hold one sequence",
+                 "physical pages below one sequence's pages are refused"),
+                (["--sequences", "4", "--kv-pages", "64", "--kv-physical-pages", "256", "--kv-logical-pages", "128"],
+                 "must cover the physical pages", "logical pages below the sequences' pages are refused")):
+            refused = subprocess.run(
+                [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+                 "--runtime-root", runtime_root,
+                 "--weightd-socket", socket_path,
+                 "--kv-backing-bytes", str(40 * 10 ** 9),
+                 "--output-dir", str(Path(temporary) / "refused"), *arguments],
+                capture_output=True, text=True)
+            check(refused.returncode != 0 and message in refused.stderr, failures, refusal)
+        defaulted = subprocess.run(
+            [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+             "--runtime-root", runtime_root,
+             "--weightd-socket", socket_path,
+             "--sequences", "4", "--kv-pages", "64", "--kv-physical-pages", "64",
+             "--kv-backing-bytes", str(40 * 10 ** 9),
+             "--output-dir", str(Path(temporary) / "defaulted")],
+            capture_output=True, text=True)
+        check(defaulted.returncode == 0 and json.loads((Path(temporary) / "defaulted" / "deployment.json").read_text())
+              ["runtime_limits"]["kv_logical_page_capacity"] == 256, failures,
+              "the logical pages default to the sequences' pages when the physical pages hold fewer")
+
         check_run = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
              "--runtime-root", runtime_root,

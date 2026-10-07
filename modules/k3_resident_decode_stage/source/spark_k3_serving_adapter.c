@@ -288,7 +288,8 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 			state->device_config.credit_count = 8u;
 			state->device_config.local_hidden_dimension = hidden;
 			state->device_config.max_active_sequence_count =
-				state->runner_config.max_input_row_count;
+				SparkK3KvShardSequenceCapacity(state->runner_config.max_input_row_count,
+					state->runner_config.tp_degree);
 			int32_t hosts_token = SparkJsonFindObjectMember(&doc, dev, "peer_hosts");
 			uint32_t peer_count = hosts_token >= 0 ?
 				SparkJsonGetArrayElementCount(&doc, hosts_token) : 0u;
