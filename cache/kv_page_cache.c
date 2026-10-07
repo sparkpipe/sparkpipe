@@ -2067,8 +2067,6 @@ static SparkStatus SparkKvPageCacheSaveCheck(const SparkKvPageCache *cache,uint3
 {
 	const SparkKvPageCacheEntry *entry = &cache->entries[entry_index];
 	uint32_t index;
-	if ( (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u && cache->state_store != 0 )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	for (index=entry_index; index != SPARK_KV_PAGE_CACHE_NO_INDEX && index < cache->entry_capacity; index=cache->entries[index].parent_entry_index)
 		if ( (cache->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -2081,8 +2079,6 @@ static uint32_t SparkKvPageCacheSaveEligible(const SparkKvPageCache *cache,uint3
 {
 	const SparkKvPageCacheEntry *entry = &cache->entries[entry_index];
 	uint32_t index;
-	if ( (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u && cache->state_store != 0 )
-		return(0u);
 	for (index=entry_index; index != SPARK_KV_PAGE_CACHE_NO_INDEX && index < cache->entry_capacity; index=cache->entries[index].parent_entry_index)
 		if ( (cache->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u )
 			return(0u);
@@ -2231,10 +2227,15 @@ static uint32_t SparkKvPageCacheSaveUnsavedEntry(const SparkKvPageCache *cache,u
 	return(SPARK_KV_PAGE_CACHE_NO_INDEX);
 }
 
+static uint32_t SparkKvPageCacheSavesState(const SparkKvPageCache *cache,uint32_t entry_index)
+{
+	return(cache->state_store != 0 && (cache->entries[entry_index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) == 0u ? 1u : 0u);
+}
+
 static SparkStatus SparkKvPageCacheSaveBegin(SparkKvPageCache *cache,uint32_t entry_index,SparkKvPageCacheSaveWork *work)
 {
 	const SparkKvPageCacheEntry *entry = &cache->entries[entry_index];
-	uint32_t kinds[3],segment_count = cache->state_store != 0 ? 3u : 2u;
+	uint32_t kinds[3],segment_count = SparkKvPageCacheSavesState(cache,entry_index) != 0u ? 3u : 2u;
 	uint64_t bytes[3];
 	SparkKvSnapshotKey key;
 	kinds[0] = SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_CHAIN;
@@ -2242,7 +2243,7 @@ static SparkStatus SparkKvPageCacheSaveBegin(SparkKvPageCache *cache,uint32_t en
 	kinds[2] = SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_STATE;
 	bytes[0] = (uint64_t)entry->page_count * sizeof(SparkKvPageCacheSnapshotLink);
 	bytes[1] = cache->page_store->page_bytes;
-	bytes[2] = cache->state_store != 0 ? cache->state_store->page_bytes : 0u;
+	bytes[2] = segment_count == 3u ? cache->state_store->page_bytes : 0u;
 	SparkKvPageCacheSnapshotKey(cache,&entry->identity,entry->token_count,&key);
 	return(SparkKvSnapshotWriteBegin(cache->snapshot->store,&key,kinds,bytes,segment_count,&work->ticket));
 }
@@ -2312,7 +2313,7 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 			continue;
 		}
 		work->page = (uint8_t *)work->ticket.segments[1].data;
-		work->state = cache->state_store != 0 ? (uint8_t *)work->ticket.segments[2].data : 0;
+		work->state = SparkKvPageCacheSavesState(cache,entry_index) != 0u ? (uint8_t *)work->ticket.segments[2].data : 0;
 		if ( cache->write_meter != 0 )
 			SparkKvWriteMeterRecord(cache->write_meter,work->ticket.file_bytes,SparkKvPageCacheNowNs());
 		snapshot->in_flight = 1u;

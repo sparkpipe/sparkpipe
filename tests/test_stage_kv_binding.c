@@ -1433,6 +1433,52 @@ static void TestRecurrentCheckpoints(void)
 	printf("A11 recurrent checkpoints: a stateless publish captures nothing and is never a resume point, a full state store demotes the oldest checkpoint to stateless KV and keeps the newer ones resumable: ok\n");
 }
 
+static void PublishRecurrentStep(uint64_t sequence,uint32_t position,uint32_t context,uint8_t identity,uint8_t seed,uint32_t stateless,uint8_t *bytes)
+{
+	TestStep step;
+	TestFinished finished = {0};
+	uint32_t page;
+	StepInit(&step,sequence,0u,position,context);
+	StepPublish(&step,context,identity);
+	if ( stateless != 0u )
+		step.lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
+	StepStart(&step);
+	page = LanePage(0u,position / TEST_BLOCK);
+	FillPage(page,seed);
+	PageBytes(page,bytes);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(void *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+}
+
+static void TestSnapshotStatelessChain(void)
+{
+	SparkStageKvConfiguration configuration;
+	SparkModelDriverKvStoreCounters counters;
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	MakeDirectories();
+	ConfigureRecurrent(&configuration);
+	assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+	PublishRecurrentStep(1u,0u,4u,0x70u,0x31u,1u,pages[0]);
+	PublishRecurrentStep(1u,4u,8u,0x71u,0x32u,0u,pages[1]);
+	ReleaseSequence(1u,0u);
+	WaitSavesIdle();
+	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.save_failure_count == 0u && counters.store_file_count == 2u);
+	assert(counters.store_used_bytes < 2u * BINDING.snapshot_page_file_bytes);
+	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
+	assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+	assert(BINDING.kv_pool.reattached == 0u && BINDING.kv_pool_adopted_pages == 0u);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
+	Close();
+	printf("snapshot of a sparse checkpoint chain: a stateless page saves without a state segment, so the chain under a checkpoint reaches the store and restores after a restart with a fresh pool: ok\n");
+}
+
 static void TestWeightdOwnsPool(void)
 {
 	uint64_t generation,committed,lane_bytes;
@@ -1483,6 +1529,7 @@ int main(void)
 	TestRecurrentRoundTrip();
 	TestRecurrentRefusals();
 	TestRecurrentCheckpoints();
+	TestSnapshotStatelessChain();
 	TestReleaseAfterFailedRun();
 	TestKvServerFinish();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
