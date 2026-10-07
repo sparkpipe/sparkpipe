@@ -4,6 +4,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
+#include "inference/kernels/skinny.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/head.cuh"
@@ -204,6 +205,21 @@ struct K3LayerBuffers
 	float *output_score;
 };
 
+static int32_t K3SkinnyRows(const void *weight, const uint16_t *source, uint16_t *destination_bf16, float *destination_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
+{
+	uint32_t first, count;
+	int32_t status = LM_LAUNCH_OK;
+	for ( first = 0u; first < rows && status == LM_LAUNCH_OK; first += count )
+	{
+		count = rows - first < LM_SKINNY_ROWS_WIDE ? rows - first : LM_SKINNY_ROWS_WIDE;
+		status = LmSkinnyDense<LmBf16Format>(weight,source + (uint64_t)first * input_dimension,
+			destination_bf16 != 0 ? destination_bf16 + (uint64_t)first * output_dimension : (uint16_t *)0,
+			destination_f32 != 0 ? destination_f32 + (uint64_t)first * output_dimension : (float *)0,
+			count,input_dimension,output_dimension,0u,0u,stream);
+	}
+	return(status);
+}
+
 template<class Format>
 static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const void *weight, const void *weight_scale, uint16_t *destination, uint16_t *accumulate, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
 {
@@ -212,6 +228,12 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 		"K3Project carries the unquantised projections; experts go weight-only");
 	if (weight_scale != 0)
 		return(LM_LAUNCH_ERR_SHAPE);
+	if ( accumulate == 0 )
+	{
+		int32_t status = K3SkinnyRows(weight,source,destination,(float *)0,rows,input_dimension,output_dimension,stream);
+		if ( status != LM_LAUNCH_ERR_SHAPE )
+			return(status);
+	}
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
@@ -515,9 +537,11 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_f32 = b->router_logits;
-	status = LmGemmLaunch<LmBf16Format,K3_LAYER_TILE_N,LmBf16Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->normed_bf16,b->router_weight,rows,rows,1u,1u,
-		K3_HIDDEN,K3_EXPERTS,multiprocessors,false,stream);
+	status = K3SkinnyRows(b->router_weight,b->normed_bf16,(uint16_t *)0,b->router_logits,rows,K3_HIDDEN,K3_EXPERTS,stream);
+	if ( status == LM_LAUNCH_ERR_SHAPE )
+		status = LmGemmLaunch<LmBf16Format,K3_LAYER_TILE_N,LmBf16Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+			&gemm,b->normed_bf16,b->router_weight,rows,rows,1u,1u,
+			K3_HIDDEN,K3_EXPERTS,multiprocessors,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true,1u,1u,LM_TOPK_SCORE_SIGMOID>), rows, K3_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
@@ -579,6 +603,10 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	gemm.output_bf16 = b->gate_up_bf16;
 	gemm.source_row_map = b->route_source_token;
 	gemm.source_row_count = rows;
+	status = b->expert_interleave != 0u ? LmSkinnyCellExperts(b->expert_w1_weight,b->latent_bf16,b->gate_up_bf16,
+		b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,rows,0u,moe_in,w1_out,b->expert_tile_k,stream) : LM_LAUNCH_ERR_SHAPE;
+	if ( status != LM_LAUNCH_ERR_SHAPE )
+		return(status);
 	if ( b->expert_interleave != 0u )
 	{
 		if ( b->expert_tile_k == 32u )
@@ -628,7 +656,9 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	gemm.source_row_map = 0;
 	gemm.source_row_count = 0u;
 	const uint32_t w2_in = K3_EXPERT_INTERMEDIATE;
-	if ( b->expert_interleave != 0u )
+	status = b->expert_interleave != 0u ? LmSkinnyCellExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
+		b->group_row_offset,0,K3_EXPERTS,packed_rows,rows,1u,w2_in,moe_in,b->expert_tile_k,stream) : LM_LAUNCH_ERR_SHAPE;
+	if ( status == LM_LAUNCH_ERR_SHAPE && b->expert_interleave != 0u )
 	{
 		if ( b->expert_tile_k == 32u )
 			status = LmGemmWeightOnlyInterleavedLaunch<
@@ -643,7 +673,7 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
 				multiprocessors,true,stream);
 	}
-	else
+	else if ( status == LM_LAUNCH_ERR_SHAPE )
 		status = LmGemmWeightOnlyLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
