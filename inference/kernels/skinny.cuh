@@ -757,15 +757,44 @@ static __device__ __forceinline__ void LmSkinnyCellTile(uint4 weight, float scal
 		accumulator[r] = fmaf(scale,chunk[r],accumulator[r]);
 }
 
+template<uint32_t ROWS>
+static __device__ __forceinline__ void LmSkinnyCellRows(const LmSkinnyCellArguments &args, const uint8_t *base, uint64_t tile_stride, uint32_t cell, uint32_t sub, uint32_t half, uint32_t first)
+{
+	float accumulator[ROWS];
+	const uint16_t *activation[ROWS];
+	uint32_t r, t, packed;
+	#pragma unroll
+	for ( r = 0u; r < ROWS; r++ )
+	{
+		accumulator[r] = 0.0f;
+		packed = first + r;
+		activation[r] = args.activation + (uint64_t)(args.activation_packed != 0u ? packed : args.route_source_token[packed]) * args.input_dimension;
+	}
+	#pragma unroll 4
+	for ( t = half; t < args.k_tiles; t += 2u )
+	{
+		const uint8_t *tile = base + (uint64_t)t * tile_stride;
+		const uint4 weight = __ldcs((const uint4 *)(tile + sub * LM_SKINNY_CHUNK_BYTES));
+		const float scale = LmUe8m0ToFloat(__ldg(tile + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + sub));
+		LmSkinnyCellTile<ROWS>(weight,scale,activation,t * LM_SKINNY_CELL_TILE_K,accumulator);
+	}
+	#pragma unroll
+	for ( r = 0u; r < ROWS; r++ )
+		accumulator[r] += __shfl_xor_sync(0xffffffffu,accumulator[r],LM_SKINNY_CELL_NEURONS);
+	if ( half != 0u )
+		return;
+	#pragma unroll
+	for ( r = 0u; r < ROWS; r++ )
+		args.output_bf16[(uint64_t)(first + r) * args.output_dimension + cell * LM_SKINNY_CELL_NEURONS + sub] = LmFloatToBf16(accumulator[r]);
+}
+
 template<uint32_t BATCH>
 __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyCellKernel(const __grid_constant__ LmSkinnyCellArguments args)
 {
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES, sub = lane % LM_SKINNY_CELL_NEURONS, half = lane / LM_SKINNY_CELL_NEURONS;
 	const uint32_t task = (blockIdx.x * LM_SKINNY_THREADS + threadIdx.x) / LM_WARP_LANES;
 	const uint64_t tile_stride = (uint64_t)args.cells * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
-	uint32_t row, cell, group, start, end, first, count, r, t, packed;
-	float accumulator[BATCH];
-	const uint16_t *activation[BATCH];
+	uint32_t row, cell, group, start, end, first;
 	const uint8_t *base;
 	LmDependentWait();
 	if ( task >= args.packed_rows * args.cells )
@@ -778,33 +807,32 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyCellKernel(const __
 		return;
 	end = args.group_row_offset[group + 1u];
 	base = args.weight + (uint64_t)group * args.group_bytes + (uint64_t)cell * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
-	for ( first = start; first < end; first += BATCH )
+	for ( first = start; first < end; )
 	{
-		count = end - first < BATCH ? end - first : BATCH;
-		#pragma unroll
-		for ( r = 0u; r < BATCH; r++ )
+		const uint32_t count = end - first;
+		if constexpr ( BATCH >= 4u )
 		{
-			accumulator[r] = 0.0f;
-			packed = first + (r < count ? r : 0u);
-			activation[r] = args.activation + (uint64_t)(args.activation_packed != 0u ? packed : args.route_source_token[packed]) * args.input_dimension;
+			if ( count >= 4u )
+			{
+				LmSkinnyCellRows<4u>(args,base,tile_stride,cell,sub,half,first);
+				first += 4u;
+				continue;
+			}
+			if ( count == 3u )
+			{
+				LmSkinnyCellRows<3u>(args,base,tile_stride,cell,sub,half,first);
+				first += 3u;
+				continue;
+			}
+			if ( count == 2u )
+			{
+				LmSkinnyCellRows<2u>(args,base,tile_stride,cell,sub,half,first);
+				first += 2u;
+				continue;
+			}
 		}
-		#pragma unroll 4
-		for ( t = half; t < args.k_tiles; t += 2u )
-		{
-			const uint8_t *tile = base + (uint64_t)t * tile_stride;
-			const uint4 weight = __ldcs((const uint4 *)(tile + sub * LM_SKINNY_CHUNK_BYTES));
-			const float scale = LmUe8m0ToFloat(__ldg(tile + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + sub));
-			LmSkinnyCellTile<BATCH>(weight,scale,activation,t * LM_SKINNY_CELL_TILE_K,accumulator);
-		}
-		#pragma unroll
-		for ( r = 0u; r < BATCH; r++ )
-			accumulator[r] += __shfl_xor_sync(0xffffffffu,accumulator[r],LM_SKINNY_CELL_NEURONS);
-		if ( half != 0u )
-			continue;
-		#pragma unroll
-		for ( r = 0u; r < BATCH; r++ )
-			if ( r < count )
-				args.output_bf16[(uint64_t)(first + r) * args.output_dimension + cell * LM_SKINNY_CELL_NEURONS + sub] = LmFloatToBf16(accumulator[r]);
+		LmSkinnyCellRows<1u>(args,base,tile_stride,cell,sub,half,first);
+		first += 1u;
 	}
 }
 

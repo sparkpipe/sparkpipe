@@ -1680,8 +1680,19 @@ static SparkStatus K3RunnerHeadArgmax(SparkK3RunnerState *state, K3LayerBuffers 
 {
 	SparkTpDeviceCollectiveSubmission submission;
 	int32_t status;
-	if ( rows == 1u && state->head_certified_fp8_payload != 0 )
-		status = K3HeadCertifiedB1(b, state->head_norm_weight, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32, state->head_certified_fp8_norm_f32, state->head_certified_scratch, state->head_certified_candidates, state->head_screened_count, state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
+	if ( state->head_certified_fp8_payload != 0 )
+	{
+		status = LM_LAUNCH_OK;
+		for ( uint32_t row = 0u; row < rows && status == LM_LAUNCH_OK; ++row )
+		{
+			K3LayerBuffers one = *b;
+			one.hidden_bf16 = b->hidden_bf16 + (uint64_t)row * K3_HIDDEN;
+			one.normed_bf16 = b->normed_bf16 + (uint64_t)row * K3_HIDDEN;
+			one.output_token = b->output_token + row;
+			one.output_score = b->output_score + row;
+			status = K3HeadCertifiedB1(&one, state->head_norm_weight, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32, state->head_certified_fp8_norm_f32, state->head_certified_scratch, state->head_certified_candidates, state->head_screened_count, state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
+		}
+	}
 	else
 		status = K3HeadRankSlice(b, state->head_norm_weight, state->head_weight,
 			state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, rows, stream);
