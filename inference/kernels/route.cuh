@@ -14,6 +14,7 @@ static __device__ __forceinline__ uint32_t LmRouteSourceRow(const uint32_t *__re
 }
 
 #define LM_ROUTE_SCAN_PARTS 3u
+#define LM_ROUTE_STAGED_MAX 1024u
 
 template<uint32_t THREADS>
 static __device__ __forceinline__ void LmRouteScanBlock(uint32_t (*value)[LM_ROUTE_SCAN_PARTS])
@@ -95,13 +96,17 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
 {
 	__shared__ uint32_t count[EXPERTS];
+	__shared__ uint32_t staged[LM_ROUTE_STAGED_MAX];
+	const uint32_t *source = routes <= LM_ROUTE_STAGED_MAX ? staged : route_expert;
 	uint32_t index,expert,packed;
 	LmDependentRelease();
 	for (index = threadIdx.x; index < EXPERTS; index += THREADS)
 		count[index] = 0u;
+	for (index = threadIdx.x; index < routes && index < LM_ROUTE_STAGED_MAX; index += THREADS)
+		staged[index] = route_expert[index];
 	__syncthreads();
 	for (index = threadIdx.x; index < routes; index += THREADS)
-		atomicAdd(&count[route_expert[index]],1u);
+		atomicAdd(&count[source[index]],1u);
 	__syncthreads();
 	LmRouteBuildPrefix<THREADS,EXPERTS>(count,group_row_offset,tile_m,neuron_tiles_up,tile_prefix_up,neuron_tiles_down,tile_prefix_down);
 	__syncthreads();
@@ -110,7 +115,7 @@ void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t rout
 		const uint32_t end = group_row_offset[expert + 1u];
 		packed = count[expert];
 		for (index = 0u; index < routes && packed < end; index++)
-			if ( route_expert[index] == expert )
+			if ( source[index] == expert )
 			{
 				route_packed_row[index] = packed;
 				route_source_token[packed] = index / top_k;
