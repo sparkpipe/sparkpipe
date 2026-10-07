@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <cstring>
+#include <ctime>
 
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
@@ -17,6 +18,7 @@
 
 #define K3_SAMPLE_THREADS 1024u
 #define K3_DISTRIBUTION_HEAD_ROWS 4u
+#define K3_RUNNER_GRAPH_ROWS 16u
 
 typedef struct SparkK3RunnerState SparkK3RunnerState;
 
@@ -323,6 +325,15 @@ typedef struct SparkK3RunnerState
 	uint16_t *distribution_normed;
 	float *distribution_logits;
 	float *distribution_gathered;
+	cudaGraphExec_t graph_exec[K3_RUNNER_GRAPH_ROWS];
+	SparkK3StepInput graph_input[K3_RUNNER_GRAPH_ROWS];
+	uint8_t graph_refused[K3_RUNNER_GRAPH_ROWS];
+	uint64_t graph_launches;
+	uint64_t timing_steps;
+	uint64_t timing_graph_steps;
+	uint64_t timing_submit_ns;
+	uint64_t timing_graph_ns;
+	SparkTpDeviceCollectiveHardwareTiming timing_wait;
 } SparkK3RunnerState;
 
 static SparkStatus K3RunnerAllocateDistribution(SparkK3RunnerState *state,
@@ -1638,6 +1649,210 @@ static SparkStatus K3RunnerChainEnd(SparkK3RunnerState *state, cudaStream_t stre
 	return status;
 }
 
+static uint64_t K3RunnerNowNs(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static SparkStatus K3RunnerEmbed(SparkK3RunnerState *state, const SparkK3StageRunner *runner,
+	K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+{
+	if ( K3Embedding(state->embed_weight, state->token_ids_device,
+		b->hidden_bf16, rows, runner->tp_rank * state->vocab_slice_rows,
+		state->vocab_slice_rows, stream) != LM_LAUNCH_OK )
+		return SPARK_STATUS_INTERNAL_ERROR;
+	if ( K3RunnerReduceBf16(state, stream, b->hidden_bf16, rows) != SPARK_STATUS_OK )
+		return SPARK_STATUS_INTERNAL_ERROR;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3RunnerHeadArgmax(SparkK3RunnerState *state, K3LayerBuffers *b,
+	uint32_t rows, cudaStream_t stream)
+{
+	SparkTpDeviceCollectiveSubmission submission;
+	int32_t status;
+	if ( rows == 1u && state->head_certified_fp8_payload != 0 )
+		status = K3HeadCertifiedB1(b, state->head_norm_weight, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32, state->head_certified_fp8_norm_f32, state->head_certified_scratch, state->head_certified_candidates, state->head_screened_count, state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
+	else
+		status = K3HeadRankSlice(b, state->head_norm_weight, state->head_weight,
+			state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, rows, stream);
+	if ( status != LM_LAUNCH_OK )
+		{ fprintf(stderr, "sparkpipe_k3: final head launch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
+	if ( state->device_collective_created == 0 )
+		return SPARK_STATUS_OK;
+	if ( K3HeadMaxlocPack(state->output_score, state->output_token,
+		state->head_maxloc, rows, stream) != LM_LAUNCH_OK )
+		{ fprintf(stderr, "sparkpipe_k3: head maxloc pack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
+	K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+		rows, state->head_maxloc, state->head_maxloc, state->tp_next_ordinal++);
+	if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) != SPARK_STATUS_OK )
+		{ fprintf(stderr, "sparkpipe_k3: head argmax collective enqueue failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
+	if ( K3HeadMaxlocUnpack(state->head_maxloc, state->output_token,
+		state->output_score, rows, stream) != LM_LAUNCH_OK )
+		{ fprintf(stderr, "sparkpipe_k3: head maxloc unpack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3RunnerStepBody(SparkK3RunnerState *state, const SparkK3StageRunner *runner,
+	SparkK3StepInput *in, uint32_t rows, uint32_t sequences, uint32_t packed_rows, cudaStream_t stream)
+{
+	K3LayerBuffers *b = state->dispatch.buffers;
+	SparkStatus status = runner->owns_embedding != 0u ? K3RunnerEmbed(state, runner, b, rows, stream) : SPARK_STATUS_OK;
+	int32_t slice;
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	slice = K3RunnerLaunchSliceDirect(state, in, rows, sequences, packed_rows, stream);
+	if ( slice != SPARK_K3_DISPATCH_OK )
+		{ fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", slice); return SPARK_STATUS_INTERNAL_ERROR; }
+	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
+		return K3RunnerHeadArgmax(state, b, rows, stream);
+	return SPARK_STATUS_OK;
+}
+
+static uint32_t K3RunnerGraphEligible(const SparkK3RunnerState *state, const SparkK3StageRunner *runner,
+	uint32_t rows, uint32_t sequences)
+{
+	return state->resident != 0u && state->device_collective_created != 0 &&
+		state->device_collective_deferred != 0u && runner->owns_embedding != 0u &&
+		runner->owns_final_head != 0u && state->head_weight != 0 && rows == sequences &&
+		rows <= K3_RUNNER_GRAPH_ROWS && state->graph_refused[rows - 1u] == 0u ? 1u : 0u;
+}
+
+static void K3RunnerGraphDrop(SparkK3RunnerState *state)
+{
+	for ( uint32_t index = 0u; index < K3_RUNNER_GRAPH_ROWS; ++index )
+	{
+		if ( state->graph_exec[index] != 0 )
+			(void)cudaGraphExecDestroy(state->graph_exec[index]);
+		state->graph_exec[index] = 0;
+		state->graph_refused[index] = 0u;
+	}
+}
+
+static void K3RunnerGraphCapture(SparkK3RunnerState *state, const SparkK3StageRunner *runner,
+	SparkK3StepInput *in, uint32_t rows, uint32_t sequences, uint32_t packed_rows, cudaStream_t stream)
+{
+	const uint64_t started = K3RunnerNowNs();
+	cudaGraph_t graph = 0;
+	cudaGraphExec_t exec = 0;
+	cudaError_t error = cudaSuccess;
+	size_t nodes = 0u;
+	SparkStatus status = SparkTpDeviceCollectiveArmCapture(&state->device_collective);
+	if ( status == SPARK_STATUS_OK )
+	{
+		error = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+		if ( error == cudaSuccess )
+		{
+			status = K3RunnerStepBody(state, runner, in, rows, sequences, packed_rows, stream);
+			error = cudaStreamEndCapture(stream, &graph);
+		}
+	}
+	(void)SparkTpDeviceCollectiveDisarmCapture(&state->device_collective);
+	if ( status == SPARK_STATUS_OK && error == cudaSuccess && graph != 0 )
+		error = cudaGraphGetNodes(graph, 0, &nodes);
+	if ( status == SPARK_STATUS_OK && error == cudaSuccess && graph != 0 )
+		error = cudaGraphInstantiate(&exec, graph, 0);
+	if ( status == SPARK_STATUS_OK && error == cudaSuccess && exec != 0 )
+		error = cudaGraphUpload(exec, stream);
+	if ( graph != 0 )
+		(void)cudaGraphDestroy(graph);
+	if ( status != SPARK_STATUS_OK || error != cudaSuccess || exec == 0 )
+	{
+		fprintf(stderr, "K3-GRAPH-CAPTURE-FAILED rows=%u status=%d cuda=%s: this row count runs eager\n",
+			rows, (int)status, cudaGetErrorString(error));
+		if ( exec != 0 )
+			(void)cudaGraphExecDestroy(exec);
+		(void)cudaGetLastError();
+		state->graph_refused[rows - 1u] = 1u;
+		state->copy_failed = 0u;
+		state->tp_collective_failed = 0u;
+		return;
+	}
+	state->graph_exec[rows - 1u] = exec;
+	state->graph_input[rows - 1u] = *in;
+	fprintf(stderr, "K3-GRAPH-CAPTURE rows=%u nodes=%llu capture_ms=%.1f\n", rows,
+		(unsigned long long)nodes, (double)(K3RunnerNowNs() - started) / 1e6);
+}
+
+static SparkStatus K3RunnerGraphLaunch(SparkK3RunnerState *state, cudaGraphExec_t exec, cudaStream_t stream)
+{
+	uint64_t collective_error = 0ull;
+	SparkStatus status = SparkTpDeviceCollectiveGraphPreLaunch(&state->device_collective, stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveGraphCancelSeed(&state->device_collective, stream);
+	const uint64_t started = K3RunnerNowNs();
+	if ( status == SPARK_STATUS_OK && cudaGraphLaunch(exec, stream) != cudaSuccess )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkTpDeviceCollectiveGraphSettle(&state->device_collective, stream, &collective_error);
+	state->timing_graph_ns += K3RunnerNowNs() - started;
+	state->timing_graph_steps++;
+	if ( status == SPARK_STATUS_OK && collective_error != 0ull )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "K3-GRAPH-FAILED status=%d collective_error=%llu\n", (int)status,
+			(unsigned long long)collective_error);
+		return status;
+	}
+	state->graph_launches++;
+	return SPARK_STATUS_OK;
+}
+
+static void K3RunnerTiming(SparkK3RunnerState *state, uint32_t rank, uint64_t submit_ns)
+{
+	SparkTpDeviceCollectiveHardwareTiming step;
+	uint64_t steps;
+	state->timing_submit_ns += submit_ns;
+	state->timing_steps++;
+	if ( state->device_collective_created != 0 &&
+		SparkTpDeviceCollectiveHardwareStats(&state->device_collective, &step) == SPARK_STATUS_OK )
+	{
+		state->timing_wait.source_wait_ns += step.source_wait_ns;
+		state->timing_wait.peer_wait_ns += step.peer_wait_ns;
+		state->timing_wait.copy_ns += step.copy_ns;
+		state->timing_wait.combine_ns += step.combine_ns;
+	}
+	if ( state->timing_steps < 64u )
+		return;
+	steps = state->timing_steps;
+	fprintf(stderr, "K3-STEP-TIMING rank=%u steps=%llu graph_steps=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
+		rank, (unsigned long long)steps, (unsigned long long)state->timing_graph_steps,
+		(unsigned long long)(state->timing_submit_ns / steps / 1000u),
+		(unsigned long long)(state->timing_graph_steps != 0u ? state->timing_graph_ns / state->timing_graph_steps / 1000u : 0u),
+		(unsigned long long)(state->timing_wait.source_wait_ns / steps / 1000u),
+		(unsigned long long)(state->timing_wait.peer_wait_ns / steps / 1000u),
+		(unsigned long long)(state->timing_wait.copy_ns / steps / 1000u),
+		(unsigned long long)(state->timing_wait.combine_ns / steps / 1000u));
+	state->timing_steps = 0u;
+	state->timing_graph_steps = 0u;
+	state->timing_submit_ns = 0u;
+	state->timing_graph_ns = 0u;
+	memset(&state->timing_wait, 0, sizeof(state->timing_wait));
+}
+
+static SparkStatus K3RunnerStep(SparkK3RunnerState *state, const SparkK3StageRunner *runner,
+	SparkK3StepInput *in, uint32_t rows, uint32_t sequences, uint32_t packed_rows, cudaStream_t stream)
+{
+	if ( K3RunnerGraphEligible(state, runner, rows, sequences) != 0u )
+	{
+		if ( state->graph_exec[rows - 1u] != 0 &&
+			memcmp(&state->graph_input[rows - 1u], in, sizeof(*in)) != 0 )
+		{
+			(void)cudaGraphExecDestroy(state->graph_exec[rows - 1u]);
+			state->graph_exec[rows - 1u] = 0;
+		}
+		if ( state->graph_exec[rows - 1u] == 0 )
+			K3RunnerGraphCapture(state, runner, in, rows, sequences, packed_rows, stream);
+		if ( state->graph_exec[rows - 1u] != 0 )
+			return K3RunnerGraphLaunch(state, state->graph_exec[rows - 1u], stream);
+	}
+	return K3RunnerStepBody(state, runner, in, rows, sequences, packed_rows, stream);
+}
+
 SparkStatus SparkK3StageRunnerSubmit(
 	SparkK3StageRunner *runner,
 	const SparkK3StageRunnerDispatch *dispatch)
@@ -1647,13 +1862,12 @@ SparkStatus SparkK3StageRunnerSubmit(
 	K3LayerBuffers *b;
 	cudaStream_t stream;
 	uint32_t rows, sequences, packed_rows;
-	uint32_t dense_offsets[2];
-	int32_t status;
 	SparkStatus exchange_status;
 	SparkModelDriverCompletion completion;
 	uint32_t *host_tokens;
 	float *host_scores;
 	uint32_t i;
+	const uint64_t submit_started = K3RunnerNowNs();
 	if ( runner == 0 || dispatch == 0 || runner->private_state == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state = (SparkK3RunnerState *)runner->private_state;
@@ -1689,13 +1903,6 @@ SparkStatus SparkK3StageRunnerSubmit(
 			cudaMemcpyDefault, stream) != cudaSuccess ||
 			cudaStreamSynchronize(stream) != cudaSuccess )
 			return SPARK_STATUS_IO_ERROR;
-		status = K3Embedding(state->embed_weight, state->token_ids_device,
-			b->hidden_bf16, rows, runner->tp_rank * state->vocab_slice_rows,
-			state->vocab_slice_rows, stream);
-		if ( status != LM_LAUNCH_OK )
-			return SPARK_STATUS_INTERNAL_ERROR;
-		if ( K3RunnerReduceBf16(state, stream, b->hidden_bf16, rows) != SPARK_STATUS_OK )
-			return SPARK_STATUS_INTERNAL_ERROR;
 	}
 	else
 	{
@@ -1736,36 +1943,13 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.head_candidate_token = state->head_candidate_token;
 	in.output_token = state->output_token;
 	in.output_score = state->output_score;
-	(void)dense_offsets;
-	status = K3RunnerLaunchSliceDirect(state, &in, rows, sequences,
-		packed_rows, stream);
-	if ( status != SPARK_K3_DISPATCH_OK )
-		{ fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
+	exchange_status = K3RunnerStep(state, runner, &in, rows, sequences, packed_rows, stream);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
 	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
 	{
-		if ( rows == 1u && state->head_certified_fp8_payload != 0 )
-			status = K3HeadCertifiedB1(b, state->head_norm_weight, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32, state->head_certified_fp8_norm_f32, state->head_certified_scratch, state->head_certified_candidates, state->head_screened_count, state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
-		else
-			status = K3HeadRankSlice(b, state->head_norm_weight, state->head_weight,
-				state->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, rows, stream);
-		if ( status != LM_LAUNCH_OK )
-			{ fprintf(stderr, "sparkpipe_k3: final head launch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
 		if ( state->device_collective_created != 0 )
 		{
-			SparkTpDeviceCollectiveSubmission submission;
-			if ( K3HeadMaxlocPack(state->output_score, state->output_token,
-				state->head_maxloc, rows, stream) != LM_LAUNCH_OK )
-				{ fprintf(stderr, "sparkpipe_k3: head maxloc pack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
-			K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-				rows, state->head_maxloc, state->head_maxloc, state->tp_next_ordinal++);
-			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
-					&submission,
-					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) !=
-				SPARK_STATUS_OK )
-				{ fprintf(stderr, "sparkpipe_k3: head argmax collective enqueue failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
-			if ( K3HeadMaxlocUnpack(state->head_maxloc, state->output_token,
-				state->output_score, rows, stream) != LM_LAUNCH_OK )
-				{ fprintf(stderr, "sparkpipe_k3: head maxloc unpack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
 			exchange_status = K3RunnerVerifyCollectives(state, stream);
 			if ( exchange_status != SPARK_STATUS_OK )
 				return exchange_status;
@@ -1830,6 +2014,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 		return exchange_status;
 	if ( state->tp_context_overflow != 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	K3RunnerTiming(state, runner->tp_rank, K3RunnerNowNs() - submit_started);
 	exchange_status = K3RunnerChainEnd(state, stream);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
@@ -1920,6 +2105,7 @@ SparkStatus SparkK3StageRunnerAttachKv(SparkK3StageRunner *runner, const SparkK3
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		}
 	}
+	K3RunnerGraphDrop(state);
 	if ( SparkK3DispatchAttachKv(&state->dispatch, kv->pool, kv->layer_stride_bytes, kv->page_table, kv->page_table_stride,
 		kv->pool_page_count, kv->sequence_count) != SPARK_K3_DISPATCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -2004,6 +2190,7 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 	if ( runner == 0 || runner->private_state == 0 )
 		return;
 	state = (SparkK3RunnerState *)runner->private_state;
+	K3RunnerGraphDrop(state);
 	SparkK3RunnerStrayReport(state);
 	free(state->stray_head_bits);
 	free(state->stray_seen_bits);
