@@ -110,17 +110,14 @@ void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t rout
 	__syncthreads();
 	LmRouteBuildPrefix<THREADS,EXPERTS>(count,group_row_offset,tile_m,neuron_tiles_up,tile_prefix_up,neuron_tiles_down,tile_prefix_down);
 	__syncthreads();
-	for (expert = threadIdx.x; expert < EXPERTS; expert += THREADS)
+	for (index = threadIdx.x; index < routes; index += THREADS)
 	{
-		const uint32_t end = group_row_offset[expert + 1u];
+		expert = source[index];
 		packed = count[expert];
-		for (index = 0u; index < routes && packed < end; index++)
-			if ( source[index] == expert )
-			{
-				route_packed_row[index] = packed;
-				route_source_token[packed] = index / top_k;
-				packed++;
-			}
+		for (uint32_t earlier = 0u; earlier < index; earlier++)
+			packed += source[earlier] == expert ? 1u : 0u;
+		route_packed_row[index] = packed;
+		route_source_token[packed] = index / top_k;
 	}
 }
 
