@@ -49,7 +49,6 @@ typedef struct SparkK3RunnerTpContext
 	cudaStream_t stream;
 	uint32_t rows;
 	uint32_t boundary;
-	uint32_t segments;
 	uint32_t phase;
 	uint32_t gate_up_elements;
 } SparkK3RunnerTpContext;
@@ -78,11 +77,7 @@ __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	if ( phase == 0u )
 		fused[i] = attention[i];
 	else
-	{
-		fused[i] = hidden[i];
-		if ( segments == 2u )
-			fused[elements + i] = shared[i];
-	}
+		fused[i] = segments == 2u ? LmFloatToBf16(LmBf16ToFloat(hidden[i]) + LmBf16ToFloat(shared[i])) : hidden[i];
 }
 
 __global__ static void K3RunnerLatentRowsKernel(const uint16_t *gathered, uint16_t *latent,
@@ -495,7 +490,6 @@ static void K3RunnerTpApply(SparkK3RunnerTpContext *tp)
 {
 	K3LayerBuffers *b = tp->buffers;
 	uint32_t rows = tp->rows;
-	uint32_t elements = rows * K3_HIDDEN;
 	uint16_t *fused = tp->fused;
 	if ( tp->phase == 2u )
 	{
@@ -514,11 +508,7 @@ static void K3RunnerTpApply(SparkK3RunnerTpContext *tp)
 			K3PartialAdd(b, fused, rows, tp->stream);
 	}
 	else
-	{
 		K3PartialAdd(b, fused, rows, tp->stream);
-		if ( tp->segments == 2u )
-			K3PartialAdd(b, fused + elements, rows, tp->stream);
-	}
 	K3RunnerTpContextRelease(tp);
 }
 
@@ -772,7 +762,6 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			completion_context->stream = stream;
 			completion_context->rows = rows;
 			completion_context->boundary = 0u;
-			completion_context->segments = 1u;
 			completion_context->phase = phase;
 			completion_context->gate_up_elements = gate_up_elements;
 			SparkTpDeviceCollectiveSubmission submission;
@@ -805,11 +794,10 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			completion_context->stream = stream;
 			completion_context->rows = rows;
 			completion_context->boundary = boundary;
-			completion_context->segments = segments;
 			completion_context->phase = phase;
 			completion_context->gate_up_elements = 0u;
 			K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-				rows * segments, state->fused_device, state->fused_device, state->tp_next_ordinal++);
+				rows, state->fused_device, state->fused_device, state->tp_next_ordinal++);
 			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
 				&submission,
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
