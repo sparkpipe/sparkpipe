@@ -713,34 +713,27 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 			state->fused_device,rows,phase,segments,0u);
 		{
-			const uint32_t op_count =
-				(phase == 1u && segments == 2u) ? 2u : 1u;
-			for ( uint32_t op = 0u; op < op_count; ++op )
-			{
-				uint16_t *segment = state->fused_device +
-					(op == 0u ? 0u : elements);
-				SparkK3RunnerTpContext *completion_context =
-					K3RunnerTpContextAcquire(state);
-				if ( completion_context == 0 )
-					return;
-				completion_context->owner = state;
-				completion_context->fused = segment;
-				completion_context->buffers = b;
-				completion_context->stream = stream;
-				completion_context->rows = rows;
-				completion_context->boundary = (op == 0u) ? boundary : 0u;
-				completion_context->segments = 1u;
-				completion_context->phase = phase;
-				completion_context->gate_up_elements = 0u;
-				SparkTpDeviceCollectiveSubmission submission;
-				K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-					rows, segment, segment, state->tp_next_ordinal++);
-				if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
-					&submission,
-					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
-					state->tp_collective_failed = 1u;
-				K3RunnerTpApply(completion_context);
-			}
+			SparkK3RunnerTpContext *completion_context =
+				K3RunnerTpContextAcquire(state);
+			SparkTpDeviceCollectiveSubmission submission;
+			if ( completion_context == 0 )
+				return;
+			completion_context->owner = state;
+			completion_context->fused = state->fused_device;
+			completion_context->buffers = b;
+			completion_context->stream = stream;
+			completion_context->rows = rows;
+			completion_context->boundary = boundary;
+			completion_context->segments = segments;
+			completion_context->phase = phase;
+			completion_context->gate_up_elements = 0u;
+			K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+				rows * segments, state->fused_device, state->fused_device, state->tp_next_ordinal++);
+			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
+				&submission,
+				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+				state->tp_collective_failed = 1u;
+			K3RunnerTpApply(completion_context);
 		}
 		return;
 	}
