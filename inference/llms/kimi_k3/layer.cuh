@@ -208,6 +208,12 @@ struct K3LayerBuffers
 	float *output_score;
 };
 
+#define K3_EXPERT_CELLS(b) \
+	((b)->expert_w1_output != 0u && (b)->expert_w1_output < K3_EXPERT_INTERMEDIATE * 2u)
+
+#define K3_ROUTER_SLICE(b,rows) \
+	((float *)((b)->latent_bf16 + (uint64_t)(rows) * K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN)))
+
 static int32_t K3SkinnyRows(const void *weight, const uint16_t *source, uint16_t *destination_bf16, float *destination_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
 {
 	uint32_t first, count;
@@ -528,6 +534,21 @@ static int32_t K3LayerMlaShardMerge(const K3LayerBuffers *b, uint32_t rows, cuda
 		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
+static int32_t K3LayerMoeSelect(const K3LayerBuffers *b, uint32_t rows,
+	uint32_t packed_rows, cudaStream_t stream)
+{
+	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
+	if ( LmTopkRouteLaunch<K3_LAYER_THREADS,K3_TOP_K,true,LM_TOPK_SCORE_SIGMOID>(rows,b->router_logits,K3_EXPERTS,
+		b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,stream) != cudaSuccess )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
+	return(LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(
+		b->route_expert,rows,packed_rows,K3_TOP_K,b->group_row_offset,
+		b->route_packed_row,b->route_source_token,w1_out,
+		moe_in,K3_LAYER_TILE_N,b->group_tile_prefix_w1,
+		b->group_tile_prefix_w2,stream));
+}
+
 template<class Format>
 static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 	uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
@@ -537,6 +558,12 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+	if ( K3_EXPERT_CELLS(b) )
+	{
+		const uint32_t experts = K3_EXPERTS / (K3_ROUTED_EXPERT_HIDDEN / moe_in);
+		return(K3SkinnyRows((const uint8_t *)b->router_weight + (uint64_t)b->tp_rank * experts * K3_HIDDEN * sizeof(uint16_t),
+			b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,stream));
+	}
 	memset(&gemm,0,sizeof(gemm));
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
@@ -548,15 +575,7 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 			K3_HIDDEN,K3_EXPERTS,multiprocessors,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	if ( LmTopkRouteLaunch<K3_LAYER_THREADS,K3_TOP_K,true,LM_TOPK_SCORE_SIGMOID>(rows,b->router_logits,K3_EXPERTS,
-		b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,stream) != cudaSuccess )
-		return(LM_LAUNCH_ERR_LAUNCH);
-	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
-	return(LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(
-		b->route_expert,rows,packed_rows,K3_TOP_K,b->group_row_offset,
-		b->route_packed_row,b->route_source_token,w1_out,
-		moe_in,K3_LAYER_TILE_N,b->group_tile_prefix_w1,
-		b->group_tile_prefix_w2,stream));
+	return(K3LayerMoeSelect(b,rows,packed_rows,stream));
 }
 
 template<class Format>
@@ -584,8 +603,6 @@ static int32_t K3LayerMoeOutput(const K3LayerBuffers *b, uint32_t rows,
 	return(status);
 }
 
-#define K3_EXPERT_CELLS(b) \
-	((b)->expert_w1_output != 0u && (b)->expert_w1_output < K3_EXPERT_INTERMEDIATE * 2u)
 
 template<class Format>
 static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
@@ -600,6 +617,9 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 	if ( phase == 0u )
 		return(K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 			b->latent_bf16,rows,K3_HIDDEN,slice,multiprocessors,stream));
+	status = K3LayerMoeSelect(b,rows,packed_rows,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	status = LmSkinnyCellExperts(b->expert_w1_weight,b->shared_out_bf16,b->gate_up_bf16,
 		b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,rows,0u,
 		K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,stream);
