@@ -1096,6 +1096,24 @@ static __device__ void SparkTpMeshPublishSlot(
     }
 }
 
+static __device__ uint32_t SparkTpMeshAlreadyShipped(const SparkTpMeshRoundControl *control)
+{
+    const volatile uint64_t *shipped = (const volatile uint64_t *)(uintptr_t)control->shipped_cell;
+    return shipped != 0 && (control->round_seq == 0u || SparkTpLdAcquireU64(shipped) == control->round_seq) ? 1u : 0u;
+}
+
+static __device__ void SparkTpMeshShipGate(volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,uint32_t mode,uint64_t timeout_ns)
+{
+    if ( (mode & SPARK_TP_MESH_PUBLISH_SHIP) != 0u && SparkTpMeshAlreadyShipped(control) != 0u )
+        return;
+    if ( (mode & SPARK_TP_MESH_PUBLISH_SHIP) != 0u )
+    {
+        SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
+        SparkTpMeshGateAwait(gate,control);
+    }
+    if ( (mode & SPARK_TP_MESH_PUBLISH_GUARD) != 0u ) SparkTpMeshGateGuard(gate,control);
+}
+
 static __global__ void SparkTpMeshHardwarePublishKernel(
     uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
     volatile uint64_t *entry,SparkTpMeshRoundControl *control,uint32_t rank,
@@ -1106,12 +1124,7 @@ static __global__ void SparkTpMeshHardwarePublishKernel(
     __shared__ uint64_t failed;
     if ( threadIdx.x == 0u )
     {
-        if ( (mode & SPARK_TP_MESH_PUBLISH_SHIP) != 0u )
-        {
-            SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
-            SparkTpMeshGateAwait(gate,control);
-        }
-        if ( (mode & SPARK_TP_MESH_PUBLISH_GUARD) != 0u ) SparkTpMeshGateGuard(gate,control);
+        SparkTpMeshShipGate(gate,control,mode,timeout_ns);
         started = SparkTpGlobalTimerNs();
         if ( control->seq > UINT32_MAX - phase_offset ) control->error_word = UINT64_MAX;
         failed = control->error_word;
@@ -1127,12 +1140,7 @@ static __global__ void SparkTpMeshHardwarePublishGateKernel(
     volatile SparkWeightdMeshWaitRequest *gate,SparkTpMeshRoundControl *control,uint32_t mode,uint64_t timeout_ns)
 {
     if ( threadIdx.x != 0u || blockIdx.x != 0u ) return;
-    if ( (mode & SPARK_TP_MESH_PUBLISH_SHIP) != 0u )
-    {
-        SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
-        SparkTpMeshGateAwait(gate,control);
-    }
-    if ( (mode & SPARK_TP_MESH_PUBLISH_GUARD) != 0u ) SparkTpMeshGateGuard(gate,control);
+    SparkTpMeshShipGate(gate,control,mode,timeout_ns);
 }
 
 static __global__ void SparkTpMeshHardwarePublishWideKernel(

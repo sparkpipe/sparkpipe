@@ -69,6 +69,9 @@ _Static_assert(offsetof(SparkTpMeshRoundControl,diag_word) ==
 _Static_assert(offsetof(SparkTpMeshRoundControl,cancel_expected) ==
     SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_EXPECTED * sizeof(uint64_t),
     "cancel word");
+_Static_assert(offsetof(SparkTpMeshRoundControl,shipped_cell) ==
+    SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL * sizeof(uint64_t),
+    "shipped cell word");
 
 #define SPARK_TP_DEVICE_COLLECTIVE_STAGING_SETS \
     (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK * 16u)
@@ -830,8 +833,8 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
                     sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE) != 0 ||
                  cudaMemset((uint8_t *)implementation->round_control +
                     SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS * sizeof(uint64_t),0,
-                    SPARK_TP_MESH_ROUND_CONTROL_BYTES -
-                    SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS * sizeof(uint64_t)) != 0 )
+                    (SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL -
+                    SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS) * sizeof(uint64_t)) != 0 )
                 SPARK_FAIL(SPARK_STATUS_IO_ERROR);
             implementation->cell_mirror = 0ull;
             implementation->capture_rounds = 0u;
@@ -2188,6 +2191,15 @@ static SparkStatus SparkTpDeviceCollectiveEnsureCells(
     phase = "seed-epoch";
     result = cudaMemcpy(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_EPOCH * sizeof(uint64_t),
         &zero_epoch,sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE);
+    if ( result != 0 ) goto failed;
+    phase = "seed-shipped-cell";
+    {
+        uint64_t shipped = implementation->hardware_wait != 0u && implementation->mesh_device != 0 ?
+            (uint64_t)(uintptr_t)(implementation->mesh_device +
+                SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(SparkTpDeviceCollectiveBandIndex(implementation),implementation->tp_rank)) : 0u;
+        result = cudaMemcpy(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL * sizeof(uint64_t),
+            &shipped,sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE);
+    }
     if ( result != 0 ) goto failed;
     phase = "alloc-readback";
     result = cudaHostAlloc((void **)&implementation->published_host_cell,
