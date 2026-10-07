@@ -245,10 +245,14 @@ typedef struct SparkK3RunnerState
 	int device_collective_created;
 	SparkTpDeviceCollective device_collective_wide;
 	int device_collective_wide_created;
+	uint32_t device_collective_deferred;
+	uint32_t device_collective_wide_deferred;
 	SparkWeightdLazyPack *lazy_pack;
 	uint64_t lease_identifier[K3_RUNNER_LEASES_PER_LAYER];
 	uint32_t lease_phase[K3_RUNNER_LEASES_PER_LAYER];
 	void *lease_address;
+	const void *resident_base;
+	uint32_t resident;
 	uint32_t *group_offset_host;
 	uint64_t layer_w1_offset[K3_LAYERS];
 	uint64_t layer_w2_offset[K3_LAYERS];
@@ -552,6 +556,35 @@ static cudaError_t K3RunnerCopy(void *destination, const void *source,
 	return cudaStreamSynchronize(stream);
 }
 
+static void K3RunnerSubmissionInit(SparkTpDeviceCollectiveSubmission *submission,
+	uint32_t deferred, const SparkK3RunnerState *state, cudaStream_t stream,
+	uint32_t active, const void *local, void *full, uint64_t ordinal)
+{
+	memset(submission, 0, sizeof(*submission));
+	submission->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	submission->descriptor_bytes = sizeof(*submission);
+	submission->active_sequence_count = active;
+	submission->logical_sequence_count = state->logical_sequence_count;
+	submission->flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+	submission->ordinal = ordinal;
+	submission->local_device = local;
+	submission->full_device = full;
+	submission->cuda_stream = stream;
+	submission->completion_function = deferred != 0u ? 0 : K3RunnerEmbedCompletion;
+}
+
+static SparkStatus K3RunnerVerifyCollectives(SparkK3RunnerState *state, cudaStream_t stream)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( state->device_collective_created != 0 )
+		status = SparkTpDeviceCollectiveVerifyDeferred(&state->device_collective, stream);
+	if ( status == SPARK_STATUS_OK && state->device_collective_wide_created != 0 )
+		status = SparkTpDeviceCollectiveVerifyDeferred(&state->device_collective_wide, stream);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "sparkpipe_k3: deferred collective rounds failed status=%d\n", (int)status);
+	return status;
+}
+
 static SparkStatus K3RunnerTakeFailure(SparkK3RunnerState *state)
 {
 	SparkStatus status = SPARK_STATUS_OK;
@@ -578,20 +611,8 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 	if ( state->device_collective_created != 0 )
 	{
 		SparkTpDeviceCollectiveSubmission submission;
-		memset(&submission, 0, sizeof(submission));
-		submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-		submission.descriptor_bytes = sizeof(submission);
-		submission.slot_index = 0u;
-		submission.active_sequence_count = rows;
-		submission.logical_sequence_count = state->logical_sequence_count;
-		submission.flags =
-			SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-		submission.ordinal = state->tp_next_ordinal++;
-		submission.local_device = device_values;
-		submission.full_device = (void *)device_values;
-		submission.cuda_stream = stream;
-		submission.completion_function = K3RunnerEmbedCompletion;
-		submission.completion_context = 0;
+		K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+			rows, device_values, (void *)device_values, state->tp_next_ordinal++);
 		return SparkTpDeviceCollectiveEnqueue(&state->device_collective,
 			&submission,
 			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
@@ -612,21 +633,12 @@ static void K3RunnerShardExchange(SparkK3RunnerState *state, K3LayerBuffers *b,
 		state->tp_collective_failed = 1u;
 		return;
 	}
-	memset(&submission, 0, sizeof(submission));
-	submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	submission.descriptor_bytes = sizeof(submission);
-	submission.slot_index = 0u;
-	submission.active_sequence_count = partials != 0u
-		? SparkK3KvShardPartialSequences(state->rows, degree)
-		: SparkK3KvShardQuerySequences(state->rows, degree);
-	submission.logical_sequence_count = state->logical_sequence_count;
-	submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-	submission.ordinal = state->tp_next_ordinal++;
-	submission.local_device = partials != 0u ? (void *)b->shard_partials_f32 : (void *)b->query_bf16;
-	submission.full_device = partials != 0u ? (void *)b->shard_partials_received_f32 : (void *)b->shard_query_gathered_bf16;
-	submission.cuda_stream = stream;
-	submission.completion_function = K3RunnerEmbedCompletion;
-	submission.completion_context = 0;
+	K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+		partials != 0u ? SparkK3KvShardPartialSequences(state->rows, degree)
+			: SparkK3KvShardQuerySequences(state->rows, degree),
+		partials != 0u ? (const void *)b->shard_partials_f32 : (const void *)b->query_bf16,
+		partials != 0u ? (void *)b->shard_partials_received_f32 : (void *)b->shard_query_gathered_bf16,
+		state->tp_next_ordinal++);
 	if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
 		partials != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER) != SPARK_STATUS_OK )
 		state->tp_collective_failed = 1u;
@@ -678,20 +690,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			completion_context->phase = phase;
 			completion_context->gate_up_elements = gate_up_elements;
 			SparkTpDeviceCollectiveSubmission submission;
-			memset(&submission, 0, sizeof(submission));
-			submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-			submission.descriptor_bytes = sizeof(submission);
-			submission.slot_index = 0u;
-			submission.active_sequence_count = rows;
-			submission.logical_sequence_count = state->logical_sequence_count;
-			submission.flags =
-				SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-			submission.ordinal = state->tp_next_ordinal_wide++;
-			submission.local_device = state->fused_device;
-			submission.full_device = state->fused_device;
-			submission.cuda_stream = stream;
-			submission.completion_function = K3RunnerEmbedCompletion;
-			submission.completion_context = 0;
+			K3RunnerSubmissionInit(&submission, state->device_collective_wide_deferred, state, stream,
+				rows, state->fused_device, state->fused_device, state->tp_next_ordinal_wide++);
 			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective_wide,
 				&submission,
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
@@ -728,21 +728,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 				completion_context->phase = phase;
 				completion_context->gate_up_elements = 0u;
 				SparkTpDeviceCollectiveSubmission submission;
-				memset(&submission, 0, sizeof(submission));
-				submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-				submission.descriptor_bytes = sizeof(submission);
-				submission.slot_index = 0u;
-				submission.active_sequence_count = rows;
-				submission.logical_sequence_count =
-					state->logical_sequence_count;
-				submission.flags =
-					SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-				submission.ordinal = state->tp_next_ordinal++;
-				submission.local_device = segment;
-				submission.full_device = segment;
-				submission.cuda_stream = stream;
-				submission.completion_function = K3RunnerEmbedCompletion;
-				submission.completion_context = 0;
+				K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+					rows, segment, segment, state->tp_next_ordinal++);
 				if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
 					&submission,
 					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
@@ -895,6 +882,14 @@ static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 	map = state->lazy_pack->map;
 	if ( map == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( state->resident != 0u )
+	{
+		buffers->expert_w1_weight = (const uint8_t *)state->resident_base +
+			state->layer_w1_offset[layer];
+		buffers->expert_w2_weight = (const uint8_t *)state->resident_base +
+			state->layer_w2_offset[layer];
+		return LM_LAUNCH_OK;
+	}
 	error = cudaStreamSynchronize(state->stream);
 	if ( error != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -951,7 +946,7 @@ static void SparkK3RunnerLazyRelease(void *context, uint32_t layer)
 	SparkK3RunnerState *state = (SparkK3RunnerState *)context;
 	SparkStatus status;
 	(void)layer;
-	if ( state == 0 )
+	if ( state == 0 || state->resident != 0u )
 		return;
 	status = SparkK3RunnerReleaseLease(state);
 	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
@@ -1337,6 +1332,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 		if ( status != SPARK_STATUS_OK )
 			{ SparkK3StageRunnerDestroy(runner); return status; }
 		state->device_collective_created = 1;
+		state->device_collective_deferred = device_config.wait_mode == SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE ? 1u : 0u;
 		if ( state->lazy_pack != 0 &&
 			state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 			status = SparkTpDeviceCollectivePrepareReceiveBf16(
@@ -1374,6 +1370,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 		if ( status != SPARK_STATUS_OK )
 			{ SparkK3StageRunnerDestroy(runner); return status; }
 		state->device_collective_wide_created = 1;
+		state->device_collective_wide_deferred = wide_config.wait_mode == SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE ? 1u : 0u;
 		if ( state->lazy_pack != 0 &&
 			state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 			status = SparkTpDeviceCollectivePrepareReceiveBf16(
@@ -1617,24 +1614,18 @@ static SparkStatus K3RunnerDistribution(SparkK3RunnerState *state,
 		{
 			SparkTpDeviceCollectiveSubmission submission;
 			rows = count - first < state->distribution_chunk_rows ? count - first : state->distribution_chunk_rows;
-			memset(&submission, 0, sizeof(submission));
-			submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-			submission.descriptor_bytes = sizeof(submission);
-			submission.active_sequence_count = rows * state->distribution_sub_rows;
-			submission.logical_sequence_count = state->logical_sequence_count;
+			K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+				rows * state->distribution_sub_rows, state->distribution_logits + (uint64_t)first * slice,
+				state->distribution_gathered, state->tp_next_ordinal++);
 			submission.row_elements = 2u * slice / state->distribution_sub_rows;
-			submission.flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-			submission.ordinal = state->tp_next_ordinal++;
-			submission.local_device = state->distribution_logits + (uint64_t)first * slice;
-			submission.full_device = state->distribution_gathered;
-			submission.cuda_stream = stream;
-			submission.completion_function = K3RunnerEmbedCompletion;
 			status = SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER);
 			if ( status == SPARK_STATUS_OK )
 				status = K3RunnerSampleDistribution(state, state->distribution_gathered, (uint64_t)rows * slice, slice, slice, first, rows, stream);
 		}
 	else
 		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = K3RunnerVerifyCollectives(state, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( K3RunnerCopy(state->output_token_host, state->output_token, (uint64_t)dispatch->row_count * sizeof(uint32_t), stream) != cudaSuccess ||
@@ -1647,11 +1638,34 @@ static SparkStatus K3RunnerDistribution(SparkK3RunnerState *state,
 static_assert(SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW == K3_ATTNRES_BANK_BYTES,
 	"the pipeline residual bank sideband carries every attention-residual slot");
 
+static SparkStatus K3RunnerCheckResident(SparkK3RunnerState *state)
+{
+	const void *pool = 0;
+	uint32_t resident = 0u;
+	SparkStatus status;
+	if ( state->lazy_pack == 0 || state->lazy_pack->map == 0 || state->resident != 0u )
+		return SPARK_STATUS_OK;
+	status = SparkWeightdMapResident(state->lazy_pack->map, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, &resident);
+	if ( status == SPARK_STATUS_OK && resident != 0u )
+		status = SparkWeightdMapPool(state->lazy_pack->map, &pool);
+	if ( status != SPARK_STATUS_OK || resident == 0u )
+		return status;
+	if ( cudaStreamSynchronize(state->stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	status = SparkK3RunnerReleaseLease(state);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	state->resident_base = pool;
+	state->resident = 1u;
+	fprintf(stderr, "K3-RESIDENT every expert group is present in a fixed pool: per-layer expert leases are off\n");
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus K3RunnerChainBegin(SparkK3RunnerState *state, uint64_t request_id)
 {
 	const uint64_t key = request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK;
-	SparkStatus status = SPARK_STATUS_OK;
-	if ( state->device_collective_created != 0 )
+	SparkStatus status = K3RunnerVerifyCollectives(state, state->stream);
+	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, key);
 	if ( status == SPARK_STATUS_OK && state->device_collective_wide_created != 0 )
 		status = SparkTpDeviceCollectiveChainKey(&state->device_collective_wide, key);
@@ -1660,8 +1674,8 @@ static SparkStatus K3RunnerChainBegin(SparkK3RunnerState *state, uint64_t reques
 
 static SparkStatus K3RunnerChainEnd(SparkK3RunnerState *state, cudaStream_t stream)
 {
-	SparkStatus status = SPARK_STATUS_OK;
-	if ( state->device_collective_created != 0 )
+	SparkStatus status = K3RunnerVerifyCollectives(state, stream);
+	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveEndChain(&state->device_collective, stream);
 	if ( status == SPARK_STATUS_OK && state->device_collective_wide_created != 0 )
 		status = SparkTpDeviceCollectiveEndChain(&state->device_collective_wide, stream);
@@ -1700,6 +1714,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
 	stream = state->stream;
+	exchange_status = K3RunnerCheckResident(state);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
 	exchange_status = K3RunnerChainBegin(state, dispatch->request_id);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
@@ -1783,20 +1800,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 			if ( K3HeadMaxlocPack(state->output_score, state->output_token,
 				state->head_maxloc, rows, stream) != LM_LAUNCH_OK )
 				{ fprintf(stderr, "sparkpipe_k3: head maxloc pack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
-			memset(&submission, 0, sizeof(submission));
-			submission.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-			submission.descriptor_bytes = sizeof(submission);
-			submission.slot_index = 0u;
-			submission.active_sequence_count = rows;
-			submission.logical_sequence_count = state->logical_sequence_count;
-			submission.flags =
-				SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
-			submission.ordinal = state->tp_next_ordinal++;
-			submission.local_device = state->head_maxloc;
-			submission.full_device = state->head_maxloc;
-			submission.cuda_stream = stream;
-			submission.completion_function = K3RunnerEmbedCompletion;
-			submission.completion_context = 0;
+			K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+				rows, state->head_maxloc, state->head_maxloc, state->tp_next_ordinal++);
 			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
 					&submission,
 					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) !=
@@ -1805,7 +1810,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 			if ( K3HeadMaxlocUnpack(state->head_maxloc, state->output_token,
 				state->output_score, rows, stream) != LM_LAUNCH_OK )
 				{ fprintf(stderr, "sparkpipe_k3: head maxloc unpack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
-			cudaStreamSynchronize(stream);
+			exchange_status = K3RunnerVerifyCollectives(state, stream);
+			if ( exchange_status != SPARK_STATUS_OK )
+				return exchange_status;
 			if ( K3RunnerCopy(state->output_token_host, state->output_token,
 				(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
 				state->copy_failed = 1u;
@@ -1847,6 +1854,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 	}
 	else if ( dispatch->hidden_output_bf16 != 0 )
 	{
+		exchange_status = K3RunnerVerifyCollectives(state, stream);
+		if ( exchange_status != SPARK_STATUS_OK )
+			return exchange_status;
 		if ( K3RunnerCopy(dispatch->hidden_output_bf16, b->hidden_bf16,
 			(uint64_t)rows * K3_HIDDEN * sizeof(uint16_t), stream) != cudaSuccess )
 			state->copy_failed = 1u;
@@ -2174,6 +2184,8 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	}
 	{
 		SparkStatus failure = K3RunnerTakeFailure(state);
+		if ( failure == SPARK_STATUS_OK )
+			failure = K3RunnerVerifyCollectives(state, stream);
 		if ( failure != SPARK_STATUS_OK )
 			return failure;
 	}
