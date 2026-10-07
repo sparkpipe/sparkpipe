@@ -53,8 +53,8 @@ def check_runner(failures):
     if not apply or statements_calling(apply, "cudaMemcpyAsync"):
         failures.append("the device-collective apply step discards a copy result; "
                         "a failed gate_up or shared copy must fail the step")
-    if apply.count("copy_failed = 1u") < 2:
-        failures.append("the device-collective apply step does not record a failed copy")
+    if apply.count("cudaMemcpyAsync(") == 0 or apply.count("copy_failed = 1u") < apply.count("cudaMemcpyAsync("):
+        failures.append("a device-collective apply copy does not record its failure")
     registered = set(re.findall(r"completion_function\s*=\s*(\w+);", text))
     for name in re.findall(r"^static void (\w+)\([^)]*\)\s*\{", text, re.M):
         if "completion->status" in body(text, name) and name not in registered:

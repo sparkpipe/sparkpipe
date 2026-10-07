@@ -593,6 +593,39 @@ static int32_t K3LayerMoeOutput(const K3LayerBuffers *b, uint32_t rows,
 	return(status);
 }
 
+#define K3_EXPERT_CELLS(b) \
+	((b)->expert_w1_output != 0u && (b)->expert_w1_output < K3_EXPERT_INTERMEDIATE * 2u)
+
+template<class Format>
+static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
+	uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream,
+	uint32_t phase)
+{
+	const uint32_t slice = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
+	const uint32_t channels = b->expert_w1_output / 2u;
+	int32_t status;
+	if ( b->tp_sharded == 0u || b->expert_interleave == 0u || b->expert_w2_input != channels )
+		return(LM_LAUNCH_ERR_SHAPE);
+	if ( phase == 0u )
+		return(K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
+			b->latent_bf16,rows,K3_HIDDEN,slice,multiprocessors,stream));
+	status = LmSkinnyCellExperts(b->expert_w1_weight,b->shared_out_bf16,b->gate_up_bf16,
+		b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,rows,0u,
+		K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
+		b->gate_up_bf16,b->intermediate_bf16,channels,K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+	status = LmSkinnyCellExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
+		b->group_row_offset,0,K3_EXPERTS,packed_rows,rows,1u,channels,
+		K3_ROUTED_EXPERT_HIDDEN,b->expert_tile_k,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+		b->gate_up_bf16,b->route_packed_row,b->route_weight,b->latent_bf16,rows,K3_TOP_K,K3_ROUTED_EXPERT_HIDDEN);
+	return(LM_LAUNCH_OK);
+}
+
 template<class Format>
 static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream,
@@ -602,6 +635,8 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	int32_t status;
 	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
 	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
+	if ( K3_EXPERT_CELLS(b) && phase < 2u )
+		return(K3LayerMoeCells<Format>(b,rows,packed_rows,multiprocessors,stream,phase));
 	if ( phase == 0u )
 	{
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
