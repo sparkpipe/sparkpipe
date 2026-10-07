@@ -235,6 +235,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u;
 	d->scratch_bytes += (size_t)max_rows * K3_EXPERTS * 4u;
 	d->scratch_bytes += (size_t)max_rows * K3_ATTNRES_MAX_SOURCES * 4u + 16u;
+	d->scratch_bytes += (size_t)max_rows * K3_ROUTED_EXPERT_HIDDEN * 2u + 16u;
+	d->scratch_bytes += (size_t)max_rows * K3_SHARED_INTERMEDIATE * 2u + 16u;
 	if ( tp_degree > 1u )
 		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(max_rows, tp_degree) + 48u;
 	d->scratch_bytes += 256u;
@@ -265,6 +267,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	b->kda_retention = (float *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u);
 	b->router_logits = (float *)k3_carve(d, &off, (size_t)max_rows * K3_EXPERTS * 4u);
 	b->attnres_score_f32 = (float *)k3_carve(d, &off, (size_t)max_rows * K3_ATTNRES_MAX_SOURCES * 4u);
+	b->latent_full_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_ROUTED_EXPERT_HIDDEN * 2u);
+	b->shared_mid_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_SHARED_INTERMEDIATE * 2u);
 	if ( tp_degree > 1u )
 	{
 		b->kv_shard = SparkK3KvShardContext(tp_rank, tp_degree);

@@ -640,69 +640,78 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 	return state->dispatch.buffers->tp_sharded != 0u ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_OK;
 }
 
-static void K3RunnerShardExchange(SparkK3RunnerState *state, K3LayerBuffers *b,
-	cudaStream_t stream, uint32_t phase)
-{
-	SparkTpDeviceCollectiveSubmission submission;
-	uint32_t degree = b->kv_shard.degree;
-	uint32_t partials = phase == K3_COLLECTIVE_MLA_PARTIALS ? 1u : 0u;
-	if ( state->device_collective_created == 0 || degree < 2u )
-	{
-		state->tp_collective_failed = 1u;
-		return;
-	}
-	K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-		partials != 0u ? SparkK3KvShardPartialSequences(state->rows, degree)
-			: SparkK3KvShardQuerySequences(state->rows, degree),
-		partials != 0u ? (const void *)b->shard_partials_f32 : (const void *)b->query_bf16,
-		partials != 0u ? (void *)b->shard_partials_received_f32 : (void *)b->shard_query_gathered_bf16,
-		state->tp_next_ordinal++);
-	if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
-		partials != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER) != SPARK_STATUS_OK )
-		state->tp_collective_failed = 1u;
-}
 
-static void K3RunnerGatherLatent(SparkK3RunnerState *state, K3LayerBuffers *b, cudaStream_t stream, uint32_t rows,
-	uint32_t with_logits)
-{
-	const uint32_t slice = K3_RANK_DIM(b, routed_down_rows, K3_ROUTED_EXPERT_HIDDEN);
-	const uint32_t ranks = K3_ROUTED_EXPERT_HIDDEN / slice;
-	const uint32_t experts = with_logits != 0u ? K3_EXPERTS / ranks : 0u;
-	SparkTpDeviceCollectiveSubmission submission;
-	uint16_t *gathered = rows == 1u && with_logits == 0u ? b->shared_out_bf16 : state->fused_device;
-	if ( state->device_collective_created == 0 || (with_logits != 0u && experts * ranks != K3_EXPERTS) )
-	{
-		state->tp_collective_failed = 1u;
-		return;
-	}
-	K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-		rows, b->latent_bf16, gathered, state->tp_next_ordinal++);
-	submission.row_elements = slice + 2u * experts;
-	if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
-		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER) != SPARK_STATUS_OK )
-		state->tp_collective_failed = 1u;
-	if ( with_logits != 0u )
-		K3RunnerLatentLogitsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + K3_EXPERTS + 255u) / 256u, rows), 256u, 0, stream>>>(
-			gathered, b->shared_out_bf16, b->router_logits, rows, slice, experts, ranks);
-	else if ( rows > 1u )
-		K3RunnerLatentRowsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream>>>(
-			gathered, b->shared_out_bf16, rows, slice, ranks);
-}
+#define K3_RUNNER_STAGE_ALL 0u
+#define K3_RUNNER_STAGE_BEGIN 1u
+#define K3_RUNNER_STAGE_FINISH 2u
 
-static void K3RunnerReduceLatent(SparkK3RunnerState *state, K3LayerBuffers *b, cudaStream_t stream, uint32_t rows)
+static void K3RunnerRound(SparkK3RunnerState *state, cudaStream_t stream, uint32_t rows,
+	const void *local, void *full, uint32_t row_elements, uint32_t operation, uint32_t stage)
 {
 	SparkTpDeviceCollectiveSubmission submission;
+	SparkStatus status;
 	if ( state->device_collective_created == 0 )
 	{
 		state->tp_collective_failed = 1u;
 		return;
 	}
+	if ( stage == K3_RUNNER_STAGE_FINISH )
+	{
+		if ( SparkTpDeviceCollectiveFinish(&state->device_collective) != SPARK_STATUS_OK )
+			state->tp_collective_failed = 1u;
+		return;
+	}
 	K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-		rows, b->latent_bf16, b->shared_out_bf16, state->tp_next_ordinal++);
-	submission.row_elements = K3_ROUTED_EXPERT_HIDDEN;
-	if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
-		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
+		rows, local, full, state->tp_next_ordinal++);
+	submission.row_elements = row_elements;
+	status = stage == K3_RUNNER_STAGE_BEGIN
+		? SparkTpDeviceCollectiveBegin(&state->device_collective, &submission, operation)
+		: SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, operation);
+	if ( status != SPARK_STATUS_OK )
 		state->tp_collective_failed = 1u;
+}
+
+static void K3RunnerShardExchange(SparkK3RunnerState *state, K3LayerBuffers *b,
+	cudaStream_t stream, uint32_t phase)
+{
+	uint32_t degree = b->kv_shard.degree;
+	uint32_t partials = (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_PARTIALS ? 1u : 0u;
+	if ( degree < 2u )
+	{
+		state->tp_collective_failed = 1u;
+		return;
+	}
+	K3RunnerRound(state, stream,
+		partials != 0u ? SparkK3KvShardPartialSequences(state->rows, degree)
+			: SparkK3KvShardQuerySequences(state->rows, degree),
+		partials != 0u ? (const void *)b->shard_partials_f32 : (const void *)b->query_bf16,
+		partials != 0u ? (void *)b->shard_partials_received_f32 : (void *)b->shard_query_gathered_bf16, 0u,
+		partials != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
+		partials != 0u ? K3_RUNNER_STAGE_ALL : (phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
+}
+
+static void K3RunnerGatherLatent(SparkK3RunnerState *state, K3LayerBuffers *b, cudaStream_t stream, uint32_t rows,
+	uint32_t with_logits, uint32_t stage)
+{
+	const uint32_t slice = K3_RANK_DIM(b, routed_down_rows, K3_ROUTED_EXPERT_HIDDEN);
+	const uint32_t ranks = K3_ROUTED_EXPERT_HIDDEN / slice;
+	const uint32_t experts = with_logits != 0u ? K3_EXPERTS / ranks : 0u;
+	uint16_t *gathered = rows == 1u && with_logits == 0u ? b->latent_full_bf16 : state->fused_device;
+	if ( with_logits != 0u && experts * ranks != K3_EXPERTS )
+	{
+		state->tp_collective_failed = 1u;
+		return;
+	}
+	K3RunnerRound(state, stream, rows, b->latent_bf16, gathered, slice + 2u * experts,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, stage);
+	if ( stage == K3_RUNNER_STAGE_BEGIN )
+		return;
+	if ( with_logits != 0u )
+		K3RunnerLatentLogitsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + K3_EXPERTS + 255u) / 256u, rows), 256u, 0, stream>>>(
+			gathered, b->latent_full_bf16, b->router_logits, rows, slice, experts, ranks);
+	else if ( rows > 1u )
+		K3RunnerLatentRowsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream>>>(
+			gathered, b->latent_full_bf16, rows, slice, ranks);
 }
 
 static void K3RunnerLayerCollective(void *context, void *stream_void,
@@ -720,24 +729,27 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			? b->hidden_bf16 : b->attention_out_bf16;
 	if ( b->tp_sharded == 0u )
 		return;
-	if ( phase == K3_COLLECTIVE_MLA_QUERY || phase == K3_COLLECTIVE_MLA_PARTIALS )
+	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_QUERY || phase == K3_COLLECTIVE_MLA_PARTIALS )
 	{
 		K3RunnerShardExchange(state, b, stream, phase);
 		return;
 	}
-	if ( K3_EXPERT_CELLS(b) && phase == 2u )
+	if ( K3_EXPERT_CELLS(b) && (phase & ~K3_COLLECTIVE_FINISH) == 2u )
 	{
-		K3RunnerGatherLatent(state, b, stream, rows, 1u);
+		K3RunnerGatherLatent(state, b, stream, rows, 1u,
+			(phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
 		return;
 	}
-	if ( K3_EXPERT_CELLS(b) && phase == 3u )
+	if ( K3_EXPERT_CELLS(b) && (phase & ~K3_COLLECTIVE_FINISH) == 3u )
 	{
-		K3RunnerReduceLatent(state, b, stream, rows);
+		K3RunnerRound(state, stream, rows, b->latent_bf16, b->latent_full_bf16, K3_ROUTED_EXPERT_HIDDEN,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
+			(phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
 		return;
 	}
 	if ( phase == 3u )
 	{
-		K3RunnerGatherLatent(state, b, stream, rows, 0u);
+		K3RunnerGatherLatent(state, b, stream, rows, 0u, K3_RUNNER_STAGE_ALL);
 		return;
 	}
 	if ( phase == 2u )

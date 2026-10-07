@@ -60,6 +60,7 @@ struct K3LayerWeights
 
 #define K3_COLLECTIVE_MLA_QUERY 4u
 #define K3_COLLECTIVE_MLA_PARTIALS 5u
+#define K3_COLLECTIVE_FINISH 0x100u
 
 struct K3SliceState
 {
@@ -193,6 +194,10 @@ static int32_t K3LaunchMlaShard(const K3SliceState *state, const K3LayerBuffers 
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_QUERY);
+	status = K3LayerMlaGate(buffers,rows,multiprocessors,stream);
+	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_QUERY | K3_COLLECTIVE_FINISH);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	status = K3LayerMlaShardPartials<Geometry>(buffers,rows,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -200,7 +205,7 @@ static int32_t K3LaunchMlaShard(const K3SliceState *state, const K3LayerBuffers 
 	status = K3LayerMlaShardMerge(buffers,rows,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	return(K3LayerMlaOutput<Format>(buffers,rows,partial_accumulate,multiprocessors,stream));
+	return(K3LayerMlaOutput<Format>(buffers,rows,partial_accumulate,1u,multiprocessors,stream));
 }
 
 template<class Format, class Geometry>
@@ -225,6 +230,35 @@ static int32_t K3LaunchAttentionHalf(const K3SliceState *state, const K3LayerBuf
 	}
 }
 
+
+template<class Format>
+static int32_t K3LaunchCellsMoe(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	void *stream_word = (void *)(uintptr_t)stream;
+	int32_t status;
+	if ( state->layer_collective == 0 || buffers->tp_sharded == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,0u);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	state->layer_collective(state->collective_context,stream_word,layer,2u);
+	status = K3LayerSharedUp<Format>(buffers,rows,buffers->shared_mid_bf16,multiprocessors,stream);
+	state->layer_collective(state->collective_context,stream_word,layer,2u | K3_COLLECTIVE_FINISH);
+	if ( status == LM_LAUNCH_OK )
+		status = K3LayerMoeSelect(buffers,rows,packed_rows,stream);
+	if ( status == LM_LAUNCH_OK && state->lazy_acquire != 0 )
+		status = state->lazy_acquire(state->lazy_context,layer,(void *)buffers);
+	if ( status == LM_LAUNCH_OK )
+		status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,1u);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	state->layer_collective(state->collective_context,stream_word,layer,3u);
+	status = K3LayerSharedDown<Format>(buffers,rows,buffers->shared_mid_bf16,multiprocessors,stream);
+	state->layer_collective(state->collective_context,stream_word,layer,3u | K3_COLLECTIVE_FINISH);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u));
+}
 
 static int32_t K3SliceFailure(uint32_t layer,const char *phase,int32_t status)
 {
@@ -267,6 +301,8 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 		if ( layer < K3_FIRST_ROUTED_LAYER )
 			status = K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
+		else if ( K3_EXPERT_CELLS(buffers) )
+			status = K3LaunchCellsMoe<Format>(state,buffers,layer,rows,packed_rows,multiprocessors,stream);
 		else if ( state->lazy_acquire != 0 )
 		{
 			status = K3LayerMoeRoute<Format>(buffers,rows,packed_rows,multiprocessors,stream);

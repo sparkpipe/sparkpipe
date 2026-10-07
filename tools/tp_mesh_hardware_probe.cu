@@ -226,7 +226,7 @@ struct Probe
             SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             device+SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(rank,rank),device+SPARK_WEIGHTD_MESH_WAIT_ENTRY(rank,rank),
             ranks[rank].control,rank,degree,ranks[rank].input,ranks[rank].output,ranks[rank].scratch,
-            elements,operation,rounds,rows,routes,(routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? staging_device+rank*SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES : nullptr,timeout));
+            elements,operation,rounds,rows,routes,(routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? staging_device+rank*SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES : nullptr,timeout,SPARK_TP_MESH_STAGE_ALL));
     }
     double Capture()
     {

@@ -133,6 +133,8 @@ struct K3LayerBuffers
 	uint16_t *kv_slot_bf16;
 	uint16_t *attention_out_bf16;
 	uint16_t *shared_out_bf16;
+	uint16_t *latent_full_bf16;
+	uint16_t *shared_mid_bf16;
 	uint16_t *attnres_bank_bf16;
 	uint16_t *attnres_partial_bf16;
 	float *attnres_score_f32;
@@ -468,15 +470,20 @@ static int32_t K3LayerMlaQuery(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 	return(LM_LAUNCH_OK);
 }
 
+static int32_t K3LayerMlaGate(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	return(K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,0,
+		b->gate_bf16,rows,K3_HIDDEN,
+		K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM),multiprocessors,stream));
+}
+
 template<class Format>
-static int32_t K3LayerMlaOutput(const K3LayerBuffers *b, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerMlaOutput(const K3LayerBuffers *b, uint32_t rows, uint16_t *partial_accumulate, uint32_t gate_ready, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
 	LM_LAUNCH((LmPerHeadProjectSplitKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(rows,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),K3_V_HEAD_DIM / LM_PER_HEAD_SPLIT_OUTPUTS), K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->value_bf16,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),rows);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,0,
-		b->gate_bf16,rows,K3_HIDDEN,
-		K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM),multiprocessors,stream);
+	status = gate_ready != 0u ? LM_LAUNCH_OK : K3LayerMlaGate(b,rows,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
@@ -498,7 +505,7 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,K3_ATTN_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS)), K3_ATTN_THREADS, 0, stream,
 		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),K3_MLA_QK_SCALE,b->attention_out_bf16,b->positions);
 	(void)context;
-	return(K3LayerMlaOutput<Format>(b,rows,partial_accumulate,multiprocessors,stream));
+	return(K3LayerMlaOutput<Format>(b,rows,partial_accumulate,0u,multiprocessors,stream));
 }
 
 static uint32_t K3LayerMlaShardReady(const K3LayerBuffers *b, uint32_t rows)
@@ -579,6 +586,32 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 }
 
 template<class Format>
+static int32_t K3LayerSharedUp(const K3LayerBuffers *b, uint32_t rows, uint16_t *intermediate,
+	uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status;
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->shared_w1_weight,b->shared_w1_scale,
+		b->gate_up_bf16,rows,K3_HIDDEN,
+		K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u),multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
+		b->gate_up_bf16,intermediate,
+		K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),
+		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+	return(LM_LAUNCH_OK);
+}
+
+template<class Format>
+static int32_t K3LayerSharedDown(const K3LayerBuffers *b, uint32_t rows, const uint16_t *intermediate,
+	uint32_t multiprocessors, cudaStream_t stream)
+{
+	return(K3Project<LmBf16Format>(b,intermediate,b->shared_w2_weight,b->shared_w2_scale,
+		b->shared_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
+		rows,K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),K3_HIDDEN,multiprocessors,stream));
+}
+
+template<class Format>
 static int32_t K3LayerMoeOutput(const K3LayerBuffers *b, uint32_t rows,
 	uint32_t multiprocessors, cudaStream_t stream)
 {
@@ -586,21 +619,12 @@ static int32_t K3LayerMoeOutput(const K3LayerBuffers *b, uint32_t rows,
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
 		b->hidden_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
 		rows,K3_RANK_DIM(b,routed_up_input,K3_ROUTED_EXPERT_HIDDEN),K3_HIDDEN,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK || K3_EXPERT_CELLS(b) )
+		return(status);
+	status = K3LayerSharedUp<Format>(b,rows,b->intermediate_bf16,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->shared_w1_weight,b->shared_w1_scale,
-		b->gate_up_bf16,rows,K3_HIDDEN,
-		K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u),multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->intermediate_bf16,
-		K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),
-		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	status = K3Project<LmBf16Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
-		b->shared_out_bf16,b->tp_sharded != 0u ? (uint16_t *)0 : b->attnres_partial_bf16,
-		rows,K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),K3_HIDDEN,multiprocessors,stream);
-	return(status);
+	return(K3LayerSharedDown<Format>(b,rows,b->intermediate_bf16,multiprocessors,stream));
 }
 
 
@@ -617,10 +641,7 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 	if ( phase == 0u )
 		return(K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 			b->latent_bf16,rows,K3_HIDDEN,slice,multiprocessors,stream));
-	status = K3LayerMoeSelect(b,rows,packed_rows,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	status = LmSkinnyCellExperts(b->expert_w1_weight,b->shared_out_bf16,b->gate_up_bf16,
+	status = LmSkinnyCellExperts(b->expert_w1_weight,b->latent_full_bf16,b->gate_up_bf16,
 		b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,rows,0u,
 		K3_ROUTED_EXPERT_HIDDEN,b->expert_w1_output,b->expert_tile_k,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -697,9 +718,9 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 		if ( b->tp_sharded == 0u )
 			return(LM_LAUNCH_ERR_SHAPE);
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float), stream,
-			b->shared_out_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->shared_out_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
+			b->latent_full_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_full_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
 		LM_LAUNCH((K3LatentSliceKernel<K3_LAYER_THREADS>), dim3((moe_in + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-			b->shared_out_bf16,b->latent_bf16,moe_in,b->tp_rank * moe_in,K3_ROUTED_EXPERT_HIDDEN);
+			b->latent_full_bf16,b->latent_bf16,moe_in,b->tp_rank * moe_in,K3_ROUTED_EXPERT_HIDDEN);
 		return(K3LayerMoeOutput<Format>(b,rows,multiprocessors,stream));
 	}
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,

@@ -139,6 +139,9 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t cell_mirror;
     uint32_t capture_rounds;
     uint32_t capture_parity;
+    uint32_t split_state;
+    uint32_t split_operation;
+    SparkTpDeviceCollectiveSubmission split_submission;
     uint64_t deferred_rounds;
     uint64_t cancel_seen;
     uint32_t round_deadline_ms;
@@ -932,10 +935,35 @@ static uint32_t SparkTpDeviceCollectiveDevicePath(const SparkTpDeviceCollectiveI
     return 3u;
 }
 
+static SparkStatus SparkTpDeviceCollectivePrepareDeviceRounds(
+    SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation,
+    uint64_t elements,uint64_t phases,uint32_t slice_routes)
+{
+    SparkTpDeviceCollectiveLogPath(implementation,operation,SparkTpDeviceCollectiveDevicePath(implementation,operation,elements,slice_routes),
+        phases,elements,submission->logical_sequence_count);
+    if ( implementation->f32_scratch_bytes < implementation->slot_bytes )
+    {
+        float *scratch;
+        if ( implementation->capture_armed != 0u ) return SPARK_STATUS_CAPACITY_EXCEEDED;
+        if ( cudaMalloc((void **)&scratch,(size_t)implementation->slot_bytes) != 0 )
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        if ( implementation->f32_scratch != 0 ) (void)cudaFree(implementation->f32_scratch);
+        implementation->f32_scratch = scratch;
+        implementation->f32_scratch_bytes = implementation->slot_bytes;
+    }
+    if ( (implementation->capture_armed == 0u || implementation->hardware_wait == 0u) && (SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u || implementation->deferred_rounds == 0u) &&
+         cudaMemsetAsync((uint8_t *)implementation->round_control +
+            SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUNDS_DONE * sizeof(uint64_t),0,
+            sizeof(uint64_t),submission->cuda_stream) != 0 )
+        return SPARK_STATUS_IO_ERROR;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     SparkTpDeviceCollectiveImplementation *implementation,
     const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation,
-    uint32_t rounds)
+    uint32_t rounds,uint32_t stage)
 {
     uint64_t elements = submission->active_sequence_count;
     int launch_result;
@@ -955,23 +983,10 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     status = SparkTpDeviceCollectivePhases(implementation,operation,elements,rounds,slice_routes,&phases);
     if ( status != SPARK_STATUS_OK )
         return status;
-    SparkTpDeviceCollectiveLogPath(implementation,operation,SparkTpDeviceCollectiveDevicePath(implementation,operation,elements,slice_routes),
-        phases,elements,submission->logical_sequence_count);
-    if ( implementation->f32_scratch_bytes < implementation->slot_bytes )
-    {
-        float *scratch;
-        if ( implementation->capture_armed != 0u ) return SPARK_STATUS_CAPACITY_EXCEEDED;
-        if ( cudaMalloc((void **)&scratch,(size_t)implementation->slot_bytes) != 0 )
-            return SPARK_STATUS_CAPACITY_EXCEEDED;
-        if ( implementation->f32_scratch != 0 ) (void)cudaFree(implementation->f32_scratch);
-        implementation->f32_scratch = scratch;
-        implementation->f32_scratch_bytes = implementation->slot_bytes;
-    }
-    if ( (implementation->capture_armed == 0u || implementation->hardware_wait == 0u) && (SparkTpDeviceCollectiveDeferred(implementation,submission) == 0u || implementation->deferred_rounds == 0u) &&
-         cudaMemsetAsync((uint8_t *)implementation->round_control +
-            SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUNDS_DONE * sizeof(uint64_t),0,
-            sizeof(uint64_t),submission->cuda_stream) != 0 )
-        return SPARK_STATUS_IO_ERROR;
+    if ( stage != SPARK_TP_MESH_STAGE_COMPLETE )
+        status = SparkTpDeviceCollectivePrepareDeviceRounds(implementation,submission,operation,elements,phases,slice_routes);
+    if ( status != SPARK_STATUS_OK )
+        return status;
     if ( implementation->hardware_wait != 0u )
         launch_result = SparkTpMeshLaunchersRegistered->hardware(submission->cuda_stream,
             implementation->mesh_device + implementation->band_base,
@@ -983,7 +998,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
             elements,operation,rounds,1u,slice_routes,
             (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u ?
                 implementation->staging_device + (uint64_t)band * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES : 0,
-            implementation->round_timeout_ns);
+            implementation->round_timeout_ns,stage);
     else
         launch_result = SparkTpMeshLaunchersRegistered->tree(submission->cuda_stream,
             implementation->mesh_buffer + implementation->band_base,
@@ -1002,6 +1017,8 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
             launch_result,cudaGetErrorString(launch_result));
         return SPARK_STATUS_IO_ERROR;
     }
+    if ( stage == SPARK_TP_MESH_STAGE_PUBLISH )
+        return SPARK_STATUS_OK;
     if ( implementation->capture_armed != 0u )
     {
         implementation->capture_rounds += (uint32_t)phases;
@@ -1376,7 +1393,7 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(SparkTpDeviceCollectiveImplem
     if ( status != SPARK_STATUS_OK )
         return status;
     if ( SparkTpDeviceCollectiveHostRound(implementation,submission,operation_kind) == 0u )
-        return SparkTpDeviceCollectiveRunDeviceRounds(implementation,submission,operation_kind,1u);
+        return SparkTpDeviceCollectiveRunDeviceRounds(implementation,submission,operation_kind,1u,SPARK_TP_MESH_STAGE_ALL);
     SparkTpDeviceCollectiveLogPath(implementation,operation_kind,1u,1u,bytes / 2u,submission->logical_sequence_count);
     if ( getenv("SPARK_TP_ROUND_TRACE") != 0 )
         fprintf(stderr,"ROUND-TRACE rank=%u armed=%u mirror=%llu cap_rounds=%u cap_parity=%u ordinal=%llu\n",implementation->tp_rank,implementation->capture_armed,(unsigned long long)implementation->cell_mirror,implementation->capture_rounds,implementation->capture_parity,(unsigned long long)submission->ordinal);
@@ -1605,6 +1622,8 @@ static SparkStatus SparkTpDeviceCollectiveSubmitInternal(
     implementation = collective->implementation;
     if ( implementation->mesh_buffer == 0 )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    if ( implementation->split_state != 0u )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL &&
          submission->local_device == submission->full_device )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1662,6 +1681,64 @@ SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
         SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64);
 }
 
+static uint32_t SparkTpDeviceCollectiveSplits(const SparkTpDeviceCollectiveImplementation *implementation,
+    const SparkTpDeviceCollectiveSubmission *submission,uint32_t operation_kind)
+{
+    uint64_t elements = (uint64_t)submission->active_sequence_count * SparkTpDeviceCollectiveRowElements(implementation,submission);
+    if ( implementation->capture_armed == 0u || implementation->hardware_wait == 0u || implementation->mesh_device == 0 ||
+         SparkTpDeviceCollectiveHostRound(implementation,submission,operation_kind) != 0u )
+        return 0u;
+    if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER )
+        elements *= implementation->tp_degree;
+    return SparkTpMeshDirectStaged(implementation->slot_bytes,implementation->tp_degree,elements,operation_kind,1u,1u,
+        SparkTpDeviceCollectiveSliceRoutes(implementation));
+}
+
+SparkStatus SparkTpDeviceCollectiveBegin(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    SparkStatus status = SparkTpDeviceCollectiveValidateSubmission(collective,submission);
+    if ( status != SPARK_STATUS_OK )
+        return status;
+    implementation = collective->implementation;
+    if ( implementation->split_state != 0u || operation_kind > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation->split_submission = *submission;
+    implementation->split_operation = operation_kind;
+    implementation->split_state = 2u;
+    if ( SparkTpDeviceCollectiveSplits(implementation,submission,operation_kind) == 0u )
+        return SPARK_STATUS_OK;
+    status = SparkTpDeviceCollectiveRoundAdmit(implementation,&implementation->split_submission,operation_kind);
+    if ( status == SPARK_STATUS_OK )
+        status = SparkTpDeviceCollectiveRunDeviceRounds(implementation,&implementation->split_submission,operation_kind,1u,SPARK_TP_MESH_STAGE_PUBLISH);
+    implementation->split_state = status == SPARK_STATUS_OK ? 1u : 0u;
+    return status;
+}
+
+SparkStatus SparkTpDeviceCollectiveFinish(
+    SparkTpDeviceCollective *collective)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    uint32_t state;
+    SparkStatus status;
+    if ( collective == 0 || collective->implementation == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    state = implementation->split_state;
+    implementation->split_state = 0u;
+    if ( state == 0u )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    if ( state == 2u )
+        return SparkTpDeviceCollectiveSubmitInternal(collective,&implementation->split_submission,implementation->split_operation);
+    status = SparkTpDeviceCollectiveRunDeviceRounds(implementation,&implementation->split_submission,
+        implementation->split_operation,1u,SPARK_TP_MESH_STAGE_COMPLETE);
+    implementation->round_count++;
+    return status;
+}
+
 SparkStatus SparkTpDeviceCollectiveEnqueue(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission,
@@ -1691,7 +1768,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
     if ( round_count == 0u )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = collective->implementation;
-    if ( implementation->mesh_buffer == 0 )
+    if ( implementation->mesh_buffer == 0 || implementation->split_state != 0u )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     if ( implementation->capture_armed != 0u )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -1720,7 +1797,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
         implementation->round_index += round_count;
         started_ns = SparkTpDeviceCollectiveTimeNs();
         status = SparkTpDeviceCollectiveRunDeviceRounds(implementation,submission,
-            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,round_count);
+            SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,round_count,SPARK_TP_MESH_STAGE_ALL);
         implementation->round_ns_total += SparkTpDeviceCollectiveTimeNs() - started_ns;
         implementation->round_count += implementation->round_control_host.rounds_done;
         return status;
