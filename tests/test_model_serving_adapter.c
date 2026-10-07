@@ -677,6 +677,10 @@ static void TestDriverCacheAdmissionIdentity(void)
 	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
 	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
 	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED;
+	assert(SparkModelDriverCacheLaneIsValid(&lane) != 0u && SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED;
+	assert(SparkModelDriverCacheLaneIsValid(&lane) == 0u && SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
 	lane.flags = 0u;
 	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
 

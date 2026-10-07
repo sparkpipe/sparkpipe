@@ -329,6 +329,9 @@ struct SparkStageKvBinding
 	uint8_t *state_staging;
 	uint8_t *lane_state;
 	uint8_t *lane_state_flags;
+	uint32_t *lane_staged_pages;
+	uint64_t *lane_staged_generations;
+	uint64_t *lane_staged_sequences;
 	uint8_t *snapshot_state;
 	uint32_t state_slot_count;
 	uint32_t reserved_recurrent;
@@ -339,6 +342,8 @@ struct SparkStageKvBinding
 	atomic_ullong recurrent_captures;
 	atomic_ullong recurrent_capture_bytes;
 	atomic_ullong recurrent_capture_ns;
+	atomic_ullong recurrent_staged_commits;
+	atomic_ullong recurrent_staged_drops;
 };
 
 static inline uint32_t SparkStageKvBindingAddressablePageCount(const SparkStageKvBinding *binding)

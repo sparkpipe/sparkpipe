@@ -1479,6 +1479,74 @@ static void TestSnapshotStatelessChain(void)
 	printf("snapshot of a sparse checkpoint chain: a stateless page saves without a state segment, so the chain under a checkpoint reaches the store and restores after a restart with a fresh pool: ok\n");
 }
 
+static void PublishStagedStep(uint64_t sequence,uint32_t position,uint32_t context,uint8_t identity,uint8_t fill)
+{
+	TestStep step;
+	TestFinished finished = {0};
+	uint32_t index;
+	StepInit(&step,sequence,0u,position,context);
+	StepPublish(&step,context,identity);
+	step.lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED;
+	StepStart(&step);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+		RECURRENT.lanes[0][index] = (uint8_t)(fill + index);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(void *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+}
+
+static SparkStatus ResumeAt(uint64_t sequence,uint32_t tokens,uint8_t identity,uint8_t fill)
+{
+	TestStep step;
+	TestFinished finished = {0};
+	SparkStatus status;
+	uint32_t attempt,index;
+	StepInit(&step,sequence,1u,tokens,tokens + 1u);
+	StepPrefix(&step,tokens,identity);
+	status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	for (attempt=0u; (status == SPARK_STATUS_PENDING || status == SPARK_STATUS_BUSY) && attempt<1000u; attempt++)
+	{
+		SleepMs(2u);
+		status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	}
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
+	assert(StepClaim(&step) == SPARK_STATUS_OK);
+	memset(RECURRENT.lanes[1],0,TEST_RECURRENT_BYTES);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,(void *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+		assert(RECURRENT.lanes[1][index] == (uint8_t)(fill + index));
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	ReleaseSequence(sequence,1u);
+	return(SPARK_STATUS_OK);
+}
+
+static void TestStagedReplyCheckpoint(void)
+{
+	SparkStageKvConfiguration configuration;
+	uint8_t page[TEST_PAGE_BYTES];
+	MakeDirectories();
+	ConfigureRecurrent(&configuration);
+	assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+	PublishStagedStep(1u,0u,4u,0x71u,0xa0u);
+	assert(atomic_load(&BINDING.recurrent_staged_commits) == 0u && BINDING.lane_staged_pages[0] != SPARK_KV_CACHE_NO_BLOCK);
+	assert(ResumeAt(2u,4u,0x71u,0xa0u) == SPARK_STATUS_NOT_FOUND);
+	ReleaseSequence(1u,0u);
+	assert(atomic_load(&BINDING.recurrent_staged_commits) == 1u && atomic_load(&BINDING.recurrent_staged_drops) == 0u);
+	assert(BINDING.lane_staged_pages[0] == SPARK_KV_CACHE_NO_BLOCK && BINDING.page_cache.state_promoted_count == 1u);
+	assert(ResumeAt(3u,4u,0x71u,0xa0u) == SPARK_STATUS_OK);
+	PublishStagedStep(4u,0u,4u,0x80u,0x10u);
+	PublishRecurrentStep(4u,4u,8u,0x81u,0x32u,0u,page);
+	assert(BINDING.lane_staged_pages[0] == SPARK_KV_CACHE_NO_BLOCK);
+	ReleaseSequence(4u,0u);
+	assert(atomic_load(&BINDING.recurrent_staged_commits) == 1u);
+	assert(ResumeAt(5u,4u,0x80u,0x10u) == SPARK_STATUS_NOT_FOUND);
+	Close();
+	printf("staged reply checkpoint: a stateless reply page keeps its state staged on the lane, is no resume point while the lane lives, becomes one with exactly that state when the lane is released, and a later stateful publish drops the stage: ok\n");
+}
+
 static void TestWeightdOwnsPool(void)
 {
 	uint64_t generation,committed,lane_bytes;
@@ -1530,6 +1598,7 @@ int main(void)
 	TestRecurrentRefusals();
 	TestRecurrentCheckpoints();
 	TestSnapshotStatelessChain();
+	TestStagedReplyCheckpoint();
 	TestReleaseAfterFailedRun();
 	TestKvServerFinish();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");

@@ -361,12 +361,13 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 		if ( submission->lanes[lane].cache_prefix_token_count != 0u && (cache_block_token_count == 0u || submission->lanes[lane].cache_prefix_token_count > submission->lanes[lane].sequence_position) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( ((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u) != (submission->lanes[lane].cache_publish_token_count != 0u) || ((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u) != (publish_identity_present != 0u) ||
-			((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) != 0u && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u) )
+			((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) != 0u && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u) ||
+			((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED) != 0u && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) == 0u) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( submission->lanes[lane].cache_publish_token_count != 0u && (cache_block_token_count == 0u || submission->lanes[lane].cache_publish_token_count <= submission->lanes[lane].cache_prefix_token_count || submission->lanes[lane].cache_publish_token_count > submission->lanes[lane].context_token_count) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&
-			((submission->lanes[lane].flags & ~SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) != SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH ||
+			((submission->lanes[lane].flags & ~(SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED)) != SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH ||
 			 submission->lanes[lane].cache_publish_token_count != submission->lanes[lane].context_token_count ||
 			 submission->lanes[lane].sequence_position != submission->lanes[lane].context_token_count) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -718,6 +719,8 @@ SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
 				destination->flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;
 			if ( (source->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) != 0u )
 				destination->flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
+			if ( (source->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED) != 0u )
+				destination->flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED;
 			if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
 				destination->flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY;
 		}

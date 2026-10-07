@@ -1762,6 +1762,36 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[18],follow[30],index,reply;
+	for (index=0u; index<18u; index++)
+		prompt[index] = 400u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,790u,4u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	reply = state.token_events[1];
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && reply == 4u,"reply checkpoint: a four-token reply completes");
+	memcpy(follow,prompt,sizeof(prompt));
+	for (index=0u; index<reply; index++)
+		follow[18u + index] = state.token_ids[1][index];
+	for (index=18u + reply; index<30u; index++)
+		follow[index] = 700u + index;
+	TestSubmitPrompt(engine,2u,791u,1u,follow,30u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u + reply,"reply checkpoint: a follow-up that carries the reply resumes after every computed token of the reply, partial last block included, not at the previous prompt's checkpoint");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.error_events[2] == 0u && state.completed_events[2] == 1u,"reply checkpoint: the follow-up completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
@@ -1799,6 +1829,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	}
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
+	TestScenarioReplyCheckpoint(&deployment,runtime_root);
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"multi-block-prefill",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);

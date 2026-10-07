@@ -67,6 +67,8 @@ typedef struct SparkModelBatchRequestState
 	uint32_t cache_published_token_count;
 	uint32_t cache_pending_token_count;
 	uint32_t cache_pending_resume;
+	uint32_t cache_pending_staged;
+	uint32_t cache_staged_token_count;
 	uint32_t cache_deferred_publication;
 	uint32_t cache_decode_publication_closed;
 	uint64_t cache_lookup_epoch;
@@ -1092,6 +1094,10 @@ static SparkStatus SparkModelBatchPublishCompletedPrefix(
 	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	if ( request->cache_pending_resume != 0u )
+		request->cache_staged_token_count = 0u;
+	else if ( request->cache_pending_staged != 0u )
+		request->cache_staged_token_count = committed.matched_token_count == completed_token_count ? completed_token_count : 0u;
 	engine->prefix_index_dirty = 1u;
 	request->cache_published_token_count = committed.matched_token_count;
 	request->cache_published_digest_context = published_context;
@@ -1286,6 +1292,18 @@ static void SparkModelBatchHandleReleaseCompletion(
 		SparkModelBatchRequestState *request;
 		request = &engine->requests[request_slots[lane]];
 		request->resident_bound = 0u;
+		if ( request->cache_staged_token_count != 0u && request->cache_staged_token_count == request->cache_published_token_count )
+		{
+			if ( SparkPrefixCacheMarkResume(&engine->prefix_cache,SparkModelBatchRequestTokens(engine,request_slots[lane]),request->cache_staged_token_count) == SPARK_STATUS_OK )
+				engine->prefix_index_dirty = 1u;
+			else
+			{
+				engine->cache_resume_unmarked_count++;
+				fprintf(stderr,"batch_resume_unmarked request=%llu tokens=%u unmarked=%llu: a block of the reply chain is stale, so its last block is not a resume point\n",
+					(unsigned long long)request->request_id,request->cache_staged_token_count,(unsigned long long)engine->cache_resume_unmarked_count);
+			}
+		}
+		request->cache_staged_token_count = 0u;
 		SparkModelBatchEmitTerminal(engine,request);
 	}
 }
@@ -2551,7 +2569,8 @@ static void SparkModelBatchInitializeLane(
 	SparkModelBatchDigestTokens(&publish_context,&tokens[digested],publish_token_count - digested);
 	lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
 	if ( SparkModelBatchPublishKeepsState(engine,request,publish_token_count,work_kind) == 0u )
-		lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS;
+		lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS |
+			(work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED : 0u);
 	lane->cache_publish_token_count = publish_token_count;
 	SparkModelBatchFinalizeIdentity(&publish_context,&lane->cache_publish_identity);
 }
@@ -2698,7 +2717,7 @@ static void SparkModelBatchBuildDecodeRows(
 		if ( (engine->scratch_lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && (request->cache_decode_publication_closed != 0u || stride > 1u || SparkModelBatchDefersDecodePublication(engine) != 0u) )
 		{
 			request->cache_deferred_publication = request->cache_decode_publication_closed == 0u ? 1u : 0u;
-			engine->scratch_lanes[lane].flags &= ~(SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS);
+			engine->scratch_lanes[lane].flags &= ~(SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED);
 			engine->scratch_lanes[lane].cache_publish_token_count = 0u;
 			memset(&engine->scratch_lanes[lane].cache_publish_identity,0,sizeof(engine->scratch_lanes[lane].cache_publish_identity));
 		}
@@ -2830,6 +2849,7 @@ static void SparkModelBatchRecordSubmission(
 		engine->requests[request_slots[lane]].cache_pending_token_count = engine->scratch_lanes[lane].cache_publish_token_count;
 		engine->requests[request_slots[lane]].cache_pending_resume = (engine->scratch_lanes[lane].flags &
 			(SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS)) == SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH ? 1u : 0u;
+		engine->requests[request_slots[lane]].cache_pending_staged = (engine->scratch_lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED) != 0u ? 1u : 0u;
 		engine->requests[request_slots[lane]].busy_retry_backoff_ms = 0u;
 		engine->requests[request_slots[lane]].busy_retry_not_before_ns = 0u;
 		engine->requests[request_slots[lane]].inflight_since_ns = now_ns;

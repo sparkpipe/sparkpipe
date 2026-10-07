@@ -244,6 +244,7 @@ typedef struct SparkKvPageCache
 	uint64_t deduplicated_page_count;
 	uint64_t stateful_dedup_lost_count;
 	uint64_t state_demoted_count;
+	uint64_t state_promoted_count;
 	uint64_t evicted_entry_count;
 	uint64_t released_sequence_count;
 	SparkKvPageCacheDeviceCopy device_copy;
@@ -299,6 +300,7 @@ SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKv
 SparkStatus SparkKvPageCacheAdoptResident(SparkKvPageCache *cache,const SparkKvPageCacheResidentRecord *records,uint32_t count,uint32_t *adopted_out);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCacheDemoteState(SparkKvPageCache *cache);
+SparkStatus SparkKvPageCachePromoteState(SparkKvPageCache *cache,uint32_t logical_page_index);
 uint32_t SparkKvPageCacheSaveParked(SparkKvPageCache *cache,uint32_t logical_page_index);
 SparkStatus SparkKvPageCacheVacateResident(SparkKvPageCache *cache,uint32_t limit,uint32_t *kept_limit,uint32_t *vacated_pages);
 SparkStatus SparkKvPageCachePrepareLane(
