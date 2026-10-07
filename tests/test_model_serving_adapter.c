@@ -673,6 +673,10 @@ static void TestDriverCacheAdmissionIdentity(void)
 	lane.sequence_position--;
 	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
 	lane.sequence_position++;
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) != 0u);
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
+	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
 	lane.flags = 0u;
 	assert(SparkModelDriverAdmissionRequestIsValid(&request) == 0u);
 

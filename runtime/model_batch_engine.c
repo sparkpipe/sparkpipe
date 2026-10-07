@@ -223,6 +223,7 @@ struct SparkModelBatchEngine
 	uint64_t prefix_miss_count;
 	uint64_t restore_hint_count;
 	uint64_t restore_hint_dropped_count;
+	uint64_t cache_resume_unmarked_count;
 	uint64_t prefix_hit_token_count;
 	uint64_t stale_prefix_recompute_count;
 	uint64_t stale_prefix_isolation_count;
@@ -1082,8 +1083,13 @@ static SparkStatus SparkModelBatchPublishCompletedPrefix(
 		tokens,
 		completed_token_count,
 		&committed);
-	if ( status == SPARK_STATUS_OK && request->cache_pending_resume != 0u )
-		status = SparkPrefixCacheMarkResume(&engine->prefix_cache,tokens,completed_token_count);
+	if ( status == SPARK_STATUS_OK && request->cache_pending_resume != 0u && engine->adapter_descriptor->cache_checkpoint_token_count != 0u &&
+		SparkPrefixCacheMarkResume(&engine->prefix_cache,tokens,completed_token_count) != SPARK_STATUS_OK )
+	{
+		engine->cache_resume_unmarked_count++;
+		fprintf(stderr,"batch_resume_unmarked request=%llu tokens=%u unmarked=%llu: a block of the chain is stale, so this checkpoint is not a resume point\n",
+			(unsigned long long)request->request_id,completed_token_count,(unsigned long long)engine->cache_resume_unmarked_count);
+	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	engine->prefix_index_dirty = 1u;
@@ -1953,7 +1959,12 @@ static void SparkModelBatchRefreshQueuedPrefix(
 			memset(&lookup,0,sizeof(lookup));
 			if ( status == SPARK_STATUS_OK && resume != 0u )
 				status = SparkPrefixCacheLookupPrompt(&engine->prefix_cache,
-					request->sequence_id,SparkModelBatchRequestTokens(engine,slot),resume,&lookup);
+					request->sequence_id,SparkModelBatchRequestTokens(engine,slot),resume + 1u,&lookup);
+			if ( status == SPARK_STATUS_OK && lookup.matched_token_count != resume )
+			{
+				status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
+				memset(&lookup,0,sizeof(lookup));
+			}
 		}
 	}
 	if ( status == SPARK_STATUS_OK )

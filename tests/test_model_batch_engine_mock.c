@@ -1725,7 +1725,7 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
 	SparkModelServingLane lane = {0};
-	uint32_t prompt[18],diverge_late[18],diverge_early[18],spans[8],ends[8],stateful[8],count,index;
+	uint32_t prompt[18],diverge_late[18],diverge_early[18],extended[26],spans[8],ends[8],stateful[8],count,index;
 	for (index=0u; index<18u; index++)
 		prompt[index] = diverge_late[index] = diverge_early[index] = 300u + index;
 	diverge_late[14] = 9u;
@@ -1749,9 +1749,16 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	TestSubmitPrompt(engine,3u,692u,1u,diverge_late,18u);
 	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 12u,"recurrent checkpoints: a prompt that diverges after the stride resumes at the stride checkpoint");
 	TestDriveUntilTerminal(engine,&state,3u,800u);
+	for (index=0u; index<8u; index++)
+		extended[18u + index] = 600u + index;
+	memcpy(extended,prompt,sizeof(prompt));
+	TestSubmitPrompt(engine,5u,694u,1u,extended,26u);
+	CHECK(TestWaitFirstRequestLane(engine,5u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent checkpoints: a prompt that extends a published one past its partial block resumes exactly at the last checkpoint, not a block earlier");
+	TestDriveUntilTerminal(engine,&state,4u,800u);
 	TestSubmitPrompt(engine,4u,693u,1u,diverge_early,18u);
 	CHECK(TestWaitFirstRequestLane(engine,4u,&lane) != 0u && lane.cache_prefix_token_count == 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == 0u,"recurrent checkpoints: shared blocks without a checkpoint are recomputed instead of resumed");
-	TestDriveUntilTerminal(engine,&state,4u,800u);
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	CHECK(state.error_events[1] == 0u && state.error_events[2] == 0u && state.error_events[3] == 0u && state.error_events[4] == 0u && state.error_events[5] == 0u,"recurrent checkpoints: no request fails, including the stateless publishes at each request end");
 	SparkModelBatchEngineDestroy(engine);
 }
 
