@@ -81,9 +81,11 @@ def check_runner(failures):
         failures.append("the step does not report a failed copy or collective "
                         "before it completes")
     chain = body(text, "K3RunnerChainBegin")
-    for band in ("device_collective", "device_collective_wide"):
-        if f"SparkTpDeviceCollectiveChainKey(&state->{band}, key)" not in chain:
-            failures.append(f"K3RunnerChainBegin does not key the {band} band")
+    if "SparkTpDeviceCollectiveChainKey(&state->device_collective, key)" not in chain:
+        failures.append("K3RunnerChainBegin does not key the device collective")
+    if "device_collective_wide" in text:
+        failures.append("the runner still opens a second mesh band; every K3 "
+                        "collective runs on the lane's first band")
     half = body(text, "SparkK3StageRunnerStepHalf")
     if "K3RunnerTakeFailure(state)" not in half:
         failures.append("the half step does not report a failed copy or collective")

@@ -269,7 +269,7 @@ cudaError_t cudaMemcpy(void *destination,const void *source,size_t bytes,cudaMem
 SparkStatus SparkWeightdRouteKeys(uint32_t layer,const uint32_t *source,uint32_t experts,uint32_t rows,SparkWeightdExpertKey *keys,uint32_t capacity,uint32_t *count)
 {
     assert(map_id == 0u && source == offsets && experts == K3_EXPERTS && rows == 3u*K3_TOP_K);
-    assert(layer == 1u && capacity == SPARK_WEIGHTD_LEASE_GROUPS_MAX);(void)keys;
+    assert(layer == 1u && capacity == K3_EXPERTS);(void)keys;
     routes++;*count=2u;return SPARK_STATUS_OK;
 }
 SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *id,uint64_t timeout)
@@ -298,12 +298,12 @@ SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t id,uint64_t tim
 static void Acquire(void)
 {
     assert(SparkK3RunnerLazyAcquire(&state,1u,&buffers) == LM_LAUNCH_OK);
-    assert(state.lease_identifier == map_id && state.lease_phase == SPARK_K3_LEASE_BEGUN);
+    assert(state.lease_identifier[0] == map_id && state.lease_phase[0] == SPARK_K3_LEASE_BEGUN);
     assert(buffers.expert_w1_weight == address+7u && buffers.expert_w2_weight == address+23u);
 }
 static void Released(void)
 {
-    assert(state.lease_identifier == 0u && state.lease_phase == 0u && state.lease_address == 0 && map_id == 0u);
+    assert(state.lease_identifier[0] == 0u && state.lease_phase[0] == 0u && state.lease_address == 0 && map_id == 0u);
     uint32_t before=releases;SparkK3RunnerLazyRelease(&state,1u);assert(releases == before);
 }
 int main(void)
@@ -312,7 +312,7 @@ int main(void)
     for (uint32_t i=0u;i<2u;i++)
     {
         Reset();Acquire();fail_release=failures[i];SparkK3RunnerLazyRelease(&state,1u);
-        assert(state.lease_identifier == map_id && state.lease_address == address && state.lease_phase == SPARK_K3_LEASE_RECORDED);
+        assert(state.lease_identifier[0] == map_id && state.lease_address == address && state.lease_phase[0] == SPARK_K3_LEASE_RECORDED);
         assert(records == 1u && releases == 1u);
         assert(SparkK3RunnerLazyAcquire(&state,1u,&buffers) == failures[i]);
         assert(acquires == 1u && routes == 1u && records == 1u && releases == 2u);
@@ -321,24 +321,34 @@ int main(void)
         SparkK3RunnerLazyRelease(&state,1u);assert(records == 2u);Released();
     }
     Reset();Acquire();fail_record=SPARK_STATUS_IO_ERROR;SparkK3RunnerLazyRelease(&state,1u);
-    assert(state.lease_identifier == map_id && state.lease_phase == SPARK_K3_LEASE_BEGUN && state.lease_address == address);
+    assert(state.lease_identifier[0] == map_id && state.lease_phase[0] == SPARK_K3_LEASE_BEGUN && state.lease_address == address);
     assert(releases == 0u && records == 1u);
     fail_record=SPARK_STATUS_OK;SparkK3RunnerLazyRelease(&state,1u);assert(records == 2u && releases == 1u);Released();
     Reset();fail_begin=SPARK_STATUS_IO_ERROR;
     assert(SparkK3RunnerLazyAcquire(&state,1u,&buffers) == SPARK_STATUS_IO_ERROR);
-    assert(state.lease_identifier == map_id && state.lease_phase == SPARK_K3_LEASE_ACQUIRED);
-    fail_release=SPARK_STATUS_BUSY;SparkK3RunnerLazyRelease(&state,1u);
-    assert(records == 0u && state.lease_identifier == map_id && state.lease_phase == SPARK_K3_LEASE_ACQUIRED);
+    assert(releases == 1u && records == 0u);Released();
+    Reset();fail_begin=SPARK_STATUS_IO_ERROR;fail_release=SPARK_STATUS_BUSY;
+    assert(SparkK3RunnerLazyAcquire(&state,1u,&buffers) == SPARK_STATUS_IO_ERROR);
+    assert(records == 0u && state.lease_identifier[0] == map_id && state.lease_phase[0] == SPARK_K3_LEASE_ACQUIRED);
+    SparkK3RunnerLazyRelease(&state,1u);
+    assert(records == 0u && state.lease_identifier[0] == map_id && state.lease_phase[0] == SPARK_K3_LEASE_ACQUIRED);
     fail_release=SPARK_STATUS_OK;assert(SparkK3RunnerReleaseLease(&state) == SPARK_STATUS_OK);Released();
     Reset();fail_acquire=SPARK_STATUS_IO_ERROR;fail_release=SPARK_STATUS_IO_ERROR;
     assert(SparkK3RunnerLazyAcquire(&state,1u,&buffers) == SPARK_STATUS_IO_ERROR);
-    assert(state.lease_identifier == map_id && state.lease_phase == SPARK_K3_LEASE_ACQUIRED && begins == 0u && records == 0u);
+    assert(state.lease_identifier[0] == map_id && state.lease_phase[0] == SPARK_K3_LEASE_ACQUIRED && begins == 0u && records == 0u);
     fail_release=SPARK_STATUS_OK;assert(SparkK3RunnerReleaseLease(&state) == SPARK_STATUS_OK);Released();
     Reset();Acquire();fail_sync=cudaErrorLaunchFailure;
     assert(SparkK3RunnerLazyAcquire(&state,1u,&buffers) == SPARK_STATUS_IO_ERROR);
-    assert(acquires == 1u && records == 0u && releases == 0u && state.lease_identifier == map_id);
+    assert(acquires == 1u && records == 0u && releases == 0u && state.lease_identifier[0] == map_id);
     fail_sync=cudaSuccess;SparkK3RunnerLazyRelease(&state,1u);Released();
     puts("PASS k3 actual acquisition/release bodies retain phase and owner across failures");
+    Reset();state.resident=1u;state.resident_base=address;
+    assert(SparkK3RunnerLazyAcquire(&state,1u,&buffers) == LM_LAUNCH_OK);
+    assert(buffers.expert_w1_weight == address+7u && buffers.expert_w2_weight == address+23u);
+    assert(syncs == 0u && routes == 0u && acquires == 0u && begins == 0u);
+    SparkK3RunnerLazyRelease(&state,1u);
+    assert(records == 0u && releases == 0u && state.lease_identifier[0] == 0u);
+    puts("PASS k3 resident experts bind by pool offset with no sync and no lease");
     return 0;
 }
 '''
@@ -358,13 +368,14 @@ def k3_harness():
     stray = source[source.index('#define K3_STRAY_BIT_INDEX('):source.index('static void SparkK3RunnerStrayAccount(')]
     functions = stray + '\n'.join(block(source, marker) for marker in (
         'static void SparkK3RunnerStrayAccount(',
+        'static SparkStatus SparkK3RunnerReleaseOneLease(',
         'static SparkStatus SparkK3RunnerReleaseLease(',
         'static SparkStatus K3RunnerLeaseTensorBase(',
         'static int32_t SparkK3RunnerLazyAcquire(',
         'static void SparkK3RunnerLazyRelease('))
-    state = source[source.index('enum\n{\n\tSPARK_K3_LEASE_ACQUIRED'):source.index('typedef struct SparkK3RunnerState\n{')]
+    state = source[source.index('#define K3_RUNNER_LEASES_PER_LAYER'):source.index('typedef struct SparkK3RunnerState\n{')]
     for name, text, fields in (
-        ('SparkK3RunnerState', source, ('lazy_pack', 'lease_tensor_base', 'lease_identifier', 'lease_phase', 'lease_address', 'group_offset_host', 'layer_w1_offset', 'layer_w2_offset', 'rows', 'stream', 'stray_head_bits', 'stray_seen_bits', 'stray_selections', 'stray_count')),
+        ('SparkK3RunnerState', source, ('lazy_pack', 'lease_tensor_base', 'lease_identifier', 'lease_phase', 'lease_address', 'resident_base', 'resident', 'group_offset_host', 'layer_w1_offset', 'layer_w2_offset', 'rows', 'stream', 'stray_head_bits', 'stray_seen_bits', 'stray_selections', 'stray_count')),
         ('K3LayerBuffers', (ROOT / 'inference/llms/kimi_k3/layer.cuh').read_text(), ('expert_w1_weight', 'expert_w2_weight', 'group_row_offset'))):
         body = block(text, 'struct ' + name + '\n{')
         declarations = []
