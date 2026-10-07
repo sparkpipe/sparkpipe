@@ -325,7 +325,15 @@ static void check_transaction(SparkWeightdClient *client,uint64_t generation,uin
 {
 	SparkWeightdExpertKey keys[3] = {{0u,0u},{0u,1u},{0u,0u}};
 	SparkWeightdWorkingSetResult result;
+	SparkWeightdResidency residency;
 	assert(SparkWeightdClientAcquire(client,generation,keys,3u,&result,TIMEOUT) == SPARK_STATUS_OK);
+	assert(result.resident_bytes == (2u * CHUNK));
+	check_ranges(base,0u);
+	check_ranges(base,1u);
+	release(client,generation,result.lease_identifier);
+	assert(SparkWeightdClientResidency(client,generation,&residency,TIMEOUT) == SPARK_STATUS_OK);
+	assert(residency.fixed_pool == 0u && residency.group_count == 4u && residency.present_count == 2u);
+	assert(SparkWeightdClientAcquire(client,generation,keys,2u,&result,TIMEOUT) == SPARK_STATUS_OK);
 	assert(result.resident_bytes == (2u * CHUNK));
 	check_ranges(base,0u);
 	check_ranges(base,1u);
@@ -840,6 +848,7 @@ static void check_pooled_attach(void)
 	SparkWeightdExpertKey keys[65];
 	SparkWeightdWorkingSetResult working;
 	SparkWeightdExportBatch batch;
+	SparkWeightdResidency residency;
 	TestServer state = {0};
 	pthread_t thread;
 	SparkWeightdClient *a,*b;
@@ -868,11 +877,22 @@ static void check_pooled_attach(void)
 	assert(result.pool_fd >= 0);
 	assert(close(result.pool_fd) == 0);
 	generation = result.arena_generation;
+	assert(SparkWeightdClientResidency(a,generation,&residency,TIMEOUT) == SPARK_STATUS_OK);
+	assert(residency.fixed_pool == 1u && residency.group_count == 65u && residency.present_count == 0u);
+	assert(SparkWeightdClientResidency(a,generation + 1u,&residency,TIMEOUT) == SPARK_STATUS_NOT_FOUND);
 	for (i=0u; i<65u; i++)
 		keys[i] = (SparkWeightdExpertKey){0u,i};
+	assert(SparkWeightdClientAcquire(a,generation,keys,64u,&working,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdClientRelease(a,generation,working.lease_identifier,&working,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdClientResidency(a,generation,&residency,TIMEOUT) == SPARK_STATUS_OK);
+	assert(residency.fixed_pool == 1u && residency.present_count == 64u);
 	assert(SparkWeightdClientAcquire(a,generation,keys,65u,&working,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdClientExportLeaseBatch(a,generation,working.lease_identifier,0u,&batch,TIMEOUT) == SPARK_STATUS_OK);
 	assert(batch.status == SPARK_STATUS_OK && batch.lease_chunk_count == 0u && batch.batch_count == 0u);
+	assert(SparkWeightdClientRelease(a,generation,working.lease_identifier,&working,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkWeightdClientResidency(a,generation,&residency,TIMEOUT) == SPARK_STATUS_OK);
+	assert(residency.fixed_pool == 1u && residency.present_count == 65u && residency.present_bytes == (65u * 64u));
+	assert(SparkWeightdClientAcquire(a,generation,keys + 7u,3u,&working,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdClientRelease(a,generation,working.lease_identifier,&working,TIMEOUT) == SPARK_STATUS_OK);
 	assert(SparkWeightdClientConnect(socket_path,&b,0) == SPARK_STATUS_OK);
 	memset(&result,0,sizeof(result));
@@ -880,6 +900,8 @@ static void check_pooled_attach(void)
 	assert(result.status == SPARK_STATUS_OK && result.arena_generation == generation);
 	assert(result.pool_fd >= 0);
 	assert(close(result.pool_fd) == 0);
+	assert(SparkWeightdClientResidency(b,generation,&residency,TIMEOUT) == SPARK_STATUS_OK);
+	assert(residency.fixed_pool == 1u && residency.group_count == 65u && residency.present_count == 65u);
 	SparkWeightdClientClose(b);
 	SparkWeightdClientClose(a);
 	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);

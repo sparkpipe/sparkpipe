@@ -92,6 +92,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT_RESULT 54u
 #define SPARK_WEIGHTD_IPC_KIND_LEASE_SLOTS 55u
 #define SPARK_WEIGHTD_IPC_KIND_LEASE_SLOTS_RESULT 56u
+#define SPARK_WEIGHTD_IPC_KIND_RESIDENCY 57u
+#define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
 #define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT ? 13u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH ? 12u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 11u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
@@ -511,6 +513,23 @@ typedef struct SparkWeightdIpcEpochExportResult
     uint32_t status;
     uint32_t reserved;
 } SparkWeightdIpcEpochExportResult;
+
+typedef struct SparkWeightdIpcResidency
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+} SparkWeightdIpcResidency;
+
+typedef struct SparkWeightdIpcResidencyResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t present_bytes;
+    uint64_t epoch;
+    uint32_t status;
+    uint32_t group_count;
+    uint32_t present_count;
+    uint32_t fixed_pool;
+} SparkWeightdIpcResidencyResult;
 
 typedef struct SparkWeightdMeshTopology
 {
@@ -1112,6 +1131,20 @@ SparkStatus SparkWeightdClientEnsure(SparkWeightdClient *client,
     uint32_t layer,
     uint32_t expert,
     SparkWeightdEnsureResult *result,
+    uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdResidency
+{
+    uint64_t present_bytes;
+    uint64_t epoch;
+    uint32_t group_count;
+    uint32_t present_count;
+    uint32_t fixed_pool;
+} SparkWeightdResidency;
+
+SparkStatus SparkWeightdClientResidency(SparkWeightdClient *client,
+    uint64_t arena_generation,
+    SparkWeightdResidency *residency,
     uint64_t timeout_nanoseconds);
 
 typedef struct SparkWeightdWorkingSetResult

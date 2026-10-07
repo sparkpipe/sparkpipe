@@ -657,6 +657,27 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkWeightdMapResident(SparkWeightdMap *map,uint64_t timeout,uint32_t *resident)
+{
+	SparkWeightdResidency residency;
+	SparkStatus status;
+	if ( resident == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*resident = 0u;
+	status = map_context(map);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( map->client_lock_initialized == 0u || pthread_mutex_lock(&map->client_lock) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = SparkWeightdClientResidency(map->client,map->generation,&residency,timeout);
+	(void)pthread_mutex_unlock(&map->client_lock);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	*resident = map->pool_mapped != 0u && map->base != 0u && residency.fixed_pool != 0u &&
+		residency.group_count != 0u && residency.present_count == residency.group_count ? 1u : 0u;
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkWeightdMapPool(const SparkWeightdMap *map,const void **address)
 {
 	if ( address == 0 )
