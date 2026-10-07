@@ -46,7 +46,6 @@ typedef struct SparkK3StageRunnerConfiguration
     uint32_t multiprocessors;
     void *execution_stream;
     const SparkTpDeviceCollectiveConfig *device_collective;
-    const SparkTpDeviceCollectiveConfig *device_collective_wide;
     void (*layer_collective_override)(void *context, void *stream,
         uint32_t layer, uint32_t phase);
     void *layer_collective_context;

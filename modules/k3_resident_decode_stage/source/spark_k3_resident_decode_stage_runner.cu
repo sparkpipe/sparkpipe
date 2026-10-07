@@ -6,7 +6,7 @@
 
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
-#include "sparkpipe/spark_k3_kv_shard.h"
+#include "sparkpipe/spark_k3_tp_sequences.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
 #include "sparkpipe/spark_k3_weightd_include.h"
@@ -243,10 +243,7 @@ typedef struct SparkK3RunnerState
 	SparkK3Dispatch dispatch;
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
-	SparkTpDeviceCollective device_collective_wide;
-	int device_collective_wide_created;
 	uint32_t device_collective_deferred;
-	uint32_t device_collective_wide_deferred;
 	SparkWeightdLazyPack *lazy_pack;
 	uint64_t lease_identifier[K3_RUNNER_LEASES_PER_LAYER];
 	uint32_t lease_phase[K3_RUNNER_LEASES_PER_LAYER];
@@ -261,7 +258,6 @@ typedef struct SparkK3RunnerState
 	uint16_t *fused_device;
 	uint32_t fused_rows;
 	uint64_t tp_next_ordinal;
-	uint64_t tp_next_ordinal_wide;
 	SparkK3RunnerTpContext *tp_context_free_head;
 	SparkK3RunnerTpContext tp_context_pool[K3_RUNNER_TP_CONTEXT_POOL_DEPTH];
 	uint32_t tp_context_overflow;
@@ -578,8 +574,6 @@ static SparkStatus K3RunnerVerifyCollectives(SparkK3RunnerState *state, cudaStre
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveVerifyDeferred(&state->device_collective, stream);
-	if ( status == SPARK_STATUS_OK && state->device_collective_wide_created != 0 )
-		status = SparkTpDeviceCollectiveVerifyDeferred(&state->device_collective_wide, stream);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "sparkpipe_k3: deferred collective rounds failed status=%d\n", (int)status);
 	return status;
@@ -670,7 +664,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			? rows * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u)
 			: rows * K3_ROUTED_EXPERT_HIDDEN;
 		uint16_t *reduce_values = phase == 2u ? b->gate_up_bf16 : b->shared_out_bf16;
-		if ( state->device_collective_wide_created != 0 )
+		if ( state->device_collective_created != 0 )
 		{
 			K3RunnerFusedPackKernel<<<(gate_up_elements + 255u) / 256u,
 				256u, 0, stream>>>(
@@ -690,9 +684,9 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			completion_context->phase = phase;
 			completion_context->gate_up_elements = gate_up_elements;
 			SparkTpDeviceCollectiveSubmission submission;
-			K3RunnerSubmissionInit(&submission, state->device_collective_wide_deferred, state, stream,
-				rows, state->fused_device, state->fused_device, state->tp_next_ordinal_wide++);
-			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective_wide,
+			K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+				SparkK3TpSequences(gate_up_elements), state->fused_device, state->fused_device, state->tp_next_ordinal++);
+			if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective,
 				&submission,
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) != SPARK_STATUS_OK )
 				state->tp_collective_failed = 1u;
@@ -1288,9 +1282,9 @@ SparkStatus SparkK3StageRunnerInitialize(
 		SparkK3RunnerLazyAcquire;
 	state->dispatch.slice_state->lazy_release =
 		SparkK3RunnerLazyRelease;
-	if ( configuration->tp_degree > 1u && (configuration->device_collective == 0 || configuration->device_collective_wide == 0) )
+	if ( configuration->tp_degree > 1u && configuration->device_collective == 0 )
 	{
-		fprintf(stderr, "sparkpipe_k3: tp=%u needs the device collective and its wide band\n", configuration->tp_degree);
+		fprintf(stderr, "sparkpipe_k3: tp=%u needs the device collective\n", configuration->tp_degree);
 		SparkK3DispatchDestroy(&state->dispatch); SparkK3ModuleDestroy(&state->module); runner->private_state = 0; delete state; return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	if ( configuration->layer_collective_override != 0 )
@@ -1312,9 +1306,13 @@ SparkStatus SparkK3StageRunnerInitialize(
 			{ SparkK3StageRunnerDestroy(runner); return SPARK_STATUS_INVALID_ARGUMENT; }
 		}
 		state->fused_rows = configuration->max_input_row_count;
-		cudaMalloc(&state->fused_device,
-			(uint64_t)state->fused_rows * K3_TOP_K *
-			(K3_EXPERT_INTERMEDIATE * 2u) * 2u);
+		{
+			uint64_t fused_bytes = (uint64_t)SparkK3TpSequences((uint64_t)state->fused_rows * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u)) *
+				K3_HIDDEN * sizeof(uint16_t);
+			if ( cudaMalloc(&state->fused_device, fused_bytes) != cudaSuccess ||
+				cudaMemset(state->fused_device, 0, fused_bytes) != cudaSuccess )
+				{ state->fused_device = 0; SparkK3StageRunnerDestroy(runner); return SPARK_STATUS_CAPACITY_EXCEEDED; }
+		}
 		SparkTpDeviceCollectiveConfig device_config =
 			*configuration->device_collective;
 		if ( device_config.backend_kind ==
@@ -1337,44 +1335,6 @@ SparkStatus SparkK3StageRunnerInitialize(
 			state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 			status = SparkTpDeviceCollectivePrepareReceiveBf16(
 				&state->device_collective,
-				(void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
-				0u,0u,0u,0u);
-		if ( status != SPARK_STATUS_OK )
-			{ SparkK3StageRunnerDestroy(runner); return status; }
-	}
-	if ( configuration->device_collective_wide != 0 )
-	{
-		if ( configuration->device_collective_wide->local_hidden_dimension !=
-			K3_RUNNER_GATE_UP_WIDTH )
-		{
-			fprintf(stderr, "sparkpipe_k3: wide device collective width %u != "
-				"gate_up %u (cold16 width contract)\n",
-				configuration->device_collective_wide->local_hidden_dimension,
-				K3_RUNNER_GATE_UP_WIDTH);
-			{ SparkK3StageRunnerDestroy(runner); return SPARK_STATUS_INVALID_ARGUMENT; }
-		}
-		SparkTpDeviceCollectiveConfig wide_config =
-			*configuration->device_collective_wide;
-		if ( wide_config.backend_kind ==
-			SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT )
-		{
-			wide_config.combine_bf16_function = K3RunnerCombineBf16;
-			wide_config.combine_tp4_bf16_function = K3RunnerCombineTp4Bf16;
-			wide_config.combine_u64_max_function = K3RunnerCombineU64Max;
-			wide_config.combine_gather_bf16_function = K3RunnerCombineGatherBf16;
-			wide_config.combine_fused_bf16_function = K3RunnerCombineSumRanksF32;
-			wide_config.combine_context = state;
-		}
-		status = SparkTpDeviceCollectiveCreate(&wide_config,
-			&state->device_collective_wide);
-		if ( status != SPARK_STATUS_OK )
-			{ SparkK3StageRunnerDestroy(runner); return status; }
-		state->device_collective_wide_created = 1;
-		state->device_collective_wide_deferred = wide_config.wait_mode == SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE ? 1u : 0u;
-		if ( state->lazy_pack != 0 &&
-			state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
-			status = SparkTpDeviceCollectivePrepareReceiveBf16(
-				&state->device_collective_wide,
 				(void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr,
 				0u,0u,0u,0u);
 		if ( status != SPARK_STATUS_OK )
@@ -1667,8 +1627,6 @@ static SparkStatus K3RunnerChainBegin(SparkK3RunnerState *state, uint64_t reques
 	SparkStatus status = K3RunnerVerifyCollectives(state, state->stream);
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, key);
-	if ( status == SPARK_STATUS_OK && state->device_collective_wide_created != 0 )
-		status = SparkTpDeviceCollectiveChainKey(&state->device_collective_wide, key);
 	return status;
 }
 
@@ -1677,8 +1635,6 @@ static SparkStatus K3RunnerChainEnd(SparkK3RunnerState *state, cudaStream_t stre
 	SparkStatus status = K3RunnerVerifyCollectives(state, stream);
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveEndChain(&state->device_collective, stream);
-	if ( status == SPARK_STATUS_OK && state->device_collective_wide_created != 0 )
-		status = SparkTpDeviceCollectiveEndChain(&state->device_collective_wide, stream);
 	return status;
 }
 
@@ -2059,13 +2015,6 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 		if ( state->device_collective.implementation != 0 )
 			return;
 		state->device_collective_created = 0;
-	}
-	if ( state->device_collective_wide_created != 0 )
-	{
-		SparkTpDeviceCollectiveDestroy(&state->device_collective_wide);
-		if ( state->device_collective_wide.implementation != 0 )
-			return;
-		state->device_collective_wide_created = 0;
 	}
 	if ( SparkK3RunnerReleaseLease(state) != SPARK_STATUS_OK )
 		return;

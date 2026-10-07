@@ -364,6 +364,11 @@ static void TestK3ContextShard(void)
 				SparkK3KvShardQueryStride(rows, degree) >= (uint64_t)rows * (96u / degree) * (SPARK_K3_MODEL_MLA_LATENT_DIMENSION + SPARK_K3_MODEL_MLA_UNROTATED_DIMENSION));
 	}
 	assert(SparkK3KvShardQuerySequences(64u, 4u) > 64u && SparkK3KvShardSequenceCapacity(64u, 4u) == SparkK3KvShardPartialSequences(64u, 4u));
+	assert(SparkK3TpSequenceCapacity(64u, 16u) == 878u && SparkK3TpSequenceCapacity(1u, 16u) == 14u);
+	for ( rows = 1u; rows <= 64u; rows++ )
+		assert(SparkK3TpSequenceCapacity(rows, 4u) >= SparkK3KvShardSequenceCapacity(rows, 4u) &&
+			(uint64_t)SparkK3TpSequenceCapacity(rows, 16u) * SPARK_K3_TP_ROW_ELEMENTS >= (uint64_t)rows * SPARK_K3_TP_GATE_UP_ROW_ELEMENTS &&
+			(uint64_t)SparkK3TpSequences((uint64_t)rows * SPARK_K3_MODEL_MOE_ROUTED_EXPERT_HIDDEN_DIMENSION) * SPARK_K3_TP_ROW_ELEMENTS >= (uint64_t)rows * SPARK_K3_MODEL_MOE_ROUTED_EXPERT_HIDDEN_DIMENSION);
 	SparkStageKvBindingDestroy(&state->kv);
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);

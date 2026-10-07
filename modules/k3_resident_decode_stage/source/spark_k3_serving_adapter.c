@@ -22,7 +22,7 @@
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_k3_kv_geometry.h"
-#include "sparkpipe/spark_k3_kv_shard.h"
+#include "sparkpipe/spark_k3_tp_sequences.h"
 
 #include "spark_k3_dspark_format.h"
 #include "inference/llms/kimi_k3/spec_verify.h"
@@ -97,7 +97,6 @@ typedef struct SparkK3ServingState
 	uint32_t max_rows;
 	SparkTpDeviceCollectiveConfig device_config;
 	SparkWeightdClient *lane_client;
-	SparkTpDeviceCollectiveConfig device_config_wide;
 	SparkTpDeviceCollectiveTopology device_topology;
 	SparkK3SpeculationKnobs speculation;
 	char device_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
@@ -288,7 +287,7 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 			state->device_config.credit_count = 8u;
 			state->device_config.local_hidden_dimension = hidden;
 			state->device_config.max_active_sequence_count =
-				SparkK3KvShardSequenceCapacity(state->runner_config.max_input_row_count,
+				SparkK3TpSequenceCapacity(state->runner_config.max_input_row_count,
 					state->runner_config.tp_degree);
 			int32_t hosts_token = SparkJsonFindObjectMember(&doc, dev, "peer_hosts");
 			uint32_t peer_count = hosts_token >= 0 ?
@@ -411,20 +410,6 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 			state->device_config.mesh_lane_client = state->lane_client;
 		}
 		state->runner_config.device_collective = &state->device_config;
-		state->device_config_wide = state->device_config;
-		state->device_config_wide.local_hidden_dimension =
-			SPARK_K3_MODEL_MOE_TOP_K *
-			(SPARK_K3_MODEL_MOE_INTERMEDIATE_DIMENSION * 2u);
-		state->device_config_wide.mesh_band_index = 1u;
-		state->device_config_wide.control_port_base =
-			state->device_config.control_port_base - 1u;
-		state->device_config_wide.collective_identifier =
-			state->device_config.collective_identifier ^
-			0x0000800000000000ull;
-		(void)SparkTpDeviceCollectiveApplyTopology(&state->device_topology,
-			&state->device_config_wide);
-		state->runner_config.device_collective_wide =
-			&state->device_config_wide;
 	}
 	status = K3ServingLoadSpeculation(state, &doc, root);
 	if ( status != SPARK_STATUS_OK )
