@@ -554,16 +554,17 @@ citations refer to that commit.
   and at the last block boundary of a prompt, and resumes only at those
   points. K3 repeated prompts resume at their checkpoint on the fleet,
   including after an engine restart and after a weightd restart from the
-  snapshot store. Two gaps remain. A stateful publish that deduplicates onto
+  snapshot store. Gaps remain. A stateful publish that deduplicates onto
   an existing stateless entry keeps the stateless entry, so that checkpoint
   is lost and the next resume recomputes (`stateful_dedup_lost_count`); the
-  store has no record move between logical pages. Decode keeps state only at
-  stride multiples, so a follow-up turn resumes before the previous reply and
-  recomputes it. GLM Flash on its stride has no fleet run yet, and its
-  serving profile still caps logical pages at one state record per page.
-  Close it with a record move in `SparkKvPageStore`, a decode checkpoint at
-  the last full block of a finished reply, a GLM Flash fleet run, and a
-  profile that sizes GLM Flash's state store for checkpoints.
+  store has no record move between logical pages. A finished reply leaves a
+  staged checkpoint at its last computed token (the binding writes it at
+  release), which has host tests but no fleet run. GLM Flash on its stride
+  has no fleet run yet, and its serving profile still caps logical pages at
+  one state record per page. Close it with a record move in
+  `SparkKvPageStore`, a fleet run where a follow-up turn resumes after the
+  previous reply on K3 and GLM Flash, and a profile that sizes GLM Flash's
+  state store for checkpoints.
 - Copy-on-write of a partial prefix page needs a device copier attached to
   the page cache (`SparkKvPageCacheAttachDeviceCopy`). glm52 (through the KV
   binding) and glm5_next attach one; dsv4, laguna and ling do not, so a

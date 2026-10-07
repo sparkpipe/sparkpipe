@@ -58,7 +58,16 @@ One call does the following:
   - `store->logical_page_capacity` is at least the arena's logical block count.
 - Attach before admitting any lane. The call returns `SPARK_STATUS_BUSY` once a sequence is live, a page has been published, or the store already holds backing pages.
 - A page's state record is keyed by the page's current arena generation. Hold the page's residency pin for the whole of a state transfer, so that the page cannot be evicted or freed during the transfer.
-- A publish whose lane carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS` needs no record and creates a stateless entry. A page sealed without a record also becomes a stateless entry. A stateless entry holds valid KV and can be shared, deduplicated and parked, but it is never a prefix: resolving a lane prefix that ends on it returns `SPARK_STATUS_NOT_FOUND`, and it is never saved to the snapshot store.
+- A publish whose lane carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS` needs no record and creates a stateless entry. A page sealed without a record also becomes a stateless entry. A stateless entry holds valid KV and can be shared, deduplicated and parked, but it is never a prefix: resolving a lane prefix that ends on it returns `SPARK_STATUS_NOT_FOUND`. The snapshot store saves it with its chain and KV page and no state segment.
+- `SparkKvPageCachePromoteState(cache, logical_page)` turns the stateless entry on that page stateful once the caller has written its record. It returns `SPARK_STATUS_NOT_FOUND` unless the page holds a valid stateless entry. If the entry was already saved to the snapshot store, its file is removed and the entry is queued for a new save with its state; a full save queue skips that save, as for any other save.
+
+### Staged reply checkpoint
+
+A stateless publish whose lane also carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED` keeps the lane's recurrent state in the stage KV binding. The flag is valid only together with `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS`. The batch engine sets it on every decode publication that drops state.
+
+- The binding captures the lane's state into the lane's state buffer and remembers the published page, its generation and the sequence. Any later publish of the lane replaces that stage: a staged one with its own page, any other with none.
+- When a CACHE_RELEASE admission releases the lane, the binding writes the staged state as the page's record and promotes the entry. A stage whose sequence, page generation or stateless entry no longer matches, or whose write fails, is dropped and counted in `recurrent_staged_drops`; the release itself never fails for it.
+- The batch engine marks the staged block a resume point when the release completes, so the next request that carries the whole reply resumes after it.
 
 ### State demotion
 
