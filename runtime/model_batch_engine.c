@@ -2687,7 +2687,7 @@ static void SparkModelBatchBuildDecodeRows(
 		if ( (engine->scratch_lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && (request->cache_decode_publication_closed != 0u || stride > 1u || SparkModelBatchDefersDecodePublication(engine) != 0u) )
 		{
 			request->cache_deferred_publication = request->cache_decode_publication_closed == 0u ? 1u : 0u;
-			engine->scratch_lanes[lane].flags &= ~SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+			engine->scratch_lanes[lane].flags &= ~(SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS);
 			engine->scratch_lanes[lane].cache_publish_token_count = 0u;
 			memset(&engine->scratch_lanes[lane].cache_publish_identity,0,sizeof(engine->scratch_lanes[lane].cache_publish_identity));
 		}

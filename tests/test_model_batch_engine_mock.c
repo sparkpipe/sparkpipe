@@ -1736,8 +1736,9 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 		return;
 	MockResidentClientSetAutoTokens(1u);
 	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
-	TestSubmitPrompt(engine,1u,690u,1u,prompt,18u);
+	TestSubmitPrompt(engine,1u,690u,6u,prompt,18u);
 	TestDriveUntilTerminal(engine,&state,1u,800u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 6u,"recurrent checkpoints: a deferred-publication decode across a block boundary completes");
 	count = TestPrefillSpans(1u,18u,spans,8u);
 	CHECK(state.completed_events[1] == 1u && count == 4u && memcmp(spans,expected_spans,sizeof(expected_spans)) == 0,"recurrent checkpoints: prefill spans stop at the checkpoint stride and at the last block boundary before the prompt end");
 	count = TestPrefillPublishes(1u,18u,ends,stateful,8u);
