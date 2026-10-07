@@ -909,9 +909,10 @@ static const char *const SparkTpDeviceCollectivePathNames[] = {
 static void SparkTpDeviceCollectiveLogPath(SparkTpDeviceCollectiveImplementation *implementation,
     uint32_t operation,uint32_t path,uint64_t phases,uint64_t elements,uint32_t rows)
 {
-    if ( operation > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL || implementation->path_logged[operation] == path )
+    if ( operation > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL || path >= 32u ||
+         (implementation->path_logged[operation] & (1u << path)) != 0u )
         return;
-    implementation->path_logged[operation] = path;
+    implementation->path_logged[operation] |= 1u << path;
     fprintf(stderr,"MESH-PATH rank=%u band=%u degree=%u operation=%u path=%s phases=%llu elements=%llu rows=%u capture=%u\n",
         implementation->tp_rank,SparkTpDeviceCollectiveBandIndex(implementation),implementation->tp_degree,operation,
         SparkTpDeviceCollectivePathNames[path],(unsigned long long)phases,(unsigned long long)elements,rows,
