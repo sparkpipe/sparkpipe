@@ -73,13 +73,6 @@ __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 		fused[i] = gate_up[i];
 		return;
 	}
-	if ( phase == 3u )
-	{
-		if ( i >= gate_up_elements )
-			return;
-		fused[i] = shared[i];
-		return;
-	}
 	if ( i >= elements )
 		return;
 	if ( phase == 0u )
@@ -90,6 +83,16 @@ __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 		if ( segments == 2u )
 			fused[elements + i] = shared[i];
 	}
+}
+
+__global__ static void K3RunnerLatentRowsKernel(const uint16_t *gathered, uint16_t *latent,
+	uint32_t rows, uint32_t slice, uint32_t ranks)
+{
+	const uint32_t row = blockIdx.y, column = (blockIdx.x * blockDim.x) + threadIdx.x;
+	if ( column >= slice * ranks )
+		return;
+	latent[(uint64_t)row * slice * ranks + column] =
+		gathered[((uint64_t)(column / slice) * rows + row) * slice + (column % slice)];
 }
 
 #define K3_RUNNER_GATHER_SOURCES_MAX 16u
@@ -484,15 +487,6 @@ static void K3RunnerTpApply(SparkK3RunnerTpContext *tp)
 		K3RunnerTpContextRelease(tp);
 		return;
 	}
-	if ( tp->phase == 3u )
-	{
-		if ( cudaMemcpyAsync(b->shared_out_bf16, fused,
-			(uint64_t)tp->gate_up_elements * sizeof(*b->shared_out_bf16),
-			cudaMemcpyDeviceToDevice, tp->stream) != cudaSuccess )
-			tp->owner->copy_failed = 1u;
-		K3RunnerTpContextRelease(tp);
-		return;
-	}
 	if ( tp->phase == 0u )
 	{
 		if ( tp->boundary != 0u )
@@ -669,12 +663,32 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		K3RunnerShardExchange(state, b, stream, phase);
 		return;
 	}
-	if ( phase == 2u || phase == 3u )
+	if ( phase == 3u )
 	{
-		const uint32_t gate_up_elements = phase == 2u
-			? rows * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u)
-			: rows * K3_ROUTED_EXPERT_HIDDEN;
-		uint16_t *reduce_values = phase == 2u ? b->gate_up_bf16 : b->shared_out_bf16;
+		const uint32_t slice = K3_RANK_DIM(b, routed_down_rows, K3_ROUTED_EXPERT_HIDDEN);
+		const uint32_t ranks = K3_ROUTED_EXPERT_HIDDEN / slice;
+		SparkTpDeviceCollectiveSubmission submission;
+		uint16_t *gathered = rows == 1u ? b->shared_out_bf16 : state->fused_device;
+		if ( state->device_collective_created == 0 )
+		{
+			state->tp_collective_failed = 1u;
+			return;
+		}
+		K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+			rows, b->latent_bf16, gathered, state->tp_next_ordinal++);
+		submission.row_elements = slice;
+		if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER) != SPARK_STATUS_OK )
+			state->tp_collective_failed = 1u;
+		if ( rows > 1u )
+			K3RunnerLatentRowsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream>>>(
+				gathered, b->shared_out_bf16, rows, slice, ranks);
+		return;
+	}
+	if ( phase == 2u )
+	{
+		const uint32_t gate_up_elements = rows * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u);
+		uint16_t *reduce_values = b->gate_up_bf16;
 		if ( state->device_collective_created != 0 )
 		{
 			K3RunnerFusedPackKernel<<<(gate_up_elements + 255u) / 256u,
