@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include "inference/llms/kimi_k3/layer.cuh"
 #include "inference/llms/kimi_k3/dspark.h"
+#include "inference/kernels/l2_load.cuh"
 
 struct K3LayerWeights
 {
@@ -61,6 +62,9 @@ struct K3LayerWeights
 #define K3_COLLECTIVE_MLA_QUERY 4u
 #define K3_COLLECTIVE_MLA_PARTIALS 5u
 #define K3_COLLECTIVE_FINISH 0x100u
+#define K3_COLLECTIVE_BEGIN 0x200u
+#define K3_L2_LOAD_BYTES (8u << 20)
+#define K3_L2_LOAD_BLOCKS 48u
 
 struct K3SliceState
 {
@@ -84,7 +88,11 @@ struct K3SliceState
 	uint32_t first_kda_index;
 	void (*layer_collective)(void *context, void *stream, uint32_t layer,
 		uint32_t phase);
+	uint32_t (*collective_published)(void *context);
 	void *collective_context;
+	void *load_stream;
+	void *load_fork;
+	void *load_join;
 	void *lazy_context;
 	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers);
 	void (*lazy_release)(void *context, uint32_t layer);
@@ -231,6 +239,59 @@ static int32_t K3LaunchAttentionHalf(const K3SliceState *state, const K3LayerBuf
 }
 
 
+static void K3L2PlanMoe(const K3LayerBuffers *b, uint32_t layer, LmL2LoadPlan *plan)
+{
+	const uint64_t row = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
+	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
+	const uint32_t experts = K3_EXPERT_CELLS(b) ? K3_EXPERTS / (K3_ROUTED_EXPERT_HIDDEN / moe_in) : K3_EXPERTS;
+	LmL2LoadBegin(plan,K3_L2_LOAD_BYTES);
+	LmL2LoadAdd(plan,b->mlp_norm_weight,row);
+	if ( layer < K3_FIRST_ROUTED_LAYER )
+	{
+		LmL2LoadAdd(plan,b->dense_gate_up_weight,(uint64_t)K3_RANK_DIM(b,dense_gate_up_rows,K3_DENSE_INTERMEDIATE * 2u) * row);
+		return;
+	}
+	LmL2LoadAdd(plan,(const uint8_t *)b->router_weight + (K3_EXPERT_CELLS(b) ? (uint64_t)b->tp_rank * experts * row : 0u),(uint64_t)experts * row);
+	LmL2LoadAdd(plan,b->routed_down_weight,(uint64_t)moe_in * row);
+	LmL2LoadAdd(plan,b->shared_w1_weight,(uint64_t)K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u) * row);
+}
+
+static void K3L2PlanAttention(const K3LayerBuffers *b, uint32_t layer, LmL2LoadPlan *plan)
+{
+	const uint64_t row = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
+	LmL2LoadBegin(plan,K3_L2_LOAD_BYTES);
+	LmL2LoadAdd(plan,b->attn_norm_weight,row);
+	if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
+		LmL2LoadAdd(plan,b->kda_qkv_beta_weight,(uint64_t)K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS) * row);
+	else
+		LmL2LoadAdd(plan,b->mla_q_down_weight,(uint64_t)K3_Q_LORA_RANK * row);
+}
+
+static int32_t K3L2LoadRound(const K3SliceState *state, uint32_t layer, uint32_t phase, const LmL2LoadPlan *plan, cudaStream_t stream)
+{
+	void *stream_word = (void *)(uintptr_t)stream;
+	cudaStream_t side = (cudaStream_t)state->load_stream;
+	uint32_t forked = 0u;
+	cudaError_t error = cudaSuccess;
+	state->layer_collective(state->collective_context,stream_word,layer,phase | K3_COLLECTIVE_BEGIN);
+	if ( plan != 0 && plan->count != 0u && side != 0 && state->collective_published != 0 &&
+		state->collective_published(state->collective_context) != 0u )
+	{
+		error = cudaEventRecord((cudaEvent_t)state->load_fork,stream);
+		if ( error == cudaSuccess )
+			error = cudaStreamWaitEvent(side,(cudaEvent_t)state->load_fork,0u);
+		if ( error == cudaSuccess )
+			error = LmL2LoadLaunch(plan,K3_L2_LOAD_BLOCKS,side);
+		if ( error == cudaSuccess )
+			error = cudaEventRecord((cudaEvent_t)state->load_join,side);
+		forked = error == cudaSuccess ? 1u : 0u;
+	}
+	state->layer_collective(state->collective_context,stream_word,layer,phase | K3_COLLECTIVE_FINISH);
+	if ( forked != 0u )
+		error = cudaStreamWaitEvent(stream,(cudaEvent_t)state->load_join,0u);
+	return(error == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
 template<class Format>
 static int32_t K3LaunchCellsMoe(const K3SliceState *state, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
 {
@@ -271,6 +332,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 {
 	uint32_t offset,layer,boundary;
 	int32_t status;
+	LmL2LoadPlan load;
 	for (offset = 0u; offset < layer_count; ++offset)
 	{
 		layer = first_layer + offset;
@@ -296,7 +358,12 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		if ( boundary != 0u && buffers->tp_sharded == 0u )
 			K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 		if ( state->layer_collective != 0 )
-			state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,0u);
+		{
+			K3L2PlanMoe(buffers,layer,&load);
+			status = K3L2LoadRound(state,layer,0u,&load,stream);
+			if ( status != LM_LAUNCH_OK )
+				return(K3SliceFailure(layer,"attention-round",status));
+		}
 		K3AttnRes(buffers,buffers->attnres_mlp_weight,
 			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 		if ( layer < K3_FIRST_ROUTED_LAYER )
@@ -346,7 +413,18 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		if ( status != LM_LAUNCH_OK )
 			return(K3SliceFailure(layer,layer < K3_FIRST_ROUTED_LAYER ? "dense" : state->lazy_acquire != 0 ? "routed-lazy" : "routed",status));
 		if ( state->layer_collective != 0 )
-			state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,1u);
+		{
+			load.count = 0u;
+			if ( offset + 1u < layer_count )
+			{
+				K3LayerBuffers next = *buffers;
+				K3BindLayer(&weights[offset + 1u],&next);
+				K3L2PlanAttention(&next,layer + 1u,&load);
+			}
+			status = K3L2LoadRound(state,layer,1u,&load,stream);
+			if ( status != LM_LAUNCH_OK )
+				return(K3SliceFailure(layer,"mlp-round",status));
+		}
 		if ( state->lazy_release != 0 )
 			state->lazy_release(state->lazy_context,layer);
 		if ( state->dspark_aux != 0 )

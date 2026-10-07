@@ -389,6 +389,9 @@ SparkStatus SparkTpDeviceCollectiveBegin(
 SparkStatus SparkTpDeviceCollectiveFinish(
     SparkTpDeviceCollective *collective);
 
+uint32_t SparkTpDeviceCollectivePublished(
+    const SparkTpDeviceCollective *collective);
+
 SparkStatus SparkTpDeviceCollectiveEnqueue(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission,

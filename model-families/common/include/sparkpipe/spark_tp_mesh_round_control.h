@@ -111,16 +111,6 @@ static inline uint32_t SparkTpMeshDirectPhasesPerChunk(uint64_t elements,uint32_
 #if defined(__CUDACC__)
 __host__ __device__
 #endif
-static inline uint32_t SparkTpMeshDirectStaged(uint64_t slot_bytes,uint32_t degree,uint64_t elements,uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes)
-{
-    return (operation == SPARK_TP_MESH_OPERATION_ALL_GATHER || operation == 1u) && rounds == 1u && logical_rows == 1u &&
-        SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,slice_routes) == 1u &&
-        SparkTpMeshDirectLocalElements(elements,degree,operation) <= SparkTpMeshDirectCapacity(slot_bytes,operation) ? 1u : 0u;
-}
-
-#if defined(__CUDACC__)
-__host__ __device__
-#endif
 static inline uint64_t SparkTpMeshAllToAllSliceElements(uint64_t slot_bytes,uint32_t degree)
 {
     return degree == 0u || slot_bytes <= 16u ? 0u : (((slot_bytes - 16u) / degree) & ~UINT64_C(15)) / 2u;
@@ -153,6 +143,18 @@ __host__ __device__
 static inline uint64_t SparkTpMeshDirectPeerCapacity(uint32_t degree,uint64_t staging_slot_bytes)
 {
     return (uint64_t)degree * ((staging_slot_bytes / 2u) & ~UINT64_C(3));
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint32_t SparkTpMeshDirectStaged(uint64_t slot_bytes,uint64_t staging_slot_bytes,uint32_t degree,uint64_t elements,uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes)
+{
+    uint32_t peer = SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,slice_routes) == 2u &&
+        (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u ? 1u : 0u;
+    uint64_t capacity = peer != 0u ? SparkTpMeshDirectPeerCapacity(degree,staging_slot_bytes) : SparkTpMeshDirectCapacity(slot_bytes,operation);
+    return (operation == SPARK_TP_MESH_OPERATION_ALL_GATHER || operation == 1u) && rounds == 1u && logical_rows == 1u &&
+        SparkTpMeshDirectLocalElements(elements,degree,operation) <= capacity ? 1u : 0u;
 }
 
 #if defined(__CUDACC__)

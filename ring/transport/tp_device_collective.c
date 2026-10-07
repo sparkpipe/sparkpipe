@@ -1693,7 +1693,7 @@ static uint32_t SparkTpDeviceCollectiveSplits(const SparkTpDeviceCollectiveImple
         return 0u;
     if ( operation_kind == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER )
         elements *= implementation->tp_degree;
-    return SparkTpMeshDirectStaged(implementation->slot_bytes,implementation->tp_degree,elements,operation_kind,1u,1u,
+    return SparkTpMeshDirectStaged(implementation->slot_bytes,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES,implementation->tp_degree,elements,operation_kind,1u,1u,
         SparkTpDeviceCollectiveSliceRoutes(implementation));
 }
 
@@ -1719,6 +1719,16 @@ SparkStatus SparkTpDeviceCollectiveBegin(
         status = SparkTpDeviceCollectiveRunDeviceRounds(implementation,&implementation->split_submission,operation_kind,1u,SPARK_TP_MESH_STAGE_PUBLISH);
     implementation->split_state = status == SPARK_STATUS_OK ? 1u : 0u;
     return status;
+}
+
+uint32_t SparkTpDeviceCollectivePublished(
+    const SparkTpDeviceCollective *collective)
+{
+    const SparkTpDeviceCollectiveImplementation *implementation;
+    if ( collective == 0 || collective->implementation == 0 )
+        return 0u;
+    implementation = (const SparkTpDeviceCollectiveImplementation *)collective->implementation;
+    return implementation->split_state == 1u ? 1u : 0u;
 }
 
 SparkStatus SparkTpDeviceCollectiveFinish(
