@@ -84,6 +84,7 @@ typedef struct SparkK3StageRunnerDispatch
     const uint32_t *distribution_positions;
     const SparkRowSampling *distribution_rules;
     SparkSamplingLogprob *distribution_logprobs;
+    uint32_t chain_steps;
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;
 } SparkK3StageRunnerDispatch;

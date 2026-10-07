@@ -57,7 +57,8 @@
 #define SPARK_K3_SERVING_CAPABILITIES \
 	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN)
 #define L SPARK_K3_MODEL_LAYER_COUNT
 #define SPARK_K3_SERVING_STAGE_LAYERS \
 	{ L, L, L, L, L, L, L, L, L, L, L, L, L, L, L, L }
@@ -977,17 +978,39 @@ static void K3ServingContinuityRows(SparkK3ServingState *state,
 
 static SparkStatus K3ServingFinish(SparkK3ServingState *state, uint32_t active,
 	const uint32_t *lane_slots, uint8_t *bound, uint64_t *sequence_ids,
-	uint64_t *next_positions, SparkStatus status)
+	uint64_t *next_positions, uint32_t extra_tokens, SparkStatus status)
 {
 	SparkStageKvBindingCompletion completion;
 	memset(&completion, 0, sizeof(completion));
 	completion.lane_count = active;
+	completion.extra_tokens = status == SPARK_STATUS_OK ? extra_tokens : 0u;
 	completion.status = status;
 	completion.resident_slots = lane_slots;
 	completion.bound = bound;
 	completion.sequence_ids = sequence_ids;
 	completion.next_positions = next_positions;
 	return SparkStageKvBindingFinishWait(&state->kv, 0u, &completion);
+}
+
+static SparkStatus K3ServingChainSteps(const SparkK3ServingState *state,
+	const SparkModelServingSubmission *submission, const SparkModelDriverFrame *frame,
+	uint32_t rows, uint32_t active, uint32_t *steps_out)
+{
+	const uint32_t *positions = (const uint32_t *)state->positions_host.pointer;
+	uint32_t steps = submission->tokens_per_sequence > 1u ? submission->tokens_per_sequence : 1u, index;
+	*steps_out = steps;
+	if ( steps == 1u )
+		return SPARK_STATUS_OK;
+	if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE || rows != active ||
+		(uint64_t)rows * steps > state->max_rows || state->runner.owns_final_head == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	for ( index = 0u; index < frame->cache_lane_count; ++index )
+		if ( (frame->cache_lanes[index].flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH)) != 0u )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	for ( index = 0u; index < rows; ++index )
+		if ( (positions[index] % SPARK_K3_KV_PAGE_SLOTS) + steps > SPARK_K3_KV_PAGE_SLOTS )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus K3ServingSubmit(void *adapter_state,
@@ -1004,7 +1027,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	uint32_t distribution_rows[SPARK_K3_SERVING_MAX_LANES], distribution_positions[SPARK_K3_SERVING_MAX_LANES], distribution_lanes[SPARK_K3_SERVING_MAX_LANES];
 	SparkRowSampling distribution_rules[SPARK_K3_SERVING_MAX_LANES];
 	SparkSamplingLogprob distribution_logprobs[SPARK_K3_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
-	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u;
+	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u;
 	SparkStatus status, finished;
 	void *stream;
 	status = K3ServingValidateSubmission(state, submission);
@@ -1018,6 +1041,8 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	status = K3ServingAdmitFrame(state, submission, &frame);
+	if ( status == SPARK_STATUS_OK )
+		status = K3ServingChainSteps(state, submission, &frame, rows, active, &steps);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	K3ServingContinuityRows(state, submission, rows, active, row_slots, row_sequence_ids, row_positions);
@@ -1112,6 +1137,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		dispatch.distribution_positions = distribution_positions;
 		dispatch.distribution_rules = distribution_rules;
 		dispatch.distribution_logprobs = distribution_logprobs;
+		dispatch.chain_steps = steps;
 		dispatch.completion_function = 0;
 		dispatch.completion_context = 0;
 		status = SparkK3StageRunnerSubmit(&state->runner, &dispatch);
@@ -1120,7 +1146,9 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, stream);
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
-	finished = K3ServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, status);
+	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
+		next_positions[lane] += steps - 1u;
+	finished = K3ServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, status);
 	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_K3_SERVING_MAX_LANES, row_slots, active);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -1135,19 +1163,20 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 			uint32_t *runs = (uint32_t *)state->runs_host.pointer;
 			uint32_t *order = (uint32_t *)state->order_host.pointer;
 			uint32_t sequences = dispatch.active_sequence_count;
-			uint32_t *tokens_host = (uint32_t *)malloc((uint64_t)rows * 4u);
+			uint32_t *tokens_host = (uint32_t *)malloc((uint64_t)rows * steps * 4u);
 			if ( tokens_host == 0 )
 				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 			SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
-				SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * 4u);
+				SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * steps * 4u);
 			if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens,
-					(uint64_t)rows * 4u, 0) != SPARK_STATUS_OK )
+					(uint64_t)rows * steps * 4u, 0) != SPARK_STATUS_OK )
 				{ free(tokens_host); SPARK_FAIL(SPARK_STATUS_IO_ERROR); }
-			completion.tokens_per_sequence = 1u;
-			completion.token_count = sequences;
+			completion.tokens_per_sequence = steps;
+			completion.token_count = sequences * steps;
 			completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
-			for ( uint32_t s = 0u; s < sequences && s < SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT; ++s )
-				completion.token_ids[s] = tokens_host[order[runs[s + 1u] - 1u]];
+			for ( uint32_t s = 0u; s < sequences; ++s )
+				for ( uint32_t step = 0u; step < steps && s * steps + step < SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT; ++step )
+					completion.token_ids[s * steps + step] = tokens_host[step * rows + order[runs[s + 1u] - 1u]];
 			free(tokens_host);
 			completion.logprob_stride = logprob_stride;
 			completion.logprob_entry_count = completion.token_count * logprob_stride;

@@ -1960,6 +1960,89 @@ static SparkStatus K3RunnerStep(SparkK3RunnerState *state, const SparkK3StageRun
 	return K3RunnerStepBody(state, runner, in, rows, sequences, packed_rows, stream);
 }
 
+static SparkStatus K3RunnerStepOutputs(SparkK3RunnerState *state, const SparkK3StageRunner *runner,
+	const SparkK3StageRunnerDispatch *current, K3LayerBuffers *b, cudaStream_t stream, uint32_t rows)
+{
+	SparkStatus exchange_status;
+	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
+	{
+		if ( state->device_collective_created != 0 )
+		{
+			exchange_status = K3RunnerVerifyCollectives(state, stream);
+			if ( exchange_status != SPARK_STATUS_OK )
+				return exchange_status;
+			if ( K3RunnerCopy(state->output_token_host, state->output_token,
+				(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
+				state->copy_failed = 1u;
+			if ( K3RunnerCopy(state->output_score_host, state->output_score,
+				(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
+				state->copy_failed = 1u;
+			if ( current->output_token_ids != 0 )
+				if ( K3RunnerCopy(current->output_token_ids, state->output_token,
+					(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
+					state->copy_failed = 1u;
+			if ( current->output_scores != 0 )
+				if ( K3RunnerCopy(current->output_scores, state->output_score,
+					(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
+					state->copy_failed = 1u;
+		}
+		else
+		{
+			cudaStreamSynchronize(stream);
+			if ( K3RunnerCopy(state->output_token_host, state->output_token,
+				(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
+				state->copy_failed = 1u;
+			if ( K3RunnerCopy(state->output_score_host, state->output_score,
+				(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
+				state->copy_failed = 1u;
+			if ( runner->tp_degree > 1u )
+				return SPARK_STATUS_INTERNAL_ERROR;
+			if ( current->output_token_ids != 0 )
+				if ( K3RunnerCopy(current->output_token_ids, state->output_token_host,
+					(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
+					state->copy_failed = 1u;
+			if ( current->output_scores != 0 )
+				if ( K3RunnerCopy(current->output_scores, state->output_score_host,
+					(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
+					state->copy_failed = 1u;
+		}
+		exchange_status = K3RunnerDistribution(state, runner, current, b, stream);
+		if ( exchange_status != SPARK_STATUS_OK )
+			return exchange_status;
+	}
+	else if ( current->hidden_output_bf16 != 0 )
+	{
+		exchange_status = K3RunnerVerifyCollectives(state, stream);
+		if ( exchange_status != SPARK_STATUS_OK )
+			return exchange_status;
+		if ( K3RunnerCopy(current->hidden_output_bf16, b->hidden_bf16,
+			(uint64_t)rows * K3_HIDDEN * sizeof(uint16_t), stream) != cudaSuccess )
+			state->copy_failed = 1u;
+		if ( current->residual_bank_output != 0 )
+		{
+			if ( current->residual_bank_output_bytes < (uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW )
+				return SPARK_STATUS_INVALID_ARGUMENT;
+			if ( K3RunnerCopy(current->residual_bank_output, b->attnres_bank_bf16,
+				(uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, stream) != cudaSuccess )
+				state->copy_failed = 1u;
+		}
+	}
+	return SPARK_STATUS_OK;
+}
+
+#define K3_RUNNER_CHAIN_LANES 16u
+
+__global__ static void K3RunnerChainAdvanceKernel(uint32_t *token_ids, const uint32_t *tokens, uint32_t *positions,
+	uint32_t *context_length, const uint32_t *sequence_of_row, uint32_t rows)
+{
+	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row >= rows )
+		return;
+	token_ids[row] = tokens[row];
+	positions[row] += 1u;
+	context_length[sequence_of_row[row]] = positions[row] + 1u;
+}
+
 SparkStatus SparkK3StageRunnerSubmit(
 	SparkK3StageRunner *runner,
 	const SparkK3StageRunnerDispatch *dispatch)
@@ -1971,14 +2054,21 @@ SparkStatus SparkK3StageRunnerSubmit(
 	uint32_t rows, sequences, packed_rows;
 	SparkStatus exchange_status;
 	SparkModelDriverCompletion completion;
-	uint32_t *host_tokens;
-	float *host_scores;
-	uint32_t i;
+	uint32_t i, step, steps;
 	const uint64_t submit_started = K3RunnerNowNs();
 	if ( runner == 0 || dispatch == 0 || runner->private_state == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state = (SparkK3RunnerState *)runner->private_state;
 	rows = dispatch->row_count;
+	steps = dispatch->chain_steps > 1u ? dispatch->chain_steps : 1u;
+	if ( steps > 1u && (runner->owns_embedding == 0u || runner->owns_final_head == 0u || state->head_weight == 0 ||
+		rows != dispatch->active_sequence_count || (uint64_t)rows * steps > state->max_rows ||
+		dispatch->distribution_count > K3_RUNNER_CHAIN_LANES || dispatch->positions == 0 || dispatch->context_length == 0) )
+	{
+		fprintf(stderr, "sparkpipe_k3: decode chain refused: steps=%u rows=%u lanes=%u distributions=%u\n",
+			steps, rows, dispatch->active_sequence_count, dispatch->distribution_count);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if ( rows == 0u || rows > state->max_rows || dispatch->active_sequence_count == 0u || dispatch->active_sequence_count > rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -2050,71 +2140,31 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.head_candidate_token = state->head_candidate_token;
 	in.output_token = state->output_token;
 	in.output_score = state->output_score;
-	exchange_status = K3RunnerStep(state, runner, &in, rows, sequences, packed_rows, stream);
-	if ( exchange_status != SPARK_STATUS_OK )
-		return exchange_status;
-	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
+	for ( step = 0u; step < steps; ++step )
 	{
-		if ( state->device_collective_created != 0 )
+		SparkK3StageRunnerDispatch current = *dispatch;
+		uint32_t chain_positions[K3_RUNNER_CHAIN_LANES];
+		if ( step != 0u )
 		{
-			exchange_status = K3RunnerVerifyCollectives(state, stream);
-			if ( exchange_status != SPARK_STATUS_OK )
-				return exchange_status;
-			if ( K3RunnerCopy(state->output_token_host, state->output_token,
-				(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			if ( K3RunnerCopy(state->output_score_host, state->output_score,
-				(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			if ( dispatch->output_token_ids != 0 )
-				if ( K3RunnerCopy(dispatch->output_token_ids, state->output_token,
-					(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
-					state->copy_failed = 1u;
-			if ( dispatch->output_scores != 0 )
-				if ( K3RunnerCopy(dispatch->output_scores, state->output_score,
-					(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
-					state->copy_failed = 1u;
-		}
-		else
-		{
-			cudaStreamSynchronize(stream);
-			if ( K3RunnerCopy(state->output_token_host, state->output_token,
-				(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			if ( K3RunnerCopy(state->output_score_host, state->output_score,
-				(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
-				state->copy_failed = 1u;
-			if ( runner->tp_degree > 1u )
+			K3RunnerChainAdvanceKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(state->token_ids_device,
+				state->output_token, (uint32_t *)dispatch->positions, (uint32_t *)dispatch->context_length,
+				dispatch->sequence_of_row, rows);
+			if ( cudaPeekAtLastError() != cudaSuccess )
 				return SPARK_STATUS_INTERNAL_ERROR;
 			if ( dispatch->output_token_ids != 0 )
-				if ( K3RunnerCopy(dispatch->output_token_ids, state->output_token_host,
-					(uint64_t)rows * sizeof(uint32_t), stream) != cudaSuccess )
-					state->copy_failed = 1u;
+				current.output_token_ids = dispatch->output_token_ids + (uint64_t)step * rows;
 			if ( dispatch->output_scores != 0 )
-				if ( K3RunnerCopy(dispatch->output_scores, state->output_score_host,
-					(uint64_t)rows * sizeof(float), stream) != cudaSuccess )
-					state->copy_failed = 1u;
+				current.output_scores = dispatch->output_scores + (uint64_t)step * rows;
+			for ( i = 0u; i < dispatch->distribution_count; ++i )
+				chain_positions[i] = dispatch->distribution_positions[i] + step;
+			if ( dispatch->distribution_count != 0u )
+				current.distribution_positions = chain_positions;
 		}
-		exchange_status = K3RunnerDistribution(state, runner, dispatch, b, stream);
+		exchange_status = K3RunnerStep(state, runner, &in, rows, sequences, packed_rows, stream);
+		if ( exchange_status == SPARK_STATUS_OK )
+			exchange_status = K3RunnerStepOutputs(state, runner, &current, b, stream, rows);
 		if ( exchange_status != SPARK_STATUS_OK )
 			return exchange_status;
-	}
-	else if ( dispatch->hidden_output_bf16 != 0 )
-	{
-		exchange_status = K3RunnerVerifyCollectives(state, stream);
-		if ( exchange_status != SPARK_STATUS_OK )
-			return exchange_status;
-		if ( K3RunnerCopy(dispatch->hidden_output_bf16, b->hidden_bf16,
-			(uint64_t)rows * K3_HIDDEN * sizeof(uint16_t), stream) != cudaSuccess )
-			state->copy_failed = 1u;
-		if ( dispatch->residual_bank_output != 0 )
-		{
-			if ( dispatch->residual_bank_output_bytes < (uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW )
-				return SPARK_STATUS_INVALID_ARGUMENT;
-			if ( K3RunnerCopy(dispatch->residual_bank_output, b->attnres_bank_bf16,
-				(uint64_t)rows * SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW, stream) != cudaSuccess )
-				state->copy_failed = 1u;
-		}
 	}
 	exchange_status = K3RunnerTakeFailure(state);
 	if ( exchange_status != SPARK_STATUS_OK )
