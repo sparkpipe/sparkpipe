@@ -21,7 +21,10 @@ with open(os.path.join(state, "log"), "a") as handle:
 if command == "PROBE":
     memory = json.load(open(os.path.join(state, "memory.json")))
     started = os.path.exists(os.path.join(state, "started-" + host))
-    print(memory[host]["after" if started else "before"])
+    reclaimed = os.path.exists(os.path.join(state, "reclaimed-" + host))
+    print(memory[host]["after" if started else "reclaimed" if reclaimed and "reclaimed" in memory[host] else "before"])
+elif command.startswith("RECLAIM"):
+    open(os.path.join(state, "reclaimed-" + host), "w").close()
 elif command.startswith("START"):
     open(os.path.join(state, "started-" + host), "w").close()
 elif command.startswith("READY"):
@@ -38,7 +41,11 @@ def config(state, port):
         "memory_margin_bytes": 6 * GIB,
         "ready_seconds": 10, "api_seconds": 10, "drain_seconds": 1, "node_seconds": 10,
         "models": [{
-            "id": "big", "kv_label": "big_stage", "node_memory_bytes": 100 * GIB,
+            "id": "small", "kv_label": "small_stage", "node_memory_bytes": 30 * GIB, "node_reclaim": "RECLAIM small",
+            "node_start": "START small", "node_ready": "READY {run_id}", "node_stop": "STOP small",
+            "api_start": "true", "api_stop": "true", "health": f"http://127.0.0.1:{port}/small",
+        }, {
+            "id": "big", "kv_label": "big_stage", "node_memory_bytes": 100 * GIB, "node_reclaim": "RECLAIM big",
             "node_start": "START {rank}", "node_ready": "READY {run_id}", "node_stop": "STOP",
             "api_start": "true", "api_stop": "true", "health": f"http://127.0.0.1:{port}/health",
         }],
@@ -57,6 +64,7 @@ async def scenario(memory, expect_ok):
 
         app = web.Application()
         app.router.add_get("/health", health)
+        app.router.add_get("/small", lambda request: web.json_response({"connected_ranks": 0}))
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -77,7 +85,8 @@ async def scenario(memory, expect_ok):
         await swapper.cleanup(None)
         await runner.cleanup()
         started = [host for host, command in log if command.startswith("START")]
-        return swapper, started, expect_ok
+        reclaims = sorted({command for host, command in log if command.startswith("RECLAIM")})
+        return swapper, started, reclaims
 
 
 def main():
@@ -91,15 +100,21 @@ def main():
         print("ok   " + name)
 
     roomy = {"n0": {"before": 115 * GIB, "after": 13 * GIB}, "n1": {"before": 112 * GIB, "after": 9 * GIB}, "n2": {"before": 114 * GIB, "after": 12 * GIB}}
-    swapper, started, _ = asyncio.run(scenario(roomy, True))
+    swapper, started, reclaims = asyncio.run(scenario(roomy, True))
     check("a model whose projection plus margin fits every node starts", swapper.state == "idle" and swapper.active == "big" and sorted(started) == ["n0", "n1", "n2"])
+    check("cold arenas stay warm when every node already has room", reclaims == [])
     record = swapper.history[-1]
     check("the swap records the memory each node actually used", record["memory"]["used_gib_max"] == 103.0 and record["memory"]["used_gib_min"] == 102.0)
     check("the swap records the tightest node after the load", record["memory"]["tightest"] == "n1" and record["memory"]["available_gib_min"] == 9.0)
 
-    short = dict(roomy, n1={"before": 105 * GIB, "after": 1 * GIB})
-    swapper, started, _ = asyncio.run(scenario(short, False))
-    check("a node below projection plus margin refuses the start on every node", swapper.state == "failed" and started == [] and swapper.active is None)
+    reclaimable = dict(roomy, n1={"before": 80 * GIB, "reclaimed": 112 * GIB, "after": 9 * GIB})
+    swapper, started, reclaims = asyncio.run(scenario(reclaimable, True))
+    check("a short node first releases the other models' cold arenas, then the model starts",
+          swapper.state == "idle" and len(started) == 3 and reclaims == ["RECLAIM small"])
+    short = dict(roomy, n1={"before": 80 * GIB, "reclaimed": 105 * GIB, "after": 1 * GIB})
+    swapper, started, reclaims = asyncio.run(scenario(short, False))
+    check("a node still below projection plus margin after the release refuses the start on every node",
+          swapper.state == "failed" and started == [] and swapper.active is None and reclaims == ["RECLAIM small"])
     check("the refusal names the short node and its available memory", "n1 105.0" in swapper.error and "n0" not in swapper.error.split("GiB available:")[-1])
 
     exact = dict(roomy, n2={"before": 106 * GIB, "after": 4 * GIB})
@@ -116,12 +131,19 @@ def main():
     except SystemExit:
         check("a config without a memory margin is refused", True)
     broken = config("/tmp", 1)
-    del broken["models"][0]["node_memory_bytes"]
+    del broken["models"][1]["node_memory_bytes"]
     try:
         model_swap.Swapper(broken)
         check("a model without a memory projection is refused", False)
     except SystemExit:
         check("a model without a memory projection is refused", True)
+    broken = config("/tmp", 1)
+    del broken["models"][0]["node_reclaim"]
+    try:
+        model_swap.Swapper(broken)
+        check("a model without a cold arena release command is refused", False)
+    except SystemExit:
+        check("a model without a cold arena release command is refused", True)
     print(f"PASS {checks} checks")
     return 0
 

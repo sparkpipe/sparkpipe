@@ -35,7 +35,8 @@
   {
    "id": "glm-5.3",
    "kv_label": "glm52_stage",
-   "node_memory_bytes": 77309411328,
+   "node_memory_bytes": 68719476736,
+   "node_reclaim": "cd $HOME/glmfull-lane6/kvproof && $HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --reclaim-pack $(cut -d' ' -f1 packs/pack.sha256)",
    "node_start": "cd $HOME/glmfull-lane6/kvproof && mkdir -p logs && if [ -f residentd.log ] && [ ! -L residentd.log ]; then mv residentd.log logs/residentd-before-{run_id}.log; fi && ln -sfn logs/residentd-{run_id}.log residentd.log && systemctl --user reset-failed sp-glmfull-kv 2>/dev/null; systemd-run --user --unit=sp-glmfull-kv -p MemoryMax=20G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/glmfull-lane6/kvproof -E LD_LIBRARY_PATH=$HOME/glmfull-lane6/kvproof/lib -E SPARK_GLM52_SERVING_FLAT_RANKS=16 -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_ATTACH_LAZY=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=6 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=55834574848 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=8589934592 -E SPARK_GLM52_PIN_EXPERTS=1 -E SPARK_TP_WAIT_MODE=hardware -E SPARK_GLM52_CHAIN_MODE=graph -E SPARK_GLM52_PROJECTION_SPLIT=1 -E SPARK_GLM52_PREFILL_WAVE_ROWS=1024 bash -c 'SPARK_WEIGHTD_PACK_SHA256=$(cat packs/pack.sha256) exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index {rank} > logs/residentd-{run_id}.log 2>&1' >/dev/null",
    "node_ready": "cd $HOME/glmfull-lane6/kvproof; a=$(systemctl --user is-active sp-glmfull-kv); if [ \"$a\" = active ] && grep -q 'model_residentd ready' logs/residentd-{run_id}.log 2>/dev/null; then echo READY; elif [ \"$a\" = active ] || [ \"$a\" = activating ]; then echo WAIT; else echo DEAD; fi",
    "node_stop": "systemctl --user stop sp-glmfull-kv 2>/dev/null; systemctl --user reset-failed sp-glmfull-kv 2>/dev/null; ! systemctl --user is-active -q sp-glmfull-kv",
@@ -46,7 +47,8 @@
   {
    "id": "glm-5.3-flash",
    "kv_label": "glm5_next_stage",
-   "node_memory_bytes": 38654705664,
+   "node_memory_bytes": 32212254720,
+   "node_reclaim": "cd $HOME/flash-tip/root && $HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --reclaim-pack packs/*.sp",
    "node_start": "cd $HOME/flash-tip/root && mkdir -p logs && if [ -f residentd.log ] && [ ! -L residentd.log ]; then mv residentd.log logs/residentd-before-{run_id}.log; fi && ln -sfn logs/residentd-{run_id}.log residentd.log && systemctl --user reset-failed sp-flash-kv 2>/dev/null; systemd-run --user --unit=sp-flash-kv -p MemoryMax=24G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/flash-tip/root -E LD_LIBRARY_PATH=$HOME/flash-tip/root/lib -E CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=34359738368 bash -c 'exec ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index {rank} > logs/residentd-{run_id}.log 2>&1' >/dev/null",
    "node_ready": "cd $HOME/flash-tip/root; a=$(systemctl --user is-active sp-flash-kv); if [ \"$a\" = active ] && grep -q 'model_residentd ready' logs/residentd-{run_id}.log 2>/dev/null; then echo READY; elif [ \"$a\" = active ] || [ \"$a\" = activating ]; then echo WAIT; else echo DEAD; fi",
    "node_stop": "systemctl --user stop sp-flash-kv 2>/dev/null; systemctl --user reset-failed sp-flash-kv 2>/dev/null; ! systemctl --user is-active -q sp-flash-kv",
@@ -57,7 +59,8 @@
   {
    "id": "kimi-k3",
    "kv_label": "k3_stage",
-   "node_memory_bytes": 111669149696,
+   "node_memory_bytes": 105226698752,
+   "node_reclaim": "cd $HOME/k3-lanes/lane8/root && $HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --reclaim-pack $(cut -d' ' -f1 packs/pack.sha256)",
    "node_start": "cd $HOME/k3-lanes/lane8/root && mkdir -p logs && if [ -f residentd.log ] && [ ! -L residentd.log ]; then mv residentd.log logs/residentd-before-{run_id}.log; fi && ln -sfn logs/residentd-{run_id}.log residentd.log && systemctl --user reset-failed sp-k3-rd8 2>/dev/null; systemd-run --user --unit=sp-k3-rd8 -p MemoryMax=16G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/k3-lanes/lane8/root -E LD_LIBRARY_PATH=$HOME/k3-lanes/lane8/root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=8 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=99568941440 -E SPARK_K3_STATE_BUDGET_BYTES=5368709120 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index {rank} > logs/residentd-{run_id}.log 2>&1' >/dev/null",
    "node_ready": "cd $HOME/k3-lanes/lane8/root; a=$(systemctl --user is-active sp-k3-rd8); if [ \"$a\" = active ] && grep -q 'model_residentd ready' logs/residentd-{run_id}.log 2>/dev/null; then echo READY; elif [ \"$a\" = active ] || [ \"$a\" = activating ]; then echo WAIT; else echo DEAD; fi",
    "node_stop": "systemctl --user stop sp-k3-rd8 2>/dev/null; systemctl --user reset-failed sp-k3-rd8 2>/dev/null; ! systemctl --user is-active -q sp-k3-rd8",

@@ -39,7 +39,7 @@ class Swapper:
         self.node_seconds = float(config.get("node_seconds", 240))
         self.models = {}
         for spec in config["models"]:
-            require(spec, ("id", "kv_label", "node_memory_bytes", "node_start", "node_ready", "node_stop", "api_start", "api_stop", "health"), f"model {spec.get('id')!r}")
+            require(spec, ("id", "kv_label", "node_memory_bytes", "node_reclaim", "node_start", "node_ready", "node_stop", "api_start", "api_stop", "health"), f"model {spec.get('id')!r}")
             self.models[spec["id"]] = spec
         self.active = None
         self.wanted = None
@@ -108,6 +108,11 @@ class Swapper:
     async def admit(self, model):
         before = await self.available()
         need = int(model["node_memory_bytes"]) + self.memory_margin
+        if any(value < need for value in before):
+            for other in self.models.values():
+                if other["id"] != model["id"]:
+                    self.check(await self.fan(other["node_reclaim"], 120, {}), f"{other['id']} cold arena release")
+            before = await self.available()
         short = [f"{self.nodes[rank]} {value / 2**30:.1f}" for rank, value in enumerate(before) if value < need]
         if short:
             raise SwapError(f"{model['id']} needs {need / 2**30:.1f} GiB available per node "
