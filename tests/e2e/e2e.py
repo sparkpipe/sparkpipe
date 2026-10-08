@@ -160,13 +160,26 @@ def stream_collect(stream):
     return chunks, tokens, finish
 
 
+def text_response(body):
+    data = json.loads(body)
+    for choice in data.get("choices", []):
+        text = choice.get("text")
+        if text is None:
+            text = choice.get("message", {}).get("content")
+        if text is None:
+            text = choice.get("delta", {}).get("content")
+        if text is not None:
+            return text
+    raise E2EFail(f"no text in response: {body[:200]}")
+
+
 def response_tokens(body):
     data = json.loads(body)
     finish = None
     for choice in data.get("choices", []):
         if choice.get("finish_reason"):
             finish = choice["finish_reason"]
-    if isinstance(data.get("tokens"), list) and data["tokens"]:
+    if isinstance(data.get("tokens"), list):
         return data["tokens"], finish or data.get("finish_reason")
     for choice in data.get("choices", []):
         if "token_ids" in choice:
@@ -225,6 +238,7 @@ def measurement_for(evidence, tokens, deadline=30.0):
 
 
 TESTS = {}
+MODELS_CONFIG = {}
 
 
 def test(tier, name):
@@ -684,6 +698,386 @@ def t_spec_payoff(model, spec, api, evidence, receipt):
     receipt["ratio"] = round(rate_on / rate_off, 3)
 
 
+@test("A", "context_boundaries")
+def t_context_boundaries(model, spec, api, evidence, receipt):
+    limit = spec.get("long_context", 131072)
+    budget = 8
+    fit = limit - budget
+    prompt = lcg_tokens(fit, 901)
+    status, body = api.request(prompt, budget)
+    require(status == 200, f"exact-fit prompt ({fit}+{budget}) returned {status}",
+            body[:300])
+    tokens, finish = response_tokens(body)
+    require(finish == "length" and len(tokens) == budget,
+            f"exact-fit finish {finish} with {len(tokens)} tokens")
+    over = lcg_tokens(fit + 1, 902)
+    status, body = api.request(over, budget)
+    require(status == 400, f"one-over-limit returned {status}", body[:200])
+    data = json.loads(body)
+    code = (data.get("error") or {}).get("code")
+    require(code in ("context_length_exceeded", "invalid_request_error"),
+            f"boundary error code {code}", body[:200])
+    receipt["fit"] = fit
+    receipt["over_rejected"] = code
+
+
+@test("A", "edge_shapes")
+def t_edge_shapes(model, spec, api, evidence, receipt):
+    status, body = api.request(lcg_tokens(32, 911), 1)
+    require(status == 200, f"max_tokens=1 returned {status}", body[:200])
+    tokens, finish = response_tokens(body)
+    require(len(tokens) == 1 and finish == "length",
+            f"max_tokens=1 gave {len(tokens)} tokens, finish {finish}")
+    status, body = api.request(lcg_tokens(1, 912), 4)
+    require(status == 200, f"single-token prompt returned {status}", body[:200])
+    tokens, _ = response_tokens(body)
+    require(len(tokens) == 4, "single-token prompt mis-sized output")
+    connection = http.client.HTTPConnection(api.host, api.port, timeout=30)
+    both = {"prompt": "hello", "prompt_token_ids": [1, 2, 3],
+            "max_tokens": 4, "temperature": 0.0}
+    connection.request("POST", completion_path(api.chat),
+                       json.dumps(both), {"Content-Type": "application/json"})
+    response = connection.getresponse()
+    code_both = response.status
+    response.read()
+    connection.close()
+    require(code_both == 400, f"prompt+prompt_token_ids returned {code_both}")
+    empty = {"prompt_token_ids": [], "max_tokens": 4, "temperature": 0.0}
+    status, body = api.post(empty)
+    require(status == 400, f"empty prompt returned {status}", body[:200])
+    status, body = api.get("/health")
+    require(status == 200, "engine unhealthy after edge shapes")
+
+
+@test("A", "stop_token_edges")
+def t_stop_token_edges(model, spec, api, evidence, receipt):
+    prompt = lcg_tokens(32, 921)
+    _, plain = api.request(prompt, 12)
+    full, _ = response_tokens(plain)
+    status, body = api.request(prompt, 12, stop_token_ids=[full[0]])
+    require(status == 200, body[:200])
+    tokens, finish = response_tokens(body)
+    require(finish == "stop",
+            f"stop-at-first finish {finish} with {len(tokens)} tokens")
+    require(tokens in ([], [full[0]]),
+            f"stop-at-first emitted unexpected tokens {tokens}")
+    status, body = api.request(prompt, 12, stop_token_ids=[full[6]])
+    require(status == 200, body[:200])
+    tokens, finish = response_tokens(body)
+    require(finish == "stop", f"mid-stop finish {finish}")
+    require(tokens[:6] == full[:6] and len(tokens) in (6, 7),
+            "early stop changed the tokens before the stop position",
+            f"{tokens} vs {full}")
+    status, body = api.request(prompt, 12, stop_token_ids=[999999])
+    require(status == 200, body[:200])
+    tokens, finish = response_tokens(body)
+    require(finish == "length" and tokens == full,
+            "never-hit stop changed the stream")
+
+
+@test("A", "duplicate_concurrent")
+def t_duplicate_concurrent(model, spec, api, evidence, receipt):
+    prompt = lcg_tokens(128, 931)
+    results = [None] * 4
+
+    def run(index):
+        try:
+            results[index] = api.request(prompt, 24)
+        except Exception as error:
+            results[index] = (0, f"transport: {error}")
+
+    threads = []
+    for index in range(4):
+        thread = threading.Thread(target=run, args=(index,))
+        thread.start()
+        threads.append(thread)
+        time.sleep(0.05)
+    for thread in threads:
+        thread.join()
+    streams = []
+    for index, (status, body) in enumerate(results):
+        require(status == 200, f"duplicate {index} returned {status}",
+                str(body)[:200])
+        tokens, _ = response_tokens(body)
+        streams.append(tokens)
+    for index in range(1, 4):
+        require(streams[index] == streams[0],
+                f"concurrent duplicate {index} diverged from duplicate 0")
+    if evidence.available():
+        rows = evidence.measurements(prompt_sha(prompt))
+        ids = [row.get("request_id") for row in rows[-4:]]
+        require(len(set(ids)) == 4,
+                f"concurrent duplicates reused request ids: {ids}")
+    receipt["identical_streams"] = 4
+
+
+@test("A", "batch_invariance")
+def t_batch_invariance(model, spec, api, evidence, receipt):
+    probe = lcg_tokens(96, 941)
+    _, solo = api.request(probe, 48)
+    reference, _ = response_tokens(solo)
+    results = [None] * 8
+    noise = [lcg_tokens(24 + 16 * i, 950 + i) for i in range(8)]
+
+    def run(index):
+        try:
+            results[index] = api.request(
+                probe if index == 0 else noise[index], 48)
+        except Exception as error:
+            results[index] = (0, f"transport: {error}")
+
+    threads = []
+    for index in range(8):
+        thread = threading.Thread(target=run, args=(index,))
+        thread.start()
+        threads.append(thread)
+        time.sleep(0.05)
+    for thread in threads:
+        thread.join()
+    status, body = results[0]
+    require(status == 200, f"probe under load returned {status}",
+            str(body)[:200])
+    loaded, _ = response_tokens(body)
+    require(loaded == reference,
+            "greedy output changed under concurrent load (batch invariance)")
+    _, again = api.request(probe, 48)
+    after, _ = response_tokens(again)
+    require(after == reference, "greedy output drifted after load")
+    receipt["reference_tokens"] = len(reference)
+
+
+@test("A", "cancel_storm")
+def t_cancel_storm(model, spec, api, evidence, receipt):
+    streams = []
+    references = []
+    survivors = [None] * 8
+    prompts = [lcg_tokens(48, 960 + i) for i in range(16)]
+    for index in range(16):
+        _, plain = api.request(prompts[index], 24)
+        tokens, _ = response_tokens(plain)
+        references.append(tokens)
+
+    def keep(index):
+        try:
+            stream = Stream(*api.stream(prompts[index], 24))
+            _, tokens, _ = stream_collect(stream)
+            survivors[index] = tokens
+            stream.close()
+        except Exception as error:
+            survivors[index] = f"died: {error}"
+
+    handles = []
+    threads = []
+    for index in range(16):
+        if index < 8:
+            thread = threading.Thread(target=keep, args=(index,))
+            thread.start()
+            threads.append(thread)
+            time.sleep(0.05)
+        else:
+            stream = Stream(*api.stream(prompts[index], 512))
+            handles.append(stream)
+    got = 0
+    for stream in handles:
+        try:
+            for event in stream.events():
+                if json.loads(event).get("tokens"):
+                    got += 1
+                    break
+        except Exception:
+            pass
+    for stream in handles:
+        stream.close()
+    require(got >= 1, "no cancelled stream produced a token before abort")
+    for thread in threads:
+        thread.join()
+    for index in range(8):
+        require(survivors[index] == references[index],
+                f"survivor {index} diverged while 8 peers were cancelled: "
+                f"{survivors[index]}")
+    status, body = api.get("/health")
+    require(status == 200, "engine unhealthy after cancel storm", body[:200])
+    prompt = lcg_tokens(32, 979)
+    status, body = api.request(prompt, 8)
+    require(status == 200, "post-storm request failed", body[:200])
+    receipt["cancelled"] = 8
+    receipt["survivors"] = 8
+
+
+@test("A", "error_recovery")
+def t_error_recovery(model, spec, api, evidence, receipt):
+    limit = spec.get("long_context", 131072)
+    steps = []
+    oversized = lcg_tokens(limit + 64, 981)
+    status, _ = api.request(oversized, 4)
+    steps.append(("oversized", status))
+    prompt = lcg_tokens(24, 982)
+    status, body = api.request(prompt, 6)
+    require(status == 200, f"request after oversized error failed: {status}",
+            body[:200])
+    steps.append(("recovery_1", status))
+    status, _ = api.request(lcg_tokens(16, 983), 4, temperature=-1.0)
+    steps.append(("bad_temperature", status))
+    status, body = api.request(prompt, 6)
+    require(status == 200, "request after sampling error failed", body[:200])
+    tokens, _ = response_tokens(body)
+    require(len(tokens) == 6, "recovery completion mis-sized")
+    steps.append(("recovery_2", status))
+    connection = http.client.HTTPConnection(api.host, api.port, timeout=30)
+    connection.request("POST", completion_path(api.chat), "{broken",
+                       {"Content-Type": "application/json"})
+    response = connection.getresponse()
+    response.read()
+    connection.close()
+    steps.append(("malformed", response.status))
+    status, body = api.request(prompt, 6)
+    require(status == 200, "request after malformed body failed", body[:200])
+    steps.append(("recovery_3", status))
+    status, body = api.request(lcg_tokens(24, 984), 64, deadline_ms=1)
+    steps.append(("deadline", status))
+    if status == 200:
+        if evidence.available():
+            row = measurement_for(evidence, lcg_tokens(24, 984))
+            require(row.get("deadline_expired") in (0, 1),
+                    f"deadline_expired field {row.get('deadline_expired')}")
+    status, body = api.request(prompt, 6)
+    require(status == 200, "request after deadline test failed", body[:200])
+    steps.append(("recovery_4", status))
+    status, body = api.get("/health")
+    require(status == 200, "engine unhealthy at end of error sequence")
+    receipt["sequence"] = steps
+
+
+@test("A", "churn_stability")
+def t_churn_stability(model, spec, api, evidence, receipt):
+    status, body = api.get("/health")
+    baseline = json.loads(body).get("live_requests")
+    rounds = 120
+    lengths = []
+    prompt_pool = [lcg_tokens(20 + 3 * i, 1000 + i) for i in range(24)]
+    t0 = time.time()
+    for round_index in range(rounds):
+        prompt = prompt_pool[round_index % len(prompt_pool)]
+        status, body = api.request(prompt, 6)
+        require(status == 200,
+                f"churn request {round_index} returned {status}",
+                str(body)[:200])
+        tokens, _ = response_tokens(body)
+        require(len(tokens) == 6,
+                f"churn request {round_index} emitted {len(tokens)} tokens")
+        lengths.append(len(tokens))
+    wall = time.time() - t0
+    status, body = api.get("/health")
+    data = json.loads(body)
+    require(status == 200, "engine unhealthy after churn", body[:200])
+    if baseline is not None and data.get("live_requests") is not None:
+        require(data["live_requests"] <= baseline,
+                f"live_requests leaked: {baseline} -> {data['live_requests']}")
+    if evidence.available():
+        ids = [row.get("request_id")
+               for prompt in prompt_pool
+               for row in evidence.measurements(prompt_sha(prompt))]
+        recent = ids[-(rounds + 8):]
+        require(len(recent) == len(set(recent)),
+                "request ids repeated across churn (slot or id reuse)")
+    receipt["requests"] = rounds
+    receipt["wall_s"] = round(wall, 2)
+    receipt["served"] = data.get("served")
+
+
+@test("A", "utf8_stream_integrity")
+def t_utf8_stream_integrity(model, spec, api, evidence, receipt):
+    if not spec.get("text_supported"):
+        raise E2EFail("SKIPPED: no text_supported in the model config")
+    words = ["héllo", "日本語", "🎉", "wörld", "中文", "τthesis",
+             "naïve", "🌍", "straße", "emoji"]
+    prompt = " ".join(words * 3)
+    status, body = api.request_text(prompt, 12)
+    require(status == 200, f"text request returned {status}", body[:300])
+    plain_text = text_response(body)
+    body = {"prompt": prompt, "max_tokens": 12, "temperature": 0.0,
+            "stream": True}
+    stream = Stream(*api.open_stream(body))
+    try:
+        pieces = []
+        for event in stream.events():
+            if event == "[DONE]":
+                break
+            data = json.loads(event)
+            for choice in data.get("choices", []):
+                piece = choice.get("text")
+                if piece is None:
+                    piece = choice.get("delta", {}).get("content")
+                if piece:
+                    pieces.append(piece)
+    finally:
+        stream.close()
+    streamed_text = "".join(pieces)
+    require(streamed_text == plain_text,
+            "streamed text differs from non-stream text",
+            f"{streamed_text[:60]!r} != {plain_text[:60]!r}")
+    try:
+        streamed_text.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise E2EFail(f"streamed text is not valid unicode: {error}")
+    receipt["chars"] = len(streamed_text)
+
+
+@test("A", "model_isolation")
+def t_model_isolation(model, spec, api, evidence, receipt):
+    other_name = spec.get("isolation_peer")
+    if not other_name:
+        raise E2EFail("SKIPPED: no isolation_peer in the model config")
+    other_spec = MODELS_CONFIG.get(other_name)
+    if not other_spec:
+        raise E2EFail(f"SKIPPED: peer model {other_name} not in config")
+    peer = Api(other_spec)
+    prompt = lcg_tokens(64, 991)
+    outcomes = [None] * 2
+
+    def hit(index, target):
+        try:
+            outcomes[index] = target.request(prompt, 16)
+        except Exception as error:
+            outcomes[index] = (0, f"transport: {error}")
+
+    threads = [threading.Thread(target=hit, args=(0, api)),
+               threading.Thread(target=hit, args=(1, peer))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    for index, (status, body) in enumerate(outcomes):
+        require(status == 200, f"isolation request {index} returned {status}",
+                str(body)[:200])
+    if evidence.available():
+        rows = evidence.measurements(prompt_sha(prompt))
+        for row in rows[-2:]:
+            require(row.get("adapter_id"),
+                    "no adapter identity in evidence for isolation run")
+    receipt["peer"] = other_name
+
+
+@test("A", "evidence_integrity")
+def t_evidence_integrity(model, spec, api, evidence, receipt):
+    require(evidence.available(), "evidence_integrity needs api_log evidence")
+    rows = evidence.measurements()
+    require(len(rows) >= 4, f"only {len(rows)} measurement lines found")
+    ids = [row.get("request_id") for row in rows]
+    require(all(isinstance(i, int) and i > 0 for i in ids),
+            f"non-numeric request ids: {ids[:6]}")
+    require(len(ids) == len(set(ids)), "duplicate request ids in evidence")
+    for row in rows:
+        require("prompt_sha256" in row and len(row["prompt_sha256"]) == 64,
+                f"malformed prompt sha: {row.get('prompt_sha256')}")
+        require(row.get("prompt_tokens", 0) >= row.get("cached_prompt_tokens", 0),
+                f"cached exceeds prompt: {row}")
+        require(row.get("finish_reason") in ("length", "stop", "error"),
+                f"unknown finish_reason {row.get('finish_reason')}")
+    receipt["measurement_lines"] = len(rows)
+    receipt["boot_pids"] = sorted({row.get("boot_pid") for row in rows})
+
+
 class FakeApiHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -716,6 +1110,19 @@ class FakeApiHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         tokens = body.get("prompt_token_ids")
+        text = body.get("prompt")
+        if text is not None and tokens is not None:
+            self._json(400, {"error": {
+                "message": "prompt and prompt_token_ids are exclusive"}})
+            return
+        if text is not None:
+            words = text.split(" ")
+            tokens = []
+            for word in words:
+                tokens.append(sum(word.encode()) % 90000 + 1000)
+            body = dict(body)
+            body["prompt_token_ids"] = tokens
+            body["fake_words"] = words
         if not tokens:
             self._json(400, {"error": {
                 "message": "prompt_token_ids required"}})
@@ -724,7 +1131,10 @@ class FakeApiHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": {"message": "bad temperature"}})
             return
         if len(tokens) + body.get("max_tokens", 16) > 65536:
-            self._json(400, {"error": {"message": "prompt too long"}})
+            self._json(400, {"error": {
+                "message": "the prompt exceeds this deployment's positions",
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded"}})
             return
         out = self.server.engine.complete(body)
         if body.get("stream"):
@@ -746,8 +1156,10 @@ class FakeApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")
         self.end_headers()
-        for token in out["tokens"]:
-            chunk = {"choices": [{"index": 0, "text": "x", "finish_reason": None}],
+        pieces = out.get("fake_pieces") or ["x"] * len(out["tokens"])
+        for token, piece in zip(out["tokens"], pieces):
+            chunk = {"choices": [{"index": 0, "text": piece + " ",
+                                  "finish_reason": None}],
                      "tokens": [token]}
             self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
         final = {"choices": [{"index": 0, "text": "",
@@ -762,6 +1174,9 @@ class FakeEngine:
         self.seen = []
         self.counter = 0
         self.live = 0
+
+    WORDS = ["héllo", "日本語", "🎉", "wörld", "中文",
+             "τthesis", "naïve", "🌍", "straße", "emoji"]
 
     def complete(self, body):
         tokens = body["prompt_token_ids"]
@@ -798,9 +1213,12 @@ class FakeEngine:
                "finish_reason": finish, "tokens": []}
         with open(self.log_path, "a") as handle:
             handle.write(json.dumps(row) + "\n")
-        result = {"choices": [{"index": 0, "text": "x",
+        words = [self.WORDS[token % len(self.WORDS)] for token in stream]
+        text_out = "".join(word + " " for word in words)
+        result = {"choices": [{"index": 0, "text": text_out,
                                "finish_reason": finish}],
-                  "tokens": stream, "finish_reason": finish}
+                  "tokens": stream, "finish_reason": finish,
+                  "fake_pieces": words}
         if body.get("logprobs"):
             result["logprobs"] = [-0.5 - 0.01 * i for i in range(len(stream))]
         return result
@@ -817,10 +1235,15 @@ def selftest():
         server.engine = FakeEngine(log_path)
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        config = {"models": {"fake": {
-            "host": "127.0.0.1", "port": port, "chat": False,
-            "api_log": log_path, "ranks": 16, "long_context": 65536,
-            "logprobs_supported": True}}}
+        config = {"models": {
+            "fake": {
+                "host": "127.0.0.1", "port": port, "chat": False,
+                "api_log": log_path, "ranks": 16, "long_context": 65536,
+                "logprobs_supported": True, "text_supported": True,
+                "isolation_peer": "fake_peer"},
+            "fake_peer": {
+                "host": "127.0.0.1", "port": port, "chat": False,
+                "api_log": log_path, "ranks": 16, "long_context": 65536}}}
         try:
             failures = run_selected(config, "fake", tiers=("A",),
                                     receipt_dir=None, quiet=False)
@@ -831,6 +1254,9 @@ def selftest():
 
 def run_selected(config, model, tiers, receipt_dir, quiet):
     spec = config["models"][model]
+    global MODELS_CONFIG
+    MODELS_CONFIG.clear()
+    MODELS_CONFIG.update(config["models"])
     api = Api(spec)
     evidence = Evidence(config, model)
     failures = 0

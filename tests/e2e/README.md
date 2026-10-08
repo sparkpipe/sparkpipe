@@ -65,6 +65,49 @@ See `e2e_config.example.json`. Per model: `host`, `port`, `chat`
 `logprobs_supported`. Fleet blocks: `rotation` (host + tool path +
 model slot names) and `speculation` (spec-on/spec-off endpoints).
 
+## Known-failure-class coverage
+
+Each Tier A test beyond the core contract guards a failure class that
+has shipped in public inference stacks (and in this fleet's own ledger):
+
+- `context_boundaries` — off-by-one at the position limit: exact-fit
+  must serve, one-over must name `context_length_exceeded` (the
+  crash-or-garbage-at-exactly-N class).
+- `edge_shapes` — degenerate shapes: `max_tokens=1`, single-token
+  prompt, `prompt`+`prompt_token_ids` together rejected, empty prompt
+  rejected (hang-or-garbage class).
+- `stop_token_edges` — stop token as the first generated token, mid-run
+  stop (tokens before the stop must be an exact prefix of the unstopped
+  run), never-hit stop (finish `length`); the missed-boundary-check and
+  stop-changes-history classes.
+- `duplicate_concurrent` — the same prompt submitted four times
+  concurrently: identical greedy outputs and four distinct request ids
+  (prefix-cache insert races corrupting concurrent duplicates).
+- `batch_invariance` — one greedy probe solo, under 8-way concurrent
+  load, and after the load: byte-identical (batched-numerics changing
+  outputs by occupancy).
+- `cancel_storm` — 8 of 16 streams aborted after their first token;
+  survivors must equal their references and the engine must stay
+  healthy (cancellation tearing shared state).
+- `error_recovery` — oversized, invalid-temperature, malformed-body and
+  1 ms-deadline requests each followed by a healthy completion (the
+  one-bad-request-wedges-the-engine class; this fleet's completion-4xx
+  latch was exactly this).
+- `churn_stability` — 120 sequential requests over a rotating pool:
+  correct lengths, `live_requests` returns to baseline, evidence
+  request ids never repeat (slow slot/id leaks that benchmarks miss).
+- `utf8_stream_integrity` — multibyte-heavy text: the concatenation of
+  stream pieces must equal the non-stream text and be valid UTF-8
+  (chunk-boundary codepoint splits/drops). Config-gated on
+  `text_supported`.
+- `model_isolation` — the same prompt to two configured endpoints
+  simultaneously; evidence adapter identities must match their
+  endpoints (cross-model response mixing under load). Config-gated on
+  `isolation_peer`.
+- `evidence_integrity` — every measurement line: unique increasing
+  request ids, 64-hex prompt digests, cached <= prompt, known
+  finish_reason values (silent drop / malformed evidence class).
+
 ## Prompt fixtures
 
 Tests address the engine with `prompt_token_ids` arrays (the API accepts
