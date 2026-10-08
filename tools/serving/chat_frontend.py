@@ -369,7 +369,9 @@ class OutputParser:
         self.call = model.tool_calls
         self.types = tool_parameter_types(tools)
         self.stops = [stop for stop in stops if stop] + model.end_markers
+        self.end_markers = model.end_markers
         self.drops = model.content_markers
+        self.ended = False
         self.state = "reasoning" if reasoning_open else "content"
         self.buffer = ""
         self.calls = 0
@@ -488,6 +490,7 @@ class OutputParser:
                 if marker != self.call["start"]:
                     self.buffer = ""
                     self.stopped = True
+                    self.ended = marker in self.end_markers
                     break
                 self.buffer = self.buffer[index + len(marker):]
                 self.state = "call"
@@ -712,7 +715,7 @@ class Frontend:
             usage = chunk.get("usage") or usage
             for event in parser.feed("".join(text)):
                 yield event
-            if parser.stopped:
+            if parser.stopped and not parser.ended:
                 finish = "stop"
                 break
         for event in parser.finish():

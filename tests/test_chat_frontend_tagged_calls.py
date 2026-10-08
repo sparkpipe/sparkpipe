@@ -66,7 +66,7 @@ def main():
             check(calls[0]["function"]["name"] == "write_file" and first == {"path": 'a "quoted" & raw/path.txt', "lines": 12, "overwrite": True},
                   "typed arguments decode: string kept raw, number and boolean as JSON" + name)
             check(second == {"path": "b.txt", "lines": 3}, "a JSON object argument merges into the call" + name)
-        check(parser.stopped and "never shown" not in joined["content"], "the message end marker stops the reply" + name)
+        check(parser.stopped and parser.ended and "never shown" not in joined["content"], "the message end marker ends the reply and marks it as the model's own end" + name)
 
     plain = O + "response" + S + "Paris" + C + "response" + S + C + "message" + S
     joined, calls, _ = run(plain, 2, reasoning_open=False)
