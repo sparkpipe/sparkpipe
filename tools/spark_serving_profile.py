@@ -49,33 +49,54 @@ PROFILES = {
 }
 
 
-def derive(sequences: int, positions: int = 512, recurrent_page_bytes: int = 0, backing_bytes: int = 0) -> dict:
+KV_BACKING_IN_FLIGHT_PAGES = 2
+
+
+def checkpoint_slots(sequences: int, positions: int, checkpoint_tokens: int) -> int:
+    return sequences * ((positions + checkpoint_tokens - 1) // checkpoint_tokens + 1)
+
+
+def derive(sequences: int, positions: int = 512, recurrent_page_bytes: int = 0, backing_bytes: int = 0,
+           rows: int = PROFILE_ROW_CAPACITY, checkpoint_tokens: int = 0, page_bytes: int = 0) -> dict:
     if sequences < 1 or positions < 1:
         raise ValueError("sequences and positions must be positive")
+    if rows < sequences or rows > min(MESH_MAX_BATCH_ROWS, FIRMWARE_MAX_INPUT_ROWS):
+        raise ValueError(f"a {rows}-row wave must hold every one of {sequences} sequences and fit the "
+                         f"{min(MESH_MAX_BATCH_ROWS, FIRMWARE_MAX_INPUT_ROWS)}-row mesh batch")
     pages_per_sequence = (positions + KV_PAGE_TOKENS - 1) // KV_PAGE_TOKENS
     resident_pages = sequences * pages_per_sequence
     kv_pages = KV_POOL_PAGES_PER_RESIDENT_PAGE * resident_pages
-    if recurrent_page_bytes:
+    physical_pages = kv_pages
+    backing = kv_pages * KV_PAGE_BYTES * KV_BACKING_HEADROOM
+    if checkpoint_tokens:
+        if not recurrent_page_bytes or not page_bytes or checkpoint_tokens % KV_PAGE_TOKENS:
+            raise ValueError("a checkpoint stride needs the recurrent record bytes, the KV page bytes and a whole number of pages")
+        state_bytes = checkpoint_slots(sequences, positions, checkpoint_tokens) * recurrent_page_bytes
+        spill_pages = (backing_bytes - state_bytes) // page_bytes - KV_BACKING_IN_FLIGHT_PAGES if backing_bytes > state_bytes else -1
+        if spill_pages < 0:
+            raise ValueError(f"a {backing_bytes}-byte KV backing budget cannot hold the {state_bytes} bytes of recurrent "
+                             f"checkpoints that {sequences} sequences of {positions} positions keep")
+        physical_pages = resident_pages
+        kv_pages = resident_pages + min(spill_pages, kv_pages - resident_pages)
+        backing = backing_bytes
+    elif recurrent_page_bytes:
         state_pages = (backing_bytes - 2 * KV_PAGE_BYTES) // recurrent_page_bytes if backing_bytes > 2 * KV_PAGE_BYTES else 0
         if state_pages < resident_pages:
             raise ValueError(f"a {backing_bytes}-byte KV backing budget holds the {recurrent_page_bytes}-byte recurrent "
                              f"record of {state_pages} pages; the resident sequences need {resident_pages}")
         kv_pages = min(kv_pages, state_pages)
-    row_capacity = min(PROFILE_ROW_CAPACITY, MESH_MAX_BATCH_ROWS, FIRMWARE_MAX_INPUT_ROWS)
+        physical_pages = kv_pages
+        backing = kv_pages * KV_PAGE_BYTES * KV_BACKING_HEADROOM
     return {
         "max_active_sequences": sequences,
         "resident_sequence_capacity": sequences,
         "max_inflight_submissions": min(4, sequences),
-        # Validator invariant: max_input_rows >= sequences; prefill waves
-        # ride the mesh, so the mesh batch cap is the ceiling. The
-        # multi-chunk prefill continuation bug (#1210) forces 1 until the
-        # engine fix lands; derived, not hand-pinned.
-        "max_input_rows": 1 if sequences == 1 else min(sequences, row_capacity),
+        "max_input_rows": rows,
         "kv_logical_page_capacity": kv_pages,
-        "kv_physical_page_capacity": kv_pages,
+        "kv_physical_page_capacity": physical_pages,
         "kv_partition": "/",
-        "kv_backing_maximum_bytes": kv_pages * KV_PAGE_BYTES * KV_BACKING_HEADROOM,
-        "execution_row_capacity": row_capacity,
+        "kv_backing_maximum_bytes": backing,
+        "execution_row_capacity": rows,
         "max_sequence_positions": positions,
     }
 
@@ -91,7 +112,8 @@ def verify(runtime_limits: dict, stage_config: dict, nodes_backing=None) -> list
     """Return a list of drift findings ([] = consistent)."""
     positions = stage_config.get("max_sequence_positions") or 512
     try:
-        want = derive(runtime_limits.get("max_active_sequences", 0), positions)
+        want = derive(runtime_limits.get("max_active_sequences", 0), positions,
+                      rows=runtime_limits.get("max_input_rows", PROFILE_ROW_CAPACITY))
     except ValueError as error:
         return [f"cannot derive a consistent profile: {error}"]
     got = dict(runtime_limits)

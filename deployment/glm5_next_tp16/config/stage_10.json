@@ -3,7 +3,7 @@
  "model_revision": "84c6a6aa9497188e15a635ba793b0f95a79b1033",
  "expert_weight_codec": "fp8",
  "stage_pack_path": "packs/glm53flash.fp8.tp16.ranka.sp",
- "max_sequence_positions": 32768,
+ "max_sequence_positions": 262144,
  "execution_row_capacity": 1024,
  "decode_split_context_threshold": 64,
  "tp_degree": 16,
