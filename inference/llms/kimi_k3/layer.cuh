@@ -4,6 +4,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
+#include "inference/kernels/stream_gemm.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/cell_mma.cuh"
 #include "inference/kernels/topk_warp.cuh"
@@ -247,6 +248,13 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return(status);
 	}
+	if constexpr ( LmStreamWeight<Format>::kSupported )
+		if ( accumulate == 0 )
+		{
+			int32_t status = LmStreamGemmDense<Format>(weight,LmScaleTensorNone(),source,destination,(float *)0,rows,input_dimension,output_dimension,0u,0u,multiprocessors,stream);
+			if ( status != LM_LAUNCH_ERR_SHAPE )
+				return(status);
+		}
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
@@ -611,6 +619,9 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 		const uint8_t *slice = (const uint8_t *)b->router_weight + (uint64_t)b->tp_rank * experts * K3_HIDDEN * sizeof(uint16_t);
 		if ( rows <= LM_SKINNY_ROWS_WIDE )
 			return(K3SkinnyRows(slice,b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,stream));
+		status = LmStreamGemmDense<LmBf16Format>(slice,LmScaleTensorNone(),b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,0u,0u,multiprocessors,stream);
+		if ( status != LM_LAUNCH_ERR_SHAPE )
+			return(status);
 		memset(&gemm,0,sizeof(gemm));
 		gemm.scale_a = LmScaleTensorNone();
 		gemm.scale_b = LmScaleTensorNone();
