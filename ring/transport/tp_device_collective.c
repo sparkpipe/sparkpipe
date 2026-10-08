@@ -72,6 +72,12 @@ _Static_assert(offsetof(SparkTpMeshRoundControl,cancel_expected) ==
 _Static_assert(offsetof(SparkTpMeshRoundControl,shipped_cell) ==
     SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL * sizeof(uint64_t),
     "shipped cell word");
+_Static_assert(offsetof(SparkTpMeshRoundControl,cancel_cell) ==
+    SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_CELL * sizeof(uint64_t),
+    "cancel cell word");
+_Static_assert(offsetof(SparkTpMeshRoundControl,first_arrival_ns) ==
+    SPARK_TP_MESH_ROUND_CONTROL_WORD_FIRST_ARRIVAL_NS * sizeof(uint64_t),
+    "first arrival word");
 
 #define SPARK_TP_DEVICE_COLLECTIVE_STAGING_SETS \
     (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK * 16u)
@@ -2207,8 +2213,14 @@ static SparkStatus SparkTpDeviceCollectiveEnsureCells(
         uint64_t shipped = implementation->hardware_wait != 0u && implementation->mesh_device != 0 ?
             (uint64_t)(uintptr_t)(implementation->mesh_device +
                 SPARK_WEIGHTD_MESH_SHIPPED_ENTRY(SparkTpDeviceCollectiveBandIndex(implementation),implementation->tp_rank)) : 0u;
+        uint64_t cancel = implementation->hardware_wait != 0u && implementation->mesh_device != 0 ?
+            (uint64_t)(uintptr_t)(implementation->mesh_device +
+                SparkTpDeviceCollectiveCancelCellOffset(SparkTpDeviceCollectiveBandIndex(implementation))) : 0u;
         result = cudaMemcpy(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL * sizeof(uint64_t),
             &shipped,sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE);
+        if ( result == 0 )
+            result = cudaMemcpy(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_CELL * sizeof(uint64_t),
+                &cancel,sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE);
     }
     if ( result != 0 ) goto failed;
     phase = "alloc-readback";
@@ -2701,7 +2713,10 @@ SparkStatus SparkTpDeviceCollectiveHardwareStats(
     }
     if ( cudaMemcpy(timing_out,(uint8_t *)implementation->round_control +
             SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS * sizeof(uint64_t),
-            sizeof(*timing_out),SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST) != 0 )
+            4u * sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST) != 0 ||
+         cudaMemcpy(&timing_out->first_arrival_ns,(uint8_t *)implementation->round_control +
+            SPARK_TP_MESH_ROUND_CONTROL_WORD_FIRST_ARRIVAL_NS * sizeof(uint64_t),
+            (1u + SPARK_TP_MESH_ROUND_CONTROL_PEERS) * sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST) != 0 )
         return SPARK_STATUS_IO_ERROR;
     return SPARK_STATUS_OK;
 }

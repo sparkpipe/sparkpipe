@@ -3,11 +3,15 @@
 #include <string.h>
 
 #include <infiniband/verbs.h>
+#include <infiniband/mlx5dv.h>
 
 #define SPARK_STUB_IBV_DEVICES 2u
 #define SPARK_STUB_IBV_QPS_MAX 4096u
 #define SPARK_STUB_IBV_COMPLETIONS_MAX 1024u
 #define SPARK_STUB_IBV_LID 0x1234u
+#define SPARK_STUB_MLX5_WQES 512u
+#define SPARK_STUB_MLX5_CQES 1024u
+#define SPARK_STUB_MLX5_CQS 512u
 
 typedef struct SparkStubIbvDevice
 {
@@ -21,7 +25,20 @@ typedef struct SparkStubIbvQp
     int state;
     uint32_t remote_qpn;
     int live;
+    struct ibv_cq *send_cq;
+    uint8_t *send_queue;
+    uint32_t record[2];
+    uint64_t doorbell;
+    uint32_t parsed;
 } SparkStubIbvQp;
+
+typedef struct SparkStubIbvCq
+{
+    struct ibv_cq pub;
+    uint8_t *entries;
+    uint32_t record[2];
+    uint32_t produced;
+} SparkStubIbvCq;
 
 typedef struct SparkStubIbvCompletion
 {
@@ -50,6 +67,10 @@ static uint32_t spark_stub_ibv_posted_work_count;
 static uint64_t spark_stub_ibv_fail_post_at;
 static uint32_t spark_stub_ibv_empty_gid_queries;
 static uint64_t spark_stub_ibv_gid_queries;
+static SparkStubIbvCq spark_stub_ibv_cqs[SPARK_STUB_MLX5_CQS];
+static uint32_t spark_stub_ibv_cq_count;
+uint64_t spark_stub_mlx5_wr_id(uint32_t qpn,uint32_t index) __attribute__((weak));
+int spark_stub_mlx5_cq_live(const struct ibv_cq *cq) __attribute__((weak));
 
 static void spark_stub_ibv_init_devices(void)
 {
@@ -194,12 +215,18 @@ struct ibv_cq *ibv_create_cq(struct ibv_context *context, int entries,
     (void)context_pointer;
     (void)channel;
     (void)vector;
-    return (struct ibv_cq *)calloc(1u,sizeof(struct ibv_cq));
+    if ( spark_stub_ibv_cq_count >= SPARK_STUB_MLX5_CQS )
+    {
+        errno = ENOMEM;
+        return 0;
+    }
+    memset(&spark_stub_ibv_cqs[spark_stub_ibv_cq_count],0,sizeof(spark_stub_ibv_cqs[0]));
+    return &spark_stub_ibv_cqs[spark_stub_ibv_cq_count++].pub;
 }
 
 int ibv_destroy_cq(struct ibv_cq *cq)
 {
-    free(cq);
+    (void)cq;
     return 0;
 }
 
@@ -208,7 +235,6 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd,
 {
     SparkStubIbvQp *qp;
     (void)pd;
-    (void)attributes;
     if (spark_stub_ibv_qp_count >= SPARK_STUB_IBV_QPS_MAX)
     {
         errno = ENOMEM;
@@ -219,6 +245,10 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd,
     qp->state = IBV_QPS_RESET;
     qp->remote_qpn = 0u;
     qp->live = 1;
+    qp->send_cq = attributes != 0 ? attributes->send_cq : 0;
+    qp->send_queue = 0;
+    qp->record[0] = qp->record[1] = 0u;
+    qp->parsed = 0u;
     spark_stub_ibv_qp_count++;
     return &qp->pub;
 }
@@ -250,8 +280,11 @@ int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attributes,
     next_state = attributes->qp_state;
     if (next_state == IBV_QPS_RESET)
     {
+        spark_stub_mlx5_scan();
         stub_qp->state = IBV_QPS_RESET;
         stub_qp->remote_qpn = 0u;
+        stub_qp->record[0] = stub_qp->record[1] = 0u;
+        stub_qp->parsed = 0u;
         return 0;
     }
     if (next_state == IBV_QPS_INIT)
@@ -439,26 +472,156 @@ int ibv_post_send(struct ibv_qp *qp, struct ibv_send_wr *request,
     return 0;
 }
 
+int mlx5dv_init_obj(struct mlx5dv_obj *obj, uint64_t obj_type)
+{
+    if ( obj == 0 )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    if ( (obj_type & MLX5DV_OBJ_QP) != 0u )
+    {
+        SparkStubIbvQp *qp = spark_stub_ibv_qp_from_pub(obj->qp.in);
+        if ( qp->send_queue == 0 && (qp->send_queue = (uint8_t *)calloc(SPARK_STUB_MLX5_WQES,64u)) == 0 )
+        {
+            errno = ENOMEM;
+            return -1;
+        }
+        memset(obj->qp.out,0,sizeof(*obj->qp.out));
+        obj->qp.out->dbrec = qp->record;
+        obj->qp.out->sq.buf = qp->send_queue;
+        obj->qp.out->sq.wqe_cnt = SPARK_STUB_MLX5_WQES;
+        obj->qp.out->sq.stride = 64u;
+        obj->qp.out->bf.reg = &qp->doorbell;
+        obj->qp.out->bf.size = 0u;
+    }
+    if ( (obj_type & MLX5DV_OBJ_CQ) != 0u )
+    {
+        SparkStubIbvCq *cq = (SparkStubIbvCq *)obj->cq.in;
+        uint32_t index;
+        if ( cq->entries == 0 )
+        {
+            if ( (cq->entries = (uint8_t *)calloc(SPARK_STUB_MLX5_CQES,64u)) == 0 )
+            {
+                errno = ENOMEM;
+                return -1;
+            }
+            for ( index = 0u; index < SPARK_STUB_MLX5_CQES; index++ )
+                ((struct mlx5_cqe64 *)(cq->entries + (uint64_t)index * 64u))->op_own = (uint8_t)(MLX5_CQE_INVALID << 4);
+        }
+        memset(obj->cq.out,0,sizeof(*obj->cq.out));
+        obj->cq.out->buf = cq->entries;
+        obj->cq.out->dbrec = cq->record;
+        obj->cq.out->cqe_cnt = SPARK_STUB_MLX5_CQES;
+        obj->cq.out->cqe_size = 64u;
+    }
+    return 0;
+}
+
+void spark_stub_mlx5_scan(void)
+{
+    uint32_t q;
+    for ( q = 0u; q < spark_stub_ibv_qp_count; q++ )
+    {
+        SparkStubIbvQp *qp = &spark_stub_ibv_qps[q];
+        uint32_t producer = be32toh(qp->record[MLX5_SND_DBR]) & 0xffffu,advanced = 0u;
+        if ( qp->send_queue == 0 )
+            continue;
+        while ( (qp->parsed & 0xffffu) != producer && spark_stub_ibv_posted_work_count < 16384u )
+        {
+            uint32_t index = qp->parsed & (SPARK_STUB_MLX5_WQES - 1u);
+            const struct mlx5_wqe_ctrl_seg *control = (const struct mlx5_wqe_ctrl_seg *)(qp->send_queue + (uint64_t)index * 64u);
+            const struct mlx5_wqe_raddr_seg *remote = (const struct mlx5_wqe_raddr_seg *)(control + 1);
+            const struct mlx5_wqe_data_seg *data = (const struct mlx5_wqe_data_seg *)(remote + 1);
+            uint32_t count = be32toh(data->byte_count);
+            SparkStubIbvPostedWork *work = &spark_stub_ibv_posted_work[spark_stub_ibv_posted_work_count++];
+            memset(work,0,sizeof(*work));
+            work->qp_number = be32toh(control->qpn_ds) >> 8;
+            work->wqe_index = qp->parsed & 0xffffu;
+            work->remote = be64toh(remote->raddr);
+            work->flags = (control->fm_ce_se & MLX5_WQE_CTRL_CQ_UPDATE) != 0u ? IBV_SEND_SIGNALED : 0u;
+            if ( (count & MLX5_INLINE_SEG) != 0u )
+            {
+                work->flags |= IBV_SEND_INLINE;
+                work->length = count & ~MLX5_INLINE_SEG;
+                memcpy(&work->inline_word,(const uint8_t *)data + 4u,sizeof(work->inline_word));
+            }
+            else
+            {
+                work->length = count;
+                work->lkey = be32toh(data->lkey);
+                work->source = be64toh(data->addr);
+            }
+            work->wr_id = spark_stub_mlx5_wr_id != 0 ? spark_stub_mlx5_wr_id(work->qp_number,work->wqe_index) : 0u;
+            qp->parsed++;
+            advanced = 1u;
+        }
+        spark_stub_ibv_post_sends += advanced;
+    }
+}
+
 uint32_t spark_stub_ibv_posted_count(void)
 {
+    spark_stub_mlx5_scan();
     return spark_stub_ibv_posted_work_count;
 }
 
 int spark_stub_ibv_posted(uint32_t index, SparkStubIbvPostedWork *work)
 {
+    spark_stub_mlx5_scan();
     if ( index >= spark_stub_ibv_posted_work_count || work == 0 ) return -1;
     *work = spark_stub_ibv_posted_work[index];
     return 0;
 }
 
+static uint8_t spark_stub_mlx5_syndrome(int status)
+{
+    switch ( status )
+    {
+        case IBV_WC_WR_FLUSH_ERR: return MLX5_CQE_SYNDROME_WR_FLUSH_ERR;
+        case IBV_WC_RETRY_EXC_ERR: return MLX5_CQE_SYNDROME_TRANSPORT_RETRY_EXC_ERR;
+        case IBV_WC_RNR_RETRY_EXC_ERR: return MLX5_CQE_SYNDROME_RNR_RETRY_EXC_ERR;
+        case IBV_WC_REM_ACCESS_ERR: return MLX5_CQE_SYNDROME_REMOTE_ACCESS_ERR;
+        default: return 0xffu;
+    }
+}
+
+static int spark_stub_mlx5_produce(SparkStubIbvCq *cq,uint32_t qpn,uint32_t wqe_index,int status)
+{
+    struct mlx5_cqe64 *entry;
+    uint32_t consumed;
+    if ( cq == 0 || cq->entries == 0 ) return -1;
+    consumed = be32toh(cq->record[0]) & 0xffffffu;
+    if ( ((cq->produced - consumed) & 0xffffffu) >= SPARK_STUB_MLX5_CQES ) return -1;
+    entry = (struct mlx5_cqe64 *)(cq->entries + (uint64_t)(cq->produced & (SPARK_STUB_MLX5_CQES - 1u)) * 64u);
+    memset(entry,0,sizeof(*entry) - 1u);
+    entry->sop_drop_qpn = htobe32(qpn & 0xffffffu);
+    entry->wqe_counter = htobe16((uint16_t)wqe_index);
+    if ( status != IBV_WC_SUCCESS )
+    {
+        ((struct mlx5_err_cqe *)entry)->syndrome = spark_stub_mlx5_syndrome(status);
+        ((struct mlx5_err_cqe *)entry)->vendor_err_synd = 0x81u;
+    }
+    __sync_synchronize();
+    entry->op_own = (uint8_t)(((status == IBV_WC_SUCCESS ? MLX5_CQE_REQ : MLX5_CQE_REQ_ERR) << 4) |
+        ((cq->produced & SPARK_STUB_MLX5_CQES) != 0u ? 1u : 0u));
+    cq->produced++;
+    return 0;
+}
+
 int spark_stub_ibv_complete(uint64_t work_id, int status)
 {
-    uint32_t next = (spark_stub_ibv_completion_tail + 1u) % SPARK_STUB_IBV_COMPLETIONS_MAX;
-    if ( next == spark_stub_ibv_completion_head ) return -1;
-    spark_stub_ibv_completions[spark_stub_ibv_completion_tail].wr_id = work_id;
-    spark_stub_ibv_completions[spark_stub_ibv_completion_tail].status = status;
-    spark_stub_ibv_completion_tail = next;
-    return 0;
+    uint32_t index;
+    spark_stub_mlx5_scan();
+    for ( index = spark_stub_ibv_posted_work_count; index-- > 0u; )
+        if ( spark_stub_ibv_posted_work[index].wr_id == work_id )
+        {
+            SparkStubIbvQp *qp = spark_stub_ibv_qp_find(spark_stub_ibv_posted_work[index].qp_number);
+            if ( qp != 0 && spark_stub_mlx5_cq_live != 0 && spark_stub_mlx5_cq_live(qp->send_cq) == 0 )
+                return 0;
+            return qp != 0 ? spark_stub_mlx5_produce((SparkStubIbvCq *)qp->send_cq,qp->pub.qp_num,spark_stub_ibv_posted_work[index].wqe_index,status) : -1;
+        }
+    return -1;
 }
 
 void spark_stub_ibv_fail_post_call(uint64_t call)
@@ -519,6 +682,7 @@ uint64_t spark_stub_ibv_modify_qp_failures(void)
 
 uint64_t spark_stub_ibv_post_send_calls(void)
 {
+    spark_stub_mlx5_scan();
     return spark_stub_ibv_post_sends;
 }
 
@@ -529,19 +693,17 @@ void spark_stub_ibv_fail_modify_qp_for_qpn(uint32_t remote_qpn)
 
 void spark_stub_ibv_poll_cq_inject(int status, uint32_t count)
 {
+    SparkStubIbvCq *cq = &spark_stub_ibv_cqs[0];
     uint32_t index;
-    for (index = 0u; index < count; index++)
-    {
-        uint32_t next = (spark_stub_ibv_completion_tail + 1u) %
-            SPARK_STUB_IBV_COMPLETIONS_MAX;
-        if (next == spark_stub_ibv_completion_head)
+    for (index = 0u; index < spark_stub_ibv_cq_count; index++)
+        if ( spark_stub_mlx5_cq_live != 0 && spark_stub_mlx5_cq_live(&spark_stub_ibv_cqs[index].pub) != 0 )
+        {
+            cq = &spark_stub_ibv_cqs[index];
             break;
-        spark_stub_ibv_completions[spark_stub_ibv_completion_tail].wr_id =
-            spark_stub_ibv_next_wr_id++;
-        spark_stub_ibv_completions[spark_stub_ibv_completion_tail].status =
-            status;
-        spark_stub_ibv_completion_tail = next;
-    }
+        }
+    for (index = 0u; index < count; index++)
+        if ( spark_stub_mlx5_produce(cq,0xffffffu,(uint32_t)spark_stub_ibv_next_wr_id++,status) != 0 )
+            break;
 }
 
 void spark_stub_ibv_set_qp_state(uint32_t qpn, int state)

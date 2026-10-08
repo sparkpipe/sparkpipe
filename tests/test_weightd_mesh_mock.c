@@ -20,6 +20,20 @@
 
 #include "../node/weightd_mesh.c"
 
+uint64_t spark_stub_mlx5_wr_id(uint32_t qpn,uint32_t index)
+{
+    uint32_t peer;
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+        if ( weightd_mesh.send_qps[peer] != 0 && weightd_mesh.send_queues[peer].qpn == qpn )
+            return weightd_mesh.send_queues[peer].wr_id[index & weightd_mesh.send_queues[peer].mask];
+    return UINT64_MAX;
+}
+
+int spark_stub_mlx5_cq_live(const struct ibv_cq *cq)
+{
+    return cq != 0 && (cq == weightd_mesh.cq || cq == weightd_mesh.pair_cq) ? 1 : 0;
+}
+
 #ifndef SPARK_WEIGHTD_MESH_DIR
 #error "SPARK_WEIGHTD_MESH_DIR must name the mock mesh record directory"
 #endif
@@ -412,27 +426,30 @@ static void test_slot_lifetimes(uint32_t local_rank)
     {
         SparkStubIbvPostedWork work;
         CHECK(spark_stub_ibv_posted(i,&work) == 0,"B1 WR captured");
-        CHECK((work.flags & IBV_SEND_SIGNALED) != 0u,"every owned WR has terminal evidence");
         if ( (work.wr_id & 3u) == 3u )
-            CHECK(spark_stub_ibv_complete(work.wr_id,IBV_WC_SUCCESS) == 0,"tail completion delivered before payload");
+            CHECK((work.flags & IBV_SEND_SIGNALED) != 0u && (work.flags & IBV_SEND_INLINE) != 0u &&
+                work.length == 8u && work.inline_word == seq,
+                "every tail is signaled and carries the slot tag inline");
         else
         {
+            SparkStubIbvPostedWork tail;
+            CHECK((work.flags & IBV_SEND_SIGNALED) == 0u && spark_stub_ibv_posted(i + 1u,&tail) == 0 &&
+                tail.qp_number == work.qp_number && tail.wqe_index == work.wqe_index + 1u && (tail.wr_id & 3u) == 3u,
+                "every payload is chained directly before its signaled tail on the same queue");
             CHECK(work.source == (uint64_t)(uintptr_t)payload && work.length == 64u,
                 "B1 source and payload extent remain unchanged");
             CHECK(*(const uint8_t *)(uintptr_t)work.source == 0x5au,"NIC source retains original contribution until completion");
         }
     }
-    SparkWeightdMeshDrainCq();
-    CHECK(test_shipped(0u,local_rank) == 0u,"tails alone cannot release outstanding payload reads");
-    CHECK(spark_stub_ibv_posted(first + 1u,&stale) == 0,"capture duplicate tail identity");
+    test_complete_range(first,last - 2u);
+    CHECK(test_shipped(0u,local_rank) == 0u,"the last outstanding peer retains ownership");
+    CHECK(spark_stub_ibv_posted(first + 1u,&stale) == 0 && (stale.wr_id & 3u) == 3u,"capture duplicate tail identity");
     CHECK(spark_stub_ibv_complete(stale.wr_id,IBV_WC_SUCCESS) == 0,"duplicate tail injected");
     SparkWeightdMeshDoorbellPoll();
     CHECK(test_shipped(0u,local_rank) == 0u,"duplicate completion does not consume another WR");
     CHECK(spark_stub_ibv_posted_count() == last,"pending doorbell is not posted a second time");
-    test_complete_range(first,last - 2u);
-    CHECK(test_shipped(0u,local_rank) == 0u,"last outstanding peer retains ownership");
     test_complete_range(last - 2u,last);
-    CHECK(test_shipped(0u,local_rank) == seq,"all terminal WRs release the source generation");
+    CHECK(test_shipped(0u,local_rank) == seq,"the last tail completion releases the source generation");
     first = spark_stub_ibv_posted_count();
     CHECK(test_post_slot(0u,local_rank,seq + 1u,all_peers) == SPARK_STATUS_OK,
         "completed source slot admits its next generation");
@@ -454,16 +471,16 @@ static void test_slot_lifetimes(uint32_t local_rank)
     entry[0] = 0u;
 
     first = spark_stub_ibv_posted_count();
-    spark_stub_ibv_fail_post_call(spark_stub_ibv_post_send_calls() + 2u);
-    CHECK(test_post_slot(1u,local_rank,seq,all_peers) == SPARK_STATUS_IO_ERROR,
-        "partial post failure reports explicit failure");
+    CHECK(test_post_slot(1u,local_rank,seq,all_peers) == SPARK_STATUS_OK,"tail failure scenario posts");
     last = spark_stub_ibv_posted_count();
-    spark_stub_ibv_fail_post_call(0u);
-    CHECK(last > first && test_shipped(1u,local_rank) == 0u,
-        "partial failure retains successfully posted work without false ACK");
+    CHECK(spark_stub_ibv_posted(first + 1u,&stale) == 0 && (stale.wr_id & 3u) == 3u &&
+        spark_stub_ibv_complete(stale.wr_id,IBV_WC_RETRY_EXC_ERR) == 0,"one tail fails on the wire");
+    SparkWeightdMeshDrainCq();
+    CHECK(test_shipped(1u,local_rank) == 0u,
+        "a failed tail retains the remaining posted work without false ACK");
     CHECK(test_post_slot(1u,local_rank,seq + 1u,all_peers) == SPARK_STATUS_IO_ERROR,
-        "partial failure fences new source ownership while draining");
-    test_complete_range(first,last);
+        "a failed transfer fences new source ownership while draining");
+    test_complete_range(first + 2u,last);
     CHECK(test_shipped(1u,local_rank) == 0u &&
         weightd_mesh.transfers[SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank].pending == 0u,
         "failed generation drains all accepted work but does not advertise success");
@@ -515,10 +532,13 @@ static void test_slot_lifetimes(uint32_t local_rank)
     CHECK(test_post_slot(7u,local_rank,seq + 4u,all_peers) == SPARK_STATUS_BUSY,
         "capacity pressure rejects before any partial posting");
     CHECK(spark_stub_ibv_posted_count() == last,"BUSY leaves publication and completion ledgers unchanged");
-    test_complete_range(first,first + TEST_MESH_PEERS * 2u);
+    for ( i = 0u; i < TEST_MESH_PEERS; i++ )
+        test_complete_range(first + i * SPARK_WEIGHTD_MESH_SEND_CAPACITY,first + i * SPARK_WEIGHTD_MESH_SEND_CAPACITY + 2u);
     CHECK(test_post_slot(7u,local_rank,seq + 4u,all_peers) == SPARK_STATUS_OK,
-        "completed work makes capacity retry useful");
-    test_complete_range(first + TEST_MESH_PEERS * 2u,spark_stub_ibv_posted_count());
+        "two completed sends on every peer make capacity retry useful");
+    for ( i = 0u; i < TEST_MESH_PEERS; i++ )
+        test_complete_range(first + i * SPARK_WEIGHTD_MESH_SEND_CAPACITY + 2u,first + (i + 1u) * SPARK_WEIGHTD_MESH_SEND_CAPACITY);
+    test_complete_range(last,spark_stub_ibv_posted_count());
     for ( i = 0u; i < TEST_MESH_PEERS; i++ )
         CHECK(weightd_mesh.send_pending[i] == 0u,"all accepted SQ ownership returns after terminal completions");
 }
@@ -539,7 +559,8 @@ static void test_expect_route(uint32_t first, uint32_t last, uint64_t slot_base,
         if ( (work.wr_id & 3u) == 3u )
         {
             tails++;
-            CHECK(work.source == slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u && work.length == 8u,label);
+            CHECK((work.flags & IBV_SEND_INLINE) != 0u && work.length == 8u &&
+                work.inline_word == *(const uint64_t *)(uintptr_t)(slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u),label);
             continue;
         }
         data++;
@@ -658,9 +679,9 @@ static void test_peer_routes(uint32_t local_rank)
             if ( (work.wr_id & 3u) == 3u )
             {
                 tails++;
-                CHECK(work.lkey == weightd_mesh.recv_mr->lkey && work.length == 8u &&
-                    work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u,
-                    "the tail still ships from the sender's own slot");
+                CHECK((work.flags & IBV_SEND_INLINE) != 0u && work.length == 8u &&
+                    work.inline_word == *(const uint64_t *)((const uint8_t *)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u),
+                    "the tail carries the tag of the sender's own slot inline");
                 continue;
             }
             data++;
@@ -783,10 +804,15 @@ static void test_all_transfer_identities(void)
         memset(&weightd_mesh.transfers[index],0,sizeof(saved));
         weightd_mesh.transfers[index].generation = ++SparkWeightdMeshNextTransferGeneration;
         weightd_mesh.transfers[index].seq = previous + 1u;
-        CHECK(SparkWeightdMeshPostTransfer(index,0u,2u,0u,64u) == SPARK_STATUS_OK,
-            "every lane, band and rank posts a distinct completion identity");
-        CHECK(SparkWeightdMeshPostTransfer(index,0u,3u,64u,8u) == SPARK_STATUS_OK,
-            "every completion identity owns its tail write");
+        {
+            SparkWeightdMeshRoute route = {0};
+            uint8_t logical[SPARK_WEIGHTD_MESH_RANKS_PER_BAND] = {0};
+            uint64_t tag = previous + 1u;
+            SparkWeightdMeshPostPeer(index,band,0u,0u,0u,64u,route,logical,&tag);
+            SparkWeightdMeshSqRing(1u);
+        }
+        CHECK(spark_stub_ibv_posted_count() - first == 2u,
+            "every lane, band and rank posts its payload chained to an inline tail with a distinct completion identity");
         test_complete_range(first,spark_stub_ibv_posted_count());
         CHECK(weightd_mesh.transfers[index].pending == 0u &&
             weightd_mesh.doorbell_posted[index] == previous + 1u &&
@@ -929,11 +955,15 @@ static void test_mesh_hardware_wait(void)
     {
         SparkWeightdMeshWaitRequest *failed = test_wait_request(3u,rank);
         first = spark_stub_ibv_posted_count();
-        spark_stub_ibv_fail_post_call(spark_stub_ibv_post_send_calls() + 2u);
-        CHECK(test_post_slot(3u,rank,tag,0x6u) == SPARK_STATUS_IO_ERROR,
-            "hardware gate sees actual partial transport post failure");
-        spark_stub_ibv_fail_post_call(0u);
+        CHECK(test_post_slot(3u,rank,tag,0x6u) == SPARK_STATUS_OK,"hardware gate transfer posts to two peers");
         last = spark_stub_ibv_posted_count();
+        {
+            SparkStubIbvPostedWork work;
+            CHECK(spark_stub_ibv_posted(first + 1u,&work) == 0 && (work.wr_id & 3u) == 3u &&
+                spark_stub_ibv_complete(work.wr_id,IBV_WC_RETRY_EXC_ERR) == 0,"hardware gate sees one tail fail on the wire");
+            SparkWeightdMeshDrainCq();
+            first += 2u;
+        }
         test_wait_publish(failed,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,tag,0u,0u);
         SparkWeightdMeshWaitRequestsPoll(7100u);
         CHECK(failed->ready == 1u && failed->error == UINT64_MAX &&
@@ -1136,9 +1166,10 @@ static void test_mesh_topology(void)
         assert(spark_stub_ibv_posted(i,&work) == 0);
         if (i != first) offset += SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u;
         CHECK(work.qp_number == weightd_mesh.send_qps[5u]->qp_num &&
-            work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + offset &&
+            (i != first ? work.inline_word == *(const uint64_t *)((const uint8_t *)weightd_mesh.recv_buffer + offset) :
+                work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + offset) &&
             work.remote == weightd_mesh.qp_info[5u].remote_addr + offset,
-            "physical QP translation preserves the logical payload and remote offsets");
+            "physical QP translation preserves the logical payload, tail tag and remote offsets");
     }
     test_complete_range(first,last - 1u);
     CHECK(SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_BUSY,
@@ -1401,7 +1432,7 @@ static void test_mesh_peer_reset(uint32_t local_rank)
     SparkWeightdMeshTryWire();
     test_capture_end();
     CHECK(test_file_contains(log_path,"WD-PEER-RESET") && test_file_contains(log_path,"reason=record") &&
-        test_file_contains(log_path,"cells=1 bits=2 send_pending=3 rpc_pending=1"),
+        test_file_contains(log_path,"cells=1 bits=1 send_pending=3 rpc_pending=1"),
         "the restarted peer's in-flight work is reset before re-wiring");
     CHECK(weightd_mesh.transfers[index].pending == 0u &&
         weightd_mesh.transfers[index].failed == SPARK_WEIGHTD_MESH_TRANSFER_PEER_RESET &&
@@ -2382,8 +2413,8 @@ int main(void)
         entry[0] = 1u;
         SparkWeightdMeshDoorbellPoll();
     }
-    CHECK(spark_stub_ibv_post_send_calls() - post_before == 6u,
-        "TP4 B1 posts payload and tail to three peers only");
+    CHECK(spark_stub_ibv_post_send_calls() - post_before == 3u,
+        "TP4 B1 rings the queues of three peers only");
     test_mesh_lane_protocol();
     test_mesh_activity_protocol(protocol_post_first);
     test_load_pace_while_serving(0u);

@@ -176,6 +176,13 @@ enum ibv_mtu
 #define IBV_WC_WR_FLUSH_ERR 5
 #define IBV_WC_RNR_RETRY_EXC_ERR 8
 #define IBV_WC_RETRY_EXC_ERR 12
+#define IBV_WC_RDMA_WRITE 4
+#define IBV_WC_LOC_LEN_ERR 1
+#define IBV_WC_LOC_QP_OP_ERR 2
+#define IBV_WC_LOC_PROT_ERR 4
+#define IBV_WC_REM_ACCESS_ERR 10
+#define IBV_WC_REM_OP_ERR 11
+#define IBV_WC_GENERAL_ERR 21
 
 struct ibv_device **ibv_get_device_list(int *count);
 void ibv_free_device_list(struct ibv_device **list);
@@ -238,6 +245,8 @@ typedef struct SparkStubIbvPostedWork
     uint32_t qp_number;
     uint32_t flags;
     uint32_t lkey;
+    uint32_t wqe_index;
+    uint64_t inline_word;
 } SparkStubIbvPostedWork;
 
 uint32_t spark_stub_ibv_posted_count(void);

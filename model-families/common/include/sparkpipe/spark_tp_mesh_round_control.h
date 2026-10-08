@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 21u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 39u
 #define SPARK_TP_MESH_ROUND_CONTROL_BYTES \
     (SPARK_TP_MESH_ROUND_CONTROL_WORDS * sizeof(uint64_t))
 
@@ -27,6 +27,10 @@
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_PUBLISH_BLOCKS_DONE 18u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_PUBLISH_STARTED_NS 19u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL 20u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_CELL 21u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_FIRST_ARRIVAL_NS 22u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_PEER_ARRIVAL_NS 23u
+#define SPARK_TP_MESH_ROUND_CONTROL_PEERS 16u
 
 typedef struct SparkTpMeshRoundControl
 {
@@ -51,6 +55,9 @@ typedef struct SparkTpMeshRoundControl
     uint64_t publish_blocks_done;
     uint64_t publish_started_ns;
     uint64_t shipped_cell;
+    uint64_t cancel_cell;
+    uint64_t first_arrival_ns;
+    uint64_t peer_arrival_ns[SPARK_TP_MESH_ROUND_CONTROL_PEERS];
 } SparkTpMeshRoundControl;
 
 #define SPARK_TP_MESH_ROUND_LOOP_DECISION_GO 0u

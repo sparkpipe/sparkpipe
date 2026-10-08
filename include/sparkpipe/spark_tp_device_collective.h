@@ -411,6 +411,8 @@ typedef struct SparkTpDeviceCollectiveHardwareTiming
     uint64_t peer_wait_ns;
     uint64_t copy_ns;
     uint64_t combine_ns;
+    uint64_t first_arrival_ns;
+    uint64_t peer_arrival_ns[16];
 } SparkTpDeviceCollectiveHardwareTiming;
 
 SparkStatus SparkTpDeviceCollectiveHardwareStats(
