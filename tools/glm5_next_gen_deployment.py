@@ -27,7 +27,7 @@ HOSTS = [h for h in os.environ.get(
 TP = len(HOSTS)
 ROOT_NAME = os.environ.get("GLM5_NEXT_ROOT_NAME", "glm53flash.fp8.tp16")
 KV_BACKING_MAXIMUM_BYTES = int(os.environ.get("GLM5_NEXT_KV_BACKING_BYTES", "137438953472"))
-MAX_SEQUENCE_POSITIONS = int(os.environ.get("GLM5_NEXT_MAX_POSITIONS", "262144"))
+MAX_SEQUENCE_POSITIONS = int(os.environ.get("GLM5_NEXT_MAX_POSITIONS", "131072"))
 ROW_CAPACITY = int(os.environ.get("GLM5_NEXT_ROWS", "1024"))
 SEQUENCES = int(os.environ.get("GLM5_NEXT_SEQUENCES", "16"))
 KV_SNAPSHOT_MAXIMUM_BYTES = 68719476736
@@ -215,10 +215,19 @@ def tokenizer_block(eos_token_ids: list) -> dict:
     }
 
 
+def index_context_parallel_fits(positions: int, rows: int) -> bool:
+    local_pools = (positions // model_constant("INDEX_KPOOL") + TP - 1) // TP
+    sequence_floats = model_constant("HIDDEN_DIMENSION") // 2
+    return (rows * local_pools + sequence_floats - 1) // sequence_floats <= rows
+
+
 def serving_profile() -> dict:
     if MAX_SEQUENCE_POSITIONS > model_constant("MAXIMUM_CONTEXT_TOKENS"):
         raise SystemExit(f"GLM5_NEXT_MAX_POSITIONS={MAX_SEQUENCE_POSITIONS} exceeds the model's "
                          f"{model_constant('MAXIMUM_CONTEXT_TOKENS')}-token context")
+    if TP >= KV_SHARD_REQUIRED_DEGREE and not index_context_parallel_fits(MAX_SEQUENCE_POSITIONS, ROW_CAPACITY):
+        raise SystemExit(f"GLM5_NEXT_MAX_POSITIONS={MAX_SEQUENCE_POSITIONS}: the index context-parallel score gather "
+                         f"at TP{TP} does not fit {ROW_CAPACITY} rows (SparkGlm5NextIndexCpFits)")
     return spark_serving_profile.derive(
         SEQUENCES, MAX_SEQUENCE_POSITIONS, recurrent_page_bytes(), KV_BACKING_MAXIMUM_BYTES,
         rows=ROW_CAPACITY, checkpoint_tokens=kv_geometry_constant("CHECKPOINT_TOKENS"), page_bytes=kv_page_bytes())
@@ -293,12 +302,13 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(args.output)
     score = score_members(vars(args), ROOT_NAME, RUNTIME_ROOT, root)
+    deployment = resident_deployment()
     (root / "config").mkdir(parents=True, exist_ok=True)
     for rank in range(TP):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
             render_stage(dict(stage_config(rank), **score)))
     (root / "model_resident.json").write_text(
-        json.dumps(resident_deployment(), indent=1) + "\n")
+        json.dumps(deployment, indent=1) + "\n")
     print(f"{root}: {TP} stage configs + model_resident.json "
           f"(hosts {HOSTS[0]}..{HOSTS[-1]})")
     return 0

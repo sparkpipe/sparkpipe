@@ -122,6 +122,10 @@ def main() -> int:
               <= node["kv_backing_maximum_bytes"] for node in committed["nodes"]))
     check("the committed GLM Flash deployment prefills in mesh-wide waves",
           limits["max_input_rows"] == sp.MESH_MAX_BATCH_ROWS)
+    check("the GLM Flash index score gather fits 131072 positions at TP16 in 1024-row waves",
+          flash.index_context_parallel_fits(131072, 1024) and not flash.index_context_parallel_fits(131072 + 64, 1024))
+    check("the committed GLM Flash deployment fits its index score gather",
+          flash.index_context_parallel_fits(limits["max_sequence_positions"], limits["max_input_rows"]))
 
     # Drift detector: the incident's actual drifted configs must be caught.
     drifted_limits = dict(b8)
