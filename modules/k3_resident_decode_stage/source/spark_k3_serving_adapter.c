@@ -1109,6 +1109,8 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		memset(&dispatch, 0, sizeof(dispatch));
 		dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
 		dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
+		dispatch.flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ?
+			SPARK_K3_STAGE_RUNNER_DISPATCH_FLAG_PREFILL : 0u;
 		dispatch.request_id = submission->request_id;
 		dispatch.sequence_id = submission->sequence_id;
 		dispatch.sequence_position = submission->sequence_position;

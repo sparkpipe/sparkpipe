@@ -303,6 +303,7 @@ typedef struct SparkK3RunnerState
 	uint32_t fused_capacity;
 	float *head_slots_device;
 	uint64_t *head_maxloc;
+	uint32_t head_last_rows;
 	uint16_t *head_hidden;
 	uint32_t *head_token;
 	float *head_score;
@@ -1836,7 +1837,7 @@ static SparkStatus K3RunnerHeadArgmax(SparkK3RunnerState *state, K3LayerBuffers 
 {
 	K3LayerBuffers last;
 	SparkStatus status;
-	if ( sequences >= rows || in->sequence_row_begin == 0 || in->sequence_row_indices == 0 )
+	if ( state->head_last_rows == 0u || sequences >= rows || in->sequence_row_begin == 0 || in->sequence_row_indices == 0 )
 		return K3RunnerHeadRows(state, b, rows, stream);
 	K3HeadLastRowsGatherKernel<<<sequences, K3_LAYER_THREADS, 0, stream>>>(in->sequence_row_begin,
 		in->sequence_row_indices, b->hidden_bf16, state->head_hidden);
@@ -2124,6 +2125,11 @@ SparkStatus SparkK3StageRunnerSubmit(
 	if ( rows == 0u || rows > state->max_rows || dispatch->active_sequence_count == 0u || dispatch->active_sequence_count > rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( (dispatch->flags & ~SPARK_K3_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS) != 0u )
+	{
+		fprintf(stderr, "sparkpipe_k3: submit refused: unknown dispatch flags 0x%x\n", dispatch->flags);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if ( state->dispatch.mla_count != 0u && state->dispatch.kv_attached == 0u )
 	{
 		fprintf(stderr, "sparkpipe_k3: submit refused: the KV binding pool is not attached\n");
@@ -2140,6 +2146,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
 	state->rows = rows;
+	state->head_last_rows = (dispatch->flags & SPARK_K3_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u ? 1u : 0u;
 	state->logical_sequence_count = dispatch->active_sequence_count;
 	b = state->dispatch.buffers;
 	sequences = dispatch->active_sequence_count;
@@ -2495,6 +2502,7 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 	sequences = 1u;
 	packed_rows = rows * K3_TOP_K;
 	state->rows = rows;
+	state->head_last_rows = 0u;
 	if ( SparkK3DispatchShardRows(d, rows) != SPARK_K3_DISPATCH_OK )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ( phase == 0u && K3RunnerCopy(b->hidden_bf16, hidden_input_bf16,
