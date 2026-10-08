@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <cuda_runtime.h>
+#include "runtime/launch.h"
 
 #define LM_L2_LOAD_RANGES 8u
 #define LM_L2_LOAD_THREADS 256u
@@ -67,6 +68,6 @@ static inline cudaError_t LmL2LoadLaunch(const LmL2LoadPlan *plan, uint32_t bloc
 {
 	if ( plan->count == 0u )
 		return(cudaSuccess);
-	LmL2LoadKernel<<<blocks,LM_L2_LOAD_THREADS,0u,stream>>>(*plan);
+	LM_LAUNCH((LmL2LoadKernel),blocks,LM_L2_LOAD_THREADS,0u,stream,*plan);
 	return(cudaPeekAtLastError());
 }

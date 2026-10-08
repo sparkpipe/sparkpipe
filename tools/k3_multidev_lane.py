@@ -157,7 +157,7 @@ def kv_backing_minimum(topology: str, sequences: int, physical_pages: int, logic
     return spill * kv_page_bytes(topology) + checkpoints * recurrent_page_bytes(topology) + KV_IN_FLIGHT_MARGIN_BYTES
 DEFAULT_KV_SNAPSHOT_BYTES = 8 * 1024 * 1024 * 1024
 KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS (64) tokens
-MAX_ROWS = 64
+MAX_ROWS = 1024
 
 # The batch engine refuses a deployment with no EOS tokens (SCHEMA_ERROR at
 # SparkModelBatchValidateConfiguration — cold14: status=6, tokens=0, the

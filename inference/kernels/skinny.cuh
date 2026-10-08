@@ -685,7 +685,7 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 #define LM_SKINNY_CELL_NEURONS 16u
 #define LM_SKINNY_CELL_ROWS 17u
 #define LM_SKINNY_CELL_TILE_K 32u
-#define LM_SKINNY_CELL_BATCH 4u
+#define LM_SKINNY_CELL_BATCH 16u
 
 typedef struct LmSkinnyCellArguments
 {
@@ -716,11 +716,18 @@ static __device__ __forceinline__ uint32_t LmSkinnyCellGroup(const uint32_t *off
 
 static __device__ __forceinline__ float2 LmSkinnyE2m1Pair(uint32_t word, uint32_t byte)
 {
+#if defined(__CUDA_ARCH__)
 	uint32_t widened;
 	asm("{\n\t.reg .b8 narrow;\n\tcvt.u8.u32 narrow, %1;\n\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
 		: "=r"(widened) : "r"(word >> (8u * byte)));
 	return(make_float2(__half2float(__ushort_as_half((uint16_t)(widened & 0xffffu))),
 		__half2float(__ushort_as_half((uint16_t)(widened >> 16u)))));
+#else
+	const uint32_t packed = (word >> (8u * byte)) & 0xffu;
+	const float magnitude[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
+	return(make_float2(((packed & 0x8u) != 0u ? -1.0f : 1.0f) * magnitude[packed & 0x7u],
+		((packed & 0x80u) != 0u ? -1.0f : 1.0f) * magnitude[(packed >> 4u) & 0x7u]));
+#endif
 }
 
 template<uint32_t BATCH>
@@ -810,6 +817,21 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyCellKernel(const __
 	for ( first = start; first < end; )
 	{
 		const uint32_t count = end - first;
+		if constexpr ( BATCH >= 16u )
+		{
+			if ( count >= 16u )
+			{
+				LmSkinnyCellRows<16u>(args,base,tile_stride,cell,sub,half,first);
+				first += 16u;
+				continue;
+			}
+			if ( count >= 8u )
+			{
+				LmSkinnyCellRows<8u>(args,base,tile_stride,cell,sub,half,first);
+				first += 8u;
+				continue;
+			}
+		}
 		if constexpr ( BATCH >= 4u )
 		{
 			if ( count >= 4u )

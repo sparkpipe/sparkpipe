@@ -270,7 +270,7 @@ static void K3L2PlanAttention(const K3LayerBuffers *b, uint32_t layer, LmL2LoadP
 static int32_t K3L2LoadRound(const K3SliceState *state, uint32_t layer, uint32_t phase, const LmL2LoadPlan *plan, cudaStream_t stream)
 {
 	void *stream_word = (void *)(uintptr_t)stream;
-	cudaStream_t side = (cudaStream_t)state->load_stream;
+	cudaStream_t side = (cudaStream_t)(uintptr_t)state->load_stream;
 	uint32_t forked = 0u;
 	cudaError_t error = cudaSuccess;
 	state->layer_collective(state->collective_context,stream_word,layer,phase | K3_COLLECTIVE_BEGIN);
