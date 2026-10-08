@@ -32,6 +32,14 @@ elif command.startswith("READY"):
 """
 
 
+class RequestStub:
+    def __init__(self, body):
+        self.body = body
+
+    async def json(self):
+        return self.body
+
+
 def config(state, port):
     return {
         "nodes": ["n0", "n1", "n2"],
@@ -81,10 +89,19 @@ async def scenario(memory, expect_ok):
         waiter = asyncio.ensure_future(connect_after_start())
         await swapper.swap("big")
         waiter.cancel()
+        if swapper.active == "big":
+            for started_marker in pathlib.Path(state).glob("started-*"):
+                started_marker.unlink()
+            live["up"] = False
+            waiter = asyncio.ensure_future(connect_after_start())
+            response = await swapper.activate(RequestStub({"model": "big"}))
+            await swapper.task
+            waiter.cancel()
+            swapper.restarted = response.status == 202 and swapper.active == "big" and len(list(pathlib.Path(state).glob("started-*"))) == 3
         log = [json.loads(line) for line in pathlib.Path(state, "log").read_text().splitlines()]
         await swapper.cleanup(None)
         await runner.cleanup()
-        started = [host for host, command in log if command.startswith("START")]
+        started = sorted({host for host, command in log if command.startswith("START")})
         reclaims = sorted({command for host, command in log if command.startswith("RECLAIM")})
         return swapper, started, reclaims
 
@@ -103,6 +120,7 @@ def main():
     swapper, started, reclaims = asyncio.run(scenario(roomy, True))
     check("a model whose projection plus margin fits every node starts", swapper.state == "idle" and swapper.active == "big" and sorted(started) == ["n0", "n1", "n2"])
     check("cold arenas stay warm when every node already has room", reclaims == [])
+    check("requesting the active model after its engines died starts it again", getattr(swapper, "restarted", False))
     record = swapper.history[-1]
     check("the swap records the memory each node actually used", record["memory"]["used_gib_max"] == 103.0 and record["memory"]["used_gib_min"] == 102.0)
     check("the swap records the tightest node after the load", record["memory"]["tightest"] == "n1" and record["memory"]["available_gib_min"] == 9.0)

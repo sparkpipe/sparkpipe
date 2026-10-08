@@ -246,8 +246,10 @@ class Swapper:
         model_id = body.get("model") if isinstance(body, dict) else None
         if model_id not in self.models:
             return web.json_response({"error": f"model {model_id!r} is not configured; configured: {sorted(self.models)}"}, status=404)
-        if model_id == self.active and self.state != "swapping" and await self.ready(self.models[model_id]):
-            return web.json_response(self.status(), status=200)
+        if model_id == self.active and self.state != "swapping":
+            if await self.ready(self.models[model_id]):
+                return web.json_response(self.status(), status=200)
+            self.active = None
         self.wanted = model_id
         if self.task is None or self.task.done():
             self.task = asyncio.ensure_future(self.drive())
