@@ -61,6 +61,7 @@ struct K3LayerWeights
 
 #define K3_COLLECTIVE_MLA_QUERY 4u
 #define K3_COLLECTIVE_MLA_PARTIALS 5u
+#define K3_COLLECTIVE_MLA_DOWN 6u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
 #define K3_L2_LOAD_BYTES (8u << 20)
@@ -198,7 +199,18 @@ static int32_t K3LaunchMlaShard(const K3SliceState *state, const K3LayerBuffers 
 	int32_t status;
 	if ( state->layer_collective == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
-	status = K3LayerMlaQuery<Format,Geometry>(buffers,rows,multiprocessors,stream);
+	if ( K3_MLA_DOWN_SLICED(buffers,rows) )
+	{
+		status = K3LayerMlaDownSlice(buffers,rows,stream);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+		state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_DOWN);
+	}
+	else
+		status = K3LayerMlaDown<Format>(buffers,rows,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	status = K3LayerMlaUp<Format,Geometry>(buffers,rows,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_QUERY);

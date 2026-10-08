@@ -90,6 +90,26 @@ __global__ static void K3RunnerLatentRowsKernel(const uint16_t *gathered, uint16
 		gathered[((uint64_t)(column / slice) * rows + row) * slice + (column % slice)];
 }
 
+__global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint16_t *query,
+	uint16_t *key, uint32_t rows, uint32_t query_slice, uint32_t key_slice)
+{
+	const uint32_t row = blockIdx.y, column = (blockIdx.x * blockDim.x) + threadIdx.x;
+	const uint32_t stride = query_slice + key_slice;
+	uint32_t rank;
+	if ( column < K3_Q_LORA_RANK )
+	{
+		rank = column / query_slice;
+		query[(uint64_t)row * K3_Q_LORA_RANK + column] =
+			gathered[((uint64_t)rank * rows + row) * stride + column % query_slice];
+	}
+	else if ( column < K3_Q_LORA_RANK + K3_MLA_KV_A_DIM )
+	{
+		rank = (column - K3_Q_LORA_RANK) / key_slice;
+		key[(uint64_t)row * K3_MLA_KV_A_DIM + column - K3_Q_LORA_RANK] =
+			gathered[((uint64_t)rank * rows + row) * stride + query_slice + (column - K3_Q_LORA_RANK) % key_slice];
+	}
+}
+
 __global__ static void K3RunnerLatentLogitsKernel(const uint16_t *gathered, uint16_t *latent,
 	float *logits, uint32_t rows, uint32_t slice, uint32_t experts, uint32_t ranks)
 {
@@ -733,6 +753,17 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS )
 	{
 		K3RunnerShardExchange(state, b, stream, phase);
+		return;
+	}
+	if ( base == K3_COLLECTIVE_MLA_DOWN )
+	{
+		const uint32_t degree = b->kv_shard.degree;
+		K3RunnerRound(state, stream, rows, b->latent_bf16, state->fused_device,
+			(K3_Q_LORA_RANK + K3_MLA_KV_A_DIM) / degree, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+		K3RunnerMlaDownRowsKernel<<<dim3((K3_Q_LORA_RANK + K3_MLA_KV_A_DIM + 255u) / 256u, rows), 256u, 0, stream>>>(
+			state->fused_device, b->latent_bf16, b->kv_slot_bf16, rows, K3_Q_LORA_RANK / degree, K3_MLA_KV_A_DIM / degree);
+		if ( cudaPeekAtLastError() != cudaSuccess )
+			state->tp_collective_failed = 1u;
 		return;
 	}
 	if ( K3_EXPERT_CELLS(b) && base == 2u )
