@@ -194,6 +194,38 @@ static int reclaim_pack_digest(const char *spec,char hex[SPARK_WEIGHTD_SHA256_HE
     return 1;
 }
 
+static int drop_kv_pools(const char *socket_path,char **labels,int label_count)
+{
+    SparkWeightdKvPoolDropResult drop;
+    SparkWeightdClient *client = 0;
+    SparkStatus status;
+    int index,busy = 0;
+    status = SparkWeightdClientConnect(socket_path,&client,0);
+    if ( status != SPARK_STATUS_OK )
+    {
+        fprintf(stderr,"weightd_warm: DROP-KV connect %s failed status=%d\n",socket_path,(int)status);
+        return 1;
+    }
+    for (index=0; index<label_count; index++)
+    {
+        memset(&drop,0,sizeof(drop));
+        status = SparkWeightdClientKvPoolDrop(client,labels[index],&drop,30u * UINT64_C(1000000000));
+        if ( status != SPARK_STATUS_OK )
+        {
+            fprintf(stderr,"weightd_warm: DROP-KV label=%s failed status=%d%s\n",labels[index],(int)status,
+                status == SPARK_STATUS_IO_ERROR ? " (the daemon closed the connection: a weightd without KV_POOL_DROP support)" : "");
+            SparkWeightdClientClose(client);
+            return 1;
+        }
+        fprintf(stderr,"weightd_warm: DROP-KV label=%s released=%u bytes=%llu busy=%u\n",labels[index],drop.released_count,
+            (unsigned long long)drop.released_bytes,drop.busy_count);
+        if ( drop.busy_count != 0u )
+            busy = 1;
+    }
+    SparkWeightdClientClose(client);
+    return busy ? 3 : 0;
+}
+
 static int reclaim_packs(const char *socket_path,char **specs,int spec_count)
 {
     char digests[23][SPARK_WEIGHTD_SHA256_HEX_BYTES];
@@ -303,6 +335,10 @@ int main(int argument_count,char **arguments)
     }
     if ( argument_count >= 4 && strcmp(arguments[2],"--reclaim-pack") == 0 )
         return reclaim_packs(arguments[1],&arguments[3],argument_count - 3);
+    if ( argument_count >= 4 && strcmp(arguments[2],"--drop-kv") == 0 )
+        return drop_kv_pools(arguments[1],&arguments[3],argument_count - 3);
+    if ( argument_count == 3 && strcmp(arguments[2],"--drop-kv") == 0 )
+        goto usage;
     if ( argument_count == 3 && strcmp(arguments[2],"--reclaim-pack") == 0 )
         goto usage;
     if ( argument_count == 3 && strcmp(arguments[2],"--reclaim") == 0 )
@@ -494,6 +530,7 @@ usage:
     fprintf(stderr,"usage: weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY [LAYERS=45 [EXPERTS=288 [TIMEOUT_S=1800]]]\n"
         "       weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY --wset FILE [TIMEOUT_S=300]\n"
         "       weightd_warm SOCKET --reclaim   (node-global: every cold arena of every lane)\n"
+        "       weightd_warm SOCKET --drop-kv LABEL [...]   (release detached KV pools of these labels; exit 3 if one is attached)\n"
         "       weightd_warm SOCKET --reclaim-pack PACK|SHA256 [...]   (only cold arenas of these packs;\n"
         "              PACK reads PACK.sha256; exit 3 if a matching arena is still attached)\n"
         "       options (any position): --family dsv4_pro --world-rank R (derive the exact\n"

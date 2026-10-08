@@ -1281,9 +1281,30 @@ static void SparkTestKvPools(void)
     }
     assert(grant.reattached == 0u && grant.chunk_count == 3u && SparkWeightdServerKvCommittedBytes(context.server) == 3u * SPARK_TEST_KV_CHUNK_BYTES);
     assert(SparkWeightdServerKvPoolCount(context.server) == 1u);
-    SparkTestKvGrantClose(&grant);
-    SparkWeightdClientClose(third);
-    third = 0;
+    {
+        SparkWeightdKvPoolDropResult drop;
+        SparkWeightdClient *dropper = 0;
+        uint64_t committed = SparkWeightdServerKvCommittedBytes(context.server);
+        SparkTestConnect(&dropper,socket_path,0ull);
+        assert(SparkWeightdClientKvPoolDrop(dropper,"another-label",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK &&
+            drop.released_count == 0u && drop.busy_count == 0u);
+        assert(SparkWeightdClientKvPoolDrop(dropper,"kvpool-test",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK &&
+            drop.released_count == 0u && drop.busy_count == 1u && SparkWeightdServerKvPoolCount(context.server) == 1u);
+        SparkTestKvGrantClose(&grant);
+        SparkWeightdClientClose(third);
+        third = 0;
+        for (index = 0u; index < 500u; index++)
+        {
+            assert(SparkWeightdClientKvPoolDrop(dropper,"kvpool-test",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+            if (drop.busy_count == 0u)
+                break;
+            usleep(2000u);
+        }
+        assert(drop.released_count == 1u && drop.released_bytes == committed &&
+            SparkWeightdServerKvPoolCount(context.server) == 0u && SparkWeightdServerKvCommittedBytes(context.server) == 0u);
+        assert(SparkWeightdClientKvPoolDrop(dropper,"",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_INVALID_ARGUMENT);
+        SparkWeightdClientClose(dropper);
+    }
     SparkTestStopServer(&context,thread);
 
     (void)unlink(socket_path);

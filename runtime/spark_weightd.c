@@ -537,6 +537,10 @@ static uint32_t SparkWeightdKindBodyBytes(uint32_t kind)
             return SPARK_WEIGHTD_IPC_EVICT_BYTES - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_RESIDENCY:
             return sizeof(SparkWeightdIpcResidency) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP:
+            return sizeof(SparkWeightdIpcKvPoolDrop) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT:
+            return sizeof(SparkWeightdIpcKvPoolDropResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT:
             return sizeof(SparkWeightdIpcResidencyResult) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
         case SPARK_WEIGHTD_IPC_KIND_EVICT_RESULT:
@@ -604,6 +608,8 @@ static uint32_t SparkWeightdKindResultKind(uint32_t kind)
             return SPARK_WEIGHTD_IPC_KIND_EVICT_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RESIDENCY:
             return SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT;
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP:
+            return SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_ACQUIRE:
             return SPARK_WEIGHTD_IPC_KIND_ACQUIRE_RESULT;
         case SPARK_WEIGHTD_IPC_KIND_RELEASE:
@@ -4085,6 +4091,41 @@ static uint32_t SparkWeightdServerReclaimMatching(SparkWeightdServer *server, ui
     return SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES;
 }
 
+static uint32_t SparkWeightdServerOnKvPoolDrop(SparkWeightdServer *server, const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
+{
+    const SparkWeightdIpcKvPoolDrop *drop = (const SparkWeightdIpcKvPoolDrop *)request;
+    SparkWeightdIpcKvPoolDropResult *result = (SparkWeightdIpcKvPoolDropResult *)response;
+    char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
+    uint32_t index;
+    memset(result, 0, sizeof(*result));
+    SparkWeightdBuildHeader(response, result_kind, request_id);
+    memcpy(label, drop->label, sizeof(label));
+    label[sizeof(label) - 1u] = '\0';
+    if ( label[0] == '\0' || memchr(drop->label, '\0', sizeof(drop->label)) == 0 )
+    {
+        result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
+        return SPARK_WEIGHTD_IPC_KV_POOL_DROP_RESULT_BYTES;
+    }
+    for (index = 0u; index < SPARK_WEIGHTD_KV_POOL_COUNT_MAX; index++)
+    {
+        SparkWeightdKvPool *pool = &server->kv_pools[index];
+        if ( pool->generation == 0u || strcmp(pool->label, label) != 0 )
+            continue;
+        if ( pool->owner_connection != 0u || (pool->shared != 0u && pool->holder_mask != 0u) )
+        {
+            result->busy_count++;
+            continue;
+        }
+        result->released_bytes += pool->chunk_bytes * pool->chunk_count;
+        result->released_count++;
+        SparkWeightdKvPoolRelease(server, index, "dropped");
+    }
+    result->status = (uint32_t)SPARK_STATUS_OK;
+    fprintf(stderr,"weightd kv pool drop label=%s released=%u bytes=%llu busy=%u kv_committed=%llu\n",label,result->released_count,
+        (unsigned long long)result->released_bytes,result->busy_count,(unsigned long long)server->kv_committed_bytes);
+    return SPARK_WEIGHTD_IPC_KV_POOL_DROP_RESULT_BYTES;
+}
+
 static uint32_t SparkWeightdServerOnReclaim(SparkWeightdServer *server, uint8_t *response, uint32_t result_kind, uint64_t request_id)
 {
     return(SparkWeightdServerReclaimMatching(server,response,result_kind,request_id,0));
@@ -4163,6 +4204,8 @@ static uint32_t SparkWeightdServerDispatchKind(SparkWeightdServer *server, Spark
             return(SparkWeightdServerOnReclaim(server,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_RECLAIM_PACK:
             return(SparkWeightdServerOnReclaimPack(server,request,response,result_kind,request_id));
+        case SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP:
+            return(SparkWeightdServerOnKvPoolDrop(server,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH:
             return(SparkWeightdServerOnKvPoolAttach(server,connection,request,response,result_kind,request_id));
         case SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE:
@@ -5716,6 +5759,43 @@ SparkStatus SparkWeightdClientEvict(SparkWeightdClient *client,
     *released_leases_out = wire_result.released_leases;
     if ( wire_result.status != (uint32_t)SPARK_STATUS_OK )
         return SparkWeightdStatusFromWire(wire_result.status);
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkWeightdClientKvPoolDrop(SparkWeightdClient *client,
+    const char *label,
+    SparkWeightdKvPoolDropResult *result,
+    uint64_t timeout_nanoseconds)
+{
+    SparkWeightdIpcKvPoolDrop wire;
+    SparkWeightdIpcKvPoolDropResult wire_result;
+    SparkStatus status;
+    size_t length;
+
+    if ( client == 0 || label == 0 || result == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    length = strlen(label);
+    if ( length == 0u || length >= sizeof(wire.label) )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    memset(result, 0, sizeof(*result));
+    memset(&wire, 0, sizeof(wire));
+    wire.header.magic = SPARK_WEIGHTD_IPC_MAGIC;
+    wire.header.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+    wire.header.kind = SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP;
+    wire.header.body_bytes = sizeof(wire) - SPARK_WEIGHTD_IPC_HEADER_BYTES;
+    wire.header.request_id = ++client->next_request_id;
+    memcpy(wire.label, label, length);
+    memset(&wire_result, 0, sizeof(wire_result));
+    status = SparkWeightdClientExchange(client, &wire,
+        (uint32_t)sizeof(wire), &wire_result,
+        (uint32_t)sizeof(wire_result), timeout_nanoseconds);
+    if ( status != SPARK_STATUS_OK )
+        SPARK_RETURN(status);
+    if ( wire_result.status != (uint32_t)SPARK_STATUS_OK )
+        return SparkWeightdStatusFromWire(wire_result.status);
+    result->released_bytes = wire_result.released_bytes;
+    result->released_count = wire_result.released_count;
+    result->busy_count = wire_result.busy_count;
     return SPARK_STATUS_OK;
 }
 

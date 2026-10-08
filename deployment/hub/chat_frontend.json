@@ -1,0 +1,173 @@
+{
+ "models": [
+  {
+   "id": "glm-5.3",
+   "model_dir": "models/glm-5.3",
+   "engine": "http://127.0.0.1:8456",
+   "context_tokens": 262144,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|endoftext|>",
+    "<|user|>",
+    "<|observation|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_effort",
+    "clear_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_effort": "low"
+    },
+    "low": {
+     "reasoning_effort": "low"
+    },
+    "medium": {
+     "reasoning_effort": "high"
+    },
+    "high": {
+     "reasoning_effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "key_start": "<arg_key>",
+    "key_end": "</arg_key>",
+    "value_start": "<arg_value>",
+    "value_end": "</arg_value>"
+   }
+  },
+  {
+   "id": "glm-5.3-flash",
+   "model_dir": "models/glm-5.3-flash",
+   "engine": "http://127.0.0.1:8458",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|endoftext|>",
+    "<|user|>",
+    "<|observation|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_effort",
+    "clear_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_effort": "low"
+    },
+    "low": {
+     "reasoning_effort": "low"
+    },
+    "medium": {
+     "reasoning_effort": "high"
+    },
+    "high": {
+     "reasoning_effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "key_start": "<arg_key>",
+    "key_end": "</arg_key>",
+    "value_start": "<arg_value>",
+    "value_end": "</arg_value>"
+   }
+  },
+  {
+   "id": "kimi-k3",
+   "model_dir": "models/kimi-k3",
+   "engine": "http://127.0.0.1:8459",
+   "context_tokens": 131072,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "tokenizer": {
+    "kind": "tiktoken",
+    "file": "tiktoken.model",
+    "special_tokens_from": "tokenizer_config.json",
+    "reserved_special_tokens": 256,
+    "pattern": "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+   },
+   "renderer": {
+    "kind": "segments",
+    "module": "encoding_k3.py",
+    "function": "build_chat_segments"
+   },
+   "stop_tokens": [
+    "<|end_of_msg|>"
+   ],
+   "template_defaults": {
+    "thinking": true
+   },
+   "template_kwargs": [
+    "thinking",
+    "thinking_effort"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "thinking": false
+    },
+    "low": {
+     "thinking_effort": "low"
+    },
+    "medium": {
+     "thinking_effort": "high"
+    },
+    "high": {
+     "thinking_effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<|open|>think<|sep|>",
+    "end": "<|close|>think<|sep|>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "<|open|>call",
+    "end": "<|close|>call<|sep|>",
+    "attribute_end": "<|sep|>",
+    "argument_start": "<|open|>argument",
+    "argument_end": "<|close|>argument<|sep|>",
+    "object_start": "<|open|>json",
+    "object_end": "<|close|>json<|sep|>"
+   },
+   "content_markers": [
+    "<|open|>response<|sep|>",
+    "<|close|>response<|sep|>",
+    "<|open|>tools<|sep|>",
+    "<|close|>tools<|sep|>"
+   ],
+   "end_markers": [
+    "<|close|>message<|sep|>"
+   ]
+  }
+ ],
+ "control": {
+  "status_url": "http://127.0.0.1:8440/status",
+  "activate_url": "http://127.0.0.1:8440/activate"
+ },
+ "site_dir": "site"
+}

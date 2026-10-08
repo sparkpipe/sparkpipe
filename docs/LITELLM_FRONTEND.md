@@ -61,6 +61,70 @@ Known limits:
 - A 60K-token prompt takes about 90 s to prefill the first time; later turns
   that share its prefix reuse it.
 
+## Three models and on-demand swaps (2026-10-08)
+
+The door serves `glm-5.3` (GLM-5.3 Full), `glm-5.3-flash` (GLM-5.3 Flash) and
+`kimi-k3` (Kimi K3). One model holds the fleet at a time; a request for
+another model waits while the fleet swaps.
+
+| Piece | Where | What |
+| --- | --- | --- |
+| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}` |
+| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` and `POST /v1/sparkpipe/activate` pass through to it; `/` serves the playground |
+| LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
+
+A swap to model T, in order:
+
+1. Wait up to `drain_seconds` for live requests on each model that will be stopped.
+2. Stop every other model's API and engines.
+3. Release their detached KV pools on every node: `weightd_warm SOCKET --drop-kv LABEL` (weightd `KV_POOL_DROP`, IPC kinds 59/60; an attached pool is refused and the swap fails).
+4. Start T's engines and wait until every rank logs `model_residentd ready`. A dead rank fails the swap.
+5. Warm T's weights where the model has a warm step.
+6. Start T's API and wait until it connects every rank.
+
+The KV of a stopped model stays on NVMe in its snapshot store. Weightd no longer keeps it in RAM, so the next model gets that memory. When the model comes back, its cached prefixes restore from the snapshot.
+
+Measured on 16 Sparks (weightd 2ff18388, controller cycle, 4.2K-token document asked before and after):
+
+| Swap | Time | Prefix cached on return |
+| --- | --- | --- |
+| cold start to K3 | 42 s (ranks 22 s, warm 17 s) | 4,224 of 4,227 |
+| K3 to GLM Full | 23.5 s | 4,224 of 4,288 |
+| GLM Full to GLM Flash | 10.9 s | 4,224 of 4,284 |
+| GLM Flash to K3 | 42.3 s | 4,224 of 4,227, identical output |
+
+Without step 3, weightd keeps each stopped model's KV pool resident (GLM Full 3.1 GB, Flash 0.4 GB). With K3 loaded, nodes then fell to earlyoom's 3% line, and earlyoom terminated a K3 rank.
+
+The controller assumes one user steering the fleet. The last requested model wins, and two clients alternating between models will thrash it.
+
+### Kimi K3 in the chat layer
+
+K3 has no Jinja template. Its model directory holds the published files:
+
+- `tiktoken.model` and `tokenizer_config.json`, the tokenizer (`"tokenizer": {"kind": "tiktoken", ...}` with the split pattern from `tokenization_kimi.py`);
+- `encoding_k3.py`, the encoder (`"renderer": {"kind": "segments", "module": "encoding_k3.py", "function": "build_chat_segments"}`).
+
+The renderer encodes each segment the encoder returns. Special tokens are allowed only in the structural segments, so user text never becomes a control token.
+
+The reply is parsed as `think`, `response` and `tools` channels:
+
+- `reasoning` ends at `<|close|>think<|sep|>`;
+- the response and tools wrappers are `content_markers` and are dropped;
+- calls use the `tagged` tool-call format, with typed `argument` elements or a `json` object;
+- `<|close|>message<|sep|>` is an end marker.
+
+OpenAI `reasoning_effort` maps onto K3's `thinking_effort`: low → low, medium → high, high → max. `minimal` turns thinking off.
+
+### ZCode
+
+ZCode reaches the door as a custom provider in `~/.zcode/v2/provider_config.json`:
+
+- `"providerId": "custom:sparkpipe"`;
+- `"api": {"type": "anthropic-messages", "baseUrl": "http://rtx5090:4000"}`;
+- model ids `kimi-k3`, `glm-5.3` and `glm-5.3-flash`, with context windows 131072, 262144 and 32768 in `modelConfigRules`.
+
+LiteLLM runs without a master key, so the provider's API key is a placeholder. Picking a model in ZCode swaps the fleet on its first request.
+
 ## The model_api contract (read first)
 
 `model_api` (`node/model_api.c`) accepts OpenAI-shaped requests. Text

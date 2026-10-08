@@ -94,6 +94,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_LEASE_SLOTS_RESULT 56u
 #define SPARK_WEIGHTD_IPC_KIND_RESIDENCY 57u
 #define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
 #define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT ? 13u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH ? 12u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 11u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
@@ -520,6 +522,22 @@ typedef struct SparkWeightdIpcResidency
     uint64_t arena_generation;
 } SparkWeightdIpcResidency;
 
+typedef struct SparkWeightdIpcKvPoolDrop
+{
+    SparkWeightdIpcHeader header;
+    char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
+} SparkWeightdIpcKvPoolDrop;
+
+typedef struct SparkWeightdIpcKvPoolDropResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t released_bytes;
+    uint32_t status;
+    uint32_t released_count;
+    uint32_t busy_count;
+    uint32_t reserved;
+} SparkWeightdIpcKvPoolDropResult;
+
 typedef struct SparkWeightdIpcResidencyResult
 {
     SparkWeightdIpcHeader header;
@@ -936,6 +954,7 @@ _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeight
 #define SPARK_WEIGHTD_IPC_RECLAIM_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaim))
 #define SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaimResult))
 #define SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaimPack))
+#define SPARK_WEIGHTD_IPC_KV_POOL_DROP_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcKvPoolDropResult))
 #define SPARK_WEIGHTD_IPC_EXPORT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExport))
 #define SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExportResult))
 #define SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES ((uint32_t)sizeof(SparkWeightdIpcAttachLazy))
@@ -1145,6 +1164,18 @@ typedef struct SparkWeightdResidency
 SparkStatus SparkWeightdClientResidency(SparkWeightdClient *client,
     uint64_t arena_generation,
     SparkWeightdResidency *residency,
+    uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdKvPoolDropResult
+{
+    uint64_t released_bytes;
+    uint32_t released_count;
+    uint32_t busy_count;
+} SparkWeightdKvPoolDropResult;
+
+SparkStatus SparkWeightdClientKvPoolDrop(SparkWeightdClient *client,
+    const char *label,
+    SparkWeightdKvPoolDropResult *result,
     uint64_t timeout_nanoseconds);
 
 typedef struct SparkWeightdWorkingSetResult

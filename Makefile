@@ -719,6 +719,7 @@ PYTHON_TESTS := \
 	tests/test_sample_host.py \
 	tests/test_chat_frontend_sampling.py \
 	tests/test_chat_frontend_warm_queue.py \
+	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_hy4_fp8_scale_contract.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
