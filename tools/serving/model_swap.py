@@ -27,17 +27,19 @@ def require(spec, keys, where):
 
 class Swapper:
     def __init__(self, config):
-        require(config, ("nodes", "ssh", "drop_kv", "models"), "the config")
+        require(config, ("nodes", "ssh", "drop_kv", "memory_probe", "memory_margin_bytes", "models"), "the config")
         self.nodes = list(config["nodes"])
         self.ssh = list(config["ssh"])
         self.drop_kv = config["drop_kv"]
+        self.memory_probe = config["memory_probe"]
+        self.memory_margin = int(config["memory_margin_bytes"])
         self.ready_seconds = float(config.get("ready_seconds", 300))
         self.api_seconds = float(config.get("api_seconds", 120))
         self.drain_seconds = float(config.get("drain_seconds", 30))
         self.node_seconds = float(config.get("node_seconds", 240))
         self.models = {}
         for spec in config["models"]:
-            require(spec, ("id", "kv_label", "node_start", "node_ready", "node_stop", "api_start", "api_stop", "health"), f"model {spec.get('id')!r}")
+            require(spec, ("id", "kv_label", "node_memory_bytes", "node_start", "node_ready", "node_stop", "api_start", "api_stop", "health"), f"model {spec.get('id')!r}")
             self.models[spec["id"]] = spec
         self.active = None
         self.wanted = None
@@ -48,6 +50,7 @@ class Swapper:
         self.phase_started = None
         self.error = None
         self.history = []
+        self.memory = None
         self.task = None
         self.session = None
 
@@ -56,7 +59,7 @@ class Swapper:
         return {"active": self.active, "state": self.state, "target": self.target, "wanted": self.wanted, "phase": self.phase,
                 "swap_elapsed_s": round(now - self.swap_started, 1) if self.state == "swapping" and self.swap_started else None,
                 "phase_elapsed_s": round(now - self.phase_started, 1) if self.state == "swapping" and self.phase_started else None,
-                "error": self.error, "models": [{"id": model_id, "active": model_id == self.active} for model_id in self.models],
+                "error": self.error, "memory": self.memory, "models": [{"id": model_id, "active": model_id == self.active} for model_id in self.models],
                 "history": self.history[-10:]}
 
     def enter(self, phase):
@@ -90,6 +93,35 @@ class Swapper:
         if failed:
             host, code, text = failed[0]
             raise SwapError(f"{what} failed on {len(failed)} node(s); first {host} exit {code}: {text}")
+
+    async def available(self):
+        results = await self.fan(self.memory_probe, 30, {})
+        self.check(results, "memory probe")
+        values = []
+        for rank, (code, text) in enumerate(results):
+            try:
+                values.append(int(text.split()[-1]))
+            except (IndexError, ValueError):
+                raise SwapError(f"memory probe on {self.nodes[rank]} printed {text[-80:]!r}, not a byte count")
+        return values
+
+    async def admit(self, model):
+        before = await self.available()
+        need = int(model["node_memory_bytes"]) + self.memory_margin
+        short = [f"{self.nodes[rank]} {value / 2**30:.1f}" for rank, value in enumerate(before) if value < need]
+        if short:
+            raise SwapError(f"{model['id']} needs {need / 2**30:.1f} GiB available per node "
+                            f"({int(model['node_memory_bytes']) / 2**30:.1f} GiB projected + {self.memory_margin / 2**30:.1f} GiB margin); "
+                            f"short on {len(short)} node(s), GiB available: {', '.join(short)}")
+        return before
+
+    def measure(self, model, before, after):
+        used = [b - a for b, a in zip(before, after)]
+        self.memory = {"model": model["id"], "projected_gib": round(int(model["node_memory_bytes"]) / 2**30, 1),
+                       "used_gib_max": round(max(used) / 2**30, 1), "used_gib_min": round(min(used) / 2**30, 1),
+                       "available_gib_min": round(min(after) / 2**30, 1),
+                       "tightest": self.nodes[min(range(len(after)), key=lambda rank: after[rank])]}
+        print(json.dumps(dict(self.memory, event="swap_memory")), file=sys.stderr, flush=True)
 
     async def health(self, model):
         try:
@@ -158,6 +190,7 @@ class Swapper:
         self.error = None
         self.swap_started = time.time()
         previous = self.active
+        measured = None
         try:
             if await self.ready(model):
                 self.active = target
@@ -172,14 +205,18 @@ class Swapper:
                 if code != 0:
                     raise SwapError(f"{target} api stop exit {code}: {text[-300:]}")
                 self.check(await self.fan(model["node_stop"], self.node_seconds, {}), f"{target} engine stop")
+                self.enter("checking memory")
+                before = await self.admit(model)
                 await self.start(model)
+                self.measure(model, before, await self.available())
+                measured = self.memory
                 self.active = target
             self.state = "idle"
         except SwapError as error:
             self.state = "failed"
             self.error = str(error)
         elapsed = round(time.time() - self.swap_started, 1)
-        record = {"from": previous, "to": target, "ok": self.state == "idle", "seconds": elapsed, "error": self.error,
+        record = {"from": previous, "to": target, "ok": self.state == "idle", "seconds": elapsed, "error": self.error, "memory": measured,
                   "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         self.history.append(record)
         print(json.dumps(dict(record, event="swap_done")), file=sys.stderr, flush=True)
