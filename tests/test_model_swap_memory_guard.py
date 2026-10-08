@@ -21,10 +21,12 @@ with open(os.path.join(state, "log"), "a") as handle:
 if command == "PROBE":
     memory = json.load(open(os.path.join(state, "memory.json")))
     started = os.path.exists(os.path.join(state, "started-" + host))
-    reclaimed = os.path.exists(os.path.join(state, "reclaimed-" + host))
-    print(memory[host]["after" if started else "reclaimed" if reclaimed and "reclaimed" in memory[host] else "before"])
+    others = os.path.exists(os.path.join(state, "reclaimed-small-" + host))
+    own = os.path.exists(os.path.join(state, "reclaimed-big-" + host))
+    level = "after" if started else "reclaimed_own" if own and "reclaimed_own" in memory[host] else "reclaimed" if others and "reclaimed" in memory[host] else "before"
+    print(memory[host][level])
 elif command.startswith("RECLAIM"):
-    open(os.path.join(state, "reclaimed-" + host), "w").close()
+    open(os.path.join(state, "reclaimed-" + command.split()[1] + "-" + host), "w").close()
 elif command.startswith("START"):
     open(os.path.join(state, "started-" + host), "w").close()
 elif command.startswith("READY"):
@@ -129,10 +131,14 @@ def main():
     swapper, started, reclaims = asyncio.run(scenario(reclaimable, True))
     check("a short node first releases the other models' cold arenas, then the model starts",
           swapper.state == "idle" and len(started) == 3 and reclaims == ["RECLAIM small"])
-    short = dict(roomy, n1={"before": 80 * GIB, "reclaimed": 105 * GIB, "after": 1 * GIB})
+    own = dict(roomy, n1={"before": 12 * GIB, "reclaimed": 12 * GIB, "reclaimed_own": 112 * GIB, "after": 9 * GIB})
+    swapper, started, reclaims = asyncio.run(scenario(own, True))
+    check("a node still short after the other models' release frees the model's own cold arena, then starts",
+          swapper.state == "idle" and len(started) == 3 and reclaims == ["RECLAIM big", "RECLAIM small"])
+    short = dict(roomy, n1={"before": 80 * GIB, "reclaimed": 105 * GIB, "reclaimed_own": 105 * GIB, "after": 1 * GIB})
     swapper, started, reclaims = asyncio.run(scenario(short, False))
-    check("a node still below projection plus margin after the release refuses the start on every node",
-          swapper.state == "failed" and started == [] and swapper.active is None and reclaims == ["RECLAIM small"])
+    check("a node still below projection plus margin after every release refuses the start on every node",
+          swapper.state == "failed" and started == [] and swapper.active is None and reclaims == ["RECLAIM big", "RECLAIM small"])
     check("the refusal names the short node and its available memory", "n1 105.0" in swapper.error and "n0" not in swapper.error.split("GiB available:")[-1])
 
     exact = dict(roomy, n2={"before": 106 * GIB, "after": 4 * GIB})

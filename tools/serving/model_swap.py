@@ -113,6 +113,9 @@ class Swapper:
                 if other["id"] != model["id"]:
                     self.check(await self.fan(other["node_reclaim"], 120, {}), f"{other['id']} cold arena release")
             before = await self.available()
+        if any(value < need for value in before):
+            self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} own cold arena release")
+            before = await self.available()
         short = [f"{self.nodes[rank]} {value / 2**30:.1f}" for rank, value in enumerate(before) if value < need]
         if short:
             raise SwapError(f"{model['id']} needs {need / 2**30:.1f} GiB available per node "
