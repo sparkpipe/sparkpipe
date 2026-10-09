@@ -41,6 +41,23 @@ typedef struct SparkK3StepInput
 	uint32_t gather_context;
 } SparkK3StepInput;
 
+typedef struct SparkK3ScratchWidths
+{
+	uint32_t qkvb;
+	uint32_t query;
+	uint32_t key;
+	uint32_t value;
+	uint32_t gate;
+	uint32_t decay;
+	uint32_t latent;
+	uint32_t attention_out;
+	uint32_t gate_up;
+	uint32_t intermediate;
+	uint32_t retention;
+	uint32_t shared_mid;
+	uint32_t fused;
+} SparkK3ScratchWidths;
+
 typedef struct SparkK3Dispatch
 {
 	uint32_t first_layer;
@@ -66,6 +83,7 @@ typedef struct SparkK3Dispatch
 	uint16_t *kda_v_window_pool;
 	uint8_t *scratch;
 	size_t scratch_bytes;
+	SparkK3ScratchWidths widths;
 	uint32_t *gather_plan;
 	uint64_t mla_gather_waves;
 	uint64_t mla_scatter_waves;
@@ -78,7 +96,9 @@ typedef struct SparkK3Dispatch
 
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
-	uint64_t kv_page_bytes, uint32_t tp_degree, uint32_t tp_rank, int device);
+	uint64_t kv_page_bytes, uint32_t tp_degree, uint32_t tp_rank, const SparkK3ScratchWidths *widths, int device);
+int32_t SparkK3DispatchScratchWidths(SparkK3Pack *pack, uint32_t first_layer, uint32_t layer_count,
+	uint32_t tp_degree, SparkK3ScratchWidths *widths);
 void SparkK3DispatchDestroy(SparkK3Dispatch *d);
 int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t layer_stride_bytes,
 	const uint32_t *page_table, uint32_t page_table_stride, uint32_t pool_page_count, uint32_t sequence_count);

@@ -129,13 +129,131 @@ static uint8_t *k3_carve(SparkK3Dispatch *d, size_t *offset, size_t bytes)
 	return p;
 }
 
+static uint32_t K3Max(uint32_t a, uint32_t b)
+{
+	return a > b ? a : b;
+}
+
+static void K3ScratchWidthsFor(const K3LayerBuffers *b, SparkK3ScratchWidths *w)
+{
+	const uint32_t kda_heads = K3_RANK_DIM(b, kda_heads_rank, K3_KDA_HEADS);
+	const uint32_t mla_heads = K3_RANK_DIM(b, mla_heads_rank, K3_MLA_HEADS);
+	const uint32_t w1 = K3_RANK_DIM(b, expert_w1_output, K3_EXPERT_INTERMEDIATE * 2u);
+	const uint32_t slice = K3_RANK_DIM(b, routed_down_rows, K3_ROUTED_EXPERT_HIDDEN);
+	const uint32_t ranks = K3_ROUTED_EXPERT_HIDDEN / slice;
+	const uint32_t router = 2u * (K3_EXPERTS / ranks);
+	const uint32_t cells = K3_EXPERT_CELLS(b) ? 1u : 0u;
+	w->qkvb = K3_RANK_DIM(b, kda_qkvb_rows, K3_KDA_QKVB_FUSED_ROWS);
+	w->query = K3Max(kda_heads * K3_KDA_KEY_DIM, K3_RANK_DIM(b, mla_q_up_rows, K3_MLA_Q_DIM));
+	w->key = kda_heads * K3_KDA_KEY_DIM;
+	w->value = K3Max(K3Max(kda_heads * K3_KDA_VALUE_DIM, mla_heads * K3_V_HEAD_DIM),
+		K3_RANK_DIM(b, mla_gate_rows, K3_MLA_OUT_DIM));
+	w->gate = K3Max(K3_RANK_DIM(b, kda_gate_rows, K3_KDA_V_DIM), K3_RANK_DIM(b, mla_gate_rows, K3_MLA_OUT_DIM));
+	w->decay = K3_RANK_DIM(b, kda_decay_up_rows, K3_KDA_QK_DIM);
+	w->latent = cells != 0u
+		? K3Max(K3Max(K3_KDA_KEY_DIM, K3_Q_LORA_RANK + K3_MLA_KV_A_DIM), K3Max(slice + router, K3_ROUTED_EXPERT_HIDDEN))
+		: K3_TOP_K * K3_ROUTED_EXPERT_HIDDEN;
+	w->attention_out = K3Max(K3Max(K3_HIDDEN, mla_heads * K3_KV_LORA_RANK), kda_heads * K3_KDA_VALUE_DIM);
+	w->gate_up = K3Max(K3_TOP_K * K3Max(w1, K3_ROUTED_EXPERT_HIDDEN),
+		K3Max(K3_RANK_DIM(b, shared_w1_rows, K3_SHARED_INTERMEDIATE * 2u), K3_RANK_DIM(b, dense_gate_up_rows, K3_DENSE_INTERMEDIATE * 2u)));
+	w->intermediate = K3Max(K3_TOP_K * (w1 / 2u),
+		K3Max(K3_RANK_DIM(b, shared_w2_input, K3_SHARED_INTERMEDIATE), K3_RANK_DIM(b, dense_down_input, K3_DENSE_INTERMEDIATE)));
+	w->retention = kda_heads * K3_KDA_KEY_DIM;
+	w->shared_mid = K3_RANK_DIM(b, shared_w2_input, K3_SHARED_INTERMEDIATE);
+	w->fused = cells != 0u
+		? K3Max(K3_HIDDEN, K3Max((slice + router) * ranks, K3_Q_LORA_RANK + K3_MLA_KV_A_DIM))
+		: K3_TOP_K * K3_EXPERT_INTERMEDIATE * 2u;
+}
+
+static uint32_t K3ScratchFits(const SparkK3ScratchWidths *needs, const SparkK3ScratchWidths *capacity)
+{
+	static const char *const names[] = {"qkvb", "query", "key", "value", "gate", "decay", "latent",
+		"attention_out", "gate_up", "intermediate", "retention", "shared_mid", "fused"};
+	const uint32_t *need = (const uint32_t *)needs, *have = (const uint32_t *)capacity;
+	uint32_t index, fits = 1u;
+	static_assert(sizeof(SparkK3ScratchWidths) == sizeof(names) / sizeof(names[0]) * sizeof(uint32_t),
+		"every scratch width has a name");
+	for ( index = 0u; index < sizeof(names) / sizeof(names[0]); ++index )
+		if ( need[index] > have[index] )
+		{
+			fprintf(stderr, "sparkpipe_k3: bound weights need %u %s elements per row, scratch holds %u\n",
+				need[index], names[index], have[index]);
+			fits = 0u;
+		}
+	return fits;
+}
+
+static int32_t K3PackRankDims(SparkK3Pack *pack, uint32_t first_layer, uint32_t layer_count, K3LayerBuffers *b)
+{
+	int32_t status = SPARK_K3_DISPATCH_OK;
+	char dim_name[96];
+	SparkK3SliceKindLayers kinds;
+	SparkK3PackEntry dim_entry;
+	SparkK3SliceKindLayersFor(first_layer, layer_count, &kinds);
+#define K3_FILL_RANK(layer, field_name, field_ptr, axis, rank) \
+	do { \
+		if ( status != SPARK_K3_DISPATCH_OK || (layer) == SPARK_K3_SLICE_NO_LAYER ) \
+			break; \
+		snprintf(dim_name, sizeof(dim_name), "model.layers.%u.%s", \
+			(uint32_t)(layer), field_name); \
+		if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) != 0 || \
+			dim_entry.shape_count < (rank) || dim_entry.shape[axis] == 0u ) \
+		{ \
+			fprintf(stderr, "sparkpipe_k3: rank dimension missing %s\n", dim_name); \
+			status = SPARK_K3_DISPATCH_ERR_BIND; \
+			break; \
+		} \
+		*(field_ptr) = (uint32_t)dim_entry.shape[axis]; \
+	} while ( 0 )
+	K3_FILL_RANK(kinds.kda, "kda_qkv_beta_weight", &b->kda_qkvb_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.kda, "kda_gate_weight", &b->kda_gate_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.kda, "kda_decay_up_weight", &b->kda_decay_up_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.kda, "kda_out_weight", &b->kda_out_input, 1u, 2u);
+	K3_FILL_RANK(kinds.mla, "mla_q_up_weight", &b->mla_q_up_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.mla, "mla_gate_weight", &b->mla_gate_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.mla, "mla_out_weight", &b->mla_out_input, 1u, 2u);
+	K3_FILL_RANK(kinds.routed, "routed_down_weight", &b->routed_down_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.routed, "routed_up_weight", &b->routed_up_input, 1u, 2u);
+	K3_FILL_RANK(kinds.routed, "expert_w1_weight", &b->expert_w1_output, 1u, 2u);
+	K3_FILL_RANK(kinds.routed, "shared_w1_weight", &b->shared_w1_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.routed, "shared_w2_weight", &b->shared_w2_input, 1u, 2u);
+	K3_FILL_RANK(kinds.routed, "expert_w2_weight", &b->expert_w2_input, 2u, 3u);
+	K3_FILL_RANK(kinds.dense, "dense_gate_up_weight", &b->dense_gate_up_rows, 0u, 2u);
+	K3_FILL_RANK(kinds.dense, "dense_down_weight", &b->dense_down_input, 1u, 2u);
+	if ( status != SPARK_K3_DISPATCH_OK )
+		return status;
+	if ( b->kda_qkvb_rows != 0u )
+		b->kda_heads_rank = b->kda_qkvb_rows / 385u;
+	if ( b->mla_gate_rows != 0u )
+		b->mla_heads_rank = b->mla_gate_rows / K3_V_HEAD_DIM;
+#undef K3_FILL_RANK
+	return status;
+}
+
+int32_t SparkK3DispatchScratchWidths(SparkK3Pack *pack, uint32_t first_layer, uint32_t layer_count,
+	uint32_t tp_degree, SparkK3ScratchWidths *widths)
+{
+	K3LayerBuffers *dims;
+	int32_t status;
+	if ( pack == 0 || widths == 0 || layer_count == 0u )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	dims = new K3LayerBuffers;
+	memset(dims, 0, sizeof(*dims));
+	dims->tp_sharded = tp_degree > 1u ? 1u : 0u;
+	status = K3PackRankDims(pack, first_layer, layer_count, dims);
+	if ( status == SPARK_K3_DISPATCH_OK )
+		K3ScratchWidthsFor(dims, widths);
+	delete dims;
+	return status;
+}
+
 int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizing,
 	uint32_t sequences, uint32_t max_rows, uint32_t kv_pages_per_view,
-	uint64_t kv_page_bytes, uint32_t tp_degree, uint32_t tp_rank, int device)
+	uint64_t kv_page_bytes, uint32_t tp_degree, uint32_t tp_rank, const SparkK3ScratchWidths *widths, int device)
 {
 	SparkK3KdaRankLayout layout;
 	SparkK3RankStateBytes state_plan;
-	if ( d == 0 || sizing == 0 || sequences == 0u || max_rows == 0u ||
+	if ( d == 0 || sizing == 0 || widths == 0 || sequences == 0u || max_rows == 0u ||
 		sizing->layer_count == 0u ||
 		SparkK3KdaRankLayoutFor(tp_degree, &layout) == 0u ||
 		SparkK3RankStateBytesFor(sizing->kda_layer_count,
@@ -162,6 +280,7 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->routes_capacity = max_rows * K3_TOP_K;
 	d->kv_pages_per_view = kv_pages_per_view;
 	d->kv_page_bytes = kv_page_bytes;
+	d->widths = *widths;
 	d->device = device;
 
 	const uint64_t state_bytes = (uint64_t)d->kda_count * sequences * layout.state_slot_bytes;
@@ -211,32 +330,24 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	st->first_kda_index = d->first_layer - (d->first_layer / 4u);
 
 	size_t off = 0u;
+	const SparkK3ScratchWidths *w = &d->widths;
+	const size_t rows = max_rows;
+	const size_t query_elements = tp_degree > 1u && SparkK3KvShardQueryStride(max_rows, tp_degree) > rows * w->query
+		? (size_t)SparkK3KvShardQueryStride(max_rows, tp_degree) : rows * w->query;
+	const size_t sizes[] = {
+		rows * K3_HIDDEN * 2u, rows * K3_HIDDEN * 2u, rows * w->qkvb * 2u,
+		rows * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS * 2u, rows * K3_KDA_KEY_DIM * 2u, query_elements * 2u,
+		rows * w->key * 2u, rows * w->value * 2u, rows * w->gate * 2u, rows * w->decay * 2u,
+		rows * w->latent * 2u, rows * K3_MLA_KV_A_DIM * 2u, rows * w->attention_out * 2u,
+		rows * K3_HIDDEN * 2u, (size_t)K3_ATTNRES_MAX_SOURCES * rows * K3_HIDDEN * 2u, rows * K3_HIDDEN * 2u,
+		rows * K3_KDA_HEADS * 2u, rows * K3_KDA_HEADS * 4u, rows * w->gate_up * 2u, rows * w->intermediate * 2u,
+		rows * w->retention * 4u, rows * K3_EXPERTS * 4u, rows * K3_ATTNRES_MAX_SOURCES * 4u,
+		rows * K3_ROUTED_EXPERT_HIDDEN * 2u, rows * w->shared_mid * 2u};
+	const size_t count = sizeof(sizes) / sizeof(sizes[0]);
+	size_t index = 0u;
 	d->scratch_bytes = 0u;
-	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_QKVB_FUSED_ROWS * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_KEY_DIM * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_MLA_Q_DIM * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_QK_DIM * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_V_DIM * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_V_DIM * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_QK_DIM * 2u;
-	d->scratch_bytes += (size_t)d->routes_capacity * K3_ROUTED_EXPERT_HIDDEN * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_MLA_KV_A_DIM * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_MLA_LATENT_OUT_DIM * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;
-	d->scratch_bytes += (size_t)K3_ATTNRES_MAX_SOURCES * max_rows * K3_HIDDEN * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_HIDDEN * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * 4u;
-	d->scratch_bytes += (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u * 2u;
-	d->scratch_bytes += (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u;
-	d->scratch_bytes += (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u;
-	d->scratch_bytes += (size_t)max_rows * K3_EXPERTS * 4u;
-	d->scratch_bytes += (size_t)max_rows * K3_ATTNRES_MAX_SOURCES * 4u + 16u;
-	d->scratch_bytes += (size_t)max_rows * K3_ROUTED_EXPERT_HIDDEN * 2u + 16u;
-	d->scratch_bytes += (size_t)max_rows * K3_SHARED_INTERMEDIATE * 2u + 16u;
+	for ( size_t item = 0u; item < count; ++item )
+		d->scratch_bytes += (sizes[item] + 15u) & ~(size_t)15u;
 	if ( tp_degree > 1u )
 		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(max_rows, tp_degree) + 48u;
 	d->scratch_bytes += 256u;
@@ -244,31 +355,33 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 	cudaMemset(d->scratch, 0, d->scratch_bytes);
 	K3LayerBuffers *b = d->buffers_host;
-	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);
-	b->normed_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);
-	b->fused_qkvb_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_QKVB_FUSED_ROWS * 2u);
-	b->fused_decay_gate_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS * 2u);
-	b->gate_latent_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_KEY_DIM * 2u);
-	b->query_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_MLA_Q_DIM * 2u);
-	b->key_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_QK_DIM * 2u);
-	b->value_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_V_DIM * 2u);
-	b->gate_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_V_DIM * 2u);
-	b->decay_logit_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_QK_DIM * 2u);
-	b->latent_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)d->routes_capacity * K3_ROUTED_EXPERT_HIDDEN * 2u);
-	b->kv_slot_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_MLA_KV_A_DIM * 2u);
-	b->attention_out_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_MLA_LATENT_OUT_DIM * 2u);
-	b->shared_out_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);
-	b->attnres_bank_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)K3_ATTNRES_MAX_SOURCES * max_rows * K3_HIDDEN * 2u);
-	b->attnres_partial_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_HIDDEN * 2u);
-	b->kda_beta_logit = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_HEADS * 2u);
-	b->kda_write_gate_out = (float *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_HEADS * 4u);
-	b->gate_up_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u * 2u);
-	b->intermediate_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)d->routes_capacity * K3_SHARED_INTERMEDIATE * 2u);
-	b->kda_retention = (float *)k3_carve(d, &off, (size_t)max_rows * K3_KDA_HEADS * K3_KDA_KEY_DIM * 4u);
-	b->router_logits = (float *)k3_carve(d, &off, (size_t)max_rows * K3_EXPERTS * 4u);
-	b->attnres_score_f32 = (float *)k3_carve(d, &off, (size_t)max_rows * K3_ATTNRES_MAX_SOURCES * 4u);
-	b->latent_full_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_ROUTED_EXPERT_HIDDEN * 2u);
-	b->shared_mid_bf16 = (uint16_t *)k3_carve(d, &off, (size_t)max_rows * K3_SHARED_INTERMEDIATE * 2u);
+	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->normed_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->fused_qkvb_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->fused_decay_gate_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->gate_latent_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->query_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->key_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->value_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->gate_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->decay_logit_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->latent_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->kv_slot_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->attention_out_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->shared_out_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->attnres_bank_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->attnres_partial_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->kda_beta_logit = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->kda_write_gate_out = (float *)k3_carve(d, &off, sizes[index++]);
+	b->gate_up_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->intermediate_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->kda_retention = (float *)k3_carve(d, &off, sizes[index++]);
+	b->router_logits = (float *)k3_carve(d, &off, sizes[index++]);
+	b->attnres_score_f32 = (float *)k3_carve(d, &off, sizes[index++]);
+	b->latent_full_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->shared_mid_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	if ( index != count )
+		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_ARGUMENT; }
 	if ( tp_degree > 1u )
 	{
 		b->kv_shard = SparkK3KvShardContext(tp_rank, tp_degree);
@@ -431,47 +544,13 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	}
 	if ( status == SPARK_K3_DISPATCH_OK )
 	{
-		char dim_name[96];
-		SparkK3SliceKindLayers kinds;
-		SparkK3PackEntry dim_entry;
-		SparkK3SliceKindLayersFor(d->first_layer, layer_count, &kinds);
-#define K3_FILL_RANK(layer, field_name, field_ptr, axis, rank) \
-		do { \
-			if ( status != SPARK_K3_DISPATCH_OK || (layer) == SPARK_K3_SLICE_NO_LAYER ) \
-				break; \
-			snprintf(dim_name, sizeof(dim_name), "model.layers.%u.%s", \
-				(uint32_t)(layer), field_name); \
-			if ( SparkK3PackLoadEntry(pack, dim_name, &dim_entry) != 0 || \
-				dim_entry.shape_count < (rank) || dim_entry.shape[axis] == 0u ) \
-			{ \
-				fprintf(stderr, "sparkpipe_k3: rank dimension missing %s\n", dim_name); \
-				status = SPARK_K3_DISPATCH_ERR_BIND; \
-				break; \
-			} \
-			*(field_ptr) = (uint32_t)dim_entry.shape[axis]; \
-		} while ( 0 )
-		K3_FILL_RANK(kinds.kda, "kda_qkv_beta_weight", &d->buffers->kda_qkvb_rows, 0u, 2u);
-		K3_FILL_RANK(kinds.kda, "kda_gate_weight", &d->buffers->kda_gate_rows, 0u, 2u);
-		K3_FILL_RANK(kinds.kda, "kda_decay_up_weight", &d->buffers->kda_decay_up_rows, 0u, 2u);
-		K3_FILL_RANK(kinds.kda, "kda_out_weight", &d->buffers->kda_out_input, 1u, 2u);
-		K3_FILL_RANK(kinds.mla, "mla_q_up_weight", &d->buffers->mla_q_up_rows, 0u, 2u);
-		K3_FILL_RANK(kinds.mla, "mla_gate_weight", &d->buffers->mla_gate_rows, 0u, 2u);
-		K3_FILL_RANK(kinds.mla, "mla_out_weight", &d->buffers->mla_out_input, 1u, 2u);
-		K3_FILL_RANK(kinds.routed, "routed_down_weight", &d->buffers->routed_down_rows, 0u, 2u);
-		K3_FILL_RANK(kinds.routed, "routed_up_weight", &d->buffers->routed_up_input, 1u, 2u);
-		K3_FILL_RANK(kinds.routed, "expert_w1_weight", &d->buffers->expert_w1_output, 1u, 2u);
-		K3_FILL_RANK(kinds.routed, "shared_w1_weight", &d->buffers->shared_w1_rows, 0u, 2u);
-		K3_FILL_RANK(kinds.routed, "shared_w2_weight", &d->buffers->shared_w2_input, 1u, 2u);
-		K3_FILL_RANK(kinds.routed, "expert_w2_weight", &d->buffers->expert_w2_input, 2u, 3u);
-		K3_FILL_RANK(kinds.dense, "dense_gate_up_weight", &d->buffers->dense_gate_up_rows, 0u, 2u);
-		K3_FILL_RANK(kinds.dense, "dense_down_weight", &d->buffers->dense_down_input, 1u, 2u);
+		SparkK3ScratchWidths needs;
+		status = K3PackRankDims(pack, d->first_layer, layer_count, d->buffers);
 		if ( status != SPARK_K3_DISPATCH_OK )
 		{
 			delete[] host;
 			return status;
 		}
-		if ( d->buffers->kda_qkvb_rows != 0u )
-			d->buffers->kda_heads_rank = d->buffers->kda_qkvb_rows / 385u;
 		if ( (d->buffers->kda_qkvb_rows != 0u ?
 				d->buffers->kda_heads_rank : (uint32_t)K3_KDA_HEADS) !=
 			d->kda_rank_heads )
@@ -482,9 +561,12 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 			delete[] host;
 			return SPARK_K3_DISPATCH_ERR_BIND;
 		}
-		if ( d->buffers->mla_gate_rows != 0u )
-			d->buffers->mla_heads_rank = d->buffers->mla_gate_rows / K3_V_HEAD_DIM;
-#undef K3_FILL_RANK
+		K3ScratchWidthsFor(d->buffers, &needs);
+		if ( K3ScratchFits(&needs, &d->widths) == 0u )
+		{
+			delete[] host;
+			return SPARK_K3_DISPATCH_ERR_BIND;
+		}
 		SparkK3PackEntry entry;
 		if ( SparkK3PackLoadEntry(pack, "model.attnres_out_weight", &entry) == 0 )
 		{

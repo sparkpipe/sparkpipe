@@ -1156,6 +1156,7 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3RunnerState *state,
 {
 	uint64_t budget = 0u, planned;
 	SparkK3RankStateBytes state_plan;
+	SparkK3ScratchWidths widths;
 	memset(&state_plan, 0, sizeof(state_plan));
 	if ( K3RunnerEnvUnsigned64("SPARK_K3_STATE_BUDGET_BYTES", 1u, UINT64_MAX,
 		&budget) != SPARK_STATUS_OK )
@@ -1177,11 +1178,17 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3RunnerState *state,
 			configuration->tp_degree);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	if ( SparkK3DispatchScratchWidths(&state->module.pack, state->module.sizing.first_layer,
+		state->module.sizing.layer_count, configuration->tp_degree, &widths) != SPARK_K3_DISPATCH_OK )
+	{
+		fprintf(stderr, "sparkpipe_k3: the pack does not give the per-rank scratch widths\n");
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	}
 	if ( SparkK3DispatchCreate(&state->dispatch, &state->module.sizing,
 		configuration->max_active_sequence_count,
 		configuration->max_input_row_count,
 		configuration->kv_pages_per_sequence,
-		state->kv_page_bytes, configuration->tp_degree, configuration->tp_rank, 0) != SPARK_K3_DISPATCH_OK )
+		state->kv_page_bytes, configuration->tp_degree, configuration->tp_rank, &widths, 0) != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: dispatch create failed tp_degree=%u\n",
 			configuration->tp_degree);
@@ -1500,7 +1507,7 @@ SparkStatus SparkK3StageRunnerInitialize(
 		}
 		state->fused_rows = configuration->max_input_row_count;
 		{
-			uint64_t fused_bytes = (uint64_t)SparkK3TpSequences((uint64_t)state->fused_rows * K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u)) *
+			uint64_t fused_bytes = (uint64_t)SparkK3TpSequences((uint64_t)state->fused_rows * state->dispatch.widths.fused) *
 				K3_HIDDEN * sizeof(uint16_t);
 			if ( cudaMalloc(&state->fused_device, fused_bytes) != cudaSuccess ||
 				cudaMemset(state->fused_device, 0, fused_bytes) != cudaSuccess )
@@ -2683,6 +2690,8 @@ SparkStatus SparkK3StageRunnerStepHalf(SparkK3StageRunner *runner, uint32_t laye
 		state->copy_failed = 1u;
 	if ( phase == 2u )
 	{
+		if ( (uint64_t)packed_rows * (2u * K3_EXPERT_INTERMEDIATE) > (uint64_t)d->max_rows * d->widths.gate_up )
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		if ( K3RunnerCopy(b->gate_up_bf16, partial_input_bf16,
 			(uint64_t)packed_rows * (2u * K3_EXPERT_INTERMEDIATE) * sizeof(uint16_t), stream) != cudaSuccess )
 			state->copy_failed = 1u;
