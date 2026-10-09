@@ -1212,6 +1212,7 @@ static SparkStatus StageRunnerHeadRows(SparkStageRunnerState *state, const uint1
 	head.head_weight = state->head_weight;
 	head.hidden = state->geometry.hidden;
 	head.epsilon = state->geometry.rms_epsilon;
+	head.norm_f32 = state->geometry.head_norm_f32;
 	head.vocab_slice_rows = state->vocab_slice_rows;
 	head.rank_offset = state->tp_rank * state->vocab_slice_rows;
 	head.candidate_score = state->head_candidate_score;
