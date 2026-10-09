@@ -379,6 +379,16 @@ typedef struct SparkK3RunnerState
 	uint64_t timing_submit_ns;
 	uint64_t phase_ns[4];
 	uint32_t phase_waves;
+	cudaEvent_t layer_event[K3_LAYERS + 1u];
+	uint64_t layer_host_ns[K3_LAYERS + 1u];
+	double layer_gpu_ms[K3_LAYERS + 1u];
+	double layer_enqueue_ms[K3_LAYERS + 1u];
+	double layer_lag_ms[K3_LAYERS + 1u];
+	double layer_span_ms[2];
+	uint32_t layer_events_created;
+	uint32_t layer_marks;
+	uint32_t layer_mark_last;
+	uint32_t layer_waves;
 	uint64_t timing_graph_ns;
 	SparkTpDeviceCollectiveHardwareTiming timing_wait;
 } SparkK3RunnerState;
@@ -1089,11 +1099,27 @@ static int32_t SparkK3RunnerLazyAcquire(void *context, uint32_t layer,
 	return LM_LAUNCH_OK;
 }
 
+static uint64_t K3RunnerNowNs(void);
+
+static void K3RunnerLayerMark(SparkK3RunnerState *state, uint32_t index)
+{
+	if ( state->layer_marks == 0u || index > K3_LAYERS )
+		return;
+	if ( cudaEventRecord(state->layer_event[index], state->stream) != cudaSuccess )
+	{
+		state->layer_marks = 0u;
+		return;
+	}
+	state->layer_host_ns[index] = K3RunnerNowNs();
+	state->layer_mark_last = index;
+}
+
 static void SparkK3RunnerLazyRelease(void *context, uint32_t layer)
 {
 	SparkK3RunnerState *state = (SparkK3RunnerState *)context;
 	SparkStatus status;
-	(void)layer;
+	if ( state != 0 && layer < K3_LAYERS )
+		K3RunnerLayerMark(state, layer + 1u);
 	if ( state == 0 || state->resident != 0u )
 		return;
 	status = SparkK3RunnerReleaseLease(state);
@@ -1830,6 +1856,75 @@ static void K3RunnerPhases(SparkK3RunnerState *state, uint32_t rank, const uint6
 	state->phase_waves = 0u;
 }
 
+static uint32_t K3RunnerLayerMarksBegin(SparkK3RunnerState *state)
+{
+	uint32_t index;
+	state->layer_marks = 0u;
+	for ( ; state->layer_events_created <= K3_LAYERS; ++state->layer_events_created )
+		if ( cudaEventCreate(&state->layer_event[state->layer_events_created]) != cudaSuccess )
+			return 0u;
+	state->layer_marks = 1u;
+	state->layer_mark_last = 0u;
+	for ( index = 0u; index <= K3_LAYERS; ++index )
+		state->layer_host_ns[index] = 0u;
+	K3RunnerLayerMark(state, 0u);
+	return state->layer_marks;
+}
+
+static void K3RunnerLayerMarksEnd(SparkK3RunnerState *state, uint32_t rank)
+{
+	const uint32_t last = state->layer_mark_last;
+	uint32_t index, order, top[4] = {0u, 0u, 0u, 0u}, starved = 0u;
+	float gpu, since;
+	state->layer_marks = 0u;
+	if ( last == 0u || cudaEventSynchronize(state->layer_event[last]) != cudaSuccess )
+		return;
+	for ( index = 1u; index <= last; ++index )
+	{
+		if ( state->layer_host_ns[index] == 0u ||
+			cudaEventElapsedTime(&gpu, state->layer_event[index - 1u], state->layer_event[index]) != cudaSuccess ||
+			cudaEventElapsedTime(&since, state->layer_event[0], state->layer_event[index]) != cudaSuccess )
+			return;
+		state->layer_gpu_ms[index] += gpu;
+		state->layer_enqueue_ms[index] += (double)(state->layer_host_ns[index] - state->layer_host_ns[index - 1u]) / 1e6;
+		state->layer_lag_ms[index] += since - (double)(state->layer_host_ns[index] - state->layer_host_ns[0]) / 1e6;
+	}
+	state->layer_span_ms[0] += since;
+	state->layer_span_ms[1] += (double)(state->layer_host_ns[last] - state->layer_host_ns[0]) / 1e6;
+	if ( ++state->layer_waves < 16u )
+		return;
+	for ( index = 1u; index <= last; ++index )
+	{
+		for ( order = 0u; order < 4u; ++order )
+			if ( top[order] == 0u || state->layer_gpu_ms[index] > state->layer_gpu_ms[top[order]] )
+			{
+				memmove(top + order + 1u, top + order, (3u - order) * sizeof(top[0]));
+				top[order] = index;
+				break;
+			}
+		if ( starved == 0u || state->layer_lag_ms[index] < state->layer_lag_ms[starved] )
+			starved = index;
+	}
+	fprintf(stderr, "K3-LAYER-MARKS rank=%u waves=%u layers=%u gpu_span_ms=%.1f host_span_ms=%.1f starved=%u:%.1f top",
+		rank, state->layer_waves, last, state->layer_span_ms[0] / state->layer_waves, state->layer_span_ms[1] / state->layer_waves,
+		starved - 1u, state->layer_lag_ms[starved] / state->layer_waves);
+	for ( order = 0u; order < 4u && top[order] != 0u; ++order )
+		fprintf(stderr, " %u:%.1f/%.1f/%.1f", top[order] - 1u, state->layer_gpu_ms[top[order]] / state->layer_waves,
+			state->layer_enqueue_ms[top[order]] / state->layer_waves, state->layer_lag_ms[top[order]] / state->layer_waves);
+	fprintf(stderr, "\nK3-LAYER-GPU rank=%u ms", rank);
+	for ( index = 1u; index <= last; ++index )
+		fprintf(stderr, "%c%.0f", index == 1u ? '=' : ',', state->layer_gpu_ms[index] / state->layer_waves);
+	fprintf(stderr, "\nK3-LAYER-LAG rank=%u ms", rank);
+	for ( index = 1u; index <= last; ++index )
+		fprintf(stderr, "%c%.0f", index == 1u ? '=' : ',', state->layer_lag_ms[index] / state->layer_waves);
+	fprintf(stderr, "\n");
+	memset(state->layer_gpu_ms, 0, sizeof(state->layer_gpu_ms));
+	memset(state->layer_enqueue_ms, 0, sizeof(state->layer_enqueue_ms));
+	memset(state->layer_lag_ms, 0, sizeof(state->layer_lag_ms));
+	memset(state->layer_span_ms, 0, sizeof(state->layer_span_ms));
+	state->layer_waves = 0u;
+}
+
 static SparkStatus K3RunnerEmbed(SparkK3RunnerState *state, const SparkK3StageRunner *runner,
 	K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
 {
@@ -2264,6 +2359,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.output_token = state->output_token;
 	in.output_score = state->output_score;
 	phase_marks[0] = submit_started;
+	if ( steps == 1u && rows > LM_SKINNY_ROWS_WIDE )
+		(void)K3RunnerLayerMarksBegin(state);
 	phase_marks[1] = K3RunnerNowNs();
 	for ( step = 0u; step < steps; ++step )
 	{
@@ -2290,6 +2387,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = K3RunnerStepOutputs(state, runner, &current, b, stream, rows);
 		phase_marks[3] = K3RunnerNowNs();
+		if ( state->layer_marks != 0u && exchange_status == SPARK_STATUS_OK )
+			K3RunnerLayerMarksEnd(state, runner->tp_rank);
+		state->layer_marks = 0u;
 		if ( exchange_status != SPARK_STATUS_OK )
 			return exchange_status;
 	}
@@ -2499,6 +2599,8 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 		state->lazy_pack = 0;
 	}
 	cudaFree(state->fused_device);
+	while ( state->layer_events_created != 0u )
+		(void)cudaEventDestroy(state->layer_event[--state->layer_events_created]);
 	if ( state->load_join != 0 )
 		(void)cudaEventDestroy(state->load_join);
 	if ( state->load_fork != 0 )
