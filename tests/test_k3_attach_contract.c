@@ -1,4 +1,5 @@
-#include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
+#include "sparkpipe/spark_stage_runner.h"
+#include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_k3_pack_load.h"
 #include "sparkpipe/spark_status.h"
 
@@ -19,8 +20,17 @@ static const char *const k3_layer0_tensors[] =
 	"dense_gate_up_weight", "dense_down_weight"
 };
 
-typedef SparkStatus (*InitFunction)(SparkK3StageRunner *,
-	const SparkK3StageRunnerConfiguration *);
+typedef SparkStatus (*InitFunction)(SparkStageRunner *,
+	const SparkStageRunnerConfiguration *, const SparkStageRunnerModelInterface *);
+typedef const SparkStageRunnerModelInterface *(*ModelFunction)(void);
+
+typedef struct SparkK3ProbeSettings
+{
+	uint64_t budget;
+	const char *socket;
+	const char *digest;
+	uint64_t pool;
+} SparkK3ProbeSettings;
 
 static int expect(int condition, const char *what)
 {
@@ -91,12 +101,18 @@ static long SparkK3ProbeWritePack(const char *path)
 	return(written == (size_t)file_bytes ? file_bytes : -1);
 }
 
-static SparkStatus SparkK3ProbeInitialize(InitFunction init,
-	const char *pack_path, SparkK3StageRunner *runner)
+static SparkStatus SparkK3ProbeInitialize(InitFunction init, ModelFunction model,
+	const char *pack_path, const SparkK3ProbeSettings *settings, SparkStageRunner *runner)
 {
-	SparkK3StageRunnerConfiguration config;
+	SparkStageRunnerConfiguration config;
 	memset(&config, 0, sizeof(config));
-	config.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
+	config.abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
+	config.state_budget_bytes = settings->budget;
+	config.weights.socket_path = settings->socket;
+	if ( settings->digest != 0 )
+		snprintf(config.weights.pack_sha256, sizeof(config.weights.pack_sha256), "%s", settings->digest);
+	config.weights.expert_pool_bytes = settings->pool;
+	config.weights.spine_budget_bytes = settings->pool;
 	config.descriptor_bytes = (uint32_t)sizeof(config);
 	config.stage_index = 0u;
 	config.stage_count = 1u;
@@ -107,17 +123,18 @@ static SparkStatus SparkK3ProbeInitialize(InitFunction init,
 	config.kv_pages_per_sequence = 1u;
 	config.multiprocessors = 1u;
 	config.rank_pack_path = pack_path;
-	return(init(runner, &config));
+	return(init(runner, &config, model()));
 }
 
 int main(void)
 {
 	void *adapter;
 	InitFunction init;
-	SparkK3StageRunner runner;
+	ModelFunction model;
+	SparkK3ProbeSettings settings;
+	SparkStageRunner runner;
 	char pack_path[256];
 	char digest[65];
-	char pool_env[64];
 	long pack_bytes;
 	uint32_t i;
 	int failures = 0;
@@ -139,35 +156,35 @@ int main(void)
 		remove(pack_path);
 		return(1);
 	}
-	init = (InitFunction)dlsym(adapter, "SparkK3StageRunnerInitialize");
-	if ( init == 0 )
+	init = (InitFunction)dlsym(adapter, "SparkStageRunnerInitialize");
+	model = (ModelFunction)dlsym(adapter, "SparkK3StageModel");
+	if ( init == 0 || model == 0 )
 	{
-		printf("FAIL: SparkK3StageRunnerInitialize is not exported\n");
+		printf("FAIL: SparkStageRunnerInitialize or SparkK3StageModel is not exported\n");
 		dlclose(adapter);
 		remove(pack_path);
 		return(1);
 	}
 	memset(&runner, 0, sizeof(runner));
-	unsetenv("SPARK_K3_STATE_BUDGET_BYTES");
-	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
+	memset(&settings, 0, sizeof(settings));
+	failures += expect(SparkK3ProbeInitialize(init, model, pack_path, &settings, &runner) ==
 		SPARK_STATUS_INVALID_ARGUMENT && runner.private_state == 0,
 		"a runner without a rank state budget is refused");
-	setenv("SPARK_K3_STATE_BUDGET_BYTES", "1", 1);
-	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
+	settings.budget = 1u;
+	failures += expect(SparkK3ProbeInitialize(init, model, pack_path, &settings, &runner) ==
 		SPARK_STATUS_CAPACITY_EXCEEDED && runner.private_state == 0,
 		"a rank state plan over the budget is refused before any allocation");
-	setenv("SPARK_K3_STATE_BUDGET_BYTES", "1073741824", 1);
-	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
+	settings.budget = 1073741824u;
+	failures += expect(SparkK3ProbeInitialize(init, model, pack_path, &settings, &runner) ==
 		SPARK_STATUS_UNSUPPORTED,
 		"weightd absent fails closed with a non-retryable UNSUPPORTED (no direct load)");
 	if ( runner.private_state != 0 )
 		failures += expect(0, "runner state leaked on failure");
-	snprintf(pool_env, sizeof(pool_env), "%ld", pack_bytes);
 	setenv("SPARK_WEIGHTD_SOCKET", "/tmp/k3attach-probe-absent.sock", 1);
-	setenv("SPARK_WEIGHTD_PACK_SHA256", digest, 1);
-	setenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES", pool_env, 1);
-	setenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES", pool_env, 1);
-	failures += expect(SparkK3ProbeInitialize(init, pack_path, &runner) ==
+	settings.socket = "/tmp/k3attach-probe-absent.sock";
+	settings.digest = digest;
+	settings.pool = (uint64_t)pack_bytes;
+	failures += expect(SparkK3ProbeInitialize(init, model, pack_path, &settings, &runner) ==
 		SPARK_STATUS_IO_ERROR,
 		"configured weightd with dead socket fails closed (no direct load)");
 	dlclose(adapter);

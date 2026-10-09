@@ -745,9 +745,6 @@ static SparkStatus K3ModelOpen(const SparkStageRunnerModelOpen *request, void **
 	status = K3RunnerCreateDispatch(state, configuration);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	status = K3ModelExpertOffsets(state);
-	if ( status != SPARK_STATUS_OK )
-		return status;
 	memset(geometry, 0, sizeof(*geometry));
 	geometry->hidden = K3_HIDDEN;
 	geometry->vocab = state->module.pack.config.vocab;
@@ -757,13 +754,6 @@ static SparkStatus K3ModelOpen(const SparkStageRunnerModelOpen *request, void **
 	geometry->rms_epsilon = K3_RMS_EPSILON;
 	geometry->sideband_bytes_per_row = SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW;
 	geometry->pack_bytes = state->module.pack.file_bytes;
-	if ( state->owns_embedding != 0u &&
-		K3ModelEntry(state, "model.embed_tokens.weight", &geometry->embed_offset, &geometry->embed_bytes, &geometry->embed_rows) != SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-	if ( state->owns_final_head != 0u &&
-		(K3ModelEntry(state, "model.norm.weight", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
-		K3ModelEntry(state, "lm_head.weight", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK) )
-		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	geometry->kv_layer_count = state->dispatch.mla_count;
 	geometry->kv_layer_page_bytes = K3GlobalKv::kPageBytes;
 	geometry->kv_shard = state->dispatch.buffers->kv_shard;
@@ -791,6 +781,15 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	if ( SparkK3DispatchBindWeights(&state->dispatch, &state->module.pack, state->module.bound, state->module.bound_count,
 		lazy_pack) != SPARK_K3_DISPATCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( K3ModelExpertOffsets(state) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	if ( state->owns_embedding != 0u &&
+		K3ModelEntry(state, "model.embed_tokens.weight", &geometry->embed_offset, &geometry->embed_bytes, &geometry->embed_rows) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	if ( state->owns_final_head != 0u &&
+		(K3ModelEntry(state, "model.norm.weight", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
+		K3ModelEntry(state, "lm_head.weight", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK) )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	state->dispatch.buffers->tp_sharded = state->tp_degree > 1u ? 1u : 0u;
 	state->dispatch.buffers->tp_rank = state->tp_rank;
 	geometry->lease_tensor_base = (uint32_t)(state->dispatch.buffers->routed_down_rows % K3_LAYER_TILE_N != 0u);

@@ -5,7 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULE = ROOT / "modules" / "k3_resident_decode_stage" / "source"
-RUNNER = MODULE / "spark_k3_resident_decode_stage_runner.cu"
+RUNNER = ROOT / "inference" / "runner" / "stage_runner.cu"
+MODEL = MODULE / "spark_k3_stage_model.cu"
 ADAPTER = MODULE / "spark_k3_serving_adapter.c"
 TRANSPORT = ROOT / "ring" / "transport" / "host_staged_tcp.c"
 
@@ -30,30 +31,33 @@ def statements_calling(text, call):
 
 def check_runner(failures):
     text = RUNNER.read_text()
-    copy = body(text, "K3RunnerCopy")
-    if not re.search(r"cudaMemcpyAsync\(destination,\s*source,[^;]*stream\)", copy) or \
-            not re.search(r"return cudaStreamSynchronize\(stream\);", copy):
-        failures.append("K3RunnerCopy is not an execution-stream copy followed by a "
-                        "sync of that stream; residentd's stream is non-blocking, so a "
-                        "legacy-stream copy races the step kernels")
-    acquire = body(text, "SparkK3RunnerLazyAcquire")
-    outside = text.replace(acquire, "")
+    model = MODEL.read_text()
+    for source, name in ((text, "StageRunnerCopy"), (model, "K3RunnerCopy")):
+        copy = body(source, name)
+        if not re.search(r"cudaMemcpyAsync\(destination,\s*source,[^;]*stream\)", copy) or \
+                not re.search(r"return cudaStreamSynchronize\(stream\);", copy):
+            failures.append(f"{name} is not an execution-stream copy followed by a "
+                            "sync of that stream; residentd's stream is non-blocking, so a "
+                            "legacy-stream copy races the step kernels")
+    acquire = body(text, "StageRunnerExpertWeightsService")
+    outside = text.replace(acquire, "") + model
     if re.search(r"\bcudaMemcpy\(", outside):
-        failures.append("the runner names a legacy-stream cudaMemcpy outside the lazy "
-                        "route readback; stage inputs, index buffers, collective "
-                        "staging and outputs go through K3RunnerCopy")
+        failures.append("a legacy-stream cudaMemcpy appears outside the expert route "
+                        "readback; stage inputs, index buffers, collective staging and "
+                        "outputs go through the stream-ordered copy")
     sync = acquire.find("cudaStreamSynchronize(state->stream)")
     readback = acquire.find("cudaMemcpy(")
     if readback >= 0 and (sync < 0 or sync > readback):
-        failures.append("the lazy route readback does not follow a sync of the "
+        failures.append("the expert route readback does not follow a sync of the "
                         "execution stream, so it can read stale group offsets")
-    if statements_calling(text, "SparkTpDeviceCollectiveEnqueue"):
-        failures.append("a device-collective enqueue result is discarded")
-    apply = body(text, "K3RunnerTpApply")
+    if statements_calling(text, "SparkTpDeviceCollectiveEnqueue") or statements_calling(model, "SparkTpDeviceCollective"):
+        failures.append("a device-collective enqueue result is discarded, or the model "
+                        "calls the device collective instead of the runner's round service")
+    apply = body(model, "K3RunnerTpApply")
     if not apply or statements_calling(apply, "cudaMemcpyAsync"):
         failures.append("the device-collective apply step discards a copy result; "
                         "a failed gate_up or shared copy must fail the step")
-    if apply.count("cudaMemcpyAsync(") == 0 or apply.count("copy_failed = 1u") < apply.count("cudaMemcpyAsync("):
+    if apply.count("cudaMemcpyAsync(") == 0 or apply.count("SPARK_STATUS_IO_ERROR") < apply.count("cudaMemcpyAsync("):
         failures.append("a device-collective apply copy does not record its failure")
     registered = set(re.findall(r"completion_function\s*=\s*(\w+);", text))
     for name in re.findall(r"^static void (\w+)\([^)]*\)\s*\{", text, re.M):
@@ -61,39 +65,36 @@ def check_runner(failures):
             failures.append(f"{name} reads a collective completion status but is "
                             f"never registered as a completion function, so the "
                             f"check is dead")
-    if "SparkTpCollective" in text.replace("SparkTpDeviceCollective", ""):
+    if "SparkTpCollective" in (text + model).replace("SparkTpDeviceCollective", ""):
         failures.append("the runner still reaches the removed host TCP collective")
-    layer = body(text, "K3RunnerLayerCollective")
-    if layer.count("tp_collective_failed = 1u") < 4:
+    layer = body(model, "K3RunnerLayerCollective")
+    if layer.count("K3ModelFail(state)") < 4:
         failures.append("a tensor-parallel layer reduce without its device collective does not fail the step")
-    submit = body(text, "SparkK3StageRunnerSubmit")
-    begin = submit.find("K3RunnerChainBegin(state, dispatch->request_id)")
-    first_work = min(i for i in (submit.find("K3Embedding("), submit.find("K3RunnerCopy(")) if i >= 0)
+    submit = body(text, "SparkStageRunnerSubmit")
+    begin = submit.find("StageRunnerChainBegin(state, dispatch->request_id)")
+    first_work = min(i for i in (submit.find("cudaMemcpyAsync(state->token_ids_device"), submit.find("StageRunnerStageInput(")) if i >= 0)
     if begin < 0 or begin > first_work:
         failures.append("the step does not key its device-collective chain before "
                         "its first collective; an unkeyed chain exhausts the "
                         "rebase budget after a few steps")
-    if "K3RunnerChainEnd(state, stream)" not in submit:
+    if "StageRunnerChainEnd(state, stream)" not in submit:
         failures.append("the step does not end its device-collective chain")
-    take = submit.find("K3RunnerTakeFailure(state)")
-    end = submit.find("K3RunnerChainEnd(state, stream)")
+    take = submit.find("StageRunnerTakeFailure(state)")
+    end = submit.find("StageRunnerChainEnd(state, stream)")
     if take < 0 or end < 0 or take > end:
         failures.append("the step does not report a failed copy or collective "
                         "before it completes")
-    chain = body(text, "K3RunnerChainBegin")
+    chain = body(text, "StageRunnerChainBegin")
     if "SparkTpDeviceCollectiveChainKey(&state->device_collective, key)" not in chain:
-        failures.append("K3RunnerChainBegin does not key the device collective")
-    if "device_collective_wide" in text:
-        failures.append("the runner still opens a second mesh band; every K3 "
+        failures.append("StageRunnerChainBegin does not key the device collective")
+    if "device_collective_wide" in text + model:
+        failures.append("the runner still opens a second mesh band; every "
                         "collective runs on the lane's first band")
-    half = body(text, "SparkK3StageRunnerStepHalf")
-    if "K3RunnerTakeFailure(state)" not in half:
-        failures.append("the half step does not report a failed copy or collective")
-    seed = body(text, "K3RunnerSeedIndices")
+    seed = body(text, "StageRunnerSeedIndices")
     if not re.search(r"resident_sequence_capacity > configuration->max_active_sequence_count\s*\)"
                      r"[^}]*return SPARK_STATUS_INVALID_ARGUMENT", seed, re.S):
         failures.append("the runner accepts more resident sequences than it has "
-                        "KDA state slots")
+                        "recurrent state slots")
 
 
 def check_adapter(failures):
@@ -134,7 +135,7 @@ def main():
         return 1
     print("K3 stage copies run on the execution stream and sync before use; a "
           "failed copy or collective fails the step; each step keys and ends its "
-          "device-collective chain; the runner refuses more resident sequences than KDA state slots")
+          "device-collective chain; the runner refuses more resident sequences than recurrent state slots")
     return 0
 
 

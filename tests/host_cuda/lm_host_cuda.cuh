@@ -52,6 +52,7 @@ extern LmHostDim3 blockDim;
 extern LmHostDim3 gridDim;
 
 #define __shared__
+#define __align__(bytes) alignas(bytes)
 #define LM_HOST_SHARED_BYTES 65536u
 
 #define LM_HOST_WARP_LANES 1u
@@ -93,6 +94,9 @@ static inline float2 make_float2(float a, float b) { float2 v; v.x = a; v.y = b;
 static inline __half __ushort_as_half(unsigned short bits) { __half h; h.raw = bits; return h; }
 static inline unsigned short __half_as_ushort(__half h) { return h.raw; }
 static inline float __shfl_down_sync(unsigned, float, unsigned, int = 32) { return 0.0f; }
+static inline float __fmul_rn(float a, float b) { return a * b; }
+static inline float __fmaf_rn(float a, float b, float c) { return fmaf(a, b, c); }
+static inline float __fadd_rn(float a, float b) { return a + b; }
 static inline float __shfl_sync(unsigned, float value, int, int = 32) { return value; }
 static inline float __shfl_xor_sync(unsigned, float value, int, int = 32) { return value; }
 static inline unsigned __ballot_sync(unsigned, int predicate) { return predicate != 0 ? 1u : 0u; }

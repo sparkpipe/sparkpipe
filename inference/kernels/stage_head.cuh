@@ -3,13 +3,12 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/head.cuh"
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/stage_head_shape.h"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_lm_certified_launch.h"
 #include <stdint.h>
 
-#define LM_STAGE_HEAD_THREADS 256u
-#define LM_STAGE_HEAD_TILE 1024u
 
 template<uint32_t THREADS>
 __global__ static void LmStageEmbeddingKernel(const uint16_t *__restrict__ embed_weight, const uint32_t *__restrict__ token_ids,

@@ -38,6 +38,7 @@ struct LmHostRecorderFormat
 	}
 };
 #include "inference/llms/kimi_k3/layer.cuh"
+#include "inference/kernels/stage_head.cuh"
 
 #define ROWS 3u
 #define SLICE 16u
@@ -49,11 +50,11 @@ static uint32_t candidate_token[ROWS], output_token[ROWS];
 
 int main(void)
 {
-	static K3LayerBuffers b;
+	LmStageHeadRows head;
 	static const uint32_t winner[ROWS] = { 3u, 11u, 0u };
 	static const uint32_t offsets[] = { 0u, 10240u, 15u * 10240u };
 	uint32_t row, index, failures = 0u;
-	memset(&b, 0, sizeof(b));
+	memset(&head, 0, sizeof(head));
 	for (index = 0u; index < K3_HIDDEN; ++index)
 		norm_weight[index] = LmFloatToBf16(1.0f);
 	for (row = 0u; row < ROWS; ++row)
@@ -62,13 +63,15 @@ int main(void)
 		for (row = 0u; row < ROWS; ++row)
 			head_weight[index * K3_HIDDEN + row] =
 				LmFloatToBf16(index == winner[row] ? 2.0f : 0.5f);
-	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
-	b.head_candidate_score = candidate_score; b.head_candidate_token = candidate_token;
-	b.output_token = output_token; b.output_score = output_score;
+	head.hidden_bf16 = hidden; head.normed_bf16 = normed; head.norm_weight = norm_weight; head.head_weight = head_weight;
+	head.hidden = K3_HIDDEN; head.epsilon = K3_RMS_EPSILON; head.vocab_slice_rows = SLICE;
+	head.candidate_score = candidate_score; head.candidate_token = candidate_token;
+	head.output_token = output_token; head.output_score = output_score;
 	for (index = 0u; index < sizeof(offsets) / sizeof(offsets[0]); ++index)
 	{
-		int32_t status = K3HeadRankSlice(&b, norm_weight, head_weight,
-			offsets[index], SLICE, ROWS, 0);
+		int32_t status;
+		head.rank_offset = offsets[index];
+		status = LmStageHeadSlice(head, ROWS, 0);
 		if ( status != LM_LAUNCH_OK )
 		{
 			printf("FAIL rank offset %u: launch %d\n", offsets[index], status);

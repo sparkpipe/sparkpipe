@@ -291,7 +291,7 @@ static __device__ __forceinline__ void LmDeltaRuleColumnPrepare(uint32_t query_s
 		if ( lane == 0u )
 			*beta_s = write_gate[(row * key_heads) + head];
 	}
-	inverse = rsqrtf(LmDeltaRuleWarpTotal<WARPS,PARTS>(squares,lane) + 1e-6f);
+	inverse = rsqrtf((LmDeltaRuleWarpTotal<WARPS,PARTS>(squares,lane) + 1e-6f));
 	#pragma unroll
 	for ( part = 0u; part < PARTS; part++ )
 		if ( query_side != 0u )
