@@ -377,6 +377,8 @@ typedef struct SparkK3RunnerState
 	uint64_t timing_steps;
 	uint64_t timing_graph_steps;
 	uint64_t timing_submit_ns;
+	uint64_t phase_ns[4];
+	uint32_t phase_waves;
 	uint64_t timing_graph_ns;
 	SparkTpDeviceCollectiveHardwareTiming timing_wait;
 } SparkK3RunnerState;
@@ -1814,6 +1816,20 @@ static uint64_t K3RunnerNowNs(void)
 	return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
 }
 
+static void K3RunnerPhases(SparkK3RunnerState *state, uint32_t rank, const uint64_t *marks)
+{
+	uint32_t phase;
+	for ( phase = 0u; phase < 4u; ++phase )
+		state->phase_ns[phase] += marks[phase + 1u] - marks[phase];
+	if ( ++state->phase_waves < 16u )
+		return;
+	fprintf(stderr, "K3-SUBMIT-PHASES rank=%u waves=%u setup_ms=%.1f enqueue_ms=%.1f outputs_ms=%.1f chain_end_ms=%.1f\n",
+		rank, state->phase_waves, (double)state->phase_ns[0] / state->phase_waves / 1e6, (double)state->phase_ns[1] / state->phase_waves / 1e6,
+		(double)state->phase_ns[2] / state->phase_waves / 1e6, (double)state->phase_ns[3] / state->phase_waves / 1e6);
+	memset(state->phase_ns, 0, sizeof(state->phase_ns));
+	state->phase_waves = 0u;
+}
+
 static SparkStatus K3RunnerEmbed(SparkK3RunnerState *state, const SparkK3StageRunner *runner,
 	K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
 {
@@ -2153,6 +2169,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 	SparkModelDriverCompletion completion;
 	uint32_t i, step, steps;
 	const uint64_t submit_started = K3RunnerNowNs();
+	uint64_t phase_marks[5];
 	if ( runner == 0 || dispatch == 0 || runner->private_state == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state = (SparkK3RunnerState *)runner->private_state;
@@ -2246,6 +2263,8 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.head_candidate_token = state->head_candidate_token;
 	in.output_token = state->output_token;
 	in.output_score = state->output_score;
+	phase_marks[0] = submit_started;
+	phase_marks[1] = K3RunnerNowNs();
 	for ( step = 0u; step < steps; ++step )
 	{
 		SparkK3StageRunnerDispatch current = *dispatch;
@@ -2267,8 +2286,10 @@ SparkStatus SparkK3StageRunnerSubmit(
 				current.distribution_positions = chain_positions;
 		}
 		exchange_status = K3RunnerStep(state, runner, &in, rows, sequences, packed_rows, stream);
+		phase_marks[2] = K3RunnerNowNs();
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = K3RunnerStepOutputs(state, runner, &current, b, stream, rows);
+		phase_marks[3] = K3RunnerNowNs();
 		if ( exchange_status != SPARK_STATUS_OK )
 			return exchange_status;
 	}
@@ -2279,6 +2300,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	K3RunnerTiming(state, runner->tp_rank, K3RunnerNowNs() - submit_started);
 	exchange_status = K3RunnerChainEnd(state, stream);
+	phase_marks[4] = K3RunnerNowNs();
+	if ( exchange_status == SPARK_STATUS_OK && rows > LM_SKINNY_ROWS_WIDE )
+		K3RunnerPhases(state, runner->tp_rank, phase_marks);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
 	runner->stats.submitted_count++;
