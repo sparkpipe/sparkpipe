@@ -39,6 +39,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL 3u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
@@ -388,6 +389,9 @@ SparkStatus SparkTpDeviceCollectiveBegin(
 
 SparkStatus SparkTpDeviceCollectiveFinish(
     SparkTpDeviceCollective *collective);
+
+uint32_t SparkTpDeviceCollectiveSupportsReduceScatter(
+    const SparkTpDeviceCollective *collective);
 
 uint32_t SparkTpDeviceCollectivePublished(
     const SparkTpDeviceCollective *collective);
