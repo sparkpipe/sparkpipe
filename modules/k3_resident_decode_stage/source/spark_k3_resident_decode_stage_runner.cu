@@ -310,9 +310,6 @@ typedef struct SparkK3RunnerState
 	uint32_t tp_context_overflow;
 	SparkK3RunnerTpContext *pending_tp;
 	cudaStream_t load_stream;
-	cudaStream_t comm_stream;
-	cudaEvent_t comm_ready;
-	cudaEvent_t comm_done;
 	cudaEvent_t load_fork;
 	cudaEvent_t load_join;
 	uint32_t tp_collective_failed;
@@ -689,31 +686,6 @@ static SparkStatus K3RunnerReduceBf16(SparkK3RunnerState *state, cudaStream_t st
 #define K3_RUNNER_STAGE_BEGIN 1u
 #define K3_RUNNER_STAGE_FINISH 2u
 
-static uint32_t K3RunnerCommAside(const SparkK3RunnerState *state, uint32_t stage)
-{
-	return stage != K3_RUNNER_STAGE_ALL && state->dispatch.pair_active != 0u && state->comm_stream != 0 ? 1u : 0u;
-}
-
-static cudaStream_t K3RunnerCommBegin(SparkK3RunnerState *state, cudaStream_t stream)
-{
-	if ( cudaEventRecord(state->comm_ready, stream) != cudaSuccess ||
-		cudaStreamWaitEvent(state->comm_stream, state->comm_ready, 0u) != cudaSuccess )
-		state->tp_collective_failed = 1u;
-	return state->comm_stream;
-}
-
-static void K3RunnerCommEnd(SparkK3RunnerState *state)
-{
-	if ( cudaEventRecord(state->comm_done, state->comm_stream) != cudaSuccess )
-		state->tp_collective_failed = 1u;
-}
-
-static void K3RunnerCommJoin(SparkK3RunnerState *state, cudaStream_t stream)
-{
-	if ( cudaStreamWaitEvent(stream, state->comm_done, 0u) != cudaSuccess )
-		state->tp_collective_failed = 1u;
-}
-
 static void K3RunnerRound(SparkK3RunnerState *state, cudaStream_t stream, uint32_t rows,
 	const void *local, void *full, uint32_t row_elements, uint32_t operation, uint32_t stage)
 {
@@ -722,23 +694,6 @@ static void K3RunnerRound(SparkK3RunnerState *state, cudaStream_t stream, uint32
 	if ( state->device_collective_created == 0 )
 	{
 		state->tp_collective_failed = 1u;
-		return;
-	}
-	if ( K3RunnerCommAside(state, stage) != 0u )
-	{
-		cudaStream_t comm;
-		if ( stage == K3_RUNNER_STAGE_FINISH )
-		{
-			K3RunnerCommJoin(state, stream);
-			return;
-		}
-		comm = K3RunnerCommBegin(state, stream);
-		K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, comm,
-			rows, local, full, state->tp_next_ordinal++);
-		submission.row_elements = row_elements;
-		if ( SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, operation) != SPARK_STATUS_OK )
-			state->tp_collective_failed = 1u;
-		K3RunnerCommEnd(state);
 		return;
 	}
 	if ( stage == K3_RUNNER_STAGE_FINISH )
@@ -909,13 +864,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	{
 		SparkK3RunnerTpContext *pending = state->pending_tp;
 		state->pending_tp = 0;
-		if ( K3RunnerCommAside(state, stage) != 0u )
-		{
-			if ( pending == 0 )
-				state->tp_collective_failed = 1u;
-			K3RunnerCommJoin(state, stream);
-		}
-		else if ( pending == 0 || SparkTpDeviceCollectiveFinish(&state->device_collective) != SPARK_STATUS_OK )
+		if ( pending == 0 || SparkTpDeviceCollectiveFinish(&state->device_collective) != SPARK_STATUS_OK )
 			state->tp_collective_failed = 1u;
 		if ( pending != 0 )
 			K3RunnerTpApply(pending);
@@ -939,24 +888,13 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		completion_context->boundary = boundary;
 		completion_context->phase = base;
 		completion_context->gate_up_elements = 0u;
-		if ( K3RunnerCommAside(state, stage) != 0u )
-		{
-			K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, K3RunnerCommBegin(state, stream),
-				rows, state->fused_device, state->fused_device, state->tp_next_ordinal++);
-			status = SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
+		K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
+			rows, state->fused_device, state->fused_device, state->tp_next_ordinal++);
+		status = stage == K3_RUNNER_STAGE_BEGIN
+			? SparkTpDeviceCollectiveBegin(&state->device_collective, &submission,
+				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
+			: SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
 				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
-			K3RunnerCommEnd(state);
-		}
-		else
-		{
-			K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-				rows, state->fused_device, state->fused_device, state->tp_next_ordinal++);
-			status = stage == K3_RUNNER_STAGE_BEGIN
-				? SparkTpDeviceCollectiveBegin(&state->device_collective, &submission,
-					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
-				: SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
-					SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
-		}
 		if ( status != SPARK_STATUS_OK )
 			state->tp_collective_failed = 1u;
 		if ( stage == K3_RUNNER_STAGE_BEGIN )
@@ -1544,15 +1482,10 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->lanes[1].index = 1u;
 	state->dispatch.slice_state->collective_context = &state->lanes[0];
 	state->dispatch.slice_state->collective_pair_context = &state->lanes[1];
-	int priority_low = 0, priority_high = 0;
 	if ( configuration->tp_degree > 1u &&
 		(cudaStreamCreateWithFlags(&state->load_stream, cudaStreamNonBlocking) != cudaSuccess ||
 		 cudaEventCreateWithFlags(&state->load_fork, cudaEventDisableTiming) != cudaSuccess ||
-		 cudaEventCreateWithFlags(&state->load_join, cudaEventDisableTiming) != cudaSuccess ||
-		 cudaDeviceGetStreamPriorityRange(&priority_low, &priority_high) != cudaSuccess ||
-		 cudaStreamCreateWithPriority(&state->comm_stream, cudaStreamNonBlocking, priority_high) != cudaSuccess ||
-		 cudaEventCreateWithFlags(&state->comm_ready, cudaEventDisableTiming) != cudaSuccess ||
-		 cudaEventCreateWithFlags(&state->comm_done, cudaEventDisableTiming) != cudaSuccess) )
+		 cudaEventCreateWithFlags(&state->load_join, cudaEventDisableTiming) != cudaSuccess) )
 	{
 		fprintf(stderr, "sparkpipe_k3: the weight load stream could not be created\n");
 		SparkK3StageRunnerDestroy(runner);
@@ -2701,12 +2634,6 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 		(void)cudaEventDestroy(state->load_fork);
 	if ( state->load_stream != 0 )
 		(void)cudaStreamDestroy(state->load_stream);
-	if ( state->comm_done != 0 )
-		(void)cudaEventDestroy(state->comm_done);
-	if ( state->comm_ready != 0 )
-		(void)cudaEventDestroy(state->comm_ready);
-	if ( state->comm_stream != 0 )
-		(void)cudaStreamDestroy(state->comm_stream);
 	SparkK3DispatchDestroy(&state->dispatch);
 	SparkK3ModuleDestroy(&state->module);
 	free(state->group_offset_host);
