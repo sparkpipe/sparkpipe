@@ -2401,6 +2401,7 @@ SparkStatus SparkK3StageRunnerSubmit(
 			(uint64_t)rows * K3_HIDDEN * sizeof(*b->hidden_bf16), stream) != cudaSuccess )
 			state->copy_failed = 1u;
 	}
+	memset(&in, 0, sizeof(in));
 	in.hidden_in = b->hidden_bf16;
 	in.positions = dispatch->positions;
 	in.context_length = dispatch->context_length;
@@ -2408,9 +2409,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.sequence_row_begin = dispatch->sequence_row_begin;
 	in.sequence_row_indices = dispatch->sequence_row_indices;
 	in.kda_state_index = dispatch->kda_state_index;
-	in.gather_sequence = dispatch->gather_sequence;
 	in.gather_context = (dispatch->flags & SPARK_K3_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u && dispatch->active_sequence_count == 1u
 		? dispatch->gather_context : 0u;
+	in.gather_sequence = in.gather_context != 0u ? dispatch->gather_sequence : 0u;
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
 	in.route_source_token = state->route_source_token;
