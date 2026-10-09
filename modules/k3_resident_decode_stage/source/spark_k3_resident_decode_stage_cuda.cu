@@ -7,7 +7,7 @@
 #include "sparkpipe/spark_k3_kv_shard.h"
 #include "sparkpipe/spark_weightd_cxx.h"
 
-#include "sparkpipe/spark_tp_mesh_kernels.cuh"
+#include "sparkpipe/spark_tp_mesh_round_control.h"
 
 extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_state,
 	void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows,

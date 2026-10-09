@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "inference/kernels/sample.cuh"
 #include "inference/kernels/stage_head.cuh"

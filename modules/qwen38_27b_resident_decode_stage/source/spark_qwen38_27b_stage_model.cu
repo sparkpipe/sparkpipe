@@ -510,6 +510,9 @@ static SparkStatus QwenOpen(const SparkStageRunnerModelOpen *request, void **mod
 	geometry->pack_bytes = state->pack.file_bytes;
 	geometry->kv_layer_count = QW_ATTN_LAYERS;
 	geometry->kv_layer_page_bytes = QwenKv::kPageBytes;
+	geometry->kv_shard.degree = state->tp_degree;
+	geometry->kv_shard.rank = state->tp_rank;
+	geometry->kv_shard.grain = 1u;
 	geometry->recurrent_bytes = (uint64_t)QW_GDN_LAYERS * (state->gdn_state_bytes + state->gdn_window_bytes);
 	geometry->head_norm_f32 = 1u;
 	if ( QwenEntry(state, "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||

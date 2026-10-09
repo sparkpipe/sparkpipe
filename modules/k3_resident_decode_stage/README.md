@@ -121,7 +121,8 @@ disabled with a log line. Compare `stray_rate` with the
 and others) as external symbols. They are defined in
 `model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`, so every
 shared object that links the device collective must compile that header into
-one of its own CUDA translation units.
-`spark_k3_resident_decode_stage_cuda.cu` includes it. Serving adapters are
+one of its own CUDA translation units. The common stage runner
+(`inference/runner/stage_runner.cu`) includes it, so every runner model gets
+the launchers from the runner. Serving adapters are
 loaded with `dlopen(..., RTLD_NOW | RTLD_LOCAL)`, so a missing launcher fails
 the load.
