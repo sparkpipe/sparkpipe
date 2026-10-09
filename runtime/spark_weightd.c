@@ -383,7 +383,7 @@ SparkStatus SparkWeightdManifestIdentity(const SparkWeightdManifest *manifest,ui
 	const SparkWeightdRange *range;
 	uint8_t record[48] = {0};
 	uint32_t i,j,values[4];
-	if ( manifest == 0 || digest == 0 || manifest->ranges == 0 || manifest->range_count == 0u )
+	if ( manifest == 0 || digest == 0 || manifest->ranges == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	SparkSha256Initialize(&hash);
 	for (i=0u; i<manifest->range_count; i++)
@@ -1586,7 +1586,7 @@ static SparkStatus SparkWeightdExpertManifestLoad(const char *pack_path,uint64_t
 	status = SparkWeightdManifestLoad(path,arena_bytes,manifest);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	entries = calloc(manifest->group_count,sizeof(*entries));
+	entries = calloc(manifest->group_count + 1u,sizeof(*entries));
 	if ( entries == 0 )
 	{
 		SparkWeightdManifestDestroy(manifest);

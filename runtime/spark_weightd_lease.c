@@ -9,12 +9,12 @@ SparkStatus SparkWeightdLeaseTableCreate(const SparkWeightdManifest *manifest,Sp
 	if ( out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*out = 0;
-	if ( manifest == 0 || manifest->groups == 0 || manifest->group_count == 0u )
+	if ( manifest == 0 || manifest->groups == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	table = calloc(1u,sizeof(*table));
 	if ( table == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	table->pins = calloc(manifest->group_count,sizeof(*table->pins));
+	table->pins = calloc(manifest->group_count + 1u,sizeof(*table->pins));
 	if ( table->pins == 0 )
 	{
 		free(table);

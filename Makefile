@@ -366,6 +366,7 @@ TEST_NAMES := \
     test_weightd \
     test_weightd_lease \
     test_weightd_working_set \
+    test_weightd_dense_manifest \
     test_weightd_churn \
     test_weightd_expert_stress \
     test_glm5_next_lazy_dispatch \
@@ -1917,6 +1918,9 @@ build/multi_dev_smoke: tools/multi_dev_smoke.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY
 
 build/test_weightd_lease: tests/test_weightd_lease.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_lease.h include/sparkpipe/spark_weightd_manifest.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tests/test_weightd_lease.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c $(LDFLAGS) -o $@
+
+build/test_weightd_dense_manifest: tests/test_weightd_dense_manifest.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 build/test_weightd_working_set: tests/test_weightd_working_set.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
