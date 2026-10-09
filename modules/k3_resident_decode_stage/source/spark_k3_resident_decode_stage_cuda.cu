@@ -752,7 +752,8 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	{
 		const uint32_t rows_a = in->pair_rows, rows_b = rows - in->pair_rows;
 		const uint32_t *row_begin = b->sequence_row_begin, *row_indices = b->sequence_row_indices;
-		uint32_t *dense_offset = b->dense_row_offset, *dense_tiles = b->dense_tile_prefix;
+		const uint32_t *dense_offset = b->dense_row_offset;
+		uint32_t *dense_tiles = b->dense_tile_prefix;
 		int32_t status;
 		K3DispatchPairKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(d->pair_arrays, rows_a, rows_b);
 		if ( cudaPeekAtLastError() != cudaSuccess )
