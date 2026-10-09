@@ -63,7 +63,6 @@ struct K3LayerWeights
 #define K3_COLLECTIVE_MLA_PARTIALS 5u
 #define K3_COLLECTIVE_MLA_DOWN 6u
 #define K3_COLLECTIVE_MLA_KEYS 7u
-#define K3_COLLECTIVE_SP_GATHER 8u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
 #define K3_L2_LOAD_BYTES (8u << 20)
@@ -103,7 +102,6 @@ struct K3SliceState
 	void *lazy_context;
 	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers);
 	void (*lazy_release)(void *context, uint32_t layer);
-	uint32_t sp_ready;
 };
 
 static_assert(K3_KDA_LAYER_COUNT + K3_MLA_LAYER_COUNT == K3_LAYERS,
@@ -362,28 +360,6 @@ static int32_t K3LaunchCellsMoe(const K3SliceState *state, K3LayerBuffers *buffe
 	return(K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream,2u));
 }
 
-static void K3SpPre(K3LayerBuffers *buffers, uint32_t layer, cudaStream_t stream)
-{
-	K3LayerBuffers sp;
-	K3SpView(buffers,&sp);
-	if ( layer > 0u )
-		K3AttnRes(&sp,buffers->attnres_attn_weight,
-			((layer - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,buffers->sp_rows,stream);
-	if ( (layer % K3_ATTNRES_BLOCK_SIZE) == 0u )
-	{
-		if ( layer == 0u )
-			K3PartialSet(&sp,K3SpOwnRows(buffers,buffers->hidden_bf16),buffers->sp_rows,stream);
-		K3BankStore(&sp,layer / K3_ATTNRES_BLOCK_SIZE,buffers->sp_rows,stream);
-	}
-}
-
-static void K3SpAttnRes(const K3LayerBuffers *buffers, const void *weight, uint32_t sources, cudaStream_t stream)
-{
-	K3LayerBuffers sp;
-	K3SpView(buffers,&sp);
-	K3AttnRes(&sp,weight,sources,buffers->sp_rows,stream);
-}
-
 static int32_t K3SliceFailure(uint32_t layer,const char *phase,int32_t status)
 {
 	fprintf(stderr,"k3 slice failed layer=%u phase=%s status=%d\n",layer,phase,status);
@@ -404,23 +380,14 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		K3BindLayer(&weights[offset],buffers);
 		K3BindLayerState(state,layer,buffers);
 		boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u ? 1u : 0u;
-		if ( buffers->sp_rows != 0u )
+		if ( layer > 0u )
+			K3AttnRes(buffers,buffers->attnres_attn_weight,
+				((layer - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
+		if ( boundary != 0u )
 		{
-			K3SpPre(buffers,layer,stream);
-			if ( layer > 0u )
-				state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_SP_GATHER);
-		}
-		else
-		{
-			if ( layer > 0u )
-				K3AttnRes(buffers,buffers->attnres_attn_weight,
-					((layer - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
-			if ( boundary != 0u )
-			{
-				if ( layer == 0u )
-					K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
-				K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
-			}
+			if ( layer == 0u )
+				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
+			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
 		}
 		status = K3LaunchAttentionHalf<Format,Geometry>(state,buffers,layer,rows,sequences,commit,
 			boundary != 0u ? (uint16_t *)0 : buffers->attnres_partial_bf16,context,
@@ -436,14 +403,8 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			if ( status != LM_LAUNCH_OK )
 				return(K3SliceFailure(layer,"attention-round",status));
 		}
-		if ( buffers->sp_rows != 0u )
-		{
-			K3SpAttnRes(buffers,buffers->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,stream);
-			state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_SP_GATHER);
-		}
-		else
-			K3AttnRes(buffers,buffers->attnres_mlp_weight,
-				(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
+		K3AttnRes(buffers,buffers->attnres_mlp_weight,
+			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 		if ( layer < K3_FIRST_ROUTED_LAYER )
 			status = K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
 		else if ( K3_EXPERT_CELLS(buffers) )
@@ -517,12 +478,6 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 	}
 	if ( first_layer + layer_count == K3_LAYERS )
 	{
-		if ( buffers->sp_rows != 0u )
-		{
-			K3SpAttnRes(buffers,buffers->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,stream);
-			state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,K3_LAYERS - 1u,K3_COLLECTIVE_SP_GATHER);
-			return(LM_LAUNCH_OK);
-		}
 		K3AttnRes(buffers,buffers->attnres_out_weight,
 			((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 		return(LM_LAUNCH_OK);
@@ -573,28 +528,6 @@ static int32_t K3PairRound(const K3SliceState *state, void *lane, cudaStream_t m
 	return(consumer != 0 ? K3PairFence(state,consumer,main) : LM_LAUNCH_OK);
 }
 
-static int32_t K3PairPrep(const K3SliceState *state, void *lane, cudaStream_t main, K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, cudaStream_t stream)
-{
-	if ( buffers->sp_rows == 0u )
-	{
-		K3PairPre(buffers,layer,rows,stream);
-		return(LM_LAUNCH_OK);
-	}
-	K3SpPre(buffers,layer,stream);
-	return(layer > 0u ? K3PairRound(state,lane,main,stream,stream,layer,K3_COLLECTIVE_SP_GATHER,0u) : LM_LAUNCH_OK);
-}
-
-static int32_t K3PairMix(const K3SliceState *state, void *lane, cudaStream_t main, K3LayerBuffers *buffers, const void *weight, uint32_t sources, uint32_t layer, uint32_t rows, cudaStream_t stream)
-{
-	if ( buffers->sp_rows == 0u )
-	{
-		K3AttnRes(buffers,weight,sources,rows,stream);
-		return(LM_LAUNCH_OK);
-	}
-	K3SpAttnRes(buffers,weight,sources,stream);
-	return(K3PairRound(state,lane,main,stream,stream,layer,K3_COLLECTIVE_SP_GATHER,0u));
-}
-
 template<class Format, class Geometry>
 static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *a, K3LayerBuffers *b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a, uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, cudaStream_t stream)
 {
@@ -619,7 +552,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		K3BindLayerState(state,layer,a);
 		K3BindLayer(&weights[offset],b);
 		K3BindLayerState(state,layer,b);
-		K3_PAIR_DO(K3PairPrep(state,lane_a,stream,a,layer,rows_a,sa));
+		K3PairPre(a,layer,rows_a,sa);
 		if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
 			K3_PAIR_DO(K3LayerKda<Format>(a,rows_a,1u,commit,(uint16_t *)0,multiprocessors,sa));
 		else
@@ -628,14 +561,12 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
 		{
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,0u,0u));
-			if ( a->sp_rows != 0u )
-				K3_PAIR_DO(K3PairMix(state,lane_a,stream,a,a->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,layer,rows_a,sa));
-			K3_PAIR_DO(K3PairPrep(state,lane_b,stream,b,layer,rows_b,sb));
+			K3PairPre(b,layer,rows_b,sb);
 			K3_PAIR_DO(K3LayerKda<Format>(b,rows_b,1u,commit,(uint16_t *)0,multiprocessors,sb));
 		}
 		else
 		{
-			K3_PAIR_DO(K3PairPrep(state,lane_b,stream,b,layer,rows_b,sb));
+			K3PairPre(b,layer,rows_b,sb);
 			K3_PAIR_DO((K3LayerMlaQuery<Format,Geometry>(b,rows_b,multiprocessors,sb)));
 			K3_PAIR_DO(K3LayerMlaGatherPack<Geometry>(a,rows_a,sb));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sb,0,layer,K3_COLLECTIVE_MLA_KEYS,1u));
@@ -648,25 +579,19 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			K3_PAIR_DO(K3LayerMlaOutput<Format>(a,rows_a,(uint16_t *)0,1u,multiprocessors,sa));
 			K3_PAIR_DO(K3PairFence(state,sb,sa));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,0u,0u));
-			if ( a->sp_rows != 0u )
-				K3_PAIR_DO(K3PairMix(state,lane_a,stream,a,a->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,layer,rows_a,sa));
 			K3_PAIR_DO(K3LayerMlaGatherPartials<Geometry>(b,rows_b,sb));
 			K3_PAIR_DO(K3LayerMlaShardMerge(b,rows_b,sb));
 			K3_PAIR_DO(K3LayerMlaOutput<Format>(b,rows_b,(uint16_t *)0,1u,multiprocessors,sb));
 		}
 		K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,0u,0u));
-		if ( b->sp_rows != 0u )
-			K3_PAIR_DO(K3PairMix(state,lane_b,stream,b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,layer,rows_b,sb));
 		if ( status != LM_LAUNCH_OK )
 			return(K3SliceFailure(layer,"pair-attention",status));
-		if ( a->sp_rows == 0u )
-			K3AttnRes(a,a->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
+		K3AttnRes(a,a->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
 		if ( layer < K3_FIRST_ROUTED_LAYER )
 		{
 			K3_PAIR_DO(K3LayerDenseMlp<Format>(a,rows_a,multiprocessors,sa));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,1u,0u));
-			if ( b->sp_rows == 0u )
-				K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
+			K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
 			K3_PAIR_DO(K3LayerDenseMlp<Format>(b,rows_b,multiprocessors,sb));
 			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,1u,0u));
 			if ( status != LM_LAUNCH_OK )
@@ -678,8 +603,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,0,layer,2u,1u));
 			K3_PAIR_DO(K3LayerSharedUp<Format>(a,rows_a,a->shared_mid_bf16,multiprocessors,sa));
 			K3_PAIR_DO(K3PairFence(state,sa,stream));
-			if ( b->sp_rows == 0u )
-				K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
+			K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
 			K3_PAIR_DO(K3LayerLatentMoe<Format>(b,rows_b,rows_b * K3_TOP_K,multiprocessors,sb,0u));
 			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,0,layer,2u,1u));
 			K3_PAIR_DO(K3LayerSharedUp<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));
@@ -707,8 +631,8 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		return(K3SliceFailure(layer,"pair",status));
 	if ( first_layer + layer_count == K3_LAYERS )
 	{
-		K3_PAIR_DO(K3PairMix(state,lane_a,stream,a,a->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,K3_LAYERS - 1u,rows_a,sa));
-		K3_PAIR_DO(K3PairMix(state,lane_b,stream,b,b->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,K3_LAYERS - 1u,rows_b,sb));
+		K3AttnRes(a,a->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
+		K3AttnRes(b,b->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
 	}
 	else
 	{

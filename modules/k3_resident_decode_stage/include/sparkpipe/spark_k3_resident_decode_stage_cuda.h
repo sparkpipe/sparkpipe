@@ -93,7 +93,6 @@ typedef struct SparkK3Dispatch
 	uint32_t pair_active;
 	uint32_t pair_rows[2];
 	uint64_t pair_waves;
-	uint64_t sp_waves;
 	uint32_t tp_degree;
 	uint32_t kda_rank_heads;
 	SparkK3RankStateBytes state_bytes;

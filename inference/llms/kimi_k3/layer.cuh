@@ -219,11 +219,6 @@ struct K3LayerBuffers
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;
 	float *output_score;
-	uint16_t *sp_bank_bf16;
-	uint16_t *sp_partial_bf16;
-	uint16_t *sp_hidden_bf16;
-	uint16_t *sp_reduced_bf16;
-	uint32_t sp_rows;
 };
 
 #define K3_EXPERT_CELLS(b) \
@@ -332,19 +327,6 @@ static void K3BankStore(const K3LayerBuffers *b, uint32_t slot, uint32_t rows, c
 		b->attnres_partial_bf16,
 		b->attnres_bank_bf16 + ((uint64_t)slot * rows * K3_HIDDEN),
 		rows,K3_HIDDEN);
-}
-
-static void K3SpView(const K3LayerBuffers *b, K3LayerBuffers *sp)
-{
-	*sp = *b;
-	sp->attnres_bank_bf16 = b->sp_bank_bf16;
-	sp->attnres_partial_bf16 = b->sp_partial_bf16;
-	sp->hidden_bf16 = b->sp_hidden_bf16;
-}
-
-static const uint16_t *K3SpOwnRows(const K3LayerBuffers *b, const uint16_t *full)
-{
-	return(full + (uint64_t)b->tp_rank * b->sp_rows * K3_HIDDEN);
 }
 
 template<uint32_t THREADS>

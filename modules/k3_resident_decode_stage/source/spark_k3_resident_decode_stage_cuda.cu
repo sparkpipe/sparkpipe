@@ -337,7 +337,6 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	size_t off = 0u;
 	const SparkK3ScratchWidths *w = &d->widths;
 	const size_t rows = max_rows;
-	const size_t sp_rows = (rows + tp_degree - 1u) / tp_degree;
 	const size_t query_elements = tp_degree > 1u && SparkK3KvShardQueryStride(max_rows, tp_degree) > rows * w->query
 		? (size_t)SparkK3KvShardQueryStride(max_rows, tp_degree) : rows * w->query;
 	const size_t sizes[] = {
@@ -348,9 +347,7 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		rows * K3_HIDDEN * 2u, (size_t)K3_ATTNRES_MAX_SOURCES * rows * K3_HIDDEN * 2u, rows * K3_HIDDEN * 2u,
 		rows * K3_KDA_HEADS * 2u, rows * K3_KDA_HEADS * 4u, rows * w->gate_up * 2u, rows * w->intermediate * 2u,
 		rows * w->retention * 4u, rows * K3_EXPERTS * 4u, rows * K3_ATTNRES_MAX_SOURCES * 4u,
-		rows * K3_ROUTED_EXPERT_HIDDEN * 2u, rows * w->shared_mid * 2u,
-		(size_t)K3_ATTNRES_MAX_SOURCES * sp_rows * K3_HIDDEN * 2u, sp_rows * K3_HIDDEN * 2u,
-		sp_rows * K3_HIDDEN * 2u, sp_rows * K3_HIDDEN * 2u};
+		rows * K3_ROUTED_EXPERT_HIDDEN * 2u, rows * w->shared_mid * 2u};
 	const size_t count = sizeof(sizes) / sizeof(sizes[0]);
 	size_t index = 0u;
 	d->scratch_bytes = 0u;
@@ -388,10 +385,6 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	b->attnres_score_f32 = (float *)k3_carve(d, &off, sizes[index++]);
 	b->latent_full_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
 	b->shared_mid_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->sp_bank_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->sp_partial_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->sp_hidden_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->sp_reduced_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
 	if ( index != count )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_ARGUMENT; }
 	if ( tp_degree > 1u )
@@ -664,10 +657,6 @@ static void K3DispatchPairView(const SparkK3Dispatch *d, const K3LayerBuffers *a
 	b->attnres_score_f32 += r * K3_ATTNRES_MAX_SOURCES;
 	b->latent_full_bf16 += r * K3_ROUTED_EXPERT_HIDDEN;
 	b->shared_mid_bf16 += r * w->shared_mid;
-	b->sp_bank_bf16 += (size_t)K3_ATTNRES_MAX_SOURCES * a->sp_rows * K3_HIDDEN;
-	b->sp_partial_bf16 += (size_t)a->sp_rows * K3_HIDDEN;
-	b->sp_hidden_bf16 += (size_t)a->sp_rows * K3_HIDDEN;
-	b->sp_reduced_bf16 += (size_t)a->sp_rows * K3_HIDDEN;
 	b->positions = a->positions + r;
 	b->sequence_of_row = a->sequence_of_row + r;
 	b->sequence_row_begin = d->pair_arrays + 2u;
@@ -747,12 +736,6 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->output_token = in->output_token;
 	b->output_score = in->output_score;
 	b->shard_gather = 0u;
-	b->sp_rows = 0u;
-	const uint32_t sp_degree = d->slice_state->sp_ready != 0u && d->tp_degree > 1u && b->tp_sharded != 0u &&
-		d->slice_state->dspark_aux == 0 && rows > LM_SKINNY_ROWS_WIDE && d->first_layer == 0u &&
-		d->layer_count == K3_LAYERS ? d->tp_degree : 0u;
-	if ( sp_degree != 0u && (rows % sp_degree) == 0u )
-		b->sp_rows = rows / sp_degree;
 	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE )
 	{
 		const int32_t gather = in->gather_context != 0u && sequences == 1u
@@ -768,7 +751,6 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 		d->pair_arrays != 0 && d->widths.latent == K3_ROUTED_EXPERT_HIDDEN && in->pair_rows < rows )
 	{
 		const uint32_t rows_a = in->pair_rows, rows_b = rows - in->pair_rows;
-		const uint32_t sp_whole = b->sp_rows;
 		const uint32_t *row_begin = b->sequence_row_begin, *row_indices = b->sequence_row_indices;
 		const uint32_t *dense_offset = b->dense_row_offset;
 		uint32_t *dense_tiles = b->dense_tile_prefix;
@@ -776,9 +758,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 		K3DispatchPairKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(d->pair_arrays, rows_a, rows_b);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			return SPARK_K3_DISPATCH_ERR_CUDA;
-		b->sp_rows = sp_degree != 0u && (rows_a % sp_degree) == 0u && (rows_b % sp_degree) == 0u ? rows_a / sp_degree : 0u;
 		K3DispatchPairView(d, b, d->pair_buffers, rows_a);
-		d->pair_buffers->sp_rows = b->sp_rows != 0u ? rows_b / sp_degree : 0u;
 		if ( K3PairReady(d->slice_state, b, d->pair_buffers, rows_a, rows_b) != 0u )
 		{
 			b->sequence_row_begin = d->pair_arrays;
@@ -796,15 +776,10 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 			b->dense_row_offset = dense_offset;
 			b->dense_tile_prefix = dense_tiles;
 			if ( status == LM_LAUNCH_OK )
-			{
 				d->pair_waves++;
-				d->sp_waves += b->sp_rows != 0u ? 1u : 0u;
-			}
 			return status;
 		}
-		b->sp_rows = sp_whole;
 	}
-	d->sp_waves += b->sp_rows != 0u ? 1u : 0u;
 	return(K3StageSlice(d->weights, d->slice_state, d->buffers, d->first_layer,
 		d->layer_count, rows, sequences, commit, packed_rows, context,
 		multiprocessors, (void *)stream));
