@@ -632,6 +632,7 @@ PYTHON_TESTS := \
 	tests/test_kv_shard_host.py \
 	tests/test_index_shard_host.py \
 	tests/test_kv_shard_cuda.py \
+	tests/test_gqa_shard_cuda.py \
 	tests/test_latent_gather_prefill_cuda.py \
 	tests/test_delta_rule_column_cuda.py \
 	tests/test_index_shard_cuda.py \
