@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_json.h"
@@ -107,6 +108,8 @@ typedef struct SparkK3ServingState
 	SparkMemoryBuffer positions_host;
 	SparkMemoryBuffer context_host;
 	SparkMemoryBuffer state_host;
+	uint64_t wave_host_ns[5];
+	uint32_t wave_host_count;
 	SparkMemoryBuffer positions_device;
 	SparkMemoryBuffer context_device;
 	SparkMemoryBuffer state_device;
@@ -1013,6 +1016,29 @@ static SparkStatus K3ServingChainSteps(const SparkK3ServingState *state,
 	return SPARK_STATUS_OK;
 }
 
+static uint64_t K3ServingNowNs(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static void K3ServingWaveHost(SparkK3ServingState *state, const uint64_t *marks)
+{
+	uint32_t phase;
+	for ( phase = 0u; phase < 5u; ++phase )
+		state->wave_host_ns[phase] += marks[phase + 1u] - marks[phase];
+	if ( ++state->wave_host_count < 16u )
+		return;
+	fprintf(stderr, "K3-WAVE-HOST rank=%u prefill_waves=%u admit_ms=%.1f submit_ms=%.1f capture_ms=%.1f sync_ms=%.1f finish_ms=%.1f\n",
+		state->runner_config.tp_rank, state->wave_host_count,
+		(double)state->wave_host_ns[0] / state->wave_host_count / 1e6, (double)state->wave_host_ns[1] / state->wave_host_count / 1e6,
+		(double)state->wave_host_ns[2] / state->wave_host_count / 1e6, (double)state->wave_host_ns[3] / state->wave_host_count / 1e6,
+		(double)state->wave_host_ns[4] / state->wave_host_count / 1e6);
+	memset(state->wave_host_ns, 0, sizeof(state->wave_host_ns));
+	state->wave_host_count = 0u;
+}
+
 static SparkStatus K3ServingSubmit(void *adapter_state,
 	const SparkModelServingSubmission *submission)
 {
@@ -1028,8 +1054,10 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	SparkRowSampling distribution_rules[SPARK_K3_SERVING_MAX_LANES];
 	SparkSamplingLogprob distribution_logprobs[SPARK_K3_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
 	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u;
+	uint64_t marks[6];
 	SparkStatus status, finished;
 	void *stream;
+	marks[0] = K3ServingNowNs();
 	status = K3ServingValidateSubmission(state, submission);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -1145,15 +1173,22 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		dispatch.chain_steps = steps;
 		dispatch.completion_function = 0;
 		dispatch.completion_context = 0;
+		marks[1] = K3ServingNowNs();
 		status = SparkK3StageRunnerSubmit(&state->runner, &dispatch);
 	}
+	marks[2] = K3ServingNowNs();
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, stream);
+	marks[3] = K3ServingNowNs();
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
+	marks[4] = K3ServingNowNs();
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
 		next_positions[lane] += steps - 1u;
 	finished = K3ServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, status);
+	marks[5] = K3ServingNowNs();
+	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
+		K3ServingWaveHost(state, marks);
 	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_K3_SERVING_MAX_LANES, row_slots, active);
 	if ( status != SPARK_STATUS_OK )
 		return status;
