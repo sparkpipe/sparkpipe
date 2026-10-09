@@ -285,7 +285,7 @@ static void K3AttnRes(const K3LayerBuffers *b, const void *score_weight, uint32_
 {
 	if ( sources > K3_ATTNRES_MAX_SOURCES )
 		sources = K3_ATTNRES_MAX_SOURCES;
-	if ( b->attnres_score_f32 != 0 && rows <= LM_SKINNY_ROWS_WIDE )
+	if ( b->attnres_score_f32 != 0 )
 	{
 		LM_LAUNCH((LmAttnResScoreKernel<K3_LAYER_THREADS>), dim3(rows,sources), K3_LAYER_THREADS, 0, stream,
 			b->attnres_bank_bf16,b->attnres_partial_bf16,(const uint16_t *)score_weight,b->attnres_score_f32,
