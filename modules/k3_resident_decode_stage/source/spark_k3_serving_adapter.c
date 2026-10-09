@@ -11,7 +11,9 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_k3_llm_defines.h"
 #include "sparkpipe/spark_k3_model.h"
-#include "sparkpipe/spark_k3_resident_decode_stage_runner.h"
+#include "sparkpipe/spark_k3_stage_model.h"
+#include "sparkpipe/spark_stage_runner.h"
+#include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_k3_serving_adapter.h"
 #include "sparkpipe/spark_memory_buffer.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
@@ -92,8 +94,8 @@ typedef struct SparkK3SpeculationKnobs
 
 typedef struct SparkK3ServingState
 {
-	SparkK3StageRunner runner;
-	SparkK3StageRunnerConfiguration runner_config;
+	SparkStageRunner runner;
+	SparkStageRunnerConfiguration runner_config;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;
 	char *pack_path;
@@ -153,6 +155,35 @@ static uint32_t K3ServingEnvU32(const char *name, uint32_t fallback)
 	if ( end == value || parsed > 0xffffffffull )
 		return fallback;
 	return (uint32_t)parsed;
+}
+
+static SparkStatus K3ServingRunnerEnvironment(SparkStageRunnerConfiguration *config)
+{
+	const char *digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+	const char *budget = getenv("SPARK_K3_STATE_BUDGET_BYTES");
+	const char *pool = getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES");
+	const char *spine = getenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES");
+	char *end = 0;
+	config->weights.socket_path = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+	config->stray_working_set_path = getenv("SPARK_K3_STRAY_WSET");
+	if ( digest == 0 || strlen(digest) != SPARK_STAGE_RUNNER_DIGEST_HEX || budget == 0 || pool == 0 || spine == 0 )
+	{
+		fprintf(stderr, "sparkpipe_k3: the runner needs SPARK_WEIGHTD_PACK_SHA256, SPARK_K3_STATE_BUDGET_BYTES, "
+			"SPARK_WEIGHTD_EXPERT_POOL_BYTES and SPARK_WEIGHTD_SPINE_BUDGET_BYTES\n");
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	memcpy(config->weights.pack_sha256, digest, SPARK_STAGE_RUNNER_DIGEST_HEX + 1u);
+	errno = 0;
+	config->state_budget_bytes = strtoull(budget, &end, 10);
+	if ( errno != 0 || end == budget || *end != '\0' )
+		return SPARK_STATUS_PARSE_ERROR;
+	config->weights.expert_pool_bytes = strtoull(pool, &end, 10);
+	if ( errno != 0 || end == pool || *end != '\0' )
+		return SPARK_STATUS_PARSE_ERROR;
+	config->weights.spine_budget_bytes = strtoull(spine, &end, 10);
+	if ( errno != 0 || end == spine || *end != '\0' )
+		return SPARK_STATUS_PARSE_ERROR;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus K3ServingLoadSpeculation(SparkK3ServingState *state,
@@ -216,7 +247,7 @@ static SparkStatus K3ServingLoadConfiguration(SparkK3ServingState *state,
 	if ( token < 0 || SparkJsonCopyString(&doc, token, &state->pack_path) != SPARK_STATUS_OK )
 		{ SparkJsonDocumentDestroy(&doc); return SPARK_STATUS_SCHEMA_ERROR; }
 	memset(&state->runner_config, 0, sizeof(state->runner_config));
-	state->runner_config.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
+	state->runner_config.abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
 	state->runner_config.descriptor_bytes = (uint32_t)sizeof(state->runner_config);
 	state->runner_config.tp_degree = K3ServingJsonU32(&doc, root, "tp_degree", 1u);
 	{
@@ -502,7 +533,7 @@ static SparkStatus K3ServingRecurrentCopy(void *context, uint32_t direction,
 	if ( state == 0 || (direction != SPARK_STAGE_KV_RECURRENT_TO_BUFFER &&
 		direction != SPARK_STAGE_KV_RECURRENT_FROM_BUFFER) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return SparkK3StageRunnerRecurrentCopy(&state->runner,
+	return SparkStageRunnerRecurrentCopy(&state->runner,
 		direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER ? 1u : 0u,
 		slot, buffer, bytes, stream);
 }
@@ -526,7 +557,7 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
 	SparkStageKvConfiguration kv;
-	SparkK3StageRunnerKv attach;
+	SparkStageRunnerKv attach;
 	SparkStatus status;
 	memset(&kv, 0, sizeof(kv));
 	state->ledger.module_tag = SPARK_K3_SERVING_MODULE_TAG;
@@ -534,7 +565,7 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	kv.block_token_count = SPARK_K3_KV_PAGE_SLOTS;
 	kv.region_count = 1u;
 	kv.regions[0].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
-	kv.regions[0].layer_count = SparkK3StageRunnerKvLayerCount(&state->runner);
+	kv.regions[0].layer_count = SparkStageRunnerKvLayerCount(&state->runner);
 	kv.regions[0].layer_page_bytes = (uint64_t)SPARK_K3_KV_PAGE_SLOTS *
 		SPARK_K3_MODEL_MLA_KV_A_DIMENSION * SPARK_K3_KV_BYTES_PER_SCALAR;
 	kv.arena_kv_head_count = 1u;
@@ -556,7 +587,7 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	kv.snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
 	if ( state->runner_config.tp_degree > 1u )
 		kv.context_shard = SparkK3KvShardContext(state->runner_config.tp_rank, state->runner_config.tp_degree);
-	status = SparkK3StageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
+	status = SparkStageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr, "%s kv binding refused: the runner has no weightd pack, so the KV layout has no pack identity\n",
@@ -568,7 +599,7 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	kv.expert_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
 	kv.kv_codec = SPARK_WEIGHT_CODEC_BF16;
 	kv.driver_symbol = (const void *)&K3ServingBindKv;
-	kv.recurrent.lane_bytes = SparkK3StageRunnerRecurrentBytes(&state->runner);
+	kv.recurrent.lane_bytes = SparkStageRunnerRecurrentBytes(&state->runner);
 	if ( kv.recurrent.lane_bytes != 0u )
 	{
 		kv.recurrent.copy = K3ServingRecurrentCopy;
@@ -587,7 +618,7 @@ static SparkStatus K3ServingBindKv(SparkK3ServingState *state,
 	attach.pool_page_count = SparkStageKvBindingAddressablePageCount(&state->kv);
 	attach.sequence_count = state->kv.resident_sequence_capacity;
 	attach.context_shard = state->kv.context_shard;
-	return SparkK3StageRunnerAttachKv(&state->runner, &attach);
+	return SparkStageRunnerAttachKv(&state->runner, &attach);
 }
 
 static SparkServingCacheAdmission K3ServingCacheContext(SparkK3ServingState *state,
@@ -754,7 +785,9 @@ static SparkStatus K3ServingInitialize(
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status == SPARK_STATUS_CAPACITY_EXCEEDED ?
 			SPARK_STATUS_CAPACITY_EXCEEDED : status; }
-	status = SparkK3StageRunnerInitialize(&state->runner, &state->runner_config);
+	status = K3ServingRunnerEnvironment(&state->runner_config);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageRunnerInitialize(&state->runner, &state->runner_config, SparkK3StageModel());
 	if ( status != SPARK_STATUS_OK )
 		{ K3ServingDestroy(state); return status; }
 	status = K3ServingBindKv(state, configuration);
@@ -774,7 +807,7 @@ static void K3ServingDestroy(void *adapter_state)
 		return;
 	SparkStageKvBindingDestroy(&state->kv);
 	SparkStageModuleLedgerRelease(&state->ledger);
-	SparkK3StageRunnerDestroy(&state->runner);
+	SparkStageRunnerDestroy(&state->runner);
 	if ( state->lane_client != 0 )
 	{
 		(void)SparkWeightdClientClose(state->lane_client);
@@ -943,7 +976,7 @@ static SparkStatus K3ServingSubmitNonRow(SparkK3ServingState *state,
 			status = state->publish_completed == 0u ? SPARK_STATUS_INTERNAL_ERROR : state->publish_completion.status;
 	}
 	else
-		status = SparkK3StageRunnerResetSlots(&state->runner, slots, submission->active_sequence_count);
+		status = SparkStageRunnerResetSlots(&state->runner, slots, submission->active_sequence_count);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( state->completion_function != 0 )
@@ -1043,7 +1076,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	const SparkModelServingSubmission *submission)
 {
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
-	SparkK3StageRunnerDispatch dispatch;
+	SparkStageRunnerDispatch dispatch;
 	SparkModelDriverFrame frame;
 	SparkK3ServingContinuity continuity;
 	uint32_t row_slots[SPARK_K3_SERVING_MAX_ROWS];
@@ -1135,10 +1168,10 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK )
 	{
 		memset(&dispatch, 0, sizeof(dispatch));
-		dispatch.abi_version = SPARK_K3_STAGE_RUNNER_ABI_VERSION;
+		dispatch.abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
 		dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
 		dispatch.flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ?
-			SPARK_K3_STAGE_RUNNER_DISPATCH_FLAG_PREFILL : 0u;
+			SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL : 0u;
 		dispatch.request_id = submission->request_id;
 		dispatch.sequence_id = submission->sequence_id;
 		dispatch.sequence_position = submission->sequence_position;
@@ -1151,7 +1184,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		dispatch.sequence_of_row = state->state_device.pointer;
 		dispatch.sequence_row_begin = state->runs_device.pointer;
 		dispatch.sequence_row_indices = state->order_device.pointer;
-		dispatch.kda_state_index = state->seqslot_device.pointer;
+		dispatch.recurrent_index = state->seqslot_device.pointer;
 		dispatch.gather_sequence = active == 1u ? ((const uint32_t *)state->state_host.pointer)[0] : 0u;
 		dispatch.gather_context = active == 1u && dispatch.gather_sequence < state->runner_config.max_active_sequence_count
 			? ((const uint32_t *)state->context_host.pointer)[dispatch.gather_sequence] : 0u;
@@ -1159,10 +1192,10 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		dispatch.hidden_input_bytes = submission->hidden_input_bytes;
 		dispatch.hidden_output_bf16 = submission->hidden_output_address;
 		dispatch.hidden_output_bytes = submission->hidden_output_bytes;
-		dispatch.residual_bank_input = submission->boundary_sideband_input_address;
-		dispatch.residual_bank_input_bytes = submission->boundary_sideband_input_bytes;
-		dispatch.residual_bank_output = submission->boundary_sideband_output_address;
-		dispatch.residual_bank_output_bytes = submission->boundary_sideband_output_bytes;
+		dispatch.sideband_input = submission->boundary_sideband_input_address;
+		dispatch.sideband_input_bytes = submission->boundary_sideband_input_bytes;
+		dispatch.sideband_output = submission->boundary_sideband_output_address;
+		dispatch.sideband_output_bytes = submission->boundary_sideband_output_bytes;
 		dispatch.output_token_ids = state->output_tokens.pointer;
 		dispatch.output_scores = state->output_scores.pointer;
 		dispatch.distribution_count = distribution_count;
@@ -1174,7 +1207,7 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		dispatch.completion_function = 0;
 		dispatch.completion_context = 0;
 		marks[1] = K3ServingNowNs();
-		status = SparkK3StageRunnerSubmit(&state->runner, &dispatch);
+		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}
 	marks[2] = K3ServingNowNs();
 	if ( status == SPARK_STATUS_OK )
@@ -1287,14 +1320,14 @@ static SparkStatus K3ServingSnapshot(void *adapter_state,
 	SparkModelServingAdapterSnapshot *snapshot)
 {
 	SparkK3ServingState *state = (SparkK3ServingState *)adapter_state;
-	SparkK3StageRunnerStats stats;
+	SparkStageRunnerStats stats;
 	if ( state == 0 || snapshot == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(snapshot, 0, sizeof(*snapshot));
 	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
 	snapshot->available_submission_count = state->max_rows;
-	SparkK3StageRunnerGetStats(&state->runner, &stats);
+	SparkStageRunnerGetStats(&state->runner, &stats);
 	snapshot->submitted_count = stats.submitted_count;
 	snapshot->completed_count = stats.completed_count;
 	snapshot->resident_sequence_count = SparkStageKvBindingResidentCount(&state->kv);
@@ -1325,7 +1358,7 @@ static SparkStatus K3ServingReset(void *adapter_state, uint64_t control_generati
 		fprintf(stderr, "%s reset: execution stream failed; lanes stay claimed\n", SPARK_K3_SERVING_MODULE_TAG);
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
-	status = SparkK3StageRunnerResetSlots(&state->runner, slots, count);
+	status = SparkStageRunnerResetSlots(&state->runner, slots, count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingReset(&state->kv, control_generation);
 	if ( status == SPARK_STATUS_OK )

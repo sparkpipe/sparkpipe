@@ -5,7 +5,7 @@
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_k3_kv_shard.h"
-#include "sparkpipe/spark_k3_weightd_include.h"
+#include "sparkpipe/spark_weightd_cxx.h"
 
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
 

@@ -25,6 +25,7 @@ COMMON = (
     "runtime",
     "inference/stage",
     "inference/kernels",
+    "inference/runner",
     "model-families/common",
     "common",
 )

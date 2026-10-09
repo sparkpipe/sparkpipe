@@ -232,7 +232,7 @@ K3 = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "sparkpipe/spark_k3_weightd_include.h"
+#include "sparkpipe/spark_weightd_cxx.h"
 #include "sparkpipe/spark_error_site.h"
 #include "inference/llms/kimi_k3/config.h"
 #define LM_LAUNCH_OK 0
