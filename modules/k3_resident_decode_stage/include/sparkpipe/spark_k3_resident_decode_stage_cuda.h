@@ -39,6 +39,7 @@ typedef struct SparkK3StepInput
 	float *output_score;
 	uint32_t gather_sequence;
 	uint32_t gather_context;
+	uint32_t pair_rows;
 } SparkK3StepInput;
 
 typedef struct SparkK3ScratchWidths
@@ -87,6 +88,11 @@ typedef struct SparkK3Dispatch
 	uint32_t *gather_plan;
 	uint64_t mla_gather_waves;
 	uint64_t mla_scatter_waves;
+	K3LayerBuffers *pair_buffers;
+	uint32_t *pair_arrays;
+	uint32_t pair_active;
+	uint32_t pair_rows[2];
+	uint64_t pair_waves;
 	uint32_t tp_degree;
 	uint32_t kda_rank_heads;
 	SparkK3RankStateBytes state_bytes;

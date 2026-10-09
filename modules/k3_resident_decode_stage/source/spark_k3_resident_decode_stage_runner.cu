@@ -22,6 +22,14 @@
 
 typedef struct SparkK3RunnerState SparkK3RunnerState;
 
+typedef struct SparkK3RunnerLane
+{
+	SparkK3RunnerState *state;
+	uint32_t index;
+} SparkK3RunnerLane;
+
+#define K3_RUNNER_PAIR_MIN_ROWS 256u
+
 __global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
 {
 	if ( threadIdx.x == 0u )
@@ -389,6 +397,7 @@ typedef struct SparkK3RunnerState
 	uint32_t layer_marks;
 	uint32_t layer_mark_last;
 	uint32_t layer_waves;
+	SparkK3RunnerLane lanes[2];
 	uint64_t timing_graph_ns;
 	SparkTpDeviceCollectiveHardwareTiming timing_wait;
 } SparkK3RunnerState;
@@ -557,6 +566,8 @@ static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
 	uint32_t packed_rows, cudaStream_t stream)
 {
 	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
+	in->pair_rows = state->head_last_rows != 0u && sequences == 1u && rows >= 2u * K3_RUNNER_PAIR_MIN_ROWS &&
+		state->device_collective_created != 0 && state->device_collective_deferred != 0u ? rows / 2u : 0u;
 	return SparkK3DispatchStep(&state->dispatch, in, rows, sequences, 1u,
 		packed_rows, state->max_context, state->multiprocessors, stream);
 }
@@ -702,7 +713,7 @@ static void K3RunnerRound(SparkK3RunnerState *state, cudaStream_t stream, uint32
 }
 
 static void K3RunnerShardExchange(SparkK3RunnerState *state, K3LayerBuffers *b,
-	cudaStream_t stream, uint32_t phase)
+	cudaStream_t stream, uint32_t rows, uint32_t phase)
 {
 	uint32_t degree = b->kv_shard.degree;
 	uint32_t partials = (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_PARTIALS ? 1u : 0u;
@@ -724,8 +735,8 @@ static void K3RunnerShardExchange(SparkK3RunnerState *state, K3LayerBuffers *b,
 		return;
 	}
 	K3RunnerRound(state, stream,
-		partials != 0u ? SparkK3KvShardPartialSequences(state->rows, degree)
-			: SparkK3KvShardQuerySequences(state->rows, degree),
+		partials != 0u ? SparkK3KvShardPartialSequences(rows, degree)
+			: SparkK3KvShardQuerySequences(rows, degree),
 		partials != 0u ? (const void *)b->shard_partials_f32 : (const void *)b->query_bf16,
 		partials != 0u ? (void *)b->shard_partials_received_f32 : (void *)b->shard_query_gathered_bf16, 0u,
 		partials != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
@@ -759,10 +770,11 @@ static void K3RunnerGatherLatent(SparkK3RunnerState *state, K3LayerBuffers *b, c
 static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t layer, uint32_t phase)
 {
-	SparkK3RunnerState *state = (SparkK3RunnerState *)context;
-	K3LayerBuffers *b = state->dispatch.buffers;
+	const SparkK3RunnerLane *lane = (const SparkK3RunnerLane *)context;
+	SparkK3RunnerState *state = lane->state;
+	K3LayerBuffers *b = lane->index != 0u ? state->dispatch.pair_buffers : state->dispatch.buffers;
 	cudaStream_t stream = (cudaStream_t)stream_void;
-	uint32_t rows = state->rows;
+	uint32_t rows = state->dispatch.pair_active != 0u ? state->dispatch.pair_rows[lane->index] : state->rows;
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
 	uint32_t elements = rows * K3_HIDDEN;
 	const uint32_t stage = (phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH :
@@ -776,7 +788,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		return;
 	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS || base == K3_COLLECTIVE_MLA_KEYS )
 	{
-		K3RunnerShardExchange(state, b, stream, phase);
+		K3RunnerShardExchange(state, b, stream, rows, phase);
 		return;
 	}
 	if ( base == K3_COLLECTIVE_MLA_DOWN )
@@ -896,7 +908,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 
 static uint32_t K3RunnerPublished(void *context)
 {
-	SparkK3RunnerState *state = (SparkK3RunnerState *)context;
+	SparkK3RunnerState *state = ((const SparkK3RunnerLane *)context)->state;
 	return state->device_collective_created != 0 ? SparkTpDeviceCollectivePublished(&state->device_collective) : 0u;
 }
 typedef struct SparkK3ManifestCheckContext
@@ -1464,7 +1476,12 @@ SparkStatus SparkK3StageRunnerInitialize(
 	state->dispatch.buffers->tp_rank = configuration->tp_rank;
 	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 	state->dispatch.slice_state->collective_published = K3RunnerPublished;
-	state->dispatch.slice_state->collective_context = state;
+	state->lanes[0].state = state;
+	state->lanes[0].index = 0u;
+	state->lanes[1].state = state;
+	state->lanes[1].index = 1u;
+	state->dispatch.slice_state->collective_context = &state->lanes[0];
+	state->dispatch.slice_state->collective_pair_context = &state->lanes[1];
 	if ( configuration->tp_degree > 1u &&
 		(cudaStreamCreateWithFlags(&state->load_stream, cudaStreamNonBlocking) != cudaSuccess ||
 		 cudaEventCreateWithFlags(&state->load_fork, cudaEventDisableTiming) != cudaSuccess ||
@@ -1493,6 +1510,8 @@ SparkStatus SparkK3StageRunnerInitialize(
 			configuration->layer_collective_override;
 		state->dispatch.slice_state->collective_context =
 			configuration->layer_collective_context;
+		state->dispatch.slice_state->collective_pair_context = 0;
+		state->dispatch.slice_state->collective_published = 0;
 	}
 	if ( configuration->device_collective != 0 )
 	{
@@ -2140,9 +2159,10 @@ static void K3RunnerTiming(SparkK3RunnerState *state, uint32_t rank, uint64_t su
 	if ( state->timing_steps < 64u )
 		return;
 	steps = state->timing_steps;
-	fprintf(stderr, "K3-STEP-TIMING rank=%u steps=%llu graph_steps=%llu mla_gather_waves=%llu mla_scatter_waves=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
+	fprintf(stderr, "K3-STEP-TIMING rank=%u steps=%llu graph_steps=%llu mla_gather_waves=%llu mla_scatter_waves=%llu pair_waves=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
 		rank, (unsigned long long)steps, (unsigned long long)state->timing_graph_steps,
 		(unsigned long long)state->dispatch.mla_gather_waves, (unsigned long long)state->dispatch.mla_scatter_waves,
+		(unsigned long long)state->dispatch.pair_waves,
 		(unsigned long long)(state->timing_submit_ns / steps / 1000u),
 		(unsigned long long)(state->timing_graph_steps != 0u ? state->timing_graph_ns / state->timing_graph_steps / 1000u : 0u),
 		(unsigned long long)(state->timing_wait.source_wait_ns / steps / 1000u),

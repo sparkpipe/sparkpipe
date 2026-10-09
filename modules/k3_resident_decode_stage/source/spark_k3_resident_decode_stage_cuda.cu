@@ -13,6 +13,11 @@ extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_sta
 	void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows,
 	uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,
 	uint32_t multiprocessors, void *stream);
+#define K3_DISPATCH_PAIR_IDENTITY 16u
+
+extern "C" int32_t K3StageSlicePair(const void *layer_weights, const void *slice_state,
+	void *buffers_a, void *buffers_b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a,
+	uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, void *stream);
 
 #define WF(field, name) { offsetof(K3LayerWeights, field), name }
 static const struct SparkK3WeightBind
@@ -396,6 +401,11 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		if ( cudaMalloc(&d->gather_plan, (size_t)3u * sequences * sizeof(uint32_t)) != cudaSuccess )
 			{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
 		cudaMemset(d->gather_plan, 0, (size_t)3u * sequences * sizeof(uint32_t));
+		d->pair_buffers = new K3LayerBuffers;
+		memset(d->pair_buffers, 0, sizeof(*d->pair_buffers));
+		if ( cudaMalloc(&d->pair_arrays, ((size_t)K3_DISPATCH_PAIR_IDENTITY + max_rows) * sizeof(uint32_t)) != cudaSuccess )
+			{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
+		cudaMemset(d->pair_arrays, 0, ((size_t)K3_DISPATCH_PAIR_IDENTITY + max_rows) * sizeof(uint32_t));
 	}
 	return SPARK_K3_DISPATCH_OK;
 }
@@ -452,6 +462,8 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 	cudaFree(d->access_error);
 	cudaFree(d->scratch);
 	cudaFree(d->gather_plan);
+	cudaFree(d->pair_arrays);
+	delete d->pair_buffers;
 	delete[] d->mla_cache;
 	delete[] d->weights;
 	delete d->slice_state;
@@ -603,6 +615,56 @@ int32_t SparkK3DispatchShardRows(SparkK3Dispatch *d, uint32_t rows)
 	return SPARK_K3_DISPATCH_OK;
 }
 
+__global__ static void K3DispatchPairKernel(uint32_t *arrays, uint32_t rows_a, uint32_t rows_b)
+{
+	const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( index == 0u )
+	{
+		arrays[0] = 0u; arrays[1] = rows_a; arrays[2] = 0u; arrays[3] = rows_b;
+		arrays[4] = 0u; arrays[5] = rows_a; arrays[6] = 0u; arrays[7] = rows_b;
+	}
+	if ( index < rows_a + rows_b )
+		arrays[K3_DISPATCH_PAIR_IDENTITY + index] = index;
+}
+
+static void K3DispatchPairView(const SparkK3Dispatch *d, const K3LayerBuffers *a, K3LayerBuffers *b, uint32_t rows_a)
+{
+	const SparkK3ScratchWidths *w = &d->widths;
+	const size_t r = rows_a;
+	*b = *a;
+	b->hidden_bf16 += r * K3_HIDDEN;
+	b->normed_bf16 += r * K3_HIDDEN;
+	b->fused_qkvb_bf16 += r * w->qkvb;
+	b->fused_decay_gate_bf16 += r * K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS;
+	b->gate_latent_bf16 += r * K3_KDA_KEY_DIM;
+	b->query_bf16 += r * w->query;
+	b->key_bf16 += r * w->key;
+	b->value_bf16 += r * w->value;
+	b->gate_bf16 += r * w->gate;
+	b->decay_logit_bf16 += r * w->decay;
+	b->latent_bf16 += r * w->latent;
+	b->kv_slot_bf16 += r * K3_MLA_KV_A_DIM;
+	b->attention_out_bf16 += r * w->attention_out;
+	b->shared_out_bf16 += r * K3_HIDDEN;
+	b->attnres_bank_bf16 += (size_t)K3_ATTNRES_MAX_SOURCES * r * K3_HIDDEN;
+	b->attnres_partial_bf16 += r * K3_HIDDEN;
+	b->kda_beta_logit += r * K3_KDA_HEADS;
+	b->kda_write_gate_out += r * K3_KDA_HEADS;
+	b->gate_up_bf16 += r * w->gate_up;
+	b->intermediate_bf16 += r * w->intermediate;
+	b->kda_retention += r * w->retention;
+	b->router_logits += r * K3_EXPERTS;
+	b->attnres_score_f32 += r * K3_ATTNRES_MAX_SOURCES;
+	b->latent_full_bf16 += r * K3_ROUTED_EXPERT_HIDDEN;
+	b->shared_mid_bf16 += r * w->shared_mid;
+	b->positions = a->positions + r;
+	b->sequence_of_row = a->sequence_of_row + r;
+	b->sequence_row_begin = d->pair_arrays + 2u;
+	b->sequence_row_indices = d->pair_arrays + K3_DISPATCH_PAIR_IDENTITY;
+	b->dense_row_offset = d->pair_arrays + 6u;
+	b->dense_tile_prefix = d->pair_arrays + 10u;
+}
+
 __global__ static void K3DispatchGatherPlanKernel(uint32_t *plan, uint32_t capacity, uint32_t sequence, uint32_t context)
 {
 	plan[0] = sequence;
@@ -684,6 +746,38 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 			d->mla_gather_waves++;
 		else
 			d->mla_scatter_waves++;
+	}
+	if ( b->shard_gather != 0u && in->pair_rows != 0u && sequences == 1u && d->pair_buffers != 0 &&
+		d->pair_arrays != 0 && d->widths.latent == K3_ROUTED_EXPERT_HIDDEN && in->pair_rows < rows )
+	{
+		const uint32_t rows_a = in->pair_rows, rows_b = rows - in->pair_rows;
+		const uint32_t *row_begin = b->sequence_row_begin, *row_indices = b->sequence_row_indices;
+		uint32_t *dense_offset = b->dense_row_offset, *dense_tiles = b->dense_tile_prefix;
+		int32_t status;
+		K3DispatchPairKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(d->pair_arrays, rows_a, rows_b);
+		if ( cudaPeekAtLastError() != cudaSuccess )
+			return SPARK_K3_DISPATCH_ERR_CUDA;
+		K3DispatchPairView(d, b, d->pair_buffers, rows_a);
+		if ( K3PairReady(d->slice_state, b, d->pair_buffers, rows_a, rows_b) != 0u )
+		{
+			b->sequence_row_begin = d->pair_arrays;
+			b->sequence_row_indices = d->pair_arrays + K3_DISPATCH_PAIR_IDENTITY;
+			b->dense_row_offset = d->pair_arrays + 4u;
+			b->dense_tile_prefix = d->pair_arrays + 8u;
+			d->pair_rows[0] = rows_a;
+			d->pair_rows[1] = rows_b;
+			d->pair_active = 1u;
+			status = K3StageSlicePair(d->weights, d->slice_state, d->buffers, d->pair_buffers, d->first_layer,
+				d->layer_count, rows_a, rows_b, commit, multiprocessors, (void *)stream);
+			d->pair_active = 0u;
+			b->sequence_row_begin = row_begin;
+			b->sequence_row_indices = row_indices;
+			b->dense_row_offset = dense_offset;
+			b->dense_tile_prefix = dense_tiles;
+			if ( status == LM_LAUNCH_OK )
+				d->pair_waves++;
+			return status;
+		}
 	}
 	return(K3StageSlice(d->weights, d->slice_state, d->buffers, d->first_layer,
 		d->layer_count, rows, sequences, commit, packed_rows, context,
