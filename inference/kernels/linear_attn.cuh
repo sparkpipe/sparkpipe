@@ -238,6 +238,180 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		LmStoreState(&state[(flat / COLUMNS) * VALUE_DIM + column + flat % COLUMNS],state_s[flat]);
 }
 
+template<uint32_t WARPS, uint32_t PARTS>
+static __device__ __forceinline__ float LmDeltaRuleWarpTotal(const float (&parts)[PARTS], uint32_t lane)
+{
+	float sums[PARTS], value = 0.0f;
+	uint32_t part, offset;
+	#pragma unroll
+	for ( part = 0u; part < PARTS; part++ )
+	{
+		float partial = parts[part];
+		for ( offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u )
+			partial += __shfl_down_sync(0xffffffffu,partial,offset);
+		sums[part] = __shfl_sync(0xffffffffu,partial,0);
+	}
+	#pragma unroll
+	for ( part = 0u; part < PARTS; part++ )
+		if ( lane == part )
+			value = sums[part];
+	if ( lane >= WARPS )
+		value = 0.0f;
+	for ( offset = WARPS / 2u; offset > 0u; offset >>= 1u )
+		value += __shfl_down_sync(0xffffffffu,value,offset);
+	return(__shfl_sync(0xffffffffu,value,0));
+}
+
+#define LM_DELTA_COLUMN_WARPS 4u
+#define LM_DELTA_COLUMN_THREADS (LM_DELTA_COLUMN_WARPS * LM_WARP_LANES)
+#define LM_DELTA_COLUMN_RING 3u
+
+template<uint32_t WARPS, uint32_t KEY_DIM, uint32_t VALUE_DIM>
+static __device__ __forceinline__ void LmDeltaRuleColumnPrepare(uint32_t query_side, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint32_t row, uint32_t head, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t column, uint32_t lane, float *key_s, float *query_s, float *forget_s, float *value_s, float *beta_s)
+{
+	constexpr uint32_t PARTS = KEY_DIM / LM_WARP_LANES;
+	const uint64_t base = (((uint64_t)row * key_heads) + head) * KEY_DIM;
+	const uint16_t *source = query_side != 0u ? query_bf16 : key_bf16;
+	float parts[PARTS], squares[PARTS], inverse;
+	uint32_t part;
+	#pragma unroll
+	for ( part = 0u; part < PARTS; part++ )
+	{
+		parts[part] = LmBf16ToFloat(source[base + part * LM_WARP_LANES + lane]);
+		squares[part] = 0.0f;
+		squares[part] += parts[part] * parts[part];
+	}
+	if ( query_side != 0u )
+		value_s[lane] = LmBf16ToFloat(value_bf16[(((uint64_t)row * key_heads * value_heads_per_key) + (uint64_t)head * value_heads_per_key) * VALUE_DIM + column + lane]);
+	else
+	{
+		#pragma unroll
+		for ( part = 0u; part < PARTS; part++ )
+			forget_s[part * LM_WARP_LANES + lane] = forget_gate[base + part * LM_WARP_LANES + lane];
+		if ( lane == 0u )
+			*beta_s = write_gate[(row * key_heads) + head];
+	}
+	inverse = rsqrtf(LmDeltaRuleWarpTotal<WARPS,PARTS>(squares,lane) + 1e-6f);
+	#pragma unroll
+	for ( part = 0u; part < PARTS; part++ )
+		if ( query_side != 0u )
+			query_s[part * LM_WARP_LANES + lane] = parts[part] * (inverse * rsqrtf((float)KEY_DIM));
+		else
+			key_s[part * LM_WARP_LANES + lane] = parts[part] * inverse;
+}
+
+template<uint32_t REDUCE_THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
+__global__ __launch_bounds__(LM_DELTA_COLUMN_THREADS)
+void LmDeltaRuleColumnKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
+{
+	static_assert((KEY_DIM % LM_WARP_LANES) == 0u && (VALUE_DIM % LM_WARP_LANES) == 0u && KEY_DIM <= REDUCE_THREADS &&
+		(REDUCE_THREADS % LM_WARP_LANES) == 0u && REDUCE_THREADS / LM_WARP_LANES <= LM_WARP_LANES &&
+		(KEY_DIM % (4u * LM_DELTA_COLUMN_WARPS)) == 0u,
+		"a lane owns one value column; the norms reduce as a REDUCE_THREADS block sum would");
+	constexpr uint32_t WARPS = REDUCE_THREADS / LM_WARP_LANES;
+	__shared__ float state_s[KEY_DIM][LM_WARP_LANES];
+	__shared__ __align__(16) float key_s[LM_DELTA_COLUMN_RING][KEY_DIM];
+	__shared__ __align__(16) float query_s[LM_DELTA_COLUMN_RING][KEY_DIM];
+	__shared__ __align__(16) float forget_s[LM_DELTA_COLUMN_RING][KEY_DIM];
+	__shared__ float value_s[LM_DELTA_COLUMN_RING][LM_WARP_LANES];
+	__shared__ float beta_s[LM_DELTA_COLUMN_RING];
+	__shared__ float coefficient_s[LM_WARP_LANES];
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES, warp = threadIdx.x / LM_WARP_LANES;
+	const uint32_t sequence = blockIdx.x, head = blockIdx.y, column_base = blockIdx.z * LM_WARP_LANES;
+	uint32_t index, begin, end, ordinal, count, step;
+	State *state;
+	if ( sequence >= sequences || head >= key_heads || column_base >= VALUE_DIM )
+		return;
+	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
+	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+	if ( sequence_row_count != 0 )
+		end = begin + sequence_row_count[sequence];
+	count = end > begin ? end - begin : 0u;
+	state = (State *)(state_pool
+		+ ((uint64_t)state_index[sequence] * slot_bytes)
+		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * sizeof(State)));
+	for ( index = threadIdx.x; index < KEY_DIM * LM_WARP_LANES; index += LM_DELTA_COLUMN_THREADS )
+		state_s[index / LM_WARP_LANES][index % LM_WARP_LANES] = LmScalarToFloat(state[((index / LM_WARP_LANES) * VALUE_DIM) + column_base + (index % LM_WARP_LANES)]);
+	for ( step = 0u; step < 2u && step < count; step++ )
+		if ( warp >= 2u )
+		{
+			ordinal = begin + step;
+			LmDeltaRuleColumnPrepare<WARPS,KEY_DIM,VALUE_DIM>(warp - 2u,key_bf16,query_bf16,value_bf16,forget_gate,write_gate,
+				sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal,head,key_heads,value_heads_per_key,column_base,lane,
+				key_s[step],query_s[step],forget_s[step],value_s[step],&beta_s[step]);
+		}
+	__syncthreads();
+	if ( warp == 1u && count != 0u )
+	{
+		float predicted = 0.0f;
+		#pragma unroll 16
+		for ( index = 0u; index < KEY_DIM; index++ )
+			predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key_s[0][index]),forget_s[0][index],predicted);
+		coefficient_s[lane] = beta_s[0] * (value_s[0][lane] - predicted);
+	}
+	__syncthreads();
+	for ( step = 0u; step < count; step++ )
+	{
+		const uint32_t buffer = step % LM_DELTA_COLUMN_RING, next = (step + 1u) % LM_DELTA_COLUMN_RING, ahead = (step + 2u) % LM_DELTA_COLUMN_RING;
+		{
+			const float coefficient = coefficient_s[lane];
+			#pragma unroll
+			for ( index = warp * (KEY_DIM / LM_DELTA_COLUMN_WARPS); index < (warp + 1u) * (KEY_DIM / LM_DELTA_COLUMN_WARPS); index += 4u )
+			{
+				const float4 forget4 = *(const float4 *)&forget_s[buffer][index];
+				const float4 key4 = *(const float4 *)&key_s[buffer][index];
+				state_s[index][lane] = __fmaf_rn(forget4.x,state_s[index][lane],__fmul_rn(coefficient,key4.x));
+				state_s[index + 1u][lane] = __fmaf_rn(forget4.y,state_s[index + 1u][lane],__fmul_rn(coefficient,key4.y));
+				state_s[index + 2u][lane] = __fmaf_rn(forget4.z,state_s[index + 2u][lane],__fmul_rn(coefficient,key4.z));
+				state_s[index + 3u][lane] = __fmaf_rn(forget4.w,state_s[index + 3u][lane],__fmul_rn(coefficient,key4.w));
+			}
+		}
+		__syncthreads();
+		if ( warp == 0u )
+		{
+			const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[begin + step] : begin + step;
+			float total = 0.0f;
+			#pragma unroll 4
+			for ( index = 0u; index < KEY_DIM; index += 4u )
+			{
+				const float4 query4 = *(const float4 *)&query_s[buffer][index];
+				total = __fmaf_rn(state_s[index][lane],query4.x,total);
+				total = __fmaf_rn(state_s[index + 1u][lane],query4.y,total);
+				total = __fmaf_rn(state_s[index + 2u][lane],query4.z,total);
+				total = __fmaf_rn(state_s[index + 3u][lane],query4.w,total);
+			}
+			output_bf16[(((uint64_t)row * key_heads) + head) * VALUE_DIM + column_base + lane] = LmFloatToBf16(total);
+		}
+		else if ( warp == 1u && step + 1u < count )
+		{
+			float predicted = 0.0f;
+			#pragma unroll 4
+			for ( index = 0u; index < KEY_DIM; index += 4u )
+			{
+				const float4 key4 = *(const float4 *)&key_s[next][index];
+				const float4 forget4 = *(const float4 *)&forget_s[next][index];
+				predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key4.x),forget4.x,predicted);
+				predicted = __fmaf_rn(__fmul_rn(state_s[index + 1u][lane],key4.y),forget4.y,predicted);
+				predicted = __fmaf_rn(__fmul_rn(state_s[index + 2u][lane],key4.z),forget4.z,predicted);
+				predicted = __fmaf_rn(__fmul_rn(state_s[index + 3u][lane],key4.w),forget4.w,predicted);
+			}
+			coefficient_s[lane] = beta_s[next] * (value_s[next][lane] - predicted);
+		}
+		else if ( warp >= 2u && step + 2u < count )
+		{
+			ordinal = begin + step + 2u;
+			LmDeltaRuleColumnPrepare<WARPS,KEY_DIM,VALUE_DIM>(warp - 2u,key_bf16,query_bf16,value_bf16,forget_gate,write_gate,
+				sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal,head,key_heads,value_heads_per_key,column_base,lane,
+				key_s[ahead],query_s[ahead],forget_s[ahead],value_s[ahead],&beta_s[ahead]);
+		}
+		__syncthreads();
+	}
+	if ( commit == 0u )
+		return;
+	for ( index = threadIdx.x; index < KEY_DIM * LM_WARP_LANES; index += LM_DELTA_COLUMN_THREADS )
+		LmStoreState(&state[((index / LM_WARP_LANES) * VALUE_DIM) + column_base + (index % LM_WARP_LANES)],state_s[index / LM_WARP_LANES][index % LM_WARP_LANES]);
+}
+
 enum LmConvActivation
 {
 	LM_CONV_NONE = 0,
