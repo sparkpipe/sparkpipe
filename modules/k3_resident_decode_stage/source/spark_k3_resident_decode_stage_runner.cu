@@ -310,6 +310,8 @@ typedef struct SparkK3RunnerState
 	uint32_t tp_context_overflow;
 	SparkK3RunnerTpContext *pending_tp;
 	cudaStream_t load_stream;
+	cudaStream_t pair_stream[2];
+	cudaEvent_t pair_fence;
 	cudaEvent_t load_fork;
 	cudaEvent_t load_join;
 	uint32_t tp_collective_failed;
@@ -1485,13 +1487,19 @@ SparkStatus SparkK3StageRunnerInitialize(
 	if ( configuration->tp_degree > 1u &&
 		(cudaStreamCreateWithFlags(&state->load_stream, cudaStreamNonBlocking) != cudaSuccess ||
 		 cudaEventCreateWithFlags(&state->load_fork, cudaEventDisableTiming) != cudaSuccess ||
-		 cudaEventCreateWithFlags(&state->load_join, cudaEventDisableTiming) != cudaSuccess) )
+		 cudaEventCreateWithFlags(&state->load_join, cudaEventDisableTiming) != cudaSuccess ||
+		 cudaStreamCreateWithFlags(&state->pair_stream[0], cudaStreamNonBlocking) != cudaSuccess ||
+		 cudaStreamCreateWithFlags(&state->pair_stream[1], cudaStreamNonBlocking) != cudaSuccess ||
+		 cudaEventCreateWithFlags(&state->pair_fence, cudaEventDisableTiming) != cudaSuccess) )
 	{
 		fprintf(stderr, "sparkpipe_k3: the weight load stream could not be created\n");
 		SparkK3StageRunnerDestroy(runner);
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	state->dispatch.slice_state->load_stream = state->load_stream;
+	state->dispatch.slice_state->pair_stream_a = state->pair_stream[0];
+	state->dispatch.slice_state->pair_stream_b = state->pair_stream[1];
+	state->dispatch.slice_state->pair_fence = state->pair_fence;
 	state->dispatch.slice_state->load_fork = state->load_fork;
 	state->dispatch.slice_state->load_join = state->load_join;
 	state->dispatch.slice_state->lazy_context = state;
@@ -2634,6 +2642,11 @@ void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
 		(void)cudaEventDestroy(state->load_fork);
 	if ( state->load_stream != 0 )
 		(void)cudaStreamDestroy(state->load_stream);
+	if ( state->pair_fence != 0 )
+		(void)cudaEventDestroy(state->pair_fence);
+	for ( uint32_t lane = 0u; lane < 2u; ++lane )
+		if ( state->pair_stream[lane] != 0 )
+			(void)cudaStreamDestroy(state->pair_stream[lane]);
 	SparkK3DispatchDestroy(&state->dispatch);
 	SparkK3ModuleDestroy(&state->module);
 	free(state->group_offset_host);
