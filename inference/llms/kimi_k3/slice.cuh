@@ -62,6 +62,7 @@ struct K3LayerWeights
 #define K3_COLLECTIVE_MLA_QUERY 4u
 #define K3_COLLECTIVE_MLA_PARTIALS 5u
 #define K3_COLLECTIVE_MLA_DOWN 6u
+#define K3_COLLECTIVE_MLA_KEYS 7u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
 #define K3_L2_LOAD_BYTES (8u << 20)
@@ -194,11 +195,33 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 }
 
 template<class Format, class Geometry>
+static int32_t K3LaunchMlaGather(const K3SliceState *state, const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status = K3LayerMlaQuery<Format,Geometry>(buffers,rows,multiprocessors,stream);
+	if ( status == LM_LAUNCH_OK )
+		status = K3LayerMlaGatherPack<Geometry>(buffers,rows,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_KEYS);
+	status = K3LayerMlaGate(buffers,rows,multiprocessors,stream);
+	state->layer_collective(state->collective_context,(void *)(uintptr_t)stream,layer,K3_COLLECTIVE_MLA_KEYS | K3_COLLECTIVE_FINISH);
+	if ( status == LM_LAUNCH_OK )
+		status = K3LayerMlaGatherPartials<Geometry>(buffers,rows,stream);
+	if ( status == LM_LAUNCH_OK )
+		status = K3LayerMlaShardMerge(buffers,rows,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	return(K3LayerMlaOutput<Format>(buffers,rows,partial_accumulate,1u,multiprocessors,stream));
+}
+
+template<class Format, class Geometry>
 static int32_t K3LaunchMlaShard(const K3SliceState *state, const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
 	if ( state->layer_collective == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
+	if ( buffers->shard_gather != 0u )
+		return(K3LaunchMlaGather<Format,Geometry>(state,buffers,layer,rows,partial_accumulate,multiprocessors,stream));
 	if ( K3_MLA_DOWN_SLICED(buffers,rows) )
 	{
 		status = K3LayerMlaDownSlice(buffers,rows,stream);

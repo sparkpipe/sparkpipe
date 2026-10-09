@@ -278,6 +278,11 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 			(size_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree) * sizeof(float));
 		b->shard_partials_received_f32 = (float *)k3_carve(d, &off,
 			(size_t)tp_degree * SparkK3KvShardPartialStride(max_rows, tp_degree) * sizeof(float));
+		b->shard_gather_send = (uint8_t *)b->shard_partials_f32;
+		b->shard_gather_keys = (const uint8_t *)b->shard_query_gathered_bf16;
+		if ( cudaMalloc(&d->gather_plan, (size_t)3u * sequences * sizeof(uint32_t)) != cudaSuccess )
+			{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
+		cudaMemset(d->gather_plan, 0, (size_t)3u * sequences * sizeof(uint32_t));
 	}
 	return SPARK_K3_DISPATCH_OK;
 }
@@ -333,6 +338,7 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 	cudaFree(d->kda_k_window_pool); cudaFree(d->kda_v_window_pool);
 	cudaFree(d->access_error);
 	cudaFree(d->scratch);
+	cudaFree(d->gather_plan);
 	delete[] d->mla_cache;
 	delete[] d->weights;
 	delete d->slice_state;
@@ -515,6 +521,46 @@ int32_t SparkK3DispatchShardRows(SparkK3Dispatch *d, uint32_t rows)
 	return SPARK_K3_DISPATCH_OK;
 }
 
+__global__ static void K3DispatchGatherPlanKernel(uint32_t *plan, uint32_t capacity, uint32_t sequence, uint32_t context)
+{
+	plan[0] = sequence;
+	plan[capacity + sequence] = 0u;
+	plan[2u * capacity + sequence] = context;
+}
+
+static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t rows, uint32_t sequence,
+	uint32_t context, cudaStream_t stream)
+{
+	const uint32_t degree = b->kv_shard.degree;
+	const uint64_t unit = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
+	const uint32_t most = SparkKvShardGatherKeys(b->kv_shard, context);
+	const uint64_t units = ((uint64_t)most * K3_MLA_KV_A_DIM * sizeof(uint16_t) + unit - 1u) / unit;
+	const uint64_t query_units = SparkK3KvShardQuerySequences(rows, degree);
+	const uint64_t partial_units = SparkK3KvShardPartialSequences(rows, degree);
+	uint64_t gather_rounds, scatter_rounds;
+	b->shard_gather = 0u;
+	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u ||
+		units * K3_HIDDEN > SparkK3KvShardQueryStride(d->max_rows, degree) ||
+		units * unit > (uint64_t)degree * SparkK3KvShardPartialStride(d->max_rows, degree) * sizeof(float) )
+		return 0;
+	scatter_rounds = SparkTpMeshDirectChunks(query_units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES) +
+		SparkTpMeshAllToAllChunks(partial_units * K3_HIDDEN, degree, SPARK_WEIGHTD_MESH_SLOT_BYTES);
+	gather_rounds = SparkTpMeshDirectChunks(units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES);
+	if ( SparkKvShardExchangeCostNs(gather_rounds, (uint64_t)(degree - 1u) * units * unit) >=
+		SparkKvShardExchangeCostNs(scatter_rounds, (uint64_t)(degree - 1u) * (query_units + partial_units) * unit) )
+		return 0;
+	K3DispatchGatherPlanKernel<<<1u, 1u, 0, stream>>>(d->gather_plan, d->sequences, sequence, context);
+	if ( cudaPeekAtLastError() != cudaSuccess )
+		return -1;
+	b->shard_gather = 1u;
+	b->shard_gather_most_keys = most;
+	b->shard_gather_list = d->gather_plan;
+	b->shard_gather_offset = d->gather_plan + d->sequences;
+	b->shard_gather_context = d->gather_plan + 2u * d->sequences;
+	b->shard_gather_stride = units * unit;
+	return 1;
+}
+
 int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows,
 	uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
@@ -545,6 +591,18 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->head_candidate_token = in->head_candidate_token;
 	b->output_token = in->output_token;
 	b->output_score = in->output_score;
+	b->shard_gather = 0u;
+	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE )
+	{
+		const int32_t gather = in->gather_context != 0u && sequences == 1u
+			? K3DispatchGatherPlan(d, b, rows, in->gather_sequence, in->gather_context, stream) : 0;
+		if ( gather < 0 )
+			return SPARK_K3_DISPATCH_ERR_CUDA;
+		if ( gather > 0 )
+			d->mla_gather_waves++;
+		else
+			d->mla_scatter_waves++;
+	}
 	return(K3StageSlice(d->weights, d->slice_state, d->buffers, d->first_layer,
 		d->layer_count, rows, sequences, commit, packed_rows, context,
 		multiprocessors, (void *)stream));

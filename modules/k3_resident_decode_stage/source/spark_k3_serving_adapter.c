@@ -1124,6 +1124,9 @@ static SparkStatus K3ServingSubmit(void *adapter_state,
 		dispatch.sequence_row_begin = state->runs_device.pointer;
 		dispatch.sequence_row_indices = state->order_device.pointer;
 		dispatch.kda_state_index = state->seqslot_device.pointer;
+		dispatch.gather_sequence = active == 1u ? ((const uint32_t *)state->state_host.pointer)[0] : 0u;
+		dispatch.gather_context = active == 1u && dispatch.gather_sequence < state->runner_config.max_active_sequence_count
+			? ((const uint32_t *)state->context_host.pointer)[dispatch.gather_sequence] : 0u;
 		dispatch.hidden_input_bf16 = submission->hidden_input_address;
 		dispatch.hidden_input_bytes = submission->hidden_input_bytes;
 		dispatch.hidden_output_bf16 = submission->hidden_output_address;

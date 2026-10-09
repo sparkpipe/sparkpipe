@@ -699,6 +699,18 @@ static void K3RunnerShardExchange(SparkK3RunnerState *state, K3LayerBuffers *b,
 		state->tp_collective_failed = 1u;
 		return;
 	}
+	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_KEYS )
+	{
+		if ( b->shard_gather == 0u || b->shard_gather_stride % ((uint64_t)K3_HIDDEN * sizeof(uint16_t)) != 0u )
+		{
+			state->tp_collective_failed = 1u;
+			return;
+		}
+		K3RunnerRound(state, stream, (uint32_t)(b->shard_gather_stride / ((uint64_t)K3_HIDDEN * sizeof(uint16_t))),
+			b->shard_gather_send, (void *)b->shard_gather_keys, 0u, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
+			(phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
+		return;
+	}
 	K3RunnerRound(state, stream,
 		partials != 0u ? SparkK3KvShardPartialSequences(state->rows, degree)
 			: SparkK3KvShardQuerySequences(state->rows, degree),
@@ -750,7 +762,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			? b->hidden_bf16 : b->attention_out_bf16;
 	if ( b->tp_sharded == 0u )
 		return;
-	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS )
+	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS || base == K3_COLLECTIVE_MLA_KEYS )
 	{
 		K3RunnerShardExchange(state, b, stream, phase);
 		return;
@@ -2010,8 +2022,9 @@ static void K3RunnerTiming(SparkK3RunnerState *state, uint32_t rank, uint64_t su
 	if ( state->timing_steps < 64u )
 		return;
 	steps = state->timing_steps;
-	fprintf(stderr, "K3-STEP-TIMING rank=%u steps=%llu graph_steps=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
+	fprintf(stderr, "K3-STEP-TIMING rank=%u steps=%llu graph_steps=%llu mla_gather_waves=%llu mla_scatter_waves=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
 		rank, (unsigned long long)steps, (unsigned long long)state->timing_graph_steps,
+		(unsigned long long)state->dispatch.mla_gather_waves, (unsigned long long)state->dispatch.mla_scatter_waves,
 		(unsigned long long)(state->timing_submit_ns / steps / 1000u),
 		(unsigned long long)(state->timing_graph_steps != 0u ? state->timing_graph_ns / state->timing_graph_steps / 1000u : 0u),
 		(unsigned long long)(state->timing_wait.source_wait_ns / steps / 1000u),
@@ -2217,6 +2230,9 @@ SparkStatus SparkK3StageRunnerSubmit(
 	in.sequence_row_begin = dispatch->sequence_row_begin;
 	in.sequence_row_indices = dispatch->sequence_row_indices;
 	in.kda_state_index = dispatch->kda_state_index;
+	in.gather_sequence = dispatch->gather_sequence;
+	in.gather_context = (dispatch->flags & SPARK_K3_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u && dispatch->active_sequence_count == 1u
+		? dispatch->gather_context : 0u;
 	in.route_expert = state->route_expert;
 	in.route_packed_row = state->route_packed_row;
 	in.route_source_token = state->route_source_token;

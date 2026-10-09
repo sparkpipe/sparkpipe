@@ -14,7 +14,7 @@ extern "C" {
 #endif
 
 
-#define SPARK_K3_STAGE_RUNNER_ABI_VERSION 4u
+#define SPARK_K3_STAGE_RUNNER_ABI_VERSION 5u
 #define SPARK_K3_STAGE_RUNNER_CONFIGURATION_BYTES \
     ((uint32_t)sizeof(SparkK3StageRunnerConfiguration))
 #define SPARK_K3_STAGE_RUNNER_DISPATCH_BYTES \
@@ -72,6 +72,8 @@ typedef struct SparkK3StageRunnerDispatch
     const uint32_t *kda_state_index;
     const uint32_t *sequence_row_begin;
     const uint32_t *sequence_row_indices;
+    uint32_t gather_sequence;
+    uint32_t gather_context;
     const void *hidden_input_bf16;
     uint64_t hidden_input_bytes;
     void *hidden_output_bf16;

@@ -37,6 +37,8 @@ typedef struct SparkK3StepInput
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;
 	float *output_score;
+	uint32_t gather_sequence;
+	uint32_t gather_context;
 } SparkK3StepInput;
 
 typedef struct SparkK3Dispatch
@@ -64,6 +66,9 @@ typedef struct SparkK3Dispatch
 	uint16_t *kda_v_window_pool;
 	uint8_t *scratch;
 	size_t scratch_bytes;
+	uint32_t *gather_plan;
+	uint64_t mla_gather_waves;
+	uint64_t mla_scatter_waves;
 	uint32_t tp_degree;
 	uint32_t kda_rank_heads;
 	SparkK3RankStateBytes state_bytes;

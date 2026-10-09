@@ -195,6 +195,14 @@ struct K3LayerBuffers
 	float *shard_partials_received_f32;
 	uint64_t shard_query_rank_stride;
 	uint64_t shard_partial_rank_stride;
+	uint32_t shard_gather;
+	uint32_t shard_gather_most_keys;
+	const uint32_t *shard_gather_list;
+	const uint32_t *shard_gather_offset;
+	const uint32_t *shard_gather_context;
+	uint8_t *shard_gather_send;
+	const uint8_t *shard_gather_keys;
+	uint64_t shard_gather_stride;
 	const uint32_t *sequence_of_row;
 	const uint32_t *context_length;
 	const uint32_t *positions;
@@ -578,6 +586,46 @@ static int32_t K3LayerMlaShardPartials(const K3LayerBuffers *b, uint32_t rows, c
 		K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,
 		0,0u,0u,K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == cudaSuccess
 		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static uint32_t K3LayerMlaGatherReady(const K3LayerBuffers *b, uint32_t rows)
+{
+	return(K3LayerMlaShardReady(b,rows) != 0u && b->shard_gather != 0u && rows > LM_SKINNY_ROWS_WIDE &&
+		b->shard_gather_list != 0 && b->shard_gather_offset != 0 && b->shard_gather_context != 0 &&
+		b->shard_gather_send != 0 && b->shard_gather_keys != 0 && b->shard_gather_most_keys != 0u &&
+		b->shard_gather_stride >= (uint64_t)b->shard_gather_most_keys * K3_MLA_KV_A_DIM * sizeof(uint16_t) ? 1u : 0u);
+}
+
+template<class Geometry>
+static int32_t K3LayerMlaGatherPack(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+{
+	if ( K3LayerMlaGatherReady(b,rows) == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	return(LmKvShardGatherPackLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset,
+		b->shard_gather_context,1u,b->shard_gather_most_keys,b->shard_gather_send,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+template<class Geometry>
+static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
+{
+	LmKvShardGatherView view;
+	SparkKvShard source;
+	uint32_t rank;
+	if ( K3LayerMlaGatherReady(b,rows) == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	for ( rank = 0u; rank < b->kv_shard.degree; rank++ )
+	{
+		source = b->kv_shard;
+		source.rank = rank;
+		if ( LmKvShardGatherViewInitialize<Geometry>(&view,b->cache_shard.pages,source,b->shard_gather_keys + (uint64_t)rank * b->shard_gather_stride,
+				b->shard_gather_offset,b->shard_gather_context) != 0 )
+			return(LM_LAUNCH_ERR_SHAPE);
+		if ( LmLatentGatherPrefillLaunch<Geometry,LmKvShardGatherView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(view,b->query_bf16,
+				K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,K3_MLA_QK_SCALE,
+				b->shard_partials_received_f32 + (uint64_t)rank * b->shard_partial_rank_stride,rows,stream) != cudaSuccess )
+			return(LM_LAUNCH_ERR_LAUNCH);
+	}
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3LayerMlaShardMerge(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)

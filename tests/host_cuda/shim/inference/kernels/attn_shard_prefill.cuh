@@ -22,3 +22,20 @@ static inline cudaError_t LmLatentShardPrefillLaunch(
 	return LmLatentShardPartialLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank,
 		sequence_of_row, context_length, row_position, 0, 0u, 0u, qk_scale, partials, partial_rank_stride, rows, stream);
 }
+
+template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
+static inline cudaError_t LmLatentGatherPrefillLaunch(
+	Pages cache,
+	const uint16_t *query_bf16,
+	uint32_t heads_per_rank,
+	const uint32_t *sequence_of_row,
+	const uint32_t *context_length,
+	const uint32_t *row_position,
+	float qk_scale,
+	float *partials,
+	uint32_t rows,
+	cudaStream_t stream)
+{
+	return LmLatentShardPartialOwnHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, heads_per_rank,
+		sequence_of_row, context_length, row_position, 0, 0u, 0u, qk_scale, partials, rows, stream);
+}
