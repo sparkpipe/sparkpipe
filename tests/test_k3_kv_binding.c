@@ -1,3 +1,4 @@
+#include "inference/runner/stage_serving_adapter.c"
 #include "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c"
 #include "tests/test_k3_runner_stub.h"
 #include "tests/test_weightd_kv_server.h"
@@ -38,7 +39,7 @@ static int RemoveEntry(const char *path, const struct stat *info, int flag, stru
 	return(remove(path));
 }
 
-static SparkStatus BindWith(SparkK3ServingState *state, uint32_t logical, uint32_t physical)
+static SparkStatus BindWith(SparkStageServingState *state, uint32_t logical, uint32_t physical)
 {
 	SparkModelServingAdapterConfiguration configuration;
 	memset(&configuration, 0, sizeof(configuration));
@@ -48,15 +49,16 @@ static SparkStatus BindWith(SparkK3ServingState *state, uint32_t logical, uint32
 	configuration.kv_backing_maximum_bytes = UINT64_C(1) << 26;
 	configuration.kv_snapshot_directory = SNAPSHOT_DIRECTORY;
 	configuration.kv_snapshot_maximum_bytes = UINT64_C(1) << 26;
-	return(K3ServingBindKv(state, &configuration));
+	return(StageServingBindKv(state, &configuration));
 }
 
-static SparkK3ServingState *Open(void)
+static SparkStageServingState *Open(void)
 {
-	SparkK3ServingState *state = (SparkK3ServingState *)calloc(1u, sizeof(*state));
+	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
 	SparkMemoryBuffer *host[6], *device[8];
 	uint32_t index;
 	assert(state != 0);
+	state->model = &K3StageServing;
 	host[0] = &state->positions_host; host[1] = &state->context_host; host[2] = &state->state_host;
 	host[3] = &state->runs_host; host[4] = &state->seqslot_host; host[5] = &state->order_host;
 	device[0] = &state->positions_device; device[1] = &state->context_device; device[2] = &state->state_device;
@@ -73,7 +75,7 @@ static SparkK3ServingState *Open(void)
 	state->runner_config.kv_pages_per_sequence = 2u;
 	state->runner_config.execution_stream = (void *)(uintptr_t)7u;
 	state->completion_function = Completion;
-	SparkStageModuleAtomicStateArrayInitialize(state->lane_states, SPARK_K3_SERVING_MAX_LANES);
+	SparkStageModuleAtomicStateArrayInitialize(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES);
 	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
 	assert(mkdtemp(DIRECTORY) != 0);
 	strcpy(SNAPSHOT_DIRECTORY, "/tmp/sparkpipe-k3-snapshot-XXXXXX");
@@ -90,9 +92,9 @@ static SparkK3ServingState *Open(void)
 	return(state);
 }
 
-static void Close(SparkK3ServingState *state)
+static void Close(SparkStageServingState *state)
 {
-	K3ServingDestroy(state);
+	StageServingDestroy(state);
 	assert(rmdir(DIRECTORY) == 0);
 	assert(nftw(SNAPSHOT_DIRECTORY, RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) == 0);
 }
@@ -170,28 +172,28 @@ static void WorkRows(TestK3Work *work, uint32_t lane, uint64_t first, uint32_t c
 	work->submission.token_count = work->submission.row_count;
 }
 
-static SparkStatus Run(SparkK3ServingState *state, TestK3Work *work)
+static SparkStatus Run(SparkStageServingState *state, TestK3Work *work)
 {
-	SparkStatus status = K3ServingPrefetch(state, &work->submission, 1u);
+	SparkStatus status = StageServingPrefetch(state, &work->submission, 1u);
 	if ( status == SPARK_STATUS_OK )
-		status = K3ServingResolvePrefetch(state, &work->submission, SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT);
+		status = StageServingResolvePrefetch(state, &work->submission, SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT);
 	if ( status == SPARK_STATUS_OK )
-		status = K3ServingSubmit(state, &work->submission);
+		status = StageServingSubmit(state, &work->submission);
 	return(status);
 }
 
-static void Release(SparkK3ServingState *state, uint64_t sequence, uint32_t slot)
+static void Release(SparkStageServingState *state, uint64_t sequence, uint32_t slot)
 {
 	TestK3Work work;
 	uint32_t completions = COMPLETIONS;
 	WorkInit(&work, SPARK_MODEL_SERVING_WORK_KIND_RELEASE);
 	WorkLane(&work, sequence, slot, 0u, 0u);
-	assert(K3ServingSubmit(state, &work.submission) == SPARK_STATUS_OK && COMPLETIONS == completions + 1u);
+	assert(StageServingSubmit(state, &work.submission) == SPARK_STATUS_OK && COMPLETIONS == completions + 1u);
 }
 
 static void TestK3PrefillDecodeRelease(void)
 {
-	SparkK3ServingState *state = Open();
+	SparkStageServingState *state = Open();
 	SparkStageKvRecurrentCounters counters;
 	TestK3Work work;
 	uint32_t index, dispatches;
@@ -236,7 +238,7 @@ static void TestK3PrefillDecodeRelease(void)
 
 static void TestK3PrefixRestore(void)
 {
-	SparkK3ServingState *state = Open();
+	SparkStageServingState *state = Open();
 	SparkStageKvRecurrentCounters counters;
 	TestK3Work work;
 	uint64_t published;
@@ -254,11 +256,11 @@ static void TestK3PrefixRestore(void)
 	WorkLane(&work, 2u, 1u, 4u, 5u);
 	WorkPrefix(&work, 4u, 0x91u);
 	WorkRows(&work, 0u, 4u, 1u);
-	assert(K3ServingPrefetch(state, &work.submission, 1u) == SPARK_STATUS_OK);
+	assert(StageServingPrefetch(state, &work.submission, 1u) == SPARK_STATUS_OK);
 	assert((state->kv.lane_state_flags[1] & SPARK_STAGE_KV_LANE_STATE_RESTORE_READY) != 0u);
-	assert(K3ServingResolvePrefetch(state, &work.submission, SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT) == SPARK_STATUS_OK);
+	assert(StageServingResolvePrefetch(state, &work.submission, SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT) == SPARK_STATUS_OK);
 	memset(test_recurrent_lanes[1], 0, TEST_K3_RECURRENT_BYTES);
-	assert(K3ServingSubmit(state, &work.submission) == SPARK_STATUS_OK);
+	assert(StageServingSubmit(state, &work.submission) == SPARK_STATUS_OK);
 	assert(memcmp(test_recurrent_lanes[1], test_recurrent_lanes[0], TEST_K3_RECURRENT_BYTES) == 0 && test_recurrent_from_buffer >= 1u);
 	assert(atomic_load(&state->kv.lane_next_positions[1]) == 5u);
 	SparkStageKvBindingTakeRecurrentCounters(&state->kv, &counters);
@@ -278,21 +280,21 @@ static void TestK3PrefixRestore(void)
 
 static void TestK3Reset(void)
 {
-	SparkK3ServingState *state = Open();
+	SparkStageServingState *state = Open();
 	TestK3Work work;
 	WorkInit(&work, SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
 	WorkLane(&work, 1u, 2u, 0u, 3u);
 	WorkRows(&work, 0u, 0u, 3u);
 	assert(Run(state, &work) == SPARK_STATUS_OK && SparkStageKvBindingResidentCount(&state->kv) == 1u);
 	test_reset_calls = 0u;
-	assert(K3ServingReset(state, 2u) == SPARK_STATUS_OK);
+	assert(StageServingReset(state, 2u) == SPARK_STATUS_OK);
 	assert(test_reset_calls == 1u && test_reset_count == 4u && SparkStageKvBindingResidentCount(&state->kv) == 0u);
 	assert(state->kv.reset_generation == 2u && atomic_load(&state->reset_generation) == 2u);
-	assert(K3ServingReset(state, 2u) == SPARK_STATUS_VALIDATION_FAILED && test_reset_calls == 1u);
+	assert(StageServingReset(state, 2u) == SPARK_STATUS_VALIDATION_FAILED && test_reset_calls == 1u);
 	WorkInit(&work, SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
 	WorkLane(&work, 3u, 2u, 0u, 2u);
 	WorkRows(&work, 0u, 0u, 2u);
-	assert(K3ServingSubmit(state, &work.submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(StageServingSubmit(state, &work.submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	work.submission.control_generation = 2u;
 	assert(Run(state, &work) == SPARK_STATUS_OK && SparkStageKvBindingResidentCount(&state->kv) == 1u);
 	Close(state);
@@ -301,8 +303,9 @@ static void TestK3Reset(void)
 
 static void TestK3Refusals(void)
 {
-	SparkK3ServingState *state = (SparkK3ServingState *)calloc(1u, sizeof(*state));
+	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
 	assert(state != 0);
+	state->model = &K3StageServing;
 	state->max_rows = 8u;
 	state->runner_config.resident_sequence_capacity = 4u;
 	state->runner_config.kv_pages_per_sequence = 2u;
@@ -324,10 +327,11 @@ static void TestK3Refusals(void)
 
 static void TestK3ContextShard(void)
 {
-	SparkK3ServingState *state = (SparkK3ServingState *)calloc(1u, sizeof(*state));
+	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
 	const uint64_t page = (uint64_t)SPARK_K3_KV_PAGE_SLOTS * SPARK_K3_MODEL_MLA_KV_A_DIMENSION * SPARK_K3_KV_BYTES_PER_SCALAR;
 	uint32_t rows;
 	assert(state != 0);
+	state->model = &K3StageServing;
 	state->max_rows = 8u;
 	state->runner_config.max_input_row_count = 8u;
 	state->runner_config.max_active_sequence_count = 4u;

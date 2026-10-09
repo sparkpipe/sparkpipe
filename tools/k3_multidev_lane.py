@@ -222,8 +222,12 @@ def group_hosts(rank: int) -> list[str]:
     return HOSTS[first:first + TP]
 
 
+DEFAULT_STATE_BUDGET_BYTES = 5 << 30
+
+
 def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
-                   sequences: int = 16, rows: int | None = None) -> dict:
+                   sequences: int = 16, rows: int | None = None,
+                   state_budget_bytes: int = DEFAULT_STATE_BUDGET_BYTES) -> dict:
     tp = tp_rank_of(rank)
     config = {
         "stage_pack_path": deployed_pack(rank),
@@ -234,6 +238,7 @@ def adapter_config(rank: int, kv_pages: int = KV_PAGES_PER_SEQUENCE,
         "max_rows": rows if rows is not None else sequences,
         "resident_capacity": sequences,
         "kv_pages": kv_pages,
+        "state_budget_bytes": state_budget_bytes,
         "hidden": 7168,
         "device_collective": {
             "backend": "hidden_transport",
@@ -413,6 +418,11 @@ def main() -> int:
                         help="sha256 of the compiled publisher tokenizer the "
                              "API channel serves (runtime/" + TOKENIZER_ASSET +
                              "); omitted for residentd-only roots")
+    parser.add_argument("--state-budget-bytes", type=int,
+                        default=DEFAULT_STATE_BUDGET_BYTES,
+                        help="per-rank budget for KDA state, windows, MLA KV "
+                             "and scratch; the stage runner refuses a plan "
+                             "over it (default %(default)d)")
     parser.add_argument("--check", action="store_true",
                         help="verify the outputs are current instead of "
                              "writing them")
@@ -446,6 +456,8 @@ def main() -> int:
         raise SystemExit("kv-snapshot-bytes must be positive and finite")
     if not 1 <= arguments.sequences <= 16:
         raise SystemExit("sequences must be within 1..16")
+    if arguments.state_budget_bytes <= 0:
+        raise SystemExit("state-budget-bytes must be positive")
     if not 1 <= arguments.kv_pages <= 16384:
         raise SystemExit("kv-pages must be within 1..16384")
 
@@ -464,7 +476,8 @@ def main() -> int:
     ranks = range(WORLD) if arguments.rank is None else [arguments.rank]
     for rank in ranks:
         text = render(adapter_config(rank, arguments.kv_pages,
-                                     arguments.sequences, arguments.rows))
+                                     arguments.sequences, arguments.rows,
+                                     arguments.state_budget_bytes))
         name = f"adapter.{host_of(rank)}.json" if arguments.rank is None \
             else "adapter.json"
         wrote = write_or_check(output / name, text, arguments.check) or wrote

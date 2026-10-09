@@ -128,6 +128,8 @@ def adapter_gates(config, rank, failures, per_host_ports):
     check(config["stage_pack_path"] == expected_pack, failures,
           f"{host}: stage_pack_path {config['stage_pack_path']}")
 
+    check(config["state_budget_bytes"] == lane.DEFAULT_STATE_BUDGET_BYTES, failures,
+          f"{host}: the adapter carries the rank state budget")
     check("tp_collective" not in config, failures, f"{host}: the host TCP collective is gone")
     per_host_ports.setdefault(host, []).append(lane.CONTROL_BASE + rank)
     check(config["device_collective"]["wait_mode"] == "hardware", failures, f"{host}: device collective wait mode")
@@ -295,9 +297,9 @@ def main() -> int:
               "a KV backing below the spilled pages and the KDA checkpoints is refused")
 
         for arguments, message, refusal in (
-                (["--sequences", "4", "--rows", "65"], "within sequences..64",
-                 "a wave wider than the adapter's 64 rows is refused"),
-                (["--sequences", "4", "--rows", "3"], "within sequences..64",
+                (["--sequences", "4", "--rows", str(lane.MAX_ROWS + 1)], f"within sequences..{lane.MAX_ROWS}",
+                 "a wave wider than the adapter's row limit is refused"),
+                (["--sequences", "4", "--rows", "3"], f"within sequences..{lane.MAX_ROWS}",
                  "a wave narrower than one row per sequence is refused"),
                 (["--sequences", "4", "--kv-pages", "4096", "--kv-physical-pages", "256"], "must hold one sequence",
                  "physical pages below one sequence's pages are refused"),

@@ -10,13 +10,14 @@ TEMPLATE_SYMBOLS = [
     "SparkServingAdapterTemplateLoadTpCollective",
     "SparkServingAdapterTemplateReservePending",
     "SparkServingAdapterTemplateLoadDriver",
+    "SparkStageServingAdapterInterface",
 ]
 
 FAMILIES = {
     "dsv4_resident_decode_stage": None,
     "glm52_resident_decode_stage": None,
     "qwen38_27b_resident_decode_stage": None,
-    "k3_resident_decode_stage": "exempt:pack-API-module (verified not the pasted shape; dry-final report)",
+    "k3_resident_decode_stage": None,
     "glm5_next_resident_decode_stage": None,
     "qwen38_max_resident_decode_stage": "wave-2",
     "qwen4_flash_resident_decode_stage": "wave-2",
