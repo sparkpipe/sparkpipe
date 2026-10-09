@@ -38,6 +38,7 @@ struct LmHostRecorderFormat
 		return((uint8_t)(((int)clamped) & 15));
 	}
 };
+#include "tests/host_cuda/lm_host_skinny_recorder.cuh"
 #include "inference/llms/kimi_k3/slice.cuh"
 
 #define ROWS 2u
@@ -273,9 +274,10 @@ int main(void)
 		mismatch = 0u;
 		for (byte = 0u; byte < sizeof(kda_state); ++byte)
 			if ( kda_state[byte] != truth_state[byte] ) ++mismatch;
-		for (byte = 0u; byte < sizeof(truth_q); ++byte)
-			if ( q_window[byte] != truth_q[byte] || k_window[byte] != truth_k[byte]
-				|| v_window[byte] != truth_v[byte] ) ++mismatch;
+		for (byte = 0u; byte < sizeof(truth_q) / sizeof(truth_q[0]); ++byte)
+			if ( q_window[byte] != truth_q[byte] || k_window[byte] != truth_k[byte] ) ++mismatch;
+		for (byte = 0u; byte < sizeof(truth_v) / sizeof(truth_v[0]); ++byte)
+			if ( v_window[byte] != truth_v[byte] ) ++mismatch;
 		printf("fold_mismatch %u\n", mismatch);
 		state.replay_conv_q = 0; state.replay_conv_k = 0; state.replay_conv_v = 0;
 		state.replay_retention = 0; state.replay_write_gate = 0;
