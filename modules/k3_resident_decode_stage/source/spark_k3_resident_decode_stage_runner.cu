@@ -59,6 +59,7 @@ typedef struct SparkK3RunnerTpContext
 	uint32_t boundary;
 	uint32_t phase;
 	uint32_t gate_up_elements;
+	uint32_t sp;
 } SparkK3RunnerTpContext;
 
 static SparkK3RunnerTpContext *K3RunnerTpContextAcquire(
@@ -527,6 +528,7 @@ static SparkK3RunnerTpContext *K3RunnerTpContextAcquire(
 		return 0;
 	}
 	state->tp_context_free_head = context->pool_next;
+	context->sp = 0u;
 	return context;
 }
 
@@ -542,6 +544,17 @@ static void K3RunnerTpApply(SparkK3RunnerTpContext *tp)
 	K3LayerBuffers *b = tp->buffers;
 	uint32_t rows = tp->rows;
 	uint16_t *fused = tp->fused;
+	if ( tp->sp != 0u )
+	{
+		K3LayerBuffers sp;
+		K3SpView(b, &sp);
+		if ( tp->phase == 0u && tp->boundary != 0u )
+			K3PartialSet(&sp, b->sp_reduced_bf16, b->sp_rows, tp->stream);
+		else
+			K3PartialAdd(&sp, b->sp_reduced_bf16, b->sp_rows, tp->stream);
+		K3RunnerTpContextRelease(tp);
+		return;
+	}
 	if ( tp->phase == 2u )
 	{
 		if ( cudaMemcpyAsync(b->gate_up_bf16, fused,
@@ -568,6 +581,8 @@ static int32_t K3RunnerLaunchSliceDirect(SparkK3RunnerState *state,
 	uint32_t packed_rows, cudaStream_t stream)
 {
 	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
+	state->dispatch.slice_state->sp_ready = state->device_collective_created != 0 && state->device_collective_deferred != 0u &&
+		SparkTpDeviceCollectiveSupportsReduceScatter(&state->device_collective) != 0u ? 1u : 0u;
 	in->pair_rows = state->head_last_rows != 0u && sequences == 1u && rows >= 2u * K3_RUNNER_PAIR_MIN_ROWS &&
 		state->device_collective_created != 0 && state->device_collective_deferred != 0u ? rows / 2u : 0u;
 	return SparkK3DispatchStep(&state->dispatch, in, rows, sequences, 1u,
@@ -793,6 +808,17 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		K3RunnerShardExchange(state, b, stream, rows, phase);
 		return;
 	}
+	if ( base == K3_COLLECTIVE_SP_GATHER )
+	{
+		if ( b->sp_rows == 0u )
+		{
+			state->tp_collective_failed = 1u;
+			return;
+		}
+		K3RunnerRound(state, stream, b->sp_rows, b->sp_hidden_bf16, b->hidden_bf16, 0u,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+		return;
+	}
 	if ( base == K3_COLLECTIVE_MLA_DOWN )
 	{
 		const uint32_t degree = b->kv_shard.degree;
@@ -872,10 +898,14 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			K3RunnerTpApply(pending);
 		return;
 	}
-	K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
-		phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
-		state->fused_device,rows,base,segments,0u);
+	const uint32_t sp = b->sp_rows != 0u && (base == 0u || base == 1u) ? 1u : 0u;
+	if ( sp == 0u || base != 0u )
+		K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
+			phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
+			state->fused_device,rows,base,segments,0u);
 	{
+		const uint32_t operation = sp != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 :
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
 		SparkK3RunnerTpContext *completion_context =
 			K3RunnerTpContextAcquire(state);
 		SparkTpDeviceCollectiveSubmission submission;
@@ -890,13 +920,13 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		completion_context->boundary = boundary;
 		completion_context->phase = base;
 		completion_context->gate_up_elements = 0u;
+		completion_context->sp = sp;
 		K3RunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-			rows, state->fused_device, state->fused_device, state->tp_next_ordinal++);
+			rows, sp != 0u && base == 0u ? (const void *)phase0_source : (const void *)state->fused_device,
+			sp != 0u ? (void *)b->sp_reduced_bf16 : (void *)state->fused_device, state->tp_next_ordinal++);
 		status = stage == K3_RUNNER_STAGE_BEGIN
-			? SparkTpDeviceCollectiveBegin(&state->device_collective, &submission,
-				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16)
-			: SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
-				SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+			? SparkTpDeviceCollectiveBegin(&state->device_collective, &submission, operation)
+			: SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, operation);
 		if ( status != SPARK_STATUS_OK )
 			state->tp_collective_failed = 1u;
 		if ( stage == K3_RUNNER_STAGE_BEGIN )
@@ -2167,10 +2197,11 @@ static void K3RunnerTiming(SparkK3RunnerState *state, uint32_t rank, uint64_t su
 	if ( state->timing_steps < 64u )
 		return;
 	steps = state->timing_steps;
-	fprintf(stderr, "K3-STEP-TIMING rank=%u steps=%llu graph_steps=%llu mla_gather_waves=%llu mla_scatter_waves=%llu pair_waves=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
+	fprintf(stderr, "K3-STEP-TIMING rank=%u steps=%llu graph_steps=%llu mla_gather_waves=%llu mla_scatter_waves=%llu pair_waves=%llu sp_waves=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
 		rank, (unsigned long long)steps, (unsigned long long)state->timing_graph_steps,
 		(unsigned long long)state->dispatch.mla_gather_waves, (unsigned long long)state->dispatch.mla_scatter_waves,
 		(unsigned long long)state->dispatch.pair_waves,
+		(unsigned long long)state->dispatch.sp_waves,
 		(unsigned long long)(state->timing_submit_ns / steps / 1000u),
 		(unsigned long long)(state->timing_graph_steps != 0u ? state->timing_graph_ns / state->timing_graph_steps / 1000u : 0u),
 		(unsigned long long)(state->timing_wait.source_wait_ns / steps / 1000u),
