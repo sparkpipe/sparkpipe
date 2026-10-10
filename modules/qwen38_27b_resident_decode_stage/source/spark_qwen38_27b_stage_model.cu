@@ -96,6 +96,9 @@ typedef struct QwenModelState
 	uint64_t gdn_window_bytes;
 	uint64_t record_stride;
 	QwenLayer layers[QW_LAYERS];
+	FILE *dump;
+	uint16_t *dump_rows;
+	uint32_t *dump_positions;
 	void *arena;
 	uint64_t arena_bytes;
 	uint16_t *normed;
@@ -299,9 +302,9 @@ static SparkStatus QwenAttention(QwenModelState *state, const QwenLayer *layer, 
 	LM_LAUNCH((LmHeadRmsNormKernel<QW_THREADS,float>), dim3(QW_KV_HEADS,rows), QW_THREADS, 0, stream,
 		state->attn_key, layer->k_norm, state->attn_key, rows, QW_KV_HEADS, QW_HEAD_DIM, QW_EPSILON, 1.0f);
 	LM_LAUNCH((LmRopePerHeadKernel<QW_THREADS>), dim3(rows,QW_HEADS), QW_THREADS, 0, stream,
-		state->attn_query, step->positions, QW_HEADS, QW_HEAD_DIM, QW_ROPE_DIM, QW_ROPE_THETA);
+		state->attn_query, step->positions, QW_HEADS, QW_HEAD_DIM, QW_ROPE_DIM, QW_ROPE_THETA, (const float *)0, 1.0f, 0u);
 	LM_LAUNCH((LmRopePerHeadKernel<QW_THREADS>), dim3(rows,QW_KV_HEADS), QW_THREADS, 0, stream,
-		state->attn_key, step->positions, QW_KV_HEADS, QW_HEAD_DIM, QW_ROPE_DIM, QW_ROPE_THETA);
+		state->attn_key, step->positions, QW_KV_HEADS, QW_HEAD_DIM, QW_ROPE_DIM, QW_ROPE_THETA, (const float *)0, 1.0f, 0u);
 	QwenPackSlotKernel<<<dim3(QwenBlocks(2u * QW_KV_WIDTH),rows), QW_THREADS, 0, stream>>>(state->attn_key, state->attn_value, state->attn_slot);
 	LM_LAUNCH((LmKvShardStoreKernel<QwenKv,QW_THREADS>), rows, QW_THREADS, 0, stream,
 		*view, state->attn_slot, step->sequence_of_row, step->positions, rows, 2u * QW_KV_WIDTH);
@@ -336,6 +339,25 @@ static SparkStatus QwenFfn(QwenModelState *state, const QwenLayer *layer, const 
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus QwenDumpLayer(QwenModelState *state, uint32_t layer, const SparkStageRunnerStep *step, const uint16_t *hidden,
+	const uint16_t *partial, cudaStream_t stream)
+{
+	const uint32_t header[3] = { 0x444c5751u, layer, step->rows };
+	const uint64_t values = (uint64_t)step->rows * QW_HIDDEN;
+	if ( cudaStreamSynchronize(stream) != cudaSuccess ||
+		cudaMemcpy(state->dump_positions, step->positions, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
+		cudaMemcpy(state->dump_rows, hidden, (size_t)values * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
+		(partial != 0 && cudaMemcpy(state->dump_rows + values, partial, (size_t)values * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess) )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( partial == 0 )
+		memset(state->dump_rows + values, 0, (size_t)values * sizeof(uint16_t));
+	fwrite(header, sizeof(header), 1u, state->dump);
+	fwrite(state->dump_positions, sizeof(uint32_t), step->rows, state->dump);
+	fwrite(state->dump_rows, sizeof(uint16_t), (size_t)(2u * values), state->dump);
+	fflush(state->dump);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus QwenStep(void *model, const SparkStageRunnerStep *step, void *stream_void)
 {
 	QwenModelState *state = (QwenModelState *)model;
@@ -345,6 +367,13 @@ static SparkStatus QwenStep(void *model, const SparkStageRunnerStep *step, void 
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( state->dump != 0 )
+	{
+		cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
+		if ( cudaStreamIsCapturing(stream, &capturing) != cudaSuccess || capturing != cudaStreamCaptureStatusNone )
+			return SPARK_STATUS_UNSUPPORTED;
+		status = QwenDumpLayer(state, 0xffffffffu, step, hidden, 0, stream);
+	}
 	for ( uint32_t index = 0u; index < QW_LAYERS && status == SPARK_STATUS_OK; ++index )
 	{
 		const QwenLayer *layer = &state->layers[index];
@@ -361,6 +390,8 @@ static SparkStatus QwenStep(void *model, const SparkStageRunnerStep *step, void 
 		status = QwenFfn(state, layer, step, stream);
 		if ( status == SPARK_STATUS_OK )
 			status = QwenRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
+		if ( status == SPARK_STATUS_OK && state->dump != 0 )
+			status = QwenDumpLayer(state, index, step, hidden, state->partial, stream);
 		if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
 			state->services->layer_done(state->services->context, index);
 	}
@@ -443,6 +474,10 @@ static void QwenClose(void *model)
 		(void)cudaFree(state->arena);
 	if ( state->pack_open != 0u )
 		SparkNamedPackClose(&state->pack);
+	if ( state->dump != 0 )
+		fclose(state->dump);
+	free(state->dump_rows);
+	free(state->dump_positions);
 	free(state);
 }
 
@@ -484,6 +519,16 @@ static SparkStatus QwenOpen(const SparkStageRunnerModelOpen *request, void **mod
 	state->tp_degree = configuration->tp_degree;
 	state->tp_rank = configuration->tp_rank;
 	state->max_rows = configuration->max_input_row_count;
+	if ( getenv("SPARK_QWEN38_27B_LAYER_DUMP") != 0 )
+	{
+		state->dump = fopen(getenv("SPARK_QWEN38_27B_LAYER_DUMP"), "wb");
+		state->dump_rows = (uint16_t *)malloc((size_t)2u * state->max_rows * QW_HIDDEN * sizeof(uint16_t));
+		state->dump_positions = (uint32_t *)malloc((size_t)state->max_rows * sizeof(uint32_t));
+		if ( state->dump == 0 || state->dump_rows == 0 || state->dump_positions == 0 )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		fprintf(stderr, "sparkpipe_qwen38_27b: this rank dumps every layer's residual and sublayer output to %s (debug; graphs off)\n",
+			getenv("SPARK_QWEN38_27B_LAYER_DUMP"));
+	}
 	if ( configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
 	{
 		state->linear_bytes = 1u;
