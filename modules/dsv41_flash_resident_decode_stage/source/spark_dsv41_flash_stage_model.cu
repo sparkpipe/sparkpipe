@@ -550,20 +550,20 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		cudaMemcpy(state->dump_routes, state->route_expert, (size_t)routes * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
 		cudaMemcpy(state->dump_weights, state->route_weight, (size_t)routes * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	D41RouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
+	LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
 		routes, state->tp_rank * D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS);
 	if ( LmRouteBuild<D41_THREADS,D41_LOCAL_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset,
 		state->route_packed_row, state->route_source_token, D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down,
 		stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41PackedWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
 	D41Fp8Qdq(state->xq, (uint64_t)rows * D41_HIDDEN, stream);
 	launch = D41ExpertsUp(state, layer->e_w1, w1_scale, state->expert_gate, rows, routes, sms, stream);
 	if ( launch == LM_LAUNCH_OK )
 		launch = D41ExpertsUp(state, layer->e_w3, w3_scale, state->expert_up, rows, routes, sms, stream);
 	if ( launch != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41SwigluPackedKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes), D41_THREADS, 0, stream>>>(state->expert_gate, state->expert_up,
+	LmSwigluPackedKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes), D41_THREADS, 0, stream>>>(state->expert_gate, state->expert_up,
 		state->packed_weight, state->expert_act, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	D41Fp8Qdq(state->expert_act, (uint64_t)routes * D41_MOE_INTER, stream);
 	launch = LmSkinnyGroupedExperts<LmMxfp4>(layer->e_w2, w2_scale, state->expert_act, state->expert_out, state->group_row_offset,
@@ -612,7 +612,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		if ( dumped != SPARK_STATUS_OK )
 			return dumped;
 	}
-	D41MoeLocalFinalizeKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+	LmMoeLocalFinalizeKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
 		state->route_expert, state->tp_rank == 0u ? state->shared_out : (const uint16_t *)0, state->partial, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
 	return D41Launched();
 }

@@ -77,8 +77,26 @@ DSV41_FLASH = {
     "recurrent_bytes": (40 * 8 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
 }
 
+QWEN38_MAX = {
+    **QWEN38_27B,
+    "swap_id": "qwen3.8-max",
+    "api_port": 8464,
+    "kv_label": "qwen38_max_stage",
+    "node_memory_bytes": 88 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/qwen3.8-max-nvfp4-radixark-bf16-spine/tokenizer.json",
+    "pack": "sparkdata/qwen38_max.nvfp4.tp16/qwen38_max.tp16.rank{rank:02d}.pack",
+    "adapter": "libqwen38_max_tp16_serving_adapter.so",
+    "program": "qwen38_max",
+    "node_target": "cuda.sm121.qwen38_max.stage_runner.linear_bf16.expert_nvfp4.kv_bf16",
+    "contract": "model_contracts/qwen38_authoritative.json",
+    "hidden": 8192,
+    "kv_page_bytes": 23 * 64 * 4096 // WORLD,
+    "recurrent_bytes": 69 * (8 * 128 * 128 * 4 + 1280 * 4 * 2),
+}
+
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
+    "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
     "qwen38_27b_bf16": {
         **QWEN38_27B,
