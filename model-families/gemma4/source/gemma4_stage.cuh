@@ -16,15 +16,28 @@
 #include "inference/kernels/gqa_shard.cuh"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
+#include "inference/kernels/moe_experts.cuh"
+#include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/project.cuh"
+#include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/stream_gemm.cuh"
+#include "inference/kernels/topk_warp.cuh"
 #include "runtime/gemm.cuh"
 
 #define GM_THREADS 256u
 #define GM_EPSILON 1e-6f
 #define GM_PACK_ALIGNMENT 128u
+
+struct GemmaDefaults
+{
+	static constexpr bool kMoe = false;
+	static constexpr uint32_t kExperts = 0u;
+	static constexpr uint32_t kLocalExperts = 0u;
+	static constexpr uint32_t kTopK = 0u;
+	static constexpr uint32_t kMoeInter = 0u;
+};
 
 template<class G>
 struct GemmaShape
@@ -57,6 +70,15 @@ typedef struct GemmaLayer
 	const float *layer_scalar;
 	const float *q_norm;
 	const float *k_norm;
+	const uint16_t *router_proj;
+	const float *router_scale;
+	const float *expert_scale;
+	const uint16_t *moe_w1;
+	const uint16_t *moe_w3;
+	const uint16_t *moe_w2;
+	const float *post_ff_norm_1;
+	const float *pre_ff_norm_2;
+	const float *post_ff_norm_2;
 	uint32_t kv_index;
 } GemmaLayer;
 
@@ -71,6 +93,7 @@ struct GemmaState
 	uint32_t max_rows;
 	uint32_t slots;
 	uint32_t ffn_rows;
+	uint32_t expert_first;
 	uint64_t record_stride;
 	GemmaLayer layers[G::kLayers];
 	void *arena;
@@ -90,6 +113,22 @@ struct GemmaState
 	uint16_t *gate_up;
 	uint16_t *intermediate;
 	float *full_inv_freq;
+	uint16_t *moe_normed;
+	uint16_t *router_logits;
+	float *router_probs;
+	uint32_t *route_expert;
+	uint32_t *route_global;
+	float *route_weight;
+	uint32_t *group_row_offset;
+	uint32_t *route_packed_row;
+	uint32_t *route_source_token;
+	uint32_t *tile_prefix_up;
+	uint32_t *tile_prefix_down;
+	float *packed_weight;
+	uint16_t *expert_gate;
+	uint16_t *expert_up;
+	uint16_t *expert_act;
+	uint16_t *expert_out;
 	LmKvAccessError *kv_error;
 	LmKvShardView sliding_views[GemmaShape<G>::kSlidingLayers];
 	LmKvShardView full_views[GemmaShape<G>::kFullLayers];
@@ -168,6 +207,67 @@ void GemmaGeluTanhMulKernel(const uint16_t *gate_up, uint16_t *output, uint32_t 
 		const float cube = gate * gate * gate;
 		const float activated = LmBf16ToFloat(LmFloatToBf16(0.5f * gate * (1.0f + tanhf(0.7978845608028654f * (gate + 0.044715f * cube)))));
 		output[(uint64_t)row * width + index] = LmFloatToBf16(activated * up);
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void GemmaRouterInputKernel(const uint16_t *residual, const float *scale, uint16_t *output, uint32_t width, float epsilon, float root)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	const uint64_t base = (uint64_t)blockIdx.x * width;
+	float total = 0.0f;
+	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
+	{
+		const float value = LmBf16ToFloat(residual[base + index]);
+		total += value * value;
+	}
+	const float inverse = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
+	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
+	{
+		const float normed = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(residual[base + index]) * inverse));
+		output[base + index] = LmFloatToBf16(LmBf16ToFloat(LmFloatToBf16(normed * scale[index])) * root);
+	}
+}
+
+__global__ static void GemmaExpertScaleKernel(const uint32_t *route_expert, float *route_weight, const float *expert_scale, uint32_t routes)
+{
+	const uint32_t route = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( route < routes )
+		route_weight[route] *= expert_scale[route_expert[route]];
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint16_t *moe, const float *dense_norm, const float *moe_norm,
+	const float *post_norm, const float *scalar, uint32_t width, float epsilon)
+{
+	extern __shared__ float gemma_combined[];
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	const uint64_t base = (uint64_t)blockIdx.x * width;
+	float dense_total = 0.0f, moe_total = 0.0f, total = 0.0f;
+	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
+	{
+		const float d = LmBf16ToFloat(dense[base + index]), m = LmBf16ToFloat(moe[base + index]);
+		dense_total += d * d;
+		moe_total += m * m;
+	}
+	const float dense_scale = rsqrtf(LmBlockSum<THREADS>(dense_total, reduction) / (float)width + epsilon);
+	const float moe_scale = rsqrtf(LmBlockSum<THREADS>(moe_total, reduction) / (float)width + epsilon);
+	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
+	{
+		const float d = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(dense[base + index]) * dense_scale * dense_norm[index]));
+		const float m = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(moe[base + index]) * moe_scale * moe_norm[index]));
+		const float combined = LmBf16ToFloat(LmFloatToBf16(d + m));
+		gemma_combined[index] = combined;
+		total += combined * combined;
+	}
+	const float scale = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
+	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
+	{
+		const float normed = LmBf16ToFloat(LmFloatToBf16(gemma_combined[index] * scale * post_norm[index]));
+		const float added = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(residual[base + index]) + normed));
+		residual[base + index] = LmFloatToBf16(added * scalar[0]);
 	}
 }
 
@@ -279,6 +379,56 @@ struct GemmaModel
 		return SPARK_STATUS_OK;
 	}
 
+	static SparkStatus Moe(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	{
+		const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * G::kTopK;
+		const uint16_t *hidden = step->hidden_bf16;
+		LmLocalExpertRoutes expert_routes;
+		GemmaRouterInputKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, layer->router_scale, state->moe_normed, G::kHidden, GM_EPSILON,
+			(float)(1.0 / sqrt((double)G::kHidden)));
+		if ( Launched() != SPARK_STATUS_OK ||
+			Linear(layer->router_proj, state->moe_normed, state->router_logits, rows, G::kHidden, G::kExperts, sms, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		LmRouterSoftmaxKernel<GM_THREADS,G::kExperts><<<rows, GM_THREADS, 0, stream>>>(state->router_logits, state->router_probs);
+		if ( LmTopkRouteLaunch<GM_THREADS,G::kTopK,true,LM_TOPK_SCORE_IDENTITY>(rows, state->router_probs, G::kExperts, state->route_expert,
+			state->route_weight, (const float *)0, (const uint16_t *)0, 1.0f, stream) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		GemmaExpertScaleKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, layer->expert_scale, routes);
+		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
+			routes, state->expert_first, G::kLocalExperts);
+		if ( LmRouteBuild<GM_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
+			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up,
+			state->tile_prefix_down, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
+			hidden, (const uint16_t *)0, layer->pre_ff_norm_2, (uint16_t *)0, state->moe_normed, G::kHidden, G::kHidden, GM_EPSILON);
+		expert_routes.group_row_offset = state->group_row_offset;
+		expert_routes.route_source_token = state->route_source_token;
+		expert_routes.tile_prefix_up = state->tile_prefix_up;
+		expert_routes.tile_prefix_down = state->tile_prefix_down;
+		expert_routes.rows = rows;
+		expert_routes.routes = routes;
+		expert_routes.top_k = G::kTopK;
+		expert_routes.local_experts = G::kLocalExperts;
+		expert_routes.multiprocessors = sms;
+		if ( Launched() != SPARK_STATUS_OK ||
+			LmLocalExpertsUp<LmBf16Format>(expert_routes, layer->moe_w1, LmScaleTensorNone(), state->moe_normed, state->expert_gate, G::kHidden,
+				G::kMoeInter, stream) != LM_LAUNCH_OK ||
+			LmLocalExpertsUp<LmBf16Format>(expert_routes, layer->moe_w3, LmScaleTensorNone(), state->moe_normed, state->expert_up, G::kHidden,
+				G::kMoeInter, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		LmGeluTanhPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), GM_THREADS, 0, stream>>>(state->expert_gate, state->expert_up, state->packed_weight,
+			state->expert_act, G::kMoeInter);
+		if ( Launched() != SPARK_STATUS_OK ||
+			LmLocalExpertsDown<LmBf16Format>(expert_routes, layer->moe_w2, LmScaleTensorNone(), state->expert_act, state->expert_out, G::kMoeInter,
+				G::kHidden, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+			state->route_expert, (const uint16_t *)0, state->partial + (uint64_t)rows * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
+		return Launched();
+	}
+
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
 	{
 		State *state = (State *)model;
@@ -304,12 +454,21 @@ struct GemmaModel
 			LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 				hidden, (const uint16_t *)0, layer->pre_ff_norm, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, GM_EPSILON);
 			status = Mlp(state, layer, step, stream);
+			if constexpr ( G::kMoe )
+				if ( status == SPARK_STATUS_OK )
+					status = Moe(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
+				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, G::kMoe ? 2u * rows : rows, 0u, state->partial,
+					state->partial);
 			if ( status != SPARK_STATUS_OK )
 				break;
-			GemmaPostNormAddKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, state->partial, layer->post_ff_norm, layer->layer_scalar,
-				G::kHidden, GM_EPSILON);
+			if ( G::kMoe )
+				GemmaMoeCombineKernel<GM_THREADS><<<rows, GM_THREADS, G::kHidden * sizeof(float), stream>>>(hidden, state->partial,
+					state->partial + (uint64_t)rows * G::kHidden, layer->post_ff_norm_1, layer->post_ff_norm_2, layer->post_ff_norm, layer->layer_scalar,
+					G::kHidden, GM_EPSILON);
+			else
+				GemmaPostNormAddKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, state->partial, layer->post_ff_norm, layer->layer_scalar,
+					G::kHidden, GM_EPSILON);
 			status = Launched();
 			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
 				state->services->layer_done(state->services->context, index);
@@ -334,11 +493,12 @@ struct GemmaModel
 
 	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base)
 	{
-		const uint64_t rows = state->max_rows, width = rows * G::kHidden * sizeof(uint16_t);
+		const uint64_t rows = state->max_rows, width = rows * G::kHidden * sizeof(uint16_t), routes = rows * G::kTopK;
+		const uint64_t groups = G::kMoe ? G::kLocalExperts + 2u : 0u;
 		struct { void **target; uint64_t bytes; } plan[] =
 		{
 			{ (void **)&state->normed, width },
-			{ (void **)&state->partial, width },
+			{ (void **)&state->partial, G::kMoe ? 2u * width : width },
 			{ (void **)&state->attn_local, rows * (S::kMaxFused / state->tp_degree) * sizeof(uint16_t) },
 			{ (void **)&state->attn_gathered, rows * S::kMaxFused * sizeof(uint16_t) },
 			{ (void **)&state->attn_full, rows * S::kMaxFused * sizeof(uint16_t) },
@@ -352,6 +512,22 @@ struct GemmaModel
 			{ (void **)&state->gate_up, rows * 2u * state->ffn_rows * sizeof(uint16_t) },
 			{ (void **)&state->intermediate, rows * state->ffn_rows * sizeof(uint16_t) },
 			{ (void **)&state->full_inv_freq, (G::kFullDim / 2u) * sizeof(float) },
+			{ (void **)&state->moe_normed, G::kMoe ? width : 0u },
+			{ (void **)&state->router_logits, rows * G::kExperts * sizeof(uint16_t) },
+			{ (void **)&state->router_probs, rows * G::kExperts * sizeof(float) },
+			{ (void **)&state->route_expert, routes * sizeof(uint32_t) },
+			{ (void **)&state->route_global, routes * sizeof(uint32_t) },
+			{ (void **)&state->route_weight, routes * sizeof(float) },
+			{ (void **)&state->group_row_offset, groups * sizeof(uint32_t) },
+			{ (void **)&state->route_packed_row, routes * sizeof(uint32_t) },
+			{ (void **)&state->route_source_token, routes * sizeof(uint32_t) },
+			{ (void **)&state->tile_prefix_up, groups * sizeof(uint32_t) },
+			{ (void **)&state->tile_prefix_down, groups * sizeof(uint32_t) },
+			{ (void **)&state->packed_weight, routes * sizeof(float) },
+			{ (void **)&state->expert_gate, routes * G::kMoeInter * sizeof(uint16_t) },
+			{ (void **)&state->expert_up, routes * G::kMoeInter * sizeof(uint16_t) },
+			{ (void **)&state->expert_act, routes * G::kMoeInter * sizeof(uint16_t) },
+			{ (void **)&state->expert_out, routes * G::kHidden * sizeof(uint16_t) },
 			{ (void **)&state->kv_error, sizeof(LmKvAccessError) },
 		};
 		uint64_t cursor = 0u;
@@ -416,6 +592,21 @@ struct GemmaModel
 			fprintf(stderr, "%s: pack is tp %u rank %u hidden %u layers %u window %u, the runner is tp %u rank %u\n", G::Tag(), degree, rank,
 				hidden, layers, window, configuration->tp_degree, configuration->tp_rank);
 			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
+		if ( G::kMoe )
+		{
+			uint32_t experts = 0u, local = 0u, top_k = 0u;
+			if ( SparkNamedPackConfigU32(&state->pack, "experts", &experts) != SPARK_STATUS_OK ||
+				SparkNamedPackConfigU32(&state->pack, "local_experts", &local) != SPARK_STATUS_OK ||
+				SparkNamedPackConfigU32(&state->pack, "expert_first", &state->expert_first) != SPARK_STATUS_OK ||
+				SparkNamedPackConfigU32(&state->pack, "top_k", &top_k) != SPARK_STATUS_OK )
+				SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+			if ( experts != G::kExperts || local != G::kLocalExperts || top_k != G::kTopK || state->expert_first != rank * G::kLocalExperts )
+			{
+				fprintf(stderr, "%s: pack experts %u local %u first %u top_k %u do not match the model\n", G::Tag(), experts, local,
+					state->expert_first, top_k);
+				SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+			}
 		}
 		record_floats = LmGqaShardRecordFloats(G::kHeads, G::kFullDim, state->tp_degree) > LmGqaShardRecordFloats(G::kHeads, G::kSlidingDim, state->tp_degree) ?
 			LmGqaShardRecordFloats(G::kHeads, G::kFullDim, state->tp_degree) : LmGqaShardRecordFloats(G::kHeads, G::kSlidingDim, state->tp_degree);
@@ -514,6 +705,27 @@ struct GemmaModel
 				status = Bind(state, lazy_pack, index, "attn_q_norm", "f32", &layer->q_norm);
 			if ( status == SPARK_STATUS_OK )
 				status = Bind(state, lazy_pack, index, "attn_k_norm", "f32", &layer->k_norm);
+			if ( G::kMoe )
+			{
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "router_proj", "bf16", &layer->router_proj);
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "router_scale", "f32", &layer->router_scale);
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "expert_scale", "f32", &layer->expert_scale);
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "moe_w1", "bf16", &layer->moe_w1);
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "moe_w3", "bf16", &layer->moe_w3);
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "moe_w2", "bf16", &layer->moe_w2);
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "post_ff_norm_1", "f32", &layer->post_ff_norm_1);
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "pre_ff_norm_2", "f32", &layer->pre_ff_norm_2);
+				if ( status == SPARK_STATUS_OK )
+					status = Bind(state, lazy_pack, index, "post_ff_norm_2", "f32", &layer->post_ff_norm_2);
+			}
 			if ( status != SPARK_STATUS_OK )
 				return SPARK_STATUS_PARSE_ERROR;
 			layer->kv_index = index % G::kPeriod == G::kPhase ? full++ : sliding++;
@@ -576,8 +788,8 @@ struct GemmaModel
 	static void Report(void *model, uint32_t rank)
 	{
 		const State *state = (const State *)model;
-		fprintf(stderr, "%s rank=%u arena_bytes=%llu slots=%u rows=%u ffn_rows=%u\n", G::ReportTag(), rank,
-			(unsigned long long)state->arena_bytes, state->slots, state->max_rows, state->ffn_rows);
+		fprintf(stderr, "%s rank=%u arena_bytes=%llu slots=%u rows=%u ffn_rows=%u expert_first=%u\n", G::ReportTag(), rank,
+			(unsigned long long)state->arena_bytes, state->slots, state->max_rows, state->ffn_rows, state->expert_first);
 	}
 
 	static const SparkStageRunnerModelInterface *Interface(void)

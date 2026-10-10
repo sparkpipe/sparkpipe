@@ -128,8 +128,24 @@ GEMMA4_31B = {
     "kv_page_bytes": (50 * 64 * 16384 + 10 * 64 * 8192) // WORLD,
     "recurrent_bytes": 0,
 }
+GEMMA4_26B = {
+    **GEMMA4_31B,
+    "swap_id": "gemma-4-26b-a4b",
+    "api_port": 8467,
+    "kv_label": "gemma4_26b_stage",
+    "node_memory_bytes": 12 << 30,
+    "tokenizer_json": "/mnt/model-warm/gemma-4-26b-a4b-it/tokenizer.json",
+    "pack": "sparkdata/gemma4_26b.bf16.tp16/gemma4_26b.tp16.rank{rank:02d}.pack",
+    "adapter": "libgemma4_26b_tp16_serving_adapter.so",
+    "program": "gemma4_26b",
+    "node_target": "cuda.sm121.gemma4_26b.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/gemma4_26b_a4b_authoritative.json",
+    "hidden": 2816,
+    "kv_page_bytes": (25 * 64 * 8192 + 5 * 64 * 4096) // WORLD,
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
+    "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
     "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,

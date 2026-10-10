@@ -43,6 +43,49 @@ static __global__ void LmSwigluPackedKernel(const uint16_t *__restrict__ gate, c
 	}
 }
 
+static __global__ void LmGeluTanhPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ weight,
+	uint16_t *__restrict__ output, uint32_t width)
+{
+	const uint32_t row = blockIdx.y;
+	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
+	{
+		const float g = LmBf16ToFloat(gate[(uint64_t)row * width + element]);
+		const float activated = LmBf16ToFloat(LmFloatToBf16(0.5f * g * (1.0f + tanhf(0.7978845608028654f * (g + 0.044715f * g * g * g)))));
+		output[(uint64_t)row * width + element] = LmFloatToBf16(activated * LmBf16ToFloat(up[(uint64_t)row * width + element]) * weight[row]);
+	}
+}
+
+template<uint32_t THREADS, uint32_t WIDTH>
+__global__ static void LmRouterSoftmaxKernel(const uint16_t *logits, float *probs)
+{
+	__shared__ float reduce[THREADS / 32u];
+	const uint32_t row = blockIdx.x;
+	float top = -INFINITY, sum = 0.0f;
+	for ( uint32_t index = threadIdx.x; index < WIDTH; index += blockDim.x )
+		top = fmaxf(top, LmBf16ToFloat(logits[(uint64_t)row * WIDTH + index]));
+	for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
+		top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, offset));
+	if ( threadIdx.x % 32u == 0u )
+		reduce[threadIdx.x / 32u] = top;
+	__syncthreads();
+	top = reduce[0];
+	for ( uint32_t warp = 1u; warp < blockDim.x / 32u; ++warp )
+		top = fmaxf(top, reduce[warp]);
+	__syncthreads();
+	for ( uint32_t index = threadIdx.x; index < WIDTH; index += blockDim.x )
+		sum += expf(LmBf16ToFloat(logits[(uint64_t)row * WIDTH + index]) - top);
+	for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
+		sum += __shfl_xor_sync(0xffffffffu, sum, offset);
+	if ( threadIdx.x % 32u == 0u )
+		reduce[threadIdx.x / 32u] = sum;
+	__syncthreads();
+	sum = 0.0f;
+	for ( uint32_t warp = 0u; warp < blockDim.x / 32u; ++warp )
+		sum += reduce[warp];
+	for ( uint32_t index = threadIdx.x; index < WIDTH; index += blockDim.x )
+		probs[(uint64_t)row * WIDTH + index] = expf(LmBf16ToFloat(logits[(uint64_t)row * WIDTH + index]) - top) / sum;
+}
+
 static __global__ void LmMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
 	const uint32_t *__restrict__ route_expert, const uint16_t *__restrict__ shared, uint16_t *__restrict__ output, uint32_t top_k,
 	uint32_t local_experts, uint32_t width)

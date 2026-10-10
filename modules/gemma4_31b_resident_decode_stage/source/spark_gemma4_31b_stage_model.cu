@@ -1,7 +1,7 @@
 #include "sparkpipe/spark_gemma4_31b_stage_model.h"
 #include "gemma4_stage.cuh"
 
-struct Gemma4_31bGeometry
+struct Gemma4_31bGeometry : GemmaDefaults
 {
 	static constexpr uint32_t kTpDegree = SPARK_GEMMA4_31B_STAGE_TP_DEGREE;
 	static constexpr uint32_t kHidden = SPARK_GEMMA4_31B_STAGE_HIDDEN;

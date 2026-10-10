@@ -19,6 +19,7 @@
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/linear_attn.cuh"
+#include "inference/kernels/moe_experts.cuh"
 #include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/ngram_hash.cuh"
 #include "inference/kernels/norm.cuh"
@@ -38,9 +39,6 @@
 #define QH_THREADS 256u
 #define QH_SCALE_K 128u
 #define QH_PACK_ALIGNMENT 128u
-#define QH_GEMM_TILE_N 128u
-#define QH_GEMM_STAGES 2u
-#define QH_GEMM_WARPS 8u
 
 struct QwenHybridDefaults
 {
@@ -320,37 +318,6 @@ __global__ static void QwenHybridSliceRowsKernel(const uint16_t *source, uint16_
 	const uint32_t row = blockIdx.y;
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
 		target[(uint64_t)row * width + index] = source[(uint64_t)row * source_width + offset + index];
-}
-
-template<uint32_t WIDTH>
-__global__ static void QwenHybridSoftmaxRowsKernel(const uint16_t *logits, float *probs)
-{
-	__shared__ float reduce[QH_THREADS / 32u];
-	const uint32_t row = blockIdx.x;
-	float top = -INFINITY, sum = 0.0f;
-	for ( uint32_t index = threadIdx.x; index < WIDTH; index += blockDim.x )
-		top = fmaxf(top, LmBf16ToFloat(logits[(uint64_t)row * WIDTH + index]));
-	for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-		top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, offset));
-	if ( threadIdx.x % 32u == 0u )
-		reduce[threadIdx.x / 32u] = top;
-	__syncthreads();
-	top = reduce[0];
-	for ( uint32_t warp = 1u; warp < blockDim.x / 32u; ++warp )
-		top = fmaxf(top, reduce[warp]);
-	__syncthreads();
-	for ( uint32_t index = threadIdx.x; index < WIDTH; index += blockDim.x )
-		sum += expf(LmBf16ToFloat(logits[(uint64_t)row * WIDTH + index]) - top);
-	for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-		sum += __shfl_xor_sync(0xffffffffu, sum, offset);
-	if ( threadIdx.x % 32u == 0u )
-		reduce[threadIdx.x / 32u] = sum;
-	__syncthreads();
-	sum = 0.0f;
-	for ( uint32_t warp = 0u; warp < blockDim.x / 32u; ++warp )
-		sum += reduce[warp];
-	for ( uint32_t index = threadIdx.x; index < WIDTH; index += blockDim.x )
-		probs[(uint64_t)row * WIDTH + index] = expf(LmBf16ToFloat(logits[(uint64_t)row * WIDTH + index]) - top) / sum;
 }
 
 __global__ static void QwenHybridRowDotKernel(const uint16_t *rows_bf16, const uint16_t *weight, uint16_t *output, uint32_t width)
@@ -755,70 +722,53 @@ struct QwenHybridModel
 		return SPARK_STATUS_OK;
 	}
 
-	static int32_t ExpertsUp(State *state, const uint8_t *weight, const uint8_t *scale_data, uint16_t *output, uint32_t rows, uint32_t routes,
-		uint32_t sms, cudaStream_t stream)
+	static LmLocalExpertRoutes ExpertRoutes(const State *state, uint32_t rows, uint32_t routes, uint32_t sms)
 	{
-		const LmScaleTensor scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(scale_data, G::kLocalExperts, G::kMoeInter, G::kHidden);
-		int32_t launch = LmSkinnyGroupedExperts<LmNvfp4>(weight, scale, state->normed, output, state->group_row_offset, state->route_source_token,
-			G::kLocalExperts, routes, 0u, G::kHidden, G::kMoeInter, stream);
-		if ( launch == LM_LAUNCH_ERR_SHAPE )
-		{
-			LmGemmArguments gemm;
-			memset(&gemm, 0, sizeof(gemm));
-			gemm.scale_a = LmScaleTensorNone();
-			gemm.scale_b = scale;
-			gemm.prefix_built = 1u;
-			gemm.group_row_offset = state->group_row_offset;
-			gemm.group_tile_prefix = state->tile_prefix_up;
-			gemm.source_row_map = state->route_source_token;
-			gemm.source_row_count = rows;
-			gemm.output_bf16 = output;
-			launch = LmGemmWeightOnlyIndirectLaunch<LmNvfp4,QH_GEMM_TILE_N,QH_GEMM_STAGES,QH_GEMM_WARPS>(&gemm, state->normed, weight, routes, rows,
-				G::kTopK, G::kLocalExperts, G::kHidden, G::kMoeInter, sms, stream);
-		}
-		return launch;
+		LmLocalExpertRoutes expert_routes;
+		expert_routes.group_row_offset = state->group_row_offset;
+		expert_routes.route_source_token = state->route_source_token;
+		expert_routes.tile_prefix_up = state->tile_prefix_up;
+		expert_routes.tile_prefix_down = state->tile_prefix_down;
+		expert_routes.rows = rows;
+		expert_routes.routes = routes;
+		expert_routes.top_k = G::kTopK;
+		expert_routes.local_experts = G::kLocalExperts;
+		expert_routes.multiprocessors = sms;
+		return expert_routes;
 	}
 
 	static SparkStatus Moe(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
 		const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * G::kTopK;
 		const LmScaleTensor w2_scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(layer->moe_w2_scale, G::kLocalExperts, G::kHidden, G::kMoeInter);
+		const LmLocalExpertRoutes expert_routes = ExpertRoutes(state, rows, routes, sms);
 		int32_t launch;
 		if ( Project<LmBf16Format>(layer->moe_router, 0, state->normed, state->router_logits, rows, G::kHidden, G::kExperts, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		QwenHybridSoftmaxRowsKernel<G::kExperts><<<rows, QH_THREADS, 0, stream>>>(state->router_logits, state->router_probs);
+		LmRouterSoftmaxKernel<QH_THREADS,G::kExperts><<<rows, QH_THREADS, 0, stream>>>(state->router_logits, state->router_probs);
 		if ( LmTopkRouteLaunch<QH_THREADS,G::kTopK,true,LM_TOPK_SCORE_IDENTITY>(rows, state->router_probs, G::kExperts, state->route_expert,
 			state->route_weight, (const float *)0, (const uint16_t *)0, 1.0f, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
 		if ( LmRouteBuild<QH_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
-			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, QH_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down,
+			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down,
 			stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
-		launch = ExpertsUp(state, layer->moe_w1, layer->moe_w1_scale, state->expert_gate, rows, routes, sms, stream);
+		launch = LmLocalExpertsUp<LmNvfp4>(expert_routes, layer->moe_w1,
+			LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(layer->moe_w1_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), state->normed,
+			state->expert_gate, G::kHidden, G::kMoeInter, stream);
 		if ( launch == LM_LAUNCH_OK )
-			launch = ExpertsUp(state, layer->moe_w3, layer->moe_w3_scale, state->expert_up, rows, routes, sms, stream);
+			launch = LmLocalExpertsUp<LmNvfp4>(expert_routes, layer->moe_w3,
+				LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(layer->moe_w3_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), state->normed,
+				state->expert_up, G::kHidden, G::kMoeInter, stream);
 		if ( launch != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmSwigluPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), QH_THREADS, 0, stream>>>(state->expert_gate, state->expert_up,
 			state->packed_weight, state->expert_act, G::kMoeInter, INFINITY);
-		launch = LmSkinnyGroupedExperts<LmNvfp4>(layer->moe_w2, w2_scale, state->expert_act, state->expert_out, state->group_row_offset,
-			state->route_source_token, G::kLocalExperts, routes, 1u, G::kMoeInter, G::kHidden, stream);
-		if ( launch == LM_LAUNCH_ERR_SHAPE )
-		{
-			LmGemmArguments gemm;
-			memset(&gemm, 0, sizeof(gemm));
-			gemm.scale_a = LmScaleTensorNone();
-			gemm.scale_b = w2_scale;
-			gemm.prefix_built = 1u;
-			gemm.group_row_offset = state->group_row_offset;
-			gemm.group_tile_prefix = state->tile_prefix_down;
-			gemm.output_bf16 = state->expert_out;
-			launch = LmGemmWeightOnlyLaunch<LmNvfp4,QH_GEMM_TILE_N,QH_GEMM_STAGES,QH_GEMM_WARPS>(&gemm, state->expert_act, layer->moe_w2, routes, rows,
-				G::kTopK, G::kLocalExperts, G::kMoeInter, G::kHidden, sms, true, stream);
-		}
+		launch = LmLocalExpertsDown<LmNvfp4>(expert_routes, layer->moe_w2, w2_scale, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden,
+			stream);
 		if ( launch != LM_LAUNCH_OK ||
 			Project<LmBf16Format>(layer->moe_shared_gate_up, 0, state->normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

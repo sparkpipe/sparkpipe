@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Gemma 4 31B (dense) BF16 checkpoint -> sixteen TP16 named stage packs.
+"""Gemma 4 BF16 checkpoint (31B dense or 26B A4B MoE) -> sixteen TP16 named stage packs.
 
-Output per rank: <out>/gemma4.tp16.rank<NN>.pack (tools/spark_named_pack.py
-container), plus <pack>.sha256 and the empty-range <pack>.experts.
+Output per rank: <out>/<prefix>.tp16.rank<NN>.pack (tools/spark_named_pack.py
+container; prefix gemma4 for the 31B, gemma4_26b for the 26B), plus
+<pack>.sha256 and the empty-range <pack>.experts (experts are plain tensors).
 
 Rank r holds, all bf16 unless noted:
   embed               vocab rows [r*16384, +16384) of the tied embedding
@@ -11,12 +12,16 @@ Rank r holds, all bf16 unless noted:
   per layer           input / post-attention / pre-feedforward /
                       post-feedforward norms as f32 (plain w) and the layer
                       scalar as f32 [1]
-  attention           q_proj|k_proj|v_proj fused (sliding: 16384 rows,
-                      full: q_proj|k_proj 18432 rows, no v_proj), rank rows
-                      [r*rows/16, +rows/16); q and k norms f32; o_proj
-                      columns [r*q/16, +q/16)
-  MLP                 gate|up rows [r*1344, +1344) fused [2688, H]; down
-                      columns [H, 1344]
+  attention           q_proj|k_proj|v_proj fused (full layers: q_proj|k_proj,
+                      no v_proj), rank rows [r*rows/16, +rows/16); q and k
+                      norms f32; o_proj columns [r*q/16, +q/16)
+  MLP                 the intermediate split in 64-row blocks, the first
+                      (blocks % 16) ranks one block more: gate|up fused
+                      [2*rows, H], down columns [H, rows]
+  MoE (26B)           router proj [E, H] replicated, router scale and
+                      per-expert scale f32, the extra norms f32; experts
+                      [r*E/16, +E/16) as moe_w1 (gate) and moe_w3 (up)
+                      [E/16, I, H] and moe_w2 [E/16, H, I]
 The vision and audio towers are not packed.
 """
 
@@ -69,16 +74,17 @@ class Checkpoint:
 
 
 class RankPacks:
-    def __init__(self, out_dir, resume, ranks):
+    def __init__(self, out_dir, resume, ranks, prefix):
         self.out_dir = Path(out_dir)
         self.ranks = ranks
+        self.prefix = prefix
         self.writers = {rank: PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists()) for rank in ranks}
 
     def payload(self, rank):
-        return self.out_dir / f"gemma4.tp16.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"gemma4.tp16.rank{rank:02d}.pack"
+        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind):
         if rank in self.writers:
@@ -88,6 +94,12 @@ class RankPacks:
     def replicated(self, name, array, kind):
         for rank in self.ranks:
             self.add(rank, name, array, kind)
+
+
+def ffn_window(inter, rank):
+    blocks, extra = divmod(inter // 64, TP)
+    first = rank * blocks + min(rank, extra)
+    return slice(first * 64, (first + blocks + (1 if rank < extra else 0)) * 64)
 
 
 def pack_layer(checkpoint, packs, text, layer):
@@ -118,23 +130,45 @@ def pack_layer(checkpoint, packs, text, layer):
     gate = checkpoint.array(p + "mlp.gate_proj.weight", (inter, hidden))
     up = checkpoint.array(p + "mlp.up_proj.weight", (inter, hidden))
     down = checkpoint.array(p + "mlp.down_proj.weight", (hidden, inter))
-    ffn = inter // TP
     for rank in packs.ranks:
         packs.add(rank, name + "attn_qkv", fused[rank * rows:(rank + 1) * rows], "bf16")
         packs.add(rank, name + "attn_out", o[:, rank * columns:(rank + 1) * columns], "bf16")
-        window = slice(rank * ffn, (rank + 1) * ffn)
+        window = ffn_window(inter, rank)
         packs.add(rank, name + "ffn_gate_up", np.concatenate((gate[window], up[window])), "bf16")
         packs.add(rank, name + "ffn_down", down[:, window], "bf16")
+    if not text.get("enable_moe_block"):
+        return
+    experts, expert_inter = text["num_experts"], text["moe_intermediate_size"]
+    local = experts // TP
+    packs.replicated(name + "router_proj", checkpoint.array(p + "router.proj.weight", (experts, hidden)), "bf16")
+    packs.replicated(name + "router_scale", checkpoint.f32(p + "router.scale", (hidden,)), "f32")
+    packs.replicated(name + "expert_scale", checkpoint.f32(p + "router.per_expert_scale", (experts,)), "f32")
+    for norm, key in (("post_ff_norm_1", "post_feedforward_layernorm_1"), ("pre_ff_norm_2", "pre_feedforward_layernorm_2"),
+                      ("post_ff_norm_2", "post_feedforward_layernorm_2")):
+        packs.replicated(name + norm, checkpoint.f32(p + key + ".weight", (hidden,)), "f32")
+    gate_up = checkpoint.array(p + "experts.gate_up_proj", (experts, 2 * expert_inter, hidden))
+    expert_down = checkpoint.array(p + "experts.down_proj", (experts, hidden, expert_inter))
+    for rank in packs.ranks:
+        owned = slice(rank * local, (rank + 1) * local)
+        packs.add(rank, name + "moe_w1", gate_up[owned, :expert_inter], "bf16")
+        packs.add(rank, name + "moe_w3", gate_up[owned, expert_inter:], "bf16")
+        packs.add(rank, name + "moe_w2", expert_down[owned], "bf16")
 
 
 def finish(packs, text, revision, contract_sha256):
     vocab_rows = text["vocab_size"] // TP
+    moe = bool(text.get("enable_moe_block"))
     for rank in packs.ranks:
         packs.writers[rank].close()
-        config = {"model": "gemma4_31b", "tp_degree": TP, "tp_rank": rank, "hidden": text["hidden_size"],
+        window = ffn_window(text["intermediate_size"], rank)
+        config = {"model": "gemma4_26b_a4b" if moe else "gemma4_31b", "tp_degree": TP, "tp_rank": rank, "hidden": text["hidden_size"],
                   "layers": text["num_hidden_layers"], "vocab": text["vocab_size"], "vocab_first": rank * vocab_rows,
-                  "vocab_rows": vocab_rows, "ffn_rows": text["intermediate_size"] // TP, "full_period": 6, "full_phase": 5,
+                  "vocab_rows": vocab_rows, "ffn_rows": window.stop - window.start, "full_period": 6, "full_phase": 5,
                   "sliding_window": text["sliding_window"]}
+        if moe:
+            local = text["num_experts"] // TP
+            config.update({"experts": text["num_experts"], "local_experts": local, "expert_first": rank * local,
+                           "top_k": text["top_k_experts"]})
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
                "linear_codec": "bf16", "attn_qkv_layout": "fused_windows", "revision": revision, "contract_sha256": contract_sha256}
         final = packs.final(rank)
@@ -161,17 +195,18 @@ def main():
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
     text = json.loads((args.checkpoint / "config.json").read_text())["text_config"]
-    if text.get("enable_moe_block") or text.get("hidden_size_per_layer_input") or text.get("num_kv_shared_layers"):
-        raise PackFailure("this packer handles the dense Gemma 4 text model without per-layer inputs or shared KV")
+    if text.get("hidden_size_per_layer_input") or text.get("num_kv_shared_layers") or text.get("use_double_wide_mlp"):
+        raise PackFailure("this packer handles the Gemma 4 text model without per-layer inputs, shared KV or double-wide MLP")
     expected = ["full_attention" if index % 6 == 5 else "sliding_attention" for index in range(text["num_hidden_layers"])]
-    if text["layer_types"] != expected or text["vocab_size"] % TP or text["intermediate_size"] % (TP * 64):
-        raise PackFailure("layer pattern, vocab or intermediate size differs from the packer's TP16 layout")
+    if text["layer_types"] != expected or text["vocab_size"] % TP or text["intermediate_size"] % 64 or \
+            (text.get("enable_moe_block") and (text["num_experts"] % TP or text["moe_intermediate_size"] % 64)):
+        raise PackFailure("layer pattern, vocab, intermediate or expert sizes differ from the packer's TP16 layout")
     receipt = args.checkpoint / "DOWNLOAD-RECEIPT.json"
     revision = json.loads(receipt.read_text()).get("revision", "unknown") if receipt.exists() else "unknown"
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
-    packs = RankPacks(args.output_dir, args.resume, ranks)
+    packs = RankPacks(args.output_dir, args.resume, ranks, "gemma4_26b" if text.get("enable_moe_block") else "gemma4")
     hidden, vocab_rows = text["hidden_size"], text["vocab_size"] // TP
     embed = checkpoint.array(PREFIX + "embed_tokens.weight", (text["vocab_size"], hidden))
     for rank in ranks:
