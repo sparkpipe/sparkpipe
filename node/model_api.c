@@ -30,8 +30,8 @@
 #define API_MAX_BODY		(8u * 1024u * 1024u)
 #define API_MAX_PROMPT_TOKENS	(260000u)
 #define API_MAX_STOP_TOKENS 16
-#define API_MAX_OUTPUT_TOKENS	(8192u)
-#define API_TOKEN_BUF_BYTES	(64u * 1024u)
+#define API_MAX_OUTPUT_TOKENS	(131072u)
+#define API_TOKEN_TEXT_BYTES	12u
 
 #define API_MAX_INFLIGHT 16u
 
@@ -67,10 +67,11 @@ typedef struct ApiRequest
 	uint32_t *prompt_tokens;
 	uint32_t prompt_count;
 	uint32_t max_tokens;
-	char tokens_json[API_TOKEN_BUF_BYTES];
+	char *tokens_json;
+	size_t tokens_json_capacity;
 	volatile uint32_t tokens_json_len;
 	uint32_t *output_token_ids;
-	uint64_t token_ready_ns[API_MAX_OUTPUT_TOKENS];
+	uint64_t *token_ready_ns;
 	uint64_t accepted_ns;
 	uint64_t first_dispatch_ns;
 	uint32_t stale_prefix_recompute_count;
@@ -209,6 +210,8 @@ static void api_request_destroy(ApiRequest *req)
 	free(req->stop_tokens);
 	free(req->prompt_tokens);
 	free(req->output_token_ids);
+	free(req->token_ready_ns);
+	free(req->tokens_json);
 	free(req->logprobs);
 	free(req);
 }
@@ -284,12 +287,12 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					}
 				}
 			}
-			else if (r->tokens_json_len + 12u < sizeof(r->tokens_json) &&
+			else if (r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
 				r->output_token_count < r->max_tokens)
 			{
 				r->tokens_json_len += (uint32_t)snprintf(
 					r->tokens_json + r->tokens_json_len,
-					sizeof(r->tokens_json) - r->tokens_json_len,
+					r->tokens_json_capacity - r->tokens_json_len,
 					"%s%u", r->tokens_json_len ? "," : "",
 					(unsigned)ev->token_id);
 				r->token_ready_ns[r->output_token_count] = ev->monotonic_ns;
@@ -1462,8 +1465,16 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	if (mt >= 0)
 	{
 		uint32_t v;
-		if (SparkJsonGetUInt32(&doc, mt, &v) == SPARK_STATUS_OK && v > 0)
-			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
+		if (SparkJsonGetUInt32(&doc, mt, &v) != SPARK_STATUS_OK || v == 0u || v > API_MAX_OUTPUT_TOKENS)
+		{
+			SparkJsonDocumentDestroy(&doc);
+			free(prompt);
+			free(prompt_text);
+			free(request_stops);
+			send_response(fd, 400, "{\"error\":{\"message\":\"max_tokens must be an integer from 1 to 131072\",\"type\":\"invalid_request_error\"}}");
+			return;
+		}
+		max_tokens = v;
 	}
 	if (!api_parse_serving_options(&doc, root, &options))
 	{
@@ -1572,16 +1583,22 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		return;
 	}
 	req->output_token_ids = malloc((size_t)max_tokens * sizeof(uint32_t));
+	req->token_ready_ns = malloc((size_t)max_tokens * sizeof(uint64_t));
+	req->tokens_json_capacity = (size_t)max_tokens * API_TOKEN_TEXT_BYTES + API_TOKEN_TEXT_BYTES;
+	req->tokens_json = malloc(req->tokens_json_capacity);
 	req->logprobs = options.logprobs != 0u ? malloc((size_t)max_tokens * options.logprobs * sizeof(req->logprobs[0])) : 0;
-	if (req->output_token_ids == 0 || (options.logprobs != 0u && req->logprobs == 0))
+	if (req->output_token_ids == 0 || req->token_ready_ns == 0 || req->tokens_json == 0 || (options.logprobs != 0u && req->logprobs == 0))
 	{
 		free(prompt);
 		free(req->output_token_ids);
+		free(req->token_ready_ns);
+		free(req->tokens_json);
 		free(req->logprobs);
 		free(req);
 		send_response(fd, 500, "{\"error\":\"oom\"}");
 		return;
 	}
+	req->tokens_json[0] = '\0';
 	pthread_mutex_init(&req->mutex, 0);
 	pthread_cond_init(&req->cond, 0);
 	req->started_ms = api_now_ms();

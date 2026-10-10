@@ -30,6 +30,7 @@ HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
 SESSION_BLOCK_BASE = 18432
 MAX_ROWS = 2048
+MAX_SEQUENCES = 128
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
 DEFAULT_KV_SNAPSHOT_BYTES = 8 << 30
 
@@ -132,7 +133,7 @@ def deployment(model: dict, lane: int, args) -> dict:
                       "control_port_base": 64000 + 16 * lane},
         "weightd": {"socket_path": args.weightd_socket},
         "runtime_limits": {
-            "max_inflight_submissions": args.sequences,
+            "max_inflight_submissions": min(args.sequences, 16),
             "max_active_sequences": args.sequences,
             "max_input_rows": args.rows,
             "resident_sequence_capacity": args.sequences,
@@ -194,8 +195,8 @@ def main() -> int:
     model = MODELS[args.model]
     if not 1 <= args.lane <= 15:
         raise SystemExit("lane must be within 1..15")
-    if not 1 <= args.sequences <= 16 or not args.sequences <= args.rows <= MAX_ROWS:
-        raise SystemExit(f"sequences must be within 1..16 and rows within sequences..{MAX_ROWS}")
+    if not 1 <= args.sequences <= MAX_SEQUENCES or not args.sequences <= args.rows <= MAX_ROWS:
+        raise SystemExit(f"sequences must be within 1..{MAX_SEQUENCES} and rows within sequences..{MAX_ROWS}")
     args.kv_physical_pages = args.kv_physical_pages or args.sequences * args.kv_pages
     args.kv_logical_pages = args.kv_logical_pages or args.kv_physical_pages
     if args.kv_physical_pages < args.kv_pages or args.kv_logical_pages < args.kv_physical_pages:
