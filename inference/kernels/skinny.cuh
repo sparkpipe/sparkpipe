@@ -5,6 +5,7 @@
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/formats/fp8.cuh"
 #include "inference/kernels/formats/mxfp4.cuh"
+#include "inference/kernels/formats/mxfp8.cuh"
 #include "inference/kernels/formats/nvfp4.cuh"
 #include "inference/kernels/scale.cuh"
 #include "runtime/launch.h"
@@ -131,6 +132,11 @@ static __device__ __forceinline__ float LmSkinnyMxfp4Word(uint32_t weight, uint4
 	accumulator = LmSkinnyMxfp4Byte(weight >> 16u,activation.z,accumulator);
 	return(LmSkinnyMxfp4Byte(weight >> 24u,activation.w,accumulator));
 }
+
+template<>
+struct LmSkinnyFormat<LmMxfp8> : LmSkinnyFormat<LmFp8>
+{
+};
 
 template<>
 struct LmSkinnyFormat<LmMxfp4>
