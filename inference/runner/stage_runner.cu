@@ -171,6 +171,7 @@ enum
 typedef struct SparkStageRunnerState
 {
 	const SparkStageRunnerModelInterface *model_interface;
+	uint64_t memory_mark_available;
 	void *model;
 	SparkStageRunnerModelGeometry geometry;
 	SparkStageRunnerServices services;
@@ -825,6 +826,38 @@ static SparkStatus StageRunnerCreateLeases(SparkStageRunnerState *state)
 	return SPARK_STATUS_OK;
 }
 
+static uint64_t StageRunnerMemAvailable(void)
+{
+	FILE *file = fopen("/proc/meminfo", "r");
+	char line[128];
+	unsigned long long kib = 0ull;
+	if ( file == 0 )
+		return 0u;
+	while ( fgets(line, sizeof(line), file) != 0 )
+		if ( sscanf(line, "MemAvailable: %llu kB", &kib) == 1 )
+			break;
+	fclose(file);
+	return (uint64_t)kib * 1024u;
+}
+
+static void StageRunnerMemoryMark(SparkStageRunnerState *state, const char *phase, uint32_t rows)
+{
+	const uint64_t available = StageRunnerMemAvailable();
+	size_t device_free = 0u, device_total = 0u;
+	if ( available == 0u )
+		return;
+	if ( cudaMemGetInfo(&device_free, &device_total) != cudaSuccess )
+	{
+		(void)cudaGetLastError();
+		device_free = 0u;
+	}
+	fprintf(stderr, "STAGE-MEMORY rank=%u phase=%s rows=%u mem_available=%llu used_since_last=%lld cuda_free=%llu\n",
+		state->tp_rank, phase, rows, (unsigned long long)available,
+		state->memory_mark_available == 0u ? 0ll : (long long)state->memory_mark_available - (long long)available,
+		(unsigned long long)device_free);
+	state->memory_mark_available = available;
+}
+
 SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStageRunnerConfiguration *configuration,
 	const SparkStageRunnerModelInterface *model)
 {
@@ -871,7 +904,10 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	request.configuration = configuration;
 	request.services = &state->services;
 	request.stream = configuration->execution_stream;
+	StageRunnerMemoryMark(state, "begin", 0u);
 	status = model->open(&request, &state->model, &state->geometry);
+	if ( status == SPARK_STATUS_OK )
+		StageRunnerMemoryMark(state, "model_open", 0u);
 	if ( status == SPARK_STATUS_OK && (state->geometry.hidden == 0u || state->geometry.vocab == 0u ||
 		state->geometry.total_layers == 0u || state->geometry.hidden % 8u != 0u) )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
@@ -880,11 +916,15 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerAttachWeights(state, configuration);
 	if ( status == SPARK_STATUS_OK )
+		StageRunnerMemoryMark(state, "weights_attached", 0u);
+	if ( status == SPARK_STATUS_OK )
 	{
 		status = model->bind(state->model, state->lazy_pack, &state->geometry);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr, "sparkpipe_stage_runner: %s weight bind failed status=%d\n", model->tag, (int)status);
 	}
+	if ( status == SPARK_STATUS_OK )
+		StageRunnerMemoryMark(state, "model_bound", 0u);
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateLeases(state);
 	if ( status == SPARK_STATUS_OK )
@@ -904,9 +944,15 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateCollective(state, configuration);
 	if ( status == SPARK_STATUS_OK )
+		StageRunnerMemoryMark(state, "collective", 0u);
+	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateHead(state, runner);
 	if ( status == SPARK_STATUS_OK )
+		StageRunnerMemoryMark(state, "head", 0u);
+	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateBuffers(state, runner, configuration);
+	if ( status == SPARK_STATUS_OK )
+		StageRunnerMemoryMark(state, "buffers", 0u);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkStageRunnerDestroy(runner);
@@ -1324,6 +1370,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		error = cudaGraphUpload(exec, stream);
 	if ( graph != 0 )
 		(void)cudaGraphDestroy(graph);
+	if ( status == SPARK_STATUS_OK && error == cudaSuccess && exec != 0 )
+		StageRunnerMemoryMark(state, "graph", rows);
 	if ( status != SPARK_STATUS_OK || error != cudaSuccess || exec == 0 )
 	{
 		fprintf(stderr, "STAGE-GRAPH-CAPTURE-FAILED rows=%u status=%d cuda=%s: this row count runs eager\n",
@@ -1699,7 +1747,10 @@ SparkStatus SparkStageRunnerAttachKv(SparkStageRunner *runner, const SparkStageR
 	StageRunnerGraphDrop(state);
 	status = state->model_interface->attach_kv(state->model, kv);
 	if ( status == SPARK_STATUS_OK )
+	{
 		state->kv_attached = 1u;
+		StageRunnerMemoryMark(state, "kv_attached", 0u);
+	}
 	return status;
 }
 

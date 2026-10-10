@@ -7,6 +7,7 @@
 #include "sparkpipe/spark_qwen38_27b_stage_model.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_weight_codec.h"
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/gqa.cuh"
@@ -80,6 +81,8 @@ typedef struct QwenModelState
 	uint32_t pack_open;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
+	uint32_t linear_bytes;
+	const char *linear_kind;
 	uint32_t max_rows;
 	uint32_t slots;
 	uint32_t ffn_rows;
@@ -211,6 +214,14 @@ static int32_t QwenProject(const void *weight, const float *scale_rows, const ui
 		0u, 0u, multiprocessors, stream);
 }
 
+static int32_t QwenLinear(const QwenModelState *state, const uint8_t *weight, const float *scale_rows, const uint16_t *source,
+	uint16_t *destination, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+{
+	return state->linear_bytes == 1u ?
+		QwenProject<LmFp8>(weight, scale_rows, source, destination, rows, input_dimension, output_dimension, multiprocessors, stream) :
+		QwenProject<LmBf16Format>(weight, 0, source, destination, rows, input_dimension, output_dimension, multiprocessors, stream);
+}
+
 static SparkStatus QwenRound(QwenModelState *state, cudaStream_t stream, uint32_t operation, uint32_t rows,
 	uint32_t row_elements, const void *local, void *full)
 {
@@ -230,9 +241,10 @@ static SparkStatus QwenGdn(QwenModelState *state, const QwenLayer *layer, const 
 	uint8_t *state_pool = state->gdn_state + (uint64_t)layer->recurrent_index * state->slots * state->gdn_state_bytes;
 	uint16_t *window = state->gdn_window + (uint64_t)layer->recurrent_index * state->slots * (state->gdn_window_bytes / sizeof(uint16_t));
 	LmQkvLayout layout;
-	if ( QwenProject<LmFp8>(layer->mix_weight, layer->mix_scale, state->normed, state->qkv, rows, QW_HIDDEN,
+	if ( QwenLinear(state, layer->mix_weight, layer->mix_scale, state->normed, state->qkv, rows, QW_HIDDEN,
 			state->gdn_channels, sms, stream) != LM_LAUNCH_OK ||
-		QwenProject<LmFp8>(layer->mix_weight + (uint64_t)state->gdn_channels * QW_HIDDEN, layer->mix_scale + (uint64_t)state->gdn_channels * (QW_HIDDEN / QW_SCALE_K),
+		QwenLinear(state, layer->mix_weight + (uint64_t)state->gdn_channels * QW_HIDDEN * state->linear_bytes,
+			layer->mix_scale == 0 ? (const float *)0 : layer->mix_scale + (uint64_t)state->gdn_channels * (QW_HIDDEN / QW_SCALE_K),
 			state->normed, state->z, rows, QW_HIDDEN, state->gdn_v, sms, stream) != LM_LAUNCH_OK ||
 		QwenProject<LmBf16Format>(layer->gdn_ba, 0, state->normed, state->ba, rows, QW_HIDDEN, 2u * heads, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -258,7 +270,7 @@ static SparkStatus QwenGdn(QwenModelState *state, const QwenLayer *layer, const 
 	LM_LAUNCH((LmHeadRmsNormSiluGateKernel<QW_THREADS>), dim3(heads,rows), QW_THREADS, 0, stream,
 		state->mixed, state->z, layer->gdn_norm, state->mixed, rows, heads, QW_VALUE_DIM, QW_EPSILON);
 	if ( QwenLaunched() != SPARK_STATUS_OK ||
-		QwenProject<LmFp8>(layer->out_weight, layer->out_scale, state->mixed, state->partial, rows, state->gdn_v, QW_HIDDEN, sms, stream) != LM_LAUNCH_OK )
+		QwenLinear(state, layer->out_weight, layer->out_scale, state->mixed, state->partial, rows, state->gdn_v, QW_HIDDEN, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -273,7 +285,7 @@ static SparkStatus QwenAttention(QwenModelState *state, const QwenLayer *layer, 
 	SparkStatus status;
 	if ( state->kv_attached == 0u || stride > state->record_stride )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( QwenProject<LmFp8>(layer->mix_weight, layer->mix_scale, state->normed, state->attn_local, rows, QW_HIDDEN,
+	if ( QwenLinear(state, layer->mix_weight, layer->mix_scale, state->normed, state->attn_local, rows, QW_HIDDEN,
 		state->attn_rows, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = QwenRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, state->attn_rows, state->attn_local, state->attn_gathered);
@@ -306,7 +318,7 @@ static SparkStatus QwenAttention(QwenModelState *state, const QwenLayer *layer, 
 		QW_Q_WIDTH, state->tp_rank * state->attn_width, state->attn_width);
 	LM_LAUNCH((LmOutputGateKernel<QW_THREADS>), rows, QW_THREADS, 0, stream, state->merged, state->merged_gate, state->attn_width);
 	if ( QwenLaunched() != SPARK_STATUS_OK ||
-		QwenProject<LmFp8>(layer->out_weight, layer->out_scale, state->merged, state->partial, rows, state->attn_width, QW_HIDDEN, sms, stream) != LM_LAUNCH_OK )
+		QwenLinear(state, layer->out_weight, layer->out_scale, state->merged, state->partial, rows, state->attn_width, QW_HIDDEN, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -314,12 +326,12 @@ static SparkStatus QwenAttention(QwenModelState *state, const QwenLayer *layer, 
 static SparkStatus QwenFfn(QwenModelState *state, const QwenLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors;
-	if ( QwenProject<LmFp8>(layer->ffn_gate_up, layer->ffn_gate_up_scale, state->normed, state->gate_up, rows, QW_HIDDEN,
+	if ( QwenLinear(state, layer->ffn_gate_up, layer->ffn_gate_up_scale, state->normed, state->gate_up, rows, QW_HIDDEN,
 		2u * state->ffn_rows, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	LM_LAUNCH((LmSiluMulKernel<QW_THREADS>), rows, QW_THREADS, 0, stream, state->gate_up, state->intermediate, state->ffn_rows, true);
 	if ( QwenLaunched() != SPARK_STATUS_OK ||
-		QwenProject<LmFp8>(layer->ffn_down, layer->ffn_down_scale, state->intermediate, state->partial, rows, state->ffn_rows, QW_HIDDEN, sms, stream) != LM_LAUNCH_OK )
+		QwenLinear(state, layer->ffn_down, layer->ffn_down_scale, state->intermediate, state->partial, rows, state->ffn_rows, QW_HIDDEN, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -472,6 +484,21 @@ static SparkStatus QwenOpen(const SparkStageRunnerModelOpen *request, void **mod
 	state->tp_degree = configuration->tp_degree;
 	state->tp_rank = configuration->tp_rank;
 	state->max_rows = configuration->max_input_row_count;
+	if ( configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
+	{
+		state->linear_bytes = 1u;
+		state->linear_kind = "fp8_e4m3";
+	}
+	else if ( configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 )
+	{
+		state->linear_bytes = 2u;
+		state->linear_kind = "bf16";
+	}
+	else
+	{
+		fprintf(stderr, "sparkpipe_qwen38_27b: linear weight codec %u is neither fp8_e4m3 nor bf16\n", configuration->linear_weight_codec);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
 	state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
 		configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
 	status = SparkNamedPackOpen(configuration->rank_pack_path, SPARK_NAMED_PACK_MAGIC, SPARK_NAMED_PACK_VERSION, QW_PACK_ALIGNMENT, &state->pack);
@@ -550,9 +577,18 @@ static SparkStatus QwenSlice(QwenModelState *state, SparkWeightdLazyPack *lazy_p
 }
 
 #define QW_BIND(name, kind, field) \
-	do { const void *bound = 0; snprintf(key, sizeof(key), "layers.%u." name, index); \
+	do { const void *bound = 0; snprintf(key, sizeof(key), "layers.%u.%s", index, name); \
 		if ( QwenSlice(state, lazy_pack, key, kind, &bound) != SPARK_STATUS_OK ) return SPARK_STATUS_PARSE_ERROR; \
 		*(const void **)&layer->field = bound; } while ( 0 )
+
+#define QW_LINEAR(name, field, scale_field) \
+	do { const char *linear_name = name; QW_BIND(linear_name, state->linear_kind, field); \
+		if ( state->linear_bytes == 1u ) \
+		{ \
+			char scale_name[SPARK_NAMED_PACK_MAX_NAME_BYTES]; \
+			snprintf(scale_name, sizeof(scale_name), "%s.scale", linear_name); \
+			QW_BIND(scale_name, "f32", scale_field); \
+		} } while ( 0 )
 
 static SparkStatus QwenBind(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)
 {
@@ -563,28 +599,21 @@ static SparkStatus QwenBind(void *model, SparkWeightdLazyPack *lazy_pack, SparkS
 	for ( uint32_t index = 0u; index < QW_LAYERS; ++index )
 	{
 		QwenLayer *layer = &state->layers[index];
-		QW_BIND("ffn_gate_up", "fp8_e4m3", ffn_gate_up);
-		QW_BIND("ffn_gate_up.scale", "f32", ffn_gate_up_scale);
-		QW_BIND("ffn_down", "fp8_e4m3", ffn_down);
-		QW_BIND("ffn_down.scale", "f32", ffn_down_scale);
+		const uint32_t attention_layer = index % QW_PERIOD == QW_PHASE;
+		QW_LINEAR("ffn_gate_up", ffn_gate_up, ffn_gate_up_scale);
+		QW_LINEAR("ffn_down", ffn_down, ffn_down_scale);
+		QW_LINEAR(attention_layer ? "attn_qkv" : "gdn_qkvz", mix_weight, mix_scale);
+		QW_LINEAR(attention_layer ? "attn_out" : "gdn_out", out_weight, out_scale);
 		QW_BIND("input_norm", "f32", input_norm);
 		QW_BIND("post_norm", "f32", post_norm);
-		if ( index % QW_PERIOD == QW_PHASE )
+		if ( attention_layer )
 		{
-			QW_BIND("attn_qkv", "fp8_e4m3", mix_weight);
-			QW_BIND("attn_qkv.scale", "f32", mix_scale);
-			QW_BIND("attn_out", "fp8_e4m3", out_weight);
-			QW_BIND("attn_out.scale", "f32", out_scale);
 			QW_BIND("attn_q_norm", "f32", q_norm);
 			QW_BIND("attn_k_norm", "f32", k_norm);
 			layer->kv_index = attention++;
 		}
 		else
 		{
-			QW_BIND("gdn_qkvz", "fp8_e4m3", mix_weight);
-			QW_BIND("gdn_qkvz.scale", "f32", mix_scale);
-			QW_BIND("gdn_out", "fp8_e4m3", out_weight);
-			QW_BIND("gdn_out.scale", "f32", out_scale);
 			QW_BIND("gdn_ba", "bf16", gdn_ba);
 			QW_BIND("gdn_conv", "bf16", gdn_conv);
 			QW_BIND("gdn_norm", "bf16", gdn_norm);
@@ -604,6 +633,7 @@ static SparkStatus QwenBind(void *model, SparkWeightdLazyPack *lazy_pack, SparkS
 	return QwenPlan(state, &state->arena_bytes, (uint8_t *)state->arena);
 }
 
+#undef QW_LINEAR
 #undef QW_BIND
 
 static SparkStatus QwenAttachKv(void *model, const SparkStageRunnerKv *kv)
@@ -679,7 +709,7 @@ static const SparkStageRunnerModelInterface spark_qwen38_27b_stage_model =
 	SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
 	"sparkpipe_qwen38_27b",
 	"qwen3.8-27b",
-	"fp8",
+	"official",
 	QwenOpen,
 	QwenManifestCheck,
 	QwenBind,

@@ -253,8 +253,8 @@ class Model:
         self.reasoning = spec["reasoning"]
         self.tool_calls = dict(spec["tool_calls"])
         self.tool_calls.setdefault("format", "key_value")
-        if self.tool_calls["format"] not in ("key_value", "tagged"):
-            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value or tagged")
+        if self.tool_calls["format"] not in ("key_value", "tagged", "function_xml"):
+            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value, tagged or function_xml")
         self.content_markers = list(spec.get("content_markers", []))
         self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
@@ -380,6 +380,8 @@ class OutputParser:
     def parse_call(self, body):
         if self.call["format"] == "tagged":
             return self.parse_tagged_call(body)
+        if self.call["format"] == "function_xml":
+            return self.parse_function_xml_call(body)
         return self.parse_key_value_call(body)
 
     def typed(self, name, key, kind, value):
@@ -423,6 +425,31 @@ class OutputParser:
             rest = rest.strip()
         if not name:
             return None
+        return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
+
+    def parse_function_xml_call(self, body):
+        call = self.call
+        rest = body.strip()
+        if not rest.startswith(call["function_start"]) or not rest.endswith(call["function_end"]):
+            return None
+        name, found, rest = rest[len(call["function_start"]):len(rest) - len(call["function_end"])].partition(call["attribute_end"])
+        name = name.strip()
+        if not found or not name:
+            return None
+        arguments = {}
+        rest = rest.strip()
+        while rest:
+            if not rest.startswith(call["parameter_start"]):
+                return None
+            key, found, rest = rest[len(call["parameter_start"]):].partition(call["attribute_end"])
+            value, closed, rest = rest.partition(call["parameter_end"])
+            key = key.strip()
+            if not found or not closed or not key:
+                return None
+            value = value[1:] if value.startswith("\n") else value
+            value = value[:-1] if value.endswith("\n") else value
+            arguments[key] = self.typed(name, key, None, value)
+            rest = rest.strip()
         return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
 
     def parse_key_value_call(self, body):

@@ -9,7 +9,13 @@
 #error "QWEN38_27B_CONTRACT_SHA256 must identify the model contract"
 #endif
 
+#if defined(QWEN38_27B_BF16)
+#define SPARK_QWEN38_27B_TP16_ADAPTER_ID "qwen38_27b-bf16-tp16"
+#define SPARK_QWEN38_27B_TP16_LINEAR_CODEC SPARK_WEIGHT_CODEC_BF16
+#else
 #define SPARK_QWEN38_27B_TP16_ADAPTER_ID "qwen38_27b-tp16"
+#define SPARK_QWEN38_27B_TP16_LINEAR_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3
+#endif
 #define SPARK_QWEN38_27B_TP16_MODEL_ID "Qwen/Qwen3.8-27B"
 #define SPARK_QWEN38_27B_TP16_MAX_ROWS 2048u
 #define SPARK_QWEN38_27B_TP16_LAYERS 64u
@@ -68,8 +74,8 @@ static const SparkModelServingAdapterDescriptor Qwen38_27bServingDescriptor =
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_QWEN38_27B_STAGE_HIDDEN,
 	.boundary_element_bytes = 2u,
-	.linear_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.linear_weight_codec = SPARK_QWEN38_27B_TP16_LINEAR_CODEC,
+	.expert_weight_codec = SPARK_QWEN38_27B_TP16_LINEAR_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = 16u,

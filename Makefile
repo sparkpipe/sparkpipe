@@ -177,6 +177,7 @@ QWEN38_27B_SERVING_ADAPTER := build/libqwen38_27b_serving_adapter.$(SHARED_LIBRA
 K3_SERVING_ADAPTER := build/libk3_serving_adapter.$(SHARED_LIBRARY_EXT)
 K3_TP16_SERVING_ADAPTER := build/libk3_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
 QWEN38_27B_TP16_SERVING_ADAPTER := build/libqwen38_27b_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
+QWEN38_27B_BF16_TP16_SERVING_ADAPTER := build/libqwen38_27b_bf16_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
 QWEN38_27B_TP16_CONTRACT := model_contracts/qwen38_27b_authoritative.json
 QWEN38_27B_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN38_27B_TP16_CONTRACT)"; else shasum -a 256 "$(QWEN38_27B_TP16_CONTRACT)"; fi | awk '{print $$1}')
 QWEN38_27B_TP16_SOURCES := modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stage_model.cu
@@ -728,6 +729,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_sampling.py \
 	tests/test_chat_frontend_warm_queue.py \
 	tests/test_chat_frontend_tagged_calls.py \
+	tests/test_chat_frontend_function_xml_calls.py \
 	tests/test_model_swap_memory_guard.py \
 	tests/test_hy4_fp8_scale_contract.py \
 	tests/test_k3_spec_verify.py \
@@ -1624,8 +1626,15 @@ $(K3_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_
 $(K3_TP16_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/llms/kimi_k3/*.cu inference/llms/kimi_k3/*.cuh inference/llms/kimi_k3/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=16 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
+define QWEN38_27B_TP16_LINK
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) $(1) -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/qwen38_27b_resident_decode_stage/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_27B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+endef
+
 $(QWEN38_27B_TP16_SERVING_ADAPTER): $(QWEN38_27B_TP16_SOURCES) $(QWEN38_27B_TP16_CONTRACT) modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/qwen38_27b_resident_decode_stage/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_27B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	$(call QWEN38_27B_TP16_LINK,)
+
+$(QWEN38_27B_BF16_TP16_SERVING_ADAPTER): $(QWEN38_27B_TP16_SOURCES) $(QWEN38_27B_TP16_CONTRACT) modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/kernels/*.cuh inference/kernels/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	$(call QWEN38_27B_TP16_LINK,-DQWEN38_27B_BF16=1)
 
 build/test_model_resident_reconnect: tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

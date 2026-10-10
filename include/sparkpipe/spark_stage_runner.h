@@ -56,6 +56,7 @@ typedef struct SparkStageRunnerConfiguration
 	const SparkTpDeviceCollectiveConfig *device_collective;
 	void (*layer_collective_override)(void *context, void *stream, uint32_t layer, uint32_t phase);
 	void *layer_collective_context;
+	uint32_t linear_weight_codec;
 } SparkStageRunnerConfiguration;
 
 typedef struct SparkStageRunnerDispatch

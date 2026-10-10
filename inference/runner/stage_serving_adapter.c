@@ -309,6 +309,7 @@ static SparkStatus StageServingLoadConfiguration(SparkStageServingState *state,
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	config->rank_pack_path = state->pack_path;
+	config->linear_weight_codec = state->model->descriptor->linear_weight_codec;
 	config->stray_working_set_path = state->stray_working_set_path;
 	config->execution_stream = configuration->execution_stream;
 	config->multiprocessors = SPARK_STAGE_SERVING_MULTIPROCESSORS;

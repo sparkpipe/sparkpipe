@@ -9,6 +9,11 @@ vocabulary, KV and recurrent bytes per rank). Rank r runs on spark<hex r>.
 Ports for lane L: control 23000+16L+r, transport 64000+16L (+15 listen),
 collective identifier L<<48, mesh session ports 18432 + 16a + b (one model
 is active at a time, so lanes share the session block).
+
+--swap-entry also writes swap_entry.json: the model's entry for the hub swap
+controller (tools/serving/model_swap.py). Its node commands call the lane.sh
+that tools/stage_lane.sh setup writes into every rank root, and its API runs
+on the hub from ~/<model>-kv-api (tools/stage_lane.sh api-setup).
 """
 
 from __future__ import annotations
@@ -28,19 +33,35 @@ MAX_ROWS = 2048
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
 DEFAULT_KV_SNAPSHOT_BYTES = 8 << 30
 
+QWEN38_27B = {
+    "swap_id": "qwen3.8-27b",
+    "api_port": 8461,
+    "kv_label": "qwen38_27b_stage",
+    "node_memory_bytes": 16 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/qwen3.8-27b-fp8/tokenizer.json",
+    "pack": "sparkdata/qwen38_27b.fp8.tp16/packs/qwen38_27b.tp16.rank{rank:02d}.pack",
+    "adapter": "libqwen38_27b_tp16_serving_adapter.so",
+    "program": "qwen38_27b",
+    "node_target": "cuda.sm121.qwen38_27b.stage_runner.linear_fp8.kv_bf16",
+    "contract": "model_contracts/qwen38_27b_authoritative.json",
+    "chat_template": "model-families/qwen38_27b/chat_template.json",
+    "eos_token_ids": [248044, 248046],
+    "tokenizer_vocabulary": 248077,
+    "hidden": 5120,
+    "kv_page_bytes": 16 * 64 * 4096 // WORLD,
+    "recurrent_bytes": 48 * (3 * 128 * 128 * 4 + 640 * 4 * 2),
+}
+
 MODELS = {
-    "qwen38_27b": {
-        "pack": "sparkdata/qwen38_27b.fp8.tp16/packs/qwen38_27b.tp16.rank{rank:02d}.pack",
-        "adapter": "libqwen38_27b_tp16_serving_adapter.so",
-        "program": "qwen38_27b",
-        "node_target": "cuda.sm121.qwen38_27b.stage_runner.linear_fp8.kv_bf16",
-        "contract": "model_contracts/qwen38_27b_authoritative.json",
-        "chat_template": "model-families/qwen38_27b/chat_template.json",
-        "eos_token_ids": [248044, 248046],
-        "tokenizer_vocabulary": 248077,
-        "hidden": 5120,
-        "kv_page_bytes": 16 * 64 * 4096 // WORLD,
-        "recurrent_bytes": 48 * (3 * 128 * 128 * 4 + 640 * 4 * 2),
+    "qwen38_27b": QWEN38_27B,
+    "qwen38_27b_bf16": {
+        **QWEN38_27B,
+        "swap_id": "qwen3.8-27b-bf16",
+        "api_port": 8462,
+        "node_memory_bytes": 20 << 30,
+        "pack": "sparkdata/qwen38_27b.bf16.tp16/packs/qwen38_27b.tp16.rank{rank:02d}.pack",
+        "adapter": "libqwen38_27b_bf16_tp16_serving_adapter.so",
+        "node_target": "cuda.sm121.qwen38_27b.stage_runner.linear_bf16.kv_bf16",
     },
 }
 
@@ -127,6 +148,27 @@ def deployment(model: dict, lane: int, args) -> dict:
     return result
 
 
+def swap_entry(name: str, model: dict, lane: int) -> dict:
+    root = f"$HOME/stage-lanes/{name}/lane{lane}/root"
+    api = f"$HOME/{name}-kv-api"
+    unit = f"kv-{name.replace('_', '-')}-api"
+    return {
+        "id": model["swap_id"],
+        "kv_label": model["kv_label"],
+        "node_memory_bytes": model["node_memory_bytes"],
+        "node_reclaim": f"{root}/lane.sh reclaim",
+        "node_start": f"{root}/lane.sh start {{run_id}}",
+        "node_ready": f"{root}/lane.sh ready {{run_id}}",
+        "node_stop": f"{root}/lane.sh stop",
+        "api_start": (f"systemctl --user reset-failed {unit} 2>/dev/null; systemctl --user is-active -q {unit} || "
+                      f"systemd-run --user --unit={unit} -p MemoryMax=2G -p MemorySwapMax=0 --working-directory={api} "
+                      f"bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root {api}/runtime "
+                      f"--port {model['api_port']} >> api.log 2>&1' >/dev/null"),
+        "api_stop": f"systemctl --user stop {unit} 2>/dev/null; systemctl --user reset-failed {unit} 2>/dev/null; true",
+        "health": f"http://127.0.0.1:{model['api_port']}/health",
+    }
+
+
 def render(value: dict) -> str:
     return json.dumps(value, indent=2) + "\n"
 
@@ -147,6 +189,7 @@ def main() -> int:
     parser.add_argument("--kv-snapshot-bytes", type=int, default=DEFAULT_KV_SNAPSHOT_BYTES)
     parser.add_argument("--state-budget-bytes", type=int, default=DEFAULT_STATE_BUDGET_BYTES)
     parser.add_argument("--tokenizer-sha256", default=None)
+    parser.add_argument("--swap-entry", action="store_true")
     args = parser.parse_args()
     model = MODELS[args.model]
     if not 1 <= args.lane <= 15:
@@ -167,6 +210,8 @@ def main() -> int:
     (args.output_dir / "deployment.json").write_text(render(deployment(model, args.lane, args)))
     for rank, host in enumerate(HOSTS):
         (args.output_dir / f"adapter.{host}.json").write_text(render(adapter_config(model, args.lane, rank, args)))
+    if args.swap_entry:
+        (args.output_dir / "swap_entry.json").write_text(render(swap_entry(args.model, model, args.lane)))
     print(f"{args.model} lane {args.lane} rendered under {args.output_dir}")
     return 0
 

@@ -163,6 +163,55 @@
    "end_markers": [
     "<|close|>message<|sep|>"
    ]
+  },
+  {
+   "id": "qwen3.8-27b",
+   "model_dir": "models/qwen3.8-27b",
+   "engine": "http://127.0.0.1:8461",
+   "context_tokens": 262144,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+   ],
+   "template_defaults": {
+    "enable_thinking": true
+   },
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "function_xml",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "attribute_end": ">",
+    "function_start": "<function=",
+    "function_end": "</function>",
+    "parameter_start": "<parameter=",
+    "parameter_end": "</parameter>"
+   }
   }
  ],
  "control": {
