@@ -48,6 +48,7 @@ typedef struct SparkStageRunnerStep
 	uint32_t context;
 	uint32_t multiprocessors;
 	uint32_t last_rows_only;
+	const uint32_t *token_ids;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry
@@ -71,6 +72,8 @@ typedef struct SparkStageRunnerModelGeometry
 	uint32_t head_norm_f32;
 	uint32_t kv_layer_count;
 	uint64_t kv_layer_page_bytes;
+	uint32_t kv_second_layer_count;
+	uint64_t kv_second_layer_page_bytes;
 	SparkKvShard kv_shard;
 	uint64_t recurrent_bytes;
 	uint32_t experts;

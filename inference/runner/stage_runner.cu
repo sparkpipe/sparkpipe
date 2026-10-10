@@ -1618,6 +1618,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	in.context = state->max_context;
 	in.multiprocessors = state->multiprocessors;
 	in.last_rows_only = state->head_last_rows;
+	in.token_ids = state->token_ids_device;
 	phase_marks[0] = submit_started;
 	if ( steps == 1u && rows > STAGE_RUNNER_WIDE_ROWS )
 		(void)StageRunnerLayerMarksBegin(state);
@@ -1725,7 +1726,9 @@ SparkStatus SparkStageRunnerAttachKv(SparkStageRunner *runner, const SparkStageR
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkStageRunnerState *)runner->private_state;
 	if ( state->model_interface->attach_kv == 0 || kv->layer_count != state->geometry.kv_layer_count ||
-		kv->layer_page_bytes != state->geometry.kv_layer_page_bytes )
+		kv->layer_page_bytes != state->geometry.kv_layer_page_bytes ||
+		kv->second_layer_count != state->geometry.kv_second_layer_count ||
+		(kv->second_layer_count != 0u && (kv->second_pool == 0 || kv->second_layer_page_bytes != state->geometry.kv_second_layer_page_bytes)) )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: KV attach refused: binding has %u layers of %llu-byte pages, the slice needs %u of %llu\n",
 			kv->layer_count, (unsigned long long)kv->layer_page_bytes, state->geometry.kv_layer_count,

@@ -110,6 +110,10 @@ typedef struct SparkStageRunnerKv
 	uint32_t pool_page_count;
 	uint32_t sequence_count;
 	SparkKvShard context_shard;
+	uint8_t *second_pool;
+	uint64_t second_layer_stride_bytes;
+	uint64_t second_layer_page_bytes;
+	uint32_t second_layer_count;
 } SparkStageRunnerKv;
 
 typedef struct SparkStageRunnerStats

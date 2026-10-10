@@ -375,7 +375,8 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	kv.block_token_count = descriptor->cache_block_token_count;
 	kv.region_count = 1u;
 	model->kv_layout(state->runner_config.tp_rank, state->runner_config.tp_degree, &kv);
-	kv.region_count = 1u;
+	if ( kv.region_count != SPARK_STAGE_KV_MAX_REGIONS )
+		kv.region_count = 1u;
 	kv.regions[0].layer_count = SparkStageRunnerKvLayerCount(&state->runner);
 	kv.capacity_request.layer_count = kv.regions[0].layer_count;
 	kv.model_id = descriptor->model_id;
@@ -421,6 +422,13 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	attach.pool_page_count = SparkStageKvBindingAddressablePageCount(&state->kv);
 	attach.sequence_count = state->kv.resident_sequence_capacity;
 	attach.context_shard = state->kv.context_shard;
+	if ( kv.region_count > 1u )
+	{
+		attach.second_pool = state->kv.region_base[1];
+		attach.second_layer_stride_bytes = state->kv.region_layer_stride_bytes[1];
+		attach.second_layer_page_bytes = kv.regions[1].layer_page_bytes;
+		attach.second_layer_count = kv.regions[1].layer_count;
+	}
 	return SparkStageRunnerAttachKv(&state->runner, &attach);
 }
 
