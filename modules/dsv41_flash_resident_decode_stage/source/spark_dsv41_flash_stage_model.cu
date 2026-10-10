@@ -490,6 +490,9 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	return D41Launched();
 }
 
+static SparkStatus D41DumpRows(D41ModelState *state, uint32_t layer, uint32_t kind, const uint16_t *rows_bf16, uint32_t rows,
+	uint32_t width, cudaStream_t stream);
+
 static int32_t D41ExpertsUp(D41ModelState *state, const uint8_t *weight, LmScaleTensor scale, uint16_t *output, uint32_t rows,
 	uint32_t routes, uint32_t sms, cudaStream_t stream)
 {
@@ -573,9 +576,42 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		if ( D41Project(layer->sh_w2, state->shared_act, state->shared_out, 0, rows, D41_MOE_INTER, D41_HIDDEN, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
+	if ( state->dump != 0 && step->rows < 64u )
+	{
+		SparkStatus dumped = D41DumpRows(state, 99u, 8u, state->expert_gate, routes, D41_MOE_INTER, stream);
+		if ( dumped == SPARK_STATUS_OK )
+			dumped = D41DumpRows(state, 99u, 9u, state->expert_up, routes, D41_MOE_INTER, stream);
+		if ( dumped == SPARK_STATUS_OK )
+			dumped = D41DumpRows(state, 99u, 10u, state->expert_act, routes, D41_MOE_INTER, stream);
+		if ( dumped == SPARK_STATUS_OK )
+			dumped = D41DumpRows(state, 99u, 6u, state->expert_out, routes, D41_HIDDEN, stream);
+		if ( dumped == SPARK_STATUS_OK )
+			dumped = D41DumpRows(state, 99u, 11u, (const uint16_t *)state->route_packed_row, 1u, 2u * routes, stream);
+		if ( dumped == SPARK_STATUS_OK )
+			dumped = D41DumpRows(state, 99u, 12u, (const uint16_t *)state->route_expert, 1u, 2u * routes, stream);
+		if ( dumped == SPARK_STATUS_OK )
+			dumped = D41DumpRows(state, 99u, 13u, (const uint16_t *)state->packed_weight, 1u, 2u * routes, stream);
+		if ( dumped != SPARK_STATUS_OK )
+			return dumped;
+	}
 	D41MoeLocalFinalizeKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
 		state->route_expert, state->tp_rank == 0u ? state->shared_out : (const uint16_t *)0, state->partial, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
 	return D41Launched();
+}
+
+static SparkStatus D41DumpRows(D41ModelState *state, uint32_t layer, uint32_t kind, const uint16_t *rows_bf16, uint32_t rows,
+	uint32_t width, cudaStream_t stream)
+{
+	const uint32_t header[5] = { 0x58344c44u, layer, rows, kind, width };
+	if ( state->dump == 0 )
+		return SPARK_STATUS_OK;
+	if ( cudaStreamSynchronize(stream) != cudaSuccess ||
+		cudaMemcpy(state->dump_streams, rows_bf16, (size_t)rows * width * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	fwrite(header, sizeof(header), 1u, state->dump);
+	fwrite(state->dump_streams, sizeof(uint16_t), (size_t)rows * width, state->dump);
+	fflush(state->dump);
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, const float *pre_previous,
@@ -595,9 +631,13 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 		return status;
 	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, pre_previous, state->x, D41_HIDDEN);
 	D41RmsNorm(state->x, layer->attn_norm, state->x, rows, D41_HIDDEN, stream);
+	if ( index < 2u && (status = D41DumpRows(state, index, 3u, state->x, rows, D41_HIDDEN, stream)) != SPARK_STATUS_OK )
+		return status;
 	status = D41Attention(state, layer, index, step, stream);
 	if ( status == SPARK_STATUS_OK )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
+	if ( status == SPARK_STATUS_OK && index < 2u )
+		status = D41DumpRows(state, index, 1u, state->partial, rows, D41_HIDDEN, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	cudaMemcpyAsync(state->residual, state->streams, stream_bytes, cudaMemcpyDeviceToDevice, stream);
@@ -610,9 +650,17 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_attn, state->x, D41_HIDDEN);
 	D41RmsNorm(state->x, layer->ffn_norm, state->x, rows, D41_HIDDEN, stream);
 	cudaMemcpyAsync(state->xq, state->x, (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream);
+	if ( index < 2u && (status = D41DumpRows(state, index, 4u, state->x, rows, D41_HIDDEN, stream)) != SPARK_STATUS_OK )
+		return status;
 	status = D41Moe(state, layer, step, stream);
+	if ( status == SPARK_STATUS_OK && index < 2u )
+		status = D41DumpRows(state, index, 7u, state->partial, rows, D41_HIDDEN, stream);
+	if ( status == SPARK_STATUS_OK && index < 2u && state->tp_rank == 0u )
+		status = D41DumpRows(state, index, 5u, state->shared_out, rows, D41_HIDDEN, stream);
 	if ( status == SPARK_STATUS_OK )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
+	if ( status == SPARK_STATUS_OK && index < 2u )
+		status = D41DumpRows(state, index, 2u, state->partial, rows, D41_HIDDEN, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	cudaMemcpyAsync(state->residual, state->streams, stream_bytes, cudaMemcpyDeviceToDevice, stream);
@@ -841,7 +889,7 @@ static SparkStatus D41OpenEngramShard(D41ModelState *state, const char *pack_pat
 	FILE *file;
 	uint32_t magic = 0u;
 	D41Sibling(pack_path, "engram.spengram", state->engram_path, sizeof(state->engram_path));
-	snprintf(sha_path, sizeof(sha_path), "%s.sha256", state->engram_path);
+	snprintf(sha_path, sizeof(sha_path), "%s.digest", state->engram_path);
 	state->engram_bytes = D41FileBytes(state->engram_path);
 	file = fopen(sha_path, "rb");
 	memset(state->engram_sha256, 0, sizeof(state->engram_sha256));
@@ -855,7 +903,7 @@ static SparkStatus D41OpenEngramShard(D41ModelState *state, const char *pack_pat
 		D41ReadFile(state->engram_path, 0u, &magic, sizeof(magic)) != SPARK_STATUS_OK || magic != 0x31474544u ||
 		D41ReadFile(state->engram_path, 512u, state->engram_entries, sizeof(state->engram_entries)) != SPARK_STATUS_OK )
 	{
-		fprintf(stderr, "sparkpipe_dsv41_flash: the engram shard %s (with its .sha256) is missing or not an engram shard\n", state->engram_path);
+		fprintf(stderr, "sparkpipe_dsv41_flash: the engram shard %s (with its .digest) is missing or not an engram shard\n", state->engram_path);
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
 	for ( uint32_t index = 0u; index < 8u; ++index )
@@ -913,7 +961,7 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
 		configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
 	state->max_positions = configuration->kv_pages_per_sequence * D41_PAGE_TOKENS;
-	if ( getenv("SPARK_DSV41_FLASH_LAYER_DUMP") != 0 && configuration->tp_rank == 0u )
+	if ( getenv("SPARK_DSV41_FLASH_LAYER_DUMP") != 0 )
 	{
 		state->dump = fopen(getenv("SPARK_DSV41_FLASH_LAYER_DUMP"), "wb");
 		state->dump_streams = (uint16_t *)malloc((size_t)state->max_rows * D41K_HC * D41_HIDDEN * sizeof(uint16_t));
@@ -921,7 +969,7 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		state->dump_weights = (float *)malloc((size_t)state->max_rows * D41_TOPK * sizeof(float));
 		if ( state->dump == 0 || state->dump_streams == 0 || state->dump_routes == 0 || state->dump_weights == 0 )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		fprintf(stderr, "sparkpipe_dsv41_flash: rank 0 dumps every layer's streams and routes to %s (debug; graphs off)\n",
+		fprintf(stderr, "sparkpipe_dsv41_flash: this rank dumps every layer's streams and routes to %s (debug; graphs off)\n",
 			getenv("SPARK_DSV41_FLASH_LAYER_DUMP"));
 	}
 	pack_bytes = D41FileBytes(configuration->rank_pack_path);
@@ -1165,7 +1213,7 @@ static SparkStatus D41AttachEngram(D41ModelState *state, const SparkStageRunnerC
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memcpy(request.pack_path, state->engram_path, strlen(state->engram_path) + 1u);
 	request.expert_pool_bytes = configuration->weights.expert_pool_bytes;
-	return SparkWeightdLazyPackCreateChecked(configuration->weights.socket_path, &request, state->engram_bytes,
+	return SparkWeightdLazyPackCreateChecked(configuration->weights.socket_path, &request, state->engram_bytes + 255u,
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, D41DenseManifest, state, &state->engram_pack);
 }
 

@@ -50,7 +50,7 @@ for _i in range(16):
     _s = -1.0 if _i & 0x8 else 1.0
     _e = (_i >> 1) & 0x3
     _m = _i & 0x1
-    _E2M1_F32[_i] = _s * ((1.0 + _m / 2.0) * 2.0 ** _e if _e else _m / 2.0)
+    _E2M1_F32[_i] = _s * ((1.0 + _m / 2.0) * 2.0 ** (_e - 1) if _e else _m / 2.0)
 
 _E2M1_POS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0],
                      dtype=np.float32)

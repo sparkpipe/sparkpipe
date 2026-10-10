@@ -100,7 +100,7 @@ setup() {
         extras=""
         for item in $EXTRA_PACKS; do
           target="/home/$host/$(python3 -c "print('${item#*=}'.format(rank=$rank))")"
-          extras="$extras && test -f $target && ln -sfn $target $root/packs/${item%%=*} && printf '$DENSE_MANIFEST' > $root/packs/${item%%=*}.experts && { ! test -f $target.sha256 || ln -sfn $target.sha256 $root/packs/${item%%=*}.sha256; }"
+          extras="$extras && test -f $target && ln -sfn $target $root/packs/${item%%=*} && printf '$DENSE_MANIFEST' > $root/packs/${item%%=*}.experts && { ! test -f $target.sha256 || ln -sfn $target.sha256 $root/packs/${item%%=*}.digest; }"
         done
         $SSH "$host" "ln -sfn $pack $root/packs/$name && printf '$DENSE_MANIFEST' > $root/packs/$name.experts $extras && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $root/packs/$name > $root/spine_budget" < /dev/null
       else
