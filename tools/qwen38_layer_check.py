@@ -235,12 +235,15 @@ def main():
     def rel(a, b):
         return float(np.linalg.norm(a - b) / max(np.linalg.norm(b), 1e-30))
 
+    row_ffn = [rel(a, b) for a, b in zip(ours_ffn, ref_ffn)]
     kind = "attention" if layer % period == period - 1 else "gdn"
     print(json.dumps({"layer": layer, "kind": kind, "rows": int(len(positions)),
                       "mixer_residual_rel": round(rel(ours_residual, residual), 5),
                       "mixer_delta_rel": round(rel(ours_residual - x, mixer), 5),
                       "ffn_rel": round(rel(ours_ffn, ref_ffn), 5),
-                      "last_row_ffn_rel": round(rel(ours_ffn[-1], ref_ffn[-1]), 5)}))
+                      "last_row_ffn_rel": round(rel(ours_ffn[-1], ref_ffn[-1]), 5),
+                      "ffn_row_rel_median": round(float(np.median(row_ffn)), 5),
+                      "ffn_rows_over_2pct": [[int(i), round(v, 4)] for i, v in enumerate(row_ffn) if v > 0.02]}))
 
 
 if __name__ == "__main__":

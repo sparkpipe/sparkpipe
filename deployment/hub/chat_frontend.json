@@ -272,6 +272,42 @@
     "<｜DSML｜ calls>",
     "\n</｜DSML｜ calls>"
    ]
+  },
+  {
+   "id": "qwen3.8-max",
+   "model_dir": "models/qwen3.8-max",
+   "engine": "http://127.0.0.1:8464",
+   "context_tokens": 16384,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [],
+   "reasoning_effort": {
+    "low": {},
+    "medium": {},
+    "high": {}
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "function_xml",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "attribute_end": ">",
+    "function_start": "<function=",
+    "function_end": "</function>",
+    "parameter_start": "<parameter=",
+    "parameter_end": "</parameter>"
+   }
   }
  ],
  "control": {
