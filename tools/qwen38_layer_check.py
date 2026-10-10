@@ -10,6 +10,14 @@ checkpoint (GDN or gated attention, then the dense SwiGLU FFN or the MoE
 with the routed NVFP4 experts and the gated shared expert) and reports the
 relative error of the attention residual and of the FFN output separately.
 
+Qwen3.8 Flash dumps (magic QWLH) carry the four-stream hyper-connection
+residual after every layer, the token ids in the embedding record, and the MoE
+output. For those, layer L starts from layer L-1's residual (the embedding
+repeated four times for L = 0) and the numpy layer runs the n-gram embedding
+injection (the PLE layer), both hyper-connection mixers, the mixer with the
+sigmoid output gate and the MoE, and reports the error of the MoE output and of
+the residual after the layer.
+
   qwen38_layer_check.py --checkpoint DIR --dump FILE --layer L [--step N]
 """
 
@@ -39,7 +47,7 @@ class Checkpoint:
                 self.headers[shard] = (8 + length, json.loads(handle.read(length)))
         base, header = self.headers[shard]
         meta = header[name]
-        dtype = {"BF16": np.uint16, "F32": np.float32, "U8": np.uint8, "F8_E4M3": np.uint8}[meta["dtype"]]
+        dtype = {"BF16": np.uint16, "F32": np.float32, "U8": np.uint8, "F8_E4M3": np.uint8, "I64": np.int64}[meta["dtype"]]
         begin, end = meta["data_offsets"]
         return meta["dtype"], np.memmap(self.directory / shard, dtype=dtype, mode="r", offset=base + begin,
                                         shape=tuple(meta["shape"]))
@@ -121,7 +129,9 @@ def gdn(ckpt, layer, x):
         delta = (v[t] - memory) * beta[t][:, None]
         state += np.einsum("hk,hv->hkv", k[t], delta)
         out[t] = np.einsum("hk,hkv->hv", q[t], state)
-    normed = rms(out, ckpt.f32(p + "norm.weight"), c["rms_norm_eps"], False) * silu(z.reshape(rows, vh, vd))
+    zr = z.reshape(rows, vh, vd)
+    gate = 1.0 / (1.0 + np.exp(-zr)) if c.get("output_gate_type") == "sigmoid" else silu(zr)
+    normed = rms(out, ckpt.f32(p + "norm.weight"), c["rms_norm_eps"], False) * gate
     return normed.reshape(rows, -1) @ ckpt.f32(p + "out_proj.weight").T
 
 
@@ -187,6 +197,158 @@ def ffn(ckpt, layer, x):
     return out + shared * gate
 
 
+def group_rms(values, weight, eps, streams):
+    rows = values.shape[0]
+    grouped = values.reshape(rows, streams, -1)
+    scale = 1.0 / np.sqrt((grouped * grouped).mean(-1, keepdims=True) + eps)
+    return (grouped * scale).reshape(rows, -1) * (1.0 + weight)
+
+
+def hc_pre(ckpt, prefix, residual, inject=True):
+    c = ckpt.config
+    streams, hidden = c["hc_count"], c["hidden_size"]
+    n = group_rms(residual, ckpt.f32(prefix + "hc_norm.weight"), c["rms_norm_eps"], streams)
+    low = silu((n @ ckpt.f32(prefix + "input_mix_weight_down.weight").T) / streams)
+    mix = 1.0 / (1.0 + np.exp(-(low @ ckpt.f32(prefix + "input_mix_weight_up.weight").T)))
+    mixed = (mix * n).reshape(-1, streams, hidden).mean(1)
+    if not inject:
+        return mixed, None
+    injection = 2.0 / (1.0 + np.exp(-(n @ ckpt.f32(prefix + "block_inject_weight.weight").T) / streams))
+    return mixed, injection
+
+
+def hc_post(residual, output, injection):
+    streams = injection.shape[1]
+    return residual + (output[:, None, :] * injection[:, :, None]).reshape(residual.shape[0], -1)
+
+
+def ngram_ids(ckpt, layer, tokens):
+    c = ckpt.config
+    p = f"{ckpt.prefix}layers.{layer}.ple.ple_embedding."
+    multipliers = [int(v) for v in np.asarray(ckpt.raw(p + "layer_multipliers")[1])]
+    sizes = [int(v) for v in np.asarray(ckpt.raw(p + "ngram_heads_vocab_sizes")[1])]
+    offsets = [int(v) for v in np.asarray(ckpt.raw(p + "ngram_heads_offsets")[1])]
+    eos, orders, heads = c["eos_token_id"], c["ngram_size"] - 1, c["heads_per_ngram"]
+    ids = np.zeros((len(tokens), orders * heads), np.int64)
+    for t in range(len(tokens)):
+        shifted, blocked = [int(tokens[t])], False
+        for shift in range(1, orders + 1):
+            source = int(tokens[t - shift]) if t - shift >= 0 else eos
+            blocked = blocked or t - shift < 0 or source == eos
+            shifted.append(eos if blocked else source)
+        rolling = shifted[0] * multipliers[0]
+        for order in range(1, orders + 1):
+            rolling ^= shifted[order] * multipliers[order]
+            for head in range(heads):
+                column = (order - 1) * heads + head
+                ids[t, column] = rolling % sizes[column] + offsets[column]
+    return ids
+
+
+def ple(ckpt, layer, residual, tokens):
+    c = ckpt.config
+    p = f"{ckpt.prefix}layers.{layer}.ple."
+    streams, hidden, eps = c["hc_count"], c["hidden_size"], c["rms_norm_eps"]
+    ids = ngram_ids(ckpt, layer, tokens)
+    scale = float(ckpt.f32(p + "ple_embedding.ngram_embedding.weight_scale").reshape(-1)[0])
+    shard_rows = ckpt.raw(p + "ple_embedding.ngram_embedding.shard_0.weight")[1].shape[0]
+    embed = np.zeros((len(tokens), ids.shape[1], ckpt.raw(p + "ple_embedding.ngram_embedding.shard_0.weight")[1].shape[1]), np.float32)
+    for t in range(ids.shape[0]):
+        for column in range(ids.shape[1]):
+            shard, row = divmod(int(ids[t, column]), shard_rows)
+            table = ckpt.raw(f"{p}ple_embedding.ngram_embedding.shard_{shard}.weight")[1]
+            embed[t, column] = e4m3(np.asarray(table[row])) * scale
+    embed = bf16_round(embed.reshape(len(tokens), -1))
+    key = group_rms(embed @ ckpt.f32(p + "key_proj.weight").T, ckpt.f32(p + "norm_key.weight"), eps, streams)
+    value = embed @ ckpt.f32(p + "value_proj.weight").T
+    query = group_rms(residual, ckpt.f32(p + "norm_query.weight"), eps, streams)
+    score = (key * query).reshape(-1, streams, hidden).sum(-1) / np.sqrt(hidden)
+    score = np.sign(score) * np.sqrt(np.maximum(np.abs(score), 1e-6))
+    gated = ((1.0 / (1.0 + np.exp(-score)))[:, :, None] * value[:, None, :]).reshape(len(tokens), -1)
+    normed = group_rms(gated, ckpt.f32(p + "norm_conv.weight"), eps, streams)
+    conv = ckpt.f32(p + "conv1d.weight").reshape(gated.shape[1], -1)
+    kernel, dilation = conv.shape[1], c["ngram_size"]
+    span = (kernel - 1) * dilation
+    padded = np.concatenate([np.zeros((span, gated.shape[1]), np.float32), normed])
+    out = np.stack([sum(padded[t + j * dilation] * conv[:, j] for j in range(kernel)) for t in range(len(tokens))])
+    return residual + gated + silu(out)
+
+
+def check_hyper(ckpt, args):
+    c = ckpt.config
+    streams, hidden = c["hc_count"], c["hidden_size"]
+    step = read_hyper_dump(args.dump)[args.step]
+    order = np.argsort(step["positions"])
+    positions, tokens = step["positions"][order], step["tokens"][order]
+    if positions[0] != 0 or np.any(np.diff(positions) != 1):
+        raise SystemExit("the step must be one prefill from position 0")
+    layer = args.layer
+    residual = np.tile(step["embed"], (1, streams)) if layer == 0 else step["layers"][layer - 1][0]
+    residual = residual[order]
+    period = c.get("full_attention_interval", 4)
+    base = f"{ckpt.prefix}layers.{layer}."
+    if layer + 1 in (c.get("ple_layer_ids") or []):
+        residual = ple(ckpt, layer, residual, tokens)
+    mixed, injection = hc_pre(ckpt, base + "attn_hyper_connection.", residual)
+    mixer = attention(ckpt, layer, mixed, positions) if layer % period == period - 1 else gdn(ckpt, layer, mixed)
+    middle = hc_post(residual, mixer, injection)
+    ours_residual, ours_ffn = (values[order] for values in step["layers"][layer])
+    mixed, injection = hc_pre(ckpt, base + "mlp_hyper_connection.", middle)
+    ref_ffn = ffn(ckpt, layer, mixed)
+    ref_residual = hc_post(middle, ref_ffn, injection)
+
+    def rel(a, b):
+        return float(np.linalg.norm(a - b) / max(np.linalg.norm(b), 1e-30))
+
+    row_ffn = [rel(a, b) for a, b in zip(ours_ffn, ref_ffn)]
+    margins = route_margins(ckpt, layer, mixed)
+    print(json.dumps({"layer": layer, "kind": "attention" if layer % period == period - 1 else "gdn", "rows": int(len(positions)),
+                      "route_margin_median": float(np.median(margins)),
+                      "residual_rel": round(rel(ours_residual, ref_residual), 5),
+                      "layer_delta_rel": round(rel(ours_residual - residual, ref_residual - residual), 5),
+                      "ffn_rel": round(rel(ours_ffn, ref_ffn), 5),
+                      "ffn_row_rel_median": round(float(np.median(row_ffn)), 5),
+                      "ffn_rows_over_2pct": [[int(i), round(v, 4), float(margins[i])] for i, v in enumerate(row_ffn) if v > 0.02]}))
+
+
+def route_margins(ckpt, layer, x):
+    c = ckpt.config
+    logits = bf16_round(x @ ckpt.f32(f"{ckpt.prefix}layers.{layer}.mlp.gate.weight").T)
+    probs = np.exp(logits - logits.max(-1, keepdims=True))
+    probs /= probs.sum(-1, keepdims=True)
+    ranked = -np.sort(-probs, axis=-1)
+    k = c["num_experts_per_tok"]
+    return np.round((ranked[:, k - 1] - ranked[:, k]) / ranked[:, k - 1], 4)
+
+
+def read_hyper_dump(path):
+    data = open(path, "rb").read()
+    steps, offset = [], 0
+    while offset < len(data):
+        magic, layer, rows, width = struct.unpack_from("<4I", data, offset)
+        if magic != 0x484C5751:
+            raise SystemExit(f"bad hyper-connection dump record at {offset}")
+        offset += 16
+        positions = np.frombuffer(data, "<u4", rows, offset).copy()
+        offset += 4 * rows
+        tokens = None
+        if layer == 0xFFFFFFFF:
+            tokens = np.frombuffer(data, "<u4", rows, offset).copy()
+            offset += 4 * rows
+        main = (np.frombuffer(data, "<u2", rows * width, offset).astype(np.uint32) << 16).view(np.float32).reshape(rows, width)
+        offset += 2 * rows * width
+        hidden = width if layer == 0xFFFFFFFF else None
+        if hidden is None:
+            hidden = steps[-1]["embed"].shape[1]
+        partial = (np.frombuffer(data, "<u2", rows * hidden, offset).astype(np.uint32) << 16).view(np.float32).reshape(rows, hidden)
+        offset += 2 * rows * hidden
+        if layer == 0xFFFFFFFF:
+            steps.append({"positions": positions, "tokens": tokens, "embed": main.copy(), "layers": {}})
+        else:
+            steps[-1]["layers"][layer] = (main.copy(), partial.copy())
+    return steps
+
+
 def read_dump(path, hidden):
     data = open(path, "rb").read()
     steps, offset = [], 0
@@ -215,6 +377,8 @@ def main():
     args = parser.parse_args()
     ckpt = Checkpoint(args.checkpoint)
     c = ckpt.config
+    if open(args.dump, "rb").read(4) == struct.pack("<I", 0x484C5751):
+        return check_hyper(ckpt, args)
     step = read_dump(args.dump, c["hidden_size"])[args.step]
     order = np.argsort(step["positions"])
     positions = step["positions"][order]

@@ -56,7 +56,10 @@ void LmGqaShardPartialKernel(
 	float qk_scale,
 	float *__restrict__ send,
 	uint64_t destination_stride,
-	uint32_t rows)
+	uint32_t rows,
+	const uint32_t *__restrict__ block_mask,
+	uint32_t mask_words,
+	uint32_t block_tokens)
 {
 	constexpr uint32_t KEYS = HEAD_DIM / 32u;
 	constexpr uint32_t VALUES = VALUE_DIM / 32u;
@@ -99,6 +102,9 @@ void LmGqaShardPartialKernel(
 	for (local = 0u; local < count; ++local)
 	{
 		position = SparkKvShardLocalPosition(cache.shard,local);
+		if ( block_mask != 0 && position / block_tokens < limit / block_tokens &&
+			((block_mask[(uint64_t)row * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) == 0u )
+			continue;
 		slot = LmKvShardSlotRequired<Geometry>(cache,sequence,position,row,LM_KV_ACCESS_READ);
 		if ( slot == 0 )
 			return;
@@ -197,16 +203,20 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 	float *send,
 	uint64_t destination_stride,
 	uint32_t rows,
-	cudaStream_t stream)
+	cudaStream_t stream,
+	const uint32_t *block_mask = 0,
+	uint32_t mask_words = 0u,
+	uint32_t block_tokens = 1u)
 {
 	const uint32_t degree = cache.shard.degree;
 	if ( rows == 0u || query_bf16 == 0 || send == 0 || sequence_of_row == 0 || context_length == 0 ||
 		LmGqaShardGeometryValid(heads,KV_HEADS,VALUE_DIM,degree) == 0u ||
 		SparkKvShardValid(cache.shard,Geometry::kPageSlots) == 0u ||
-		destination_stride < (uint64_t)rows * LmGqaShardRecordFloats(heads,VALUE_DIM,degree) )
+		destination_stride < (uint64_t)rows * LmGqaShardRecordFloats(heads,VALUE_DIM,degree) ||
+		(block_mask != 0 && (mask_words == 0u || block_tokens == 0u)) )
 		return(cudaErrorInvalidValue);
 	LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream>>>(
-		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows);
+		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens);
 	return(cudaPeekAtLastError());
 }
 

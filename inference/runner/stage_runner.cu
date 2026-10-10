@@ -748,7 +748,8 @@ static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const Spa
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	if ( runner->owns_final_head == 0u )
 		return SPARK_STATUS_OK;
-	if ( StageRunnerSlice(state, state->geometry.head_norm_offset, state->geometry.head_norm_bytes, &state->head_norm_weight) != SPARK_STATUS_OK ||
+	if ( (state->geometry.head_prenormed == 0u &&
+			StageRunnerSlice(state, state->geometry.head_norm_offset, state->geometry.head_norm_bytes, &state->head_norm_weight) != SPARK_STATUS_OK) ||
 		StageRunnerSlice(state, state->geometry.head_offset, state->geometry.head_bytes, &state->head_weight) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	if ( cudaMalloc(&state->head_certified_fp8_payload, shard_rows * dim) != cudaSuccess ||
@@ -1071,15 +1072,16 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 		cudaMemcpyAsync(state->output_token, state->output_token_host, (uint64_t)dispatch->row_count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess )
 		return SPARK_STATUS_IO_ERROR;
 	LmStageRowsGatherKernel<<<count, LM_STAGE_HEAD_THREADS, 0, stream>>>(state->distribution_rows, state->hidden, state->distribution_hidden, hidden);
-	if ( state->geometry.head_norm_f32 != 0u )
+	if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u )
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
 			state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
-	else
+	else if ( state->geometry.head_prenormed == 0u )
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
 			state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
 	LM_LAUNCH((LmHeadLogitsRowsKernel<LM_STAGE_HEAD_THREADS,LM_STAGE_HEAD_TILE,STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS>),
 		dim3((slice + LM_STAGE_HEAD_TILE - 1u) / LM_STAGE_HEAD_TILE, (count + STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS),
-		LM_STAGE_HEAD_THREADS, 0, stream, state->distribution_normed, state->head_weight, state->distribution_logits, count, hidden, slice, slice);
+		LM_STAGE_HEAD_THREADS, 0, stream, state->geometry.head_prenormed != 0u ? state->distribution_hidden : state->distribution_normed,
+		state->head_weight, state->distribution_logits, count, hidden, slice, slice);
 	if ( cudaPeekAtLastError() != cudaSuccess )
 		return SPARK_STATUS_INTERNAL_ERROR;
 	if ( tp == 1u )
@@ -1258,12 +1260,13 @@ static SparkStatus StageRunnerHeadRows(SparkStageRunnerState *state, const uint1
 	LmStageHeadCertified certified;
 	int32_t status;
 	head.hidden_bf16 = hidden;
-	head.normed_bf16 = state->head_normed;
+	head.normed_bf16 = state->geometry.head_prenormed != 0u ? (uint16_t *)hidden : state->head_normed;
 	head.norm_weight = state->head_norm_weight;
 	head.head_weight = state->head_weight;
 	head.hidden = state->geometry.hidden;
 	head.epsilon = state->geometry.rms_epsilon;
 	head.norm_f32 = state->geometry.head_norm_f32;
+	head.prenormed = state->geometry.head_prenormed;
 	head.vocab_slice_rows = state->vocab_slice_rows;
 	head.rank_offset = state->tp_rank * state->vocab_slice_rows;
 	head.candidate_score = state->head_candidate_score;

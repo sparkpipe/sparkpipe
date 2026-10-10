@@ -1,7 +1,7 @@
 #include "sparkpipe/spark_qwen38_max_stage_model.h"
 #include "qwen38_hybrid_stage.cuh"
 
-struct Qwen38MaxGeometry
+struct Qwen38MaxGeometry : QwenHybridDefaults
 {
 	static constexpr uint32_t kTpDegree = SPARK_QWEN38_MAX_STAGE_TP_DEGREE;
 	static constexpr uint32_t kHidden = SPARK_QWEN38_MAX_STAGE_HIDDEN;

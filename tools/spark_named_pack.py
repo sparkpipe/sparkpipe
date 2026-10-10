@@ -66,6 +66,27 @@ class PayloadWriter:
                                       separators=(",", ":")) + "\n")
         self.journal.flush()
 
+    def add_parts(self, name, parts, kind, shape, extra=None):
+        if name in self.manifest:
+            return
+        pad = (-self.offset) % self.align
+        if pad:
+            self.handle.write(b"\0" * pad)
+            self.offset += pad
+        start = self.offset
+        for part in parts:
+            view = memoryview(part).cast("B")
+            self.handle.write(view)
+            self.offset += len(view)
+        entry = {"offset": start, "bytes": self.offset - start, "align": self.align,
+                 "kind": kind, "shape": list(shape)}
+        if extra:
+            entry.update(extra)
+        self.manifest[name] = entry
+        self.journal.write(json.dumps({"name": name, "entry": entry, "end": self.offset},
+                                      separators=(",", ":")) + "\n")
+        self.journal.flush()
+
     def close(self):
         self.journal.close()
         self.handle.close()

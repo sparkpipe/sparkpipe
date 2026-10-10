@@ -20,6 +20,9 @@ many serial and batch answers agree).
 usage:
   ds4_eval92.py --endpoint http://127.0.0.1:8433 --model qwen3.8-27b \\
       --max-tokens 16000 --temperature 0 --out qualification/ds4_eval/runs/<run-id>
+
+--resume reuses the saved successful responses of an interrupted run in --out
+(wall time and tok/s then cover only the new requests; "resumed" counts them).
 """
 
 from __future__ import annotations
@@ -100,9 +103,15 @@ def run_phase(args, cases: dict, phase: str, out: Path) -> dict:
     workers = args.concurrency if phase == "batch" else 1
 
     def one(case: dict) -> dict:
+        path = responses / f"{case['index']:03d}-{case['id']}.json"
+        if args.resume and path.exists():
+            saved = json.loads(path.read_text())
+            if "error" not in saved["response"] and saved["response"].get("choices"):
+                record = score(case, saved["response"], saved["elapsed_s"])
+                record["resumed"] = True
+                return record
         payload, elapsed = request(args.endpoint, body_for(args, cases, case, max_tokens), args.timeout)
-        (responses / f"{case['index']:03d}-{case['id']}.json").write_text(
-            json.dumps({"id": case["id"], "phase": phase, "elapsed_s": elapsed, "response": payload}, indent=1) + "\n")
+        path.write_text(json.dumps({"id": case["id"], "phase": phase, "elapsed_s": elapsed, "response": payload}, indent=1) + "\n")
         record = score(case, payload, elapsed)
         print(json.dumps({"phase": phase, "index": case["index"], "status": record["status"],
                           "passed": record["passed"], "extracted": record["extracted"][:40],
@@ -124,6 +133,7 @@ def run_phase(args, cases: dict, phase: str, out: Path) -> dict:
                "endpoint": args.endpoint, "max_tokens": max_tokens, "temperature": args.temperature,
                "reasoning_effort": args.reasoning_effort, "concurrency": workers, "wall_s": round(wall, 1),
                "completed": sum(record["status"] == "ok" for record in records),
+               "resumed": sum(bool(record.get("resumed")) for record in records),
                "errors": sum(record["status"] != "ok" for record in records),
                "passed": sum(record["passed"] for record in records), "by_family": by_family,
                "prompt_tokens": sum(record.get("prompt_tokens") or 0 for record in records),
@@ -173,6 +183,8 @@ def main() -> int:
     parser.add_argument("--concurrency", type=int, default=92)
     parser.add_argument("--phases", default=",".join(PHASES))
     parser.add_argument("--timeout", type=int, default=7200)
+    parser.add_argument("--resume", action="store_true",
+                        help="score saved successful responses of an earlier run in --out instead of requesting them again")
     args = parser.parse_args()
     phases = [phase for phase in args.phases.split(",") if phase]
     if not phases or any(phase not in PHASES for phase in phases):

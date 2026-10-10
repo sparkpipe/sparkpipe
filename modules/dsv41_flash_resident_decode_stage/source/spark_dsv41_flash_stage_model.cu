@@ -272,12 +272,13 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	const D41Engram *engram = &state->engram[which];
 	const uint32_t ar_rows = (rows * D41_ENGRAM_EMBED + D41_HIDDEN - 1u) / D41_HIDDEN;
 	SparkStatus status;
-	D41EngramHashKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->positions,
+	LmNgramHashKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->positions,
 		state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
 		(const int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
-		engram->multipliers, engram->primes, engram->offsets, state->engram_ids, rows, D41_ENGRAM_ORDERS, D41_ENGRAM_HEADS, state->engram_pad);
+		engram->multipliers, engram->primes, engram->offsets, state->engram_ids, rows, D41_ENGRAM_ORDERS, D41_ENGRAM_HEADS, state->engram_pad,
+		-1, 0u);
 	cudaMemsetAsync(state->engram_embed, 0, (uint64_t)ar_rows * D41_HIDDEN * sizeof(uint16_t), stream);
-	D41EngramGatherKernel<<<dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(state->engram_ids, engram->payload, engram->scale,
+	LmNgramGatherE8m0Kernel<<<dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(state->engram_ids, engram->payload, engram->scale,
 		state->engram_embed, engram->first_row, engram->local_rows, D41_ENGRAM_COLUMNS, D41_ENGRAM_HEAD_DIM);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -750,7 +751,7 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 	}
 	D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio2, rows, 2u);
 	D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio1, rows, 1u);
-	D41RowLanesKernel<<<step->sequences, 256u, 0, stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
+	LmRowLanesKernel<<<step->sequences, 256u, 0, stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
 		state->row_ordinal);
 	D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio2,
 		state->context_slots, 2u);
@@ -769,7 +770,7 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 			state->services->layer_done(state->services->context, index);
 	}
 	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head, step->hidden_bf16, D41_HIDDEN);
-	D41EngramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
+	LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
 		step->sequence_row_indices, step->recurrent_index,
 		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
 		step->sequences, D41_ENGRAM_ORDERS, step->commit);

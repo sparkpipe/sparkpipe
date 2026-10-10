@@ -1,7 +1,7 @@
 #include "sparkpipe/spark_qwen38_27b_stage_model.h"
 #include "qwen38_hybrid_stage.cuh"
 
-struct Qwen38_27bGeometry
+struct Qwen38_27bGeometry : QwenHybridDefaults
 {
 	static constexpr uint32_t kTpDegree = SPARK_QWEN38_27B_STAGE_TP_DEGREE;
 	static constexpr uint32_t kHidden = SPARK_QWEN38_27B_STAGE_HIDDEN;

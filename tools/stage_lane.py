@@ -94,8 +94,25 @@ QWEN38_MAX = {
     "recurrent_bytes": 69 * (8 * 128 * 128 * 4 + 1280 * 4 * 2),
 }
 
+QWEN38_FLASH = {
+    **QWEN38_27B,
+    "swap_id": "qwen3.8-flash",
+    "api_port": 8465,
+    "kv_label": "qwen38_flash_stage",
+    "node_memory_bytes": 14 << 30,
+    "tokenizer_json": "/mnt/model-warm/qwen3.8-flash-next-nvfp4-nvidia/tokenizer.json",
+    "pack": "sparkdata/qwen38_flash.nvfp4.tp16/qwen38_flash.tp16.rank{rank:02d}.pack",
+    "adapter": "libqwen38_flash_tp16_serving_adapter.so",
+    "program": "qwen38_flash",
+    "node_target": "cuda.sm121.qwen38_flash.stage_runner.linear_bf16.expert_nvfp4.kv_bf16",
+    "contract": "model_contracts/qwen4_flash_authoritative.json",
+    "hidden": 2560,
+    "kv_page_bytes": (12 * 64 * 2048 + 12 * 16 * 256) // WORLD,
+    "recurrent_bytes": 36 * (3 * 128 * 128 * 4 + 640 * 4 * 2) + 10240 * 10 * 2 + 4 * 4 + 12 * 3 * 128 * 2,
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
+    "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
     "qwen38_27b_bf16": {

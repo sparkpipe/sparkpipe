@@ -47,6 +47,14 @@ model_list:
   model_info:
     max_input_tokens: 16384
     max_output_tokens: 16384
+- model_name: qwen3.8-flash
+  litellm_params:
+    model: hosted_vllm/qwen3.8-flash
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
 - model_name: "*"
   litellm_params:
     model: hosted_vllm/glm-5.3

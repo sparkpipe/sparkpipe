@@ -202,6 +202,7 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 
 #define LM_GATE_SIGMOID 0u
 #define LM_GATE_SOFTPLUS 1u
+#define LM_GATE_SILU 2u
 
 template<uint32_t THREADS, class Weight = uint16_t>
 __global__ __launch_bounds__(THREADS, 1)
@@ -231,9 +232,8 @@ void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *
 	}
 }
 
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void LmHeadRmsNormSiluGateKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
+template<uint32_t THREADS, uint32_t GATE>
+static __device__ __forceinline__ void LmHeadRmsNormGateBody(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	uint32_t row = blockIdx.y,head = blockIdx.x,index;
@@ -254,8 +254,22 @@ void LmHeadRmsNormSiluGateKernel(const uint16_t *__restrict__ input_bf16, const 
 		value = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(input_bf16[base + index]) * scale));
 		value = LmBf16ToFloat(LmFloatToBf16(value * LmBf16ToFloat(weight_bf16[index])));
 		gate = LmBf16ToFloat(gate_bf16[base + index]);
-		output_bf16[base + index] = LmFloatToBf16(value * (gate / (1.0f + __expf(-gate))));
+		output_bf16[base + index] = LmFloatToBf16(value * (GATE == LM_GATE_SIGMOID ? 1.0f / (1.0f + __expf(-gate)) : gate / (1.0f + __expf(-gate))));
 	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadRmsNormSiluGateKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
+{
+	LmHeadRmsNormGateBody<THREADS,LM_GATE_SILU>(input_bf16,gate_bf16,weight_bf16,output_bf16,rows,heads,head_dimension,epsilon);
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
+{
+	LmHeadRmsNormGateBody<THREADS,LM_GATE_SIGMOID>(input_bf16,gate_bf16,weight_bf16,output_bf16,rows,heads,head_dimension,epsilon);
 }
 
 template<uint32_t THREADS, uint32_t ACTIVATION>

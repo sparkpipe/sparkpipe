@@ -419,12 +419,13 @@ enum LmConvActivation
 	LM_CONV_SWISH = 1
 };
 
-template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
+template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight, uint32_t DILATION = 1u>
 static __device__ __forceinline__ void LmCausalConvBody(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices)
 {
 	uint32_t sequence = blockIdx.x,channel = (blockIdx.y * THREADS) + threadIdx.x;
 	uint32_t begin,end,row,tap,ordinal;
-	uint16_t taps[KERNEL];
+	constexpr uint32_t SPAN = (KERNEL - 1u) * DILATION + 1u;
+	uint16_t taps[SPAN];
 	uint16_t *slot;
 	if ( sequence >= sequences || channel >= channels )
 		return;
@@ -432,18 +433,18 @@ static __device__ __forceinline__ void LmCausalConvBody(uint16_t *__restrict__ w
 	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
 	if ( sequence_row_count != 0 )
 		end = begin + sequence_row_count[sequence];
-	slot = window + ((uint64_t)state_index[sequence] * channels * KERNEL);
-	for (tap = 0u; tap < KERNEL; ++tap)
-		taps[tap] = slot[(channel * KERNEL) + tap];
+	slot = window + ((uint64_t)state_index[sequence] * channels * SPAN);
+	for (tap = 0u; tap < SPAN; ++tap)
+		taps[tap] = slot[(channel * SPAN) + tap];
 	for (ordinal = begin; ordinal < end; ++ordinal)
 	{
 		row = sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal;
 		float total = 0.0f;
-		for (tap = 0u; tap + 1u < KERNEL; ++tap)
+		for (tap = 0u; tap + 1u < SPAN; ++tap)
 			taps[tap] = taps[tap + 1u];
-		taps[KERNEL - 1u] = input_bf16[((uint64_t)row * channels) + channel];
+		taps[SPAN - 1u] = input_bf16[((uint64_t)row * channels) + channel];
 		for (tap = 0u; tap < KERNEL; ++tap)
-			total += LmBf16ToFloat(taps[tap])
+			total += LmBf16ToFloat(taps[tap * DILATION])
 				* LmScalarToFloat(weight[(channel * KERNEL) + tap]);
 		if ( ACTIVATION == LM_CONV_SWISH )
 		{
@@ -455,15 +456,15 @@ static __device__ __forceinline__ void LmCausalConvBody(uint16_t *__restrict__ w
 	}
 	if ( commit == 0u )
 		return;
-	for (tap = 0u; tap < KERNEL; ++tap)
-		slot[(channel * KERNEL) + tap] = taps[tap];
+	for (tap = 0u; tap < SPAN; ++tap)
+		slot[(channel * SPAN) + tap] = taps[tap];
 }
 
-template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
+template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight, uint32_t DILATION = 1u>
 __global__ __launch_bounds__(THREADS, 1)
 void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
 {
-	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight>(window,state_index,sequence_row_begin,sequence_row_count,input_bf16,weight,output_bf16,channels,sequences,commit,sequence_row_indices);
+	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight,DILATION>(window,state_index,sequence_row_begin,sequence_row_count,input_bf16,weight,output_bf16,channels,sequences,commit,sequence_row_indices);
 }
 
 #define LM_CAUSAL_CONV_STREAMS 3u

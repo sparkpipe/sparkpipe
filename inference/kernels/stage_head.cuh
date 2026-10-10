@@ -38,6 +38,7 @@ typedef struct LmStageHeadRows
 	uint32_t hidden;
 	float epsilon;
 	uint32_t norm_f32;
+	uint32_t prenormed;
 	uint32_t vocab_slice_rows;
 	uint32_t rank_offset;
 	float *candidate_score;
@@ -55,6 +56,8 @@ __global__ static void LmStageHeadRankTokenKernel(uint32_t *tokens, uint32_t row
 
 static int32_t LmStageNormRows(const LmStageHeadRows &head, uint32_t rows, cudaStream_t stream)
 {
+	if ( head.prenormed != 0u )
+		return(head.normed_bf16 == head.hidden_bf16 ? LM_LAUNCH_OK : LM_LAUNCH_ERR_SHAPE);
 	if ( head.norm_f32 != 0u )
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float>), rows, LM_STAGE_HEAD_THREADS, (head.hidden + 8u) * sizeof(float), stream,
 			head.hidden_bf16,0,(const float *)head.norm_weight,0,head.normed_bf16,head.hidden,head.hidden,head.epsilon);
@@ -93,7 +96,7 @@ typedef struct LmStageHeadCertified
 
 static int32_t LmStageHeadCertifiedSlice(const LmStageHeadRows &head, const LmStageHeadCertified &certified, uint32_t rows, cudaStream_t stream)
 {
-	if ( head.hidden_bf16 == 0 || head.normed_bf16 == 0 || head.norm_weight == 0 || head.head_weight == 0 ||
+	if ( head.hidden_bf16 == 0 || head.normed_bf16 == 0 || (head.norm_weight == 0 && head.prenormed == 0u) || head.head_weight == 0 ||
 		head.output_token == 0 || head.output_score == 0 || certified.payload == 0 || certified.scale == 0 ||
 		certified.norm == 0 || certified.scratch == 0 || certified.candidates == 0 || certified.screened == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
