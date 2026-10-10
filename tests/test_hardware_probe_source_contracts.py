@@ -94,11 +94,6 @@ def main() -> int:
     require("tools/hardware/spark_nvme_characterize.cu" in gate,
             "CUDA 13 gate does not compile the NVMe-to-GPU probe")
     require(
-        "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_cuda.cu" in gate,
-        "CUDA 13 gate does not compile the DSV4 resident module",
-    )
-    require(
         "modules/glm52_resident_decode_stage/source/"
         "spark_glm52_resident_decode_stage_cuda.cu" in gate,
         "CUDA 13 gate does not compile the GLM resident module",

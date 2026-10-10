@@ -33,7 +33,6 @@ if ! grep -Eq 'release 13\.' <<<"${nvcc_version}"; then
 fi
 
 python3 "${repository_root}/tools/glm52_model_contract.py" --check
-python3 "${repository_root}/tools/generate_dsv4_contracts.py" --check
 
 rm -rf "${output_directory}"
 mkdir -p "${output_directory}/objects" "${output_directory}/ptx" "${output_directory}/logs"
@@ -59,17 +58,11 @@ include_flags=(
 	-I"${repository_root}/deployment/include"
 	-I"${repository_root}/model-families/common/include"
 	-I"${repository_root}/model-families/glm52/include"
-	-I"${repository_root}/model-families/qwen38_27b/include"
-	-I"${repository_root}/model-families/dsv4/include"
 	-I"${repository_root}/model-families/k3/include"
 	-I"${repository_root}/model-families/mimo25/include"
 	-I"${repository_root}/modules/glm52_resident_decode_stage/include"
 	-I"${repository_root}/modules/glm52_resident_decode_stage/source"
 	-I"${repository_root}/modules/glm52_dspark_draft_backend/include"
-	-I"${repository_root}/modules/dsv4_resident_decode_stage/include"
-	-I"${repository_root}/modules/dsv4_resident_decode_stage/source"
-	-I"${repository_root}/modules/qwen38_27b_resident_decode_stage/include"
-	-I"${repository_root}/modules/qwen38_27b_resident_decode_stage/source"
 	-I"${repository_root}/modules/minimax_resident_decode_stage/include"
 	-I"${repository_root}/modules/minimax_resident_decode_stage/source"
 	-I"${repository_root}/model-families/minimax/include"
@@ -128,8 +121,6 @@ translation_units=(
 	inference/llms/kimi_k3/unity.cu
 	inference/llms/mimo_2_5/bind.cu
 	inference/llms/mimo_2_5/unity.cu
-	inference/llms/qwen_3_6/bind.cu
-	inference/llms/qwen_3_6/unity.cu
 	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_draft_backend.cu
 	modules/glm52_dspark_draft_backend/validation/validate_glm52_dspark_epoch3_cuda.cu
 )
@@ -138,27 +129,6 @@ for relative_source in "${translation_units[@]}"; do
 	artifact_name="${artifact_name%.cu}"
 	compile_cuda "${relative_source}" "${artifact_name}"
 done
-
-dsv4_model_header="${repository_root}/model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
-compile_cuda \
-	modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu \
-	dsv4_resident_decode_stage \
-	-include "${dsv4_model_header}" \
-	-DSPARK_DSV4_MODULE_BUILD=1 \
-	-DSPARK_BATCH_BUCKET=1024u
-compile_cuda \
-	modules/dsv4_resident_decode_stage/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu \
-	dsv4_resident_decode_stage_validation \
-	-include "${dsv4_model_header}" \
-	-DSPARK_DSV4_MODULE_BUILD=1 \
-	-DSPARK_BATCH_BUCKET=1024u
-
-qwen38_27b_model_header="${repository_root}/model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h"
-compile_cuda \
-	modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_cuda.cu \
-	qwen38_27b_resident_decode_stage \
-	-include "${qwen38_27b_model_header}" \
-	-DSPARK_QWEN38_27B_MODULE_BUILD=1
 
 minimax_model_header="${repository_root}/modules/minimax_resident_decode_stage/include/sparkpipe/spark_minimax_model.h"
 compile_cuda \
@@ -255,16 +225,6 @@ for codec in "${glm_codecs[@]}"; do
 		>> "${output_directory}/logs/glm52-${codec}-archive.txt" 2>&1
 done
 
-make -C "${repository_root}/modules/dsv4_resident_decode_stage" clean \
-	NVCC="${nvcc_binary}" \
-	CUDA_ARCH=sm_121a \
-	> "${output_directory}/logs/dsv4-archive.txt" 2>&1
-make -C "${repository_root}/modules/dsv4_resident_decode_stage" \
-	-j2 archive \
-	NVCC="${nvcc_binary}" \
-	CUDA_ARCH=sm_121a \
-	>> "${output_directory}/logs/dsv4-archive.txt" 2>&1
-
 make -C "${repository_root}/modules/minimax_resident_decode_stage" clean \
 	NVCC="${nvcc_binary}" \
 	CUDA_ARCH=sm_121a \
@@ -355,7 +315,6 @@ while IFS= read -r -d '' object_file; do
 done < <(find \
 	"${output_directory}/objects" \
 	"${repository_root}/build/modules/glm52_resident_decode_stage" \
-	"${repository_root}/build/modules/dsv4_resident_decode_stage" \
 	"${repository_root}/build/modules/minimax_resident_decode_stage" \
 	"${output_directory}/modules" \
 	-type f -name '*.o' -print0)

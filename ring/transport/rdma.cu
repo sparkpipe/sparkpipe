@@ -120,6 +120,15 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaCancel(
+    void *transport_state,
+    const SparkHiddenTransportPacket *packet)
+{
+    if ( transport_state == 0 || packet == 0 )
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaSetFixedLocal(
     void *transport_state,
     void *buffer,
@@ -287,6 +296,8 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
         SparkHiddenSparkHostRdmaGetPollDescriptors;
     spark_hidden_spark_host_rdma_interface.post_receive =
         SparkHiddenSparkHostRdmaPostReceive;
+    spark_hidden_spark_host_rdma_interface.cancel =
+        SparkHiddenSparkHostRdmaCancel;
     spark_hidden_spark_host_rdma_interface.post_receive_batch =
         SparkHiddenSparkHostRdmaPostReceiveBatch;
     spark_hidden_spark_host_rdma_interface.send_batch =

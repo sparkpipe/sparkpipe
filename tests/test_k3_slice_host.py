@@ -7,7 +7,9 @@ the attention output, a partial that never reset at a block boundary, no output
 retrieval, and one state slot shared by every KDA layer. All of them live
 between layers, so this is the harness that executes between layers.
 
-The recorder GEMM writes 0.125 * call index, constant across rows, so the whole
+Every projection, whether it lands on the recorder GEMM or on the recorder
+skinny kernel that takes the BF16 projections of up to 16 rows, writes
+0.125 * call index, constant across rows, so the whole
 partial/bank trajectory is closed-form: the checker replays the reference's
 schedule -
 

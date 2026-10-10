@@ -49,7 +49,7 @@ One call does the following:
 
 ### State store
 
-`SparkKvPageCacheAttachStateStore(cache, store)` attaches a second page store that holds one state record per logical page.
+`SparkKvPageCacheAttachStateStore(cache, store)` attaches a second page store that holds recurrent state records, keyed by logical page. A page has a record only when a stateful publish ended on it; its backing may hold fewer records than there are logical pages.
 
 - The call returns `SPARK_STATUS_INVALID_ARGUMENT` unless all of these hold:
   - the cache already has a page store and no state store;
@@ -58,6 +58,20 @@ One call does the following:
   - `store->logical_page_capacity` is at least the arena's logical block count.
 - Attach before admitting any lane. The call returns `SPARK_STATUS_BUSY` once a sequence is live, a page has been published, or the store already holds backing pages.
 - A page's state record is keyed by the page's current arena generation. Hold the page's residency pin for the whole of a state transfer, so that the page cannot be evicted or freed during the transfer.
+- A publish whose lane carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS` needs no record and creates a stateless entry. A page sealed without a record also becomes a stateless entry. A stateless entry holds valid KV and can be shared, deduplicated and parked, but it is never a prefix: resolving a lane prefix that ends on it returns `SPARK_STATUS_NOT_FOUND`. The snapshot store saves it with its chain and KV page and no state segment.
+- `SparkKvPageCachePromoteState(cache, logical_page)` turns the stateless entry on that page stateful once the caller has written its record. It returns `SPARK_STATUS_NOT_FOUND` unless the page holds a valid stateless entry. If the entry was already saved to the snapshot store, its file is removed and the entry is queued for a new save with its state; a full save queue skips that save, as for any other save.
+
+### Staged reply checkpoint
+
+A stateless publish whose lane also carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED` keeps the lane's recurrent state in the stage KV binding. The flag is valid only together with `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS`. The batch engine sets it on every decode publication that drops state.
+
+- The binding captures the lane's state into the lane's state buffer and remembers the published page, its generation and the sequence. Any later publish of the lane replaces that stage: a staged one with its own page, any other with none.
+- When a CACHE_RELEASE admission releases the lane, the binding writes the staged state as the page's record and promotes the entry. A stage whose sequence, page generation or stateless entry no longer matches, or whose write fails, is dropped and counted in `recurrent_staged_drops`; the release itself never fails for it.
+- The batch engine marks the staged block a resume point when the release completes, so the next request that carries the whole reply resumes after it.
+
+### State demotion
+
+`SparkKvPageCacheDemoteState` frees one state record. It walks the LRU list from the oldest entry, skips stateless entries and entries with a snapshot save pending, invalidates the first record it can, and marks that entry stateless. The KV page stays cached. It returns `SPARK_STATUS_CAPACITY_EXCEEDED` when no record can be freed, and `SPARK_STATUS_INVALID_ARGUMENT` when no state store is attached. The stage KV binding calls it before `SparkKvPageCacheEvictUnused` when a state record write finds the store full.
 
 ### Eviction
 
@@ -206,6 +220,25 @@ Caller contract:
 - On `SPARK_STATUS_OK` with a callback and graph capture not armed, the collective's completion thread later invokes `completion_function(completion_context, completion)`. In that completion, `status` is `SPARK_STATUS_OK`, `slot_index` and `ordinal` are copied from the submission, `credit_index` is 0 and `generation` is `ordinal + 1`. While graph capture is armed, no completion is queued.
 - A non-OK return delivers no completion. During an uncaptured host round, a cancel or a missed deadline returns `SPARK_STATUS_BUSY`. The deadline is the smaller of the configured `operation_timeout_milli` and 120 s. If the collective's `SparkWeightdClient` connection is dead while that round waits, it returns `SPARK_STATUS_IO_ERROR`.
 - Once `SparkTpDeviceCollectiveDestroy` has begun stopping the completion thread, the call returns `SPARK_STATUS_BUSY`. That thread delivers every completion already queued before it exits.
+
+### Deferred verification
+
+A submission is deferred when graph capture is not armed, the collective uses hardware waits, the submission sets `SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION` and it has no `completion_function`.
+
+- The call queues the round on `cuda_stream` and returns without synchronizing the stream or checking the round. It counts the round as deferred.
+- `SparkTpDeviceCollectiveVerifyDeferred(collective, stream)` checks every round deferred since the last check. It synchronizes `stream` once and returns `SPARK_STATUS_IO_ERROR` unless the device completed all of them without an error word. It returns `SPARK_STATUS_OK` at once when nothing is deferred.
+- A caller must verify before the host reads any result that depends on a deferred round, and before it starts the next chain. A failed round leaves the values it wrote undefined, so a result read before verification can be wrong without any error.
+
+## include/sparkpipe/spark_weightd.h
+
+### Residency
+
+`SparkWeightdClientResidency(client, arena_generation, residency, timeout)` reports one lazy arena that the connection is attached to: `group_count`, `present_count`, `present_bytes`, `epoch` and `fixed_pool`.
+
+- It returns `SPARK_STATUS_NOT_FOUND` when the connection is not attached to that generation or the arena is not lazy. An arena with a sticky failure returns that failure.
+- `fixed_pool` is 1 when one allocation holds the whole arena. A fixed pool never evicts a present group, and weightd frees an arena only when no client is attached and no lease is held. So while the caller stays attached, a group reported present stays present at the same offset.
+- `SparkWeightdMapResident(map, timeout, resident)` sets `*resident` to 1 only when the arena has a fixed pool, every group is present and the map holds the whole pool mapping. A consumer that sees 1 may address any group at the map base plus its offset without a lease, for as long as it stays attached.
+- An acquire whose groups are all present pins them and returns. It does not budget, load or synchronize the device.
 
 ## Host RDMA capability set
 

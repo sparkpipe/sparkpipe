@@ -42,7 +42,6 @@ template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 32u, K3_TILE_N, 32u
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, K3_TILE_N, 32u, K3_STAGES, K3_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS, false, SPARK_ACTIVATION_CODEC_NONE, true>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
-template __global__ void K3EmbeddingKernel<K3_THREADS>(const uint16_t *, const uint32_t *, uint16_t *, uint32_t, uint32_t);
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS,float>(const uint16_t *, const uint16_t *, const float *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
@@ -54,7 +53,7 @@ static_assert(K3_KDA_STATE_ELEMENT_BYTES == sizeof(float),
 static_assert(K3_KDA_STATE_SLOT_BYTES == 2u * K3_KDA_STATE_SLOT_BYTES_BF16,
 	"the bf16 option halves the slot, no more and no less");
 
-template __global__ void LmDeltaRuleKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_VALUE_DIM>(uint8_t *, uint32_t, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t, const uint32_t *);
+template __global__ void LmDeltaRuleKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_VALUE_DIM, float, K3_KDA_DELTA_COLUMNS>(uint8_t *, uint32_t, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t, const uint32_t *);
 template __global__ void LmCausalConvKernel<K3_THREADS, K3_KDA_CONV_KERNEL, LM_CONV_SWISH,float>(uint16_t *, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t, const uint32_t *);
 template __global__ void LmL2NormalisePerHeadKernel<K3_THREADS, K3_KDA_KEY_DIM>(uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmBoundedDecayKernel<K3_THREADS, K3_KDA_KEY_DIM>(const uint16_t *, const float *, const float *, float *, uint32_t, float, uint32_t);
@@ -83,7 +82,7 @@ extern "C" int32_t K3HeadRestricted(const K3LayerBuffers *b, const void *norm_we
 	return(K3Head(b,norm_weight,head_weight,token_ids,count,rows,s));
 }
 
-template __global__ void LmPerHeadProjectKernel<K3_THREADS, K3_KV_LORA_RANK, K3_V_HEAD_DIM>(const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t);
+template __global__ void LmPerHeadProjectSplitKernel<K3_THREADS, K3_KV_LORA_RANK, K3_V_HEAD_DIM>(const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t);
 
 template __global__ void LmAttnResKernel<K3_THREADS, K3_ATTNRES_MAX_SOURCES>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t, float);
 

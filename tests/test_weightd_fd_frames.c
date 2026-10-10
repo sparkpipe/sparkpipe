@@ -391,6 +391,30 @@ static void check_short_range_reads(void)
 	assert(close(fd) == 0 && unlink(path) == 0);
 }
 
+static void check_pacer_counts_other_processes(void)
+{
+	int sockets[2];
+	SparkWeightdServer *server = calloc(1u,sizeof(*server));
+	assert(server != 0 && SparkWeightdPacerInitialize(&server->pacer,0u,SparkWeightdPacerNow,SparkWeightdPacerSleepNs,0) == SPARK_STATUS_OK);
+	assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+	assert(SparkWeightdConnectionPeerPid(sockets[0]) == (uint64_t)getpid());
+	assert(close(sockets[0]) == 0 && close(sockets[1]) == 0);
+	server->dispatch_connection = 0u;
+	server->connections[0].peer_pid = 100u;
+	server->connections[1].peer_pid = 100u;
+	atomic_store(&server->connections[1].serving_until_ns,UINT64_MAX);
+	assert(SparkWeightdServerServingOther(server) == 0u);
+	assert(SparkWeightdServerPace(server,UINT64_C(4194304)) == SPARK_STATUS_OK && server->pacer.refused_count == 0u);
+	server->connections[2].peer_pid = 200u;
+	atomic_store(&server->connections[2].serving_until_ns,UINT64_MAX);
+	assert(SparkWeightdServerServingOther(server) == 1u);
+	assert(SparkWeightdServerPace(server,UINT64_C(4194304)) == SPARK_STATUS_CAPACITY_EXCEEDED && server->pacer.refused_count == 1u);
+	atomic_store(&server->connections[2].serving_until_ns,0u);
+	server->connections[0].peer_pid = 0u;
+	assert(SparkWeightdServerServingOther(server) == 1u);
+	free(server);
+}
+
 static void check_exchange_timeout_poison(void)
 {
 	int sockets[2];
@@ -625,8 +649,9 @@ int main(void)
 	check_reported_truncation();
 	check_lease_frame_shape();
 	check_short_range_reads();
+	check_pacer_counts_other_processes();
 	check_exchange_timeout_poison();
 	check_cold_control_progress();
-	puts("PASS FD frames and cold progress: short reads, failed exchange isolation, concurrent HELLO and orphan cleanup");
+	puts("PASS FD frames and cold progress: short reads, failed exchange isolation, concurrent HELLO, orphan cleanup, and loads paced only beside another process");
 	return(0);
 }

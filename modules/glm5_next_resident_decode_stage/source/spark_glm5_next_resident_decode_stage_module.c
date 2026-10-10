@@ -1980,7 +1980,7 @@ static SparkStatus SparkGlm5NextBuildWave(SparkGlm5NextTpChain *chain)
 	wave->max_sequence_positions = state->max_sequence_positions;
 	wave->execution_row_capacity = state->execution_row_capacity;
 	wave->pages_per_sequence = state->kv.pages_per_sequence;
-	wave->physical_page_count = state->kv.physical_page_count;
+	wave->physical_page_count = SparkStageKvBindingAddressablePageCount(&state->kv);
 	wave->owns_embedding = state->owns_embedding;
 	wave->owns_final_head = state->owns_final_head;
 	wave->sideband_input = SparkGlm5NextResidentDecodeStageRequiresSidebandInput(state->stage_index);
@@ -6969,6 +6969,12 @@ static SparkStatus SparkGlm5NextConfigureL2Prefetch(SparkGlm5NextModuleState *st
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkGlm5NextApplyExecutionMode(SparkGlm5NextModuleState *state)
+{
+	state->graph_path_enabled = state->graph_path_requested;
+	fprintf(stderr,"GLM execution mode=%s\n",state->graph_path_enabled != 0u ? "graph" : "eager");
+}
+
 static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *state)
 {
 	{
@@ -6987,8 +6993,6 @@ static SparkStatus SparkGlm5NextConfigureExecution(SparkGlm5NextModuleState *sta
 	{
 		const char *record_limit_env =
 		    getenv("SPARK_GLM5_NEXT_GRAPH_RECORD_OPS");
-		state->graph_path_enabled = state->graph_path_requested;
-		fprintf(stderr,"GLM execution mode=%s\n",state->graph_path_enabled != 0u ? "graph" : "eager");
 		state->graph_record_limit = record_limit_env != 0 ?
 		    (uint32_t)strtoul(record_limit_env,0,10) : 0u;
 	}
@@ -7020,7 +7024,10 @@ static SparkStatus SparkGlm5NextInitializeState(
 		atomic_init(&state->lazy_retained[lane],0);
 	status = SparkGlm5NextModuleConfigure(state,configuration,host_services,&pack_path);
 	if ( status == SPARK_STATUS_OK )
+	{
+		SparkGlm5NextApplyExecutionMode(state);
 		status = SparkStageModuleCudaWaitInitialize(&state->stream_wait,(cudaStream_t)state->execution_stream);
+	}
 	if ( status == SPARK_STATUS_OK && SparkGlm5NextConfigureCudaModule(&state->multiprocessor_count) != 0 )
 		status = SPARK_STATUS_TARGET_MISMATCH;
 	if ( status == SPARK_STATUS_OK )

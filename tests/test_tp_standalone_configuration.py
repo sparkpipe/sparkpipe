@@ -9,31 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class StandaloneConfiguration(unittest.TestCase):
     def test_model_configuration_parses_boolean_values(self):
-        for family, tag, degree in (("gemma4", "Gemma4", 16), ("minimax", "Minimax", 4), ("qwen4_flash", "Qwen4Flash", 4), ("qwen38_max", "Qwen38Max", 16)):
+        for family, tag, degree in (("gemma4", "Gemma4", 16), ("minimax", "Minimax", 4), ("qwen4_flash", "Qwen4Flash", 4)):
             with self.subTest(family=family), tempfile.TemporaryDirectory() as temp:
                 macro = family.upper()
-                collective_check = ""
-                collective_stub = ""
-                if family == "qwen38_max":
-                    collective_stub = """
-SparkStatus SparkTpDeviceCollectiveSubmitBf16(SparkTpDeviceCollective *collective, const SparkTpDeviceCollectiveSubmission *submission)
-{
-    (void)collective;
-    (void)submission;
-    abort();
-}
-"""
-                    collective_check = """
-    state.allow_unqualified_execution = 1u;
-    state.tp_degree = 16u;
-    state.tp_standalone = 0u;
-    assert(SparkQwen38MaxModuleTpAllReduceHidden(&state, 0, 0, 1u) == SPARK_STATUS_INTERNAL_ERROR);
-"""
                 source = Path(temp) / "test.c"
                 source.write_text(f'''
 #include <assert.h>
 #include "modules/{family}_resident_decode_stage/source/spark_{family}_resident_decode_stage_module.c"
-{collective_stub}
 int main(void)
 {{
     Spark{tag}ModuleState state = {{0}};
@@ -59,7 +41,6 @@ int main(void)
     assert(Spark{tag}ModuleConfigure(&state) == SPARK_STATUS_INVALID_ARGUMENT);
     setenv("SPARK_{macro}_TP_STANDALONE","garbage",1);
     assert(Spark{tag}ModuleConfigure(&state) == SPARK_STATUS_INVALID_ARGUMENT);
-{collective_check}
     return 0;
 }}
 ''')

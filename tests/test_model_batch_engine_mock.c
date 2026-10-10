@@ -1705,6 +1705,93 @@ static void TestScenarioMultiBlockPrefill(const SparkModelResidentDeployment *de
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static uint32_t TestPrefillPublishes(uint64_t request_id,uint32_t prompt_count,uint32_t *ends,uint32_t *stateful,uint32_t capacity)
+{
+	SparkModelServingLane lane;
+	uint32_t index,count = 0u;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u && count<capacity; index++)
+		if ( lane.request_id == request_id && lane.context_token_count > lane.sequence_position && lane.context_token_count <= prompt_count &&
+			(lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )
+		{
+			ends[count] = lane.cache_publish_token_count;
+			stateful[count++] = (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) == 0u ? 1u : 0u;
+		}
+	return(count);
+}
+
+static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t expected_spans[4] = {8u,4u,4u,2u},expected_ends[4] = {8u,12u,16u,18u},expected_stateful[4] = {0u,1u,1u,0u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[18],diverge_late[18],diverge_early[18],extended[26],spans[8],ends[8],stateful[8],count,index;
+	for (index=0u; index<18u; index++)
+		prompt[index] = diverge_late[index] = diverge_early[index] = 300u + index;
+	diverge_late[14] = 9u;
+	diverge_early[10] = 9u;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,690u,6u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 6u,"recurrent checkpoints: a deferred-publication decode across a block boundary completes");
+	count = TestPrefillSpans(1u,18u,spans,8u);
+	CHECK(state.completed_events[1] == 1u && count == 4u && memcmp(spans,expected_spans,sizeof(expected_spans)) == 0,"recurrent checkpoints: prefill spans stop at the checkpoint stride and at the last block boundary before the prompt end");
+	count = TestPrefillPublishes(1u,18u,ends,stateful,8u);
+	CHECK(count == 4u && memcmp(ends,expected_ends,sizeof(expected_ends)) == 0 && memcmp(stateful,expected_stateful,sizeof(expected_stateful)) == 0,"recurrent checkpoints: every block is published but only the stride and the prompt's last boundary keep state");
+	TestSubmitPrompt(engine,2u,691u,1u,prompt,18u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent checkpoints: a repeated prompt resumes at its last-boundary checkpoint");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	TestSubmitPrompt(engine,3u,692u,1u,diverge_late,18u);
+	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 12u,"recurrent checkpoints: a prompt that diverges after the stride resumes at the stride checkpoint");
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	for (index=0u; index<8u; index++)
+		extended[18u + index] = 600u + index;
+	memcpy(extended,prompt,sizeof(prompt));
+	TestSubmitPrompt(engine,5u,694u,1u,extended,26u);
+	CHECK(TestWaitFirstRequestLane(engine,5u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent checkpoints: a prompt that extends a published one past its partial block resumes exactly at the last checkpoint, not a block earlier");
+	TestDriveUntilTerminal(engine,&state,4u,800u);
+	TestSubmitPrompt(engine,4u,693u,1u,diverge_early,18u);
+	CHECK(TestWaitFirstRequestLane(engine,4u,&lane) != 0u && lane.cache_prefix_token_count == 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == 0u,"recurrent checkpoints: shared blocks without a checkpoint are recomputed instead of resumed");
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	CHECK(state.error_events[1] == 0u && state.error_events[2] == 0u && state.error_events[3] == 0u && state.error_events[4] == 0u && state.error_events[5] == 0u,"recurrent checkpoints: no request fails, including the stateless publishes at each request end");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[18],follow[30],index,reply;
+	for (index=0u; index<18u; index++)
+		prompt[index] = 400u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,790u,4u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	reply = state.token_events[1];
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && reply == 4u,"reply checkpoint: a four-token reply completes");
+	memcpy(follow,prompt,sizeof(prompt));
+	for (index=0u; index<reply; index++)
+		follow[18u + index] = state.token_ids[1][index];
+	for (index=18u + reply; index<30u; index++)
+		follow[index] = 700u + index;
+	TestSubmitPrompt(engine,2u,791u,1u,follow,30u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u + reply,"reply checkpoint: a follow-up that carries the reply resumes after every computed token of the reply, partial last block included, not at the previous prompt's checkpoint");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.error_events[2] == 0u && state.completed_events[2] == 1u,"reply checkpoint: the follow-up completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
@@ -1740,6 +1827,11 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		SparkModelResidentDeploymentReset(&deployment);
 		(void)unlink(path);
 	}
+	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
+	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
+	TestScenarioReplyCheckpoint(&deployment,runtime_root);
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"multi-block-prefill",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);
 	TestScenarioMultiBlockPrefill(&deployment,runtime_root);
 	TestScenarioCapacityRefusedPrefill(&deployment,runtime_root);

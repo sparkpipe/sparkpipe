@@ -23,6 +23,7 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 
 #define __CUDACC__ 1
 #include "inference/kernels/kv.cuh"
+#include "inference/kernels/kv_shard.cuh"
 #undef __CUDACC__
 
 #include "inference/llms/kimi_k3/layer.cuh"

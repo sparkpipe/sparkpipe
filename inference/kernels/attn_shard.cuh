@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <math.h>
 
+#include "inference/kernels/dtype.cuh"
 #include "inference/kernels/kv_shard.cuh"
 
 #define LM_LATENT_SHARD_WARPS 8u
@@ -132,7 +133,9 @@ void LmLatentShardPartialKernel(
         return;
     }
     dense = context_length[sequence];
-    if (row_position != 0 && row_position[row] < dense)
+    if (row_position != 0 && row_position[row] == 0xffffffffu)
+        dense = 0u;
+    else if (row_position != 0 && row_position[row] < dense)
         dense = row_position[row] + 1u;
     listed = selected_positions != 0 && dense > dense_limit ? 1u : 0u;
     if (listed != 0u && selected_count > LM_LATENT_SHARD_LIST_CAPACITY)

@@ -40,6 +40,13 @@
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 6u
 #define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 16u
+#elif defined(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS)
+#define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.recurrent-checkpoints.v1"
+#define TEST_MODEL_SERVING_CAPABILITIES \
+	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION)
+#define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 2u
+#define TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT 12u
 #elif defined(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_CHECKPOINTS)
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.speculative-deferred.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES \
@@ -53,6 +60,9 @@
 #endif
 #ifndef TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT
 #define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 4u
+#endif
+#ifndef TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT
+#define TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT 0u
 #endif
 
 typedef struct TestModelServingPrepared
@@ -123,7 +133,8 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.boundary_sideband_kinds = {1u,0u,0u},
 	.boundary_sideband_bytes_per_sequence = {16u,0u,0u},
 	.minimum_efficient_submission_row_count = 16u,
-	.cache_block_token_count = TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT
+	.cache_block_token_count = TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT,
+	.cache_checkpoint_token_count = TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT
 };
 
 static SparkStatus TestModelServingValidateConfiguration(

@@ -30,8 +30,8 @@
 #define API_MAX_BODY		(8u * 1024u * 1024u)
 #define API_MAX_PROMPT_TOKENS	(260000u)
 #define API_MAX_STOP_TOKENS 16
-#define API_MAX_OUTPUT_TOKENS	(8192u)
-#define API_TOKEN_BUF_BYTES	(64u * 1024u)
+#define API_MAX_OUTPUT_TOKENS	(131072u)
+#define API_TOKEN_TEXT_BYTES	12u
 
 #define API_MAX_INFLIGHT 16u
 
@@ -67,10 +67,11 @@ typedef struct ApiRequest
 	uint32_t *prompt_tokens;
 	uint32_t prompt_count;
 	uint32_t max_tokens;
-	char tokens_json[API_TOKEN_BUF_BYTES];
+	char *tokens_json;
+	size_t tokens_json_capacity;
 	volatile uint32_t tokens_json_len;
 	uint32_t *output_token_ids;
-	uint64_t token_ready_ns[API_MAX_OUTPUT_TOKENS];
+	uint64_t *token_ready_ns;
 	uint64_t accepted_ns;
 	uint64_t first_dispatch_ns;
 	uint32_t stale_prefix_recompute_count;
@@ -122,6 +123,7 @@ typedef struct ApiState
 	uint32_t health_connected_rank_count;
 	uint32_t health_missing_rank;
 	uint32_t health_degraded_rank;
+	uint32_t health_write_alert_rank;
 	uint32_t health_failed_status;
 	uint32_t health_live_requests;
 	volatile uint32_t bringup_attempts;
@@ -208,6 +210,8 @@ static void api_request_destroy(ApiRequest *req)
 	free(req->stop_tokens);
 	free(req->prompt_tokens);
 	free(req->output_token_ids);
+	free(req->token_ready_ns);
+	free(req->tokens_json);
 	free(req->logprobs);
 	free(req);
 }
@@ -283,12 +287,12 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					}
 				}
 			}
-			else if (r->tokens_json_len + 12u < sizeof(r->tokens_json) &&
+			else if (r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
 				r->output_token_count < r->max_tokens)
 			{
 				r->tokens_json_len += (uint32_t)snprintf(
 					r->tokens_json + r->tokens_json_len,
-					sizeof(r->tokens_json) - r->tokens_json_len,
+					r->tokens_json_capacity - r->tokens_json_len,
 					"%s%u", r->tokens_json_len ? "," : "",
 					(unsigned)ev->token_id);
 				r->token_ready_ns[r->output_token_count] = ev->monotonic_ns;
@@ -583,7 +587,7 @@ static void api_log_status_reports(void)
 			continue;
 		logged[rank] = report;
 		kv = &report.adapter_snapshot.kv_store;
-		fprintf(stderr,"{\"event\":\"kv_store_report\",\"boot_pid\":%d,\"rank\":%u,\"stage\":%u,\"residentd_pid\":%u,\"client_generation\":%llu,\"status\":%u,\"generation\":%llu,\"attached\":%u,\"save_count\":%llu,\"save_pages\":%llu,\"save_ns\":%llu,\"save_ns_per_page\":%llu,\"save_failures\":%llu,\"save_deferred\":%llu,\"restore_count\":%llu,\"restore_pages\":%llu,\"restore_ns\":%llu,\"restore_ns_per_page\":%llu,\"restore_misses\":%llu,\"restore_corrupt\":%llu,\"restore_read_errors\":%llu,\"restore_failures\":%llu,\"store_used_bytes\":%llu,\"store_maximum_bytes\":%llu,\"store_files\":%llu,\"store_foreign_layout_files\":%llu,\"store_checksum_failures\":%llu,\"store_removed_temporaries\":%llu,\"store_evictions\":%llu,\"store_write_failures\":%llu,\"store_queue_full\":%llu,\"store_queued\":%llu,\"store_failed_status\":%u,\"pool_resident_pages\":%llu,\"pool_physical_pages\":%llu,\"pool_logical_pages\":%llu,\"pool_retained_pages\":%llu,\"pool_evicted_entries\":%llu,\"pool_resident_evictions\":%llu,\"spill_write_bytes\":%llu,\"spill_read_bytes\":%llu,\"spill_digest_mismatches\":%llu,\"spill_read_errors\":%llu,\"pool_device_bytes\":%llu,\"pool_generation\":%llu,\"pool_reattached\":%llu,\"pool_adopted_pages\":%llu,\"write_budget_bytes_per_day\":%llu,\"write_budget_available_bytes\":%llu,\"write_budget_overrun_bytes\":%llu,\"write_budget_refused_saves\":%llu,\"write_budget_discarded_pages\":%llu}\n",
+		fprintf(stderr,"{\"event\":\"kv_store_report\",\"boot_pid\":%d,\"rank\":%u,\"stage\":%u,\"residentd_pid\":%u,\"client_generation\":%llu,\"status\":%u,\"generation\":%llu,\"attached\":%u,\"save_count\":%llu,\"save_pages\":%llu,\"save_ns\":%llu,\"save_ns_per_page\":%llu,\"save_failures\":%llu,\"save_deferred\":%llu,\"restore_count\":%llu,\"restore_pages\":%llu,\"restore_ns\":%llu,\"restore_ns_per_page\":%llu,\"restore_misses\":%llu,\"restore_corrupt\":%llu,\"restore_read_errors\":%llu,\"restore_failures\":%llu,\"store_used_bytes\":%llu,\"store_maximum_bytes\":%llu,\"store_files\":%llu,\"store_foreign_layout_files\":%llu,\"store_checksum_failures\":%llu,\"store_removed_temporaries\":%llu,\"store_evictions\":%llu,\"store_write_failures\":%llu,\"store_queue_full\":%llu,\"store_queued\":%llu,\"store_failed_status\":%u,\"pool_resident_pages\":%llu,\"pool_physical_pages\":%llu,\"pool_logical_pages\":%llu,\"pool_retained_pages\":%llu,\"pool_evicted_entries\":%llu,\"pool_resident_evictions\":%llu,\"spill_write_bytes\":%llu,\"spill_read_bytes\":%llu,\"spill_digest_mismatches\":%llu,\"spill_read_errors\":%llu,\"pool_device_bytes\":%llu,\"pool_generation\":%llu,\"pool_reattached\":%llu,\"pool_adopted_pages\":%llu,\"write_bytes\":%llu,\"write_bytes_this_hour\":%llu,\"write_bytes_previous_hour\":%llu,\"write_alerts\":%llu,\"write_alerting\":%llu}\n",
 			(int)getpid(),rank,report.stage_index,report.residentd_pid,(unsigned long long)report.client_generation,report.status,(unsigned long long)report.generation,kv->attached,
 			(unsigned long long)kv->save_count,(unsigned long long)kv->save_page_count,(unsigned long long)kv->save_ns,(unsigned long long)api_per_page(kv->save_ns,kv->save_page_count),
 			(unsigned long long)kv->save_failure_count,(unsigned long long)kv->save_deferred_count,(unsigned long long)kv->restore_count,(unsigned long long)kv->restore_page_count,
@@ -595,8 +599,8 @@ static void api_log_status_reports(void)
 			(unsigned long long)kv->pool_evicted_entries,(unsigned long long)kv->pool_resident_evictions,(unsigned long long)kv->spill_write_bytes,(unsigned long long)kv->spill_read_bytes,
 			(unsigned long long)kv->spill_digest_mismatches,(unsigned long long)kv->spill_read_errors,(unsigned long long)kv->pool_device_bytes,
 			(unsigned long long)kv->pool_generation,(unsigned long long)kv->pool_reattached,(unsigned long long)kv->pool_adopted_pages,
-			(unsigned long long)kv->write_budget_bytes_per_day,(unsigned long long)kv->write_budget_available_bytes,(unsigned long long)kv->write_budget_overrun_bytes,
-			(unsigned long long)kv->write_budget_refused_saves,(unsigned long long)kv->write_budget_discarded_pages);
+			(unsigned long long)kv->write_bytes,(unsigned long long)kv->write_bytes_this_hour,(unsigned long long)kv->write_bytes_previous_hour,
+			(unsigned long long)kv->write_alerts,(unsigned long long)kv->write_alerting);
 	}
 }
 
@@ -614,6 +618,20 @@ static uint32_t api_degraded_rank(void)
 	return(UINT32_MAX);
 }
 
+static uint32_t api_write_alert_rank(void)
+{
+	SparkModelResidentStatusReport report;
+	uint32_t rank;
+	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
+	{
+		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
+			break;
+		if ( report.generation != 0u && report.adapter_snapshot.kv_store.write_alerting != 0u )
+			return(rank);
+	}
+	return(UINT32_MAX);
+}
+
 static void api_publish_health(void)
 {
 	SparkModelBatchEngineView view;
@@ -625,6 +643,7 @@ static void api_publish_health(void)
 	__atomic_store_n(&S.health_failed_status,view.failed_status,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_live_requests,view.live_request_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_degraded_rank,api_degraded_rank(),__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_write_alert_rank,api_write_alert_rank(),__ATOMIC_RELEASE);
 	if ( view.context_limit != 0u && view.context_limit != __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE) )
 	{
 		__atomic_store_n(&S.context_limit,view.context_limit,__ATOMIC_RELEASE);
@@ -1446,8 +1465,16 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	if (mt >= 0)
 	{
 		uint32_t v;
-		if (SparkJsonGetUInt32(&doc, mt, &v) == SPARK_STATUS_OK && v > 0)
-			max_tokens = v > API_MAX_OUTPUT_TOKENS ? API_MAX_OUTPUT_TOKENS : v;
+		if (SparkJsonGetUInt32(&doc, mt, &v) != SPARK_STATUS_OK || v == 0u || v > API_MAX_OUTPUT_TOKENS)
+		{
+			SparkJsonDocumentDestroy(&doc);
+			free(prompt);
+			free(prompt_text);
+			free(request_stops);
+			send_response(fd, 400, "{\"error\":{\"message\":\"max_tokens must be an integer from 1 to 131072\",\"type\":\"invalid_request_error\"}}");
+			return;
+		}
+		max_tokens = v;
 	}
 	if (!api_parse_serving_options(&doc, root, &options))
 	{
@@ -1556,16 +1583,22 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		return;
 	}
 	req->output_token_ids = malloc((size_t)max_tokens * sizeof(uint32_t));
+	req->token_ready_ns = malloc((size_t)max_tokens * sizeof(uint64_t));
+	req->tokens_json_capacity = (size_t)max_tokens * API_TOKEN_TEXT_BYTES + API_TOKEN_TEXT_BYTES;
+	req->tokens_json = malloc(req->tokens_json_capacity);
 	req->logprobs = options.logprobs != 0u ? malloc((size_t)max_tokens * options.logprobs * sizeof(req->logprobs[0])) : 0;
-	if (req->output_token_ids == 0 || (options.logprobs != 0u && req->logprobs == 0))
+	if (req->output_token_ids == 0 || req->token_ready_ns == 0 || req->tokens_json == 0 || (options.logprobs != 0u && req->logprobs == 0))
 	{
 		free(prompt);
 		free(req->output_token_ids);
+		free(req->token_ready_ns);
+		free(req->tokens_json);
 		free(req->logprobs);
 		free(req);
 		send_response(fd, 500, "{\"error\":\"oom\"}");
 		return;
 	}
+	req->tokens_json[0] = '\0';
 	pthread_mutex_init(&req->mutex, 0);
 	pthread_cond_init(&req->cond, 0);
 	req->started_ms = api_now_ms();
@@ -1639,18 +1672,20 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
-		char b[384];
+		char b[448];
 		uint32_t ranks = __atomic_load_n(&S.health_rank_count, __ATOMIC_ACQUIRE);
+		uint32_t write_alert = __atomic_load_n(&S.health_write_alert_rank, __ATOMIC_ACQUIRE);
 		uint32_t connected = __atomic_load_n(&S.health_connected_rank_count, __ATOMIC_ACQUIRE);
 		uint32_t missing = __atomic_load_n(&S.health_missing_rank, __ATOMIC_ACQUIRE);
 		uint32_t failed = __atomic_load_n(&S.health_failed_status, __ATOMIC_ACQUIRE);
 		uint32_t eager = __atomic_load_n(&S.health_degraded_rank, __ATOMIC_ACQUIRE);
 		uint32_t degraded = connected < ranks || eager != UINT32_MAX || (failed != 0u && failed != (uint32_t)SPARK_STATUS_IO_ERROR) ? 1u : 0u;
 		(void)snprintf(b, sizeof(b),
-			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u}",
+			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"kv_write_alert_rank\":%d}",
 			degraded != 0u ? "degraded" : "ok", (unsigned long long)S.served, HaveSidecar ? "true" : "false", ranks, connected,
 			missing != UINT32_MAX ? (int)missing : -1, eager != UINT32_MAX ? (int)eager : -1, eager != UINT32_MAX ? "eager" : "none",
-			SparkStatusToString((SparkStatus)failed), __atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE));
+			SparkStatusToString((SparkStatus)failed), __atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE),
+			write_alert != UINT32_MAX ? (int)write_alert : -1);
 		send_response(fd, degraded != 0u ? 503 : 200, b);
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
@@ -1768,6 +1803,7 @@ static void *api_bringup(void *argument)
 	S.running = 1;
 	S.health_missing_rank = UINT32_MAX;
 	S.health_degraded_rank = UINT32_MAX;
+	S.health_write_alert_rank = UINT32_MAX;
 	if (pthread_create(&ApiWorker, 0, api_worker, 0) != 0)
 	{
 		api_logf("api_exit reason=worker_create_failed");

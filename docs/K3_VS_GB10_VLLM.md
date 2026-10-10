@@ -13,7 +13,7 @@ or ANNOUNCED (attributed claim without a receipt in our tree).
 | Stack | Point | Grading |
 |---|---|---|
 | gb10-vllm v5-prd, TP16+DCP8, nst6 spec | C1 29.81 tok/s, C8 87.12 agg (136 peak) — v5/README.md:68-79 | ANNOUNCED (their published table; no artifacts in our tree) |
-| gb10-vllm v5-prd, no spec (llama tg2048) | 23.59 t/s @d4000, 20.03 @d200k — v5/README.md:81-91 | ANNOUNCED |
+| gb10-vllm v5-prd, DSpark nst6 on (llama-bench tg2048, coherent corpus, lower acceptance) | 23.59 t/s @d4000, 20.03 @d200k — v5/README.md:81-91 | ANNOUNCED |
 | gb10-vllm, the 2026-09-19 announcement by @ciprianveg | 29 tok/s K3 decode on 16 Sparks | ANNOUNCED (the same stack as the 29.81 row, not SparkPipe) |
 | SparkPipe K3, one TP4 rank of stage 0 on one Spark | 55.5 ms warm B1 stage step — K3_PERF.md "Numbers" | MEASURED (one stage, 2026-08-16) |
 | SparkPipe K3, TP4xPP4 | 18.0 tok/s pipelined, ~4.5 tok/s for one B1 sequence through four stages — K3_PERF.md | ARITHMETIC from the 55.5 ms step |
@@ -21,10 +21,15 @@ or ANNOUNCED (attributed claim without a receipt in our tree).
 | SparkPipe transport, 16-rank 8 KiB all-reduce | 167 us p50 (GLM5_NEXT_ROOFLINE.md, fleet 2026-09-25) | MEASURED |
 | SparkPipe transport, warm serving chain | allreduce 561-700 us/round, pure-mesh component 136 us/round (docs/archive/HILLCLIMB_20260920.md, an archived session log; hillclimb/allreduce branch tip) | MEASURED (2026-09-20) |
 
-SparkPipe has no end-to-end K3 fleet number; its only measured K3 point is a
-single-stage step. For the B1, no-speculation target the comparable external
-number is gb10-vllm without speculation, 23.59 t/s at depth 4000 (20.03 at
-200k), not the 29.81 speculative C1.
+SparkPipe's K3 fleet numbers are in K3_PERF.md (2026-10-07: TP16 B1 10.3
+tok/s, B8 ~34 tok/s aggregate, no speculation, BF16 spine). gb10-vllm
+publishes no no-speculation number: its whole v5 benchmark section runs
+static nst6 DSpark (README "Benchmarks (v5-prd, TP16 + DCP8, static nst6,
+TILE8, kv3G, 16x GB10)"), with load-time MXFP8 for selected dense linears and
+FP8 shared experts. Its llama-bench row, 23.59 t/s at depth 4000 (20.03 at
+200k), is speculative on a corpus where it reports lower acceptance; the
+coding C1 of 29.81 is speculative too. A like-for-like comparison needs our
+speculative number or their nst0 run.
 
 ## Per-lever verdicts
 
@@ -213,8 +218,8 @@ end-to-end fleet B1 number (K3_PERF.md "Open work").
    (ARITHMETIC).
 4. Adaptive depth (cf5645a, CPU-proven): protects (3) on corpora with lower
    acceptance; the floor-4 controller keeps the verify pipeline fed through
-   dips. (Their 23.59 t/s llama-bench row is the no-speculation run, so it
-   does not measure acceptance.)
+   dips. (Their 23.59 t/s llama-bench row also runs nst6 speculation, on a
+   corpus where they report lower acceptance.)
 5. Optional multipliers, GPU-gated: spine MXFP8 (L5, ~1/3-class), S3
    in-graph AR (L1, 136 us measured pure-mesh already), kernel tier-1 class
    polish (L4).

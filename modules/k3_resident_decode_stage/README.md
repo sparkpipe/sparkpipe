@@ -100,13 +100,13 @@ adapter), which the root `Makefile` links into
 
 ### Stray accounting (diagnostic)
 
-`SPARK_K3_STRAY_WSET` names a head working-set file of raw `uint32_t`
-(layer, expert) pairs over the full-model key space. When it is set,
-`SparkK3RunnerStrayAccount` checks every (layer, expert) key that
-`SparkK3RunnerLazyAcquire` passes to `SparkWeightdMapAcquire` against the
-file. Only this rank's PP stage can route, so only that slice of the file is
-ever hit. When accounting is armed, `SparkK3StageRunnerDestroy` prints
-`K3-STRAY-RECEIPT` (selections, strays, `stray_rate`, unique stray pairs,
+The adapter configuration's optional `stray_working_set_path` names a head
+working-set file of raw `uint32_t` (layer, expert) pairs over the full-model
+key space. When it is set, the common stage runner checks every (layer,
+expert) key that it passes to `SparkWeightdMapAcquire` against the file. Only
+this rank's PP stage can route, so only that slice of the file is ever hit.
+When accounting is armed, `SparkStageRunnerDestroy` prints
+`STAGE-STRAY-RECEIPT` (selections, strays, `stray_rate`, unique stray pairs,
 head keys) as its first step, before any early return in teardown. If the
 bit sets cannot be allocated or the file cannot be opened, accounting is
 disabled with a log line. Compare `stray_rate` with the
@@ -121,7 +121,8 @@ disabled with a log line. Compare `stray_rate` with the
 and others) as external symbols. They are defined in
 `model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`, so every
 shared object that links the device collective must compile that header into
-one of its own CUDA translation units.
-`spark_k3_resident_decode_stage_cuda.cu` includes it. Serving adapters are
+one of its own CUDA translation units. The common stage runner
+(`inference/runner/stage_runner.cu`) includes it, so every runner model gets
+the launchers from the runner. Serving adapters are
 loaded with `dlopen(..., RTLD_NOW | RTLD_LOCAL)`, so a missing launcher fails
 the load.

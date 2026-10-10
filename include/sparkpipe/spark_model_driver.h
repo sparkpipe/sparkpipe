@@ -59,11 +59,15 @@ extern "C" {
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH 0x00000002u
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE 0x00000004u
 #define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY 0x00000008u
+#define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS 0x00000010u
+#define SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED 0x00000020u
 #define SPARK_MODEL_DRIVER_CACHE_LANE_KNOWN_FLAGS \
     (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | \
      SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | \
      SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE | \
-     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY)
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY | \
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS | \
+     SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED)
 #define SPARK_MODEL_DRIVER_SCALAR_COUNT 8u
 #define SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT UINT32_MAX
 
@@ -277,11 +281,11 @@ typedef struct SparkModelDriverKvStoreCounters
     uint64_t pool_generation;
     uint64_t pool_reattached;
     uint64_t pool_adopted_pages;
-    uint64_t write_budget_bytes_per_day;
-    uint64_t write_budget_available_bytes;
-    uint64_t write_budget_overrun_bytes;
-    uint64_t write_budget_refused_saves;
-    uint64_t write_budget_discarded_pages;
+    uint64_t write_bytes;
+    uint64_t write_bytes_this_hour;
+    uint64_t write_bytes_previous_hour;
+    uint64_t write_alerts;
+    uint64_t write_alerting;
 } SparkModelDriverKvStoreCounters;
 
 #define SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH 0x00000001u

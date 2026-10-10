@@ -291,6 +291,10 @@ static int32_t TestChainFrame(void)
         return(-40);
     if ( (SparkGlm5NextServingDescriptor.capability_flags & (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH)) != (SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) )
         return(-48);
+    if ( SparkGlm5NextServingDescriptor.cache_checkpoint_token_count == 0u ||
+         SparkGlm5NextServingDescriptor.cache_checkpoint_token_count % SparkGlm5NextServingDescriptor.cache_block_token_count != 0u ||
+         SparkModelServingAdapterValidateDescriptor(&SparkGlm5NextServingDescriptor) != SPARK_STATUS_OK )
+        return(-49);
     if ( TestSubmitChain(&state,3u) != 0 || DeferredFrame->tokens_per_sequence != 3u || pending->buffer.bytes != 9u * sizeof(uint32_t) || pending->last_row_by_lane[0] != 1u || pending->last_row_by_lane[2] != 0u )
         return(-41);
     for (index=0u; index<9u; index++)

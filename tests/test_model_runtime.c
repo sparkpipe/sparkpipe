@@ -2,10 +2,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "sparkpipe/spark_dsv4_runtime_contract.h"
 #include "sparkpipe/spark_k3_runtime_contract.h"
 #include "sparkpipe/spark_model_runtime.h"
-#include "sparkpipe/spark_qwen38_27b_runtime_contract.h"
 
 #define TEST_OPERATION_CAPACITY 256u
 
@@ -284,33 +282,11 @@ static int TestRejectsModifiedContract(
         "family validator rejects a modified precision contract");
 }
 
-static int TestDsv4GaBaselineExcludesDspark(void)
-{
-    SparkModelRuntimeContract contract;
-
-    contract = SparkDsv4FlashRuntimeContract();
-    return TestExpect(strcmp(contract.contract_id,
-            "deepseek-v4-flash-0731-ga-baseline-mixed-v3") == 0,
-            "DSV4 GA baseline contract identity") &&
-        TestExpect(contract.precision_policy.nonexpert_activation_precision ==
-            SPARK_MODEL_RUNTIME_PRECISION_BF16,
-            "DSV4 GA baseline keeps the non-expert spine BF16") &&
-        TestExpect((contract.required_operation_mask &
-            SPARK_MODEL_RUNTIME_OPERATION_MULTI_TOKEN_PREDICTION) == 0u,
-            "DSV4 GA baseline excludes DSpark");
-}
-
 int main(void)
 {
     const TestContractCase contract_cases[] =
     {
-        {"kimi-k3",SparkK3RuntimeContract,SparkK3RuntimeValidateContract},
-        {"qwen-3.6-27b",SparkQwen38_27bRuntimeContract,
-            SparkQwen38_27bRuntimeValidateContract},
-        {"deepseek-v4-flash",SparkDsv4FlashRuntimeContract,
-            SparkDsv4FlashRuntimeValidateContract},
-        {"deepseek-v4-pro",SparkDsv4ProRuntimeContract,
-            SparkDsv4ProRuntimeValidateContract}
+        {"kimi-k3",SparkK3RuntimeContract,SparkK3RuntimeValidateContract}
     };
     uint32_t case_index;
 
@@ -325,8 +301,7 @@ int main(void)
         }
     }
     if (!TestFailureCancels(&contract_cases[0u]) ||
-        !TestRejectsModifiedContract(&contract_cases[1u]) ||
-        !TestDsv4GaBaselineExcludesDspark())
+        !TestRejectsModifiedContract(&contract_cases[0u]))
     {
         return 1;
     }

@@ -379,6 +379,7 @@ int main(int argc,char **argv)
 		HostRunCase<64u>({4u,1024u,16u,2u,1u,0u});
 		HostRunCase<0u>({64u,1024u,16u,4u,1u,0u});
 		HostRunCase<0u>({16u,742u,16u,4u,1u,1u});
+		HostRunCase<64u>({4u,1024u,16u,6u,1u,0u});
 		HostRunCase<0u>({8u,2300u,16u,4u,1u,1u});
 	}
 	else
@@ -391,6 +392,7 @@ int main(int argc,char **argv)
 		HostRunCase<0u>({4u,300u,16u,1u,1u,1u});
 		HostRunCase<0u>({3u,2100u,4u,1u,1u,1u});
 		HostRunCase<0u>({3u,300u,4u,2u,2u,0u});
+		HostRunCase<64u>({2u,300u,16u,6u,1u,0u});
 	}
 	if ( host_failures != 0 )
 	{

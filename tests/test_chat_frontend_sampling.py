@@ -24,16 +24,19 @@ class FakeModel(chat_frontend.Model):
     def __init__(self):
         self.id = "fake"
         self.context_tokens = 4096
-        self.tokenizer = fake_tokenizer()
+        self.vocabulary = chat_frontend.TokenizersVocabulary.__new__(chat_frontend.TokenizersVocabulary)
+        self.vocabulary.tokenizer = fake_tokenizer()
         self.reasoning_effort = {}
         self.template_kwargs = set()
         self.reasoning = {"start": "<think>", "end": "</think>"}
-        self.tool_calls = {"start": "<tool_call>", "end": "</tool_call>", "key_start": "<arg_key>", "key_end": "</arg_key>",
+        self.tool_calls = {"format": "key_value", "start": "<tool_call>", "end": "</tool_call>", "key_start": "<arg_key>", "key_end": "</arg_key>",
                            "value_start": "<arg_value>", "value_end": "</arg_value>"}
+        self.content_markers = []
+        self.end_markers = []
         self.stop_token_ids = [2]
 
     def render(self, messages, tools, kwargs):
-        return "t1 t3 t4"
+        return "t1 t3 t4", self.vocabulary.encode("t1 t3 t4", True)
 
 
 def refused(body, status=400):

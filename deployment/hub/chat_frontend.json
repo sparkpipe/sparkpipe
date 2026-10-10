@@ -1,0 +1,367 @@
+{
+ "models": [
+  {
+   "id": "glm-5.3",
+   "model_dir": "models/glm-5.3",
+   "engine": "http://127.0.0.1:8456",
+   "context_tokens": 262144,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|endoftext|>",
+    "<|user|>",
+    "<|observation|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_effort",
+    "clear_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_effort": "low"
+    },
+    "low": {
+     "reasoning_effort": "low"
+    },
+    "medium": {
+     "reasoning_effort": "high"
+    },
+    "high": {
+     "reasoning_effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "key_start": "<arg_key>",
+    "key_end": "</arg_key>",
+    "value_start": "<arg_value>",
+    "value_end": "</arg_value>"
+   }
+  },
+  {
+   "id": "glm-5.3-flash",
+   "model_dir": "models/glm-5.3-flash",
+   "engine": "http://127.0.0.1:8458",
+   "context_tokens": 131072,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|endoftext|>",
+    "<|user|>",
+    "<|observation|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_effort",
+    "clear_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_effort": "low"
+    },
+    "low": {
+     "reasoning_effort": "low"
+    },
+    "medium": {
+     "reasoning_effort": "high"
+    },
+    "high": {
+     "reasoning_effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "key_start": "<arg_key>",
+    "key_end": "</arg_key>",
+    "value_start": "<arg_value>",
+    "value_end": "</arg_value>"
+   }
+  },
+  {
+   "id": "kimi-k3",
+   "model_dir": "models/kimi-k3",
+   "engine": "http://127.0.0.1:8459",
+   "context_tokens": 131072,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "tokenizer": {
+    "kind": "tiktoken",
+    "file": "tiktoken.model",
+    "special_tokens_from": "tokenizer_config.json",
+    "reserved_special_tokens": 256,
+    "pattern": "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+   },
+   "renderer": {
+    "kind": "segments",
+    "module": "encoding_k3.py",
+    "function": "build_chat_segments"
+   },
+   "stop_tokens": [
+    "<|end_of_msg|>"
+   ],
+   "template_defaults": {
+    "thinking": true
+   },
+   "template_kwargs": [
+    "thinking",
+    "thinking_effort"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "thinking": false
+    },
+    "low": {
+     "thinking_effort": "low"
+    },
+    "medium": {
+     "thinking_effort": "high"
+    },
+    "high": {
+     "thinking_effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<|open|>think<|sep|>",
+    "end": "<|close|>think<|sep|>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "<|open|>call",
+    "end": "<|close|>call<|sep|>",
+    "attribute_end": "<|sep|>",
+    "argument_start": "<|open|>argument",
+    "argument_end": "<|close|>argument<|sep|>",
+    "object_start": "<|open|>json",
+    "object_end": "<|close|>json<|sep|>"
+   },
+   "content_markers": [
+    "<|open|>response<|sep|>",
+    "<|close|>response<|sep|>",
+    "<|open|>tools<|sep|>",
+    "<|close|>tools<|sep|>"
+   ],
+   "end_markers": [
+    "<|close|>message<|sep|>"
+   ]
+  },
+  {
+   "id": "qwen3.8-27b",
+   "model_dir": "models/qwen3.8-27b",
+   "engine": "http://127.0.0.1:8461",
+   "context_tokens": 262144,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+   ],
+   "template_defaults": {
+    "enable_thinking": true
+   },
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "function_xml",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "attribute_end": ">",
+    "function_start": "<function=",
+    "function_end": "</function>",
+    "parameter_start": "<parameter=",
+    "parameter_end": "</parameter>"
+   }
+  },
+  {
+   "id": "deepseek-v4.1-flash",
+   "model_dir": "models/deepseek-v4.1-flash",
+   "engine": "http://127.0.0.1:8463",
+   "context_tokens": 16384,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "renderer": {
+    "kind": "segments",
+    "module": "encoding_dsv41.py",
+    "function": "build_chat_segments"
+   },
+   "stop_tokens": [
+    "<｜end▁of▁sentence｜>"
+   ],
+   "template_defaults": {
+    "thinking": true,
+    "effort": "high"
+   },
+   "template_kwargs": [
+    "thinking",
+    "effort"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "thinking": false
+    },
+    "low": {
+     "effort": "low"
+    },
+    "medium": {
+     "effort": "high"
+    },
+    "high": {
+     "effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "\n<｜DSML｜ invoke",
+    "end": "</｜DSML｜ invoke>",
+    "attribute_end": ">",
+    "argument_start": "<｜DSML｜ parameter",
+    "argument_end": "</｜DSML｜ parameter>",
+    "name_attribute": "name",
+    "key_attribute": "name",
+    "string_attribute": "string"
+   },
+   "content_markers": [
+    "<｜DSML｜ calls>",
+    "\n</｜DSML｜ calls>"
+   ]
+  },
+  {
+   "id": "qwen3.8-max",
+   "model_dir": "models/qwen3.8-max",
+   "engine": "http://127.0.0.1:8464",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [],
+   "reasoning_effort": {
+    "low": {},
+    "medium": {},
+    "high": {}
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "function_xml",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "attribute_end": ">",
+    "function_start": "<function=",
+    "function_end": "</function>",
+    "parameter_start": "<parameter=",
+    "parameter_end": "</parameter>"
+   }
+  },
+  {
+   "id": "qwen3.8-flash",
+   "model_dir": "models/qwen3.8-flash",
+   "engine": "http://127.0.0.1:8465",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+   ],
+   "template_defaults": {
+    "enable_thinking": true
+   },
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "function_xml",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "attribute_end": ">",
+    "function_start": "<function=",
+    "function_end": "</function>",
+    "parameter_start": "<parameter=",
+    "parameter_end": "</parameter>"
+   }
+  }
+ ],
+ "control": {
+  "status_url": "http://127.0.0.1:8440/status",
+  "activate_url": "http://127.0.0.1:8440/activate"
+ },
+ "site_dir": "site"
+}

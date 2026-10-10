@@ -39,6 +39,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL 3u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 4u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
@@ -318,9 +319,13 @@ typedef int (*SparkTpMeshTreeFunction)(void *stream,void *band,uint64_t slot_byt
     const volatile void *shipped,const volatile void *cancel,void *round_control,uint32_t rank,uint32_t degree,const void *local,
     void *output,void *scratch,uint64_t elements,uint32_t operation,uint32_t rounds,uint64_t timeout_ns);
 typedef int (*SparkTpMeshHardwarePrepareFunction)(void *host,void **device);
+#define SPARK_TP_MESH_STAGE_ALL 0u
+#define SPARK_TP_MESH_STAGE_PUBLISH 1u
+#define SPARK_TP_MESH_STAGE_COMPLETE 2u
+
 typedef int (*SparkTpMeshHardwareFunction)(void *stream,void *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,
     void *gate,void *round_control,uint32_t rank,uint32_t degree,const void *local,void *output,void *scratch,uint64_t elements,
-    uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,uint64_t timeout_ns);
+    uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes,void *staging,uint64_t timeout_ns,uint32_t stage);
 typedef int (*SparkTpMeshSeqPadFunction)(void *stream,void *seq_cell);
 typedef int (*SparkTpMeshGuardFunction)(void *stream,volatile void *error_word,void *output);
 typedef int (*SparkTpMeshWaitFunction)(void *stream,volatile void *band_base,uint64_t slot_bytes,const void *round_seq,
@@ -377,6 +382,20 @@ SparkStatus SparkTpDeviceCollectiveSubmitBf16(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);
 
+SparkStatus SparkTpDeviceCollectiveBegin(
+    SparkTpDeviceCollective *collective,
+    const SparkTpDeviceCollectiveSubmission *submission,
+    uint32_t operation_kind);
+
+SparkStatus SparkTpDeviceCollectiveFinish(
+    SparkTpDeviceCollective *collective);
+
+uint32_t SparkTpDeviceCollectiveSupportsReduceScatter(
+    const SparkTpDeviceCollective *collective);
+
+uint32_t SparkTpDeviceCollectivePublished(
+    const SparkTpDeviceCollective *collective);
+
 SparkStatus SparkTpDeviceCollectiveEnqueue(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission,
@@ -396,6 +415,8 @@ typedef struct SparkTpDeviceCollectiveHardwareTiming
     uint64_t peer_wait_ns;
     uint64_t copy_ns;
     uint64_t combine_ns;
+    uint64_t first_arrival_ns;
+    uint64_t peer_arrival_ns[16];
 } SparkTpDeviceCollectiveHardwareTiming;
 
 SparkStatus SparkTpDeviceCollectiveHardwareStats(

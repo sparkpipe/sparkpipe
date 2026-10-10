@@ -3,21 +3,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import re
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "model_contracts" / "must_work_targets.json"
-QWEN38_27B_SERVING_CONSTANTS = (
-    ROOT / "model-families" / "qwen38_27b" / "include" / "sparkpipe"
-    / "spark_qwen38_27b_serving_constants.h"
-)
 EXPECTED_FAMILIES = {
     "k3",
     "glm52",
     "glm5_next",
     "qwen38_27b",
-    "dsv4_flash",
-    "dsv4_pro",
+    "dsv41_flash",
     "mimo26_pro",
     "mimo26_flash",
 }
@@ -59,26 +53,18 @@ def main() -> int:
     assert glm53_contract["precision"]["weight_format"] == "fp8_e4m3"
     assert glm53_contract["precision"]["weight_block_size"] == [128, 128]
     assert glm53_flash["routed_expert_weight_format"] == "fp8_e4m3_block_128x128"
-    # The Qwen 3.8 27B target pins the exact checkpoint the serving constants
-    # compile against (the 3.6 line is deprecated; gate-breaking by directive).
     qwen = by_family["qwen38_27b"]
+    qwen_contract = json.loads((ROOT / qwen["contract"]).read_text(encoding="utf-8"))
     assert qwen["non_expert_weight_format"] == "bf16"
-    assert qwen["model_id"] == "Qwen/Qwen3.8-27B"
-    constants = QWEN38_27B_SERVING_CONSTANTS.read_text(encoding="utf-8")
-
-    def constant(name: str) -> str:
-        match = re.search(r'^#define ' + name + r' "([^"]+)"', constants, re.MULTILINE)
-        assert match, name
-        return match.group(1)
-
-    assert qwen["model_id"] == constant("SPARK_QWEN38_27B_SERVING_MODEL_ID")
-    assert qwen["model_revision"] == constant("SPARK_QWEN38_27B_SERVING_MODEL_REVISION")
+    assert qwen["model_id"] == "Qwen/Qwen3.8-27B" == qwen_contract["model_id"]
     assert len(qwen["model_revision"]) == 40
-    assert by_family["dsv4_flash"]["routed_expert_weight_codec"] == "mxfp4_e2m1"
-    assert by_family["dsv4_pro"]["routed_expert_weight_codec"] == "mxfp4_e2m1"
-    assert by_family["dsv4_flash"]["non_expert_weight_format"] == "fp8_e4m3_block_128x128"
-    assert by_family["dsv4_pro"]["non_expert_weight_format"] == "fp8_e4m3_block_128x128"
-    assert by_family["dsv4_flash"]["non_expert_activation_format"] == "bf16"
+    dsv41 = by_family["dsv41_flash"]
+    dsv41_contract = json.loads((ROOT / dsv41["contract"]).read_text(encoding="utf-8"))
+    assert dsv41["model_id"] == dsv41_contract["model_id"]
+    assert dsv41["model_revision"] == dsv41_contract["source_revision"]
+    assert dsv41["routed_expert_weight_codec"] == "mxfp4_e2m1"
+    assert dsv41["non_expert_weight_format"] == "fp8_e4m3_block_32x32_ue8m0"
+    assert dsv41["non_expert_activation_format"] == "bf16"
     assert by_family["mimo26_pro"]["routed_expert_weight_format"] == "mxfp4_e2m1_e8m0_block32"
     assert by_family["mimo26_flash"]["routed_expert_weight_format"] == "mxfp4_e2m1_e8m0_block32"
     assert by_family["mimo26_pro"]["non_expert_weight_format"] == (

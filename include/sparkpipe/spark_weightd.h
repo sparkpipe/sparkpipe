@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 12u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 13u
 #define SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN 8u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
@@ -88,7 +88,15 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS_RESULT 50u
 #define SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH 51u
 #define SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH_RESULT 52u
-#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH ? 12u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 11u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
+#define SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT 53u
+#define SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT_RESULT 54u
+#define SPARK_WEIGHTD_IPC_KIND_LEASE_SLOTS 55u
+#define SPARK_WEIGHTD_IPC_KIND_LEASE_SLOTS_RESULT 56u
+#define SPARK_WEIGHTD_IPC_KIND_RESIDENCY 57u
+#define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
+#define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
+#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT ? 13u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH ? 12u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 11u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
@@ -273,6 +281,8 @@ _Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
 #endif
 
 #define SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX 65536u
+#define SPARK_WEIGHTD_LEASE_SLOTS_BATCH_MAX 512u
+#define SPARK_WEIGHTD_SLOT_NONE UINT32_MAX
 
 #define SPARK_WEIGHTD_KV_POOL_COUNT_MAX 32u
 #define SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX 4096u
@@ -447,6 +457,51 @@ typedef struct SparkWeightdIpcAttachLazyResult
     int pool_fd;
 } SparkWeightdIpcAttachLazyResult;
 
+typedef struct SparkWeightdIpcSlotExport
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint32_t slot_offset;
+    uint32_t reserved0;
+} SparkWeightdIpcSlotExport;
+
+typedef struct SparkWeightdIpcSlotExportResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint64_t chunk_bytes;
+    uint32_t status;
+    uint32_t slot_count;
+    uint32_t slot_offset;
+    uint32_t batch_count;
+} SparkWeightdIpcSlotExportResult;
+
+typedef struct SparkWeightdIpcLeaseSlots
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint64_t lease_identifier;
+    uint32_t batch_offset;
+    uint32_t reserved0;
+} SparkWeightdIpcLeaseSlots;
+
+typedef struct SparkWeightdIpcLeaseSlotsResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+    uint64_t lease_identifier;
+    uint32_t status;
+    uint32_t lease_chunk_count;
+    uint32_t batch_offset;
+    uint32_t batch_count;
+    uint32_t chunk_indices[SPARK_WEIGHTD_LEASE_SLOTS_BATCH_MAX];
+    uint32_t slot_indices[SPARK_WEIGHTD_LEASE_SLOTS_BATCH_MAX];
+} SparkWeightdIpcLeaseSlotsResult;
+
+#if !defined(__cplusplus)
+_Static_assert(sizeof(SparkWeightdIpcLeaseSlotsResult) <= SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX,"lease slot batch exceeds IPC frame");
+#endif
+
 typedef struct SparkWeightdIpcEpochExport
 {
     SparkWeightdIpcHeader header;
@@ -460,6 +515,39 @@ typedef struct SparkWeightdIpcEpochExportResult
     uint32_t status;
     uint32_t reserved;
 } SparkWeightdIpcEpochExportResult;
+
+typedef struct SparkWeightdIpcResidency
+{
+    SparkWeightdIpcHeader header;
+    uint64_t arena_generation;
+} SparkWeightdIpcResidency;
+
+typedef struct SparkWeightdIpcKvPoolDrop
+{
+    SparkWeightdIpcHeader header;
+    char label[SPARK_WEIGHTD_KV_POOL_LABEL_BYTES];
+} SparkWeightdIpcKvPoolDrop;
+
+typedef struct SparkWeightdIpcKvPoolDropResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t released_bytes;
+    uint32_t status;
+    uint32_t released_count;
+    uint32_t busy_count;
+    uint32_t reserved;
+} SparkWeightdIpcKvPoolDropResult;
+
+typedef struct SparkWeightdIpcResidencyResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t present_bytes;
+    uint64_t epoch;
+    uint32_t status;
+    uint32_t group_count;
+    uint32_t present_count;
+    uint32_t fixed_pool;
+} SparkWeightdIpcResidencyResult;
 
 typedef struct SparkWeightdMeshTopology
 {
@@ -766,7 +854,7 @@ typedef struct SparkWeightdIpcKvPoolAttachResult
     uint64_t metadata_bytes;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
-    uint64_t write_budget_bytes_per_day;
+    uint64_t legacy_write_budget_bytes_per_day;
 } SparkWeightdIpcKvPoolAttachResult;
 
 typedef struct SparkWeightdIpcKvPoolResize
@@ -866,6 +954,7 @@ _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeight
 #define SPARK_WEIGHTD_IPC_RECLAIM_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaim))
 #define SPARK_WEIGHTD_IPC_RECLAIM_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaimResult))
 #define SPARK_WEIGHTD_IPC_RECLAIM_PACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcReclaimPack))
+#define SPARK_WEIGHTD_IPC_KV_POOL_DROP_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcKvPoolDropResult))
 #define SPARK_WEIGHTD_IPC_EXPORT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExport))
 #define SPARK_WEIGHTD_IPC_EXPORT_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcExportResult))
 #define SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES ((uint32_t)sizeof(SparkWeightdIpcAttachLazy))
@@ -895,7 +984,6 @@ typedef struct SparkWeightdServerConfig
     const char *socket_path;
     uint64_t device_bytes_max;
     uint64_t kv_reserve_bytes;
-    uint64_t kv_write_budget_bytes_per_day;
     uint64_t load_pace_bytes_per_second;
     uint64_t kv_shared_window_bytes;
 } SparkWeightdServerConfig;
@@ -1064,6 +1152,32 @@ SparkStatus SparkWeightdClientEnsure(SparkWeightdClient *client,
     SparkWeightdEnsureResult *result,
     uint64_t timeout_nanoseconds);
 
+typedef struct SparkWeightdResidency
+{
+    uint64_t present_bytes;
+    uint64_t epoch;
+    uint32_t group_count;
+    uint32_t present_count;
+    uint32_t fixed_pool;
+} SparkWeightdResidency;
+
+SparkStatus SparkWeightdClientResidency(SparkWeightdClient *client,
+    uint64_t arena_generation,
+    SparkWeightdResidency *residency,
+    uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdKvPoolDropResult
+{
+    uint64_t released_bytes;
+    uint32_t released_count;
+    uint32_t busy_count;
+} SparkWeightdKvPoolDropResult;
+
+SparkStatus SparkWeightdClientKvPoolDrop(SparkWeightdClient *client,
+    const char *label,
+    SparkWeightdKvPoolDropResult *result,
+    uint64_t timeout_nanoseconds);
+
 typedef struct SparkWeightdWorkingSetResult
 {
 	SparkStatus status;
@@ -1097,6 +1211,30 @@ SparkStatus SparkWeightdClientExportBatch(SparkWeightdClient *client,
     uint32_t batch_offset,
     SparkWeightdExportBatch *batch,
     uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdSlotBatch
+{
+    SparkStatus status;
+    uint64_t chunk_bytes;
+    uint32_t slot_count;
+    uint32_t slot_offset;
+    uint32_t batch_count;
+    int fds[SPARK_WEIGHTD_EXPORT_BATCH_MAX];
+} SparkWeightdSlotBatch;
+
+SparkStatus SparkWeightdClientSlotExportBatch(SparkWeightdClient *client,uint64_t arena_generation,uint32_t slot_offset,SparkWeightdSlotBatch *batch,uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdLeaseSlotBatch
+{
+    SparkStatus status;
+    uint32_t lease_chunk_count;
+    uint32_t batch_offset;
+    uint32_t batch_count;
+    uint32_t chunk_indices[SPARK_WEIGHTD_LEASE_SLOTS_BATCH_MAX];
+    uint32_t slot_indices[SPARK_WEIGHTD_LEASE_SLOTS_BATCH_MAX];
+} SparkWeightdLeaseSlotBatch;
+
+SparkStatus SparkWeightdClientLeaseSlotsBatch(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,uint32_t batch_offset,SparkWeightdLeaseSlotBatch *batch,uint64_t timeout_nanoseconds);
 
 SparkStatus SparkWeightdClientDetach(SparkWeightdClient *client,
     uint64_t arena_generation,
@@ -1138,7 +1276,6 @@ typedef struct SparkWeightdKvPoolGrant
     uint64_t metadata_bytes;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
-    uint64_t write_budget_bytes_per_day;
     uint32_t chunk_capacity;
     uint32_t chunk_count;
     uint32_t reattached;

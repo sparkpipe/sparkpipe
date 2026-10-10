@@ -1,7 +1,6 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "sparkpipe/spark_weightd_receipt.h"
-#include "sparkpipe/spark_dsv4_parallel_shape.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -125,54 +124,6 @@ static int warm_keys(SparkWeightdClient *client,uint64_t generation,
     return 0;
 }
 
-static int dsv4_pro_identity(const char *pack_path, uint32_t world_rank,
-    SparkWeightdIdentity *identity)
-{
-    SparkDsv4TpShapeDescriptor shape;
-    SparkDsv4TpNodeConfig config;
-    uint32_t header[16];
-    uint64_t wide[2], geometry;
-    FILE *file;
-    memset(&shape,0,sizeof(shape));
-    memset(&config,0,sizeof(config));
-    file = fopen(pack_path,"rb");
-    if ( file == 0 || fread(header,4u,16u,file) != 16u ||
-         fread(wide,8u,2u,file) != 2u )
-    {
-        if ( file != 0 ) fclose(file);
-        return 0;
-    }
-    fclose(file);
-    shape.abi_version = SPARK_DSV4_PARALLEL_SHAPE_ABI_VERSION;
-    shape.tp_degree = 4u;
-    shape.tp_rank = world_rank % 4u;
-    shape.pp_stage_count = 4u;
-    shape.pp_stage_index = world_rank / 4u;
-    if ( SparkDsv4TpDeriveNodeConfig(&shape,&config) != SPARK_STATUS_OK )
-        return 0;
-    geometry = UINT64_C(1469598103934665603);
-    geometry = SparkHashBytes(geometry,&header[1],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[4],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[5],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[6],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[7],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[8],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[9],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[10],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[11],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[12],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[13],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[14],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&header[15],sizeof(uint32_t));
-    geometry = SparkHashBytes(geometry,&wide[1],sizeof(uint64_t));
-    memset(identity,0,sizeof(*identity));
-    identity->geometry_fingerprint = geometry;
-    identity->topology = (uint32_t)config.configuration_hash;
-    strcpy(identity->model,"dsv4");
-    identity->revision[0] = '\0';
-    return 1;
-}
-
 static int reclaim_pack_digest(const char *spec,char hex[SPARK_WEIGHTD_SHA256_HEX_BYTES])
 {
     size_t index;
@@ -192,6 +143,38 @@ static int reclaim_pack_digest(const char *spec,char hex[SPARK_WEIGHTD_SHA256_HE
         return 0;
     }
     return 1;
+}
+
+static int drop_kv_pools(const char *socket_path,char **labels,int label_count)
+{
+    SparkWeightdKvPoolDropResult drop;
+    SparkWeightdClient *client = 0;
+    SparkStatus status;
+    int index,busy = 0;
+    status = SparkWeightdClientConnect(socket_path,&client,0);
+    if ( status != SPARK_STATUS_OK )
+    {
+        fprintf(stderr,"weightd_warm: DROP-KV connect %s failed status=%d\n",socket_path,(int)status);
+        return 1;
+    }
+    for (index=0; index<label_count; index++)
+    {
+        memset(&drop,0,sizeof(drop));
+        status = SparkWeightdClientKvPoolDrop(client,labels[index],&drop,30u * UINT64_C(1000000000));
+        if ( status != SPARK_STATUS_OK )
+        {
+            fprintf(stderr,"weightd_warm: DROP-KV label=%s failed status=%d%s\n",labels[index],(int)status,
+                status == SPARK_STATUS_IO_ERROR ? " (the daemon closed the connection: a weightd without KV_POOL_DROP support)" : "");
+            SparkWeightdClientClose(client);
+            return 1;
+        }
+        fprintf(stderr,"weightd_warm: DROP-KV label=%s released=%u bytes=%llu busy=%u\n",labels[index],drop.released_count,
+            (unsigned long long)drop.released_bytes,drop.busy_count);
+        if ( drop.busy_count != 0u )
+            busy = 1;
+    }
+    SparkWeightdClientClose(client);
+    return busy ? 3 : 0;
 }
 
 static int reclaim_packs(const char *socket_path,char **specs,int spec_count)
@@ -251,8 +234,7 @@ int main(int argument_count,char **arguments)
     char manifest_path[SPARK_WEIGHTD_PATH_BYTES + 16u];
     const char *wset_path = 0;
     const char *family = 0;
-    uint64_t world_rank = 0;
-    int world_rank_given = 0, identity_print = 0;
+    int identity_print = 0;
     char *filtered[24];
     int filtered_count = 0, index_argument;
     uint64_t layers = 45u,experts = 288u,seconds = 1800u,topology;
@@ -266,18 +248,6 @@ int main(int argument_count,char **arguments)
             family = arguments[++index_argument];
             continue;
         }
-        if ( strcmp(arguments[index_argument],"--world-rank") == 0 &&
-            index_argument + 1 < argument_count )
-        {
-            char *end;
-            errno = 0;
-            world_rank = strtoull(arguments[++index_argument],&end,10);
-            if ( errno != 0 || *end != '\0' || end == arguments[index_argument] ||
-                world_rank > 15u )
-                goto usage;
-            world_rank_given = 1;
-            continue;
-        }
         if ( strcmp(arguments[index_argument],"--identity-print") == 0 )
         {
             identity_print = 1;
@@ -289,20 +259,18 @@ int main(int argument_count,char **arguments)
     }
     arguments = filtered;
     argument_count = filtered_count;
-    if ( family != 0 && strcmp(family,"dsv4_pro") != 0 &&
-         strcmp(family,"dsv41_flash") != 0 && strcmp(family,"k3") != 0 &&
+    if ( family != 0 && strcmp(family,"dsv41_flash") != 0 && strcmp(family,"k3") != 0 &&
          strcmp(family,"ling") != 0 )
     {
-        fprintf(stderr,"weightd_warm: unknown family %s (dsv4_pro, dsv41_flash, k3, ling)\n",family);
-        goto usage;
-    }
-    if ( family != 0 && strcmp(family,"dsv4_pro") == 0 && !world_rank_given )
-    {
-        fprintf(stderr,"weightd_warm: --family dsv4_pro requires --world-rank\n");
+        fprintf(stderr,"weightd_warm: unknown family %s (dsv41_flash, k3, ling)\n",family);
         goto usage;
     }
     if ( argument_count >= 4 && strcmp(arguments[2],"--reclaim-pack") == 0 )
         return reclaim_packs(arguments[1],&arguments[3],argument_count - 3);
+    if ( argument_count >= 4 && strcmp(arguments[2],"--drop-kv") == 0 )
+        return drop_kv_pools(arguments[1],&arguments[3],argument_count - 3);
+    if ( argument_count == 3 && strcmp(arguments[2],"--drop-kv") == 0 )
+        goto usage;
     if ( argument_count == 3 && strcmp(arguments[2],"--reclaim-pack") == 0 )
         goto usage;
     if ( argument_count == 3 && strcmp(arguments[2],"--reclaim") == 0 )
@@ -381,19 +349,6 @@ int main(int argument_count,char **arguments)
         strcpy(request.identity.revision,"mxfp4");
         request.identity.topology = (uint32_t)topology;
         request.identity.geometry_fingerprint = 0u;
-    }
-    else if ( family != 0 )
-    {
-        SparkWeightdIdentity derived;
-        if ( !dsv4_pro_identity(arguments[2],(uint32_t)world_rank,&derived) )
-        {
-            fprintf(stderr,"weightd_warm: dsv4_pro identity derivation failed\n");
-            return 2;
-        }
-        request.identity.geometry_fingerprint = derived.geometry_fingerprint;
-        request.identity.topology = derived.topology;
-        strcpy(request.identity.model,derived.model);
-        strcpy(request.identity.revision,derived.revision);
     }
     if ( identity_print )
     {
@@ -474,11 +429,9 @@ int main(int argument_count,char **arguments)
         for (first=0u; first<manifest.group_count; first=index)
         {
             count = 0u;
-            for (index=first; index<manifest.group_count &&
+            for (index=first; index<manifest.group_count && count < SPARK_WEIGHTD_LEASE_GROUPS_MAX &&
                  manifest.groups[index].layer == manifest.groups[first].layer; index++)
             {
-                if ( count >= SPARK_WEIGHTD_LEASE_GROUPS_MAX )
-                    goto done;
                 keys[count].layer = manifest.groups[index].layer;
                 keys[count++].expert = manifest.groups[index].expert;
             }
@@ -496,11 +449,10 @@ usage:
     fprintf(stderr,"usage: weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY [LAYERS=45 [EXPERTS=288 [TIMEOUT_S=1800]]]\n"
         "       weightd_warm SOCKET PACK SHA256 REVISION TOPOLOGY --wset FILE [TIMEOUT_S=300]\n"
         "       weightd_warm SOCKET --reclaim   (node-global: every cold arena of every lane)\n"
+        "       weightd_warm SOCKET --drop-kv LABEL [...]   (release detached KV pools of these labels; exit 3 if one is attached)\n"
         "       weightd_warm SOCKET --reclaim-pack PACK|SHA256 [...]   (only cold arenas of these packs;\n"
         "              PACK reads PACK.sha256; exit 3 if a matching arena is still attached)\n"
-        "       options (any position): --family dsv4_pro --world-rank R (derive the exact\n"
-        "       DSV4 Pro module attach identity; REVISION/TOPOLOGY args are then ignored)\n"
-        "                           --family dsv41_flash (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
+        "       options (any position): --family dsv41_flash (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family ling (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family k3 (pin the k3 runner identity: kimi-k3/mxfp4,\n"
         "                              topology = TOPOLOGY, the runner tp_degree: 4 or 16;\n"

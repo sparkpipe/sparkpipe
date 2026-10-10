@@ -84,6 +84,10 @@ static inline uint32_t SparkModelDriverCacheLaneIsValid(
         (lane->block_identity_count != 0u) != (lane->block_identities != 0) ||
         (lane->block_identity_count != 0u &&
          (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u) ||
+        ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS) != 0u &&
+         (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u) ||
+        ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED) != 0u &&
+         (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS) == 0u) ||
         (lane->flags & ~SPARK_MODEL_DRIVER_CACHE_LANE_KNOWN_FLAGS) != 0u)
         return 0u;
     prefix_present = SparkModelDriverCacheIdentityIsPresent(
@@ -176,7 +180,7 @@ static inline uint32_t SparkModelDriverAdmissionRequestIsValid(
                 ((request->cache_lanes[index].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u))
             return 0u;
         if (publishing != 0u &&
-            (request->cache_lanes[index].flags != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH ||
+            ((request->cache_lanes[index].flags & ~(SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED)) != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH ||
              request->cache_lanes[index].publish_token_count != request->cache_lanes[index].context_token_count ||
              request->cache_lanes[index].sequence_position != request->cache_lanes[index].context_token_count))
             return 0u;

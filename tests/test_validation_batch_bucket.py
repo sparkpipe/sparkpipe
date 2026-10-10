@@ -38,7 +38,6 @@ def environment(family, prefix, codec):
 
 
 CASES = (
-    ("dsv4", f"{module('dsv4')}/validation/validate_dsv4_resident_decode_stage_cuda.sh", {"SPARK_DSV4_STAGE_INDEX": "1", "SPARK_DSV4_CUDA_VALIDATOR_SHA256": validator(f"{module('dsv4')}/validation/spark_dsv4_resident_decode_stage_cuda_validation.cu"), "SPARK_DSV4_REFERENCE_VERIFIER_SHA256": digest("tools/verify_dsv4_ga_reference_fixture.py")}),
     ("glm52", f"{module('glm52')}/validation/validate_glm52_resident_decode_stage_cuda.sh", environment("glm52", "SPARK_GLM52", "mxfp4")),
     ("glm5_next", f"{module('glm5_next')}/validation/validate_glm5_next_resident_decode_stage_cuda.sh", environment("glm5_next", "SPARK_GLM5_NEXT", "fp8")),
     ("glm5_next_mtp", f"{module('glm5_next')}/validation/validate_glm5_next_resident_decode_stage_mtp_parity.sh", {"SPARK_GLM5_NEXT_EXPERT_CODEC": "fp8"}),

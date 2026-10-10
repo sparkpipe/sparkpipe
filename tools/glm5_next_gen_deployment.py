@@ -19,12 +19,17 @@ import os
 import re
 from pathlib import Path
 
+import spark_serving_profile
+
 HOSTS = [h for h in os.environ.get(
     "GLM5_NEXT_TP_HOSTS",
     ",".join(f"spark{hex(r)[2:]}" for r in range(16))).split(",") if h]
 TP = len(HOSTS)
 ROOT_NAME = os.environ.get("GLM5_NEXT_ROOT_NAME", "glm53flash.fp8.tp16")
-KV_BACKING_MAXIMUM_BYTES = 137438953472
+KV_BACKING_MAXIMUM_BYTES = int(os.environ.get("GLM5_NEXT_KV_BACKING_BYTES", "137438953472"))
+MAX_SEQUENCE_POSITIONS = int(os.environ.get("GLM5_NEXT_MAX_POSITIONS", "131072"))
+ROW_CAPACITY = int(os.environ.get("GLM5_NEXT_ROWS", "1024"))
+SEQUENCES = int(os.environ.get("GLM5_NEXT_SEQUENCES", "16"))
 KV_SNAPSHOT_MAXIMUM_BYTES = 68719476736
 RUNTIME_ROOT = os.environ.get("GLM5_NEXT_RUNTIME_ROOT",
                               "/home/{host}/sparkdata/" + ROOT_NAME)
@@ -53,6 +58,35 @@ NODE_TARGET = "cuda.sm121.glm5_next.resident_decode_stage.bf16.expert_fp8"
 FIRMWARE_HEADER = (Path(__file__).resolve().parents[1] / "modules"
                    / "glm5_next_resident_decode_stage/include/sparkpipe"
                    / "spark_glm5_next_resident_decode_stage_firmware.h")
+MODEL_HEADER = (Path(__file__).resolve().parents[1] / "model-families"
+                / "glm5_next/include/sparkpipe/spark_glm5_next_model.h").read_text()
+KV_GEOMETRY_HEADER = (Path(__file__).resolve().parents[1] / "model-families"
+                      / "glm5_next/include/sparkpipe/spark_glm5_next_kv_geometry.h").read_text()
+
+
+def model_constant(name: str) -> int:
+    return int(re.search(r"#define SPARK_GLM5_NEXT_MODEL_" + name + r" (\d+)u", MODEL_HEADER).group(1))
+
+
+def recurrent_page_bytes() -> int:
+    heads = model_constant("KDA_HEAD_COUNT")
+    key = model_constant("KDA_HEAD_KEY_DIMENSION")
+    state_layer = heads * key * model_constant("KDA_HEAD_VALUE_DIMENSION") * model_constant("KDA_STATE_ELEMENT_BYTES")
+    window_layer = 3 * heads * key * model_constant("KDA_SHORT_CONV_KERNEL") * 2
+    return (state_layer // TP + 3 * (window_layer // (3 * TP))) * model_constant("KDA_LAYER_COUNT")
+
+
+def kv_geometry_constant(name: str) -> int:
+    return int(re.search(r"#define SPARK_GLM5_NEXT_KV_" + name + r" (\d+)u", KV_GEOMETRY_HEADER).group(1))
+
+
+def kv_page_bytes() -> int:
+    slot = (model_constant("MLA_LATENT_DIMENSION") + model_constant("MLA_QK_ROPE_HEAD_DIMENSION")) * model_constant("KV_BITS") // 8
+    index = (2 * model_constant("INDEX_HEAD_DIMENSION") + 1) * 2
+    shards = TP if TP >= KV_SHARD_REQUIRED_DEGREE else 1
+    return kv_geometry_constant("BLOCK_TOKEN_COUNT") * (slot + index) // shards * model_constant("DSA_LAYER_COUNT")
+
+
 KV_SHARD_REQUIRED_DEGREE = int(re.search(
     r"#define SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_KV_SHARD_REQUIRED_DEGREE "
     r"(\d+)u", FIRMWARE_HEADER.read_text()).group(1))
@@ -110,7 +144,7 @@ def stage_config(rank: int) -> dict:
         "model_revision": MODEL_REVISION,
         "expert_weight_codec": "fp8",
         "stage_pack_path": PACK_TEMPLATE % rank,
-        "max_sequence_positions": 32768,
+        "max_sequence_positions": MAX_SEQUENCE_POSITIONS,
         # 1024-row prefill chunks (the module's SPARK_BATCH_BUCKET width):
         # the engine chunks prompts to runtime_limits.max_input_rows, and
         # the shipped 16 made a 32K prompt 2048 sequential submissions -
@@ -119,7 +153,7 @@ def stage_config(rank: int) -> dict:
         # execution_row_capacity is validated against the module's row
         # firmware limit, not resident_sequence_capacity (the GDN-state
         # memory budget stays sized by max_active_sequences=16).
-        "execution_row_capacity": 1024,
+        "execution_row_capacity": ROW_CAPACITY,
         # R3 engagement: above 2048 positions the decode attention takes
         # the split-K (flash-decode) form - 4 heads/rank at TP16 means a
         # B1 grid of 4 CTAs on 48 SMs without it. Below the threshold the
@@ -181,15 +215,27 @@ def tokenizer_block(eos_token_ids: list) -> dict:
     }
 
 
+def index_context_parallel_fits(positions: int, rows: int) -> bool:
+    local_pools = (positions // model_constant("INDEX_KPOOL") + TP - 1) // TP
+    sequence_floats = model_constant("HIDDEN_DIMENSION") // 2
+    return (rows * local_pools + sequence_floats - 1) // sequence_floats <= rows
+
+
+def serving_profile() -> dict:
+    if MAX_SEQUENCE_POSITIONS > model_constant("MAXIMUM_CONTEXT_TOKENS"):
+        raise SystemExit(f"GLM5_NEXT_MAX_POSITIONS={MAX_SEQUENCE_POSITIONS} exceeds the model's "
+                         f"{model_constant('MAXIMUM_CONTEXT_TOKENS')}-token context")
+    if TP >= KV_SHARD_REQUIRED_DEGREE and not index_context_parallel_fits(MAX_SEQUENCE_POSITIONS, ROW_CAPACITY):
+        raise SystemExit(f"GLM5_NEXT_MAX_POSITIONS={MAX_SEQUENCE_POSITIONS}: the index context-parallel score gather "
+                         f"at TP{TP} does not fit {ROW_CAPACITY} rows (SparkGlm5NextIndexCpFits)")
+    return spark_serving_profile.derive(
+        SEQUENCES, MAX_SEQUENCE_POSITIONS, recurrent_page_bytes(), KV_BACKING_MAXIMUM_BYTES,
+        rows=ROW_CAPACITY, checkpoint_tokens=kv_geometry_constant("CHECKPOINT_TOKENS"), page_bytes=kv_page_bytes())
+
+
 def resident_deployment() -> dict:
     contract = json.loads((REPO_ROOT / "model_contracts/glm53_flash_authoritative.json").read_text())
-    # Single source of truth: every dependent constant derives from the
-    # seed via tools/spark_serving_profile.py (#1210 drift law). The old
-    # hand-pinned literals are gone; GLM5_NEXT_SEQUENCES is the seed.
-    import spark_serving_profile
-    sequences = int(os.environ.get("GLM5_NEXT_SEQUENCES", "16"))
-    derived = spark_serving_profile.derive(
-        sequences, stage_config(0)["max_sequence_positions"])
+    derived = serving_profile()
     derived_runtime_limits = {key: derived[key] for key in
                               spark_serving_profile.DEPLOYMENT_RUNTIME_MEMBERS}
     nodes = []
@@ -203,7 +249,7 @@ def resident_deployment() -> dict:
             "adapter_configuration_path": "config/stage.json",
             "kv_backing_directory": "/home/%s/kvcache/" % host + ROOT_NAME,
             "kv_partition": "/",
-            "kv_backing_maximum_bytes": KV_BACKING_MAXIMUM_BYTES,
+            "kv_backing_maximum_bytes": derived["kv_backing_maximum_bytes"],
             "kv_snapshot_directory": "/home/%s/kvsnapshot/" % host + ROOT_NAME,
             "kv_snapshot_maximum_bytes": KV_SNAPSHOT_MAXIMUM_BYTES,
             "control_endpoint": {
@@ -256,12 +302,13 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(args.output)
     score = score_members(vars(args), ROOT_NAME, RUNTIME_ROOT, root)
+    deployment = resident_deployment()
     (root / "config").mkdir(parents=True, exist_ok=True)
     for rank in range(TP):
         (root / "config" / ("stage_%02d.json" % rank)).write_text(
             render_stage(dict(stage_config(rank), **score)))
     (root / "model_resident.json").write_text(
-        json.dumps(resident_deployment(), indent=1) + "\n")
+        json.dumps(deployment, indent=1) + "\n")
     print(f"{root}: {TP} stage configs + model_resident.json "
           f"(hosts {HOSTS[0]}..{HOSTS[-1]})")
     return 0

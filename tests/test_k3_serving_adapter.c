@@ -1,3 +1,4 @@
+#include "inference/runner/stage_serving_adapter.c"
 #include "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c"
 
 #include "inference/llms/kimi_k3/generated_config.h"
@@ -107,7 +108,7 @@ static int32_t TestK3Deployment(const char *path)
 
 static int32_t TestK3ReleaseValidation(void)
 {
-	SparkK3ServingState state;
+	SparkStageServingState state;
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lanes[3];
 	uint32_t slots[4];
@@ -122,31 +123,31 @@ static int32_t TestK3ReleaseValidation(void)
 	submission.active_sequence_count = 2u;
 	lanes[0].resident_sequence_slot = 3u;
 	lanes[1].resident_sequence_slot = 1u;
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK &&
-		K3ServingReleaseSlots(&state, &submission, slots) == SPARK_STATUS_OK && slots[0] == 3u && slots[1] == 1u,
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK &&
+		StageServingReleaseSlots(&state, &submission, slots) == SPARK_STATUS_OK && slots[0] == 3u && slots[1] == 1u,
 		"a RELEASE names each released slot once");
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH;
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK,
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_OK,
 		"a publish-only frame is a rowless submission like a RELEASE");
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
 	lanes[1].resident_sequence_slot = 4u;
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
 		"a released slot outside the state pool is refused");
 	lanes[1].resident_sequence_slot = 3u;
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
 		"a slot released twice in one RELEASE is refused");
 	lanes[1].resident_sequence_slot = 1u;
 	submission.lanes = 0;
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
 		"a RELEASE naming sequences without lanes is refused");
 	submission.lanes = lanes;
 	submission.row_count = 1u;
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
 		"a RELEASE with rows is refused");
 	submission.row_count = 0u;
 	submission.control_generation = 4u;
 	atomic_store(&state.reset_generation, 5u);
-	failures += TestK3Check(K3ServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
+	failures += TestK3Check(StageServingValidateSubmission(&state, &submission) == SPARK_STATUS_INVALID_ARGUMENT,
 		"a submission from before the last reset is refused");
 	return(failures);
 }
@@ -161,7 +162,7 @@ static int32_t TestK3Grouping(void)
 	static const uint64_t positions[5] = { 0u, 1u, 2u, 0u, 1u };
 	static const uint32_t lane_of_row[5] = { 0u, 0u, 0u, 1u, 1u };
 	static const uint64_t sequences[5] = { 7u, 7u, 7u, 9u, 9u };
-	SparkK3ServingState state;
+	SparkStageServingState state;
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lanes[2];
 	SparkStatus status = SPARK_STATUS_OK;
@@ -189,7 +190,7 @@ static int32_t TestK3Grouping(void)
 	submission.row_positions = positions;
 	submission.row_lane_indices = lane_of_row;
 	submission.row_sequence_ids = sequences;
-	status = K3ServingGroupRows(&state, &submission, 5u, &active);
+	status = StageServingGroupRows(&state, &submission, 5u, &active);
 	failures += TestK3Check(status == SPARK_STATUS_OK && active == 2u,
 		"a two-sequence prefill of five rows groups into two sequences");
 	failures += TestK3Check(TestK3Host(&state.runs_host)[0] == 0u && TestK3Host(&state.runs_host)[1] == 3u &&
@@ -203,7 +204,7 @@ static int32_t TestK3Grouping(void)
 	failures += TestK3Check(TestK3Host(&state.context_host)[2] == 3u && TestK3Host(&state.context_host)[0] == 2u &&
 		TestK3Host(&state.context_host)[1] == 0u && TestK3Host(&state.context_host)[3] == 0u,
 		"attention reads each sequence's context by its slot: slot 2 holds 3 tokens, slot 0 holds 2");
-	K3ServingContinuityRows(&state, &submission, 5u, active, row_slots, row_sequences, row_positions);
+	StageServingContinuityRows(&state, &submission, 5u, active, row_slots, row_sequences, row_positions);
 	failures += TestK3Check(row_slots[0] == 2u && row_slots[1] == 0u && row_positions[0] == 0u && row_positions[1] == 0u &&
 		row_sequences[0] == 7u && row_sequences[1] == 9u && row_slots[2] == 2u && row_positions[2] == 1u &&
 		row_positions[3] == 2u && row_slots[4] == 0u && row_positions[4] == 1u,
@@ -217,7 +218,7 @@ static int32_t TestK3Grouping(void)
 		static const uint32_t past_lanes[5] = { 0u, 1u, 2u, 1u, 1u };
 		submission.row_positions = wave_positions;
 		submission.row_lane_indices = wave_lane_of_row;
-		status = K3ServingGroupRows(&state, &submission, 5u, &active);
+		status = StageServingGroupRows(&state, &submission, 5u, &active);
 		failures += TestK3Check(status == SPARK_STATUS_OK && active == 2u &&
 			TestK3Host(&state.runs_host)[1] == 2u && TestK3Host(&state.runs_host)[2] == 5u &&
 			TestK3Host(&state.order_host)[0] == 0u && TestK3Host(&state.order_host)[1] == 2u &&
@@ -227,24 +228,24 @@ static int32_t TestK3Grouping(void)
 			TestK3Host(&state.state_host)[2] == 2u && TestK3Host(&state.context_host)[2] == 2u && TestK3Host(&state.context_host)[0] == 3u,
 			"a wave prefill keeps each row's slot and each slot's context");
 		submission.row_lane_indices = one_lane;
-		failures += TestK3Check(K3ServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
+		failures += TestK3Check(StageServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
 			"a sequence with no rows is refused before admission");
 		submission.row_lane_indices = past_lanes;
-		failures += TestK3Check(K3ServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
+		failures += TestK3Check(StageServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
 			"a row naming a sequence past the submission's lanes is refused before admission");
 		submission.row_lane_indices = wave_lane_of_row;
 		lanes[0].resident_sequence_slot = 4u;
-		failures += TestK3Check(K3ServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
+		failures += TestK3Check(StageServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
 			"a row whose slot is outside the sequence pool is refused before admission");
 		lanes[0].resident_sequence_slot = 1u;
 		lanes[1].resident_sequence_slot = 1u;
-		failures += TestK3Check(K3ServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
+		failures += TestK3Check(StageServingGroupRows(&state, &submission, 5u, &active) == SPARK_STATUS_VALIDATION_FAILED,
 			"two sequences on one slot are refused before admission");
 		lanes[0].resident_sequence_slot = 2u;
 		submission.row_count = 2u;
 		submission.row_positions = decode_positions;
 		submission.row_lane_indices = decode_lanes;
-		status = K3ServingGroupRows(&state, &submission, 2u, &active);
+		status = StageServingGroupRows(&state, &submission, 2u, &active);
 		failures += TestK3Check(status == SPARK_STATUS_OK && TestK3Host(&state.context_host)[1] == 12u &&
 			TestK3Host(&state.context_host)[2] == 5u && TestK3Host(&state.context_host)[0] == 0u &&
 			TestK3Host(&state.seqslot_host)[0] == 2u && TestK3Host(&state.seqslot_host)[1] == 1u &&

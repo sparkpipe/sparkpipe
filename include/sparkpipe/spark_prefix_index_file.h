@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 #define SPARK_PREFIX_INDEX_FILE_MAGIC 0x3158444950534b53ull
-#define SPARK_PREFIX_INDEX_FILE_VERSION 1u
+#define SPARK_PREFIX_INDEX_FILE_VERSION 2u
 #define SPARK_PREFIX_INDEX_FILE_PATH_BYTES 1024u
 
 typedef struct SparkPrefixIndexFileHeader

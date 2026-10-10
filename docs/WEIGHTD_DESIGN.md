@@ -721,9 +721,18 @@ Every lazy attach declares `expert_pool_bytes`. The daemon rejects 0,
 `UINT64_MAX` and values above its device budget. A pool larger than the pack
 becomes one allocation for the whole arena whose chunks are never evicted
 (`SparkWeightdPremapPool`, logged as "pool single-alloc"). A pool no larger
-than the pack stays per-chunk lazy: acquisitions load chunks on demand and
-evict the least recently used unpinned groups to stay inside the pool
-(`SparkWeightdAcquireBudget`). A later attach to an existing arena must
+than the pack becomes a slot pool (`SparkWeightdCreateSlots`, logged as "pool
+slots"): the attach allocates `expert_pool_bytes / chunk_bytes` physical
+chunks up front and refuses with `CAPACITY_EXCEEDED` when they do not fit, so
+a pool that cannot be held fails at attach instead of mid-request.
+Acquisitions load chunks on demand into free slots and evict the least
+recently used unpinned groups to stay inside the pool
+(`SparkWeightdAcquireBudget`); an eviction unmaps the chunk and returns its
+slot, it frees no memory. A cold slot pool gives memory back to reclaim in
+this order: free slots of every cold arena, least recently used arena first,
+then the least recently used groups of the coldest arena, whose slots are
+released as they free. Such an arena stays registered with what it still
+holds, and the next attach refills its pool to full size or is refused. A later attach to an existing arena must
 declare the same pool or gets `INVALID_ARGUMENT`. The old 8 GiB default was
 deleted in 13c1113. Consumers set `SPARK_WEIGHTD_EXPERT_POOL_BYTES` explicitly,
 and the GLM module refuses to start without it. The fleet agent passes
@@ -1125,7 +1134,7 @@ Context and ownership:
   mutex around their client exchanges. `SparkWeightdMapBeginUse`,
   `SparkWeightdMapRecordCompletion` and `SparkWeightdMapDestroy` take no
   lock; the caller serializes them with the other calls.
-- The map borrows the client for every `ACQUIRE`, `EXPORT_LEASE` and
+- The map borrows the client for every `ACQUIRE`, `LEASE_SLOTS` and
   `RELEASE` and never closes it. The client, whose connection holds the lazy
   attach, must outlive the map. From the attach result the map copies only
   the generation and the chunk geometry.
@@ -1133,7 +1142,9 @@ Context and ownership:
   address reservation: per-chunk host tables, 64 lease slots each with a CUDA event
   (`cudaEventDisableTiming`), a virtual range of the chunk span plus one
   chunk for the epoch page, and, when the daemon exported them, the
-  read-only epoch page and the pooled mapping. A map holds at most 64 leases
+  read-only epoch page and the pooled mapping. For a slot pool it imports
+  every slot once (`SLOT_EXPORT` batches); a daemon that exports neither a
+  pool nor slots is refused with `UNSUPPORTED`. A map holds at most 64 leases
   at once, fewer than the daemon's `SPARK_WEIGHTD_LEASE_COUNT_MAX` per arena.
   If `SparkWeightdMapCreate` fails and its cleanup also fails, `*out` holds
   the map; pass it to `SparkWeightdMapDestroy`.
@@ -1141,8 +1152,12 @@ Context and ownership:
 `SparkWeightdMapBase` returns a base that does not change after
 `SparkWeightdMapCreate`;
 `SparkWeightdMapBeginUse` returns the same base. In a pooled map every pack
-offset is mapped. In a per-chunk map, `base + offset` is valid only while a
-lease of this map holds the covering chunk.
+offset is mapped. In a slot map, `base + offset` is valid only while a lease
+of this map holds the covering chunk. A slot map binds each leased chunk to
+the slot `LEASE_SLOTS` reports and keeps that mapping after the lease is
+released; it remaps a chunk only when the daemon has moved it to another
+slot, so re-leasing resident experts makes no CUDA mapping call. A pooled
+map makes no exchange after `ACQUIRE` at all.
 
 `SparkWeightdMapAcquire`:
 
@@ -1150,9 +1165,9 @@ lease of this map holds the covering chunk.
   `SparkWeightdMapBeginUse`, which accepts only a lease that is acquired and
   not yet begun.
 - The deadline is `now + timeout` at entry; a timeout of 0 means
-  `SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS`. Each `EXPORT_LEASE` batch gets
-  the remaining time, each chunk import checks it, and it is checked once
-  more after the last chunk. The `ACQUIRE` exchange itself is given the full
+  `SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS`. Each `LEASE_SLOTS` batch gets
+  the remaining time, and it is checked once more after the last chunk is
+  bound. The `ACQUIRE` exchange itself is given the full
   timeout, the wait for the internal mutex is unbounded, and a CUDA call in
   progress is not interrupted, so a call can overrun its deadline.
 - If the import fails after the daemon granted the lease, the slot becomes
@@ -1317,8 +1332,8 @@ returns without a status, and the caller applies its own checks.
   how the daemon holds the NO-2x constraint from the perf notes: it never
   frees a serving process's arena to make room. If a model update's new
   arena does not fit next to the live one, an eager or pooled attach fails
-  with `CAPACITY_EXCEEDED`; a per-chunk lazy arena fails later, when a chunk
-  cannot be committed. Stopping the old consumer drops its references, and
+  with `CAPACITY_EXCEEDED`; so does a slot pool, whose slots are allocated at
+  attach. Stopping the old consumer drops its references, and
   the next attach reclaims the now cold arena.
 
 `SparkWeightdServerFreeArenaSlot` frees one arena:
@@ -1354,8 +1369,10 @@ Replies that carry file descriptors:
 |---|---|
 | `ATTACH_LAZY`, `ATTACH_LAZY_SHARED` | The mesh region fd when the mesh is ready, then the pool fd of a pooled arena (0 to 2). |
 | `EXPORT` | Up to `SPARK_WEIGHTD_EXPORT_BATCH_MAX` (64) chunk fds of an eager arena, from chunk `batch_offset` on. |
-| `EXPORT_LEASE` | Up to 64 chunk fds of one lease's chunk union. None for a pooled arena: its consumer maps the pool fd from the attach reply. |
+| `EXPORT_LEASE` | Up to 64 chunk fds of one lease's chunk union. None for a pooled arena: its consumer maps the pool fd from the attach reply. Served for clients older than IPC ABI 13; in a slot pool the fds are slot handles. |
+| `SLOT_EXPORT` (ABI 13) | Up to 64 slot fds of a slot pool, from slot `slot_offset` on, with the slot count. None and a slot count of 0 for any other lazy arena. |
 | `EPOCH_EXPORT` | The lazy arena's epoch page. |
+| `LEASE_SLOTS` (ABI 13) | None. Up to 512 (chunk, slot) pairs of one lease's chunk union, sorted by chunk; `UNSUPPORTED` for an arena without slots. |
 | `MESH_MAP`, `MESH_STAGING_MAP` | The mesh region or the staging area. |
 
 Each chunk fd comes from `cuMemExportToShareableHandle` and is set

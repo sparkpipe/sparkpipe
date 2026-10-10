@@ -84,7 +84,7 @@
       "model_family": "qwen38_27b",
       "model_id": "Qwen/Qwen3.8-27B",
       "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
-      "contract": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h",
+      "contract": "model_contracts/qwen38_27b_authoritative.json",
       "routed_expert_weight_format": "none",
       "routed_expert_activation_format": "none",
       "non_expert_weight_format": "bf16",
@@ -95,18 +95,19 @@
         "gdn",
         "bf16_dense_ffn",
         "prefix_cache",
-        "pipeline_parallel"
+        "tensor_parallel_16"
       ],
       "production_ready": false
     },
     {
-      "id": "dsv4_flash_native_mixed_precision",
-      "model_family": "dsv4_flash",
-      "model_id": "deepseek-ai/DeepSeek-V4-Flash-0731",
-      "contract": "model_contracts/dsv4_flash_authoritative.json",
+      "id": "dsv41_flash_native_mixed_precision",
+      "model_family": "dsv41_flash",
+      "model_id": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "model_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+      "contract": "model_contracts/dsv41_flash_authoritative.json",
       "routed_expert_weight_codec": "mxfp4_e2m1",
       "routed_expert_activation_format": "fp8_e4m3_dynamic",
-      "non_expert_weight_format": "fp8_e4m3_block_128x128",
+      "non_expert_weight_format": "fp8_e4m3_block_32x32_ue8m0",
       "non_expert_activation_format": "bf16",
       "accumulator_format": "fp32",
       "required_features": [
@@ -115,30 +116,10 @@
         "heavily_compressed_attention",
         "hyper_connections_x4",
         "hash_moe_bootstrap",
+        "engram",
         "shared_expert",
         "baseline_decode_without_speculation",
-        "pipeline_parallel"
-      ],
-      "production_ready": false
-    },
-    {
-      "id": "dsv4_pro_native_mixed_precision",
-      "model_family": "dsv4_pro",
-      "model_id": "deepseek-ai/DeepSeek-V4-Pro",
-      "contract": "model_contracts/dsv4_pro_authoritative.json",
-      "routed_expert_weight_codec": "mxfp4_e2m1",
-      "routed_expert_activation_format": "fp8_e4m3_dynamic",
-      "non_expert_weight_format": "fp8_e4m3_block_128x128",
-      "non_expert_activation_format": "fp8_e4m3_dynamic",
-      "accumulator_format": "fp32",
-      "required_features": [
-        "compressed_sparse_attention",
-        "heavily_compressed_attention",
-        "hyper_connections_x4",
-        "hash_moe_bootstrap",
-        "shared_expert",
-        "mtp",
-        "pipeline_parallel"
+        "tensor_parallel_16"
       ],
       "production_ready": false
     },

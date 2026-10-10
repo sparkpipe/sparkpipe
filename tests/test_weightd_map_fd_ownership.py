@@ -15,7 +15,7 @@ static int test_close(int fd);
 #include "MAP_SOURCE"
 #undef close
 static int watched[2],close_count[2],replacement;
-static unsigned imports;
+static unsigned imports,exports,mode;
 static int test_close(int fd)
 {
     unsigned index;
@@ -26,11 +26,33 @@ static int test_close(int fd)
     if (close_count[index]==1) assert(dup2(replacement,fd)==fd);
     return result;
 }
+SparkStatus SparkWeightdClientSlotExportBatch(SparkWeightdClient *client,uint64_t arena_generation,uint32_t slot_offset,SparkWeightdSlotBatch *batch,uint64_t timeout_nanoseconds)
+{
+    (void)client;(void)timeout_nanoseconds;
+    assert(arena_generation==7u && slot_offset==0u && exports++==0u);
+    memset(batch,0,sizeof(*batch));
+    batch->status=SPARK_STATUS_OK;
+    batch->chunk_bytes=mode==1u?8192u:4096u;
+    batch->slot_count=2u;
+    batch->batch_count=2u;
+    batch->fds[0]=watched[0];
+    batch->fds[1]=watched[1];
+    return(SPARK_STATUS_OK);
+}
+SparkStatus SparkWeightdClientLeaseSlotsBatch(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,uint32_t batch_offset,SparkWeightdLeaseSlotBatch *batch,uint64_t timeout_nanoseconds)
+{
+    (void)client;(void)arena_generation;(void)lease_identifier;(void)batch_offset;(void)batch;(void)timeout_nanoseconds;
+    abort();
+}
 CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     void *fd,CUmemAllocationHandleType type)
 {
-    (void)handle;(void)fd;(void)type;imports++;
-    return CUDA_ERROR_INVALID_VALUE;
+    (void)type;
+    assert((intptr_t)fd==watched[imports]);
+    imports++;
+    if (mode==2u) return CUDA_ERROR_INVALID_VALUE;
+    *handle=(CUmemGenericAllocationHandle)(uintptr_t)imports;
+    return CUDA_SUCCESS;
 }
 CUresult cuMemMap(CUdeviceptr address,size_t bytes,size_t offset,
     CUmemGenericAllocationHandle handle,unsigned long long flags)
@@ -44,15 +66,12 @@ CUresult cuMemSetAccess(CUdeviceptr address,size_t bytes,
     (void)address;(void)bytes;(void)descriptors;(void)count;
     abort();
 }
-static void check(unsigned mode)
+static void check(unsigned check_mode)
 {
     SparkWeightdMap map={0};
-    SparkWeightdExportBatch batch={0};
-    CUmemGenericAllocationHandle handles[2]={0};
-    uint64_t owners[2]={0};
-    uint8_t mapped[2]={1u,1u};
-    uint32_t last=0u;
-    imports=0u;
+    SparkStatus expected;
+    mode=check_mode;
+    imports=exports=0u;
     replacement=open("/dev/zero",O_RDONLY);
     assert(replacement>=0);
     for (unsigned i=0u;i<2u;i++)
@@ -60,19 +79,13 @@ static void check(unsigned mode)
         watched[i]=open("/dev/null",O_RDONLY);
         assert(watched[i]>=0);
         close_count[i]=0;
-        batch.fds[i]=watched[i];
-        batch.chunk_indices[i]=i;
     }
-    map.chunk_bytes=4096u;map.chunk_count=2u;
-    map.mapped=mapped;map.owners=owners;map.handles=handles;
-    batch.chunk_bytes=mode==1u?8192u:4096u;
-    batch.chunk_count=2u;batch.batch_count=2u;
-    if (mode==2u) mapped[0]=0u;
-    SparkStatus expected=mode==1u?SPARK_STATUS_SCHEMA_ERROR:
-        mode==2u?SPARK_STATUS_IO_ERROR:SPARK_STATUS_OK;
-    assert(map_import_batch(&map,0u,&batch,&last,0u,2u,
-        map_now()+UINT64_C(1000000000))==expected);
-    assert(imports==(mode==2u?1u:0u));
+    map.generation=7u;map.chunk_bytes=4096u;map.chunk_count=2u;
+    expected=mode==1u?SPARK_STATUS_SCHEMA_ERROR:mode==2u?SPARK_STATUS_IO_ERROR:SPARK_STATUS_OK;
+    assert(map_import_slots(&map)==expected);
+    assert(exports==1u && imports==(mode==0u?2u:mode==2u?1u:0u));
+    assert(mode!=0u || (map.slot_count==2u && map.slot_handles[0]==(CUmemGenericAllocationHandle)1u &&
+        map.slot_handles[1]==(CUmemGenericAllocationHandle)2u && map.chunk_slots[0]==SPARK_WEIGHTD_SLOT_NONE && map.chunk_slots[1]==SPARK_WEIGHTD_SLOT_NONE));
     for (unsigned i=0u;i<2u;i++)
     {
         unsigned char value=255u;
@@ -81,12 +94,14 @@ static void check(unsigned mode)
         assert(close_count[i]==1);
         assert(close(watched[i])==0);
     }
+    free(map.slot_handles);
+    free(map.chunk_slots);
     assert(close(replacement)==0);
 }
 int main(void)
 {
-    for (unsigned mode=0u;mode<3u;mode++) check(mode);
-    puts("PASS weightd map descriptor ownership: cached, schema rejection, import failure; six reused descriptors preserved");
+    for (unsigned check_mode=0u;check_mode<3u;check_mode++) check(check_mode);
+    puts("PASS weightd map slot descriptor ownership: imported, schema rejection, import failure; every received descriptor closed exactly once and six reused descriptors preserved");
     return 0;
 }
 '''
@@ -120,6 +135,16 @@ static int test_close(int fd)
 }
 cudaError_t cudaGetDevice(int *device) { *device=0;return cudaSuccess; }
 CUresult cuCtxGetCurrent(CUcontext *context) { *context=(CUcontext)1;return CUDA_SUCCESS; }
+SparkStatus SparkWeightdClientSlotExportBatch(SparkWeightdClient *client,uint64_t arena_generation,uint32_t slot_offset,SparkWeightdSlotBatch *batch,uint64_t timeout_nanoseconds)
+{
+    (void)client;(void)arena_generation;(void)slot_offset;(void)batch;(void)timeout_nanoseconds;
+    abort();
+}
+SparkStatus SparkWeightdClientLeaseSlotsBatch(SparkWeightdClient *client,uint64_t arena_generation,uint64_t lease_identifier,uint32_t batch_offset,SparkWeightdLeaseSlotBatch *batch,uint64_t timeout_nanoseconds)
+{
+    (void)client;(void)arena_generation;(void)lease_identifier;(void)batch_offset;(void)batch;(void)timeout_nanoseconds;
+    abort();
+}
 cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event,unsigned flags)
 {
     assert(flags==cudaEventDisableTiming && events<SPARK_WEIGHTD_LEASE_COUNT_MAX);
@@ -246,18 +271,12 @@ static void check_retirement(void)
     reserved=1u;handles[1]=mappings[1]=1u;
     cleanup_faults=(1u<<1u)|(1u<<3u);cleanup_hits=0u;
     assert(map_drop_slot(&map,0u)==SPARK_STATUS_OK && owners[0]==2u);
-    assert(mapped[0] && handles[1] && mappings[1] && cleanup_hits==0u);
-    assert(map_drop_slot(&map,1u)==SPARK_STATUS_IO_ERROR);
-    assert(owners[0]==2u && mapped[0] && handles[1] && mappings[1]);
-    assert(map_drop_slot(&map,1u)==SPARK_STATUS_IO_ERROR);
-    assert(owners[0]==2u && !mapped[0] && handles[1] && !mappings[1]);
-    assert(map_drop_slot(&map,1u)==SPARK_STATUS_OK);
-    assert(!owners[0] && !mapped[0] && !imported[0] && !handles[1] && !mappings[1]);
-    assert(cleanup_faults==0u && cleanup_hits==((1u<<1u)|(1u<<3u)));
-    map.pool_mapped=1u;owners[0]=1u;mapped[0]=1u;imported[0]=(CUmemGenericAllocationHandle)(uintptr_t)2u;
-    handles[1]=mappings[1]=1u;cleanup_hits=0u;
+    assert(map_drop_slot(&map,1u)==SPARK_STATUS_OK && owners[0]==0u);
+    assert(mapped[0] && imported[0] && handles[1] && mappings[1] && cleanup_hits==0u);
+    map.pool_mapped=1u;owners[0]=1u;
     assert(map_drop_slot(&map,0u)==SPARK_STATUS_OK && !owners[0]);
     assert(mapped[0] && imported[0] && handles[1] && mappings[1] && !cleanup_hits);
+    cleanup_faults=0u;
     handles[1]=mappings[1]=reserved=0u;
 }
 int main(void)
@@ -270,7 +289,7 @@ int main(void)
     }
     check(0u,63u);check(6u,63u);
     check_retirement();
-    puts("PASS weightd map create: 21 actual-source cases; six init failures, six cleanup retry boundaries, combined retries, exact resource ownership; partial retirement retries and pooled retention");
+    puts("PASS weightd map create: 21 actual-source cases; six init failures, six cleanup retry boundaries, combined retries, exact resource ownership; a released lease keeps every mapping in slot and pooled maps");
     return 0;
 }
 '''

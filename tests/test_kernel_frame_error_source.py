@@ -46,12 +46,6 @@ def main() -> int:
         "modules/qwen4_flash_resident_decode_stage/source/"
         "spark_qwen4_flash_resident_decode_stage_cuda.cu":
             "LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE",
-        "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_cuda.cu":
-            "LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE",
-        "modules/qwen38_27b_resident_decode_stage/source/"
-        "spark_qwen38_27b_resident_decode_stage_cuda.cu":
-            "LM_FRAME_ERROR_PAYLOAD_WINDOW_OUT_OF_RANGE",
     }
     for relative, needle in required.items():
         if needle not in (ROOT / relative).read_text():

@@ -773,7 +773,6 @@ SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,const
 	mapping->mapped_count = mapping->chunk_capacity;
 	mapping->metadata = (uint8_t *)calloc(1u,(size_t)request->metadata_bytes);
 	mapping->metadata_bytes = request->metadata_bytes;
-	mapping->write_budget_bytes_per_day = UINT64_C(1) << 40;
 	mapping->pool_generation = ++KV_POOL_GENERATION;
 	return(mapping->metadata != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
 }
@@ -2921,9 +2920,14 @@ static void check_execution_environment(void)
 	const char *invalid[] = {"", "0", "-1", "18446744073709551615", "invalid"};
 	assert(unsetenv("SPARK_GLM5_NEXT_PREFETCH") == 0);
 	state.graph_path_requested = 0u;
-	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.graph_path_enabled == 0u);
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK);
+	SparkGlm5NextApplyExecutionMode(&state);
+	assert(state.graph_path_enabled == 0u);
 	state.graph_path_requested = 1u;
-	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.graph_path_enabled == 1u);
+	state.graph_path_enabled = 0u;
+	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_OK && state.graph_path_enabled == 0u);
+	SparkGlm5NextApplyExecutionMode(&state);
+	assert(state.graph_path_enabled == 1u);
 	assert(setenv("SPARK_GLM5_NEXT_PREFETCH","1",1) == 0);
 	assert(SparkGlm5NextConfigureExecution(&state) == SPARK_STATUS_UNSUPPORTED);
 	assert(unsetenv("SPARK_GLM5_NEXT_PREFETCH") == 0);

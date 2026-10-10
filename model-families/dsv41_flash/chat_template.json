@@ -1,0 +1,24 @@
+{
+ "prefix": "<｜begin▁of▁sentence｜>",
+ "thinking_prefix": "<｜begin▁of▁sentence｜>",
+ "system": "<｜System｜>",
+ "system_thinking": "<｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\n",
+ "user": "<｜User｜>",
+ "observation": null,
+ "assistant": "<｜Assistant｜></think>",
+ "assistant_thinking": "<｜Assistant｜></think>",
+ "assistant_suffix": "<｜end▁of▁sentence｜>",
+ "turn_suffix": "",
+ "generation": "<｜Assistant｜></think>",
+ "generation_thinking": "<｜Assistant｜><think>",
+ "stop_markers": [
+  "<｜end▁of▁sentence｜>"
+ ],
+ "control_markers": [
+  "<｜begin▁of▁sentence｜>",
+  "<｜end▁of▁sentence｜>",
+  "<｜User｜>",
+  "<｜Assistant｜>",
+  "<｜System｜>"
+ ]
+}

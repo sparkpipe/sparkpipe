@@ -34,6 +34,7 @@
     <label for="key">API key<input id="key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false"></label>
     <div class="row"><button id="connect" class="btn small" type="button">Connect</button><span id="models-note" class="hint">Enter an endpoint and key.</span></div>
     <label for="model">Model<select id="model"></select></label>
+    <p id="residency" class="hint" aria-live="polite"></p>
     <p class="label">Decoding</p>
     <div class="pair">
       <label for="max">Max tokens<input id="max" type="number" min="1" max="8192" value="256"></label>
@@ -113,6 +114,52 @@
       status('off', 'API unreachable');
     }
   };
+  let control = false, chosen = false, residencyTimer = 0;
+  const local = () => location.hostname !== 'sparkpipe.ai' && base() === location.origin;
+  const mark = (doc) => {
+    if (!chosen && doc.active && Array.from($('model').options).some((option) => option.value === doc.active)) $('model').value = doc.active;
+    Array.from($('model').options).forEach((option) => {
+      const tag = option.value === doc.active ? ' · loaded' : (doc.state === 'swapping' && option.value === doc.target ? ' · loading' : '');
+      option.textContent = option.value + tag;
+    });
+  };
+  const residency = async () => {
+    clearTimeout(residencyTimer);
+    let delay = 10000;
+    try {
+      const response = await fetch(base() + '/v1/sparkpipe/status', { headers: headers() });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const doc = await response.json(), last = (doc.history || []).slice(-1)[0];
+      control = true;
+      mark(doc);
+      if (doc.state === 'swapping') {
+        $('residency').textContent = 'Loading ' + doc.target + ': ' + (doc.phase || 'starting') + ', ' + Math.round(doc.swap_elapsed_s || 0) + ' s so far';
+        delay = 2000;
+      } else if (doc.state === 'failed') {
+        $('residency').textContent = 'Loading ' + ((last && last.to) || 'a model') + ' failed: ' + doc.error;
+      } else if (doc.active) {
+        $('residency').textContent = 'Loaded: ' + doc.active + (last && last.ok && last.to === doc.active ? ', swapped in ' + last.seconds + ' s' : '') + '. Other models load on demand.';
+      } else {
+        $('residency').textContent = 'No model is loaded; the first request loads one.';
+      }
+    } catch (_) {
+      control = false;
+      $('residency').textContent = '';
+      return;
+    }
+    residencyTimer = setTimeout(residency, delay);
+  };
+  const activate = async () => {
+    if (!control || !local() || !$('model').value) return;
+    try {
+      const response = await fetch(base() + '/v1/sparkpipe/activate', { method: 'POST', headers: headers(), body: JSON.stringify({ model: $('model').value }) });
+      if (!response.ok) throw await failure(response);
+    } catch (error) {
+      $('residency').textContent = 'Could not load ' + $('model').value + ': ' + error.message;
+      return;
+    }
+    residency();
+  };
   const connect = async () => {
     save('localStorage', 'sparkpipe-endpoint', $('endpoint').value.trim());
     save('sessionStorage', 'sparkpipe-key', $('key').value.trim());
@@ -127,6 +174,7 @@
     } catch (error) {
       $('models-note').textContent = 'No model list: ' + error.message;
     }
+    residency();
     snippet();
   };
   const add = (role, text) => {
@@ -195,6 +243,7 @@
     if (stream) body.stream_options = { include_usage: true };
     controller = new AbortController();
     busy(true);
+    if (control) residency();
     try {
       const response = await fetch(base() + '/v1/chat/completions', { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: controller.signal });
       if (!response.ok) throw await failure(response);
@@ -216,6 +265,7 @@
     } finally {
       controller = null;
       busy(false);
+      if (control) residency();
       $('prompt').focus();
     }
   };
@@ -223,6 +273,7 @@
   $('key').value = load('sessionStorage', 'sparkpipe-key');
   $('connect').addEventListener('click', connect);
   $('send').addEventListener('click', send);
+  $('model').addEventListener('change', () => { chosen = true; activate(); });
   $('clear').addEventListener('click', () => { history.length = 0; $('messages').replaceChildren(); });
   $('prompt').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } });
   $('prompt').addEventListener('input', () => { $('prompt').style.height = 'auto'; $('prompt').style.height = Math.min($('prompt').scrollHeight, 180) + 'px'; snippet(); });

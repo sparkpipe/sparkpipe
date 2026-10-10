@@ -174,7 +174,7 @@ static int SparkWeightdKvByteCount(const char *text,const char *name,uint64_t *v
     return 0;
 }
 
-static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *reserve,uint64_t *write_budget,uint64_t *load_pace,uint64_t *shared_window)
+static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *reserve,uint64_t *load_pace,uint64_t *shared_window)
 {
     int index;
     for (index = 1; index + 1 < argument_count; index++)
@@ -185,15 +185,11 @@ static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *
         if (strcmp(arguments[index], "--kv-reserve-bytes") == 0 &&
             SparkWeightdKvByteCount(arguments[index + 1], "--kv-reserve-bytes", reserve) != 0)
             return 2;
-        if (strcmp(arguments[index], "--kv-write-budget-bytes-per-day") == 0 &&
-            SparkWeightdKvByteCount(arguments[index + 1], "--kv-write-budget-bytes-per-day", write_budget) != 0)
-            return 2;
         if (strcmp(arguments[index], "--kv-shared-window-bytes") == 0 &&
             SparkWeightdKvByteCount(arguments[index + 1], "--kv-shared-window-bytes", shared_window) != 0)
             return 2;
     }
     if (SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_RESERVE_BYTES"), "SPARK_WEIGHTD_KV_RESERVE_BYTES", reserve) != 0 ||
-        SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY"), "SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY", write_budget) != 0 ||
         SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND"), "SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND", load_pace) != 0 ||
         SparkWeightdKvByteCount(getenv("SPARK_WEIGHTD_KV_SHARED_WINDOW_BYTES"), "SPARK_WEIGHTD_KV_SHARED_WINDOW_BYTES", shared_window) != 0)
         return 2;
@@ -205,7 +201,6 @@ int main(int argument_count, char **arguments)
     const char *socket_path = "/tmp/spark_weightd.sock";
     uint64_t device_bytes_max = SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT;
     uint64_t kv_reserve_bytes = 0ull;
-    uint64_t kv_write_budget_bytes_per_day = 0ull;
     uint64_t load_pace_bytes_per_second = 0ull;
     uint64_t kv_shared_window_bytes = 0ull;
     uint32_t mesh_fields = 0u;
@@ -405,7 +400,7 @@ int main(int argument_count, char **arguments)
         }
     }
 
-    if (SparkWeightdKvSettings(argument_count,arguments,&kv_reserve_bytes,&kv_write_budget_bytes_per_day,&load_pace_bytes_per_second,&kv_shared_window_bytes) != 0)
+    if (SparkWeightdKvSettings(argument_count,arguments,&kv_reserve_bytes,&load_pace_bytes_per_second,&kv_shared_window_bytes) != 0)
         return 2;
     if (kv_shared_window_bytes > kv_reserve_bytes)
     {
@@ -441,7 +436,6 @@ int main(int argument_count, char **arguments)
     config.socket_path = socket_path;
     config.device_bytes_max = device_bytes_max;
     config.kv_reserve_bytes = kv_reserve_bytes;
-    config.kv_write_budget_bytes_per_day = kv_write_budget_bytes_per_day;
     config.load_pace_bytes_per_second = load_pace_bytes_per_second;
     config.kv_shared_window_bytes = kv_shared_window_bytes;
 
@@ -499,11 +493,10 @@ int main(int argument_count, char **arguments)
         }
     }
 
-    printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu kv_write_budget_per_day=%llu load_pace_per_second=%llu kv_shared_window=%llu\n",
+    printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu load_pace_per_second=%llu kv_shared_window=%llu\n",
         socket_path, (unsigned long long)device_bytes_max,
         (unsigned long long)kv_reserve_bytes,
         (unsigned long long)(device_bytes_max - kv_reserve_bytes),
-        (unsigned long long)kv_write_budget_bytes_per_day,
         (unsigned long long)load_pace_bytes_per_second,
         (unsigned long long)kv_shared_window_bytes);
     fflush(stdout);

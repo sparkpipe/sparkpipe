@@ -20,6 +20,7 @@
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/weight_codec.cuh"
+#include "inference/kernels/stream_gemm.cuh"
 #include "sparkpipe/spark_glm5_next_resident_decode_stage_firmware.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/config.h"
 #include "modules/glm5_next_resident_decode_stage/source/cuda/index_kv.cuh"
@@ -233,6 +234,7 @@ void Glm5NextPoolExpandKernel(
 #define GLM5_NEXT_LAYER_TILE_N 128u
 #define GLM5_NEXT_LAYER_STAGES 2u
 #define GLM5_NEXT_LAYER_WARPS 8u
+#define GLM5_NEXT_LAYER_STREAM_EXPERT_ROWS 256u
 #define GLM5_NEXT_HEAD_TILE SPARK_GLM5_NEXT_HEAD_TILE
 #define GLM5_NEXT_HEAD_ROWS 16u
 
@@ -2501,7 +2503,12 @@ static int32_t Glm5NextLayerMoeUp(const Glm5NextLayerBuffers *buffers, uint32_t 
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(buffers->expert_w1_scale, GLM5_NEXT_EXPERTS, buffers->expert_w1_rows, GLM5_NEXT_HIDDEN);
-    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
+    status = LM_LAUNCH_ERR_SHAPE;
+    if constexpr ( LmStreamWeight<ExpertFormat>::kSupported )
+        if (rows >= GLM5_NEXT_LAYER_STREAM_EXPERT_ROWS)
+            status = LmStreamGemmGrouped<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, multiprocessors, stream);
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     if (status == LM_LAUNCH_ERR_SHAPE)
         status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w1_weight, gemm.scale_b, buffers->normed_bf16, buffers->gate_up_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 0u, GLM5_NEXT_HIDDEN, buffers->expert_w1_rows, stream);
     gemm.prefix_built = 1u;
@@ -2527,7 +2534,12 @@ static int32_t Glm5NextLayerMoeDown(const Glm5NextLayerBuffers *buffers, uint32_
     memset(&gemm, 0, sizeof(gemm));
     gemm.scale_a = LmScaleTensorNone();
     gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(buffers->expert_w2_scale, GLM5_NEXT_EXPERTS, GLM5_NEXT_HIDDEN, buffers->expert_intermediate);
-    status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
+    status = LM_LAUNCH_ERR_SHAPE;
+    if constexpr ( LmStreamWeight<ExpertFormat>::kSupported )
+        if (rows >= GLM5_NEXT_LAYER_STREAM_EXPERT_ROWS)
+            status = LmStreamGemmGrouped<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, 0, GLM5_NEXT_EXPERTS, packed_rows, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, multiprocessors, stream);
+    if (status == LM_LAUNCH_ERR_SHAPE)
+        status = LmSkinnyExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->route_expert, buffers->route_packed_row, packed_rows, GLM5_NEXT_TOP_K, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
     if (status == LM_LAUNCH_ERR_SHAPE)
         status = LmSkinnyGroupedExperts<ExpertFormat>(buffers->expert_w2_weight, gemm.scale_b, buffers->intermediate_bf16, buffers->expert_out_bf16, buffers->group_row_offset, buffers->route_source_token, GLM5_NEXT_EXPERTS, packed_rows, 1u, buffers->expert_intermediate, GLM5_NEXT_HIDDEN, stream);
     gemm.prefix_built = 1u;

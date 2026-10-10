@@ -27,8 +27,9 @@ def adapter_members():
 
 
 def rendered(lane, codec="fp8", sequences=8, rows=16, positions=4096, inflight=1, arm=None, node_root=None,
-             kv_backing_bytes=4 << 30, kv_physical_bytes=None, **score):
+             kv_backing_bytes=4 << 30, kv_physical_bytes=None, kv_snapshot_bytes=8 << 30, **score):
     arguments = argparse.Namespace(lane=lane, codec=codec, arm=arm, socket=SOCKET, kv_backing_bytes=kv_backing_bytes,
+                                   kv_snapshot_bytes=kv_snapshot_bytes,
                                    kv_physical_bytes=kv_physical_bytes, max_sequence_positions=positions,
                                    execution_row_capacity=rows, sequences=sequences, inflight=inflight,
                                    node_root=node_root, **score)
@@ -57,6 +58,8 @@ def lane_problems(lane, codec, files, members, revision, arm=None):
             failures.append(f"rank {rank}: stage members {tuple(stage)} != adapter {members}")
         if node["runtime_root"] != f"/home/{host}/glmfull-lane{lane}/root" or not node["kv_backing_directory"].startswith(node["runtime_root"] + "/"):
             failures.append(f"rank {rank}: runtime root")
+        if node.get("kv_snapshot_directory") != node["runtime_root"] + "/kvsnapshot" or node.get("kv_snapshot_maximum_bytes", 0) <= 0:
+            failures.append(f"rank {rank}: the KV binding refuses a deployment without a finite kv snapshot store under the runtime root")
         if node["control_endpoint"] != {"kind": "tcp", "host": host, "port": ports["control"] + rank}:
             failures.append(f"rank {rank}: control endpoint")
         if node["node_target"] != f"cuda.sm121.glm52.resident_decode_stage.bf16.expert_{codec}":
@@ -179,13 +182,17 @@ def main():
     page = glm53full_lane.KV_PAGE_BYTES
     if page * glm53full_lane.WORLD != 64 * (78 * (512 + 64) + 21 * 128) * 2 or page != 380928:
         failures.append(f"each rank stores 1/16 of every 64-token KV page: per-rank page bytes {page}")
-    spill = (4 << 30) // page
+    spill = (4 << 30) // page - 2
     for budget, physical in ((100 * page, 100), (64 * page, 64), (10000 * page, 8 * 64)):
         limits = rendered(6, kv_physical_bytes=budget)["model_resident.json"]["runtime_limits"]
         if limits["kv_physical_page_capacity"] != physical or limits["kv_logical_page_capacity"] != physical + spill:
             failures.append(f"kv physical budget {budget // page} pages rendered {limits['kv_physical_page_capacity']} physical, "
                             f"{limits['kv_logical_page_capacity']} logical")
-    for budget, backing in ((63 * page, 4 << 30), (100 * page, 411 * page)):
+    limits = rendered(6, kv_physical_bytes=100 * page, kv_backing_bytes=414 * page)["model_resident.json"]["runtime_limits"]
+    if limits["kv_logical_page_capacity"] != 100 + 412:
+        failures.append("the KV binding needs backing for every spill page plus two in-flight pages: "
+                        f"414 backing pages rendered {limits['kv_logical_page_capacity'] - 100} spill pages")
+    for budget, backing in ((63 * page, 4 << 30), (100 * page, 411 * page), (100 * page, 413 * page)):
         try:
             rendered(6, kv_physical_bytes=budget, kv_backing_bytes=backing)
             failures.append(f"kv physical {budget // page} pages with {backing // page} backing pages rendered")
@@ -193,7 +200,7 @@ def main():
             pass
     with tempfile.TemporaryDirectory() as directory:
         command = [sys.executable, str(ROOT / "tools/glm53full_lane.py"), "--lane", "6", "--codec", "fp8", "--socket", SOCKET,
-                   "--kv-backing-bytes", str(4 << 30), "--max-sequence-positions", "4096", "--execution-row-capacity", "16",
+                   "--kv-backing-bytes", str(4 << 30), "--kv-snapshot-bytes", str(8 << 30), "--max-sequence-positions", "4096", "--execution-row-capacity", "16",
                    "--sequences", "8", "--inflight", "1", "--output", directory]
         subprocess.run(command, check=True, capture_output=True)
         if subprocess.run(command + ["--check"], capture_output=True).returncode != 0:
@@ -207,7 +214,7 @@ def main():
         failures.append("the committed production lane tree drifted from its render.json; re-render deployment/glm53full_tp16_lane6")
     limits = json.loads((production / "model_resident.json").read_text())["runtime_limits"]
     if limits["max_sequence_positions"] != 262144 or limits["resident_sequence_capacity"] != 2 or limits["max_input_rows"] != 1024 or \
-            limits["kv_physical_page_capacity"] != 2 * 262144 // 64 or limits["kv_logical_page_capacity"] != limits["kv_physical_page_capacity"] + settings["kv_backing_bytes"] // page:
+            limits["kv_physical_page_capacity"] != 2 * 262144 // 64 or limits["kv_logical_page_capacity"] != limits["kv_physical_page_capacity"] + settings["kv_backing_bytes"] // page - 2:
         failures.append(f"production lane limits {limits}")
         stage = Path(directory) / "config/stage_03.json"
         stage.write_text(stage.read_text().replace('"tp_rank": 3', '"tp_rank": 4'))

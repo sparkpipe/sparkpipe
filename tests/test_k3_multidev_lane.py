@@ -99,6 +99,10 @@ def deployment_gates(deployment, runtime_root, socket, failures):
               f"node {i}: kv backing {backing} escapes the private root")
         check(0 < node["kv_backing_maximum_bytes"] < 1 << 40, failures,
               f"node {i}: kv backing cap must be finite")
+        check(node.get("kv_snapshot_directory") == runtime_root + "/kvsnapshot", failures,
+              f"node {i}: the KV binding refuses a deployment without a snapshot store under the root")
+        check(0 < node.get("kv_snapshot_maximum_bytes", 0) < 1 << 40, failures,
+              f"node {i}: kv snapshot cap must be finite")
         endpoint = node["control_endpoint"]
         host = f"spark{HEX[i]}"
         check(endpoint["host"] == host, failures,
@@ -124,6 +128,8 @@ def adapter_gates(config, rank, failures, per_host_ports):
     check(config["stage_pack_path"] == expected_pack, failures,
           f"{host}: stage_pack_path {config['stage_pack_path']}")
 
+    check(config["state_budget_bytes"] == lane.DEFAULT_STATE_BUDGET_BYTES, failures,
+          f"{host}: the adapter carries the rank state budget")
     check("tp_collective" not in config, failures, f"{host}: the host TCP collective is gone")
     per_host_ports.setdefault(host, []).append(lane.CONTROL_BASE + rank)
     check(config["device_collective"]["wait_mode"] == "hardware", failures, f"{host}: device collective wait mode")
@@ -268,6 +274,56 @@ def main() -> int:
 
         check(lane.MESH_RANKS == ",".join(str(i) for i in range(16)),
               failures, "mesh map must be the identity permutation")
+
+        limits = deployment["runtime_limits"]
+        record = lane.recurrent_page_bytes("tp4pp4")
+        check(record == 29638656 and lane.recurrent_page_bytes("tp16") == 28403712, failures,
+              "the KDA record per logical page is the KV binding's recurrent lane bytes")
+        minimum = lane.kv_backing_minimum("tp4pp4", limits["resident_sequence_capacity"],
+                                          limits["kv_physical_page_capacity"], limits["kv_logical_page_capacity"])
+        check(lane.kv_page_bytes("tp16") == 24 * 64 * 576 * 2 // 16, failures,
+              "a TP16 rank holds one sixteenth of every MLA layer's page")
+        check(all(node["kv_backing_maximum_bytes"] >= minimum >= (2 * limits["resident_sequence_capacity"] + 2) * record
+                  for node in deployment["nodes"]), failures,
+              "the default KV backing holds the spilled pages and two KDA checkpoints per sequence plus two")
+        short = subprocess.run(
+            [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+             "--runtime-root", runtime_root,
+             "--weightd-socket", socket_path,
+             "--kv-backing-bytes", str(minimum - 1),
+             "--output-dir", str(Path(temporary) / "short")],
+            capture_output=True, text=True)
+        check(short.returncode != 0 and "KDA checkpoints" in short.stderr, failures,
+              "a KV backing below the spilled pages and the KDA checkpoints is refused")
+
+        for arguments, message, refusal in (
+                (["--sequences", "4", "--rows", str(lane.MAX_ROWS + 1)], f"within sequences..{lane.MAX_ROWS}",
+                 "a wave wider than the adapter's row limit is refused"),
+                (["--sequences", "4", "--rows", "3"], f"within sequences..{lane.MAX_ROWS}",
+                 "a wave narrower than one row per sequence is refused"),
+                (["--sequences", "4", "--kv-pages", "4096", "--kv-physical-pages", "256"], "must hold one sequence",
+                 "physical pages below one sequence's pages are refused"),
+                (["--sequences", "4", "--kv-pages", "64", "--kv-physical-pages", "256", "--kv-logical-pages", "128"],
+                 "must cover the physical pages", "logical pages below the sequences' pages are refused")):
+            refused = subprocess.run(
+                [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+                 "--runtime-root", runtime_root,
+                 "--weightd-socket", socket_path,
+                 "--kv-backing-bytes", str(40 * 10 ** 9),
+                 "--output-dir", str(Path(temporary) / "refused"), *arguments],
+                capture_output=True, text=True)
+            check(refused.returncode != 0 and message in refused.stderr, failures, refusal)
+        defaulted = subprocess.run(
+            [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+             "--runtime-root", runtime_root,
+             "--weightd-socket", socket_path,
+             "--sequences", "4", "--kv-pages", "64", "--kv-physical-pages", "64",
+             "--kv-backing-bytes", str(40 * 10 ** 9),
+             "--output-dir", str(Path(temporary) / "defaulted")],
+            capture_output=True, text=True)
+        check(defaulted.returncode == 0 and json.loads((Path(temporary) / "defaulted" / "deployment.json").read_text())
+              ["runtime_limits"]["kv_logical_page_capacity"] == 256, failures,
+              "the logical pages default to the sequences' pages when the physical pages hold fewer")
 
         check_run = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),

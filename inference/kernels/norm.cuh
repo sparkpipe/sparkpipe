@@ -24,7 +24,9 @@ static __device__ float LmBlockSum(float value, float *shared)
 	if ( threadIdx.x == 0u )
 		shared[0] = value;
 	__syncthreads();
-	return(shared[0]);
+	value = shared[0];
+	__syncthreads();
+	return(value);
 }
 
 template<uint32_t THREADS>
@@ -45,7 +47,9 @@ static __device__ float LmBlockMax(float value, float *shared)
 	if ( threadIdx.x == 0u )
 		shared[0] = value;
 	__syncthreads();
-	return(shared[0]);
+	value = shared[0];
+	__syncthreads();
+	return(value);
 }
 
 template<uint32_t THREADS, class Weight>
@@ -198,10 +202,11 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 
 #define LM_GATE_SIGMOID 0u
 #define LM_GATE_SOFTPLUS 1u
+#define LM_GATE_SILU 2u
 
-template<uint32_t THREADS>
+template<uint32_t THREADS, class Weight = uint16_t>
 __global__ __launch_bounds__(THREADS, 1)
-void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon, float head_multiply)
+void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon, float head_multiply)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	uint32_t row = blockIdx.y,head = blockIdx.x,index;
@@ -221,10 +226,50 @@ void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]) * scale;
 		if ( weight_bf16 != 0 )
-			value *= LmBf16ToFloat(weight_bf16[index]);
+			value *= LmScalarToFloat(weight_bf16[index]);
 		rounded = LmBf16ToFloat(LmFloatToBf16(value));
 		output_bf16[base + index] = LmFloatToBf16(rounded * head_multiply);
 	}
+}
+
+template<uint32_t THREADS, uint32_t GATE>
+static __device__ __forceinline__ void LmHeadRmsNormGateBody(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.y,head = blockIdx.x,index;
+	uint64_t base;
+	float total = 0.0f,scale,value,gate;
+	if ( row >= rows || head >= heads )
+		return;
+	base = ((uint64_t)row * heads + head) * head_dimension;
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(input_bf16[base + index]);
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	scale = rsqrtf((total / (float)head_dimension) + epsilon);
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(input_bf16[base + index]) * scale));
+		value = LmBf16ToFloat(LmFloatToBf16(value * LmBf16ToFloat(weight_bf16[index])));
+		gate = LmBf16ToFloat(gate_bf16[base + index]);
+		output_bf16[base + index] = LmFloatToBf16(value * (GATE == LM_GATE_SIGMOID ? 1.0f / (1.0f + __expf(-gate)) : gate / (1.0f + __expf(-gate))));
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadRmsNormSiluGateKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
+{
+	LmHeadRmsNormGateBody<THREADS,LM_GATE_SILU>(input_bf16,gate_bf16,weight_bf16,output_bf16,rows,heads,head_dimension,epsilon);
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
+{
+	LmHeadRmsNormGateBody<THREADS,LM_GATE_SIGMOID>(input_bf16,gate_bf16,weight_bf16,output_bf16,rows,heads,head_dimension,epsilon);
 }
 
 template<uint32_t THREADS, uint32_t ACTIVATION>
@@ -580,6 +625,64 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 		}
 		output_bf16[((uint64_t)row * dimension) + index] = LmFloatToBf16(total);
 	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS) void LmAttnResScoreKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, float *__restrict__ score_f32, uint32_t sources, uint32_t rows, uint32_t dimension, uint32_t score_stride, float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	const uint32_t row = blockIdx.x, source = blockIdx.y;
+	const uint16_t *values = source + 1u == sources
+		? partial_bf16 + ((uint64_t)row * dimension)
+		: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
+	float square = 0.0f,dot = 0.0f,inverse;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float value = LmBf16ToFloat(values[index]);
+		square += value * value;
+	}
+	square = LmBlockSum<THREADS>(square,reduction);
+	inverse = rsqrtf((square / (float)dimension) + epsilon);
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+		dot += LmBf16ToFloat(values[index]) * inverse
+			* LmBf16ToFloat(score_weight_bf16[index]);
+	dot = LmBlockSum<THREADS>(dot,reduction);
+	if ( threadIdx.x == 0u )
+		score_f32[((uint64_t)row * score_stride) + source] = dot;
+}
+
+template<uint32_t THREADS, uint32_t MAX_SOURCES>
+__global__ __launch_bounds__(THREADS) void LmAttnResMixKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const float *__restrict__ score_f32, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t rows, uint32_t dimension, uint32_t score_stride)
+{
+	__shared__ float weight[MAX_SOURCES];
+	const uint32_t row = blockIdx.y, index = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t source;
+	float running_max = -INFINITY,running_sum = 0.0f,total = 0.0f;
+	if ( threadIdx.x == 0u )
+	{
+		const float *score = score_f32 + ((uint64_t)row * score_stride);
+		for (source = 0u; source < sources; ++source)
+			running_max = fmaxf(running_max,score[source]);
+		for (source = 0u; source < sources; ++source)
+		{
+			weight[source] = __expf(score[source] - running_max);
+			running_sum += weight[source];
+		}
+		for (source = 0u; source < sources; ++source)
+			weight[source] /= running_sum;
+	}
+	__syncthreads();
+	if ( index >= dimension )
+		return;
+	for (source = 0u; source < sources; ++source)
+	{
+		const uint16_t *values = source + 1u == sources
+			? partial_bf16 + ((uint64_t)row * dimension)
+			: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
+		total += weight[source] * LmBf16ToFloat(values[index]);
+	}
+	output_bf16[((uint64_t)row * dimension) + index] = LmFloatToBf16(total);
 }
 
 template<uint32_t THREADS>
