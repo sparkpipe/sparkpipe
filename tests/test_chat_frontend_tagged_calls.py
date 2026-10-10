@@ -21,8 +21,20 @@ class TaggedModel:
     end_markers = [C + "message" + S]
 
 
-def run(text, chunk, tools=None, reasoning_open=True):
-    parser = chat_frontend.OutputParser(TaggedModel(), tools, reasoning_open, [])
+D = "\uff5cDSML\uff5c"
+
+
+class AttributeModel:
+    reasoning = {"start": "<think>", "end": "</think>"}
+    tool_calls = {"format": "tagged", "start": "\n<" + D + " invoke", "end": "</" + D + " invoke>", "attribute_end": ">",
+                  "argument_start": "<" + D + " parameter", "argument_end": "</" + D + " parameter>",
+                  "name_attribute": "name", "key_attribute": "name", "string_attribute": "string"}
+    content_markers = ["<" + D + " calls>", "\n</" + D + " calls>"]
+    end_markers = []
+
+
+def run(text, chunk, tools=None, reasoning_open=True, model=None):
+    parser = chat_frontend.OutputParser(model or TaggedModel(), tools, reasoning_open, [])
     events = []
     for start in range(0, len(text), chunk):
         events.extend(parser.feed(text[start:start + chunk]))
@@ -76,11 +88,30 @@ def main():
     joined, calls, _ = run(broken, 4)
     check(not calls and "no attributes" in joined["content"], "a call that does not parse is returned as visible text, never dropped")
 
+    def invoke(name, *arguments):
+        body = "".join("\n<" + D + ' parameter name="' + key + '" string="' + flag + '">' + value + "</" + D + " parameter>" for key, flag, value in arguments)
+        return "\n<" + D + ' invoke name="' + name + '">' + body + "\n</" + D + " invoke>"
+
+    attributed = ("Plan it.</think>Checking both.\n\n<" + D + " calls>" +
+                  invoke("write_file", ("path", "true", "x > y.txt"), ("lines", "false", "7")) +
+                  invoke("write_file", ("path", "true", "12"), ("overwrite", "false", "false")) +
+                  "\n</" + D + " calls>")
+    for chunk in (1, 5, len(attributed)):
+        joined, calls, _ = run(attributed, chunk, tools, model=AttributeModel())
+        name = f" (attribute names, chunks of {chunk})"
+        check(joined == {"reasoning": "Plan it.", "content": "Checking both.\n\n"}, "the call block wrapper and call separators never reach the content" + name)
+        check(len(calls) == 2, "every call in one block is parsed" + name)
+        if len(calls) == 2:
+            check(calls[0]["function"]["name"] == "write_file" and json.loads(calls[0]["function"]["arguments"]) == {"path": "x > y.txt", "lines": 7},
+                  "the configured name attribute names the tool and the string flag keeps strings raw" + name)
+            check(json.loads(calls[1]["function"]["arguments"]) == {"path": "12", "overwrite": False},
+                  "a string-flagged value stays a string even when it looks like JSON; an unflagged value decodes as JSON" + name)
+
     for failure in failures:
         print("FAIL " + failure)
     if failures:
         return 1
-    print("PASS chat frontend tagged calls: reasoning, response and tool wrappers stream in any chunking; typed and JSON arguments decode; the message end stops; unparseable calls stay visible")
+    print("PASS chat frontend tagged calls: reasoning, response and tool wrappers stream in any chunking; typed and JSON arguments decode; the message end stops; unparseable calls stay visible; configured name, key and string-flag attributes parse multi-call blocks")
     return 0
 
 

@@ -384,6 +384,14 @@ class OutputParser:
             return self.parse_function_xml_call(body)
         return self.parse_key_value_call(body)
 
+    def argument_kind(self, attributes):
+        flag = self.call.get("string_attribute")
+        if flag is None:
+            return attributes.get("type")
+        if flag not in attributes:
+            return None
+        return "string" if attributes[flag] == "true" else "json"
+
     def typed(self, name, key, kind, value):
         if kind == "string" or (kind is None and self.types.get(name, {}).get(key) == "string"):
             return value
@@ -397,11 +405,11 @@ class OutputParser:
         head, found, rest = body.partition(call["attribute_end"])
         if not found:
             return None
-        name = tag_attributes(head).get("tool")
+        name = tag_attributes(head).get(call.get("name_attribute", "tool"))
         arguments = {}
         rest = rest.strip()
         while rest:
-            if rest.startswith(call["object_start"]):
+            if call.get("object_start") and rest.startswith(call["object_start"]):
                 _, found, rest = rest[len(call["object_start"]):].partition(call["attribute_end"])
                 value, closed, rest = rest.partition(call["object_end"])
                 if not found or not closed:
@@ -417,9 +425,10 @@ class OutputParser:
                 head, found, rest = rest[len(call["argument_start"]):].partition(call["attribute_end"])
                 value, closed, rest = rest.partition(call["argument_end"])
                 attributes = tag_attributes(head)
-                if not found or not closed or "key" not in attributes:
+                key = attributes.get(call.get("key_attribute", "key"))
+                if not found or not closed or key is None:
                     return None
-                arguments[attributes["key"]] = self.typed(name, attributes["key"], attributes.get("type"), value)
+                arguments[key] = self.typed(name, key, self.argument_kind(attributes), value)
             else:
                 return None
             rest = rest.strip()

@@ -212,6 +212,66 @@
     "parameter_start": "<parameter=",
     "parameter_end": "</parameter>"
    }
+  },
+  {
+   "id": "deepseek-v4.1-flash",
+   "model_dir": "models/deepseek-v4.1-flash",
+   "engine": "http://127.0.0.1:8463",
+   "context_tokens": 16384,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "renderer": {
+    "kind": "segments",
+    "module": "encoding_dsv41.py",
+    "function": "build_chat_segments"
+   },
+   "stop_tokens": [
+    "<｜end▁of▁sentence｜>"
+   ],
+   "template_defaults": {
+    "thinking": true,
+    "effort": "high"
+   },
+   "template_kwargs": [
+    "thinking",
+    "effort"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "thinking": false
+    },
+    "low": {
+     "effort": "low"
+    },
+    "medium": {
+     "effort": "high"
+    },
+    "high": {
+     "effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "\n<｜DSML｜ invoke",
+    "end": "</｜DSML｜ invoke>",
+    "attribute_end": ">",
+    "argument_start": "<｜DSML｜ parameter",
+    "argument_end": "</｜DSML｜ parameter>",
+    "name_attribute": "name",
+    "key_attribute": "name",
+    "string_attribute": "string"
+   },
+   "content_markers": [
+    "<｜DSML｜ calls>",
+    "\n</｜DSML｜ calls>"
+   ]
   }
  ],
  "control": {

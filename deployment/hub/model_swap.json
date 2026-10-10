@@ -80,6 +80,18 @@
    "api_start": "systemctl --user reset-failed kv-qwen38-27b-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-27b-api || systemd-run --user --unit=kv-qwen38-27b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_27b-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_27b-kv-api/runtime --port 8461 >> api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-qwen38-27b-api 2>/dev/null; systemctl --user reset-failed kv-qwen38-27b-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8461/health"
+  },
+  {
+   "id": "deepseek-v4.1-flash",
+   "kv_label": "dsv41_flash_stage",
+   "node_memory_bytes": 47244640256,
+   "node_reclaim": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-dsv41-flash-api 2>/dev/null; systemctl --user is-active -q kv-dsv41-flash-api || systemd-run --user --unit=kv-dsv41-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/dsv41_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/dsv41_flash-kv-api/runtime --port 8463 >> api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-dsv41-flash-api 2>/dev/null; systemctl --user reset-failed kv-dsv41-flash-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8463/health"
   }
  ]
 }
