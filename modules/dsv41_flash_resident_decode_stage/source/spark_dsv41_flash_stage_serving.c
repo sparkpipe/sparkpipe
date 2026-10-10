@@ -17,6 +17,7 @@
 #define SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS 16384u
 #define SPARK_DSV41_FLASH_TP16_LATENT 512u
 #define SPARK_DSV41_FLASH_TP16_INDEX_KEY 128u
+#define SPARK_DSV41_FLASH_TP16_ENGRAM_WIDTH (24u * 256u)
 #define SPARK_DSV41_FLASH_TP16_RECORD_BYTES ((uint64_t)SPARK_DSV41_FLASH_STAGE_RECORD_FLOATS * sizeof(float))
 #define L SPARK_DSV41_FLASH_TP16_LAYERS
 
@@ -49,7 +50,11 @@ static uint32_t Dsv41FlashServingCollectiveSequences(uint32_t rows, uint32_t tp_
 	const uint64_t heads = 64u / tp_degree;
 	const uint64_t bytes = (uint64_t)rows * heads * SPARK_DSV41_FLASH_TP16_RECORD_BYTES;
 	const uint64_t units = (bytes + SPARK_DSV41_FLASH_STAGE_HIDDEN * 2u - 1u) / (SPARK_DSV41_FLASH_STAGE_HIDDEN * 2u);
-	return (uint32_t)(units > rows ? units : rows) + 1u;
+	const uint64_t engram = ((uint64_t)rows * SPARK_DSV41_FLASH_TP16_ENGRAM_WIDTH + SPARK_DSV41_FLASH_STAGE_HIDDEN - 1u) /
+		SPARK_DSV41_FLASH_STAGE_HIDDEN;
+	uint64_t capacity = units > rows ? units : rows;
+	capacity = engram > capacity ? engram : capacity;
+	return (uint32_t)capacity + 1u;
 }
 
 static const SparkModelServingAdapterDescriptor Dsv41FlashServingDescriptor =
