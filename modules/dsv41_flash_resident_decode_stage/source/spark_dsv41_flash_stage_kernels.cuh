@@ -175,8 +175,20 @@ static __global__ void D41DequantFp8BlockKernel(const uint8_t *__restrict__ payl
 	(void)rows;
 }
 
+static __global__ void D41RowLanesKernel(const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
+	uint32_t *__restrict__ row_lane, uint32_t *__restrict__ row_ordinal)
+{
+	const uint32_t lane = blockIdx.x, begin = sequence_row_begin[lane], end = sequence_row_begin[lane + 1u];
+	for ( uint32_t k = begin + threadIdx.x; k < end; k += blockDim.x )
+	{
+		row_lane[sequence_row_indices[k]] = lane;
+		row_ordinal[sequence_row_indices[k]] = k - begin;
+	}
+}
+
 static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, const float *__restrict__ score, uint16_t *__restrict__ pooled,
-	uint32_t *__restrict__ emit_row, float *__restrict__ state, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_of_row,
+	uint32_t *__restrict__ emit_row, float *__restrict__ state, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane,
+	const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
 	const uint32_t *__restrict__ recurrent_slot, uint32_t ratio, uint32_t state_stride_floats, uint32_t width)
 {
 	const uint32_t row = blockIdx.x;
@@ -195,13 +207,13 @@ static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, con
 			emit_row[row] = D41K_NO_ROW;
 		return;
 	}
-	const uint32_t sequence = sequence_of_row[row];
-	const uint32_t previous_in_wave = row > 0u && sequence_of_row[row - 1u] == sequence && positions[row - 1u] + 1u == position;
-	const float *slot_state = state + (uint64_t)recurrent_slot[sequence] * state_stride_floats;
+	const uint32_t lane = row_lane[row], ordinal = row_ordinal[row];
+	const uint32_t previous = ordinal > 0u ? sequence_row_indices[sequence_row_begin[lane] + ordinal - 1u] : row;
+	const float *slot_state = state + (uint64_t)recurrent_slot[lane] * state_stride_floats;
 	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
 	{
-		const float kv0 = previous_in_wave ? kv[(uint64_t)(row - 1u) * width + c] : slot_state[c];
-		const float score0 = previous_in_wave ? score[(uint64_t)(row - 1u) * width + c] : slot_state[width + c];
+		const float kv0 = ordinal > 0u ? kv[(uint64_t)previous * width + c] : slot_state[c];
+		const float score0 = ordinal > 0u ? score[(uint64_t)previous * width + c] : slot_state[width + c];
 		const float kv1 = kv[(uint64_t)row * width + c], score1 = score[(uint64_t)row * width + c];
 		const float top = fmaxf(score0, score1);
 		const float e0 = expf(score0 - top), e1 = expf(score1 - top);
@@ -212,15 +224,17 @@ static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, con
 }
 
 static __global__ void D41CompressorSaveKernel(const float *__restrict__ kv, const float *__restrict__ score, float *__restrict__ state,
-	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ recurrent_slot,
-	uint32_t rows, uint32_t ratio, uint32_t state_stride_floats, uint32_t width, uint32_t commit)
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint32_t rows, uint32_t ratio,
+	uint32_t state_stride_floats, uint32_t width, uint32_t commit)
 {
 	const uint32_t row = blockIdx.x;
 	if ( commit == 0u || row >= rows || (positions[row] + 1u) % ratio == 0u )
 		return;
-	if ( row + 1u < rows && sequence_of_row[row + 1u] == sequence_of_row[row] )
+	const uint32_t lane = row_lane[row];
+	if ( row_ordinal[row] + 1u != sequence_row_begin[lane + 1u] - sequence_row_begin[lane] )
 		return;
-	float *slot_state = state + (uint64_t)recurrent_slot[sequence_of_row[row]] * state_stride_floats;
+	float *slot_state = state + (uint64_t)recurrent_slot[lane] * state_stride_floats;
 	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
 	{
 		slot_state[c] = kv[(uint64_t)row * width + c];
@@ -281,14 +295,16 @@ static __global__ void D41InitRecordsKernel(float *__restrict__ records, uint64_
 
 static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t heads_per_destination,
 	const uint16_t *__restrict__ query, uint64_t query_rank_stride, const uint16_t *__restrict__ wave_kv,
-	const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_of_row,
-	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride,
-	uint32_t ring_rows, uint32_t window, uint32_t degree, uint32_t rank, float qk_scale)
+	const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane,
+	const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
+	const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t window, uint32_t degree, uint32_t rank,
+	float qk_scale)
 {
 	__shared__ float score_shared[D41K_THREADS / 32u];
 	const uint32_t row = blockIdx.x, head = blockIdx.y;
-	const uint32_t position = positions[row], sequence = sequence_of_row[row];
-	const uint32_t wave_first = positions[sequence_row_begin[sequence]];
+	const uint32_t position = positions[row], lane = row_lane[row];
+	const uint32_t wave_first = position - row_ordinal[row];
+	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
 	const uint32_t first = position + 1u > window ? position + 1u - window : 0u;
 	const uint32_t destination = head / heads_per_destination, local = head % heads_per_destination;
 	const uint16_t *q = query + (uint64_t)destination * query_rank_stride + ((uint64_t)row * heads_per_destination + local) * D41K_LATENT;
@@ -301,8 +317,8 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 	{
 		if ( key % degree != rank )
 			continue;
-		const uint16_t *k = key >= wave_first ? wave_kv + (uint64_t)(row - (position - key)) * D41K_LATENT :
-			ring + (uint64_t)recurrent_slot[sequence] * ring_slot_stride + (uint64_t)((key / degree) % ring_rows) * D41K_LATENT;
+		const uint16_t *k = key >= wave_first ? wave_kv + (uint64_t)lane_rows[key - wave_first] * D41K_LATENT :
+			ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride + (uint64_t)((key / degree) % ring_rows) * D41K_LATENT;
 		float partial = 0.0f, value[D41K_LATENT / D41K_THREADS];
 		for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
 		{
@@ -328,18 +344,17 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 }
 
 static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
-	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ recurrent_slot,
-	uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit)
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
+	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit)
 {
 	const uint32_t row = blockIdx.x;
 	if ( commit == 0u || row >= rows || positions[row] % degree != rank )
 		return;
-	uint32_t last = row;
-	while ( last + 1u < rows && sequence_of_row[last + 1u] == sequence_of_row[row] )
-		++last;
-	if ( positions[last] >= positions[row] + window )
+	const uint32_t lane = row_lane[row];
+	if ( row_ordinal[row] + window < sequence_row_begin[lane + 1u] - sequence_row_begin[lane] )
 		return;
-	uint16_t *target = ring + (uint64_t)recurrent_slot[sequence_of_row[row]] * ring_slot_stride +
+	uint16_t *target = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride +
 		(uint64_t)((positions[row] / degree) % ring_rows) * D41K_LATENT;
 	for ( uint32_t c = threadIdx.x; c < D41K_LATENT; c += blockDim.x )
 		target[c] = wave_kv[(uint64_t)row * D41K_LATENT + c];
@@ -445,7 +460,8 @@ static __global__ void D41MoeLocalFinalizeKernel(const uint16_t *__restrict__ pa
 }
 
 static __global__ void D41EngramHashKernel(const uint32_t *__restrict__ token_ids, const int32_t *__restrict__ token_map,
-	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ sequence_row_begin,
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
 	const uint32_t *__restrict__ recurrent_slot, const int32_t *__restrict__ history, uint32_t history_stride,
 	const int64_t *__restrict__ multipliers, const int64_t *__restrict__ primes, const int64_t *__restrict__ offsets, int64_t *__restrict__ ids,
 	uint32_t rows, uint32_t orders, uint32_t heads, int32_t pad)
@@ -453,16 +469,16 @@ static __global__ void D41EngramHashKernel(const uint32_t *__restrict__ token_id
 	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( row >= rows )
 		return;
-	const uint32_t sequence = sequence_of_row[row], position = positions[row];
-	const uint32_t into_wave = position - positions[sequence_row_begin[sequence]];
-	const int32_t *carried = history + (uint64_t)recurrent_slot[sequence] * history_stride;
+	const uint32_t lane = row_lane[row], position = positions[row], into_wave = row_ordinal[row];
+	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
+	const int32_t *carried = history + (uint64_t)recurrent_slot[lane] * history_stride;
 	int64_t tokens[4];
 	uint32_t blocked = 0u;
 	for ( uint32_t shift = 0u; shift <= orders; ++shift )
 	{
 		int32_t source = -1;
 		if ( position >= shift )
-			source = shift <= into_wave ? token_map[token_ids[row - shift]] : carried[shift - into_wave - 1u];
+			source = shift <= into_wave ? token_map[token_ids[lane_rows[into_wave - shift]]] : carried[shift - into_wave - 1u];
 		if ( position < shift || source == -1 )
 			blocked = 1u;
 		tokens[shift] = blocked != 0u ? pad : source;
@@ -480,24 +496,21 @@ static __global__ void D41EngramHashKernel(const uint32_t *__restrict__ token_id
 }
 
 static __global__ void D41EngramHistoryKernel(const uint32_t *__restrict__ token_ids, const int32_t *__restrict__ token_map,
-	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ sequence_row_begin,
-	const uint32_t *__restrict__ recurrent_slot, int32_t *__restrict__ history, uint32_t history_stride, uint32_t sequences, uint32_t rows,
-	uint32_t orders, uint32_t commit)
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot,
+	int32_t *__restrict__ history, uint32_t history_stride, uint32_t sequences, uint32_t orders, uint32_t commit)
 {
 	const uint32_t sequence = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( commit == 0u || sequence >= sequences )
 		return;
 	const uint32_t begin = sequence_row_begin[sequence];
-	uint32_t last = begin;
-	while ( last + 1u < rows && sequence_of_row[last + 1u] == sequence )
-		++last;
-	const uint32_t into_wave = positions[last] - positions[begin];
+	const uint32_t into_wave = sequence_row_begin[sequence + 1u] - begin - 1u;
+	const uint32_t *lane_rows = sequence_row_indices + begin;
 	int32_t *slot = history + (uint64_t)recurrent_slot[sequence] * history_stride;
 	int32_t carried[4], updated[4];
 	for ( uint32_t shift = 0u; shift < orders; ++shift )
 		carried[shift] = slot[shift];
 	for ( uint32_t shift = 0u; shift < orders; ++shift )
-		updated[shift] = shift <= into_wave ? token_map[token_ids[last - shift]] : carried[shift - into_wave - 1u];
+		updated[shift] = shift <= into_wave ? token_map[token_ids[lane_rows[into_wave - shift]]] : carried[shift - into_wave - 1u];
 	for ( uint32_t shift = 0u; shift < orders; ++shift )
 		slot[shift] = updated[shift];
 }

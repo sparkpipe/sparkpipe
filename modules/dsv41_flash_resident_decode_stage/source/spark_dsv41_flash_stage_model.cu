@@ -107,7 +107,7 @@ typedef struct D41Engram
 typedef struct D41ModelState
 {
 	const SparkStageRunnerServices *services;
-	uint32_t tp_rank, max_rows, slots, max_context;
+	uint32_t tp_rank, max_rows, slots, context_slots, max_context;
 	FILE *pack_file;
 	D41PackHeader header;
 	D41PackEntry *entries;
@@ -130,7 +130,7 @@ typedef struct D41ModelState
 	float *mixes, *pre_attn, *post_attn, *comb_attn, *pre_ffn, *post_ffn, *comb_ffn, *pre_head;
 	float *c_kv, *c_score;
 	uint16_t *c_latent, *c_latent_store, *idx_key, *idx_pack_local, *idx_pack_gathered, *idx_q_full, *idx_query, *idx_w_full;
-	uint32_t *emit_row, *bound_ratio2, *bound_ratio1, *length_ratio2, *length_ratio1;
+	uint32_t *emit_row, *bound_ratio2, *bound_ratio1, *length_ratio2, *length_ratio1, *row_lane, *row_ordinal;
 	float *local_scores, *full_scores, *topk_values;
 	uint32_t *local_selected, *selected, *topk_positions;
 	uint64_t topk_entries;
@@ -193,10 +193,16 @@ static uint32_t D41Blocks(uint64_t elements)
 	return (uint32_t)(blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u);
 }
 
-static SparkStatus D41Launched(void)
+static SparkStatus D41LaunchedAt(uint32_t line)
 {
-	return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+	const cudaError_t error = cudaPeekAtLastError();
+	if ( error == cudaSuccess )
+		return SPARK_STATUS_OK;
+	fprintf(stderr, "sparkpipe_dsv41_flash: CUDA error seen at line %u: %s\n", line, cudaGetErrorString(error));
+	return SPARK_STATUS_INTERNAL_ERROR;
 }
+
+#define D41Launched() D41LaunchedAt(__LINE__)
 
 static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32,
 	uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
@@ -267,7 +273,7 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	const uint32_t ar_rows = (rows * D41_ENGRAM_EMBED + D41_HIDDEN - 1u) / D41_HIDDEN;
 	SparkStatus status;
 	D41EngramHashKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->positions,
-		step->sequence_of_row, step->sequence_row_begin, step->recurrent_index,
+		state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
 		(const int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
 		engram->multipliers, engram->primes, engram->offsets, state->engram_ids, rows, D41_ENGRAM_ORDERS, D41_ENGRAM_HEADS, state->engram_pad);
 	cudaMemsetAsync(state->engram_embed, 0, (uint64_t)ar_rows * D41_HIDDEN * sizeof(uint16_t), stream);
@@ -305,10 +311,12 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 		(ratio > 1u && D41Project(layer->c_wgate, state->x, 0, state->c_score, rows, D41_HIDDEN, D41_HEAD_DIM, sms, stream) != LM_LAUNCH_OK) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41CompressorRowsKernel<<<rows, D41_THREADS, 0, stream>>>(state->c_kv, state->c_score, state->c_latent, state->emit_row,
-		compressor_state, step->positions, step->sequence_of_row, step->recurrent_index, ratio, state_stride, D41_HEAD_DIM);
+		compressor_state, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
+		step->recurrent_index, ratio, state_stride, D41_HEAD_DIM);
 	if ( ratio > 1u )
 		D41CompressorSaveKernel<<<rows, D41_THREADS, 0, stream>>>(state->c_kv, state->c_score, compressor_state, step->positions,
-			step->sequence_of_row, step->recurrent_index, rows, ratio, state_stride, D41_HEAD_DIM, step->commit);
+			state->row_lane, state->row_ordinal, step->sequence_row_begin, step->recurrent_index, rows, ratio, state_stride, D41_HEAD_DIM,
+			step->commit);
 	D41RmsNorm(state->c_latent, layer->c_norm, state->c_latent, rows, D41_HEAD_DIM, stream);
 	if ( D41Project(layer->idx_wk, state->c_latent, state->idx_key, 0, rows, D41_HEAD_DIM, D41_INDEX_DIM, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -448,6 +456,8 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		status = D41Compress(state, layer, index, step, stream);
 	if ( status == SPARK_STATUS_OK )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, local_width, state->q_local, state->q_gathered);
+	if ( status == SPARK_STATUS_OK )
+		status = D41Launched();
 	if ( status == SPARK_STATUS_OK && ratio > 0u && D41IndexSource(index) )
 		status = D41CacheIndex(index) < 3u ? D41Select<D41Ratio2Kv>(state, layer, index, step, bound, length, stream) :
 			D41Select<D41Ratio1Kv>(state, layer, index, step, bound, length, stream);
@@ -455,16 +465,24 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		status = D41CacheIndex(index) < 3u ? D41Partials<D41Ratio2Kv>(state, index, step, bound, length, stream) :
 			D41Partials<D41Ratio1Kv>(state, index, step, bound, length, stream);
 	else if ( status == SPARK_STATUS_OK )
+	{
 		D41InitRecordsKernel<<<D41Blocks((uint64_t)rows * D41_HEADS), D41_THREADS, 0, stream>>>(state->records_send, destination_stride,
 			rows, D41_LOCAL_HEADS, D41_TP);
+		status = D41Launched();
+	}
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	D41WindowFoldKernel<<<dim3(rows, D41_HEADS), D41K_THREADS, 0, stream>>>(state->records_send, destination_stride, D41_LOCAL_HEADS,
-		state->q_gathered, (uint64_t)rows * local_width, state->window_kv, ring, step->positions, step->sequence_of_row, step->sequence_row_begin,
-		step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_TP, state->tp_rank,
+		state->q_gathered, (uint64_t)rows * local_width, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+		step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS,
+		D41_WINDOW, D41_TP, state->tp_rank,
 		1.0f / sqrtf((float)D41_HEAD_DIM));
-	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, step->sequence_of_row,
-		step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_TP, state->tp_rank, rows, step->commit);
+	status = D41Launched();
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_TP,
+		state->tp_rank, rows, step->commit);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, D41A2aUnits(rows), 0u, state->records_send,
@@ -682,6 +700,37 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 	return D41Launched();
 }
 
+static SparkStatus D41DumpStep(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+{
+	const uint32_t header[3] = { 0x53344c44u, step->rows, step->sequences };
+	const uint64_t words = 3u * (uint64_t)step->rows + step->sequences + 1u + step->sequences;
+	uint32_t *host = (uint32_t *)malloc((size_t)words * sizeof(uint32_t));
+	uint32_t *cursor = host;
+	cudaError_t error = host == 0 ? cudaErrorMemoryAllocation : cudaStreamSynchronize(stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy(cursor, step->positions, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	cursor += step->rows;
+	if ( error == cudaSuccess )
+		error = cudaMemcpy(cursor, step->sequence_of_row, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	cursor += step->rows;
+	if ( error == cudaSuccess )
+		error = cudaMemcpy(cursor, step->sequence_row_indices, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	cursor += step->rows;
+	if ( error == cudaSuccess )
+		error = cudaMemcpy(cursor, step->sequence_row_begin, (size_t)(step->sequences + 1u) * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	cursor += step->sequences + 1u;
+	if ( error == cudaSuccess )
+		error = cudaMemcpy(cursor, step->recurrent_index, (size_t)step->sequences * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	if ( error == cudaSuccess )
+	{
+		fwrite(header, sizeof(header), 1u, state->dump);
+		fwrite(host, sizeof(uint32_t), (size_t)words, state->dump);
+		fflush(state->dump);
+	}
+	free(host);
+	return error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
 static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
 {
 	D41ModelState *state = (D41ModelState *)model;
@@ -695,25 +744,35 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 		cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
 		if ( cudaStreamIsCapturing(stream, &capturing) != cudaSuccess || capturing != cudaStreamCaptureStatusNone )
 			return SPARK_STATUS_UNSUPPORTED;
+		status = D41DumpStep(state, step, stream);
+		if ( status != SPARK_STATUS_OK )
+			return status;
 	}
 	D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio2, rows, 2u);
 	D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio1, rows, 1u);
-	D41CompressedLengthKernel<<<(step->sequences + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio2, step->sequences, 2u);
-	D41CompressedLengthKernel<<<(step->sequences + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio1, step->sequences, 1u);
+	D41RowLanesKernel<<<step->sequences, 256u, 0, stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
+		state->row_ordinal);
+	D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio2,
+		state->context_slots, 2u);
+	D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio1,
+		state->context_slots, 1u);
 	D41ReplicateStreamsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, D41_HIDDEN);
-	for ( uint32_t index = 0u; index < D41_LAYERS && status == SPARK_STATUS_OK; ++index )
+	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
 	{
 		status = D41LayerStep(state, index, step, index == 0u ? state->pre_init : state->pre_head, stream);
-		if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u failed status=%d rows=%u sequences=%u\n", index, (int)status, rows, step->sequences);
+			return status;
+		}
+		if ( state->services->layer_done != 0 )
 			state->services->layer_done(state->services->context, index);
 	}
-	if ( status != SPARK_STATUS_OK )
-		return status;
 	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head, step->hidden_bf16, D41_HIDDEN);
-	D41EngramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->positions,
-		step->sequence_of_row, step->sequence_row_begin, step->recurrent_index,
+	D41EngramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
+		step->sequence_row_indices, step->recurrent_index,
 		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
-		step->sequences, rows, D41_ENGRAM_ORDERS, step->commit);
+		step->sequences, D41_ENGRAM_ORDERS, step->commit);
 	return D41Launched();
 }
 
@@ -771,6 +830,7 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->idx_query, r * D41_INDEX_HEADS * D41_INDEX_DIM * 2u }, { (void **)&state->idx_w_full, r * D41_INDEX_HEADS * 2u },
 		{ (void **)&state->emit_row, r * 4u }, { (void **)&state->bound_ratio2, r * 4u }, { (void **)&state->bound_ratio1, r * 4u },
 		{ (void **)&state->length_ratio2, s * 4u }, { (void **)&state->length_ratio1, s * 4u },
+		{ (void **)&state->row_lane, r * 4u }, { (void **)&state->row_ordinal, r * 4u },
 		{ (void **)&state->local_scores, r * state->local_score_stride * 4u },
 		{ (void **)&state->full_scores, (uint64_t)D41_SELECTION_CHUNK * state->global_score_stride * 4u },
 		{ (void **)&state->topk_values, state->topk_entries * 4u }, { (void **)&state->topk_positions, state->topk_entries * 4u },
@@ -960,6 +1020,7 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	state->max_rows = configuration->max_input_row_count;
 	state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
 		configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
+	state->context_slots = configuration->max_active_sequence_count;
 	state->max_positions = configuration->kv_pages_per_sequence * D41_PAGE_TOKENS;
 	if ( getenv("SPARK_DSV41_FLASH_LAYER_DUMP") != 0 )
 	{
