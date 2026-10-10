@@ -277,7 +277,7 @@
    "id": "qwen3.8-max",
    "model_dir": "models/qwen3.8-max",
    "engine": "http://127.0.0.1:8464",
-   "context_tokens": 16384,
+   "context_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
