@@ -20,6 +20,9 @@ host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/home/$1/stage-lanes/$STAGE_MODEL/lane$STAGE_LANE/root"; }
 pack_of() { echo "/home/$(host_of "$1")/$(python3 -c "print('$PACK_TEMPLATE'.format(rank=$1))")"; }
 KV_LABEL="$(model_field kv_label)"
+DENSE="$(python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(1 if stage_lane.MODELS['$STAGE_MODEL'].get('dense') else 0)")"
+EXTRA_PACKS="$(python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(' '.join(k + '=' + v for k, v in stage_lane.MODELS['$STAGE_MODEL'].get('extra_packs', {}).items()))")"
+DENSE_MANIFEST='\x57\x45\x50\x58\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
 PIDS=()
 
 join_ranks() {
@@ -92,7 +95,17 @@ setup() {
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       node_script "$rank" | $SSH "$host" "cat > $root/lane.sh && chmod +x $root/lane.sh"
-      $SSH "$host" "ln -sfn $pack $root/packs/ && ln -sfn $pack.experts $root/packs/ && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget"
+      if [ "$DENSE" = 1 ]; then
+        name="$(basename "$pack")"
+        extras=""
+        for item in $EXTRA_PACKS; do
+          target="/home/$host/$(python3 -c "print('${item#*=}'.format(rank=$rank))")"
+          extras="$extras && test -f $target && ln -sfn $target $root/packs/${item%%=*} && printf '$DENSE_MANIFEST' > $root/packs/${item%%=*}.experts && { ! test -f $target.sha256 || ln -sfn $target.sha256 $root/packs/${item%%=*}.sha256; }"
+        done
+        $SSH "$host" "ln -sfn $pack $root/packs/$name && printf '$DENSE_MANIFEST' > $root/packs/$name.experts $extras && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $root/packs/$name > $root/spine_budget" < /dev/null
+      else
+        $SSH "$host" "ln -sfn $pack $root/packs/ && ln -sfn $pack.experts $root/packs/ && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget" < /dev/null
+      fi
       echo "$host ready spine_budget=$($SSH "$host" cat "$root/spine_budget")"
     ) &
     PIDS[$rank]=$!

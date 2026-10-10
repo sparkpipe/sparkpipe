@@ -53,7 +53,32 @@ QWEN38_27B = {
     "recurrent_bytes": 48 * (3 * 128 * 128 * 4 + 640 * 4 * 2),
 }
 
+DSV41_FLASH = {
+    "swap_id": "deepseek-v4.1-flash",
+    "api_port": 8463,
+    "kv_label": "dsv41_flash_stage",
+    "node_memory_bytes": 44 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/deepseek-v4.1-flash/tokenizer.json",
+    "pack": "sparkdata/dsv41flash.mxfp4.tp16/packs/rank{rank}.spstage",
+    "dense": True,
+    "extra_packs": {
+        "engram.spengram": "sparkdata/dsv41flash.mxfp4.tp8pp2/engram/engram.rank{rank}.spengram",
+        "engram_tables.bin": "sparkdata/dsv41flash.mxfp4.tp16/engram_tables.bin",
+    },
+    "adapter": "libdsv41_flash_tp16_serving_adapter.so",
+    "program": "dsv41_flash",
+    "node_target": "cuda.sm121.dsv41_flash.stage_runner.linear_fp8.expert_mxfp4.kv_bf16",
+    "contract": "model_contracts/dsv41_flash_authoritative.json",
+    "chat_template": "model-families/dsv41_flash/chat_template.json",
+    "eos_token_ids": [1],
+    "tokenizer_vocabulary": 129280,
+    "hidden": 5120,
+    "kv_page_bytes": (3 * 128 + 256) * 1280 // WORLD,
+    "recurrent_bytes": (40 * 8 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
+}
+
 MODELS = {
+    "dsv41_flash": DSV41_FLASH,
     "qwen38_27b": QWEN38_27B,
     "qwen38_27b_bf16": {
         **QWEN38_27B,
@@ -77,10 +102,17 @@ def session_table() -> list[list[int]]:
     return [[0 if a == b else SESSION_BLOCK_BASE + a * WORLD + b for b in range(WORLD)] for a in range(WORLD)]
 
 
+def rank_pack_path(model: dict, lane: int, rank: int, args) -> str:
+    host = HOSTS[rank]
+    if model.get("dense"):
+        return os.path.join(args.runtime_root.format(host=host), "packs", os.path.basename(model["pack"].format(rank=rank)))
+    return f"/home/{host}/" + model["pack"].format(rank=rank)
+
+
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     host = HOSTS[rank]
     return {
-        "stage_pack_path": f"/home/{host}/" + model["pack"].format(rank=rank),
+        "stage_pack_path": rank_pack_path(model, lane, rank, args),
         "tp_degree": WORLD,
         "tp_rank": rank,
         "world_size": WORLD,
