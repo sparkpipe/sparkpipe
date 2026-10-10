@@ -110,8 +110,27 @@ QWEN38_FLASH = {
     "kv_page_bytes": (12 * 64 * 2048 + 12 * 16 * 256) // WORLD,
     "recurrent_bytes": 36 * (3 * 128 * 128 * 4 + 640 * 4 * 2) + 10240 * 10 * 2 + 4 * 4 + 12 * 3 * 128 * 2,
 }
+GEMMA4_31B = {
+    "swap_id": "gemma-4-31b",
+    "api_port": 8466,
+    "kv_label": "gemma4_31b_stage",
+    "node_memory_bytes": 16 << 30,
+    "tokenizer_json": "/mnt/model-warm/gemma-4-31b-it/tokenizer.json",
+    "pack": "sparkdata/gemma4_31b.bf16.tp16/gemma4.tp16.rank{rank:02d}.pack",
+    "adapter": "libgemma4_31b_tp16_serving_adapter.so",
+    "program": "gemma4_31b",
+    "node_target": "cuda.sm121.gemma4_31b.stage_runner.linear_bf16.kv_bf16",
+    "contract": "model_contracts/gemma4_31b_authoritative.json",
+    "chat_template": "model-families/gemma4/chat_template.json",
+    "eos_token_ids": [1, 106, 50],
+    "tokenizer_vocabulary": 262144,
+    "hidden": 5376,
+    "kv_page_bytes": (50 * 64 * 16384 + 10 * 64 * 8192) // WORLD,
+    "recurrent_bytes": 0,
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
+    "gemma4_31b": GEMMA4_31B,
     "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,

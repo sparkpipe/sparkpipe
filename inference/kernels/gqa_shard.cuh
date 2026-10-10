@@ -59,7 +59,8 @@ void LmGqaShardPartialKernel(
 	uint32_t rows,
 	const uint32_t *__restrict__ block_mask,
 	uint32_t mask_words,
-	uint32_t block_tokens)
+	uint32_t block_tokens,
+	uint32_t window)
 {
 	constexpr uint32_t KEYS = HEAD_DIM / 32u;
 	constexpr uint32_t VALUES = VALUE_DIM / 32u;
@@ -99,7 +100,7 @@ void LmGqaShardPartialKernel(
 	for (index = 0u; index < VALUES; ++index)
 		accumulator[index] = 0.0f;
 	count = SparkKvShardLocalKeys(cache.shard,limit);
-	for (local = 0u; local < count; ++local)
+	for (local = window != 0u && limit > window ? SparkKvShardLocalKeys(cache.shard,limit - window) : 0u; local < count; ++local)
 	{
 		position = SparkKvShardLocalPosition(cache.shard,local);
 		if ( block_mask != 0 && position / block_tokens < limit / block_tokens &&
@@ -206,7 +207,8 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 	cudaStream_t stream,
 	const uint32_t *block_mask = 0,
 	uint32_t mask_words = 0u,
-	uint32_t block_tokens = 1u)
+	uint32_t block_tokens = 1u,
+	uint32_t window = 0u)
 {
 	const uint32_t degree = cache.shard.degree;
 	if ( rows == 0u || query_bf16 == 0 || send == 0 || sequence_of_row == 0 || context_length == 0 ||
@@ -216,7 +218,7 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 		(block_mask != 0 && (mask_words == 0u || block_tokens == 0u)) )
 		return(cudaErrorInvalidValue);
 	LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream>>>(
-		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens);
+		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window);
 	return(cudaPeekAtLastError());
 }
 

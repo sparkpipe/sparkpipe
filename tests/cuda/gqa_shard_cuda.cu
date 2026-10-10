@@ -71,7 +71,7 @@ static T *ProbeDevice(const std::vector<T> &host)
 }
 
 template<uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
-static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequence,uint32_t context,uint32_t degree,uint32_t grain)
+static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequence,uint32_t context,uint32_t degree,uint32_t grain,uint32_t window = 0u)
 {
 	typedef ProbeGqaKv<KV_HEADS,HEAD_DIM,VALUE_DIM> Geometry;
 	const uint32_t slot_elements = KV_HEADS * (HEAD_DIM + VALUE_DIM),rows = sequences * rows_per_sequence;
@@ -95,7 +95,7 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 	double worst = 0.0,single_worst = 0.0;
 	char label[200];
 
-	snprintf(label,sizeof(label),"heads%u kv%u dim%u/%u seq%u x rows%u ctx%u degree%u grain%u",heads,KV_HEADS,HEAD_DIM,VALUE_DIM,sequences,rows_per_sequence,context,degree,grain);
+	snprintf(label,sizeof(label),"heads%u kv%u dim%u/%u seq%u x rows%u ctx%u degree%u grain%u window%u",heads,KV_HEADS,HEAD_DIM,VALUE_DIM,sequences,rows_per_sequence,context,degree,grain,window);
 	ProbeCheck(LmGqaShardGeometryValid(heads,KV_HEADS,VALUE_DIM,degree) != 0u,"the probe geometry is valid",label);
 	for (page=0u; page<pages; page++)
 		order[page] = page;
@@ -164,8 +164,8 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 		ProbeCheck(LmKvShardReplicaViewInitialize<Geometry>(&replica,view,shard) == 0,"replica view",label);
 		LmKvShardStoreKernel<Geometry,256u><<<(uint32_t)tokens,256>>>(local,values_device,token_sequence_device,token_position_device,(uint32_t)tokens,slot_elements);
 		PROBE_CUDA(cudaGetLastError());
-		ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardReplicaView,KV_HEADS,HEAD_DIM,VALUE_DIM>(replica,query_device,heads,sequences_device,contexts_device,positions_device,scale,oracle_device + (uint64_t)rank * degree * stride,stride,rows,0) == cudaSuccess,"oracle partial launch",label);
-		ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM>(local,query_device,heads,sequences_device,contexts_device,positions_device,scale,send_device + (uint64_t)rank * degree * stride,stride,rows,0) == cudaSuccess,"shard partial launch",label);
+		ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardReplicaView,KV_HEADS,HEAD_DIM,VALUE_DIM>(replica,query_device,heads,sequences_device,contexts_device,positions_device,scale,oracle_device + (uint64_t)rank * degree * stride,stride,rows,0,0,0u,1u,window) == cudaSuccess,"oracle partial launch",label);
+		ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM>(local,query_device,heads,sequences_device,contexts_device,positions_device,scale,send_device + (uint64_t)rank * degree * stride,stride,rows,0,0,0u,1u,window) == cudaSuccess,"shard partial launch",label);
 	}
 	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(oracle_send.data(),oracle_device,oracle_send.size() * sizeof(float),cudaMemcpyDeviceToHost));
@@ -198,7 +198,7 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 				SparkKvShard shard = {degree,rank,grain};
 				LmKvShardView local;
 				ProbeCheck(LmKvShardViewInitialize<Geometry>(&local,shard_pool[rank],table_device,pages_per_sequence,sequences,pages,error_device,shard) == 0,"row-alone shard view",label);
-				ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM>(local,query_device + (uint64_t)row * heads * HEAD_DIM,heads,sequences_device + row,contexts_device,positions_device + row,scale,alone_send + (uint64_t)rank * degree * alone_stride,alone_stride,1u,0) == cudaSuccess,"row-alone partial launch",label);
+				ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM>(local,query_device + (uint64_t)row * heads * HEAD_DIM,heads,sequences_device + row,contexts_device,positions_device + row,scale,alone_send + (uint64_t)rank * degree * alone_stride,alone_stride,1u,0,0,0u,1u,window) == cudaSuccess,"row-alone partial launch",label);
 			}
 			for (rank=0u; rank<degree; rank++)
 			{
@@ -232,10 +232,11 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 			const uint64_t q_base = ((uint64_t)row * heads + head) * HEAD_DIM;
 			const uint16_t *out = shard_out.data() + ((uint64_t)row * heads + head) * VALUE_DIM;
 			const uint32_t keys = row_position[row] + 1u;
+			const uint32_t lowest = window != 0u && keys > window ? keys - window : 0u;
 			std::vector<double> scores(keys),result(VALUE_DIM,0.0);
 			double top = -1.0e300,total = 0.0;
 			uint32_t key,element;
-			for (key=0u; key<keys; key++)
+			for (key=lowest; key<keys; key++)
 			{
 				const uint64_t base = ((uint64_t)sequence * context + key) * slot_elements + (uint64_t)kv_head * HEAD_DIM;
 				double dot = 0.0;
@@ -244,7 +245,7 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 				scores[key] = dot * scale;
 				top = scores[key] > top ? scores[key] : top;
 			}
-			for (key=0u; key<keys; key++)
+			for (key=lowest; key<keys; key++)
 			{
 				const uint64_t base = ((uint64_t)sequence * context + key) * slot_elements + (uint64_t)KV_HEADS * HEAD_DIM + (uint64_t)kv_head * VALUE_DIM;
 				const double weight = exp(scores[key] - top);
@@ -260,7 +261,7 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 		}
 	}
 	ProbeCheck(worst < 2.0e-3,"merged output matches the f64 attention reference",label);
-	ProbeCheck(single_worst < 4.0e-3,"merged output matches the unsharded attention kernel",label);
+	ProbeCheck(window != 0u || single_worst < 4.0e-3,"merged output matches the unsharded attention kernel",label);
 	printf("%s %s: KV per rank %.1f MiB of %.1f MiB, worst |out-f64| %.2e, |sharded-unsharded| %.2e\n",
 		probe_failures == 0 ? "PASS" : "FAIL",label,(double)shard_bytes / degree / 1048576.0,(double)pages * Geometry::kPageBytes / 1048576.0,worst,single_worst);
 	for (rank=0u; rank<degree; rank++)
@@ -281,11 +282,14 @@ int main(void)
 	ProbeCase<2u,128u,128u>(16u,1u,48u,1024u,8u,1u);
 	ProbeCase<8u,128u,128u>(64u,4u,1u,2048u,16u,1u);
 	ProbeCase<16u,128u,128u>(32u,2u,17u,1024u,4u,2u);
+	ProbeCase<16u,256u,256u>(32u,2u,33u,4096u,16u,1u,1024u);
+	ProbeCase<16u,256u,256u>(32u,1u,1u,1500u,16u,1u,1024u);
+	ProbeCase<4u,512u,512u>(32u,2u,9u,2048u,16u,1u);
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grains 1/2/4, partials from each rank's own KV equal the replicated oracle bit for bit, merged output matches f64 and the unsharded kernel, a row alone equals its bits inside the batch\n");
+	printf("PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grains 1/2/4, partials from each rank's own KV equal the replicated oracle bit for bit, merged output matches f64 and the unsharded kernel, a row alone equals its bits inside the batch, a sliding window keeps exactly the last window positions, 512-wide heads\n");
 	return 0;
 }
