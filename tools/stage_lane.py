@@ -143,10 +143,42 @@ GEMMA4_26B = {
     "hidden": 2816,
     "kv_page_bytes": (25 * 64 * 8192 + 5 * 64 * 4096) // WORLD,
 }
+LING3_FLASH = {
+    "swap_id": "ling-3.0-flash",
+    "api_port": 8468,
+    "kv_label": "ling3_stage",
+    "node_memory_bytes": 24 << 30,
+    "tokenizer_json": "/mnt/model-warm/ling-3.0-flash/tokenizer.json",
+    "pack": "sparkdata/ling3_flash.bf16.tp16/ling3_flash.tp16.rank{rank:02d}.pack",
+    "adapter": "libling3_flash_tp16_serving_adapter.so",
+    "program": "ling3_flash",
+    "node_target": "cuda.sm121.ling3_flash.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/ling_authoritative.json",
+    "chat_template": "model-families/ling/chat_template.json",
+    "eos_token_ids": [156895, 156892],
+    "tokenizer_vocabulary": 157184,
+    "hidden": 2560,
+    "kv_page_bytes": 7 * 64 * 1152 // WORLD,
+    "recurrent_bytes": 35 * (2 * 128 * 128 * 4 + 768 * 4 * 2),
+}
+
+LING3_FIN = {
+    **LING3_FLASH,
+    "swap_id": "ling-3.0-flash-fin",
+    "api_port": 8469,
+    "tokenizer_json": "/mnt/model-warm/ling-3.0-flash-fin/tokenizer.json",
+    "pack": "sparkdata/ling3_fin.bf16.tp16/ling3_fin.tp16.rank{rank:02d}.pack",
+    "adapter": "libling3_fin_tp16_serving_adapter.so",
+    "program": "ling3_fin",
+    "node_target": "cuda.sm121.ling3_fin.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/lingfin_authoritative.json",
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
     "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
+    "ling3_fin": LING3_FIN,
+    "ling3_flash": LING3_FLASH,
     "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
