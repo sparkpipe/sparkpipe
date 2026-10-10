@@ -327,8 +327,7 @@
       "probe": "model_kernel_characterize",
       "production_required": true,
       "consumers": [
-        "inference/kernels/gqa.cuh",
-        "inference/llms/qwen_3_6/layer.cuh"
+        "inference/kernels/gqa.cuh"
       ],
       "decision": {
         "policy_path": "kernels.gqa",

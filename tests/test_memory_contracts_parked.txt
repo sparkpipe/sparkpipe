@@ -1,21 +1,15 @@
 # IR-7 parked memory-contract inventory (pinned 2026-08-28, red-gate lane).
-# One "<count> <path>: <message>" entry per violation class+site; line
 # numbers are deliberately absent (they churn on unrelated edits).
-# Rules enforced by tests/test_memory_contracts.py:
 #   - a violation NOT listed here fails the gate (no new debt);
 #   - an entry whose count shrank fails the gate until pruned here in the
 #     same commit as the fix (the list always equals reality);
 #   - structural checks (stale generated artifacts, duplicate headers)
 #     are not parkable and never appear in this file.
-# Base at pinning: e2023da + the serving-adapter template common_offset
 # fix. 286 occurrences / 79 entries. Triage of the audit's 248 -> 285/286
-# delta: glm5_next validation (29) and k3 runner were already inside the
 # hygiene lane's 248; the growth is the qwen4_flash lane's validation
 # module (+31) and its geometry/stagepack tooling literals (+2, plus
 # allowlist spreads into glm5_next tools).
 # Re-pinned 2026-09-24 to the tree as merged at 68e80c07 plus the cleanup
-# branch: the gate had not run in CI and 185 new sites had accumulated.
-# Re-scoped 2026-09-28: GLM literal and scalar checks skip trees owned by
 # non-GLM families (model-families/<family>, modules/<family>_*,
 # qualification/<family>, tools naming the family); 26 entries pruned.
 1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES is not derived from its wire type
@@ -45,11 +39,6 @@
 1 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: fread uses a direct size/count literal
 1 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: memcpy uses a direct size/count literal
 3 modules/hy4_resident_decode_stage/tools/hy4_pack_convert.c: strncmp uses a direct size/count literal
-6 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMalloc uses a direct size/count literal
-13 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: cudaMalloc uses a raw byte-width multiplier
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: malloc uses a raw byte-width multiplier
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memcpy uses a direct size/count literal
-1 modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_runner.cu: memset uses a raw byte-width multiplier
 6 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferAllocate uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: SparkMemoryBufferCopy uses a raw byte-width multiplier
 1 modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c: malloc uses a raw byte-width multiplier
@@ -67,16 +56,6 @@
 3 modules/ling_resident_decode_stage/validation/spark_ling_resident_decode_stage_cuda_validation.cu: malloc uses a raw byte-width multiplier
 18 modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu: cudaMallocManaged uses a raw byte-width multiplier
 1 modules/muse_glimmer_resident_decode_stage/validation/spark_muse_glimmer_resident_decode_stage_cuda_validation.cu: cudaMemsetAsync uses a raw byte-width multiplier
-8 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
-3 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: cudaMemcpy uses a raw byte-width multiplier
-7 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: cudaMemcpyAsync uses a raw byte-width multiplier
-3 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_resident_decode_stage_module.c: malloc uses a raw byte-width multiplier
-1 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c: memcmp uses a direct size/count literal
-2 modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_serving_adapter.c: memcpy uses a direct size/count literal
-1 modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
-1 modules/qwen38_max_resident_decode_stage/source/spark_qwen38_max_resident_decode_stage_module.c: memcpy uses a direct size/count literal
-2 modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu: calloc uses a raw byte-width multiplier
-4 modules/qwen38_max_resident_decode_stage/validation/spark_qwen38_max_resident_decode_stage_cuda_validation.cu: memcpy uses a direct size/count literal
 1 modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c: SparkStageModuleDeviceAllocate uses a raw byte-width multiplier
 1 modules/qwen4_flash_resident_decode_stage/source/spark_qwen4_flash_resident_decode_stage_module.c: memcpy uses a direct size/count literal
 18 modules/qwen4_flash_resident_decode_stage/validation/spark_qwen4_flash_resident_decode_stage_cuda_validation.cu: cudaMalloc uses a raw byte-width multiplier
@@ -94,7 +73,6 @@
 3 tools/dev/ling_gemm_repro.cu: cudaMalloc uses a raw byte-width multiplier
 3 tools/dev/ling_gemm_repro.cu: cudaMemset uses a raw byte-width multiplier
 1 tools/devcycle/bw_probe.cu: cudaMalloc uses a direct size/count literal
-5 tools/dsv4_pro_experts_manifest.c: memcpy uses a direct size/count literal
 5 tools/glm52_experts_manifest.c: memcpy uses a direct size/count literal
 1 tools/glm52_resident_stagepack.py: GLM model literal 576 is outside the model contract
 1 tools/glm52_resident_stagepack.py: GLM model literal 6144 is outside the model contract
@@ -179,37 +157,9 @@
 1 tools/mesh_register_attach_repro.c: memcpy uses a direct size/count literal
 1 tools/mesh_register_repro.c: memset uses a direct size/count literal
 9 tools/multi_dev_smoke.c: memcpy uses a direct size/count literal
-4 tools/qwen36_dflash2_conv_parity.cu: cudaMalloc uses a raw byte-width multiplier
-4 tools/qwen36_dflash2_conv_parity.cu: cudaMemcpy uses a raw byte-width multiplier
-4 tools/qwen36_dflash2_conv_parity.cu: fwrite uses a direct size/count literal
-5 tools/qwen36_dflash2_conv_parity.cu: malloc uses a raw byte-width multiplier
-3 tools/qwen36_multirow_dot_bench.cu: cudaMalloc uses a raw byte-width multiplier
-2 tools/qwen36_multirow_dot_bench.cu: cudaMemcpy uses a direct size/count literal
-5 tools/qwen36_multirow_dot_bench.cu: cudaMemcpy uses a raw byte-width multiplier
-5 tools/qwen36_multirow_dot_bench.cu: malloc uses a raw byte-width multiplier
-2 tools/qwen36_native_linear_bench.cu: cudaMalloc uses a raw byte-width multiplier
-2 tools/qwen36_native_linear_bench.cu: cudaMemset uses a raw byte-width multiplier
-3 tools/qwen36_native_staged_bench.cu: cudaMalloc uses a raw byte-width multiplier
-3 tools/qwen36_native_staged_bench.cu: cudaMemcpy uses a raw byte-width multiplier
-3 tools/qwen36_native_staged_bench.cu: malloc uses a raw byte-width multiplier
-3 tools/qwen36_native_warp_specialized_bench.cu: cudaMalloc uses a raw byte-width multiplier
-5 tools/qwen36_native_warp_specialized_bench.cu: cudaMemcpy uses a raw byte-width multiplier
-5 tools/qwen36_native_warp_specialized_bench.cu: malloc uses a raw byte-width multiplier
-1 tools/qwen36_stagepack_rans.c: fwrite uses a direct size/count literal
-3 tools/qwen36_stagepack_rans.c: malloc uses a raw byte-width multiplier
-3 tools/qwen36_stagepack_rans.c: memcpy uses a direct size/count literal
-2 tools/qwen36_stagepack_rans.c: memcpy uses a raw byte-width multiplier
-5 tools/qwen38_27b_experts_manifest.c: memcpy uses a direct size/count literal
-2 tools/qwen38_27b_nvfp4_smoke.cu: cudaMalloc uses a raw byte-width multiplier
-5 tools/qwen38_27b_nvfp4_smoke.cu: cudaMemcpy uses a raw byte-width multiplier
-4 tools/qwen38_27b_nvfp4_smoke.cu: malloc uses a raw byte-width multiplier
-13 tools/qwen38_27b_nvfp4_smoke.cu: memcpy uses a direct size/count literal
-1 tools/qwen38_27b_nvfp4_smoke.cu: memcpy uses a raw byte-width multiplier
-1 tools/qwen38_27b_nvfp4_smoke.cu: wire header uses a numeric field offset
 1 tools/qwen38_27b_stagepack.py: scalar element width is assigned as a byte literal
 1 tools/qwen38_tp4_collective_bench.c: cudaMalloc uses a raw byte-width multiplier
 1 tools/qwen38_tp4_nccl_bench.c: cudaMalloc uses a raw byte-width multiplier
-7 tools/qwen38max_experts_manifest.c: memcpy uses a direct size/count literal
 10 tools/qwen4_flash_nvfp4_smoke.cu: cudaMalloc uses a raw byte-width multiplier
 8 tools/qwen4_flash_nvfp4_smoke.cu: cudaMemcpy uses a raw byte-width multiplier
 3 tools/qwen4_flash_nvfp4_smoke.cu: malloc uses a raw byte-width multiplier

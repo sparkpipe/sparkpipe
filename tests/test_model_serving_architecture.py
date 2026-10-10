@@ -517,134 +517,6 @@ def main() -> int:
         "resident does not enforce active and persistent KV slot ownership",
     )
 
-    module = (
-        ROOT
-        / "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_module.c"
-    ).read_text(encoding="utf-8")
-    require(
-        "SparkStageModuleEnvironment" not in module,
-        "DSV4 production geometry still comes from process environment",
-    )
-    require(
-        re.findall(r'getenv\("([^"]+)"\)', module) == [],
-        "DSV4 production module reads process environment",
-    )
-    require(
-        "SparkDsv4ResidentDecodeStageNodeContext" in module,
-        "DSV4 module does not consume its typed node context",
-    )
-    require(
-        "resident_sequence_capacity" in module
-        and "state->max_active_sequence_count" not in module,
-        "DSV4 still conflates dispatch width with persistent KV capacity",
-    )
-    require(
-        "SparkHiddenTransport" not in module,
-        "DSV4 compute module owns pipeline transport",
-    )
-    require(
-        "SPARK_DSV4_STAGE_GRAPHS" not in module,
-        "DSV4 module retains a silent graph-selection path",
-    )
-    require(
-        "SparkDsv4ModuleRunCausalAttention" in module
-        and "SparkDsv4LaunchBulkPrefillAttn" in module
-        and "SparkDsv4LaunchWindowShadow" in module
-        and "SparkDsv4ModulePrefillWaveRowCount" not in module
-        and "SparkDsv4ModuleRunFrame(" in module
-        and "SparkDsv4ModuleRunFrameWaves" not in module
-        and "SparkRowLayoutValidateRoundMajor" in module,
-        "DSV4 prefill is not the R2c bulk causal path (window shadow + "
-        "whole-frame scatter + one bulk attention launch)",
-    )
-    require(
-        "cudaStreamCreate(" not in module
-        and module.count("cudaStreamCreateWithFlags") == 1
-        and "kv_page_store_stream" in module
-        and "cudaDeviceSynchronize" not in module
-        and "state->execution_stream = host_services->execution_stream" in module
-        and "state->execution_stream != frame->execution_stream" in module,
-        "DSV4 execution stream and isolated KV transfer stream are not separated",
-    )
-    stage_runner = (
-        ROOT
-        / "modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c"
-    ).read_text(encoding="utf-8")
-    require(
-        "frame->execution_stream = runner->execution_stream" in stage_runner,
-        "DSV4 runner drops the resident-owned CUDA stream",
-    )
-
-    for relative in (
-        "modules/dsv4_resident_decode_stage/source/spark_dsv4_stage_runner.c",
-        "modules/dsv4_resident_decode_stage/source/spark_dsv4_serving_adapter.c",
-        "modules/dsv4_resident_decode_stage/include/sparkpipe/"
-        "spark_dsv4_resident_decode_stage_firmware.h",
-    ):
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        require(
-            "SparkHiddenTransportSession" not in text
-            and "SparkHiddenTransportSend" not in text
-            and "SparkHiddenTransportPostReceive" not in text,
-            f"{relative} crosses the model/transport ownership boundary",
-        )
-
-    description_path = (
-        ROOT
-        / "examples/model_descriptions/"
-        "dsv4_resident_decode_stage_firmware.json"
-    )
-    description = json.loads(description_path.read_text(encoding="utf-8"))
-    runtime_contract = description["metadata"]["runtime_contract"]
-    require(runtime_contract["required_environment"] == [], "DSV4 requires model env")
-    require(runtime_contract["fallback_allowed"] is False, "DSV4 permits fallback")
-    require(
-        runtime_contract["configuration_source"].startswith("typed "),
-        "DSV4 configuration source is not typed",
-    )
-    require(
-        runtime_contract["completion"] == "external"
-        and runtime_contract["runtime_backend_selection"] == "forbidden"
-        and runtime_contract["runtime_precision_selection"] == "forbidden",
-        "DSV4 description does not bind the generalized execution contract",
-    )
-    require(
-        description["stages"][0]["programs"][0]["max_inflight"] == 13,
-        "DSV4 driver capacity disagrees with its PP13 serving adapter",
-    )
-    adapter = read_source(
-        ROOT
-        / "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_serving_adapter.c"
-    )
-    model_header = (
-        ROOT
-        / "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h"
-    ).read_text(encoding="utf-8")
-    firmware_header = (
-        ROOT
-        / "modules/dsv4_resident_decode_stage/include/sparkpipe/"
-        "spark_dsv4_resident_decode_stage_firmware.h"
-    ).read_text(encoding="utf-8")
-    description_sha256 = hashlib.sha256(description_path.read_bytes()).hexdigest()
-    require(
-        description_sha256 in model_header
-        and "SPARK_DSV4_MODEL_DESCRIPTION_SHA256" in adapter,
-        "DSV4 generated contract and adapter are not bound to the model description",
-    )
-    require(
-        "resident_row_lane_indices[row] = "
-        "submission->lanes[lane].resident_sequence_slot" in adapter,
-        "DSV4 adapter does not translate batch lanes to persistent KV slots",
-    )
-    # Re-pinned for the f0bd7c8 serving-adapter cutover: the family
-    # adapter no longer hand-fills the driver create request; the shared
-    # template spine (runtime/serving_adapter_template.c) copies
-    # kv_logical_page_capacity / kv_physical_page_capacity /
-    # kv_backing_directory / kv_backing_maximum_bytes from
-    # configuration->runtime_limits into the create request, and the
-    # module consumes them from host_services unchanged.
     template_spine = (
         ROOT / "runtime/serving_adapter_template.c"
     ).read_text(encoding="utf-8")
@@ -652,12 +524,8 @@ def main() -> int:
         "create_request.kv_logical_page_capacity =\n\t\tconfiguration->runtime_limits.kv_logical_page_capacity"
         in template_spine
         and "create_request.kv_physical_page_capacity =\n\t\tconfiguration->runtime_limits.kv_physical_page_capacity"
-        in template_spine
-        and "state->logical_page_capacity = host_services->kv_logical_page_capacity"
-        in module
-        and "state->physical_page_capacity = host_services->kv_physical_page_capacity"
-        in module,
-        "DSV4 device layer does not consume neutral KV page budgets",
+        in template_spine,
+        "the serving template does not pass neutral KV page budgets to the driver",
     )
     deployment_header = (
         ROOT / "include/sparkpipe/spark_model_resident_deployment.h"
@@ -669,93 +537,6 @@ def main() -> int:
         in resident
         and "getenv(" not in resident,
         "KV backing policy is not owned by the typed generic deployment",
-    )
-    require(
-        "node_context.logical_page_capacity" not in adapter
-        and "node_context.physical_page_capacity" not in adapter
-        and "physical_page_capacity = state->max_active_sequence_count" not in adapter
-        and "uint32_t logical_page_capacity;" not in firmware_header
-        and "uint32_t physical_page_capacity;" not in firmware_header,
-        "DSV4 adapter or node context owns generic cache sizing policy",
-    )
-    require(
-        "SparkRowLayoutValidateRoundMajor" in adapter,
-        "DSV4 adapter does not fail closed on non-wavefront prefill order",
-    )
-    require(
-        "SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION" in adapter
-        and "cudaLaunchHostFunc" in module,
-        "DSV4 does not use stream-ordered external completion",
-    )
-    require(
-        "SparkResolveRuntimePath" in adapter,
-        "DSV4 stage packs can bypass the manifest runtime root",
-    )
-    require(
-        ".quiesce = SparkDsv4ServingQuiesce" in adapter
-        and "state->quiescing = 1u" in adapter
-        and "snapshot.active_submission_count == 0u" in adapter,
-        "DSV4 adapter cannot prove model work is quiescent before unload",
-    )
-    require(
-        "allow_unqualified_execution" not in adapter
-        and "ALLOW_UNQUALIFIED" not in adapter,
-        "DSV4 production adapter exposes a qualification bypass",
-    )
-    require(
-        "ALLOW_UNQUALIFIED" not in module
-        and "NODE_CONTEXT_FLAG_ALLOW_UNQUALIFIED" not in firmware_header,
-        "DSV4 module exposes a runtime qualification bypass",
-    )
-    for config_name in (
-        "dsv4_serving_adapter_config.json",
-        "dsv4_serving_adapter_config_absolute.json",
-        "dsv4_serving_adapter_config_stale.json",
-    ):
-        config_text = (ROOT / "tests/fixtures" / config_name).read_text(
-            encoding="utf-8"
-        )
-        require(
-            "allow_unqualified_execution" not in config_text,
-            f"{config_name} exposes a qualification bypass",
-        )
-
-    deployment_example = json.loads(
-        (
-            ROOT
-            / "examples/deployments/dsv4_flash_pp13_host_rdma.json"
-        ).read_text(encoding="utf-8")
-    )
-    dsv4_description = json.loads(
-        (
-            ROOT
-            / "examples/model_descriptions/dsv4_resident_decode_stage_firmware.json"
-        ).read_text(encoding="utf-8")
-    )
-    dsv4_target = dsv4_description["stages"][0]["target"]
-    expected_hosts = [f"spark{rank}-fabric" for rank in range(10)] + [
-        "sparka-fabric",
-        "sparkb-fabric",
-        "sparkc-fabric",
-    ]
-    require(
-        deployment_example["coordinator_rank_index"] == 0
-        and [node["transport_host"] for node in deployment_example["nodes"]]
-        == expected_hosts
-        and all(
-            not component["shared_object_path"].startswith("/")
-            for component in (
-                deployment_example["adapter"],
-                deployment_example["driver"],
-                deployment_example["transport"],
-            )
-        ),
-        "DSV4 deployment does not use explicit hosts and node-local release roots",
-    )
-    require(
-        all(node["node_target"] == dsv4_target
-            for node in deployment_example["nodes"]),
-        "DSV4 deployment target drifts from the generated AOT package",
     )
 
     fixture_adapter = (
@@ -791,7 +572,7 @@ def main() -> int:
         "resident test hides duplicate posts with immediate completion",
     )
 
-    print("model-neutral resident boundary and DSV4 adapter ownership hold")
+    print("model-neutral resident boundary holds")
     return 0
 
 

@@ -45,7 +45,7 @@ QWEN38_27B = {
     "program": "qwen38_27b",
     "node_target": "cuda.sm121.qwen38_27b.stage_runner.linear_fp8.kv_bf16",
     "contract": "model_contracts/qwen38_27b_authoritative.json",
-    "chat_template": "model-families/qwen38_27b/chat_template.json",
+    "chat_template": "model-families/qwen38/chat_template.json",
     "eos_token_ids": [248044, 248046],
     "tokenizer_vocabulary": 248077,
     "hidden": 5120,

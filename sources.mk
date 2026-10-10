@@ -98,17 +98,6 @@ SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c \
 	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c
 
-SPARKPIPE_QWEN38_27B_SOURCES := \
-    model-families/qwen38_27b/src/spark_qwen38_27b_work_control.c
-
-SPARKPIPE_QWEN38_SOURCES := \
-    model-families/qwen38_max/src/spark_qwen38_max_work_control.c
-
-SPARKPIPE_DSV4_SOURCES := \
-    model-families/dsv4/src/spark_dsv4_parallel_shape.c \
-    model-families/dsv4/src/spark_dsv4_cache_plan.c \
-    model-families/dsv4/src/spark_dsv4_cache_arena.c
-
 SPARKPIPE_K3_SOURCES := \
     modules/k3_resident_decode_stage/source/spark_k3_pack_load.c \
     modules/k3_resident_decode_stage/source/spark_k3_bind.c \

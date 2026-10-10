@@ -70,24 +70,10 @@
       "pipeline_payload_bytes_per_row": 10240
     },
     {
-      "id": "dsv4_flash_native_mixed_precision",
-      "family": "dsv4_flash",
-      "hidden_dimension": 4096,
+      "id": "dsv41_flash_native_mixed_precision",
+      "family": "dsv41_flash",
+      "hidden_dimension": 5120,
       "attention_head_count": 64,
-      "kv_head_count": 1,
-      "moe_expert_count": 256,
-      "moe_top_k": 6,
-      "expert_weight_format": "fp4_native",
-      "expert_activation_format": "checkpoint_native",
-      "non_expert_format": "fp8_e4m3",
-      "kernel_roles": ["gqa", "moe", "dsa", "dense"],
-      "pipeline_payload_bytes_per_row": 8192
-    },
-    {
-      "id": "dsv4_pro_native_mixed_precision",
-      "family": "dsv4_pro",
-      "hidden_dimension": 7168,
-      "attention_head_count": 128,
       "kv_head_count": 1,
       "moe_expert_count": 384,
       "moe_top_k": 6,
@@ -95,7 +81,7 @@
       "expert_activation_format": "checkpoint_native",
       "non_expert_format": "fp8_e4m3",
       "kernel_roles": ["gqa", "moe", "dsa", "dense"],
-      "pipeline_payload_bytes_per_row": 14336
+      "pipeline_payload_bytes_per_row": 10240
     },
     {
       "id": "mimo26_flash_mxfp4_experts_fp8_spine",

@@ -41,29 +41,18 @@ GLM52_MODULE_MAKEFILE = os.path.join(
 GLM_WRAPPER_MAKEFILE = os.path.join(ROOT, "modules/glm52_resident_decode_stage/glm_resident_stage_wrapper.mk")
 GLM_COMMON_TUNING_HEADER = os.path.join(
     ROOT, "model-families/glm52/cuda_tree", "spark_glm_batch_tuning.h")
-DSV4_MODULE_MAKEFILE = os.path.join(
-    ROOT, "modules/dsv4_resident_decode_stage/Makefile")
 GLM52_TUNING_HEADER = os.path.join(
     ROOT, "modules/glm52_resident_decode_stage/include/sparkpipe",
     "spark_glm52_batch_tuning.h")
 K3_TUNING_HEADER = os.path.join(
     ROOT, "modules/k3_resident_decode_stage/include/sparkpipe",
     "spark_k3_batch_tuning.h")
-DSV4_TUNING_HEADER = os.path.join(
-    ROOT, "modules/dsv4_resident_decode_stage/include/sparkpipe",
-    "spark_dsv4_batch_tuning.h")
 GLM52_FIRMWARE_HEADER = os.path.join(
     ROOT, "modules/glm52_resident_decode_stage/include/sparkpipe",
     "spark_glm52_resident_decode_stage_firmware.h")
-DSV4_FIRMWARE_HEADER = os.path.join(
-    ROOT, "modules/dsv4_resident_decode_stage/include/sparkpipe",
-    "spark_dsv4_resident_decode_stage_firmware.h")
 GLM52_FIRMWARE_JSON = os.path.join(
     ROOT, "examples/model_descriptions",
     "glm52_resident_decode_stage_mxfp4_firmware.json")
-DSV4_FIRMWARE_JSON = os.path.join(
-    ROOT, "examples/model_descriptions",
-    "dsv4_resident_decode_stage_firmware.json")
 TOP_MAKEFILE = os.path.join(ROOT, "Makefile")
 
 BUCKETS = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
@@ -80,14 +69,8 @@ GLM52_ID_SUFFIX = "v2"
 K3_ID_PREFIX = ("spark.k3.resident_decode_stage.mxfp4_routed_bf16_rest."
                 "h7168.l93.kda69.mla24")
 K3_ID_SUFFIX = "v2"
-DSV4_ID_PREFIX = ("spark.dsv4.flash.resident_decode_stage.linear_fp8."
-                  "expert_mxfp4.kv_bf16.h4096.l43.e256.k6.ga0731")
-DSV4_ID_SUFFIX = "v4"
 
 DEFAULT_PROBES = (
-    ("dsv4", ("sparkpipe/spark_dsv4_model.h", "sparkpipe/spark_dsv4_batch_tuning.h"),
-     ("-Iinclude", "-Imodel-families/dsv4/include",
-      "-Imodules/dsv4_resident_decode_stage/include")),
     ("glm52", ("sparkpipe/spark_glm52_batch_tuning.h",),
      ("-I.", "-Iinclude", "-Imodel-families/glm52/include",
       "-Imodules/glm52_resident_decode_stage/include",
@@ -216,10 +199,6 @@ def check_tuning_header(path, family, id_prefix, id_suffix, extra_paths=()):
     if "#define SPARK_BATCH_BUCKET" in text:
         report("explicit bucket", rel,
                "the build must fail when it omits its bucket")
-    if family == "dsv4" and (not text.startswith("#pragma once\n") or
-                             "#ifndef" in text):
-        report("header guard", rel,
-               "DSV4 uses pragma once and no ifndef fallback")
     # The guard closes the set: every bucket named exactly as the flag spells
     # it, so a typo'd -DSPARK_BATCH_BUCKET is a build error, not a silent tune.
     guard = re.search(r"#if SPARK_BATCH_BUCKET != 1u.*?#error", text, re.S)
@@ -263,24 +242,12 @@ def check_firmware_identity():
         report("firmware capacity", rel,
                "the active-sequence ceiling must be the compiled bucket")
 
-    text = open(DSV4_FIRMWARE_HEADER).read()
-    rel = os.path.relpath(DSV4_FIRMWARE_HEADER, ROOT)
-    if '#include "sparkpipe/spark_dsv4_batch_tuning.h"' not in text:
-        report("firmware wiring", rel, "the firmware header must include the "
-               "batch-tuning header")
-    if not re.search(
-            r"#define SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT \\\n"
-            r"\s+SPARK_DSV4_BATCH_TUNING_SEQUENCE_CEILING", text):
-        report("firmware capacity", rel,
-               "the active-sequence ceiling must come from the tuning header")
-
     # The unflagged build IS the b1024 module and keeps the unbucketed ID the
     # model descriptions publish; a bucketed ID appears only when a variant
     # archive publishes. Drift here means the compiled module and the model
     # description name different artifacts.
     for json_path, id_prefix, id_suffix in (
-            (GLM52_FIRMWARE_JSON, GLM52_ID_PREFIX, GLM52_ID_SUFFIX),
-            (DSV4_FIRMWARE_JSON, DSV4_ID_PREFIX, DSV4_ID_SUFFIX)):
+            (GLM52_FIRMWARE_JSON, GLM52_ID_PREFIX, GLM52_ID_SUFFIX),):
         firmware_json = open(json_path).read()
         rel = os.path.relpath(json_path, ROOT)
         if f'"module": "{id_prefix}.{id_suffix}"' not in firmware_json:
@@ -293,9 +260,7 @@ def check_top_level_makefile():
     rel = "Makefile"
     for target, delegation in (
             ("cuda_glm52_resident_decode_stage_variants",
-             "modules/glm52_resident_decode_stage variants"),
-            ("cuda_dsv4_resident_decode_stage_variants",
-             "modules/dsv4_resident_decode_stage variants")):
+             "modules/glm52_resident_decode_stage variants"),):
         if not re.search(rf"^{target}:", text, re.M):
             report("variant set", rel, f"the {target} target is missing")
         if delegation not in text:
@@ -312,14 +277,9 @@ PROBE_TEMPLATE = r"""
 #include <stdio.h>
 #include <string.h>
 
-// The dsv4 model header first: the firmware/tuning headers pick up its
-// geometry by the module's model-header-first pattern.
-#include "sparkpipe/spark_dsv4_model.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
-#include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm52_batch_tuning.h"
 #include "sparkpipe/spark_k3_batch_tuning.h"
-#include "sparkpipe/spark_dsv4_batch_tuning.h"
 
 // The ceiling contract, executed: smallest built bucket >= the request, 0
 // above b1024 (no silent oversubscription of the pools the ceiling sizes).
@@ -367,26 +327,18 @@ int main(void)
     // makes a variant archive more than a rename.
     assert(SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT ==
            EXPECTED_COMPILED_BUCKET);
-    assert(SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT ==
-           EXPECTED_SEQUENCE_CEILING);
     check_ceiling(SparkGlmBatchVariantBucketCeiling,
                   SparkGlmBatchVariantModuleId,
                   "GLM52_PREFIX", "GLM52_SUFFIX");
     check_ceiling(SparkK3BatchVariantBucketCeiling,
                   SparkK3BatchVariantModuleId,
                   "K3_PREFIX", "K3_SUFFIX");
-    check_ceiling(SparkDsv4BatchVariantBucketCeiling,
-                  SparkDsv4BatchVariantModuleId,
-                  "DSV4_PREFIX", "DSV4_SUFFIX");
     assert(strcmp(SPARK_GLM52_BATCH_TUNING_MODULE_ID,
                   "GLM52_PREFIX.bEXPECTED_BUCKET_ID.GLM52_SUFFIX") == 0);
     assert(strcmp(SPARK_K3_BATCH_TUNING_MODULE_ID,
                   "K3_PREFIX.bEXPECTED_BUCKET_ID.K3_SUFFIX") == 0);
-    assert(strcmp(SPARK_DSV4_BATCH_TUNING_MODULE_ID,
-                  "DSV4_PREFIX.bEXPECTED_BUCKET_ID.DSV4_SUFFIX") == 0);
     assert(SPARK_GLM52_BATCH_TUNING_GROUPED_TILE_M == EXPECTED_TILE_M);
     assert(SPARK_K3_BATCH_TUNING_GROUPED_TILE_M == EXPECTED_TILE_M);
-    assert(SPARK_DSV4_BATCH_TUNING_GROUPED_TILE_M == EXPECTED_TILE_M);
     return(0);
 }
 """
@@ -395,16 +347,12 @@ int main(void)
 def probe_source(bucket):
     source = PROBE_TEMPLATE
     source = source.replace("EXPECTED_COMPILED_BUCKET", f"{bucket}u")
-    source = source.replace("EXPECTED_SEQUENCE_CEILING",
-                            f"{bucket}u")
     source = source.replace("EXPECTED_BUCKET_ID", str(bucket))
     source = source.replace("EXPECTED_TILE_M", f"{EXPECTED_TILE_M[bucket]}u")
     source = source.replace('"GLM52_PREFIX', f'"{GLM52_ID_PREFIX}')
     source = source.replace('GLM52_SUFFIX"', f'{GLM52_ID_SUFFIX}"')
     source = source.replace('"K3_PREFIX', f'"{K3_ID_PREFIX}')
     source = source.replace('K3_SUFFIX"', f'{K3_ID_SUFFIX}"')
-    source = source.replace('"DSV4_PREFIX', f'"{DSV4_ID_PREFIX}')
-    source = source.replace('DSV4_SUFFIX"', f'{DSV4_ID_SUFFIX}"')
     return source
 
 
@@ -418,10 +366,8 @@ def check_selection_contract():
         return
     include_flags = [
         "-I.", "-Iinclude", "-Imodel-families/glm52/include",
-        "-Imodel-families/dsv4/include",
         "-Imodules/glm52_resident_decode_stage/include",
         "-Imodules/k3_resident_decode_stage/include",
-        "-Imodules/dsv4_resident_decode_stage/include",
     ]
     # The glm52 variant module ID names the expert codec; the probe compiles
     # the mxfp4 spelling, the one the mxfp4 model description publishes.
@@ -534,18 +480,15 @@ def main():
     check_rules_makefile()
     check_family_makefile(GLM52_MODULE_MAKEFILE, "glm52",
                           extra_paths=(GLM_WRAPPER_MAKEFILE,))
-    check_family_makefile(DSV4_MODULE_MAKEFILE, "dsv4")
     check_tuning_header(GLM52_TUNING_HEADER, "glm52",
                         GLM52_ID_PREFIX, GLM52_ID_SUFFIX,
                         extra_paths=(GLM_COMMON_TUNING_HEADER,))
     check_tuning_header(K3_TUNING_HEADER, "k3", K3_ID_PREFIX, K3_ID_SUFFIX)
-    check_tuning_header(DSV4_TUNING_HEADER, "dsv4",
-                        DSV4_ID_PREFIX, DSV4_ID_SUFFIX)
     check_firmware_identity()
     check_top_level_makefile()
     check_selection_contract()
     check_glm5_next_selection_contract()
-    print("glm52 + dsv4 + k3 + glm5_next batch variants: eleven buckets B1..B1024")
+    print("glm52 + k3 + glm5_next batch variants: eleven buckets B1..B1024")
     if FAILURES:
         print(f"\n{len(FAILURES)} batch-variant contract failure(s):")
         print("\n".join(FAILURES))

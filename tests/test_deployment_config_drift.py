@@ -216,28 +216,12 @@ def main() -> int:
                           "spark_glm52_serving_adapter.c",
                           "SparkGlm52ServingConfigurationMembers", stage)
 
-        # --- the generic spec family: every committed spec must still
-        # generate (schema drift detector), and the two committed generator
-        # twins must byte-match ---
-        for spec in sorted((ROOT / "examples/deployments").glob("*.spec.json")):
-            base = spec.name[:-len(".spec.json")]
-            out = scratch / ("spec-%s.json" % base)
-            run(["python3", "tools/generate_model_resident_deployment.py",
-                 "--specification", str(spec), "--output", str(out)])
-        for twin in ("dsv4_flash_pp13_host_rdma", "qwen36_pp13_host_rdma"):
-            generated = scratch / ("spec-%s.json" % twin)
-            committed = ROOT / "examples/deployments" / (twin + ".json")
-            problem = diff_bytes(generated, committed)
-            if problem:
-                failures.append(problem)
-
     if failures:
         for failure in failures:
             print("FAIL " + failure)
         return 1
     print("deployment config drift PASS: k3 (17), glm5_next (17), glm52 "
-          "adapter members, %d deployment specs + 2 committed twins"
-          % len(list((ROOT / "examples/deployments").glob("*.spec.json"))))
+          "adapter members")
     return 0
 
 

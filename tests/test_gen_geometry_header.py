@@ -29,10 +29,6 @@ class GeometryHeaderGenerator(unittest.TestCase):
             with self.subTest(family=family):
                 run = self.check("--family", family)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        for family in sorted(module.ADAPTER_CONSTANTS):
-            with self.subTest(adapter_constants=family):
-                run = self.check("--family", family, "--emit-adapter-constants")
-                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_contract_changes_reach_the_output(self):
         module = generator()

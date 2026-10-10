@@ -2,8 +2,7 @@
 """Geometry-header generator: the recipe compiler v0 (W4 redundancy lane).
 
 model_contracts/<family>_authoritative.json -> the family geometry header
-(model-families/<family>/include/sparkpipe/spark_<family>_model.h) and the
-family's serving-adapter descriptor constants blob. Every geometry number in
+(model-families/<family>/include/sparkpipe/spark_<family>_model.h). Every geometry number in
 the emitted header is read from the contract (strict indexing - a missing key
 is an error, never a default); prose and derived-macro structure are owned by
 this file's family templates, the same split the dsv4/k3 contract generators
@@ -12,13 +11,11 @@ model geometry is recorded in FAMILY_POLICY below.
 
 Proof discipline (docs/HOUSECLEANING_PLAN.md W4.4): where a hand-written
 original exists, --check must reproduce it byte-identical before cutover.
-Both families' headers are byte-identical to the output; tests/test_gen_geometry_header.py
+The family header is byte-identical to the output; tests/test_gen_geometry_header.py
 runs --check for every output.
 
 Usage:
-    python3 tools/gen_geometry_header.py --family qwen38_27b [--check]
-    python3 tools/gen_geometry_header.py --family glm5_next  [--check]
-    python3 tools/gen_geometry_header.py --family qwen38_27b --emit-adapter-constants [--check]
+    python3 tools/gen_geometry_header.py --family glm5_next [--check]
 """
 from __future__ import annotations
 
@@ -30,27 +27,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 FAMILIES = {
-    "qwen38_27b": {
-        "contract": "model_contracts/qwen38_27b_authoritative.json",
-        "header": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_model.h",
-    },
     "glm5_next": {
         "contract": "model_contracts/glm53_flash_authoritative.json",
         "header": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h",
     },
 }
 
-ADAPTER_CONSTANTS = {
-    "qwen38_27b": "model-families/qwen38_27b/include/sparkpipe/spark_qwen38_27b_serving_constants.h",
-}
-
 # Constants that are module/deployment policy, not checkpoint geometry; the
 # contract does not carry them. Each entry names its owner so the split stays
 # auditable. Values land in the emitted header verbatim.
 FAMILY_POLICY = {
-    "qwen38_27b": {
-        "gdn_chunk_tokens": 64,       # module chunk width (kernel walk granularity)
-    },
     "glm5_next": {
         "kv_pool_tokens": 4194304,                # deployment KV policy
         "restricted_vocab_count": 256,            # deployment sampling policy
@@ -93,89 +79,6 @@ def scientific(value: float) -> str:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
-
-
-def render_qwen38_27b(c: dict) -> str:
-    model, hybrid, gdn, attn = c["model"], c["hybrid_attention"], c["gdn"], c["attention"]
-    cache = c["cache"]
-    policy = FAMILY_POLICY["qwen38_27b"]
-    require(hybrid["gdn_layer_count"] + hybrid["full_layer_count"] == model["layer_count"],
-            "qwen38_27b hybrid layer partition must cover the stack")
-    require(model["rms_norm_epsilon"] == 1e-06, "qwen38_27b epsilon literal formatting below assumes 1e-06")
-
-    hidden, layers, vocab = u(model["hidden_dimension"]), u(model["layer_count"]), u(model["vocabulary_size"])
-    heads, kv_heads, head_dim = u(attn["query_head_count"]), u(attn["kv_head_count"]), u(attn["head_dimension"])
-    gdn_key_heads, gdn_value_heads = u(gdn["key_head_count"]), u(gdn["value_head_count"])
-    max_ctx = u(model["maximum_context_tokens"])
-    eps = f"{model['rms_norm_epsilon']:.0e}"
-    ffn = u(model["dense_intermediate_dimension"])
-    mtp = u(model["mtp_layer_count"])
-    period, phase = u(hybrid["period"]), u(hybrid["full_phase"])
-    gdn_layers, full_layers = u(hybrid["gdn_layer_count"]), u(hybrid["full_layer_count"])
-    gdn_key_dim, gdn_value_dim = u(gdn["key_dimension"]), u(gdn["value_dimension"])
-    conv_kernel = u(gdn["short_conv_kernel"])
-    rope_dim = u(attn["rope_dimension"])
-    theta = repr(float(attn["rope_theta"]))
-    chunk = u(policy["gdn_chunk_tokens"])
-    page = u(cache["kv_page_slots"])
-
-    return f"""#ifndef SPARKPIPE_SPARK_QWEN38_27B_MODEL_H
-#define SPARKPIPE_SPARK_QWEN38_27B_MODEL_H
-
-#define SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION {hidden}
-#define SPARK_QWEN38_27B_MODEL_LAYER_COUNT {layers}
-#define SPARK_QWEN38_27B_MODEL_VOCAB_COUNT {vocab}
-#define SPARK_QWEN38_27B_MODEL_ATTENTION_HEAD_COUNT {heads}
-#define SPARK_QWEN38_27B_MODEL_KV_HEAD_COUNT {kv_heads}
-#define SPARK_QWEN38_27B_MODEL_HEAD_DIMENSION {head_dim}
-#define SPARK_QWEN38_27B_MODEL_GDN_KEY_HEAD_COUNT {gdn_key_heads}
-#define SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT {gdn_value_heads}
-
-#define SPARK_QWEN38_27B_MODEL_OUTPUT_VOCAB_COUNT SPARK_QWEN38_27B_MODEL_VOCAB_COUNT
-#define SPARK_QWEN38_27B_MODEL_MAXIMUM_CONTEXT_TOKENS {max_ctx}
-#define SPARK_QWEN38_27B_MODEL_RMS_NORM_EPSILON {eps}f
-#define SPARK_QWEN38_27B_MODEL_FFN_INTERMEDIATE_DIMENSION {ffn}
-#define SPARK_QWEN38_27B_MODEL_MTP_LAYER_COUNT {mtp}
-
-#define SPARK_QWEN38_27B_MODEL_ATTENTION_PERIOD {period}
-#define SPARK_QWEN38_27B_MODEL_FULL_ATTENTION_PHASE {phase}
-#define SPARK_QWEN38_27B_MODEL_LAYER_IS_GDN(layer_index) \\
-	(((layer_index) % SPARK_QWEN38_27B_MODEL_ATTENTION_PERIOD) != SPARK_QWEN38_27B_MODEL_FULL_ATTENTION_PHASE)
-#define SPARK_QWEN38_27B_MODEL_GDN_LAYER_COUNT {gdn_layers}
-#define SPARK_QWEN38_27B_MODEL_FULL_ATTENTION_LAYER_COUNT {full_layers}
-
-#define SPARK_QWEN38_27B_MODEL_GDN_HEAD_KEY_DIMENSION {gdn_key_dim}
-#define SPARK_QWEN38_27B_MODEL_GDN_HEAD_VALUE_DIMENSION {gdn_value_dim}
-#define SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEADS_PER_KEY_HEAD \\
-	(SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT / SPARK_QWEN38_27B_MODEL_GDN_KEY_HEAD_COUNT)
-#define SPARK_QWEN38_27B_MODEL_GDN_CONV_KERNEL {conv_kernel}
-#define SPARK_QWEN38_27B_MODEL_GDN_QK_DIMENSION \\
-	(SPARK_QWEN38_27B_MODEL_GDN_KEY_HEAD_COUNT * SPARK_QWEN38_27B_MODEL_GDN_HEAD_KEY_DIMENSION)
-#define SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION \\
-	(SPARK_QWEN38_27B_MODEL_GDN_VALUE_HEAD_COUNT * SPARK_QWEN38_27B_MODEL_GDN_HEAD_VALUE_DIMENSION)
-#define SPARK_QWEN38_27B_MODEL_GDN_CONV_CHANNELS \\
-	((2u * SPARK_QWEN38_27B_MODEL_GDN_QK_DIMENSION) + SPARK_QWEN38_27B_MODEL_GDN_VALUE_DIMENSION)
-#define SPARK_QWEN38_27B_MODEL_GDN_CONV_TAIL_COLUMNS (SPARK_QWEN38_27B_MODEL_GDN_CONV_KERNEL - 1u)
-#define SPARK_QWEN38_27B_MODEL_GDN_CHUNK_TOKENS {chunk}
-
-#define SPARK_QWEN38_27B_MODEL_ATTN_QUERY_HEAD_COUNT SPARK_QWEN38_27B_MODEL_ATTENTION_HEAD_COUNT
-#define SPARK_QWEN38_27B_MODEL_ATTN_KV_HEAD_COUNT SPARK_QWEN38_27B_MODEL_KV_HEAD_COUNT
-#define SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION SPARK_QWEN38_27B_MODEL_HEAD_DIMENSION
-#define SPARK_QWEN38_27B_MODEL_ATTN_ROPE_DIMENSION {rope_dim}
-#define SPARK_QWEN38_27B_MODEL_ATTN_ROPE_THETA {theta}f
-#define SPARK_QWEN38_27B_MODEL_ATTN_QUERY_DIMENSION \\
-	(SPARK_QWEN38_27B_MODEL_ATTN_QUERY_HEAD_COUNT * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION)
-#define SPARK_QWEN38_27B_MODEL_ATTN_KV_DIMENSION \\
-	(SPARK_QWEN38_27B_MODEL_ATTN_KV_HEAD_COUNT * SPARK_QWEN38_27B_MODEL_ATTN_HEAD_DIMENSION)
-#define SPARK_QWEN38_27B_MODEL_ATTN_CACHE_TOKEN_ELEMENTS \\
-	(2u * SPARK_QWEN38_27B_MODEL_ATTN_KV_DIMENSION)
-
-#define SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES 2u
-#define SPARK_QWEN38_27B_MODEL_HIDDEN_BF16_BYTES \\
-	(SPARK_QWEN38_27B_MODEL_HIDDEN_DIMENSION * SPARK_QWEN38_27B_MODEL_BF16_ELEMENT_BYTES)
-
-#endif
-"""
 
 
 def render_glm5_next(c: dict) -> str:
@@ -437,60 +340,12 @@ def render_glm5_next(c: dict) -> str:
 
 
 RENDERERS = {
-    "qwen38_27b": render_qwen38_27b,
     "glm5_next": render_glm5_next,
 }
 
 
 def render_header(family: str, contract: dict) -> str:
     return RENDERERS[family](contract)
-
-
-def emit_adapter_constants(family: str, contract: dict) -> str:
-    """The serving-adapter descriptor constants blob for the family.
-
-    Emitted next to the geometry header (model-families/<family>/...) so the
-    adapter's pasted constants block becomes an include; the cutover edit in
-    modules/ belongs to the W2 consolidation lane (their write set).
-    """
-    if family != "qwen38_27b":
-        raise ValueError(f"adapter-constants emission not yet modelled for {family}")
-    model = contract["model"]
-    revision = contract["revision"]
-    require(contract["model_id"] == "Qwen/Qwen3.8-27B", "contract model id moved")
-    stage_layers = ", ".join(["64u"] * 4 + ["0u"] * 12)
-    stage_layers_tp1 = ", ".join(["64u"] * 1 + ["0u"] * 15)
-    max_ctx = u(model["maximum_context_tokens"])
-    return f"""#ifndef SPARKPIPE_SPARK_QWEN38_27B_SERVING_CONSTANTS_H
-#define SPARKPIPE_SPARK_QWEN38_27B_SERVING_CONSTANTS_H
-
-#ifndef SPARK_QWEN38_27B_SERVING_TP_DEGREE
-#error "SPARK_QWEN38_27B_SERVING_TP_DEGREE must name the serving topology: 4 for the TP4 whole-stack build, 1 for TP1"
-#endif
-#define SPARK_QWEN38_27B_SERVING_TP (SPARK_QWEN38_27B_SERVING_TP_DEGREE >= 1u)
-
-#define SPARK_QWEN38_27B_SERVING_MODEL_ID "Qwen/Qwen3.8-27B"
-#define SPARK_QWEN38_27B_SERVING_MODEL_REVISION "{revision}"
-#define SPARK_QWEN38_27B_SERVING_DRIVER_MODEL_ID \\
-	"alibaba.qwen3.8-27b.resident-decode-stage-firmware"
-#define SPARK_QWEN38_27B_SERVING_STAGE_NAME "qwen38_27b_resident_decode_stage"
-#define SPARK_QWEN38_27B_SERVING_TARGET \\
-	"cuda.sm121.qwen38_27b.resident_decode_stage.bf16"
-#define SPARK_QWEN38_27B_SERVING_PROGRAM_NAME "resident_decode"
-#define SPARK_QWEN38_27B_SERVING_MAX_SEQUENCE_POSITIONS_CAP {max_ctx}
-
-#if SPARK_QWEN38_27B_SERVING_TP_DEGREE == 1u
-#define SPARK_QWEN38_27B_SERVING_ADAPTER_ID "spark.qwen38_27b.serving-adapter.tp1.v1"
-#define SPARK_QWEN38_27B_SERVING_STAGE_COUNT 1u
-#define SPARK_QWEN38_27B_SERVING_STAGE_LAYER_COUNTS {{{stage_layers_tp1}}}
-#else
-#define SPARK_QWEN38_27B_SERVING_ADAPTER_ID "spark.qwen38_27b.serving-adapter.tp4.v1"
-#define SPARK_QWEN38_27B_SERVING_STAGE_COUNT 4u
-#define SPARK_QWEN38_27B_SERVING_STAGE_LAYER_COUNTS {{{stage_layers}}}
-#endif
-
-#endif
-"""
 
 
 def write_or_check(relative: str, content: str, check_only: bool) -> bool:
@@ -513,18 +368,12 @@ def main() -> int:
     parser.add_argument("--family", required=True, choices=sorted(FAMILIES))
     parser.add_argument("--check", action="store_true",
                         help="verify the regenerated file matches the checked-in one byte-for-byte")
-    parser.add_argument("--emit-adapter-constants", action="store_true",
-                        help="emit the family serving-adapter descriptor constants header")
     arguments = parser.parse_args()
 
     family = FAMILIES[arguments.family]
     contract = load_contract(family["contract"])
-    if arguments.emit_adapter_constants:
-        relative = ADAPTER_CONSTANTS[arguments.family]
-        content = emit_adapter_constants(arguments.family, contract)
-    else:
-        relative = family["header"]
-        content = render_header(arguments.family, contract)
+    relative = family["header"]
+    content = render_header(arguments.family, contract)
     return 0 if write_or_check(relative, content, arguments.check) else 1
 
 

@@ -114,8 +114,7 @@ def validate_workloads() -> None:
         ), "bf16", "bf16"),
         "glm5_next": (4096, 64, 1, 288, 8, "fp8_e4m3_block_128x128", "bf16", "fp8_e4m3"),
         "qwen38_27b": (5120, 24, 4, 0, 0, "none", "bf16", "bf16"),
-        "dsv4_flash": (4096, 64, 1, 256, 6, "fp4_native", "checkpoint_native", "fp8_e4m3"),
-        "dsv4_pro": (7168, 128, 1, 384, 6, "fp4_native", "checkpoint_native", "fp8_e4m3"),
+        "dsv41_flash": (5120, 64, 1, 384, 6, "fp4_native", "checkpoint_native", "fp8_e4m3"),
     }
     for family, values in expected.items():
         model = models[family]

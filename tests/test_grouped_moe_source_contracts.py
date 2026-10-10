@@ -64,28 +64,8 @@ def main() -> None:
     reject(k3_code, "LmGatherRowsKernel", "K3 gathered routed activation")
     reject(k3_code, "route_gather_bf16", "K3 packed activation copy")
 
-    dsv4 = read(
-        "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_module.c"
-    )
-    dsv4_cuda = read(
-        "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_cuda.cu"
-    )
     mimo = read("inference/llms/mimo_2_5/layer.cuh")
-    require(dsv4, "float *moe_scores_f32;", "DSV4 FP32 router output")
-    require(dsv4, "SparkDsv4LaunchGateRoute", "DSV4 fused routing entrypoint")
-    require(dsv4, "SparkDsv4LaunchFusedExpertW13Act",
-            "DSV4 fused indirect grouped expert W13 plus activation")
-    require(dsv4, "SparkDsv4LaunchFusedSharedW13Act",
-            "DSV4 fused shared expert W13 plus activation")
-    require(dsv4, "SparkDsv4LaunchExpertDown", "DSV4 native grouped expert W2")
-    reject(dsv4, "SparkDsv4LaunchExpertUp",
-           "DSV4 split routed expert-up success path")
-    require(dsv4_cuda, "sqrtf(SparkLmSoftplus(accumulator))", "DSV4 sqrt-softplus router")
-    require(dsv4, "SPARK_DSV4_MODEL_ROUTED_SCALING_FACTOR", "DSV4 router scale")
     require(mimo, "float *router_logits;", "MiMo FP32 router output")
-    reject(dsv4, "for (expert", "DSV4 per-expert host loop")
 
     model = read("tests/studies/sparkpipe_glm52_batchplane_model.c")
     require(model, "expert_sweeps_per_active_expert = 1.0", "one expert sweep model")

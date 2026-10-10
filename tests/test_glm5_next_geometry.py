@@ -275,8 +275,9 @@ def main() -> int:
         dirs = {
             "glm52": ROOT / "modules/glm52_resident_decode_stage",
             "k3": ROOT / "modules/k3_resident_decode_stage",
-            "dsv4": ROOT / "modules/dsv4_resident_decode_stage",
         }
+        if donor in RETIRED_DONORS:
+            continue
         check(f"donor module present: {donor}", dirs[donor].is_dir())
 
     print()
@@ -285,6 +286,9 @@ def main() -> int:
         return 1
     print("PASS glm5_next geometry + name mapping round-trip")
     return 0
+
+
+RETIRED_DONORS = {"dsv4"}
 
 
 def pattern_of(name: str) -> str:

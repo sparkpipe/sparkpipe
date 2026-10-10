@@ -48,23 +48,6 @@ NO_DRIVER = {}
 KNOWN_INCOMPLETE = {}
 
 
-def validate_dsv4_module():
-    header = (ROOT / "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h").read_text()
-    module = (ROOT / "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c").read_text()
-    ratios = {int(value) for value in re.findall(r"\b(0|4|128)u\b", header[header.index("SparkDsv4ModelCompressionRatios"):])}
-    if ratios != {0, 4, 128}:
-        return "contract does not expose exactly SWA, CSA, and HCA"
-    for needle in (
-        "SparkDsv4ModelLayerKind(layer_index)",
-        "kind == SPARK_DSV4_MODEL_LAYER_KIND_CSA",
-        "kind != SPARK_DSV4_MODEL_LAYER_KIND_SWA",
-        "SparkDsv4LaunchSparseAttn",
-    ):
-        if needle not in module:
-            return f"active module does not dispatch {needle}"
-    return None
-
-
 def selector_kinds(model):
     """Evaluate the model's LAYER_KIND macro by compiling it.
 
@@ -152,12 +135,6 @@ def driver_dispatches(model):
 
 def main():
     failures = 0
-    dsv4_problem = validate_dsv4_module()
-    if dsv4_problem is None:
-        print("  ok   dsv4: 43 layers, kinds [swa, csa, hca]")
-    else:
-        failures += 1
-        print(f"  FAIL dsv4: {dsv4_problem}")
     for model in sorted(p.name for p in LLMS.iterdir() if p.is_dir()):
         kinds, count = selector_kinds(model)
         if kinds is None:
