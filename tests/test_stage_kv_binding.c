@@ -459,7 +459,7 @@ static void TestCompletionEntryNeverWaits(void)
 	printf("T1 completion entry never waits: ok (entry %llu ns)\n",(unsigned long long)elapsed);
 }
 
-static void TestCopyOnWriteIsOneDeviceCopyPerRegion(void)
+static void TestCopyOnWriteIsOneDeviceCopyPerRegionLayer(void)
 {
 	TestStep y;
 	uint8_t source_bytes[TEST_PAGE_BYTES],destination_bytes[TEST_PAGE_BYTES];
@@ -475,7 +475,7 @@ static void TestCopyOnWriteIsOneDeviceCopyPerRegion(void)
 	destination = LanePage(1u,0u);
 	assert(destination != source);
 	assert(spark_stub_cuda_sync_copy_calls() == 0u);
-	assert(spark_stub_cuda_async_copy_calls() == 2u && HOOK.device_copies == 2u && HOOK.foreign_stream_copies == 0u);
+	assert(spark_stub_cuda_async_copy_calls() == 1u + TEST_LAYERS && HOOK.device_copies == 1u + TEST_LAYERS && HOOK.foreign_stream_copies == 0u);
 	PageBytes(source,source_bytes);
 	PageBytes(destination,destination_bytes);
 	assert(memcmp(source_bytes,destination_bytes,sizeof(source_bytes)) == 0);
@@ -491,7 +491,7 @@ static void TestCopyOnWriteIsOneDeviceCopyPerRegion(void)
 	assert(spark_stub_cuda_last_wait_stream() == stream && spark_stub_cuda_last_wait_event() == (cudaEvent_t)BINDING.copier.fence_event);
 	assert(cudaStreamDestroy(stream) == cudaSuccess);
 	Close();
-	printf("T2 copy-on-write is one device copy per region: ok\n");
+	printf("T2 copy-on-write is one device copy per page-major region and per layer of a layer-major region: ok\n");
 }
 
 static void TestCopyOnWriteDuringAPark(void)
@@ -520,7 +520,7 @@ static void TestCopyOnWriteDuringAPark(void)
 	StepInit(&y,2u,1u,2u,3u);
 	StepPrefix(&y,2u,0x40u);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
-	assert(LanePage(1u,0u) != source && HOOK.device_copies == 2u);
+	assert(LanePage(1u,0u) != source && HOOK.device_copies == 1u + TEST_LAYERS);
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
 	HookRelease();
 	assert(SparkKvPageStoreWaitForTransfers(&BINDING.page_store) == SPARK_STATUS_OK);
@@ -1578,7 +1578,7 @@ int main(void)
 	TestKvServerStart(64ull << 20);
 	TestWeightdOwnsPool();
 	TestCompletionEntryNeverWaits();
-	TestCopyOnWriteIsOneDeviceCopyPerRegion();
+	TestCopyOnWriteIsOneDeviceCopyPerRegionLayer();
 	TestCopyOnWriteDuringAPark();
 	TestFinishAndReleaseOnlyMark();
 	TestVerifyRewind();
