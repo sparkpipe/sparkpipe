@@ -24,7 +24,7 @@ static uint64_t Load(const uint64_t *word) { return __atomic_load_n(word,__ATOMI
 static void Store(uint64_t *word,uint64_t value) { __atomic_store_n(word,value,__ATOMIC_RELEASE); }
 static uint16_t Bf16(float value)
 {
-    uint32_t bits;std::memcpy(&bits,&value,sizeof(bits));return static_cast<uint16_t>(bits>>16u);
+    uint32_t bits;std::memcpy(&bits,&value,sizeof(bits));bits+=0x7fffu+((bits>>16u)&1u);return static_cast<uint16_t>(bits>>16u);
 }
 static float Float(uint16_t value)
 {

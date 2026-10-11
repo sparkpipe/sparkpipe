@@ -5,11 +5,12 @@
 #if defined(__CUDACC__)
 #include <cuda_runtime.h>
 #include <cuda.h>
+#include <cuda_bf16.h>
 #include "sparkpipe/spark_weightd.h"
 #include <stdio.h>
 #include "sparkpipe/spark_tp_mesh_round_control.h"
 #include "sparkpipe/spark_tp_device_collective.h"
-#define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V15-DEVICE-ARRIVAL"
+#define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V16-SUM-RNE"
 #define SPARK_TP_MESH_ERROR_PARITY_MISMATCH 0xFFFFFFFFFF000000ull
 #define SPARK_TP_MESH_ERROR_CANCELLED 0xFFFFFFFFFE000000ull
 #if defined(__CUDACC__)
@@ -255,11 +256,19 @@ static __device__ __forceinline__ float2 SparkTpLoadBf16Pair(const void *base,ui
 	return(pair);
 }
 
+static __device__ __forceinline__ uint16_t SparkTpFloatToBf16(float value)
+{
+	return(__bfloat16_as_ushort(__float2bfloat16_rn(value)));
+}
+
+static __device__ __forceinline__ uint32_t SparkTpPackBf16Pair(float x,float y)
+{
+	return(((uint32_t)SparkTpFloatToBf16(y) << 16u) | (uint32_t)SparkTpFloatToBf16(x));
+}
+
 static __device__ __forceinline__ void SparkTpStoreBf16Pair(void *base,uint64_t element,float x,float y)
 {
-	uint32_t packed = ((uint32_t)(__float_as_int(y) & 0xffff0000u)) |
-	    (uint32_t)((__float_as_int(x) >> 16) & 0x0000ffffu);
-	((uint32_t *)base)[element] = packed;
+	((uint32_t *)base)[element] = SparkTpPackBf16Pair(x,y);
 }
 
 static_assert(sizeof(SparkTpMeshRoundControl) ==
@@ -531,7 +540,7 @@ static __device__ void SparkTpMeshTreeFinish(
 {
     for ( uint64_t i = threadIdx.x; i < count; i += blockDim.x )
     {
-        if ( operation == 1u ) ((uint16_t *)output)[begin + i] = (uint16_t)(__float_as_uint(((const float *)scratch)[i]) >> 16u);
+        if ( operation == 1u ) ((uint16_t *)output)[begin + i] = SparkTpFloatToBf16(((const float *)scratch)[i]);
         else if ( operation == 2u ) ((uint64_t *)output)[begin + i] = ((const uint64_t *)scratch)[i];
         else ((uint16_t *)output)[begin + i] = ((const uint16_t *)scratch)[i];
     }
@@ -1325,7 +1334,7 @@ static __device__ void SparkTpMeshHardwareDirectElement(
     if ( operation == 2u )
         ((uint64_t *)output)[begin + i] = maximum;
     else
-        ((uint16_t *)output)[begin + i] = (uint16_t)(__float_as_uint(sum) >> 16u);
+        ((uint16_t *)output)[begin + i] = SparkTpFloatToBf16(sum);
 }
 
 static __device__ void SparkTpMeshHardwareSumQuad(
@@ -1350,7 +1359,7 @@ static __device__ void SparkTpMeshHardwareSumQuad(
         }
 #pragma unroll
     for ( k = 0u; k < 4u; k++ )
-        words[k] = (__float_as_uint(sum[2u * k]) >> 16u) | (__float_as_uint(sum[2u * k + 1u]) & 0xffff0000u);
+        words[k] = SparkTpPackBf16Pair(sum[2u * k],sum[2u * k + 1u]);
     *(uint4 *)output = make_uint4(words[0],words[1],words[2],words[3]);
 }
 
