@@ -63,7 +63,7 @@ static SparkStatus SparkStageKvBindingPageCopy(void *context,uint32_t direction,
 	cudaError_t error;
 	uintptr_t base;
 	uint64_t span,offset,packed,layer_page,stride;
-	uint32_t region,layers;
+	uint32_t region,layers,layer;
 	if ( binding == 0 || device_address == 0u || host_address == 0 ||
 		(direction != SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST && direction != SPARK_KV_PAGE_STORE_COPY_HOST_TO_DEVICE) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -92,9 +92,11 @@ static SparkStatus SparkStageKvBindingPageCopy(void *context,uint32_t direction,
 			layer_page = binding->regions[region].layer_page_bytes;
 			layers = binding->regions[region].layer_count;
 			stride = binding->region_layer_stride_bytes[region];
-			error = direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST ?
-				cudaMemcpy2DAsync(host_address,(size_t)layer_page,(const void *)(base + (offset / packed) * layer_page),(size_t)stride,(size_t)layer_page,layers,kind,stream) :
-				cudaMemcpy2DAsync((void *)(base + (offset / packed) * layer_page),(size_t)stride,host_address,(size_t)layer_page,(size_t)layer_page,layers,kind,stream);
+			error = cudaSuccess;
+			for (layer=0u; error == cudaSuccess && layer<layers; layer++)
+				error = direction == SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST ?
+					cudaMemcpyAsync((uint8_t *)host_address + (uint64_t)layer * layer_page,(const void *)(base + layer * stride + (offset / packed) * layer_page),(size_t)layer_page,kind,stream) :
+					cudaMemcpyAsync((void *)(base + layer * stride + (offset / packed) * layer_page),(const uint8_t *)host_address + (uint64_t)layer * layer_page,(size_t)layer_page,kind,stream);
 		}
 		if ( error == cudaSuccess )
 			error = cudaStreamSynchronize(stream);

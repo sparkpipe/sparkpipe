@@ -1558,6 +1558,7 @@ static __global__ void SparkLmHeadCertifiedFp8ScoreKernel(const void *hidden_bf1
 	float accumulator = 0.0f,bound = 0.0f,scale;
 	float2 hidden_pair,shadow_pair;
 	uint4 hidden_first,hidden_second,shadow_vector;
+	uint2 shadow_half;
 	if ( neuron >= candidate_count ) return;
 	for (tile=0u; tile<tiles; tile++)
 	{
@@ -1580,12 +1581,31 @@ static __global__ void SparkLmHeadCertifiedFp8ScoreKernel(const void *hidden_bf1
 		if ( (lane & 1u) == 0u )
 			bound = fmaf(__ldg(hidden_norm_f32 + group),__ldg(cert_norm_f32 + norm_base + group),bound);
 	}
+	if ( (hidden_dimension & 256u) != 0u )
+	{
+		group = (tiles * 16u) + (lane >> 2u);
+		scale = __ldg(shadow_scale_f32 + norm_base + group);
+		shadow_half = __ldg(((const uint2 *)shadow_payload) + (shadow_base * 2u) + ((uint64_t)tiles * 64u) + lane);
+		hidden_first = __ldg(((const uint4 *)hidden_bf16) + ((uint64_t)tiles * 64u) + lane);
+		#pragma unroll
+		for (pair=0u; pair<4u; pair++)
+		{
+			word = pair < 2u ? shadow_half.x : shadow_half.y;
+			shadow_pair = LmE4m3PairToFloat2((uint16_t)(word >> ((pair & 1u) << 4u)));
+			word = SparkLmHeadUint4Word(hidden_first,pair);
+			hidden_pair = __bfloat1622float2(*(const __nv_bfloat162 *)&word);
+			accumulator = fmaf(hidden_pair.x,shadow_pair.x * scale,accumulator);
+			accumulator = fmaf(hidden_pair.y,shadow_pair.y * scale,accumulator);
+		}
+		if ( (lane & 3u) == 0u )
+			bound = fmaf(__ldg(hidden_norm_f32 + group),__ldg(cert_norm_f32 + norm_base + group),bound);
+	}
 	accumulator = SparkLmWarpReduceSum(accumulator);
 	bound = SparkLmWarpReduceSum(bound);
 	if ( lane == 0u )
 	{
 		coarse_scores[neuron] = accumulator;
-		bound *= 1.0f + (float)SparkLmHeadFloatGamma(tiles + 5u);
+		bound *= 1.0f + (float)SparkLmHeadFloatGamma(tiles + ((hidden_dimension & 256u) != 0u ? 1u : 0u) + 5u);
 		bounds[neuron] = nextafterf(bound,INFINITY);
 	}
 }
@@ -1599,6 +1619,7 @@ static __global__ void SparkLmHeadCertifiedFp8ScoreRowsKernel(const void *hidden
 	float accumulator[SPARK_LM_HEAD_CERTIFIED_FP8_ROWS],bound[SPARK_LM_HEAD_CERTIFIED_FP8_ROWS],scale,cert;
 	float2 hidden_pair,shadow_pair[8];
 	uint4 hidden_first,hidden_second,shadow_vector;
+	uint2 shadow_half;
 	if ( neuron >= candidate_count ) return;
 	#pragma unroll
 	for (row=0u; row<SPARK_LM_HEAD_CERTIFIED_FP8_ROWS; row++)
@@ -1637,6 +1658,35 @@ static __global__ void SparkLmHeadCertifiedFp8ScoreRowsKernel(const void *hidden
 				bound[row] = fmaf(__ldg(hidden_norm_f32 + (uint64_t)row * row_stride + group),cert,bound[row]);
 		}
 	}
+	if ( (hidden_dimension & 256u) != 0u )
+	{
+		group = (tiles * 16u) + (lane >> 2u);
+		scale = __ldg(shadow_scale_f32 + norm_base + group);
+		cert = __ldg(cert_norm_f32 + norm_base + group);
+		shadow_half = __ldg(((const uint2 *)shadow_payload) + (shadow_base * 2u) + ((uint64_t)tiles * 64u) + lane);
+		#pragma unroll
+		for (pair=0u; pair<4u; pair++)
+		{
+			word = pair < 2u ? shadow_half.x : shadow_half.y;
+			shadow_pair[pair] = LmE4m3PairToFloat2((uint16_t)(word >> ((pair & 1u) << 4u)));
+		}
+		#pragma unroll
+		for (row=0u; row<SPARK_LM_HEAD_CERTIFIED_FP8_ROWS; row++)
+		{
+			if ( row >= rows ) break;
+			hidden_first = __ldg(((const uint4 *)hidden_bf16) + ((uint64_t)row * hidden_dimension) / 8u + ((uint64_t)tiles * 64u) + lane);
+			#pragma unroll
+			for (pair=0u; pair<4u; pair++)
+			{
+				word = SparkLmHeadUint4Word(hidden_first,pair);
+				hidden_pair = __bfloat1622float2(*(const __nv_bfloat162 *)&word);
+				accumulator[row] = fmaf(hidden_pair.x,shadow_pair[pair].x * scale,accumulator[row]);
+				accumulator[row] = fmaf(hidden_pair.y,shadow_pair[pair].y * scale,accumulator[row]);
+			}
+			if ( (lane & 3u) == 0u )
+				bound[row] = fmaf(__ldg(hidden_norm_f32 + (uint64_t)row * row_stride + group),cert,bound[row]);
+		}
+	}
 	#pragma unroll
 	for (row=0u; row<SPARK_LM_HEAD_CERTIFIED_FP8_ROWS; row++)
 	{
@@ -1646,7 +1696,7 @@ static __global__ void SparkLmHeadCertifiedFp8ScoreRowsKernel(const void *hidden
 		if ( lane == 0u )
 		{
 			coarse_scores[(uint64_t)row * row_stride + neuron] = accumulator[row];
-			bound[row] *= 1.0f + (float)SparkLmHeadFloatGamma(tiles + 5u);
+			bound[row] *= 1.0f + (float)SparkLmHeadFloatGamma(tiles + ((hidden_dimension & 256u) != 0u ? 1u : 0u) + 5u);
 			bounds[(uint64_t)row * row_stride + neuron] = nextafterf(bound[row],INFINITY);
 		}
 	}
@@ -4736,7 +4786,7 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
 		shadow_scale_f32 == 0 || cert_norm_f32 == 0 || scratch == 0 ||
 		candidate_ids == 0 || candidate_count == 0 || output_token_id == 0 ||
 		output_score == 0 || row_count != 1u || vocabulary_count == 0u ||
-		hidden_dimension == 0u || (hidden_dimension % 512u) != 0u )
+		hidden_dimension == 0u || (hidden_dimension % 256u) != 0u )
 		return(cudaErrorInvalidValue);
 	view = SparkLmHeadCertifiedFp8ScratchView(scratch,vocabulary_count,
 		hidden_dimension);
@@ -4792,7 +4842,7 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
 		shadow_scale_f32 == 0 || cert_norm_f32 == 0 || scratch == 0 ||
 		candidate_ids == 0 || candidate_count == 0 || output_token_id == 0 ||
 		output_score == 0 || row_count == 0u || vocabulary_count == 0u ||
-		hidden_dimension == 0u || (hidden_dimension % 512u) != 0u )
+		hidden_dimension == 0u || (hidden_dimension % 256u) != 0u )
 		return(cudaErrorInvalidValue);
 	for (row=0u; row<row_count; row++)
 	{

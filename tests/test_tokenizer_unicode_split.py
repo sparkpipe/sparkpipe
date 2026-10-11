@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "build/sparkpipe_split"
 TABLES = ROOT / "text/unicode_class_tables.h"
+CASE_TABLES = ROOT / "text/unicode_case_tables.h"
 FIXTURE = ROOT / "tests/fixtures/tokenizer_unicode_split_hf.json"
 GLM_TOKENIZER = ROOT / "qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json"
 
@@ -25,9 +26,9 @@ def run_records(tokenizer_path, texts, *extra):
     return [line if line.startswith("error") else [int(item) for item in line.split()] for line in lines]
 
 
-def table_ranges():
+def table_ranges(path=TABLES):
     return [[int(first, 16), int(last, 16), int(klass)] for first, last, klass in
-            re.findall(r"\{0x([0-9A-F]+)u,0x([0-9A-F]+)u,(\d)u\}", TABLES.read_text())]
+            re.findall(r"\{0x([0-9A-F]+)u,0x([0-9A-F]+)u,(\d)u\}", path.read_text())]
 
 
 def main():
@@ -40,11 +41,14 @@ def main():
     texts = fixture["texts"]
     version = re.search(r'SPARK_UNICODE_CLASS_VERSION "([0-9.]+)"', TABLES.read_text()).group(1)
     if version == unicodedata.unidata_version:
-        check = subprocess.run([sys.executable, str(ROOT / "tools/gen_unicode_class_tables.py"), "--output", str(TABLES), "--check"], capture_output=True, text=True)
+        check = subprocess.run([sys.executable, str(ROOT / "tools/gen_unicode_class_tables.py"), "--output", str(TABLES), "--case-output", str(CASE_TABLES), "--check"],
+                               capture_output=True, text=True)
         if check.returncode != 0:
             failures.append(check.stderr.strip())
     if table_ranges() != fixture["oniguruma_class_ranges"]:
         failures.append("text/unicode_class_tables.h differs from the Oniguruma classes recorded from HF tokenizers")
+    if table_ranges(CASE_TABLES) != fixture["oniguruma_case_ranges"]:
+        failures.append("text/unicode_case_tables.h differs from the Oniguruma letter cases recorded from HF tokenizers")
     compared = 0
     with tempfile.TemporaryDirectory() as directory:
         for name, entry in fixture["patterns"].items():
@@ -69,7 +73,7 @@ def main():
         print(f"{len(failures)} failures")
         return 1
     print(f"PASS pre-tokenizer splits match HF tokenizers {fixture['tokenizers_version']}: {len(fixture['patterns'])} patterns x {len(texts)} texts ({compared} splits), "
-          f"{len(fixture['oniguruma_class_ranges'])} Oniguruma class ranges, {len(texts)} glm-5.3-flash encodings")
+          f"{len(fixture['oniguruma_class_ranges'])} Oniguruma class ranges, {len(fixture['oniguruma_case_ranges'])} letter case ranges, {len(texts)} glm-5.3-flash encodings")
     return 0
 
 
