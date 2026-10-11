@@ -544,6 +544,57 @@
     "value_start": "<arg_value>",
     "value_end": "</arg_value>"
    }
+  },
+  {
+   "id": "muse-glimmer-30b",
+   "model_dir": "models/muse-glimmer-30b",
+   "engine": "http://127.0.0.1:8471",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|eot|>",
+    "<|end_of_text|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_strength"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_strength": "low"
+    },
+    "low": {
+     "reasoning_strength": "low"
+    },
+    "medium": {
+     "reasoning_strength": "medium"
+    },
+    "high": {
+     "reasoning_strength": "high"
+    }
+   },
+   "reasoning": {
+    "start": "<|start|>assistant",
+    "end": " to=user<|message|>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "<atem:invoke",
+    "end": "</atem:invoke>",
+    "attribute_end": ">",
+    "argument_start": "<atem:parameter",
+    "argument_end": "</atem:parameter>",
+    "name_attribute": "name",
+    "key_attribute": "name"
+   },
+   "content_markers": [
+    "<atem:function_calls>",
+    "</atem:function_calls>"
+   ]
   }
  ],
  "control": {

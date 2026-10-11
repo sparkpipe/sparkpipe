@@ -164,6 +164,18 @@
    "api_start": "systemctl --user reset-failed kv-hy4-api 2>/dev/null; systemctl --user is-active -q kv-hy4-api || systemd-run --user --unit=kv-hy4-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/hy4-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/hy4-kv-api/runtime --port 8470 >> api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-hy4-api 2>/dev/null; systemctl --user reset-failed kv-hy4-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8470/health"
+  },
+  {
+   "id": "muse-glimmer-30b",
+   "kv_label": "muse_glimmer_stage",
+   "node_memory_bytes": 17179869184,
+   "node_reclaim": "$HOME/stage-lanes/muse_glimmer/lane4/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/muse_glimmer/lane4/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/muse_glimmer/lane4/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/muse_glimmer/lane4/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-muse-glimmer-api 2>/dev/null; systemctl --user is-active -q kv-muse-glimmer-api || systemd-run --user --unit=kv-muse-glimmer-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/muse_glimmer-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/muse_glimmer-kv-api/runtime --port 8471 >> api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-muse-glimmer-api 2>/dev/null; systemctl --user reset-failed kv-muse-glimmer-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8471/health"
   }
  ]
 }
