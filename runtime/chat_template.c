@@ -59,10 +59,18 @@ static const char *SparkChatTemplateRoleSuffix(
 	const SparkJsonDocument *document,
 	int32_t role)
 {
-	if ( chat_template->assistant_suffix != 0 && role >= 0 &&
-		SparkJsonStringEquals(document,role,"assistant") )
-		return(chat_template->assistant_suffix);
-	return("");
+	const char *suffix = 0;
+	if ( role < 0 )
+		return("");
+	if ( SparkJsonStringEquals(document,role,"assistant") )
+		suffix = chat_template->assistant_suffix;
+	else if ( SparkJsonStringEquals(document,role,"user") )
+		suffix = chat_template->user_suffix;
+	else if ( SparkJsonStringEquals(document,role,"system") )
+		suffix = chat_template->system_turn_suffix;
+	else if ( SparkJsonStringEquals(document,role,"observation") )
+		suffix = chat_template->observation_suffix;
+	return(suffix != 0 ? suffix : "");
 }
 
 static const char *SparkChatTemplateSystemSuffix(

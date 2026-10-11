@@ -28,7 +28,8 @@ static const char *const SparkModelResidentDeploymentChatTemplateMembers[] =
 	"prefix","thinking_prefix","system","system_thinking","user","observation",
 	"assistant","assistant_thinking","turn_suffix","generation",
 	"generation_thinking","stop_markers","assistant_suffix","control_markers",
-	"plain_prefix","system_suffix","system_suffix_thinking"
+	"plain_prefix","system_suffix","system_suffix_thinking","user_suffix",
+	"system_turn_suffix","observation_suffix"
 };
 static const char *const SparkModelResidentDeploymentAdapterMembers[] =
 {
@@ -472,7 +473,8 @@ static SparkStatus SparkModelResidentDeploymentValidateChatTemplateMembers(
 	int32_t object,
 	uint32_t *suffixed)
 {
-	static const char *const optional[] = { "assistant_suffix","control_markers","plain_prefix","system_suffix","system_suffix_thinking" };
+	static const char *const optional[] = { "assistant_suffix","control_markers","plain_prefix","system_suffix","system_suffix_thinking",
+		"user_suffix","system_turn_suffix","observation_suffix" };
 	const uint32_t optional_count = (uint32_t)(sizeof(optional) / sizeof(optional[0]));
 	const char *members[sizeof(SparkModelResidentDeploymentChatTemplateMembers) / sizeof(SparkModelResidentDeploymentChatTemplateMembers[0])];
 	uint32_t count = 0u,index;
@@ -542,6 +544,12 @@ static SparkStatus SparkModelResidentDeploymentParseChatTemplate(
 		status = SparkModelResidentDeploymentTextString(document,object,"system_suffix",&chat->system_suffix);
 	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"system_suffix_thinking") >= 0 )
 		status = SparkModelResidentDeploymentTextString(document,object,"system_suffix_thinking",&chat->system_suffix_thinking);
+	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"user_suffix") >= 0 )
+		status = SparkModelResidentDeploymentTextString(document,object,"user_suffix",&chat->user_suffix);
+	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"system_turn_suffix") >= 0 )
+		status = SparkModelResidentDeploymentTextString(document,object,"system_turn_suffix",&chat->system_turn_suffix);
+	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"observation_suffix") >= 0 )
+		status = SparkModelResidentDeploymentTextString(document,object,"observation_suffix",&chat->observation_suffix);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentNullableString(document,object,"system",&chat->system);
 	if ( status == SPARK_STATUS_OK )
@@ -566,7 +574,8 @@ static SparkStatus SparkModelResidentDeploymentParseChatTemplate(
 		(chat->system == 0) != (chat->system_thinking == 0) ||
 		(chat->assistant_thinking == 0) != (chat->generation_thinking == 0) ||
 		(chat->generation_thinking == 0 && chat->thinking_prefix[0] != '\0') ||
-		(chat->system == 0 && (chat->system_suffix != 0 || chat->system_suffix_thinking != 0)) ||
+		(chat->system == 0 && (chat->system_suffix != 0 || chat->system_suffix_thinking != 0 || chat->system_turn_suffix != 0)) ||
+		(chat->observation == 0 && chat->observation_suffix != 0) ||
 		(chat->generation_thinking == 0 && chat->system_suffix_thinking != 0) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	array = SparkModelResidentDeploymentMember(document,object,"stop_markers");
@@ -745,6 +754,9 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->chat_template.assistant);
 	free(deployment->chat_template.assistant_thinking);
 	free(deployment->chat_template.assistant_suffix);
+	free(deployment->chat_template.user_suffix);
+	free(deployment->chat_template.system_turn_suffix);
+	free(deployment->chat_template.observation_suffix);
 	for (uint32_t control = 0u; control < deployment->chat_template.control_marker_count; control++)
 		free(deployment->chat_template.control_markers[control]);
 	free(deployment->chat_template.turn_suffix);

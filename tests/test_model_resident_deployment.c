@@ -408,6 +408,47 @@ static void TestChatTemplates(void)
 		free(k3);
 	}
 
+	{
+		char *laguna = TestReadText("model-families/laguna/chat_template.json");
+		static const char eos[] = "\xe3\x80\x88|EOS|\xe3\x80\x89";
+		static const char header[] = "\xe3\x80\x88|EOS|\xe3\x80\x89<system>You are a helpful, conversationally-fluent assistant made by Poolside. "
+			"You are here to be helpful to users through natural language conversations.</system>\n";
+		char expected[1024];
+		assert(TestLoadWithChatTemplate(laguna,&deployment) == SPARK_STATUS_OK);
+		assert(deployment.chat_template.declared == 1u && deployment.chat_template.stop_marker_count == 2u);
+		snprintf(expected,sizeof(expected),"%s<user>hi</user>\n<assistant></think>",header);
+		TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<user>hi</user>\n<assistant><think>",header);
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<system>Be terse.</system>\n<user>hi</user>\n<assistant></think>ok</assistant>\n<user>bye</user>\n<assistant></think>",eos);
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<system>Be terse.</system>\n<user>hi</user>\n<assistant><think></think>ok</assistant>\n<user>bye</user>\n<assistant><think>",eos);
+		TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<user>hi</user>\n<tool_response>42</tool_response>\n<assistant></think>",header);
+		TestRender(&deployment,"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"observation\",\"content\":\"42\"}]}",false,
+			SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<user>hi</user>\n<system>s</system>\n<assistant><think>",header);
+		TestRender(&deployment,"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"system\",\"content\":\"s\"}]}",true,
+			SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		memset(special,0,sizeof(special));
+		special[0].text = (char *)eos; special[0].text_bytes = (uint32_t)strlen(eos); special[0].token_id = 2u; special[0].is_special = 1u;
+		special[1].text = (char *)"</assistant>"; special[1].text_bytes = 12u; special[1].token_id = 24u; special[1].is_special = 1u;
+		special[2].text = (char *)"<assistant>"; special[2].text_bytes = 11u; special[2].token_id = 23u; special[2].is_special = 0u;
+		assert(SparkChatTemplateResolveStops(&deployment.chat_template,special,3u,stop_ids,&stop_count,&unresolved) == SPARK_STATUS_OK);
+		assert(stop_count == 2u && stop_ids[0] == 24u && stop_ids[1] == 2u && unresolved == 0);
+		SparkModelResidentDeploymentDestroy(&deployment);
+		TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+			"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,\"system_turn_suffix\":\"S\","
+			"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+		TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+			"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,\"observation_suffix\":\"O\","
+			"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+		TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+			"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,\"user_suffix\":null,"
+			"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+		free(laguna);
+	}
+
 	assert(TestLoadWithChatTemplate(glm52,&deployment) == SPARK_STATUS_OK);
 	assert(deployment.chat_template.declared == 1u && deployment.chat_template.stop_marker_count == 3u);
 	TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
@@ -460,7 +501,7 @@ static void TestChatTemplates(void)
 	free(glm);
 	free(gemma);
 	free(glm52);
-	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, GLM-5.2, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token or one declared control marker)\n");
+	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, GLM-5.2, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix, Laguna closes every role with its own suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token or one declared control marker)\n");
 }
 
 int main(int argc,char **argv)
