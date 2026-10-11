@@ -1,0 +1,39 @@
+release agent identity check 2026-10-11T07:50:15Z, firmware fw-2aa246576 (SOURCE_COMMIT 2aa246576), hub API ~/api-build-2aa246576/build
+swap id hy4-preview
+swap entry vs generated: IDENTICAL
+07:26:47 idle hy4-preview None 23.7
+capital: IDENTICAL 8 tokens, logprobs identical
+arith: IDENTICAL 64 tokens, logprobs identical
+code: IDENTICAL 64 tokens, logprobs identical
+story: IDENTICAL 64 tokens, logprobs identical
+translate: IDENTICAL 64 tokens, logprobs identical
+science: IDENTICAL 64 tokens, logprobs identical
+primes: IDENTICAL 14 tokens, logprobs identical
+chinese: IDENTICAL 27 tokens, logprobs identical
+long_recall: IDENTICAL 64 tokens, logprobs identical
+IDENTITY 9/9 identical
+-- sha256 (16 hex) of the running API exe, the build, the hub adapter and the build adapter; then the adapter on each node
+api_pid 2492115
+425824f461b0cdbf /proc/2492115/exe
+425824f461b0cdbf /home/spec/api-build-2aa246576/build/sparkpipe_model_api
+e5664ac4ce11af64 /home/spec/hy4-kv-api/runtime/lib/libhy4_tp16_serving_adapter.so
+e5664ac4ce11af64 /home/spec/api-build-2aa246576/build/libhy4_tp16_serving_adapter.so
+spark0 a1abacf3fe7b71f2
+spark1 a1abacf3fe7b71f2
+spark2 a1abacf3fe7b71f2
+spark3 a1abacf3fe7b71f2
+spark4 a1abacf3fe7b71f2
+spark5 a1abacf3fe7b71f2
+spark6 a1abacf3fe7b71f2
+spark7 a1abacf3fe7b71f2
+spark8 a1abacf3fe7b71f2
+spark9 a1abacf3fe7b71f2
+sparka a1abacf3fe7b71f2
+sparkb a1abacf3fe7b71f2
+sparkc a1abacf3fe7b71f2
+sparkd a1abacf3fe7b71f2
+sparke a1abacf3fe7b71f2
+sparkf a1abacf3fe7b71f2
+-- API health before and after the capture
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+{"status":"ok","served":9,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}

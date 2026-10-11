@@ -1,0 +1,63 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "0a7386d11b1ebacafb7eb82dfae51c27825f14ec04ff165236a9076a0cde7653"
+ },
+ "response": {
+  "id": "chatcmpl-d54a82eca763437db22c786979f9c529",
+  "created": 1791705127,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 5",
+     "role": "assistant",
+     "reasoning_content": " to=self<|message|>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nFunction appends quoted token. Uses strlcat and strncat. strncat will stop at NUL? strncat copies up to n bytes but stops at NUL? Actually strncat copies at most n chars, but stops at NUL. Wait strncat spec: copies at most n characters from src, not including terminating NUL? It stops at NUL. So embedded NUL bytes in tok_len will be truncated. Also strlcat expects null-terminated dest. But main issue: strncat(sql, tok, tok_len) will not copy embedded NULs, and also doesn't guarantee null termination? It does.\n\nBut len may include embedded NUL bytes. strncat will stop at first NUL, so token truncated. Also strlcat after may be okay.\n\nPrimary bug is line 5 using strncat which stops at NUL, losing data. Also strlcat on line 4/6 assumes sql is null-terminated, okay.\n\nMaybe also buffer overflow? strlcat with sql_cap is safe? strlcat ensures not overflow.\n\nBug is line 5. Could also be line 4-6 not handling embedded NUL in SQL? Actually SQL token quoting needs escape single quotes. Not present.\n\nProbably bug is line 5.\n\nAnswer: 5\n\nIf need set? Might be 4,5,6? Primary bug introduced at 5.\n\nReturn Answer: 5<|eom|><|start|>assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 338,
+   "prompt_tokens": 267,
+   "total_tokens": 605,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think> to=self<|message|>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nFunction appends quoted token. Uses strlcat and strncat. strncat will stop at NUL? strncat copies up to n bytes but stops at NUL? Actually strncat copies at most n chars, but stops at NUL. Wait strncat spec: copies at most n characters from src, not including terminating NUL? It stops at NUL. So embedded NUL bytes in tok_len will be truncated. Also strlcat expects null-terminated dest. But main issue: strncat(sql, tok, tok_len) will not copy embedded NULs, and also doesn't guarantee null termination? It does.\n\nBut len may include embedded NUL bytes. strncat will stop at first NUL, so token truncated. Also strlcat after may be okay.\n\nPrimary bug is line 5 using strncat which stops at NUL, losing data. Also strlcat on line 4/6 assumes sql is null-terminated, okay.\n\nMaybe also buffer overflow? strlcat with sql_cap is safe? strlcat ensures not overflow.\n\nBug is line 5. Could also be line 4-6 not handling embedded NUL in SQL? Actually SQL token quoting needs escape single quotes. Not present.\n\nProbably bug is line 5.\n\nAnswer: 5\n\nIf need set? Might be 4,5,6? Primary bug introduced at 5.\n\nReturn Answer: 5<|eom|><|start|>assistant</think>Answer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 10084.4,
+  "output_sha256": "2c65f002039dd3ddc9d043b506d3795a856c14dc9bda486c00d18bd8811ed92a",
+  "prompt_token_count": 267,
+  "generated_token_count": 338,
+  "reasoning_chars": 1308,
+  "content_chars": 9,
+  "status": "stop"
+ }
+}

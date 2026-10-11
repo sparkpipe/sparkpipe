@@ -1,0 +1,33 @@
+release agent identity check 2026-10-11T07:54:09Z, firmware fw-2aa246576 (SOURCE_COMMIT 2aa246576), hub API ~/api-build-2aa246576/build
+swap id muse-glimmer-30b (entry added to the controller by the release agent, identical to the gemma agent's generated entry)
+generated vs gemma.md entry: IDENTICAL
+07:37:51 idle muse-glimmer-30b None 14.3
+capital: IDENTICAL 40 tokens, logprobs identical
+arith: IDENTICAL 40 tokens, logprobs identical
+code: IDENTICAL 40 tokens, logprobs identical
+story: IDENTICAL 40 tokens, logprobs identical
+IDENTITY 4/4 identical
+-- sha256 (16 hex) of the running API exe, the build, the hub adapter and the build adapter; then the adapter on each node
+425824f461b0cdbf running API exe
+425824f461b0cdbf api-build-2aa246576/build/sparkpipe_model_api
+e7acb22a94098db3 ~/muse_glimmer-kv-api/runtime/lib/libmuse_glimmer_tp16_serving_adapter.so
+e7acb22a94098db3 api-build-2aa246576/build/libmuse_glimmer_tp16_serving_adapter.so
+spark0 6a2b6e8c8ba6f5bc
+spark1 6a2b6e8c8ba6f5bc
+spark2 6a2b6e8c8ba6f5bc
+spark3 6a2b6e8c8ba6f5bc
+spark4 6a2b6e8c8ba6f5bc
+spark5 6a2b6e8c8ba6f5bc
+spark6 6a2b6e8c8ba6f5bc
+spark7 6a2b6e8c8ba6f5bc
+spark8 6a2b6e8c8ba6f5bc
+spark9 6a2b6e8c8ba6f5bc
+sparka 6a2b6e8c8ba6f5bc
+sparkb 6a2b6e8c8ba6f5bc
+sparkc 6a2b6e8c8ba6f5bc
+sparkd 6a2b6e8c8ba6f5bc
+sparke 6a2b6e8c8ba6f5bc
+sparkf 6a2b6e8c8ba6f5bc
+-- API health before and after the capture
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+{"status":"ok","served":4,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}

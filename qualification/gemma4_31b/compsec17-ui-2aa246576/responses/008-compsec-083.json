@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-31b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "286bb1736ab50f0e89b10d7345fee3410448af048e824222c910bd68117e5147"
+ },
+ "response": {
+  "id": "chatcmpl-4b428b4faef549c6ab86138a3bef5374",
+  "created": 1791704025,
+  "model": "gemma-4-31b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability lies in the logic used to manage the `segments` container. The problem description explicitly states that \"Inputs are not guaranteed to arrive in ascending segment order.\"\n\nIf `segno` is smaller than `last` (which happens if segments arrive out of order), the calculation `int missing = segno - last - 1;` on line 9 will result in a negative number. When this negative value is passed to `a->segments.grow()` on line 10, it will likely be treated as a very large unsigned integer (due to implicit conversion to `size_t`), leading to an attempted massive memory allocation (Denial of Service). \n\nFurthermore, if `segno` is smaller than the current size of the container but the `grow` logic fails or is bypassed, line 11 performs an indexed assignment. However, the primary logic flaw that fails to account for the \"not guaranteed to arrive in ascending order\" constraint is the calculation of `missing` based on the assumption that `segno > last`.\n\nAnswer: 9,10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 221,
+   "prompt_tokens": 346,
+   "total_tokens": 567,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability lies in the logic used to manage the `segments` container. The problem description explicitly states that \"Inputs are not guaranteed to arrive in ascending segment order.\"\n\nIf `segno` is smaller than `last` (which happens if segments arrive out of order), the calculation `int missing = segno - last - 1;` on line 9 will result in a negative number. When this negative value is passed to `a->segments.grow()` on line 10, it will likely be treated as a very large unsigned integer (due to implicit conversion to `size_t`), leading to an attempted massive memory allocation (Denial of Service). \n\nFurthermore, if `segno` is smaller than the current size of the container but the `grow` logic fails or is bypassed, line 11 performs an indexed assignment. However, the primary logic flaw that fails to account for the \"not guaranteed to arrive in ascending order\" constraint is the calculation of `missing` based on the assumption that `segno > last`.\n\nAnswer: 9,10",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "9,10",
+  "passed": true,
+  "elapsed_ms": 7591.2,
+  "output_sha256": "cfd128002e929897ac9867d678cd97fad479127e78e941bb4880f453fd350fe4",
+  "prompt_token_count": 346,
+  "generated_token_count": 221,
+  "reasoning_chars": 0,
+  "content_chars": 979,
+  "status": "stop"
+ }
+}

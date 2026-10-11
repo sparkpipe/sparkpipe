@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "fa9a18d055e8306eb9ede116fbaa13458947203e4e105e27382b86e7d69cc1c2"
+ },
+ "response": {
+  "id": "chatcmpl-f4ce694333ea4c7f919bc53afec58f83",
+  "created": 1791704572,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Line 10 grows the vector by `missing`, but `missing` can be negative when segments arrive out of order or repeat, so the vector may not be large enough before indexing at line 11. The primary bug is introduced at line 10.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 55,
+   "prompt_tokens": 315,
+   "total_tokens": 370,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Line 10 grows the vector by `missing`, but `missing` can be negative when segments arrive out of order or repeat, so the vector may not be large enough before indexing at line 11. The primary bug is introduced at line 10.\n\nAnswer: 10",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 13458.2,
+  "output_sha256": "238c4da8f98266e200390744e0e2548695c61ee7fc01ce5e45caa9484033d9de",
+  "prompt_token_count": 315,
+  "generated_token_count": 55,
+  "reasoning_chars": 0,
+  "content_chars": 233,
+  "status": "stop"
+ }
+}

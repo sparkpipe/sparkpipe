@@ -1,0 +1,63 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "bad21b8c17ed269cdbf984c1912ee8945c5851a7b97c380bbc09781accceac21"
+ },
+ "response": {
+  "id": "chatcmpl-62f9d0fec01e4b64a7e9ec2e962aecc0",
+  "created": 1791705098,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 10",
+     "role": "assistant",
+     "reasoning_content": " to=self<|message|>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\n1 static bool xdr_datum...\n3 uint32_t n = xdr_get_u32...\n4 char *dst = base + desc->offset;\n6 if (n > xdr_bytes_available...)\n9 xdr_read_bytes(xdr, dst, n);\n10 dst[n] = '\\0';\n\nBug? dst points into slice selected by descriptor. No check that n fits within slice bounds. Also dst[n] = '\\0' writes one past n bytes. If slice size is exactly n, overflow. Also dst may be out of bounds if offset beyond base.\n\nPrimary bug is missing bounds check for slice. Line 4 computes dst but no validation. Or line 10 writes null terminator beyond allocated? The read writes n bytes, then null terminator at n. If slice size is n, overflow by 1. Could be line 10.\n\nProbably bug introduced at line 4? Or line 9? The vulnerability is writing beyond slice. The primary bug is using dst without checking offset+ n fits in slice. The line where dst is used is 9 and 10. Smallest set? Maybe 4,9,10.\n\nThe bug is introduced at line 4 where dst computed without validation, but actual overflow at 10.\n\nProbably answer: 4,10? Hmm.\n\nThe null terminator write is classic off-by-one. n may be equal to slice size. So line 10 is bug.\n\nAlso need ensure dst[n] within base slice. The check missing is offset + n +1 <= slice size.\n\nI think primary bug is line 10 writing null terminator without ensuring space.\n\nReturn 10.\n\nLet's answer 10.<|eom|><|start|>assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 384,
+   "prompt_tokens": 319,
+   "total_tokens": 703,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think> to=self<|message|>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\n1 static bool xdr_datum...\n3 uint32_t n = xdr_get_u32...\n4 char *dst = base + desc->offset;\n6 if (n > xdr_bytes_available...)\n9 xdr_read_bytes(xdr, dst, n);\n10 dst[n] = '\\0';\n\nBug? dst points into slice selected by descriptor. No check that n fits within slice bounds. Also dst[n] = '\\0' writes one past n bytes. If slice size is exactly n, overflow. Also dst may be out of bounds if offset beyond base.\n\nPrimary bug is missing bounds check for slice. Line 4 computes dst but no validation. Or line 10 writes null terminator beyond allocated? The read writes n bytes, then null terminator at n. If slice size is n, overflow by 1. Could be line 10.\n\nProbably bug introduced at line 4? Or line 9? The vulnerability is writing beyond slice. The primary bug is using dst without checking offset+ n fits in slice. The line where dst is used is 9 and 10. Smallest set? Maybe 4,9,10.\n\nThe bug is introduced at line 4 where dst computed without validation, but actual overflow at 10.\n\nProbably answer: 4,10? Hmm.\n\nThe null terminator write is classic off-by-one. n may be equal to slice size. So line 10 is bug.\n\nAlso need ensure dst[n] within base slice. The check missing is offset + n +1 <= slice size.\n\nI think primary bug is line 10 writing null terminator without ensuring space.\n\nReturn 10.\n\nLet's answer 10.<|eom|><|start|>assistant</think>Answer: 10",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 11462.0,
+  "output_sha256": "7df2cccf1d103af897d1edb7f73df198f11b0dd7c4c5d8b8bcc15d8d29ab2426",
+  "prompt_token_count": 319,
+  "generated_token_count": 384,
+  "reasoning_chars": 1506,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}
