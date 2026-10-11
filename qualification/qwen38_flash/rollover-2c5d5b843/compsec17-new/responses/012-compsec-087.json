@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "018c7fb5e86c6cab3460acc0faa3318ea31d326ac899807cfc035b5ccd977654"
+ },
+ "response": {
+  "id": "chatcmpl-72232bca776b4982bbf43105dcee8c15",
+  "created": 1791721997,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is a buffer underflow (out-of-bounds write) caused by the pointer arithmetic on line 8.\n\n**Analysis:**\n1.  **Line 4**: `uint8_t *tp = tmp;` initializes `tp` to point to the start of the 16-byte stack buffer `tmp`.\n2.  **Line 8**: `colonp = --tp;` decrements `tp` *before* assigning it to `colonp`.\n    *   `--tp` makes `tp` point to `tmp - 1` (one byte before the start of the buffer).\n    *   `colonp` is assigned this invalid pointer (`tmp - 1`).\n    *   This is undefined behavior and an out-of-bounds access.\n3.  **Line 14-15**: The loop writes to `*tp++`. Since `tp` was decremented, the first write goes to `tmp[0]` (which is correct for the data), but the pointer `tp` is now effectively tracking the end of the parsed data relative to the shifted start. However, the critical issue is the initialization of `colonp`.\n4.  **Line 21**: `memmove(colonp + (16 - (tp - tmp)), colonp, n);`\n    *   If `colonp` is `tmp - 1`, and `tp` points to the end of parsed data (e.g., `tmp + 2` for one hextet), then `tp - tmp` is 2.\n    *   The destination is `(tmp - 1) + (16 - 2) = tmp + 13`.\n    *   The source is `tmp - 1`.\n    *   The length `n` is `tp - colonp` = `(tmp + 2) - (tmp - 1) = 3`.\n    *   `memmove` reads from `tmp - 1` (out of bounds) and writes to `tmp + 13`.\n    *   More critically, if the address is short, `tp` might not advance enough, or the logic relies on `colonp` being a valid pointer within the buffer to calculate the shift correctly. The standard idiom for this is `colonp = tp;` (remembering the current position) or handling the leading `::` by setting",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 492,
+   "total_tokens": 1004,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is a buffer underflow (out-of-bounds write) caused by the pointer arithmetic on line 8.\n\n**Analysis:**\n1.  **Line 4**: `uint8_t *tp = tmp;` initializes `tp` to point to the start of the 16-byte stack buffer `tmp`.\n2.  **Line 8**: `colonp = --tp;` decrements `tp` *before* assigning it to `colonp`.\n    *   `--tp` makes `tp` point to `tmp - 1` (one byte before the start of the buffer).\n    *   `colonp` is assigned this invalid pointer (`tmp - 1`).\n    *   This is undefined behavior and an out-of-bounds access.\n3.  **Line 14-15**: The loop writes to `*tp++`. Since `tp` was decremented, the first write goes to `tmp[0]` (which is correct for the data), but the pointer `tp` is now effectively tracking the end of the parsed data relative to the shifted start. However, the critical issue is the initialization of `colonp`.\n4.  **Line 21**: `memmove(colonp + (16 - (tp - tmp)), colonp, n);`\n    *   If `colonp` is `tmp - 1`, and `tp` points to the end of parsed data (e.g., `tmp + 2` for one hextet), then `tp - tmp` is 2.\n    *   The destination is `(tmp - 1) + (16 - 2) = tmp + 13`.\n    *   The source is `tmp - 1`.\n    *   The length `n` is `tp - colonp` = `(tmp + 2) - (tmp - 1) = 3`.\n    *   `memmove` reads from `tmp - 1` (out of bounds) and writes to `tmp + 13`.\n    *   More critically, if the address is short, `tp` might not advance enough, or the logic relies on `colonp` being a valid pointer within the buffer to calculate the shift correctly. The standard idiom for this is `colonp = tp;` (remembering the current position) or handling the leading `::` by setting",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "13",
+  "passed": false,
+  "elapsed_ms": 13155.9,
+  "output_sha256": "910e0d4a92bb78528cd341db78fea74cf57f0e6197010ac517953b8b1328ee26",
+  "prompt_token_count": 492,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1596,
+  "status": "length"
+ }
+}

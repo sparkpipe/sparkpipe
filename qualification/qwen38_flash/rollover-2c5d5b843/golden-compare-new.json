@@ -1,0 +1,40 @@
+{
+ "prompts": {
+  "capital": {
+   "old_len": 8,
+   "new_len": 8,
+   "compared": 8,
+   "agree": 8,
+   "first_flip": null,
+   "identical": false,
+   "max_delta": 0.483776,
+   "served_max_delta": 0.000151
+  },
+  "arith": {
+   "old_len": 32,
+   "new_len": 32,
+   "compared": 32,
+   "agree": 32,
+   "first_flip": null,
+   "identical": false,
+   "max_delta": 0.716301,
+   "served_max_delta": 0.086575
+  },
+  "code": {
+   "old_len": 32,
+   "new_len": 32,
+   "compared": 32,
+   "agree": 32,
+   "first_flip": null,
+   "identical": false,
+   "max_delta": 0.743785,
+   "served_max_delta": 0.062813
+  }
+ },
+ "compared": 72,
+ "agree": 72,
+ "max_delta": 0.743785,
+ "large": [],
+ "served_max_delta": 0.086575,
+ "identical": false
+}

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8d364524354929f498c83a76b2e20e51a15b1e1ef4eb13a2167647b1712bee5c"
+ },
+ "response": {
+  "id": "chatcmpl-32719ceb3d854558afb7be8da8e6e0fa",
+  "created": 1791721973,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability lies in the use of `strncat` on line 5.\n\n1.  **Function Behavior**: `strncat(dest, src, n)` appends at most `n` characters from `src` to `dest`. Crucially, `strncat` stops copying if it encounters a null terminator (`\\0`) in `src` *before* copying `n` characters. It does **not** guarantee that `n` bytes are copied if a null byte is present earlier.\n2.  **Input Context**: The problem states that `tok_len` may include embedded NUL bytes. This implies `tok` is a binary-safe buffer of length `tok_len`, not necessarily a null-terminated string.\n3.  **The Bug**: If `tok` contains an embedded NUL byte (e.g., `tok = \"ab\\0cd\"` with `tok_len = 5`), `strncat` will stop copying after `\"ab\"`. The remaining bytes (`\\0cd`) are ignored.\n4.  **Security Implication**: In the context of SQL injection or token reconstruction, if the application logic assumes the entire `tok_len` bytes are included in the SQL string, this truncation can lead to logic errors or security bypasses. For example, if the token is meant to be a quoted identifier or value, truncating it at a NUL byte might result in an incomplete or malformed SQL statement, or potentially allow injection if the truncation interacts with other parsing logic (though the primary issue here is incorrect data handling/truncation). More critically, `strncat` is unsafe for binary data because it relies on null-termination semantics which are explicitly violated by the input description. The correct function for copying a specific number of bytes regardless of content is `memcpy` (with proper bounds checking) or a custom append function that handles length explicitly.\n5.  **Line Identification**: The incorrect function call that introduces the truncation vulnerability is on line 5.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 420,
+   "prompt_tokens": 238,
+   "total_tokens": 658,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability lies in the use of `strncat` on line 5.\n\n1.  **Function Behavior**: `strncat(dest, src, n)` appends at most `n` characters from `src` to `dest`. Crucially, `strncat` stops copying if it encounters a null terminator (`\\0`) in `src` *before* copying `n` characters. It does **not** guarantee that `n` bytes are copied if a null byte is present earlier.\n2.  **Input Context**: The problem states that `tok_len` may include embedded NUL bytes. This implies `tok` is a binary-safe buffer of length `tok_len`, not necessarily a null-terminated string.\n3.  **The Bug**: If `tok` contains an embedded NUL byte (e.g., `tok = \"ab\\0cd\"` with `tok_len = 5`), `strncat` will stop copying after `\"ab\"`. The remaining bytes (`\\0cd`) are ignored.\n4.  **Security Implication**: In the context of SQL injection or token reconstruction, if the application logic assumes the entire `tok_len` bytes are included in the SQL string, this truncation can lead to logic errors or security bypasses. For example, if the token is meant to be a quoted identifier or value, truncating it at a NUL byte might result in an incomplete or malformed SQL statement, or potentially allow injection if the truncation interacts with other parsing logic (though the primary issue here is incorrect data handling/truncation). More critically, `strncat` is unsafe for binary data because it relies on null-termination semantics which are explicitly violated by the input description. The correct function for copying a specific number of bytes regardless of content is `memcpy` (with proper bounds checking) or a custom append function that handles length explicitly.\n5.  **Line Identification**: The incorrect function call that introduces the truncation vulnerability is on line 5.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 11193.7,
+  "output_sha256": "79bc28da7634cb45afe6897adb14ac8e644321dd3d2442650c34540a3297db26",
+  "prompt_token_count": 238,
+  "generated_token_count": 420,
+  "reasoning_chars": 0,
+  "content_chars": 1770,
+  "status": "stop"
+ }
+}

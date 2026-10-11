@@ -1,0 +1,62 @@
+{
+ "id": "compsec-092",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe verifier checks a serialized DFA. Some states are encoded as differences from another state default table.\n\nCode:\n```c\n 1: static int verify_dfa_reduced(const struct dfa *d)\n 2: {\n 3:     for (uint32_t state = 0; state < d->state_count; state++) {\n 4:         uint32_t j = state;\n 5: \n 6:         if (d->default_table[j] >= d->state_count)\n 7:             return -EINVAL;\n 8: \n 9:         while (d->is_differential[j]) {\n10:             uint32_t parent = d->default_table[j];\n11:             j = parent;                    // parent not rechecked here\n12:         }\n13: \n14:         validate_accept_table(d->accept[j]);\n15:     }\n16:     return 0;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8be7c7c9d56764387a4e348f75c5f1001bd31a5996ae63e45d9069135440919a"
+ },
+ "response": {
+  "id": "chatcmpl-bac2ce4c6e714d32b444e552d92213d1",
+  "created": 1791726250,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is that when following the differential chain, the parent state\u2019s `default_table` value is not revalidated against `state_count` before being used as an index. This can lead to an out-of-bounds access if a parent\u2019s default_table entry is invalid, because only the initial state\u2019s default_table is checked at line 6.\n\nThe bug is introduced at line 11 where `j = parent;` is assigned without rechecking bounds.\n\nAnswer: 11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 101,
+   "prompt_tokens": 306,
+   "total_tokens": 407,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is that when following the differential chain, the parent state\u2019s `default_table` value is not revalidated against `state_count` before being used as an index. This can lead to an out-of-bounds access if a parent\u2019s default_table entry is invalid, because only the initial state\u2019s default_table is checked at line 6.\n\nThe bug is introduced at line 11 where `j = parent;` is assigned without rechecking bounds.\n\nAnswer: 11",
+ "grade": {
+  "index": 17,
+  "id": "compsec-092",
+  "source": "COMPSEC",
+  "domain": "Linux kernel AppArmor",
+  "expected": "10-14",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 14612.1,
+  "output_sha256": "a1380f47afe49cedbba764e66166744b49314076c033b08f2620a3bbdd8b8a6a",
+  "prompt_token_count": 306,
+  "generated_token_count": 101,
+  "reasoning_chars": 0,
+  "content_chars": 438,
+  "status": "stop"
+ }
+}

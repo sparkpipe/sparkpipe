@@ -1,0 +1,63 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function validates a per-request authentication blob before passing it to the GSS layer.\n\nCode:\n```c\n 1: #define AUTH_STACK_MAX 256\n 2: \n 3: static bool check_rpcsec_packet(const uint8_t *wire, size_t wire_left)\n 4: {\n 5:     if (wire_left < 4)\n 6:         return false;\n 7: \n 8:     uint32_t body_len = get_be32(wire);      // attacker-controlled length field\n 9:     const uint8_t *body = wire + 4;\n10:     uint8_t scratch[AUTH_STACK_MAX];\n11: \n12:     /* XDR opaque values are padded to 4-byte alignment on the wire. */\n13:     uint32_t pad = (4 - (body_len & 3)) & 3;\n14:     uint32_t encoded_len = body_len + pad;\n15: \n16:     /* This check only proves the source bytes exist in the packet. */\n17:     if (encoded_len > wire_left - 4)\n18:         return false;\n19: \n20:     memcpy(scratch, body, encoded_len);\n21:     return gss_verify_mic(scratch, body_len);\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "c327f70448160f208446b3fc034314a07447b665ef12b806dc0021ed19ac8ed6"
+ },
+ "response": {
+  "id": "chatcmpl-67ed73b9bf674c0eab6b4109ee1d5e62",
+  "created": 1791731193,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is an integer overflow: `body_len + pad` at line 14 can wrap around (e.g., body_len near UINT32_MAX), making `encoded_len` small and bypassing the bounds check at line 17, while `body_len` itself remains huge \u2014 though the memcpy uses `encoded_len`, the overflow lets a crafted length pass validation inconsistently. The overflow occurs in lines 13\u201314.\n\nAnswer: 13,14",
+     "role": "assistant",
+     "reasoning_content": "Integer overflow: body_len + pad can overflow uint32_t, bypassing check. Lines 13-14."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 116,
+   "prompt_tokens": 384,
+   "total_tokens": 500,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Integer overflow: body_len + pad can overflow uint32_t, bypassing check. Lines 13-14.</think>The bug is an integer overflow: `body_len + pad` at line 14 can wrap around (e.g., body_len near UINT32_MAX), making `encoded_len` small and bypassing the bounds check at line 17, while `body_len` itself remains huge \u2014 though the memcpy uses `encoded_len`, the overflow lets a crafted length pass validation inconsistently. The overflow occurs in lines 13\u201314.\n\nAnswer: 13,14",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "13,14",
+  "passed": false,
+  "elapsed_ms": 2938.5,
+  "output_sha256": "7c4b4eab2fb09e197f2f2683ff6432c89fb0965418fbc7cf4b46170e1973fbbb",
+  "prompt_token_count": 384,
+  "generated_token_count": 116,
+  "reasoning_chars": 85,
+  "content_chars": 374,
+  "status": "stop"
+ }
+}

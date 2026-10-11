@@ -1,0 +1,63 @@
+{
+ "id": "compsec-088",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function exports a finite-field Diffie-Hellman public value into a fixed-width buffer for the group. The public MPI may be supplied by an application.\n\nCode:\n```c\n 1: static int export_ffdh_public(const struct DhmContext *ctx,\n 2:                               uint8_t *out, size_t out_len)\n 3: {\n 4:     size_t plen = mpi_size(&ctx->P);      // byte length of the group prime\n 5:     size_t ylen = mpi_size(&ctx->Y);      // byte length of public value\n 6: \n 7:     if (out_len < plen)\n 8:         return -1;\n 9: \n10:     memset(out, 0, plen);\n11:     return mpi_write_binary(&ctx->Y, out + (plen - ylen), ylen);\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "ab84369e26833885c92e5ba81eb48c1da3235c133ff2ca375177e89303d4d4a2"
+ },
+ "response": {
+  "id": "chatcmpl-788af9b769e040978496879fb0057021",
+  "created": 1791730549,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\n- Line 7 checks `out_len >= plen`, so the buffer can hold `plen` bytes.\n- Line 10 correctly zeroes `plen` bytes.\n- Line 11 assumes `ylen <= plen`. But `Y` is a public value that may be supplied by an application (e.g., a peer's DH public key), so `ylen` can exceed `plen`. Then:\n  - `plen - ylen` underflows (huge size_t), making `out + (plen - ylen)` an out-of-bounds pointer.\n  - `mpi_write_binary` writes `ylen > plen` bytes, overflowing the buffer.\n\nThe missing validation `if (ylen > plen) return -1;` manifests at line 11, where the unchecked `ylen` is used in both the offset computation and the write length.\n\nAnswer: 11",
+     "role": "assistant",
+     "reasoning_content": "ylen can exceed plen \u2192 out + (plen - ylen) underflows, and writing ylen bytes overflows. Bug at line 11."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 219,
+   "prompt_tokens": 304,
+   "total_tokens": 523,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>ylen can exceed plen \u2192 out + (plen - ylen) underflows, and writing ylen bytes overflows. Bug at line 11.</think>**Analysis:**\n\n- Line 7 checks `out_len >= plen`, so the buffer can hold `plen` bytes.\n- Line 10 correctly zeroes `plen` bytes.\n- Line 11 assumes `ylen <= plen`. But `Y` is a public value that may be supplied by an application (e.g., a peer's DH public key), so `ylen` can exceed `plen`. Then:\n  - `plen - ylen` underflows (huge size_t), making `out + (plen - ylen)` an out-of-bounds pointer.\n  - `mpi_write_binary` writes `ylen > plen` bytes, overflowing the buffer.\n\nThe missing validation `if (ylen > plen) return -1;` manifests at line 11, where the unchecked `ylen` is used in both the offset computation and the write length.\n\nAnswer: 11",
+ "grade": {
+  "index": 13,
+  "id": "compsec-088",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 9628.2,
+  "output_sha256": "0d7cad6ed297e9f2e9326e42fe71986ce2943cf3b4de2aedef8013bf41f6ad47",
+  "prompt_token_count": 304,
+  "generated_token_count": 219,
+  "reasoning_chars": 104,
+  "content_chars": 643,
+  "status": "stop"
+ }
+}

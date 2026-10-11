@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "cdb929fff5595cede33badf76ef57fc2cdb87f44f88c4e1cab2811399c1dc910"
+ },
+ "response": {
+  "id": "chatcmpl-b203e0e0dde547148769e39b74ecdac8",
+  "created": 1791721453,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `ensure_tag_buffer` calculates the required buffer size `need` by summing `prefix_len`, `name_len`, and 3 (for `\"/>\\0\"`). It then casts this sum to an `unsigned int`.\n\nThe vulnerability lies in the potential for integer overflow. `prefix_len` and `name_len` are of type `size_t` (typically 64-bit on modern systems). If the sum `prefix_len + name_len + 3` exceeds the maximum value of `unsigned int` (which is typically 32-bit, max ~4GB), the cast on line 3 will truncate the value.\n\nFor example, if `prefix_len + name_len + 3` is `0x100000000` (4GB + 1), casting it to `unsigned int` results in `0`.\n1. `need` becomes `0`.\n2. The check `if (need > p->tag_cap)` might fail if `p->tag_cap` is 0 or small, or if `p->tag_cap` is large enough to hold the truncated `need` but not the actual required size.\n3. Even if `realloc` is called with a small `need` (due to truncation), the subsequent `memcpy` calls on lines 13-15 will write `prefix_len` and `name_len` bytes into the buffer. Since the buffer was only allocated for the truncated `need` (which is much smaller than the actual data size), this results in a heap buffer overflow.\n\nThe primary bug is introduced at the point where the size calculation is truncated, which is line 3.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 355,
+   "prompt_tokens": 371,
+   "total_tokens": 726,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `ensure_tag_buffer` calculates the required buffer size `need` by summing `prefix_len`, `name_len`, and 3 (for `\"/>\\0\"`). It then casts this sum to an `unsigned int`.\n\nThe vulnerability lies in the potential for integer overflow. `prefix_len` and `name_len` are of type `size_t` (typically 64-bit on modern systems). If the sum `prefix_len + name_len + 3` exceeds the maximum value of `unsigned int` (which is typically 32-bit, max ~4GB), the cast on line 3 will truncate the value.\n\nFor example, if `prefix_len + name_len + 3` is `0x100000000` (4GB + 1), casting it to `unsigned int` results in `0`.\n1. `need` becomes `0`.\n2. The check `if (need > p->tag_cap)` might fail if `p->tag_cap` is 0 or small, or if `p->tag_cap` is large enough to hold the truncated `need` but not the actual required size.\n3. Even if `realloc` is called with a small `need` (due to truncation), the subsequent `memcpy` calls on lines 13-15 will write `prefix_len` and `name_len` bytes into the buffer. Since the buffer was only allocated for the truncated `need` (which is much smaller than the actual data size), this results in a heap buffer overflow.\n\nThe primary bug is introduced at the point where the size calculation is truncated, which is line 3.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 6587.2,
+  "output_sha256": "7f91fc780be006b6f8900e1b24819d186b5a7e731397dc47d92bd2bf0e80eb9f",
+  "prompt_token_count": 371,
+  "generated_token_count": 355,
+  "reasoning_chars": 0,
+  "content_chars": 1258,
+  "status": "stop"
+ }
+}

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper is called once for each Special Line Character option received in a TELNET LINEMODE negotiation.\n\nCode:\n```c\n 1: #define SLCBUF_SIZE 108\n 2: #define SLC_NCHARS 18\n 3: \n 4: struct slc_state {\n 5:     unsigned char buf[SLCBUF_SIZE];\n 6:     size_t used;\n 7: };\n 8: \n 9: static void add_slc(struct slc_state *s,\n10:                     unsigned char func,\n11:                     unsigned char flags,\n12:                     unsigned char value)\n13: {\n14:     if (func <= SLC_NCHARS)\n15:         return;                    // ignore ordinary entries here\n16: \n17:     /* Store one SLC triplet for later reply construction. */\n18:     s->buf[s->used++] = func;\n19:     s->buf[s->used++] = flags;\n20:     s->buf[s->used++] = value;\n21: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d939b7a74bc2d9f5828ad4178ac94585682aed43f90d2b8cdc90d9f5820c266b"
+ },
+ "response": {
+  "id": "chatcmpl-b605d8a5dc3e4f5c8898fd671ce77324",
+  "created": 1791725933,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function writes three bytes into `s->buf` without checking whether `s->used + 3` exceeds `SLCBUF_SIZE`. Since this is called once per SLC option received, repeated calls can overflow the buffer.\n\nThe primary bug is introduced at the first unchecked write.\n\nAnswer: 18",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 63,
+   "prompt_tokens": 329,
+   "total_tokens": 392,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function writes three bytes into `s->buf` without checking whether `s->used + 3` exceeds `SLCBUF_SIZE`. Since this is called once per SLC option received, repeated calls can overflow the buffer.\n\nThe primary bug is introduced at the first unchecked write.\n\nAnswer: 18",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "18",
+  "passed": true,
+  "elapsed_ms": 11537.2,
+  "output_sha256": "e8f8f2c76fdbe7a109da070155104dd38a7d0c6334d9cbacff5ec21658ebcd88",
+  "prompt_token_count": 329,
+  "generated_token_count": 63,
+  "reasoning_chars": 0,
+  "content_chars": 271,
+  "status": "stop"
+ }
+}

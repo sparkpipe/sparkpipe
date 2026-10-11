@@ -1,0 +1,58 @@
+{
+ "prompts": {
+  "short": {
+   "old_len": 48,
+   "new_len": 48,
+   "compared": 48,
+   "agree": 48,
+   "first_flip": null,
+   "identical": false,
+   "max_delta": 0.538992,
+   "served_max_delta": 0.124096
+  },
+  "p600": {
+   "old_len": 48,
+   "new_len": 48,
+   "compared": 26,
+   "agree": 25,
+   "first_flip": 25,
+   "identical": false,
+   "max_delta": 0.592216,
+   "served_max_delta": 0.159101,
+   "old_margin_at_flip": 0.0864,
+   "new_token_old_rank": 2
+  },
+  "p3k": {
+   "old_len": 48,
+   "new_len": 48,
+   "compared": 14,
+   "agree": 13,
+   "first_flip": 13,
+   "identical": false,
+   "max_delta": 1.01123,
+   "served_max_delta": 0.097988,
+   "old_margin_at_flip": 0.5989,
+   "new_token_old_rank": 3
+  },
+  "p9k": {
+   "old_len": 48,
+   "new_len": 48,
+   "compared": 19,
+   "agree": 18,
+   "first_flip": 18,
+   "identical": false,
+   "max_delta": 0.491539,
+   "served_max_delta": 0.104237,
+   "old_margin_at_flip": 0.2621,
+   "new_token_old_rank": 2
+  }
+ },
+ "compared": 107,
+ "agree": 104,
+ "max_delta": 1.01123,
+ "large": [
+  "p3k: flip at 13 with old top-1/top-2 margin 0.5989"
+ ],
+ "served_max_delta": 0.159101,
+ "identical": false
+}

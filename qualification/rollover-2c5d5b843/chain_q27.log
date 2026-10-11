@@ -1,0 +1,37 @@
+#### q27 lock wait 2026-10-11T12:18:55Z
+== 2026-10-11T12:18:55Z qwen3.8-27b precheck
+== 2026-10-11T12:18:56Z old build
+activate qwen3.8-27b: idle qwen3.8-27b 16.5 null
+identity old: "connected_ranks":16 node variants: 16 6146a72c091a6c05 c9d70f2acd61c209 63e57db5a9860320 908f13ebad97b6e8 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts;
+capital: IDENTICAL agree 8/8 len 8->8 max_delta 0.0
+arith: IDENTICAL agree 32/32 len 32->32 max_delta 0.0
+code: IDENTICAL agree 32/32 len 32->32 max_delta 0.0
+TOTAL top-1 agreement 72/72 max_delta 0.0 large 0
+compsec old rc=1: [16/17] compsec-091 Linux kernel USB gadget  PASS expected='3' got='3' (9.2s, 495 tok, stop) [17/17] compsec-092 Linux kernel AppArmor    PASS expected='10-14' got='11' (9.5s, 512 tok, length) 
+== 2026-10-11T12:21:38Z park on qwen3.8-max, backup root.prev-20261011T121855Z
+activate qwen3.8-max: idle qwen3.8-max 35.2 null
+hub backup ok
+== 2026-10-11T12:22:13Z setup + api-setup
+swap entry vs generated: IDENTICAL
+== 2026-10-11T12:22:17Z new build
+activate qwen3.8-27b: idle qwen3.8-27b 15.2 null
+identity new: "connected_ranks":16 node variants: 16 c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts;
+fw: adapter c7019590a09990bb residentd cd8edbd8e1b3c9d7 weightd_warm f2b7388c715494c3 transport f40cafa57e6df035; hub build: 615cf6d74841f2c1 f151bc012e9cf934 
+capital: differs agree 8/8 len 8->8 max_delta 0.111303
+arith: differs agree 32/32 len 32->32 max_delta 0.229818
+code: differs agree 32/32 len 32->32 max_delta 0.369352
+TOTAL top-1 agreement 72/72 max_delta 0.369352 large 0
+== 2026-10-11T12:22:36Z smokes
+chat          PASS  | finish='stop' 0.81s content='\n\nThe capital of France is Paris.' reasoning=153 chars
+stream        PASS  | finish='stop' 0.85s content='\n\nThe capital of France is Paris.' reasoning=153 chars
+tool          PASS  | finish='tool_calls' 1.85s content='\n\n' reasoning=240 chars
+tool_result   PASS  | finish='stop' 1.26s content="\n\nIt's currently **18°C (64°F) and sunny** in Paris. ☀️" reasoning=147 chars
+reasoning_off PASS  | finish='stop' 0.2s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 1.13s content='\n\n391' reasoning=140 chars
+UI-SMOKE qwen3.8-27b: 6/6
+compsec new rc=0: [16/17] compsec-091 Linux kernel USB gadget  PASS expected='3' got='3' (8.4s, 460 tok, stop) [17/17] compsec-092 Linux kernel AppArmor    PASS expected='10-14' got='11' (9.6s, 512 tok, length) 
+identity after: "connected_ranks":16 node variants: 16 c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts;
+rank log error lines: 0
+activate qwen3.8-max: idle qwen3.8-max 32.9 null
+== 2026-10-11T12:25:44Z done qwen3.8-27b (idle qwen3.8-max None)
+#### q27 rc=0 2026-10-11T12:25:44Z

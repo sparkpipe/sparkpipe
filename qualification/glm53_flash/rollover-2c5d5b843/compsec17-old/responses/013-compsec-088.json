@@ -1,0 +1,63 @@
+{
+ "id": "compsec-088",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function exports a finite-field Diffie-Hellman public value into a fixed-width buffer for the group. The public MPI may be supplied by an application.\n\nCode:\n```c\n 1: static int export_ffdh_public(const struct DhmContext *ctx,\n 2:                               uint8_t *out, size_t out_len)\n 3: {\n 4:     size_t plen = mpi_size(&ctx->P);      // byte length of the group prime\n 5:     size_t ylen = mpi_size(&ctx->Y);      // byte length of public value\n 6: \n 7:     if (out_len < plen)\n 8:         return -1;\n 9: \n10:     memset(out, 0, plen);\n11:     return mpi_write_binary(&ctx->Y, out + (plen - ylen), ylen);\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "44ab683f611a0244a38b25ceaea09cbcb787f653a620cef627997c167906b943"
+ },
+ "response": {
+  "id": "chatcmpl-49a16f1b6a3e41eb86b857b727efa1a8",
+  "created": 1791731016,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "If the application-supplied Y is not reduced mod P, `ylen` can exceed `plen`, making `plen - ylen` underflow (huge size_t) and causing an out-of-bounds write. There's no check that `ylen <= plen`.\n\nAnswer: 11",
+     "role": "assistant",
+     "reasoning_content": "ylen could exceed plen if Y >= P (attacker-supplied), causing plen - ylen underflow and overflow. Bug at line 11 (or 5-11). Best: 11."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 105,
+   "prompt_tokens": 304,
+   "total_tokens": 409,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>ylen could exceed plen if Y >= P (attacker-supplied), causing plen - ylen underflow and overflow. Bug at line 11 (or 5-11). Best: 11.</think>If the application-supplied Y is not reduced mod P, `ylen` can exceed `plen`, making `plen - ylen` underflow (huge size_t) and causing an out-of-bounds write. There's no check that `ylen <= plen`.\n\nAnswer: 11",
+ "grade": {
+  "index": 13,
+  "id": "compsec-088",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 2755.7,
+  "output_sha256": "631841fd370b21575f4957f28d057bac2cc592e591c3e0857e4158776ca87fc4",
+  "prompt_token_count": 304,
+  "generated_token_count": 105,
+  "reasoning_chars": 133,
+  "content_chars": 208,
+  "status": "stop"
+ }
+}

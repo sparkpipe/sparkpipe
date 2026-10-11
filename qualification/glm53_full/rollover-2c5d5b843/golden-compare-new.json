@@ -1,0 +1,106 @@
+{
+ "prompts": {
+  "capital": {
+   "old_len": 8,
+   "new_len": 8,
+   "compared": 8,
+   "agree": 8,
+   "first_flip": null,
+   "identical": false,
+   "max_delta": 0.620909,
+   "served_max_delta": 0.008179
+  },
+  "arith": {
+   "old_len": 128,
+   "new_len": 128,
+   "compared": 18,
+   "agree": 17,
+   "first_flip": 17,
+   "identical": false,
+   "max_delta": 0.983675,
+   "served_max_delta": 0.119286,
+   "old_margin_at_flip": 0.3021,
+   "new_token_old_rank": 2
+  },
+  "code": {
+   "old_len": 128,
+   "new_len": 128,
+   "compared": 1,
+   "agree": 0,
+   "first_flip": 0,
+   "identical": false,
+   "max_delta": 0.427901,
+   "served_max_delta": 0.0,
+   "old_margin_at_flip": 0.3823,
+   "new_token_old_rank": 2
+  },
+  "story": {
+   "old_len": 128,
+   "new_len": 128,
+   "compared": 2,
+   "agree": 1,
+   "first_flip": 1,
+   "identical": false,
+   "max_delta": 1.117706,
+   "served_max_delta": 0.017218,
+   "old_margin_at_flip": 1.2461,
+   "new_token_old_rank": 4
+  },
+  "reason": {
+   "old_len": 128,
+   "new_len": 128,
+   "compared": 78,
+   "agree": 77,
+   "first_flip": 77,
+   "identical": false,
+   "max_delta": 1.58115,
+   "served_max_delta": 0.257969,
+   "old_margin_at_flip": 0.0778,
+   "new_token_old_rank": 2
+  },
+  "translate": {
+   "old_len": 126,
+   "new_len": 86,
+   "compared": 13,
+   "agree": 12,
+   "first_flip": 12,
+   "identical": false,
+   "max_delta": 0.637384,
+   "served_max_delta": 0.054319,
+   "old_margin_at_flip": 0.1447,
+   "new_token_old_rank": 2
+  },
+  "long_2k": {
+   "old_len": 128,
+   "new_len": 128,
+   "compared": 2,
+   "agree": 1,
+   "first_flip": 1,
+   "identical": false,
+   "max_delta": 1.899094,
+   "served_max_delta": 0.207827,
+   "old_margin_at_flip": 0.2462,
+   "new_token_old_rank": 2
+  },
+  "long_8k": {
+   "old_len": 128,
+   "new_len": 128,
+   "compared": 9,
+   "agree": 8,
+   "first_flip": 8,
+   "identical": false,
+   "max_delta": 0.686283,
+   "served_max_delta": 0.237965,
+   "old_margin_at_flip": 0.4172,
+   "new_token_old_rank": 2
+  }
+ },
+ "compared": 131,
+ "agree": 124,
+ "max_delta": 1.899094,
+ "large": [
+  "story: flip at 1 with old top-1/top-2 margin 1.2461"
+ ],
+ "served_max_delta": 0.257969,
+ "identical": false
+}

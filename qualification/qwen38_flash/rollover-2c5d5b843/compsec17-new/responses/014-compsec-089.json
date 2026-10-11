@@ -1,0 +1,62 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "5ecc0d392d3c161fed8caa3197c0ce0ffe88de751584f4c5b58f2e0ec9f73246"
+ },
+ "response": {
+  "id": "chatcmpl-ad49fa6097434e359068f795dabfd93a",
+  "created": 1791722018,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `ccm_finish_reduced` computes a full 16-byte tag into a local buffer `full_tag`. It then copies `tag_len` bytes from `full_tag` to the user-provided `tag` buffer.\n\nThe vulnerability lies in the lack of validation for `tag_len`.\n1.  **Source Buffer Overflow**: `full_tag` is 16 bytes. If `tag_len > 16`, `memcpy` will read out-of-bounds from the stack.\n2.  **Destination Buffer Overflow**: The caller provides `tag`. If `tag_len` is larger than the actual size of the buffer pointed to by `tag`, `memcpy` will write out-of-bounds.\n\nThe prompt states: \"The public multipart CCM API lets the caller request a tag length.\" This implies `tag_len` is an external input. In secure cryptographic APIs, the implementation must validate that the requested tag length is within the supported range (typically 4 to 16 bytes for CCM, or at least <= 16). The code performs no such check before the `memcpy`.\n\nThe bug is introduced at the `memcpy` call because it uses the unvalidated `tag_len` directly. While the root cause is missing validation, the specific line where the unsafe operation occurs is line 10. If we consider where the *logic* error is (missing check), it's the absence of a check before line 10. However, standard practice for identifying the \"primary bug\" in such snippets points to the line executing the unsafe copy with untrusted length.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 335,
+   "prompt_tokens": 264,
+   "total_tokens": 599,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `ccm_finish_reduced` computes a full 16-byte tag into a local buffer `full_tag`. It then copies `tag_len` bytes from `full_tag` to the user-provided `tag` buffer.\n\nThe vulnerability lies in the lack of validation for `tag_len`.\n1.  **Source Buffer Overflow**: `full_tag` is 16 bytes. If `tag_len > 16`, `memcpy` will read out-of-bounds from the stack.\n2.  **Destination Buffer Overflow**: The caller provides `tag`. If `tag_len` is larger than the actual size of the buffer pointed to by `tag`, `memcpy` will write out-of-bounds.\n\nThe prompt states: \"The public multipart CCM API lets the caller request a tag length.\" This implies `tag_len` is an external input. In secure cryptographic APIs, the implementation must validate that the requested tag length is within the supported range (typically 4 to 16 bytes for CCM, or at least <= 16). The code performs no such check before the `memcpy`.\n\nThe bug is introduced at the `memcpy` call because it uses the unvalidated `tag_len` directly. While the root cause is missing validation, the specific line where the unsafe operation occurs is line 10. If we consider where the *logic* error is (missing check), it's the absence of a check before line 10. However, standard practice for identifying the \"primary bug\" in such snippets points to the line executing the unsafe copy with untrusted length.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 8743.2,
+  "output_sha256": "77f5b805803b445930cc048593c72aa17249bc96a4f46f48fc5fe9496c24a0a0",
+  "prompt_token_count": 264,
+  "generated_token_count": 335,
+  "reasoning_chars": 0,
+  "content_chars": 1371,
+  "status": "stop"
+ }
+}

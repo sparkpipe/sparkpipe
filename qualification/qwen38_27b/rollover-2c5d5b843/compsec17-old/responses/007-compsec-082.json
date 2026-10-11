@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "414610c6640cf0f160d47040f8eaa80eef032a23eb6ae985ad0e99adb12cf1bb"
+ },
+ "response": {
+  "id": "chatcmpl-e353f8caac464adc8c291fd9fd709321",
+  "created": 1791721213,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The function `xdr_datum` is intended to decode a C-string from an XDR stream into a specific location in memory (`base + desc->offset`).\n\n1.  **Line 3**: Reads the length `n` of the string from the stream.\n2.  **Line 4**: Calculates the destination pointer `dst`.\n3.  **Line 6-7**: Checks if there are enough bytes available in the *source* stream (`xdr`) to read `n` bytes. This prevents reading out of bounds from the input buffer.\n4.  **Line 9**: Reads `n` bytes from the stream into `dst`.\n5.  **Line 10**: Writes a null terminator at `dst[n]`.\n\n**Vulnerability Analysis:**\nThe code checks if the *source* has enough data (`xdr_bytes_available`), but it **does not check if the destination buffer (`desc`) is large enough** to hold `n` bytes plus the null terminator.\n\nThe `SliceDesc` structure (implied by `desc->offset`) likely contains information about the size of the slice or the total size of the `base` buffer. However, the code only uses `desc->offset`. It assumes that the slice starting at `desc->offset` is large enough to accommodate `n + 1` bytes.\n\nIf the attacker controls the XDR stream, they can set `n` to a very large value (e.g., `0xFFFFFFFF` or a value larger than the allocated buffer size for that slice).\n- `xdr_bytes_available(xdr)` might return a large number if the input buffer is large enough to contain that many bytes (or if the check is bypassed/incorrect, but the prompt says it is accurate).\n- `xdr_read_bytes` will write `n` bytes into `dst`.\n- `dst[n] = '\\0'` will write one more byte.\n\nIf `n` exceeds the size of the memory region allocated for the slice at `desc->offset`, this results in a **buffer overflow**.\n\nThe bug is introduced because the code fails to validate `n` against the destination capacity. The specific line where the unsafe operation occurs is the write to the destination. However, the *primary bug* is the lack of a bounds check on the destination. In the context of \"where the primary bug is introduced\", it is often attributed to the line that performs the unsafe",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 297,
+   "total_tokens": 809,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `xdr_datum` is intended to decode a C-string from an XDR stream into a specific location in memory (`base + desc->offset`).\n\n1.  **Line 3**: Reads the length `n` of the string from the stream.\n2.  **Line 4**: Calculates the destination pointer `dst`.\n3.  **Line 6-7**: Checks if there are enough bytes available in the *source* stream (`xdr`) to read `n` bytes. This prevents reading out of bounds from the input buffer.\n4.  **Line 9**: Reads `n` bytes from the stream into `dst`.\n5.  **Line 10**: Writes a null terminator at `dst[n]`.\n\n**Vulnerability Analysis:**\nThe code checks if the *source* has enough data (`xdr_bytes_available`), but it **does not check if the destination buffer (`desc`) is large enough** to hold `n` bytes plus the null terminator.\n\nThe `SliceDesc` structure (implied by `desc->offset`) likely contains information about the size of the slice or the total size of the `base` buffer. However, the code only uses `desc->offset`. It assumes that the slice starting at `desc->offset` is large enough to accommodate `n + 1` bytes.\n\nIf the attacker controls the XDR stream, they can set `n` to a very large value (e.g., `0xFFFFFFFF` or a value larger than the allocated buffer size for that slice).\n- `xdr_bytes_available(xdr)` might return a large number if the input buffer is large enough to contain that many bytes (or if the check is bypassed/incorrect, but the prompt says it is accurate).\n- `xdr_read_bytes` will write `n` bytes into `dst`.\n- `dst[n] = '\\0'` will write one more byte.\n\nIf `n` exceeds the size of the memory region allocated for the slice at `desc->offset`, this results in a **buffer overflow**.\n\nThe bug is introduced because the code fails to validate `n` against the destination capacity. The specific line where the unsafe operation occurs is the write to the destination. However, the *primary bug* is the lack of a bounds check on the destination. In the context of \"where the primary bug is introduced\", it is often attributed to the line that performs the unsafe",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "0",
+  "passed": false,
+  "elapsed_ms": 9269.2,
+  "output_sha256": "d578e7aada8bc0f471d2ff37a2c1b0f5905b2229a88691e8b507dc33d54826d4",
+  "prompt_token_count": 297,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 2028,
+  "status": "length"
+ }
+}

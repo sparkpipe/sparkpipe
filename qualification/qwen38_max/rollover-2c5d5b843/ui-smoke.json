@@ -1,0 +1,342 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T13:56:22+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "qwen3.8-max",
+ "passed": 5,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "qwen3.8-max",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-c5bfd01f1f574acbbb48c9c463bbf93e",
+     "created": 1791726922,
+     "model": "qwen3.8-max",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "\n\nThe capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": "We need to answer user's simple question: \"What is the capital of France? Answer in one sentence.\" Need final one sentence. Ensure concise.\n"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 64,
+      "total_tokens": 104,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "\n\nThe capital of France is Paris.",
+    "reasoning": "We need to answer user's simple question: \"What is the capital of France? Answer in one sentence.\" Need final one sentence. Ensure concise.\n",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 10.28
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "qwen3.8-max",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "\n\nThe capital of France is Paris.",
+    "reasoning": "We need to answer user's simple question: \"What is the capital of France? Answer in one sentence.\" Need final one sentence. Ensure concise.\n",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 9,
+    "elapsed_s": 10.25
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "qwen3.8-max",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-e5c356aca57c4044acc9bd6c1c3a1ff8",
+     "created": 1791726960,
+     "model": "qwen3.8-max",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "content": "\n\n",
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\"}",
+           "name": "get_weather"
+          },
+          "id": "call_98aa21c9adf246a88d5135fe",
+          "type": "function"
+         }
+        ],
+        "reasoning_content": "The user is asking about the current weather in Paris. I should use the get_weather tool with location \"Paris\". The unit parameter is optional, so I won't specify it (or I could default to celsius since Paris is in France). Let me just call it with location \"Paris\".\n"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 87,
+      "prompt_tokens": 347,
+      "total_tokens": 434,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "\n\n",
+    "reasoning": "The user is asking about the current weather in Paris. I should use the get_weather tool with location \"Paris\". The unit parameter is optional, so I won't specify it (or I could default to celsius since Paris is in France). Let me just call it with location \"Paris\".\n",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\"}",
+       "name": "get_weather"
+      },
+      "id": "call_98aa21c9adf246a88d5135fe",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 27.45
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "qwen3.8-max",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": "\n\n",
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\"}",
+         "name": "get_weather"
+        },
+        "id": "call_98aa21c9adf246a88d5135fe",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_98aa21c9adf246a88d5135fe",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-d66e88a8bae44254afc455f8cd536618",
+     "created": 1791726970,
+     "model": "qwen3.8-max",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "\n\nThe current weather in Paris is **sunny** with a temperature of **18\u00b0C**.",
+        "role": "assistant",
+        "reasoning_content": "The tool returned the weather for Paris: 18\u00b0C, sunny. I should report this to the user.\n"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 45,
+      "prompt_tokens": 411,
+      "total_tokens": 456,
+      "prompt_tokens_details": {
+       "cached_tokens": 320
+      }
+     }
+    },
+    "content": "\n\nThe current weather in Paris is **sunny** with a temperature of **18\u00b0C**.",
+    "reasoning": "The tool returned the weather for Paris: 18\u00b0C, sunny. I should report this to the user.\n",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 10.46
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "qwen3.8-max",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "error": "HTTP 400: {\"error\":{\"message\":\"litellm.BadRequestError: Hosted_vllmException - {\\\"error\\\": {\\\"message\\\": \\\"reasoning_effort must be one of ['high', 'low', 'medium']\\\", \\\"type\\\": \\\"invalid_request_error\\\", \\\"code\\\": \\\"unsupported_parameter\\\"}}. Received Model Group=qwen3.8-max\\nAvailable Model Group Fallbacks=None\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"400\"}}",
+    "elapsed_s": 0.04
+   },
+   "problems": [
+    "HTTP 400: {\"error\":{\"message\":\"litellm.BadRequestError: Hosted_vllmException - {\\\"error\\\": {\\\"message\\\": \\\"reasoning_effort must be one of ['high', 'low', 'medium']\\\", \\\"type\\\": \\\"invalid_request_error\\\", \\\"code\\\": \\\"unsupported_parameter\\\"}}. Received Model Group=qwen3.8-max\\nAvailable Model Group Fallbacks=None\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"400\"}}"
+   ]
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "qwen3.8-max",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-9f0879370f8b4ed7b2143a3668d89080",
+     "created": 1791726982,
+     "model": "qwen3.8-max",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "\n\n391",
+        "role": "assistant",
+        "reasoning_content": "We need answer simple multiplication. Compute 17*23 = 17*20 + 17*3 = 340+51=391. Final just number.\n"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 49,
+      "prompt_tokens": 68,
+      "total_tokens": 117,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "\n\n391",
+    "reasoning": "We need answer simple multiplication. Compute 17*23 = 17*20 + 17*3 = 340+51=391. Final just number.\n",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 12.07
+   },
+   "problems": []
+  }
+ ]
+}

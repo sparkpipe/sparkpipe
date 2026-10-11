@@ -1,0 +1,63 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper is called once for each Special Line Character option received in a TELNET LINEMODE negotiation.\n\nCode:\n```c\n 1: #define SLCBUF_SIZE 108\n 2: #define SLC_NCHARS 18\n 3: \n 4: struct slc_state {\n 5:     unsigned char buf[SLCBUF_SIZE];\n 6:     size_t used;\n 7: };\n 8: \n 9: static void add_slc(struct slc_state *s,\n10:                     unsigned char func,\n11:                     unsigned char flags,\n12:                     unsigned char value)\n13: {\n14:     if (func <= SLC_NCHARS)\n15:         return;                    // ignore ordinary entries here\n16: \n17:     /* Store one SLC triplet for later reply construction. */\n18:     s->buf[s->used++] = func;\n19:     s->buf[s->used++] = flags;\n20:     s->buf[s->used++] = value;\n21: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "23c184d25f31139b157ebde422b4273c5eca19fadfb8f6f3002aa71d13ef182c"
+ },
+ "response": {
+  "id": "chatcmpl-7414511521d8440eab561bd48f0af54f",
+  "created": 1791730445,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function writes three bytes into `s->buf` (108 bytes) with no bounds check on `s->used`. Since it's called once per SLC option received from the remote peer, an attacker can supply more than 36 triplets, causing `used` to exceed `SLCBUF_SIZE` and overflow the buffer. The primary unchecked write begins at line 18.\n\nAnswer: 18",
+     "role": "assistant",
+     "reasoning_content": "Buffer overflow: no bounds check on used. Primary bug at line 18 (write without check). Lines 18-20."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 109,
+   "prompt_tokens": 333,
+   "total_tokens": 442,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Buffer overflow: no bounds check on used. Primary bug at line 18 (write without check). Lines 18-20.</think>The function writes three bytes into `s->buf` (108 bytes) with no bounds check on `s->used`. Since it's called once per SLC option received from the remote peer, an attacker can supply more than 36 triplets, causing `used` to exceed `SLCBUF_SIZE` and overflow the buffer. The primary unchecked write begins at line 18.\n\nAnswer: 18",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "18",
+  "passed": true,
+  "elapsed_ms": 5099.5,
+  "output_sha256": "f2046a81d9457d9345816db8210f4b3f6d57e30ce296a41cbf17b7654dc194e3",
+  "prompt_token_count": 333,
+  "generated_token_count": 109,
+  "reasoning_chars": 100,
+  "content_chars": 330,
+  "status": "stop"
+ }
+}
