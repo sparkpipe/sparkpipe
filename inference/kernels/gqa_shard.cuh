@@ -158,13 +158,14 @@ void LmGqaShardMergeKernel(
 	uint32_t heads,
 	uint32_t rank,
 	uint16_t *__restrict__ output_bf16,
-	uint32_t rows)
+	uint32_t rows,
+	const float *__restrict__ sinks)
 {
 	const uint32_t row = blockIdx.x;
 	const uint32_t width = LmGqaShardWidth(heads,VALUE_DIM,sources), slots = LmGqaShardHeadSlots(heads,VALUE_DIM,sources);
 	const uint32_t record = width + 2u * slots, origin = (rank * width) / VALUE_DIM;
 	uint32_t element, source, slot_index;
-	float global_max, source_max, scale, denominator, merged;
+	float global_max, source_max, scale, denominator, merged, sink = 0.0f;
 	const float *base;
 
 	if ( row >= rows )
@@ -178,6 +179,11 @@ void LmGqaShardMergeKernel(
 			source_max = received[(uint64_t)source * source_stride + (uint64_t)row * record + width + 2u * slot_index];
 			global_max = source_max > global_max ? source_max : global_max;
 		}
+		if ( sinks != 0 )
+		{
+			sink = sinks[(rank * width + element) / VALUE_DIM];
+			global_max = sink > global_max ? sink : global_max;
+		}
 		denominator = 0.0f;
 		merged = 0.0f;
 		for (source = 0u; source < sources; ++source)
@@ -188,6 +194,8 @@ void LmGqaShardMergeKernel(
 			denominator = fmaf(base[width + 2u * slot_index + 1u],scale,denominator);
 			merged = fmaf(base[element],scale,merged);
 		}
+		if ( sinks != 0 )
+			denominator += __expf(sink - global_max);
 		output_bf16[(uint64_t)row * width + element] = LmFloatToBf16(merged / fmaxf(denominator,1.0e-20f));
 	}
 }
@@ -231,12 +239,13 @@ static inline cudaError_t LmGqaShardMergeLaunch(
 	uint32_t rank,
 	uint16_t *output_bf16,
 	uint32_t rows,
-	cudaStream_t stream)
+	cudaStream_t stream,
+	const float *sinks = 0)
 {
 	if ( rows == 0u || received == 0 || output_bf16 == 0 || sources == 0u || sources > SPARK_KV_SHARD_MAX_DEGREE ||
 		rank >= sources || ((uint64_t)heads * VALUE_DIM) % sources != 0u ||
 		source_stride < (uint64_t)rows * LmGqaShardRecordFloats(heads,VALUE_DIM,sources) )
 		return(cudaErrorInvalidValue);
-	LM_LAUNCH((LmGqaShardMergeKernel<VALUE_DIM>),rows,256u,0,stream,received,source_stride,sources,heads,rank,output_bf16,rows);
+	LM_LAUNCH((LmGqaShardMergeKernel<VALUE_DIM>),rows,256u,0,stream,received,source_stride,sources,heads,rank,output_bf16,rows,sinks);
 	return(cudaPeekAtLastError());
 }
