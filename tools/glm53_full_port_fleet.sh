@@ -26,7 +26,7 @@ activate() {
     state="$($SSH $HUB "curl -s localhost:8440/status" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state'], d['active'], d['error'])")"
     case "$state" in
       "idle $model None") log "activated $model"; return 0 ;;
-      idle*) log "activate $model failed: $state"; return 1 ;;
+      idle*|failed*) log "activate $model failed: $state"; return 1 ;;
     esac
     sleep 5
   done
@@ -79,7 +79,8 @@ teardown() {
   collect
   each_rank stop
   each_rank reclaim
-  activate qwen3.8-max
+  each_rank drop-kv
+  activate qwen3.8-max || { sleep 30; activate qwen3.8-max; }
 }
 
 run() {
