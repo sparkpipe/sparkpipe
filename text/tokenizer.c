@@ -2747,8 +2747,7 @@ SparkStatus SparkTokenizerLoadCompiledFile(
     status = SparkTokenizerBinaryReadUInt64(file, &magic);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &version);
     if (status != SPARK_STATUS_OK || magic != SPARK_TOKENIZER_COMPILED_FILE_MAGIC ||
-        version < SPARK_TOKENIZER_COMPILED_FILE_LEGACY_VERSION ||
-        version > SPARK_TOKENIZER_COMPILED_FILE_VERSION)
+        version != SPARK_TOKENIZER_COMPILED_FILE_VERSION)
     {
         fclose(file);
         SparkTokenizerDestroy(tokenizer);
@@ -2762,16 +2761,13 @@ SparkStatus SparkTokenizerLoadCompiledFile(
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->maximum_token_id);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->byte_level_use_regex);
     if (status == SPARK_STATUS_OK && tokenizer->byte_level_use_regex > SPARK_TOKENIZER_SPLIT_MODE_NEWLINE_LETTERS) status = SPARK_STATUS_PARSE_ERROR;
-    if (status == SPARK_STATUS_OK && version >= SPARK_TOKENIZER_COMPILED_FILE_VERSION)
+    if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->ignore_merges);
+    if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->rank_ordered_merges);
+    if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->normalizer_nfc);
+    if (status == SPARK_STATUS_OK &&
+        (tokenizer->ignore_merges > 1u || tokenizer->rank_ordered_merges > 1u || tokenizer->normalizer_nfc > 1u))
     {
-        status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->ignore_merges);
-        if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->rank_ordered_merges);
-        if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &tokenizer->normalizer_nfc);
-        if (status == SPARK_STATUS_OK &&
-            (tokenizer->ignore_merges > 1u || tokenizer->rank_ordered_merges > 1u || tokenizer->normalizer_nfc > 1u))
-        {
-            status = SPARK_STATUS_SCHEMA_ERROR;
-        }
+        status = SPARK_STATUS_SCHEMA_ERROR;
     }
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &vocabulary_count);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &fast_merge_pair_count);
@@ -2850,15 +2846,10 @@ SparkStatus SparkTokenizerLoadCompiledFile(
         char *text;
 
         status = SparkTokenizerBinaryReadUInt32(file, &token_id);
-        is_special = 1u;
-        if (status == SPARK_STATUS_OK &&
-            version >= SPARK_TOKENIZER_COMPILED_FILE_SPECIAL_FLAG_VERSION)
+        if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &is_special);
+        if (status == SPARK_STATUS_OK && is_special > 1u)
         {
-            status = SparkTokenizerBinaryReadUInt32(file, &is_special);
-            if (status == SPARK_STATUS_OK && is_special > 1u)
-            {
-                status = SPARK_STATUS_SCHEMA_ERROR;
-            }
+            status = SPARK_STATUS_SCHEMA_ERROR;
         }
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &text_bytes);
         if (status == SPARK_STATUS_OK && text_bytes == 0u) status = SPARK_STATUS_SCHEMA_ERROR;

@@ -1741,14 +1741,13 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
         fprintf(stderr,"weightd-mesh: staging mr failed errno=%d\n",errno);
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
-    printf("weightd-mesh staging bytes=%llu (bands=%u peers=%u slot_bytes=%llu capabilities=%u abi=%u served_min=%u)\n",
+    printf("weightd-mesh staging bytes=%llu (bands=%u peers=%u slot_bytes=%llu capabilities=%u abi=%u)\n",
         (unsigned long long)SPARK_WEIGHTD_MESH_STAGING_BYTES,
         (unsigned)SPARK_WEIGHTD_MESH_BANDS,
         (unsigned)SPARK_WEIGHTD_MESH_RANKS_PER_BAND,
         (unsigned long long)SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES,
         (unsigned)SPARK_WEIGHTD_MESH_CAPABILITIES,
-        (unsigned)SPARK_WEIGHTD_IPC_ABI_VERSION,
-        (unsigned)SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN);
+        (unsigned)SPARK_WEIGHTD_IPC_ABI_VERSION);
     fflush(stdout);
     SparkWeightdMeshPhase("staging-mr-registered");
     weightd_mesh.seq_mr = ibv_reg_mr(weightd_mesh.protection_domain,

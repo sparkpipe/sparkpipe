@@ -376,17 +376,17 @@ static void SparkTestTokenizerCompiledFileAndConfiguredBatch(void)
 }
 
 
-static const char *SparkTestTokenizerLegacyCompiledPath(void)
+static const char *SparkTestTokenizerHandWrittenCompiledPath(void)
 {
-    return "build/test_tokenizer_legacy_v1.compiled";
+    return "build/test_tokenizer_hand_written.compiled";
 }
 
-static void SparkTestTokenizerWriteLegacyCompiledFile(
+static void SparkTestTokenizerWriteHandWrittenCompiledFile(
+    uint32_t version,
     uint32_t added_token_text_bytes)
 {
     static const char special_text[] = "<|stop|>";
     const uint64_t magic = SPARK_TOKENIZER_COMPILED_FILE_MAGIC;
-    const uint32_t version = SPARK_TOKENIZER_COMPILED_FILE_LEGACY_VERSION;
     const uint32_t header[] = {
         SPARK_TOKENIZER_BPE_MODEL_KIND_BYTE_LEVEL,
         0u,
@@ -394,23 +394,32 @@ static void SparkTestTokenizerWriteLegacyCompiledFile(
         0u,
         0u,
         SPARK_TEST_TOKEN_STOP,
-        1u,
-        1u,
-        0u,
         1u};
+    const uint32_t current_flags[] = {0u, 0u, 0u};
+    const uint32_t counts[] = {1u, 0u, 1u};
     const uint32_t token_id = SPARK_TEST_TOKEN_STOP;
     const uint32_t text_bytes = (uint32_t)sizeof(special_text) - 1u;
+    const uint32_t is_special = 1u;
     FILE *file;
 
-    file = fopen(SparkTestTokenizerLegacyCompiledPath(), "wb");
+    file = fopen(SparkTestTokenizerHandWrittenCompiledPath(), "wb");
     assert(file != 0);
     assert(fwrite(&magic, sizeof(magic), 1u, file) == 1u);
     assert(fwrite(&version, sizeof(version), 1u, file) == 1u);
     assert(fwrite(header, sizeof(header), 1u, file) == 1u);
+    if (version == SPARK_TOKENIZER_COMPILED_FILE_VERSION)
+    {
+        assert(fwrite(current_flags, sizeof(current_flags), 1u, file) == 1u);
+    }
+    assert(fwrite(counts, sizeof(counts), 1u, file) == 1u);
     assert(fwrite(&token_id, sizeof(token_id), 1u, file) == 1u);
     assert(fwrite(&text_bytes, sizeof(text_bytes), 1u, file) == 1u);
     assert(fwrite(special_text, text_bytes, 1u, file) == 1u);
     assert(fwrite(&token_id, sizeof(token_id), 1u, file) == 1u);
+    if (version == SPARK_TOKENIZER_COMPILED_FILE_VERSION)
+    {
+        assert(fwrite(&is_special, sizeof(is_special), 1u, file) == 1u);
+    }
     assert(fwrite(&added_token_text_bytes, sizeof(added_token_text_bytes), 1u, file) == 1u);
     if (added_token_text_bytes != 0u)
     {
@@ -419,7 +428,30 @@ static void SparkTestTokenizerWriteLegacyCompiledFile(
     assert(fclose(file) == 0);
 }
 
-static void SparkTestTokenizerLoadsLegacyCompiledFile(void)
+static void SparkTestTokenizerRefusesOlderCompiledFiles(void)
+{
+    SparkTokenizer tokenizer;
+    SparkTokenizerCompiledFileConfiguration configuration;
+    uint32_t version;
+
+    for (version = 1u; version < SPARK_TOKENIZER_COMPILED_FILE_VERSION; ++version)
+    {
+        SparkTestTokenizerWriteHandWrittenCompiledFile(
+            version,
+            (uint32_t)sizeof("<|stop|>") - 1u);
+        SparkTokenizerReset(&tokenizer);
+        memset(&configuration, 0, sizeof(configuration));
+        configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+        configuration.descriptor_bytes =
+            SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+        configuration.compiled_tokenizer_path = SparkTestTokenizerHandWrittenCompiledPath();
+        assert(SparkTokenizerLoadCompiledFile(&tokenizer, &configuration) ==
+            SPARK_STATUS_SCHEMA_ERROR);
+        SparkTokenizerDestroy(&tokenizer);
+    }
+}
+
+static void SparkTestTokenizerLoadsHandWrittenCompiledFile(void)
 {
     SparkTokenizer tokenizer;
     SparkTokenizerCompiledFileConfiguration configuration;
@@ -427,14 +459,15 @@ static void SparkTestTokenizerLoadsLegacyCompiledFile(void)
     uint32_t text_bytes;
     char text[16u];
 
-    SparkTestTokenizerWriteLegacyCompiledFile(
+    SparkTestTokenizerWriteHandWrittenCompiledFile(
+        SPARK_TOKENIZER_COMPILED_FILE_VERSION,
         (uint32_t)sizeof("<|stop|>") - 1u);
     SparkTokenizerReset(&tokenizer);
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
     configuration.descriptor_bytes =
         SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
-    configuration.compiled_tokenizer_path = SparkTestTokenizerLegacyCompiledPath();
+    configuration.compiled_tokenizer_path = SparkTestTokenizerHandWrittenCompiledPath();
     assert(SparkTokenizerLoadCompiledFile(&tokenizer, &configuration) ==
         SPARK_STATUS_OK);
     assert(tokenizer.special_token_count == 1u);
@@ -478,13 +511,13 @@ static void SparkTestTokenizerRejectsEmptyAddedTokens(void)
     json_configuration.tokenizer_json_path = SparkTestTokenizerJsonPath();
     assert(SparkTokenizerLoadHuggingFaceJson(&tokenizer, &json_configuration) ==
         SPARK_STATUS_SCHEMA_ERROR);
-    SparkTestTokenizerWriteLegacyCompiledFile(0u);
+    SparkTestTokenizerWriteHandWrittenCompiledFile(SPARK_TOKENIZER_COMPILED_FILE_VERSION, 0u);
     memset(&compiled_configuration, 0, sizeof(compiled_configuration));
     compiled_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
     compiled_configuration.descriptor_bytes =
         SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
     compiled_configuration.compiled_tokenizer_path =
-        SparkTestTokenizerLegacyCompiledPath();
+        SparkTestTokenizerHandWrittenCompiledPath();
     assert(SparkTokenizerLoadCompiledFile(&tokenizer, &compiled_configuration) ==
         SPARK_STATUS_SCHEMA_ERROR);
     SparkTokenizerDestroy(&tokenizer);
@@ -1204,7 +1237,8 @@ int main(void)
     SparkTestTokenizerDecodesByteLevelTokens();
     SparkTestTokenizerEncodesBatch();
     SparkTestTokenizerCompiledFileAndConfiguredBatch();
-    SparkTestTokenizerLoadsLegacyCompiledFile();
+    SparkTestTokenizerLoadsHandWrittenCompiledFile();
+    SparkTestTokenizerRefusesOlderCompiledFiles();
     SparkTestTokenizerRejectsEmptyAddedTokens();
     SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk();
     for (uint32_t pattern_index = 0u; pattern_index < sizeof(g_spark_test_letter_split_patterns) / sizeof(g_spark_test_letter_split_patterns[0]); ++pattern_index)
