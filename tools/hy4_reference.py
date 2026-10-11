@@ -46,13 +46,17 @@ import os
 import resource
 import struct
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
 GROUP = 32
-LOOKAHEAD = 12
+LOOKAHEAD = 8
+CHUNK = 32 << 20
+KINDS = {"BF16": np.uint16, "F32": np.float32, "F8_E4M3": np.uint8, "U8": np.uint8}
 
 
 def bf16(values):
@@ -87,60 +91,85 @@ class Checkpoint:
         self.weight_map = json.loads((self.directory / "model.safetensors.index.json").read_text())["weight_map"]
         self.headers = {}
         self.descriptors = {}
+        self.guard = threading.Lock()
+        self.pool = ThreadPoolExecutor(max_workers=2)
+        self.pending = {}
 
     def meta(self, name):
         shard = self.weight_map[name]
-        if shard not in self.headers:
-            with open(self.directory / shard, "rb") as handle:
-                length = struct.unpack("<Q", handle.read(8))[0]
-                self.headers[shard] = (8 + length, json.loads(handle.read(length)))
+        with self.guard:
+            if shard not in self.headers:
+                with open(self.directory / shard, "rb") as handle:
+                    length = struct.unpack("<Q", handle.read(8))[0]
+                    self.headers[shard] = (8 + length, json.loads(handle.read(length)))
+                self.descriptors[shard] = os.open(self.directory / shard, os.O_RDONLY)
         base, header = self.headers[shard]
-        return shard, base, header[name]
+        return self.descriptors[shard], base, header[name]
 
-    def advise(self, name, first=None, count=None, drop=False):
-        shard, base, meta = self.meta(name)
+    def load(self, name, first, count):
+        descriptor, base, meta = self.meta(name)
         begin, end = meta["data_offsets"]
+        shape = list(meta["shape"])
         if first is not None:
-            stride = (end - begin) // meta["shape"][0]
-            begin, end = begin + first * stride, begin + min(meta["shape"][0], first + count) * stride
-            if begin >= end:
-                return
-        if shard not in self.descriptors:
-            self.descriptors[shard] = os.open(self.directory / shard, os.O_RDONLY)
-        os.posix_fadvise(self.descriptors[shard], base + begin, end - begin, os.POSIX_FADV_DONTNEED if drop else os.POSIX_FADV_WILLNEED)
+            stride = (end - begin) // shape[0]
+            begin, end, shape[0] = begin + first * stride, begin + (first + count) * stride, count
+        buffer = np.empty(end - begin, dtype=np.uint8)
+        view, done = memoryview(buffer), 0
+        while done < buffer.size:
+            got = os.preadv(descriptor, [view[done:done + CHUNK]], base + begin + done)
+            if got <= 0:
+                raise OSError(f"short read of {name} at {done}")
+            done += got
+        os.posix_fadvise(descriptor, base + begin, end - begin, os.POSIX_FADV_DONTNEED)
+        return buffer.view(KINDS[meta["dtype"]]).reshape(shape), meta["dtype"]
 
-    def advise_layer(self, layer):
+    def prefetch(self, name, first=None, count=None):
+        key = (name, first, count)
+        if key not in self.pending:
+            self.pending[key] = self.pool.submit(self.load, name, first, count)
+
+    def prefetch_layer(self, layer):
         prefix = f"model.layers.{layer}."
         for name in self.weight_map:
             if name.startswith(prefix) and ".mlp.experts." not in name:
-                self.advise(name)
+                self.prefetch(name)
 
-    def raw(self, name, dtype, shape=None):
-        shard, base, meta = self.meta(name)
-        if meta["dtype"] != dtype or (shape is not None and tuple(meta["shape"]) != tuple(shape)):
-            raise ValueError(f"{name}: {meta['dtype']} {meta['shape']}, expected {dtype} {shape}")
+    def read(self, name, dtype, shape=None, first=None, count=None):
+        future = self.pending.pop((name, first, count), None)
+        array, actual = future.result() if future is not None else self.load(name, first, count)
+        if actual != dtype or (shape is not None and tuple(array.shape) != tuple(shape)):
+            raise ValueError(f"{name}: {actual} {list(array.shape)}, expected {dtype} {shape}")
+        return array
+
+    def discard(self, prefix):
+        unread = sorted(key[0] for key in self.pending if key[0].startswith(prefix))
+        for key in [key for key in self.pending if key[0].startswith(prefix)]:
+            self.pending.pop(key).result()
+        return unread
+
+    def gather(self, name, rows):
+        descriptor, base, meta = self.meta(name)
         begin, end = meta["data_offsets"]
-        kind = {"BF16": np.uint16, "F32": np.float32, "F8_E4M3": np.uint8, "U8": np.uint8}[dtype]
-        return np.memmap(self.directory / shard, dtype=kind, mode="r", offset=base + begin,
-                         shape=((end - begin) // np.dtype(kind).itemsize,)).reshape(meta["shape"])
+        table = np.memmap(self.directory / self.weight_map[name], dtype=KINDS[meta["dtype"]], mode="r", offset=base + begin,
+                          shape=tuple(meta["shape"]))
+        return np.asarray(table[rows])
 
-    def bf16(self, name, shape=None):
-        return (np.asarray(self.raw(name, "BF16", shape)).astype(np.uint32) << 16).view(np.float32)
+    def bf16(self, name, shape=None, first=None, count=None):
+        return (self.read(name, "BF16", shape, first, count).astype(np.uint32) << 16).view(np.float32)
 
     def f32(self, name, shape=None):
-        return np.array(self.raw(name, "F32", shape))
+        return self.read(name, "F32", shape)
 
     def fp8(self, weight, scale):
-        weight = np.asarray(weight)
         rows, columns = weight.shape
         values = np.take(E4M3, weight).reshape(rows, columns // GROUP, GROUP)
-        values *= np.exp2(np.asarray(scale).astype(np.float32) - 127.0)[:, :, None]
+        values *= np.exp2(scale.astype(np.float32) - 127.0)[:, :, None]
         if not np.isfinite(values).all():
             raise ValueError("an E4M3 weight decodes to NaN")
         return values.reshape(rows, columns)
 
     def mxfp8(self, name, shape):
-        return self.fp8(self.raw(name + ".weight", "F8_E4M3", shape), self.raw(name + ".weight_scale", "U8", (shape[0], shape[1] // GROUP)))
+        return self.fp8(self.read(name + ".weight", "F8_E4M3", shape), self.read(name + ".weight_scale", "U8", (shape[0], shape[1] // GROUP)))
 
 
 class Reference:
@@ -295,33 +324,29 @@ class Reference:
         chosen = np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
         weights = np.take_along_axis(scores, chosen, axis=-1)
         weights = weights / (weights.sum(axis=-1, keepdims=True) + np.float32(1e-20)) * self.route_scale
-        gate_up = c.raw(p + "experts.gate_up_proj", "F8_E4M3", (self.experts, 2 * self.moe_inter, self.hidden))
-        gate_up_scale = c.raw(p + "experts.gate_up_proj_scale", "U8", (self.experts, 2 * self.moe_inter, self.hidden // GROUP))
-        down = c.raw(p + "experts.down_proj", "F8_E4M3", (self.experts, self.hidden, self.moe_inter))
-        down_scale = c.raw(p + "experts.down_proj_scale", "U8", (self.experts, self.hidden, self.moe_inter // GROUP))
+        stacked = [(p + "experts.gate_up_proj", "F8_E4M3", (1, 2 * self.moe_inter, self.hidden)),
+                   (p + "experts.gate_up_proj_scale", "U8", (1, 2 * self.moe_inter, self.hidden // GROUP)),
+                   (p + "experts.down_proj", "F8_E4M3", (1, self.hidden, self.moe_inter)),
+                   (p + "experts.down_proj_scale", "U8", (1, self.hidden, self.moe_inter // GROUP))]
         routed = np.zeros((rows, self.hidden), dtype=np.float32)
         limit = self.swiglu_limit
-        stacked = [p + "experts.gate_up_proj", p + "experts.gate_up_proj_scale", p + "experts.down_proj", p + "experts.down_proj_scale"]
-        used = [expert for expert in range(self.experts) if (chosen == expert).any()]
-        for index in range(min(LOOKAHEAD, len(used))):
-            for name in stacked:
-                c.advise(name, used[index], 1)
-        for index, expert in enumerate(used):
-            if index + LOOKAHEAD < len(used):
-                for name in stacked:
-                    c.advise(name, used[index + LOOKAHEAD], 1)
-            if index == len(used) // 2 and layer + 1 < self.config["num_hidden_layers"]:
-                c.advise_layer(layer + 1)
+        for expert in range(self.experts):
+            if expert + LOOKAHEAD < self.experts:
+                for name, _, _ in stacked:
+                    c.prefetch(name, expert + LOOKAHEAD, 1)
+            if expert == self.experts // 2 and layer + 1 < self.config["num_hidden_layers"]:
+                c.prefetch_layer(layer + 1)
+            w_gate_up, s_gate_up, w_down, s_down = [c.read(name, dtype, shape, expert, 1)[0] for name, dtype, shape in stacked]
             token, slot = np.nonzero(chosen == expert)
-            w_gate_up = c.fp8(gate_up[expert], gate_up_scale[expert])
+            if token.size == 0:
+                continue
+            w = c.fp8(w_gate_up, s_gate_up)
             x = normed[token]
-            g = np.minimum(bf16(x @ w_gate_up[:self.moe_inter].T), limit)
-            u = np.clip(bf16(x @ w_gate_up[self.moe_inter:].T), -limit, limit)
-            del w_gate_up
-            y = bf16(bf16(bf16(silu(g)) * u) @ c.fp8(down[expert], down_scale[expert]).T)
+            g = np.minimum(bf16(x @ w[:self.moe_inter].T), limit)
+            u = np.clip(bf16(x @ w[self.moe_inter:].T), -limit, limit)
+            del w
+            y = bf16(bf16(bf16(silu(g)) * u) @ c.fp8(w_down, s_down).T)
             routed[token] += y * weights[token, slot][:, None]
-            for name in stacked:
-                c.advise(name, expert, 1, drop=True)
         shared = p + "shared_experts."
         g = bf16(normed @ c.mxfp8(shared + "gate_proj", (self.moe_inter, self.hidden)).T)
         u = bf16(normed @ c.mxfp8(shared + "up_proj", (self.moe_inter, self.hidden)).T)
@@ -335,17 +360,22 @@ class Reference:
             first += len(tokens)
         tokens = np.concatenate([np.asarray(t, dtype=np.int64) for t in sequences])
         positions = np.concatenate([np.arange(len(t), dtype=np.int64) for t in sequences])
-        embed = self.checkpoint.raw("model.embed_tokens.weight", "BF16")
-        hidden = (np.asarray(embed[tokens]).astype(np.uint32) << 16).view(np.float32)
+        hidden = (self.checkpoint.gather("model.embed_tokens.weight", tokens).astype(np.uint32) << 16).view(np.float32)
         streams = np.repeat(hidden[:, None, :], self.hc, axis=1)
         selections = [None] * len(spans)
         layers = self.config["num_hidden_layers"] if last_layer is None else last_layer + 1
         dumps = []
-        self.checkpoint.advise_layer(0)
+        self.checkpoint.prefetch_layer(0)
         for layer in range(layers):
             started = time.time()
             p = f"model.layers.{layer}."
             c = self.checkpoint
+            if self.config["mlp_layer_types"][layer] != "dense":
+                for name in ("gate_up_proj", "gate_up_proj_scale", "down_proj", "down_proj_scale"):
+                    for expert in range(LOOKAHEAD):
+                        c.prefetch(p + "mlp.experts." + name, expert, 1)
+            elif layer + 1 < layers:
+                c.prefetch_layer(layer + 1)
             mixed, post = self.hc_weights(streams, c.f32(p + "hc_attn_layer.hc_pre.hc_fn"), c.f32(p + "hc_attn_layer.hc_pre.hc_base"),
                                           c.f32(p + "hc_attn_layer.hc_pre.hc_scale"), True)
             branch = self.attention(layer, rms_norm(mixed, c.bf16(p + "input_layernorm.weight"), self.epsilon), positions, spans, selections)
@@ -357,6 +387,9 @@ class Reference:
             streams = bf16(streams + post[:, :, None] * branch[:, None, :])
             if dump_rows is not None:
                 dumps.append(streams[dump_rows].copy())
+            unread = c.discard(p)
+            if unread:
+                raise ValueError(f"layer {layer} tensors the reference did not use: {unread}")
             rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1048576.0
             print(f"layer {layer} done {time.time() - started:.1f}s max_rss {rss:.2f} GiB", file=sys.stderr, flush=True)
         c = self.checkpoint
@@ -366,10 +399,10 @@ class Reference:
         return spans, streams, rms_norm(collapsed, c.bf16("model.norm.weight"), self.epsilon)
 
     def logits(self, normed, chunk=8192):
-        head = self.checkpoint.raw("lm_head.weight", "BF16")
+        vocab = self.config["vocab_size"]
         parts = []
-        for first in range(0, head.shape[0], chunk):
-            rows = (np.asarray(head[first:first + chunk]).astype(np.uint32) << 16).view(np.float32)
+        for first in range(0, vocab, chunk):
+            rows = self.checkpoint.bf16("lm_head.weight", None, first, min(chunk, vocab - first))
             parts.append(normed @ rows.T)
         return np.concatenate(parts, axis=-1)
 
@@ -431,10 +464,14 @@ def score(args):
     if args.dump:
         np.savez(args.dump, streams=reference.dumps.view(np.uint32) >> 16, labels=np.array(dump_labels), normed=normed[dump_rows])
     report = {"lora_epsilon": args.lora_epsilon, "stats": {k: min(v) for k, v in reference.stats.items()}, "prompts": {}}
+    starts, all_rows = [], []
     for name, (first, count) in zip(names, spans):
+        starts.append(len(all_rows))
+        all_rows.extend(range(first + len(prompts[name]) - 1, first + count - 1))
+    all_logits = reference.logits(normed[all_rows])
+    for name, (first, count), start in zip(names, spans, starts):
         prompt, served = prompts[name], capture[name]
-        rows_normed = normed[first + len(prompt) - 1:first + count - 1]
-        logits = reference.logits(rows_normed).astype(np.float64)
+        logits = all_logits[start:start + count - len(prompt)].astype(np.float64)
         logprobs = logits - logits.max(axis=-1, keepdims=True)
         logprobs -= np.log(np.exp(logprobs).sum(axis=-1, keepdims=True))
         rows = []
@@ -459,9 +496,22 @@ def score(args):
     Path(args.out).write_text(json.dumps(report))
 
 
+def summary(args):
+    report = json.loads(Path(args.report).read_text())
+    print("| prompt | prompt tokens | served | top-1 agree | near-tie disagree (<0.1 nat) | hard disagree | logprob delta median | max |")
+    print("|---|---|---|---|---|---|---|---|")
+    for name, row in report["prompts"].items():
+        median, peak = row["logprob_delta_median"], row["logprob_delta_max"]
+        print(f"| {name} | {row['prompt_tokens']} | {row['tokens']} | {row['top1_agree']}/{row['tokens']} | {row['near_tie_disagree']} | "
+              f"{row['hard_disagree'] or '-'} | {median if median is None else round(median, 4)} | {peak if peak is None else round(peak, 4)} |")
+    print(f"stats {report.get('stats')} max_rss_gib {report.get('max_rss_gib')}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    m = sub.add_parser("summary")
+    m.add_argument("--report", required=True)
     t = sub.add_parser("tokenize")
     t.add_argument("--checkpoint", required=True)
     t.add_argument("--prompts", required=True)
@@ -475,7 +525,7 @@ def main():
     s.add_argument("--dump", help="npz of the per-layer streams (bf16 bits) of each prompt's last prompt row and first served rows")
     s.add_argument("--last-layer", type=int, help="stop after this layer (debug: the logits are then not the model's)")
     args = parser.parse_args()
-    tokenize(args) if args.command == "tokenize" else score(args)
+    {"tokenize": tokenize, "score": score, "summary": summary}[args.command](args)
 
 
 if __name__ == "__main__":
