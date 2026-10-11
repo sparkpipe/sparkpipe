@@ -90,7 +90,7 @@ reclaim() {
 }
 
 drop_kv() {
-  each "R=\$HOME/$RIG; \$R/bin/weightd_warm /tmp/spark_weightd.sock --drop-kv glm52_stage" "drop-kv"
+  each "\$HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --drop-kv glm52_stage" "drop-kv"
 }
 
 case "${1:-}" in
