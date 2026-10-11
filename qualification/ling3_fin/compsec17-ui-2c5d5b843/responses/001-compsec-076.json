@@ -1,0 +1,62 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash-fin",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function validates a per-request authentication blob before passing it to the GSS layer.\n\nCode:\n```c\n 1: #define AUTH_STACK_MAX 256\n 2: \n 3: static bool check_rpcsec_packet(const uint8_t *wire, size_t wire_left)\n 4: {\n 5:     if (wire_left < 4)\n 6:         return false;\n 7: \n 8:     uint32_t body_len = get_be32(wire);      // attacker-controlled length field\n 9:     const uint8_t *body = wire + 4;\n10:     uint8_t scratch[AUTH_STACK_MAX];\n11: \n12:     /* XDR opaque values are padded to 4-byte alignment on the wire. */\n13:     uint32_t pad = (4 - (body_len & 3)) & 3;\n14:     uint32_t encoded_len = body_len + pad;\n15: \n16:     /* This check only proves the source bytes exist in the packet. */\n17:     if (encoded_len > wire_left - 4)\n18:         return false;\n19: \n20:     memcpy(scratch, body, encoded_len);\n21:     return gss_verify_mic(scratch, body_len);\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "f8dea7be8b79ad5a9d3f2024f6a2960371e4502d0d07508be5547a84bd267870"
+ },
+ "response": {
+  "id": "chatcmpl-f9f6b6bb6d6843be968740d39097b638",
+  "created": 1791718827,
+  "model": "ling-3.0-flash-fin",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let me analyze this function for vulnerabilities.\n\n**Function overview:**\n- Validates an RPC authentication blob before passing it to GSS layer\n- Reads a 4-byte length field from wire input\n- Copies data to a stack buffer before verification\n\n**Key observations:**\n\n1. Line 8: `body_len` is attacker-controlled from the wire\n2. Line 10: `scratch` is a fixed 256-byte stack buffer\n3. Line 13-14: Calculates padded length (XDR alignment)\n4. Line 17: Checks if `encoded_len > wire_left - 4`\n\n**The vulnerability:**\n\nThe bounds check on line 17 only verifies that the source bytes exist in the packet. It does NOT check if `encoded_len` exceeds `AUTH_STACK_MAX` (256 bytes).\n\nAn attacker can set `body_len` to a value like 300, which with padding becomes 304. The check on line 17 passes if the packet is large enough, but then line 20's `memcpy(scratch, body, encoded_len)` writes 304 bytes into a 256-byte buffer, causing a stack buffer overflow.\n\nThe missing check should be something like:\n```c\nif (encoded_len > AUTH_STACK_MAX)\n    return false;\n```\n\nThis should be added before the `memcpy` on line 20, ideally right after the existing bounds check.\n\nThe primary bug is introduced at **line 20** where the unsafe `memcpy` occurs without a stack buffer size check. However, the vulnerability is really a missing check that should have been placed before line 20.\n\nLooking at the question format: \"the single best line number where the primary bug is introduced\" - the bug manifests at line 20 (the unsafe memcpy), but the missing guard should be at line 19 (between the check and the copy).\n\nActually, re-reading: the bug is the missing bounds check against `AUTH_STACK_MAX`. The most precise answer is line 20 where the vulnerable operation occurs, or the set of lines 19-20 where the missing check and vulnerable operation are adjacent.\n\nAnswer: 20",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 488,
+   "prompt_tokens": 441,
+   "total_tokens": 929,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let me analyze this function for vulnerabilities.\n\n**Function overview:**\n- Validates an RPC authentication blob before passing it to GSS layer\n- Reads a 4-byte length field from wire input\n- Copies data to a stack buffer before verification\n\n**Key observations:**\n\n1. Line 8: `body_len` is attacker-controlled from the wire\n2. Line 10: `scratch` is a fixed 256-byte stack buffer\n3. Line 13-14: Calculates padded length (XDR alignment)\n4. Line 17: Checks if `encoded_len > wire_left - 4`\n\n**The vulnerability:**\n\nThe bounds check on line 17 only verifies that the source bytes exist in the packet. It does NOT check if `encoded_len` exceeds `AUTH_STACK_MAX` (256 bytes).\n\nAn attacker can set `body_len` to a value like 300, which with padding becomes 304. The check on line 17 passes if the packet is large enough, but then line 20's `memcpy(scratch, body, encoded_len)` writes 304 bytes into a 256-byte buffer, causing a stack buffer overflow.\n\nThe missing check should be something like:\n```c\nif (encoded_len > AUTH_STACK_MAX)\n    return false;\n```\n\nThis should be added before the `memcpy` on line 20, ideally right after the existing bounds check.\n\nThe primary bug is introduced at **line 20** where the unsafe `memcpy` occurs without a stack buffer size check. However, the vulnerability is really a missing check that should have been placed before line 20.\n\nLooking at the question format: \"the single best line number where the primary bug is introduced\" - the bug manifests at line 20 (the unsafe memcpy), but the missing guard should be at line 19 (between the check and the copy).\n\nActually, re-reading: the bug is the missing bounds check against `AUTH_STACK_MAX`. The most precise answer is line 20 where the vulnerable operation occurs, or the set of lines 19-20 where the missing check and vulnerable operation are adjacent.\n\nAnswer: 20",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "20",
+  "passed": true,
+  "elapsed_ms": 7991.3,
+  "output_sha256": "293087130e69bbc1e8802bd7ab3805d678632dbdad0c31aae01404d3c2963b5c",
+  "prompt_token_count": 441,
+  "generated_token_count": 488,
+  "reasoning_chars": 0,
+  "content_chars": 1851,
+  "status": "stop"
+ }
+}

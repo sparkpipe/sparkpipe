@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash-fin",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "35fe922baf86d582e97badef884b4ed1533e6317927d140d150a28da36f4e101"
+ },
+ "response": {
+  "id": "chatcmpl-8c26efa3a0954b24a1f497424bc10fa2",
+  "created": 1791718877,
+  "model": "ling-3.0-flash-fin",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let me analyze this function for vulnerabilities.\n\nThe function `append_quoted_token` is supposed to reconstruct a quoted SQL token by:\n1. Appending a single quote `'`\n2. Appending the token content\n3. Appending another single quote `'`\n\nThe vulnerability here relates to SQL injection. The function takes a token and its length, but it doesn't escape any special characters within the token itself.\n\nLooking at line 5: `strncat(sql, tok, tok_len);`\n\nThis line copies `tok_len` bytes from `tok` into `sql` without any escaping. If the token contains a single quote character `'`, it will be inserted directly into the SQL string, which could allow SQL injection attacks.\n\nFor example, if `tok` is `\"'; DROP TABLE users; --\"` and `tok_len` is the length of this string, the resulting SQL would be:\n`\"' ; DROP TABLE users; --'\"`\n\nThis would be interpreted as SQL code rather than just a string value.\n\nThe proper fix would be to escape any single quotes in the token (typically by doubling them: `''`) before inserting them into the SQL string.\n\nThe primary bug is introduced at line 5, where the token is appended without any escaping of special characters.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 282,
+   "prompt_tokens": 251,
+   "total_tokens": 533,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let me analyze this function for vulnerabilities.\n\nThe function `append_quoted_token` is supposed to reconstruct a quoted SQL token by:\n1. Appending a single quote `'`\n2. Appending the token content\n3. Appending another single quote `'`\n\nThe vulnerability here relates to SQL injection. The function takes a token and its length, but it doesn't escape any special characters within the token itself.\n\nLooking at line 5: `strncat(sql, tok, tok_len);`\n\nThis line copies `tok_len` bytes from `tok` into `sql` without any escaping. If the token contains a single quote character `'`, it will be inserted directly into the SQL string, which could allow SQL injection attacks.\n\nFor example, if `tok` is `\"'; DROP TABLE users; --\"` and `tok_len` is the length of this string, the resulting SQL would be:\n`\"' ; DROP TABLE users; --'\"`\n\nThis would be interpreted as SQL code rather than just a string value.\n\nThe proper fix would be to escape any single quotes in the token (typically by doubling them: `''`) before inserting them into the SQL string.\n\nThe primary bug is introduced at line 5, where the token is appended without any escaping of special characters.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 4427.1,
+  "output_sha256": "c2ef1ff27b48491a9f5b8ed427bbec873c65e26cc8e70bafc513c446c44a6c24",
+  "prompt_token_count": 251,
+  "generated_token_count": 282,
+  "reasoning_chars": 0,
+  "content_chars": 1167,
+  "status": "stop"
+ }
+}
