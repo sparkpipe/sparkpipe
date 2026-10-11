@@ -57,6 +57,7 @@
 #define GLM_SLOT_BYTES (GLM_SLOT * 2u)
 #define GLM_PAGE_SLOTS 64u
 #define GLM_SELECTED SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT
+#define GLM_MAX_POSITIONS SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define GLM_INDEX_HEADS SPARK_GLM52_MODEL_DSA_INDEX_HEAD_COUNT
 #define GLM_INDEX_DIM SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION
 #define GLM_INDEX_QUERY (GLM_INDEX_HEADS * GLM_INDEX_DIM)
@@ -1238,6 +1239,12 @@ struct GlmModel
 		state->scatter_rows = state->max_rows < GLM_SCATTER_ROWS ? state->max_rows : GLM_SCATTER_ROWS;
 		state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
 			configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
+		if ( configuration->kv_pages_per_sequence == 0u || (uint64_t)configuration->kv_pages_per_sequence * GLM_PAGE_SLOTS > GLM_MAX_POSITIONS )
+		{
+			fprintf(stderr, "%s: %u KV pages per sequence give %llu positions; the model allows 1 to %u\n", G::Tag(), configuration->kv_pages_per_sequence,
+				(unsigned long long)configuration->kv_pages_per_sequence * GLM_PAGE_SLOTS, GLM_MAX_POSITIONS);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
 		state->max_positions = configuration->kv_pages_per_sequence * GLM_PAGE_SLOTS;
 		state->shard.degree = state->tp_degree;
 		state->shard.rank = state->tp_rank;
