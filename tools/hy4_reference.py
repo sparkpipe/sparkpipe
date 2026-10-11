@@ -29,7 +29,7 @@ deployment; accumulations are f32.
              elementwise sigmoid gate (linear_gate of the normed input) on the
              64 x 256 head outputs before o_proj
   indexer    layers with indexer_types "full": q = wq_b(normed q lora), k =
-             LayerNorm(wk(x)) (eps rms_norm_eps), rope on the last 64 of 128;
+             LayerNorm(wk(x)) (eps 1e-6, as vLLM hy_v4), rope on the last 64 of 128;
              score(t, s) = sum_h w_h relu(q_h . k_s) / sqrt(32 * 128) with w =
              weights_proj(x); the top 2048 positions s <= t are the attended
              set; "shared" layers reuse the last full layer's set
@@ -240,7 +240,7 @@ class Reference:
         key = bf16(normed @ c.mxfp8(p + "wk", (self.index_dim, self.hidden)).T)
         mean = key.mean(axis=-1, keepdims=True)
         centred = key - mean
-        inverse = np.power((centred * centred).mean(axis=-1, keepdims=True) + np.float32(self.epsilon), np.float32(-0.5))
+        inverse = np.power((centred * centred).mean(axis=-1, keepdims=True) + np.float32(1e-6), np.float32(-0.5))
         key = bf16(centred * inverse * c.bf16(p + "k_norm.weight") + c.bf16(p + "k_norm.bias"))
         nope = self.index_dim - self.rope_dim
         query[..., nope:] = self.rope(query[..., nope:], positions)
@@ -521,7 +521,7 @@ def main():
     s.add_argument("--prompts", required=True)
     s.add_argument("--capture", required=True)
     s.add_argument("--out", required=True)
-    s.add_argument("--lora-epsilon", type=float, default=1e-6)
+    s.add_argument("--lora-epsilon", type=float, default=1e-5)
     s.add_argument("--dump", help="npz of the per-layer streams (bf16 bits) of each prompt's last prompt row and first served rows")
     s.add_argument("--last-layer", type=int, help="stop after this layer (debug: the logits are then not the model's)")
     args = parser.parse_args()
