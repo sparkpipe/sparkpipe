@@ -899,6 +899,8 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->output_token_ids = state->output_tokens.pointer;
 	dispatch->output_scores = state->output_scores.pointer;
 	dispatch->chain_steps = steps;
+	dispatch->host_positions = (const uint32_t *)state->positions_host.pointer;
+	dispatch->host_sequence_of_row = (const uint32_t *)state->state_host.pointer;
 }
 
 static SparkStatus StageServingComplete(SparkStageServingState *state, const SparkModelServingSubmission *submission,

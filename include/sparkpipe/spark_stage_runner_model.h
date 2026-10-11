@@ -49,6 +49,9 @@ typedef struct SparkStageRunnerStep
 	uint32_t multiprocessors;
 	uint32_t last_rows_only;
 	const uint32_t *token_ids;
+	const uint32_t *host_positions;
+	const uint32_t *host_sequence_of_row;
+	uint32_t graph_key;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry
@@ -110,6 +113,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*reset_slot)(void *model, uint32_t slot, void *stream);
 	const void *(*probe_buffers)(void *model);
 	void (*report)(void *model, uint32_t rank);
+	uint32_t (*graph_key)(void *model, const SparkStageRunnerStep *step);
 };
 
 #ifdef __cplusplus

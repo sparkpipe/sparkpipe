@@ -1461,7 +1461,7 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
 	const uint32_t rows = in->rows;
-	if ( StageRunnerGraphEligible(state, runner, rows, in->sequences) != 0u )
+	if ( in->graph_key != 0u && StageRunnerGraphEligible(state, runner, rows, in->sequences) != 0u )
 	{
 		if ( state->graph_exec[rows - 1u] != 0 && memcmp(&state->graph_input[rows - 1u], in, sizeof(*in)) != 0 )
 		{
@@ -1572,6 +1572,12 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 			steps, rows, dispatch->active_sequence_count, dispatch->distribution_count);
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
+	if ( steps > 1u && state->model_interface->graph_key != 0 )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: decode chain refused: steps=%u for a model that reads host row metadata, which a chain step does not advance\n",
+			steps);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if ( rows == 0u || rows > state->max_rows || dispatch->active_sequence_count == 0u || dispatch->active_sequence_count > rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1628,6 +1634,9 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	in.multiprocessors = state->multiprocessors;
 	in.last_rows_only = state->head_last_rows;
 	in.token_ids = state->token_ids_device;
+	in.host_positions = dispatch->host_positions;
+	in.host_sequence_of_row = dispatch->host_sequence_of_row;
+	in.graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, &in) : 1u;
 	phase_marks[0] = submit_started;
 	if ( steps == 1u && rows > STAGE_RUNNER_WIDE_ROWS )
 		(void)StageRunnerLayerMarksBegin(state);
@@ -1638,6 +1647,8 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		uint32_t chain_positions[STAGE_RUNNER_CHAIN_LANES];
 		if ( step != 0u )
 		{
+			in.host_positions = 0;
+			in.host_sequence_of_row = 0;
 			StageRunnerChainAdvanceKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(state->token_ids_device,
 				state->output_token, (uint32_t *)dispatch->positions, (uint32_t *)dispatch->context_length,
 				dispatch->sequence_of_row, rows);

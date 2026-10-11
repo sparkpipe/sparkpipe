@@ -97,6 +97,8 @@ typedef struct SparkStageRunnerDispatch
 	uint32_t chain_steps;
 	SparkModelDriverCompletionFunction completion_function;
 	void *completion_context;
+	const uint32_t *host_positions;
+	const uint32_t *host_sequence_of_row;
 } SparkStageRunnerDispatch;
 
 typedef struct SparkStageRunnerKv
