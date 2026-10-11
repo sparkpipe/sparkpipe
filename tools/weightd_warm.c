@@ -260,9 +260,9 @@ int main(int argument_count,char **arguments)
     arguments = filtered;
     argument_count = filtered_count;
     if ( family != 0 && strcmp(family,"dsv41_flash") != 0 && strcmp(family,"k3") != 0 &&
-         strcmp(family,"ling") != 0 )
+         strcmp(family,"ling") != 0 && strcmp(family,"glm52") != 0 )
     {
-        fprintf(stderr,"weightd_warm: unknown family %s (dsv41_flash, k3, ling)\n",family);
+        fprintf(stderr,"weightd_warm: unknown family %s (dsv41_flash, glm52, k3, ling)\n",family);
         goto usage;
     }
     if ( argument_count >= 4 && strcmp(arguments[2],"--reclaim-pack") == 0 )
@@ -336,6 +336,10 @@ int main(int argument_count,char **arguments)
     else if ( family != 0 && strcmp(family,"ling") == 0 )
     {
         strcpy(request.identity.model,"ling_stage");
+    }
+    else if ( family != 0 && strcmp(family,"glm52") == 0 )
+    {
+        strcpy(request.identity.model,"glm52_stage");
     }
     else if ( family != 0 && strcmp(family,"k3") == 0 )
     {
@@ -454,6 +458,7 @@ usage:
         "              PACK reads PACK.sha256; exit 3 if a matching arena is still attached)\n"
         "       options (any position): --family dsv41_flash (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family ling (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
+        "                           --family glm52 (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family k3 (pin the k3 runner identity: kimi-k3/mxfp4,\n"
         "                              topology = TOPOLOGY, the runner tp_degree: 4 or 16;\n"
         "                              arena bytes stay the pack size per the daemon's\n"
