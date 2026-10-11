@@ -1461,7 +1461,7 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
 	const uint32_t rows = in->rows;
-	if ( StageRunnerGraphEligible(state, runner, rows, in->sequences) != 0u )
+	if ( in->graph_key != 0u && StageRunnerGraphEligible(state, runner, rows, in->sequences) != 0u )
 	{
 		if ( state->graph_exec[rows - 1u] != 0 && memcmp(&state->graph_input[rows - 1u], in, sizeof(*in)) != 0 )
 		{
@@ -1628,6 +1628,9 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	in.multiprocessors = state->multiprocessors;
 	in.last_rows_only = state->head_last_rows;
 	in.token_ids = state->token_ids_device;
+	in.host_positions = dispatch->host_positions;
+	in.host_sequence_of_row = dispatch->host_sequence_of_row;
+	in.graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, &in) : 1u;
 	phase_marks[0] = submit_started;
 	if ( steps == 1u && rows > STAGE_RUNNER_WIDE_ROWS )
 		(void)StageRunnerLayerMarksBegin(state);
