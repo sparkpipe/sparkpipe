@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 : "${STAGE_MODEL:?STAGE_MODEL names a tools/stage_lane.py MODELS entry}"
-: "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (1..15)}"
+: "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (0..15)}"
 : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
 : "${STAGE_WEIGHTD_SOCKET:?STAGE_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${STAGE_EXPERT_POOL_BYTES:?STAGE_EXPERT_POOL_BYTES is the per-rank routed expert pool}"
