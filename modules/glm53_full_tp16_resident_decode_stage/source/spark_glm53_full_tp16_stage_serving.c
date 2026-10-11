@@ -15,6 +15,7 @@
 #define SPARK_GLM53_FULL_TP16_ADAPTER_ID "glm53-full-tp16"
 #define SPARK_GLM53_FULL_TP16_MODEL_ID "zai-org/GLM-5.3"
 #define SPARK_GLM53_FULL_TP16_MAX_ROWS 1024u
+#define SPARK_GLM53_FULL_TP16_CHAIN_TOKENS 16u
 #define Q SPARK_GLM53_FULL_TP16_STAGE_LAYERS
 
 static void Glm53FullTp16ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
@@ -60,6 +61,7 @@ static const SparkModelServingAdapterDescriptor Glm53FullTp16ServingDescriptor =
 		GLM53_FULL_CONTRACT_SHA256),
 	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
@@ -77,7 +79,7 @@ static const SparkModelServingAdapterDescriptor Glm53FullTp16ServingDescriptor =
 	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
 	.max_input_row_count = SPARK_GLM53_FULL_TP16_MAX_ROWS,
 	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_output_token_count = SPARK_STAGE_SERVING_MAX_LANES,
+	.max_output_token_count = SPARK_GLM53_FULL_TP16_CHAIN_TOKENS,
 	.max_speculative_token_count = 0u,
 	.stage_layer_counts = { Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q },
 	.minimum_efficient_submission_row_count = 1u,
