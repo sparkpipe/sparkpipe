@@ -9,7 +9,8 @@ OUTDIR="${1:?local output directory}"
 GRAPH_SHA="${2:?graph build sha}"
 CYCLES="${3:-graph:smoke,capture,speed eager:speed}"
 source /Users/mac/sparkpipe-coord/lanes/driver-sprint/env/glmfull_env.sh
-FW_eager=/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-2aa246576
+FW_eager=/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-glmgraphs-eager-2aa246576
+REVISION=935644c05e76fc198714f4cca449fd8b970ff6d7
 API_eager=/home/spec/api-build-2aa246576/build
 FW_graph=/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-glmgraphs-$GRAPH_SHA
 API_graph=/home/spec/api-build-glmgraphs-$GRAPH_SHA/build
@@ -79,6 +80,20 @@ collect() {
   $SSH $HUB "tail -c 40000 ~/$API_DIR/api.log" < /dev/null > "$out/api.tail.log" 2>/dev/null
 }
 
+warm_rank() {
+  local rank="$1" out="$2" host="spark${HEX:$1:1}"
+  $SSH "$host" "cd $(root_of "$host") && SPARK_WEIGHTD_EXPERT_POOL_BYTES=$STAGE_EXPERT_POOL_BYTES ./bin/weightd_warm $STAGE_WEIGHTD_SOCKET \$(readlink -f packs/*.glm52sp) \$(cut -c1-64 packs/pack.sha256) $REVISION 16 --family glm52 --shared 78 256 1800 2>&1 | tail -3" < /dev/null > "$out/warm$rank.log" 2>&1
+}
+
+warm() {
+  local out="$1" rank
+  warm_rank 0 "$out"
+  grep -q 'layer 77 WARM' "$out/warm0.log" || { log "warm refused on spark0: $(tail -1 "$out/warm0.log")"; return 1; }
+  for rank in $(seq 1 15); do warm_rank $rank "$out" & done
+  wait
+  log "warm: $(grep -l 'layer 77 WARM' "$out"/warm*.log | wc -l | tr -d ' ')/16 nodes warmed layer 77"
+}
+
 run() {
   $SSH $HUB "cd $WORK/repo && python3 tools/glm53_full_golden.py $*" < /dev/null
 }
@@ -95,6 +110,7 @@ cycle() {
   fi
   STAGE_RUN_ID="$RUN_ID" bash "$HERE/stage_lane.sh" start > "$out/start.log" 2>&1 || status=1
   if [ $status = 0 ] && wait_ready; then
+    warm "$out"
     $SSH $HUB "systemctl --user reset-failed $UNIT_API 2>/dev/null; rm -f ~/$API_DIR/runtime/prefix_index.spi; cd ~/$API_DIR && systemd-run --user --unit=$UNIT_API -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=\$HOME/$API_DIR bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root \$HOME/$API_DIR/runtime --port $API_PORT >> api.log 2>&1' > /dev/null" < /dev/null
     for attempt in $(seq 1 60); do
       $SSH $HUB "curl -sf localhost:$API_PORT/health" < /dev/null > /dev/null 2>&1 && break
