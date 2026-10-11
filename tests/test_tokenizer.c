@@ -434,7 +434,7 @@ static void SparkTestTokenizerRefusesOlderCompiledFiles(void)
     SparkTokenizerCompiledFileConfiguration configuration;
     uint32_t version;
 
-    for (version = 1u; version < SPARK_TOKENIZER_COMPILED_FILE_VERSION; ++version)
+    for (version = 1u; version < SPARK_TOKENIZER_COMPILED_FILE_TIKTOKEN_VERSION; ++version)
     {
         SparkTestTokenizerWriteHandWrittenCompiledFile(
             version,
