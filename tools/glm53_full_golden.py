@@ -13,6 +13,11 @@ compsec: sends the committed COMPSEC-17 prompts (prompt_token_ids) with
   --concurrency requests in flight and grades them with the ds4_eval rule.
 compare: compares two capture files: token equality, first divergence,
   bit-identical logprobs, served-token logprob deltas.
+speed: streams one named prompt greedily, once per batch size with that many
+  identical requests in flight, and records per request the arrival time of
+  every token event; decode tok/s is (tokens - 1) / (last event - first
+  event) per request, and the batch aggregate is the decoded tokens of all
+  requests over the span from the earliest first event to the latest last one.
 """
 from __future__ import annotations
 
@@ -101,6 +106,58 @@ def complete(port: int, ids: list, max_tokens: int, logprobs: int, timeout: int)
     reply = json.load(urllib.request.urlopen(request, timeout=timeout))
     reply["wall_s"] = round(time.monotonic() - started, 3)
     return reply
+
+
+def stream(port: int, ids: list, max_tokens: int, timeout: int, origin: float) -> dict:
+    body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "temperature": 0, "stream": True}
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+    started = time.monotonic()
+    tokens, events, usage, finish = [], [], None, None
+    with urllib.request.urlopen(request, timeout=timeout) as reply:
+        for raw in reply:
+            line = raw.decode().strip()
+            if not line.startswith("data: "):
+                continue
+            if line == "data: [DONE]":
+                break
+            event = json.loads(line[6:])
+            if "error" in event:
+                raise SystemExit(f"stream error: {event['error']}")
+            arrived = time.monotonic()
+            chunk = event.get("tokens") or []
+            if chunk:
+                tokens.extend(chunk)
+                events.append([round(arrived - origin, 4), len(chunk)])
+            usage = event.get("usage") or usage
+            finish = (event.get("choices") or [{}])[0].get("finish_reason") or finish
+    first, last = events[0][0] if events else 0.0, events[-1][0] if events else 0.0
+    decode_s = last - first
+    return {"tokens": tokens, "finish_reason": finish, "usage": usage, "start_s": round(started - origin, 4), "first_s": first, "last_s": last,
+            "events": events, "decode_tok_s": round((len(tokens) - 1) / decode_s, 3) if len(tokens) > 1 and decode_s > 0 else None}
+
+
+def speed(args) -> int:
+    document = json.loads(Path(args.prompts).read_text())
+    chosen = selected(document, args.names)
+    if len(chosen) != 1:
+        raise SystemExit("speed takes exactly one prompt name")
+    ids = chosen[0]["prompt_token_ids"]
+    out = {"format": "sparkpipe-glm53full-speed-v1", "label": args.label, "port": args.port, "prompt": chosen[0]["name"], "prompt_tokens": len(ids),
+           "max_tokens": args.max_tokens, "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "batches": {}}
+    for size in [int(value) for value in args.batches.split(",")]:
+        origin = time.monotonic()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=size) as pool:
+            replies = list(pool.map(lambda _: stream(args.port, ids, args.max_tokens, args.timeout, origin), range(size)))
+        decoded = sum(max(len(r["tokens"]) - 1, 0) for r in replies)
+        span = max(r["last_s"] for r in replies) - min(r["first_s"] for r in replies)
+        identical = all(r["tokens"] == replies[0]["tokens"] for r in replies)
+        out["batches"][str(size)] = {"requests": replies, "decoded_tokens": decoded, "span_s": round(span, 4),
+                                    "aggregate_tok_s": round(decoded / span, 3) if span > 0 else None, "identical_tokens": identical}
+        print(size, [r["decode_tok_s"] for r in replies], "aggregate", out["batches"][str(size)]["aggregate_tok_s"], "tokens",
+              [len(r["tokens"]) for r in replies], "cached", [((r["usage"] or {}).get("prompt_tokens_details") or {}).get("cached_tokens") for r in replies],
+              "identical", identical, flush=True)
+    Path(args.out).write_text(json.dumps(out, indent=1) + "\n")
+    return 0
 
 
 def record(reply: dict) -> dict:
@@ -228,11 +285,20 @@ def main() -> int:
         if command == "compsec":
             p.add_argument("--concurrency", type=int, required=True)
             p.add_argument("--tokenizer", required=True)
+    p = commands.add_parser("speed")
+    p.add_argument("--prompts", required=True)
+    p.add_argument("--names", required=True)
+    p.add_argument("--port", type=int, required=True)
+    p.add_argument("--max-tokens", type=int, required=True)
+    p.add_argument("--batches", default="1,4")
+    p.add_argument("--label", required=True)
+    p.add_argument("--timeout", type=int, default=1800)
+    p.add_argument("--out", required=True)
     p = commands.add_parser("compare")
     p.add_argument("reference")
     p.add_argument("candidate")
     args = parser.parse_args()
-    return {"render": render, "capture": capture, "batch": batch, "compsec": compsec, "compare": compare}[args.command](args)
+    return {"render": render, "capture": capture, "batch": batch, "compsec": compsec, "compare": compare, "speed": speed}[args.command](args)
 
 
 if __name__ == "__main__":

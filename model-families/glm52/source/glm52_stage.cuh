@@ -1698,11 +1698,17 @@ struct GlmModel
 	static void Measure(const State *state, GlmWave *wave, const uint32_t *host_positions)
 	{
 		uint32_t row;
+		if ( wave->ordered == 0u )
+		{
+			wave->context = state->max_positions;
+			ScatterSizes(state, wave->rows, &wave->query_units, &wave->indexing_units, &wave->partial_units, &wave->candidate_offset);
+			return;
+		}
 		wave->context = 0u;
 		for ( row = 0u; row < wave->rows; row++ )
 			if ( host_positions[wave->first + row] + 1u > wave->context )
 				wave->context = host_positions[wave->first + row] + 1u;
-		wave->gather = wave->ordered != 0u && wave->rows > LM_SKINNY_ROWS ? 1u : 0u;
+		wave->gather = wave->rows > LM_SKINNY_ROWS ? 1u : 0u;
 		if ( wave->gather != 0u )
 		{
 			const uint32_t old_bound = OldBound(host_positions + wave->first, wave->rows);
@@ -1792,6 +1798,23 @@ struct GlmModel
 		return SPARK_STATUS_OK;
 	}
 
+	static uint32_t KvErrorReport(const State *state)
+	{
+		const LmKvAccessError *error = state->host_error;
+		if ( error->error_code == 0u )
+			return 0u;
+		fprintf(stderr, "%s: KV access error code=%u kind=%u row=%u sequence=%u position=%u page=%u\n", G::Tag(), error->error_code,
+			error->access_kind, error->row, error->sequence, error->position, error->page);
+		return 1u;
+	}
+
+	static void CUDART_CB KvErrorCheck(void *user)
+	{
+		const State *state = (const State *)user;
+		if ( KvErrorReport(state) != 0u )
+			state->services->fail(state->services->context, SPARK_STATUS_INTERNAL_ERROR);
+	}
+
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
 	{
 		State *state = (State *)model;
@@ -1801,11 +1824,11 @@ struct GlmModel
 		GlmRegime regime;
 		GlmWave wave;
 		SparkStatus status = SPARK_STATUS_OK;
-		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots || state->kv_attached == 0u || step->host_positions == 0 ||
-			step->host_sequence_of_row == 0 || step->positions == 0 || step->sequence_of_row == 0 )
+		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots || state->kv_attached == 0u || step->positions == 0 ||
+			step->sequence_of_row == 0 || (ordered != 0u && (step->host_positions == 0 || step->host_sequence_of_row == 0)) )
 		{
-			fprintf(stderr, "%s: step refused rows=%u sequences=%u kv=%u host_rows=%s\n", G::Tag(), rows, step->sequences, state->kv_attached,
-				step->host_positions != 0 && step->host_sequence_of_row != 0 ? "yes" : "missing");
+			fprintf(stderr, "%s: step refused rows=%u sequences=%u kv=%u ordered=%u host_rows=%s\n", G::Tag(), rows, step->sequences, state->kv_attached,
+				ordered, step->host_positions != 0 && step->host_sequence_of_row != 0 ? "yes" : "missing");
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		if ( cudaMemsetAsync(state->kv_error, 0, sizeof(LmKvAccessError), stream) != cudaSuccess )
@@ -1841,29 +1864,31 @@ struct GlmModel
 				wave.rows = rows - first < state->scatter_rows ? rows - first : state->scatter_rows;
 			if ( wave.rows == 0u )
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-			Measure(state, &wave, ordered != 0u ? state->host_positions : step->host_positions);
+			Measure(state, &wave, state->host_positions);
 			status = Wave(state, &wave, step, stream);
 		}
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( cudaMemcpyAsync(state->host_error, state->kv_error, sizeof(LmKvAccessError), cudaMemcpyDeviceToHost, stream) != cudaSuccess ||
-			cudaStreamSynchronize(stream) != cudaSuccess )
+		if ( cudaMemcpyAsync(state->host_error, state->kv_error, sizeof(LmKvAccessError), cudaMemcpyDeviceToHost, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		if ( state->host_error->error_code != 0u )
-		{
-			fprintf(stderr, "%s: KV access error code=%u kind=%u row=%u sequence=%u position=%u page=%u\n", G::Tag(), state->host_error->error_code,
-				state->host_error->access_kind, state->host_error->row, state->host_error->sequence, state->host_error->position, state->host_error->page);
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		}
 		state->steps++;
+		if ( ordered == 0u )
+		{
+			if ( cudaLaunchHostFunc(stream, KvErrorCheck, state) != cudaSuccess )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+			return SPARK_STATUS_OK;
+		}
+		if ( cudaStreamSynchronize(stream) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		if ( KvErrorReport(state) != 0u )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
 	}
 
 	static uint32_t GraphKey(void *model, const SparkStageRunnerStep *step)
 	{
 		(void)model;
-		(void)step;
-		return 0u;
+		return step->last_rows_only == 0u && step->rows == step->sequences ? 1u : 0u;
 	}
 
 	static SparkStatus RecurrentCopy(void *model, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)

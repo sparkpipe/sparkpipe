@@ -235,6 +235,7 @@ int main(int argument_count,char **arguments)
     const char *wset_path = 0;
     const char *family = 0;
     int identity_print = 0;
+    int shared = 0;
     char *filtered[24];
     int filtered_count = 0, index_argument;
     uint64_t layers = 45u,experts = 288u,seconds = 1800u,topology;
@@ -253,6 +254,11 @@ int main(int argument_count,char **arguments)
             identity_print = 1;
             continue;
         }
+        if ( strcmp(arguments[index_argument],"--shared") == 0 )
+        {
+            shared = 1;
+            continue;
+        }
         if ( filtered_count == (int)(sizeof(filtered)/sizeof(filtered[0])) )
             goto usage;
         filtered[filtered_count++] = arguments[index_argument];
@@ -260,9 +266,9 @@ int main(int argument_count,char **arguments)
     arguments = filtered;
     argument_count = filtered_count;
     if ( family != 0 && strcmp(family,"dsv41_flash") != 0 && strcmp(family,"k3") != 0 &&
-         strcmp(family,"ling") != 0 )
+         strcmp(family,"ling") != 0 && strcmp(family,"glm52") != 0 )
     {
-        fprintf(stderr,"weightd_warm: unknown family %s (dsv41_flash, k3, ling)\n",family);
+        fprintf(stderr,"weightd_warm: unknown family %s (dsv41_flash, glm52, k3, ling)\n",family);
         goto usage;
     }
     if ( argument_count >= 4 && strcmp(arguments[2],"--reclaim-pack") == 0 )
@@ -337,6 +343,10 @@ int main(int argument_count,char **arguments)
     {
         strcpy(request.identity.model,"ling_stage");
     }
+    else if ( family != 0 && strcmp(family,"glm52") == 0 )
+    {
+        strcpy(request.identity.model,"glm52_stage");
+    }
     else if ( family != 0 && strcmp(family,"k3") == 0 )
     {
         if ( topology != 4u && topology != 16u )
@@ -395,7 +405,8 @@ int main(int argument_count,char **arguments)
     }
     status = SparkWeightdClientConnect(arguments[1],&client,0);
     if ( status == SPARK_STATUS_OK )
-        status = SparkWeightdClientAttachLazy(client,&request,&attached,seconds * UINT64_C(1000000000));
+        status = shared != 0 ? SparkWeightdClientAttachLazyShared(client,&request,&attached,seconds * UINT64_C(1000000000)) :
+            SparkWeightdClientAttachLazy(client,&request,&attached,seconds * UINT64_C(1000000000));
     if ( status != SPARK_STATUS_OK || attached.status != SPARK_STATUS_OK )
     {
         fprintf(stderr,"weightd_warm: attach failed status=%d daemon=%u\n",(int)status,attached.status);
@@ -454,10 +465,13 @@ usage:
         "              PACK reads PACK.sha256; exit 3 if a matching arena is still attached)\n"
         "       options (any position): --family dsv41_flash (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family ling (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
+        "                           --family glm52 (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family k3 (pin the k3 runner identity: kimi-k3/mxfp4,\n"
         "                              topology = TOPOLOGY, the runner tp_degree: 4 or 16;\n"
         "                              arena bytes stay the pack size per the daemon's\n"
         "                              size-mismatch contract)\n"
+        "                           --shared (warm only an arena a lane already attached with this identity;\n"
+        "                              the daemon refuses instead of loading another copy of the pack)\n"
         "                           --identity-print (print the derived identity and exit)\n"
         "       finite SPARK_WEIGHTD_EXPERT_POOL_BYTES is required\n");
     return 2;

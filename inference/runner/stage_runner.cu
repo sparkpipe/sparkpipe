@@ -1340,6 +1340,13 @@ static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, con
 		rows <= STAGE_RUNNER_GRAPH_ROWS && state->graph_refused[rows - 1u] == 0u ? 1u : 0u;
 }
 
+static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, SparkStageRunnerStep *identity)
+{
+	memcpy(identity, in, sizeof(*identity));
+	identity->host_positions = 0;
+	identity->host_sequence_of_row = 0;
+}
+
 static void StageRunnerGraphDrop(SparkStageRunnerState *state)
 {
 	for ( uint32_t index = 0u; index < STAGE_RUNNER_GRAPH_ROWS; ++index )
@@ -1394,7 +1401,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		return;
 	}
 	state->graph_exec[rows - 1u] = exec;
-	state->graph_input[rows - 1u] = *in;
+	StageRunnerGraphIdentity(in, &state->graph_input[rows - 1u]);
 	fprintf(stderr, "STAGE-GRAPH-CAPTURE rows=%u nodes=%llu capture_ms=%.1f\n", rows,
 		(unsigned long long)nodes, (double)(StageRunnerNowNs() - started) / 1e6);
 }
@@ -1461,9 +1468,11 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
 	const uint32_t rows = in->rows;
+	SparkStageRunnerStep identity;
 	if ( in->graph_key != 0u && StageRunnerGraphEligible(state, runner, rows, in->sequences) != 0u )
 	{
-		if ( state->graph_exec[rows - 1u] != 0 && memcmp(&state->graph_input[rows - 1u], in, sizeof(*in)) != 0 )
+		StageRunnerGraphIdentity(in, &identity);
+		if ( state->graph_exec[rows - 1u] != 0 && memcmp(&state->graph_input[rows - 1u], &identity, sizeof(identity)) != 0 )
 		{
 			(void)cudaGraphExecDestroy(state->graph_exec[rows - 1u]);
 			state->graph_exec[rows - 1u] = 0;
@@ -1572,12 +1581,6 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 			steps, rows, dispatch->active_sequence_count, dispatch->distribution_count);
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
-	if ( steps > 1u && state->model_interface->graph_key != 0 )
-	{
-		fprintf(stderr, "sparkpipe_stage_runner: decode chain refused: steps=%u for a model that reads host row metadata, which a chain step does not advance\n",
-			steps);
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	}
 	if ( rows == 0u || rows > state->max_rows || dispatch->active_sequence_count == 0u || dispatch->active_sequence_count > rows ||
 		(runner->owns_embedding != 0u && dispatch->token_ids == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1637,6 +1640,12 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	in.host_positions = dispatch->host_positions;
 	in.host_sequence_of_row = dispatch->host_sequence_of_row;
 	in.graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, &in) : 1u;
+	if ( steps > 1u && in.graph_key == 0u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: decode chain refused: steps=%u and the model reads host row metadata for this step, which a chain step does not advance\n",
+			steps);
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	phase_marks[0] = submit_started;
 	if ( steps == 1u && rows > STAGE_RUNNER_WIDE_ROWS )
 		(void)StageRunnerLayerMarksBegin(state);
@@ -1649,6 +1658,11 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		{
 			in.host_positions = 0;
 			in.host_sequence_of_row = 0;
+			if ( state->model_interface->graph_key != 0 && state->model_interface->graph_key(state->model, &in) != in.graph_key )
+			{
+				fprintf(stderr, "sparkpipe_stage_runner: decode chain refused at step %u: the model's graph key depends on host row metadata\n", step);
+				return SPARK_STATUS_INVALID_ARGUMENT;
+			}
 			StageRunnerChainAdvanceKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(state->token_ids_device,
 				state->output_token, (uint32_t *)dispatch->positions, (uint32_t *)dispatch->context_length,
 				dispatch->sequence_of_row, rows);
