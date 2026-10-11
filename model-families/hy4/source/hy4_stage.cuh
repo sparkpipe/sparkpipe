@@ -444,7 +444,7 @@ struct HyModel
 			Linear(layer->index_k, state->normed, state->index_k, rows, G::kHidden, G::kIndexDim, sms, stream) != LM_LAUNCH_OK ||
 			Dense16(layer->index_weights, state->normed, (uint16_t *)0, state->index_weights, rows, G::kHidden, G::kIndexHeads, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		HyLayerNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->index_k, layer->index_k_norm, layer->index_k_bias, G::kIndexDim, G::kEpsilon);
+		HyLayerNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->index_k, layer->index_k_norm, layer->index_k_bias, G::kIndexDim, G::kIndexNormEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,G::kIndexHeads), HY_THREADS, 0, stream,
 			state->index_q, step->positions, G::kIndexHeads, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,1u), HY_THREADS, 0, stream,
@@ -495,7 +495,7 @@ struct HyModel
 			Dense16(layer->gate, state->normed, state->gate, (float *)0, rows, G::kHidden, S::kRankHeads * G::kValueDim, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		HyRmsNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora, G::kQLora,
-			G::kLoraEpsilon);
+			G::kEpsilon);
 		if ( Launched() != SPARK_STATUS_OK ||
 			Linear(layer->q_b, state->q_resid, state->q, rows, G::kQLora, S::kRankHeads * S::kQkDim, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -505,7 +505,7 @@ struct HyModel
 			state->q, step->positions, S::kRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
 		HyQueryPackKernel<<<dim3(rows, S::kRankHeads), HY_THREADS, 0, stream>>>(state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
 			G::kNope, G::kRope);
-		HyRmsNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->kv, layer->kv_norm, state->kv, G::kLatent, S::kSlot, S::kSlot, G::kLoraEpsilon);
+		HyRmsNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->kv, layer->kv_norm, state->kv, G::kLatent, S::kSlot, S::kSlot, G::kEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->kv, step->sequence_of_row,
