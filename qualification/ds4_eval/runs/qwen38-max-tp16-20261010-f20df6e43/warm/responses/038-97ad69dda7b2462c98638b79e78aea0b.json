@@ -1,0 +1,31 @@
+{
+ "id": "97ad69dda7b2462c98638b79e78aea0b",
+ "phase": "warm",
+ "elapsed_s": 9.992563386913389,
+ "response": {
+  "id": "chatcmpl-87c9615bfc9b46ae8d2fffcfa147a9f2",
+  "object": "chat.completion",
+  "created": 1791649505,
+  "model": "qwen3.8-max",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "role": "assistant",
+     "content": null,
+     "reasoning_content": "We"
+    },
+    "logprobs": null,
+    "finish_reason": "length"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 209,
+   "completion_tokens": 1,
+   "total_tokens": 210,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ }
+}
