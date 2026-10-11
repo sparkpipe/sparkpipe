@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "kimi-k3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "b7bc52ee94a8292087432f87b4f182a0a95746d93baba0cab2d35ea575438c9e"
+ },
+ "response": {
+  "id": "chatcmpl-7973fcb92f2c4b989a66ea80d5d0208c",
+  "created": 1791730308,
+  "model": "kimi-k3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 8",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 10,
+   "prompt_tokens": 446,
+   "total_tokens": 456,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Answer: 8",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "8",
+  "passed": true,
+  "elapsed_ms": 2293.0,
+  "output_sha256": "e2284da5e23c3abd009d967785a957706c8fd3cad96bd569ebc008478b011154",
+  "prompt_token_count": 446,
+  "generated_token_count": 10,
+  "reasoning_chars": 0,
+  "content_chars": 9,
+  "status": "stop"
+ }
+}

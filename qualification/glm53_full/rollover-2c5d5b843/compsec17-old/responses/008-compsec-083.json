@@ -1,0 +1,63 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "bfba13011f575dc89300a083a38d08ac07732501895d232d2d7b5565fba31aac"
+ },
+ "response": {
+  "id": "chatcmpl-782d91153d154ad08863374bb3ac1220",
+  "created": 1791730498,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\nThe function assumes segments arrive in ascending order. When they don't:\n\n- If a segment number arrives that is \u2264 `last` (out of order), `missing = segno - last - 1` becomes negative (line 9).\n- `grow()` with a smaller size does nothing (or shrinks), so the vector isn't resized (line 10).\n- `a->segments[segno]` then writes out of bounds (line 11).\n\nThe root cause is line 13: `last = segno` unconditionally overwrites the high-water mark even when `segno <= last`, destroying the tracking needed to compute `missing` correctly for subsequent out-of-order segments. With `last` correctly maintained as the maximum seen, `missing` would always be \u2265 0 and the grow would cover the index.\n\nAnswer: 13",
+     "role": "assistant",
+     "reasoning_content": "Out-of-order segments: last updated to segno, so if segments arrive out of order, missing is negative, grow shrinks/no-op, and a->segments[segno] may be out of bounds. Primary bug: line 13 (last = segno) or line 9-10. The bug introduced where last is set to segno regardless of order \u2014 line 13. But arguably line 10/11. Best single line: 13? The out-of-bounds write happens at 11, but root cause is 13. I'd say 13."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 298,
+   "prompt_tokens": 296,
+   "total_tokens": 594,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Out-of-order segments: last updated to segno, so if segments arrive out of order, missing is negative, grow shrinks/no-op, and a->segments[segno] may be out of bounds. Primary bug: line 13 (last = segno) or line 9-10. The bug introduced where last is set to segno regardless of order \u2014 line 13. But arguably line 10/11. Best single line: 13? The out-of-bounds write happens at 11, but root cause is 13. I'd say 13.</think>**Analysis:**\n\nThe function assumes segments arrive in ascending order. When they don't:\n\n- If a segment number arrives that is \u2264 `last` (out of order), `missing = segno - last - 1` becomes negative (line 9).\n- `grow()` with a smaller size does nothing (or shrinks), so the vector isn't resized (line 10).\n- `a->segments[segno]` then writes out of bounds (line 11).\n\nThe root cause is line 13: `last = segno` unconditionally overwrites the high-water mark even when `segno <= last`, destroying the tracking needed to compute `missing` correctly for subsequent out-of-order segments. With `last` correctly maintained as the maximum seen, `missing` would always be \u2265 0 and the grow would cover the index.\n\nAnswer: 13",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "13",
+  "passed": false,
+  "elapsed_ms": 13158.5,
+  "output_sha256": "ff1a27702bd8b00756a286e1b961e3deabbbeae0b19a442ace677df7842cdc98",
+  "prompt_token_count": 296,
+  "generated_token_count": 298,
+  "reasoning_chars": 414,
+  "content_chars": 714,
+  "status": "stop"
+ }
+}

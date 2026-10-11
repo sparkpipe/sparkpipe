@@ -1,0 +1,63 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "bfba13011f575dc89300a083a38d08ac07732501895d232d2d7b5565fba31aac"
+ },
+ "response": {
+  "id": "chatcmpl-0c2bad2b5ad443a098bdee5fb4458fd6",
+  "created": 1791730820,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:** The function assumes segments arrive in ascending order. If a segment with a lower number arrives after a higher one (e.g., segment 5 then segment 2), `missing = segno - last - 1` becomes negative (line 9), and `grow()` with a smaller/negative size fails to expand the container (line 10), so the write `a->segments[segno]` at line 11 can index out of bounds. The root cause is unconditionally updating `last = segno` at line 13 instead of tracking the maximum seen segment number, which breaks the gap-filling logic for out-of-order input.\n\nAnswer: 13",
+     "role": "assistant",
+     "reasoning_content": "Out-of-order segments: last updated to segno, so if segments arrive out of order, missing is negative, grow shrinks or negative size; also segments[segno] may be out of bounds. Primary bug: line 13 (last = segno) or line 9/10. The bug introduced where last is set to segno regardless of order \u2014 line 13. But arguably line 10 grow with negative missing. Smallest set: 9,10? The core flaw: last should be max(last, segno). I'd say line 13."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 258,
+   "prompt_tokens": 296,
+   "total_tokens": 554,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Out-of-order segments: last updated to segno, so if segments arrive out of order, missing is negative, grow shrinks or negative size; also segments[segno] may be out of bounds. Primary bug: line 13 (last = segno) or line 9/10. The bug introduced where last is set to segno regardless of order \u2014 line 13. But arguably line 10 grow with negative missing. Smallest set: 9,10? The core flaw: last should be max(last, segno). I'd say line 13.</think>**Analysis:** The function assumes segments arrive in ascending order. If a segment with a lower number arrives after a higher one (e.g., segment 5 then segment 2), `missing = segno - last - 1` becomes negative (line 9), and `grow()` with a smaller/negative size fails to expand the container (line 10), so the write `a->segments[segno]` at line 11 can index out of bounds. The root cause is unconditionally updating `last = segno` at line 13 instead of tracking the maximum seen segment number, which breaks the gap-filling logic for out-of-order input.\n\nAnswer: 13",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "13",
+  "passed": false,
+  "elapsed_ms": 12074.0,
+  "output_sha256": "ab79f61c2b1a386e18777806b8b22fcea6a577d53c12cb478c7877c64a90774a",
+  "prompt_token_count": 296,
+  "generated_token_count": 258,
+  "reasoning_chars": 437,
+  "content_chars": 566,
+  "status": "stop"
+ }
+}

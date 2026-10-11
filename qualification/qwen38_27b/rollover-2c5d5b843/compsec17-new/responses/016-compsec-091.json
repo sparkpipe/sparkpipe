@@ -1,0 +1,62 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "03f67e7f15f2d8e75f8489433cc5c4622ea4d3d6bb99b50dbdb9016a9279414e"
+ },
+ "response": {
+  "id": "chatcmpl-036511e242d140678a736e816688b2f0",
+  "created": 1791721496,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function calculates the total transfer size in bytes by shifting the number of blocks left by `blkbits` (which represents $\\log_2$ of the block size).\n\n```c\n 3:     uint32_t bytes = blocks << blkbits;\n```\n\nThe variable `blocks` is of type `uint32_t`. The variable `blkbits` is an `unsigned` integer. In C, the shift operator `<<` promotes its operands to `int` if they fit, or keeps them as `unsigned`/`uint32_t` depending on the platform and specific types, but crucially, the result is stored in `uint32_t bytes`.\n\nIf `blocks` is large enough and `blkbits` is non-zero, the value `blocks << blkbits` can exceed the maximum value representable by a 32-bit unsigned integer ($2^{32} - 1$). When this happens, the result wraps around (modulo $2^{32}$).\n\nFor example, if `blocks` is $2^{31}$ and `blkbits` is 1, the true byte count is $2^{32}$ bytes (4 GB). However, `2^{31} << 1` in 32-bit arithmetic results in 0. The check on line 5 (`if (bytes > lun->backing_size)`) would then compare 0 against the backing size, likely passing the check (assuming backing size is positive). Subsequently, `lun->data_size_from_cmnd` is set to 0. This leads to a logic error where a massive transfer is treated as a zero-length transfer, or if the wrap-around results in a small positive number, it allows a buffer overflow or incorrect data processing later when the actual transfer is attempted based on the original `blocks` count or other metadata, or simply fails to validate the true size.\n\nMore critically, if the intention is to check if the transfer fits in the backing store, the overflow causes the check to be bypassed for large transfers that wrap to small values. This is an integer overflow vulnerability.\n\nThe bug is introduced on line 3 where the overflow occurs.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 460,
+   "prompt_tokens": 252,
+   "total_tokens": 712,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function calculates the total transfer size in bytes by shifting the number of blocks left by `blkbits` (which represents $\\log_2$ of the block size).\n\n```c\n 3:     uint32_t bytes = blocks << blkbits;\n```\n\nThe variable `blocks` is of type `uint32_t`. The variable `blkbits` is an `unsigned` integer. In C, the shift operator `<<` promotes its operands to `int` if they fit, or keeps them as `unsigned`/`uint32_t` depending on the platform and specific types, but crucially, the result is stored in `uint32_t bytes`.\n\nIf `blocks` is large enough and `blkbits` is non-zero, the value `blocks << blkbits` can exceed the maximum value representable by a 32-bit unsigned integer ($2^{32} - 1$). When this happens, the result wraps around (modulo $2^{32}$).\n\nFor example, if `blocks` is $2^{31}$ and `blkbits` is 1, the true byte count is $2^{32}$ bytes (4 GB). However, `2^{31} << 1` in 32-bit arithmetic results in 0. The check on line 5 (`if (bytes > lun->backing_size)`) would then compare 0 against the backing size, likely passing the check (assuming backing size is positive). Subsequently, `lun->data_size_from_cmnd` is set to 0. This leads to a logic error where a massive transfer is treated as a zero-length transfer, or if the wrap-around results in a small positive number, it allows a buffer overflow or incorrect data processing later when the actual transfer is attempted based on the original `blocks` count or other metadata, or simply fails to validate the true size.\n\nMore critically, if the intention is to check if the transfer fits in the backing store, the overflow causes the check to be bypassed for large transfers that wrap to small values. This is an integer overflow vulnerability.\n\nThe bug is introduced on line 3 where the overflow occurs.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 8367.9,
+  "output_sha256": "cec7ee5df36772f8e5c3ee26b81bd8e25edd92d5db4f474b4edfc092221f4e85",
+  "prompt_token_count": 252,
+  "generated_token_count": 460,
+  "reasoning_chars": 0,
+  "content_chars": 1780,
+  "status": "stop"
+ }
+}

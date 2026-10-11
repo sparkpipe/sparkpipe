@@ -1,0 +1,63 @@
+{
+ "id": "compsec-078",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function checks the SM2 C3 hash in a decoded ciphertext. Assume parse_sm2_ciphertext() may return a c3 field of any length.\n\nCode:\n```c\n 1: #define SM3_DIGEST_LEN 32\n 2: \n 3: static bool check_sm2_c3(const uint8_t *msg, size_t msg_len,\n 4:                          const struct sm2_ctext *ct)\n 5: {\n 6:     uint8_t expected[SM3_DIGEST_LEN];\n 7: \n 8:     sm3_c3_hash(expected, ct->x2, ct->x2_len, msg, msg_len, ct->y2, ct->y2_len);\n 9: \n10:     /* Constant-time comparison: returns 0 only if all bytes match. */\n11:     if (ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) != 0)\n12:         return false;\n13: \n14:     return true;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "1d74cadcd31a9cc945c826e92b6f23bab17155122eab27bb7b3210ebfb764d7f"
+ },
+ "response": {
+  "id": "chatcmpl-99f49c6e51674b0bbbb9980334f13b99",
+  "created": 1791730451,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Answer: 11**\n\nThe vulnerability is an out-of-bounds read on line 11. Since `parse_sm2_ciphertext()` may return a `c3` field of any length, `ct->c3.data` could contain fewer than `SM3_DIGEST_LEN` (32) bytes. The call to `ct_memcmp()` unconditionally reads 32 bytes from `ct->c3.data`, reading past the end of the buffer when `ct->c3` is shorter than 32 bytes. The fix would be to first verify `ct->c3.len == SM3_DIGEST_LEN` before comparing.\n\nAnswer: 11",
+     "role": "assistant",
+     "reasoning_content": "ct->c3.data may be shorter than 32 \u2192 OOB read at line 11."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 152,
+   "prompt_tokens": 328,
+   "total_tokens": 480,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>ct->c3.data may be shorter than 32 \u2192 OOB read at line 11.</think>**Answer: 11**\n\nThe vulnerability is an out-of-bounds read on line 11. Since `parse_sm2_ciphertext()` may return a `c3` field of any length, `ct->c3.data` could contain fewer than `SM3_DIGEST_LEN` (32) bytes. The call to `ct_memcmp()` unconditionally reads 32 bytes from `ct->c3.data`, reading past the end of the buffer when `ct->c3` is shorter than 32 bytes. The fix would be to first verify `ct->c3.len == SM3_DIGEST_LEN` before comparing.\n\nAnswer: 11",
+ "grade": {
+  "index": 3,
+  "id": "compsec-078",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 6880.1,
+  "output_sha256": "2895a29a40e490ee022fc9348eb0c0cf0ed6a0801feed1a77eab223b473eb52e",
+  "prompt_token_count": 328,
+  "generated_token_count": 152,
+  "reasoning_chars": 57,
+  "content_chars": 454,
+  "status": "stop"
+ }
+}

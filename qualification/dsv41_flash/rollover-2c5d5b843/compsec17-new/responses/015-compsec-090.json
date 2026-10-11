@@ -1,0 +1,62 @@
+{
+ "id": "compsec-090",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8386e52fc6eabbee3abd8c980b3b089e4e8b55762fa5d360f47771600b1814bb"
+ },
+ "response": {
+  "id": "chatcmpl-964a7556c3a7443d8f073b1ed97f2cb3",
+  "created": 1791726223,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is an out-of-bounds array access.  \n\n`htype` is a `uint8_t` derived from the low byte of `type`, so it can be 0\u2013255.  \nThe `mandatory_handlers` array has only 255 elements (indices 0\u2013254).  \nIf `htype == 255`, then `mandatory_handlers[255]` is out of bounds.  \n\nThe check `if (htype < 0x80)` only filters values below 128, so values 128\u2013255 reach the array access.  \nThe array size should be 256 to safely index with any `uint8_t`.  \n\nThe bug is introduced at the array declaration (line 2), because the size is too small for the possible index range.  \n\nAnswer: 2",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 170,
+   "prompt_tokens": 338,
+   "total_tokens": 508,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is an out-of-bounds array access.  \n\n`htype` is a `uint8_t` derived from the low byte of `type`, so it can be 0\u2013255.  \nThe `mandatory_handlers` array has only 255 elements (indices 0\u2013254).  \nIf `htype == 255`, then `mandatory_handlers[255]` is out of bounds.  \n\nThe check `if (htype < 0x80)` only filters values below 128, so values 128\u2013255 reach the array access.  \nThe array size should be 256 to safely index with any `uint8_t`.  \n\nThe bug is introduced at the array declaration (line 2), because the size is too small for the possible index range.  \n\nAnswer: 2",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "source": "COMPSEC",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "2",
+  "passed": false,
+  "elapsed_ms": 23920.1,
+  "output_sha256": "2ad5112069b5d4d02a530c8c40ef53026ebda29434b300e22bffbbe6546c8ba9",
+  "prompt_token_count": 338,
+  "generated_token_count": 170,
+  "reasoning_chars": 0,
+  "content_chars": 582,
+  "status": "stop"
+ }
+}

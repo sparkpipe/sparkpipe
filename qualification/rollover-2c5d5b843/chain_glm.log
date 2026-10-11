@@ -1,0 +1,86 @@
+#### full lock wait 2026-10-11T14:53:14Z
+== 2026-10-11T14:53:14Z glm-5.3 precheck
+== 2026-10-11T14:53:15Z legacy build
+activate glm-5.3: idle glm-5.3 31.7 null
+compsec old rc=0: RESULT: 14/17 fails: compsec-082 compsec-083 compsec-090 
+activate qwen3.8-max: idle qwen3.8-max 40.5 null
+== 2026-10-11T14:57:02Z port setup + api-setup
+== 2026-10-11T14:57:06Z hub configs (.prev-20261011T145314Z)
+swap entry {"id": "glm-5.3", "kv_label": "glm53_full_stage", "node_memory_bytes": 68719476736, "node_reclaim": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh reclaim", " ...; chat engine http://127.0.0.1:8475 context 262144
+services: controller idle qwen3.8-max None; chat models 12
+== 2026-10-11T14:57:26Z port build
+activate glm-5.3: idle glm-5.3 33.1 null
+{"model": "glm-5.3", "projected_gib": 64.0, "used_gib_max": 56.2, "used_gib_min": 56.1, "available_gib_min": 50.4, "tightest": "spark4", "event": "swap_memory"}
+identity: "connected_ranks":16 fw adapter f7d140832c3d2224; node variants: 16 f7d140832c3d2224 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=N resident=0;
+  16 warm=75 resident=0;
+capital: differs agree 8/8 len 8->8 served_max_delta 0.008179 topk_max_delta 0.620909
+arith: differs agree 17/18 len 128->128 served_max_delta 0.119286 topk_max_delta 0.983675 flip@17 margin 0.3021 rank 2
+code: differs agree 0/1 len 128->128 served_max_delta 0.0 topk_max_delta 0.427901 flip@0 margin 0.3823 rank 2
+story: differs agree 1/2 len 128->128 served_max_delta 0.017218 topk_max_delta 1.117706 flip@1 margin 1.2461 rank 4
+reason: differs agree 77/78 len 128->128 served_max_delta 0.257969 topk_max_delta 1.58115 flip@77 margin 0.0778 rank 2
+translate: differs agree 12/13 len 126->86 served_max_delta 0.054319 topk_max_delta 0.637384 flip@12 margin 0.1447 rank 2
+long_2k: differs agree 1/2 len 128->128 served_max_delta 0.207827 topk_max_delta 1.899094 flip@1 margin 0.2462 rank 2
+long_8k: differs agree 8/9 len 128->128 served_max_delta 0.237965 topk_max_delta 0.686283 flip@8 margin 0.4172 rank 2
+TOTAL top-1 agreement 124/131 served_max_delta 0.257969 topk_max_delta 1.899094 large 1
+LARGE story: flip at 1 with old top-1/top-2 margin 1.2461
+GOLDEN rc=2: quality gate decides (COMPSEC >= legacy - 1, smokes >= legacy 6/6)
+== 2026-10-11T14:59:04Z smokes
+chat          PASS  | finish='stop' 3.03s content='The capital of France is Paris.' reasoning=253 chars
+stream        PASS  | finish='stop' 3.01s content='The capital of France is Paris.' reasoning=253 chars
+tool          PASS  | finish='tool_calls' 3.49s content='' reasoning=187 chars
+tool_result   PASS  | finish='stop' 2.39s content="The current weather in Paris is **sunny** with a temperature of **18°C**. It's a pleasant " reasoning=79 chars
+reasoning_off PASS  | finish='stop' 0.57s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 1.61s content='391' reasoning=43 chars
+UI-SMOKE glm-5.3: 6/6
+compsec new rc=0: RESULT: 15/17 fails: compsec-082 compsec-083 
+quality: COMPSEC legacy 14 -> port 15; smokes 6/6 (legacy 6/6)
+rank log error lines: 0
+activate qwen3.8-max: idle qwen3.8-max 40.9 null
+== 2026-10-11T15:02:38Z done glm-5.3 (idle qwen3.8-max None)
+#### full rc=0 2026-10-11T15:02:38Z
+#### flash lock wait 2026-10-11T15:02:38Z
+== 2026-10-11T15:02:38Z glm-5.3-flash precheck
+== 2026-10-11T15:02:39Z legacy build
+activate glm-5.3-flash: idle glm-5.3-flash 21.4 null
+compsec old rc=0: RESULT: 15/17 fails: compsec-076 compsec-079 
+activate qwen3.8-max: idle qwen3.8-max 40.3 null
+== 2026-10-11T15:04:29Z port setup + api-setup
+== 2026-10-11T15:04:33Z hub configs (.prev-20261011T150238Z)
+swap entry {"id": "glm-5.3-flash", "kv_label": "glm53_flash_stage", "node_memory_bytes": 34359738368, "node_reclaim": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh rec ...; chat engine http://127.0.0.1:8476 context 131072
+services: controller idle qwen3.8-max None; chat models 12
+== 2026-10-11T15:04:52Z port build
+activate glm-5.3-flash: idle glm-5.3-flash 22.7 null
+{"model": "glm-5.3-flash", "projected_gib": 32.0, "used_gib_max": 24.6, "used_gib_min": 24.6, "available_gib_min": 79.0, "tightest": "spark4", "event": "swap_memory"}
+identity: "connected_ranks":16 fw adapter d09e4f2932e4d076; node variants: 16 d09e4f2932e4d076 cd8edbd8e1b3c9d7 f2b7388c715494c3 warm=N resident=0;
+  16 warm=42 resident=0;
+capital: differs agree 8/8 len 8->8 served_max_delta 0.028797 topk_max_delta 1.46978
+arith: differs agree 5/6 len 96->96 served_max_delta 0.136257 topk_max_delta 0.385292 flip@5 margin 0.2831 rank 2
+code: differs agree 78/79 len 96->96 served_max_delta 0.080547 topk_max_delta 3.195819 flip@78 margin 0.3282 rank 2
+story: differs agree 0/1 len 96->96 served_max_delta 0.0 topk_max_delta 0.54304 flip@0 margin 0.1031 rank 2
+batch_haiku: differs agree 3/4 len 22->20 served_max_delta 0.0322 topk_max_delta 0.171612 flip@3 margin 0.1709 rank 2
+batch_sort: differs agree 2/3 len 82->68 served_max_delta 0.027388 topk_max_delta 0.880237 flip@2 margin 0.0091 rank 2
+batch_planet: differs agree 27/28 len 96->96 served_max_delta 0.072119 topk_max_delta 0.57486 flip@27 margin 0.3614 rank 2
+batch_sql: differs agree 20/21 len 96->96 served_max_delta 0.038668 topk_max_delta 0.851757 flip@20 margin 0.3115 rank 2
+doc2k_kernel: differs agree 13/14 len 96->96 served_max_delta 0.480482 topk_max_delta 1.117758 flip@13 margin 0.0436 rank 2
+doc2k_contracts: differs agree 10/11 len 96->96 served_max_delta 0.013264 topk_max_delta 0.934194 flip@10 margin 0.0086 rank 2
+doc8k_weightd: differs agree 0/1 len 96->96 served_max_delta 0.0 topk_max_delta 0.145376 flip@0 margin 0.0275 rank 2
+doc8k_dma: differs agree 31/32 len 96->96 served_max_delta 0.260258 topk_max_delta 1.080096 flip@31 margin 0.2334 rank 2
+TOTAL top-1 agreement 197/208 served_max_delta 0.480482 topk_max_delta 3.195819 large 0
+self  b4/batch_planet vs b1/batch_planet: tokens same, logprobs bit-identical
+self  b4/batch_sql vs b1/batch_sql: tokens same, logprobs bit-identical
+self  reuse/doc8k_weightd_again vs b1/doc8k_weightd: tokens same, logprobs bit-identical
+token lists differing: 17
+== 2026-10-11T15:06:24Z smokes
+chat          PASS  | finish='stop' 1.25s content='The capital of France is Paris.' reasoning=218 chars
+stream        PASS  | finish='stop' 1.27s content='The capital of France is Paris.' reasoning=218 chars
+tool          PASS  | finish='tool_calls' 1.72s content='' reasoning=224 chars
+tool_result   PASS  | finish='stop' 1.14s content='The weather in Paris right now is **sunny** with a temperature of **18°C** (about 64°F). A' reasoning=70 chars
+reasoning_off FAIL reasoning_content present with reasoning off | finish='stop' 0.44s content='391' reasoning=11 chars
+reasoning_on  PASS  | finish='stop' 1.06s content='391' reasoning=73 chars
+UI-SMOKE glm-5.3-flash: 5/6
+compsec new rc=1: RESULT: 13/17 fails: compsec-076 compsec-079 compsec-080 compsec-092 
+quality: COMPSEC legacy 15 -> port 13; smokes 5/6 (legacy 5/6)
+rank log error lines: 0
+activate qwen3.8-max: idle qwen3.8-max 39.8 null
+== 2026-10-11T15:08:02Z done glm-5.3-flash (idle qwen3.8-max None)
+#### flash rc=0 2026-10-11T15:08:02Z

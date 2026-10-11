@@ -1,0 +1,62 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "kimi-k3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "9b78fb436b66b1dcd8746e1a2e4f7686b3c789ebe20b1ca62e50c1fb24f36273"
+ },
+ "response": {
+  "id": "chatcmpl-f903e25d389146c994049af29abc12f1",
+  "created": 1791730317,
+  "model": "kimi-k3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 10,
+   "prompt_tokens": 243,
+   "total_tokens": 253,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Answer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 2294.8,
+  "output_sha256": "5c732e2792664af79431c4ff48781d03de6406612c1746973ff107d96e200284",
+  "prompt_token_count": 243,
+  "generated_token_count": 10,
+  "reasoning_chars": 0,
+  "content_chars": 9,
+  "status": "stop"
+ }
+}

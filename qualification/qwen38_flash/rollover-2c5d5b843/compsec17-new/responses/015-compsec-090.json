@@ -1,0 +1,62 @@
+{
+ "id": "compsec-090",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "1aee1fbf47f9676de9676e43bf5775bb8663418cfe55e83046c52ba6669ddc2a"
+ },
+ "response": {
+  "id": "chatcmpl-d217c9ca00fb49258ef98c9bbb299b37",
+  "created": 1791722031,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The code contains an out-of-bounds read vulnerability.\n\n1.  **Line 7**: `htype` is derived from the low byte of `type`, so `htype` can range from 0 to 255.\n2.  **Line 9**: The check `if (htype < 0x80)` handles values 0 through 127.\n3.  **Line 12**: If `htype` is 128 or greater, the code proceeds to access `mandatory_handlers[htype]`.\n4.  **Line 2**: The array `mandatory_handlers` is declared with size 255 (`mandatory_handlers[255]`). Valid indices are 0 through 254.\n5.  **The Bug**: If `htype` is 255 (which is possible since it's a `uint8_t` and passes the `< 0x80` check), the code attempts to access `mandatory_handlers[255]`. This is an out-of-bounds read (index 255 is outside the bounds 0-254).\n\nThe primary bug is introduced at the point where the array is accessed with an unchecked index that can exceed the array's bounds. While the array declaration (Line 2) sets the size, the logic error allowing the out-of-bounds access occurs at Line 12. However, often in these types of questions, if the array size is fixed and the index is unbounded, the access line is the primary bug location. Let's look closer. Is there a better candidate?\n\nIf `htype` is 255:\n- Line 9: `255 < 128` is false.\n- Line 12: `mandatory_handlers[255]` is accessed.\n- Array size is 255. Max index is 254.\n- Accessing index 255 is OOB.\n\nThe vulnerability is the out-of-bounds access. The line performing the unsafe access is Line 12.\n\nAnswer: 12",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 452,
+   "prompt_tokens": 360,
+   "total_tokens": 812,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The code contains an out-of-bounds read vulnerability.\n\n1.  **Line 7**: `htype` is derived from the low byte of `type`, so `htype` can range from 0 to 255.\n2.  **Line 9**: The check `if (htype < 0x80)` handles values 0 through 127.\n3.  **Line 12**: If `htype` is 128 or greater, the code proceeds to access `mandatory_handlers[htype]`.\n4.  **Line 2**: The array `mandatory_handlers` is declared with size 255 (`mandatory_handlers[255]`). Valid indices are 0 through 254.\n5.  **The Bug**: If `htype` is 255 (which is possible since it's a `uint8_t` and passes the `< 0x80` check), the code attempts to access `mandatory_handlers[255]`. This is an out-of-bounds read (index 255 is outside the bounds 0-254).\n\nThe primary bug is introduced at the point where the array is accessed with an unchecked index that can exceed the array's bounds. While the array declaration (Line 2) sets the size, the logic error allowing the out-of-bounds access occurs at Line 12. However, often in these types of questions, if the array size is fixed and the index is unbounded, the access line is the primary bug location. Let's look closer. Is there a better candidate?\n\nIf `htype` is 255:\n- Line 9: `255 < 128` is false.\n- Line 12: `mandatory_handlers[255]` is accessed.\n- Array size is 255. Max index is 254.\n- Accessing index 255 is OOB.\n\nThe vulnerability is the out-of-bounds access. The line performing the unsafe access is Line 12.\n\nAnswer: 12",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "source": "COMPSEC",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "12",
+  "passed": true,
+  "elapsed_ms": 12292.9,
+  "output_sha256": "ad32d1fda823f5014d60c8634d45d056a04927f8304773b6e7047b9444a1ada3",
+  "prompt_token_count": 360,
+  "generated_token_count": 452,
+  "reasoning_chars": 0,
+  "content_chars": 1431,
+  "status": "stop"
+ }
+}

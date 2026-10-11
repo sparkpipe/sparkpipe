@@ -210,10 +210,10 @@ MUSE_GLIMMER = {
     "recurrent_bytes": 0,
 }
 GLM53_FLASH = {
-    "swap_id": "glm-5.3-flash-tp16",
+    "swap_id": "glm-5.3-flash",
     "api_port": 8476,
     "kv_label": "glm53_flash_stage",
-    "node_memory_bytes": 32 << 30,
+    "node_memory_bytes": 25 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/glm-5.3-flash-bf16-official/tokenizer.json",
     "pack": "sparkdata/glm53flash.fp8.tp16/packs/glm53flash.fp8.tp16.rank{rank:x}.sp",
     "adapter": "libglm53_flash_tp16_serving_adapter.so",
@@ -246,10 +246,10 @@ LAGUNA = {
     "recurrent_bytes": 0,
 }
 GLM53_FULL = {
-    "swap_id": "glm-5.3-tp16",
+    "swap_id": "glm-5.3",
     "api_port": 8475,
     "kv_label": "glm53_full_stage",
-    "node_memory_bytes": 64 << 30,
+    "node_memory_bytes": 57 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/glm-5.3-fp8/tokenizer.json",
     "pack": "sparkdata/glm53full.fp8.tp16/packs/glm53full.fp8.tp16-rank{rank}.glm52sp",
     "adapter": "libglm53_full_tp16_serving_adapter.so",

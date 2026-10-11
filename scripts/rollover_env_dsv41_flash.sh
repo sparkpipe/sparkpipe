@@ -1,0 +1,2 @@
+export STAGE_MODEL=dsv41_flash STAGE_LANE=10 STAGE_MEMORY_MAX=32G STAGE_FIRMWARE=/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-2c5d5b843 STAGE_WEIGHTD_SOCKET=/tmp/spark_weightd.sock STAGE_EXPERT_POOL_BYTES=268435456 STAGE_API_FIRMWARE=/home/spec/api-build-2c5d5b843/build
+export STAGE_SEQUENCES=8 STAGE_ROWS=1024 STAGE_KV_PAGES=64

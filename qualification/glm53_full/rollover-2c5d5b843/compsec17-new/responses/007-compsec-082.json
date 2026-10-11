@@ -1,0 +1,63 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "15672e183cc947acb345908d9068845bfe2138b308fc85efa5f9bd06a575907d"
+ },
+ "response": {
+  "id": "chatcmpl-890edad453b04ae69631a64ba0de7ede",
+  "created": 1791730808,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function validates `n` only against the number of bytes remaining in the input stream, never against the destination slice's capacity (`desc->size`). A large `n` (up to all available input bytes) can overflow the fixed-size cstring buffer at `base + desc->offset`, both in the `xdr_read_bytes` write (line 9) and the NUL terminator write (line 10). The flawed validation that fails to bound `n` by the slice size is at line 6.\n\nAnswer: 6",
+     "role": "assistant",
+     "reasoning_content": "No bound check against desc->size; overflow at line 9/10. Primary bug: line 6 (check only against available bytes, not slice capacity) \u2014 but the write happens at 9/10. The bug is introduced where the missing check should be: line 6."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 169,
+   "prompt_tokens": 277,
+   "total_tokens": 446,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>No bound check against desc->size; overflow at line 9/10. Primary bug: line 6 (check only against available bytes, not slice capacity) \u2014 but the write happens at 9/10. The bug is introduced where the missing check should be: line 6.</think>The function validates `n` only against the number of bytes remaining in the input stream, never against the destination slice's capacity (`desc->size`). A large `n` (up to all available input bytes) can overflow the fixed-size cstring buffer at `base + desc->offset`, both in the `xdr_read_bytes` write (line 9) and the NUL terminator write (line 10). The flawed validation that fails to bound `n` by the slice size is at line 6.\n\nAnswer: 6",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "6",
+  "passed": false,
+  "elapsed_ms": 8188.9,
+  "output_sha256": "31672defed27cc175b8ab4baa2dc4def166628631b3e24b988612bce0b718ae6",
+  "prompt_token_count": 277,
+  "generated_token_count": 169,
+  "reasoning_chars": 232,
+  "content_chars": 441,
+  "status": "stop"
+ }
+}

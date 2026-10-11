@@ -1,0 +1,63 @@
+{
+ "id": "compsec-090",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "c200371ab8b619f9a0ebb396ff3a56003173d308cd00881f5fab8e4393ababe3"
+ },
+ "response": {
+  "id": "chatcmpl-f54c1b70f62d46b6bd30b0a56273f4f4",
+  "created": 1791731020,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The table `mandatory_handlers` has 255 entries (indices 0\u2013254), but `htype` can be 255 (0xFF). When `htype == 255`, line 12 reads out of bounds and line 13 would call through an out-of-bounds pointer.\n\nAnswer: 12,13",
+     "role": "assistant",
+     "reasoning_content": "Table has 255 entries, indices 0\u2013254; htype max 255 \u2192 out of bounds at line 12/13."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 96,
+   "prompt_tokens": 328,
+   "total_tokens": 424,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Table has 255 entries, indices 0\u2013254; htype max 255 \u2192 out of bounds at line 12/13.</think>The table `mandatory_handlers` has 255 entries (indices 0\u2013254), but `htype` can be 255 (0xFF). When `htype == 255`, line 12 reads out of bounds and line 13 would call through an out-of-bounds pointer.\n\nAnswer: 12,13",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "source": "COMPSEC",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "12,13",
+  "passed": true,
+  "elapsed_ms": 2349.5,
+  "output_sha256": "a0c061190d18bda1820863b536928bcf98c12b77aea541f10ff0a679435bf3a5",
+  "prompt_token_count": 328,
+  "generated_token_count": 96,
+  "reasoning_chars": 82,
+  "content_chars": 215,
+  "status": "stop"
+ }
+}

@@ -1,0 +1,63 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "04208c34253aa152732fdde326be3a2f6d62bb2a0fc18d26f4d4536079e23981"
+ },
+ "response": {
+  "id": "chatcmpl-09f74f199b8346e38862db041812392d",
+  "created": 1791730881,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\nThe function computes a full 16-byte CCM tag into a local buffer, then copies `tag_len` bytes to the caller's buffer.\n\nThe vulnerability: `tag_len` is never validated. The public API lets the caller request an arbitrary tag length, but this function blindly copies `tag_len` bytes from the 16-byte `full_tag` buffer into the caller's `tag` buffer. If `tag_len > 16`, this reads past `full_tag` (stack buffer over-read) and writes past the caller's tag buffer (buffer overflow). A CCM tag length must be one of the valid values (e.g., 4, 6, 8, 10, 12, 14, or 16) and at most 16.\n\nThe bug is introduced at the `memcpy` on line 10, where the unvalidated `tag_len` is used.\n\nAnswer: 10",
+     "role": "assistant",
+     "reasoning_content": "Tag length not validated against 16 \u2014 overflow at memcpy line 10."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 207,
+   "prompt_tokens": 245,
+   "total_tokens": 452,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Tag length not validated against 16 \u2014 overflow at memcpy line 10.</think>**Analysis:**\n\nThe function computes a full 16-byte CCM tag into a local buffer, then copies `tag_len` bytes to the caller's buffer.\n\nThe vulnerability: `tag_len` is never validated. The public API lets the caller request an arbitrary tag length, but this function blindly copies `tag_len` bytes from the 16-byte `full_tag` buffer into the caller's `tag` buffer. If `tag_len > 16`, this reads past `full_tag` (stack buffer over-read) and writes past the caller's tag buffer (buffer overflow). A CCM tag length must be one of the valid values (e.g., 4, 6, 8, 10, 12, 14, or 16) and at most 16.\n\nThe bug is introduced at the `memcpy` on line 10, where the unvalidated `tag_len` is used.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 9940.7,
+  "output_sha256": "a855b1a003d4f03753e859abb4cba686dda1968730c98dcc2e6cc36e375cea15",
+  "prompt_token_count": 245,
+  "generated_token_count": 207,
+  "reasoning_chars": 65,
+  "content_chars": 696,
+  "status": "stop"
+ }
+}

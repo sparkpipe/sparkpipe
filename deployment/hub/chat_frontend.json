@@ -3,7 +3,7 @@
   {
    "id": "glm-5.3",
    "model_dir": "models/glm-5.3",
-   "engine": "http://127.0.0.1:8456",
+   "engine": "http://127.0.0.1:8475",
    "context_tokens": 262144,
    "warm_queue": {
     "depth": 64,
@@ -50,7 +50,7 @@
   {
    "id": "glm-5.3-flash",
    "model_dir": "models/glm-5.3-flash",
-   "engine": "http://127.0.0.1:8458",
+   "engine": "http://127.0.0.1:8476",
    "context_tokens": 131072,
    "warm_queue": {
     "depth": 64,
