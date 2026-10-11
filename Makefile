@@ -689,6 +689,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_chat_frontend_function_xml_calls.py \
 	tests/test_model_swap_memory_guard.py \
+	tests/test_model_swap_shared_label.py \
 	tests/test_hy4_fp8_scale_contract.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
