@@ -116,6 +116,54 @@
    "api_start": "systemctl --user reset-failed kv-qwen38-flash-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-flash-api || systemd-run --user --unit=kv-qwen38-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_flash-kv-api/runtime --port 8465 >> api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-qwen38-flash-api 2>/dev/null; systemctl --user reset-failed kv-qwen38-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8465/health"
+  },
+  {
+   "id": "gemma-4-31b",
+   "kv_label": "gemma4_31b_stage",
+   "node_memory_bytes": 17179869184,
+   "node_reclaim": "$HOME/stage-lanes/gemma4_31b/lane14/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/gemma4_31b/lane14/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/gemma4_31b/lane14/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/gemma4_31b/lane14/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-gemma4-31b-api 2>/dev/null; systemctl --user is-active -q kv-gemma4-31b-api || systemd-run --user --unit=kv-gemma4-31b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/gemma4_31b-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/gemma4_31b-kv-api/runtime --port 8466 >> api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-gemma4-31b-api 2>/dev/null; systemctl --user reset-failed kv-gemma4-31b-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8466/health"
+  },
+  {
+   "id": "gemma-4-26b-a4b",
+   "kv_label": "gemma4_26b_stage",
+   "node_memory_bytes": 12884901888,
+   "node_reclaim": "$HOME/stage-lanes/gemma4_26b/lane15/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/gemma4_26b/lane15/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/gemma4_26b/lane15/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/gemma4_26b/lane15/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-gemma4-26b-api 2>/dev/null; systemctl --user is-active -q kv-gemma4-26b-api || systemd-run --user --unit=kv-gemma4-26b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/gemma4_26b-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/gemma4_26b-kv-api/runtime --port 8467 >> api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-gemma4-26b-api 2>/dev/null; systemctl --user reset-failed kv-gemma4-26b-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8467/health"
+  },
+  {
+   "id": "ling-3.0-flash",
+   "kv_label": "ling3_stage",
+   "node_memory_bytes": 25769803776,
+   "node_reclaim": "$HOME/stage-lanes/ling3_flash/lane2/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/ling3_flash/lane2/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/ling3_flash/lane2/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/ling3_flash/lane2/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-ling3-flash-api 2>/dev/null; systemctl --user is-active -q kv-ling3-flash-api || systemd-run --user --unit=kv-ling3-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/ling3_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/ling3_flash-kv-api/runtime --port 8468 >> api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-ling3-flash-api 2>/dev/null; systemctl --user reset-failed kv-ling3-flash-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8468/health"
+  },
+  {
+   "id": "hy4-preview",
+   "kv_label": "hy4_tp16_stage",
+   "node_memory_bytes": 68719476736,
+   "node_reclaim": "$HOME/stage-lanes/hy4/lane3/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/hy4/lane3/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/hy4/lane3/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/hy4/lane3/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-hy4-api 2>/dev/null; systemctl --user is-active -q kv-hy4-api || systemd-run --user --unit=kv-hy4-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/hy4-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/hy4-kv-api/runtime --port 8470 >> api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-hy4-api 2>/dev/null; systemctl --user reset-failed kv-hy4-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8470/health"
   }
  ]
 }
