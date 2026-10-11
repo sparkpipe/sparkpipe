@@ -65,6 +65,15 @@ static const char *SparkChatTemplateRoleSuffix(
 	return("");
 }
 
+static const char *SparkChatTemplateSystemSuffix(
+	const SparkModelResidentChatTemplate *chat_template,
+	bool thinking,
+	bool leading_system)
+{
+	const char *suffix = thinking ? chat_template->system_suffix_thinking : chat_template->system_suffix;
+	return(leading_system && suffix != 0 ? suffix : "");
+}
+
 SparkChatTemplateOutcome SparkChatTemplateRender(
 	const SparkModelResidentChatTemplate *chat_template,
 	const SparkJsonDocument *document,
@@ -111,6 +120,8 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 	}
 	if ( thinking && leading_system == 0u && !SparkChatTemplateAppend(&rendered,chat_template->thinking_prefix) )
 		outcome = SPARK_CHAT_TEMPLATE_OUT_OF_MEMORY;
+	if ( !thinking && leading_system == 0u && chat_template->plain_prefix != 0 && !SparkChatTemplateAppend(&rendered,chat_template->plain_prefix) )
+		outcome = SPARK_CHAT_TEMPLATE_OUT_OF_MEMORY;
 	for ( message_index = 0u; outcome == SPARK_CHAT_TEMPLATE_RENDERED && message_index < message_count; message_index++ )
 	{
 		int32_t entry = SparkJsonGetArrayElement(document,messages,message_index);
@@ -135,6 +146,7 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 			break;
 		}
 		if ( !SparkChatTemplateAppend(&rendered,header) || !SparkChatTemplateAppend(&rendered,piece) ||
+			!SparkChatTemplateAppend(&rendered,SparkChatTemplateSystemSuffix(chat_template,thinking,message_index == 0u && leading_system != 0u)) ||
 			!SparkChatTemplateAppend(&rendered,SparkChatTemplateRoleSuffix(chat_template,document,
 				SparkJsonFindObjectMember(document,entry,"role"))) ||
 			!SparkChatTemplateAppend(&rendered,chat_template->turn_suffix) )

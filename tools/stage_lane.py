@@ -156,7 +156,7 @@ LING3_FLASH = {
     "contract": "model_contracts/ling_authoritative.json",
     "chat_template": "model-families/ling/chat_template.json",
     "eos_token_ids": [156895, 156892],
-    "tokenizer_vocabulary": 157184,
+    "tokenizer_vocabulary": 157153,
     "hidden": 2560,
     "kv_page_bytes": 7 * 64 * 1152 // WORLD,
     "recurrent_bytes": 35 * (2 * 128 * 128 * 4 + 768 * 4 * 2),

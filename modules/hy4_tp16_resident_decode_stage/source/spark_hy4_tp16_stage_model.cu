@@ -27,6 +27,7 @@ struct Hy4Geometry
 	static constexpr float kRouteScale = 2.827f;
 	static constexpr float kSwigluLimit = 10.0f;
 	static constexpr float kEpsilon = 1e-5f;
+	static constexpr float kLoraEpsilon = 1e-6f;
 	static constexpr float kHcEpsilon = 1e-6f;
 	static constexpr float kHcMagnitude = 2.0f;
 	static constexpr uint32_t kPageSlots = SPARK_HY4_TP16_STAGE_PAGE_SLOTS;

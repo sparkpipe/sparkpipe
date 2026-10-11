@@ -1,16 +1,19 @@
 {
- "prefix": "<｜hy_start:opensource｜>system<｜hy_middle:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_end:opensource｜>",
+ "prefix": "",
  "thinking_prefix": "<｜hy_start:opensource｜>system<｜hy_middle:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:high<｜hy_end:opensource｜>",
  "system": "<｜hy_start:opensource｜>system<｜hy_middle:opensource｜>",
  "system_thinking": "<｜hy_start:opensource｜>system<｜hy_middle:opensource｜>",
  "user": "<｜hy_start:opensource｜>user<｜hy_middle:opensource｜>",
  "observation": null,
  "assistant": "<｜hy_start:opensource｜>assistant<｜hy_middle:opensource｜><think:opensource></think:opensource>",
- "assistant_thinking": "<｜hy_start:opensource｜>assistant<｜hy_middle:opensource｜><think:opensource>",
+ "assistant_thinking": "<｜hy_start:opensource｜>assistant<｜hy_middle:opensource｜><think:opensource></think:opensource>",
  "turn_suffix": "<｜hy_end:opensource｜>",
  "generation": "<｜hy_start:opensource｜>assistant<｜hy_middle:opensource｜><think:opensource></think:opensource>",
  "generation_thinking": "<｜hy_start:opensource｜>assistant<｜hy_middle:opensource｜><think:opensource>",
  "stop_markers": [
   "<｜hy_end:opensource｜>"
- ]
+ ],
+ "plain_prefix": "<｜hy_start:opensource｜>system<｜hy_middle:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_end:opensource｜>",
+ "system_suffix": "<｜reasoning_mode:opensource｜>reasoning_effort:no_think",
+ "system_suffix_thinking": "<｜reasoning_mode:opensource｜>reasoning_effort:high"
 }

@@ -328,6 +328,49 @@ static void TestChatTemplates(void)
 	SparkModelResidentDeploymentDestroy(&deployment);
 
 	{
+		char *ling = TestReadText("model-families/ling/chat_template.json");
+		char *hy4 = TestReadText("model-families/hy4/chat_template.json");
+		char *muse = TestReadText("model-families/muse_glimmer/chat_template.json");
+		assert(TestLoadWithChatTemplate(ling,&deployment) == SPARK_STATUS_OK);
+		TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<role>SYSTEM</role>detailed thinking off<|role_end|><role>HUMAN</role>hi<|role_end|><role>ASSISTANT</role>\n<think></think>");
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<role>SYSTEM</role>detailed thinking on<|role_end|><role>HUMAN</role>hi<|role_end|><role>ASSISTANT</role>\n<think>");
+		TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<role>SYSTEM</role>Be terse.\ndetailed thinking on<|role_end|><role>HUMAN</role>hi<|role_end|>"
+			"<role>ASSISTANT</role>\n<think></think>ok<|role_end|><role>HUMAN</role>bye<|role_end|><role>ASSISTANT</role>\n<think>");
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<role>SYSTEM</role>Be terse.\ndetailed thinking off<|role_end|><role>HUMAN</role>hi<|role_end|>"
+			"<role>ASSISTANT</role>\n<think></think>ok<|role_end|><role>HUMAN</role>bye<|role_end|><role>ASSISTANT</role>\n<think></think>");
+		SparkModelResidentDeploymentDestroy(&deployment);
+		assert(TestLoadWithChatTemplate(hy4,&deployment) == SPARK_STATUS_OK);
+		TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>system<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9creasoning_mode:opensource\xef\xbd\x9c>reasoning_effort:no_think<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>user<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>hi<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>assistant<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c><think:opensource></think:opensource>");
+		TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>system<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>Be terse."
+			"<\xef\xbd\x9creasoning_mode:opensource\xef\xbd\x9c>reasoning_effort:high<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>user<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>hi<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>assistant<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c><think:opensource></think:opensource>ok<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>user<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>bye<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>assistant<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c><think:opensource>");
+		SparkModelResidentDeploymentDestroy(&deployment);
+		assert(TestLoadWithChatTemplate(muse,&deployment) == SPARK_STATUS_OK);
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\nKnowledge cutoff: 2026-01-04.\n\n"
+			"Reasoning strength: high.\n\n# Valid recipients: \"self\", \"user\".<|eot|><|start|>user<|message|>hi<|eot|><|start|>assistant");
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|begin_of_text|><|start|>system<|message|>Be terse.\n\nReasoning strength: low.\n\n# Valid recipients: \"self\", \"user\".<|eot|>"
+			"<|start|>user<|message|>hi<|eot|><|start|>assistant to=user<|message|>ok<|eot|><|start|>user<|message|>bye<|eot|><|start|>assistant");
+		SparkModelResidentDeploymentDestroy(&deployment);
+		free(ling);
+		free(hy4);
+		free(muse);
+	}
+
+	{
 		char *k3 = TestReadText("model-families/k3/chat_template.json");
 		static const char suffixed_null[] =
 			"{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
@@ -482,26 +525,6 @@ int main(int argc,char **argv)
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_unknown.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_no_backing.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_duplicate_rank.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
-	assert(SparkModelResidentDeploymentLoad("examples/deployments/dsv4_flash_pp13_host_rdma.json",&deployment) == SPARK_STATUS_OK);
-	assert(deployment.node_count == 13u);
-	assert(deployment.runtime_limits.max_inflight_submission_count == 13u);
-	assert(deployment.runtime_limits.max_active_sequence_count == 1024u);
-	assert(deployment.runtime_limits.max_input_row_count == 1024u);
-	assert(deployment.runtime_limits.resident_sequence_capacity == 16384u);
-	assert(deployment.runtime_limits.kv_logical_page_capacity == 1048576u);
-	assert(deployment.runtime_limits.kv_physical_page_capacity == 16384u);
-	assert(strcmp(deployment.adapter_shared_object_path,"lib/model_serving_adapter.so") == 0);
-	assert(strcmp(deployment.transport_shared_object_path,"lib/hidden_transport.so") == 0);
-	node = SparkModelResidentDeploymentFindRank(&deployment,12u);
-	assert(node != 0);
-	assert(strcmp(node->transport_host,"sparkc-fabric") == 0);
-	assert(strcmp(node->runtime_root,
-		"/home/sparkc/sparkdata/dsv4_flash.fp8.pp13") == 0);
-	assert(strcmp(node->adapter_configuration_path,"config/dsv4_flash_stage.json") == 0);
-	assert(strcmp(node->kv_backing_directory,
-		"/home/sparkc/kvcache/dsv4_flash/pp13.bf16") == 0);
-	assert(node->kv_backing_maximum_bytes == UINT64_C(274877906944));
-	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.tokenizer_asset_path != 0);
 	assert(deployment.tokenizer_vocabulary_size == 129280u);

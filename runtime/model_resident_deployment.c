@@ -27,7 +27,8 @@ static const char *const SparkModelResidentDeploymentChatTemplateMembers[] =
 {
 	"prefix","thinking_prefix","system","system_thinking","user","observation",
 	"assistant","assistant_thinking","turn_suffix","generation",
-	"generation_thinking","stop_markers","assistant_suffix","control_markers"
+	"generation_thinking","stop_markers","assistant_suffix","control_markers",
+	"plain_prefix","system_suffix","system_suffix_thinking"
 };
 static const char *const SparkModelResidentDeploymentAdapterMembers[] =
 {
@@ -471,12 +472,13 @@ static SparkStatus SparkModelResidentDeploymentValidateChatTemplateMembers(
 	int32_t object,
 	uint32_t *suffixed)
 {
-	static const char *const optional[] = { "assistant_suffix","control_markers" };
+	static const char *const optional[] = { "assistant_suffix","control_markers","plain_prefix","system_suffix","system_suffix_thinking" };
+	const uint32_t optional_count = (uint32_t)(sizeof(optional) / sizeof(optional[0]));
 	const char *members[sizeof(SparkModelResidentDeploymentChatTemplateMembers) / sizeof(SparkModelResidentDeploymentChatTemplateMembers[0])];
 	uint32_t count = 0u,index;
-	for ( index = 0u; index < sizeof(members) / sizeof(members[0]) - 2u; index++ )
+	for ( index = 0u; index < sizeof(members) / sizeof(members[0]) - optional_count; index++ )
 		members[count++] = SparkModelResidentDeploymentChatTemplateMembers[index];
-	for ( index = 0u; index < 2u; index++ )
+	for ( index = 0u; index < optional_count; index++ )
 		if ( SparkModelResidentDeploymentMember(document,object,optional[index]) >= 0 )
 			members[count++] = optional[index];
 	*suffixed = SparkModelResidentDeploymentMember(document,object,"assistant_suffix") >= 0 ? 1u : 0u;
@@ -534,6 +536,12 @@ static SparkStatus SparkModelResidentDeploymentParseChatTemplate(
 		status = SparkModelResidentDeploymentTextString(document,object,"prefix",&chat->prefix);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentTextString(document,object,"thinking_prefix",&chat->thinking_prefix);
+	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"plain_prefix") >= 0 )
+		status = SparkModelResidentDeploymentTextString(document,object,"plain_prefix",&chat->plain_prefix);
+	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"system_suffix") >= 0 )
+		status = SparkModelResidentDeploymentTextString(document,object,"system_suffix",&chat->system_suffix);
+	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"system_suffix_thinking") >= 0 )
+		status = SparkModelResidentDeploymentTextString(document,object,"system_suffix_thinking",&chat->system_suffix_thinking);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentNullableString(document,object,"system",&chat->system);
 	if ( status == SPARK_STATUS_OK )
@@ -557,7 +565,9 @@ static SparkStatus SparkModelResidentDeploymentParseChatTemplate(
 	if ( chat->user[0] == '\0' || chat->assistant[0] == '\0' || chat->generation[0] == '\0' ||
 		(chat->system == 0) != (chat->system_thinking == 0) ||
 		(chat->assistant_thinking == 0) != (chat->generation_thinking == 0) ||
-		(chat->generation_thinking == 0 && chat->thinking_prefix[0] != '\0') )
+		(chat->generation_thinking == 0 && chat->thinking_prefix[0] != '\0') ||
+		(chat->system == 0 && (chat->system_suffix != 0 || chat->system_suffix_thinking != 0)) ||
+		(chat->generation_thinking == 0 && chat->system_suffix_thinking != 0) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	array = SparkModelResidentDeploymentMember(document,object,"stop_markers");
 	if ( !SparkJsonTokenIsType(document,array,SPARK_JSON_TOKEN_ARRAY) )
@@ -725,6 +735,9 @@ void SparkModelResidentDeploymentDestroy(
 	free(deployment->weightd_socket_path);
 	free(deployment->chat_template.prefix);
 	free(deployment->chat_template.thinking_prefix);
+	free(deployment->chat_template.plain_prefix);
+	free(deployment->chat_template.system_suffix);
+	free(deployment->chat_template.system_suffix_thinking);
 	free(deployment->chat_template.system);
 	free(deployment->chat_template.system_thinking);
 	free(deployment->chat_template.user);

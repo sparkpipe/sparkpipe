@@ -23,6 +23,9 @@ typedef struct SparkModelResidentChatTemplate
 	uint32_t stop_marker_count;
 	char *prefix;
 	char *thinking_prefix;
+	char *plain_prefix;
+	char *system_suffix;
+	char *system_suffix_thinking;
 	char *system;
 	char *system_thinking;
 	char *user;

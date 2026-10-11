@@ -358,9 +358,16 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
 
 
 def chat_template_value(value: Any) -> dict[str, Any]:
-    keys = CHAT_TEMPLATE_KEYS | ({key for key in ("assistant_suffix", "control_markers") if key in value}
-                                 if isinstance(value, dict) else set())
+    optional = ("assistant_suffix", "control_markers", "plain_prefix", "system_suffix", "system_suffix_thinking")
+    keys = CHAT_TEMPLATE_KEYS | ({key for key in optional if key in value} if isinstance(value, dict) else set())
     template = exact_object(value, keys, "chat_template")
+    for key in ("plain_prefix", "system_suffix", "system_suffix_thinking"):
+        if key in template and not isinstance(template[key], str):
+            raise DeploymentError(f"chat_template.{key} must be a string")
+    if ("system_suffix" in template or "system_suffix_thinking" in template) and template.get("system") is None:
+        raise DeploymentError("chat_template.system_suffix needs a system header")
+    if "system_suffix_thinking" in template and template.get("generation_thinking") is None:
+        raise DeploymentError("chat_template.system_suffix_thinking needs generation_thinking")
     if "assistant_suffix" in template and not isinstance(template["assistant_suffix"], str):
         raise DeploymentError("chat_template.assistant_suffix must be a string")
     if "control_markers" in template:

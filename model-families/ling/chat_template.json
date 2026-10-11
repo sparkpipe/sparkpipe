@@ -1,17 +1,20 @@
 {
- "prefix": "<role>SYSTEM</role>detailed thinking off<|role_end|>",
+ "prefix": "",
  "thinking_prefix": "<role>SYSTEM</role>detailed thinking on<|role_end|>",
  "system": "<role>SYSTEM</role>",
  "system_thinking": "<role>SYSTEM</role>",
  "user": "<role>HUMAN</role>",
  "observation": "<role>OBSERVATION</role>",
  "assistant": "<role>ASSISTANT</role>\n<think></think>",
- "assistant_thinking": "<role>ASSISTANT</role>\n<think>",
+ "assistant_thinking": "<role>ASSISTANT</role>\n<think></think>",
  "turn_suffix": "<|role_end|>",
  "generation": "<role>ASSISTANT</role>\n<think></think>",
  "generation_thinking": "<role>ASSISTANT</role>\n<think>",
  "stop_markers": [
   "<|role_end|>",
   "<|endoftext|>"
- ]
+ ],
+ "plain_prefix": "<role>SYSTEM</role>detailed thinking off<|role_end|>",
+ "system_suffix": "\ndetailed thinking off",
+ "system_suffix_thinking": "\ndetailed thinking on"
 }
