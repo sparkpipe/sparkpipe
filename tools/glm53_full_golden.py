@@ -162,12 +162,14 @@ def compsec(args) -> int:
     cases = prompts["cases"]
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(args.concurrency) as pool:
-        replies = list(pool.map(lambda c: complete(args.port, c["prompt_token_ids"], args.max_tokens, 0, args.timeout), cases))
+        replies = list(pool.map(lambda c: complete(args.port, c["prompt_token_ids"], args.max_tokens, args.logprobs, args.timeout), cases))
     wall = round(time.monotonic() - started, 1)
     tokens = {index: list(reply["tokens"]) for index, reply in enumerate(replies, 1)}
     summary = module.grade_cases(prompts, tokens, module.output_decoder(Path(args.tokenizer)), args.max_tokens)
-    summary.update({"label": args.label, "port": args.port, "concurrency": args.concurrency, "wall_s": wall,
-                    "tokens": {cases[index - 1]["id"]: tokens[index] for index in tokens}})
+    summary.update({"label": args.label, "port": args.port, "concurrency": args.concurrency, "logprobs": args.logprobs, "wall_s": wall,
+                    "tokens": {cases[index - 1]["id"]: tokens[index] for index in tokens},
+                    "cached_tokens": {cases[index - 1]["id"]: ((replies[index - 1].get("usage") or {}).get("prompt_tokens_details") or {}).get("cached_tokens")
+                                      for index in tokens}})
     Path(args.out).write_text(json.dumps(summary, indent=1) + "\n")
     for r in summary["results"]:
         print(f"{r['id']} {'PASS' if r['passed'] else 'FAIL'} expected={r['expected']!r} got={r['extracted'][:40]!r} tokens={r['generated_token_count']}{' budget' if r['hit_budget'] else ''}")
@@ -221,7 +223,7 @@ def main() -> int:
         p.add_argument("--out", required=True)
         if command != "compsec":
             p.add_argument("--names")
-        if command == "capture":
+        if command in ("capture", "compsec"):
             p.add_argument("--logprobs", type=int, default=0)
         if command == "compsec":
             p.add_argument("--concurrency", type=int, required=True)
