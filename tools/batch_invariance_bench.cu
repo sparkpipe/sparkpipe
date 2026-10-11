@@ -27,6 +27,7 @@
 #define LAUNCH(call) do { int32_t launch_status = (call); if ( launch_status != LM_LAUNCH_OK ) { printf("FAIL launch %s: %d\n", #call, launch_status); exit(1); } } while (0)
 
 static uint32_t sms;
+static uint32_t straggler;
 static const uint32_t kRows[] = {1u, 16u, 64u, 256u, 1024u};
 static const char *kOption[] = {"current", "skinny_all", "tensor_all"};
 
@@ -158,6 +159,16 @@ static void BuildRoutes(RouteSet *set, uint32_t first_token, uint32_t tokens, cu
 			if ( !seen )
 				expert[(uint64_t)t * BENCH_TOP_K + chosen++] = e;
 		}
+	}
+	if ( straggler != 0u )
+	{
+		uint32_t count[BENCH_EXPERTS / BENCH_LOCAL] = {0}, busiest = 0;
+		for ( uint32_t e : expert )
+			count[e / BENCH_LOCAL]++;
+		for ( uint32_t r = 1; r < BENCH_EXPERTS / BENCH_LOCAL; r++ )
+			busiest = count[r] > count[busiest] ? r : busiest;
+		for ( uint32_t &e : expert )
+			e = (e + BENCH_EXPERTS - busiest * BENCH_LOCAL) % BENCH_EXPERTS;
 	}
 	set->tokens = tokens;
 	set->routes = tokens * BENCH_TOP_K;
@@ -359,6 +370,47 @@ static void ExpertCase(cudaStream_t s)
 	cudaFree(b.w1); cudaFree(b.w3); cudaFree(b.w2); cudaFree(b.normed); cudaFree(b.gate); cudaFree(b.up); cudaFree(b.act); cudaFree(b.out);
 }
 
+static void ExpertDecode(cudaStream_t s)
+{
+	const uint64_t up_elements = (uint64_t)BENCH_LOCAL * BENCH_EXPERT_INTER * BENCH_EXPERT_HIDDEN;
+	ExpertBuffers b;
+	cudaEvent_t start, stop;
+	straggler = 1u;
+	CHECK(cudaMalloc(&b.w1, up_elements * 2u));
+	CHECK(cudaMalloc(&b.w3, up_elements * 2u));
+	CHECK(cudaMalloc(&b.w2, up_elements * 2u));
+	CHECK(cudaMalloc(&b.normed, 16u * BENCH_EXPERT_HIDDEN * 2u));
+	CHECK(cudaMalloc(&b.gate, 128u * BENCH_EXPERT_INTER * 2u));
+	CHECK(cudaMalloc(&b.up, 128u * BENCH_EXPERT_INTER * 2u));
+	CHECK(cudaMalloc(&b.act, 128u * BENCH_EXPERT_INTER * 2u));
+	CHECK(cudaMalloc(&b.out, 128u * BENCH_EXPERT_HIDDEN * 2u));
+	Fill(b.w1, up_elements, 21u, 0.03f);
+	Fill(b.w3, up_elements, 22u, 0.03f);
+	Fill(b.w2, up_elements, 23u, 0.03f);
+	Fill(b.normed, 16u * BENCH_EXPERT_HIDDEN, 24u, 1.0f);
+	Fill(b.act, 128u * BENCH_EXPERT_INTER, 25u, 1.0f);
+	CHECK(cudaEventCreate(&start));
+	CHECK(cudaEventCreate(&stop));
+	for ( uint32_t m : {1u, 2u, 4u, 8u, 16u} )
+	{
+		RouteSet set;
+		BuildRoutes(&set, 7777u * m, m, s);
+		for ( int option = 0; option < 3; option += 2 )
+		{
+			for ( uint32_t i = 0; i < 3u; i++ )
+				LAUNCH(ExpertLayer(option, &set, b, b.normed, b.gate, b.up, b.act, b.out, s));
+			CHECK(cudaEventRecord(start, s));
+			for ( uint32_t i = 0; i < BENCH_ITERATIONS; i++ )
+				LAUNCH(ExpertLayer(option, &set, b, b.normed, b.gate, b.up, b.act, b.out, s));
+			CHECK(cudaEventRecord(stop, s));
+			printf("EXPERTS-BUSIEST-RANK option=%s rows=%u local_routes=%u us=%.2f\n", kOption[option], m, set.local, 1000.0 * Elapsed(start, stop) / BENCH_ITERATIONS);
+		}
+		FreeRoutes(&set);
+	}
+	straggler = 0u;
+	cudaFree(b.w1); cudaFree(b.w3); cudaFree(b.w2); cudaFree(b.normed); cudaFree(b.gate); cudaFree(b.up); cudaFree(b.act); cudaFree(b.out);
+}
+
 int main(int argc, char **argv)
 {
 	cudaStream_t s;
@@ -373,9 +425,14 @@ int main(int argc, char **argv)
 		DenseCase("h1344_to_5376", 1344u, 5376u, s);
 		DenseCase("h4096_to_1024", 4096u, 1024u, s);
 		DenseCase("h1024_to_4096", 1024u, 4096u, s);
+		DenseCase("h5376_to_2688", 5376u, 2688u, s);
+		DenseCase("h512_to_5376", 512u, 5376u, s);
 	}
 	if ( argc < 2 || strcmp(argv[1], "dense") != 0 )
+	{
 		ExpertCase(s);
+		ExpertDecode(s);
+	}
 	printf("DONE\n");
 	return 0;
 }
