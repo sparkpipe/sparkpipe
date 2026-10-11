@@ -1,0 +1,63 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "b0da8fc1b686f0fdded38bfd66b87a9df4c7d9055a2542a8cc3012b846a06333"
+ },
+ "response": {
+  "id": "chatcmpl-5e64e241e6a647b18babf5bfe98b371c",
+  "created": 1791717032,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 3",
+     "role": "assistant",
+     "reasoning_content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\n1 static int accept_transfer...\n3 uint32_t bytes = blocks << blkbits;\n...\nIf bytes > lun->backing_size return -EINVAL;\n\nBug is overflow of blocks << blkbits in 32-bit. bytes wraps around, check passes.\n\nPrimary bug introduced at line 3. Possibly also line 5? The bug is introduced at shift. So line 3.\n\nIf need set? Might be 3,5? Primary bug is overflow at 3.\n\nReturn 3.\n\nAnswer: 3"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 148,
+   "prompt_tokens": 276,
+   "total_tokens": 424,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\n1 static int accept_transfer...\n3 uint32_t bytes = blocks << blkbits;\n...\nIf bytes > lun->backing_size return -EINVAL;\n\nBug is overflow of blocks << blkbits in 32-bit. bytes wraps around, check passes.\n\nPrimary bug introduced at line 3. Possibly also line 5? The bug is introduced at shift. So line 3.\n\nIf need set? Might be 3,5? Primary bug is overflow at 3.\n\nReturn 3.\n\nAnswer: 3</think>Answer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 4328.7,
+  "output_sha256": "f77bb7fc050e34edcad2f64ad8b75a2d7c6e7158dfb129b9efa1d3e7d49006af",
+  "prompt_token_count": 276,
+  "generated_token_count": 148,
+  "reasoning_chars": 536,
+  "content_chars": 9,
+  "status": "stop"
+ }
+}

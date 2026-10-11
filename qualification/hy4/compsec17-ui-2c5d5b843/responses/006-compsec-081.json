@@ -1,0 +1,62 @@
+{
+ "id": "compsec-081",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe diagnostic request builder has small protocol-defined fields.\n\nCode:\n```c\n 1: #define MAX_DIAG_PAYLOAD       6\n 2: #define MAX_REQUEST_PAYLOAD    7\n 3: \n 4: static int send_diagnostic_request(uint8_t sid,\n 5:                                    const uint8_t *pid, size_t pid_len,\n 6:                                    const uint8_t *payload, size_t payload_len)\n 7: {\n 8:     uint8_t req[MAX_DIAG_PAYLOAD];\n 9: \n10:     if (pid_len > 2 || payload_len > MAX_REQUEST_PAYLOAD)\n11:         return -1;\n12: \n13:     req[0] = sid;\n14:     memcpy(req + 1, pid, pid_len);\n15:     memcpy(req + 1 + pid_len, payload, payload_len);\n16: \n17:     return transport_send(req, 1 + pid_len + payload_len);\n18: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "6e71fbd4a18fd1b1de49fdba6c2abba34707ae13237a8d48b101b4e74a060cad"
+ },
+ "response": {
+  "id": "chatcmpl-108ad1bf8aac49539eb9ae67980daf96",
+  "created": 1791717480,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let's analyze the function step by step.\n\nThe function `send_diagnostic_request` builds a diagnostic request in a buffer `req` of size `MAX_DIAG_PAYLOAD` (which is 6 bytes).\n\n- Line 10: Checks that `pid_len` is at most 2 and `payload_len` is at most `MAX_REQUEST_PAYLOAD` (which is 7).\n- Line 13: Sets `req[0] = sid`.\n- Line 14: Copies `pid_len` bytes from `pid` to `req + 1`.\n- Line 15: Copies `payload_len` bytes from `payload` to `req + 1 + pid_len`.\n- Line 17: Sends `1 + pid_len + payload_len` bytes from `req`.\n\nThe buffer `req` has size 6. The total number of bytes written is `1 + pid_len + payload_len`.\n\nGiven the constraints:\n- `pid_len` can be up to 2.\n- `payload_len` can be up to 7.\n\nSo the maximum total bytes written is `1 + 2 + 7 = 10` bytes. But `req` is only 6 bytes. This means there is a buffer overflow when `1 + pid_len + payload_len > 6`.\n\nThe check on line 10 only ensures `pid_len <= 2` and `payload_len <= 7`, but it does not ensure that `1 + pid_len + payload_len <= MAX_DIAG_PAYLOAD` (which is 6). Therefore, the bug is introduced by the insufficient check on line 10, which allows the total size to exceed the buffer size.\n\nThe primary bug is introduced at line 10 because the check is inadequate to prevent the buffer overflow that occurs later.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 387,
+   "prompt_tokens": 344,
+   "total_tokens": 731,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let's analyze the function step by step.\n\nThe function `send_diagnostic_request` builds a diagnostic request in a buffer `req` of size `MAX_DIAG_PAYLOAD` (which is 6 bytes).\n\n- Line 10: Checks that `pid_len` is at most 2 and `payload_len` is at most `MAX_REQUEST_PAYLOAD` (which is 7).\n- Line 13: Sets `req[0] = sid`.\n- Line 14: Copies `pid_len` bytes from `pid` to `req + 1`.\n- Line 15: Copies `payload_len` bytes from `payload` to `req + 1 + pid_len`.\n- Line 17: Sends `1 + pid_len + payload_len` bytes from `req`.\n\nThe buffer `req` has size 6. The total number of bytes written is `1 + pid_len + payload_len`.\n\nGiven the constraints:\n- `pid_len` can be up to 2.\n- `payload_len` can be up to 7.\n\nSo the maximum total bytes written is `1 + 2 + 7 = 10` bytes. But `req` is only 6 bytes. This means there is a buffer overflow when `1 + pid_len + payload_len > 6`.\n\nThe check on line 10 only ensures `pid_len <= 2` and `payload_len <= 7`, but it does not ensure that `1 + pid_len + payload_len <= MAX_DIAG_PAYLOAD` (which is 6). Therefore, the bug is introduced by the insufficient check on line 10, which allows the total size to exceed the buffer size.\n\nThe primary bug is introduced at line 10 because the check is inadequate to prevent the buffer overflow that occurs later.\n\nAnswer: 10",
+ "grade": {
+  "index": 6,
+  "id": "compsec-081",
+  "source": "COMPSEC",
+  "domain": "uds-c",
+  "expected": "10-15",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 39825.6,
+  "output_sha256": "6cc4962456301811a48cb0f532c7b514ef7d61b684b1daf911017b77731a122f",
+  "prompt_token_count": 344,
+  "generated_token_count": 387,
+  "reasoning_chars": 0,
+  "content_chars": 1288,
+  "status": "stop"
+ }
+}

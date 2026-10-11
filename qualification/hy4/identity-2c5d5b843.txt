@@ -1,0 +1,113 @@
+release2 identity 2026-10-11T11:11:49Z, firmware fw-2c5d5b843, hub API ~/api-build-2c5d5b843/build, swap id hy4-preview
+swap entry vs generated: IDENTICAL
+api_pid 1200102
+615cf6d74841f2c11  /proc/1200102/exe
+615cf6d74841f2c11  /home/spec/api-build-2c5d5b843/build/sparkpipe_model_api
+45d928287c0762963  /home/spec/hy4-kv-api/runtime/lib/libhy4_tp16_serving_adapter.so
+45d928287c0762963  /home/spec/api-build-2c5d5b843/build/libhy4_tp16_serving_adapter.so
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+spark0 b0baf76ebb75d581 b0baf76ebb75d581
+spark1 b0baf76ebb75d581 b0baf76ebb75d581
+spark2 b0baf76ebb75d581 b0baf76ebb75d581
+spark3 b0baf76ebb75d581 b0baf76ebb75d581
+spark4 b0baf76ebb75d581 b0baf76ebb75d581
+spark5 b0baf76ebb75d581 b0baf76ebb75d581
+spark6 b0baf76ebb75d581 b0baf76ebb75d581
+spark7 b0baf76ebb75d581 b0baf76ebb75d581
+spark8 b0baf76ebb75d581 b0baf76ebb75d581
+spark9 b0baf76ebb75d581 b0baf76ebb75d581
+sparka b0baf76ebb75d581 b0baf76ebb75d581
+sparkb b0baf76ebb75d581 b0baf76ebb75d581
+sparkc b0baf76ebb75d581 b0baf76ebb75d581
+sparkd b0baf76ebb75d581 b0baf76ebb75d581
+sparke b0baf76ebb75d581 b0baf76ebb75d581
+sparkf b0baf76ebb75d581 b0baf76ebb75d581
+fw b0baf76ebb75d581
+{"status":"ok","served":10,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+
+## run log (setup, swap entry, activation, capture comparisons, smokes, COMPSEC, reclaim check)
+== 2026-10-11T11:11:19Z hy4-preview precheck
+controller: idle qwen3.8-max None
+== 2026-10-11T11:11:20Z setup
+rtx5090:hy4-kv-api ready (tokenizer ac95145adf17fd0579a64bbcaade30f7cd5a0c4be69d9aa0473f83b163cde61c); swap controller entry in ./hy4.swap_entry.json
+swap entry vs generated: IDENTICAL
+== 2026-10-11T11:11:23Z activate hy4-preview
+11:11:49 idle hy4-preview None 24.1
+node adapter sha:   16 b0baf76ebb75d581
+"connected_ranks":16
+== 2026-10-11T11:11:50Z capture
+chinese 27 
+long_recall 64 
+-- vs capture-2aa246576 (truncating mesh SUM):
+   capital: IDENTICAL 8 tokens, logprobs differ
+   arith: IDENTICAL 64 tokens, logprobs differ
+   code: IDENTICAL 64 tokens, logprobs differ
+   story: DIFFERS at token 11 (agent 64 tokens, release 64 tokens; agent [11974, 11, 26332] release [2829, 2284, 415])
+   translate: DIFFERS at token 1 (agent 64 tokens, release 55 tokens; agent [488, 259, 3444] release [341, 269, 14629])
+   science: DIFFERS at token 30 (agent 64 tokens, release 64 tokens; agent [899, 442, 341] release [14118, 442, 302])
+   primes: IDENTICAL 14 tokens, logprobs differ
+   chinese: IDENTICAL 27 tokens, logprobs differ
+   long_recall: DIFFERS at token 21 (agent 64 tokens, release 64 tokens; agent [12273, 26112, 533] release [31898, 12273, 533])
+   IDENTITY 5/9 identical
+-- vs numerics RNE capture hy4-capture-8546591f7.json:
+   capital: IDENTICAL 8 tokens, logprobs differ
+   arith: IDENTICAL 64 tokens, logprobs differ
+   code: IDENTICAL 64 tokens, logprobs differ
+   story: DIFFERS at token 57 (agent 64 tokens, release 64 tokens; agent [13, 1177, 649] release [539, 269, 4329])
+   translate: DIFFERS at token 6 (agent 64 tokens, release 55 tokens; agent [34716, 514, 31037] release [1, 34716, 514])
+   science: DIFFERS at token 4 (agent 64 tokens, release 64 tokens; agent [6066, 765, 269] release [683, 82, 14988])
+   primes: IDENTICAL 14 tokens, logprobs differ
+   chinese: DIFFERS at token 25 (agent 31 tokens, release 27 tokens; agent [114442, 51210, 295] release [320, 120025])
+   long_recall: IDENTICAL 64 tokens, logprobs differ
+   IDENTITY 5/9 identical
+== 2026-10-11T11:14:16Z smokes
+chat          PASS  | finish='stop' 8.64s content='The capital of France is Paris.' reasoning=294 chars
+stream        PASS  | finish='stop' 8.67s content='The capital of France is Paris.' reasoning=294 chars
+tool          PASS  | finish='tool_calls' 13.23s content='' reasoning=247 chars
+tool_result   PASS  | finish='stop' 4.74s content='The weather in Paris right now is **18°C and sunny**.' reasoning=0 chars
+reasoning_off PASS  | finish='stop' 3.15s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 9.24s content='391' reasoning=252 chars
+UI-SMOKE hy4-preview: 6/6
+== 2026-10-11T11:15:04Z compsec17
+"connected_ranks":16
+rank log lines with error|fail|fault|abort|AER: 16
+== 2026-10-11T11:21:36Z restore qwen3.8-max
+11:22:12 idle qwen3.8-max None 33.4
+== 2026-10-11T11:22:12Z reclaim check
+  16 DROP-KV label=hy4_tp16_stage released=0 bytes=0 busy=0
+  16 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=1
+== 2026-10-11T11:22:12Z done hy4-preview
+
+## rank logs (error|fail|fault|abort grep; dmesg is not readable for the user on the sparks)
+spark0 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark1 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark2 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark3 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark4 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark5 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark6 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark7 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark8 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+spark9 logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparka logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkb logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkc logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkd logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparke logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted
+sparkf logs/residentd-20261011T111132Z.log
+dmesg: read kernel buffer failed: Operation not permitted

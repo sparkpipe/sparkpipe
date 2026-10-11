@@ -1,0 +1,63 @@
+{
+ "id": "compsec-088",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function exports a finite-field Diffie-Hellman public value into a fixed-width buffer for the group. The public MPI may be supplied by an application.\n\nCode:\n```c\n 1: static int export_ffdh_public(const struct DhmContext *ctx,\n 2:                               uint8_t *out, size_t out_len)\n 3: {\n 4:     size_t plen = mpi_size(&ctx->P);      // byte length of the group prime\n 5:     size_t ylen = mpi_size(&ctx->Y);      // byte length of public value\n 6: \n 7:     if (out_len < plen)\n 8:         return -1;\n 9: \n10:     memset(out, 0, plen);\n11:     return mpi_write_binary(&ctx->Y, out + (plen - ylen), ylen);\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "4a5d9143b56c9143cf665962f30098f827ae49019ecdecc9b968f69ac8976bce"
+ },
+ "response": {
+  "id": "chatcmpl-98366815bd934d6b971b556494dc6457",
+  "created": 1791717013,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 11",
+     "role": "assistant",
+     "reasoning_content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nplen = mpi_size(&ctx->P)\nylen = mpi_size(&ctx->Y)\nif out_len < plen return -1\nmemset(out,0,plen)\nreturn mpi_write_binary(&ctx->Y, out + (plen - ylen), ylen)\n\nBug? mpi_write_binary writes ylen bytes at out + (plen - ylen). If ylen > plen? Then pointer underflows. Also if ylen > out_len? out_len >= plen, but offset negative? Actually plen - ylen could underflow size_t -> huge. Also no check ylen <= plen. Also memset plen bytes, but out_len may be > plen? memset only plen. Might be okay.\n\nPrimary bug is missing check ylen <= plen leading to out-of-bounds write before buffer. Line 11 uses out + (plen - ylen). Also line 10 memset uses plen but out_len check only >= plen. Could be okay.\n\nBug introduced at line 11? Or line 5? The bug is introduced by using ylen without validation. The primary bug line is 11 where write occurs with unchecked offset. Could also be line 7 check insufficient.\n\nProbably line 11.\n\nIf small group adjacent lines: 7-11? The smallest set: 11.\n\nAnswer: 11\n\n"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 311,
+   "prompt_tokens": 343,
+   "total_tokens": 654,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nplen = mpi_size(&ctx->P)\nylen = mpi_size(&ctx->Y)\nif out_len < plen return -1\nmemset(out,0,plen)\nreturn mpi_write_binary(&ctx->Y, out + (plen - ylen), ylen)\n\nBug? mpi_write_binary writes ylen bytes at out + (plen - ylen). If ylen > plen? Then pointer underflows. Also if ylen > out_len? out_len >= plen, but offset negative? Actually plen - ylen could underflow size_t -> huge. Also no check ylen <= plen. Also memset plen bytes, but out_len may be > plen? memset only plen. Might be okay.\n\nPrimary bug is missing check ylen <= plen leading to out-of-bounds write before buffer. Line 11 uses out + (plen - ylen). Also line 10 memset uses plen but out_len check only >= plen. Could be okay.\n\nBug introduced at line 11? Or line 5? The bug is introduced by using ylen without validation. The primary bug line is 11 where write occurs with unchecked offset. Could also be line 7 check insufficient.\n\nProbably line 11.\n\nIf small group adjacent lines: 7-11? The smallest set: 11.\n\nAnswer: 11\n\n</think>Answer: 11",
+ "grade": {
+  "index": 13,
+  "id": "compsec-088",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 9097.5,
+  "output_sha256": "0e519f9a2d92a0b504290c5aa00c6d1cccf556b124ed14f27becd6b8b722f9be",
+  "prompt_token_count": 343,
+  "generated_token_count": 311,
+  "reasoning_chars": 1142,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

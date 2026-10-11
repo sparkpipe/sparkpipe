@@ -1,0 +1,62 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-31b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper is called once for each Special Line Character option received in a TELNET LINEMODE negotiation.\n\nCode:\n```c\n 1: #define SLCBUF_SIZE 108\n 2: #define SLC_NCHARS 18\n 3: \n 4: struct slc_state {\n 5:     unsigned char buf[SLCBUF_SIZE];\n 6:     size_t used;\n 7: };\n 8: \n 9: static void add_slc(struct slc_state *s,\n10:                     unsigned char func,\n11:                     unsigned char flags,\n12:                     unsigned char value)\n13: {\n14:     if (func <= SLC_NCHARS)\n15:         return;                    // ignore ordinary entries here\n16: \n17:     /* Store one SLC triplet for later reply construction. */\n18:     s->buf[s->used++] = func;\n19:     s->buf[s->used++] = flags;\n20:     s->buf[s->used++] = value;\n21: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "7d459cda086c906d46eab43616850142698bb949b7bbea664b2340cad70b1677"
+ },
+ "response": {
+  "id": "chatcmpl-a490c817626b40648479b1f4604a71c5",
+  "created": 1791716590,
+  "model": "gemma-4-31b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `add_slc` writes three bytes to the `s->buf` array on lines 18, 19, and 20. However, there is no check to ensure that `s->used` does not exceed the buffer size `SLCBUF_SIZE` (108). Since this helper is called for each Special Line Character option received, a malicious or malformed TELNET negotiation sequence could provide enough options to cause a buffer overflow.\n\nAnswer: 18,19,20",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 109,
+   "prompt_tokens": 379,
+   "total_tokens": 488,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `add_slc` writes three bytes to the `s->buf` array on lines 18, 19, and 20. However, there is no check to ensure that `s->used` does not exceed the buffer size `SLCBUF_SIZE` (108). Since this helper is called for each Special Line Character option received, a malicious or malformed TELNET negotiation sequence could provide enough options to cause a buffer overflow.\n\nAnswer: 18,19,20",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "18,19,20",
+  "passed": true,
+  "elapsed_ms": 3878.3,
+  "output_sha256": "48b0a4e95b7848ee73a3ce21ed0bfe66b748a771113b6ce497d1077e1e018d51",
+  "prompt_token_count": 379,
+  "generated_token_count": 109,
+  "reasoning_chars": 0,
+  "content_chars": 398,
+  "status": "stop"
+ }
+}

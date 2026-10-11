@@ -1,0 +1,63 @@
+{
+ "id": "compsec-078",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function checks the SM2 C3 hash in a decoded ciphertext. Assume parse_sm2_ciphertext() may return a c3 field of any length.\n\nCode:\n```c\n 1: #define SM3_DIGEST_LEN 32\n 2: \n 3: static bool check_sm2_c3(const uint8_t *msg, size_t msg_len,\n 4:                          const struct sm2_ctext *ct)\n 5: {\n 6:     uint8_t expected[SM3_DIGEST_LEN];\n 7: \n 8:     sm3_c3_hash(expected, ct->x2, ct->x2_len, msg, msg_len, ct->y2, ct->y2_len);\n 9: \n10:     /* Constant-time comparison: returns 0 only if all bytes match. */\n11:     if (ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) != 0)\n12:         return false;\n13: \n14:     return true;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "5636c768dd9cb68f7ffe90dd6dfe8ab6806ae04ea30369b06044960ce5db1b6c"
+ },
+ "response": {
+  "id": "chatcmpl-2da0410ed9284c1a8f1fb63f8068b602",
+  "created": 1791716915,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 11",
+     "role": "assistant",
+     "reasoning_content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode checks SM2 C3 hash. Assume parse_sm2_ciphertext() may return a c3 field of any length.\n\nLine 11: ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) !=0\n\nIf ct->c3 length < 32, then reading ct->c3.data beyond length -> out of bounds read. Also if longer, only first 32 compared.\n\nBug is introduced at line 11? Or at assumption? The comparison uses SM3_DIGEST_LEN without checking ct->c3 length. Primary bug is line 11. Could also be line 12? No.\n\nMaybe also need to check length before compare. So bug line 11.\n\nIf bug is only clear from small group adjacent lines, maybe 11,12? The comparison is line 11.\n\nAnswer: 11\n\nReturn format.\n\n"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 218,
+   "prompt_tokens": 374,
+   "total_tokens": 592,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode checks SM2 C3 hash. Assume parse_sm2_ciphertext() may return a c3 field of any length.\n\nLine 11: ct_memcmp(expected, ct->c3.data, SM3_DIGEST_LEN) !=0\n\nIf ct->c3 length < 32, then reading ct->c3.data beyond length -> out of bounds read. Also if longer, only first 32 compared.\n\nBug is introduced at line 11? Or at assumption? The comparison uses SM3_DIGEST_LEN without checking ct->c3 length. Primary bug is line 11. Could also be line 12? No.\n\nMaybe also need to check length before compare. So bug line 11.\n\nIf bug is only clear from small group adjacent lines, maybe 11,12? The comparison is line 11.\n\nAnswer: 11\n\nReturn format.\n\n</think>Answer: 11",
+ "grade": {
+  "index": 3,
+  "id": "compsec-078",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 6428.2,
+  "output_sha256": "d09039876b5c0ca95d0126be298e72e67f5c5bb8ed98769fba0d8fc8f49d7d03",
+  "prompt_token_count": 374,
+  "generated_token_count": 218,
+  "reasoning_chars": 786,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

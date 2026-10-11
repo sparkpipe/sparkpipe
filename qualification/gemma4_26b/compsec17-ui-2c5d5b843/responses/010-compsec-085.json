@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d32882d536b6bef8e318032d71e5d911d38129f86f57e3454b1b71ccf63b4be5"
+ },
+ "response": {
+  "id": "chatcmpl-dad92e442dda409ca1429e5470dc966e",
+  "created": 1791716785,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function is vulnerable to a SQL injection/malformed query vulnerability because it uses `strncat` to append a token that may contain embedded NUL bytes. \n\nIn C, `strncat` treats the source string as a null-terminated string. If `tok` contains an embedded NUL byte (which the prompt explicitly states is possible), `strncat` will stop copying at the first NUL byte encountered, even if `tok_len` is larger. This results in a truncated token being placed in the SQL string. More critically, if the input `tok` is intended to be a quoted string but contains a NUL byte followed by SQL syntax (e.g., `' OR '1'='1`), the `strncat` function will only copy the part before the NUL, but the subsequent `strlcat` will append the closing quote. While this specific implementation's primary failure is the inability to handle the full `tok_len` due to the NUL byte, the logic error lies in using a NUL-terminated string function (`strncat`) on a length-delimited buffer that is explicitly allowed to contain NULs.\n\nHowever, the most direct bug is that `strncat` is fundamentally incompatible with the requirement that `tok` may contain embedded NUL bytes.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 280,
+   "prompt_tokens": 257,
+   "total_tokens": 537,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function is vulnerable to a SQL injection/malformed query vulnerability because it uses `strncat` to append a token that may contain embedded NUL bytes. \n\nIn C, `strncat` treats the source string as a null-terminated string. If `tok` contains an embedded NUL byte (which the prompt explicitly states is possible), `strncat` will stop copying at the first NUL byte encountered, even if `tok_len` is larger. This results in a truncated token being placed in the SQL string. More critically, if the input `tok` is intended to be a quoted string but contains a NUL byte followed by SQL syntax (e.g., `' OR '1'='1`), the `strncat` function will only copy the part before the NUL, but the subsequent `strlcat` will append the closing quote. While this specific implementation's primary failure is the inability to handle the full `tok_len` due to the NUL byte, the logic error lies in using a NUL-terminated string function (`strncat`) on a length-delimited buffer that is explicitly allowed to contain NULs.\n\nHowever, the most direct bug is that `strncat` is fundamentally incompatible with the requirement that `tok` may contain embedded NUL bytes.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 3488.9,
+  "output_sha256": "26d0275d5bfa675b6137b99a7e9f1f6007951d8b7fe3cbe9df3882471a2bb7fe",
+  "prompt_token_count": 257,
+  "generated_token_count": 280,
+  "reasoning_chars": 0,
+  "content_chars": 1159,
+  "status": "stop"
+ }
+}

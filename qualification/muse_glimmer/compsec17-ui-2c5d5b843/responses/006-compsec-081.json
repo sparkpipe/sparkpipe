@@ -1,0 +1,63 @@
+{
+ "id": "compsec-081",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe diagnostic request builder has small protocol-defined fields.\n\nCode:\n```c\n 1: #define MAX_DIAG_PAYLOAD       6\n 2: #define MAX_REQUEST_PAYLOAD    7\n 3: \n 4: static int send_diagnostic_request(uint8_t sid,\n 5:                                    const uint8_t *pid, size_t pid_len,\n 6:                                    const uint8_t *payload, size_t payload_len)\n 7: {\n 8:     uint8_t req[MAX_DIAG_PAYLOAD];\n 9: \n10:     if (pid_len > 2 || payload_len > MAX_REQUEST_PAYLOAD)\n11:         return -1;\n12: \n13:     req[0] = sid;\n14:     memcpy(req + 1, pid, pid_len);\n15:     memcpy(req + 1 + pid_len, payload, payload_len);\n16: \n17:     return transport_send(req, 1 + pid_len + payload_len);\n18: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d746b89333020567977e3694704976c94a8866e21c41cdea2bf91724f8261933"
+ },
+ "response": {
+  "id": "chatcmpl-3839777e72c742bfada2ef6009fe7699",
+  "created": 1791716944,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 10",
+     "role": "assistant",
+     "reasoning_content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nreq size MAX_DIAG_PAYLOAD 6\nMAX_REQUEST_PAYLOAD 7\nCheck pid_len >2 or payload_len >7 return -1\nThen memcpy req+1 pid pid_len\nmemcpy req+1+pid_len payload payload_len\nsend req, 1+pid_len+payload_len\n\nBug: req buffer size 6. Max allowed pid_len 2, payload_len 7 => total 1+2+7=10 >6 overflow. Also payload_len check uses MAX_REQUEST_PAYLOAD 7 but req can hold only 5 after sid+pid. So overflow.\n\nPrimary bug introduced at line 10? Check condition insufficient. Or line 8 buffer too small? The bug is introduced at line 10 where validation is wrong. Or line 14/15 memcpy overflow.\n\nPrimary bug is validation missing total size. Line 10 is where check happens. Could be line 10.\n\nAlso line 8 defines buffer too small relative to max. But bug introduced at check.\n\nProbably line 10.\n\nIf need smallest set: 10,14,15? The primary bug is line 10.\n\nReturn 10.\n\nAnswer: 10"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 282,
+   "prompt_tokens": 365,
+   "total_tokens": 647,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nreq size MAX_DIAG_PAYLOAD 6\nMAX_REQUEST_PAYLOAD 7\nCheck pid_len >2 or payload_len >7 return -1\nThen memcpy req+1 pid pid_len\nmemcpy req+1+pid_len payload payload_len\nsend req, 1+pid_len+payload_len\n\nBug: req buffer size 6. Max allowed pid_len 2, payload_len 7 => total 1+2+7=10 >6 overflow. Also payload_len check uses MAX_REQUEST_PAYLOAD 7 but req can hold only 5 after sid+pid. So overflow.\n\nPrimary bug introduced at line 10? Check condition insufficient. Or line 8 buffer too small? The bug is introduced at line 10 where validation is wrong. Or line 14/15 memcpy overflow.\n\nPrimary bug is validation missing total size. Line 10 is where check happens. Could be line 10.\n\nAlso line 8 defines buffer too small relative to max. But bug introduced at check.\n\nProbably line 10.\n\nIf need smallest set: 10,14,15? The primary bug is line 10.\n\nReturn 10.\n\nAnswer: 10</think>Answer: 10",
+ "grade": {
+  "index": 6,
+  "id": "compsec-081",
+  "source": "COMPSEC",
+  "domain": "uds-c",
+  "expected": "10-15",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 8337.5,
+  "output_sha256": "669156f9f9c44ecffd4304d6e2d3ea9b15c2c6027dec3e92d24f1cde4894556d",
+  "prompt_token_count": 365,
+  "generated_token_count": 282,
+  "reasoning_chars": 1017,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

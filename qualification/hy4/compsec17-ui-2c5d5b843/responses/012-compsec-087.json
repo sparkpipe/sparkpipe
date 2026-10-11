@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "231539a8daebbbbae9a45b41e72deb65ddff43774a1ecf34ee21289fdd049462"
+ },
+ "response": {
+  "id": "chatcmpl-dde72824236a4351877f32951a253384",
+  "created": 1791717601,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "Looking at this IPv6 parsing function, I need to trace through the logic carefully.\n\nThe function:\n1. Uses `tmp[16]` buffer with `tp` pointer\n2. Handles `::` compression by setting `colonp = --tp` (line 8)\n3. Parses hextets in the while loop (lines 12-17)\n4. If compression occurred, shifts bytes and fills with zeros (lines 19-23)\n\nLet me analyze the compression handling:\n\nWhen `::` is at the start:\n- Line 8: `colonp = --tp` \u2014 this decrements `tp` from `tmp` to `tmp - 1`, then assigns to `colonp`\n- So `colonp = tmp - 1` (pointing BEFORE the buffer!)\n\nThen in the compression handling (lines 19-23):\n- Line 20: `n = tp - colonp` \u2014 this is the number of bytes parsed\n- Line 21: `memmove(colonp + (16 - (tp - tmp)), colonp, n)` \u2014 moves data\n- Line 22: `memset(colonp, 0, 16 - (tp - tmp))` \u2014 zeros out the gap\n\nThe critical issue: `colonp` points to `tmp - 1`, which is **outside the buffer bounds**.\n\nWhen we do `memmove(colonp + (16 - (tp - tmp)), colonp, n)`:\n- `colonp` is `tmp - 1`\n- We're reading from `tmp - 1` (out of bounds read)\n- We're writing to `colonp + (16 - (tp - tmp))` which could be within bounds\n\nAnd `memset(colonp, 0, 16 - (tp - tmp))`:\n- Writing zeros starting at `tmp - 1` \u2014 **out of bounds write!**\n\nThe bug is introduced at line 8 where `colonp = --tp` makes `colonp` point before the buffer. The actual memory corruption manifests at lines 21-22, but the root cause is line 8.\n\nWait, let me reconsider. The question asks for \"the single best line number where the primary bug is introduced.\"\n\nLine 8 is where `colonp` is set to point outside the buffer (`tmp - 1`). This is the root cause. Lines 21-22 are where the out-of-b",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 456,
+   "total_tokens": 968,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at this IPv6 parsing function, I need to trace through the logic carefully.\n\nThe function:\n1. Uses `tmp[16]` buffer with `tp` pointer\n2. Handles `::` compression by setting `colonp = --tp` (line 8)\n3. Parses hextets in the while loop (lines 12-17)\n4. If compression occurred, shifts bytes and fills with zeros (lines 19-23)\n\nLet me analyze the compression handling:\n\nWhen `::` is at the start:\n- Line 8: `colonp = --tp` \u2014 this decrements `tp` from `tmp` to `tmp - 1`, then assigns to `colonp`\n- So `colonp = tmp - 1` (pointing BEFORE the buffer!)\n\nThen in the compression handling (lines 19-23):\n- Line 20: `n = tp - colonp` \u2014 this is the number of bytes parsed\n- Line 21: `memmove(colonp + (16 - (tp - tmp)), colonp, n)` \u2014 moves data\n- Line 22: `memset(colonp, 0, 16 - (tp - tmp))` \u2014 zeros out the gap\n\nThe critical issue: `colonp` points to `tmp - 1`, which is **outside the buffer bounds**.\n\nWhen we do `memmove(colonp + (16 - (tp - tmp)), colonp, n)`:\n- `colonp` is `tmp - 1`\n- We're reading from `tmp - 1` (out of bounds read)\n- We're writing to `colonp + (16 - (tp - tmp))` which could be within bounds\n\nAnd `memset(colonp, 0, 16 - (tp - tmp))`:\n- Writing zeros starting at `tmp - 1` \u2014 **out of bounds write!**\n\nThe bug is introduced at line 8 where `colonp = --tp` makes `colonp` point before the buffer. The actual memory corruption manifests at lines 21-22, but the root cause is line 8.\n\nWait, let me reconsider. The question asks for \"the single best line number where the primary bug is introduced.\"\n\nLine 8 is where `colonp` is set to point outside the buffer (`tmp - 1`). This is the root cause. Lines 21-22 are where the out-of-b",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "22",
+  "passed": true,
+  "elapsed_ms": 50460.9,
+  "output_sha256": "ffa56e390ad58f824717e6d283e51c60d52936c195304432f170cf6759ec0262",
+  "prompt_token_count": 456,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1652,
+  "status": "length"
+ }
+}
