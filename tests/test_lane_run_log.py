@@ -13,8 +13,6 @@ TOOLS = {
     "k3_lane.sh": {"K3_LANE": "3", "K3_WEIGHTD_SOCKET": "/run/weightd.sock", "K3_EXPERT_POOL_BYTES": "1", "K3_MEMORY_MAX": "10G",
                    "K3_STATE_BUDGET_BYTES": "1", "RUN": "K3_RUN_ID", "FIRMWARE": "K3_FIRMWARE"},
     "fleet_serve.sh": {"G5_API_HOST": "rtx5090", "RUN": "FLEET_RUN_ID", "FIRMWARE": "FLEET_FIRMWARE_UNUSED", "ARGS": ["glm53_release"]},
-    "ling_lane.sh": {"LING_LANE": "10", "LING_CODEC": "bf16", "LING_EXPERT_POOL_BYTES": "1", "LING_WEIGHTD_SOCKET": "/run/weightd.sock",
-                     "LING_MEMORY_MAX": "12G", "RUN": "LING_RUN_ID", "FIRMWARE": "LING_FIRMWARE"},
 }
 
 

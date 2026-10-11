@@ -9,15 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FAMILIES = {
 	"glm52": {
-		"config": "model-families/glm52/cuda_tree/spark_glm_cuda_config.h",
+		"config": "model_contracts/glm53_full_authoritative.json",
 		"host": "model-families/glm52/include/sparkpipe/spark_glm52_model.h",
-		"module": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c",
+		"module": None,
 		"pairs": [],
 	},
 	"glm5_next": {
 		"config": "model_contracts/glm53_flash_authoritative.json",
 		"host": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h",
-		"module": "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c",
+		"module": None,
 		"pairs": [],
 	},
 	"k3": {
@@ -55,12 +55,6 @@ FAMILIES = {
 			("K3_ATTNRES_MAX_SOURCES", "SPARK_K3_MODEL_ATTNRES_MAX_REPRESENTATIONS"),
 			("K3_MXFP4_GROUP", "SPARK_K3_MODEL_MXFP4_GROUP_SIZE"),
 		],
-	},
-	"mimo25": {
-		"config": "inference/llms/mimo_2_5/config.h",
-		"host": "model-families/mimo25/include/sparkpipe/spark_mimo25_model.h",
-		"module": None,
-		"pairs": [],
 	},
 }
 

@@ -333,107 +333,11 @@ def adapt_glm_full(c):
             "kv_geometry": kv_geometry, "shard_classes": shard_classes}
 
 
-def adapt_mimo25(c):
-    m, hyb, att, moe = (c["model"], c["hybrid_attention"], c["attention"],
-                        c["moe"])
-    hidden, layers, vocab = (m["hidden_dimension"], m["layer_count"],
-                             m["vocabulary_size"])
-    q_heads = att["query_head_count"]
-    head_dim, v_dim = att["head_dimension"], att["value_head_dimension"]
-    q_rows = q_heads * head_dim
-    o_in = att["o_input_dimension"]
-    full_attn = (hidden * q_rows +
-                 hidden * att["full_kv_head_count"] * (head_dim + v_dim) +
-                 o_in * hidden)
-    swa_attn = (hidden * q_rows +
-                hidden * att["swa_kv_head_count"] * (head_dim + v_dim) +
-                o_in * hidden)
-    dense_mlp = 3 * hidden * m["dense_intermediate_dimension"]
-    routed_mlp = moe["experts_per_token"] * 3 * hidden * moe["expert_intermediate_dimension"]
-    full_set = set(hyb["full_layer_indices"])
-    layer_costs = [
-        (full_attn if i in full_set else swa_attn) +
-        (dense_mlp if i < m["first_routed_layer"] else routed_mlp)
-        for i in range(layers)
-    ]
-    kv_geometry = {
-        "layout": "gqa_full_kv_bf16_prescaled",
-        "layer_count": layers,
-        "full_layer_count": hyb["full_layer_count"],
-        "swa_layer_count": hyb["swa_layer_count"],
-        "full_layer_indices": hyb["full_layer_indices"],
-        "query_head_count": q_heads,
-        "head_dimension": head_dim,
-        "value_head_dimension": v_dim,
-        "full_kv_head_count": att["full_kv_head_count"],
-        "swa_kv_head_count": att["swa_kv_head_count"],
-        "rope_dimension": att["rope_dimension"],
-        "rope_convention": att["rope_convention"],
-        "full_rope_theta": att["full_rope_theta"],
-        "swa_rope_theta": att["swa_rope_theta"],
-        "cached_value_scale": att["cached_value_scale"],
-        "swa_sink_bias": att["swa_sink_bias"],
-        "sliding_window_tokens": hyb["sliding_window_tokens"],
-        "kv_element_bits": c["cache"]["kv_element_bits"],
-    }
-
-    def cls(name, match, shard_class, split, scope, extent, note=None,
-            group=None, instances=None, head_count=None):
-        return {"name": name, "match": match, "shard_class": shard_class,
-                "split": split, "scope": scope, "split_extent": extent,
-                "quant_group": group, "note": note,
-                "instances_per_model": instances, "head_count": head_count}
-
-    block = c["precision"]["fp8_scale_block"]
-    shard_classes = [
-        cls("heads_out:q", ["self_attn.qkv_proj.weight:q"],
-            "OUTPUT_DIM_HEADS", "output_heads", "per_layer", q_rows,
-            "the fused qkv splits [q | k | v] head-major (family header "
-            "REFERENCE-PIN); the q segment is what shards",
-            head_count=q_heads),
-        cls("kv_segments", ["self_attn.qkv_proj.weight:k",
-                            "self_attn.qkv_proj.weight:v"],
-            "REPLICATED", "none", "per_layer", None,
-            "4 full / 8 SWA KV heads do not divide 16; replicating keeps "
-            "the cached pre-scaled values identical per rank"),
-        cls("heads_in:o", ["self_attn.o_proj.weight"], "INPUT_DIM_HEADS",
-            "input_heads", "per_layer", o_in, head_count=q_heads),
-        cls("expert_gate_up", ["mlp.experts.gate_proj.weight",
-                               "mlp.experts.up_proj.weight"],
-            "OUTPUT_DIM", "output", "per_expert_per_layer",
-            moe["expert_intermediate_dimension"], group=block,
-            note="per-rank rows stay whole [128,128] fp8 scale blocks",
-            instances=moe["routed_expert_count"] * (layers - m["first_routed_layer"])),
-        cls("expert_down", ["mlp.experts.down_proj.weight"], "INPUT_DIM",
-            "input", "per_expert_per_layer",
-            moe["expert_intermediate_dimension"], group=block,
-            instances=moe["routed_expert_count"] * (layers - m["first_routed_layer"])),
-        cls("dense_gate_up", ["mlp.gate_proj.weight", "mlp.up_proj.weight"],
-            "OUTPUT_DIM", "output", "per_dense_layer",
-            m["dense_intermediate_dimension"]),
-        cls("dense_down", ["mlp.down_proj.weight"], "INPUT_DIM", "input",
-            "per_dense_layer", m["dense_intermediate_dimension"]),
-        cls("embed_and_head", ["model.embed_tokens.weight", "lm_head.weight"],
-            "OUTPUT_DIM", "output", "per_model", vocab),
-        cls("replicated", ["layernorm", "norm.weight", "mlp.gate",
-                           "sink", "model.norm.weight", "mtp."],
-            "REPLICATED", "none", "mixed", None,
-            "norms, the f32 router and its correction bias, SWA sink "
-            "biases and the three MTP draft layers"),
-    ]
-    return {"layer_count": layers, "first_routed_layer": m["first_routed_layer"],
-            "layer_costs": layer_costs,
-            "final_stage_extra_cost": hidden * vocab,
-            "kv_geometry": kv_geometry, "shard_classes": shard_classes}
-
-
 MODELS = {
     "k3": {"contract": "k3_authoritative.json", "family": "k3",
            "adapter": adapt_k3},
     "glm53full": {"contract": "glm53_full_authoritative.json", "family": "glm52",
                   "adapter": lambda c: adapt_glm_full(glm_full_geometry(c))},
-    "mimo25": {"contract": "mimo25_authoritative.json", "family": "mimo25",
-               "adapter": adapt_mimo25},
 }
 
 

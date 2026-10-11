@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build GLM-5.2 resident-decode stage packs (v3 .glm52sp).
 
-Wire format: modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h
+Wire format: model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h
 Layout: header (264B) | directory (N * 64B) | 256B-aligned payloads | scales.
 
 Precision policy (fp8 spine dequant, verbatim fp8 experts):

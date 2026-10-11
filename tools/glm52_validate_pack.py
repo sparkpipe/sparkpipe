@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate a GLM52 stage pack against the C module policy (1:1 mirror).
 
-Mirrors modules/glm52_resident_decode_stage/source/spark_glm52_stagepack_format.h
+Mirrors model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h
 SparkGlm52StagePackExpectedShape + ExpectedPayloadBytes/ExpectedScaleBytes and
 the geometry checks in SparkGlm52PackValidateEntryGeometry, plus the inventory
 masks (SparkGlm52ExpectedLayerMask / ExpectedGlobalMask).

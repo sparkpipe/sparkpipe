@@ -66,8 +66,7 @@
       "probe": "cuda_characterize",
       "production_required": true,
       "consumers": [
-        "inference/kernels/gqa.cuh",
-        "model-families/glm52/cuda_tree/spark_glm_cuda_layer.cuh"
+        "inference/kernels/gqa.cuh"
       ],
       "decision": {
         "policy_path": "hardware.gb10.sparse_memory",

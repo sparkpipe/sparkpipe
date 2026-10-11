@@ -109,24 +109,6 @@ def main() -> int:
         except ValueError:
             check(f"a checkpoint stride {name} is refused", True)
 
-    sys.path.insert(0, str(ROOT / "tools"))
-    import glm5_next_gen_deployment as flash
-    committed = json.loads((ROOT / "deployment/glm5_next_tp16/model_resident.json").read_text())
-    limits = committed["runtime_limits"]
-    flash_spill = limits["kv_logical_page_capacity"] - limits["kv_physical_page_capacity"]
-    flash_slots = sp.checkpoint_slots(limits["max_active_sequences"], limits["max_sequence_positions"], flash.kv_geometry_constant("CHECKPOINT_TOKENS"))
-    check("the GLM Flash page bytes match the binding's measured 67672-byte TP16 page", flash.kv_page_bytes() == page)
-    check("the committed GLM Flash deployment fits its spilled pages and checkpoints in every node's backing",
-          flash.recurrent_page_bytes() == record and
-          all((flash_spill + sp.KV_BACKING_IN_FLIGHT_PAGES) * flash.kv_page_bytes() + flash_slots * flash.recurrent_page_bytes()
-              <= node["kv_backing_maximum_bytes"] for node in committed["nodes"]))
-    check("the committed GLM Flash deployment prefills in mesh-wide waves",
-          limits["max_input_rows"] == sp.MESH_MAX_BATCH_ROWS)
-    check("the GLM Flash index score gather fits 131072 positions at TP16 in 1024-row waves",
-          flash.index_context_parallel_fits(131072, 1024) and not flash.index_context_parallel_fits(131072 + 64, 1024))
-    check("the committed GLM Flash deployment fits its index score gather",
-          flash.index_context_parallel_fits(limits["max_sequence_positions"], limits["max_input_rows"]))
-
     # Drift detector: the incident's actual drifted configs must be caught.
     drifted_limits = dict(b8)
     drifted_limits["kv_logical_page_capacity"] = 128  # hand-pinned leftover

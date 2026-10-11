@@ -1,7 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 
-#include "spark_glm52_stagepack_format.h"
+#include "sparkpipe/spark_glm52_stagepack.h"
 
 static void SparkTestHeaderLayout(void)
 {

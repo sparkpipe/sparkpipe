@@ -95,8 +95,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     runtime/work_transaction.c
 
 SPARKPIPE_GLM52_SOURCES := \
-	model-families/glm52/src/spark_glm52_chat_template.c \
-	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c
+	model-families/glm52/src/spark_glm52_chat_template.c
 
 SPARKPIPE_K3_SOURCES := \
     modules/k3_resident_decode_stage/source/spark_k3_pack_load.c \

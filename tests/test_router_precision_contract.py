@@ -3,7 +3,6 @@ import re
 import sys
 from pathlib import Path
 
-from family_source import read_source
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,11 +13,7 @@ def main():
     launch = (ROOT / "runtime/gemm.cuh").read_text()
     stream = (ROOT / "inference/kernels/stream_gemm.cuh").read_text()
     models = {
-        "glm52": (
-            "model-families/glm52/cuda_tree/spark_glm_cuda_layer.cuh"
-        ),
         "kimi_k3": "inference/llms/kimi_k3/layer.cuh",
-        "mimo_2_5": "inference/llms/mimo_2_5/layer.cuh",
     }
     failures = []
     if "void *output_f32;" not in gemm:
@@ -28,18 +23,8 @@ def main():
     if "(args->output_bf16 == 0) == (args->output_f32 == 0)" not in stream:
         failures.append("stream GEMM output selection is not fail-closed")
     arg = r"\s*[\w>-]+\s*,"
-    f32_router = {
-        "glm52": (
-            r"LmSkinnyDense<\w+>\(" + arg * 2 + r"\s*0\s*,\s*\w+->router_logits\s*,",
-            r"LmStreamGemmDense<\w+>\(" + arg + r"\s*\w+\(\)\s*," + arg + r"\s*0\s*,\s*\w+->router_logits\s*,",
-        ),
-    }
-    bf16_router = {
-        "glm52": (
-            r"LmSkinnyDense<\w+>\(" + arg * 2 + r"\s*\w+->router_logits",
-            r"LmStreamGemmDense<\w+>\(" + arg + r"\s*\w+\(\)\s*," + arg + r"\s*\w+->router_logits",
-        ),
-    }
+    f32_router = {}
+    bf16_router = {}
     for model,path in models.items():
         source = (ROOT / path).read_text()
         required = f32_router.get(model, (r"gemm\.output_f32\s*=\s*\w+->router_logits\s*;",))
@@ -48,17 +33,6 @@ def main():
         refused = bf16_router.get(model, ()) + (r"output_bf16\s*=\s*\w+->router_logits\s*;",)
         if any(re.search(pattern, source) for pattern in refused):
             failures.append(f"{model} router still writes BF16")
-    dsv4 = read_source(
-        ROOT
-        / "modules/dsv4_resident_decode_stage/source/"
-        "spark_dsv4_resident_decode_stage_cuda.cu"
-    )
-    if not re.search(
-        r"SparkDsv4GateScoresKernel\([^)]*float \*scores_f32",dsv4,re.S
-    ):
-        failures.append("dsv4 router is not FP32")
-    if "void *scores_bf16" in dsv4:
-        failures.append("dsv4 router still exposes a BF16 score output")
     kimi = (ROOT / "inference/llms/kimi_k3/layer.cuh").read_text()
     sigmoid_topk = re.search(
         r"LmTopkSmallKernel<\s*K3_LAYER_THREADS\s*,\s*K3_TOP_K\s*,"

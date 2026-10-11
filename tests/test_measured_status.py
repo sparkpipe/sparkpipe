@@ -11,8 +11,8 @@ sys.path.insert(0,str(ROOT / "tools"))
 
 from glm52_model_contract import CODECS, description_path
 ACTIVE_CUDA_DIRECTORIES = (
-    ROOT / "inference" / "llms" / "glm5_2",
-    ROOT / "modules" / "glm52_resident_decode_stage",
+    ROOT / "model-families" / "glm52" / "source",
+    ROOT / "modules" / "glm53_full_tp16_resident_decode_stage",
 )
 FORBIDDEN_FLAGS = {
     "jit_kv_cache",
