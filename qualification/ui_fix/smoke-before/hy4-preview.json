@@ -1,0 +1,367 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T08:25:02+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "hy4-preview",
+ "passed": 6,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "hy4-preview",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-29080944f314420682437346a5ff1fe0",
+     "created": 1791707068,
+     "model": "hy4-preview",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": "We need to answer: \"What is the capital of France? Answer in one sentence.\" The user asks a simple question. I need to provide the capital of France in one sentence. The capital is Paris. So answer: \"The capital of France is Paris.\" That's one sentence. Ensure it's just one sentence. No extra text. I'll output that."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 82,
+      "prompt_tokens": 33,
+      "total_tokens": 115,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "We need to answer: \"What is the capital of France? Answer in one sentence.\" The user asks a simple question. I need to provide the capital of France in one sentence. The capital is Paris. So answer: \"The capital of France is Paris.\" That's one sentence. Ensure it's just one sentence. No extra text. I'll output that.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 9.66
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "hy4-preview",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "We need to answer: \"What is the capital of France? Answer in one sentence.\" The user asks a simple question. I need to provide the capital of France in one sentence. The capital is Paris. So answer: \"The capital of France is Paris.\" That's one sentence. Ensure it's just one sentence. No extra text. I'll output that.",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 29,
+    "elapsed_s": 9.58
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "hy4-preview",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-81d96aacc18e4b588afccfad3c652488",
+     "created": 1791707085,
+     "model": "hy4-preview",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "content": "I'll check the current weather in Paris for you.",
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+           "name": "get_weather"
+          },
+          "id": "call_e1d7f9f6aaf44bfbbc4d1421",
+          "type": "function"
+         }
+        ],
+        "reasoning_content": "The user wants the weather in Paris. I should call the get_weather tool."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 49,
+      "prompt_tokens": 225,
+      "total_tokens": 274,
+      "prompt_tokens_details": {
+       "cached_tokens": 192
+      }
+     }
+    },
+    "content": "I'll check the current weather in Paris for you.",
+    "reasoning": "The user wants the weather in Paris. I should call the get_weather tool.",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+       "name": "get_weather"
+      },
+      "id": "call_e1d7f9f6aaf44bfbbc4d1421",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 6.99
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "hy4-preview",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": "I'll check the current weather in Paris for you.",
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+         "name": "get_weather"
+        },
+        "id": "call_e1d7f9f6aaf44bfbbc4d1421",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_e1d7f9f6aaf44bfbbc4d1421",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-0e9fa474157c4e0cbee4b68a3495f9d0",
+     "created": 1791707089,
+     "model": "hy4-preview",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The weather in Paris right now is **18\u00b0C and sunny**. \u2600\ufe0f",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 18,
+      "prompt_tokens": 289,
+      "total_tokens": 307,
+      "prompt_tokens_details": {
+       "cached_tokens": 256
+      }
+     }
+    },
+    "content": "The weather in Paris right now is **18\u00b0C and sunny**. \u2600\ufe0f",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 4.56
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "hy4-preview",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-91ecf6eacdd3432094a1d5966ca0a2bb",
+     "created": 1791707093,
+     "model": "hy4-preview",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 1,
+      "prompt_tokens": 38,
+      "total_tokens": 39,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 3.24
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "hy4-preview",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-45ba55e97f804d99bb1df40e3d660fe0",
+     "created": 1791707102,
+     "model": "hy4-preview",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": "We need answer user asks: \"What is 17 * 23? Reply with just the number.\" Need compute 17*23. 17*20=340, 17*3=51, total 391. Need reply with just the number. So final should be \"391\" no extra text. Ensure no punctuation? Just number. Could be 391. Done."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 80,
+      "prompt_tokens": 35,
+      "total_tokens": 115,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "We need answer user asks: \"What is 17 * 23? Reply with just the number.\" Need compute 17*23. 17*20=340, 17*3=51, total 391. Need reply with just the number. So final should be \"391\" no extra text. Ensure no punctuation? Just number. Could be 391. Done.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 9.5
+   },
+   "problems": []
+  }
+ ]
+}
