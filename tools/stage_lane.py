@@ -209,10 +209,29 @@ MUSE_GLIMMER = {
     "kv_page_bytes": (52 * 64 * 1024) // WORLD,
     "recurrent_bytes": 0,
 }
+GLM53_FLASH = {
+    "swap_id": "glm-5.3-flash-tp16",
+    "api_port": 8476,
+    "kv_label": "glm53_flash_stage",
+    "node_memory_bytes": 32 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/glm-5.3-flash-bf16-official/tokenizer.json",
+    "pack": "sparkdata/glm53flash.fp8.tp16/packs/glm53flash.fp8.tp16.rank{rank}.sp",
+    "adapter": "libglm53_flash_tp16_serving_adapter.so",
+    "program": "glm53_flash",
+    "node_target": "cuda.sm121.glm53_flash.stage_runner.linear_bf16.expert_fp8.kv_bf16",
+    "contract": "model_contracts/glm53_flash_authoritative.json",
+    "chat_template": "model-families/glm5_next/chat_template.json",
+    "eos_token_ids": [154820, 154827, 154829],
+    "tokenizer_vocabulary": 154856,
+    "hidden": 4096,
+    "kv_page_bytes": (11 * 64 * 1024 + 11 * 64 * 514) // WORLD,
+    "recurrent_bytes": 34 * (4 * 128 * 128 * 4 + 3 * 512 * 4 * 2),
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
     "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
+    "glm53_flash": GLM53_FLASH,
     "hy4": HY4,
     "ling3_fin": LING3_FIN,
     "muse_glimmer": MUSE_GLIMMER,
@@ -365,8 +384,8 @@ def main() -> int:
     parser.add_argument("--swap-entry", action="store_true")
     args = parser.parse_args()
     model = MODELS[args.model]
-    if not 1 <= args.lane <= 15:
-        raise SystemExit("lane must be within 1..15")
+    if not 0 <= args.lane <= 15:
+        raise SystemExit("lane must be within 0..15")
     if not 1 <= args.sequences <= MAX_SEQUENCES or not args.sequences <= args.rows <= MAX_ROWS:
         raise SystemExit(f"sequences must be within 1..{MAX_SEQUENCES} and rows within sequences..{MAX_ROWS}")
     args.kv_physical_pages = args.kv_physical_pages or args.sequences * args.kv_pages
