@@ -1083,7 +1083,7 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 		LM_STAGE_HEAD_THREADS, 0, stream, state->geometry.head_prenormed != 0u ? state->distribution_hidden : state->distribution_normed,
 		state->head_weight, state->distribution_logits, count, hidden, slice, slice);
 	if ( cudaPeekAtLastError() != cudaSuccess ||
-		LmStageSoftcap(state->distribution_logits, (uint64_t)count * slice, state->geometry.logit_softcap, stream) != LM_LAUNCH_OK )
+		LmStageSoftcap(state->distribution_logits, (uint64_t)count * slice, state->geometry.logit_softcap, state->geometry.logit_scale, stream) != LM_LAUNCH_OK )
 		return SPARK_STATUS_INTERNAL_ERROR;
 	if ( tp == 1u )
 		status = StageRunnerSampleDistribution(state, state->distribution_logits, (uint64_t)count * slice, slice, slice, 0u, count, stream);
@@ -1284,7 +1284,7 @@ static SparkStatus StageRunnerHeadRows(SparkStageRunnerState *state, const uint1
 	if ( status != LM_LAUNCH_OK )
 		{ fprintf(stderr, "sparkpipe_stage_runner: final head launch failed %d\n", status); return SPARK_STATUS_INTERNAL_ERROR; }
 	if ( state->device_collective_created == 0 )
-		return LmStageSoftcap(score, rows, state->geometry.logit_softcap, stream) == LM_LAUNCH_OK ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+		return LmStageSoftcap(score, rows, state->geometry.logit_softcap, state->geometry.logit_scale, stream) == LM_LAUNCH_OK ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	if ( LmStageMaxlocPack(score, token, state->head_maxloc, rows, stream) != LM_LAUNCH_OK )
 		{ fprintf(stderr, "sparkpipe_stage_runner: head maxloc pack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
 	StageRunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
@@ -1293,7 +1293,7 @@ static SparkStatus StageRunnerHeadRows(SparkStageRunnerState *state, const uint1
 			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64) != SPARK_STATUS_OK )
 		{ fprintf(stderr, "sparkpipe_stage_runner: head argmax collective enqueue failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
 	if ( LmStageMaxlocUnpack(state->head_maxloc, token, score, rows, stream) != LM_LAUNCH_OK ||
-		LmStageSoftcap(score, rows, state->geometry.logit_softcap, stream) != LM_LAUNCH_OK )
+		LmStageSoftcap(score, rows, state->geometry.logit_softcap, state->geometry.logit_scale, stream) != LM_LAUNCH_OK )
 		{ fprintf(stderr, "sparkpipe_stage_runner: head maxloc unpack failed\n"); return SPARK_STATUS_INTERNAL_ERROR; }
 	return SPARK_STATUS_OK;
 }

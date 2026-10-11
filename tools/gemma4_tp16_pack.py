@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gemma 4 BF16 checkpoint (31B dense or 26B A4B MoE) -> sixteen TP16 named stage packs.
+"""Gemma 4 (31B dense, 26B A4B MoE) or Muse Glimmer 30B BF16 checkpoint -> sixteen TP16 named stage packs.
 
 Output per rank: <out>/<prefix>.tp16.rank<NN>.pack (tools/spark_named_pack.py
 container; prefix gemma4 for the 31B, gemma4_26b for the 26B), plus
@@ -22,6 +22,10 @@ Rank r holds, all bf16 unless noted:
                       per-expert scale f32, the extra norms f32; experts
                       [r*E/16, +E/16) as moe_w1 (gate) and moe_w3 (up)
                       [E/16, I, H] and moe_w2 [E/16, H, I]
+  Muse Glimmer        the four in-layer norms are stored as f32 (1 + w)
+                      (Gemma2 centred norms); no q/k norm weights (weightless);
+                      attn_gate: gate_proj rows of the rank's heads [q/16, H];
+                      no layer scalar; untied lm_head as head, vocab rows
 The vision and audio towers are not packed.
 """
 
@@ -102,30 +106,42 @@ def ffn_window(inter, rank):
     return slice(first * 64, (first + blocks + (1 if rank < extra else 0)) * 64)
 
 
+def is_muse(text):
+    return text.get("model_type") == "muse_glimmer_text"
+
+
 def pack_layer(checkpoint, packs, text, layer):
     hidden = text["hidden_size"]
+    muse = is_muse(text)
     p = f"{PREFIX}layers.{layer}."
     name = f"layers.{layer}."
     full = text["layer_types"][layer] == "full_attention"
-    head_dim = text["global_head_dim"] if full else text["head_dim"]
+    head_dim = text["global_head_dim"] if full and not muse else text["head_dim"]
     heads = text["num_attention_heads"]
-    kv_heads = text["num_global_key_value_heads"] if full else text["num_key_value_heads"]
+    kv_heads = text["num_global_key_value_heads"] if full and not muse else text["num_key_value_heads"]
     for norm, key in (("input_norm", "input_layernorm"), ("post_attn_norm", "post_attention_layernorm"),
                       ("pre_ff_norm", "pre_feedforward_layernorm"), ("post_ff_norm", "post_feedforward_layernorm")):
-        packs.replicated(name + norm, checkpoint.f32(p + key + ".weight", (hidden,)), "f32")
-    packs.replicated(name + "layer_scalar", checkpoint.f32(p + "layer_scalar", (1,)), "f32")
+        weight = checkpoint.f32(p + key + ".weight", (hidden,))
+        packs.replicated(name + norm, (weight + np.float32(1.0)).astype(np.float32) if muse else weight, "f32")
+    if not muse:
+        packs.replicated(name + "layer_scalar", checkpoint.f32(p + "layer_scalar", (1,)), "f32")
     q = checkpoint.array(p + "self_attn.q_proj.weight", (heads * head_dim, hidden))
     k = checkpoint.array(p + "self_attn.k_proj.weight", (kv_heads * head_dim, hidden))
     parts = [q, k]
-    if not (full and text["attention_k_eq_v"]):
+    if not (full and text.get("attention_k_eq_v")):
         parts.append(checkpoint.array(p + "self_attn.v_proj.weight", (kv_heads * head_dim, hidden)))
     fused = np.concatenate(parts)
     o = checkpoint.array(p + "self_attn.o_proj.weight", (hidden, heads * head_dim))
     if fused.shape[0] % TP or o.shape[1] % TP:
         raise PackFailure(f"layer {layer}: fused rows {fused.shape[0]} or o_proj columns {o.shape[1]} do not divide {TP}")
     rows, columns = fused.shape[0] // TP, o.shape[1] // TP
-    packs.replicated(name + "attn_q_norm", checkpoint.f32(p + "self_attn.q_norm.weight", (head_dim,)), "f32")
-    packs.replicated(name + "attn_k_norm", checkpoint.f32(p + "self_attn.k_norm.weight", (head_dim,)), "f32")
+    if muse:
+        gate = checkpoint.array(p + "self_attn.gate_proj.weight", (heads * head_dim, hidden))
+        for rank in packs.ranks:
+            packs.add(rank, name + "attn_gate", gate[rank * columns:(rank + 1) * columns], "bf16")
+    else:
+        packs.replicated(name + "attn_q_norm", checkpoint.f32(p + "self_attn.q_norm.weight", (head_dim,)), "f32")
+        packs.replicated(name + "attn_k_norm", checkpoint.f32(p + "self_attn.k_norm.weight", (head_dim,)), "f32")
     inter = text["intermediate_size"]
     gate = checkpoint.array(p + "mlp.gate_proj.weight", (inter, hidden))
     up = checkpoint.array(p + "mlp.up_proj.weight", (inter, hidden))
@@ -155,15 +171,16 @@ def pack_layer(checkpoint, packs, text, layer):
         packs.add(rank, name + "moe_w2", expert_down[owned], "bf16")
 
 
-def finish(packs, text, revision, contract_sha256):
+def finish(packs, text, revision, contract_sha256, period):
     vocab_rows = text["vocab_size"] // TP
     moe = bool(text.get("enable_moe_block"))
+    model = "muse_glimmer_30b" if is_muse(text) else "gemma4_26b_a4b" if moe else "gemma4_31b"
     for rank in packs.ranks:
         packs.writers[rank].close()
         window = ffn_window(text["intermediate_size"], rank)
-        config = {"model": "gemma4_26b_a4b" if moe else "gemma4_31b", "tp_degree": TP, "tp_rank": rank, "hidden": text["hidden_size"],
+        config = {"model": model, "tp_degree": TP, "tp_rank": rank, "hidden": text["hidden_size"],
                   "layers": text["num_hidden_layers"], "vocab": text["vocab_size"], "vocab_first": rank * vocab_rows,
-                  "vocab_rows": vocab_rows, "ffn_rows": window.stop - window.start, "full_period": 6, "full_phase": 5,
+                  "vocab_rows": vocab_rows, "ffn_rows": window.stop - window.start, "full_period": period, "full_phase": period - 1,
                   "sliding_window": text["sliding_window"]}
         if moe:
             local = text["num_experts"] // TP
@@ -197,7 +214,8 @@ def main():
     text = json.loads((args.checkpoint / "config.json").read_text())["text_config"]
     if text.get("hidden_size_per_layer_input") or text.get("num_kv_shared_layers") or text.get("use_double_wide_mlp"):
         raise PackFailure("this packer handles the Gemma 4 text model without per-layer inputs, shared KV or double-wide MLP")
-    expected = ["full_attention" if index % 6 == 5 else "sliding_attention" for index in range(text["num_hidden_layers"])]
+    period = text["layer_types"].index("full_attention") + 1
+    expected = ["full_attention" if index % period == period - 1 else "sliding_attention" for index in range(text["num_hidden_layers"])]
     if text["layer_types"] != expected or text["vocab_size"] % TP or text["intermediate_size"] % 64 or \
             (text.get("enable_moe_block") and (text["num_experts"] % TP or text["moe_intermediate_size"] % 64)):
         raise PackFailure("layer pattern, vocab, intermediate or expert sizes differ from the packer's TP16 layout")
@@ -206,16 +224,19 @@ def main():
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
-    packs = RankPacks(args.output_dir, args.resume, ranks, "gemma4_26b" if text.get("enable_moe_block") else "gemma4")
+    packs = RankPacks(args.output_dir, args.resume, ranks, "muse" if is_muse(text) else "gemma4_26b" if text.get("enable_moe_block") else "gemma4")
     hidden, vocab_rows = text["hidden_size"], text["vocab_size"] // TP
     embed = checkpoint.array(PREFIX + "embed_tokens.weight", (text["vocab_size"], hidden))
+    head = checkpoint.array("lm_head.weight", (text["vocab_size"], hidden)) if is_muse(text) else None
     for rank in ranks:
         packs.add(rank, "embed", embed[rank * vocab_rows:(rank + 1) * vocab_rows], "bf16")
+        if head is not None:
+            packs.add(rank, "head", head[rank * vocab_rows:(rank + 1) * vocab_rows], "bf16")
     packs.replicated("head_norm", checkpoint.f32(PREFIX + "norm.weight", (hidden,)), "f32")
     for layer in range(text["num_hidden_layers"]):
         pack_layer(checkpoint, packs, text, layer)
         print(f"layer {layer} packed", flush=True)
-    finish(packs, text, revision, contract_sha256)
+    finish(packs, text, revision, contract_sha256, period)
     return 0
 
 

@@ -84,18 +84,21 @@ static int32_t LmStageHeadSlice(const LmStageHeadRows &head, uint32_t rows, cuda
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-__global__ static void LmStageSoftcapKernel(float *values, uint64_t count, float cap)
+__global__ static void LmStageSoftcapKernel(float *values, uint64_t count, float cap, float scale)
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
-		values[index] = cap * tanhf(values[index] / cap);
+	{
+		const float value = scale != 0.0f ? values[index] * scale : values[index];
+		values[index] = cap != 0.0f ? cap * tanhf(value / cap) : value;
+	}
 }
 
-static int32_t LmStageSoftcap(float *values, uint64_t count, float cap, cudaStream_t stream)
+static int32_t LmStageSoftcap(float *values, uint64_t count, float cap, float scale, cudaStream_t stream)
 {
 	const uint64_t blocks = (count + LM_STAGE_HEAD_THREADS - 1u) / LM_STAGE_HEAD_THREADS;
-	if ( cap == 0.0f || count == 0u )
+	if ( (cap == 0.0f && scale == 0.0f) || count == 0u )
 		return LM_LAUNCH_OK;
-	LM_LAUNCH((LmStageSoftcapKernel), (uint32_t)(blocks < 4096u ? blocks : 4096u), LM_STAGE_HEAD_THREADS, 0, stream, values,count,cap);
+	LM_LAUNCH((LmStageSoftcapKernel), (uint32_t)(blocks < 4096u ? blocks : 4096u), LM_STAGE_HEAD_THREADS, 0, stream, values,count,cap,scale);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
