@@ -21,6 +21,10 @@ usage:
   ds4_eval92.py --endpoint http://127.0.0.1:8433 --model qwen3.8-27b \\
       --max-tokens 16000 --temperature 0 --out qualification/ds4_eval/runs/<run-id>
 
+With a nonzero temperature, --top-p and --top-k pass the model's recommended
+sampling through and --seed gives case i the seed (seed + i), so a sampled run
+repeats exactly on the same build and batch composition.
+
 --resume reuses the saved successful responses of an interrupted run in --out
 (wall time and tok/s then cover only the new requests; "resumed" counts them).
 """
@@ -71,6 +75,13 @@ def messages(cases: dict, case: dict) -> list:
 def body_for(args, cases: dict, case: dict, max_tokens: int) -> dict:
     body = {"model": args.model, "messages": messages(cases, case), "max_tokens": max_tokens,
             "temperature": args.temperature}
+    if args.temperature:
+        if args.top_p is not None:
+            body["top_p"] = args.top_p
+        if args.top_k is not None:
+            body["top_k"] = args.top_k
+        if args.seed is not None:
+            body["seed"] = args.seed + case["index"]
     if args.reasoning_effort:
         body["reasoning_effort"] = args.reasoning_effort
     return body
@@ -131,6 +142,7 @@ def run_phase(args, cases: dict, phase: str, out: Path) -> dict:
     completion = sum(record.get("completion_tokens") or 0 for record in records)
     summary = {"format": "sparkpipe-ds4-eval92-phase-v1", "phase": phase, "model": args.model,
                "endpoint": args.endpoint, "max_tokens": max_tokens, "temperature": args.temperature,
+               "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed,
                "reasoning_effort": args.reasoning_effort, "concurrency": workers, "wall_s": round(wall, 1),
                "completed": sum(record["status"] == "ok" for record in records),
                "resumed": sum(bool(record.get("resumed")) for record in records),
@@ -149,8 +161,8 @@ def run_phase(args, cases: dict, phase: str, out: Path) -> dict:
 
 def report(out: Path, args, cases_path: Path, summaries: dict) -> None:
     lines = [f"# ds4-eval 92 — {args.model}", "",
-             f"- Endpoint `{args.endpoint}`, temperature `{args.temperature}`, max_tokens `{args.max_tokens}`,"
-             f" reasoning_effort `{args.reasoning_effort or 'model default'}`",
+             f"- Endpoint `{args.endpoint}`, temperature `{args.temperature}`, top_p `{args.top_p}`, top_k `{args.top_k}`,"
+             f" seed `{args.seed}`, max_tokens `{args.max_tokens}`, reasoning_effort `{args.reasoning_effort or 'model default'}`",
              f"- Cases `{cases_path.relative_to(ROOT) if cases_path.is_relative_to(ROOT) else cases_path}`"
              f" sha256 `{hashlib.sha256(cases_path.read_bytes()).hexdigest()}`", "",
              "| Phase | Concurrency | Passed | Errors | Prompt tok | Cached tok | Completion tok | Wall s | Completion tok/s |",
@@ -179,6 +191,9 @@ def main() -> int:
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     parser.add_argument("--max-tokens", type=int, required=True)
     parser.add_argument("--temperature", type=float, required=True)
+    parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--reasoning-effort", choices=("minimal", "low", "medium", "high"), default=None)
     parser.add_argument("--concurrency", type=int, default=92)
     parser.add_argument("--phases", default=",".join(PHASES))
@@ -189,6 +204,8 @@ def main() -> int:
     phases = [phase for phase in args.phases.split(",") if phase]
     if not phases or any(phase not in PHASES for phase in phases):
         raise SystemExit(f"--phases is a comma list of {', '.join(PHASES)}")
+    if not args.temperature and (args.top_p is not None or args.top_k is not None or args.seed is not None):
+        raise SystemExit("--top-p, --top-k and --seed apply to sampling; give a nonzero --temperature")
     cases = json.loads(args.cases.read_text())
     if len(cases.get("cases", [])) != 92:
         raise SystemExit(f"{args.cases} holds {len(cases.get('cases', []))} cases, not the 92-case suite")
