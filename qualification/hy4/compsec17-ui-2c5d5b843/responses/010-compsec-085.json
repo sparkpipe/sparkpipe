@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "106381c39e2d9fb9489e5feeec87b0b07d53f1c6c3b20cf7b0cbcbe3a43c5b31"
+ },
+ "response": {
+  "id": "chatcmpl-8457c5ef2fbf49a1bff6d6f0bf1f0b98",
+  "created": 1791717534,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Line 5 uses `strncat` without accounting for the remaining capacity of `sql`, so it can overflow the destination buffer. The primary bug is introduced at line 5.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 42,
+   "prompt_tokens": 239,
+   "total_tokens": 281,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Line 5 uses `strncat` without accounting for the remaining capacity of `sql`, so it can overflow the destination buffer. The primary bug is introduced at line 5.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 11687.4,
+  "output_sha256": "6b145f37070ad0255e806e0d6000d0ef6e59ba05d04c6a882ab80215d3b4b21f",
+  "prompt_token_count": 239,
+  "generated_token_count": 42,
+  "reasoning_chars": 0,
+  "content_chars": 172,
+  "status": "stop"
+ }
+}

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "fa9a18d055e8306eb9ede116fbaa13458947203e4e105e27382b86e7d69cc1c2"
+ },
+ "response": {
+  "id": "chatcmpl-027cf93db3234803b36c4b95fd8d0253",
+  "created": 1791717506,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Line 10 grows the vector by `missing`, but `missing` can be negative when segments arrive out of order or repeat, so the vector may not be large enough for `segno`. The primary bug is introduced at line 10, with the unsafe use at line 11.\n\nAnswer: 10,11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 65,
+   "prompt_tokens": 315,
+   "total_tokens": 380,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Line 10 grows the vector by `missing`, but `missing` can be negative when segments arrive out of order or repeat, so the vector may not be large enough for `segno`. The primary bug is introduced at line 10, with the unsafe use at line 11.\n\nAnswer: 10,11",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "10,11",
+  "passed": true,
+  "elapsed_ms": 13915.1,
+  "output_sha256": "7bcae1d6fef4e9a0b778ebdef7bba8eb62863588ff19cc4653bc34ae5ed0b0a0",
+  "prompt_token_count": 315,
+  "generated_token_count": 65,
+  "reasoning_chars": 0,
+  "content_chars": 253,
+  "status": "stop"
+ }
+}

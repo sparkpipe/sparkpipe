@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a51b56b195a5f209ff7fcc8a4778a323535963ed9599cb94ab79f52e41540ee0"
+ },
+ "response": {
+  "id": "chatcmpl-766ab82ab5d64688b35046744b3fd48d",
+  "created": 1791716781,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `decode_component` performs in-place decoding of a percent-encoded string. The vulnerability lies in how `s[r]` is handled when it is passed to `isxdigit`.\n\nAccording to the problem statement, `char` is signed on this target. In C, when a `signed char` with a negative value (e.g., a character with the high bit set, like `0xFF`) is passed to a function expecting an `int` (like `isxdigit`), it undergoes **sign extension**. For example, `0xFF` becomes `0xFFFFFFFF`.\n\nThe problem states that the `ctype` implementation indexes a table for values other than `EOF`. If `isxdigit` receives a negative value (due to sign extension), it will attempt to index the lookup table with a very large or negative index, leading to an out-of-bounds memory access.\n\nThe bug is introduced at line 7, where `s[r + 1]` and `s[r + 2]` are passed directly to `isxdigit` without being cast to `unsigned char`.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 237,
+   "prompt_tokens": 348,
+   "total_tokens": 585,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `decode_component` performs in-place decoding of a percent-encoded string. The vulnerability lies in how `s[r]` is handled when it is passed to `isxdigit`.\n\nAccording to the problem statement, `char` is signed on this target. In C, when a `signed char` with a negative value (e.g., a character with the high bit set, like `0xFF`) is passed to a function expecting an `int` (like `isxdigit`), it undergoes **sign extension**. For example, `0xFF` becomes `0xFFFFFFFF`.\n\nThe problem states that the `ctype` implementation indexes a table for values other than `EOF`. If `isxdigit` receives a negative value (due to sign extension), it will attempt to index the lookup table with a very large or negative index, leading to an out-of-bounds memory access.\n\nThe bug is introduced at line 7, where `s[r + 1]` and `s[r + 2]` are passed directly to `isxdigit` without being cast to `unsigned char`.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 3096.8,
+  "output_sha256": "0d8b4c7650c6975ddbc6020fd0fcb2f3405797b7da180171a33c17719f9383a3",
+  "prompt_token_count": 348,
+  "generated_token_count": 237,
+  "reasoning_chars": 0,
+  "content_chars": 913,
+  "status": "stop"
+ }
+}

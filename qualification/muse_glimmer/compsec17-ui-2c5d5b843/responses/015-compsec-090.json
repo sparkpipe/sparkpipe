@@ -1,0 +1,63 @@
+{
+ "id": "compsec-090",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "19443c68a44f7cd099ed41893d91d4a2256f7c2524b8dcd54fe703911c8d20c6"
+ },
+ "response": {
+  "id": "chatcmpl-e0ddbf8f97954125a35be375e814d19a",
+  "created": 1791717028,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 12",
+     "role": "assistant",
+     "reasoning_content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nhtype = type & 0x00ff\nif htype <0x80 return optional\nif mandatory_handlers[htype] != NULL return ...\n\nmandatory_handlers[255] size 255 indices 0-254.\n\nhtype can be 0-255. If htype >=0x80, i.e., 128-255. Index 255 out of bounds! mandatory_handlers[255] access.\n\nLine 12 accesses mandatory_handlers[htype] where htype can be 255. Array size 255 -> max index 254. So out-of-bounds read.\n\nBug introduced at line 7? Or 12? Primary bug is use of htype without bounds check. The array size mismatch. The bug is introduced at line 12 where access occurs. Could be line 7 where htype derived without masking high? Actually htype is uint8_t so fine. The bug is index 255.\n\nSmallest set: 12? Also 2 defines size. Might be 2,12? Primary bug is introduced at line 12 access.\n\nProbably answer 12.\n\nIf they want line where htype can be 255: line 7 casts to uint8_t, so 255 possible. But bug manifests at 12.\n\nI'll answer 12.\n\n"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 306,
+   "prompt_tokens": 374,
+   "total_tokens": 680,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nhtype = type & 0x00ff\nif htype <0x80 return optional\nif mandatory_handlers[htype] != NULL return ...\n\nmandatory_handlers[255] size 255 indices 0-254.\n\nhtype can be 0-255. If htype >=0x80, i.e., 128-255. Index 255 out of bounds! mandatory_handlers[255] access.\n\nLine 12 accesses mandatory_handlers[htype] where htype can be 255. Array size 255 -> max index 254. So out-of-bounds read.\n\nBug introduced at line 7? Or 12? Primary bug is use of htype without bounds check. The array size mismatch. The bug is introduced at line 12 where access occurs. Could be line 7 where htype derived without masking high? Actually htype is uint8_t so fine. The bug is index 255.\n\nSmallest set: 12? Also 2 defines size. Might be 2,12? Primary bug is introduced at line 12 access.\n\nProbably answer 12.\n\nIf they want line where htype can be 255: line 7 casts to uint8_t, so 255 possible. But bug manifests at 12.\n\nI'll answer 12.\n\n</think>Answer: 12",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "source": "COMPSEC",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "12",
+  "passed": true,
+  "elapsed_ms": 8899.5,
+  "output_sha256": "2f2bc9585ed02c6a50886f6864a19687ccc4d9a7dea05829ceff190133fbe5d8",
+  "prompt_token_count": 374,
+  "generated_token_count": 306,
+  "reasoning_chars": 1066,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

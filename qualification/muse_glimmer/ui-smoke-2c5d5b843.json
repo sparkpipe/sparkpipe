@@ -1,0 +1,271 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T11:08:12+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "muse-glimmer-30b",
+ "passed": 4,
+ "total": 4,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-66a0d8f07e264dd19001df10a540989d",
+     "created": 1791716881,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": "What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly no extra. Answer in one sentence.\n\nWe should comply.\n\nPotential nuance: answer in one sentence. Provide that.\n\nNo extra fluff? Could be okay.\n\nProbably output: The capital of France is Paris.\n\nThat's one sentence.\n\nEnsure punctuation.\n\nDone."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 112,
+      "prompt_tokens": 68,
+      "total_tokens": 180,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly no extra. Answer in one sentence.\n\nWe should comply.\n\nPotential nuance: answer in one sentence. Provide that.\n\nNo extra fluff? Could be okay.\n\nProbably output: The capital of France is Paris.\n\nThat's one sentence.\n\nEnsure punctuation.\n\nDone.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 3.25
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly no extra. Answer in one sentence.\n\nWe should comply.\n\nPotential nuance: answer in one sentence. Provide that.\n\nNo extra fluff? Could be okay.\n\nProbably output: The capital of France is Paris.\n\nThat's one sentence.\n\nEnsure punctuation.\n\nDone.",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 17,
+    "elapsed_s": 3.15
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-98c2e6de4cfe49e59e122a6d6d41820d",
+     "created": 1791716889,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+           "name": "get_weather"
+          },
+          "id": "call_e51f43bc1aae4d89af1b9691",
+          "type": "function"
+         }
+        ],
+        "reasoning_content": "We need to use get_weather tool. Location Paris. Unit? Not specified. Could default? Probably celsius. Might ask? Could provide both? The tool requires location, unit optional? Schema says required location, unit enum celsius fahrenheit. Probably optional? It says required [\"location\"]. So unit optional. Might default? Could pick celsius. Probably provide celsius.\n\nWe should call get_weather with location=\"Paris\", unit=\"celsius\".",
+        "content": null
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 149,
+      "prompt_tokens": 436,
+      "total_tokens": 585,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "",
+    "reasoning": "We need to use get_weather tool. Location Paris. Unit? Not specified. Could default? Probably celsius. Might ask? Could provide both? The tool requires location, unit optional? Schema says required location, unit enum celsius fahrenheit. Probably optional? It says required [\"location\"]. So unit optional. Might default? Could pick celsius. Probably provide celsius.\n\nWe should call get_weather with location=\"Paris\", unit=\"celsius\".",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+       "name": "get_weather"
+      },
+      "id": "call_e51f43bc1aae4d89af1b9691",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 4.74
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+         "name": "get_weather"
+        },
+        "id": "call_e51f43bc1aae4d89af1b9691",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_e51f43bc1aae4d89af1b9691",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-a3e77fbcd1364d3d88fcbdb17b7be0ea",
+     "created": 1791716892,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The current weather in Paris is **18\u00b0C and sunny**.\n",
+        "role": "assistant",
+        "reasoning_content": "What is the weather in Paris right now? Use the get_weather tool.\n\nWe have tool output: location Paris, temperature_c 18, condition sunny.\n\nWe should respond with weather. Probably just say it's 18\u00b0C and sunny.\n\nNo further constraints. Provide answer.\n\nPossibly ask unit? User didn't specify. We used celsius. Could provide.\n\nFollow guidelines."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 94,
+      "prompt_tokens": 534,
+      "total_tokens": 628,
+      "prompt_tokens_details": {
+       "cached_tokens": 384
+      }
+     }
+    },
+    "content": "The current weather in Paris is **18\u00b0C and sunny**.\n",
+    "reasoning": "What is the weather in Paris right now? Use the get_weather tool.\n\nWe have tool output: location Paris, temperature_c 18, condition sunny.\n\nWe should respond with weather. Probably just say it's 18\u00b0C and sunny.\n\nNo further constraints. Provide answer.\n\nPossibly ask unit? User didn't specify. We used celsius. Could provide.\n\nFollow guidelines.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 2.91
+   },
+   "problems": []
+  }
+ ]
+}

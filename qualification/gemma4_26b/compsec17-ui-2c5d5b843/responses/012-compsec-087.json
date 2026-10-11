@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "c9122da7f0e21f1ac5d68b22063e9d61af5e9eab82b78332d47b333b093f588a"
+ },
+ "response": {
+  "id": "chatcmpl-c0522c5244b74b6d87b91921ed6b1093",
+  "created": 1791716791,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function attempts to handle IPv6 address compression (the `::` notation) by shifting bytes in a temporary buffer.\n\nLet's trace the logic when `::` is at the start (e.g., `::1`):\n1. Line 7: `src[0] == ':' && src[1] == ':'` is true.\n2. Line 8: `colonp = --tp;`. Since `tp` initially points to `tmp[0]`, `tp` now points to `tmp[-1]`. This is an out-of-bounds pointer write/assignment.\n3. Line 20: `n = (size_t)(tp - colonp)`. Since `colonp` is `tp - 1`, `n` becomes 1.\n4. Line 21: `memmove(colonp + (16 - (tp - tmp)), colonp, n);`. If `colonp` is `tmp - 1`, this performs memory operations on memory preceding the `tmp` array.\n\nThe primary bug is the pointer arithmetic on line 8, which sets `colonp` to an address before the allocated `tmp` buffer, leading to an out-of-bounds memory access when `colonp` is subsequently used in `memmove` and `memset`.\n\nAnswer: 8",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 285,
+   "prompt_tokens": 512,
+   "total_tokens": 797,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function attempts to handle IPv6 address compression (the `::` notation) by shifting bytes in a temporary buffer.\n\nLet's trace the logic when `::` is at the start (e.g., `::1`):\n1. Line 7: `src[0] == ':' && src[1] == ':'` is true.\n2. Line 8: `colonp = --tp;`. Since `tp` initially points to `tmp[0]`, `tp` now points to `tmp[-1]`. This is an out-of-bounds pointer write/assignment.\n3. Line 20: `n = (size_t)(tp - colonp)`. Since `colonp` is `tp - 1`, `n` becomes 1.\n4. Line 21: `memmove(colonp + (16 - (tp - tmp)), colonp, n);`. If `colonp` is `tmp - 1`, this performs memory operations on memory preceding the `tmp` array.\n\nThe primary bug is the pointer arithmetic on line 8, which sets `colonp` to an address before the allocated `tmp` buffer, leading to an out-of-bounds memory access when `colonp` is subsequently used in `memmove` and `memset`.\n\nAnswer: 8",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "8",
+  "passed": true,
+  "elapsed_ms": 3713.6,
+  "output_sha256": "ab94b1773118fdf771130743d049322ab8d0ed381293d1b1fb1a38bfdc1f01f1",
+  "prompt_token_count": 512,
+  "generated_token_count": 285,
+  "reasoning_chars": 0,
+  "content_chars": 865,
+  "status": "stop"
+ }
+}
