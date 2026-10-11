@@ -29,6 +29,7 @@ class FakeModel(chat_frontend.Model):
         self.reasoning_effort = {}
         self.template_kwargs = set()
         self.reasoning = {"start": "<think>", "end": "</think>"}
+        self.channels = None
         self.tool_calls = {"format": "key_value", "start": "<tool_call>", "end": "</tool_call>", "key_start": "<arg_key>", "key_end": "</arg_key>",
                            "value_start": "<arg_value>", "value_end": "</arg_value>"}
         self.content_markers = []

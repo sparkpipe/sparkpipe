@@ -392,16 +392,15 @@
     }
    },
    "reasoning": {
-    "start": "<|channel>",
+    "start": "<|channel>thought\n",
     "end": "<channel|>"
    },
    "tool_calls": {
-    "format": "tagged",
+    "format": "object",
     "start": "<|tool_call>",
     "end": "<tool_call|>",
-    "attribute_end": "{",
-    "argument_start": "<|\"|>",
-    "argument_end": "<|\"|>"
+    "name_prefix": "call:",
+    "string_delimiter": "<|\"|>"
    }
   },
   {
@@ -438,16 +437,15 @@
     }
    },
    "reasoning": {
-    "start": "<|channel>",
+    "start": "<|channel>thought\n",
     "end": "<channel|>"
    },
    "tool_calls": {
-    "format": "tagged",
+    "format": "object",
     "start": "<|tool_call>",
     "end": "<tool_call|>",
-    "attribute_end": "{",
-    "argument_start": "<|\"|>",
-    "argument_end": "<|\"|>"
+    "name_prefix": "call:",
+    "string_delimiter": "<|\"|>"
    }
   },
   {
@@ -577,9 +575,13 @@
      "reasoning_strength": "high"
     }
    },
-   "reasoning": {
-    "start": "<|start|>assistant",
-    "end": " to=user<|message|>"
+   "channels": {
+    "message_start": "<|start|>assistant",
+    "header_end": "<|message|>",
+    "message_end": "<|eom|>",
+    "recipient_prefix": " to=",
+    "reasoning_recipient": "self",
+    "content_recipient": "user"
    },
    "tool_calls": {
     "format": "tagged",
