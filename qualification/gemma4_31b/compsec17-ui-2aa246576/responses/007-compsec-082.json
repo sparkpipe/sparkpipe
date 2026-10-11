@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-31b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "b958d345970c01d4580a4d640484927e1411da03e9a474b2905584889aea9490"
+ },
+ "response": {
+  "id": "chatcmpl-5794d188e5df4d65a2ed670ba96fbf4f",
+  "created": 1791704018,
+  "model": "gemma-4-31b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function reads a length `n` from the XDR stream and then reads `n` bytes into a destination buffer `dst`. On line 10, it attempts to null-terminate the string by writing `'\\0'` at `dst[n]`.\n\nThe vulnerability is a buffer overflow (off-by-one). The code checks if `n` bytes are available in the XDR stream, but it does not check if the destination buffer `dst` (defined by `base` and `desc->offset`) has enough space to hold `n + 1` bytes. Since `n` is a `uint32_t` provided by the input stream, an attacker can provide a value of `n` that fills the allocated slice exactly, causing `dst[n]` to write a null byte outside the bounds of the allocated memory.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 182,
+   "prompt_tokens": 316,
+   "total_tokens": 498,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function reads a length `n` from the XDR stream and then reads `n` bytes into a destination buffer `dst`. On line 10, it attempts to null-terminate the string by writing `'\\0'` at `dst[n]`.\n\nThe vulnerability is a buffer overflow (off-by-one). The code checks if `n` bytes are available in the XDR stream, but it does not check if the destination buffer `dst` (defined by `base` and `desc->offset`) has enough space to hold `n + 1` bytes. Since `n` is a `uint32_t` provided by the input stream, an attacker can provide a value of `n` that fills the allocated slice exactly, causing `dst[n]` to write a null byte outside the bounds of the allocated memory.\n\nAnswer: 10",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 6561.3,
+  "output_sha256": "163ee6f0e0d26b6384302178974826757e649bc4b341ab9e245e05801217fdef",
+  "prompt_token_count": 316,
+  "generated_token_count": 182,
+  "reasoning_chars": 0,
+  "content_chars": 671,
+  "status": "stop"
+ }
+}

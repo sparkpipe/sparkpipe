@@ -1,0 +1,62 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper is called once for each Special Line Character option received in a TELNET LINEMODE negotiation.\n\nCode:\n```c\n 1: #define SLCBUF_SIZE 108\n 2: #define SLC_NCHARS 18\n 3: \n 4: struct slc_state {\n 5:     unsigned char buf[SLCBUF_SIZE];\n 6:     size_t used;\n 7: };\n 8: \n 9: static void add_slc(struct slc_state *s,\n10:                     unsigned char func,\n11:                     unsigned char flags,\n12:                     unsigned char value)\n13: {\n14:     if (func <= SLC_NCHARS)\n15:         return;                    // ignore ordinary entries here\n16: \n17:     /* Store one SLC triplet for later reply construction. */\n18:     s->buf[s->used++] = func;\n19:     s->buf[s->used++] = flags;\n20:     s->buf[s->used++] = value;\n21: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "45e351a72a32f5e769971ee2cbe05713b1ea5bc6c1740e9fbe2587b84249f793"
+ },
+ "response": {
+  "id": "chatcmpl-b50290e27bfa4348b2543191d829382b",
+  "created": 1791704866,
+  "model": "ling-3.0-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "14",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 2,
+   "prompt_tokens": 381,
+   "total_tokens": 383,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "14",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "14",
+  "passed": false,
+  "elapsed_ms": 448.8,
+  "output_sha256": "8527a891e224136950ff32ca212b45bc93f69fbb801c3b1ebedac52775f99e61",
+  "prompt_token_count": 381,
+  "generated_token_count": 2,
+  "reasoning_chars": 0,
+  "content_chars": 2,
+  "status": "stop"
+ }
+}

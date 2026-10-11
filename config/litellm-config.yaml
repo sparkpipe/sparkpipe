@@ -55,6 +55,46 @@ model_list:
   model_info:
     max_input_tokens: 32768
     max_output_tokens: 32768
+- model_name: gemma-4-31b
+  litellm_params:
+    model: hosted_vllm/gemma-4-31b
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
+- model_name: gemma-4-26b-a4b
+  litellm_params:
+    model: hosted_vllm/gemma-4-26b-a4b
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
+- model_name: hy4-preview
+  litellm_params:
+    model: hosted_vllm/hy4-preview
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
+- model_name: ling-3.0-flash
+  litellm_params:
+    model: hosted_vllm/ling-3.0-flash
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
+- model_name: muse-glimmer-30b
+  litellm_params:
+    model: hosted_vllm/muse-glimmer-30b
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
 - model_name: "*"
   litellm_params:
     model: hosted_vllm/glm-5.3

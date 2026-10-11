@@ -357,6 +357,244 @@
     "parameter_start": "<parameter=",
     "parameter_end": "</parameter>"
    }
+  },
+  {
+   "id": "gemma-4-31b",
+   "model_dir": "models/gemma-4-31b",
+   "engine": "http://127.0.0.1:8466",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<turn|>",
+    "<eos>",
+    "<|tool_response>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<|channel>",
+    "end": "<channel|>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "<|tool_call>",
+    "end": "<tool_call|>",
+    "attribute_end": "{",
+    "argument_start": "<|\"|>",
+    "argument_end": "<|\"|>"
+   }
+  },
+  {
+   "id": "gemma-4-26b-a4b",
+   "model_dir": "models/gemma-4-26b-a4b",
+   "engine": "http://127.0.0.1:8467",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<turn|>",
+    "<eos>",
+    "<|tool_response>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<|channel>",
+    "end": "<channel|>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "<|tool_call>",
+    "end": "<tool_call|>",
+    "attribute_end": "{",
+    "argument_start": "<|\"|>",
+    "argument_end": "<|\"|>"
+   }
+  },
+  {
+   "id": "hy4-preview",
+   "model_dir": "models/hy4-preview",
+   "engine": "http://127.0.0.1:8470",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<｜hy_end:opensource｜>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_effort"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_effort": "no_think"
+    },
+    "low": {
+     "reasoning_effort": "high"
+    },
+    "medium": {
+     "reasoning_effort": "high"
+    },
+    "high": {
+     "reasoning_effort": "high"
+    }
+   },
+   "reasoning": {
+    "start": "<think:opensource>",
+    "end": "</think:opensource>"
+   },
+   "tool_calls": {
+    "format": "key_value",
+    "start": "<tool_call:opensource>",
+    "end": "</tool_call:opensource>",
+    "key_start": "<arg_key:opensource>",
+    "key_end": "</arg_key:opensource>",
+    "value_start": "<arg_value:opensource>",
+    "value_end": "</arg_value:opensource>"
+   },
+   "content_markers": [
+    "<tool_calls:opensource>",
+    "</tool_calls:opensource>"
+   ]
+  },
+  {
+   "id": "ling-3.0-flash",
+   "model_dir": "models/ling-3.0-flash",
+   "engine": "http://127.0.0.1:8468",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|role_end|>",
+    "<|endoftext|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "key_value",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "key_start": "<arg_key>",
+    "key_end": "</arg_key>",
+    "value_start": "<arg_value>",
+    "value_end": "</arg_value>"
+   }
+  },
+  {
+   "id": "muse-glimmer-30b",
+   "model_dir": "models/muse-glimmer-30b",
+   "engine": "http://127.0.0.1:8471",
+   "context_tokens": 32768,
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 600,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|eot|>",
+    "<|end_of_text|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_strength"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_strength": "low"
+    },
+    "low": {
+     "reasoning_strength": "low"
+    },
+    "medium": {
+     "reasoning_strength": "medium"
+    },
+    "high": {
+     "reasoning_strength": "high"
+    }
+   },
+   "reasoning": {
+    "start": "<|start|>assistant",
+    "end": " to=user<|message|>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "<atem:invoke",
+    "end": "</atem:invoke>",
+    "attribute_end": ">",
+    "argument_start": "<atem:parameter",
+    "argument_end": "</atem:parameter>",
+    "name_attribute": "name",
+    "key_attribute": "name"
+   },
+   "content_markers": [
+    "<atem:function_calls>",
+    "</atem:function_calls>"
+   ]
   }
  ],
  "control": {

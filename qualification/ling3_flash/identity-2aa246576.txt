@@ -1,0 +1,44 @@
+release agent identity check 2026-10-11T07:50:15Z, firmware fw-2aa246576 (SOURCE_COMMIT 2aa246576), hub API ~/api-build-2aa246576/build
+swap id ling-3.0-flash
+swap entry vs generated: IDENTICAL
+07:30:17 idle ling-3.0-flash None 16.2
+capital: IDENTICAL 8 tokens, logprobs identical
+arith: IDENTICAL 64 tokens, logprobs identical
+code: IDENTICAL 64 tokens, logprobs identical
+story: IDENTICAL 64 tokens, logprobs identical
+sky: IDENTICAL 55 tokens, logprobs identical
+translate: IDENTICAL 14 tokens, logprobs identical
+list: IDENTICAL 64 tokens, logprobs identical
+zh: IDENTICAL 17 tokens, logprobs identical
+count: IDENTICAL 64 tokens, logprobs identical
+long: IDENTICAL 64 tokens, logprobs identical
+capital_turn2: IDENTICAL 10 tokens, logprobs identical
+sky_turn2: IDENTICAL 64 tokens, logprobs identical
+translate_turn2: IDENTICAL 15 tokens, logprobs identical
+zh_turn2: IDENTICAL 45 tokens, logprobs identical
+IDENTITY 14/14 identical
+-- sha256 (16 hex) of the running API exe, the build, the hub adapter and the build adapter; then the adapter on each node
+api_pid 2537672
+425824f461b0cdbf /proc/2537672/exe
+425824f461b0cdbf /home/spec/api-build-2aa246576/build/sparkpipe_model_api
+795d31690c6bdc52 /home/spec/ling3_flash-kv-api/runtime/lib/libling3_flash_tp16_serving_adapter.so
+795d31690c6bdc52 /home/spec/api-build-2aa246576/build/libling3_flash_tp16_serving_adapter.so
+spark0 45aa92af43e67140
+spark1 45aa92af43e67140
+spark2 45aa92af43e67140
+spark3 45aa92af43e67140
+spark4 45aa92af43e67140
+spark5 45aa92af43e67140
+spark6 45aa92af43e67140
+spark7 45aa92af43e67140
+spark8 45aa92af43e67140
+spark9 45aa92af43e67140
+sparka 45aa92af43e67140
+sparkb 45aa92af43e67140
+sparkc 45aa92af43e67140
+sparkd 45aa92af43e67140
+sparke 45aa92af43e67140
+sparkf 45aa92af43e67140
+-- API health before and after the capture
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+{"status":"ok","served":14,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}

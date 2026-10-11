@@ -1,0 +1,62 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "cb43b9733578d856000931cfec788fd74c17fbb5c81ad36d9f6c4da26e9fb621"
+ },
+ "response": {
+  "id": "chatcmpl-98d1d45e19de4592a388ff1f4a648221",
+  "created": 1791704766,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Line 3 computes `bytes` by shifting `blocks` left by `blkbits` without checking for overflow. If `blocks` is large enough, `blocks << blkbits` can overflow the 32-bit `uint32_t`, producing a small `bytes` value that passes the check on line 5 and is then stored on line 8. The primary bug is introduced at the computation of `bytes`.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 90,
+   "prompt_tokens": 250,
+   "total_tokens": 340,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Line 3 computes `bytes` by shifting `blocks` left by `blkbits` without checking for overflow. If `blocks` is large enough, `blocks << blkbits` can overflow the 32-bit `uint32_t`, producing a small `bytes` value that passes the check on line 5 and is then stored on line 8. The primary bug is introduced at the computation of `bytes`.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 15770.3,
+  "output_sha256": "f7d1251067f631811fe9a59ec0031e663bf224abcca305f66c089894d06e9e81",
+  "prompt_token_count": 250,
+  "generated_token_count": 90,
+  "reasoning_chars": 0,
+  "content_chars": 344,
+  "status": "stop"
+ }
+}

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "e0cb7207bf0f061c1b44c4f3c11ccbda05d5a80b3859ae9332914cc30366e470"
+ },
+ "response": {
+  "id": "chatcmpl-258cefd829b345dc89b9645aedcca01d",
+  "created": 1791704200,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `ccm_finish_reduced` takes a `tag_len` parameter from the caller and uses it in a `memcpy` operation to copy data from a fixed-size buffer `full_tag` (which is 16 bytes) into the destination buffer `tag`. \n\nThe vulnerability is a buffer overflow (specifically a stack-based buffer overflow if `tag_len` is larger than 16, or a heap/stack overflow of the destination `tag` if `tag_len` is larger than the allocated size of `tag`). Since `tag_len` is provided by the caller and is not validated against the size of the source buffer `full_tag` (16 bytes), a caller can provide a `tag_len` greater than 16, causing `memcpy` to read past the end of `full_tag`. Even if `tag_len` is within the bounds of `tag`, the lack of a check against the source buffer size `16` makes line 10 the site of the memory corruption/out-of-bounds read.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 233,
+   "prompt_tokens": 284,
+   "total_tokens": 517,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `ccm_finish_reduced` takes a `tag_len` parameter from the caller and uses it in a `memcpy` operation to copy data from a fixed-size buffer `full_tag` (which is 16 bytes) into the destination buffer `tag`. \n\nThe vulnerability is a buffer overflow (specifically a stack-based buffer overflow if `tag_len` is larger than 16, or a heap/stack overflow of the destination `tag` if `tag_len` is larger than the allocated size of `tag`). Since `tag_len` is provided by the caller and is not validated against the size of the source buffer `full_tag` (16 bytes), a caller can provide a `tag_len` greater than 16, causing `memcpy` to read past the end of `full_tag`. Even if `tag_len` is within the bounds of `tag`, the lack of a check against the source buffer size `16` makes line 10 the site of the memory corruption/out-of-bounds read.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 3247.9,
+  "output_sha256": "87b071a5f2c27af6067c3e6aa641b9485fa84aac72c7ceccbf9b2a478e491da9",
+  "prompt_token_count": 284,
+  "generated_token_count": 233,
+  "reasoning_chars": 0,
+  "content_chars": 854,
+  "status": "stop"
+ }
+}
