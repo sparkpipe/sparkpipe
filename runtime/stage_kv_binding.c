@@ -1025,7 +1025,7 @@ static SparkStatus SparkStageKvBindingAttachShared(SparkStageKvBinding *binding,
 	request.page_bytes = binding->page_bytes;
 	request.alignment_pages = (uint32_t)alignment;
 	request.label = binding->module_tag;
-	status = SparkWeightdKvSharedAttach(&request,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS,&binding->kv_shared);
+	status = SparkWeightdKvSharedAttach(&request,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS,&binding->kv_shared);
 	if ( status == SPARK_STATUS_UNSUPPORTED )
 	{
 		fprintf(stderr,"%s kv shared prefix off: weightd has no shared window for %u-page groups of %llu bytes\n",binding->module_tag,(uint32_t)alignment,(unsigned long long)binding->page_bytes);
@@ -1177,7 +1177,7 @@ static SparkStatus SparkStageKvBindingPoolKey(const SparkStageKvConfiguration *c
 static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration,uint64_t lane_entries)
 {
 	SparkWeightdKvPoolRequest request;
-	uint64_t region_offsets[SPARK_STAGE_KV_MAX_REGIONS],*offsets = 0;
+	uint64_t region_offsets[SPARK_STAGE_KV_MAX_REGIONS],*offsets = 0,attach_start_ns,attach_ms;
 	uint32_t region;
 	SparkStatus status;
 	memset(&request,0,sizeof(request));
@@ -1199,11 +1199,16 @@ static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,co
 	}
 	request.metadata_bytes = sizeof(SparkStageKvPoolSeal) + (uint64_t)binding->physical_page_count * sizeof(SparkKvPageCacheResidentRecord);
 	request.label = binding->module_tag;
-	status = SparkWeightdKvPoolMap(&request,offsets,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS,&binding->kv_pool);
+	attach_start_ns = SparkStageKvNowNs();
+	status = SparkWeightdKvPoolMap(&request,offsets,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS,&binding->kv_pool);
+	attach_ms = (SparkStageKvNowNs() - attach_start_ns) / 1000000ull;
 	free(offsets);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s kv pool attach failed status=%s after %llu ms of a %llu ms deadline\n",binding->module_tag,SparkStatusToString(status),
+			(unsigned long long)attach_ms,(unsigned long long)(SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS / 1000000ull));
 	if ( status == SPARK_STATUS_OK && binding->shared_page_count != 0u )
 	{
-		status = SparkWeightdKvSharedMapChunks(&binding->kv_shared,binding->kv_reservation,binding->shared_chunk_offsets,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS);
+		status = SparkWeightdKvSharedMapChunks(&binding->kv_shared,binding->kv_reservation,binding->shared_chunk_offsets,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS);
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr,"%s kv binding refused: mapping the shared prefix window failed status=%s mapped=%u of %u chunks\n",binding->module_tag,SparkStatusToString(status),
 				binding->kv_shared.mapped_count,binding->kv_shared.chunk_count);
@@ -1214,8 +1219,8 @@ static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,co
 		binding->region_base[region] = (uint8_t *)binding->kv_pool.device_base + region_offsets[region];
 	binding->page_table = (uint32_t *)binding->kv_pool.device_base;
 	binding->pool_mapped_bytes = (uint64_t)binding->kv_pool.mapped_count * binding->kv_pool.chunk_bytes;
-	fprintf(stderr,"%s kv pool weightd generation=%llu reattached=%u chunks=%u/%u minimum_chunks=%u chunk_bytes=%llu pages=%u/%u kv_committed=%llu kv_reserve=%llu private_kv_bytes=0\n",binding->module_tag,
-		(unsigned long long)binding->kv_pool.pool_generation,binding->kv_pool.reattached,binding->kv_pool.mapped_count,binding->kv_pool.chunk_capacity,binding->kv_pool_minimum_chunks,
+	fprintf(stderr,"%s kv pool weightd generation=%llu reattached=%u attach_ms=%llu chunks=%u/%u minimum_chunks=%u chunk_bytes=%llu pages=%u/%u kv_committed=%llu kv_reserve=%llu private_kv_bytes=0\n",binding->module_tag,
+		(unsigned long long)binding->kv_pool.pool_generation,binding->kv_pool.reattached,(unsigned long long)attach_ms,binding->kv_pool.mapped_count,binding->kv_pool.chunk_capacity,binding->kv_pool_minimum_chunks,
 		(unsigned long long)binding->kv_pool.chunk_bytes,SparkStageKvBindingPoolPageLimit(binding,binding->kv_pool.mapped_count),binding->physical_page_count,
 		(unsigned long long)binding->kv_pool.kv_committed_bytes,(unsigned long long)binding->kv_pool.kv_reserve_bytes);
 	return(SPARK_STATUS_OK);

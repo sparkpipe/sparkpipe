@@ -58,7 +58,9 @@ case "\${1:-}" in
   stop)
     systemctl --user stop $UNIT 2>/dev/null; systemctl --user reset-failed $UNIT 2>/dev/null; ! systemctl --user is-active -q $UNIT ;;
   reclaim)
-    ./bin/weightd_warm $STAGE_WEIGHTD_SOCKET --reclaim-pack "\$(cut -c1-64 packs/pack.sha256)" ;;
+    ./bin/weightd_warm $STAGE_WEIGHTD_SOCKET --reclaim-pack "\$(cut -c1-64 packs/pack.sha256)"; pack=\$?
+    ./bin/weightd_warm $STAGE_WEIGHTD_SOCKET --drop-kv $KV_LABEL; kv=\$?
+    [ \$pack -eq 0 ] && [ \$kv -eq 0 ] ;;
   drop-kv)
     ./bin/weightd_warm $STAGE_WEIGHTD_SOCKET --drop-kv $KV_LABEL ;;
   *) echo "usage: lane.sh start [RUN_ID]|ready RUN_ID|stop|reclaim|drop-kv" >&2; exit 2 ;;
