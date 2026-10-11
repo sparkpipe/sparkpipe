@@ -1609,6 +1609,16 @@ cudaError_t SparkTpLaunchMeshWait(cudaStream_t stream,
     return cudaSuccess;
 }
 
+static uint16_t cuda_stub_roundloop_bf16_rne(float value)
+{
+    uint32_t bits;
+    uint32_t lsb;
+    memcpy(&bits, &value, 4u);
+    lsb = (bits >> 16) & 1u;
+    bits += 0x7fffu + lsb;
+    return (uint16_t)(bits >> 16);
+}
+
 static int cuda_stub_tree_wait(const volatile uint64_t *cell,uint64_t tag,
     const volatile uint64_t *cancel,SparkTpMeshRoundControl *control,uint64_t deadline,uint64_t expected_cancel)
 {
@@ -1726,9 +1736,7 @@ cudaError_t SparkTpLaunchMeshTree(cudaStream_t stream,void *band_base,
             {
                 if ( operation == 1u )
                 {
-                    uint32_t bits;
-                    memcpy(&bits,(const float *)scratch + i,sizeof(bits));
-                    ((uint16_t *)output)[begin + i] = (uint16_t)(bits >> 16u);
+                    ((uint16_t *)output)[begin + i] = cuda_stub_roundloop_bf16_rne(((const float *)scratch)[i]);
                 }
                 else if ( operation == 2u ) ((uint64_t *)output)[begin + i] = ((uint64_t *)scratch)[i];
                 else ((uint16_t *)output)[begin + i] = ((uint16_t *)scratch)[i];
@@ -1750,16 +1758,6 @@ static uint64_t cuda_stub_roundloop_now_ns(void)
         return 0ull;
     return (uint64_t)now.tv_sec * UINT64_C(1000000000) +
         (uint64_t)now.tv_nsec;
-}
-
-static uint16_t cuda_stub_roundloop_bf16_rne(float value)
-{
-    uint32_t bits;
-    uint32_t lsb;
-    memcpy(&bits, &value, 4u);
-    lsb = (bits >> 16) & 1u;
-    bits += 0x7fffu + lsb;
-    return (uint16_t)(bits >> 16);
 }
 
 static float cuda_stub_roundloop_bf16_load(uint32_t packed, uint32_t high)
