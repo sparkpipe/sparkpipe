@@ -158,7 +158,9 @@ class Swapper:
         if code != 0:
             raise SwapError(f"{model['id']} api stop exit {code}: {text[-300:]}")
         self.check(await self.fan(model["node_stop"], self.node_seconds, {}), f"{model['id']} engine stop")
-        self.check(await self.fan(self.drop_kv, 60, {"label": model["kv_label"]}), f"{model['id']} KV pool release")
+
+    async def release(self, label):
+        self.check(await self.fan(self.drop_kv, 60, {"label": label}), f"KV pool {label} release")
 
     async def start(self, model):
         run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -204,15 +206,18 @@ class Swapper:
                 self.active = target
             else:
                 self.active = None
-                for other in self.models.values():
-                    if other["id"] != target:
-                        self.enter(f"stopping {other['id']}")
-                        await self.stop(other)
+                others = [other for other in self.models.values() if other["id"] != target]
+                for other in others:
+                    self.enter(f"stopping {other['id']}")
+                    await self.stop(other)
                 self.enter(f"clearing {target}")
                 code, text = await self.local(model["api_stop"], 60)
                 if code != 0:
                     raise SwapError(f"{target} api stop exit {code}: {text[-300:]}")
                 self.check(await self.fan(model["node_stop"], self.node_seconds, {}), f"{target} engine stop")
+                for label in dict.fromkeys(other["kv_label"] for other in others):
+                    self.enter(f"releasing KV pool {label}")
+                    await self.release(label)
                 self.enter("checking memory")
                 before = await self.admit(model)
                 await self.start(model)
