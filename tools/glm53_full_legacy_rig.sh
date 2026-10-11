@@ -52,7 +52,11 @@ ready() {
     count=0
     for rank in $(seq 0 15); do
       host="spark${HEX:$rank:1}"
-      $SSH "$host" "grep -q 'model_residentd ready' \$HOME/$RIG/logs/residentd-$run.log && systemctl --user is-active -q $UNIT" < /dev/null && count=$((count + 1))
+      $SSH "$host" "grep -q 'model_residentd ready' \$HOME/$RIG/logs/residentd-$run.log && systemctl --user is-active -q $UNIT" < /dev/null
+      case $? in
+        0) count=$((count + 1)) ;;
+        255) log "rig rank $rank unreachable"; return 1 ;;
+      esac
     done
     [ $count = 16 ] && { log "rig 16/16 ready"; return 0; }
     for rank in $(seq 0 15); do
@@ -85,6 +89,10 @@ reclaim() {
   each "R=\$HOME/$RIG; \$R/bin/weightd_warm /tmp/spark_weightd.sock --reclaim-pack \$(cut -c1-64 \$R/packs/pack.sha256)" "reclaim"
 }
 
+drop_kv() {
+  each "R=\$HOME/$RIG; \$R/bin/weightd_warm /tmp/spark_weightd.sock --drop-kv glm52_stage" "drop-kv"
+}
+
 case "${1:-}" in
   setup) setup ;;
   clean) clean ;;
@@ -94,5 +102,6 @@ case "${1:-}" in
   api-stop) api_stop ;;
   stop) stop ;;
   reclaim) reclaim ;;
-  *) echo "usage: $0 setup|clean|start RUN CHAIN|ready RUN|api-start|api-stop|stop|reclaim" >&2; exit 2 ;;
+  drop-kv) drop_kv ;;
+  *) echo "usage: $0 setup|clean|start RUN CHAIN|ready RUN|api-start|api-stop|stop|reclaim|drop-kv" >&2; exit 2 ;;
 esac
