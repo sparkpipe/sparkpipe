@@ -1967,6 +1967,15 @@ static uint32_t SparkTokenizerJsonNormalizerSupported(
     {
         return 1u;
     }
+    if (SparkTokenizerJsonTypeIs(document, normalizer_token_index, "Sequence"))
+    {
+        int32_t normalizers = SparkJsonFindObjectMember(document, normalizer_token_index, "normalizers");
+        if (normalizers >= 0 && SparkJsonTokenIsType(document, normalizers, SPARK_JSON_TOKEN_ARRAY) &&
+            SparkJsonGetArrayElementCount(document, normalizers) == 0u)
+        {
+            return 1u;
+        }
+    }
     return SparkTokenizerJsonTypeIs(document, normalizer_token_index, "NFC") ||
         SparkTokenizerJsonIsMetaspaceNormalizer(document, root_token_index) ? 1u : 0u;
 }
