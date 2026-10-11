@@ -1713,6 +1713,15 @@ static const char *const SPARK_TOKENIZER_DIGIT_IDEOGRAPH_SEQUENCE_PATTERNS[SPARK
     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+"
 };
 
+static uint32_t SparkTokenizerJsonNoPrefixSpace(
+    const SparkJsonDocument *document,
+    int32_t element_token_index)
+{
+    int32_t member = SparkJsonFindObjectMember(document,element_token_index,"add_prefix_space");
+    bool add_prefix_space = true;
+    return member < 0 || (SparkJsonGetBoolean(document,member,&add_prefix_space) == SPARK_STATUS_OK && !add_prefix_space) ? 1u : 0u;
+}
+
 static uint32_t SparkTokenizerJsonIsIsolatedSplit(
     const SparkJsonDocument *document,
     int32_t element_token_index,
@@ -1770,7 +1779,8 @@ static uint32_t SparkTokenizerJsonIsDigitIdeographSequence(
         }
     }
     member = SparkJsonGetArrayElement(document,elements,SPARK_TOKENIZER_SEQUENCE_SPLIT_COUNT);
-    if (!SparkJsonStringEquals(document,SparkJsonFindObjectMember(document,member,"type"),"ByteLevel"))
+    if (!SparkJsonStringEquals(document,SparkJsonFindObjectMember(document,member,"type"),"ByteLevel") ||
+        !SparkTokenizerJsonNoPrefixSpace(document,member))
     {
         return 0u;
     }
@@ -1828,7 +1838,7 @@ static uint32_t SparkTokenizerJsonIsNewlineLettersSequence(
     }
     element = SparkJsonGetArrayElement(document,elements,2u);
     member = SparkJsonFindObjectMember(document,element,"type");
-    if (member < 0 || !SparkJsonStringEquals(document,member,"ByteLevel"))
+    if (member < 0 || !SparkJsonStringEquals(document,member,"ByteLevel") || !SparkTokenizerJsonNoPrefixSpace(document,element))
     {
         return 0u;
     }
@@ -2016,7 +2026,8 @@ static uint32_t SparkTokenizerJsonPreTokenizerSupported(
         SparkJsonTokenIsType(document, elements, SPARK_JSON_TOKEN_ARRAY) &&
         SparkJsonGetArrayElementCount(document, elements) == 2u &&
         SparkTokenizerJsonIsKnownSplitElement(document, SparkJsonGetArrayElement(document, elements, 0u)) &&
-        SparkTokenizerJsonIsByteLevelElement(document, SparkJsonGetArrayElement(document, elements, 1u), 1u) ? 1u : 0u;
+        SparkTokenizerJsonIsByteLevelElement(document, SparkJsonGetArrayElement(document, elements, 1u), 1u) &&
+        SparkTokenizerJsonNoPrefixSpace(document, SparkJsonGetArrayElement(document, elements, 1u)) ? 1u : 0u;
 }
 
 static uint32_t SparkTokenizerJsonNormalizerSupported(

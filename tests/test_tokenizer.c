@@ -1166,6 +1166,35 @@ static void SparkTestTokenizerRefusesUnimplementedShapes(void)
     printf("PASS tokenizer refuses pre-tokenizers and normalizers it does not implement\n");
 }
 
+static void SparkTestTokenizerRefusesPrefixSpaceAfterSplits(void)
+{
+    static const char letters[] =
+        "{\"type\":\"Split\",\"pattern\":{\"Regex\":\"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\\\r\\\\n\\\\p{L}\\\\p{N}]?\\\\p{L}+|\\\\p{N}| ?[^\\\\s\\\\p{L}\\\\p{N}]+[\\\\r\\\\n]*|\\\\s*[\\\\r\\\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"},\"behavior\":\"Isolated\",\"invert\":false}";
+    static const char newline[] =
+        "{\"type\":\"Split\",\"pattern\":{\"Regex\":\"(?:\\\\r?\\\\n)+(?!\\\\r?\\\\n)\"},\"behavior\":\"MergedWithNext\",\"invert\":false}";
+    static const char digit_ideograph[] =
+        "{\"type\": \"Split\", \"pattern\": {\"Regex\": \"\\\\p{N}{1,3}\"}, \"behavior\": \"Isolated\", \"invert\": false}, {\"type\": \"Split\", \"pattern\": {\"Regex\": \"[一-龥぀-ゟ゠-ヿ]+\"}, \"behavior\": \"Isolated\", \"invert\": false}, {\"type\": \"Split\", \"pattern\": {\"Regex\": \"[!\\\"#$%&'()*+,\\\\-./:;<=>?@\\\\[\\\\\\\\\\\\]^_`{|}~][A-Za-z]+|[^\\r\\n\\\\p{L}\\\\p{P}\\\\p{S}]?[\\\\p{L}\\\\p{M}]+| ?[\\\\p{P}\\\\p{S}]+[\\r\\n]*|\\\\s*[\\r\\n]+|\\\\s+(?!\\\\S)|\\\\s+\"}, \"behavior\": \"Isolated\", \"invert\": false}";
+    static const char *const byte_level[3] =
+    {
+        "{\"type\":\"ByteLevel\",\"use_regex\":false}",
+        "{\"type\":\"ByteLevel\",\"add_prefix_space\":false,\"use_regex\":false}",
+        "{\"type\":\"ByteLevel\",\"add_prefix_space\":true,\"use_regex\":false}"
+    };
+    char sequence[4096];
+    uint32_t index;
+    for (index = 0u; index < 3u; index++)
+    {
+        const SparkStatus expected = index < 2u ? SPARK_STATUS_OK : SPARK_STATUS_PARSE_ERROR;
+        (void)snprintf(sequence, sizeof(sequence), "{\"type\":\"Sequence\",\"pretokenizers\":[%s,%s]}", letters, byte_level[index]);
+        assert(SparkTestShapeLoad("null", sequence) == expected);
+        (void)snprintf(sequence, sizeof(sequence), "{\"type\":\"Sequence\",\"pretokenizers\":[%s,%s,%s]}", newline, letters, byte_level[index]);
+        assert(SparkTestShapeLoad("null", sequence) == expected);
+        (void)snprintf(sequence, sizeof(sequence), "{\"type\":\"Sequence\",\"pretokenizers\":[%s,%s]}", digit_ideograph, byte_level[index]);
+        assert(SparkTestShapeLoad("null", sequence) == expected);
+    }
+    printf("PASS tokenizer refuses a ByteLevel add_prefix_space after a split (it would prefix every piece)\n");
+}
+
 int main(void)
 {
     SparkTestTokenizerRefusesUnimplementedShapes();
@@ -1187,5 +1216,6 @@ int main(void)
     SparkTestCompiledFileCarriesEncodingFlags();
     SparkTestDigitIdeographSequencePretokenizes();
     SparkTestNewlineRunSequencePretokenizes();
+    SparkTestTokenizerRefusesPrefixSpaceAfterSplits();
     return 0;
 }
