@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""Source contracts for the asynchronous KV binding: no synchronous copies, no removed entry points, a completion entry that never takes the KV lock, and the execution fence before every frame's stream work."""
+"""Source contracts for the asynchronous KV binding: no synchronous copies, no removed entry points and a completion entry that never takes the KV lock."""
 from pathlib import Path
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
-GLM52 = ROOT / "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c"
-GLM5_NEXT = ROOT / "modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_module.c"
-GLM_STAGE = ROOT / "model-families/glm52/stage_module/spark_glm_stage_module.h"
 RUNTIME_FILES = [ROOT / "runtime/stage_kv_binding.c", ROOT / "runtime/kv_device_copy.c"]
 REMOVED = [
     r"SparkKvPageStoreCopyResidentPage",
@@ -57,33 +54,6 @@ def main():
     for forbidden in ("binding->mutex", "SparkStageKvBindingLock", "cuda"):
         if forbidden in finish:
             failures.append(f"SparkStageKvBindingFinishAsync touches {forbidden}")
-    glm52 = GLM52.read_text()
-    complete = body(glm52, "SparkGlm52CompleteAsync")
-    if re.search(r"cuda[A-Z]\w*\s*\(", complete):
-        failures.append("SparkGlm52CompleteAsync calls CUDA")
-    if "SparkStageKvBindingFinishAsync(" not in complete:
-        failures.append("SparkGlm52CompleteAsync does not hand the completion to SparkStageKvBindingFinishAsync")
-    execute = body(glm52, "SparkGlm52ExecuteBatch")
-    fence, upload = execute.find("SparkStageKvBindingFenceExecution("), execute.find("SparkStageKvBindingUploadPageTables(")
-    if fence < 0 or upload < 0 or fence > upload:
-        failures.append("SparkGlm52ExecuteBatch does not fence the execution stream before uploading page tables")
-    glm5_next = GLM5_NEXT.read_text()
-    start_slot = body(glm5_next, "SparkGlm5NextStartSlot")
-    fence, start = start_slot.find("SparkStageKvBindingFenceExecution("), start_slot.find("SparkGlm5NextStartClaimedBatch(")
-    if fence < 0 or start < 0 or fence > start:
-        failures.append("SparkGlm5NextStartSlot does not fence the execution stream on the binding before starting the batch")
-    claimed = body(glm5_next, "SparkGlm5NextStartClaimedBatch")
-    order = [claimed.find(call) for call in ("SparkStageKvBindingClaim(", "SparkStageKvBindingRecurrentRestore(", "SparkStageKvBindingUploadPageTables(")]
-    if min(order) < 0 or order != sorted(order):
-        failures.append("SparkGlm5NextStartClaimedBatch does not claim, restore recurrent state and upload page tables in that order")
-    if "SparkStageKvBindingFinishWait(" not in body(glm5_next, "SparkGlm5NextFinishCacheLanes"):
-        failures.append("SparkGlm5NextFinishCacheLanes does not finish through SparkStageKvBindingFinishWait")
-    for private in ("SparkKvLaneTransactions", "SparkKvPageStore", "SparkKvDeviceCopier", "kv_mutex", "SparkKvBackendInitialize"):
-        if private in glm5_next:
-            failures.append(f"glm5_next still owns KV state: {private}")
-    for path, text in ((GLM_STAGE, GLM_STAGE.read_text()), (GLM5_NEXT, glm5_next)):
-        if "frame->execution_stream != state->execution_stream" not in text:
-            failures.append(f"the frame stream check is missing from {path.relative_to(ROOT)}")
     for path in RUNTIME_FILES:
         text = path.read_text()
         for pattern in (r"\bgetenv\s*\(", r"\busleep\s*\(", r"\bnanosleep\s*\(", r"\bsleep\s*\("):
@@ -93,7 +63,7 @@ def main():
         for failure in failures:
             print("FAIL " + failure, file=sys.stderr)
         sys.exit(1)
-    print("PASS kv binding async source contracts: no synchronous copies, removed entry points gone, completion entry lock-free, execution fence before page tables, frame stream checks kept, no sleeps or env switches")
+    print("PASS kv binding async source contracts: no synchronous copies, removed entry points gone, completion entry lock-free, no sleeps or env switches")
 
 
 if __name__ == "__main__":

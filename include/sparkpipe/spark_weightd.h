@@ -16,7 +16,6 @@ extern "C" {
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
 #define SPARK_WEIGHTD_IPC_ABI_VERSION 13u
-#define SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN 8u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
 #define SPARK_WEIGHTD_ID_BYTES 64u
@@ -96,7 +95,6 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
-#define SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ((kind) >= SPARK_WEIGHTD_IPC_KIND_SLOT_EXPORT ? 13u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH ? 12u : (kind) >= SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH ? 11u : (kind) >= SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP ? 9u : SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN)
 #define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
 #define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
@@ -854,7 +852,6 @@ typedef struct SparkWeightdIpcKvPoolAttachResult
     uint64_t metadata_bytes;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
-    uint64_t legacy_write_budget_bytes_per_day;
 } SparkWeightdIpcKvPoolAttachResult;
 
 typedef struct SparkWeightdIpcKvPoolResize
@@ -938,7 +935,7 @@ typedef struct SparkWeightdIpcKvSharedAttachResult
 } SparkWeightdIpcKvSharedAttachResult;
 
 #if !defined(__cplusplus)
-_Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 104u &&
+_Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 96u &&
     sizeof(SparkWeightdIpcKvPoolResize) == 40u && sizeof(SparkWeightdIpcKvPoolResizeResult) == 48u &&
     sizeof(SparkWeightdIpcKvPoolExport) == 40u && sizeof(SparkWeightdIpcKvPoolExportResult) == 40u &&
     sizeof(SparkWeightdIpcKvPoolStatus) == 32u && sizeof(SparkWeightdIpcKvPoolStatusResult) == 64u,"kv pool frames are fixed for ABI 11");
@@ -976,7 +973,7 @@ SparkStatus SparkWeightdIpcValidateHeaderVersion(const SparkWeightdIpcHeader *he
     uint32_t expected_kind,
     uint32_t abi_version);
 
-uint32_t SparkWeightdIpcAbiServed(uint32_t abi_version,uint32_t kind);
+uint32_t SparkWeightdIpcAbiServed(uint32_t abi_version);
 
 
 typedef struct SparkWeightdServerConfig

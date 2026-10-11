@@ -8,7 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "../modules/glm5_next_resident_decode_stage/source/spark_glm5_next_stagepack_format.h"
+#include "sparkpipe/spark_glm5_next_stagepack.h"
 
 static int32_t range_write(FILE *pack,FILE *out,uint32_t layer,uint32_t expert,uint32_t kind,uint64_t offset,uint64_t bytes)
 {
@@ -36,14 +36,14 @@ static int32_t range_write(FILE *pack,FILE *out,uint32_t layer,uint32_t expert,u
 	return(fwrite(record,1u,sizeof(record),out) == sizeof(record) ? 0 : -3);
 }
 
-static int32_t entry_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackHeader *header,const SparkGlm5NextStagePackEntry *entry,uint32_t *count)
+static int32_t entry_write(FILE *pack,FILE *out,const Glm5NextPackHeader *header,const Glm5NextPackEntry *entry,uint32_t *count)
 {
 	SparkExpertPlanes planes;
 	const SparkExpertPlane *plane;
 	uint64_t directory_end,end;
 	uint32_t index,expert;
 	int32_t err;
-	if ( entry->tensor_kind != SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
+	if ( entry->tensor_kind != GLM5_NEXT_T_EXPERT_UP_GATE && entry->tensor_kind != GLM5_NEXT_T_EXPERT_DOWN )
 		return(0);
 	if ( SparkWeightCodecIsKnown(entry->weight_codec) == 0u )
 		return(-4);
@@ -75,9 +75,9 @@ static int32_t entry_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackHead
 	return(0);
 }
 
-static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackHeader *header)
+static int32_t manifest_write(FILE *pack,FILE *out,const Glm5NextPackHeader *header)
 {
-	SparkGlm5NextStagePackEntry entry;
+	Glm5NextPackEntry entry;
 	uint32_t words[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,SPARK_WEIGHTD_RANGE_MANIFEST_VERSION,0u,0u};
 	uint32_t i;
 	uint64_t up = 0u,down = 0u,expected = 0u;
@@ -85,17 +85,17 @@ static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackH
 	if ( fwrite(words,1u,sizeof(words),out) != sizeof(words) )
 		return(-8);
 	for (i=header->first_layer_index; i<(header->first_layer_index + header->layer_count); i++)
-		if ( SparkGlm5NextStagePackLayerIsDense(i) == 0u )
+		if ( (i < SPARK_GLM5_NEXT_MODEL_FIRST_ROUTED_LAYER ? 1u : 0u) == 0u )
 			expected |= (UINT64_C(1) << i);
 	for (i=0u; i<header->tensor_count; i++)
 	{
 		if ( fseeko(pack,(off_t)(header->directory_offset + ((uint64_t)i * sizeof(entry))),SEEK_SET) != 0 || fread(&entry,1u,sizeof(entry),pack) != sizeof(entry) )
 			return(-9);
-		if ( entry.tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry.tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
+		if ( entry.tensor_kind == GLM5_NEXT_T_EXPERT_UP_GATE || entry.tensor_kind == GLM5_NEXT_T_EXPERT_DOWN )
 		{
 			if ( entry.layer_index >= 64u )
 				return(-23);
-			if ( entry.tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE )
+			if ( entry.tensor_kind == GLM5_NEXT_T_EXPERT_UP_GATE )
 				up |= (UINT64_C(1) << entry.layer_index);
 			else
 				down |= (UINT64_C(1) << entry.layer_index);
@@ -109,25 +109,25 @@ static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm5NextStagePackH
 	return(0);
 }
 
-static int32_t header_read(FILE *pack,SparkGlm5NextStagePackHeader *header)
+static int32_t header_read(FILE *pack,Glm5NextPackHeader *header)
 {
 	struct stat st;
 	uint64_t directory_bytes;
 	if ( fstat(fileno(pack),&st) != 0 || st.st_size < 0 || fread(header,1u,sizeof(*header),pack) != sizeof(*header) )
 		return(-11);
-	if ( header->magic != SPARK_GLM5_NEXT_STAGEPACK_MAGIC || header->format_version != SPARK_GLM5_NEXT_STAGEPACK_FORMAT_VERSION || header->header_bytes != sizeof(*header) || header->directory_entry_bytes != sizeof(SparkGlm5NextStagePackEntry) )
+	if ( header->magic != GLM5_NEXT_PACK_MAGIC || header->format_version != GLM5_NEXT_PACK_VERSION || header->header_bytes != sizeof(*header) || header->directory_entry_bytes != sizeof(Glm5NextPackEntry) )
 		return(-12);
 	if ( header->file_bytes != (uint64_t)st.st_size || header->routed_expert_count == 0u || header->tensor_count == 0u )
 		return(-13);
 	if ( header->first_layer_index > SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX || header->layer_count == 0u || header->layer_count > (SPARK_GLM5_NEXT_MODEL_MTP_LAYER_INDEX + 1u - header->first_layer_index) )
 		return(-26);
-	directory_bytes = ((uint64_t)header->tensor_count * sizeof(SparkGlm5NextStagePackEntry));
+	directory_bytes = ((uint64_t)header->tensor_count * sizeof(Glm5NextPackEntry));
 	if ( header->directory_offset < sizeof(*header) || header->directory_offset > header->file_bytes || directory_bytes > (header->file_bytes - header->directory_offset) )
 		return(-14);
 	return(0);
 }
 
-static int32_t manifest_publish(FILE *pack,const SparkGlm5NextStagePackHeader *header,const char *path)
+static int32_t manifest_publish(FILE *pack,const Glm5NextPackHeader *header,const char *path)
 {
 	SparkWeightdManifest manifest;
 	char temporary[4096];
@@ -166,9 +166,9 @@ static int32_t manifest_publish(FILE *pack,const SparkGlm5NextStagePackHeader *h
 	return(err);
 }
 
-static int32_t manifest_check(FILE *pack,const SparkGlm5NextStagePackHeader *header,const char *path)
+static int32_t manifest_check(FILE *pack,const Glm5NextPackHeader *header,const char *path)
 {
-	SparkGlm5NextStagePackEntry entry;
+	Glm5NextPackEntry entry;
 	SparkWeightdManifest manifest;
 	uint64_t covered = 0u;
 	uint32_t i,entries = 0u;
@@ -179,7 +179,7 @@ static int32_t manifest_check(FILE *pack,const SparkGlm5NextStagePackHeader *hea
 	{
 		if ( fseeko(pack,(off_t)(header->directory_offset + ((uint64_t)i * sizeof(entry))),SEEK_SET) != 0 || fread(&entry,1u,sizeof(entry),pack) != sizeof(entry) )
 			err = -9;
-		else if ( entry.tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry.tensor_kind == SPARK_GLM5_NEXT_STAGEPACK_TENSOR_EXPERT_DOWN )
+		else if ( entry.tensor_kind == GLM5_NEXT_T_EXPERT_UP_GATE || entry.tensor_kind == GLM5_NEXT_T_EXPERT_DOWN )
 		{
 			entries++;
 			if ( SparkExpertPlanesCovered(&manifest,entry.tensor_kind,entry.layer_index,entry.weight_codec,entry.scale_encoding,entry.group_count,entry.payload_offset,entry.payload_bytes,entry.scale_offset,entry.scale_bytes,&covered) != SPARK_STATUS_OK )
@@ -196,7 +196,7 @@ static int32_t manifest_check(FILE *pack,const SparkGlm5NextStagePackHeader *hea
 
 int main(int argc,char **argv)
 {
-	SparkGlm5NextStagePackHeader header;
+	Glm5NextPackHeader header;
 	FILE *pack;
 	char path[4096];
 	const char *pack_path;

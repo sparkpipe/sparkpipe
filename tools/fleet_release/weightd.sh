@@ -2,8 +2,8 @@
 . "$(dirname "$0")/lib.sh"
 step=${1:-}
 case "$step" in
-    stage|receipts-adopt|receipts-verify|receipts-check|publish|announce|wait|verify|rollback) ;;
-    *) echo "usage: weightd.sh stage|receipts-adopt|receipts-verify|receipts-check|publish|announce|wait|verify|rollback"; exit 2;;
+    stage|receipts-verify|receipts-check|publish|announce|wait|verify|rollback) ;;
+    *) echo "usage: weightd.sh stage|receipts-verify|receipts-check|publish|announce|wait|verify|rollback"; exit 2;;
 esac
 weightd_changes || { echo "OLD_WEIGHTD = NEW_WEIGHTD ($NEW_WEIGHTD): this release does not change weightd"; exit 2; }
 need BUILD_HOST WEIGHTD_BUNDLE_BUILD NEW_RECEIPT NEW_WARM
@@ -46,18 +46,13 @@ case "$step" in
         nodes --expect stage_wd="$NEW_WEIGHTD" --expect stage_rc="$NEW_RECEIPT" --expect stage_warm="$NEW_WARM" --log "$log.nodes" | tail -n 1
         [ "${PIPESTATUS[0]}" -eq 0 ] || die "bundle not staged on every node"
         ;;
-    receipts-adopt)
-        per_rank "$STAGE_BIN/weightd_receipt adopt @PACK@; echo rc=\$?" | tee "$log.out"
-        grep -q "HASH MISMATCH" "$log.out" && die "HASH MISMATCH: stop and investigate that pack"
-        grep -q "FAILED rc=" "$log.out" && die "ssh failure"
-        ;;
     receipts-verify)
         per_rank "$STAGE_BIN/weightd_receipt check @PACK@ >/dev/null 2>&1 && echo receipt-valid || { nice -n 19 ionice -c3 $STAGE_BIN/weightd_receipt verify @PACK@; echo rc=\$?; }" | tee "$log.out"
         grep -q "HASH MISMATCH\|FAILED rc=" "$log.out" && die "verify failed"
         ;;
     receipts-check)
         nodes --expect receipt=rc0 --log "$log.nodes" | tail -n 1
-        [ "${PIPESTATUS[0]}" -eq 0 ] || die "a rank pack has no valid receipt (receipts-adopt, receipts-verify)"
+        [ "${PIPESTATUS[0]}" -eq 0 ] || die "a rank pack has no valid receipt (receipts-verify)"
         ;;
     publish)
         build_check

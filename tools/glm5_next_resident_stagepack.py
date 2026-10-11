@@ -5,7 +5,7 @@ Real-checkpoint packer: reads /mnt/model-warm/glm-5.3-flash (FP8 e4m3
 [128,128] checkpoint, 62 shards) through header-only safetensors memmaps
 and emits one wire-format-v1 .g5nsp per TP rank. The tensor vocabulary is
 the 49-kind table in modules/glm5_next_resident_decode_stage/source/
-spark_glm5_next_stagepack_format.h, and every checkpoint->pack transform
+model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h, and every checkpoint->pack transform
 follows model-families/glm5_next/name_map.json:
 
   - the pack-V2 fusions: kda_qkv_beta = q|k|v|beta rows (the checkpoint's

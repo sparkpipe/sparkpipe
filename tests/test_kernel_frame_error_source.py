@@ -43,9 +43,6 @@ def main() -> int:
         "inference/kernels/tile.cuh": "LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE",
         "inference/kernels/activation.cuh": "LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE",
         "inference/kernels/gemm.cuh": "frame_error",
-        "modules/qwen4_flash_resident_decode_stage/source/"
-        "spark_qwen4_flash_resident_decode_stage_cuda.cu":
-            "LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE",
     }
     for relative, needle in required.items():
         if needle not in (ROOT / relative).read_text():

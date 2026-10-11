@@ -421,11 +421,6 @@ SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-    if (identity->abi_version >= SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN &&
-        identity->abi_version <= SPARK_WEIGHTD_IPC_ABI_VERSION)
-    {
-        identity->abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-    }
     if (SparkWeightdStringBounded(identity->model, SPARK_WEIGHTD_ID_BYTES) !=
         SPARK_STATUS_OK)
     {
@@ -675,10 +670,9 @@ static void SparkWeightdBuildHeader(uint8_t *response,
     header->request_id = request_id;
 }
 
-uint32_t SparkWeightdIpcAbiServed(uint32_t abi_version,uint32_t kind)
+uint32_t SparkWeightdIpcAbiServed(uint32_t abi_version)
 {
-    return abi_version <= SPARK_WEIGHTD_IPC_ABI_VERSION &&
-        abi_version >= SPARK_WEIGHTD_IPC_KIND_ABI_MIN(kind) ? 1u : 0u;
+    return abi_version == SPARK_WEIGHTD_IPC_ABI_VERSION ? 1u : 0u;
 }
 
 SparkStatus SparkWeightdIpcValidateHeader(const SparkWeightdIpcHeader *header,
@@ -706,7 +700,7 @@ SparkStatus SparkWeightdIpcValidateHeaderVersion(const SparkWeightdIpcHeader *he
         SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
     }
     if (header->abi_version != abi_version ||
-        SparkWeightdIpcAbiServed(abi_version,expected_kind) == 0u)
+        SparkWeightdIpcAbiServed(abi_version) == 0u)
     {
         SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
@@ -3636,7 +3630,6 @@ static uint32_t SparkWeightdServerOnKvPoolAttach(SparkWeightdServer *server,Spar
 	result->metadata_fd_count = pool->metadata_fd >= 0 ? 1u : 0u;
 	result->device_bytes = pool->chunk_bytes * pool->chunk_capacity;
 	result->metadata_bytes = pool->metadata_bytes;
-	result->legacy_write_budget_bytes_per_day = UINT64_MAX;
 	return(sizeof(*result));
 }
 
@@ -4448,7 +4441,7 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
                 (const SparkWeightdIpcHeader *)connection->request;
             uint32_t expected_bytes;
             if (header->magic != SPARK_WEIGHTD_IPC_MAGIC ||
-                SparkWeightdIpcAbiServed(header->abi_version,header->kind) == 0u ||
+                SparkWeightdIpcAbiServed(header->abi_version) == 0u ||
                 (connection->abi_version != 0u && connection->abi_version != header->abi_version) ||
                 SparkWeightdKindResultKind(header->kind) == 0u ||
                 header->body_bytes >

@@ -3,7 +3,7 @@
 
 The packer tests check tools/glm52_resident_stagepack.py against the Python
 mirror, so the mirror itself must agree with the C policy the module loads
-with. This compiles spark_glm52_stagepack_format.h and compares, for every
+with. This compiles spark_glm52_stagepack.h and compares, for every
 tensor kind, every layer (plus the global slot and one past the last layer),
 the bf16, fp8 and nvfp4 expert codecs and TP degrees 1 through 16:
 acceptance, all six shape fields and the payload and scale byte counts.
@@ -28,7 +28,7 @@ LAYERS = (V.GLOBAL_LAYER, *range(79))
 
 PROGRAM = r"""
 #include <stdio.h>
-#include "spark_glm52_stagepack_format.h"
+#include "sparkpipe/spark_glm52_stagepack.h"
 
 int main(void)
 {
@@ -66,7 +66,7 @@ def c_policy():
         path.write_text(source)
         subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I.", "-Iinclude",
                         "-Imodel-families/common/include", "-Imodel-families/glm52/include",
-                        "-Imodules/glm52_resident_decode_stage/source", str(path), "-o", str(binary)],
+                        str(path), "-o", str(binary)],
                        cwd=ROOT, check=True)
         output = subprocess.run([str(binary)], capture_output=True, text=True, check=True).stdout
     policy = {}
