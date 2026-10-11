@@ -1,0 +1,42 @@
+[
+ {
+  "name": "capital",
+  "text": "What is the capital of France? Answer in one sentence."
+ },
+ {
+  "name": "arith",
+  "text": "Compute 37 * 43 and explain the steps briefly."
+ },
+ {
+  "name": "code",
+  "text": "Write a Python function that returns the n-th Fibonacci number iteratively."
+ },
+ {
+  "name": "story",
+  "text": "Write the opening paragraph of a short story about a lighthouse keeper who finds a message in a bottle."
+ },
+ {
+  "name": "sky",
+  "text": "Explain in two sentences why the sky is blue."
+ },
+ {
+  "name": "translate",
+  "text": "Translate into French: The weather is nice today and we are going to the park."
+ },
+ {
+  "name": "list",
+  "text": "List five common uses of baking soda."
+ },
+ {
+  "name": "zh",
+  "text": "用一句话介绍一下长城。"
+ },
+ {
+  "name": "count",
+  "text": "Count from 1 to 20, separated by commas."
+ },
+ {
+  "name": "long",
+  "text": "Read the following passage and summarize it in three sentences.\n\nThe town of Marrow Bay grew up around a single pier. In the early years the pier served fishing boats only, and the town was little more than a row of wooden sheds where nets were mended and catches were salted for the long trip inland. Over three generations the harbour was dredged twice, a stone breakwater was built to shelter the moorings from winter storms, and a narrow railway line connected the quay to the market towns in the valley. Each of these changes brought new trades. Coopers arrived to make barrels, then a small boatyard opened, and finally a cannery was built on the northern shore, employing nearly a third of the adult population at its peak. The cannery shaped daily life in ways that older residents still describe in detail. Shifts began before dawn, when the first boats returned, and the factory whistle could be heard across the entire bay. Children walked to school past stacks of empty tins, and the smell of brine and smoke hung over the lower streets for most of the year. Wages were modest but regular, which was unusual for a fishing town, and families began to build brick houses on the hill above the harbour instead of renting rooms near the water. A library, a meeting hall and a second church were all paid for by subscription during this period. The decline came gradually. Fish stocks in the outer banks fell over two decades, larger trawlers from distant ports began to land their catches elsewhere, and the railway line was closed after a bridge in the valley was judged unsafe and never repaired. The cannery reduced its shifts, then closed one wing, and finally shut its doors on a grey morning in late autumn. Many younger people left to find work in the cities, and the population fell by almost half within ten years. In recent times the town has found a different footing. The breakwater now shelters pleasure boats as well as a few remaining fishing crews, the old cannery has been converted into workshops and a small museum, and the hill houses are popular with visitors in the summer months. Residents argue about whether this change is a recovery or simply a different kind of dependence, since much of the new income arrives only in the warm season. What most of them agree on is that the pier, repaired many times and now longer than it has ever been, remains the centre of the town."
+ }
+]

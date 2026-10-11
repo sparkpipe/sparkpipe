@@ -172,6 +172,9 @@ class Reference:
     def linear(self, values, name, out_dim, in_dim):
         return bf16(values @ self.checkpoint.bf16(name, out_dim, in_dim).T)
 
+    def output(self, values, name, out_dim, in_dim):
+        return self.linear(values, name, out_dim, in_dim)
+
     def conv_silu(self, values, weight):
         padded = np.concatenate([np.zeros((self.conv - 1, values.shape[1]), dtype=np.float32), values], axis=0)
         total = np.zeros_like(values)
@@ -206,7 +209,7 @@ class Reference:
         gate = self.linear(normed, a + "g_proj.weight", width, self.hidden).reshape(rows, heads, dim)
         weight = self.checkpoint.bf16(a + "o_norm.weight", dim)
         mixed = output * np.power((output * output).mean(axis=-1, keepdims=True) + self.epsilon, np.float32(-0.5)) * weight * sigmoid(gate)
-        return self.linear(bf16(mixed).reshape(rows, width), a + "o_proj.weight", self.hidden, width)
+        return self.output(bf16(mixed).reshape(rows, width), a + "o_proj.weight", self.hidden, width)
 
     def rope(self, values, positions):
         angles = positions[:, None].astype(np.float32) * self.inv_freq[None, :]
@@ -240,7 +243,7 @@ class Reference:
             output[:, head, :] = bf16(weights @ value[:, head, :])
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads, self.hidden)))
         output = bf16(output * gate[:, :, None])
-        return self.linear(output.reshape(rows, heads * self.value_dim), a + "dense.weight", self.hidden, heads * self.value_dim)
+        return self.output(output.reshape(rows, heads * self.value_dim), a + "dense.weight", self.hidden, heads * self.value_dim)
 
     def swiglu_weights(self, values, weights, limit):
         gate_weight, up_weight, down_weight = weights
