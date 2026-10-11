@@ -18,6 +18,7 @@ from tokenizers import Tokenizer
 from tokenizers.decoders import DecodeStream
 
 ROLE_ALIASES = {"developer": "system"}
+CHANNEL_KEYS = ("message_start", "header_end", "message_end", "recipient_prefix", "reasoning_recipient", "content_recipient")
 UNSUPPORTED_FIELDS = ("n", "logit_bias", "best_of", "echo", "suffix")
 NEUTRAL_FIELDS = {"frequency_penalty": 0, "presence_penalty": 0, "repetition_penalty": 1, "min_p": 0}
 MAX_TOP_LOGPROBS = 20
@@ -67,10 +68,70 @@ def longest_marker_prefix(text, markers):
 
 
 ATTRIBUTE = re.compile(r'(\w+)="([^"]*)"')
+CALL_NAME = re.compile(r"\w+")
+BARE_KEY = re.compile(r'[^\s{}\[\],:"]+')
+SCALAR = json.JSONDecoder()
 
 
 def tag_attributes(text):
     return {key: value.replace("&quot;", '"').replace("&amp;", "&") for key, value in ATTRIBUTE.findall(text)}
+
+
+def skip_space(text, position):
+    while position < len(text) and text[position].isspace():
+        position += 1
+    return position
+
+
+def delimited_string(text, position, delimiter):
+    end = text.find(delimiter, position + len(delimiter))
+    if end < 0:
+        raise ValueError("unterminated string")
+    return text[position + len(delimiter):end], end + len(delimiter)
+
+
+def delimited_key(text, position, delimiter):
+    position = skip_space(text, position)
+    if text.startswith(delimiter, position):
+        return delimited_string(text, position, delimiter)
+    if text.startswith('"', position):
+        key, end = SCALAR.raw_decode(text, position)
+        return key, end
+    match = BARE_KEY.match(text, position)
+    if match is None:
+        raise ValueError("missing key")
+    return match.group(0), match.end()
+
+
+def delimited_value(text, position, delimiter):
+    position = skip_space(text, position)
+    if text.startswith(delimiter, position):
+        return delimited_string(text, position, delimiter)
+    if text.startswith("{", position) or text.startswith("[", position):
+        mapping = text[position] == "{"
+        close = "}" if mapping else "]"
+        result = {} if mapping else []
+        position = skip_space(text, position + 1)
+        if text.startswith(close, position):
+            return result, position + 1
+        while True:
+            if mapping:
+                key, position = delimited_key(text, position, delimiter)
+                position = skip_space(text, position)
+                if not text.startswith(":", position):
+                    raise ValueError("missing colon")
+                result[key], position = delimited_value(text, position + 1, delimiter)
+            else:
+                value, position = delimited_value(text, position, delimiter)
+                result.append(value)
+            position = skip_space(text, position)
+            if text.startswith(",", position):
+                position += 1
+            elif text.startswith(close, position):
+                return result, position + 1
+            else:
+                raise ValueError("missing separator")
+    return SCALAR.raw_decode(text, position)
 
 
 class TokenizersVocabulary:
@@ -143,6 +204,8 @@ class TemplateRenderer:
             text = self.template.render(messages=messages, tools=tools or None, add_generation_prompt=True, **context)
         except jinja2.exceptions.TemplateError as error:
             raise RequestError(400, "invalid_messages", f"the chat template refused the request: {error}")
+        except Exception as error:
+            raise RequestError(400, "invalid_messages", f"the chat template could not render the request: {type(error).__name__}: {error}")
         return text, self.vocabulary.encode(text, True)
 
 
@@ -160,8 +223,8 @@ class SegmentRenderer:
     def render(self, messages, tools, kwargs):
         try:
             segments = self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
-        except (ValueError, KeyError, TypeError, AssertionError) as error:
-            raise RequestError(400, "invalid_messages", f"the chat renderer refused the request: {error}")
+        except Exception as error:
+            raise RequestError(400, "invalid_messages", f"the chat renderer refused the request: {type(error).__name__}: {error}")
         ids = []
         for segment in segments:
             ids.extend(self.vocabulary.encode(segment.text, segment.allow_special))
@@ -250,11 +313,18 @@ class Model:
         self.template_defaults = dict(spec.get("template_defaults", {}))
         self.template_kwargs = set(spec.get("template_kwargs", []))
         self.reasoning_effort = dict(spec.get("reasoning_effort", {}))
-        self.reasoning = spec["reasoning"]
+        self.channels = spec.get("channels")
+        if self.channels is not None and set(self.channels) != set(CHANNEL_KEYS):
+            raise SystemExit(f"chat_frontend: {self.id} channels needs exactly {', '.join(CHANNEL_KEYS)}")
+        if (self.channels is None) == ("reasoning" not in spec):
+            raise SystemExit(f"chat_frontend: {self.id} needs either reasoning start and end markers or a channels protocol, not both")
+        self.reasoning = spec.get("reasoning")
         self.tool_calls = dict(spec["tool_calls"])
         self.tool_calls.setdefault("format", "key_value")
-        if self.tool_calls["format"] not in ("key_value", "tagged", "function_xml"):
-            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value, tagged or function_xml")
+        if self.tool_calls["format"] not in ("key_value", "tagged", "function_xml", "object"):
+            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value, tagged, function_xml or object")
+        if self.tool_calls["format"] == "object" and not all(isinstance(self.tool_calls.get(key), str) and self.tool_calls[key] for key in ("name_prefix", "string_delimiter")):
+            raise SystemExit(f"chat_frontend: {self.id} object tool calls need name_prefix and string_delimiter")
         self.content_markers = list(spec.get("content_markers", []))
         self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
@@ -363,8 +433,13 @@ def tool_parameter_types(tools):
     return types
 
 
+def call_entry(name, arguments):
+    return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
+
+
 class OutputParser:
     def __init__(self, model, tools, reasoning_open, stops):
+        self.reasoning_start = model.reasoning["start"]
         self.reasoning_end = model.reasoning["end"]
         self.call = model.tool_calls
         self.types = tool_parameter_types(tools)
@@ -373,6 +448,7 @@ class OutputParser:
         self.drops = model.content_markers
         self.ended = False
         self.state = "reasoning" if reasoning_open else "content"
+        self.fresh = not reasoning_open
         self.buffer = ""
         self.calls = 0
         self.stopped = False
@@ -382,7 +458,22 @@ class OutputParser:
             return self.parse_tagged_call(body)
         if self.call["format"] == "function_xml":
             return self.parse_function_xml_call(body)
+        if self.call["format"] == "object":
+            return self.parse_object_call(body)
         return self.parse_key_value_call(body)
+
+    def parse_object_call(self, body):
+        prefix = self.call["name_prefix"]
+        name = CALL_NAME.match(body, len(prefix)) if body.startswith(prefix) else None
+        if name is None or not body.startswith("{", name.end()):
+            return None
+        try:
+            arguments, end = delimited_value(body, name.end(), self.call["string_delimiter"])
+        except ValueError:
+            return None
+        if not isinstance(arguments, dict) or body[end:].strip():
+            return None
+        return call_entry(name.group(0), arguments)
 
     def argument_kind(self, attributes):
         flag = self.call.get("string_attribute")
@@ -434,7 +525,7 @@ class OutputParser:
             rest = rest.strip()
         if not name:
             return None
-        return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
+        return call_entry(name, arguments)
 
     def parse_function_xml_call(self, body):
         call = self.call
@@ -459,7 +550,7 @@ class OutputParser:
             value = value[:-1] if value.endswith("\n") else value
             arguments[key] = self.typed(name, key, None, value)
             rest = rest.strip()
-        return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
+        return call_entry(name, arguments)
 
     def parse_key_value_call(self, body):
         call = self.call
@@ -489,7 +580,7 @@ class OutputParser:
                     arguments[key] = value
         if not name or rest.strip():
             return None
-        return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
+        return call_entry(name, arguments)
 
     def feed(self, text):
         self.buffer += text
@@ -508,6 +599,15 @@ class OutputParser:
                 self.buffer = self.buffer[index + len(self.reasoning_end):]
                 self.state = "content"
             elif self.state == "content":
+                if self.fresh:
+                    head = self.buffer.lstrip()
+                    if not head or self.reasoning_start.startswith(head):
+                        break
+                    self.fresh = False
+                    if head.startswith(self.reasoning_start):
+                        self.buffer = head[len(self.reasoning_start):]
+                        self.state = "reasoning"
+                        continue
                 markers = [self.call["start"]] + self.stops + self.drops
                 hits = [(self.buffer.find(marker), marker) for marker in markers]
                 hits = [hit for hit in hits if hit[0] >= 0]
@@ -554,6 +654,98 @@ class OutputParser:
                 events.append(("content", self.call["start"] + self.buffer))
             else:
                 events.append(("content", self.buffer))
+        self.buffer = ""
+        return events
+
+
+class ChannelParser(OutputParser):
+    def __init__(self, model, tools, prompt, stops):
+        self.channel = model.channels
+        self.call = model.tool_calls
+        self.types = tool_parameter_types(tools)
+        self.stops = [stop for stop in stops if stop] + model.end_markers
+        self.end_markers = model.end_markers
+        self.drops = model.content_markers
+        self.ended = False
+        self.state = "header" if prompt.endswith(self.channel["message_start"]) else "between"
+        self.target = "tool"
+        self.buffer = ""
+        self.calls = 0
+        self.stopped = False
+
+    def emit(self, events, text):
+        if self.target == "reasoning":
+            events.append(("reasoning", text))
+        elif self.target == "content" or text.strip():
+            events.append(("content", text))
+
+    def recipient(self, header):
+        prefix = self.channel["recipient_prefix"]
+        if prefix not in header:
+            return "content"
+        name = header.split(prefix, 1)[1].split()
+        name = name[0] if name else ""
+        return "reasoning" if name == self.channel["reasoning_recipient"] else "content" if name == self.channel["content_recipient"] else "tool"
+
+    def feed(self, text):
+        self.buffer += text
+        events = []
+        start, end = self.channel["message_start"], self.channel["message_end"]
+        while self.buffer and not self.stopped:
+            if self.state == "header":
+                index = self.buffer.find(self.channel["header_end"])
+                if index < 0:
+                    break
+                self.target = self.recipient(self.buffer[:index])
+                self.buffer = self.buffer[index + len(self.channel["header_end"]):]
+                self.state = "body"
+            elif self.state == "call":
+                index = self.buffer.find(self.call["end"])
+                if index < 0:
+                    break
+                body = self.buffer[:index]
+                self.buffer = self.buffer[index + len(self.call["end"]):]
+                self.state = "body"
+                parsed = self.parse_call(body)
+                if parsed is None:
+                    events.append(("content", self.call["start"] + body + self.call["end"]))
+                else:
+                    events.append(("tool_call", parsed))
+                    self.calls += 1
+            else:
+                markers = [start] if self.state == "between" else [end, start]
+                if self.state == "body" and self.target != "reasoning":
+                    markers += [self.call["start"]] + self.stops + self.drops
+                hits = [hit for hit in ((self.buffer.find(marker), marker) for marker in markers) if hit[0] >= 0]
+                if not hits:
+                    keep = longest_marker_prefix(self.buffer, markers)
+                    if len(self.buffer) > keep:
+                        self.emit(events, self.buffer[:len(self.buffer) - keep])
+                        self.buffer = self.buffer[len(self.buffer) - keep:]
+                    break
+                index, marker = min(hits)
+                if index:
+                    self.emit(events, self.buffer[:index])
+                self.buffer = self.buffer[index + len(marker):]
+                if marker == start:
+                    self.state = "header"
+                elif marker == end:
+                    self.state, self.target = "between", "tool"
+                elif marker == self.call["start"]:
+                    self.state = "call"
+                elif marker not in self.drops:
+                    self.buffer = ""
+                    self.stopped = True
+                    self.ended = marker in self.end_markers
+        return events
+
+    def finish(self):
+        events = []
+        if self.buffer and not self.stopped:
+            if self.state == "call":
+                events.append(("content", self.call["start"] + self.buffer))
+            elif self.state != "header":
+                self.emit(events, self.buffer)
         self.buffer = ""
         return events
 
@@ -666,8 +858,10 @@ class Frontend:
         stops = body.get("stop") or []
         if isinstance(stops, str):
             stops = [stops]
-        reasoning_open = prompt.rstrip().endswith(model.reasoning["start"])
-        parser = OutputParser(model, tools, reasoning_open, stops)
+        if model.channels is not None:
+            parser = ChannelParser(model, tools, prompt, stops)
+        else:
+            parser = OutputParser(model, tools, prompt.rstrip().endswith(model.reasoning["start"].rstrip()), stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body))
         return engine_body, parser, len(prompt_ids)

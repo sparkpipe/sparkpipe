@@ -87,6 +87,9 @@ typedef struct SparkStageRunnerModelGeometry
 	uint32_t lease_tensor_base;
 	const uint64_t *expert_w1_offset;
 	const uint64_t *expert_w2_offset;
+	uint32_t embed_alias_first;
+	uint32_t embed_alias_count;
+	uint32_t embed_alias_row;
 } SparkStageRunnerModelGeometry;
 
 typedef struct SparkStageRunnerModelOpen

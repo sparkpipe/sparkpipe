@@ -62,6 +62,9 @@ struct GemmaDefaults
 	static constexpr bool kSigmoidRouter = false;
 	static constexpr uint32_t kFirstMoeLayer = 0u;
 	static constexpr float kRoutedScale = 1.0f;
+	static constexpr uint32_t kEmbedAliasFirst = 0u;
+	static constexpr uint32_t kEmbedAliasCount = 0u;
+	static constexpr uint32_t kEmbedAliasRow = 0u;
 };
 
 template<class G>
@@ -824,6 +827,12 @@ struct GemmaModel
 		geometry->head_norm_f32 = 1u;
 		geometry->logit_softcap = G::kLogitSoftcap;
 		geometry->logit_scale = G::kLogitScale;
+		if constexpr ( G::kEmbedAliasCount != 0u )
+		{
+			geometry->embed_alias_first = G::kEmbedAliasFirst;
+			geometry->embed_alias_count = G::kEmbedAliasCount;
+			geometry->embed_alias_row = G::kEmbedAliasRow;
+		}
 		if ( Entry(state, "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
 			Entry(state, "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
