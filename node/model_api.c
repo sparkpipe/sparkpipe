@@ -1914,7 +1914,7 @@ int main(int argc, char **argv)
 	cfg.prefix_index_path = S.prefix_index_path;
 	cfg.peer_prefix_index_paths = peer_count != 0u ? peer_indexes : 0;
 	cfg.peer_prefix_index_count = peer_count;
-	cfg.request_capacity = 64;
+	cfg.request_capacity = 128;
 	cfg.max_context_tokens = api_context_limit(&dep);
 	S.context_limit = cfg.max_context_tokens;
 	api_logf("api_context_limit max_context_tokens=%u deployment_max_sequence_positions=%u", cfg.max_context_tokens, dep.max_sequence_positions);
