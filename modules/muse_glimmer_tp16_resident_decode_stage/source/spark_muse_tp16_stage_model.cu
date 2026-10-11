@@ -9,7 +9,8 @@ struct MuseGlimmerGeometry : GemmaDefaults
 	static constexpr uint32_t kVocab = 202048u;
 	static constexpr uint32_t kPeriod = SPARK_MUSE_TP16_STAGE_PERIOD;
 	static constexpr uint32_t kPhase = 3u;
-	static constexpr uint32_t kHeads = 32u;
+	static constexpr uint32_t kSlidingHeads = 32u;
+	static constexpr uint32_t kFullHeads = 32u;
 	static constexpr uint32_t kSlidingKvHeads = SPARK_MUSE_TP16_STAGE_SLIDING_KV_HEADS;
 	static constexpr uint32_t kSlidingDim = SPARK_MUSE_TP16_STAGE_SLIDING_DIM;
 	static constexpr uint32_t kFullKvHeads = SPARK_MUSE_TP16_STAGE_FULL_KV_HEADS;

@@ -39,6 +39,9 @@ typedef struct SparkModelResidentChatTemplate
 	char *stop_markers[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
 	uint32_t control_marker_count;
 	char *control_markers[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
+	char *user_suffix;
+	char *system_turn_suffix;
+	char *observation_suffix;
 } SparkModelResidentChatTemplate;
 
 typedef struct SparkModelResidentDeploymentNode

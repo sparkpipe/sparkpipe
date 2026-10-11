@@ -9,7 +9,8 @@ struct Gemma4_26bGeometry : GemmaDefaults
 	static constexpr uint32_t kVocab = 262144u;
 	static constexpr uint32_t kPeriod = SPARK_GEMMA4_26B_STAGE_PERIOD;
 	static constexpr uint32_t kPhase = 5u;
-	static constexpr uint32_t kHeads = 16u;
+	static constexpr uint32_t kSlidingHeads = 16u;
+	static constexpr uint32_t kFullHeads = 16u;
 	static constexpr uint32_t kSlidingKvHeads = SPARK_GEMMA4_26B_STAGE_SLIDING_KV_HEADS;
 	static constexpr uint32_t kSlidingDim = SPARK_GEMMA4_26B_STAGE_SLIDING_DIM;
 	static constexpr uint32_t kFullKvHeads = SPARK_GEMMA4_26B_STAGE_FULL_KV_HEADS;
