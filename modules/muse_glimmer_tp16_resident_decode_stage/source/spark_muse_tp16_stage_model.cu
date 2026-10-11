@@ -36,6 +36,9 @@ struct MuseGlimmerGeometry : GemmaDefaults
 	static constexpr bool kGeluMlp = false;
 	static constexpr bool kUntiedHead = true;
 	static constexpr bool kLayerScalar = false;
+	static constexpr uint32_t kEmbedAliasFirst = 200091u;
+	static constexpr uint32_t kEmbedAliasCount = 2u;
+	static constexpr uint32_t kEmbedAliasRow = 0u;
 	static const char *Tag(void) { return "sparkpipe_muse_glimmer"; }
 	static const char *Name(void) { return "muse-glimmer-30b"; }
 	static const char *ReportTag(void) { return "MUSE-STATE"; }

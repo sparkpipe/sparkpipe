@@ -941,6 +941,14 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 				state->geometry.embed_rows, state->geometry.head_rows, state->vocab);
 			status = SPARK_STATUS_PARSE_ERROR;
 		}
+		else if ( state->geometry.embed_alias_count != 0u && (state->geometry.embed_alias_first >= state->vocab ||
+			state->geometry.embed_alias_count > state->vocab - state->geometry.embed_alias_first || state->geometry.embed_alias_row >= state->vocab ||
+			state->geometry.embed_alias_row - state->geometry.embed_alias_first < state->geometry.embed_alias_count) )
+		{
+			fprintf(stderr, "sparkpipe_stage_runner: embedding alias of %u ids from %u onto row %u does not fit vocab %u\n",
+				state->geometry.embed_alias_count, state->geometry.embed_alias_first, state->geometry.embed_alias_row, state->vocab);
+			status = SPARK_STATUS_PARSE_ERROR;
+		}
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateCollective(state, configuration);
@@ -1245,8 +1253,13 @@ static void StageRunnerLayerMarksEnd(SparkStageRunnerState *state, uint32_t rank
 
 static SparkStatus StageRunnerEmbed(SparkStageRunnerState *state, const SparkStageRunner *runner, uint32_t rows, cudaStream_t stream)
 {
-	if ( LmStageEmbedding(state->embed_weight, state->token_ids_device, state->hidden, rows, state->geometry.hidden,
-		runner->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream) != LM_LAUNCH_OK )
+	const int32_t launched = state->geometry.embed_alias_count != 0u
+		? LmStageEmbeddingAlias(state->embed_weight, state->token_ids_device, state->hidden, rows, state->geometry.hidden,
+			runner->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, state->geometry.embed_alias_first,
+			state->geometry.embed_alias_count, state->geometry.embed_alias_row, stream)
+		: LmStageEmbedding(state->embed_weight, state->token_ids_device, state->hidden, rows, state->geometry.hidden,
+			runner->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, stream);
+	if ( launched != LM_LAUNCH_OK )
 		return SPARK_STATUS_INTERNAL_ERROR;
 	if ( StageRunnerReduceBf16(state, stream, state->hidden, rows) != SPARK_STATUS_OK )
 		return SPARK_STATUS_INTERNAL_ERROR;
