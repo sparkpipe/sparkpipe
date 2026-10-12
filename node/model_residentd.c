@@ -696,8 +696,11 @@ static SparkStatus SparkModelResidentdAllocateCuda(
 	SparkStatus status;
 	cudaError_t error;
 	uint32_t index;
+	int least_priority = 0,greatest_priority = 0;
 	runtime->memory_mode = memory_mode;
-	error = cudaStreamCreateWithFlags(&runtime->execution_stream,cudaStreamNonBlocking);
+	error = cudaDeviceGetStreamPriorityRange(&least_priority,&greatest_priority);
+	if ( error == cudaSuccess )
+		error = cudaStreamCreateWithPriority(&runtime->execution_stream,cudaStreamNonBlocking,greatest_priority);
 	if ( error != cudaSuccess )
 	{
 		fprintf(stderr,"model_residentd cuda_stream_create stream=execution rank=%u stage=%u cuda_error=%d detail=%s\n",
