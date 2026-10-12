@@ -1,0 +1,368 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-12T01:21:53+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "ling-3.0-flash-fin",
+ "passed": 6,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "ling-3.0-flash-fin",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-a51af437fafe4195ad8fd7c58106ed79",
+     "created": 1791768108,
+     "model": "ling-3.0-flash-fin",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": "1.  **Analyze the Request:**\n    *   Question: \"What is the capital of France?\"\n    *   Constraint: \"Answer in one sentence.\"\n\n2.  **Retrieve Knowledge:**\n    *   Capital of France = Paris.\n\n3.  **Formulate Answer:**\n    *   Draft 1: The capital of France is Paris. (One sentence, directly answers the question).\n    *   Draft 2: Paris is the capital of France. (One sentence, directly answers the question).\n\n4.  **Check Constraints:**\n    *   Is it one sentence? Yes.\n    *   Does it answer the question? Yes.\n\n5.  **Final Selection:**\n    *   \"The capital of France is Paris.\""
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 172,
+      "prompt_tokens": 32,
+      "total_tokens": 204,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "1.  **Analyze the Request:**\n    *   Question: \"What is the capital of France?\"\n    *   Constraint: \"Answer in one sentence.\"\n\n2.  **Retrieve Knowledge:**\n    *   Capital of France = Paris.\n\n3.  **Formulate Answer:**\n    *   Draft 1: The capital of France is Paris. (One sentence, directly answers the question).\n    *   Draft 2: Paris is the capital of France. (One sentence, directly answers the question).\n\n4.  **Check Constraints:**\n    *   Is it one sentence? Yes.\n    *   Does it answer the question? Yes.\n\n5.  **Final Selection:**\n    *   \"The capital of France is Paris.\"",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 2.44
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "ling-3.0-flash-fin",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "1.  **Analyze the Request:**\n    *   Question: \"What is the capital of France?\"\n    *   Constraint: \"Answer in one sentence.\"\n\n2.  **Retrieve Knowledge:**\n    *   Capital of France = Paris.\n\n3.  **Formulate Answer:**\n    *   Draft 1: The capital of France is Paris. (One sentence, directly answers the question).\n    *   Draft 2: Paris is the capital of France. (One sentence, directly answers the question).\n\n4.  **Check Constraints:**\n    *   Is it one sentence? Yes.\n    *   Does it answer the question? Yes.\n\n5.  **Final Selection:**\n    *   \"The capital of France is Paris.\"",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 26,
+    "elapsed_s": 2.34
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "ling-3.0-flash-fin",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-414f1a4da1be47ff808b8907a999d57f",
+     "created": 1791768111,
+     "model": "ling-3.0-flash-fin",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\"}",
+           "name": "get_weather"
+          },
+          "id": "call_6f364541b70a4330bcf15b55",
+          "type": "function"
+         }
+        ],
+        "reasoning_content": "The user wants to know the current weather in Paris. I'll use the get_weather tool with \"Paris\" as the location.",
+        "content": null
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 42,
+      "prompt_tokens": 268,
+      "total_tokens": 310,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "",
+    "reasoning": "The user wants to know the current weather in Paris. I'll use the get_weather tool with \"Paris\" as the location.",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\"}",
+       "name": "get_weather"
+      },
+      "id": "call_6f364541b70a4330bcf15b55",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 0.98
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "ling-3.0-flash-fin",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\"}",
+         "name": "get_weather"
+        },
+        "id": "call_6f364541b70a4330bcf15b55",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_6f364541b70a4330bcf15b55",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-230324640c9b4a55a4192dbb920e4545",
+     "created": 1791768113,
+     "model": "ling-3.0-flash-fin",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The current weather in Paris is **sunny** with a temperature of **18\u00b0C**. Enjoy the lovely weather! \u2600\ufe0f",
+        "role": "assistant",
+        "reasoning_content": "The user asked for the weather in Paris. I called the get_weather tool and received the result. Let me present this information clearly.\n\nThe result shows:\n- Location: Paris\n- Temperature: 18\u00b0C\n- Condition: Sunny"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 80,
+      "prompt_tokens": 324,
+      "total_tokens": 404,
+      "prompt_tokens_details": {
+       "cached_tokens": 256
+      }
+     }
+    },
+    "content": "The current weather in Paris is **sunny** with a temperature of **18\u00b0C**. Enjoy the lovely weather! \u2600\ufe0f",
+    "reasoning": "The user asked for the weather in Paris. I called the get_weather tool and received the result. Let me present this information clearly.\n\nThe result shows:\n- Location: Paris\n- Temperature: 18\u00b0C\n- Condition: Sunny",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 1.19
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "ling-3.0-flash-fin",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-a5aa3f3b552243048220a15af4020815",
+     "created": 1791768113,
+     "model": "ling-3.0-flash-fin",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 37,
+      "total_tokens": 40,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.18
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "ling-3.0-flash-fin",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-2b0c8d62f7a24eb8a05a00227454515f",
+     "created": 1791768113,
+     "model": "ling-3.0-flash-fin",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": "17 * 23 = 17 * 20 + 17 * 3 = 340 + 51 = 391."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 36,
+      "total_tokens": 76,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "17 * 23 = 17 * 20 + 17 * 3 = 340 + 51 = 391.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.64
+   },
+   "problems": []
+  }
+ ]
+}
