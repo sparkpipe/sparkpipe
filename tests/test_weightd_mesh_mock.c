@@ -628,7 +628,7 @@ static uint64_t test_peer_route_bytes(uint32_t rows)
 
 static void test_peer_routes(uint32_t local_rank)
 {
-    static const uint32_t rows[] = {1u,8u,128u,129u,512u,1024u};
+    static const uint32_t rows[] = {1u,8u,128u,129u,512u,1024u,2048u,4096u};
     uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
     uint64_t seq = (UINT64_C(10) << 32u) | 1u, slot_base, staging = (uint64_t)(uintptr_t)weightd_mesh.staging_buffer;
     uint32_t case_index, first, last, i, peer, peer_rank, data, tails;
@@ -657,7 +657,7 @@ static void test_peer_routes(uint32_t local_rank)
     for ( case_index = 0u; case_index < sizeof(rows) / sizeof(rows[0]); case_index++ )
     {
         uint64_t bytes = test_peer_route_bytes(rows[case_index]);
-        CHECK(rows[case_index] <= SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS,"the mesh row cap admits every tested exchange height up to 1024 rows");
+        CHECK(rows[case_index] <= SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS,"the mesh row cap admits every tested exchange height up to 4096 rows");
         uint64_t slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
             ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
         slot_base = (8u * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;

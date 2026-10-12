@@ -9,13 +9,13 @@ emitters must go through derive(); verify() rejects drifted configs.
 
 Compile-time ceilings (keep in sync with the C headers; verify() checks
 the derived values against them):
-  SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS = 1024  (include/sparkpipe/spark_weightd.h)
+  SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS = 4096  (include/sparkpipe/spark_weightd.h)
   SPARK_GLM5_NEXT_..._MAX_INPUT_ROW_COUNT = 65536 (module firmware)
   KV page granularity = 64 positions/page
 """
 from __future__ import annotations
 
-MESH_MAX_BATCH_ROWS = 1024
+MESH_MAX_BATCH_ROWS = 4096
 PROFILE_ROW_CAPACITY = 128
 FIRMWARE_MAX_INPUT_ROWS = 65536
 KV_PAGE_TOKENS = 64

@@ -52,7 +52,7 @@
 #endif
 
 #define SPARK_K3_SERVING_CONTRACT_SHA256 "318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"
-#define SPARK_K3_SERVING_MAX_ROWS 2048u
+#define SPARK_K3_SERVING_MAX_ROWS 4096u
 
 static void K3ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
