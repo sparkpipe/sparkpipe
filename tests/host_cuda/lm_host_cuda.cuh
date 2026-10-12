@@ -156,6 +156,8 @@ typedef int cudaError_t;
 static inline cudaError_t cudaPeekAtLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaGetLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaMemsetAsync(void *, int, unsigned long long, dim3) { return cudaSuccess; }
+enum cudaMemcpyKind { cudaMemcpyHostToHost = 0, cudaMemcpyHostToDevice = 1, cudaMemcpyDeviceToHost = 2, cudaMemcpyDeviceToDevice = 3, cudaMemcpyDefault = 4 };
+static inline cudaError_t cudaMemcpy(void *destination, const void *source, size_t bytes, cudaMemcpyKind) { memcpy(destination, source, bytes); return cudaSuccess; }
 typedef void *cudaEvent_t;
 static inline cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t) { return cudaSuccess; }
 static inline cudaError_t cudaStreamWaitEvent(cudaStream_t, cudaEvent_t, unsigned) { return cudaSuccess; }
