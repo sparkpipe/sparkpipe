@@ -24,6 +24,11 @@ if command == "PROBE":
     others = os.path.exists(os.path.join(state, "reclaimed-small-" + host))
     own = os.path.exists(os.path.join(state, "reclaimed-big-" + host))
     level = "after" if started else "reclaimed_own" if own and "reclaimed_own" in memory[host] else "reclaimed" if others and "reclaimed" in memory[host] else "before"
+    probes = os.path.join(state, "probes-" + host)
+    count = int(open(probes).read()) if os.path.exists(probes) else 0
+    open(probes, "w").write(str(count + 1))
+    if level != "after" and "late" in memory[host] and count >= 4:
+        level = "late"
     print(memory[host][level])
 elif command.startswith("RECLAIM"):
     open(os.path.join(state, "reclaimed-" + command.split()[1] + "-" + host), "w").close()
@@ -49,7 +54,7 @@ def config(state, port):
         "drop_kv": "DROP {label}",
         "memory_probe": "PROBE",
         "memory_margin_bytes": 6 * GIB,
-        "ready_seconds": 10, "api_seconds": 10, "drain_seconds": 1, "node_seconds": 10,
+        "ready_seconds": 10, "api_seconds": 10, "drain_seconds": 1, "node_seconds": 10, "release_seconds": 3,
         "models": [{
             "id": "small", "kv_label": "small_stage", "node_memory_bytes": 30 * GIB, "node_reclaim": "RECLAIM small",
             "node_start": "START small", "node_ready": "READY {run_id}", "node_stop": "STOP small",
@@ -140,6 +145,11 @@ def main():
     check("a node still below projection plus margin after every release refuses the start on every node",
           swapper.state == "failed" and started == [] and swapper.active is None and reclaims == ["RECLAIM big", "RECLAIM small"])
     check("the refusal names the short node and its available memory", "n1 105.0" in swapper.error and "n0" not in swapper.error.split("GiB available:")[-1])
+
+    late = dict(roomy, n1={"before": 100 * GIB, "late": 110 * GIB, "after": 7 * GIB})
+    swapper, started, _ = asyncio.run(scenario(late, True))
+    check("memory that the stopped engines release a few seconds late is waited for, then the model starts",
+          swapper.state == "idle" and len(started) == 3)
 
     exact = dict(roomy, n2={"before": 106 * GIB, "after": 4 * GIB})
     swapper, started, _ = asyncio.run(scenario(exact, True))

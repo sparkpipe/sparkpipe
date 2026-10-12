@@ -37,6 +37,7 @@ class Swapper:
         self.api_seconds = float(config.get("api_seconds", 120))
         self.drain_seconds = float(config.get("drain_seconds", 30))
         self.node_seconds = float(config.get("node_seconds", 240))
+        self.release_seconds = float(config.get("release_seconds", 60))
         self.models = {}
         for spec in config["models"]:
             require(spec, ("id", "kv_label", "node_memory_bytes", "node_reclaim", "node_start", "node_ready", "node_stop", "api_start", "api_stop", "health"), f"model {spec.get('id')!r}")
@@ -115,6 +116,10 @@ class Swapper:
             before = await self.available()
         if any(value < need for value in before):
             self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} own cold arena release")
+            before = await self.available()
+        deadline = time.time() + self.release_seconds
+        while any(value < need for value in before) and time.time() < deadline:
+            await asyncio.sleep(2)
             before = await self.available()
         short = [f"{self.nodes[rank]} {value / 2**30:.1f}" for rank, value in enumerate(before) if value < need]
         if short:
