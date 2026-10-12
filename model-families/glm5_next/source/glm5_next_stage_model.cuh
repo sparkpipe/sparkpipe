@@ -86,6 +86,10 @@ typedef struct Glm5NextModelState
 	float *shard_partials_received;
 	uint64_t steps;
 	uint64_t prefill_rows;
+	struct Glm5NextModelState *lane_scratch;
+	struct Glm5NextModelState *lane_states[SPARK_STAGE_RUNNER_LANES];
+	uint64_t lane_base[SPARK_STAGE_RUNNER_LANES][2];
+	uint32_t lane_bound[SPARK_STAGE_RUNNER_LANES];
 } Glm5NextModelState;
 
 static uint32_t Glm5NextRankHeads(uint32_t total, uint32_t degree)
@@ -281,7 +285,7 @@ static SparkStatus Glm5NextPackOpen(Glm5NextModelState *state, const char *path,
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus Glm5NextAllocate(Glm5NextModelState *state)
+static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 {
 	const uint64_t R = state->max_rows, P = R * G5N_TOP_K, D = state->tp_degree;
 	const uint32_t local_stride = Glm5NextLocalStride(state, state->context_capacity);
@@ -297,7 +301,7 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state)
 	const Glm5NextBuffer plan[] =
 	{
 		{ (void **)&state->dense_row_offset, 8u }, { (void **)&state->dense_tile_prefix, 8u },
-		{ (void **)&state->kv_error, sizeof(LmKvAccessError) },
+		{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		{ (void **)&state->streams, R * G5N_HC_FLAT * 2u }, { (void **)&state->snapshot, R * G5N_HC_FLAT * 2u },
 		{ (void **)&state->normed, R * G5N_HIDDEN * 2u }, { (void **)&state->collapsed, R * G5N_HIDDEN * 2u },
 		{ (void **)&state->streams_mean, R * G5N_HIDDEN * 2u },
@@ -328,11 +332,13 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state)
 		{ (void **)&state->group_tile_prefix_w2, (G5N_EXPERTS + 1u) * 4u },
 		{ (void **)&state->shard_query_gathered, D * query_stride * 2u },
 		{ (void **)&state->shard_partials, D * partial_stride * 4u }, { (void **)&state->shard_partials_received, D * partial_stride * 4u },
-		{ (void **)&state->kda_state, (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_state_slot_bytes },
-		{ (void **)&state->kda_windows, 3u * (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_window_slot_bytes },
+		{ (void **)&state->kda_state, lane == 0u ? (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_state_slot_bytes : 0u },
+		{ (void **)&state->kda_windows, lane == 0u ? 3u * (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_window_slot_bytes : 0u },
 	};
 	for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
-		if ( cudaMalloc(plan[index].pointer, (size_t)plan[index].bytes) != cudaSuccess ||
+		if ( plan[index].bytes == 0u )
+			*plan[index].pointer = 0;
+		else if ( cudaMalloc(plan[index].pointer, (size_t)plan[index].bytes) != cudaSuccess ||
 			cudaMemset(*plan[index].pointer, 0, (size_t)plan[index].bytes) != cudaSuccess )
 		{
 			*plan[index].pointer = 0;
@@ -342,8 +348,69 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state)
 	return SPARK_STATUS_OK;
 }
 
+static uint32_t Glm5NextScratch(Glm5NextModelState *state, void ***fields)
+{
+	void **pointers[] =
+	{
+		(void **)&state->dense_row_offset, (void **)&state->dense_tile_prefix, (void **)&state->streams, (void **)&state->snapshot,
+		(void **)&state->normed, (void **)&state->collapsed, (void **)&state->streams_mean, (void **)&state->hc_mixes, (void **)&state->hc_pre,
+		(void **)&state->hc_post, (void **)&state->hc_comb, (void **)&state->q_compressed, (void **)&state->q, (void **)&state->query_latent,
+		(void **)&state->index_query, (void **)&state->index_key, (void **)&state->index_head_weight, (void **)&state->index_gate,
+		(void **)&state->index_packed, (void **)&state->selected_pools, (void **)&state->selected_positions, (void **)&state->selection_scores,
+		(void **)&state->index_local_scores, (void **)&state->index_gathered_scores, (void **)&state->fused_qkvb, (void **)&state->fused_decay_gate,
+		(void **)&state->kda_decay_latent, (void **)&state->kda_gate_latent, (void **)&state->kda_beta_logit, (void **)&state->kda_gate,
+		(void **)&state->kda_decay_logit, (void **)&state->kda_retention, (void **)&state->kda_write_gate, (void **)&state->kv_slot,
+		(void **)&state->attention_latent, (void **)&state->attention_value, (void **)&state->attention_out, (void **)&state->gate_up,
+		(void **)&state->intermediate, (void **)&state->expert_out, (void **)&state->shared_out, (void **)&state->router_logits,
+		(void **)&state->route_expert, (void **)&state->route_weight, (void **)&state->route_source_token, (void **)&state->route_packed_row,
+		(void **)&state->group_row_offset, (void **)&state->group_tile_prefix_w1, (void **)&state->group_tile_prefix_w2,
+		(void **)&state->shard_query_gathered, (void **)&state->shard_partials, (void **)&state->shard_partials_received,
+	};
+	const uint32_t count = (uint32_t)(sizeof(pointers) / sizeof(pointers[0]));
+	for ( uint32_t index = 0u; index < count; ++index )
+		fields[index] = pointers[index];
+	return count;
+}
+
+#define G5N_SCRATCH_FIELDS 64u
+#define G5N_LANE_ROWS 1024u
+
+static void Glm5NextLaneFree(Glm5NextModelState *state)
+{
+	void **fields[G5N_SCRATCH_FIELDS];
+	Glm5NextModelState *donor = state->lane_scratch;
+	if ( donor != 0 )
+	{
+		const uint32_t count = Glm5NextScratch(donor, fields);
+		for ( uint32_t index = 0u; index < count; ++index )
+			if ( *fields[index] != 0 )
+				(void)cudaFree(*fields[index]);
+		free(donor);
+	}
+	for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+		free(state->lane_states[lane]);
+	state->lane_scratch = 0;
+}
+
+static SparkStatus Glm5NextLaneAllocate(Glm5NextModelState *state)
+{
+	void **fields[G5N_SCRATCH_FIELDS];
+	Glm5NextModelState *donor = (Glm5NextModelState *)malloc(sizeof(*donor));
+	if ( donor == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memcpy(donor, state, sizeof(*donor));
+	for ( uint32_t index = 0u, count = Glm5NextScratch(donor, fields); index < count; ++index )
+		*fields[index] = 0;
+	state->lane_scratch = donor;
+	for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+		if ( (state->lane_states[lane] = (Glm5NextModelState *)calloc(1u, sizeof(Glm5NextModelState))) == 0 )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return Glm5NextAllocate(donor, 1u);
+}
+
 static void Glm5NextFree(Glm5NextModelState *state)
 {
+	Glm5NextLaneFree(state);
 	void *pointers[] =
 	{
 		state->dense_row_offset, state->dense_tile_prefix, state->kv_error, state->streams, state->snapshot, state->normed, state->collapsed,
@@ -480,6 +547,12 @@ struct Glm5NextStage
 		return state->services->round(state->services->context, (void *)stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows, 0u, local, full);
 	}
 
+	static void RowState(const Glm5NextModelState *state, uint32_t layer, uint32_t phase)
+	{
+		if ( state->services->row_state != 0 )
+			state->services->row_state(state->services->context, layer, phase);
+	}
+
 	static SparkStatus Launch(int32_t status, const char *site, uint32_t layer)
 	{
 		if ( status == LM_LAUNCH_OK )
@@ -492,7 +565,9 @@ struct Glm5NextStage
 		cudaStream_t stream)
 	{
 		const uint32_t rows = step->rows, sms = step->multiprocessors, layer = b->layer_index, D = state->tp_degree;
-		SparkStatus status = Launch(Glm5NextAttentionHead(b, rows, context, sms, stream), "attention head", layer);
+		SparkStatus status;
+		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+		status = Launch(Glm5NextAttentionHead(b, rows, context, sms, stream), "attention head", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
 				SparkGlm5NextIndexCpGatherSequences(rows, Glm5NextLocalStride(state, context)), b->index_local_scores, (void *)b->index_gathered_scores);
@@ -503,6 +578,7 @@ struct Glm5NextStage
 				b->query_latent_bf16, b->shard_query_gathered_bf16);
 		if ( status == SPARK_STATUS_OK )
 			status = Launch(Glm5NextAttentionPartial(b, rows, stream), "attention partial", layer);
+		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, SparkGlm5NextKvShardPartialSequences(rows, D, UINT32_MAX),
 				b->shard_partials_f32, b->shard_partials_received_f32);
@@ -560,9 +636,16 @@ struct Glm5NextStage
 			Glm5NextBindLayer(state, step, layer, &b);
 			status = Launch(Glm5NextHcSite(&b, w->hc_attn_fn, w->hc_attn_base, w->hc_attn_scale, rows, stream), "attention hc site", layer);
 			if ( status == SPARK_STATUS_OK )
-				status = w->kda_ordinal != G5N_NO_ORDINAL ?
-					Launch(Glm5NextKda(&b, rows, step->sequences, step->commit, step->multiprocessors, stream), "kda", layer) :
-					Attention(state, &b, step, context, stream);
+			{
+				if ( w->kda_ordinal != G5N_NO_ORDINAL )
+				{
+					RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+					status = Launch(Glm5NextKda(&b, rows, step->sequences, step->commit, step->multiprocessors, stream), "kda", layer);
+					RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+				}
+				else
+					status = Attention(state, &b, step, context, stream);
+			}
 			if ( status == SPARK_STATUS_OK )
 				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, b.attention_out_bf16, b.attention_out_bf16);
 			if ( status == SPARK_STATUS_OK )
@@ -634,7 +717,9 @@ struct Glm5NextStage
 		memset(geometry, 0, sizeof(*geometry));
 		status = Glm5NextPackOpen(state, configuration->rank_pack_path, G::kExpertCodec, geometry);
 		if ( status == SPARK_STATUS_OK )
-			status = Glm5NextAllocate(state);
+			status = Glm5NextAllocate(state, 0u);
+		if ( status == SPARK_STATUS_OK )
+			status = Glm5NextLaneAllocate(state);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		geometry->hidden = G5N_HIDDEN;
@@ -772,6 +857,49 @@ struct Glm5NextStage
 		return SPARK_STATUS_OK;
 	}
 
+	static void LaneFold(Glm5NextModelState *state)
+	{
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+		{
+			const Glm5NextModelState *copy = state->lane_states[lane];
+			if ( state->lane_bound[lane] == 0u || copy == 0 )
+				continue;
+			state->steps += copy->steps - state->lane_base[lane][0];
+			state->prefill_rows += copy->prefill_rows - state->lane_base[lane][1];
+			state->lane_base[lane][0] = copy->steps;
+			state->lane_base[lane][1] = copy->prefill_rows;
+		}
+	}
+
+	static SparkStatus Lane(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model)
+	{
+		Glm5NextModelState *state = (Glm5NextModelState *)model;
+		Glm5NextModelState *copy;
+		void **fields[G5N_SCRATCH_FIELDS], **donor_fields[G5N_SCRATCH_FIELDS];
+		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 ||
+			state->lane_scratch == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( step->rows > state->max_rows || step->rows < G5N_LANE_ROWS )
+			return SPARK_STATUS_UNSUPPORTED;
+		LaneFold(state);
+		copy = state->lane_states[lane];
+		memcpy(copy, state, sizeof(*copy));
+		copy->services = services;
+		if ( lane != 0u )
+		{
+			const uint32_t count = Glm5NextScratch(copy, fields);
+			if ( Glm5NextScratch(state->lane_scratch, donor_fields) != count )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			for ( uint32_t index = 0u; index < count; ++index )
+				*fields[index] = *donor_fields[index];
+		}
+		state->lane_bound[lane] = 1u;
+		state->lane_base[lane][0] = copy->steps;
+		state->lane_base[lane][1] = copy->prefill_rows;
+		*lane_model = copy;
+		return SPARK_STATUS_OK;
+	}
+
 	static void Close(void *model)
 	{
 		Glm5NextModelState *state = (Glm5NextModelState *)model;
@@ -863,7 +991,8 @@ struct Glm5NextStage
 
 	static void Report(void *model, uint32_t rank)
 	{
-		const Glm5NextModelState *state = (const Glm5NextModelState *)model;
+		Glm5NextModelState *state = (Glm5NextModelState *)model;
+		LaneFold(state);
 		fprintf(stderr, "%s rank=%u steps=%llu prefill_rows=%llu context_capacity=%u\n", G::ReportTag(), rank, (unsigned long long)state->steps,
 			(unsigned long long)state->prefill_rows, state->context_capacity);
 	}
@@ -886,7 +1015,9 @@ struct Glm5NextStage
 			RecurrentCopy,
 			ResetSlot,
 			ProbeBuffers,
-			Report
+			Report,
+			0,
+			Lane
 		};
 		return &table;
 	}

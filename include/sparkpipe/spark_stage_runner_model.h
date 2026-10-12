@@ -15,6 +15,9 @@ extern "C" {
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
+#define SPARK_STAGE_RUNNER_LANES 2u
+#define SPARK_STAGE_RUNNER_ROW_STATE_READ 0u
+#define SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN 1u
 
 struct SparkWeightdLazyPack;
 struct SparkWeightdManifest;
@@ -29,6 +32,7 @@ typedef struct SparkStageRunnerServices
 	SparkStatus (*expert_weights)(void *context, uint32_t layer, const uint32_t *group_row_offset_device,
 		uint32_t routed_rows, const void **w1, const void **w2);
 	void (*layer_done)(void *context, uint32_t layer);
+	void (*row_state)(void *context, uint32_t layer, uint32_t phase);
 } SparkStageRunnerServices;
 
 typedef struct SparkStageRunnerStep
@@ -117,6 +121,7 @@ struct SparkStageRunnerModelInterface
 	const void *(*probe_buffers)(void *model);
 	void (*report)(void *model, uint32_t rank);
 	uint32_t (*graph_key)(void *model, const SparkStageRunnerStep *step);
+	SparkStatus (*lane)(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model);
 };
 
 #ifdef __cplusplus

@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstring>
 #include <ctime>
+#include <pthread.h>
 
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_stage_runner.h"
@@ -24,6 +25,52 @@
 #define STAGE_RUNNER_WIDE_ROWS 16u
 
 typedef struct SparkStageRunnerState SparkStageRunnerState;
+
+#define STAGE_RUNNER_LANE_MIN_ROWS 256u
+#define STAGE_RUNNER_LANE_ALIGN 128u
+#define STAGE_RUNNER_LANE_EPOCH_EVENTS 8u
+
+typedef struct StageRunnerLane
+{
+	SparkStageRunnerState *state;
+	uint32_t index;
+	cudaStream_t stream;
+	cudaEvent_t ready;
+	cudaEvent_t landed;
+	cudaEvent_t epoch_event[STAGE_RUNNER_LANE_EPOCH_EVENTS];
+	SparkStageRunnerServices services;
+	void *model;
+	SparkStageRunnerStep step;
+	uint32_t *row_begin;
+	uint32_t *context_length;
+	uint32_t rounds;
+	uint32_t epoch;
+	uint32_t group_rounds;
+	uint32_t holding;
+	uint32_t finished;
+	SparkStatus status;
+} StageRunnerLane;
+
+typedef struct StageRunnerLanes
+{
+	uint32_t created;
+	uint32_t worker_started;
+	pthread_t worker;
+	pthread_mutex_t lock;
+	pthread_cond_t wake;
+	uint64_t job;
+	uint64_t job_done;
+	uint32_t stop;
+	uint64_t turn;
+	uint32_t failed;
+	cudaEvent_t fork;
+	uint32_t *host_stage;
+	uint32_t context_entries;
+	int device;
+	uint64_t waves;
+	uint64_t whole;
+	StageRunnerLane lane[SPARK_STAGE_RUNNER_LANES];
+} StageRunnerLanes;
 
 #define STAGE_RUNNER_GATHER_SOURCES_MAX 16u
 
@@ -271,6 +318,8 @@ typedef struct SparkStageRunnerState
 	uint32_t layer_waves;
 	uint64_t timing_graph_ns;
 	SparkTpDeviceCollectiveHardwareTiming timing_wait;
+	uint32_t sequence_capacity;
+	StageRunnerLanes lanes;
 } SparkStageRunnerState;
 
 static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
@@ -829,6 +878,16 @@ static SparkStatus StageRunnerCreateLeases(SparkStageRunnerState *state)
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state);
+static void StageRunnerDestroyLanes(SparkStageRunnerState *state);
+
+static void StageRunnerRowStateService(void *context, uint32_t layer, uint32_t phase)
+{
+	(void)context;
+	(void)layer;
+	(void)phase;
+}
+
 static uint64_t StageRunnerMemAvailable(void)
 {
 	FILE *file = fopen("/proc/meminfo", "r");
@@ -898,12 +957,14 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	state->max_rows = configuration->max_input_row_count;
 	state->max_context = configuration->resident_sequence_capacity;
 	state->multiprocessors = configuration->multiprocessors;
+	state->sequence_capacity = configuration->max_active_sequence_count;
 	state->services.context = state;
 	state->services.round = StageRunnerRoundService;
 	state->services.published = StageRunnerPublishedService;
 	state->services.fail = StageRunnerFailService;
 	state->services.expert_weights = StageRunnerExpertWeightsService;
 	state->services.layer_done = StageRunnerLayerDoneService;
+	state->services.row_state = StageRunnerRowStateService;
 	request.configuration = configuration;
 	request.services = &state->services;
 	request.stream = configuration->execution_stream;
@@ -964,6 +1025,8 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 		status = StageRunnerCreateBuffers(state, runner, configuration);
 	if ( status == SPARK_STATUS_OK )
 		StageRunnerMemoryMark(state, "buffers", 0u);
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerCreateLanes(state);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkStageRunnerDestroy(runner);
@@ -1332,13 +1395,351 @@ static SparkStatus StageRunnerHeadArgmax(SparkStageRunnerState *state, const Spa
 	return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
+static SparkStatus StageRunnerLaneExpertWeights(void *context, uint32_t layer, const uint32_t *group_row_offset_device,
+	uint32_t routed_rows, const void **w1, const void **w2)
+{
+	return StageRunnerExpertWeightsService(((StageRunnerLane *)context)->state, layer, group_row_offset_device, routed_rows, w1, w2);
+}
+
+static uint32_t StageRunnerLanePublished(void *context)
+{
+	return StageRunnerPublishedService(((StageRunnerLane *)context)->state);
+}
+
+static void StageRunnerLaneFail(void *context, SparkStatus status)
+{
+	StageRunnerLane *lane = (StageRunnerLane *)context;
+	StageRunnerLanes *lanes = &lane->state->lanes;
+	pthread_mutex_lock(&lanes->lock);
+	StageRunnerFailService(lane->state, status);
+	lanes->failed = 1u;
+	pthread_cond_broadcast(&lanes->wake);
+	pthread_mutex_unlock(&lanes->lock);
+}
+
+static SparkStatus StageRunnerLaneFollow(StageRunnerLanes *lanes, StageRunnerLane *lane, const StageRunnerLane *leader)
+{
+	while ( lanes->failed == 0u && leader->finished == 0u && leader->epoch < lane->epoch )
+		pthread_cond_wait(&lanes->wake, &lanes->lock);
+	if ( lanes->failed != 0u )
+		return SPARK_STATUS_INTERNAL_ERROR;
+	return cudaStreamWaitEvent(lane->stream, leader->epoch < lane->epoch ? leader->ready :
+		leader->epoch_event[lane->epoch % STAGE_RUNNER_LANE_EPOCH_EVENTS], 0u) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
+static uint32_t StageRunnerLaneTurn(const StageRunnerLane *lane, const StageRunnerLane *other)
+{
+	if ( lane->holding != 0u )
+		return 1u;
+	if ( other->holding != 0u )
+		return 0u;
+	if ( other->finished != 0u || other->epoch > lane->epoch )
+		return 1u;
+	if ( other->epoch < lane->epoch )
+		return 0u;
+	return other->group_rounds > lane->group_rounds || (other->group_rounds == lane->group_rounds && lane->index == 0u) ? 1u : 0u;
+}
+
+static void StageRunnerLaneLayerDone(void *context, uint32_t layer)
+{
+	StageRunnerLane *lane = (StageRunnerLane *)context;
+	if ( lane->index == 0u )
+		StageRunnerLayerDoneService(lane->state, layer);
+}
+
+static void StageRunnerLaneRowState(void *context, uint32_t layer, uint32_t phase)
+{
+	StageRunnerLane *lane = (StageRunnerLane *)context;
+	StageRunnerLanes *lanes = &lane->state->lanes;
+	SparkStatus status = SPARK_STATUS_OK;
+	(void)layer;
+	if ( (lane->index == 0u) != (phase == SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN) )
+		return;
+	pthread_mutex_lock(&lanes->lock);
+	lane->epoch++;
+	lane->group_rounds = 0u;
+	if ( lane->index == 0u && cudaEventRecord(lane->epoch_event[lane->epoch % STAGE_RUNNER_LANE_EPOCH_EVENTS], lane->stream) != cudaSuccess )
+		status = SPARK_STATUS_IO_ERROR;
+	pthread_cond_broadcast(&lanes->wake);
+	if ( status == SPARK_STATUS_OK && lane->index != 0u )
+		status = StageRunnerLaneFollow(lanes, lane, &lanes->lane[0]);
+	if ( status != SPARK_STATUS_OK )
+	{
+		StageRunnerFailService(lane->state, status);
+		lanes->failed = 1u;
+		pthread_cond_broadcast(&lanes->wake);
+	}
+	pthread_mutex_unlock(&lanes->lock);
+}
+
+static SparkStatus StageRunnerLaneRound(void *context, void *stream_void, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements, const void *local, void *full)
+{
+	StageRunnerLane *lane = (StageRunnerLane *)context;
+	SparkStageRunnerState *state = lane->state;
+	StageRunnerLanes *lanes = &state->lanes;
+	StageRunnerLane *other = &lanes->lane[lane->index ^ 1u];
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( (cudaStream_t)stream_void != lane->stream || (stage == SPARK_STAGE_RUNNER_ROUND_FINISH) != (lane->holding != 0u) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: lane %u refused a stage %u round (holding %u) on its stream %s\n", lane->index, stage,
+			lane->holding, (cudaStream_t)stream_void == lane->stream ? "yes" : "no");
+		status = SPARK_STATUS_UNSUPPORTED;
+	}
+	pthread_mutex_lock(&lanes->lock);
+	while ( status == SPARK_STATUS_OK && lanes->failed == 0u && StageRunnerLaneTurn(lane, other) == 0u )
+		pthread_cond_wait(&lanes->wake, &lanes->lock);
+	if ( lanes->failed != 0u )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status == SPARK_STATUS_OK && stage != SPARK_STAGE_RUNNER_ROUND_FINISH && (cudaEventRecord(lane->ready, lane->stream) != cudaSuccess ||
+		cudaStreamWaitEvent(state->stream, lane->ready, 0u) != cudaSuccess) )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerRoundService(state, state->stream, operation, stage, rows, row_elements, local, full);
+	lane->holding = status == SPARK_STATUS_OK && stage == SPARK_STAGE_RUNNER_ROUND_BEGIN ? 1u : 0u;
+	if ( status == SPARK_STATUS_OK && lane->holding == 0u && (cudaEventRecord(lane->landed, state->stream) != cudaSuccess ||
+		cudaStreamWaitEvent(lane->stream, lane->landed, 0u) != cudaSuccess) )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( lane->holding == 0u )
+	{
+		lane->rounds++;
+		lane->group_rounds++;
+	}
+	if ( status != SPARK_STATUS_OK )
+		lanes->failed = 1u;
+	pthread_cond_broadcast(&lanes->wake);
+	pthread_mutex_unlock(&lanes->lock);
+	return status;
+}
+
+static void StageRunnerLaneRun(StageRunnerLanes *lanes, StageRunnerLane *lane)
+{
+	SparkStatus status = lane->state->model_interface->step(lane->model, &lane->step, lane->stream);
+	pthread_mutex_lock(&lanes->lock);
+	if ( status == SPARK_STATUS_OK && cudaEventRecord(lane->ready, lane->stream) != cudaSuccess )
+		status = SPARK_STATUS_IO_ERROR;
+	lane->status = status;
+	lane->finished = 1u;
+	if ( status != SPARK_STATUS_OK )
+		lanes->failed = 1u;
+	pthread_cond_broadcast(&lanes->wake);
+	pthread_mutex_unlock(&lanes->lock);
+}
+
+static void *StageRunnerLaneWorker(void *argument)
+{
+	StageRunnerLanes *lanes = (StageRunnerLanes *)argument;
+	uint64_t seen = 0u;
+	(void)cudaSetDevice(lanes->device);
+	pthread_mutex_lock(&lanes->lock);
+	for ( ;; )
+	{
+		while ( lanes->stop == 0u && lanes->job == seen )
+			pthread_cond_wait(&lanes->wake, &lanes->lock);
+		if ( lanes->stop != 0u )
+			break;
+		seen = lanes->job;
+		pthread_mutex_unlock(&lanes->lock);
+		StageRunnerLaneRun(lanes, &lanes->lane[1]);
+		pthread_mutex_lock(&lanes->lock);
+		lanes->job_done = seen;
+		pthread_cond_broadcast(&lanes->wake);
+	}
+	pthread_mutex_unlock(&lanes->lock);
+	return 0;
+}
+
+static void StageRunnerDestroyLanes(SparkStageRunnerState *state)
+{
+	StageRunnerLanes *lanes = &state->lanes;
+	uint32_t index;
+	if ( lanes->created == 0u )
+		return;
+	if ( lanes->worker_started != 0u )
+	{
+		pthread_mutex_lock(&lanes->lock);
+		lanes->stop = 1u;
+		pthread_cond_broadcast(&lanes->wake);
+		pthread_mutex_unlock(&lanes->lock);
+		(void)pthread_join(lanes->worker, 0);
+		lanes->worker_started = 0u;
+	}
+	for ( index = 0u; index < SPARK_STAGE_RUNNER_LANES; ++index )
+	{
+		StageRunnerLane *lane = &lanes->lane[index];
+		if ( lane->stream != 0 )
+			(void)cudaStreamDestroy(lane->stream);
+		if ( lane->ready != 0 )
+			(void)cudaEventDestroy(lane->ready);
+		if ( lane->landed != 0 )
+			(void)cudaEventDestroy(lane->landed);
+		for ( uint32_t event = 0u; event < STAGE_RUNNER_LANE_EPOCH_EVENTS; ++event )
+			if ( lane->epoch_event[event] != 0 )
+				(void)cudaEventDestroy(lane->epoch_event[event]);
+		cudaFree(lane->row_begin);
+		cudaFree(lane->context_length);
+	}
+	if ( lanes->fork != 0 )
+		(void)cudaEventDestroy(lanes->fork);
+	if ( lanes->host_stage != 0 )
+		(void)cudaFreeHost(lanes->host_stage);
+	pthread_cond_destroy(&lanes->wake);
+	pthread_mutex_destroy(&lanes->lock);
+	memset(lanes, 0, sizeof(*lanes));
+}
+
+static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state)
+{
+	StageRunnerLanes *lanes = &state->lanes;
+	uint32_t index;
+	if ( state->model_interface->lane == 0 || state->device_collective_created == 0 || state->device_collective_deferred == 0u )
+		return SPARK_STATUS_OK;
+	if ( pthread_mutex_init(&lanes->lock, 0) != 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( pthread_cond_init(&lanes->wake, 0) != 0 )
+	{
+		pthread_mutex_destroy(&lanes->lock);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	lanes->created = 1u;
+	lanes->context_entries = state->sequence_capacity;
+	if ( cudaGetDevice(&lanes->device) != cudaSuccess || cudaEventCreateWithFlags(&lanes->fork, cudaEventDisableTiming) != cudaSuccess ||
+		cudaMallocHost((void **)&lanes->host_stage, 8u * sizeof(uint32_t)) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	for ( index = 0u; index < SPARK_STAGE_RUNNER_LANES; ++index )
+	{
+		StageRunnerLane *lane = &lanes->lane[index];
+		lane->state = state;
+		lane->index = index;
+		lane->services.context = lane;
+		lane->services.round = StageRunnerLaneRound;
+		lane->services.published = StageRunnerLanePublished;
+		lane->services.fail = StageRunnerLaneFail;
+		lane->services.expert_weights = StageRunnerLaneExpertWeights;
+		lane->services.layer_done = StageRunnerLaneLayerDone;
+		lane->services.row_state = StageRunnerLaneRowState;
+		if ( cudaStreamCreateWithFlags(&lane->stream, cudaStreamNonBlocking) != cudaSuccess ||
+			cudaEventCreateWithFlags(&lane->ready, cudaEventDisableTiming) != cudaSuccess ||
+			cudaEventCreateWithFlags(&lane->landed, cudaEventDisableTiming) != cudaSuccess ||
+			cudaMalloc(&lane->row_begin, 2u * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc(&lane->context_length, (uint64_t)lanes->context_entries * sizeof(uint32_t)) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		for ( uint32_t event = 0u; event < STAGE_RUNNER_LANE_EPOCH_EVENTS; ++event )
+			if ( cudaEventCreateWithFlags(&lane->epoch_event[event], cudaEventDisableTiming) != cudaSuccess )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	if ( pthread_create(&lanes->worker, 0, StageRunnerLaneWorker, lanes) != 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	lanes->worker_started = 1u;
+	return SPARK_STATUS_OK;
+}
+
+static uint32_t StageRunnerLanesSplit(const SparkStageRunnerState *state, const SparkStageRunnerStep *in)
+{
+	const uint32_t first = in->rows / 2u / STAGE_RUNNER_LANE_ALIGN * STAGE_RUNNER_LANE_ALIGN;
+	uint32_t index;
+	if ( state->lanes.created == 0u || in->sequences != 1u || in->last_rows_only == 0u || in->host_positions == 0 ||
+		in->host_sequence_of_row == 0 || (state->resident == 0u && state->geometry.experts != 0u) ||
+		first < STAGE_RUNNER_LANE_MIN_ROWS || in->rows - first < STAGE_RUNNER_LANE_MIN_ROWS ||
+		in->host_sequence_of_row[0] >= state->lanes.context_entries )
+		return 0u;
+	for ( index = 1u; index < in->rows; ++index )
+		if ( in->host_positions[index] != in->host_positions[0] + index || in->host_sequence_of_row[index] != in->host_sequence_of_row[0] )
+			return 0u;
+	return first;
+}
+
+static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const SparkStageRunnerStep *in, uint32_t first, cudaStream_t stream)
+{
+	StageRunnerLanes *lanes = &state->lanes;
+	StageRunnerLane *a = &lanes->lane[0], *b = &lanes->lane[1];
+	const uint32_t slot = in->host_sequence_of_row[0], second = in->rows - first;
+	const uint64_t offset = (uint64_t)first * state->geometry.hidden;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index;
+	lanes->host_stage[0] = 0u;
+	lanes->host_stage[1] = first;
+	lanes->host_stage[2] = 0u;
+	lanes->host_stage[3] = second;
+	lanes->host_stage[4] = in->host_positions[first - 1u] + 1u;
+	if ( cudaMemcpyAsync(a->row_begin, lanes->host_stage, 2u * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess ||
+		cudaMemcpyAsync(b->row_begin, lanes->host_stage + 2u, 2u * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess ||
+		cudaMemcpyAsync(a->context_length, in->context_length, (uint64_t)lanes->context_entries * sizeof(uint32_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
+		cudaMemcpyAsync(a->context_length + slot, lanes->host_stage + 4u, sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess ||
+		cudaEventRecord(lanes->fork, stream) != cudaSuccess ||
+		cudaStreamWaitEvent(a->stream, lanes->fork, 0u) != cudaSuccess || cudaStreamWaitEvent(b->stream, lanes->fork, 0u) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	a->step = *in;
+	a->step.rows = first;
+	a->step.context_length = a->context_length;
+	a->step.sequence_row_begin = a->row_begin;
+	a->step.gather_context = in->gather_context != 0u ? lanes->host_stage[4] : 0u;
+	b->step = *in;
+	b->step.rows = second;
+	b->step.hidden_bf16 = in->hidden_bf16 + offset;
+	b->step.positions = in->positions + first;
+	b->step.sequence_of_row = in->sequence_of_row + first;
+	b->step.sequence_row_begin = b->row_begin;
+	b->step.token_ids = in->token_ids != 0 ? in->token_ids + first : 0;
+	b->step.host_positions = in->host_positions + first;
+	b->step.host_sequence_of_row = in->host_sequence_of_row + first;
+	for ( index = 0u; index < SPARK_STAGE_RUNNER_LANES && status == SPARK_STATUS_OK; ++index )
+		status = state->model_interface->lane(state->model, index, &lanes->lane[index].step, &lanes->lane[index].services,
+			&lanes->lane[index].model);
+	if ( status == SPARK_STATUS_UNSUPPORTED )
+	{
+		lanes->whole++;
+		return state->model_interface->step(state->model, in, stream);
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: %s lane setup failed status=%d\n", state->model_interface->tag, (int)status);
+		return status;
+	}
+	pthread_mutex_lock(&lanes->lock);
+	lanes->turn = 0u;
+	lanes->failed = 0u;
+	for ( index = 0u; index < SPARK_STAGE_RUNNER_LANES; ++index )
+	{
+		lanes->lane[index].rounds = 0u;
+		lanes->lane[index].epoch = 0u;
+		lanes->lane[index].group_rounds = 0u;
+		lanes->lane[index].holding = 0u;
+		lanes->lane[index].finished = 0u;
+		lanes->lane[index].status = SPARK_STATUS_OK;
+	}
+	lanes->job++;
+	pthread_cond_broadcast(&lanes->wake);
+	pthread_mutex_unlock(&lanes->lock);
+	StageRunnerLaneRun(lanes, a);
+	pthread_mutex_lock(&lanes->lock);
+	while ( lanes->job_done != lanes->job )
+		pthread_cond_wait(&lanes->wake, &lanes->lock);
+	pthread_mutex_unlock(&lanes->lock);
+	status = a->status != SPARK_STATUS_OK ? a->status : b->status;
+	if ( status == SPARK_STATUS_OK && (a->epoch != b->epoch || a->epoch == 0u) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: %s lanes fenced %u and %u row-state phases; a lane step must fence each layer's row state once\n",
+			state->model_interface->tag, a->epoch, b->epoch);
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	}
+	if ( status == SPARK_STATUS_OK && (cudaStreamWaitEvent(stream, a->ready, 0u) != cudaSuccess || cudaStreamWaitEvent(stream, b->ready, 0u) != cudaSuccess) )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK && lanes->waves++ == 0u )
+		fprintf(stderr, "STAGE-LANES rank=%u lanes=%u rows=%u split=%u+%u rounds=%u+%u fences=%u whole=%llu\n", state->tp_rank,
+			SPARK_STAGE_RUNNER_LANES, in->rows, first, second, a->rounds, b->rounds, a->epoch, (unsigned long long)lanes->whole);
+	return status;
+}
+
 static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const SparkStageRunner *runner,
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
 	SparkStatus status = runner->owns_embedding != 0u ? StageRunnerEmbed(state, runner, in->rows, stream) : SPARK_STATUS_OK;
+	uint32_t first;
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	status = state->model_interface->step(state->model, in, stream);
+	first = StageRunnerLanesSplit(state, in);
+	status = first != 0u ? StageRunnerLanesStep(state, in, first, stream) : state->model_interface->step(state->model, in, stream);
 	if ( status != SPARK_STATUS_OK )
 		{ fprintf(stderr, "sparkpipe_stage_runner: %s step failed status=%d\n", state->model_interface->tag, (int)status); return status; }
 	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
@@ -1890,6 +2291,7 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	if ( runner == 0 || runner->private_state == 0 )
 		return;
 	state = (SparkStageRunnerState *)runner->private_state;
+	StageRunnerDestroyLanes(state);
 	StageRunnerGraphDrop(state);
 	StageRunnerGraphPrefetchFree(state);
 	SparkStageRunnerStrayReport(state);

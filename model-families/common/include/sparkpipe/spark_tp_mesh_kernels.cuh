@@ -25,6 +25,9 @@ __attribute__((used)) static const char SparkTpMeshKernelsBuildMarkerHost[] =
 
 #define SPARK_TP_MESH_THREADS 256u
 #define SPARK_TP_MESH_COPY_BLOCKS 192u
+#define SPARK_TP_MESH_DIRECT_THREADS 128u
+#define SPARK_TP_MESH_DEPENDENT_ELEMENTS 65536u
+#define SPARK_TP_MESH_SMALL_MESSAGE_ELEMENTS 131072u
 #define SPARK_TP_MESH_WIDE_PUBLISH_BYTES 65536u
 #define SPARK_TP_MESH_WIDE_PUBLISH_UNIT (SPARK_TP_MESH_THREADS * 16u * 4u)
 
@@ -90,6 +93,24 @@ static __device__ __forceinline__ void SparkTpMeshCopyHalvesFromBand(
 		((uint4 *)destination)[i] = SparkTpLdVolatileU128(source + i * 8u);
 	for ( i = quads * 8u + lane; i < count; i += lanes )
 		destination[i] = source[i];
+}
+
+static inline uint32_t SparkTpMeshMultiprocessors(void)
+{
+	static int multiprocessors = 0;
+	int device = 0,count = 0;
+	if ( multiprocessors == 0 && cudaGetDevice(&device) == cudaSuccess &&
+		cudaDeviceGetAttribute(&count,cudaDevAttrMultiProcessorCount,device) == cudaSuccess && count > 0 )
+		multiprocessors = count;
+	return(multiprocessors > 0 ? (uint32_t)multiprocessors : 1u);
+}
+
+static inline uint32_t SparkTpMeshDirectBlocks(uint64_t elements,uint32_t peers)
+{
+	uint64_t needed = (elements + SPARK_TP_MESH_DIRECT_THREADS - 1u) / SPARK_TP_MESH_DIRECT_THREADS;
+	uint64_t limit = SparkTpMeshMultiprocessors() / (peers != 0u ? peers : 1u);
+	limit = limit != 0u ? limit : 1u;
+	return((uint32_t)(needed == 0u ? 1u : needed < limit ? needed : limit));
 }
 
 static inline uint32_t SparkTpMeshCopyBlocks(uint64_t elements,uint32_t peers)
@@ -1403,7 +1424,7 @@ static __device__ void SparkTpMeshHardwareCombineDone(SparkTpMeshRoundControl *c
     }
 }
 
-static __global__ void SparkTpMeshHardwareDirectKernel(
+static __device__ __forceinline__ void SparkTpMeshHardwareDirectRun(
     const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
     SparkTpMeshRoundControl *control,uint32_t degree,void *output,
     uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first,uint32_t skip_peer)
@@ -1446,6 +1467,22 @@ static __global__ void SparkTpMeshHardwareDirectKernel(
     for ( i = first + quads * 8u + lane; i < first + span; i += lanes )
         SparkTpMeshHardwareDirectElement(band,slot_bytes,slots_per_rank,ring,degree,output,local_elements,begin,count,operation,i,packed_first);
     SparkTpMeshHardwareCombineDone(control,last);
+}
+
+static __global__ void SparkTpMeshHardwareDirectKernel(
+    const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
+    SparkTpMeshRoundControl *control,uint32_t degree,void *output,
+    uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first,uint32_t skip_peer)
+{
+    SparkTpMeshHardwareDirectRun(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,skip_peer);
+}
+
+static __global__ __launch_bounds__(SPARK_TP_MESH_DIRECT_THREADS,4) void SparkTpMeshHardwareDirectWideKernel(
+    const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
+    SparkTpMeshRoundControl *control,uint32_t degree,void *output,
+    uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first,uint32_t skip_peer)
+{
+    SparkTpMeshHardwareDirectRun(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,skip_peer);
 }
 
 static __global__ void SparkTpMeshAllToAllPackKernel(
@@ -1601,6 +1638,7 @@ extern "C" cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device_out)
         (const void *)SparkTpMeshHardwarePublishGateKernel,
         (const void *)SparkTpMeshHardwarePublishWideKernel,
         (const void *)SparkTpMeshHardwareDirectKernel,
+        (const void *)SparkTpMeshHardwareDirectWideKernel,
         (const void *)SparkTpMeshHardwareSeedKernel,
         (const void *)SparkTpMeshHardwareFoldKernel,
         (const void *)SparkTpMeshHardwareFinishKernel,
@@ -1684,13 +1722,33 @@ static cudaError_t SparkTpMeshHardwareArrivalExchange(cudaStream_t stream,uint8_
 static cudaError_t SparkTpMeshHardwareCombinePacked(cudaStream_t stream,const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t degree,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first,uint32_t skip_peer)
 {
     dim3 grid;
+    uint64_t work;
+    if ( (operation == SPARK_TP_MESH_OPERATION_ALL_GATHER ? count * degree : count) <= SPARK_TP_MESH_SMALL_MESSAGE_ELEMENTS )
+    {
+        if ( operation == SPARK_TP_MESH_OPERATION_ALL_GATHER )
+            grid = dim3(SparkTpMeshCopyBlocks(count,degree),degree);
+        else if ( operation == SPARK_TP_MESH_OPERATION_SLICE_GATHER )
+            grid = dim3(SparkTpMeshCopyBlocks(local_elements,degree),degree);
+        else
+            grid = dim3(SparkTpMeshCopyBlocks(span,1u),1u);
+        return LM_LAUNCH_DEPENDENT((SparkTpMeshHardwareDirectKernel),grid,SPARK_TP_MESH_THREADS,0u,stream,band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,skip_peer);
+    }
     if ( operation == SPARK_TP_MESH_OPERATION_ALL_GATHER )
-        grid = dim3(SparkTpMeshCopyBlocks(count,degree),degree);
+        work = count * degree;
     else if ( operation == SPARK_TP_MESH_OPERATION_SLICE_GATHER )
-        grid = dim3(SparkTpMeshCopyBlocks(local_elements,degree),degree);
+        work = local_elements * degree;
     else
-        grid = dim3(SparkTpMeshCopyBlocks(span,1u),1u);
-    return LM_LAUNCH_DEPENDENT((SparkTpMeshHardwareDirectKernel),grid,SPARK_TP_MESH_THREADS,0u,stream,band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,skip_peer);
+        work = span;
+    if ( operation == SPARK_TP_MESH_OPERATION_ALL_GATHER )
+        grid = dim3(SparkTpMeshDirectBlocks(count,degree),degree);
+    else if ( operation == SPARK_TP_MESH_OPERATION_SLICE_GATHER )
+        grid = dim3(SparkTpMeshDirectBlocks(local_elements,degree),degree);
+    else
+        grid = dim3(SparkTpMeshDirectBlocks(span,1u),1u);
+    if ( work <= SPARK_TP_MESH_DEPENDENT_ELEMENTS )
+        return LM_LAUNCH_DEPENDENT((SparkTpMeshHardwareDirectWideKernel),grid,SPARK_TP_MESH_DIRECT_THREADS,0u,stream,band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,skip_peer);
+    SparkTpMeshHardwareDirectWideKernel<<<grid,SPARK_TP_MESH_DIRECT_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,skip_peer);
+    return cudaPeekAtLastError();
 }
 
 static cudaError_t SparkTpMeshHardwareCombine(cudaStream_t stream,const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t degree,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint32_t skip_peer)
