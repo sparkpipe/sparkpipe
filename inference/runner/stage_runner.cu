@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "inference/kernels/sample.cuh"
 #include "inference/kernels/stage_head.cuh"
+#include "inference/kernels/weight_prefetch.cuh"
 
 #define STAGE_RUNNER_SAMPLE_THREADS 1024u
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS 4u
@@ -249,6 +250,7 @@ typedef struct SparkStageRunnerState
 	cudaGraphExec_t graph_exec[STAGE_RUNNER_GRAPH_ROWS];
 	SparkStageRunnerStep graph_input[STAGE_RUNNER_GRAPH_ROWS];
 	uint8_t graph_refused[STAGE_RUNNER_GRAPH_ROWS];
+	LmWeightPrefetchPlan graph_prefetch[STAGE_RUNNER_GRAPH_ROWS];
 	uint64_t graph_launches;
 	uint64_t timing_steps;
 	uint64_t timing_graph_steps;
@@ -1371,6 +1373,34 @@ static void StageRunnerGraphDrop(SparkStageRunnerState *state)
 	}
 }
 
+static LmWeightPrefetchPlan *StageRunnerGraphPrefetch(SparkStageRunnerState *state, uint32_t rows)
+{
+	LmWeightPrefetchPlan *plan = &state->graph_prefetch[rows - 1u];
+	if ( plan->device != 0 )
+		return(plan);
+	plan->host = (LmWeightPrefetchGroup *)calloc(LM_WEIGHT_PREFETCH_GROUPS, sizeof(LmWeightPrefetchGroup));
+	if ( plan->host == 0 || cudaMalloc((void **)&plan->device, (size_t)LM_WEIGHT_PREFETCH_GROUPS * sizeof(LmWeightPrefetchGroup)) != cudaSuccess )
+	{
+		free(plan->host);
+		memset(plan, 0, sizeof(*plan));
+		return(0);
+	}
+	plan->capacity = LM_WEIGHT_PREFETCH_GROUPS;
+	return(plan);
+}
+
+static void StageRunnerGraphPrefetchFree(SparkStageRunnerState *state)
+{
+	for ( uint32_t index = 0u; index < STAGE_RUNNER_GRAPH_ROWS; ++index )
+	{
+		LmWeightPrefetchPlan *plan = &state->graph_prefetch[index];
+		if ( plan->device != 0 )
+			(void)cudaFree(plan->device);
+		free(plan->host);
+		memset(plan, 0, sizeof(*plan));
+	}
+}
+
 static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkStageRunner *runner,
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
@@ -1380,15 +1410,19 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	cudaGraphExec_t exec = 0;
 	cudaError_t error = cudaSuccess;
 	size_t nodes = 0u;
-	SparkStatus status = SparkTpDeviceCollectiveArmCapture(&state->device_collective);
+	LmWeightPrefetchPlan *prefetch = StageRunnerGraphPrefetch(state, rows);
+	SparkStatus status = prefetch != 0 ? SparkTpDeviceCollectiveArmCapture(&state->device_collective) : SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status == SPARK_STATUS_OK )
 	{
+		LmWeightPrefetchArm(prefetch, stream);
 		error = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
 		if ( error == cudaSuccess )
 		{
 			status = StageRunnerStepBody(state, runner, in, stream);
 			error = cudaStreamEndCapture(stream, &graph);
 		}
+		if ( LmWeightPrefetchDisarm(prefetch, status == SPARK_STATUS_OK && error == cudaSuccess ? 1u : 0u) != cudaSuccess && error == cudaSuccess )
+			error = cudaErrorMemoryAllocation;
 	}
 	(void)SparkTpDeviceCollectiveDisarmCapture(&state->device_collective);
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess && graph != 0 )
@@ -1415,8 +1449,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	}
 	state->graph_exec[rows - 1u] = exec;
 	StageRunnerGraphIdentity(in, &state->graph_input[rows - 1u]);
-	fprintf(stderr, "STAGE-GRAPH-CAPTURE rows=%u nodes=%llu capture_ms=%.1f\n", rows,
-		(unsigned long long)nodes, (double)(StageRunnerNowNs() - started) / 1e6);
+	fprintf(stderr, "STAGE-GRAPH-CAPTURE rows=%u nodes=%llu capture_ms=%.1f prefetch_groups=%u prefetch_dropped=%u\n", rows,
+		(unsigned long long)nodes, (double)(StageRunnerNowNs() - started) / 1e6, prefetch->groups, prefetch->dropped);
 }
 
 static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, cudaGraphExec_t exec, cudaStream_t stream)
@@ -1857,6 +1891,7 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 		return;
 	state = (SparkStageRunnerState *)runner->private_state;
 	StageRunnerGraphDrop(state);
+	StageRunnerGraphPrefetchFree(state);
 	SparkStageRunnerStrayReport(state);
 	free(state->stray_head_bits);
 	free(state->stray_seen_bits);

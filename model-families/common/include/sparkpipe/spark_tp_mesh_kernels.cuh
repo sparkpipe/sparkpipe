@@ -10,6 +10,9 @@
 #include <stdio.h>
 #include "sparkpipe/spark_tp_mesh_round_control.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "inference/kernels/dependent_launch.cuh"
+#include "inference/kernels/weight_prefetch.cuh"
+#include "runtime/launch.h"
 #define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V16-SUM-RNE"
 #define SPARK_TP_MESH_ERROR_PARITY_MISMATCH 0xFFFFFFFFFF000000ull
 #define SPARK_TP_MESH_ERROR_CANCELLED 0xFFFFFFFFFE000000ull
@@ -1065,13 +1068,24 @@ static __global__ void SparkTpMeshHardwareGuardKernel(
 
 static __global__ void SparkTpMeshHardwareArrivalKernel(
     const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
-    SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,uint64_t timeout_ns)
+    SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,uint64_t timeout_ns,
+    LmWeightPrefetchGroup *prefetch,uint32_t resume)
 {
     const uint32_t lane = threadIdx.x;
     const volatile uint64_t *tail,*cancel;
-    uint64_t tag,ring,expected,started,seen = 0u,fault = 0u,diag = 0u,landed = UINT64_MAX,other;
-    uint32_t missing,first,step;
+    uint64_t tag,ring,expected,started,seen = 0u,fault = 0u,diag = 0u,landed = UINT64_MAX,other,position = 0u,extent = 0u;
+    uint32_t missing,first,step,spans = 0u,issuer,issuers;
+    LmDependentRelease();
     if ( blockIdx.x != 0u || lane >= 32u || SparkTpLdcvU64(&control->error_word) != 0u ) return;
+    if ( prefetch != 0 )
+    {
+        spans = prefetch->count;
+        extent = LmWeightPrefetchExtent(prefetch,spans);
+        position = resume != 0u ? prefetch->progress : 0u;
+    }
+    issuers = degree < 32u ? 33u - degree : 1u;
+    issuers = issuers < LM_WEIGHT_PREFETCH_ISSUERS ? issuers : LM_WEIGHT_PREFETCH_ISSUERS;
+    issuer = lane == rank ? 0u : lane >= degree ? lane - degree + 1u : UINT32_MAX;
     tag = control->round_seq;
     ring = (tag - 1u) & (slots_per_rank - 1u);
     tail = (const volatile uint64_t *)(band + ((uint64_t)lane * slots_per_rank + ring) * slot_bytes + slot_bytes - 8u);
@@ -1081,6 +1095,12 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
     started = SparkTpGlobalTimerNs();
     for (;;)
     {
+        if ( position < extent )
+        {
+            if ( issuer < issuers )
+                LmWeightPrefetchPiece(prefetch,spans,position + (uint64_t)issuer * LM_WEIGHT_PREFETCH_PIECE_BYTES);
+            position += (uint64_t)issuers * LM_WEIGHT_PREFETCH_PIECE_BYTES;
+        }
         if ( missing != 0u && (seen = SparkTpLdAcquireU64(tail)) == tag )
         {
             missing = 0u;
@@ -1099,6 +1119,8 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
         if ( fault == tag ) diag = seen;
         break;
     }
+    if ( prefetch != 0 && issuer == 0u )
+        prefetch->progress = position < extent ? position : extent;
     if ( fault == 0u && lane < SPARK_TP_MESH_ROUND_CONTROL_PEERS && landed != UINT64_MAX && landed > control->wait_started_ns )
         control->peer_arrival_ns[lane] += landed - control->wait_started_ns;
     for ( step = 16u; step != 0u; step >>= 1u )
@@ -1387,6 +1409,7 @@ static __global__ void SparkTpMeshHardwareDirectKernel(
     uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint64_t packed_first,uint32_t skip_peer)
 {
     uint64_t ring,i,lane,lanes,peer,start,length,quads,base;
+    LmDependentWait();
     if ( control->error_word != 0u ) return;
     if ( threadIdx.x == 0u )
         (void)atomicMin((unsigned long long *)&control->math_started_ns,SparkTpGlobalTimerNs());
@@ -1627,7 +1650,9 @@ static cudaError_t SparkTpMeshHardwarePeerGuard(cudaStream_t stream,SparkWeightd
 
 static cudaError_t SparkTpMeshHardwareArrival(cudaStream_t stream,const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,uint64_t timeout_ns)
 {
-    SparkTpMeshHardwareArrivalKernel<<<1,32,0u,stream>>>(band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns);
+    uint32_t resume;
+    LmWeightPrefetchGroup *prefetch = LmWeightPrefetchSlot(stream,&resume);
+    SparkTpMeshHardwareArrivalKernel<<<1,32,0u,stream>>>(band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns,prefetch,resume);
     return cudaPeekAtLastError();
 }
 
@@ -1665,8 +1690,7 @@ static cudaError_t SparkTpMeshHardwareCombinePacked(cudaStream_t stream,const ui
         grid = dim3(SparkTpMeshCopyBlocks(local_elements,degree),degree);
     else
         grid = dim3(SparkTpMeshCopyBlocks(span,1u),1u);
-    SparkTpMeshHardwareDirectKernel<<<grid,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,skip_peer);
-    return cudaPeekAtLastError();
+    return LM_LAUNCH_DEPENDENT((SparkTpMeshHardwareDirectKernel),grid,SPARK_TP_MESH_THREADS,0u,stream,band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,operation,first,span,last,packed_first,skip_peer);
 }
 
 static cudaError_t SparkTpMeshHardwareCombine(cudaStream_t stream,const uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,SparkTpMeshRoundControl *control,uint32_t degree,void *output,uint64_t local_elements,uint64_t begin,uint64_t count,uint32_t operation,uint64_t first,uint64_t span,uint32_t last,uint32_t skip_peer)
