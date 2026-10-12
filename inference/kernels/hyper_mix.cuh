@@ -4,8 +4,14 @@
 
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/norm.cuh"
+#include "runtime/launch.h"
 
 #ifdef __CUDACC__
+#include <cooperative_groups.h>
+
+#define LM_HYPER_INJECT_CLUSTER_ROWS 8u
+#define LM_HYPER_INJECT_BATCH 16u
+
 static __device__ __forceinline__ float LmHyperRound(float value)
 {
 	return LmBf16ToFloat(LmFloatToBf16(value));
@@ -99,6 +105,77 @@ void LmHyperInjectWeightsKernel(const uint16_t *__restrict__ normed_bf16, const 
 		if ( threadIdx.x == 0u )
 			inject[(uint64_t)row * STREAMS + stream] = LmHyperRound(2.0f * LmHyperRound(LmHyperSigmoid(LmHyperRound(logit / (float)STREAMS))));
 	}
+}
+
+template<uint32_t THREADS, uint32_t STREAMS>
+__global__ __launch_bounds__(LM_WARP_LANES, 1)
+void LmHyperInjectWeightsClusterKernel(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ weight_bf16, float *__restrict__ inject,
+	uint32_t width)
+{
+	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES;
+	__shared__ float warp_sums[STREAMS];
+	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
+	const uint32_t part = cluster.block_rank(), row = blockIdx.x / WARPS, total_width = STREAMS * width;
+	const uint32_t thread = part * LM_WARP_LANES + threadIdx.x;
+	const uint16_t *source = normed_bf16 + (uint64_t)row * total_width;
+	float sums[STREAMS];
+	static_assert(THREADS % LM_WARP_LANES == 0u && WARPS <= 8u, "one portable cluster block per warp of the reference block");
+	for ( uint32_t stream = 0u; stream < STREAMS; ++stream )
+		sums[stream] = 0.0f;
+	for ( uint32_t first = thread; first < total_width; first += THREADS * LM_HYPER_INJECT_BATCH )
+	{
+		uint16_t values[LM_HYPER_INJECT_BATCH], weights[STREAMS][LM_HYPER_INJECT_BATCH];
+#pragma unroll
+		for ( uint32_t step = 0u; step < LM_HYPER_INJECT_BATCH; ++step )
+		{
+			const uint32_t index = first + step * THREADS;
+			values[step] = index < total_width ? source[index] : (uint16_t)0u;
+#pragma unroll
+			for ( uint32_t stream = 0u; stream < STREAMS; ++stream )
+				weights[stream][step] = index < total_width ? weight_bf16[(uint64_t)stream * total_width + index] : (uint16_t)0u;
+		}
+#pragma unroll
+		for ( uint32_t step = 0u; step < LM_HYPER_INJECT_BATCH; ++step )
+		{
+			if ( first + step * THREADS >= total_width )
+				break;
+			const float value = LmBf16ToFloat(values[step]);
+#pragma unroll
+			for ( uint32_t stream = 0u; stream < STREAMS; ++stream )
+				sums[stream] += value * LmBf16ToFloat(weights[stream][step]);
+		}
+	}
+	for ( uint32_t stream = 0u; stream < STREAMS; ++stream )
+	{
+		float value = sums[stream];
+		for ( uint32_t offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u )
+			value += __shfl_down_sync(0xffffffffu, value, offset);
+		if ( threadIdx.x == 0u )
+			warp_sums[stream] = value;
+	}
+	LmClusterBarrier();
+	if ( part == 0u )
+		for ( uint32_t stream = 0u; stream < STREAMS; ++stream )
+		{
+			float value = threadIdx.x < WARPS ? cluster.map_shared_rank(warp_sums, threadIdx.x)[stream] : 0.0f;
+			for ( uint32_t offset = WARPS / 2u; offset > 0u; offset >>= 1u )
+				value += __shfl_down_sync(0xffffffffu, value, offset);
+			const float logit = LmHyperRound(value);
+			if ( threadIdx.x == 0u )
+				inject[(uint64_t)row * STREAMS + stream] = LmHyperRound(2.0f * LmHyperRound(LmHyperSigmoid(LmHyperRound(logit / (float)STREAMS))));
+		}
+	LmClusterBarrier();
+}
+
+template<uint32_t THREADS, uint32_t STREAMS>
+static inline cudaError_t LmHyperInjectWeightsLaunch(uint32_t rows, cudaStream_t stream, const uint16_t *normed_bf16, const uint16_t *weight_bf16, float *inject,
+	uint32_t width)
+{
+	if ( rows != 0u && rows <= LM_HYPER_INJECT_CLUSTER_ROWS )
+		return LmLaunchClusterKernel((LmHyperInjectWeightsClusterKernel<THREADS, STREAMS>), dim3(rows * (THREADS / LM_WARP_LANES)), dim3(LM_WARP_LANES), 0,
+			stream, THREADS / LM_WARP_LANES, 0u, normed_bf16, weight_bf16, inject, width);
+	LmHyperInjectWeightsKernel<THREADS, STREAMS><<<rows, THREADS, 0, stream>>>(normed_bf16, weight_bf16, inject, width);
+	return cudaPeekAtLastError();
 }
 
 template<uint32_t THREADS>

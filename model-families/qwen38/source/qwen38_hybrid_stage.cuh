@@ -842,7 +842,7 @@ struct QwenHybridModel
 		LmHyperMixKernel<QH_THREADS><<<dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream>>>(state->hc_up, state->hc_normed, mixed,
 			G::kStreams, G::kHidden);
 		if ( inject != 0 )
-			LmHyperInjectWeightsKernel<QH_THREADS, G::kStreams><<<rows, QH_THREADS, 0, stream>>>(state->hc_normed, inject, state->hc_inject, G::kHidden);
+			LmHyperInjectWeightsLaunch<QH_THREADS, G::kStreams>(rows, stream, state->hc_normed, inject, state->hc_inject, G::kHidden);
 		return Launched();
 	}
 
