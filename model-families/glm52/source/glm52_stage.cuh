@@ -26,6 +26,7 @@
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/head.cuh"
 #include "inference/kernels/index_score.cuh"
+#include "inference/kernels/index_select.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
@@ -241,7 +242,8 @@ typedef struct GlmBuffers
 	float *shard_partials;
 	float *shard_partials_received;
 	uint64_t shard_partial_stride;
-	uint32_t *index_local_selected;
+	uint32_t *index_bitmaps;
+	uint32_t index_bitmap_words;
 } GlmBuffers;
 
 static inline void GlmProjectionSlice(uint32_t total, uint32_t tp_degree, uint32_t tp_rank, uint32_t *first, uint32_t *count)
@@ -279,24 +281,48 @@ static __device__ __forceinline__ void GlmProjectionSource(uint32_t column, uint
 	*offset = local * GLM_GRANULE + column % GLM_GRANULE;
 }
 
-static __global__ void GlmProjectionUnpackKernel(const uint16_t *gathered, uint16_t *query_out, uint16_t *latent_out, uint32_t rows,
-	uint32_t tp_degree, uint32_t width, uint32_t query_max)
+static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel(const uint16_t *__restrict__ gathered, const uint16_t *__restrict__ query_norm,
+	const uint16_t *__restrict__ latent_norm, const uint32_t *__restrict__ positions, uint16_t *__restrict__ query_out, uint16_t *__restrict__ slot_out,
+	uint32_t rows, uint32_t tp_degree, uint32_t width, uint32_t query_max, uint32_t rope_dimension, float theta, float epsilon)
 {
-	const uint32_t row = blockIdx.x;
-	uint32_t rank, offset;
-	for ( uint32_t column = threadIdx.x; column < GLM_GATHER_WIDTH; column += blockDim.x )
+	__shared__ float query[GLM_QUERY_A];
+	__shared__ float latent[GLM_SLOT];
+	__shared__ float reduction[GLM_THREADS / LM_WARP_LANES];
+	const uint32_t row = blockIdx.x, half = rope_dimension / 2u;
+	uint16_t *query_row = query_out + (uint64_t)row * GLM_QUERY_A;
+	uint32_t rank, offset, index;
+	float total = 0.0f, scale, value, position;
+	LmDependentRelease();
+	for ( index = threadIdx.x; index < GLM_QUERY_A; index += GLM_THREADS )
 	{
-		if ( column < GLM_QUERY_A )
-		{
-			GlmProjectionSource(column, GLM_QUERY_A, tp_degree, &rank, &offset);
-			query_out[(uint64_t)row * GLM_QUERY_A + column] = gathered[((uint64_t)rank * rows + row) * width + offset];
-		}
-		else
-		{
-			GlmProjectionSource(column - GLM_QUERY_A, GLM_SLOT, tp_degree, &rank, &offset);
-			latent_out[(uint64_t)row * GLM_SLOT + column - GLM_QUERY_A] = gathered[((uint64_t)rank * rows + row) * width + query_max + offset];
-		}
+		GlmProjectionSource(index, GLM_QUERY_A, tp_degree, &rank, &offset);
+		value = LmBf16ToFloat(gathered[((uint64_t)rank * rows + row) * width + offset]);
+		query[index] = value;
+		total += value * value;
 	}
+	total = LmBlockSum<GLM_THREADS>(total, reduction);
+	scale = rsqrtf((total / (float)GLM_QUERY_A) + epsilon);
+	for ( index = threadIdx.x; index < GLM_QUERY_A; index += GLM_THREADS )
+		query_row[index] = LmFloatToBf16(query[index] * scale * LmScalarToFloat(query_norm[index]));
+	total = 0.0f;
+	for ( index = threadIdx.x; index < GLM_SLOT; index += GLM_THREADS )
+	{
+		GlmProjectionSource(index, GLM_SLOT, tp_degree, &rank, &offset);
+		value = LmBf16ToFloat(gathered[((uint64_t)rank * rows + row) * width + query_max + offset]);
+		latent[index] = value;
+		if ( index < GLM_LATENT )
+			total += value * value;
+	}
+	total = LmBlockSum<GLM_THREADS>(total, reduction);
+	scale = rsqrtf((total / (float)GLM_LATENT) + epsilon);
+	for ( index = threadIdx.x; index < GLM_SLOT; index += GLM_THREADS )
+		slot_out[(uint64_t)row * GLM_SLOT + index] = index < GLM_LATENT ? LmFloatToBf16(latent[index] * scale * LmScalarToFloat(latent_norm[index])) :
+			LmFloatToBf16(latent[index]);
+	__syncthreads();
+	position = (float)positions[row];
+	for ( index = threadIdx.x; index < half; index += GLM_THREADS )
+		LmRopeRotate<LM_ROPE_INTERLEAVED>(slot_out, (uint64_t)row * GLM_SLOT + GLM_LATENT, index, half,
+			position * __powf(theta, -2.0f * (float)index / (float)rope_dimension));
 }
 
 static __global__ void GlmWaveContextKernel(const uint32_t *slots, const uint32_t *positions, uint32_t *context_lengths, uint32_t rows)
@@ -453,6 +479,22 @@ static int32_t GlmIndexerScore(const GlmBuffers *b, LmKvShardView pages, uint32_
 	return GlmLaunched();
 }
 
+static int32_t GlmIndexerScoreSelect(const GlmBuffers *b, uint32_t rows, uint32_t score_stride, uint32_t keep, uint2 *candidates, cudaStream_t stream)
+{
+	const uint32_t chunk_rows = GlmIndexerChunkRows(b, rows);
+	for ( uint32_t first = 0u; first < rows; first += chunk_rows )
+	{
+		const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
+		if ( LmWeightedSparseScoreLaunch<GlmIndexKv,GLM_INDEX_HEADS,GLM_INDEX_DIM>(b->index_query_bf16 + (uint64_t)first * GLM_INDEX_QUERY,
+				b->index_head_weight_bf16 + (uint64_t)first * GLM_INDEX_HEADS, b->index_shard, b->sequence_of_row + first, b->context_length,
+				b->row_positions + first, count, score_stride, GLM_INDEX_SCALE / sqrtf((float)GLM_INDEX_HEADS), b->selection_scores, stream) != cudaSuccess ||
+			LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(b->kv_shard, b->selection_scores, score_stride, b->sequence_of_row + first, b->context_length,
+				b->row_positions + first, keep, GLM_SELECTED, count, candidates + (uint64_t)first * keep, stream) != cudaSuccess )
+			return LM_LAUNCH_ERR_LAUNCH;
+	}
+	return GlmLaunched();
+}
+
 static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
 	uint32_t q_first, q_count, kv_first, kv_count, width, query_max;
@@ -483,21 +525,16 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
 	int32_t status;
-	GlmProjectionUnpackKernel<<<rows, GLM_THREADS, 0, stream>>>(b->projection_gather_bf16, b->q_compressed_bf16, b->kv_slot_bf16, rows, b->tp_degree,
-		GlmProjectionSliceWidth(b->tp_degree), GlmProjectionSliceMax(GLM_QUERY_A, b->tp_degree));
+	GlmProjectionNormKernel<<<rows, GLM_THREADS, 0, stream>>>(b->projection_gather_bf16, b->weights->q_a_norm, b->weights->kv_a_norm, b->positions,
+		b->q_compressed_bf16, b->kv_slot_bf16, rows, b->tp_degree, GlmProjectionSliceWidth(b->tp_degree), GlmProjectionSliceMax(GLM_QUERY_A, b->tp_degree),
+		GLM_ROPE, GLM_ROPE_THETA, GLM_RMS_EPSILON);
 	if ( cudaPeekAtLastError() != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
-	LmFusedResidualRmsNormLaunch<GLM_THREADS,uint16_t>(rows, stream,
-		b->q_compressed_bf16, 0, b->weights->q_a_norm, 0, b->q_compressed_bf16, GLM_QUERY_A, GLM_QUERY_A, GLM_RMS_EPSILON);
 	status = GlmLinear(b->q_compressed_bf16, b->weights->q_b, b->q_bf16, rows, GLM_QUERY_A, b->q_b_rows, b->q_b_rows, 0u, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LmFusedResidualRmsNormLaunch<GLM_THREADS,uint16_t>(rows, stream,
-		b->kv_slot_bf16, 0, b->weights->kv_a_norm, 0, b->kv_slot_bf16, GLM_LATENT, GLM_SLOT, GLM_RMS_EPSILON);
 	LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
 		b->q_bf16, b->query_rope_bf16, b->positions, b->attn_heads, GLM_NOPE + GLM_ROPE, GLM_NOPE, GLM_ROPE, GLM_ROPE_THETA);
-	LM_LAUNCH((LmRopeKernel<GLM_THREADS,LM_ROPE_INTERLEAVED>), rows, GLM_THREADS, 0, stream,
-		b->kv_slot_bf16, b->positions, GLM_SLOT, GLM_LATENT, GLM_ROPE, GLM_ROPE_THETA);
 	if ( LmPerHeadProjectChainLaunch<GLM_THREADS,GLM_NOPE,GLM_LATENT,GLM_NOPE + GLM_ROPE,0u>(b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank *
 			b->attn_heads * GLM_LATENT * GLM_NOPE, b->query_latent_bf16, b->attn_heads, rows, stream) != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
@@ -566,8 +603,8 @@ static int32_t GlmShardScatterPre(const GlmBuffers *b, uint32_t rows, uint32_t c
 	{
 		status = GlmIndexerQuery(b, rows, sms, stream);
 		if ( status == LM_LAUNCH_OK )
-			status = GlmIndexerScore(b, b->index_shard, rows, SparkKvShardGatherKeys(b->kv_shard, context), GlmShardKeep(b->kv_shard, context),
-				b->index_local_selected, (uint2 *)((uint8_t *)b->shard_send_bf16 + b->shard_candidate_offset), stream);
+			status = GlmIndexerScoreSelect(b, rows, SparkKvShardGatherKeys(b->kv_shard, context), GlmShardKeep(b->kv_shard, context),
+				(uint2 *)((uint8_t *)b->shard_send_bf16 + b->shard_candidate_offset), stream);
 	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
@@ -584,11 +621,9 @@ static int32_t GlmShardScatterMid(const GlmBuffers *b, uint32_t rows, uint32_t c
 		for ( uint32_t first = 0u; first < rows; first += chunk_rows )
 		{
 			const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
-			if ( LmIndexShardCandidateScatterLaunch<GLM_THREADS>(candidates + (uint64_t)first * keep, b->shard_rank_stride_bytes / sizeof(uint2),
-					b->kv_shard.degree, keep, count, context, b->selection_scores, stream) != cudaSuccess ||
-				LmTopkExactLaunch<GLM_THREADS>(b->selection_scores, count, context, GLM_SELECTED, LM_TOPK_EXACT_CHUNK, LM_TOPK_EXACT_CHUNKED_ROWS,
-					b->topk_scratch_values, b->topk_scratch_positions, b->topk_scratch_entries, b->selected_positions + (uint64_t)first * GLM_SELECTED,
-					stream) != cudaSuccess )
+			if ( LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>(candidates + (uint64_t)first * keep, b->shard_rank_stride_bytes / sizeof(uint2),
+					b->kv_shard, keep, b->sequence_of_row + first, b->context_length, b->row_positions + first, GLM_SELECTED, GLM_SELECTED, count, b->index_bitmap_words,
+					b->index_bitmaps, b->selected_positions + (uint64_t)first * GLM_SELECTED, stream) != cudaSuccess )
 				return LM_LAUNCH_ERR_LAUNCH;
 		}
 	}
@@ -863,7 +898,7 @@ struct GlmModel
 		uint16_t *shard_received;
 		float *shard_partials;
 		float *shard_partials_received;
-		uint32_t *index_local_selected;
+		uint32_t *index_bitmaps;
 		uint8_t *latent_pack;
 		uint8_t *latent_pool;
 		uint32_t *latent_remap;
@@ -997,7 +1032,7 @@ struct GlmModel
 			{ (void **)&state->shard_received, degree * state->indexing_units_max * GLM_UNIT_BYTES },
 			{ (void **)&state->shard_partials, degree * state->partial_units_max * GLM_UNIT_BYTES },
 			{ (void **)&state->shard_partials_received, degree * state->partial_units_max * GLM_UNIT_BYTES },
-			{ (void **)&state->index_local_selected, (uint64_t)state->scatter_rows * GLM_SELECTED * sizeof(uint32_t) },
+			{ (void **)&state->index_bitmaps, (uint64_t)state->scatter_rows * 2u * LmIndexSelectBitmapWords(state->max_positions) * sizeof(uint32_t) },
 			{ (void **)&state->latent_pack, state->latent_bytes },
 			{ (void **)&state->latent_pool, degree * state->latent_bytes + rows * GLM_SLOT_BYTES },
 			{ (void **)&state->latent_remap, (uint64_t)state->max_positions * sizeof(uint32_t) },
@@ -1582,7 +1617,8 @@ struct GlmModel
 		b->shard_partials = state->shard_partials;
 		b->shard_partials_received = state->shard_partials_received;
 		b->shard_partial_stride = (uint64_t)wave->partial_units * (GLM_UNIT_BYTES / sizeof(float));
-		b->index_local_selected = state->index_local_selected;
+		b->index_bitmaps = state->index_bitmaps;
+		b->index_bitmap_words = LmIndexSelectBitmapWords(state->max_positions);
 	}
 
 	static SparkStatus Fail(const char *site, uint32_t layer, int32_t code)
