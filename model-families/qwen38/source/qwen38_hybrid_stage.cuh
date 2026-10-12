@@ -151,6 +151,9 @@ struct QwenHybridState
 	uint32_t *dump_positions;
 	void *arena;
 	uint64_t arena_bytes;
+	void *lane_arena;
+	uint64_t lane_bytes;
+	QwenHybridState *lane_states[SPARK_STAGE_RUNNER_LANES];
 	uint16_t *normed;
 	uint16_t *partial;
 	uint16_t *gate_up;
@@ -557,6 +560,12 @@ struct QwenHybridModel
 			rows, row_elements, local, full);
 	}
 
+	static void RowState(const State *state, uint32_t layer, uint32_t phase)
+	{
+		if ( state->services->row_state != 0 )
+			state->services->row_state(state->services->context, layer, phase);
+	}
+
 	static SparkStatus Launched(void)
 	{
 		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
@@ -576,6 +585,7 @@ struct QwenHybridModel
 				state->normed, state->z, rows, G::kHidden, state->gdn_v, sms, stream) != LM_LAUNCH_OK ||
 			Project<LmBf16Format>(layer->gdn_ba, 0, state->normed, state->ba, rows, G::kHidden, 2u * heads, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmCausalConvKernel<QH_THREADS,QH_CONV,LM_CONV_SWISH,uint16_t>), dim3(sequences,(state->gdn_channels + QH_THREADS - 1u) / QH_THREADS),
 			QH_THREADS, 0, stream, window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->gdn_conv,
 			state->qkv, state->gdn_channels, sequences, step->commit, step->sequence_row_indices);
@@ -595,6 +605,7 @@ struct QwenHybridModel
 			LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, (uint32_t)state->gdn_state_bytes, step->recurrent_index, step->sequence_row_begin,
 			(const uint32_t *)0, state->query_heads, state->key_heads, state->value, state->retention, state->write_gate, state->mixed,
 			heads, 1u, sequences, step->commit, step->sequence_row_indices);
+		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if constexpr ( G::kGdnSigmoidGate )
 			LM_LAUNCH((LmHeadRmsNormSigmoidGateKernel<QH_THREADS>), dim3(heads,rows), QH_THREADS, 0, stream,
 				state->mixed, state->z, layer->gdn_norm, state->mixed, rows, heads, QH_VALUE_DIM, QH_EPSILON);
@@ -693,16 +704,20 @@ struct QwenHybridModel
 		LM_LAUNCH((LmRopePerHeadKernel<QH_THREADS>), dim3(rows,G::kKvHeads), QH_THREADS, 0, stream,
 			state->attn_key, step->positions, G::kKvHeads, G::kHeadDim, G::kRopeDim, G::kRopeTheta, (const float *)0, 1.0f, 0u);
 		QwenHybridPackSlotKernel<G><<<dim3(Blocks(2u * S::kKvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_key, state->attn_value, state->attn_slot);
+		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,QH_THREADS>), rows, QH_THREADS, 0, stream,
 			*view, state->attn_slot, step->sequence_of_row, step->positions, rows, 2u * S::kKvWidth);
 		if constexpr ( S::kIndexer )
 		{
 			status = IndexPrepare(state, layer, step, stream);
+			RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			if ( status == SPARK_STATUS_OK )
 				status = IndexSelect(state, layer, step, stream);
 			if ( status != SPARK_STATUS_OK )
 				return status;
 		}
+		else
+			RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( Launched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<typename S::Kv,LmKvShardView,G::kKvHeads,G::kHeadDim,G::kHeadDim>(*view, state->attn_query, G::kHeads,
 				step->sequence_of_row, step->context_length, step->positions, 1.0f / sqrtf((float)G::kHeadDim), state->send, stride, rows, stream,
@@ -860,6 +875,7 @@ struct QwenHybridModel
 		SparkStatus status;
 		if ( step->token_ids == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		RowState(state, G::kPleLayer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LmNgramHashKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, (const int32_t *)0, step->positions, state->row_lane,
 			state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, state->ple_history, S::kPleHistory,
 			state->ple_multipliers, state->ple_vocab_sizes, state->ple_offsets, state->ple_ids, rows, G::kPleOrders, G::kPleHeadsPerOrder,
@@ -889,6 +905,7 @@ struct QwenHybridModel
 		LmHyperAddKernel<QH_THREADS><<<Blocks(elements), QH_THREADS, 0, stream>>>(state->residual, state->ple_gated, state->ple_conv_out, elements);
 		LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, (const int32_t *)0, step->sequence_row_begin,
 			step->sequence_row_indices, step->recurrent_index, state->ple_history, S::kPleHistory, step->sequences, G::kPleOrders, step->commit);
+		RowState(state, G::kPleLayer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		return Launched();
 	}
 
@@ -1000,9 +1017,9 @@ struct QwenHybridModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base)
+	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)
 	{
-		const uint64_t rows = state->max_rows, slots = state->slots, routes = rows * (G::kMoe ? G::kTopK : 0u);
+		const uint64_t rows = state->max_rows, slots = lane == 0u ? state->slots : 0u, routes = rows * (G::kMoe ? G::kTopK : 0u);
 		const uint64_t width = rows * G::kHidden * sizeof(uint16_t);
 		struct { void **target; uint64_t bytes; } plan[] =
 		{
@@ -1085,7 +1102,7 @@ struct QwenHybridModel
 			{ (void **)&state->index_full_scores, S::kIndexer ? (uint64_t)QH_INDEX_CHUNK * state->index_global_stride * sizeof(float) : 0u },
 			{ (void **)&state->index_selected, rows * S::kIndexBlocks * sizeof(uint32_t) },
 			{ (void **)&state->index_mask, rows * state->index_mask_words * sizeof(uint32_t) },
-			{ (void **)&state->kv_error, sizeof(LmKvAccessError) },
+			{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		};
 		uint64_t cursor = 0u;
 		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
@@ -1106,6 +1123,10 @@ struct QwenHybridModel
 			return;
 		if ( state->arena != 0 )
 			(void)cudaFree(state->arena);
+		if ( state->lane_arena != 0 )
+			(void)cudaFree(state->lane_arena);
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+			free(state->lane_states[lane]);
 		if ( state->pack_open != 0u )
 			SparkNamedPackClose(&state->pack);
 		if ( state->dump != 0 )
@@ -1255,13 +1276,15 @@ struct QwenHybridModel
 		}
 		state->record_stride = (((uint64_t)state->max_rows * LmGqaShardRecordFloats(G::kHeads, G::kHeadDim, state->tp_degree) * sizeof(float) +
 			G::kHidden * sizeof(uint16_t) - 1u) / (G::kHidden * sizeof(uint16_t))) * G::kHidden * sizeof(uint16_t) / sizeof(float);
-		status = Plan(state, &state->arena_bytes, 0);
+		status = Plan(state, &state->arena_bytes, 0, 0u);
+		if ( status == SPARK_STATUS_OK )
+			status = Plan(state, &state->lane_bytes, 0, 1u);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( state->arena_bytes > configuration->state_budget_bytes )
+		if ( state->arena_bytes + state->lane_bytes > configuration->state_budget_bytes )
 		{
 			fprintf(stderr, "%s: rank state %llu bytes is over the %llu-byte budget (rows %u, slots %u)\n", G::Tag(),
-				(unsigned long long)state->arena_bytes, (unsigned long long)configuration->state_budget_bytes, state->max_rows, state->slots);
+				(unsigned long long)(state->arena_bytes + state->lane_bytes), (unsigned long long)configuration->state_budget_bytes, state->max_rows, state->slots);
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		memset(geometry, 0, sizeof(*geometry));
@@ -1487,7 +1510,44 @@ struct QwenHybridModel
 		}
 		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		return Plan(state, &state->arena_bytes, (uint8_t *)state->arena);
+		if ( cudaMalloc(&state->lane_arena, state->lane_bytes) != cudaSuccess )
+		{
+			state->lane_arena = 0;
+			fprintf(stderr, "%s: the %llu-byte second lane state could not be allocated\n", G::Tag(), (unsigned long long)state->lane_bytes);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		if ( cudaMemset(state->lane_arena, 0, state->lane_bytes) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+			if ( (state->lane_states[lane] = (State *)calloc(1u, sizeof(State))) == 0 )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		return Plan(state, &state->arena_bytes, (uint8_t *)state->arena, 0u);
+	}
+
+	static SparkStatus Lane(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model)
+	{
+		State *state = (State *)model;
+		State *copy;
+		uint64_t bytes = 0u;
+		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->dump != 0 || state->lane_states[lane] == 0 ||
+			state->lane_arena == 0 )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		copy = state->lane_states[lane];
+		memcpy(copy, state, sizeof(*copy));
+		copy->services = services;
+		if ( lane != 0u )
+		{
+			if ( Plan(copy, &bytes, (uint8_t *)state->lane_arena, lane) != SPARK_STATUS_OK || bytes != state->lane_bytes )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			copy->gdn_state = state->gdn_state;
+			copy->gdn_window = state->gdn_window;
+			copy->ple_window = state->ple_window;
+			copy->ple_history = state->ple_history;
+			copy->index_tail = state->index_tail;
+			copy->kv_error = state->kv_error;
+		}
+		*lane_model = copy;
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus AttachKv(void *model, const SparkStageRunnerKv *kv)
@@ -1613,7 +1673,9 @@ struct QwenHybridModel
 			RecurrentCopy,
 			ResetSlot,
 			ProbeBuffers,
-			Report
+			Report,
+			0,
+			Lane
 		};
 		return &interface_table;
 	}

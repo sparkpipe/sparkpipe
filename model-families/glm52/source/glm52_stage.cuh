@@ -851,6 +851,11 @@ struct GlmModel
 		const uint16_t *final_norm;
 		void *arena;
 		uint64_t arena_bytes;
+		void *lane_arena;
+		uint32_t *lane_host_staging;
+		void *lane_states[SPARK_STAGE_RUNNER_LANES];
+		uint64_t lane_base[SPARK_STAGE_RUNNER_LANES][3];
+		uint32_t lane_bound[SPARK_STAGE_RUNNER_LANES];
 		uint16_t *hidden;
 		uint16_t *residual;
 		uint16_t *normed;
@@ -1245,6 +1250,12 @@ struct GlmModel
 			(void)cudaFree(state->arena);
 		if ( state->host_staging != 0 )
 			(void)cudaFreeHost(state->host_staging);
+		if ( state->lane_arena != 0 )
+			(void)cudaFree(state->lane_arena);
+		if ( state->lane_host_staging != 0 )
+			(void)cudaFreeHost(state->lane_host_staging);
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+			free(state->lane_states[lane]);
 		free(state);
 	}
 
@@ -1309,9 +1320,9 @@ struct GlmModel
 		status = Plan(state, &state->arena_bytes, 0);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( state->arena_bytes > configuration->state_budget_bytes )
+		if ( 2u * state->arena_bytes > configuration->state_budget_bytes )
 		{
-			fprintf(stderr, "%s: rank state %llu bytes is over the %llu-byte budget\n", G::Tag(), (unsigned long long)state->arena_bytes,
+			fprintf(stderr, "%s: rank state %llu bytes for two lanes is over the %llu-byte budget\n", G::Tag(), 2ull * (unsigned long long)state->arena_bytes,
 				(unsigned long long)configuration->state_budget_bytes);
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
@@ -1469,14 +1480,86 @@ struct GlmModel
 			state->host_staging = 0;
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
-		state->host_order = state->host_staging;
-		state->host_positions = state->host_order + state->max_rows;
-		state->host_slots = state->host_positions + state->max_rows;
-		state->host_error = (LmKvAccessError *)(void *)(state->host_slots + state->max_rows);
+		Staging(state, state->host_staging);
+		if ( cudaMalloc(&state->lane_arena, state->arena_bytes) != cudaSuccess )
+		{
+			state->lane_arena = 0;
+			fprintf(stderr, "%s: %llu bytes of second lane state do not fit\n", G::Tag(), (unsigned long long)state->arena_bytes);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		if ( cudaMemset(state->lane_arena, 0, state->arena_bytes) != cudaSuccess ||
+			cudaHostAlloc((void **)&state->lane_host_staging, 3u * (uint64_t)state->max_rows * sizeof(uint32_t) + sizeof(LmKvAccessError) + 64u,
+				cudaHostAllocPortable) != cudaSuccess )
+		{
+			state->lane_host_staging = 0;
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+			if ( (state->lane_states[lane] = calloc(1u, sizeof(State))) == 0 )
+				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		fprintf(stderr, "%s rank=%u arena_bytes=%llu rows=%u slots=%u positions=%u scatter_units=%u/%u/%u gather_latent=%u x %u units select_rows=%u\n",
 			G::Tag(), state->tp_rank, (unsigned long long)state->arena_bytes, state->max_rows, state->slots, state->max_positions,
 			state->query_units_max, state->indexing_units_max, state->partial_units_max, state->latent_max.chunks, state->latent_max.chunk_units,
 			state->select_rows_max);
+		return SPARK_STATUS_OK;
+	}
+
+	static void Staging(State *state, uint32_t *staging)
+	{
+		state->host_staging = staging;
+		state->host_order = staging;
+		state->host_positions = state->host_order + state->max_rows;
+		state->host_slots = state->host_positions + state->max_rows;
+		state->host_error = (LmKvAccessError *)(void *)(state->host_slots + state->max_rows);
+	}
+
+	static void LaneFold(State *state)
+	{
+		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+		{
+			State *copy = (State *)state->lane_states[lane];
+			if ( state->lane_bound[lane] == 0u || copy == 0 )
+				continue;
+			state->steps += copy->steps - state->lane_base[lane][0];
+			state->waves += copy->waves - state->lane_base[lane][1];
+			state->gather_waves += copy->gather_waves - state->lane_base[lane][2];
+			state->lane_base[lane][0] = copy->steps;
+			state->lane_base[lane][1] = copy->waves;
+			state->lane_base[lane][2] = copy->gather_waves;
+		}
+	}
+
+	static SparkStatus Lane(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model)
+	{
+		State *state = (State *)model;
+		State *copy;
+		GlmRegime regime;
+		uint64_t bytes = 0u;
+		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 ||
+			state->lane_arena == 0 || state->lane_host_staging == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( step->last_rows_only == 0u || step->host_positions == 0 || step->host_sequence_of_row == 0 || step->rows <= LM_SKINNY_ROWS ||
+			step->rows > state->max_rows )
+			return SPARK_STATUS_UNSUPPORTED;
+		regime.positions = step->host_positions;
+		regime.max_positions = state->max_positions;
+		if ( SparkRowLayoutPackedSpanWaveRowCount(0u, step->rows, step->host_sequence_of_row, SelectionRegime, &regime, state->max_rows, 1u) != step->rows )
+			return SPARK_STATUS_UNSUPPORTED;
+		LaneFold(state);
+		copy = (State *)state->lane_states[lane];
+		memcpy(copy, state, sizeof(*copy));
+		copy->services = services;
+		if ( lane != 0u )
+		{
+			if ( Plan(copy, &bytes, (uint8_t *)state->lane_arena) != SPARK_STATUS_OK || bytes != state->arena_bytes )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			Staging(copy, state->lane_host_staging);
+		}
+		state->lane_bound[lane] = 1u;
+		state->lane_base[lane][0] = copy->steps;
+		state->lane_base[lane][1] = copy->waves;
+		state->lane_base[lane][2] = copy->gather_waves;
+		*lane_model = copy;
 		return SPARK_STATUS_OK;
 	}
 
@@ -1627,6 +1710,12 @@ struct GlmModel
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 
+	static void RowState(const State *state, uint32_t layer, uint32_t phase)
+	{
+		if ( state->services->row_state != 0 )
+			state->services->row_state(state->services->context, layer, phase);
+	}
+
 	static SparkStatus GatherExchange(State *state, const GlmWave *wave, GlmBuffers *b, uint32_t layer, cudaStream_t stream)
 	{
 		SparkStatus status = SPARK_STATUS_OK;
@@ -1670,7 +1759,9 @@ struct GlmModel
 			return status;
 		if ( wave->gather != 0u )
 		{
+			RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 			code = GlmShardGatherPre(&b, rows, wave->context, layer, sms, stream);
+			RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("gather pre", layer, code);
 			status = GatherExchange(state, wave, &b, layer, stream);
@@ -1682,6 +1773,7 @@ struct GlmModel
 		}
 		else
 		{
+			RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 			code = GlmShardScatterPre(&b, rows, wave->context, layer, sms, stream);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("scatter pre", layer, code);
@@ -1690,6 +1782,7 @@ struct GlmModel
 			if ( status != SPARK_STATUS_OK )
 				return status;
 			code = GlmShardScatterMid(&b, rows, wave->context, layer, stream);
+			RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("scatter mid", layer, code);
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, wave->partial_units, 0u, state->shard_partials,
@@ -1952,7 +2045,8 @@ struct GlmModel
 
 	static void Report(void *model, uint32_t rank)
 	{
-		const State *state = (const State *)model;
+		State *state = (State *)model;
+		LaneFold(state);
 		fprintf(stderr, "%s rank=%u steps=%llu waves=%llu gather_waves=%llu arena_bytes=%llu\n", G::ReportTag(), rank, (unsigned long long)state->steps,
 			(unsigned long long)state->waves, (unsigned long long)state->gather_waves, (unsigned long long)state->arena_bytes);
 	}
@@ -1976,7 +2070,8 @@ struct GlmModel
 			ResetSlot,
 			ProbeBuffers,
 			Report,
-			GraphKey
+			GraphKey,
+			Lane
 		};
 		return &interface_table;
 	}
