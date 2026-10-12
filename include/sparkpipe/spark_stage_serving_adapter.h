@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 #define SPARK_STAGE_SERVING_MAX_LANES 128u
-#define SPARK_STAGE_SERVING_MAX_ROWS 2048u
+#define SPARK_STAGE_SERVING_MAX_ROWS 4096u
 #define SPARK_STAGE_SERVING_MULTIPROCESSORS 48u
 
 typedef struct SparkStageServingModel
