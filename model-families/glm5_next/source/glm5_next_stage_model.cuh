@@ -579,7 +579,7 @@ struct Glm5NextStage
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		Glm5NextStreamsMeanKernel<<<rows, G5N_THREADS, 0, stream>>>(state->streams, state->streams_mean, rows);
-		LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, state->streams_mean,
+		LmBf16RmsNormLaunch<G5N_THREADS>(rows, stream, state->streams_mean,
 			(const uint16_t *)state->final_norm, step->hidden_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
