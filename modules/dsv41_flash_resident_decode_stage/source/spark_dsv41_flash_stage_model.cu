@@ -24,6 +24,7 @@
 #include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/weight_codec.cuh"
+#include "inference/kernels/formats/mxfp8.cuh"
 #include "runtime/gemm.cuh"
 #include "spark_dsv41_flash_stagepack_format.h"
 #include "spark_dsv41_flash_stage_kernels.cuh"
@@ -68,7 +69,7 @@
 #define D41_ENGRAM_EMBED (D41_ENGRAM_COLUMNS * D41_ENGRAM_HEAD_DIM)
 #define D41_ENGRAM_KV_LOCAL (D41_ENGRAM_KV_ROWS / D41_TP)
 #define D41_FP8_BLOCK 32u
-#define D41_SHARED_GRANULE 64u
+#define D41_SHARED_GRANULE 128u
 #define D41_THREADS 256u
 #define D41_SLOT_BYTES SPARK_DSV41_FLASH_STAGE_SLOT_BYTES
 #define D41_PAGE_TOKENS SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS
@@ -98,23 +99,29 @@ using D41Ratio1Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS, true>;
 typedef SparkDsv41FlashStagePackHeader D41PackHeader;
 typedef SparkDsv41FlashStagePackEntry D41PackEntry;
 
+typedef struct D41Fp8Linear
+{
+	const uint8_t *weight, *scale;
+} D41Fp8Linear;
+
 typedef struct D41Layer
 {
 	const uint16_t *attn_norm, *ffn_norm, *q_norm, *kv_norm;
-	const uint16_t *q_a, *q_b, *kv_a, *o_a, *o_b, *idx_q_b;
+	D41Fp8Linear q_a, q_b, kv_a, o_a, o_b, idx_q_b;
 	const uint16_t *idx_wk, *idx_wp, *idx_kn, *c_wkv, *c_wgate, *c_norm;
 	const float *sink, *hc_attn_fn, *hc_attn_base, *hc_attn_scale, *hc_ffn_fn, *hc_ffn_base, *hc_ffn_scale;
 	const uint16_t *router;
 	const float *router_bias;
 	const uint8_t *e_w1, *e_w1_scale, *e_w2, *e_w2_scale, *e_w3, *e_w3_scale;
 	const uint8_t *e_w1_cells, *e_w2_cells, *e_w3_cells;
-	const uint16_t *sh_w1, *sh_w2, *sh_w3;
+	D41Fp8Linear sh_w1, sh_w2, sh_w3;
 } D41Layer;
 
 typedef struct D41Engram
 {
 	const uint8_t *payload, *scale;
-	const uint16_t *wkv, *q_weight, *k_weight;
+	D41Fp8Linear wkv;
+	const uint16_t *q_weight, *k_weight;
 	uint64_t first_row, local_rows;
 	int64_t *multipliers, *primes, *offsets;
 } D41Engram;
@@ -135,8 +142,8 @@ typedef struct D41ModelState
 	D41Layer layers[D41_LAYERS];
 	D41Engram engram[2];
 	double *full_frequency, *compress_frequency;
-	uint16_t *dequant;
-	uint64_t dequant_bytes;
+	uint8_t *fp8_side;
+	uint64_t fp8_side_bytes;
 	uint8_t *cells;
 	uint64_t cells_bytes;
 	void *arena;
@@ -257,6 +264,29 @@ static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16
 	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
+static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
+	uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const LmScaleTensor scale = LmScaleTensorBlockUe8m0(linear->scale, 1u, output_dimension, input_dimension, 1u, LM_MXFP8_GROUP);
+	if ( rows <= LM_SKINNY_ROWS_WIDE )
+	{
+		LmSkinnyArguments args;
+		memset(&args, 0, sizeof(args));
+		args.weight = linear->weight;
+		args.activation = source;
+		args.output_bf16 = destination;
+		args.scale = scale;
+		args.rows = rows;
+		args.input_dimension = input_dimension;
+		args.output_dimension = output_dimension;
+		const int32_t status = LmSkinnyLaunch<LmMxfp8>(&args, stream);
+		if ( status != LM_LAUNCH_ERR_SHAPE )
+			return status;
+	}
+	return LmStreamGemmDense<LmMxfp8>(linear->weight, scale, source, destination, (float *)0, rows, input_dimension, output_dimension, 0u, 0u,
+		multiprocessors, stream);
+}
+
 static SparkStatus D41Round(D41ModelState *state, cudaStream_t stream, uint32_t operation, uint32_t rows, uint32_t row_elements,
 	const void *local, void *full)
 {
@@ -311,7 +341,7 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	D41Fp8Qdq(state->engram_embed, (uint64_t)rows * D41_ENGRAM_EMBED, stream);
-	if ( D41Project(engram->wkv, state->engram_embed, state->engram_kv_local, 0, rows, D41_ENGRAM_EMBED, D41_ENGRAM_KV_LOCAL,
+	if ( D41Linear(&engram->wkv, state->engram_embed, state->engram_kv_local, rows, D41_ENGRAM_EMBED, D41_ENGRAM_KV_LOCAL,
 		step->multiprocessors, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_ENGRAM_KV_LOCAL, state->engram_kv_local,
@@ -418,7 +448,7 @@ static SparkStatus D41Select(D41ModelState *state, const D41Layer *layer, uint32
 	SparkStatus status;
 	if ( state->candidate_blocks != 0u && index >= D41_CANDIDATE_SOURCE && D41Ratio(index) != 1u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	if ( D41Project(layer->idx_q_b, state->qrq, state->idx_pack_local, 0, rows, D41_QLORA, local_width, sms, stream) != LM_LAUNCH_OK ||
+	if ( D41Linear(&layer->idx_q_b, state->qrq, state->idx_pack_local, rows, D41_QLORA, local_width, sms, stream) != LM_LAUNCH_OK ||
 		D41Project(layer->idx_wp, state->x, state->idx_w_full, 0, rows, D41_HIDDEN, D41_LOCAL_INDEX_HEADS, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Rope(state->idx_pack_local, rows, D41_LOCAL_INDEX_HEADS, D41_INDEX_DIM, D41_INDEX_DIM - D41_ROPE, step->positions, 0,
@@ -518,13 +548,13 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	SparkStatus status;
 	cudaMemcpyAsync(state->xq, state->x, (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream);
 	D41Fp8Qdq(state->xq, (uint64_t)rows * D41_HIDDEN, stream);
-	if ( D41Project(layer->q_a, state->xq, state->q_latent, 0, rows, D41_HIDDEN, D41_QLORA, sms, stream) != LM_LAUNCH_OK )
+	if ( D41Linear(&layer->q_a, state->xq, state->q_latent, rows, D41_HIDDEN, D41_QLORA, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41RmsNorm(state->q_latent, layer->q_norm, state->qr, rows, D41_QLORA, stream);
 	cudaMemcpyAsync(state->qrq, state->qr, (uint64_t)rows * D41_QLORA * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream);
 	D41Fp8Qdq(state->qrq, (uint64_t)rows * D41_QLORA, stream);
-	if ( D41Project(layer->q_b, state->qrq, state->q_local, 0, rows, D41_QLORA, local_width, sms, stream) != LM_LAUNCH_OK ||
-		D41Project(layer->kv_a, state->xq, state->kv, 0, rows, D41_HIDDEN, D41_HEAD_DIM, sms, stream) != LM_LAUNCH_OK )
+	if ( D41Linear(&layer->q_b, state->qrq, state->q_local, rows, D41_QLORA, local_width, sms, stream) != LM_LAUNCH_OK ||
+		D41Linear(&layer->kv_a, state->xq, state->kv, rows, D41_HIDDEN, D41_HEAD_DIM, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Rope(state->q_local, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
 	D41RmsNorm(state->kv, layer->kv_norm, state->kv, rows, D41_HEAD_DIM, stream);
@@ -588,10 +618,10 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	D41GroupInputKernel<<<dim3(D41Blocks(2u * local_width), rows), D41_THREADS, 0, stream>>>(state->attn_gathered, state->group_input, rows,
 		local_width, (state->tp_rank / 2u) * 2u, 2u);
 	D41Fp8Qdq(state->group_input, (uint64_t)rows * 2u * local_width, stream);
-	if ( D41Project(layer->o_a, state->group_input, state->wo_a_out, 0, rows, 2u * local_width, D41_WO_A_ROWS, sms, stream) != LM_LAUNCH_OK )
+	if ( D41Linear(&layer->o_a, state->group_input, state->wo_a_out, rows, 2u * local_width, D41_WO_A_ROWS, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Fp8Qdq(state->wo_a_out, (uint64_t)rows * D41_WO_A_ROWS, stream);
-	if ( D41Project(layer->o_b, state->wo_a_out, state->partial, 0, rows, D41_WO_A_ROWS, D41_HIDDEN, sms, stream) != LM_LAUNCH_OK )
+	if ( D41Linear(&layer->o_b, state->wo_a_out, state->partial, rows, D41_WO_A_ROWS, D41_HIDDEN, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return D41Launched();
 }
@@ -639,13 +669,13 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	if ( D41Experts(layer->e_w2_cells, state->expert_act, state->expert_out, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream) !=
 		LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( D41Project(layer->sh_w1, state->xq, state->shared_gate, 0, rows, D41_HIDDEN, state->shared_width, sms, stream) != LM_LAUNCH_OK ||
-		D41Project(layer->sh_w3, state->xq, state->shared_up, 0, rows, D41_HIDDEN, state->shared_width, sms, stream) != LM_LAUNCH_OK )
+	if ( D41Linear(&layer->sh_w1, state->xq, state->shared_gate, rows, D41_HIDDEN, state->shared_width, sms, stream) != LM_LAUNCH_OK ||
+		D41Linear(&layer->sh_w3, state->xq, state->shared_up, rows, D41_HIDDEN, state->shared_width, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
 		state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
 	D41Fp8Qdq(state->shared_act, (uint64_t)rows * state->shared_width, stream);
-	if ( D41Project(layer->sh_w2, state->shared_act, state->shared_out, 0, rows, state->shared_width, D41_HIDDEN, sms, stream) != LM_LAUNCH_OK )
+	if ( D41Linear(&layer->sh_w2, state->shared_act, state->shared_out, rows, state->shared_width, D41_HIDDEN, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->dump != 0 && step->rows < 64u )
 	{
@@ -1070,8 +1100,8 @@ static void D41Close(void *model)
 		SparkWeightdLazyPackDestroy(state->engram_pack);
 	if ( state->arena != 0 )
 		(void)cudaFree(state->arena);
-	if ( state->dequant != 0 )
-		(void)cudaFree(state->dequant);
+	if ( state->fp8_side != 0 )
+		(void)cudaFree(state->fp8_side);
 	if ( state->cells != 0 )
 		(void)cudaFree(state->cells);
 	(void)cudaFree(state->token_map);
@@ -1253,33 +1283,38 @@ static SparkStatus D41SliceEntry(SparkWeightdLazyPack *pack, const D41PackEntry 
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus D41DequantSlice(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint32_t row_first,
-	uint32_t rows, uint32_t column_first, uint32_t columns, uint64_t *cursor, const uint16_t **out)
+static SparkStatus D41Fp8Slice(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint32_t row_first,
+	uint32_t rows, uint32_t column_first, uint32_t columns, uint64_t *cursor, D41Fp8Linear *out)
 {
 	const void *payload = 0, *scale = 0;
+	const uint32_t whole_rows = column_first == 0u && entry != 0 && columns == entry->columns ? 1u : 0u;
 	if ( entry == 0 || entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 || entry->rows % D41_FP8_BLOCK != 0u ||
 		entry->columns % D41_FP8_BLOCK != 0u || rows == 0u || columns == 0u || row_first % D41_FP8_BLOCK != 0u ||
-		column_first % D41_FP8_BLOCK != 0u || row_first > entry->rows || rows > entry->rows - row_first || column_first > entry->columns ||
-		columns > entry->columns - column_first ||
-		D41SliceEntry(pack, entry, 0u, &payload) != SPARK_STATUS_OK || D41SliceEntry(pack, entry, 1u, &scale) != SPARK_STATUS_OK )
+		column_first % D41_FP8_BLOCK != 0u || columns % D41_FP8_BLOCK != 0u || row_first > entry->rows || rows > entry->rows - row_first ||
+		column_first > entry->columns || columns > entry->columns - column_first ||
+		D41SliceEntry(pack, entry, 0u, &payload) != SPARK_STATUS_OK || D41SliceEntry(pack, entry, 1u, &scale) != SPARK_STATUS_OK ||
+		((uintptr_t)payload % 16u) != 0u )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-	if ( state->dequant != 0 )
+	const uint64_t scale_bytes = (((uint64_t)rows * (columns / D41_FP8_BLOCK)) + 255u) & ~255ull;
+	const uint64_t weight_bytes = whole_rows != 0u ? 0u : (((uint64_t)rows * columns) + 255u) & ~255ull;
+	if ( state->fp8_side != 0 )
 	{
-		uint16_t *target = (uint16_t *)((uint8_t *)state->dequant + *cursor);
-		D41DequantFp8BlockKernel<<<dim3(D41Blocks(columns), rows), D41_THREADS>>>((const uint8_t *)payload, (const uint8_t *)scale, target,
-			entry->columns, row_first, column_first, columns);
-		*out = target;
+		uint8_t *row_scale = state->fp8_side + *cursor;
+		uint8_t *weight = whole_rows != 0u ? (uint8_t *)0 : row_scale + scale_bytes;
+		D41Fp8SliceKernel<<<rows, D41_THREADS>>>((const uint8_t *)payload, (const uint8_t *)scale, weight, row_scale, entry->columns, row_first,
+			column_first, columns);
+		out->scale = row_scale;
+		out->weight = whole_rows != 0u ? (const uint8_t *)payload + (uint64_t)row_first * entry->columns : weight;
 	}
-	*cursor += (((uint64_t)rows * columns * sizeof(uint16_t)) + 255u) & ~255ull;
+	*cursor += scale_bytes + weight_bytes;
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus D41Dequant(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint64_t *cursor,
-	const uint16_t **out)
+static SparkStatus D41Fp8(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint64_t *cursor, D41Fp8Linear *out)
 {
 	if ( entry == 0 )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-	return D41DequantSlice(state, pack, entry, 0u, entry->rows, 0u, entry->columns, cursor, out);
+	return D41Fp8Slice(state, pack, entry, 0u, entry->rows, 0u, entry->columns, cursor, out);
 }
 
 #define D41_ENTRY(kind, layer) D41Find(state, SPARK_DSV41_FLASH_STAGEPACK_TENSOR_##kind, layer)
@@ -1292,17 +1327,17 @@ static SparkStatus D41Dequant(D41ModelState *state, SparkWeightdLazyPack *pack, 
 	do { const D41PackEntry *found = D41_ENTRY(kind, layer); const void *bound = 0; \
 		if ( found == 0 || D41SliceEntry(lazy_pack, found, 1u, &bound) != SPARK_STATUS_OK ) return SPARK_STATUS_PARSE_ERROR; \
 		*(const void **)&(field) = bound; } while ( 0 )
-#define D41_DEQUANT(kind, layer, field) \
-	do { if ( D41Dequant(state, lazy_pack, D41_ENTRY(kind, layer), &cursor, &(field)) != SPARK_STATUS_OK ) { \
+#define D41_FP8(kind, layer, field) \
+	do { if ( D41Fp8(state, lazy_pack, D41_ENTRY(kind, layer), &cursor, &(field)) != SPARK_STATUS_OK ) { \
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " is not a 32x32-block fp8 tensor\n", layer); return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
-#define D41_DEQUANT_SLICE(kind, layer, field, first_row, row_count, first_column, column_count) \
+#define D41_FP8_SLICE(kind, layer, field, first_row, row_count, first_column, column_count) \
 	do { const D41PackEntry *found = D41_ENTRY(kind, layer); \
-		if ( found == 0 || D41DequantSlice(state, lazy_pack, found, first_row, row_count == 0u ? found->rows : row_count, first_column, \
+		if ( found == 0 || D41Fp8Slice(state, lazy_pack, found, first_row, row_count == 0u ? found->rows : row_count, first_column, \
 			column_count == 0u ? found->columns : column_count, &cursor, &(field)) != SPARK_STATUS_OK ) { \
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " has no 32x32-block fp8 slice for this rank\n", layer); \
 			return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
 
-static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *lazy_pack, uint64_t *dequant_bytes)
+static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *lazy_pack, uint64_t *side_bytes)
 {
 	uint64_t cursor = 0u;
 	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
@@ -1313,11 +1348,11 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		D41_PAYLOAD(Q_NORM, index, layer->q_norm);
 		D41_PAYLOAD(KV_NORM, index, layer->kv_norm);
 		D41_PAYLOAD(ATTN_SINK, index, layer->sink);
-		D41_DEQUANT(Q_A, index, layer->q_a);
-		D41_DEQUANT(Q_B, index, layer->q_b);
-		D41_DEQUANT(KV_A, index, layer->kv_a);
-		D41_DEQUANT(O_A, index, layer->o_a);
-		D41_DEQUANT(O_B, index, layer->o_b);
+		D41_FP8(Q_A, index, layer->q_a);
+		D41_FP8(Q_B, index, layer->q_b);
+		D41_FP8(KV_A, index, layer->kv_a);
+		D41_FP8(O_A, index, layer->o_a);
+		D41_FP8(O_B, index, layer->o_b);
 		D41_PAYLOAD(HC_ATTN_FN, index, layer->hc_attn_fn);
 		D41_PAYLOAD(HC_ATTN_BASE, index, layer->hc_attn_base);
 		D41_PAYLOAD(HC_ATTN_SCALE, index, layer->hc_attn_scale);
@@ -1332,9 +1367,9 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		D41_SCALE(EXPERT_W2, index, layer->e_w2_scale);
 		D41_PAYLOAD(EXPERT_W3, index, layer->e_w3);
 		D41_SCALE(EXPERT_W3, index, layer->e_w3_scale);
-		D41_DEQUANT_SLICE(SHARED_W1, index, layer->sh_w1, state->shared_first, state->shared_width, 0u, 0u);
-		D41_DEQUANT_SLICE(SHARED_W2, index, layer->sh_w2, 0u, 0u, state->shared_first, state->shared_width);
-		D41_DEQUANT_SLICE(SHARED_W3, index, layer->sh_w3, state->shared_first, state->shared_width, 0u, 0u);
+		D41_FP8_SLICE(SHARED_W1, index, layer->sh_w1, state->shared_first, state->shared_width, 0u, 0u);
+		D41_FP8_SLICE(SHARED_W2, index, layer->sh_w2, 0u, 0u, state->shared_first, state->shared_width);
+		D41_FP8_SLICE(SHARED_W3, index, layer->sh_w3, state->shared_first, state->shared_width, 0u, 0u);
 		if ( D41KvSource(index) )
 		{
 			D41_PAYLOAD(COMPRESSOR_WKV, index, layer->c_wkv);
@@ -1346,11 +1381,11 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		}
 		if ( D41Ratio(index) > 0u && D41IndexSource(index) )
 		{
-			D41_DEQUANT(INDEXER_Q_B, index, layer->idx_q_b);
+			D41_FP8(INDEXER_Q_B, index, layer->idx_q_b);
 			D41_PAYLOAD(INDEXER_WEIGHTS_PROJ, index, layer->idx_wp);
 		}
 	}
-	*dequant_bytes = cursor;
+	*side_bytes = cursor;
 	return SPARK_STATUS_OK;
 }
 
@@ -1381,7 +1416,7 @@ static SparkStatus D41BindEngram(D41ModelState *state, uint64_t *cursor, const S
 		if ( D41SliceEntry(state->engram_pack, k, 0u, &bound) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		engram->k_weight = (const uint16_t *)bound;
-		if ( D41DequantSlice(state, state->engram_pack, wkv, state->tp_rank * D41_ENGRAM_KV_LOCAL, D41_ENGRAM_KV_LOCAL, 0u, D41_ENGRAM_EMBED,
+		if ( D41Fp8Slice(state, state->engram_pack, wkv, state->tp_rank * D41_ENGRAM_KV_LOCAL, D41_ENGRAM_KV_LOCAL, 0u, D41_ENGRAM_EMBED,
 			cursor, &engram->wkv) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	}
@@ -1496,11 +1531,11 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 		status = D41BindEngram(state, &bytes, D41BindConfiguration);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	state->dequant_bytes = bytes;
-	if ( cudaMalloc((void **)&state->dequant, bytes) != cudaSuccess )
+	state->fp8_side_bytes = bytes;
+	if ( cudaMalloc((void **)&state->fp8_side, bytes) != cudaSuccess )
 	{
-		state->dequant = 0;
-		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the dequantized fp8 projections could not be allocated\n", (unsigned long long)bytes);
+		state->fp8_side = 0;
+		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the fp8 row scales and slices could not be allocated\n", (unsigned long long)bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	bytes = 0u;
@@ -1537,8 +1572,8 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 	return SPARK_STATUS_OK;
 }
 
-#undef D41_DEQUANT_SLICE
-#undef D41_DEQUANT
+#undef D41_FP8_SLICE
+#undef D41_FP8
 #undef D41_SCALE
 #undef D41_PAYLOAD
 #undef D41_ENTRY
@@ -1612,8 +1647,8 @@ static const void *D41ProbeBuffers(void *model)
 static void D41Report(void *model, uint32_t rank)
 {
 	const D41ModelState *state = (const D41ModelState *)model;
-	fprintf(stderr, "DSV41-STATE rank=%u arena_bytes=%llu dequant_bytes=%llu slots=%u rows=%u positions=%u recurrent_bytes=%llu\n", rank,
-		(unsigned long long)state->arena_bytes, (unsigned long long)state->dequant_bytes, state->slots, state->max_rows, state->max_positions,
+	fprintf(stderr, "DSV41-STATE rank=%u arena_bytes=%llu fp8_side_bytes=%llu slots=%u rows=%u positions=%u recurrent_bytes=%llu\n", rank,
+		(unsigned long long)state->arena_bytes, (unsigned long long)state->fp8_side_bytes, state->slots, state->max_rows, state->max_positions,
 		(unsigned long long)state->recurrent_bytes);
 }
 

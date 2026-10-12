@@ -154,17 +154,15 @@ static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t h
 	value[1] = LmFloatToBf16((float)((double)imaginary * cosine + (double)real * sine));
 }
 
-static __global__ void D41DequantFp8BlockKernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ scale, uint16_t *__restrict__ output,
-	uint32_t columns, uint32_t row_first, uint32_t column_first, uint32_t output_columns)
+static __global__ void D41Fp8SliceKernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ block_scale, uint8_t *__restrict__ weight,
+	uint8_t *__restrict__ row_scale, uint32_t columns, uint32_t row_first, uint32_t column_first, uint32_t output_columns)
 {
-	const uint32_t row = row_first + blockIdx.y;
-	const uint32_t scale_columns = columns / 32u;
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < output_columns; index += gridDim.x * blockDim.x )
-	{
-		const uint32_t column = column_first + index;
-		const float factor = LmE8m0ToFloat(scale[(uint64_t)(row / 32u) * scale_columns + column / 32u]);
-		output[(uint64_t)blockIdx.y * output_columns + index] = LmFloatToBf16(LmE4m3ToFloat(payload[(uint64_t)row * columns + column]) * factor);
-	}
+	const uint32_t row = row_first + blockIdx.x, scale_columns = columns / 32u, output_groups = output_columns / 32u;
+	for ( uint32_t group = threadIdx.x; group < output_groups; group += blockDim.x )
+		row_scale[(uint64_t)blockIdx.x * output_groups + group] = block_scale[(uint64_t)(row / 32u) * scale_columns + column_first / 32u + group];
+	if ( weight != 0 )
+		for ( uint32_t index = threadIdx.x; index < output_columns; index += blockDim.x )
+			weight[(uint64_t)blockIdx.x * output_columns + index] = payload[(uint64_t)row * columns + column_first + index];
 }
 
 static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, const float *__restrict__ score, uint16_t *__restrict__ pooled,
