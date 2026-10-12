@@ -32,6 +32,28 @@ void LmGroupRmsNormKernel(const uint16_t *__restrict__ input_bf16, const float *
 	const uint64_t base = ((uint64_t)row * groups + group) * dimension;
 	const float *group_weight = weight + (uint64_t)group * dimension;
 	float total = 0.0f;
+	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+	{
+		float staged_input[LM_RMS_NORM_STAGED], staged_weight[LM_RMS_NORM_STAGED];
+#pragma unroll
+		for ( uint32_t slot = 0u; slot < LM_RMS_NORM_STAGED; ++slot )
+		{
+			const uint32_t index = threadIdx.x + slot * THREADS;
+			staged_input[slot] = index < dimension ? LmBf16ToFloat(input_bf16[base + index]) : 0.0f;
+			staged_weight[slot] = index < dimension ? group_weight[index] : 0.0f;
+		}
+#pragma unroll
+		for ( uint32_t slot = 0u; slot < LM_RMS_NORM_STAGED; ++slot )
+			if ( threadIdx.x + slot * THREADS < dimension )
+				total += staged_input[slot] * staged_input[slot];
+		total = LmBlockSum<THREADS>(total, reduction);
+		const float scale = rsqrtf(total / (float)dimension + epsilon);
+#pragma unroll
+		for ( uint32_t slot = 0u; slot < LM_RMS_NORM_STAGED; ++slot )
+			if ( threadIdx.x + slot * THREADS < dimension )
+				output_bf16[base + threadIdx.x + slot * THREADS] = LmFloatToBf16(staged_input[slot] * scale * staged_weight[slot]);
+		return;
+	}
 	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
 	{
 		const float value = LmBf16ToFloat(input_bf16[base + index]);

@@ -22,6 +22,62 @@ __global__ void ProbeFillKernel(uint16_t *values,uint64_t count,uint64_t salt)
 	}
 }
 
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void ProbeReferenceGroupNormKernel(const uint16_t *__restrict__ input_bf16, const float *__restrict__ weight, uint16_t *__restrict__ output_bf16,
+	uint32_t groups, uint32_t dimension, float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	const uint32_t group = blockIdx.x, row = blockIdx.y;
+	const uint64_t base = ((uint64_t)row * groups + group) * dimension;
+	const float *group_weight = weight + (uint64_t)group * dimension;
+	float total = 0.0f;
+	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
+	{
+		const float value = LmBf16ToFloat(input_bf16[base + index]);
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total, reduction);
+	const float scale = rsqrtf(total / (float)dimension + epsilon);
+	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
+		output_bf16[base + index] = LmFloatToBf16(LmBf16ToFloat(input_bf16[base + index]) * scale * group_weight[index]);
+}
+
+__global__ void ProbeFloatKernel(const uint16_t *bits, float *values, uint64_t count)
+{
+	for (uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x)
+		values[index] = LmBf16ToFloat(bits[index]);
+}
+
+static void ProbeGroupCase(uint32_t rows,uint32_t groups,uint32_t dimension)
+{
+	const uint64_t count = (uint64_t)rows * groups * dimension;
+	std::vector<uint16_t> expected(count),got(count);
+	uint16_t *input,*bits,*out;
+	float *weight;
+	PROBE_CUDA(cudaMalloc((void **)&input,count * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&bits,(uint64_t)groups * dimension * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&weight,(uint64_t)groups * dimension * sizeof(float)));
+	PROBE_CUDA(cudaMalloc((void **)&out,count * 2u));
+	ProbeFillKernel<<<64,256>>>(input,count,dimension + rows);
+	ProbeFillKernel<<<64,256>>>(bits,(uint64_t)groups * dimension,dimension * 5u);
+	ProbeFloatKernel<<<64,256>>>(bits,weight,(uint64_t)groups * dimension);
+	ProbeReferenceGroupNormKernel<256u><<<dim3(groups,rows),256u>>>(input,weight,out,groups,dimension,1.0e-6f);
+	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_CUDA(cudaMemcpy(expected.data(),out,count * 2u,cudaMemcpyDeviceToHost));
+	LmGroupRmsNormKernel<256u><<<dim3(groups,rows),256u>>>(input,weight,input,groups,dimension,1.0e-6f);
+	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_CUDA(cudaMemcpy(got.data(),input,count * 2u,cudaMemcpyDeviceToHost));
+	if ( expected != got )
+	{
+		printf("FAIL group norm rows%u groups%u dim%u: the staged in-place kernel differs from the two-pass reference\n",rows,groups,dimension);
+		probe_failures++;
+	}
+	else
+		printf("PASS group norm rows%u groups%u dim%u: staged in-place kernel bitwise equal to the two-pass reference\n",rows,groups,dimension);
+	cudaFree(input); cudaFree(bits); cudaFree(weight); cudaFree(out);
+}
+
 template<uint32_t STREAMS>
 static void ProbeCase(uint32_t rows,uint32_t width)
 {
@@ -60,12 +116,15 @@ int main(void)
 		ProbeCase<4u>(rows,2048u);
 		ProbeCase<4u>(rows,1000u);
 		ProbeCase<2u>(rows,3000u);
+		ProbeGroupCase(rows,4u,2560u);
+		ProbeGroupCase(rows,4u,4096u);
+		ProbeGroupCase(rows,2u,5000u);
 	}
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS hyper-connection inject weights on the device: 1..10 rows, cluster launch bitwise equal to the one-block kernel\n");
+	printf("PASS hyper-connection inject weights and group norm on the device: 1..10 rows, bitwise equal to the reference kernels\n");
 	return 0;
 }
