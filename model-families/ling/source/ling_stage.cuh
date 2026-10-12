@@ -20,7 +20,7 @@
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/moe_experts.cuh"
 #include "inference/kernels/moe_local.cuh"
-#include "inference/kernels/norm.cuh"
+#include "inference/kernels/norm_cluster.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
@@ -295,7 +295,7 @@ struct LingModel
 			state->mla_q, step->positions, S::kMlaRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
 		LingRopeQueryPackKernel<<<dim3(rows, S::kMlaRankHeads), LG_THREADS, 0, stream>>>(state->mla_latent_query, state->mla_q, state->mla_query,
 			S::kMlaRankHeads, G::kLatent, G::kNope, G::kRope);
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), rows, LG_THREADS, (G::kLatent + 8u) * sizeof(float), stream,
+		LmFusedResidualRmsNormLaunch<LG_THREADS,float>(rows, stream,
 			state->mla_kv, (const uint16_t *)0, layer->mla_kv_norm, (uint16_t *)0, state->mla_kv, G::kLatent, S::kSlot, LG_EPSILON);
 		LM_LAUNCH((LmRopePerHeadKernel<LG_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,1u), LG_THREADS, 0, stream,
 			state->mla_kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
@@ -401,7 +401,7 @@ struct LingModel
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
 		{
 			const LingLayer *layer = &state->layers[index];
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
+			LmFusedResidualRmsNormLaunch<LG_THREADS,float>(rows, stream,
 				hidden, index == 0u ? (const uint16_t *)0 : state->partial, layer->input_norm, index == 0u ? (uint16_t *)0 : hidden,
 				state->normed, G::kHidden, G::kHidden, LG_EPSILON);
 			status = index % G::kPeriod == G::kPhase ? Mla(state, layer, step, stream) : Kda(state, layer, step, stream);
@@ -409,7 +409,7 @@ struct LingModel
 				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
 			if ( status != SPARK_STATUS_OK )
 				break;
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
+			LmFusedResidualRmsNormLaunch<LG_THREADS,float>(rows, stream,
 				hidden, state->partial, layer->post_norm, hidden, state->normed, G::kHidden, G::kHidden, LG_EPSILON);
 			status = index < G::kDenseLayers ? Dense(state, layer, step, stream) : Moe(state, layer, index, step, stream);
 			if ( status == SPARK_STATUS_OK )

@@ -16,6 +16,26 @@ static __device__ __forceinline__ void LmDependentRelease(void)
 #endif
 }
 
+static __device__ __forceinline__ void LmClusterArrive(void)
+{
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+	asm volatile("barrier.cluster.arrive.release.aligned;" ::: "memory");
+#endif
+}
+
+static __device__ __forceinline__ void LmClusterWait(void)
+{
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+	asm volatile("barrier.cluster.wait.acquire.aligned;" ::: "memory");
+#endif
+}
+
+static __device__ __forceinline__ void LmClusterBarrier(void)
+{
+	LmClusterArrive();
+	LmClusterWait();
+}
+
 static __device__ __forceinline__ void LmPrefetchL2(const void *address, uint32_t bytes)
 {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900

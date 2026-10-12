@@ -511,6 +511,7 @@ PYTHON_TESTS := \
 	tests/test_project_chain_cuda.py \
 	tests/test_topk_warp_cuda.py \
 	tests/test_rms_norm_cuda.py \
+	tests/test_topk_exact_cuda.py \
 	tests/test_layer_norm_cuda.py \
 	tests/test_hidden_transport_host_rdma_load.py \
 	tests/test_skinny_dependent_cuda.py \

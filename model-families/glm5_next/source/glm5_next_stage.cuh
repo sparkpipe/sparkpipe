@@ -846,8 +846,7 @@ static int32_t Glm5NextIndexSelect(const Glm5NextLayerBuffers *b, uint32_t rows,
 	const uint32_t local_stride = SparkGlm5NextIndexCpLocalStride(pools, degree);
 	LM_LAUNCH((Glm5NextPoolPermuteKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->index_gathered_scores, b->selection_scores, pools,
 		local_stride, (uint64_t)SparkGlm5NextIndexCpGatherSequences(rows, local_stride) * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS, degree);
-	LM_LAUNCH((LmTopkExactKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->selection_scores, pools, G5N_SELECTED / G5N_KPOOL,
-		b->selected_pools);
+	LmTopkExactRowsLaunch<G5N_THREADS>(b->selection_scores, rows, pools, G5N_SELECTED / G5N_KPOOL, b->selected_pools, stream);
 	LM_LAUNCH((Glm5NextPoolExpandKernel<G5N_THREADS, G5N_KPOOL, G5N_SELECTED, G5N_INDEX_WIDTH>), rows, G5N_THREADS, 0, stream, b->selected_pools,
 		b->sequence_of_row, b->context_length, b->positions, b->selected_positions, rows);
 	return Glm5NextLaunched();

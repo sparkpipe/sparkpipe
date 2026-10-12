@@ -1081,10 +1081,10 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 		return SPARK_STATUS_IO_ERROR;
 	LmStageRowsGatherKernel<<<count, LM_STAGE_HEAD_THREADS, 0, stream>>>(state->distribution_rows, state->hidden, state->distribution_hidden, hidden);
 	if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u )
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
+		LmFusedResidualRmsNormLaunch<LM_STAGE_HEAD_THREADS,float>(count, stream,
 			state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
 	else if ( state->geometry.head_prenormed == 0u )
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
+		LmFusedResidualRmsNormLaunch<LM_STAGE_HEAD_THREADS,uint16_t>(count, stream,
 			state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
 	LM_LAUNCH((LmHeadLogitsRowsKernel<LM_STAGE_HEAD_THREADS,LM_STAGE_HEAD_TILE,STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS>),
 		dim3((slice + LM_STAGE_HEAD_TILE - 1u) / LM_STAGE_HEAD_TILE, (count + STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS),
