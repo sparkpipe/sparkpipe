@@ -22,7 +22,7 @@
 #include "inference/kernels/moe_experts.cuh"
 #include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/ngram_hash.cuh"
-#include "inference/kernels/norm.cuh"
+#include "inference/kernels/norm_cluster.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
@@ -842,7 +842,7 @@ struct QwenHybridModel
 		LmHyperMixKernel<QH_THREADS><<<dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream>>>(state->hc_up, state->hc_normed, mixed,
 			G::kStreams, G::kHidden);
 		if ( inject != 0 )
-			LmHyperInjectWeightsKernel<QH_THREADS, G::kStreams><<<rows, QH_THREADS, 0, stream>>>(state->hc_normed, inject, state->hc_inject, G::kHidden);
+			LmHyperInjectWeightsLaunch<QH_THREADS, G::kStreams>(rows, stream, state->hc_normed, inject, state->hc_inject, G::kHidden);
 		return Launched();
 	}
 
@@ -937,7 +937,7 @@ struct QwenHybridModel
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
 		{
 			const QwenHybridLayer *layer = &state->layers[index];
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
+			LmFusedResidualRmsNormLaunch<QH_THREADS,float>(rows, stream,
 				hidden, index == 0u ? (const uint16_t *)0 : state->partial, layer->input_norm, index == 0u ? (uint16_t *)0 : hidden,
 				state->normed, G::kHidden, G::kHidden, QH_EPSILON);
 			status = index % G::kPeriod == G::kPhase ? Attention(state, layer, step, stream) : Gdn(state, layer, step, stream);
@@ -945,7 +945,7 @@ struct QwenHybridModel
 				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
 			if ( status != SPARK_STATUS_OK )
 				break;
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
+			LmFusedResidualRmsNormLaunch<QH_THREADS,float>(rows, stream,
 				hidden, state->partial, layer->post_norm, hidden, state->normed, G::kHidden, G::kHidden, QH_EPSILON);
 			status = Ffn(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
