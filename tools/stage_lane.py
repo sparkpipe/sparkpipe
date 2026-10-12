@@ -248,7 +248,7 @@ LAGUNA = {
 GLM53_FULL = {
     "swap_id": "glm-5.3",
     "api_port": 8475,
-    "kv_label": "glm53_full_stage",
+    "kv_label": "glm53_full_tp16_stage",
     "node_memory_bytes": 57 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/glm-5.3-fp8/tokenizer.json",
     "pack": "sparkdata/glm53full.fp8.tp16/packs/glm53full.fp8.tp16-rank{rank}.glm52sp",
