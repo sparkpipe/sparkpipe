@@ -371,6 +371,23 @@ static void TestChatTemplates(void)
 	}
 
 	{
+		char *mimo = TestReadText("model-families/mimo26/chat_template.json");
+		assert(TestLoadWithChatTemplate(mimo,&deployment) == SPARK_STATUS_OK);
+		TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|im_start|>user\nhi<|im_end|><|im_start|>assistant\n<think></think>");
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|im_start|>user\nhi<|im_end|><|im_start|>assistant\n");
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|im_start|>system\nBe terse.<|im_end|><|im_start|>user\nhi<|im_end|><|im_start|>assistant\n<think></think>ok<|im_end|>"
+			"<|im_start|>user\nbye<|im_end|><|im_start|>assistant\n<think></think>");
+		TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|im_start|>system\nBe terse.<|im_end|><|im_start|>user\nhi<|im_end|><|im_start|>assistant\n<think></think>ok<|im_end|>"
+			"<|im_start|>user\nbye<|im_end|><|im_start|>assistant\n");
+		SparkModelResidentDeploymentDestroy(&deployment);
+		free(mimo);
+	}
+
+	{
 		char *k3 = TestReadText("model-families/k3/chat_template.json");
 		static const char suffixed_null[] =
 			"{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
