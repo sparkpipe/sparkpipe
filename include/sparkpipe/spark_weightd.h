@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 13u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 14u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
 #define SPARK_WEIGHTD_ID_BYTES 64u
@@ -938,7 +938,7 @@ typedef struct SparkWeightdIpcKvSharedAttachResult
 _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeightdIpcKvPoolAttachResult) == 96u &&
     sizeof(SparkWeightdIpcKvPoolResize) == 40u && sizeof(SparkWeightdIpcKvPoolResizeResult) == 48u &&
     sizeof(SparkWeightdIpcKvPoolExport) == 40u && sizeof(SparkWeightdIpcKvPoolExportResult) == 40u &&
-    sizeof(SparkWeightdIpcKvPoolStatus) == 32u && sizeof(SparkWeightdIpcKvPoolStatusResult) == 64u,"kv pool frames are fixed for ABI 11");
+    sizeof(SparkWeightdIpcKvPoolStatus) == 32u && sizeof(SparkWeightdIpcKvPoolStatusResult) == 64u,"kv pool frames are fixed for ABI 14");
 #endif
 
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
