@@ -1,0 +1,62 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "laguna-s-2.1",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function validates a per-request authentication blob before passing it to the GSS layer.\n\nCode:\n```c\n 1: #define AUTH_STACK_MAX 256\n 2: \n 3: static bool check_rpcsec_packet(const uint8_t *wire, size_t wire_left)\n 4: {\n 5:     if (wire_left < 4)\n 6:         return false;\n 7: \n 8:     uint32_t body_len = get_be32(wire);      // attacker-controlled length field\n 9:     const uint8_t *body = wire + 4;\n10:     uint8_t scratch[AUTH_STACK_MAX];\n11: \n12:     /* XDR opaque values are padded to 4-byte alignment on the wire. */\n13:     uint32_t pad = (4 - (body_len & 3)) & 3;\n14:     uint32_t encoded_len = body_len + pad;\n15: \n16:     /* This check only proves the source bytes exist in the packet. */\n17:     if (encoded_len > wire_left - 4)\n18:         return false;\n19: \n20:     memcpy(scratch, body, encoded_len);\n21:     return gss_verify_mic(scratch, body_len);\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "399e5dd72148b42608cb28744d9869ba197256c7070307da390e31bc5022c10c"
+ },
+ "response": {
+  "id": "chatcmpl-b84f543f2415490cb6f89c0c6ed15c94",
+  "created": 1791770584,
+  "model": "laguna-s-2.1",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Looking at this function, I need to analyze the buffer handling carefully.\n\nThe key issue is on line 20: `memcpy(scratch, body, encoded_len);`\n\nThe `scratch` buffer is declared as `uint8_t scratch[AUTH_STACK_MAX]` where `AUTH_STACK_MAX` is 256.\n\nThe `encoded_len` is calculated as `body_len + pad` where `body_len` is attacker-controlled (from line 8). The check on line 17 only verifies that `encoded_len` fits within the remaining wire data (`wire_left - 4`), but it does NOT check that `encoded_len` fits within the `scratch` buffer size of 256 bytes.\n\nAn attacker can set `body_len` to a value like 300 (with appropriate padding), which would pass the wire length check (if `wire_left` is large enough) but would cause a stack buffer overflow when `memcpy` writes 300+ bytes into the 256-byte `scratch` buffer.\n\nThe missing bounds check against `AUTH_STACK_MAX` is the primary vulnerability.\n\nAnswer: 20",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 238,
+   "prompt_tokens": 473,
+   "total_tokens": 711,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at this function, I need to analyze the buffer handling carefully.\n\nThe key issue is on line 20: `memcpy(scratch, body, encoded_len);`\n\nThe `scratch` buffer is declared as `uint8_t scratch[AUTH_STACK_MAX]` where `AUTH_STACK_MAX` is 256.\n\nThe `encoded_len` is calculated as `body_len + pad` where `body_len` is attacker-controlled (from line 8). The check on line 17 only verifies that `encoded_len` fits within the remaining wire data (`wire_left - 4`), but it does NOT check that `encoded_len` fits within the `scratch` buffer size of 256 bytes.\n\nAn attacker can set `body_len` to a value like 300 (with appropriate padding), which would pass the wire length check (if `wire_left` is large enough) but would cause a stack buffer overflow when `memcpy` writes 300+ bytes into the 256-byte `scratch` buffer.\n\nThe missing bounds check against `AUTH_STACK_MAX` is the primary vulnerability.\n\nAnswer: 20",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "20",
+  "passed": true,
+  "elapsed_ms": 5803.1,
+  "output_sha256": "8d036cd1e2753c3069fb08d9c6661d28e0cf59d12bfd7bf63c2bf1ab6022b58d",
+  "prompt_token_count": 473,
+  "generated_token_count": 238,
+  "reasoning_chars": 0,
+  "content_chars": 907,
+  "status": "stop"
+ }
+}

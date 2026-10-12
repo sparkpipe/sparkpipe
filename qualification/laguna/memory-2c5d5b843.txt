@@ -1,0 +1,16 @@
+spark0 memavail_kib before 101173088 after_ready 79261292 after_perf 77915968
+spark1 memavail_kib before 101634820 after_ready 79686284 after_perf 78367188
+spark2 memavail_kib before 99158000 after_ready 77192660 after_perf 75877784
+spark3 memavail_kib before 103998132 after_ready 82059028 after_perf 80737788
+spark4 memavail_kib before 99138468 after_ready 77170804 after_perf 75863684
+spark5 memavail_kib before 103231776 after_ready 81334496 after_perf 79982700
+spark6 memavail_kib before 103814288 after_ready 81846808 after_perf 80546528
+spark7 memavail_kib before 101295744 after_ready 79378904 after_perf 78025736
+spark8 memavail_kib before 101326240 after_ready 79416404 after_perf 78069412
+spark9 memavail_kib before 101212260 after_ready 79244148 after_perf 77916196
+sparka memavail_kib before 103492164 after_ready 81537660 after_perf 80245068
+sparkb memavail_kib before 101316672 after_ready 79402152 after_perf 78090676
+sparkc memavail_kib before 103350492 after_ready 81382128 after_perf 80082252
+sparkd memavail_kib before 103246096 after_ready 81328840 after_perf 79978812
+sparke memavail_kib before 102934648 after_ready 80991840 after_perf 79688488
+sparkf memavail_kib before 102344520 after_ready 80387236 after_perf 79077728

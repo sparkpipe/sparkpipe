@@ -1,0 +1,16 @@
+spark0 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark1 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark2 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark3 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark4 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark5 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark6 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark7 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark8 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+spark9 weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+sparka weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+sparkb weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+sparkc weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+sparkd weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+sparke weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
+sparkf weightd_warm: DROP-KV label=laguna_stage released=1 bytes=6450839552 busy=0
