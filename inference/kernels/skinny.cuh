@@ -53,15 +53,25 @@ static __device__ __forceinline__ float LmSkinnyBf16Chunk(uint4 weight, uint4 ac
 	return(LmSkinnyBf16Pairs(weight.w,activation.w,accumulator));
 }
 
-static __device__ __forceinline__ float LmSkinnyFp8Word(uint32_t weight, uint4 activation_half, uint32_t word, float accumulator)
+static __device__ __forceinline__ float LmSkinnyFp8Pairs(float2 low, float2 high, uint4 activation_half, uint32_t word, float accumulator)
 {
-	float2 low = LmE4m3PairToFloat2Pure((uint16_t)weight), high = LmE4m3PairToFloat2Pure((uint16_t)(weight >> 16u));
 	uint32_t first = word == 0u ? activation_half.x : activation_half.z, second = word == 0u ? activation_half.y : activation_half.w;
 	accumulator = fmaf(low.x,__uint_as_float(first << 16u),accumulator);
 	accumulator = fmaf(low.y,__uint_as_float(first & 0xffff0000u),accumulator);
 	accumulator = fmaf(high.x,__uint_as_float(second << 16u),accumulator);
 	return(fmaf(high.y,__uint_as_float(second & 0xffff0000u),accumulator));
 }
+
+static __device__ __forceinline__ float LmSkinnyFp8Word(uint32_t weight, uint4 activation_half, uint32_t word, float accumulator)
+{
+	return(LmSkinnyFp8Pairs(LmE4m3PairToFloat2Pure((uint16_t)weight),LmE4m3PairToFloat2Pure((uint16_t)(weight >> 16u)),activation_half,word,accumulator));
+}
+
+template<class Format>
+struct LmSkinnyDecodeOnce
+{
+	static constexpr bool kValue = false;
+};
 
 template<class Format>
 struct LmSkinnyFormat
@@ -112,6 +122,37 @@ struct LmSkinnyFormat<LmFp8>
 		accumulator = LmSkinnyFp8Word(weight.z,activation.high,0u,accumulator);
 		return(LmSkinnyFp8Word(weight.w,activation.high,1u,accumulator));
 	}
+	typedef struct Decoded
+	{
+		float2 pair[8];
+	}
+	Decoded;
+	static __device__ __forceinline__ Decoded Decode(uint4 weight)
+	{
+		Decoded decoded;
+		const uint32_t words[4] = {weight.x,weight.y,weight.z,weight.w};
+		#pragma unroll
+		for ( uint32_t word = 0u; word < 4u; word++ )
+		{
+			decoded.pair[2u * word] = LmE4m3PairToFloat2Pure((uint16_t)words[word]);
+			decoded.pair[2u * word + 1u] = LmE4m3PairToFloat2Pure((uint16_t)(words[word] >> 16u));
+		}
+		return(decoded);
+	}
+	static __device__ __forceinline__ float ChunkDecoded(const Decoded &decoded, Activation activation)
+	{
+		float accumulator = 0.0f;
+		accumulator = LmSkinnyFp8Pairs(decoded.pair[0],decoded.pair[1],activation.low,0u,accumulator);
+		accumulator = LmSkinnyFp8Pairs(decoded.pair[2],decoded.pair[3],activation.low,1u,accumulator);
+		accumulator = LmSkinnyFp8Pairs(decoded.pair[4],decoded.pair[5],activation.high,0u,accumulator);
+		return(LmSkinnyFp8Pairs(decoded.pair[6],decoded.pair[7],activation.high,1u,accumulator));
+	}
+};
+
+template<>
+struct LmSkinnyDecodeOnce<LmFp8>
+{
+	static constexpr bool kValue = true;
 };
 
 typedef struct LmSkinnyQuad
@@ -133,6 +174,12 @@ static __device__ __forceinline__ float LmSkinnyMxfp4Word(uint32_t weight, uint4
 	accumulator = LmSkinnyMxfp4Byte(weight >> 16u,activation.z,accumulator);
 	return(LmSkinnyMxfp4Byte(weight >> 24u,activation.w,accumulator));
 }
+
+template<>
+struct LmSkinnyDecodeOnce<LmMxfp8>
+{
+	static constexpr bool kValue = true;
+};
 
 template<>
 struct LmSkinnyFormat<LmMxfp8> : LmSkinnyFormat<LmFp8>
@@ -271,6 +318,13 @@ static __device__ __forceinline__ void LmSkinnyAccumulate(const LmSkinnyArgument
 						part = LmSkinnyFormat<Format>::Halves(weight[u][n],staged[u][r]);
 						accumulator[n][r] = fmaf(high,part.y,fmaf(scale,part.x,accumulator[n][r]));
 					}
+				}
+				else if constexpr ( ROWS > 1u && LmSkinnyDecodeOnce<Format>::kValue )
+				{
+					const typename LmSkinnyFormat<Format>::Decoded decoded = LmSkinnyFormat<Format>::Decode(weight[u][n]);
+					#pragma unroll
+					for ( r = 0u; r < ROWS; r++ )
+						accumulator[n][r] = fmaf(scale,LmSkinnyFormat<Format>::ChunkDecoded(decoded,staged[u][r]),accumulator[n][r]);
 				}
 				else
 				{
