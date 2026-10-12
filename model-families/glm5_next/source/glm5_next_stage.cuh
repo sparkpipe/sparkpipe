@@ -16,7 +16,7 @@
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/moe_experts.cuh"
-#include "inference/kernels/norm_cluster.cuh"
+#include "inference/kernels/norm.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
@@ -705,7 +705,7 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 		w->kda_decay_gate_down == 0 || w->kda_decay_up == 0 || w->kda_gate_up == 0 || w->kda_q_conv == 0 || w->kda_k_conv == 0 ||
 		w->kda_v_conv == 0 || w->kda_decay_bias == 0 || w->kda_head_log_scale == 0 || w->kda_out_norm == 0 || w->kda_out == 0 )
 		return LM_LAUNCH_ERR_SHAPE;
-	LmBf16RmsNormLaunch<G5N_THREADS>(rows, stream, b->hc_collapsed_bf16,
+	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
 	{
 		const LmSkinnyDenseTarget targets[2] = {
@@ -819,7 +819,7 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 	if ( w->attn_norm == 0 || w->q_a == 0 || w->q_a_norm == 0 || w->q_b == 0 || w->kv_a == 0 || w->kv_a_norm == 0 || b->kv_b_key == 0 ||
 		b->kv_b_value == 0 || w->attn_output == 0 )
 		return LM_LAUNCH_ERR_SHAPE;
-	LmBf16RmsNormLaunch<G5N_THREADS>(rows, stream, b->hc_collapsed_bf16,
+	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
 	{
 		const LmSkinnyDenseTarget targets[4] = {
@@ -835,7 +835,7 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 			G5N_QA, 0u, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LmBf16RmsNormLaunch<G5N_THREADS>(rows, stream, b->q_compressed_bf16,
+	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_QA + 8u) * sizeof(float), stream, b->q_compressed_bf16,
 		(const uint16_t *)w->q_a_norm, b->q_compressed_bf16, G5N_QA, G5N_QA, G5N_EPS);
 	return Glm5NextIndexScore(b, rows, context, sms, projected, stream);
 }
@@ -864,7 +864,7 @@ static int32_t Glm5NextAttentionTail(const Glm5NextLayerBuffers *b, uint32_t row
 			G5N_LATENT, 0u, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LmBf16RmsNormLaunch<G5N_THREADS>(rows, stream, b->kv_slot_bf16,
+	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_LATENT + 8u) * sizeof(float), stream, b->kv_slot_bf16,
 		(const uint16_t *)w->kv_a_norm, b->kv_slot_bf16, G5N_LATENT, G5N_LATENT, G5N_EPS);
 	if ( LmPerHeadProjectRowsLaunch<G5N_THREADS, G5N_NOPE, G5N_LATENT, G5N_NOPE, 0u>(b->q_bf16, (const uint16_t *)b->kv_b_key, b->query_latent_bf16,
 		b->attn_heads, rows, stream) != cudaSuccess )
@@ -899,7 +899,7 @@ static int32_t Glm5NextDenseMlp(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	int32_t status;
 	if ( w->post_attn_norm == 0 || w->dense_gate_up == 0 || w->dense_down == 0 )
 		return LM_LAUNCH_ERR_SHAPE;
-	LmBf16RmsNormLaunch<G5N_THREADS>(rows, stream, b->hc_collapsed_bf16,
+	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->post_attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
 	status = Glm5NextLinear(b->normed_bf16, w->dense_gate_up, b->gate_up_bf16, b->dense_row_offset, b->dense_tile_prefix, rows, G5N_HIDDEN,
 		b->dense_gate_up_rows, b->dense_gate_up_rows, 0u, sms, stream);
@@ -919,7 +919,7 @@ static int32_t Glm5NextMoeRoute(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	int32_t status;
 	if ( w->post_attn_norm == 0 || w->router == 0 || w->router_correction == 0 || w->shared_gate_up == 0 || w->shared_down == 0 )
 		return LM_LAUNCH_ERR_SHAPE;
-	LmBf16RmsNormLaunch<G5N_THREADS>(rows, stream, b->hc_collapsed_bf16,
+	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->post_attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
 	status = LmSkinnyDense<LmBf16Format>(w->router, b->normed_bf16, 0, b->router_logits, rows, G5N_HIDDEN, G5N_EXPERTS, 0u, 0u, stream);
 	memset(&gemm, 0, sizeof(gemm));

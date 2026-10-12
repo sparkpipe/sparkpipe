@@ -18,7 +18,7 @@
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/moe_experts.cuh"
 #include "inference/kernels/moe_local.cuh"
-#include "inference/kernels/norm_cluster.cuh"
+#include "inference/kernels/norm.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
@@ -499,7 +499,7 @@ struct GemmaModel
 			state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
-		LmFusedResidualRmsNormLaunch<GM_THREADS,float>(rows, stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 			hidden, (const uint16_t *)0, layer->pre_ff_norm_2, (uint16_t *)0, state->moe_normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		expert_routes.group_row_offset = state->group_row_offset;
 		expert_routes.route_source_token = state->route_source_token;
@@ -577,7 +577,7 @@ struct GemmaModel
 		const uint64_t width = (uint64_t)rows * G::kHidden;
 		uint16_t *hidden = step->hidden_bf16;
 		SparkStatus status = SPARK_STATUS_OK;
-		LmFusedResidualRmsNormLaunch<GM_THREADS,float>(rows, stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 			hidden, (const uint16_t *)0, state->layers[0].input_norm, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
 		{
@@ -589,7 +589,7 @@ struct GemmaModel
 				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
 			if ( status != SPARK_STATUS_OK )
 				break;
-			LmFusedResidualRmsNormLaunch<GM_THREADS,float>(rows, stream,
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 				state->partial, hidden, layer->pre_ff_norm, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 			status = Mlp(state, layer, step, stream);
 			if constexpr ( G::kMoe && G::kSigmoidRouter )
@@ -600,7 +600,7 @@ struct GemmaModel
 			if ( status != SPARK_STATUS_OK )
 				break;
 			if ( index + 1u < G::kLayers )
-				LmFusedResidualRmsNormLaunch<GM_THREADS,float>(rows, stream,
+				LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 					ffn, hidden, state->layers[index + 1u].input_norm, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 			else
 				GemmaAddRowsKernel<<<Blocks(width), GM_THREADS, 0, stream>>>(hidden, ffn, width);
@@ -630,7 +630,7 @@ struct GemmaModel
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
 		{
 			const GemmaLayer *layer = &state->layers[index];
-			LmFusedResidualRmsNormLaunch<GM_THREADS,float>(rows, stream,
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 				hidden, (const uint16_t *)0, layer->input_norm, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 			status = index % G::kPeriod == G::kPhase ? Attention<true>(state, layer, step, stream) : Attention<false>(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
@@ -639,7 +639,7 @@ struct GemmaModel
 				break;
 			GemmaPostNormAddKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, state->partial, layer->post_attn_norm, (const float *)0,
 				G::kHidden, G::kPostEpsilon);
-			LmFusedResidualRmsNormLaunch<GM_THREADS,float>(rows, stream,
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 				hidden, (const uint16_t *)0, layer->pre_ff_norm, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 			status = Mlp(state, layer, step, stream);
 			if constexpr ( G::kMoe )

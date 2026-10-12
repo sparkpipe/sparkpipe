@@ -2,7 +2,7 @@
 
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/head.cuh"
-#include "inference/kernels/norm_cluster.cuh"
+#include "inference/kernels/norm.cuh"
 #include "inference/kernels/stage_head_shape.h"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_head_screen.h"
@@ -81,10 +81,10 @@ static int32_t LmStageNormRows(const LmStageHeadRows &head, uint32_t rows, cudaS
 	if ( head.prenormed != 0u )
 		return(head.normed_bf16 == head.hidden_bf16 ? LM_LAUNCH_OK : LM_LAUNCH_ERR_SHAPE);
 	if ( head.norm_f32 != 0u )
-		LmFusedResidualRmsNormLaunch<LM_STAGE_HEAD_THREADS,float>(rows, stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float>), rows, LM_STAGE_HEAD_THREADS, (head.hidden + 8u) * sizeof(float), stream,
 			head.hidden_bf16,0,(const float *)head.norm_weight,0,head.normed_bf16,head.hidden,head.hidden,head.epsilon);
 	else
-		LmFusedResidualRmsNormLaunch<LM_STAGE_HEAD_THREADS,uint16_t>(rows, stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), rows, LM_STAGE_HEAD_THREADS, (head.hidden + 8u) * sizeof(float), stream,
 			head.hidden_bf16,0,(const uint16_t *)head.norm_weight,0,head.normed_bf16,head.hidden,head.hidden,head.epsilon);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
