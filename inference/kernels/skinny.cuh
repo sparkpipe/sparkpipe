@@ -778,6 +778,7 @@ typedef struct LmSkinnyDenseTarget
 	uint16_t *output_bf16;
 	float *output_f32;
 	uint32_t output_dimension,output_row_stride,output_column_offset;
+	LmScaleTensor scale;
 }
 LmSkinnyDenseTarget;
 
@@ -801,7 +802,7 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 			args->activation = activation;
 			args->output_bf16 = targets[part].output_bf16;
 			args->output_f32 = targets[part].output_f32;
-			args->scale = LmScaleTensorNone();
+			args->scale = targets[part].scale;
 			args->rows = rows;
 			args->input_dimension = input_dimension;
 			args->output_dimension = targets[part].output_dimension;

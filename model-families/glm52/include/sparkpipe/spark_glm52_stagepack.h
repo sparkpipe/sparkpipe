@@ -150,7 +150,27 @@ static inline uint32_t SparkGlm52StagePackTpShardsRows(uint32_t tensor_kind)
 
 #include "sparkpipe/family/stagepack/spark_stagepack_tp_shards_cols.h"
 
-static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t expert_codec,uint32_t tp_degree,SparkGlm52StagePackTensorShape *shape)
+static inline uint32_t SparkGlm52StagePackKindIsLinear(uint32_t tensor_kind)
+{
+	switch ( tensor_kind )
+	{
+	case SPARK_GLM52_STAGEPACK_TENSOR_Q_A:
+	case SPARK_GLM52_STAGEPACK_TENSOR_Q_B:
+	case SPARK_GLM52_STAGEPACK_TENSOR_KV_A:
+	case SPARK_GLM52_STAGEPACK_TENSOR_ATTN_OUTPUT:
+	case SPARK_GLM52_STAGEPACK_TENSOR_INDEX_Q:
+	case SPARK_GLM52_STAGEPACK_TENSOR_INDEX_K:
+	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_GATE_UP:
+	case SPARK_GLM52_STAGEPACK_TENSOR_DENSE_DOWN:
+	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP:
+	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN:
+		return(1u);
+	default:
+		return(0u);
+	}
+}
+
+static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint32_t layer_index,uint32_t linear_codec,uint32_t expert_codec,uint32_t tp_degree,SparkGlm52StagePackTensorShape *shape)
 {
 	uint32_t global;
 	if ( shape == 0 || tensor_kind >= SPARK_GLM52_STAGEPACK_TENSOR_KIND_COUNT || tp_degree == 0u )
@@ -208,6 +228,14 @@ static inline int32_t SparkGlm52StagePackExpectedShape(uint32_t tensor_kind,uint
 	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_GATE_UP: SparkGlm52StagePackShapeBf16(shape,1u,2u * SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION); break;
 	case SPARK_GLM52_STAGEPACK_TENSOR_SHARED_DOWN: SparkGlm52StagePackShapeBf16(shape,1u,SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION); break;
 	default: return(-6);
+	}
+	if ( SparkGlm52StagePackKindIsLinear(tensor_kind) != 0u && linear_codec != SPARK_WEIGHT_CODEC_BF16 )
+	{
+		if ( linear_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
+			return(-8);
+		shape->payload_type = SPARK_GLM52_STAGEPACK_PAYLOAD_PACKED_WEIGHT;
+		shape->weight_codec = linear_codec;
+		shape->scale_encoding = SparkWeightCodecScaleEncoding(linear_codec);
 	}
 	if ( SparkGlm52StagePackTpShardsRows(tensor_kind) != 0u )
 	{
