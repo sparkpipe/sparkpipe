@@ -7,7 +7,7 @@ import threading
 import time
 import urllib.parse
 
-STORY = "Write a long, detailed story about a lighthouse keeper who finds a map in a bottle. Describe every day of the journey."
+STORY = "Write a long, detailed story about a lighthouse keeper who finds a map in a bottle. Describe every day of the journey.\n\nDay one began when the keeper"
 PARAGRAPH = ("The committee reviewed the quarterly logistics report, which covered warehouse throughput, "
              "late shipments, staffing changes, fuel costs and the new routing software. ")
 
