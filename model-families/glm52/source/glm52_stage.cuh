@@ -604,7 +604,7 @@ static int32_t GlmShardScatterMid(const GlmBuffers *b, uint32_t rows, uint32_t c
 		{
 			const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
 			if ( GlmIndexMergeSelectLaunch<GLM_INDEX_SELECT_THREADS>(candidates + (uint64_t)first * keep, b->shard_rank_stride_bytes / sizeof(uint2),
-					b->kv_shard.degree, keep, b->sequence_of_row + first, b->context_length, b->row_positions + first, count, b->index_bitmap_words,
+					b->kv_shard, keep, b->sequence_of_row + first, b->context_length, b->row_positions + first, count, b->index_bitmap_words,
 					b->index_bitmaps, b->selected_positions + (uint64_t)first * GLM_SELECTED, stream) != cudaSuccess )
 				return LM_LAUNCH_ERR_LAUNCH;
 		}
