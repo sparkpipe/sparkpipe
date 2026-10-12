@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "laguna-s-2.1",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "e5c9ff510c2647ed7aa6301224e5ac474c4896ce071b75282aab95134b6923f4"
+ },
+ "response": {
+  "id": "chatcmpl-9ffdb9eb2b6046e1b7a4dbc74a7d63cf",
+  "created": 1791770645,
+  "model": "laguna-s-2.1",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is an integer overflow in the calculation of `need` on line 3. The sum `prefix_len + name_len + 3` is cast to `unsigned int`, which can wrap around if the sum exceeds `UINT_MAX`. This results in a smaller `need` value, causing insufficient buffer allocation. Subsequent `memcpy` calls on lines 13-15 then write beyond the allocated buffer, leading to a heap overflow.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 95,
+   "prompt_tokens": 426,
+   "total_tokens": 521,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is an integer overflow in the calculation of `need` on line 3. The sum `prefix_len + name_len + 3` is cast to `unsigned int`, which can wrap around if the sum exceeds `UINT_MAX`. This results in a smaller `need` value, causing insufficient buffer allocation. Subsequent `memcpy` calls on lines 13-15 then write beyond the allocated buffer, leading to a heap overflow.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 2877.6,
+  "output_sha256": "fb3903b222051221826273f55358e9e07bea4946bf7253c1cee3fa85bdc72d85",
+  "prompt_token_count": 426,
+  "generated_token_count": 95,
+  "reasoning_chars": 0,
+  "content_chars": 396,
+  "status": "stop"
+ }
+}

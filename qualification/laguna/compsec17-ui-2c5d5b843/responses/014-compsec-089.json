@@ -1,0 +1,62 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "laguna-s-2.1",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "7501252086f43f8fd6d3ef234983f9bf6b6c008026d20ffe0aeb0c9ab9709778"
+ },
+ "response": {
+  "id": "chatcmpl-2074a67c040d4511bbb22f630214688a",
+  "created": 1791770660,
+  "model": "laguna-s-2.1",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `ccm_finish_reduced` allows the caller to specify `tag_len`, which is used directly in `memcpy` without validation. If `tag_len` exceeds the size of `full_tag` (16 bytes), a buffer over-read occurs. Additionally, the `tag == NULL` check occurs after `ccm_compute_full_tag`, which is a minor issue but not the primary vulnerability. The critical flaw is the unchecked `tag_len` in `memcpy`.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 102,
+   "prompt_tokens": 303,
+   "total_tokens": 405,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `ccm_finish_reduced` allows the caller to specify `tag_len`, which is used directly in `memcpy` without validation. If `tag_len` exceeds the size of `full_tag` (16 bytes), a buffer over-read occurs. Additionally, the `tag == NULL` check occurs after `ccm_compute_full_tag`, which is a minor issue but not the primary vulnerability. The critical flaw is the unchecked `tag_len` in `memcpy`.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 2689.5,
+  "output_sha256": "6ba8dc2ae0da84e7941db287d8a88d778e3761f3a0dcd9c7fef8e3cb4b7c397c",
+  "prompt_token_count": 303,
+  "generated_token_count": 102,
+  "reasoning_chars": 0,
+  "content_chars": 414,
+  "status": "stop"
+ }
+}
