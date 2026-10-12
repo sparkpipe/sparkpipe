@@ -30,7 +30,7 @@
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
-#include "inference/kernels/norm_cluster.cuh"
+#include "inference/kernels/norm.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/project_chain.cuh"
 #include "inference/kernels/route.cuh"
@@ -536,7 +536,7 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 {
 	uint32_t q_first, q_count, kv_first, kv_count, width, query_max;
 	int32_t status = LM_LAUNCH_OK;
-	LmFusedResidualRmsNormLaunch<GLM_THREADS,uint16_t>(rows, stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (GLM_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16, b->residual_bf16, b->weights->attn_norm, b->residual_bf16, b->normed_bf16, GLM_HIDDEN, GLM_HIDDEN, GLM_RMS_EPSILON);
 	GlmProjectionSlice(GLM_QUERY_A, b->tp_degree, b->tp_rank, &q_first, &q_count);
 	GlmProjectionSlice(GLM_SLOT, b->tp_degree, b->tp_rank, &kv_first, &kv_count);
@@ -718,7 +718,7 @@ static int32_t GlmShardGatherPost(const GlmBuffers *b, uint32_t rows, uint32_t c
 static int32_t GlmDenseMlp(const GlmBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
 	int32_t status;
-	LmFusedResidualRmsNormLaunch<GLM_THREADS,uint16_t>(rows, stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (GLM_HIDDEN + 8u) * sizeof(float), stream,
 		b->attention_out_bf16, b->residual_bf16, b->weights->post_norm, b->residual_bf16, b->normed_bf16, GLM_HIDDEN, GLM_HIDDEN, GLM_RMS_EPSILON);
 	status = GlmLinear(b->normed_bf16, b->weights->dense_gate_up, b->gate_up_bf16, rows, GLM_HIDDEN, b->dense_gate_up_rows, b->dense_gate_up_rows, 0u, sms, stream);
 	if ( status != LM_LAUNCH_OK )
@@ -730,7 +730,7 @@ static int32_t GlmDenseMlp(const GlmBuffers *b, uint32_t rows, uint32_t sms, cud
 static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
 {
 	int32_t status;
-	LmFusedResidualRmsNormLaunch<GLM_THREADS,uint16_t>(rows, stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (GLM_HIDDEN + 8u) * sizeof(float), stream,
 		b->attention_out_bf16, b->residual_bf16, b->weights->post_norm, b->residual_bf16, b->normed_bf16, GLM_HIDDEN, GLM_HIDDEN, GLM_RMS_EPSILON);
 	status = rows <= LM_SKINNY_ROWS_WIDE
 		? GlmSkinny<LmBf16Format>(b->weights->router, LmScaleTensorNone(), b->normed_bf16, 0, b->router_logits, rows, GLM_HIDDEN, GLM_EXPERTS, 0u, 0u, stream)
@@ -1976,7 +1976,7 @@ struct GlmModel
 			if ( LmRowDigestCheckLaunch(state->digest + GLM_DIGESTS, GLM_DIGESTS, state->kv_error, stream) != cudaSuccess )
 				return Fail("kv digest check", GLM_LAYERS, LM_LAUNCH_ERR_LAUNCH);
 		}
-		LmFusedResidualRmsNormLaunch<GLM_THREADS,uint16_t>(rows, stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (GLM_HIDDEN + 8u) * sizeof(float), stream,
 			hidden, state->residual, state->final_norm, 0, state->normed, GLM_HIDDEN, GLM_HIDDEN, GLM_RMS_EPSILON);
 		if ( wave->ordered != 0u )
 			GlmRowsScatterKernel<<<rows, GLM_THREADS, 0, stream>>>(state->order + wave->first, state->normed, step->hidden_bf16, GLM_HIDDEN);
