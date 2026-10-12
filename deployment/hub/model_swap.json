@@ -34,7 +34,7 @@
  "models": [
   {
    "id": "glm-5.3",
-   "kv_label": "glm53_full_stage",
+   "kv_label": "glm53_full_tp16_stage",
    "node_memory_bytes": 61203283968,
    "node_reclaim": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh start {run_id}",
