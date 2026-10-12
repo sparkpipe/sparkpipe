@@ -52,7 +52,8 @@ row() {
     *) return 1 ;;
   esac
 }
-field() { local r; r=$(row "$1") || return 1; set -- $r; case "$2" in lane) echo "$1";; fwlib) echo "$2";; lib) echo "$3";; api) echo "$4";; port) echo "$5";; label) echo "$6";; esac; }
+field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; fwlib) echo "$2";; lib) echo "$3";; api) echo "$4";; port) echo "$5";; label) echo "$6";; esac; }
+for id in $MODELS; do for k in lane fwlib lib api port label; do v=$(field "$id" "$k"); case "$k:$v" in *:|*" "*|lane:/*|lane:*..*|[!l]*:*/*|l[!a]*:*/*) echo "field $k of $id is '$v': refusing to run" >&2; exit 1;; esac; done; case "$(field "$id" lane)" in */lane[0-9]*) ;; *) echo "lane of $id is not <dir>/lane<N>: refusing to run" >&2; exit 1;; esac; done
 utc() { [ -f "$STATE/utc" ] || date -u +%Y%m%dT%H%M%SZ > "$STATE/utc"; cat "$STATE/utc"; }
 residentds() { fan "pgrep -c -f 'bin/sparkpipe_model_[r]esidentd' || true" | awk '{s+=$2} END {print s+0}'; }
 running_wd() { fan "sha256sum < /proc/\$(pgrep -o -f 'sparkdata/weightd/sparkpipe_[w]eightd')/exe | cut -c1-16; test -e /tmp/weightd-mesh/.ready && echo ready" | awk '{c[$2]++} END {for (k in c) printf "%s=%d ", k, c[k]}'; }
