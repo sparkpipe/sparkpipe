@@ -36,6 +36,10 @@
 #define HY_SCALE_GROUP 32u
 #define HY_PACK_ALIGNMENT 128u
 #define HY_SELECT_CHUNK 64u
+#define HY_HC_LANES 256u
+#define HY_HC_SLICE 32u
+#define HY_HC_LOADERS 128u
+#define HY_HC_SPLIT_ROWS 16u
 
 template<class G>
 struct HyShape
@@ -122,6 +126,7 @@ struct HyState
 	uint64_t arena_bytes;
 	uint16_t *streams;
 	float *hc_post;
+	float *hc_partial;
 	uint16_t *mixed;
 	uint16_t *normed;
 	uint16_t *partial;
@@ -179,6 +184,19 @@ __global__ static void HyExpandStreamsKernel(const uint16_t *hidden, uint16_t *s
 		streams[(uint64_t)row * streams_count * width + index] = hidden[(uint64_t)row * width + index % width];
 }
 
+template<uint32_t STREAMS, uint32_t MIXES>
+static __device__ __forceinline__ void HyHcWeights(const float *total, uint32_t flat, const float *base, const float *scale, float norm_epsilon,
+	float hc_epsilon, float post_magnitude, float *weights, float *post)
+{
+	const float inverse = rsqrtf(total[MIXES] / (float)flat + norm_epsilon);
+	for ( uint32_t s = 0u; s < STREAMS; ++s )
+	{
+		weights[s] = 1.0f / (1.0f + expf(-(total[s] * inverse * scale[0] + base[s]))) + hc_epsilon;
+		if ( MIXES > STREAMS && post != 0 )
+			post[s] = post_magnitude / (1.0f + expf(-(total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]))) + hc_epsilon;
+	}
+}
+
 template<uint32_t THREADS, uint32_t STREAMS, uint32_t MIXES>
 __global__ __launch_bounds__(THREADS, 1)
 void HyHcPreKernel(const uint16_t *streams, const float *fn, const float *base, const float *scale, float *post, uint16_t *mixed,
@@ -227,14 +245,8 @@ void HyHcPreKernel(const uint16_t *streams, const float *fn, const float *base, 
 			for ( uint32_t w = 0u; w < WARPS; ++w )
 				total[m] += reduction[r][m][w];
 		}
-		const float inverse = rsqrtf(total[MIXES] / (float)flat + norm_epsilon);
-		for ( uint32_t s = 0u; s < STREAMS; ++s )
-		{
-			weights[r][s] = 1.0f / (1.0f + expf(-(total[s] * inverse * scale[0] + base[s]))) + hc_epsilon;
-			if ( MIXES > STREAMS )
-				post[(uint64_t)(first + r) * STREAMS + s] =
-					post_magnitude / (1.0f + expf(-(total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]))) + hc_epsilon;
-		}
+		HyHcWeights<STREAMS,MIXES>(total, flat, base, scale, norm_epsilon, hc_epsilon, post_magnitude, weights[r],
+			MIXES > STREAMS ? post + (uint64_t)(first + r) * STREAMS : (float *)0);
 	}
 	__syncthreads();
 	for ( uint32_t r = 0u; r < HY_HC_ROWS; ++r )
@@ -251,6 +263,76 @@ void HyHcPreKernel(const uint16_t *streams, const float *fn, const float *base, 
 	}
 }
 
+template<uint32_t STREAMS, uint32_t WIDTH>
+__global__ __launch_bounds__(HY_HC_LOADERS)
+void HyHcDotKernel(const uint16_t *streams, const float *fn, float *partial, uint32_t mixes)
+{
+	constexpr uint32_t FLAT = STREAMS * WIDTH, STEPS = FLAT / HY_HC_LANES;
+	static_assert(FLAT % HY_HC_LANES == 0u, "every lane walks the same number of columns");
+	__shared__ float coefficient[STEPS][HY_HC_SLICE];
+	__shared__ float value[STEPS][HY_HC_SLICE];
+	const uint32_t mix = blockIdx.x, lane_first = blockIdx.y * HY_HC_SLICE, row = blockIdx.z;
+	const uint16_t *source = streams + (uint64_t)row * FLAT;
+	for ( uint32_t index = threadIdx.x; index < STEPS * HY_HC_SLICE; index += HY_HC_LOADERS )
+	{
+		const uint32_t step = index / HY_HC_SLICE, lane = index % HY_HC_SLICE, k = step * HY_HC_LANES + lane_first + lane;
+		value[step][lane] = LmBf16ToFloat(source[k]);
+		coefficient[step][lane] = mix < mixes - 1u ? fn[(uint64_t)mix * FLAT + k] : 0.0f;
+	}
+	__syncthreads();
+	if ( threadIdx.x < HY_HC_SLICE )
+	{
+		float dot = 0.0f;
+		if ( mix < mixes - 1u )
+			for ( uint32_t step = 0u; step < STEPS; ++step )
+				dot = fmaf(value[step][threadIdx.x], coefficient[step][threadIdx.x], dot);
+		else
+			for ( uint32_t step = 0u; step < STEPS; ++step )
+				dot = fmaf(value[step][threadIdx.x], value[step][threadIdx.x], dot);
+		partial[((uint64_t)row * mixes + mix) * HY_HC_LANES + lane_first + threadIdx.x] = dot;
+	}
+}
+
+template<uint32_t STREAMS, uint32_t MIXES, uint32_t WIDTH>
+__global__ __launch_bounds__(HY_HC_LANES, 1)
+void HyHcMixKernel(const uint16_t *streams, const float *partial, const float *base, const float *scale, float *post, uint16_t *mixed,
+	float norm_epsilon, float hc_epsilon, float post_magnitude)
+{
+	constexpr uint32_t WARPS = HY_HC_LANES / 32u, FLAT = STREAMS * WIDTH;
+	__shared__ float reduction[MIXES + 1u][WARPS];
+	__shared__ float weights[STREAMS];
+	const uint32_t row = blockIdx.y, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
+	for ( uint32_t m = 0u; m <= MIXES; ++m )
+	{
+		float value = partial[((uint64_t)row * (MIXES + 1u) + m) * HY_HC_LANES + threadIdx.x];
+		for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
+			value += __shfl_xor_sync(0xffffffffu, value, offset);
+		if ( lane == 0u )
+			reduction[m][warp] = value;
+	}
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		float total[MIXES + 1u];
+		for ( uint32_t m = 0u; m <= MIXES; ++m )
+		{
+			total[m] = 0.0f;
+			for ( uint32_t w = 0u; w < WARPS; ++w )
+				total[m] += reduction[m][w];
+		}
+		HyHcWeights<STREAMS,MIXES>(total, FLAT, base, scale, norm_epsilon, hc_epsilon, post_magnitude, weights,
+			MIXES > STREAMS && blockIdx.x == 0u ? post + (uint64_t)row * STREAMS : (float *)0);
+	}
+	__syncthreads();
+	for ( uint32_t d = blockIdx.x * HY_HC_LANES + threadIdx.x; d < WIDTH; d += gridDim.x * HY_HC_LANES )
+	{
+		float total = 0.0f;
+		for ( uint32_t s = 0u; s < STREAMS; ++s )
+			total = fmaf(weights[s], LmBf16ToFloat(streams[(uint64_t)row * FLAT + s * WIDTH + d]), total);
+		mixed[(uint64_t)row * WIDTH + d] = LmFloatToBf16(total);
+	}
+}
+
 __global__ static void HyHcPostKernel(uint16_t *streams, const float *post, const uint16_t *output, uint32_t streams_count, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
@@ -262,23 +344,34 @@ __global__ static void HyHcPostKernel(uint16_t *streams, const float *post, cons
 	}
 }
 
-template<uint32_t THREADS>
+template<uint32_t THREADS, uint32_t WIDTH>
 __global__ __launch_bounds__(THREADS, 1)
-void HyRmsNormKernel(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t width, uint32_t input_stride, uint32_t output_stride,
-	float epsilon)
+void HyRmsNormKernel(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t input_stride, uint32_t output_stride, float epsilon)
 {
+	constexpr uint32_t PER_THREAD = (WIDTH + THREADS - 1u) / THREADS;
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	const uint16_t *source = input + (uint64_t)blockIdx.x * input_stride;
 	uint16_t *target = output + (uint64_t)blockIdx.x * output_stride;
+	float values[PER_THREAD];
 	float total = 0.0f;
-	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
+#pragma unroll
+	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
 	{
-		const float value = LmBf16ToFloat(source[index]);
-		total += value * value;
+		const uint32_t index = threadIdx.x + step * THREADS;
+		values[step] = index < WIDTH ? LmBf16ToFloat(source[index]) : 0.0f;
 	}
-	const float inverse = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)width + epsilon);
-	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
-		target[index] = LmFloatToBf16(LmBf16ToFloat(weight[index]) * LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(source[index]) * inverse)));
+#pragma unroll
+	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
+		if ( threadIdx.x + step * THREADS < WIDTH )
+			total += values[step] * values[step];
+	const float inverse = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)WIDTH + epsilon);
+#pragma unroll
+	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
+	{
+		const uint32_t index = threadIdx.x + step * THREADS;
+		if ( index < WIDTH )
+			target[index] = LmFloatToBf16(LmBf16ToFloat(weight[index]) * LmBf16ToFloat(LmFloatToBf16(values[step] * inverse)));
+	}
 }
 
 template<uint32_t THREADS>
@@ -494,7 +587,7 @@ struct HyModel
 			Linear(layer->kv_a, state->normed, state->kv, rows, G::kHidden, S::kSlot, sms, stream) != LM_LAUNCH_OK ||
 			Dense16(layer->gate, state->normed, state->gate, (float *)0, rows, G::kHidden, S::kRankHeads * G::kValueDim, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		HyRmsNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora, G::kQLora,
+		HyRmsNormKernel<HY_THREADS,G::kQLora><<<rows, HY_THREADS, 0, stream>>>(state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora,
 			G::kEpsilon);
 		if ( Launched() != SPARK_STATUS_OK ||
 			Linear(layer->q_b, state->q_resid, state->q, rows, G::kQLora, S::kRankHeads * S::kQkDim, sms, stream) != LM_LAUNCH_OK )
@@ -505,7 +598,7 @@ struct HyModel
 			state->q, step->positions, S::kRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
 		HyQueryPackKernel<<<dim3(rows, S::kRankHeads), HY_THREADS, 0, stream>>>(state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
 			G::kNope, G::kRope);
-		HyRmsNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->kv, layer->kv_norm, state->kv, G::kLatent, S::kSlot, S::kSlot, G::kEpsilon);
+		HyRmsNormKernel<HY_THREADS,G::kLatent><<<rows, HY_THREADS, 0, stream>>>(state->kv, layer->kv_norm, state->kv, S::kSlot, S::kSlot, G::kEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->kv, step->sequence_of_row,
@@ -601,10 +694,20 @@ struct HyModel
 		return Launched();
 	}
 
-	static void HcPre(State *state, const float *fn, const float *base, const float *scale, uint32_t rows, cudaStream_t stream)
+	template<uint32_t MIXES>
+	static void HcPre(State *state, const float *fn, const float *base, const float *scale, float *post, uint16_t *mixed, uint32_t rows, float magnitude,
+		cudaStream_t stream)
 	{
-		HyHcPreKernel<HY_THREADS,G::kStreams,2u * G::kStreams><<<(rows + HY_HC_ROWS - 1u) / HY_HC_ROWS, HY_THREADS, 0, stream>>>(state->streams, fn, base,
-			scale, state->hc_post, state->mixed, rows, G::kHidden, G::kEpsilon, G::kHcEpsilon, G::kHcMagnitude);
+		if ( rows <= HY_HC_SPLIT_ROWS )
+		{
+			HyHcDotKernel<G::kStreams,G::kHidden><<<dim3(MIXES + 1u, HY_HC_LANES / HY_HC_SLICE, rows), HY_HC_LOADERS, 0, stream>>>(state->streams, fn,
+				state->hc_partial, MIXES + 1u);
+			HyHcMixKernel<G::kStreams,MIXES,G::kHidden><<<dim3((G::kHidden + HY_HC_LANES - 1u) / HY_HC_LANES, rows), HY_HC_LANES, 0, stream>>>(state->streams,
+				state->hc_partial, base, scale, post, mixed, G::kEpsilon, G::kHcEpsilon, magnitude);
+			return;
+		}
+		HyHcPreKernel<HY_THREADS,G::kStreams,MIXES><<<(rows + HY_HC_ROWS - 1u) / HY_HC_ROWS, HY_THREADS, 0, stream>>>(state->streams, fn, base, scale, post,
+			mixed, rows, G::kHidden, G::kEpsilon, G::kHcEpsilon, magnitude);
 	}
 
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
@@ -620,8 +723,9 @@ struct HyModel
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
 		{
 			const HyLayer *layer = &state->layers[index];
-			HcPre(state, layer->attn_hc_fn, layer->attn_hc_base, layer->attn_hc_scale, rows, stream);
-			HyRmsNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->mixed, layer->input_norm, state->normed, G::kHidden, G::kHidden, G::kHidden,
+			HcPre<2u * G::kStreams>(state, layer->attn_hc_fn, layer->attn_hc_base, layer->attn_hc_scale, state->hc_post, state->mixed, rows,
+				G::kHcMagnitude, stream);
+			HyRmsNormKernel<HY_THREADS,G::kHidden><<<rows, HY_THREADS, 0, stream>>>(state->mixed, layer->input_norm, state->normed, G::kHidden, G::kHidden,
 				G::kEpsilon);
 			status = Launched();
 			if ( status == SPARK_STATUS_OK )
@@ -631,8 +735,9 @@ struct HyModel
 			if ( status != SPARK_STATUS_OK )
 				break;
 			HyHcPostKernel<<<dim3(Blocks(S::kResidual), rows), HY_THREADS, 0, stream>>>(state->streams, state->hc_post, state->partial, G::kStreams, G::kHidden);
-			HcPre(state, layer->mlp_hc_fn, layer->mlp_hc_base, layer->mlp_hc_scale, rows, stream);
-			HyRmsNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->mixed, layer->post_norm, state->normed, G::kHidden, G::kHidden, G::kHidden,
+			HcPre<2u * G::kStreams>(state, layer->mlp_hc_fn, layer->mlp_hc_base, layer->mlp_hc_scale, state->hc_post, state->mixed, rows,
+				G::kHcMagnitude, stream);
+			HyRmsNormKernel<HY_THREADS,G::kHidden><<<rows, HY_THREADS, 0, stream>>>(state->mixed, layer->post_norm, state->normed, G::kHidden, G::kHidden,
 				G::kEpsilon);
 			status = Launched();
 			if ( status == SPARK_STATUS_OK )
@@ -648,8 +753,7 @@ struct HyModel
 		}
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		HyHcPreKernel<HY_THREADS,G::kStreams,G::kStreams><<<(rows + HY_HC_ROWS - 1u) / HY_HC_ROWS, HY_THREADS, 0, stream>>>(state->streams, state->head_hc_fn,
-			state->head_hc_base, state->head_hc_scale, (float *)0, hidden, rows, G::kHidden, G::kEpsilon, G::kHcEpsilon, 0.0f);
+		HcPre<G::kStreams>(state, state->head_hc_fn, state->head_hc_base, state->head_hc_scale, (float *)0, hidden, rows, 0.0f, stream);
 		return Launched();
 	}
 
@@ -676,6 +780,7 @@ struct HyModel
 		{
 			{ (void **)&state->streams, rows * S::kResidual * sizeof(uint16_t) },
 			{ (void **)&state->hc_post, rows * G::kStreams * sizeof(float) },
+			{ (void **)&state->hc_partial, (rows < HY_HC_SPLIT_ROWS ? rows : HY_HC_SPLIT_ROWS) * (2u * G::kStreams + 1u) * HY_HC_LANES * sizeof(float) },
 			{ (void **)&state->mixed, width },
 			{ (void **)&state->normed, width },
 			{ (void **)&state->partial, width },
