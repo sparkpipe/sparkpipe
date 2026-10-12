@@ -78,6 +78,7 @@
 #define GLM_TILE_STAGES 2u
 #define GLM_TILE_WARPS 8u
 #define GLM_STREAM_EXPERT_ROWS 256u
+#define GLM_LANE_ROWS 1024u
 #define GLM_UNIT_BYTES ((uint64_t)GLM_HIDDEN * 2u)
 #define GLM_CANDIDATE_BYTES 8u
 #define GLM_PARTIAL_FLOATS (GLM_LATENT + 2u)
@@ -1538,7 +1539,7 @@ struct GlmModel
 		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 ||
 			state->lane_arena == 0 || state->lane_host_staging == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( step->last_rows_only == 0u || step->host_positions == 0 || step->host_sequence_of_row == 0 || step->rows <= LM_SKINNY_ROWS ||
+		if ( step->last_rows_only == 0u || step->host_positions == 0 || step->host_sequence_of_row == 0 || step->rows < GLM_LANE_ROWS ||
 			step->rows > state->max_rows )
 			return SPARK_STATUS_UNSUPPORTED;
 		regime.positions = step->host_positions;

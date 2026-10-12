@@ -373,6 +373,7 @@ static uint32_t Glm5NextScratch(Glm5NextModelState *state, void ***fields)
 }
 
 #define G5N_SCRATCH_FIELDS 64u
+#define G5N_LANE_ROWS 1024u
 
 static void Glm5NextLaneFree(Glm5NextModelState *state)
 {
@@ -878,7 +879,7 @@ struct Glm5NextStage
 		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 ||
 			state->lane_scratch == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( step->rows > state->max_rows )
+		if ( step->rows > state->max_rows || step->rows < G5N_LANE_ROWS )
 			return SPARK_STATUS_UNSUPPORTED;
 		LaneFold(state);
 		copy = state->lane_states[lane];

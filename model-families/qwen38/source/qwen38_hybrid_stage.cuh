@@ -508,6 +508,8 @@ __global__ static void QwenIndexMaskKernel(const uint32_t *selected, const uint3
 	}
 }
 
+#define QH_MOE_LANE_ROWS 1024u
+
 template<class G>
 struct QwenHybridModel
 {
@@ -1532,6 +1534,8 @@ struct QwenHybridModel
 		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->dump != 0 || state->lane_states[lane] == 0 ||
 			state->lane_arena == 0 )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		if ( step->rows < (G::kMoe ? QH_MOE_LANE_ROWS : 1u) )
+			return SPARK_STATUS_UNSUPPORTED;
 		copy = state->lane_states[lane];
 		memcpy(copy, state, sizeof(*copy));
 		copy->services = services;
