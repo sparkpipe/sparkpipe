@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/dependent_launch.cuh"
+#include "inference/kernels/weight_prefetch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/formats/fp8.cuh"
@@ -432,6 +433,7 @@ static int32_t LmSkinnySplitShape(const LmSkinnyArguments *args, cudaStream_t st
 template<class Format>
 static int32_t LmSkinnySplitRows(const LmSkinnyArguments *args, cudaStream_t stream)
 {
+	LmWeightPrefetchNote(stream,args->weight,(uint64_t)args->output_dimension * (args->input_dimension / LmSkinnyFormat<Format>::kElements) * LM_SKINNY_CHUNK_BYTES);
 	if ( args->rows > LM_SKINNY_ROWS )
 		return(LmSkinnySplitShape<Format,LM_SKINNY_ROWS_WIDE>(args,stream));
 	if ( args->rows > LM_SKINNY_ROWS_MID )
@@ -577,6 +579,8 @@ static int32_t LmSkinnyLaunchGroup(const LmSkinnyArguments *args, uint32_t chunk
 template<class Format>
 static int32_t LmSkinnyLaunchRows(const LmSkinnyArguments *args, uint32_t chunks, cudaStream_t stream)
 {
+	if ( args->route_expert == 0 && args->group_row_offset == 0 )
+		LmWeightPrefetchNote(stream,args->weight,(uint64_t)args->output_dimension * chunks * LM_SKINNY_CHUNK_BYTES);
 	if ( chunks >= 32u )
 		return(LmSkinnyLaunchGroup<Format,32u>(args,chunks,stream));
 	if ( chunks >= 16u )
@@ -753,6 +757,8 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 				return(LM_LAUNCH_ERR_SHAPE);
 		}
 		chunks = input_dimension / LmSkinnyFormat<Format>::kElements;
+		for ( part = 0u; part < count; part++ )
+			LmWeightPrefetchNote(stream,multi.part[part].weight,(uint64_t)multi.part[part].output_dimension * chunks * LM_SKINNY_CHUNK_BYTES);
 		if ( chunks >= 32u )
 			return(LmSkinnyMultiGroup<Format,32u>(&multi,rows,chunks,stream));
 		if ( chunks >= 16u )
