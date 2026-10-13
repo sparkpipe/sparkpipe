@@ -51,9 +51,6 @@ typedef struct SparkModelBatchEvent
 	uint64_t request_id;
 	uint64_t sequence_id;
 	SparkModelBatchRequestHandle request_handle;
-	uint32_t model_extension_kind;
-	uint32_t first_draft_miss_count;
-	uint32_t first_draft_policy;
 	uint32_t stale_prefix_recompute_count;
 	uint64_t first_dispatch_ns;
 	uint32_t logprob_count;
