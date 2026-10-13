@@ -139,7 +139,14 @@ class TokenizersVocabulary:
         self.tokenizer = Tokenizer.from_file(str(directory / spec.get("file", "tokenizer.json")))
 
     def encode(self, text, special):
-        return self.tokenizer.encode(text, add_special_tokens=False).ids
+        self.tokenizer.encode_special_tokens = not special
+        try:
+            return self.tokenizer.encode(text, add_special_tokens=False).ids
+        finally:
+            self.tokenizer.encode_special_tokens = False
+
+    def special_strings(self):
+        return [token.content for token in self.tokenizer.get_added_tokens_decoder().values() if token.special]
 
     def decoder(self):
         stream = DecodeStream(skip_special_tokens=False)
@@ -169,6 +176,9 @@ class TiktokenVocabulary:
     def encode(self, text, special):
         return self.encoding.encode(text, allowed_special="all") if special else self.encoding.encode_ordinary(text)
 
+    def special_strings(self):
+        return list(self.specials)
+
     def decoder(self):
         utf8 = codecs.getincrementaldecoder("utf-8")("replace")
         return lambda token: utf8.decode(self.encoding.decode_single_token_bytes(token))
@@ -197,16 +207,50 @@ class TemplateRenderer:
         self.template_tokens = {name: tokenizer_config[name] for name in ("bos_token", "eos_token", "pad_token", "unk_token") if isinstance(tokenizer_config.get(name), str)}
         self.vocabulary = vocabulary
 
-    def render(self, messages, tools, kwargs):
-        context = dict(self.template_tokens)
-        context.update(kwargs)
+    def render_text(self, messages, tools, context):
         try:
-            text = self.template.render(messages=messages, tools=tools or None, add_generation_prompt=True, **context)
+            return self.template.render(messages=messages, tools=tools or None, add_generation_prompt=True, **context)
         except jinja2.exceptions.TemplateError as error:
             raise RequestError(400, "invalid_messages", f"the chat template refused the request: {error}")
         except Exception as error:
             raise RequestError(400, "invalid_messages", f"the chat template could not render the request: {type(error).__name__}: {error}")
-        return text, self.vocabulary.encode(text, True)
+
+    def render(self, messages, tools, kwargs):
+        context = dict(self.template_tokens)
+        context.update(kwargs)
+        text = self.render_text(messages, tools, context)
+        specials = [token for token in self.vocabulary.special_strings() if token]
+        carried = []
+
+        def mark(value):
+            if isinstance(value, str):
+                if any(token in value for token in specials):
+                    carried.append(value)
+                    return f"\ue000{len(carried) - 1}\ue001"
+                return value
+            if isinstance(value, dict):
+                if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
+                    raise RequestError(400, "invalid_messages", "a request key carries a control token string")
+                return {key: mark(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [mark(item) for item in value]
+            return value
+
+        marked_messages, marked_tools = mark(messages), mark(tools)
+        if not carried:
+            return text, self.vocabulary.encode(text, True)
+        pieces = re.split("\ue000([0-9]+)\ue001", self.render_text(marked_messages, marked_tools, context))
+        ids, rebuilt = [], []
+        for index, piece in enumerate(pieces):
+            if index % 2 == 0:
+                rebuilt.append(piece)
+                ids.extend(self.vocabulary.encode(piece, True))
+            else:
+                rebuilt.append(carried[int(piece)])
+                ids.extend(self.vocabulary.encode(carried[int(piece)], False))
+        if "".join(rebuilt) != text:
+            raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
+        return text, ids
 
 
 class SegmentRenderer:
