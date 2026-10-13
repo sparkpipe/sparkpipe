@@ -1462,6 +1462,63 @@ static void TestScenarioRankBusyBackpressure(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioInflightExpiryHoldsSlot(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	static const uint32_t prompt[4] = {11u,12u,13u,14u};
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine = 0;
+	uint64_t ids[TEST_RANKS];
+	struct timespec start,now;
+	uint64_t elapsed_ns = 0u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,1u,0u);
+	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS;
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"inflight expiry: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,530u,2u);
+	for (uint32_t step=0u; step<20u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,0u);
+		CHECK(ids[rank] != 0u,"inflight expiry: the submission is in flight on every rank");
+	}
+	clock_gettime(CLOCK_MONOTONIC,&start);
+	while ( state.error_events[1] == 0u && elapsed_ns < UINT64_C(5000000000) )
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+		usleep(5000);
+		clock_gettime(CLOCK_MONOTONIC,&now);
+		elapsed_ns = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - (uint64_t)start.tv_nsec;
+	}
+	CHECK(state.error_events[1] == 1u,"inflight expiry: the client is failed once the in-flight budget passes");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 1u,
+		"inflight expiry: the request slot stays held while its submission is still in flight");
+	CHECK(TestSubmitPromptStatus(engine,2u,531u,2u,prompt,4u) == SPARK_STATUS_BUSY,
+		"inflight expiry: a new request cannot take the only slot while it is held");
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_COMPLETION,SPARK_STATUS_OK,1u) != 0u,
+			"inflight expiry: deliver the late completion");
+	TestDrive(engine,200u);
+	CHECK(state.token_events[1] == 0u && state.error_events[1] == 1u && state.completed_events[1] == 0u,
+		"inflight expiry: the late completion emits no token and no second terminal to the expired client");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 0u,
+		"inflight expiry: the slot is released once the submission completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioDriverIoError(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -2070,6 +2127,7 @@ int main(void)
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);
 	TestScenarioPendingRestoreRetries(&deployment,runtime_root);
 	TestScenarioDriverIoError(&deployment,runtime_root);
+	TestScenarioInflightExpiryHoldsSlot(&deployment,runtime_root);
 	TestScenarioEosEarlyStop(&deployment,runtime_root);
 	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
 	TestScenarioAdapterCacheModes(runtime_root);
