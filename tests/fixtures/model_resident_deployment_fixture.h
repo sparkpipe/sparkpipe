@@ -20,6 +20,8 @@ typedef struct TestModelResidentDeploymentFixture
 	const char *tokenizer_asset_path;
 	uint32_t tokenizer_vocabulary_size;
 	const char *tokenizer_asset_sha256;
+	const uint32_t *tokenizer_text_prompt_prefix_ids;
+	uint32_t tokenizer_text_prompt_prefix_count;
 	const char *chat_template_json;
 	const char *const *runtime_roots;
 	const char *const *transport_hosts;

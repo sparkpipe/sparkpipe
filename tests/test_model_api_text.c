@@ -177,6 +177,8 @@ static uint32_t TestApiProbeFreeTcpPort(void)
 	return(port);
 }
 
+static const uint32_t TestApiTextPromptPrefix[1] = { 1u };
+
 static void TestApiWriteDeployment(const char *path,
 	const SparkModelResidentEndpoint *endpoints,
 	uint32_t control_port_base,
@@ -238,6 +240,8 @@ static void TestApiWriteDeployment(const char *path,
 		{
 			fixture.tokenizer_vocabulary_size = sidecar.tokenizer.maximum_token_id + 1u;
 			fixture.tokenizer_asset_sha256 = asset_sha256;
+			fixture.tokenizer_text_prompt_prefix_ids = TestApiTextPromptPrefix;
+			fixture.tokenizer_text_prompt_prefix_count = 1u;
 		}
 		else
 		{
@@ -842,9 +846,9 @@ static unsigned TestApiMeasurementCount(const char *log_data)
 	return count;
 }
 
-static void TestApiChatPromptServed(TestApiStack *stack,
-	const SparkTokenizerSidecar *sidecar, const char *body,
-	const char *expected_text, unsigned *measurements_seen)
+static void TestApiPromptServed(TestApiStack *stack,
+	const SparkTokenizerSidecar *sidecar, const char *path, const char *object, const char *body,
+	uint32_t prefix_count, const char *expected_text, unsigned *measurements_seen)
 {
 	char expected_hex[SPARK_SHA256_HEX_BYTES];
 	char response[65536];
@@ -856,13 +860,13 @@ static void TestApiChatPromptServed(TestApiStack *stack,
 	struct timespec delay = {0,2000000};
 	unsigned attempt;
 
-	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",body,
+	TestApiHttpCall(stack->api_port,"POST",path,body,
 		response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
-	assert(TestApiBodyContains(TestApiResponseJsonBody(response),
-		"\"object\":\"chat.completion\""));
-	expected_count = TestApiEncodeExpected(sidecar,expected_text,
-		expected_ids,sizeof(expected_ids) / sizeof(expected_ids[0]));
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),object));
+	memcpy(expected_ids,TestApiTextPromptPrefix,(size_t)prefix_count * sizeof(uint32_t));
+	expected_count = prefix_count + TestApiEncodeExpected(sidecar,expected_text,
+		expected_ids + prefix_count,sizeof(expected_ids) / sizeof(expected_ids[0]) - prefix_count);
 	assert(SparkSha256Bytes(expected_ids,
 		(size_t)expected_count * sizeof(uint32_t),expected_hex) == SPARK_STATUS_OK);
 	for ( attempt = 0u; attempt < 500u; attempt++ )
@@ -885,6 +889,13 @@ static void TestApiChatPromptServed(TestApiStack *stack,
 	assert(field != 0);
 	assert(strncmp(field + 17,expected_hex,SPARK_SHA256_HEX_BYTES - 1u) == 0);
 	free(log_data);
+}
+
+static void TestApiChatPromptServed(TestApiStack *stack,
+	const SparkTokenizerSidecar *sidecar, const char *body,
+	const char *expected_text, unsigned *measurements_seen)
+{
+	TestApiPromptServed(stack,sidecar,"/v1/chat/completions","\"object\":\"chat.completion\"",body,0u,expected_text,measurements_seen);
 }
 
 static void TestApiChatOptionRejected(TestApiStack *stack, const char *path,
@@ -924,6 +935,8 @@ static void TestApiChatTemplateServing(TestApiStack *stack,
 	measurements_seen = TestApiMeasurementCount(log_data);
 	free(log_data);
 
+	TestApiPromptServed(stack,sidecar,"/v1/completions","\"object\":\"text_completion\"",
+		"{\"prompt\":\"hello there\",\"max_tokens\":1}",1u,"hello there",&measurements_seen);
 	TestApiChatPromptServed(stack,sidecar,
 		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":2}",
 		thinking_off,&measurements_seen);
