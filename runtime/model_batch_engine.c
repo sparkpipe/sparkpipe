@@ -927,6 +927,20 @@ static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *en
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkModelBatchRestoreOrCancel(
+	SparkModelBatchEngine *engine,
+	SparkModelBatchRequestState *request,
+	const SparkModelBatchSubmissionState *submission)
+{
+	if ( request->cancel_pending != 0u && (submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ||
+		submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE) )
+	{
+		SparkModelBatchQueueTerminal(engine,request,SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED,SPARK_STATUS_OK);
+		return;
+	}
+	SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
+}
+
 static void SparkModelBatchRequeueStaleWave(SparkModelBatchEngine *engine,SparkModelBatchSubmissionState *submission)
 {
 	SparkModelBatchRequestState *request;
@@ -948,7 +962,7 @@ static void SparkModelBatchRequeueStaleWave(SparkModelBatchEngine *engine,SparkM
 			status = SparkModelBatchRecomputeStalePrefix(engine,request);
 		request->busy_retry_not_before_ns = 0u;
 		if ( status == SPARK_STATUS_OK )
-			SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
+			SparkModelBatchRestoreOrCancel(engine,request,submission);
 		else
 		{
 			SparkModelBatchSetFailed(engine,status);
@@ -1031,7 +1045,7 @@ static void SparkModelBatchHandleRejected(
 			fprintf(stderr,"batch_prefill_span_shrunk request=%llu span=%u limit=%u\n",(unsigned long long)request->request_id,prefill_counts[lane],request->prefill_span_limit);
 			request->busy_retry_not_before_ns = 0u;
 			SparkModelBatchAdmittedResidency(request,submission);
-			SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
+			SparkModelBatchRestoreOrCancel(engine,request,submission);
 		}
 		else if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) &&
 			(request->busy_since_ns == 0u || SparkModelBatchNowNs() - request->busy_since_ns < engine->inflight_budget_ns) )
@@ -1050,7 +1064,7 @@ static void SparkModelBatchHandleRejected(
 				request->busy_retry_not_before_ns = now +
 				    (uint64_t)request->busy_retry_backoff_ms * UINT64_C(1000000);
 			SparkModelBatchAdmittedResidency(request,submission);
-			SparkModelBatchRestoreRejectedRequest(request,submission->work_kind);
+			SparkModelBatchRestoreOrCancel(engine,request,submission);
 		}
 		else
 		{
@@ -3080,6 +3094,11 @@ static SparkStatus SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine 
 		if ( request->state == SPARK_MODEL_BATCH_REQUEST_QUEUED_RELEASE )
 		{
 			SparkModelBatchEmitTerminal(engine,request);
+			continue;
+		}
+		if ( request->cancel_pending != 0u )
+		{
+			SparkModelBatchQueueTerminal(engine,request,SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED,SPARK_STATUS_OK);
 			continue;
 		}
 		if ( request->generated_token_count != 0u )
