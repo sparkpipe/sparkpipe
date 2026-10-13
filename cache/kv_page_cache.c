@@ -2530,6 +2530,8 @@ static SparkStatus SparkKvPageCacheRestoreOutcome(SparkKvSnapshotStore *store,co
 {
 	if ( status == SPARK_STATUS_OK || status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_HASH_MISMATCH )
 		return(status);
+	if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
+		return(SPARK_STATUS_NOT_FOUND);
 	(void)SparkKvSnapshotRemove(store,key);
 	if ( status != SPARK_STATUS_IO_ERROR )
 		return(SPARK_STATUS_HASH_MISMATCH);

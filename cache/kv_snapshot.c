@@ -996,7 +996,9 @@ SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKv
 	status = SparkKvSnapshotOpenValidated(store,key,&header,&descriptor,1u);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( segment_index >= header.segment_count || header.segments[segment_index].kind != kind )
+	if ( segment_index >= header.segment_count )
+		status = SPARK_STATUS_NOT_FOUND;
+	else if ( header.segments[segment_index].kind != kind )
 		status = SPARK_STATUS_VALIDATION_FAILED;
 	else if ( capacity < header.segments[segment_index].bytes || (header.segments[segment_index].bytes != 0u && data == 0) )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
