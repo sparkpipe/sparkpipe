@@ -162,6 +162,38 @@ static void check_mesh_mapping(uint32_t raw_offset,uint32_t failure,uint64_t adv
     assert(close(source) == 0 && close(pool) == 0 && close(sockets[0]) == 0 && close(sockets[1]) == 0);
 }
 
+static void check_lane_close_waits_for_dispatch(void)
+{
+    SparkWeightdServer *server = calloc(1u,sizeof(*server));
+    SparkWeightdConnection *closing;
+    assert(server != 0);
+    closing = &server->connections[5];
+    closing->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
+    closing->fd = 7;
+    closing->mesh_active = 1u;
+    closing->mesh_lane = 3u;
+    atomic_store_explicit(&server->dispatch_state,1u,memory_order_release);
+    server->dispatch_connection = 2u;
+    assert(SparkWeightdServerClosable(server,5u) == 0u);
+    closing->mesh_active = 0u;
+    assert(SparkWeightdServerClosable(server,5u) == 1u);
+    closing->mesh_active = 1u;
+    closing->lane_mask = 0u;
+    atomic_store_explicit(&server->dispatch_state,0u,memory_order_release);
+    assert(SparkWeightdServerClosable(server,5u) == 1u);
+    atomic_store_explicit(&server->dispatch_state,1u,memory_order_release);
+    closing->mesh_active = 0u;
+    closing->lane_mask = 1u;
+    assert(SparkWeightdServerClosable(server,5u) == 0u);
+    closing->lane_mask = 0u;
+    server->dispatch_connection = 5u;
+    assert(SparkWeightdServerClosable(server,5u) == 0u);
+    closing->fd = -1;
+    atomic_store_explicit(&server->dispatch_state,0u,memory_order_release);
+    assert(SparkWeightdServerClosable(server,5u) == 0u);
+    free(server);
+}
+
 static void check_mesh_only_dispatch(void)
 {
     SparkWeightdServer *server = calloc(1u,sizeof(*server));
@@ -634,6 +666,7 @@ static void check_cold_control_progress(void)
 
 int main(void)
 {
+    check_lane_close_waits_for_dispatch();
     check_mesh_only_dispatch();
     check_mesh_only_map(1u,SPARK_STATUS_OK,0u);
     check_mesh_only_map(0u,SPARK_STATUS_BUSY,0u);
@@ -652,6 +685,6 @@ int main(void)
 	check_pacer_counts_other_processes();
 	check_exchange_timeout_poison();
 	check_cold_control_progress();
-	puts("PASS FD frames and cold progress: short reads, failed exchange isolation, concurrent HELLO, orphan cleanup, and loads paced only beside another process");
+	puts("PASS FD frames and cold progress: a connection with an active mesh lane is closed only while no dispatch runs, short reads, failed exchange isolation, concurrent HELLO, orphan cleanup, and loads paced only beside another process");
 	return(0);
 }
