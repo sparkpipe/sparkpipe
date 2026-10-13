@@ -174,7 +174,8 @@ static __device__ __forceinline__ uint32_t LmIndexSelectExclusiveScan(uint32_t v
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmIndexSelectLocalKernel(SparkKvShard shard, const float *__restrict__ scores, uint32_t score_stride, const uint32_t *__restrict__ sequence_of_row,
-	const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t keep, uint32_t dense_limit, uint2 *__restrict__ candidates)
+	const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t keep, uint32_t dense_limit, uint2 *__restrict__ candidates,
+	LmFrameError *__restrict__ error)
 {
 	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
 	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
@@ -189,7 +190,13 @@ void LmIndexSelectLocalKernel(SparkKvShard shard, const float *__restrict__ scor
 		return;
 	local = SparkKvShardLocalKeys(shard, bound);
 	if ( local > score_stride )
-		local = score_stride;
+	{
+		if ( threadIdx.x == 0u )
+			LmFrameErrorReport(error, LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE, 0u, row, sequence_of_row[row], local, score_stride);
+		for ( entry = threadIdx.x; entry < keep; entry += THREADS )
+			out[entry] = make_uint2(__float_as_uint(-INFINITY), LM_INDEX_SHARD_NO_POSITION);
+		return;
+	}
 	if ( local <= keep )
 	{
 		for ( entry = threadIdx.x; entry < keep; entry += THREADS )
@@ -322,13 +329,14 @@ void LmIndexSelectMergeKernel(const uint2 *__restrict__ gathered, uint64_t rank_
 
 template<uint32_t THREADS>
 static inline cudaError_t LmIndexSelectLocalLaunch(SparkKvShard shard, const float *scores, uint32_t score_stride, const uint32_t *sequence_of_row,
-	const uint32_t *context_length, const uint32_t *row_position, uint32_t keep, uint32_t dense_limit, uint32_t rows, uint2 *candidates, cudaStream_t stream)
+	const uint32_t *context_length, const uint32_t *row_position, uint32_t keep, uint32_t dense_limit, uint32_t rows, uint2 *candidates, LmFrameError *error,
+	cudaStream_t stream)
 {
-	if ( scores == 0 || sequence_of_row == 0 || context_length == 0 || candidates == 0 || rows == 0u || keep == 0u ||
+	if ( scores == 0 || sequence_of_row == 0 || context_length == 0 || candidates == 0 || error == 0 || rows == 0u || keep == 0u ||
 		score_stride == 0u || shard.degree == 0u || shard.grain == 0u )
 		return cudaErrorInvalidValue;
 	LM_LAUNCH((LmIndexSelectLocalKernel<THREADS>), rows, THREADS, 0, stream, shard, scores, score_stride, sequence_of_row, context_length, row_position,
-		keep, dense_limit, candidates);
+		keep, dense_limit, candidates, error);
 	return cudaPeekAtLastError();
 }
 
