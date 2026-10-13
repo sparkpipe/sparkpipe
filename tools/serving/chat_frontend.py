@@ -929,7 +929,12 @@ class Frontend:
                     data = line[5:].strip()
                     if data == "[DONE]":
                         return
-                    yield json.loads(data)
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        raise RequestError(502, "engine_error", f"the {model.id} engine sent a stream event that is not JSON: {data[:120]}")
+                    yield event
+                raise RequestError(502, "engine_error", f"the {model.id} engine stream ended before [DONE]; the reply is incomplete")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
