@@ -29,6 +29,7 @@ typedef struct LmWeightPrefetchPlan
 	uint32_t groups;
 	uint32_t dropped;
 	uint32_t budget;
+	uint32_t current_dropped;
 }
 LmWeightPrefetchPlan;
 
@@ -45,6 +46,7 @@ static inline void LmWeightPrefetchArm(LmWeightPrefetchPlan *plan, cudaStream_t 
 	plan->stream = stream;
 	plan->groups = 0u;
 	plan->dropped = 0u;
+	plan->current_dropped = 0u;
 	plan->budget = LM_WEIGHT_PREFETCH_BUDGET_BYTES;
 	memset(plan->host,0,(size_t)plan->capacity * sizeof(*plan->host));
 	LmWeightPrefetchActive() = plan;
@@ -69,13 +71,16 @@ static inline LmWeightPrefetchGroup *LmWeightPrefetchSlot(cudaStream_t stream, u
 	if ( plan->groups != 0u && plan->host[plan->groups - 1u].count == 0u )
 	{
 		*resume = 1u;
+		plan->current_dropped = 0u;
 		return(plan->device + plan->groups - 1u);
 	}
 	if ( plan->groups == plan->capacity )
 	{
 		plan->dropped++;
+		plan->current_dropped = 1u;
 		return(0);
 	}
+	plan->current_dropped = 0u;
 	plan->groups++;
 	return(plan->device + plan->groups - 1u);
 }
@@ -85,7 +90,7 @@ static inline void LmWeightPrefetchNote(cudaStream_t stream, const void *address
 	LmWeightPrefetchPlan *plan = LmWeightPrefetchActive();
 	LmWeightPrefetchGroup *group;
 	uint64_t start = (uint64_t)(uintptr_t)address,room;
-	if ( plan == 0 || plan->stream != stream || plan->groups == 0u || address == 0 || (start & 15u) != 0u )
+	if ( plan == 0 || plan->stream != stream || plan->groups == 0u || plan->current_dropped != 0u || address == 0 || (start & 15u) != 0u )
 		return;
 	group = &plan->host[plan->groups - 1u];
 	room = plan->budget > group->total ? plan->budget - group->total : 0u;
