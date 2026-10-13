@@ -1475,12 +1475,27 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	}
 	if (root >= 0)
 	{
+		int32_t stop_member = SparkJsonFindObjectMember(&doc, root, "stop_token_ids");
 		uint32_t *stops = 0;
-		uint32_t stop_len = parse_token_array(&doc, root, "stop_token_ids", &stops);
-		if (stop_len > 0 && stop_len <= API_MAX_STOP_TOKENS)
+		uint32_t stop_len = 0u;
+		if (stop_member >= 0 &&
+			!(SparkJsonTokenIsType(&doc, stop_member, SPARK_JSON_TOKEN_ARRAY) &&
+				SparkJsonGetArrayElementCount(&doc, stop_member) == 0))
+		{
+			stop_len = parse_token_array(&doc, root, "stop_token_ids", &stops);
+			if (stop_len == 0u || stop_len > API_MAX_STOP_TOKENS)
+			{
+				free(stops);
+				SparkJsonDocumentDestroy(&doc);
+				free(prompt);
+				free(prompt_text);
+				send_response(fd, 400,
+					"{\"error\":{\"message\":\"stop_token_ids must be an array of at most 16 token ids\","
+					"\"type\":\"invalid_request_error\",\"code\":\"invalid_stop_token_ids\"}}");
+				return;
+			}
 			request_stops = stops, request_stop_count = stop_len;
-		else
-			free(stops);
+		}
 	}
 	if (chat_request != 0u && request_stops == 0 && ChatStopTokenCount != 0u)
 	{

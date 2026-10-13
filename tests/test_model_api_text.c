@@ -1141,6 +1141,30 @@ static void TestApiHttpBounds(TestApiStack *stack)
 	printf("test_model_api_text: http bounds OK (oversized headers close at once, headers plus a body past the buffer, malformed or overflowing Content-Length and a body-only content-length all get a prompt 400, and the engine keeps serving)\n");
 }
 
+static void TestApiStopTokenIds(TestApiStack *stack)
+{
+	static const char *const refused[] = {
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":\"x\"}",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[11,\"a\"]}",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]}",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[999999]}",
+	};
+	char response[4096];
+	uint32_t index;
+	for (index = 0u; index < sizeof(refused) / sizeof(refused[0]); ++index)
+	{
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",refused[index],response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400 && TestApiBodyContains(response,"invalid_stop_token_ids"));
+	}
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
+		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2,\"stop_token_ids\":[99]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: stop_token_ids OK (a string, a non-integer id, more than 16 ids and an out-of-range id are refused with 400; an empty list and valid ids serve)\n");
+}
+
 static void TestApiDegradedPath(TestApiStack *stack)
 {
 	const char *flag = getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE");
@@ -1339,6 +1363,7 @@ int main(void)
 	TestApiSamplingOptions(&stack);
 	TestApiClientDisconnectDrains(&stack);
 	TestApiHttpBounds(&stack);
+	TestApiStopTokenIds(&stack);
 	TestApiDegradedPath(&stack);
 	TestApiRankLoss(&stack);
 	TestApiStopStack(&stack);
