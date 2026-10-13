@@ -160,13 +160,25 @@ static int SparkWeightdParseByte(const char *program, const char *flag,
     return 1;
 }
 
-static int SparkWeightdKvByteCount(const char *text,const char *name,uint64_t *value)
+static int SparkWeightdParseCount(const char *text,uint64_t *value)
 {
     char *parse_end = 0;
+    unsigned long long parsed;
+    if (text == 0 || text[0] < '0' || text[0] > '9')
+        return 0;
+    errno = 0;
+    parsed = strtoull(text, &parse_end, 10);
+    if (errno != 0 || parse_end == text || *parse_end != '\0')
+        return 0;
+    *value = (uint64_t)parsed;
+    return 1;
+}
+
+static int SparkWeightdKvByteCount(const char *text,const char *name,uint64_t *value)
+{
     if (text == 0 || text[0] == '\0')
         return 0;
-    *value = strtoull(text, &parse_end, 10);
-    if (parse_end == text || *parse_end != '\0')
+    if (SparkWeightdParseCount(text, value) == 0)
     {
         fprintf(stderr, "weightd: bad %s '%s'\n", name, text);
         return 2;
@@ -222,9 +234,7 @@ int main(int argument_count, char **arguments)
         else if (strcmp(arguments[index], "--device-bytes-max") == 0 &&
             index + 1 < argument_count)
         {
-            char *parse_end = 0;
-            device_bytes_max = strtoull(arguments[index + 1], &parse_end, 10);
-            if (parse_end == arguments[index + 1] || *parse_end != '\0' ||
+            if (SparkWeightdParseCount(arguments[index + 1], &device_bytes_max) == 0 ||
                 device_bytes_max == 0ull)
             {
                 fprintf(stderr, "weightd: bad --device-bytes-max '%s'\n",
@@ -236,7 +246,6 @@ int main(int argument_count, char **arguments)
             index++;
         }
         else if ((strcmp(arguments[index], "--kv-reserve-bytes") == 0 ||
-                strcmp(arguments[index], "--kv-write-budget-bytes-per-day") == 0 ||
                 strcmp(arguments[index], "--load-pace-bytes-per-second") == 0 ||
                 strcmp(arguments[index], "--kv-shared-window-bytes") == 0) &&
             index + 1 < argument_count)
@@ -384,9 +393,8 @@ int main(int argument_count, char **arguments)
         }
         if (env_ceiling != 0 && env_ceiling[0] != '\0')
         {
-            char *parse_end = 0;
-            uint64_t parsed = strtoull(env_ceiling, &parse_end, 10);
-            if (parse_end == env_ceiling || *parse_end != '\0' ||
+            uint64_t parsed = 0ull;
+            if (SparkWeightdParseCount(env_ceiling, &parsed) == 0 ||
                 parsed == 0ull)
             {
                 fprintf(stderr, "weightd: bad SPARK_WEIGHTD_DEVICE_BYTES_MAX '%s'\n",

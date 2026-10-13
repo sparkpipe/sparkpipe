@@ -491,6 +491,7 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_routed_oracle.py \
 	tests/test_glm52_experts_manifest.py \
 	tests/test_weightd_lazy_pair.py \
+	tests/test_weightd_cli_counts.py \
 	tests/test_generated_control_admission.py \
 	tests/test_topk_exact_host.py \
 	tests/test_glm5_next_graph_regime.py \
