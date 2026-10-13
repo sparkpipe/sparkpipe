@@ -102,6 +102,7 @@ typedef SparkDsv41FlashStagePackEntry D41PackEntry;
 typedef struct D41Fp8Linear
 {
 	const uint8_t *weight, *scale;
+	const uint16_t *wide;
 } D41Fp8Linear;
 
 typedef struct D41Layer
@@ -283,8 +284,8 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
 	}
-	return LmStreamGemmDense<LmMxfp8>(linear->weight, scale, source, destination, (float *)0, rows, input_dimension, output_dimension, 0u, 0u,
-		multiprocessors, stream);
+	return LmStreamGemmDense<LmBf16Block32>(linear->wide, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
+		output_dimension, 0u, 0u, multiprocessors, stream);
 }
 
 static SparkStatus D41Round(D41ModelState *state, cudaStream_t stream, uint32_t operation, uint32_t rows, uint32_t row_elements,
@@ -1297,16 +1298,19 @@ static SparkStatus D41Fp8Slice(D41ModelState *state, SparkWeightdLazyPack *pack,
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	const uint64_t scale_bytes = (((uint64_t)rows * (columns / D41_FP8_BLOCK)) + 255u) & ~255ull;
 	const uint64_t weight_bytes = whole_rows != 0u ? 0u : (((uint64_t)rows * columns) + 255u) & ~255ull;
+	const uint64_t wide_bytes = (((uint64_t)rows * columns * sizeof(uint16_t)) + 255u) & ~255ull;
 	if ( state->fp8_side != 0 )
 	{
 		uint8_t *row_scale = state->fp8_side + *cursor;
 		uint8_t *weight = whole_rows != 0u ? (uint8_t *)0 : row_scale + scale_bytes;
-		D41Fp8SliceKernel<<<rows, D41_THREADS>>>((const uint8_t *)payload, (const uint8_t *)scale, weight, row_scale, entry->columns, row_first,
-			column_first, columns);
+		uint16_t *wide = (uint16_t *)(row_scale + scale_bytes + weight_bytes);
+		D41Fp8SliceKernel<<<rows, D41_THREADS>>>((const uint8_t *)payload, (const uint8_t *)scale, weight, row_scale, wide, entry->columns,
+			row_first, column_first, columns);
 		out->scale = row_scale;
 		out->weight = whole_rows != 0u ? (const uint8_t *)payload + (uint64_t)row_first * entry->columns : weight;
+		out->wide = wide;
 	}
-	*cursor += scale_bytes + weight_bytes;
+	*cursor += scale_bytes + weight_bytes + wide_bytes;
 	return SPARK_STATUS_OK;
 }
 
@@ -1535,7 +1539,7 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 	if ( cudaMalloc((void **)&state->fp8_side, bytes) != cudaSuccess )
 	{
 		state->fp8_side = 0;
-		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the fp8 row scales and slices could not be allocated\n", (unsigned long long)bytes);
+		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the fp8 row scales, slices and bf16 widenings could not be allocated\n", (unsigned long long)bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	bytes = 0u;
