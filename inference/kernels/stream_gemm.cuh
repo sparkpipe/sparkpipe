@@ -272,6 +272,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	static_assert(STAGES >= 2u,"the tile leaves no room for a second pipeline stage");
 	static_assert(!Weight::kScaled || (TILE_K % SCALE_K == 0u && SCALE_K % 32u == 0u),"a k-tile must hold whole weight scale blocks");
 	static_assert(BLOCK_K == 0u || (TILE_K % BLOCK_K == 0u && BLOCK_K % 32u == 0u),"a k-tile must hold whole accumulation blocks");
+	static_assert(A_ROW_CHUNKS >= 8u && B_ROW_CHUNKS >= 8u,"the shared-memory swizzle needs tile rows of at least 128 bytes");
 	extern __shared__ __align__(128) uint8_t lm_stream_shared[];
 	uint32_t *prefix = (uint32_t *)(lm_stream_shared + STAGES * STAGE_BYTES);
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(lm_stream_shared);
