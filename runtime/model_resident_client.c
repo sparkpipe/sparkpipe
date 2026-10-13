@@ -1161,7 +1161,17 @@ SparkStatus SparkModelResidentClientProgress(
 		SPARK_RETURN(status);
 	status = SparkModelResidentClientFlush(client);
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkModelResidentClientRead(client,maximum_message_count);
+		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_IO_ERROR )
+		{
+			fprintf(stderr,
+			    "client_stream_rejected rank=%u status=%u — dropping the session and reconnecting\n",
+			    (unsigned)client->rank_index,(unsigned)status);
+			SparkModelResidentClientFailStop(client);
+			SPARK_RETURN(status);
+		}
+	}
 	if ( status == SPARK_STATUS_IO_ERROR )
 	{
 		fprintf(stderr,

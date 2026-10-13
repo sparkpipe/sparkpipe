@@ -1,14 +1,17 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -16,6 +19,7 @@
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "sparkpipe/spark_model_resident_client.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_model_resident_ipc.h"
 #include "fixtures/test_child_guard.h"
 
 #ifndef TEST_MODEL_RESIDENTD_PATH
@@ -243,6 +247,86 @@ static void TestModelResidentWriteDeployment(
 	assert(TestModelResidentDeploymentWrite(path,&fixture) == 0);
 }
 
+static void TestModelResidentMalformedStreamDrops(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingRuntimeLimits *limits)
+{
+	SparkModelResidentClientConfiguration configuration;
+	SparkModelResidentClientView view;
+	SparkModelResidentEndpoint endpoint;
+	SparkModelResidentClient *client = 0;
+	TestModelResidentState state;
+	struct sockaddr_un address;
+	char path[108];
+	int32_t listener,child_status;
+	pid_t server;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t attempt;
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-model-resident-bad-%ld.sock",(long)getpid()) > 0);
+	unlink(path);
+	listener = socket(AF_UNIX,SOCK_STREAM,0);
+	assert(listener >= 0);
+	memset(&address,0,sizeof(address));
+	address.sun_family = AF_UNIX;
+	memcpy(address.sun_path,path,strlen(path) + 1u);
+	assert(bind(listener,(const struct sockaddr *)&address,sizeof(address)) == 0);
+	assert(listen(listener,1) == 0);
+	server = fork();
+	assert(server >= 0);
+	if ( server == 0 )
+	{
+		SparkModelResidentIpcHello hello;
+		SparkModelResidentIpcHelloAck ack;
+		SparkModelResidentIpcHeader bad;
+		int32_t peer = accept(listener,0,0);
+		if ( peer < 0 || read(peer,&hello,sizeof(hello)) != (ssize_t)sizeof(hello) ||
+			SparkModelResidentIpcInitializeHelloAck(&ack,hello.header.message_id,SPARK_STATUS_OK,hello.rank_index,hello.stage_index,7u,
+				hello.session_epoch,descriptor,limits,4096u) != SPARK_STATUS_OK ||
+			write(peer,&ack,sizeof(ack)) != (ssize_t)sizeof(ack) )
+			_exit(2);
+		bad = ack.header;
+		bad.message_bytes = 1u;
+		if ( write(peer,&bad,sizeof(bad)) != (ssize_t)sizeof(bad) )
+			_exit(3);
+		sleep(3);
+		_exit(0);
+	}
+	close(listener);
+	memset(&endpoint,0,sizeof(endpoint));
+	endpoint.abi_version = SPARK_MODEL_RESIDENT_ENDPOINT_ABI_VERSION;
+	endpoint.descriptor_bytes = SPARK_MODEL_RESIDENT_ENDPOINT_BYTES;
+	endpoint.kind = SPARK_MODEL_RESIDENT_ENDPOINT_KIND_UNIX;
+	endpoint.unix_socket_path = path;
+	memset(&state,0,sizeof(state));
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_MODEL_RESIDENT_CLIENT_CONFIGURATION_BYTES;
+	configuration.connect_timeout_ms = 1000u;
+	configuration.runtime_limits = *limits;
+	configuration.endpoint = endpoint;
+	configuration.adapter_descriptor = descriptor;
+	configuration.submit_result_function = TestModelResidentResult;
+	configuration.submit_result_context = &state;
+	configuration.completion_function = TestModelResidentCompletion;
+	configuration.completion_context = &state;
+	assert(SparkModelResidentClientConnect(&configuration,&client) == SPARK_STATUS_OK);
+	for (attempt=0u; attempt<200u && status == SPARK_STATUS_OK; attempt++)
+	{
+		struct timespec wait = {0,5000000};
+		status = SparkModelResidentClientProgress(client,8u);
+		if ( status == SPARK_STATUS_OK )
+			nanosleep(&wait,0);
+	}
+	assert(status == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentClientGetView(client,&view) == SPARK_STATUS_OK);
+	assert(view.connected == 0u);
+	SparkModelResidentClientDestroy(client);
+	assert(kill(server,SIGKILL) == 0 || errno == ESRCH);
+	assert(waitpid(server,&child_status,0) == server);
+	unlink(path);
+	printf("PASS a malformed message from the resident fails with its own status and drops the session at once\n");
+}
+
 int main(void)
 {
 	SparkModelServingAdapterDynamicLibrary adapter;
@@ -297,6 +381,7 @@ int main(void)
 	child = TestModelResidentStart(deployment_path,0u);
 	TestModelResidentWaitForSocket(socket_path);
 	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_MODEL_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&adapter) == SPARK_STATUS_OK);
+	TestModelResidentMalformedStreamDrops(adapter.adapter_interface.descriptor,&deployment.runtime_limits);
 	memset(&state,0,sizeof(state));
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;
