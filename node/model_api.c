@@ -1027,16 +1027,13 @@ static int api_resolve_seed(ApiOptions *options)
 	return 1;
 }
 
+_Static_assert(SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS <= API_MAX_STOP_TOKENS, "a chat template's stop markers fit a request's stop list");
+
 static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
 {
-	uint32_t count = EngineStopTokenCount;
 	memcpy(stops,EngineStopTokens,(size_t)EngineStopTokenCount * sizeof(uint32_t));
-	if ( req->stop_token_count <= API_MAX_STOP_TOKENS )
-	{
-		memcpy(stops + count,req->stop_tokens,(size_t)req->stop_token_count * sizeof(uint32_t));
-		count += req->stop_token_count;
-	}
-	return count;
+	memcpy(stops + EngineStopTokenCount,req->stop_tokens,(size_t)req->stop_token_count * sizeof(uint32_t));
+	return EngineStopTokenCount + req->stop_token_count;
 }
 
 static void api_usage_json(char *buffer, size_t capacity, const ApiRequest *req)
@@ -1401,7 +1398,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 {
 	SparkJsonDocument doc;
 	int32_t root, mt;
-	uint32_t *request_stops = 0;
+	uint32_t request_stops[API_MAX_STOP_TOKENS];
 	uint32_t request_stop_count = 0;
 	uint32_t chat_request = 0;
 	bool chat_thinking = false;
@@ -1494,19 +1491,13 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 					"\"type\":\"invalid_request_error\",\"code\":\"invalid_stop_token_ids\"}}");
 				return;
 			}
-			request_stops = stops, request_stop_count = stop_len;
+			memcpy(request_stops, stops, (size_t)stop_len * sizeof(uint32_t));
+			request_stop_count = stop_len;
+			free(stops);
 		}
 	}
-	if (chat_request != 0u && request_stops == 0 && ChatStopTokenCount != 0u)
+	if (chat_request != 0u && request_stop_count == 0u && ChatStopTokenCount != 0u)
 	{
-		request_stops = malloc(ChatStopTokenCount * sizeof(uint32_t));
-		if (request_stops == 0)
-		{
-			SparkJsonDocumentDestroy(&doc);
-			free(prompt_text);
-			send_response(fd, 500, "{\"error\":\"oom\"}");
-			return;
-		}
 		memcpy(request_stops, ChatStopTokens, ChatStopTokenCount * sizeof(uint32_t));
 		request_stop_count = ChatStopTokenCount;
 	}
@@ -1519,7 +1510,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			SparkJsonDocumentDestroy(&doc);
 			free(prompt);
 			free(prompt_text);
-			free(request_stops);
 			send_response(fd, 400, "{\"error\":{\"message\":\"max_tokens must be an integer from 1 to 131072\",\"type\":\"invalid_request_error\"}}");
 			return;
 		}
@@ -1530,7 +1520,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		SparkJsonDocumentDestroy(&doc);
 		free(prompt);
 		free(prompt_text);
-		free(request_stops);
 		send_response(fd, 400,
 			"{\"error\":{\"message\":\"stream must be a boolean; priority, deadline_ms and seed "
 			"must be unsigned integers, deadline_ms nonzero; temperature must be 0 or between "
@@ -1614,7 +1603,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	{
 		char err[224];
 		free(prompt);
-		free(request_stops);
 		(void)snprintf(err, sizeof(err), "{\"error\":{\"message\":\"the prompt has %u tokens and this deployment serves %u positions, so no output fits\",\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}", prompt_len, __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE));
 		send_response(fd, 400, err);
 		return;
@@ -1622,7 +1610,6 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	if (!api_resolve_seed(&options))
 	{
 		free(prompt);
-		free(request_stops);
 		send_response(fd, 500, "{\"error\":{\"message\":\"no entropy for a sampling seed\",\"type\":\"server_error\",\"code\":\"seed_unavailable\"}}");
 		return;
 	}
@@ -1638,13 +1625,16 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->tokens_json_capacity = (size_t)max_tokens * API_TOKEN_TEXT_BYTES + API_TOKEN_TEXT_BYTES;
 	req->tokens_json = malloc(req->tokens_json_capacity);
 	req->logprobs = options.logprobs != 0u ? malloc((size_t)max_tokens * options.logprobs * sizeof(req->logprobs[0])) : 0;
-	if (req->output_token_ids == 0 || req->token_ready_ns == 0 || req->tokens_json == 0 || (options.logprobs != 0u && req->logprobs == 0))
+	req->stop_tokens = request_stop_count != 0u ? malloc((size_t)request_stop_count * sizeof(uint32_t)) : 0;
+	if (req->output_token_ids == 0 || req->token_ready_ns == 0 || req->tokens_json == 0 || (options.logprobs != 0u && req->logprobs == 0) ||
+		(request_stop_count != 0u && req->stop_tokens == 0))
 	{
 		free(prompt);
 		free(req->output_token_ids);
 		free(req->token_ready_ns);
 		free(req->tokens_json);
 		free(req->logprobs);
+		free(req->stop_tokens);
 		free(req);
 		send_response(fd, 500, "{\"error\":\"oom\"}");
 		return;
@@ -1653,7 +1643,8 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	pthread_mutex_init(&req->mutex, 0);
 	pthread_cond_init(&req->cond, 0);
 	req->started_ms = api_now_ms();
-	req->stop_tokens = request_stops;
+	if (request_stop_count != 0u)
+		memcpy(req->stop_tokens, request_stops, (size_t)request_stop_count * sizeof(uint32_t));
 	req->stop_token_count = request_stop_count;
 	req->stream = options.stream;
 	req->priority = options.priority;
