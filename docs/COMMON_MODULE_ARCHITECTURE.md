@@ -150,7 +150,8 @@ The launchers validate `tp_degree` and `tp_rank` before dividing by the degree. 
   `tests/test_common_glm_cuda_tree.c` covers it.
 - **glm5_next.** It keeps its own tree under
   `modules/glm5_next_resident_decode_stage/source/cuda/`, and shares pieces
-  with glm52 through `include/sparkpipe/family/glm/`.
+  with glm52 through family templates (removed with the module tree on
+  2026-10-13; see [FAMILY_TEMPLATES](FAMILY_TEMPLATES.md)).
 
 #### M-3 `common_serving_tp_config`: the adapter template's TP loader
 
@@ -182,7 +183,7 @@ before and after the move.
 
 #### M-7 `common_kv_frame`
 
-`common/common_kv_frame.h` runs the JIT KV tier for qwen38_max, qwen4_flash and muse_glimmer. Each module reaches it through `family/module/spark_module_open_kv_tier.h`, `spark_module_kv_frame_ops.h` and `spark_module_kv_prepare_frame.h`, and its `llm_defines.h` names the frame's constants (`SPARK_LLM_KV_BLOCK_TOKENS`, `SPARK_LLM_KV_STAGING_RECORDS` and the rest).
+`common/common_kv_frame.h` runs the JIT KV tier for qwen38_max, qwen4_flash and muse_glimmer. Each module reached it through family module templates (removed on 2026-10-13), and its `llm_defines.h` names the frame's constants (`SPARK_LLM_KV_BLOCK_TOKENS`, `SPARK_LLM_KV_STAGING_RECORDS` and the rest).
 
 `LmKvFramePrepareFrame` prepares one decode frame in six steps, each its own function:
 
@@ -327,7 +328,7 @@ residency and storage".
   laguna, ling, qwen38_27b, qwen38_max and qwen4_flash include it. No
   wrapper module over it exists.
 - **M-13, common validation oracle and harness.** The shared validation
-  templates are under `include/sparkpipe/family/validation/`. No common
+  templates were removed with the module tree on 2026-10-13. No common
   oracle module exists.
 - **M-15, common deployment generator.** Deployment generators are still
   per family (`tools/*_gen_deployment.py`, `tools/k3_gen_deployment.sh`).

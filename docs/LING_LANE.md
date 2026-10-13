@@ -130,7 +130,7 @@ python3 tools/api_serving_perf.py --endpoint http://127.0.0.1:8437 \
 `LingGemmBf16` over a sweep of shapes and row counts, and reports launches
 that do not finish. `modules/ling_resident_decode_stage/source/cuda/unity.cu`
 generates `LingGemmBf16` from `SPARK_FAMILY_BARE(GemmBf16)` in
-`include/sparkpipe/family/glm/spark_glm_unity_gemm.cuh`. The repro has no
+the GLM unity GEMM family template (removed on 2026-10-13). The repro has no
 device code. Link it against the ling module archive
 (`libling_resident_decode_stage_<codec>.a`), which defines `LingGemmBf16` and
 `SparkLingConfigureCudaModule`.
