@@ -586,6 +586,12 @@ PYTHON_TESTS := \
 	tests/test_model_swap_failures.py \
 	tests/test_stage_lane_kv_labels.py \
 	tests/test_stage_lane_stop.py \
+	tests/test_chat_frontend_object_and_channel_calls.py \
+	tests/test_draftd_kernels.py \
+	tests/test_draftd_mtp_kv.py \
+	tests/test_k3_reshard_cells.py \
+	tests/test_laguna_reference_torch.py \
+	tests/test_python_tests_registered.py \
 	tests/test_tokenizer_text_prefix.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
