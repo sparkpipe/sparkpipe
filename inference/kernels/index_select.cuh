@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <math.h>
 
+#include "inference/kernels/frame_error.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/topk_exact.cuh"
 
@@ -230,7 +231,7 @@ template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmIndexSelectMergeKernel(const uint2 *__restrict__ gathered, uint64_t rank_stride_candidates, SparkKvShard shard, uint32_t keep,
 	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position,
-	uint32_t k, uint32_t dense_limit, uint32_t row_words, uint32_t *__restrict__ bitmaps, uint32_t *__restrict__ selected)
+	uint32_t k, uint32_t dense_limit, uint32_t row_words, uint32_t *__restrict__ bitmaps, uint32_t *__restrict__ selected, LmFrameError *__restrict__ error)
 {
 	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
 	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
@@ -244,7 +245,11 @@ void LmIndexSelectMergeKernel(const uint2 *__restrict__ gathered, uint64_t rank_
 		return;
 	words = LmIndexSelectBitmapWords(bound);
 	if ( words > row_words )
-		words = row_words;
+	{
+		if ( threadIdx.x == 0u )
+			LmFrameErrorReport(error, LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE, 0u, row, sequence_of_row[row], bound, row_words * 32u);
+		return;
+	}
 	for ( index = threadIdx.x; index < words; index += THREADS )
 	{
 		greater[index] = 0u;
@@ -330,12 +335,12 @@ static inline cudaError_t LmIndexSelectLocalLaunch(SparkKvShard shard, const flo
 template<uint32_t THREADS>
 static inline cudaError_t LmIndexSelectMergeLaunch(const uint2 *gathered, uint64_t rank_stride_candidates, SparkKvShard shard, uint32_t keep,
 	const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t k, uint32_t dense_limit, uint32_t rows,
-	uint32_t row_words, uint32_t *bitmaps, uint32_t *selected, cudaStream_t stream)
+	uint32_t row_words, uint32_t *bitmaps, uint32_t *selected, LmFrameError *error, cudaStream_t stream)
 {
-	if ( gathered == 0 || sequence_of_row == 0 || context_length == 0 || bitmaps == 0 || selected == 0 || rows == 0u || keep == 0u || k == 0u || shard.degree == 0u ||
+	if ( gathered == 0 || sequence_of_row == 0 || context_length == 0 || bitmaps == 0 || selected == 0 || error == 0 || rows == 0u || keep == 0u || k == 0u || shard.degree == 0u ||
 		shard.degree > SPARK_KV_SHARD_MAX_DEGREE || shard.grain == 0u || row_words == 0u || rank_stride_candidates < (uint64_t)rows * keep )
 		return cudaErrorInvalidValue;
 	LM_LAUNCH((LmIndexSelectMergeKernel<THREADS>), rows, THREADS, 0, stream, gathered, rank_stride_candidates, shard, keep, sequence_of_row, context_length,
-		row_position, k, dense_limit, row_words, bitmaps, selected);
+		row_position, k, dense_limit, row_words, bitmaps, selected, error);
 	return cudaPeekAtLastError();
 }

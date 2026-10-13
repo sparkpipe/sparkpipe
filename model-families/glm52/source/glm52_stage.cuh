@@ -252,6 +252,7 @@ typedef struct GlmBuffers
 	uint64_t shard_partial_stride;
 	uint32_t *index_bitmaps;
 	uint32_t index_bitmap_words;
+	LmKvAccessError *index_error;
 } GlmBuffers;
 
 static inline void GlmProjectionSlice(uint32_t total, uint32_t tp_degree, uint32_t tp_rank, uint32_t *first, uint32_t *count)
@@ -661,7 +662,7 @@ static int32_t GlmShardScatterMid(const GlmBuffers *b, uint32_t rows, uint32_t c
 			const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
 			if ( LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>(candidates + (uint64_t)first * keep, b->shard_rank_stride_bytes / sizeof(uint2),
 					b->kv_shard, keep, b->sequence_of_row + first, b->context_length, b->row_positions + first, GLM_SELECTED, GLM_SELECTED, count, b->index_bitmap_words,
-					b->index_bitmaps, b->selected_positions + (uint64_t)first * GLM_SELECTED, stream) != cudaSuccess )
+					b->index_bitmaps, b->selected_positions + (uint64_t)first * GLM_SELECTED, b->index_error, stream) != cudaSuccess )
 				return LM_LAUNCH_ERR_LAUNCH;
 		}
 	}
@@ -1764,6 +1765,7 @@ struct GlmModel
 		b->shard_partial_stride = (uint64_t)wave->partial_units * (GLM_UNIT_BYTES / sizeof(float));
 		b->index_bitmaps = state->index_bitmaps;
 		b->index_bitmap_words = LmIndexSelectBitmapWords(state->max_positions);
+		b->index_error = state->kv_error;
 	}
 
 	static SparkStatus Fail(const char *site, uint32_t layer, int32_t code)
