@@ -265,8 +265,9 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 
 **Projections (`project.cuh`)**
 
-- `LmLowRankProject` is the raw form and `LmAbsorbedProject` the absorbed
-  form. At decode, absorbed avoids materializing per-head K and V.
+- The low-rank and absorbed attention projections live in each model's
+  own layer code; `project.cuh` keeps the shared split, rope and per-head
+  kernels.
 - **The per-head value projection stays unabsorbed**
   (`LmPerHeadProjectKernel`), for two reasons (4187f90^):
   - Elementwise output gating does not commute with the fold.
