@@ -111,6 +111,14 @@ model_list:
   model_info:
     max_input_tokens: 32768
     max_output_tokens: 32768
+- model_name: mimo-v2.6-flash
+  litellm_params:
+    model: hosted_vllm/mimo-v2.6-flash
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
 - model_name: "*"
   litellm_params:
     model: hosted_vllm/glm-5.3

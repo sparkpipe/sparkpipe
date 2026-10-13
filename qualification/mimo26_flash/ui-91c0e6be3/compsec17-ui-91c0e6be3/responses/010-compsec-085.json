@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "aa4bc720c564265a28dc4e19220cc6290f48510dcfd0bd6d27e43969f89a53bf"
+ },
+ "response": {
+  "id": "chatcmpl-fd4bbafc8e5f4fad9eddced0a16d84e4",
+  "created": 1791857561,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function uses `strncat` on line 5, which is dangerous here because `tok` may contain embedded NUL bytes (as stated in the problem), and `strncat` stops at the first NUL in `tok`, not at `tok_len` bytes. Additionally, `strncat` does not respect `sql_cap`, so it can overflow `sql`.\n\nThe primary bug is the use of `strncat` which both ignores `sql_cap` (buffer overflow) and mishandles embedded NULs.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 114,
+   "prompt_tokens": 222,
+   "total_tokens": 336,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function uses `strncat` on line 5, which is dangerous here because `tok` may contain embedded NUL bytes (as stated in the problem), and `strncat` stops at the first NUL in `tok`, not at `tok_len` bytes. Additionally, `strncat` does not respect `sql_cap`, so it can overflow `sql`.\n\nThe primary bug is the use of `strncat` which both ignores `sql_cap` (buffer overflow) and mishandles embedded NULs.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 4394.2,
+  "output_sha256": "2c49fe7559337b26eb3e5cdfaf31bae8ca13b8f2a8d6cf8d035fc0cf2e8478a6",
+  "prompt_token_count": 222,
+  "generated_token_count": 114,
+  "reasoning_chars": 0,
+  "content_chars": 413,
+  "status": "stop"
+ }
+}

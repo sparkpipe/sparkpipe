@@ -1,0 +1,62 @@
+{
+ "id": "compsec-088",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function exports a finite-field Diffie-Hellman public value into a fixed-width buffer for the group. The public MPI may be supplied by an application.\n\nCode:\n```c\n 1: static int export_ffdh_public(const struct DhmContext *ctx,\n 2:                               uint8_t *out, size_t out_len)\n 3: {\n 4:     size_t plen = mpi_size(&ctx->P);      // byte length of the group prime\n 5:     size_t ylen = mpi_size(&ctx->Y);      // byte length of public value\n 6: \n 7:     if (out_len < plen)\n 8:         return -1;\n 9: \n10:     memset(out, 0, plen);\n11:     return mpi_write_binary(&ctx->Y, out + (plen - ylen), ylen);\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "68e09c34a79fac81e710d738c227a13db5e0fed764e9c973ceb7af0303389181"
+ },
+ "response": {
+  "id": "chatcmpl-beacaaf1165d4402a8b1e943d292c4ef",
+  "created": 1791857582,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function checks that `out_len >= plen`, then writes `plen` bytes total (memset + the MPI write). However, if `ylen > plen` (i.e., the public value Y is larger than the prime P \u2014 possible since Y is application-supplied), then `plen - ylen` underflows (size_t), causing `out + (plen - ylen)` to point far out of bounds, and `mpi_write_binary` writes `ylen` bytes there \u2014 a heap/stack buffer overflow.\n\nThe primary bug is introduced at line 11, where the subtraction `plen - ylen` can underflow without validation.\n\nAnswer: 11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 140,
+   "prompt_tokens": 304,
+   "total_tokens": 444,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function checks that `out_len >= plen`, then writes `plen` bytes total (memset + the MPI write). However, if `ylen > plen` (i.e., the public value Y is larger than the prime P \u2014 possible since Y is application-supplied), then `plen - ylen` underflows (size_t), causing `out + (plen - ylen)` to point far out of bounds, and `mpi_write_binary` writes `ylen` bytes there \u2014 a heap/stack buffer overflow.\n\nThe primary bug is introduced at line 11, where the subtraction `plen - ylen` can underflow without validation.\n\nAnswer: 11",
+ "grade": {
+  "index": 13,
+  "id": "compsec-088",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 6388.2,
+  "output_sha256": "57a20e5e0bcfcf7258f595be31a78f1bf4ad33ae7e949ce5b2ab2c81bfba4373",
+  "prompt_token_count": 304,
+  "generated_token_count": 140,
+  "reasoning_chars": 0,
+  "content_chars": 528,
+  "status": "stop"
+ }
+}
