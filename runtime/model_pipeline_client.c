@@ -254,6 +254,17 @@ static void SparkModelPipelineClientInvalidateLease(
 	memset(slot,0,sizeof(*slot));
 }
 
+static void SparkModelPipelineClientDropLeases(
+	SparkModelPipelineClient *pipeline,
+	SparkModelPipelineTransaction *transaction)
+{
+	SparkModelServingLane *lanes = SparkModelPipelineClientTransactionLanes(pipeline,transaction);
+	uint32_t lane;
+	for (lane=0u; lane<transaction->lane_count; lane++)
+		if ( lanes[lane].resident_sequence_slot < pipeline->runtime_limits.resident_sequence_capacity )
+			SparkModelPipelineClientInvalidateLease(pipeline,lanes[lane].resident_sequence_slot);
+}
+
 static SparkStatus SparkModelPipelineClientUpdateLeases(
 	SparkModelPipelineClient *pipeline,
 	SparkModelPipelineTransaction *transaction)
@@ -347,6 +358,7 @@ static void SparkModelPipelineClientReportCompletion(
 		completion = transaction->final_completion;
 	else
 	{
+		SparkModelPipelineClientDropLeases(pipeline,transaction);
 		memset(&completion,0,sizeof(completion));
 		completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 		completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
