@@ -35,9 +35,9 @@ def main():
             failures.append(f"{model} router still writes BF16")
     kimi = (ROOT / "inference/llms/kimi_k3/layer.cuh").read_text()
     sigmoid_topk = re.search(
-        r"LmTopkSmallKernel<\s*K3_LAYER_THREADS\s*,\s*K3_TOP_K\s*,"
-        r"\s*true\s*,\s*1u\s*,\s*1u\s*,"
-        r"\s*(?:true|LM_TOPK_SCORE_SIGMOID)\s*>",
+        r"LmTopkRouteLaunch<\s*K3_LAYER_THREADS\s*,\s*K3_TOP_K\s*,"
+        r"\s*true\s*,\s*LM_TOPK_SCORE_SIGMOID\s*>\s*\(\s*rows\s*,"
+        r"\s*b->router_logits\s*,",
         kimi,
         re.S,
     )

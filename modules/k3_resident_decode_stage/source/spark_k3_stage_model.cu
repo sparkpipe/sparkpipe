@@ -876,15 +876,15 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 			cudaMemset(state->row_share_device, 0, share_bytes) != cudaSuccess )
 			{ state->row_share_device = 0; SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
 	}
-	if ( cudaMalloc(&state->route_expert, routes * 4u) != cudaSuccess ||
-		cudaMalloc(&state->route_packed_row, routes * 4u) != cudaSuccess ||
-		cudaMalloc(&state->route_source_token, routes * 4u) != cudaSuccess ||
-		cudaMalloc(&state->route_weight, routes * 4u) != cudaSuccess ||
-		cudaMalloc(&state->group_row_offset, (uint64_t)(K3_EXPERTS + 1u) * 4u) != cudaSuccess ||
-		cudaMalloc(&state->group_tile_prefix_w1, (uint64_t)(K3_EXPERTS + 1u) * 4u) != cudaSuccess ||
-		cudaMalloc(&state->group_tile_prefix_w2, (uint64_t)(K3_EXPERTS + 1u) * 4u) != cudaSuccess ||
-		cudaMalloc(&state->dense_row_offset, 8u) != cudaSuccess ||
-		cudaMalloc(&state->dense_tile_prefix, 8u) != cudaSuccess )
+	if ( cudaMalloc(&state->route_expert, routes * sizeof(*state->route_expert)) != cudaSuccess ||
+		cudaMalloc(&state->route_packed_row, routes * sizeof(*state->route_packed_row)) != cudaSuccess ||
+		cudaMalloc(&state->route_source_token, routes * sizeof(*state->route_source_token)) != cudaSuccess ||
+		cudaMalloc(&state->route_weight, routes * sizeof(*state->route_weight)) != cudaSuccess ||
+		cudaMalloc(&state->group_row_offset, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_row_offset)) != cudaSuccess ||
+		cudaMalloc(&state->group_tile_prefix_w1, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_tile_prefix_w1)) != cudaSuccess ||
+		cudaMalloc(&state->group_tile_prefix_w2, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_tile_prefix_w2)) != cudaSuccess ||
+		cudaMalloc(&state->dense_row_offset, 2u * sizeof(*state->dense_row_offset)) != cudaSuccess ||
+		cudaMalloc(&state->dense_tile_prefix, 2u * sizeof(*state->dense_tile_prefix)) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return SPARK_STATUS_OK;
 }

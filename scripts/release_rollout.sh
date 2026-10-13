@@ -86,15 +86,15 @@ capture() {
   hub "mkdir -p ~/$R/$id && cd ~/$R && timeout 3600 python3 kit/release_capture.py $port $id/$tag.json kit/prompt_source.c > $id/$tag.log 2>&1; echo capture $id $tag rc=\$?"
   case "$id" in
     glm-5.3) hub "cd ~/rollover/tree && timeout 2400 python3 tools/glm53_full_golden.py capture --prompts qualification/glm53_full/golden/prompts.json --port $port --max-tokens 128 --logprobs 4 --label $R-$tag --out ~/$R/$id/golden-$tag.json > ~/$R/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
-    kimi-k3) hub "cd ~/rollover/tree && timeout 1800 python3 scripts/rollover_k3_golden.py $port ~/$R/$id/golden-$tag.json > ~/$R/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
-    qwen3.8-27b|qwen3.8-flash|qwen3.8-max) hub "cd ~/rollover/tree && timeout 1800 python3 scripts/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port ~/$R/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
-    deepseek-v4.1-flash) hub "cd ~/rollover/tree && timeout 1800 python3 scripts/rollover_lp_capture.py qualification/dsv41_flash/reference_tokens.json $port ~/$R/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
+    kimi-k3) hub "cd ~/rollover/tree && timeout 1800 python3 ~/$R/kit/rollover_k3_golden.py $port ~/$R/$id/golden-$tag.json > ~/$R/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
+    qwen3.8-27b|qwen3.8-flash|qwen3.8-max) hub "cd ~/rollover/tree && timeout 1800 python3 ~/$R/kit/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port ~/$R/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
+    deepseek-v4.1-flash) hub "cd ~/rollover/tree && timeout 1800 python3 ~/$R/kit/rollover_lp_capture.py qualification/dsv41_flash/reference_tokens.json $port ~/$R/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
   esac
 }
 compare() {
   local id=$1 a=$2 b=$3
   hub "cd ~/$R && python3 kit/release_compare.py $id/$a.json $id/$b.json | tail -7"
-  hub "test -f ~/$R/$id/golden-$a.json && test -f ~/$R/$id/golden-$b.json && { python3 ~/perfoverlap/exact.py ~/$R/$id/golden-$a.json ~/$R/$id/golden-$b.json | head -3; cd ~/rollover/tree && python3 scripts/rollover_golden_compare.py ~/$R/$id/golden-$a.json ~/$R/$id/golden-$b.json 0.5 ~/$R/$id/golden-compare-$a-$b.json 2>&1 | tail -2; } || true"
+  hub "test -f ~/$R/$id/golden-$a.json && test -f ~/$R/$id/golden-$b.json && { python3 ~/perfoverlap/exact.py ~/$R/$id/golden-$a.json ~/$R/$id/golden-$b.json | head -3; cd ~/rollover/tree && python3 ~/$R/kit/rollover_golden_compare.py ~/$R/$id/golden-$a.json ~/$R/$id/golden-$b.json 0.5 ~/$R/$id/golden-compare-$a-$b.json 2>&1 | tail -2; } || true"
 }
 
 step=${1:-}
@@ -108,7 +108,7 @@ case "$step" in
     hub "test -x $APIB/sparkpipe_model_api && test -x $APIB/sparkpipe_tokenize_prompt && cat ~/release/core/WEIGHTSD_BIN" | grep -q "$OLD_WD" || { echo "hub core weightd is not $OLD_WD"; exit 1; }
     echo "weightd running: $(running_wd)"
     fan "ls -d \$HOME/sparkdata/glm53full.fp8lin.tp16/packs/*.glm52sp | wc -l" | awk '{print $2}' | sort | uniq -c | sed 's/^/fp8lin packs per node: /'
-    hub "mkdir -p ~/$R/kit" && scp -q "$KIT/release_capture.py" "$KIT/release_compare.py" rtx5090:$R/kit/ && scp -q "$KIT/../runtime/json.c" rtx5090:$R/kit/prompt_source.c
+    hub "mkdir -p ~/$R/kit" && scp -q "$KIT/../tools/release_capture.py" "$KIT/../tools/release_compare.py" "$KIT/../tools/rollover_golden_compare.py" "$KIT/../tools/rollover_k3_golden.py" "$KIT/../tools/rollover_lp_capture.py" rtx5090:$R/kit/ && scp -q "$KIT/../runtime/json.c" rtx5090:$R/kit/prompt_source.c
     echo PRECHECK-OK ;;
   old)
     for id in $MODELS; do stamp "old $id"; activate "$id" && capture "$id" old || echo "OLD-FAILED $id"; done

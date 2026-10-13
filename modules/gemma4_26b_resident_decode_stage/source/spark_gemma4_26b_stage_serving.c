@@ -26,7 +26,7 @@ static void Gemma4_26bServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, Spar
 	kv->regions[1].layer_count = SPARK_GEMMA4_26B_STAGE_FULL_LAYERS;
 	kv->arena_kv_head_count = SPARK_GEMMA4_26B_STAGE_SLIDING_KV_HEADS;
 	kv->arena_head_dim = 2u * SPARK_GEMMA4_26B_STAGE_SLIDING_DIM;
-	kv->arena_bytes_per_scalar = 2u;
+	kv->arena_bytes_per_scalar = sizeof(uint16_t);
 	kv->capacity_request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	kv->capacity_request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
 	kv->capacity_request.layout = SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
@@ -34,7 +34,7 @@ static void Gemma4_26bServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, Spar
 	kv->capacity_request.head_count = SPARK_GEMMA4_26B_STAGE_SLIDING_KV_HEADS;
 	kv->capacity_request.query_key_head_dimension = SPARK_GEMMA4_26B_STAGE_SLIDING_DIM;
 	kv->capacity_request.value_head_dimension = SPARK_GEMMA4_26B_STAGE_SLIDING_DIM;
-	kv->capacity_request.bytes_per_scalar = 2u;
+	kv->capacity_request.bytes_per_scalar = sizeof(uint16_t);
 	kv->context_shard.degree = tp_degree;
 	kv->context_shard.rank = tp_rank;
 	kv->context_shard.grain = 1u;

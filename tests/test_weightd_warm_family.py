@@ -12,13 +12,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WARM = ROOT / "tools" / "weightd_warm.c"
 MODULE_TAGS = {
-    None: (ROOT / "modules" / "glm5_next_resident_decode_stage" / "source" /
-           "spark_glm5_next_resident_decode_stage_module.c",
-           "SPARK_GLM5_NEXT_MODULE_TAG"),
+    None: (ROOT / "modules" / "glm53_flash_tp16_resident_decode_stage" /
+           "source" / "spark_glm53_flash_tp16_stage_model.cu",
+           r'WeightdModel\(void\) \{ return "([^"]+)"'),
+    "glm52": (ROOT / "modules" / "glm53_full_tp16_resident_decode_stage" /
+              "source" / "spark_glm53_full_tp16_stage_model.cu",
+              r'WeightdModel\(void\) \{ return "([^"]+)"'),
     "dsv41_flash": (ROOT / "modules" / "dsv41_flash_resident_decode_stage" /
-                    "source" /
-                    "spark_dsv41_flash_resident_decode_stage_module.c",
-                    "SPARK_DSV41_FLASH_MODULE_TAG"),
+                    "source" / "spark_dsv41_flash_stage_serving.c",
+                    r'\.module_tag = "([^"]+)"'),
 }
 STUBS = """
 #include "sparkpipe/spark_weightd.h"
@@ -46,6 +48,13 @@ SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *c,
 SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *c,
     const char *p,SparkWeightdReclaimResult *r,uint64_t t)
     { (void)c;(void)p;(void)r;(void)t; return SPARK_STATUS_UNSUPPORTED; }
+SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *c,
+    const SparkWeightdLazyAttachRequest *q,
+    SparkWeightdLazyAttachResult *r,uint64_t t)
+    { (void)c;(void)q;(void)r;(void)t; return SPARK_STATUS_UNSUPPORTED; }
+SparkStatus SparkWeightdClientKvPoolDrop(SparkWeightdClient *c,
+    const char *l,SparkWeightdKvPoolDropResult *r,uint64_t t)
+    { (void)c;(void)l;(void)r;(void)t; return SPARK_STATUS_UNSUPPORTED; }
 SparkStatus SparkWeightdPackDigestRead(const char *p,char h[65])
     { (void)p;(void)h; return SPARK_STATUS_UNSUPPORTED; }
 """
@@ -55,11 +64,10 @@ PACK_BYTES = 4096
 
 
 def module_tag(family):
-    source, define = MODULE_TAGS[family]
-    match = re.search(r'#define\s+%s\s+"([^"]+)"' % define,
-                      source.read_text())
+    source, pattern = MODULE_TAGS[family]
+    match = re.search(pattern, source.read_text())
     if match is None:
-        raise AssertionError("%s not defined in %s" % (define, source))
+        raise AssertionError("no weightd model tag in %s" % source)
     return match.group(1)
 
 
@@ -74,10 +82,7 @@ class WeightdWarmFamilyIdentity(unittest.TestCase):
         build = subprocess.run(
             ["cc", "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra",
              "-Werror", "-O2", f"-I{ROOT / 'include'}",
-             f"-I{ROOT / 'model-families' / 'dsv4' / 'include'}",
              "-o", str(cls.binary), str(WARM),
-             str(ROOT / "model-families" / "dsv4" / "src" /
-                 "spark_dsv4_parallel_shape.c"),
              str(ROOT / "runtime" / "spark_weightd_manifest.c"),
              str(stubs)],
             capture_output=True, text=True)
@@ -163,16 +168,11 @@ class WeightdWarmFamilyIdentity(unittest.TestCase):
                          self.run_warm("--family", "dsv41_flash").stdout)
 
     def test_unknown_family_is_refused(self):
-        for family in ("dsv41_unknown", "glm5_next", ""):
+        for family in ("dsv41_unknown", "glm5_next", "dsv4_pro", ""):
             with self.subTest(family=family):
                 run = self.run_warm("--family", family)
                 self.assertEqual(run.returncode, 2, run.stdout)
                 self.assertEqual(run.stdout, "")
-
-    def test_dsv4_pro_requires_world_rank(self):
-        run = self.run_warm("--family", "dsv4_pro")
-        self.assertEqual(run.returncode, 2, run.stdout)
-        self.assertEqual(run.stdout, "")
 
     def test_invalid_identity_arguments_are_refused(self):
         for digest in ("0" * 63, "g" * 64):

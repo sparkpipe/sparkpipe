@@ -28,14 +28,14 @@ static void Glm53FullTp16ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, S
 	kv->regions[1].layer_count = SPARK_GLM53_FULL_TP16_STAGE_INDEX_LAYERS;
 	kv->arena_kv_head_count = 1u;
 	kv->arena_head_dim = SPARK_GLM53_FULL_TP16_STAGE_LATENT + SPARK_GLM53_FULL_TP16_STAGE_ROPE;
-	kv->arena_bytes_per_scalar = 2u;
+	kv->arena_bytes_per_scalar = sizeof(uint16_t);
 	kv->capacity_request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	kv->capacity_request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
 	kv->capacity_request.layout = SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE;
 	kv->capacity_request.layer_count = SPARK_GLM53_FULL_TP16_STAGE_LAYERS;
 	kv->capacity_request.compressed_dimension = SPARK_GLM53_FULL_TP16_STAGE_LATENT;
 	kv->capacity_request.position_dimension = SPARK_GLM53_FULL_TP16_STAGE_ROPE;
-	kv->capacity_request.bytes_per_scalar = 2u;
+	kv->capacity_request.bytes_per_scalar = sizeof(uint16_t);
 	kv->capacity_request.fp8_scale_block_size = SPARK_GLM53_FULL_TP16_STAGE_FP8_SCALE_BLOCK;
 	kv->capacity_request.index_key_layer_count = SPARK_GLM53_FULL_TP16_STAGE_INDEX_LAYERS;
 	kv->capacity_request.index_key_dimension = SPARK_GLM53_FULL_TP16_STAGE_INDEX_DIM;

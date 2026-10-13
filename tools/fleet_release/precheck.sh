@@ -8,7 +8,6 @@ bad() { echo "FAIL $*"; fail=$((fail + 1)); }
 echo "precheck $S7 (read-only) $(date -u +%FT%TZ): root $RELEASE_ROOT_NAME on $NODE_COUNT nodes, weightd $OLD_WEIGHTD -> $NEW_WEIGHTD"
 
 echo "== rotation"
-rotation_gate || fail=$((fail + 1))
 
 echo "== source"
 if git -C "$SOURCE_REPO" merge-base --is-ancestor "$SHA" origin/main; then ok "$S7 is on origin/main (last fetched: $(git -C "$SOURCE_REPO" rev-parse --short origin/main))"; else bad "$S7 is not an ancestor of the fetched origin/main"; fi

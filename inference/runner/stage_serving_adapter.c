@@ -915,10 +915,10 @@ static SparkStatus StageServingComplete(SparkStageServingState *state, const Spa
 		const uint32_t *order = (const uint32_t *)state->order_host.pointer;
 		uint32_t *tokens_host = state->completion_tokens;
 		SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(tokens_host,
-			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * steps * 4u);
+			SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * steps * sizeof(*tokens_host));
 		if ( (uint64_t)rows * steps > SPARK_STAGE_SERVING_MAX_ROWS )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens, (uint64_t)rows * steps * 4u, 0) != SPARK_STATUS_OK )
+		if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens, (uint64_t)rows * steps * sizeof(*tokens_host), 0) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		completion.tokens_per_sequence = steps;
 		completion.token_count = active * steps;

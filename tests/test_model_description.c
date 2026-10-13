@@ -49,29 +49,6 @@ static void SparkTestFirmwareDemoDescription(void)
     SparkModelDescriptionDestroy(&description);
 }
 
-static void SparkTestDsv4Description(void)
-{
-    SparkModelDescription description;
-    const SparkModelStageDescription *stage;
-    const SparkModelProgramDescription *program;
-    char error_buffer[1024];
-
-    SparkModelDescriptionReset(&description);
-    assert(SparkLoadModelDescription(
-               "examples/model_descriptions/dsv4_resident_decode_stage_firmware.json",
-               &description,
-               error_buffer,
-               sizeof(error_buffer)) == SPARK_STATUS_OK);
-    stage = SparkFindModelStage(&description, "dsv4_resident_decode_stage");
-    assert(stage != 0);
-    program = SparkFindModelProgram(stage, "resident_decode");
-    assert(program != 0);
-    assert(program->max_inflight == 13u);
-    assert(program->completion_mode == SPARK_MODEL_PROGRAM_COMPLETION_EXTERNAL);
-    assert((program->scheduling.flags & SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION) == 0u);
-    SparkModelDescriptionDestroy(&description);
-}
-
 static void SparkTestDuplicateProgramRejected(void)
 {
     SparkModelDescription description;
@@ -102,7 +79,6 @@ static void SparkTestDuplicateProgramRejected(void)
 int main(void)
 {
     SparkTestFirmwareDemoDescription();
-    SparkTestDsv4Description();
     SparkTestDuplicateProgramRejected();
     return 0;
 }

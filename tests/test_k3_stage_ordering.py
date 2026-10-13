@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MODULE = ROOT / "modules" / "k3_resident_decode_stage" / "source"
 RUNNER = ROOT / "inference" / "runner" / "stage_runner.cu"
 MODEL = MODULE / "spark_k3_stage_model.cu"
-ADAPTER = MODULE / "spark_k3_serving_adapter.c"
+ADAPTER = ROOT / "inference" / "runner" / "stage_serving_adapter.c"
 TRANSPORT = ROOT / "ring" / "transport" / "host_staged_tcp.c"
 
 
@@ -98,16 +98,19 @@ def check_runner(failures):
 
 
 def check_adapter(failures):
-    submit = body(ADAPTER.read_text(), "K3ServingSubmit")
-    copies = re.findall(r"SparkMemoryBufferCopy\(&state->(\w+),[^;]*?,\s*([^,;]+)\)\s*!=", submit)
+    adapter = ADAPTER.read_text()
+    copy_inputs = body(adapter, "StageServingCopyInputs")
+    copies = re.findall(r"SparkMemoryBufferCopy\(&state->(\w+),[^;]*?,\s*([^,;]+)\)\s*!=", copy_inputs)
     device = [(name, stream) for name, stream in copies if name.endswith("_device")]
     if not device:
         failures.append("the adapter's device index copies are not checked")
+    if not re.search(r"void \*stream = state->runner_config\.execution_stream;", copy_inputs):
+        failures.append("the adapter's index copies do not take the runner's execution stream")
     for name, stream in device:
-        if stream.strip() != "state->runner_config.execution_stream":
+        if stream.strip() != "stream":
             failures.append(f"the adapter copies {name} on {stream.strip()}, not the "
                             f"execution stream the step kernels run on")
-    if re.search(r"\(void\)SparkMemoryBufferCopy\(", submit):
+    if re.search(r"\(void\)SparkMemoryBufferCopy\(", adapter):
         failures.append("the adapter discards a copy result")
 
 

@@ -18,7 +18,7 @@ need() {
 need RELEASE_NODES RELEASE_HUB RELEASE_ROOT_NAME RELEASE_RANK_PACK RELEASE_DRIVER RELEASE_LAYOUT \
     RELEASE_WEIGHTD_STAGE RELEASE_PROBE_EXTRA RELEASE_CHECKS RELEASE_ARTIFACT \
     RELEASE_API_CHANNEL RELEASE_API_UNIT RELEASE_API_PORT RELEASE_ADAPTER_BUILD \
-    RELEASE_ROTATION_PAUSE_FILE RELEASE_ROTATION_UNIT RELEASE_MEM_UNHOLD_GIB RELEASE_MEM_FLOOR_GIB \
+    RELEASE_MEM_UNHOLD_GIB RELEASE_MEM_FLOOR_GIB \
     RELEASE_CONVERGE_EXPECT RELEASE_CONVERGE_MIN RELEASE_API_REQUIRED_STRING RELEASE_API_REQUIRED_LOG \
     RELEASE_BUILD_FILES RELEASE_STAGE_WORLD LOGS CHANNEL_ADD STAGE_CONFIG_ADD \
     SHA S7 PREV7 SERVED_MANIFEST_SHA NEW_MANIFEST_SHA EXPECT_CHANGED \
@@ -80,24 +80,6 @@ on_nodes() {
         pids="$pids $!"
     done
     wait $pids
-}
-
-rotation_gate() {
-    if [ "$RELEASE_ROTATION_PAUSE_FILE" = none ]; then
-        echo "INFO rotation gate off (RELEASE_ROTATION_PAUSE_FILE=none)"
-        return 0
-    fi
-    local r
-    r=$(hub "test -e ~/$RELEASE_ROTATION_PAUSE_FILE && echo paused || echo running; systemctl --user show -p ActiveState --value $RELEASE_ROTATION_UNIT 2>/dev/null || echo unknown")
-    set -- $r
-    if [ "${1:-}" != paused ]; then
-        echo "FAIL rotation is not paused (~/$RELEASE_ROTATION_PAUSE_FILE missing on $RELEASE_HUB): pause it before any release step"
-        return 1
-    fi
-    case "${2:-unknown}" in
-        inactive|failed) echo "OK   rotation paused, $RELEASE_ROTATION_UNIT ${2} (no tick running)";;
-        *) echo "FAIL rotation paused but $RELEASE_ROTATION_UNIT is ${2:-unknown}: a tick is still running; wait for it to exit"; return 1;;
-    esac
 }
 
 drain_start() {
