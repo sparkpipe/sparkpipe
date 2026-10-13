@@ -1,127 +1,58 @@
 # Family templates
 
-Most model families were created by copying another family and renaming
-it: glm52 → glm5_next → laguna and ling, and qwen38_27b → qwen4_flash. The
-qwen38_max, gemma4, muse_glimmer and minimax lineage was built the same way.
-Code that is still identical across forks lives once under
-`include/sparkpipe/family/`, and each family instantiates it under its own
-names.
+Model families were once created by copying another family and renaming
+it, and the code that stayed identical across forks lived once under
+`include/sparkpipe/family/`, instantiated by each family under its own
+names. The drivers now run on the common stage runner
+(`inference/runner/`) and the shared kernels (`inference/kernels/`), which
+take parameters instead of names. What remains of the template layer is
+listed below; new shared code goes to the runner or the kernels with
+generic names (`tests/test_dry_law.py`), not here.
 
 ## The idiom
 
 A translation unit names its family, then includes the shared bodies it uses:
 
 ```c
-#define SPARK_FAMILY_CAMEL Glm5Next
-#define SPARK_FAMILY_UPPER GLM5_NEXT
-#define SPARK_FAMILY_LOWER glm5_next
+#define SPARK_FAMILY_CAMEL Glm52
+#define SPARK_FAMILY_UPPER GLM52
+#define SPARK_FAMILY_LOWER glm52
 #include "sparkpipe/family/spark_family.h"
-#include "sparkpipe/family/serving/spark_serving_quiesce.h"
+#include "sparkpipe/family/stagepack/spark_stagepack_glm.h"
 ```
 
 Inside a template:
 
-| Written as | Expands to (glm5_next) |
+| Written as | Expands to (glm52) |
 | --- | --- |
-| `SPARK_FAMILY(ServingQuiesce)` | `SparkGlm5NextServingQuiesce` |
-| `SPARK_FAMILY_CONST(MODULE_TAG)` | `SPARK_GLM5_NEXT_MODULE_TAG` |
-| `SPARK_FAMILY_BARE(LayerBuffers)` | `Glm5NextLayerBuffers` |
-| `SPARK_FAMILY_BARE_CONST(TOP_K)` | `GLM5_NEXT_TOP_K` |
-| `SPARK_FAMILY_STRING(SPARK_FAMILY_LOWER)` | `"glm5_next"` |
+| `SPARK_FAMILY(StagePackShapeBf16)` | `SparkGlm52StagePackShapeBf16` |
+| `SPARK_FAMILY_CONST(MODULE_TAG)` | `SPARK_GLM52_MODULE_TAG` |
+| `SPARK_FAMILY_BARE(LayerBuffers)` | `Glm52LayerBuffers` |
+| `SPARK_FAMILY_BARE_CONST(TOP_K)` | `GLM52_TOP_K` |
+| `SPARK_FAMILY_STRING(SPARK_FAMILY_LOWER)` | `"glm52"` |
 
 Symbols keep their family names, so call sites, exports and logs do not
-change. To find the definition of `SparkGlm5NextServingQuiesce`, drop the
-family prefix and search for `SPARK_FAMILY(ServingQuiesce)`.
-`tests/family_source.py` expands a source file's template includes for tests
-that grep source text.
+change. To find a definition, drop the family prefix and search for
+`SPARK_FAMILY(<name>)`. `tests/family_source.py` expands a source file's
+template includes for tests that grep source text.
 
-## Layout
+## What remains
 
-| Directory | Contents |
+| Template | Included by |
 | --- | --- |
-| `serving/` | serving adapter functions |
-| `module/` | resident decode stage module functions |
-| `stagepack/` | stage-pack format helpers |
-| `cuda/` | CUDA host glue shared across lineages |
-| `glm/` | GLM-lineage CUDA host glue, layer and unity code, api.h |
-| `synth/` | pack synthesizer helpers |
-| `validation/` | GPU validator reference math, kernel checks and module drivers |
-| `abi/` | firmware ABI structs shared by the family firmware headers |
+| `stagepack/spark_stagepack_glm.h`, `spark_stagepack_shape_bf16.h`, `spark_stagepack_tp_shards_cols.h` | `model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h` |
+| `stagepack/spark_stagepack_kind_is_hc.h`, `spark_stagepack_shape_f32.h` | `modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h` |
+| `glm/spark_glm_head_maxloc.cuh` | `tests/host_cuda/head_sampling_host.cu`, `tests/host_cuda/glm5_next_expert_cover_host.cu`, `tests/test_working_set_rollback.cu` |
+| `module/spark_module_combine.h` | `tools/mesh_round_bench.cu` |
 
-A header holds only functions that every family including it shares. When
-two groups of families carry different versions of a function (for example
-the serial and parallel wave metadata kernels), each version has its own
-header, named so that the difference is visible.
+The serving, module, ABI, CUDA glue, synthesizer and validation templates
+had no remaining users once the drivers moved to the common runner and were
+removed on 2026-10-13.
 
-## Templates included by headers
-
-A header cannot use `SPARK_FAMILY_CAMEL`: the translation unit that includes
-it may define that name itself. Header templates therefore take their own
-one-argument macro, which the including header defines just before the first
-template and undefines after the last:
-
-```c
-#define SPARK_ABI_TYPE(name) SparkQwen38Max##name
-#include "sparkpipe/family/abi/spark_abi_linear_view.h"
-...
-#undef SPARK_ABI_TYPE
-```
-
-| Template | Macros | Included by |
-| --- | --- | --- |
-| `family/abi/spark_abi_*.h` | `SPARK_ABI_TYPE` | `modules/<family>_resident_decode_stage/include/sparkpipe/spark_<family>_resident_decode_stage_firmware.h` |
-| `model-families/common/include/sparkpipe/spark_work_control_api.h` | `SPARK_WORK_CONTROL_FN`, `SPARK_WORK_CONTROL_TYPE` | `spark_<family>_work_control.h`; the matching bodies are in `spark_work_control_common.h` |
-
-To find `SparkQwen38MaxLinearView`, search for `SPARK_ABI_TYPE(LinearView)`.
-Header templates have no include guard, because each family instantiates
-them once. Constants stay in the family header: a macro cannot define a
-macro name.
-
-## Rule for moving code here
+## Rule for moving code between a template and its families
 
 A function moves only if every family that includes the shared body compiles
 it to the same object code it produced before: identical host disassembly and
 SASS, both at `-O3` and with inlining and IPA disabled. A copy that compiles
-differently is drift, not duplication. It stays in its family until someone
-decides which behaviour is right.
-
-Compare host objects with `tools/host_codegen_diff.py` and cubins with
-`tools/kernel_codegen_diff.py`. Build both host objects with
-`-ffunction-sections -fdata-sections`, and define `__FILE__` as `"F"` and
-`__LINE__` as `0` in both builds (with `-w`), so the error sites that move
-with the code compare equal. Make any behaviour change a family needs first,
-in its own commit, so the move itself compares identical.
-
-A value that differs by family reaches the template through a macro the
-family defines just before the include, named with `SPARK_FAMILY_CONST`: for
-example `SPARK_GLM52_MODULE_TP_MESH_REGION(state)` in
-`module/spark_module_tp_open_node_context.h`. A family that omits one does not
-compile. A call whose trailing arguments differ by family goes through a
-function-like macro in the same way. qwen4_flash's GDN launchers take a
-tensor-parallel degree that qwen38_27b's do not, so both validators define
-`SPARK_<FAMILY>_VALIDATION_GDN_LAUNCH(launch,...)`: qwen38_27b's expands to
-`launch(__VA_ARGS__)` and qwen4_flash's to `launch(__VA_ARGS__,1u)`.
-
-A declaration (a struct, a typedef or a prototype) moves only if every
-translation unit that includes it preprocesses to the same tokens before
-and after the move, line markers aside. That covers the host `.c` files, the
-`.cu` files through `nvcc -E`, and the tests and tools that include the
-header.
-
-## Adoption gate
-
-`tests/test_template_adoption.py` fails when shared code exists but a family
-does not use it:
-
-1. Serving adapters must call the adapter template and must not parse the
-   `tp_collective` configuration themselves.
-2. Pack synthesizers under `modules/*/tools/` must include
-   `spark_pack_synthesize_common.h`.
-3. Work-control headers must include `spark_work_control_api.h`, and
-   batch-tuning headers must include the shared bucket ladder.
-4. No firmware header may define a struct whose body, after the family name
-   is removed, equals another firmware header's struct or an `abi/` template.
-
-Families that have not adopted a pattern yet are listed in the test with a
-reason. A listed family that adopts fails the gate until it is removed from
-the list, so the lists only shrink.
+differently is drift, not duplication. Compare host objects with
+`tools/host_codegen_diff.py` and cubins with `tools/kernel_codegen_diff.py`.

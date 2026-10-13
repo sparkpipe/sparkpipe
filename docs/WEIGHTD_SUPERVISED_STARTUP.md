@@ -51,10 +51,9 @@ two environment variables.
   at once. It sends no `HELLO`.
 - On success it sets `SPARK_WEIGHTD_SOCKET` to the deployment socket and
   `SPARK_WEIGHTD_PACK_SHA256` to the digest, replacing any existing values.
-  `SparkWeightdAttachRequested` reads the socket from there. The shared lazy
-  open helper (`include/sparkpipe/family/module/spark_module_lazy_open.h`)
-  reads the digest, and `SparkWeightdAttachPack` falls back to it when the
-  slice carries none.
+  `SparkWeightdAttachRequested` reads the socket from there, and
+  `SparkWeightdAttachPack` falls back to the digest when the slice carries
+  none.
 - On failure it returns a negative code. Residentd logs a line starting
   `model_residentd weightd-required status=<code> root=<root> socket=<socket>`
   and exits 1.

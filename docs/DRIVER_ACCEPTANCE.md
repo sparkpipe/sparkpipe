@@ -298,7 +298,7 @@ invented geometry; complete the real integration and rerun the gates.
   `modules/<family>_resident_decode_stage/source/` (mimo26 holds only its
   stagepack format header). MiMo 2.5 has no module directory; its engine is
   `inference/llms/mimo_2_5`.
-- The families built on `include/sparkpipe/family/serving/` (dsv4, gemma4,
+- The families that were built on the shared serving templates (dsv4, gemma4,
   glm52, glm5_next, laguna, ling, minimax, muse_glimmer, qwen38_27b) and
   qwen38_max route reset through a driver RESET admission. A present
   callback is structural evidence only; the functional evidence above still
