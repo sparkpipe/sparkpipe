@@ -46,8 +46,6 @@
 2 tools/batch_invariance_bench.cu: cudaMemset uses a raw byte-width multiplier
 1 tools/batch_invariance_bench.cu: memcpy uses a direct size/count literal
 3 tools/batch_invariance_bench.cu: memcpy uses a raw byte-width multiplier
-3 tools/dev/ling_gemm_repro.cu: cudaMalloc uses a raw byte-width multiplier
-3 tools/dev/ling_gemm_repro.cu: cudaMemset uses a raw byte-width multiplier
 1 tools/devcycle/bw_probe.cu: cudaMalloc uses a direct size/count literal
 5 tools/glm52_experts_manifest.c: memcpy uses a direct size/count literal
 1 tools/glm52_resident_stagepack.py: GLM model literal 576 is outside the model contract
