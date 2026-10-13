@@ -1,0 +1,62 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "64d733e2e71a5e77097094ad64e2e7a18993c343266016f2857526e8dc291d36"
+ },
+ "response": {
+  "id": "chatcmpl-0abb388417ec4dd6a66c05bc4a5fbbe0",
+  "created": 1791868843,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is integer overflow in the shift operation on line 3. `blocks` is `uint32_t`, and shifting left by `blkbits` can overflow the 32-bit type (e.g., blocks = 0x1000000, blkbits = 9 \u2192 0x800000000 wraps to 0). This makes `bytes` wrap around to a small value, passing the bounds check on line 5, and then `data_size_from_cmnd` is set to a wrong (wrapped) value. The overflow occurs at the computation on line 3.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 135,
+   "prompt_tokens": 235,
+   "total_tokens": 370,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The bug is integer overflow in the shift operation on line 3. `blocks` is `uint32_t`, and shifting left by `blkbits` can overflow the 32-bit type (e.g., blocks = 0x1000000, blkbits = 9 \u2192 0x800000000 wraps to 0). This makes `bytes` wrap around to a small value, passing the bounds check on line 5, and then `data_size_from_cmnd` is set to a wrong (wrapped) value. The overflow occurs at the computation on line 3.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 12549.0,
+  "output_sha256": "2d4e75d8597da119c6eacf86fbeb112257c2c7319bf9c99de1cd19a0722e6573",
+  "prompt_token_count": 235,
+  "generated_token_count": 135,
+  "reasoning_chars": 0,
+  "content_chars": 423,
+  "status": "stop"
+ }
+}

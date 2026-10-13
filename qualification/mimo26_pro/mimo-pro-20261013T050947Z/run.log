@@ -1,0 +1,60 @@
+2026-10-13T05:09:47Z run mimo-pro-20261013T050947Z model mimo26_pro lane 1 fw /Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-release-91c0e6be3 (91c0e6be3) api /home/spec/api-build-91c0e6be3/build
+2026-10-13T05:09:47Z controller: idle qwen3.8-max None
+{"active": "qwen3.8-max", "state": "idle", "target": null, "wanted": "qwen3.8-flash", "phase": null, "swap_elapsed_s": null, "phase_elapsed_s": null, "error": null, "memory": {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.6, "used_gib_min": 90.5, "available_gib_min": 16.3, "tightest": "spark4"}, "models": [{"id": "glm-5.3", "active": false}, {"id": "glm-5.3-flash", "active": false}, {"id": "kimi-k3", "active": false}, {"id": "qwen3.8-27b", "active": false}, {"id": "deepseek-v4.1-flash", "active": false}, {"id": "qwen3.8-max", "active": true}, {"id": "qwen3.8-flash", "active": false}, {"id": "gemma-4-31b", "active": false}, {"id": "gemma-4-26b-a4b", "active": false}, {"id": "ling-3.0-flash", "active": false}, {"id": "hy4-preview", "active": false}, {"id": "muse-glimmer-30b", "active": false}, {"id": "ling-3.0-flash-fin", "active": false}, {"id": "laguna-s-2.1", "active": false}, {"id": "mimo-v2.6-flash", "active": false}], "history": [{"from": "qwen3.8-27b", "to": "kimi-k3", "ok": true, "seconds": 44.1, "error": null, "memory": {"model": "kimi-k3", "projected_gib": 97.5, "used_gib_max": 97.9, "used_gib_min": 97.7, "available_gib_min": 8.8, "tightest": "spark4"}, "finished": "2026-10-13T04:49:05Z"}, {"from": "kimi-k3", "to": "qwen3.8-27b", "ok": true, "seconds": 22.8, "error": null, "memory": {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.3, "used_gib_min": 5.2, "available_gib_min": 101.3, "tightest": "spark4"}, "finished": "2026-10-13T04:50:41Z"}, {"from": "qwen3.8-27b", "to": "kimi-k3", "ok": true, "seconds": 44.6, "error": null, "memory": {"model": "kimi-k3", "projected_gib": 97.5, "used_gib_max": 97.9, "used_gib_min": 97.8, "available_gib_min": 8.8, "tightest": "spark4"}, "finished": "2026-10-13T04:51:29Z"}, {"from": "kimi-k3", "to": "qwen3.8-27b", "ok": true, "seconds": 21.7, "error": null, "memory": {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.4, "used_gib_min": 5.2, "available_gib_min": 101.3, "tightest": "spark4"}, "finished": "2026-10-13T04:52:26Z"}, {"from": "qwen3.8-27b", "to": "qwen3.8-max", "ok": true, "seconds": 33.7, "error": null, "memory": {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.6, "used_gib_min": 90.5, "available_gib_min": 16.0, "tightest": "spark4"}, "finished": "2026-10-13T04:53:04Z"}, {"from": "qwen3.8-max", "to": "qwen3.8-27b", "ok": true, "seconds": 16.0, "error": null, "memory": {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.4, "used_gib_min": 5.2, "available_gib_min": 101.0, "tightest": "spark4"}, "finished": "2026-10-13T04:53:23Z"}, {"from": "qwen3.8-27b", "to": "glm-5.3", "ok": true, "seconds": 31.5, "error": null, "memory": {"model": "glm-5.3", "projected_gib": 57.0, "used_gib_max": 58.4, "used_gib_min": 58.3, "available_gib_min": 48.0, "tightest": "spark4"}, "finished": "2026-10-13T04:54:00Z"}, {"from": "glm-5.3", "to": "qwen3.8-27b", "ok": true, "seconds": 15.4, "error": null, "memory": {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.5, "used_gib_min": 5.2, "available_gib_min": 52.0, "tightest": "spark4"}, "finished": "2026-10-13T04:56:39Z"}, {"from": "qwen3.8-27b", "to": "glm-5.3", "ok": true, "seconds": 37.1, "error": null, "memory": {"model": "glm-5.3", "projected_gib": 57.0, "used_gib_max": 58.4, "used_gib_min": 58.3, "available_gib_min": 48.5, "tightest": "spark4"}, "finished": "2026-10-13T04:57:21Z"}, {"from": "glm-5.3", "to": "qwen3.8-max", "ok": true, "seconds": 68.9, "error": null, "memory": {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.6, "used_gib_min": 90.5, "available_gib_min": 16.3, "tightest": "spark4"}, "finished": "2026-10-13T05:04:04Z"}]}2026-10-13T05:10:08Z swap: qwen3.8-flash active
+2026-10-13T05:10:08Z min MemAvailable with qwen3.8-flash active: 94 GiB (need >= 54 GiB = 48 estimate + 6 margin)
+spark0 ready spine_budget=35423854463
+spark1 ready spine_budget=35423854463
+spark2 ready spine_budget=35423854463
+spark3 ready spine_budget=35423854463
+spark4 ready spine_budget=35423854463
+spark6 ready spine_budget=35423854463
+spark5 ready spine_budget=35423854463
+spark7 ready spine_budget=35423854463
+spark8 ready spine_budget=35423854463
+spark9 ready spine_budget=35423854463
+sparka ready spine_budget=35423854463
+sparkb ready spine_budget=35423854463
+sparkc ready spine_budget=35423854463
+sparkd ready spine_budget=35423854463
+sparke ready spine_budget=35423854463
+sparkf ready spine_budget=35423854463
+ERRSITE runtime/json.c:737 status=1 count=1
+rtx5090:mimo26_pro-kv-api ready (tokenizer b3736c75df6a767365e6df2d7762a7fc9e74974f8fa37124a9761f0e748c0052); swap controller entry in ./mimo26_pro.swap_entry.json
+  16 d4bdfe3948f1af8c 12621eec4183444c 
+d4bdfe3948f1af8c 12621eec4183444c  <- fw
+stage_lane: mimo26_pro run mimo-pro-20261013T050947Z; rank logs are logs/residentd-mimo-pro-20261013T050947Z.log under each lane root
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: ef414dcee3a04a379e3059ce8e6686af
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 15d8c8038e57419f8d5280eb6c358727
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 6761f226b3634db0ac60be226446ca15
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: ab92981c3f06458e856498d99020a040
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: e6c29a1eb44f48acb7b4359e90fafb15
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 4f879bba0e094fe99d653032312689bb
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: abeaeee533094753926e5fdc16e1b1c8
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 71ade8a2537c4add93bfadee157488eb
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 7cb0636b6b474f8fa4dd06f3ac15dd3d
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 3e836a247ba84c8c88cbc504d4e9cc08
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 06e6940f5cdf497492ff6f571bd50d91
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 91708143c8604bfeabd651bfa9619970
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 9f6eabc25c914f80899a30a33bae5162
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: e0a26c8c7b1648ad838c1ae0b79472b0
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 92ce7faed6834961a428ac2986eb0ce7
+Running as unit: sp-mimo26-pro-rd1.service; invocation ID: 56afe9dd823c41a78237f1bd69789b45
+2026-10-13T05:10:43Z lane state after 4 polls: 16 READY
+2026-10-13T05:10:47Z api health: {"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+2026-10-13T05:10:47Z api exe: 368d7f85ce8d1e1f
+capital 8 
+arith 64 
+code 64 
+story 64 
+B1 vs B1again tokens identical 4 / 4 logprobs identical 4
+B4 chat prompts: identical 4/4
+B4 synthetic: identical 4/4
+B8 all: identical 8/8
+2026-10-13T05:12:08Z health after: "connected_ranks":16
+MAX MemAvailable drop after ready 41.01 GiB, after capture+batch 42.22 GiB
+2026-10-13T05:12:08Z teardown: api stop, lane stop, reclaim
+rank log error-ish lines:   16 0
+  16 weightd_warm: DROP-KV label=mimo26_pro_tp16_stage released=1 bytes=6920601600 busy=0
+{"active": "qwen3.8-flash", "state": "idle", "target": null, "wanted": "qwen3.8-max", "phase": null, "swap_elapsed_s": null, "phase_elapsed_s": null, "error": null, "memory": {"model": "qwen3.8-flash", "projected_gib": 14.0, "used_gib_max": 11.9, "used_gib_min": 11.9, "available_gib_min": 94.7, "tightest": "spark4"}, "models": [{"id": "glm-5.3", "active": false}, {"id": "glm-5.3-flash", "active": false}, {"id": "kimi-k3", "active": false}, {"id": "qwen3.8-27b", "active": false}, {"id": "deepseek-v4.1-flash", "active": false}, {"id": "qwen3.8-max", "active": false}, {"id": "qwen3.8-flash", "active": true}, {"id": "gemma-4-31b", "active": false}, {"id": "gemma-4-26b-a4b", "active": false}, {"id": "ling-3.0-flash", "active": false}, {"id": "hy4-preview", "active": false}, {"id": "muse-glimmer-30b", "active": false}, {"id": "ling-3.0-flash-fin", "active": false}, {"id": "laguna-s-2.1", "active": false}, {"id": "mimo-v2.6-flash", "active": false}], "history": [{"from": "kimi-k3", "to": "qwen3.8-27b", "ok": true, "seconds": 22.8, "error": null, "memory": {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.3, "used_gib_min": 5.2, "available_gib_min": 101.3, "tightest": "spark4"}, "finished": "2026-10-13T04:50:41Z"}, {"from": "qwen3.8-27b", "to": "kimi-k3", "ok": true, "seconds": 44.6, "error": null, "memory": {"model": "kimi-k3", "projected_gib": 97.5, "used_gib_max": 97.9, "used_gib_min": 97.8, "available_gib_min": 8.8, "tightest": "spark4"}, "finished": "2026-10-13T04:51:29Z"}, {"from": "kimi-k3", "to": "qwen3.8-27b", "ok": true, "seconds": 21.7, "error": null, "memory": {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.4, "used_gib_min": 5.2, "available_gib_min": 101.3, "tightest": "spark4"}, "finished": "2026-10-13T04:52:26Z"}, {"from": "qwen3.8-27b", "to": "qwen3.8-max", "ok": true, "seconds": 33.7, "error": null, "memory": {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.6, "used_gib_min": 90.5, "available_gib_min": 16.0, "tightest": "spark4"}, "finished": "2026-10-13T04:53:04Z"}, {"from": "qwen3.8-max", "to": "qwen3.8-27b", "ok": true, "seconds": 16.0, "error": null, "memory": {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.4, "used_gib_min": 5.2, "available_gib_min": 101.0, "tightest": "spark4"}, "finished": "2026-10-13T04:53:23Z"}, {"from": "qwen3.8-27b", "to": "glm-5.3", "ok": true, "seconds": 31.5, "error": null, "memory": {"model": "glm-5.3", "projected_gib": 57.0, "used_gib_max": 58.4, "used_gib_min": 58.3, "available_gib_min": 48.0, "tightest": "spark4"}, "finished": "2026-10-13T04:54:00Z"}, {"from": "glm-5.3", "to": "qwen3.8-27b", "ok": true, "seconds": 15.4, "error": null, "memory": {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.5, "used_gib_min": 5.2, "available_gib_min": 52.0, "tightest": "spark4"}, "finished": "2026-10-13T04:56:39Z"}, {"from": "qwen3.8-27b", "to": "glm-5.3", "ok": true, "seconds": 37.1, "error": null, "memory": {"model": "glm-5.3", "projected_gib": 57.0, "used_gib_max": 58.4, "used_gib_min": 58.3, "available_gib_min": 48.5, "tightest": "spark4"}, "finished": "2026-10-13T04:57:21Z"}, {"from": "glm-5.3", "to": "qwen3.8-max", "ok": true, "seconds": 68.9, "error": null, "memory": {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.6, "used_gib_min": 90.5, "available_gib_min": 16.3, "tightest": "spark4"}, "finished": "2026-10-13T05:04:04Z"}, {"from": "qwen3.8-max", "to": "qwen3.8-flash", "ok": true, "seconds": 18.4, "error": null, "memory": {"model": "qwen3.8-flash", "projected_gib": 14.0, "used_gib_max": 11.9, "used_gib_min": 11.9, "available_gib_min": 94.7, "tightest": "spark4"}, "finished": "2026-10-13T05:10:04Z"}]}2026-10-13T05:12:46Z swap: qwen3.8-max active
+2026-10-13T05:12:46Z final controller: idle qwen3.8-max None
+2026-10-13T05:12:46Z done
