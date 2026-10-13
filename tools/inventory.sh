@@ -19,7 +19,6 @@ describe() {
 	*/kernels/topk.cuh) echo "top-k both shapes: bitonic small, radix large" ;;
 	*/kernels/head.cuh) echo "sampling head: candidates, commit, softmax" ;;
 	*/kernels/linear_attn.cuh) echo "delta rule decode, causal conv; GDN and KDA" ;;
-	*/kernels/graph.cuh) echo "CUDA graph capture keyed by shape" ;;
 	*/kernels/tensor_map.cuh) echo "TMA descriptor geometry" ;;
 	*/kernels/formats/*) echo "weight format trait: stored width, mma, fragment decode" ;;
 	modules/*/source/cuda/config.h) echo "package-specialized model shapes and constants" ;;

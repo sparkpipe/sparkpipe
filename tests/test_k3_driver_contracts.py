@@ -123,7 +123,7 @@ def main():
 
     # -- default off: the only assignment is the bind's propagation -----------
     for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu",
-                 "engine.h", "dspark.h", "pipeline_sideband.h"):
+                 "engine.h", "dspark.h"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
         for match in re.finditer(r"kda_state_bf16\s*=\s*([^;\n]+);", text):
             value = match.group(1).strip()
