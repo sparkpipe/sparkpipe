@@ -22,19 +22,11 @@
 # and stage_lane.py's per-model hidden sizes, which equal each contract's
 # hidden dimension (the GLM-literal rule matches 6144 for HY4 and MiMo Pro
 # and the Qwen GDN value width).
-1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES is not derived from its wire type
-1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_DESCRIPTOR_BYTES is not derived from its wire type
-1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES is not derived from its wire type
-1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES is not derived from its wire type
-1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES is not derived from its wire type
-1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_SEQUENCE_STATE_DESCRIPTOR_BYTES is not derived from its wire type
-1 model-families/common/include/sparkpipe/spark_dspark_drafter.h: SPARK_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES is not derived from its wire type
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 12288 is outside the model contract
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 154880 is outside the model contract
 5 modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_experts_manifest.c: memcpy uses a direct size/count literal
 1 node/weightd_spawn.c: fread uses a direct size/count literal
 1 qualification/dsv4/performance/tp4_b1_20260814/indexer_post_fusion_probe_da7f/probe.cu: GLM model literal 12288 is outside the model contract
-2 ring/transport/fixed_ring.c: memcpy uses a direct size/count literal
 1 runtime/spark_weightd.c: fread uses a direct size/count literal
 1 runtime/spark_weightd.c: memcpy uses a direct size/count literal
 1 runtime/spark_weightd.c: typed byte array extent is a raw numeric width
