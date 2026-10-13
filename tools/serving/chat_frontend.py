@@ -136,17 +136,27 @@ def delimited_value(text, position, delimiter):
 
 class TokenizersVocabulary:
     def __init__(self, directory, spec):
-        self.tokenizer = Tokenizer.from_file(str(directory / spec.get("file", "tokenizer.json")))
+        self.adopt(Tokenizer.from_file(str(directory / spec.get("file", "tokenizer.json"))))
+
+    @classmethod
+    def from_tokenizer(cls, tokenizer):
+        vocabulary = cls.__new__(cls)
+        vocabulary.adopt(tokenizer)
+        return vocabulary
+
+    def adopt(self, tokenizer):
+        self.tokenizer = tokenizer
+        document = json.loads(tokenizer.to_str())
+        document["added_tokens"] = []
+        self.plain = Tokenizer.from_str(json.dumps(document))
 
     def encode(self, text, special):
-        self.tokenizer.encode_special_tokens = not special
-        try:
+        if special:
             return self.tokenizer.encode(text, add_special_tokens=False).ids
-        finally:
-            self.tokenizer.encode_special_tokens = False
+        return self.plain.encode(text, add_special_tokens=False).ids
 
-    def special_strings(self):
-        return [token.content for token in self.tokenizer.get_added_tokens_decoder().values() if token.special]
+    def control_strings(self):
+        return [token.content for token in self.tokenizer.get_added_tokens_decoder().values()]
 
     def decoder(self):
         stream = DecodeStream(skip_special_tokens=False)
@@ -176,7 +186,7 @@ class TiktokenVocabulary:
     def encode(self, text, special):
         return self.encoding.encode(text, allowed_special="all") if special else self.encoding.encode_ordinary(text)
 
-    def special_strings(self):
+    def control_strings(self):
         return list(self.specials)
 
     def decoder(self):
@@ -219,7 +229,7 @@ class TemplateRenderer:
         context = dict(self.template_tokens)
         context.update(kwargs)
         text = self.render_text(messages, tools, context)
-        specials = [token for token in self.vocabulary.special_strings() if token]
+        specials = [token for token in self.vocabulary.control_strings() if token]
         carried = []
 
         def mark(value):
