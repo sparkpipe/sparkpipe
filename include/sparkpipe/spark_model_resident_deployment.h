@@ -11,6 +11,7 @@ extern "C" {
 
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION 3u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT 16u
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT 4u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_SCHEMA_VERSION 2u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT \
 	SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT
@@ -78,6 +79,8 @@ typedef struct SparkModelResidentDeployment
 	char *tokenizer_asset_path;
 	uint32_t tokenizer_vocabulary_size;
 	char *tokenizer_asset_sha256;
+	uint32_t tokenizer_text_prompt_prefix_count;
+	uint32_t tokenizer_text_prompt_prefix_ids[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT];
 	char *weightd_socket_path;
 	uint32_t eos_token_count;
 	uint32_t eos_token_ids[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT];

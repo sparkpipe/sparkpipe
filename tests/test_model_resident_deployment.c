@@ -588,7 +588,14 @@ int main(int argc,char **argv)
 	assert(deployment.tokenizer_vocabulary_size == 129280u);
 	assert(deployment.tokenizer_asset_sha256 != 0);
 	assert(strlen(deployment.tokenizer_asset_sha256) == 64u);
+	assert(deployment.tokenizer_text_prompt_prefix_count == 0u);
 	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_prefix.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.tokenizer_text_prompt_prefix_count == 1u && deployment.tokenizer_text_prompt_prefix_ids[0] == 0u);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_prefix_empty.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_prefix_out_of_range.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_prefix_too_long.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_path_only.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_bad_sha.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_zero_vocab.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);

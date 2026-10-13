@@ -431,7 +431,7 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	int32_t root,
 	SparkModelResidentDeployment *deployment)
 {
-	int32_t object;
+	int32_t object,prefix;
 	SparkStatus status;
 	object = SparkModelResidentDeploymentMember(document,root,"tokenizer");
 	if ( object < 0 )
@@ -441,7 +441,12 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	}
 	if ( !SparkJsonTokenIsType(document,object,SPARK_JSON_TOKEN_OBJECT) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	status = SparkJsonValidateObjectMembersExact(document,object,SparkModelResidentDeploymentTokenizerMembers,3u);
+	{
+		const char *members[4] = { SparkModelResidentDeploymentTokenizerMembers[0],SparkModelResidentDeploymentTokenizerMembers[1],
+			SparkModelResidentDeploymentTokenizerMembers[2],"text_prompt_prefix_token_ids" };
+		prefix = SparkModelResidentDeploymentMember(document,object,"text_prompt_prefix_token_ids");
+		status = SparkJsonValidateObjectMembersExact(document,object,members,prefix >= 0 ? 4u : 3u);
+	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	status = SparkModelResidentDeploymentString(document,object,"path",&deployment->tokenizer_asset_path);
@@ -452,6 +457,28 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	if ( status == SPARK_STATUS_OK && (deployment->tokenizer_vocabulary_size == 0u ||
 			!SparkModelRuntimeArtifactSha256IsValid(deployment->tokenizer_asset_sha256)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
+	deployment->tokenizer_text_prompt_prefix_count = 0u;
+	if ( status == SPARK_STATUS_OK && prefix >= 0 )
+	{
+		uint32_t index;
+		int32_t element;
+		if ( !SparkJsonTokenIsType(document,prefix,SPARK_JSON_TOKEN_ARRAY) )
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+		deployment->tokenizer_text_prompt_prefix_count = SparkJsonGetArrayElementCount(document,prefix);
+		if ( deployment->tokenizer_text_prompt_prefix_count == 0u ||
+			deployment->tokenizer_text_prompt_prefix_count > SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT )
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+		element = SparkJsonGetArrayElementFirst(document,prefix);
+		for (index=0u; index<deployment->tokenizer_text_prompt_prefix_count; index++)
+		{
+			status = SparkJsonGetUInt32(document,element,&deployment->tokenizer_text_prompt_prefix_ids[index]);
+			if ( status != SPARK_STATUS_OK )
+				SPARK_RETURN(status);
+			if ( deployment->tokenizer_text_prompt_prefix_ids[index] >= deployment->tokenizer_vocabulary_size )
+				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+			element = SparkJsonGetArrayElementNext(document,prefix,element);
+		}
+	}
 	SPARK_RETURN(status);
 }
 

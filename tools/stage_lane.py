@@ -241,6 +241,7 @@ LAGUNA = {
     "chat_template": "model-families/laguna/chat_template.json",
     "eos_token_ids": [2, 24],
     "tokenizer_vocabulary": 100352,
+    "text_prompt_prefix_token_ids": [2],
     "hidden": 3072,
     "kv_page_bytes": (48 * 64 * 4096) // WORLD,
     "recurrent_bytes": 0,
@@ -410,6 +411,8 @@ def deployment(model: dict, lane: int, args) -> dict:
     if args.tokenizer_sha256:
         result["tokenizer"] = {"path": "tokenizer/tokenizer.compiled", "sha256": args.tokenizer_sha256,
                                "vocabulary_size": model["tokenizer_vocabulary"]}
+        if model.get("text_prompt_prefix_token_ids"):
+            result["tokenizer"]["text_prompt_prefix_token_ids"] = model["text_prompt_prefix_token_ids"]
     return result
 
 
