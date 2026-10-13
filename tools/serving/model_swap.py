@@ -216,10 +216,7 @@ class Swapper:
                     self.enter(f"stopping {other['id']}")
                     await self.stop(other)
                 self.enter(f"clearing {target}")
-                code, text = await self.local(model["api_stop"], 60)
-                if code != 0:
-                    raise SwapError(f"{target} api stop exit {code}: {text[-300:]}")
-                self.check(await self.fan(model["node_stop"], self.node_seconds, {}), f"{target} engine stop")
+                await self.stop(model)
                 for label in dict.fromkeys(other["kv_label"] for other in others):
                     self.enter(f"releasing KV pool {label}")
                     await self.release(label)
@@ -233,6 +230,10 @@ class Swapper:
         except SwapError as error:
             self.state = "failed"
             self.error = str(error)
+        except Exception as error:
+            self.state = "failed"
+            self.error = f"unexpected {type(error).__name__} during {self.phase}: {error}"
+            print(json.dumps({"event": "swap_exception", "target": target, "phase": self.phase, "error": self.error}), file=sys.stderr, flush=True)
         elapsed = round(time.time() - self.swap_started, 1)
         record = {"from": previous, "to": target, "ok": self.state == "idle", "seconds": elapsed, "error": self.error, "memory": measured,
                   "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
