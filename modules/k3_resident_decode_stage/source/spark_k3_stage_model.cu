@@ -221,6 +221,16 @@ static void K3RunnerTpContextRelease(SparkK3RunnerTpContext *context)
 	state->tp_context_free_head = context;
 }
 
+static void K3RunnerTpStepReset(SparkK3ModelState *state)
+{
+	if ( state->pending_tp != 0 )
+	{
+		K3RunnerTpContextRelease(state->pending_tp);
+		state->pending_tp = 0;
+	}
+	state->tp_context_overflow = 0u;
+}
+
 static void K3RunnerTpApply(SparkK3RunnerTpContext *tp)
 {
 	K3LayerBuffers *b = tp->buffers;
@@ -440,7 +450,12 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			SparkK3RunnerTpContext *completion_context =
 				K3RunnerTpContextAcquire(state);
 			if ( completion_context == 0 )
+			{
+				K3ModelFail(state);
+				(void)state->services->round(state->services->context, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
+					K3_RUNNER_STAGE_ALL, SparkK3TpSequences(gate_up_elements), 0u, state->fused_device, state->fused_device);
 				return;
+			}
 			completion_context->owner = state;
 			completion_context->fused = state->fused_device;
 			completion_context->buffers = b;
@@ -468,9 +483,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		state->pending_tp = 0;
 		if ( pending == 0 )
 			K3ModelFail(state);
-		else
-			(void)state->services->round(state->services->context, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
-				K3_RUNNER_STAGE_FINISH, rows, 0u, state->fused_device, state->fused_device);
+		(void)state->services->round(state->services->context, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
+			K3_RUNNER_STAGE_FINISH, rows, 0u, state->fused_device, state->fused_device);
 		if ( pending != 0 )
 			K3RunnerTpApply(pending);
 		return;
@@ -487,7 +501,12 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		SparkK3RunnerTpContext *completion_context =
 			K3RunnerTpContextAcquire(state);
 		if ( completion_context == 0 )
+		{
+			K3ModelFail(state);
+			(void)state->services->round(state->services->context, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
+				stage, rows, 0u, state->fused_device, state->fused_device);
 			return;
+		}
 		completion_context->owner = state;
 		completion_context->fused = state->fused_device;
 		completion_context->buffers = b;
@@ -500,6 +519,11 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			stage, rows, 0u, state->fused_device, state->fused_device);
 		if ( stage == K3_RUNNER_STAGE_BEGIN )
 		{
+			if ( state->pending_tp != 0 )
+			{
+				K3ModelFail(state);
+				K3RunnerTpContextRelease(state->pending_tp);
+			}
 			state->pending_tp = completion_context;
 			return;
 		}
@@ -895,6 +919,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	cudaStream_t stream = (cudaStream_t)stream_void;
 	SparkK3StepInput in;
 	int32_t status;
+	K3RunnerTpStepReset(state);
 	memset(&in, 0, sizeof(in));
 	in.hidden_in = step->hidden_bf16;
 	in.positions = step->positions;
