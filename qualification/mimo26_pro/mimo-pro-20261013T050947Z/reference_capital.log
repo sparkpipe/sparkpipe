@@ -1,0 +1,11 @@
+queued 2026-10-13T05:11:26Z
+               total        used        free      shared  buff/cache   available
+Mem:              60          14          10           1          38          46
+capital tokens 8
+start 2026-10-13T05:11:25Z
+capital: 8/8 top-1 agree, 0 mismatches outside ties (margin < 0.5), served logprob delta median None max None
+	Command being timed: "python3 tools/mimo26_reference.py score --checkpoint /mnt/cold-raid6/models/mimo-v2.6-pro-rl --prompts ref/prompts_pro.json --capture ref/capture_mimo-pro-20261013T050947Z_capital.json --threads 8 --tie-margin 0.5 --out ref/report_mimo-pro-20261013T050947Z_capital.json"
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 48:33.11
+	Maximum resident set size (kbytes): 2792540
+	Exit status: 0
+ref-exit 0 2026-10-13T05:59:58Z
