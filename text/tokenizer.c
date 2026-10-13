@@ -3052,10 +3052,12 @@ static SparkStatus SparkTokenizerFindRankOrderedMerge(
     uint32_t right_token_id,
     uint32_t *merged_token_id_out)
 {
-    char merge_key[SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES];
+    char inline_key[SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES];
+    char *merge_key = inline_key;
     uint32_t left_bytes;
     uint32_t right_bytes;
     uint32_t merged_token_id;
+    SparkStatus status;
 
     if (tokenizer == 0 || merged_token_id_out == 0 ||
         tokenizer->token_text_by_id == 0 || tokenizer->token_text_bytes_by_id == 0 ||
@@ -3068,14 +3070,26 @@ static SparkStatus SparkTokenizerFindRankOrderedMerge(
     right_bytes = tokenizer->token_text_bytes_by_id[right_token_id];
     if (tokenizer->token_text_by_id[left_token_id] == 0 ||
         tokenizer->token_text_by_id[right_token_id] == 0 ||
-        (uint64_t)left_bytes + (uint64_t)right_bytes > sizeof(merge_key))
+        (uint64_t)left_bytes + (uint64_t)right_bytes > UINT32_MAX)
     {
         return SPARK_STATUS_NOT_FOUND;
     }
+    if ((uint64_t)left_bytes + (uint64_t)right_bytes > sizeof(inline_key))
+    {
+        merge_key = (char *)malloc((size_t)left_bytes + (size_t)right_bytes);
+        if (merge_key == 0)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+    }
     memcpy(merge_key,tokenizer->token_text_by_id[left_token_id],left_bytes);
     memcpy(merge_key + left_bytes,tokenizer->token_text_by_id[right_token_id],right_bytes);
-    if (SparkTokenizerFindTokenId(tokenizer,merge_key,left_bytes + right_bytes,&merged_token_id) !=
-        SPARK_STATUS_OK)
+    status = SparkTokenizerFindTokenId(tokenizer,merge_key,left_bytes + right_bytes,&merged_token_id);
+    if (merge_key != inline_key)
+    {
+        free(merge_key);
+    }
+    if (status != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_NOT_FOUND;
     }
@@ -3104,13 +3118,18 @@ static SparkStatus SparkTokenizerPushPairCandidate(
     if (tokenizer->rank_ordered_merges != 0u)
     {
         uint32_t merged_token_id = 0u;
-        if (SparkTokenizerFindRankOrderedMerge(
-                tokenizer,
-                workspace->symbol_token_ids[left_symbol_index],
-                workspace->symbol_token_ids[right_symbol_index],
-                &merged_token_id) != SPARK_STATUS_OK)
+        SparkStatus merge_status = SparkTokenizerFindRankOrderedMerge(
+            tokenizer,
+            workspace->symbol_token_ids[left_symbol_index],
+            workspace->symbol_token_ids[right_symbol_index],
+            &merged_token_id);
+        if (merge_status == SPARK_STATUS_NOT_FOUND)
         {
             return SPARK_STATUS_OK;
+        }
+        if (merge_status != SPARK_STATUS_OK)
+        {
+            return merge_status;
         }
         candidate.rank = merged_token_id;
         candidate.left_symbol_index = left_symbol_index;
