@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <assert.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -101,6 +102,14 @@ static void TestModelResidentWaitForSocket(const char *socket_path)
 		nanosleep(&delay,0);
 	}
 	assert(0 && "model resident socket did not become ready");
+}
+
+static uint32_t TestModelResidentOpenFds(void)
+{
+	uint32_t fd,count = 0u;
+	for (fd=0u; fd<4096u; fd++)
+		count += fcntl((int)fd,F_GETFD) != -1 ? 1u : 0u;
+	return(count);
 }
 
 static void TestModelResidentBuildDecode(
@@ -347,6 +356,16 @@ int main(void)
 	assert(SparkModelResidentClientGetView(client,&view) == SPARK_STATUS_OK);
 	assert(view.connected == 0u);
 	unlink(socket_path);
+	{
+		struct timespec poll_delay = {0,50000000};
+		uint32_t open_before = TestModelResidentOpenFds(),polls;
+		for (polls=0u; polls<40u; polls++)
+		{
+			assert(SparkModelResidentClientProgress(client,8u) != SPARK_STATUS_OK);
+			nanosleep(&poll_delay,0);
+		}
+		assert(TestModelResidentOpenFds() <= open_before + 1u);
+	}
 	child = TestModelResidentStart(deployment_path,0u);
 	TestModelResidentWaitForSocket(socket_path);
 	status = SPARK_STATUS_IO_ERROR;
