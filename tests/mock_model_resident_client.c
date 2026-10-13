@@ -80,6 +80,7 @@ struct SparkModelResidentClient
 	uint32_t is_final_rank;
 	SparkStatus scripted_submit_status;
 	uint32_t scripted_submit_once;
+	uint32_t release_submissions;
 	SparkStatus scripted_call_status[MOCK_CALL_COUNT];
 	SparkStatus scripted_prefix_result_status;
 	uint32_t scripted_prefix_result_count;
@@ -119,6 +120,12 @@ SparkModelResidentClient *MockResidentClientByRank(uint32_t stage_index)
 		        found->client_generation) )
 			found = mock_registry[i];
 	return(found);
+}
+
+uint32_t MockResidentClientReleaseSubmissions(uint32_t stage_index)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	return(c != 0 ? c->release_submissions : 0u);
 }
 
 uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind)
@@ -524,6 +531,8 @@ static SparkStatus MockResidentClientEnqueue(
 		mock_verify_submissions++;
 		mock_verify_rows += submission->row_count;
 	}
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		client->release_submissions++;
 	slot->committed = kind == MOCK_CALL_CONTINUE || kind == MOCK_CALL_SUBMIT;
 	slot->requires_decision = kind == MOCK_CALL_PREPARE;
 	client->last_submission_id = submission->submission_id;
