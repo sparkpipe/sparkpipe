@@ -451,8 +451,6 @@ void SparkTpDeviceCollectiveBroadcastCancel(
 #define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK \
     ((1ull << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) - 1ull)
 
-SparkStatus SparkTpDeviceCollectiveChainRetire(
-    SparkTpDeviceCollective *collective);
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,
     uint64_t request_id);
