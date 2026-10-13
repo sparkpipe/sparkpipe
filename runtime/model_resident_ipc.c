@@ -176,27 +176,11 @@ SparkStatus SparkModelResidentIpcInitializeHelloAck(
 	SparkStatus copy_status;
 	copy_status = SparkModelServingAdapterValidateRuntimeLimits(descriptor,runtime_limits);
 	if ( ack == 0 || message_id == 0u || client_generation == 0u )
-	{
-		fprintf(stderr,"IPC-ACK-SENTINEL ack=%p msgid=%llu gen=%llu\n",
-			(void *)ack,
-			(unsigned long long)message_id,
-			(unsigned long long)client_generation);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	}
 	if ( copy_status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"IPC-ACK-LIMITS status=%u\n",(unsigned)copy_status);
-		return(copy_status);
-	}
+		SPARK_RETURN(copy_status);
 	if ( rank_index >= descriptor->stage_count || stage_index >= descriptor->stage_count )
-	{
-		fprintf(stderr,"IPC-ACK-FAIL rank=%u stage=%u stage_count=%u gen=%llu msgid=%llu\n",
-			(unsigned)rank_index,(unsigned)stage_index,
-			(unsigned)descriptor->stage_count,
-			(unsigned long long)client_generation,
-			(unsigned long long)message_id);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	}
 	memset(ack,0,sizeof(*ack));
 	SparkModelResidentIpcInitializeHeader(&ack->header,SPARK_MODEL_RESIDENT_IPC_KIND_HELLO_ACK,SPARK_MODEL_RESIDENT_IPC_HELLO_ACK_BYTES,SPARK_MODEL_RESIDENT_IPC_HELLO_ACK_BYTES,message_id);
 	ack->status = (uint32_t)status;
@@ -235,7 +219,7 @@ SparkStatus SparkModelResidentIpcInitializeHelloAck(
 		copy_status = SparkModelResidentIpcCopyText(ack->model_revision,sizeof(ack->model_revision),descriptor->model_revision);
 	if ( copy_status == SPARK_STATUS_OK )
 		copy_status = SparkModelResidentIpcCopyText(ack->artifact_sha256,sizeof(ack->artifact_sha256),descriptor->artifact_sha256);
-	return(copy_status);
+	SPARK_RETURN(copy_status);
 }
 
 SparkStatus SparkModelResidentIpcValidateHelloAck(
@@ -256,12 +240,7 @@ SparkStatus SparkModelResidentIpcValidateHelloAck(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( rank_index >= descriptor->stage_count || stage_index >= descriptor->stage_count )
-	{
-		fprintf(stderr,"IPC-ACK-FAIL-VALIDATE rank=%u stage=%u stage_count=%u\n",
-			(unsigned)rank_index,(unsigned)stage_index,
-			(unsigned)descriptor->stage_count);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	}
 	if ( ack->status > SPARK_STATUS_UNSUPPORTED || ack->client_generation == 0u || ack->session_epoch != session_epoch || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->kv_logical_page_capacity != runtime_limits->kv_logical_page_capacity || ack->kv_physical_page_capacity != runtime_limits->kv_physical_page_capacity || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes || ack->linear_weight_codec != descriptor->linear_weight_codec || ack->expert_weight_codec != descriptor->expert_weight_codec || ack->kv_cache_codec != descriptor->kv_cache_codec || (ack->status == SPARK_STATUS_OK && ack->max_sequence_positions == 0u) )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	if ( ack->input_sideband_kind != (stage_index != 0u ? descriptor->boundary_sideband_kinds[stage_index - 1u] : 0u) || ack->input_sideband_bytes_per_sequence != (stage_index != 0u ? descriptor->boundary_sideband_bytes_per_sequence[stage_index - 1u] : 0u) || ack->output_sideband_kind != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_kinds[stage_index] : 0u) || ack->output_sideband_bytes_per_sequence != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_bytes_per_sequence[stage_index] : 0u) )

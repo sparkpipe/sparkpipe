@@ -555,7 +555,7 @@ static SparkStatus SparkModelResidentClientEnsureConnected(
 			client->reconnect_not_before_ns = up_ns +
 			    (uint64_t)client->reconnect_backoff_ms * UINT64_C(1000000);
 			fprintf(stderr,
-			    "client_churn_guard rank=%u backoff_ms=%u — short-lived connection, backoff carries\n",
+			    "client_churn_guard rank=%u backoff_ms=%u\n",
 			    (unsigned)client->rank_index,(unsigned)client->reconnect_backoff_ms);
 		}
 		else
@@ -1166,7 +1166,7 @@ SparkStatus SparkModelResidentClientProgress(
 		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_IO_ERROR )
 		{
 			fprintf(stderr,
-			    "client_stream_rejected rank=%u status=%u — dropping the session and reconnecting\n",
+			    "client_stream_rejected rank=%u status=%u\n",
 			    (unsigned)client->rank_index,(unsigned)status);
 			SparkModelResidentClientFailStop(client);
 			SPARK_RETURN(status);
@@ -1175,7 +1175,7 @@ SparkStatus SparkModelResidentClientProgress(
 	if ( status == SPARK_STATUS_IO_ERROR )
 	{
 		fprintf(stderr,
-		    "client_connection_lost rank=%u on progress — reconnecting\n",
+		    "client_connection_lost rank=%u\n",
 		    (unsigned)client->rank_index);
 		SparkModelResidentClientFailStop(client);
 	}
