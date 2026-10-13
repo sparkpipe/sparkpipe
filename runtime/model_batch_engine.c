@@ -52,6 +52,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t generated_token_count;
 	uint32_t output_token_budget;
 	uint32_t cancel_pending;
+	uint32_t expired;
 	uint32_t resident_bound;
 	uint32_t busy_restore_count;
 	uint64_t busy_since_ns;
@@ -750,7 +751,8 @@ static void SparkModelBatchEmitTerminal(
 		engine->completed_request_count++;
 	else if ( kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED )
 		engine->cancelled_request_count++;
-	SparkModelBatchEmit(engine,&snapshot,kind,status,0u,0u,0,0u);
+	if ( snapshot.expired == 0u )
+		SparkModelBatchEmit(engine,&snapshot,kind,status,0u,0u,0,0u);
 }
 
 static void SparkModelBatchQueueTerminal(
@@ -833,7 +835,8 @@ static SparkStatus SparkModelBatchAcceptToken(
 		SparkModelBatchRecordFirstToken(engine,request);
 	stop = SparkModelBatchTokenIsStop(engine,token_id);
 	request->state = SPARK_MODEL_BATCH_REQUEST_COMPLETING;
-	SparkModelBatchEmit(engine,request,SPARK_MODEL_BATCH_EVENT_TOKEN,SPARK_STATUS_OK,stop != 0u ? SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN : 0u,token_id,logprobs,request->sampling.logprobs);
+	if ( request->expired == 0u )
+		SparkModelBatchEmit(engine,request,SPARK_MODEL_BATCH_EVENT_TOKEN,SPARK_STATUS_OK,stop != 0u ? SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN : 0u,token_id,logprobs,request->sampling.logprobs);
 	if ( request->cancel_pending != 0u )
 		SparkModelBatchQueueTerminal(engine,request,SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED,SPARK_STATUS_OK);
 	else if ( stop != 0u || request->generated_token_count >= request->output_token_budget )
@@ -1130,7 +1133,12 @@ static SparkStatus SparkModelBatchHandlePrefillCompletion(
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 		if ( request->computed_prompt_token_count < request->prompt_token_count )
-			request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
+		{
+			if ( request->cancel_pending != 0u )
+				SparkModelBatchQueueTerminal(engine,request,SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED,SPARK_STATUS_OK);
+			else
+				request->state = SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL;
+		}
 		else
 		{
 			status = SparkModelBatchAcceptToken(engine,request,completion,lane);
@@ -3003,15 +3011,18 @@ static void SparkModelBatchExpireStalledRequests(
 			continue;
 		if ( engine->requests[index].inflight_since_ns == 0ull )
 			engine->requests[index].inflight_since_ns = now;
-		else if ( now - engine->requests[index].inflight_since_ns >
+		else if ( engine->requests[index].expired == 0u &&
+		          now - engine->requests[index].inflight_since_ns >
 		          engine->inflight_budget_ns )
 		{
 			fprintf(stderr,
-			    "batch request expired id=%llu state=%u\n",
+			    "batch request expired id=%llu state=%u; the client gets BUSY now, the slot is released when its in-flight submission completes\n",
 			    (unsigned long long)engine->requests[index].request_id,
 			    state);
-			SparkModelBatchFailRequest(engine,
-			    &engine->requests[index],SPARK_STATUS_BUSY);
+			engine->requests[index].expired = 1u;
+			engine->requests[index].cancel_pending = 1u;
+			SparkModelBatchEmit(engine,&engine->requests[index],
+			    SPARK_MODEL_BATCH_EVENT_ERROR,SPARK_STATUS_BUSY,0u,0u,0,0u);
 		}
 	}
 }
