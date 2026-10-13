@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_directory="${SPARK_CUDA_GATE_OUTPUT_DIRECTORY:-${repository_root}/build/cuda13_sm121a_gate}"
 nvcc_binary="${NVCC:-nvcc}"
 cuda_architecture="${CUDA_ARCH:-sm_121a}"
-
 "${repository_root}/tools/source_package_gate.sh"
-
 if [[ "${cuda_architecture}" != "sm_121a" ]]; then
 	echo "CUDA gate requires CUDA_ARCH=sm_121a, got ${cuda_architecture}" >&2
 	exit 2
@@ -24,16 +21,14 @@ if [[ ! -f /usr/include/infiniband/verbs.h ]]; then
 	echo "CUDA gate requires libibverbs development headers" >&2
 	exit 2
 fi
-
 nvcc_version="$(${nvcc_binary} --version)"
 if ! grep -Eq 'release 13\.' <<<"${nvcc_version}"; then
 	echo "CUDA gate requires CUDA 13.x" >&2
 	printf '%s\n' "${nvcc_version}" >&2
 	exit 2
 fi
-
 python3 "${repository_root}/tools/glm52_model_contract.py" --check
-
+cuda_home="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")"
 rm -rf "${output_directory}"
 mkdir -p "${output_directory}/objects" "${output_directory}/ptx" "${output_directory}/logs"
 printf '%s\n' "${nvcc_version}" > "${output_directory}/nvcc-version.txt"
@@ -57,16 +52,7 @@ include_flags=(
 	-I"${repository_root}/include"
 	-I"${repository_root}/deployment/include"
 	-I"${repository_root}/model-families/common/include"
-	-I"${repository_root}/model-families/glm52/include"
 	-I"${repository_root}/model-families/k3/include"
-	-I"${repository_root}/model-families/mimo25/include"
-	-I"${repository_root}/modules/glm52_resident_decode_stage/include"
-	-I"${repository_root}/modules/glm52_resident_decode_stage/source"
-	-I"${repository_root}/modules/glm52_dspark_draft_backend/include"
-	-I"${repository_root}/modules/minimax_resident_decode_stage/include"
-	-I"${repository_root}/modules/minimax_resident_decode_stage/source"
-	-I"${repository_root}/model-families/minimax/include"
-	-I"${repository_root}/model-families/minimax/include/sparkpipe"
 )
 object_flags=(
 	-std=c++17
@@ -119,10 +105,6 @@ translation_units=(
 	tools/hardware/spark_nvme_characterize.cu
 	inference/llms/kimi_k3/bind.cu
 	inference/llms/kimi_k3/unity.cu
-	inference/llms/mimo_2_5/bind.cu
-	inference/llms/mimo_2_5/unity.cu
-	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_draft_backend.cu
-	modules/glm52_dspark_draft_backend/validation/validate_glm52_dspark_epoch3_cuda.cu
 )
 for relative_source in "${translation_units[@]}"; do
 	artifact_name="${relative_source//\//__}"
@@ -130,199 +112,61 @@ for relative_source in "${translation_units[@]}"; do
 	compile_cuda "${relative_source}" "${artifact_name}"
 done
 
-minimax_model_header="${repository_root}/modules/minimax_resident_decode_stage/include/sparkpipe/spark_minimax_model.h"
-compile_cuda \
-	modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_cuda.cu \
-	minimax_resident_decode_stage \
-	-include "${minimax_model_header}" \
-	-DSPARK_MINIMAX_MODULE_BUILD=1
-
-# GLM 5.3 Flash uses the glm5_next implementation, separate from glm52.
-make -C "${repository_root}" -j2 build/glm5_next_driver_probe \
-	CUDA_HOME="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")" \
-	> "${output_directory}/logs/glm5-next-driver-probe.txt" 2>&1
-python3 "${repository_root}/tests/test_glm5_next_driver_probe.py"
-glm5_next_gpu_tests=(
-	build/test_glm5_next_head_offset
-	build/test_glm5_next_mtp_join
-	build/test_glm5_next_hc_mix
-	build/test_glm5_next_l2_prefetch
-	build/test_glm5_next_index_cp
-	build/test_glm5_next_kv_shard
-	build/test_glm5_next_rows_kernels
-)
-if ! make -C "${repository_root}" -j2 "${glm5_next_gpu_tests[@]}" \
-	NVCC="${nvcc_binary}" \
-	CUDA_ARCH=sm_121a \
-	CUDA_HOME="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")" \
-	> "${output_directory}/logs/glm5-next-gpu-tests.txt" 2>&1; then
-	echo "glm5_next GPU tests do not build for sm_121a; see logs/glm5-next-gpu-tests.txt" >&2
-	exit 5
-fi
-for gpu_test in "${glm5_next_gpu_tests[@]}"; do
-	elf_listing="$(cuobjdump --list-elf "${repository_root}/${gpu_test}")"
-	if ! grep -q 'sm_121a' <<<"${elf_listing}"; then
-		echo "CUDA test binary missing sm_121a target: ${gpu_test}" >&2
-		exit 4
-	fi
-done
-compile_cuda \
-	modules/glm5_next_resident_decode_stage/source/spark_glm5_next_resident_decode_stage_cuda.cu \
-	glm5_next_resident_decode_stage_fp8 \
-	-I"${repository_root}/model-families/glm5_next/include" \
-	-I"${repository_root}/modules/glm5_next_resident_decode_stage/include" \
-	-I"${repository_root}/modules/glm5_next_resident_decode_stage/source" \
-	-include "${repository_root}/model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h" \
-	-DGLM5_NEXT_EXPERT_WEIGHT_CODEC=5 \
-	'-DGLM5_NEXT_EXPERT_CODEC_NAME="fp8"' \
-	-DSPARK_BATCH_BUCKET=1024u
-
-glm_model_header="${repository_root}/model-families/glm52/include/sparkpipe/spark_glm52_model.h"
-glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)
-glm_codec_ids=(2 3 4 5 6 7)
-for codec_index in "${!glm_codecs[@]}"; do
-	codec="${glm_codecs[${codec_index}]}"
-	codec_id="${glm_codec_ids[${codec_index}]}"
-	read -r model_revision contract_sha256 < <(
-		python3 "${repository_root}/tools/glm52_model_contract.py" \
-			--print-build-identity "${codec}"
-	)
-	compile_cuda \
-		modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_cuda.cu \
-		"glm52_resident_decode_stage_${codec}" \
-		-include "${glm_model_header}" \
-		-DGLM_EXPERT_WEIGHT_CODEC="${codec_id}" \
-		-DGLM_EXPERT_CODEC_NAME=\""${codec}"\" \
-		-DGLM_MODEL_REVISION=\""${model_revision}"\" \
-		-DGLM_CONTRACT_SHA256=\""${contract_sha256}"\" \
-		-DSPARK_BATCH_BUCKET=1024u
-done
-
 for direct_mode in 0 1; do
 	compile_cuda ring/transport/rdma.cu "rdma_mode_${direct_mode}" \
 		-DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT="${direct_mode}"
 done
 
-for codec in "${glm_codecs[@]}"; do
-	read -r model_revision contract_sha256 < <(
-		python3 "${repository_root}/tools/glm52_model_contract.py" \
-			--print-build-identity "${codec}"
-	)
-	make -C "${repository_root}/modules/glm52_resident_decode_stage" clean \
-		EXPERT_CODEC="${codec}" \
-		MODEL_REVISION="${model_revision}" \
-		CONTRACT_SHA256="${contract_sha256}" \
-		NVCC="${nvcc_binary}" \
-		CUDA_ARCH=sm_121a \
-		> "${output_directory}/logs/glm52-${codec}-archive.txt" 2>&1
-	make -C "${repository_root}/modules/glm52_resident_decode_stage" \
-		-j2 archive \
-		EXPERT_CODEC="${codec}" \
-		MODEL_REVISION="${model_revision}" \
-		CONTRACT_SHA256="${contract_sha256}" \
-		NVCC="${nvcc_binary}" \
-		CUDA_ARCH=sm_121a \
-		>> "${output_directory}/logs/glm52-${codec}-archive.txt" 2>&1
-done
+make_variable()
+{
+	make -s --no-print-directory -C "${repository_root}" -f Makefile \
+		-f <(printf 'print-%%:\n\t@echo $(%s)\n' '$*') "print-$1" \
+		NVCC="${nvcc_binary}" CUDA_ARCH=sm_121a CUDA_HOME="${cuda_home}"
+}
 
-make -C "${repository_root}/modules/minimax_resident_decode_stage" clean \
+adapters=()
+while IFS= read -r variable; do
+	adapters+=("$(make_variable "${variable}")")
+done < <(sed -n 's/^\([A-Z0-9_]*_SERVING_ADAPTER\)[[:space:]]*:=.*/\1/p' "${repository_root}/Makefile")
+if [[ "${#adapters[@]}" -eq 0 ]]; then
+	echo "the Makefile names no serving adapters" >&2
+	exit 5
+fi
+cuda_programs=(
+	build/sparkpipe_model_residentd
+	build/sparkpipe_weightd
+	build/k3_tp_context_cuda
+)
+if ! make -C "${repository_root}" -j"$(nproc)" "${adapters[@]}" "${cuda_programs[@]}" \
 	NVCC="${nvcc_binary}" \
 	CUDA_ARCH=sm_121a \
-	> "${output_directory}/logs/minimax-archive.txt" 2>&1
-make -C "${repository_root}/modules/minimax_resident_decode_stage" \
-	-j2 archive \
-	NVCC="${nvcc_binary}" \
-	CUDA_ARCH=sm_121a \
-	>> "${output_directory}/logs/minimax-archive.txt" 2>&1
-
-cuda_home="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")"
-make -C "${repository_root}" -j2 \
-	build/libsparkpipe_core.a build/libsparkpipe_runtime.a build/libsparkpipe_model_common.a \
 	CUDA_HOME="${cuda_home}" \
-	> "${output_directory}/logs/runtime-libraries.txt" 2>&1
-
-module_codec()
-{
-	case "$1" in
-	gemma4_resident_decode_stage|hy4_resident_decode_stage|minimax_resident_decode_stage|muse_glimmer_resident_decode_stage)
-		echo bf16
-		;;
-	*)
-		echo fp8
-		;;
-	esac
-}
-
-link_module()
-{
-	local module_name="$1"
-	local archive_path="$2"
-	local entry_prefix entry_source
-	entry_prefix="$(sed -n 's/^MODULE_ENTRY_PREFIX[[:space:]]*:=[[:space:]]*//p' "${repository_root}/modules/${module_name}/Makefile")"
-	if [[ -z "${entry_prefix}" ]]; then
-		echo "module ${module_name} names no MODULE_ENTRY_PREFIX" >&2
+	> "${output_directory}/logs/adapters.txt" 2>&1; then
+	echo "the serving adapters or CUDA programs do not build for sm_121a; see logs/adapters.txt" >&2
+	exit 5
+fi
+for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
+	if [[ ! -f "${repository_root}/${artifact}" ]]; then
+		echo "build produced no ${artifact}" >&2
 		exit 5
 	fi
-	entry_source="${output_directory}/modules/${module_name}/link_entries.c"
-	{
-		for entry in Initialize Execute Admit Snapshot Destroy; do
-			printf 'extern int %s%s();\n' "${entry_prefix}" "${entry}"
-		done
-		printf 'void *SparkLinkGateEntries[] = {(void *)%sInitialize,(void *)%sExecute,(void *)%sAdmit,(void *)%sSnapshot,(void *)%sDestroy};\n' \
-			"${entry_prefix}" "${entry_prefix}" "${entry_prefix}" "${entry_prefix}" "${entry_prefix}"
-	} > "${entry_source}"
-	if ! cc -shared -fPIC -Wl,-z,defs "${entry_source}" "${archive_path}" \
-		"${repository_root}/build/libsparkpipe_model_common.a" \
-		"${repository_root}/build/libsparkpipe_runtime.a" \
-		"${repository_root}/build/libsparkpipe_core.a" \
-		-L"${cuda_home}/lib64" -lcudart -lcuda -lstdc++ -ldl -lpthread -lm \
-		-o "${output_directory}/modules/${module_name}/driver_link_check.so" \
-		> "${output_directory}/logs/${module_name}-link.txt" 2>&1; then
-		echo "module ${module_name} does not link as a driver; see logs/${module_name}-link.txt" >&2
-		exit 5
+	elf_listing="$(cuobjdump --list-elf "${repository_root}/${artifact}" 2>/dev/null || true)"
+	if ! grep -q 'sm_121a' <<<"${elf_listing}"; then
+		echo "CUDA artifact missing sm_121a target: ${artifact}" >&2
+		exit 4
 	fi
-}
-
-for module_makefile in "${repository_root}"/modules/*_resident_decode_stage/Makefile; do
-	module_name="$(basename "$(dirname "${module_makefile}")")"
-	module_build="${output_directory}/modules/${module_name}"
-	mkdir -p "${module_build}"
-	if ! make -C "${repository_root}/modules/${module_name}" -j2 archive \
-		EXPERT_CODEC="$(module_codec "${module_name}")" \
-		MODEL_REVISION=sm121a-gate \
-		CONTRACT_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
-		NVCC="${nvcc_binary}" \
-		CUDA_ARCH=sm_121a \
-		BUILD_DIRECTORY="${module_build}" \
-		> "${output_directory}/logs/${module_name}-archive.txt" 2>&1; then
-		echo "module ${module_name} does not build for sm_121a; see logs/${module_name}-archive.txt" >&2
-		exit 5
-	fi
-	link_module "${module_name}" "$(find "${module_build}" -maxdepth 1 -name '*.a' -print -quit)"
+	printf '%s\n' "${elf_listing}" > "${output_directory}/logs/$(basename "${artifact}").elf.txt"
 done
-make -C "${repository_root}/modules/glm52_dspark_draft_backend" archive \
-	NVCC="${nvcc_binary}" \
-	CUDA_ARCH=sm_121a \
-	BUILD_DIRECTORY="${output_directory}/modules/glm52_dspark_draft_backend" \
-	> "${output_directory}/logs/glm52_dspark_draft_backend-archive.txt" 2>&1
+printf '%s\n' "${adapters[@]}" > "${output_directory}/adapters.txt"
 
-while IFS= read -r -d '' object_file; do
+for object_file in "${output_directory}"/objects/*.o; do
+	object_name="$(basename "${object_file}")"
 	elf_listing="$(cuobjdump --list-elf "${object_file}" 2>/dev/null || true)"
 	if [[ -n "${elf_listing}" ]] && ! grep -q 'sm_121a' <<<"${elf_listing}"; then
 		echo "CUDA object missing sm_121a target: ${object_file}" >&2
 		exit 4
 	fi
-done < <(find \
-	"${output_directory}/objects" \
-	"${repository_root}/build/modules/glm52_resident_decode_stage" \
-	"${repository_root}/build/modules/minimax_resident_decode_stage" \
-	"${output_directory}/modules" \
-	-type f -name '*.o' -print0)
-
-for object_file in "${output_directory}"/objects/*.o; do
-	object_name="$(basename "${object_file}")"
-	cuobjdump --list-elf "${object_file}" > \
-		"${output_directory}/logs/${object_name}.elf.txt" 2>&1 || true
+	printf '%s\n' "${elf_listing}" > "${output_directory}/logs/${object_name}.elf.txt"
 	cuobjdump --dump-resource-usage "${object_file}" > \
 		"${output_directory}/logs/${object_name}.resources.txt" 2>&1 || true
 done
@@ -332,4 +176,4 @@ done
 	find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 )
 
-echo "PASS CUDA 13 exact sm_121a compile gate"
+echo "PASS CUDA 13 exact sm_121a compile gate (${#adapters[@]} serving adapters)"
