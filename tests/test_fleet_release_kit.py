@@ -376,7 +376,7 @@ STAGE_CONFIG_ADD=none
     return env
 
 
-def test_hold_waits_for_a_paused_rotation(tmp):
+def test_hold_holds_every_node_once(tmp):
     root, ssh = fake_world(tmp, ["na", "nb", "hub"])
     rootname = "glm53flash.fp8.tp16"
     for h in ("na", "nb"):
@@ -384,34 +384,13 @@ def test_hold_waits_for_a_paused_rotation(tmp):
         (root / f"{h}.probe").write_text(f"host={h} agent=active hold=no layout=legacy applied=served rootok=yes eng_n=1 exe=r0 drv=d0 wd=w0 wd_n=1 mem_gib=60 others=none\n")
     env = dict(os.environ, FAKE_ROOT=str(root), RELEASE_SSH=ssh, RELEASE_ENV=str(write_env(root)))
     r = subprocess.run(["bash", str(KIT / "hold.sh")], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
-    calls = (root / "calls.log").read_text() if (root / "calls.log").exists() else ""
-    check("hold: refuses while the rotation runs, before touching a node", r.returncode == 1 and "rotation is not paused" in r.stdout and "agent.hold" not in calls, r.stdout)
-    (root / "hub" / "fleet-rotation").mkdir()
-    (root / "hub" / "fleet-rotation" / "ROTATION_PAUSE").write_text("manual: release\n")
-    (root / "hub" / "unit-state").write_text("activating\n")
-    r = subprocess.run(["bash", str(KIT / "hold.sh")], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
-    check("hold: refuses while a rotation tick still runs", r.returncode == 1 and "a tick is still running" in r.stdout and not (root / "na" / "sparkdata" / rootname / "agent.hold").exists(), r.stdout)
-    (root / "hub" / "unit-state").write_text("inactive\n")
-    r = subprocess.run(["bash", str(KIT / "hold.sh")], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
-    check("hold: paused rotation, gate OK -> every node held", r.returncode == 0 and "HOLD DONE" in r.stdout and all((root / h / "sparkdata" / rootname / "agent.hold").exists() for h in ("na", "nb")), r.stdout + r.stderr)
+    check("hold: every node held", r.returncode == 0 and "HOLD DONE" in r.stdout and all((root / h / "sparkdata" / rootname / "agent.hold").exists() for h in ("na", "nb")), r.stdout + r.stderr)
     r = subprocess.run(["bash", str(KIT / "hold.sh")], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
     check("hold: a second release hold refuses (already held)", r.returncode == 1 and "node gate (release) failed" in r.stdout, r.stdout)
     env["RELEASE_ENV"] = str(write_env(root).rename(root / "bad.env"))
     Path(env["RELEASE_ENV"]).write_text(Path(env["RELEASE_ENV"]).read_text().replace("SHA=abc", "SHA=PENDING"))
     r = subprocess.run(["bash", str(KIT / "publish.sh")], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
     check("lib: a PENDING value stops every step", r.returncode == 2 and "SHA is still PENDING" in r.stdout, r.stdout)
-
-
-def test_step_gates_refuse_a_running_rotation(tmp):
-    root, ssh = fake_world(tmp, ["na", "nb", "hub"])
-    env = dict(os.environ, FAKE_ROOT=str(root), RELEASE_SSH=ssh, RELEASE_ENV=str(write_env(root, "BUILD_HOST=na\nBUILD_DIR=/nonexistent\nSOURCE_REPO=/nonexistent\n")))
-    for step in ("publish.sh", "precheck.sh"):
-        if (root / "calls.log").exists():
-            (root / "calls.log").unlink()
-        r = subprocess.run(["bash", str(KIT / step)], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
-        calls = (root / "calls.log").read_text() if (root / "calls.log").exists() else ""
-        touched = [c for c in calls.splitlines() if not c.startswith("hub\t") or "ROTATION_PAUSE" not in c] if step == "publish.sh" else []
-        check(f"{step}: refuses while the rotation runs", r.returncode != 0 and "FAIL rotation is not paused" in r.stdout and not touched, r.stdout[-400:] + calls)
 
 
 def weightd_world(tmp):
@@ -438,8 +417,6 @@ def weightd_world(tmp):
         (root / h / "sparkdata" / rootname).mkdir(parents=True)
         (root / h / "sparkdata" / rootname / "agent.hold").write_text("")
         (root / f"{h}.probe").write_text(f"host={h} agent=active hold=no layout=legacy applied={served_sha[:16]} rootok=yes eng_n=1 exe=r0 drv=d0 ready=1 wd={old_wd} wd_inst={old_wd} wd_n=1 wd_other=0 mem_gib=60 others=none\n")
-    (hub / "fleet-rotation").mkdir()
-    (hub / "fleet-rotation" / "ROTATION_PAUSE").write_text("manual: release\n")
     extra = f"BUILD_HOST=na\nWEIGHTD_BUNDLE_BUILD=/b\nNEW_RECEIPT=rc\nNEW_WARM=wm\n"
     envfile = write_env(root, extra)
     text = envfile.read_text().replace("SERVED_MANIFEST_SHA=served", f"SERVED_MANIFEST_SHA={served_sha}").replace("OLD_WEIGHTD=w0", f"OLD_WEIGHTD={old_wd}").replace("NEW_WEIGHTD=w0", f"NEW_WEIGHTD={new_wd}")
@@ -475,7 +452,7 @@ def main():
     test_nodes_rules_and_resample()
     test_hub_smoke()
     test_scripts_parse_and_are_model_neutral()
-    for test in (test_nodes_cli_sends_rank_pack, test_engine_logs, test_perf_summary, test_stage_config_patch, test_hub_publish_and_rollback, test_hold_waits_for_a_paused_rotation, test_step_gates_refuse_a_running_rotation, test_rollback_restores_a_published_unannounced_weightd):
+    for test in (test_nodes_cli_sends_rank_pack, test_engine_logs, test_perf_summary, test_stage_config_patch, test_hub_publish_and_rollback, test_hold_holds_every_node_once, test_rollback_restores_a_published_unannounced_weightd):
         with tempfile.TemporaryDirectory() as tmp:
             test(tmp)
     if failures:

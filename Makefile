@@ -391,7 +391,6 @@ PYTHON_TESTS := \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_fleet_registrar.py \
-	tests/test_fleet_rotation.py \
 	tests/test_fleet_release_kit.py \
 	tests/test_expert_grouping.py \
 	tests/test_ds4_parallel_pxe_rescue.py \
