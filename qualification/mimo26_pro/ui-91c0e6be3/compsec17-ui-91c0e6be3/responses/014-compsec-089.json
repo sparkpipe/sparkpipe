@@ -1,0 +1,62 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "2b95d6e708c8d5de7541a8a7b76f0e171d13b0b48dee943aca5883f291606821"
+ },
+ "response": {
+  "id": "chatcmpl-e2b89347414f4e91a1df2af2e4bea264",
+  "created": 1791868813,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function computes a full 16-byte tag into `full_tag`, then copies `tag_len` bytes to the caller's buffer. The caller controls `tag_len` via the public API. If `tag_len > 16`, `memcpy` reads past `full_tag` (out-of-bounds read) and writes past the caller's expected buffer (out-of-bounds write). The bug is the missing validation that `tag_len <= 16` before the copy.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 104,
+   "prompt_tokens": 246,
+   "total_tokens": 350,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function computes a full 16-byte tag into `full_tag`, then copies `tag_len` bytes to the caller's buffer. The caller controls `tag_len` via the public API. If `tag_len > 16`, `memcpy` reads past `full_tag` (out-of-bounds read) and writes past the caller's expected buffer (out-of-bounds write). The bug is the missing validation that `tag_len <= 16` before the copy.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 14456.2,
+  "output_sha256": "908d62969a2b272bb96ee1cd5b983ae8ed1e55877467ae8db79a85bd6939d64f",
+  "prompt_token_count": 246,
+  "generated_token_count": 104,
+  "reasoning_chars": 0,
+  "content_chars": 382,
+  "status": "stop"
+ }
+}

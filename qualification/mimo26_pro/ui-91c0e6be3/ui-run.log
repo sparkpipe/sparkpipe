@@ -1,0 +1,49 @@
+queued 2026-10-13T05:13:35Z
+lock-acquired 2026-10-13T05:14:44Z
+== 2026-10-13T05:14:44Z ui_apply mimo-v2.6-pro
+controller: idle qwen3.8-max None
+swap models 16 chat models 16 styles (1, '\n') (1, '\n')
+chat entry: {"id": "mimo-v2.6-pro", "model_dir": "models/mimo-v2.6-pro", "engine": "http://127.0.0.1:8474", "context_tokens": 32768, "warm_queue": {"depth": 64, "wait_seconds": 600, "activation_url": "http://127.0.0.1:8440/activate"}, "stop_tokens": ["<|im_end|>", "<|endoftext|>", "<|mimo_audio_eod|>"], "template_defaults": {"enable_thinking": true}, "template_kwargs": ["enable_thinking"], "reasoning_effort": {"minimal": {"enable_thinking": false}, "low": {"enable_thinking": true}, "medium": {"enable_thinking": true}, "high": {"enable_thinking": true}}, "reasoning": {"start": "<think>", "end": "</think>"}, "tool_calls": {"format": "function_xml", "start": "<tool_call>", "end": "</tool_call>", "attribute_end": ">", "function_start": "<function=", "function_end": "</function>", "parameter_start": "<parameter=", "parameter_end": "</parameter>"}}
+- model_name: mimo-v2.6-pro
+  litellm_params:
+    model: hosted_vllm/mimo-v2.6-pro
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 32768
+    max_output_tokens: 32768
+backup suffix .prev-20261013T051444Z
+controller after restart: idle qwen3.8-max None 16 True
+chat :8433: 16 listed; missing []; extra []
+litellm :4000: 16 listed; missing []; extra []
+active active active 
+controller: idle qwen3.8-max None
+== 2026-10-13T05:14:58Z ui_apply mimo-v2.6-pro done
+== 2026-10-13T05:14:58Z activate mimo-v2.6-pro
+05:15:28 idle mimo-v2.6-pro None 26.3
+swap qwen3.8-max -> mimo-v2.6-pro ok True 26.3 s error None memory {"model": "mimo-v2.6-pro", "projected_gib": 43.2, "used_gib_max": 42.6, "used_gib_min": 42.5, "available_gib_min": 63.8, "tightest": "spark4"}
+368d7f85ce8d1e1f
+"connected_ranks":16
+== 2026-10-13T05:15:28Z smokes mimo-v2.6-pro
+chat          PASS  | finish='stop' 1.08s content='The capital of France is Paris.' reasoning=31 chars
+stream        PASS  | finish='stop' 1.02s content='The capital of France is Paris.' reasoning=31 chars
+tool          PASS  | finish='tool_calls' 8.92s content='' reasoning=32 chars
+tool_result   PASS  | finish='stop' 5.71s content='The weather in Paris right now is **sunny** with a temperature of **18°C**.' reasoning=24 chars
+reasoning_off PASS  | finish='stop' 0.71s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 1.06s content='391' reasoning=13 chars
+UI-SMOKE mimo-v2.6-pro: 6/6
+== 2026-10-13T05:15:47Z compsec17 mimo-v2.6-pro
+"connected_ranks":16
+== 2026-10-13T05:21:12Z ui_qual mimo-v2.6-pro done
+chat check: stop 'Of course!\n\n**37 * 43 = 1591**\n\nHere are two ways to think about it:\n\n### Method 1: The "Difference of Squares" Trick (Fastest)\n\nThis method is a shortcut that works because 37 and 43 are equally distant from 40.\n\n1.  **Find the average:** The number exactly between 37 and 43 is **40**.\n2.  **Find t' usage 272
+rank log error-ish lines (UI run):   16 0
+== 2026-10-13T05:21:26Z activate qwen3.8-max
+05:22:06 idle qwen3.8-max None 38.0
+swap mimo-v2.6-pro -> qwen3.8-max ok True 38.0 s error None memory {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.3, "used_gib_min": 90.3, "available_gib_min": 15.8, "tightest": "spark4"}
+== 2026-10-13T05:22:06Z reclaim check mimo lane
+  16 DROP-KV label=mimo26_pro_tp16_stage released=0 bytes=0 busy=0
+   1 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=2
+  15 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=3
+final: idle qwen3.8-max None 16
+== 2026-10-13T05:22:06Z mimo_ui_run done
+ui-exit 0 2026-10-13T05:22:06Z
