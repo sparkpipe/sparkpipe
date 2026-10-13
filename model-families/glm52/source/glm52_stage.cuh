@@ -1629,12 +1629,16 @@ struct GlmModel
 	static SparkStatus AttachKv(void *model, const SparkStageRunnerKv *kv)
 	{
 		State *state = (State *)model;
-		if ( kv == 0 || kv->layer_count != GLM_LAYERS || kv->layer_page_bytes != (uint64_t)GLM_PAGE_SLOTS * GLM_SLOT_BYTES ||
+		if ( kv == 0 || kv->pool == 0 || kv->page_table == 0 || kv->pool_page_count == 0u || kv->sequence_count == 0u ||
+			kv->page_table_stride < state->max_positions / GLM_PAGE_SLOTS ||
+			kv->second_layer_stride_bytes < (uint64_t)kv->pool_page_count * GlmIndexKv::kPageBytes ||
+			kv->layer_count != GLM_LAYERS || kv->layer_page_bytes != (uint64_t)GLM_PAGE_SLOTS * GLM_SLOT_BYTES ||
 			kv->layer_stride_bytes != (uint64_t)GLM_PAGE_SLOTS * GLM_SLOT_BYTES / state->tp_degree || kv->second_pool == 0 ||
 			kv->second_layer_count != G::kIndexLayers || kv->second_layer_page_bytes != GlmIndexKv::kPageBytes || kv->sequence_count > state->slots ||
 			kv->context_shard.degree != state->shard.degree || kv->context_shard.rank != state->shard.rank || kv->context_shard.grain != state->shard.grain )
 		{
-			fprintf(stderr, "%s: KV attach refused: the binding is not the page-major latent region plus the layer-major index region of this rank\n", G::Tag());
+			fprintf(stderr, "%s: KV attach refused: the binding is not the page-major latent region plus the layer-major index region of this rank, "
+				"with a page table of at least %u pages per sequence and index layers spanning every pool page\n", G::Tag(), state->max_positions / GLM_PAGE_SLOTS);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		state->kv_pool = kv->pool;
