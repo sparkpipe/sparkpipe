@@ -86,12 +86,9 @@ no signature until it has code.
 
 Both files are in `model-families/common/include/sparkpipe/`.
 
-`spark_tp_mesh_register.h` declares the six launchers the combines call:
+`spark_tp_mesh_register.h` declares the three launchers the combines call:
 
 - `SparkTpLaunchSumRanksF32`
-- `SparkTpLaunchSeedF32`
-- `SparkTpLaunchAddF32`
-- `SparkTpLaunchRoundF32`
 - `SparkTpLaunchAccumAdd`
 - `SparkTpLaunchAccumU64Max`
 
