@@ -100,6 +100,7 @@ class SafetensorsSource:
         self.config = json.loads(config_path.read_text())
         self.headers: Dict[str, dict] = {}
         self.data_start: Dict[str, int] = {}
+        self.shard_bytes: Dict[str, int] = {}
 
     def check_config(
         self,
@@ -124,11 +125,18 @@ class SafetensorsSource:
             path = self.root / shard
             if not path.is_file():
                 raise PackFailure(f"missing shard {shard}")
+            file_bytes = path.stat().st_size
             with path.open("rb") as file:
-                header_bytes = struct.unpack("<Q", file.read(8))[0]
+                prefix = file.read(8)
+                if len(prefix) != 8:
+                    raise PackFailure(f"shard {shard} is shorter than a safetensors header")
+                header_bytes = struct.unpack("<Q", prefix)[0]
+                if header_bytes > file_bytes - 8:
+                    raise PackFailure(f"shard {shard} declares a {header_bytes}-byte header in a {file_bytes}-byte file")
                 header = json.loads(file.read(header_bytes))
             self.headers[shard] = header
             self.data_start[shard] = 8 + header_bytes
+            self.shard_bytes[shard] = file_bytes
         return self.headers[shard]
 
     def resolve(self, name: str) -> Tuple[str, dict, int]:
@@ -140,7 +148,12 @@ class SafetensorsSource:
         if name not in header:
             raise PackFailure(f"tensor {name} not in shard {shard}")
         meta = header[name]
-        return shard, meta, self.data_start[shard] + meta["data_offsets"][0]
+        offsets = meta.get("data_offsets")
+        if (not isinstance(offsets, list) or len(offsets) != 2 or not all(isinstance(value, int) and not isinstance(value, bool) for value in offsets)
+                or not 0 <= offsets[0] <= offsets[1] or self.data_start[shard] + offsets[1] > self.shard_bytes[shard]):
+            raise PackFailure(f"tensor {name} in shard {shard} has data_offsets {offsets!r} outside the shard's "
+                              f"{self.shard_bytes[shard] - self.data_start[shard]} payload bytes")
+        return shard, meta, self.data_start[shard] + offsets[0]
 
     def check_shape(
         self,
@@ -298,7 +311,8 @@ def spark_pack_replicated_draft_rows(
 #    family-side as the kind->plan plug-in) ------------------------------------
 
 def tp_window(total: int, degree: int, rank: int) -> tuple[int, int]:
-    assert total % degree == 0, f"tp_window: {total} not divisible by {degree}"
+    if degree <= 0 or total % degree != 0:
+        raise PackFailure(f"tp_window: {total} not divisible by {degree}")
     per = total // degree
     return rank * per, per
 
