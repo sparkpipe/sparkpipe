@@ -252,6 +252,60 @@ static void TestChatTemplateSchema(const char *chat_template_json, SparkStatus e
 		SparkModelResidentDeploymentDestroy(&deployment);
 }
 
+static void TestOverCountArraysFailCleanly(void)
+{
+	static const char *base_template = "{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]";
+	SparkModelResidentDeployment deployment;
+	char json[1024],*base,*nodes,*open,*close,path[256];
+	FILE *file;
+	uint32_t depth = 0u,index;
+	int quoted = 0;
+	assert(snprintf(json,sizeof(json),"%s,\"control_markers\":[\"<a>\",\"<b>\"]}",base_template) > 0);
+	TestChatTemplateSchema(json,SPARK_STATUS_OK);
+	assert(snprintf(json,sizeof(json),"%s,\"control_markers\":[\"<a>\",\"<b>\",\"<c>\",\"<d>\",\"<e>\",\"<f>\",\"<g>\",\"<h>\",\"<i>\"]}",base_template) > 0);
+	TestChatTemplateSchema(json,SPARK_STATUS_SCHEMA_ERROR);
+	base = TestReadText("tests/fixtures/model_resident_deployment.json");
+	nodes = strstr(base,"\"nodes\"");
+	assert(nodes != 0);
+	open = strchr(nodes,'[');
+	assert(open != 0);
+	for (close = open; *close != '\0'; close++)
+	{
+		if ( quoted != 0 )
+		{
+			if ( *close == '\\' && close[1] != '\0' )
+				close++;
+			else if ( *close == '"' )
+				quoted = 0;
+			continue;
+		}
+		if ( *close == '"' )
+			quoted = 1;
+		else if ( *close == '[' || *close == '{' )
+			depth++;
+		else if ( (*close == ']' || *close == '}') && --depth == 0u )
+			break;
+	}
+	assert(*close == ']');
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-node-count-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fwrite(base,1u,(size_t)(open - base) + 1u,file) == (size_t)(open - base) + 1u);
+	for (index=0u; index<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u; index++)
+		assert(fputs(index == 0u ? "{}" : ",{}",file) != EOF);
+	assert(fputs(close,file) != EOF);
+	assert(fclose(file) == 0);
+	free(base);
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad(path,&deployment) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(unlink(path) == 0);
+	printf("test_model_resident_deployment: over-count arrays OK (9 control markers and %u nodes fail cleanly instead of freeing past the arrays)\n",
+		SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u);
+}
+
 static void TestChatTemplates(void)
 {
 	static const char user_hi[] = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
@@ -551,6 +605,7 @@ int main(int argc,char **argv)
 	TestEosMetadata("\"eos_token_ids\":[1,1],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[1],\"eos_token_ids\":[2],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],",SPARK_STATUS_SCHEMA_ERROR);
+	TestOverCountArraysFailCleanly();
 	TestPrefixReuseKey("",SPARK_STATUS_OK);
 	TestPrefixReuseKey("\"prefix_reuse\":true,",SPARK_STATUS_SCHEMA_ERROR);
 	TestPrefixReuseKey("\"prefix_reuse\":false,",SPARK_STATUS_SCHEMA_ERROR);
