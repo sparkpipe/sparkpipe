@@ -815,6 +815,20 @@ build/test_skinny_dense_multi: tests/test_skinny_dense_multi.cu inference/kernel
 test-skinny-dense-multi: build/test_skinny_dense_multi
 	./build/test_skinny_dense_multi --run
 
+build/test_skinny_rows_reference: tests/test_skinny_rows_reference.cu inference/kernels/skinny.cuh | build
+	$(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@
+
+.PHONY: test-skinny-rows-reference
+test-skinny-rows-reference: build/test_skinny_rows_reference
+	./build/test_skinny_rows_reference --run
+
+build/test_skinny_grouped_reference: tests/test_skinny_grouped_reference.cu inference/kernels/skinny.cuh inference/kernels/route.cuh | build
+	$(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@
+
+.PHONY: test-skinny-grouped-reference
+test-skinny-grouped-reference: build/test_skinny_grouped_reference
+	./build/test_skinny_grouped_reference --run
+
 WORKING_SET_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude
 
 build/test_working_set_rollback: tests/test_working_set_rollback.cu runtime/spark_expert_working_set.c include/sparkpipe/spark_expert_working_set.h include/sparkpipe/spark_step_verdict.h inference/kernels/expert_cover.cuh inference/kernels/state_snapshot.cuh include/sparkpipe/spark_state_span.h | build
