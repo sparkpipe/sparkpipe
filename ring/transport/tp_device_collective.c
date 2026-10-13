@@ -564,27 +564,6 @@ static SparkStatus SparkTpDeviceCollectiveRebase(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkTpDeviceCollectiveChainRetire(
-    SparkTpDeviceCollective *collective)
-{
-    SparkTpDeviceCollectiveImplementation *implementation;
-    uint32_t band_index;
-    volatile uint64_t *base_cell;
-    if ( collective == 0 || collective->implementation == 0 )
-        return(SPARK_STATUS_INVALID_ARGUMENT);
-    implementation = collective->implementation;
-    if ( implementation->mesh_buffer == 0 || implementation->tp_rank != 0u )
-        return(SPARK_STATUS_OK);
-    band_index = SparkTpDeviceCollectiveBandIndex(implementation);
-    base_cell = (volatile uint64_t *)(implementation->mesh_buffer +
-        SparkTpDeviceCollectiveBaseCellOffset(band_index));
-    *base_cell = *base_cell +
-        SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
-    __sync_synchronize();
-    return SparkTpDeviceCollectivePublishBase(implementation,
-        SparkTpDeviceCollectiveBaseCellOffset(band_index),*base_cell);
-}
-
 static SparkStatus SparkTpDeviceCollectiveEnsureCells(
     SparkTpDeviceCollectiveImplementation *implementation);
 static SparkStatus SparkTpDeviceCollectivePrepareHardware(
@@ -1099,7 +1078,7 @@ static SparkStatus SparkTpDeviceCollectiveRoundAdvance(SparkTpDeviceCollectiveIm
     SparkStatus rebase;
     if ( implementation->chain_key != 0ull )
     {
-        if ( implementation->round_index >= (1ull << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ROUND_BITS) )
+        if ( implementation->round_index + 1ull >= (1ull << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ROUND_BITS) )
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         implementation->round_index++;
         return SPARK_STATUS_OK;
