@@ -63,6 +63,7 @@
 #define D41_ENGRAM_EMBED (D41_ENGRAM_COLUMNS * D41_ENGRAM_HEAD_DIM)
 #define D41_ENGRAM_KV_LOCAL (D41_ENGRAM_KV_ROWS / D41_TP)
 #define D41_FP8_BLOCK 32u
+#define D41_SHARED_GRANULE 64u
 #define D41_THREADS 256u
 #define D41_SLOT_BYTES SPARK_DSV41_FLASH_STAGE_SLOT_BYTES
 #define D41_PAGE_TOKENS SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS
@@ -81,6 +82,8 @@
 #define D41_GEMM_WARPS 8u
 
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
+static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D41_FP8_BLOCK == 0u,
+	"the shared expert width splits into whole fp8 blocks and whole dense GEMM k tiles");
 
 using D41Ratio2Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS / 2u, true>;
 using D41Ratio1Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS, true>;
@@ -148,6 +151,7 @@ typedef struct D41ModelState
 	uint16_t *expert_gate, *expert_up, *expert_act, *expert_out, *moe_out, *shared_gate, *shared_up, *shared_act, *shared_out;
 	int64_t *engram_ids;
 	uint16_t *engram_embed, *engram_kv, *engram_kv_local, *engram_kv_gathered;
+	uint32_t shared_first, shared_width;
 	uint8_t *recurrent;
 	uint64_t ring_bytes, compressor_bytes, history_bytes, recurrent_bytes;
 	LmKvAccessError *kv_error;
@@ -594,17 +598,14 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	}
 	if ( launch != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( state->tp_rank == 0u )
-	{
-		if ( D41Project(layer->sh_w1, state->xq, state->shared_gate, 0, rows, D41_HIDDEN, D41_MOE_INTER, sms, stream) != LM_LAUNCH_OK ||
-			D41Project(layer->sh_w3, state->xq, state->shared_up, 0, rows, D41_HIDDEN, D41_MOE_INTER, sms, stream) != LM_LAUNCH_OK )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		D41SwigluRowsKernel<<<dim3(D41Blocks(D41_MOE_INTER), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
-			state->shared_act, D41_MOE_INTER, D41_SWIGLU_LIMIT);
-		D41Fp8Qdq(state->shared_act, (uint64_t)rows * D41_MOE_INTER, stream);
-		if ( D41Project(layer->sh_w2, state->shared_act, state->shared_out, 0, rows, D41_MOE_INTER, D41_HIDDEN, sms, stream) != LM_LAUNCH_OK )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	}
+	if ( D41Project(layer->sh_w1, state->xq, state->shared_gate, 0, rows, D41_HIDDEN, state->shared_width, sms, stream) != LM_LAUNCH_OK ||
+		D41Project(layer->sh_w3, state->xq, state->shared_up, 0, rows, D41_HIDDEN, state->shared_width, sms, stream) != LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
+		state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
+	D41Fp8Qdq(state->shared_act, (uint64_t)rows * state->shared_width, stream);
+	if ( D41Project(layer->sh_w2, state->shared_act, state->shared_out, 0, rows, state->shared_width, D41_HIDDEN, sms, stream) != LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->dump != 0 && step->rows < 64u )
 	{
 		SparkStatus dumped = D41DumpRows(state, 99u, 8u, state->expert_gate, routes, D41_MOE_INTER, stream);
@@ -624,7 +625,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 			return dumped;
 	}
 	LmMoeLocalFinalizeKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
-		state->route_expert, state->tp_rank == 0u ? state->shared_out : (const uint16_t *)0, state->partial, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
+		state->route_expert, state->shared_out, state->partial, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
 	return D41Launched();
 }
 
@@ -684,7 +685,7 @@ static SparkStatus D41LayerStep(D41ModelState *state, uint32_t index, const Spar
 	status = D41Moe(state, layer, step, stream);
 	if ( status == SPARK_STATUS_OK && index < 2u )
 		status = D41DumpRows(state, index, 7u, state->partial, rows, D41_HIDDEN, stream);
-	if ( status == SPARK_STATUS_OK && index < 2u && state->tp_rank == 0u )
+	if ( status == SPARK_STATUS_OK && index < 2u )
 		status = D41DumpRows(state, index, 5u, state->shared_out, rows, D41_HIDDEN, stream);
 	if ( status == SPARK_STATUS_OK )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
@@ -1071,6 +1072,11 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		cudaMemcpy(state->full_frequency, frequencies, sizeof(frequencies), cudaMemcpyHostToDevice) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->compress_frequency = state->full_frequency + D41K_ROPE_PAIRS;
+	{
+		const uint32_t blocks = D41_MOE_INTER / D41_SHARED_GRANULE, base = blocks / D41_TP, extra = blocks % D41_TP;
+		state->shared_first = (state->tp_rank * base + (state->tp_rank < extra ? state->tp_rank : extra)) * D41_SHARED_GRANULE;
+		state->shared_width = (base + (state->tp_rank < extra ? 1u : 0u)) * D41_SHARED_GRANULE;
+	}
 	state->shard.degree = D41_TP;
 	state->shard.rank = state->tp_rank;
 	state->shard.grain = D41_GRAIN;
@@ -1193,6 +1199,12 @@ static SparkStatus D41Dequant(D41ModelState *state, SparkWeightdLazyPack *pack, 
 #define D41_DEQUANT(kind, layer, field) \
 	do { if ( D41Dequant(state, lazy_pack, D41_ENTRY(kind, layer), &cursor, &(field)) != SPARK_STATUS_OK ) { \
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " is not a 32x32-block fp8 tensor\n", layer); return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
+#define D41_DEQUANT_SLICE(kind, layer, field, first_row, row_count, first_column, column_count) \
+	do { const D41PackEntry *found = D41_ENTRY(kind, layer); \
+		if ( found == 0 || D41DequantSlice(state, lazy_pack, found, first_row, row_count == 0u ? found->rows : row_count, first_column, \
+			column_count == 0u ? found->columns : column_count, &cursor, &(field)) != SPARK_STATUS_OK ) { \
+			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " has no 32x32-block fp8 slice for this rank\n", layer); \
+			return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
 
 static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *lazy_pack, uint64_t *dequant_bytes)
 {
@@ -1224,12 +1236,9 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		D41_SCALE(EXPERT_W2, index, layer->e_w2_scale);
 		D41_PAYLOAD(EXPERT_W3, index, layer->e_w3);
 		D41_SCALE(EXPERT_W3, index, layer->e_w3_scale);
-		if ( state->tp_rank == 0u )
-		{
-			D41_DEQUANT(SHARED_W1, index, layer->sh_w1);
-			D41_DEQUANT(SHARED_W2, index, layer->sh_w2);
-			D41_DEQUANT(SHARED_W3, index, layer->sh_w3);
-		}
+		D41_DEQUANT_SLICE(SHARED_W1, index, layer->sh_w1, state->shared_first, state->shared_width, 0u, 0u);
+		D41_DEQUANT_SLICE(SHARED_W2, index, layer->sh_w2, 0u, 0u, state->shared_first, state->shared_width);
+		D41_DEQUANT_SLICE(SHARED_W3, index, layer->sh_w3, state->shared_first, state->shared_width, 0u, 0u);
 		if ( D41KvSource(index) )
 		{
 			D41_PAYLOAD(COMPRESSOR_WKV, index, layer->c_wkv);
@@ -1359,6 +1368,7 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 	return SPARK_STATUS_OK;
 }
 
+#undef D41_DEQUANT_SLICE
 #undef D41_DEQUANT
 #undef D41_SCALE
 #undef D41_PAYLOAD
