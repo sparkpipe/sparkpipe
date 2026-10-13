@@ -61,6 +61,8 @@
 #define D41_ENGRAM_HEADS 8u
 #define D41_ENGRAM_KV_ROWS ((D41K_HC + 1u) * D41_HIDDEN)
 #define D41_ENGRAM_EMBED (D41_ENGRAM_COLUMNS * D41_ENGRAM_HEAD_DIM)
+#define D41_ENGRAM_KV_LOCAL (D41_ENGRAM_KV_ROWS / D41_TP)
+#define D41_FP8_BLOCK 32u
 #define D41_THREADS 256u
 #define D41_SLOT_BYTES SPARK_DSV41_FLASH_STAGE_SLOT_BYTES
 #define D41_PAGE_TOKENS SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS
@@ -77,6 +79,8 @@
 #define D41_GEMM_TILE_N 128u
 #define D41_GEMM_STAGES 2u
 #define D41_GEMM_WARPS 8u
+
+static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
 
 using D41Ratio2Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS / 2u, true>;
 using D41Ratio1Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS, true>;
@@ -143,7 +147,7 @@ typedef struct D41ModelState
 	uint32_t *route_expert, *route_global, *group_row_offset, *route_packed_row, *route_source_token, *tile_prefix_up, *tile_prefix_down;
 	uint16_t *expert_gate, *expert_up, *expert_act, *expert_out, *moe_out, *shared_gate, *shared_up, *shared_act, *shared_out;
 	int64_t *engram_ids;
-	uint16_t *engram_embed, *engram_kv;
+	uint16_t *engram_embed, *engram_kv, *engram_kv_local, *engram_kv_gathered;
 	uint8_t *recurrent;
 	uint64_t ring_bytes, compressor_bytes, history_bytes, recurrent_bytes;
 	LmKvAccessError *kv_error;
@@ -260,9 +264,9 @@ static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head
 static SparkStatus D41HcMixes(D41ModelState *state, const uint16_t *streams, const float *fn, const float *base, const float *scale,
 	float *pre, float *post, float *comb, uint32_t rows, cudaStream_t stream)
 {
-	D41HcMixRowsKernel<<<rows, D41K_THREADS, 0, stream>>>(streams, fn, state->mixes, D41_HIDDEN, D41_EPS);
-	D41HcSinkhornRowsKernel<<<(rows + 31u) / 32u, 32u, 0, stream>>>(state->mixes, scale, base, pre, post, comb, rows,
-		D41_HC_ITERATIONS, D41_HC_EPS);
+	D41HcMixPartialKernel<<<dim3(D41K_HC_TASKS, rows), D41K_THREADS, 0, stream>>>(streams, fn, state->mixes, D41_HIDDEN);
+	D41HcSinkhornRowsKernel<<<rows, 32u, 0, stream>>>(state->mixes, scale, base, pre, post, comb, D41_HIDDEN, D41_EPS, D41_HC_ITERATIONS,
+		D41_HC_EPS);
 	return D41Launched();
 }
 
@@ -286,9 +290,15 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	D41Fp8Qdq(state->engram_embed, (uint64_t)rows * D41_ENGRAM_EMBED, stream);
-	if ( D41Project(engram->wkv, state->engram_embed, state->engram_kv, 0, rows, D41_ENGRAM_EMBED, D41_ENGRAM_KV_ROWS,
+	if ( D41Project(engram->wkv, state->engram_embed, state->engram_kv_local, 0, rows, D41_ENGRAM_EMBED, D41_ENGRAM_KV_LOCAL,
 		step->multiprocessors, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_ENGRAM_KV_LOCAL, state->engram_kv_local,
+		state->engram_kv_gathered);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	D41GroupInputKernel<<<dim3(D41Blocks(D41_ENGRAM_KV_ROWS), rows), D41_THREADS, 0, stream>>>(state->engram_kv_gathered, state->engram_kv,
+		rows, D41_ENGRAM_KV_LOCAL, 0u, D41_TP);
 	if ( SparkDsv41FlashLaunchEngramGate(stream, state->streams, state->engram_kv, engram->q_weight, engram->k_weight, rows, D41K_HC,
 		D41_HIDDEN, D41_EPS) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -819,7 +829,7 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->q_local, r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->q_gathered, D41_TP * r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->kv, r * D41_HEAD_DIM * 2u }, { (void **)&state->window_kv, r * D41_HEAD_DIM * 2u },
-		{ (void **)&state->mixes, r * D41K_HC_MIX * 4u },
+		{ (void **)&state->mixes, r * D41K_HC_TASKS * D41K_HC_WARPS * 4u },
 		{ (void **)&state->pre_attn, r * D41K_HC * 4u }, { (void **)&state->post_attn, r * D41K_HC * 4u }, { (void **)&state->comb_attn, r * 16u * 4u },
 		{ (void **)&state->pre_ffn, r * D41K_HC * 4u }, { (void **)&state->post_ffn, r * D41K_HC * 4u }, { (void **)&state->comb_ffn, r * 16u * 4u },
 		{ (void **)&state->pre_head, r * D41K_HC * 4u }, { (void **)&state->pre_init, r * D41K_HC * 4u },
@@ -851,7 +861,8 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->shared_gate, r * D41_MOE_INTER * 2u }, { (void **)&state->shared_up, r * D41_MOE_INTER * 2u },
 		{ (void **)&state->shared_act, r * D41_MOE_INTER * 2u }, { (void **)&state->shared_out, r * D41_HIDDEN * 2u },
 		{ (void **)&state->engram_ids, r * D41_ENGRAM_COLUMNS * 8u }, { (void **)&state->engram_embed, engram_rows * D41_HIDDEN * 2u },
-		{ (void **)&state->engram_kv, r * D41_ENGRAM_KV_ROWS * 2u },
+		{ (void **)&state->engram_kv, r * D41_ENGRAM_KV_ROWS * 2u }, { (void **)&state->engram_kv_local, r * D41_ENGRAM_KV_LOCAL * 2u },
+		{ (void **)&state->engram_kv_gathered, r * D41_ENGRAM_KV_ROWS * 2u },
 		{ (void **)&state->recurrent, s * state->recurrent_bytes }, { (void **)&state->kv_error, sizeof(LmKvAccessError) },
 	};
 	uint64_t cursor = 0u;
@@ -1140,22 +1151,33 @@ static SparkStatus D41SliceEntry(SparkWeightdLazyPack *pack, const D41PackEntry 
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus D41Dequant(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint64_t *cursor,
-	const uint16_t **out)
+static SparkStatus D41DequantSlice(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint32_t row_first,
+	uint32_t rows, uint32_t column_first, uint32_t columns, uint64_t *cursor, const uint16_t **out)
 {
 	const void *payload = 0, *scale = 0;
-	if ( entry == 0 || entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 || entry->rows % 32u != 0u || entry->columns % 32u != 0u ||
+	if ( entry == 0 || entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 || entry->rows % D41_FP8_BLOCK != 0u ||
+		entry->columns % D41_FP8_BLOCK != 0u || rows == 0u || columns == 0u || row_first % D41_FP8_BLOCK != 0u ||
+		column_first % D41_FP8_BLOCK != 0u || row_first > entry->rows || rows > entry->rows - row_first || column_first > entry->columns ||
+		columns > entry->columns - column_first ||
 		D41SliceEntry(pack, entry, 0u, &payload) != SPARK_STATUS_OK || D41SliceEntry(pack, entry, 1u, &scale) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	if ( state->dequant != 0 )
 	{
 		uint16_t *target = (uint16_t *)((uint8_t *)state->dequant + *cursor);
-		D41DequantFp8BlockKernel<<<dim3(D41Blocks(entry->columns), entry->rows), D41_THREADS>>>((const uint8_t *)payload,
-			(const uint8_t *)scale, target, entry->rows, entry->columns);
+		D41DequantFp8BlockKernel<<<dim3(D41Blocks(columns), rows), D41_THREADS>>>((const uint8_t *)payload, (const uint8_t *)scale, target,
+			entry->columns, row_first, column_first, columns);
 		*out = target;
 	}
-	*cursor += (((uint64_t)entry->rows * entry->columns * sizeof(uint16_t)) + 255u) & ~255ull;
+	*cursor += (((uint64_t)rows * columns * sizeof(uint16_t)) + 255u) & ~255ull;
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus D41Dequant(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint64_t *cursor,
+	const uint16_t **out)
+{
+	if ( entry == 0 )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	return D41DequantSlice(state, pack, entry, 0u, entry->rows, 0u, entry->columns, cursor, out);
 }
 
 #define D41_ENTRY(kind, layer) D41Find(state, SPARK_DSV41_FLASH_STAGEPACK_TENSOR_##kind, layer)
@@ -1254,7 +1276,8 @@ static SparkStatus D41BindEngram(D41ModelState *state, uint64_t *cursor, const S
 		if ( D41SliceEntry(state->engram_pack, k, 0u, &bound) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		engram->k_weight = (const uint16_t *)bound;
-		if ( D41Dequant(state, state->engram_pack, wkv, cursor, &engram->wkv) != SPARK_STATUS_OK )
+		if ( D41DequantSlice(state, state->engram_pack, wkv, state->tp_rank * D41_ENGRAM_KV_LOCAL, D41_ENGRAM_KV_LOCAL, 0u, D41_ENGRAM_EMBED,
+			cursor, &engram->wkv) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	}
 	(void)configuration;

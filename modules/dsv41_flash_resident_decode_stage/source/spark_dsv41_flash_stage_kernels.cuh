@@ -13,96 +13,86 @@
 #define D41K_THREADS 256u
 #define D41K_HC 4u
 #define D41K_HC_MIX ((2u + D41K_HC) * D41K_HC)
+#define D41K_HC_TASKS (D41K_HC_MIX + 1u)
+#define D41K_HC_WARPS (D41K_THREADS / 32u)
+#define D41K_HC_UNROLL 16u
 #define D41K_ROPE_PAIRS 32u
 #define D41K_LATENT 512u
 #define D41K_RECORD (D41K_LATENT + 2u)
 #define D41K_NO_ROW 0xffffffffu
 
-static __global__ void D41HcMixRowsKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ mixes,
-	uint32_t width, float epsilon)
+static __global__ void D41HcMixPartialKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ partials,
+	uint32_t width)
 {
-	__shared__ float scratch[D41K_THREADS / 32u];
-	const uint32_t row = blockIdx.x, flat = D41K_HC * width;
+	const uint32_t task = blockIdx.x, row = blockIdx.y, flat = D41K_HC * width, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
 	const uint16_t *source = streams + (uint64_t)row * flat;
-	float square = 0.0f, inverse;
-	for ( uint32_t element = threadIdx.x; element < flat; element += blockDim.x )
+	const float *weight = task < D41K_HC_MIX ? fn + (uint64_t)task * flat : 0;
+	float total = 0.0f;
+	for ( uint32_t base = threadIdx.x; base < flat; base += D41K_HC_UNROLL * D41K_THREADS )
 	{
-		const float value = LmBf16ToFloat(source[element]);
-		square += value * value;
+		float value[D41K_HC_UNROLL], factor[D41K_HC_UNROLL];
+#pragma unroll
+		for ( uint32_t step = 0u; step < D41K_HC_UNROLL; ++step )
+		{
+			const uint32_t element = base + step * D41K_THREADS;
+			value[step] = element < flat ? LmBf16ToFloat(source[element]) : 0.0f;
+			factor[step] = element >= flat ? 0.0f : weight != 0 ? weight[element] : value[step];
+		}
+#pragma unroll
+		for ( uint32_t step = 0u; step < D41K_HC_UNROLL; ++step )
+			if ( base + step * D41K_THREADS < flat )
+				total += factor[step] * value[step];
 	}
-	square = SparkDsv41FlashBlockSum(square, scratch);
-	inverse = rsqrtf(square / (float)flat + epsilon);
-	for ( uint32_t mix = 0u; mix < D41K_HC_MIX; ++mix )
-	{
-		float total = 0.0f;
-		for ( uint32_t element = threadIdx.x; element < flat; element += blockDim.x )
-			total += fn[(uint64_t)mix * flat + element] * LmBf16ToFloat(source[element]);
-		total = SparkDsv41FlashBlockSum(total, scratch);
-		if ( threadIdx.x == 0u )
-			mixes[(uint64_t)row * D41K_HC_MIX + mix] = total * inverse;
-		__syncthreads();
-	}
+	for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+		total += __shfl_down_sync(0xffffffffu, total, offset);
+	if ( lane == 0u )
+		partials[((uint64_t)row * D41K_HC_TASKS + task) * D41K_HC_WARPS + warp] = total;
 }
 
-static __global__ void D41HcSinkhornRowsKernel(const float *__restrict__ mixes, const float *__restrict__ scale, const float *__restrict__ base,
-	float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb_out, uint32_t rows, uint32_t iterations, float epsilon)
+static __device__ __forceinline__ float D41HcLineSum(float value, uint32_t first, uint32_t stride)
 {
-	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
-	float comb[D41K_HC * D41K_HC], sum, top;
-	if ( row >= rows )
-		return;
-	const float *m = mixes + (uint64_t)row * D41K_HC_MIX;
-	for ( uint32_t r = 0u; r < D41K_HC; ++r )
+	float sum = 0.0f;
+	for ( uint32_t index = 0u; index < D41K_HC; ++index )
+		sum += __shfl_sync(0xffffffffu, value, first + index * stride);
+	return sum;
+}
+
+static __global__ void D41HcSinkhornRowsKernel(const float *__restrict__ partials, const float *__restrict__ scale, const float *__restrict__ base,
+	float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb_out, uint32_t width, float rms_epsilon, uint32_t iterations,
+	float epsilon)
+{
+	__shared__ float mix[D41K_HC_TASKS];
+	const uint32_t row = blockIdx.x, lane = threadIdx.x, r = lane / D41K_HC, c = lane % D41K_HC;
+	if ( lane < D41K_HC_TASKS )
 	{
-		pre[(uint64_t)row * D41K_HC + r] = 1.0f / (1.0f + expf(-(m[r] * scale[0] + base[r]))) + epsilon;
-		post[(uint64_t)row * D41K_HC + r] = 2.0f / (1.0f + expf(-(m[D41K_HC + r] * scale[1] + base[D41K_HC + r])));
+		const float *part = partials + ((uint64_t)row * D41K_HC_TASKS + lane) * D41K_HC_WARPS;
+		float value = 0.0f;
+		for ( uint32_t warp = 0u; warp < D41K_HC_WARPS; ++warp )
+			value += part[warp];
+		mix[lane] = value;
 	}
-	for ( uint32_t r = 0u; r < D41K_HC; ++r )
-	{
-		top = -INFINITY;
-		for ( uint32_t c = 0u; c < D41K_HC; ++c )
-		{
-			comb[r * D41K_HC + c] = m[2u * D41K_HC + r * D41K_HC + c] * scale[2] + base[2u * D41K_HC + r * D41K_HC + c];
-			top = fmaxf(top, comb[r * D41K_HC + c]);
-		}
-		sum = 0.0f;
-		for ( uint32_t c = 0u; c < D41K_HC; ++c )
-		{
-			comb[r * D41K_HC + c] = expf(comb[r * D41K_HC + c] - top);
-			sum += comb[r * D41K_HC + c];
-		}
-		for ( uint32_t c = 0u; c < D41K_HC; ++c )
-			comb[r * D41K_HC + c] = comb[r * D41K_HC + c] / sum + epsilon;
-	}
-	for ( uint32_t c = 0u; c < D41K_HC; ++c )
-	{
-		sum = 0.0f;
-		for ( uint32_t r = 0u; r < D41K_HC; ++r )
-			sum += comb[r * D41K_HC + c];
-		for ( uint32_t r = 0u; r < D41K_HC; ++r )
-			comb[r * D41K_HC + c] /= sum + epsilon;
-	}
+	__syncwarp();
+	const float inverse = rsqrtf(mix[D41K_HC_MIX] / (float)(D41K_HC * width) + rms_epsilon);
+	const float *m = mix;
+	if ( lane < D41K_HC )
+		pre[(uint64_t)row * D41K_HC + lane] = 1.0f / (1.0f + expf(-((m[lane] * inverse) * scale[0] + base[lane]))) + epsilon;
+	else if ( lane < 2u * D41K_HC )
+		post[(uint64_t)row * D41K_HC + lane - D41K_HC] = 2.0f / (1.0f + expf(-((m[lane] * inverse) * scale[1] + base[lane])));
+	const uint32_t cell = lane % (D41K_HC * D41K_HC);
+	float comb = (m[2u * D41K_HC + cell] * inverse) * scale[2] + base[2u * D41K_HC + cell];
+	float top = -INFINITY;
+	for ( uint32_t index = 0u; index < D41K_HC; ++index )
+		top = fmaxf(top, __shfl_sync(0xffffffffu, comb, r * D41K_HC + index));
+	comb = expf(comb - top);
+	comb = comb / D41HcLineSum(comb, r * D41K_HC, 1u) + epsilon;
+	comb /= D41HcLineSum(comb, c, D41K_HC) + epsilon;
 	for ( uint32_t iteration = 1u; iteration < iterations; ++iteration )
 	{
-		for ( uint32_t r = 0u; r < D41K_HC; ++r )
-		{
-			sum = 0.0f;
-			for ( uint32_t c = 0u; c < D41K_HC; ++c )
-				sum += comb[r * D41K_HC + c];
-			for ( uint32_t c = 0u; c < D41K_HC; ++c )
-				comb[r * D41K_HC + c] /= sum + epsilon;
-		}
-		for ( uint32_t c = 0u; c < D41K_HC; ++c )
-		{
-			sum = 0.0f;
-			for ( uint32_t r = 0u; r < D41K_HC; ++r )
-				sum += comb[r * D41K_HC + c];
-			for ( uint32_t r = 0u; r < D41K_HC; ++r )
-				comb[r * D41K_HC + c] /= sum + epsilon;
-		}
+		comb /= D41HcLineSum(comb, r * D41K_HC, 1u) + epsilon;
+		comb /= D41HcLineSum(comb, c, D41K_HC) + epsilon;
 	}
-	for ( uint32_t index = 0u; index < D41K_HC * D41K_HC; ++index )
-		comb_out[(uint64_t)row * D41K_HC * D41K_HC + index] = comb[index];
+	if ( lane < D41K_HC * D41K_HC )
+		comb_out[(uint64_t)row * D41K_HC * D41K_HC + lane] = comb;
 }
 
 static __global__ void D41HcPreRowsKernel(const uint16_t *__restrict__ streams, const float *__restrict__ pre, uint16_t *__restrict__ output,
@@ -165,16 +155,16 @@ static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t h
 }
 
 static __global__ void D41DequantFp8BlockKernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ scale, uint16_t *__restrict__ output,
-	uint32_t rows, uint32_t columns)
+	uint32_t columns, uint32_t row_first, uint32_t column_first, uint32_t output_columns)
 {
-	const uint32_t row = blockIdx.y;
+	const uint32_t row = row_first + blockIdx.y;
 	const uint32_t scale_columns = columns / 32u;
-	for ( uint32_t column = blockIdx.x * blockDim.x + threadIdx.x; column < columns; column += gridDim.x * blockDim.x )
+	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < output_columns; index += gridDim.x * blockDim.x )
 	{
+		const uint32_t column = column_first + index;
 		const float factor = LmE8m0ToFloat(scale[(uint64_t)(row / 32u) * scale_columns + column / 32u]);
-		output[(uint64_t)row * columns + column] = LmFloatToBf16(LmE4m3ToFloat(payload[(uint64_t)row * columns + column]) * factor);
+		output[(uint64_t)blockIdx.y * output_columns + index] = LmFloatToBf16(LmE4m3ToFloat(payload[(uint64_t)row * columns + column]) * factor);
 	}
-	(void)rows;
 }
 
 static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, const float *__restrict__ score, uint16_t *__restrict__ pooled,
