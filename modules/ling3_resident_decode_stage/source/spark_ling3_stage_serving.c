@@ -29,14 +29,14 @@ static void Ling3ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStag
 	kv->regions[0].layer_page_bytes = (uint64_t)SPARK_LING3_STAGE_PAGE_SLOTS * SPARK_LING3_STAGE_KV_SLOT_BYTES;
 	kv->arena_kv_head_count = 1u;
 	kv->arena_head_dim = SPARK_LING3_STAGE_LATENT + SPARK_LING3_STAGE_ROPE;
-	kv->arena_bytes_per_scalar = 2u;
+	kv->arena_bytes_per_scalar = sizeof(uint16_t);
 	kv->capacity_request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	kv->capacity_request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
 	kv->capacity_request.layout = SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE;
 	kv->capacity_request.layer_count = SPARK_LING3_STAGE_MLA_LAYERS;
 	kv->capacity_request.compressed_dimension = SPARK_LING3_STAGE_LATENT;
 	kv->capacity_request.position_dimension = SPARK_LING3_STAGE_ROPE;
-	kv->capacity_request.bytes_per_scalar = 2u;
+	kv->capacity_request.bytes_per_scalar = sizeof(uint16_t);
 	kv->context_shard.degree = tp_degree;
 	kv->context_shard.rank = tp_rank;
 	kv->context_shard.grain = 1u;

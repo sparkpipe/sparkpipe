@@ -832,18 +832,18 @@ static SparkStatus StageRunnerCreateBuffers(SparkStageRunnerState *state, const 
 	if ( cudaMalloc(&state->hidden, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc(&state->head_normed, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc(&state->head_maxloc, rows * sizeof(uint64_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_candidate_token, rows * state->head_tiles * 4u) != cudaSuccess ||
-		cudaMalloc(&state->head_candidate_score, rows * state->head_tiles * 4u) != cudaSuccess ||
-		cudaMalloc(&state->output_token, rows * 4u) != cudaSuccess ||
-		cudaMalloc(&state->output_score, rows * 4u) != cudaSuccess ||
+		cudaMalloc(&state->head_candidate_token, rows * state->head_tiles * sizeof(*state->head_candidate_token)) != cudaSuccess ||
+		cudaMalloc(&state->head_candidate_score, rows * state->head_tiles * sizeof(*state->head_candidate_score)) != cudaSuccess ||
+		cudaMalloc(&state->output_token, rows * sizeof(*state->output_token)) != cudaSuccess ||
+		cudaMalloc(&state->output_score, rows * sizeof(*state->output_score)) != cudaSuccess ||
 		cudaMalloc(&state->head_hidden, rows * hidden * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc(&state->head_token, rows * 4u) != cudaSuccess ||
-		cudaMalloc(&state->head_score, rows * 4u) != cudaSuccess ||
-		cudaMalloc(&state->positions, 4u) != cudaSuccess ||
+		cudaMalloc(&state->head_token, rows * sizeof(*state->head_token)) != cudaSuccess ||
+		cudaMalloc(&state->head_score, rows * sizeof(*state->head_score)) != cudaSuccess ||
+		cudaMalloc(&state->positions, sizeof(*state->positions)) != cudaSuccess ||
 		cudaMalloc(&state->token_ids_device, rows * sizeof(*state->token_ids_device)) != cudaSuccess ||
-		cudaMalloc(&state->context_length, 4u) != cudaSuccess ||
-		cudaMalloc(&state->sequence_of_row, 4u) != cudaSuccess ||
-		cudaMalloc(&state->recurrent_index, 4u) != cudaSuccess )
+		cudaMalloc(&state->context_length, sizeof(*state->context_length)) != cudaSuccess ||
+		cudaMalloc(&state->sequence_of_row, sizeof(*state->sequence_of_row)) != cudaSuccess ||
+		cudaMalloc(&state->recurrent_index, sizeof(*state->recurrent_index)) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = StageRunnerPrepareOutputs(state, runner, configuration);
 	if ( status != SPARK_STATUS_OK )
@@ -2151,7 +2151,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( dispatch->completion_function != 0 )
 	{
 		if ( runner->owns_final_head == 0u )
-			memset(state->output_token_host, 0, (uint64_t)rows * 4u);
+			memset(state->output_token_host, 0, (uint64_t)rows * sizeof(*state->output_token_host));
 		memset(&completion, 0, sizeof(completion));
 		completion.request_id = dispatch->request_id;
 		completion.sequence_id = dispatch->sequence_id;

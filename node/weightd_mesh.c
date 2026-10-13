@@ -597,7 +597,7 @@ static void SparkWeightdMeshSqWrite(uint32_t peer,uint64_t wr_id,uint32_t signal
     uint32_t index = queue->produced & queue->mask;
     struct mlx5_wqe_ctrl_seg *control = (struct mlx5_wqe_ctrl_seg *)(queue->buffer + (uint64_t)index * 64u);
     struct mlx5_wqe_raddr_seg *remote = (struct mlx5_wqe_raddr_seg *)(control + 1);
-    memset(control,0,48u);
+    memset(control,0,sizeof(*control) + sizeof(*remote) + sizeof(struct mlx5_wqe_data_seg));
     mlx5dv_set_ctrl_seg(control,(uint16_t)queue->produced,MLX5_OPCODE_RDMA_WRITE,0u,queue->qpn,
         signaled != 0u ? MLX5_WQE_CTRL_CQ_UPDATE : 0u,3u,0u,0u);
     remote->raddr = htobe64(weightd_mesh.qp_info[peer].remote_addr + remote_offset);
@@ -755,7 +755,7 @@ static SparkStatus SparkWeightdMeshTransitionQp(
     attributes.ah_attr.is_global = 1;
     attributes.ah_attr.dlid = dlid;
     attributes.ah_attr.port_num = 1;
-    memcpy(attributes.ah_attr.grh.dgid.raw,dgid,16);
+    memcpy(attributes.ah_attr.grh.dgid.raw,dgid,sizeof(attributes.ah_attr.grh.dgid.raw));
     attributes.ah_attr.grh.sgid_index = (uint8_t)sgid_index;
     attributes.ah_attr.grh.hop_limit = 1;
     attributes.ah_attr.grh.traffic_class = (uint8_t)weightd_mesh.traffic_class;

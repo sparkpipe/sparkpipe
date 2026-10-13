@@ -6,6 +6,7 @@
 #include "runtime/launch.h"
 #include "sparkpipe/spark_dsv41_flash_stage_model.h"
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
@@ -57,6 +58,7 @@
 #define D41_CANDIDATE_ROWS (2048u * 8u)
 #define D41_ENGRAM_HEAD_DIM 256u
 #define D41_ENGRAM_COLUMNS 24u
+#define D41_ENGRAM_MULTIPLIERS 4u
 #define D41_ENGRAM_ORDERS 3u
 #define D41_ENGRAM_HEADS 8u
 #define D41_ENGRAM_KV_ROWS ((D41K_HC + 1u) * D41_HIDDEN)
@@ -945,10 +947,10 @@ static SparkStatus D41OpenEngramTables(D41ModelState *state, const char *pack_pa
 		const uint64_t first = (uint64_t)state->tp_rank * part;
 		engram->first_row = first;
 		engram->local_rows = first >= rows[which] ? 0u : (rows[which] - first < part ? rows[which] - first : part);
-		if ( cudaMalloc(&engram->multipliers, 4u * sizeof(int64_t)) != cudaSuccess ||
+		if ( cudaMalloc(&engram->multipliers, D41_ENGRAM_MULTIPLIERS * sizeof(int64_t)) != cudaSuccess ||
 			cudaMalloc(&engram->primes, D41_ENGRAM_COLUMNS * sizeof(int64_t)) != cudaSuccess ||
 			cudaMalloc(&engram->offsets, D41_ENGRAM_COLUMNS * sizeof(int64_t)) != cudaSuccess ||
-			cudaMemcpy(engram->multipliers, numbers + which * 4u, 4u * sizeof(int64_t), cudaMemcpyHostToDevice) != cudaSuccess ||
+			cudaMemcpy(engram->multipliers, numbers + which * D41_ENGRAM_MULTIPLIERS, D41_ENGRAM_MULTIPLIERS * sizeof(int64_t), cudaMemcpyHostToDevice) != cudaSuccess ||
 			cudaMemcpy(engram->primes, numbers + 8u + which * D41_ENGRAM_COLUMNS, D41_ENGRAM_COLUMNS * sizeof(int64_t), cudaMemcpyHostToDevice) != cudaSuccess ||
 			cudaMemcpy(engram->offsets, numbers + 56u + which * D41_ENGRAM_COLUMNS, D41_ENGRAM_COLUMNS * sizeof(int64_t), cudaMemcpyHostToDevice) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -968,7 +970,7 @@ static SparkStatus D41OpenEngramShard(D41ModelState *state, const char *pack_pat
 	memset(state->engram_sha256, 0, sizeof(state->engram_sha256));
 	if ( file != 0 )
 	{
-		if ( fread(state->engram_sha256, 1u, 64u, file) != 64u )
+		if ( fread(state->engram_sha256, 1u, SPARK_SHA256_HEX_BYTES - 1u, file) != SPARK_SHA256_HEX_BYTES - 1u )
 			state->engram_sha256[0] = 0;
 		fclose(file);
 	}
@@ -1297,7 +1299,7 @@ static SparkStatus D41AttachEngram(D41ModelState *state, const SparkStageRunnerC
 {
 	SparkWeightdLazyAttachRequest request;
 	memset(&request, 0, sizeof(request));
-	memcpy(request.identity.pack_sha256, state->engram_sha256, 65u);
+	memcpy(request.identity.pack_sha256, state->engram_sha256, SPARK_SHA256_HEX_BYTES);
 	snprintf(request.identity.model, sizeof(request.identity.model), "%s", "deepseek-v4.1-flash-engram");
 	snprintf(request.identity.revision, sizeof(request.identity.revision), "%s", "official");
 	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
