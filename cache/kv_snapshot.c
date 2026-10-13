@@ -339,6 +339,13 @@ static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const ch
 	return(SparkKvSnapshotSyncDirectory(store));
 }
 
+static SparkStatus SparkKvSnapshotFailureGateLocked(const SparkKvSnapshotStore *store)
+{
+	if ( store->failed_status != SPARK_STATUS_OK && SparkKvSnapshotNowNs() - store->failed_at_ns < store->failure_retry_ns )
+		return(store->failed_status);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkKvSnapshotCommitFile(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotSegment *segments,uint32_t segment_count)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
@@ -369,12 +376,23 @@ static SparkStatus SparkKvSnapshotCommitFile(SparkKvSnapshotStore *store,const S
 		store->write_count++;
 		store->write_bytes += header.file_bytes;
 		store->write_ns += SparkKvSnapshotNowNs() - start_ns;
+		if ( store->failed_status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"kv snapshot store %s writes again after status %u\n",store->directory,(unsigned)store->failed_status);
+			store->failed_status = SPARK_STATUS_OK;
+			store->recovered_count++;
+		}
 	}
 	else
 	{
 		store->write_failure_count++;
 		if ( status == SPARK_STATUS_IO_ERROR || status == SPARK_STATUS_CAPACITY_EXCEEDED )
+		{
 			store->failed_status = status;
+			store->failed_at_ns = SparkKvSnapshotNowNs();
+			fprintf(stderr,"kv snapshot store %s write failed status=%u; writes are refused for %llu ms, then one probes the store\n",
+				store->directory,(unsigned)status,(unsigned long long)(store->failure_retry_ns / 1000000u));
+		}
 	}
 	pthread_mutex_unlock(&runtime->mutex);
 	SPARK_RETURN(status);
@@ -538,6 +556,7 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	store->descriptor_bytes = SPARK_KV_SNAPSHOT_STORE_BYTES;
 	store->maximum_bytes = maximum_bytes;
 	store->queue_maximum_bytes = queue_maximum_bytes;
+	store->failure_retry_ns = SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS;
 	memcpy(store->directory,directory,strlen(directory) + 1u);
 	store->runtime = runtime;
 	status = SparkKvSnapshotScan(store);
@@ -803,7 +822,7 @@ SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapsh
 		SPARK_RETURN(status);
 	runtime = SparkKvSnapshotRuntimeOf(store);
 	pthread_mutex_lock(&runtime->mutex);
-	if ( store->failed_status != SPARK_STATUS_OK )
+	if ( SparkKvSnapshotFailureGateLocked(store) != SPARK_STATUS_OK )
 		status = store->failed_status;
 	else if ( SparkKvSnapshotIndexFind(runtime,key) != SPARK_KV_SNAPSHOT_NO_ENTRY )
 	{
@@ -849,7 +868,7 @@ SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvS
 	pthread_mutex_lock(&runtime->mutex);
 	for (job=runtime->jobs; job != 0 && memcmp(&job->key,key,sizeof(*key)) != 0; job=job->next)
 		;
-	if ( store->failed_status != SPARK_STATUS_OK )
+	if ( SparkKvSnapshotFailureGateLocked(store) != SPARK_STATUS_OK )
 		status = store->failed_status;
 	else if ( job != 0 )
 		status = SPARK_STATUS_PENDING;
