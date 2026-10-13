@@ -97,14 +97,13 @@ The contract is enforced rather than advisory
 - **No hidden clamps.** A power-of-two kernel bucket is never an admission
   rule. Diagnostic clamps live under `#ifdef DEBUG` and report themselves.
 
-**Adding a model.** Model families share code through
-[family templates](docs/FAMILY_TEMPLATES.md). A template moves into common
-code only if every family compiles it to identical host code and SASS. A new
-driver starts from one parameter header, whose compile errors list every
-value it must supply
-([`docs/COMMON_MODULE_ARCHITECTURE.md`](docs/COMMON_MODULE_ARCHITECTURE.md)).
-The recipe generator derives TP and PP placements from the model's
-authoritative contract in `model_contracts/`.
+**Adding a model.** Every driver runs on the common stage runner
+(`inference/runner/`). A new driver supplies only its math, as a stage model
+behind the runner's model interface
+(`include/sparkpipe/spark_stage_runner_model.h`), plus its serving glue and
+packer ([`docs/MODULE_MAP.md`](docs/MODULE_MAP.md)). The recipe generator
+derives TP and PP placements from the model's authoritative contract in
+`model_contracts/`.
 
 ## Weights: stage packs and a residency daemon
 
