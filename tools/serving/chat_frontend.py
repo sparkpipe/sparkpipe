@@ -890,28 +890,46 @@ class Frontend:
         if response_format not in (None, {"type": "text"}):
             raise RequestError(400, "unsupported_parameter", "response_format other than text is not supported by this server")
         messages = normalize_messages(body.get("messages"))
-        tools = body.get("tools") if body.get("tool_choice") != "none" else None
+        tools = body.get("tools")
+        if tools is not None and (not isinstance(tools, list) or any(
+                not isinstance(tool, dict) or tool.get("type") != "function" or not isinstance(tool.get("function"), dict) or
+                not isinstance(tool["function"].get("name"), str) for tool in tools)):
+            raise RequestError(400, "invalid_tools", "tools must be an array of function tools, each with a function object that has a string name")
+        tool_choice = body.get("tool_choice")
+        if tool_choice not in (None, "auto", "none"):
+            raise RequestError(400, "unsupported_parameter", f"tool_choice {tool_choice!r} is not supported by this server; send auto or none")
+        if tool_choice == "none":
+            tools = None
+        if body.get("stream") not in (None, True, False):
+            raise RequestError(400, "invalid_request", "stream must be a boolean")
         kwargs = {}
         effort = body.get("reasoning_effort")
         if effort is not None:
-            if effort not in model.reasoning_effort:
+            if not isinstance(effort, str) or effort not in model.reasoning_effort:
                 raise RequestError(400, "unsupported_parameter", f"reasoning_effort must be one of {sorted(model.reasoning_effort)}")
             kwargs.update(model.reasoning_effort[effort])
-        for key, value in (body.get("chat_template_kwargs") or {}).items():
+        template_kwargs = body.get("chat_template_kwargs")
+        if template_kwargs is not None and not isinstance(template_kwargs, dict):
+            raise RequestError(400, "invalid_request", "chat_template_kwargs must be an object")
+        for key, value in (template_kwargs or {}).items():
             if key not in model.template_kwargs:
                 raise RequestError(400, "unsupported_parameter", f"chat_template_kwargs.{key} is not accepted; accepted: {sorted(model.template_kwargs)}")
             kwargs[key] = value
         prompt, prompt_ids = model.render(messages, tools, kwargs)
         if len(prompt_ids) >= model.context_tokens:
             raise RequestError(400, "context_length_exceeded", f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}")
-        limit = body.get("max_completion_tokens", body.get("max_tokens"))
+        limit = number(body, "max_completion_tokens", 1, 2 ** 31, integer=True)
+        if limit is None:
+            limit = number(body, "max_tokens", 1, 2 ** 31, integer=True)
         room = model.context_tokens - len(prompt_ids)
-        max_tokens = room if limit is None else min(int(limit), room)
+        max_tokens = room if limit is None else min(limit, room)
         if max_tokens <= 0:
             raise RequestError(400, "invalid_request", "max_tokens must be positive")
         stops = body.get("stop") or []
         if isinstance(stops, str):
             stops = [stops]
+        if not isinstance(stops, list) or not all(isinstance(stop, str) and stop for stop in stops):
+            raise RequestError(400, "invalid_request", "stop must be a string or an array of non-empty strings")
         if model.channels is not None:
             parser = ChannelParser(model, tools, prompt, stops)
         else:
