@@ -1004,12 +1004,23 @@ static uint32_t TestApiTokensContain(const uint32_t *tokens, uint32_t token_coun
 	return 0u;
 }
 
+static unsigned long long TestApiServedCount(const TestApiStack *stack)
+{
+	char response[4096];
+	const char *served;
+	TestApiHttpCall(stack->api_port,"GET","/health",0,response,sizeof(response));
+	served = strstr(TestApiResponseJsonBody(response),"\"served\":");
+	assert(served != 0);
+	return strtoull(served + strlen("\"served\":"),0,10);
+}
+
 static void TestApiChatDeclaredStops(TestApiStack *stack)
 {
 	char response[65536];
 	uint32_t tokens[64];
 	uint32_t token_count;
 	const char *body;
+	unsigned long long served_before;
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",
 		"{\"prompt_token_ids\":[11,12],\"max_tokens\":8,\"temperature\":1,\"seed\":1}",
 		response,sizeof(response));
@@ -1018,6 +1029,7 @@ static void TestApiChatDeclaredStops(TestApiStack *stack)
 	token_count = TestApiScanTokenArray(body,tokens,64u);
 	assert(TestApiTokensContain(tokens,token_count,TEST_API_TURN_END_TOKEN) == 1u);
 	assert(TestApiBodyContains(body,"\"finish_reason\":\"length\""));
+	served_before = TestApiServedCount(stack);
 	TestApiHttpCall(stack->api_port,"POST","/v1/chat/completions",
 		"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8,\"temperature\":1,\"seed\":1}",
 		response,sizeof(response));
@@ -1027,8 +1039,9 @@ static void TestApiChatDeclaredStops(TestApiStack *stack)
 	assert(token_count >= 1u && token_count < 8u);
 	assert(TestApiTokensContain(tokens,token_count,TEST_API_TURN_END_TOKEN) == 0u);
 	assert(TestApiBodyContains(body,"\"finish_reason\":\"stop\""));
+	assert(TestApiServedCount(stack) == served_before + 1u);
 	printf("test_model_api_text: declared chat stop markers end a chat reply OK "
-		"(the same sampling without messages emits the marker token)\n");
+		"(the same sampling without messages emits the marker token; the stopped reply counts as served once)\n");
 }
 
 static uint32_t TestApiWaitHealthBody(const TestApiStack *stack,int status,const char *needle,uint32_t seconds)
