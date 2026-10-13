@@ -986,6 +986,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 			logprob_stride = submission->lanes[lane].sampling.logprobs;
 		distribution_count++;
 	}
+	if ( logprob_stride != 0u && submission->tokens_per_sequence > 1u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	continuity.state = state;
 	continuity.rows = rows;
 	continuity.active = active;
