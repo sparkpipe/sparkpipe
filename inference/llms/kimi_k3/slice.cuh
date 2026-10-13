@@ -65,6 +65,7 @@ struct K3LayerWeights
 #define K3_COLLECTIVE_MLA_KEYS 7u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
+#define K3_COLLECTIVE_ROWS 0x400u
 #define K3_L2_LOAD_BYTES (8u << 20)
 #define K3_L2_LOAD_BLOCKS 48u
 
@@ -489,9 +490,9 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 	return(LM_LAUNCH_OK);
 }
 
-static void K3PairPre(K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, cudaStream_t stream)
+static void K3PairPre(K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t row_shard, cudaStream_t stream)
 {
-	if ( layer > 0u )
+	if ( layer > 0u && row_shard == 0u )
 		K3AttnRes(buffers,buffers->attnres_attn_weight,
 			((layer - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows,stream);
 	if ( (layer % K3_ATTNRES_BLOCK_SIZE) == 0u )
@@ -536,6 +537,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 	const cudaStream_t sa = (cudaStream_t)state->pair_stream_a;
 	const cudaStream_t sb = (cudaStream_t)state->pair_stream_b;
 	const uint32_t total = rows_a + rows_b;
+	const uint32_t row_shard = first_layer == 0u && layer_count == K3_LAYERS && a->attnres_score_f32 != 0 && b->attnres_score_f32 != 0 ? K3_COLLECTIVE_ROWS : 0u;
 	uint32_t offset, layer = first_layer;
 	int32_t status = LM_LAUNCH_OK;
 	if ( K3PairReady(state,a,b,rows_a,rows_b) == 0u )
@@ -552,7 +554,7 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		K3BindLayerState(state,layer,a);
 		K3BindLayer(&weights[offset],b);
 		K3BindLayerState(state,layer,b);
-		K3PairPre(a,layer,rows_a,sa);
+		K3PairPre(a,layer,rows_a,row_shard,sa);
 		if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
 			K3_PAIR_DO(K3LayerKda<Format>(a,rows_a,1u,commit,(uint16_t *)0,multiprocessors,sa));
 		else
@@ -560,13 +562,13 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		K3_PAIR_DO(K3PairFence(state,sb,sa));
 		if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
 		{
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,0u,0u));
-			K3PairPre(b,layer,rows_b,sb);
+			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,row_shard,0u));
+			K3PairPre(b,layer,rows_b,row_shard,sb);
 			K3_PAIR_DO(K3LayerKda<Format>(b,rows_b,1u,commit,(uint16_t *)0,multiprocessors,sb));
 		}
 		else
 		{
-			K3PairPre(b,layer,rows_b,sb);
+			K3PairPre(b,layer,rows_b,row_shard,sb);
 			K3_PAIR_DO((K3LayerMlaQuery<Format,Geometry>(b,rows_b,multiprocessors,sb)));
 			K3_PAIR_DO(K3LayerMlaGatherPack<Geometry>(a,rows_a,sb));
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sb,0,layer,K3_COLLECTIVE_MLA_KEYS,1u));
@@ -578,22 +580,26 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			K3_PAIR_DO(K3LayerMlaShardMerge(a,rows_a,sa));
 			K3_PAIR_DO(K3LayerMlaOutput<Format>(a,rows_a,(uint16_t *)0,1u,multiprocessors,sa));
 			K3_PAIR_DO(K3PairFence(state,sb,sa));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,0u,0u));
+			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,row_shard,0u));
 			K3_PAIR_DO(K3LayerMlaGatherPartials<Geometry>(b,rows_b,sb));
 			K3_PAIR_DO(K3LayerMlaShardMerge(b,rows_b,sb));
 			K3_PAIR_DO(K3LayerMlaOutput<Format>(b,rows_b,(uint16_t *)0,1u,multiprocessors,sb));
 		}
-		K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,0u,0u));
+		K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,row_shard,0u));
 		if ( status != LM_LAUNCH_OK )
 			return(K3SliceFailure(layer,"pair-attention",status));
-		K3AttnRes(a,a->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
+		a->attnres_next_weight = offset + 1u < layer_count ? weights[offset + 1u].attnres_attn_weight : a->attnres_out_weight;
+		b->attnres_next_weight = offset + 1u < layer_count ? weights[offset + 1u].attnres_attn_weight : b->attnres_out_weight;
+		if ( row_shard == 0u )
+			K3AttnRes(a,a->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
 		if ( layer < K3_FIRST_ROUTED_LAYER )
 		{
 			K3_PAIR_DO(K3LayerDenseMlp<Format>(a,rows_a,multiprocessors,sa));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,1u,0u));
-			K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
+			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,1u | row_shard,0u));
+			if ( row_shard == 0u )
+				K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
 			K3_PAIR_DO(K3LayerDenseMlp<Format>(b,rows_b,multiprocessors,sb));
-			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,1u,0u));
+			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,1u | row_shard,0u));
 			if ( status != LM_LAUNCH_OK )
 				return(K3SliceFailure(layer,"pair-dense",status));
 		}
@@ -603,7 +609,8 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,0,layer,2u,1u));
 			K3_PAIR_DO(K3LayerSharedUp<Format>(a,rows_a,a->shared_mid_bf16,multiprocessors,sa));
 			K3_PAIR_DO(K3PairFence(state,sa,stream));
-			K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
+			if ( row_shard == 0u )
+				K3AttnRes(b,b->attnres_mlp_weight,(layer / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
 			K3_PAIR_DO(K3LayerLatentMoe<Format>(b,rows_b,rows_b * K3_TOP_K,multiprocessors,sb,0u));
 			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,0,layer,2u,1u));
 			K3_PAIR_DO(K3LayerSharedUp<Format>(b,rows_b,b->shared_mid_bf16,multiprocessors,sb));
@@ -618,9 +625,9 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sa,sb,layer,3u,1u));
 			K3_PAIR_DO(K3LayerSharedDown<Format>(a,rows_a,a->shared_mid_bf16,multiprocessors,sa));
 			K3_PAIR_DO(K3LayerLatentMoe<Format>(a,rows_a,rows_a * K3_TOP_K,multiprocessors,sa,2u));
-			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,1u,0u));
+			K3_PAIR_DO(K3PairRound(state,lane_a,stream,sa,sa,layer,1u | row_shard,0u));
 			K3_PAIR_DO(K3LayerLatentMoe<Format>(b,rows_b,rows_b * K3_TOP_K,multiprocessors,sb,2u));
-			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,1u,0u));
+			K3_PAIR_DO(K3PairRound(state,lane_b,stream,sb,sb,layer,1u | row_shard,0u));
 			if ( status != LM_LAUNCH_OK )
 				return(K3SliceFailure(layer,"pair-routed",status));
 		}
@@ -631,8 +638,11 @@ static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceSta
 		return(K3SliceFailure(layer,"pair",status));
 	if ( first_layer + layer_count == K3_LAYERS )
 	{
-		K3AttnRes(a,a->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
-		K3AttnRes(b,b->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
+		if ( row_shard == 0u )
+		{
+			K3AttnRes(a,a->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_a,sa);
+			K3AttnRes(b,b->attnres_out_weight,((K3_LAYERS - 1u) / K3_ATTNRES_BLOCK_SIZE) + 2u,rows_b,sb);
+		}
 	}
 	else
 	{

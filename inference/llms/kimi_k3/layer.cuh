@@ -144,6 +144,7 @@ struct K3LayerBuffers
 	const void *attnres_attn_weight;
 	const void *attnres_mlp_weight;
 	const void *attnres_out_weight;
+	const void *attnres_next_weight;
 	uint16_t *kda_beta_logit;
 	float *kda_write_gate_out;
 	uint16_t *gate_up_bf16;
@@ -327,6 +328,33 @@ static void K3BankStore(const K3LayerBuffers *b, uint32_t slot, uint32_t rows, c
 		b->attnres_partial_bf16,
 		b->attnres_bank_bf16 + ((uint64_t)slot * rows * K3_HIDDEN),
 		rows,K3_HIDDEN);
+}
+
+static void K3AttnResRows(const K3LayerBuffers *b, const void *score_weight, uint32_t sources, uint32_t rows, uint32_t first, uint32_t count, uint16_t *output, cudaStream_t stream)
+{
+	const uint64_t offset = (uint64_t)first * K3_HIDDEN;
+	float *score = b->attnres_score_f32 + (uint64_t)first * K3_ATTNRES_MAX_SOURCES;
+	if ( sources > K3_ATTNRES_MAX_SOURCES )
+		sources = K3_ATTNRES_MAX_SOURCES;
+	LM_LAUNCH((LmAttnResScoreKernel<K3_LAYER_THREADS>), dim3(count,sources), K3_LAYER_THREADS, 0, stream,
+		b->attnres_bank_bf16 + offset,b->attnres_partial_bf16 + offset,(const uint16_t *)score_weight,score,
+		sources,rows,K3_HIDDEN,K3_ATTNRES_MAX_SOURCES,K3_RMS_EPSILON);
+	LM_LAUNCH((LmAttnResMixKernel<K3_LAYER_THREADS,K3_ATTNRES_MAX_SOURCES>),
+		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,count), K3_LAYER_THREADS, 0, stream,
+		b->attnres_bank_bf16 + offset,b->attnres_partial_bf16 + offset,score,output,
+		sources,rows,K3_HIDDEN,K3_ATTNRES_MAX_SOURCES);
+}
+
+static void K3PartialRows(const K3LayerBuffers *b, const uint16_t *value, uint32_t first, uint32_t count, uint32_t set, cudaStream_t stream)
+{
+	uint16_t *partial = b->attnres_partial_bf16 + (uint64_t)first * K3_HIDDEN;
+	const dim3 grid((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,count);
+	if ( set != 0u )
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), grid, K3_LAYER_THREADS, 0, stream,
+			value,partial,count,K3_HIDDEN);
+	else
+		LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>), grid, K3_LAYER_THREADS, 0, stream,
+			partial,value,partial,count,K3_HIDDEN);
 }
 
 template<uint32_t THREADS>
