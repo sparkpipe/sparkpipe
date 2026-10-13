@@ -8,6 +8,9 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cu", ".cuh", ".cxx", ".h", ".hh", ".hpp", ".inc", ".inl", ".m", ".metal", ".mm")
 SHELL_SUFFIXES = (".sh", ".bash")
+MAKE_NAMES = ("Makefile", "GNUmakefile")
+MAKE_SUFFIXES = (".mk",)
+MAKE_COMMENT = re.compile(r"^[ \t]*#")
 SHEBANG = re.compile(r"^#![^\n]*[/ ](?:ba|da|z)?sh(?:[ \t]|$)")
 RAW_PREFIXES = ("R", "LR", "uR", "UR", "u8R")
 GENERATOR = "tools/gen_geometry_header.py"
@@ -196,6 +199,14 @@ def is_scanned_shell(relative, first_line):
     return PurePosixPath(relative).suffix == "" and SHEBANG.match(first_line) is not None
 
 
+def is_scanned_makefile(relative):
+    return not relative.startswith("tests/") and (PurePosixPath(relative).name in MAKE_NAMES or relative.endswith(MAKE_SUFFIXES))
+
+
+def _makefile_findings(relative, text):
+    return [f"FAIL {relative}:{number}: comment" for number, line in enumerate(text.split("\n"), 1) if MAKE_COMMENT.match(line)]
+
+
 def source_files():
     run = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture_output=True)
     if run.returncode != 0:
@@ -317,9 +328,13 @@ def main():
     failures += listing_failures
     source_count = 0
     shell_count = 0
+    make_count = 0
     for relative in files:
         raw = (ROOT / relative).read_bytes()
-        if is_scanned_source(relative):
+        if is_scanned_makefile(relative):
+            make_count += 1
+            failures += _makefile_findings(relative, raw.decode("utf-8", "surrogateescape"))
+        elif is_scanned_source(relative):
             source_count += 1
             failures += _source_findings(relative, raw.decode("utf-8", "surrogateescape"))
         elif is_scanned_shell(relative, raw.split(b"\n", 1)[0].decode("utf-8", "replace")):
@@ -336,11 +351,13 @@ def main():
         failures.append("FAIL source list: no source files found")
     for failure in failures:
         print(failure)
-    print(f"source files checked {source_count}, shell files checked {shell_count}, generator outputs checked {len(outputs)}, lexer cases {len(lexer_cases())}")
+    if make_count == 0 and not listing_failures:
+        failures.append("FAIL makefile list: no makefiles found")
+    print(f"source files checked {source_count}, shell files checked {shell_count}, makefiles checked {make_count}, generator outputs checked {len(outputs)}, lexer cases {len(lexer_cases())}")
     if failures:
         print(f"\nFAIL ({len(failures)})")
         return 1
-    print("\nPASS no comments in C, C++ or CUDA sources outside tests")
+    print("\nPASS no comments in C, C++, CUDA, shell or make sources outside tests")
     return 0
 
 
