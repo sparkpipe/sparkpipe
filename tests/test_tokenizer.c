@@ -1092,6 +1092,62 @@ static void SparkTestTiktokenMergesPastInlineKey(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+static void SparkTestPatchCompiledWord(const char *source, const char *target, long offset, uint32_t value)
+{
+    FILE *input = fopen(source, "rb");
+    FILE *output = fopen(target, "wb");
+    int character;
+    long position = 0;
+    assert(input != 0 && output != 0);
+    while ((character = fgetc(input)) != EOF)
+    {
+        if (position >= offset && position < offset + 4)
+            character = (int)((value >> (8u * (uint32_t)(position - offset))) & 0xffu);
+        assert(fputc(character, output) != EOF);
+        position++;
+    }
+    assert(fclose(input) == 0 && fclose(output) == 0);
+}
+
+static uint32_t SparkTestCompiledWord(const char *path, long offset)
+{
+    FILE *input = fopen(path, "rb");
+    uint8_t bytes[4];
+    assert(input != 0 && fseek(input, offset, SEEK_SET) == 0 && fread(bytes, 1u, 4u, input) == 4u && fclose(input) == 0);
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) | ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
+}
+
+static void SparkTestCompiledFileRefusesIdsPastMaximum(void)
+{
+    const char *good = "build/test_tokenizer_long_merge.bin";
+    const char *bad = "build/test_tokenizer_bad_ids.bin";
+    const long maximum_offset = 8 + 4 * 6;
+    SparkTokenizerCompiledFileConfiguration compiled;
+    SparkTokenizer loaded;
+    uint32_t maximum,version;
+    long first_entry;
+    version = SparkTestCompiledWord(good, 8);
+    maximum = SparkTestCompiledWord(good, maximum_offset);
+    first_entry = maximum_offset + 4 + 4 + (version == SPARK_TOKENIZER_COMPILED_FILE_VERSION ? 12 : 0) + 12;
+    assert(maximum == 263u && SparkTestCompiledWord(good, first_entry) <= maximum);
+    memset(&compiled, 0, sizeof(compiled));
+    compiled.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    compiled.descriptor_bytes = SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+    compiled.compiled_tokenizer_path = bad;
+    SparkTestPatchCompiledWord(good, bad, maximum_offset, 0xffffffffu);
+    SparkTokenizerReset(&loaded);
+    assert(SparkTokenizerLoadCompiledFile(&loaded, &compiled) == SPARK_STATUS_SCHEMA_ERROR);
+    SparkTestPatchCompiledWord(good, bad, first_entry, maximum + 1u);
+    SparkTokenizerReset(&loaded);
+    assert(SparkTokenizerLoadCompiledFile(&loaded, &compiled) == SPARK_STATUS_SCHEMA_ERROR);
+    compiled.compiled_tokenizer_path = good;
+    SparkTokenizerReset(&loaded);
+    assert(SparkTokenizerLoadCompiledFile(&loaded, &compiled) == SPARK_STATUS_OK);
+    SparkTokenizerDestroy(&loaded);
+    (void)remove(bad);
+    printf("PASS a compiled tokenizer whose maximum id is past the cap or whose vocabulary names an id past its maximum is refused\n");
+}
+
 static void SparkTestTokenizerNfcNormalizerComposesBeforeBpe(void)
 {
     static const char *const normalizers[2] = {"{\"type\": \"NFC\"}", "null"};
@@ -1309,6 +1365,7 @@ int main(void)
     SparkTestTokenizerNfcNormalizerComposesBeforeBpe();
     SparkTestCompiledFileCarriesEncodingFlags();
     SparkTestTiktokenMergesPastInlineKey();
+    SparkTestCompiledFileRefusesIdsPastMaximum();
     SparkTestDigitIdeographSequencePretokenizes();
     SparkTestNewlineRunSequencePretokenizes();
     SparkTestTokenizerRefusesPrefixSpaceAfterSplits();
