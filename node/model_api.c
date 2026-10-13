@@ -87,6 +87,7 @@ typedef struct ApiRequest
 	volatile uint32_t status;
 	SparkModelBatchRequestHandle handle;
 	uint32_t *stop_tokens;
+	uint32_t served_counted;
 	uint32_t stop_token_count;
 	uint32_t priority;
 	uint32_t stream;
@@ -275,6 +276,11 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 			{
 				pthread_mutex_lock(&r->mutex);
 				r->done = 1;
+				if ( r->served_counted == 0u )
+				{
+					r->served_counted = 1u;
+					S.served++;
+				}
 				pthread_cond_signal(&r->cond);
 				{
 					SparkModelBatchRequestHandle cancel_handle =
@@ -314,7 +320,11 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 			r->status = ev->status;
 			r->engine_completed = ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED ? 1u : 0u;
 			r->done = 1;
-			S.served++;
+			if ( r->served_counted == 0u )
+			{
+				r->served_counted = 1u;
+				S.served++;
+			}
 			pthread_cond_signal(&r->cond);
 			pthread_mutex_unlock(&r->mutex);
 		}
