@@ -1578,6 +1578,48 @@ static void TestScenarioBusyAdmittedPrefillReleases(const SparkModelResidentDepl
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioCompletionBeforeResult(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine = 0;
+	SparkModelServingCompletion completion;
+	uint64_t ids[TEST_RANKS];
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,1u,0u);
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"early completion: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,550u,2u);
+	for (uint32_t step=0u; step<20u; step++)
+		(void)SparkModelBatchEngineProgress(engine,8u);
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_RESULT,0u);
+		CHECK(ids[rank] != 0u,"early completion: the prefill waits for its result on every rank");
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		memset(&completion,0,sizeof(completion));
+		completion.submission_id = ids[rank];
+		completion.status = SPARK_STATUS_OK;
+		MockResidentClientFireCompletion(rank,&completion);
+	}
+	for (uint32_t step=0u; step<50u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		usleep(1000);
+	}
+	CHECK(state.error_events[1] == 1u,"early completion: the client of the broken submission gets one terminal error");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.inflight_submission_count == 0u && view.live_request_count == 0u,
+		"early completion: the broken submission and its request slot are released");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioDriverIoError(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -2188,6 +2230,7 @@ int main(void)
 	TestScenarioDriverIoError(&deployment,runtime_root);
 	TestScenarioInflightExpiryHoldsSlot(&deployment,runtime_root);
 	TestScenarioBusyAdmittedPrefillReleases(&deployment,runtime_root);
+	TestScenarioCompletionBeforeResult(&deployment,runtime_root);
 	TestScenarioEosEarlyStop(&deployment,runtime_root);
 	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
 	TestScenarioAdapterCacheModes(runtime_root);
