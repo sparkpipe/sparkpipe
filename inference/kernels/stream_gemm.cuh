@@ -566,6 +566,12 @@ static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t mu
 			return(LmStreamGemmLaunchShape<Format,64u,256u>(args,multiprocessors,stream));
 		return(LmStreamGemmLaunchShape<Format,128u,128u>(args,multiprocessors,stream));
 	}
+	else if constexpr ( LmStreamBlockK<Format>() != 0u )
+	{
+		if ( args->output_dimension <= 512u && args->input_dimension % 128u == 0u )
+			return(LmStreamGemmLaunchShape<Format,64u,128u>(args,multiprocessors,stream));
+		return(LmStreamGemmLaunchShape<Format,128u,64u>(args,multiprocessors,stream));
+	}
 	else
 		return(LmStreamGemmLaunchShape<Format,128u,64u>(args,multiprocessors,stream));
 }
