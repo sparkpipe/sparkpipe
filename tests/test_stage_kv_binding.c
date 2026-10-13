@@ -1479,6 +1479,35 @@ static void TestSnapshotStatelessChain(void)
 	printf("snapshot of a sparse checkpoint chain: a stateless page saves without a state segment, so the chain under a checkpoint reaches the store and restores after a restart with a fresh pool: ok\n");
 }
 
+static void TestStatelessBoundaryProbeKeepsChain(void)
+{
+	SparkStageKvConfiguration configuration;
+	SparkModelDriverKvStoreCounters counters;
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	uint64_t restored;
+	MakeDirectories();
+	ConfigureRecurrent(&configuration);
+	assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+	PublishRecurrentStep(1u,0u,4u,0x70u,0x31u,1u,pages[0]);
+	PublishRecurrentStep(1u,4u,8u,0x71u,0x32u,0u,pages[1]);
+	ReleaseSequence(1u,0u);
+	WaitSavesIdle();
+	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK);
+	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
+	assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+	assert(RestorePrefix(2u,1u,4u,0x70u,pages,1u) != SPARK_STATUS_OK);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.store_file_count == 2u);
+	restored = counters.restore_page_count;
+	assert(RestorePrefix(3u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.restore_page_count == restored + 2u && counters.store_file_count == 2u);
+	Close();
+	printf("snapshot probe at a stateless boundary: the restore that cannot resume there removes no file, and the longer chain through that page still restores: ok\n");
+}
+
 static void PublishStagedStep(uint64_t sequence,uint32_t position,uint32_t context,uint8_t identity,uint8_t fill)
 {
 	TestStep step;
@@ -1598,6 +1627,7 @@ int main(void)
 	TestRecurrentRefusals();
 	TestRecurrentCheckpoints();
 	TestSnapshotStatelessChain();
+	TestStatelessBoundaryProbeKeepsChain();
 	TestStagedReplyCheckpoint();
 	TestReleaseAfterFailedRun();
 	TestKvServerFinish();
