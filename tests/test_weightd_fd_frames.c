@@ -162,6 +162,25 @@ static void check_mesh_mapping(uint32_t raw_offset,uint32_t failure,uint64_t adv
     assert(close(source) == 0 && close(pool) == 0 && close(sockets[0]) == 0 && close(sockets[1]) == 0);
 }
 
+static void check_mesh_range_needs_one_lane(void)
+{
+    SparkWeightdConnection connection = {0};
+    const uint64_t band_bytes = (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",0u,64u) == SPARK_STATUS_INVALID_ARGUMENT);
+    connection.lane_mask = 3u;
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",0u,64u) == SPARK_STATUS_INVALID_ARGUMENT);
+    connection.lane_mask = 0u;
+    connection.mesh_active = 1u;
+    connection.mesh_lane = 0u;
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",0u,64u) == SPARK_STATUS_OK);
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",band_bytes,64u) == SPARK_STATUS_OK);
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",2u * band_bytes,64u) == SPARK_STATUS_INVALID_ARGUMENT);
+    connection.mesh_active = 0u;
+    connection.lane_mask = 1u << 3u;
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",6u * band_bytes,64u) == SPARK_STATUS_OK);
+    assert(SparkWeightdMeshRangeAllowed(&connection,"test",0u,64u) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 static void check_lane_close_waits_for_dispatch(void)
 {
     SparkWeightdServer *server = calloc(1u,sizeof(*server));
@@ -601,8 +620,8 @@ static void check_cold_control_progress(void)
 	wait_for_read();
 	assert(SparkWeightdClientConnect(socket_path,&probe,&next_hello) == SPARK_STATUS_OK);
 	assert(next_hello.daemon_generation == first_hello.daemon_generation);
-	assert(SparkWeightdClientMeshWrite(probe,0u,0u,0u,8u,UINT64_C(100000000)) == SPARK_STATUS_UNSUPPORTED);
-	assert(SparkWeightdClientMeshBroadcast(probe,1u,0u,0u,8u,1u,0u,UINT64_C(100000000)) == SPARK_STATUS_BUSY);
+	assert(SparkWeightdClientMeshWrite(probe,0u,0u,0u,8u,UINT64_C(100000000)) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkWeightdClientMeshBroadcast(probe,1u,0u,0u,8u,1u,0u,UINT64_C(100000000)) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(SparkWeightdClientAlive(probe) != 0u);
 	assert(read_blocked != 0u);
 	SparkWeightdClientClose(probe);
@@ -667,6 +686,7 @@ static void check_cold_control_progress(void)
 int main(void)
 {
     check_lane_close_waits_for_dispatch();
+    check_mesh_range_needs_one_lane();
     check_mesh_only_dispatch();
     check_mesh_only_map(1u,SPARK_STATUS_OK,0u);
     check_mesh_only_map(0u,SPARK_STATUS_BUSY,0u);

@@ -3190,7 +3190,12 @@ static SparkStatus SparkWeightdMeshRangeAllowed(const SparkWeightdConnection *co
             (unsigned long long)offset,(unsigned long long)length,(unsigned long long)SPARK_WEIGHTD_MESH_REGION_BYTES);
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-    if (lane < SPARK_WEIGHTD_MESH_MAX_LANES && SparkWeightdMeshRangeInBand(offset,length,2u * lane) == 0u &&
+    if (lane >= SPARK_WEIGHTD_MESH_MAX_LANES)
+    {
+        fprintf(stderr,"weightd mesh request refused: %s from a connection that is neither mesh-active on a lane nor the owner of exactly one lane\n",what);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    if (SparkWeightdMeshRangeInBand(offset,length,2u * lane) == 0u &&
         SparkWeightdMeshRangeInBand(offset,length,2u * lane + 1u) == 0u)
     {
         fprintf(stderr,"weightd mesh request refused: %s offset=%llu length=%llu lies outside lane %u's bands\n",what,
