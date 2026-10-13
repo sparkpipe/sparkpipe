@@ -9,9 +9,6 @@ CFLAGS += -D_GNU_SOURCE
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
 CORE_INCLUDE_FLAGS := -I. -Iinclude -Isrc
 CUDA_STUB_INCLUDE_FLAGS := -Itests/cuda_stub -Imodel-families/common/include
-# stage_module_common.c reaches <cuda_runtime.h> through spark_stage_module_common.h.
-# Nothing in this group supplied that path, so the archive could not have built;
-# the tests hid it behind -Itests/cuda_stub.
 CUDA_RUNTIME_HEADER := $(wildcard $(CUDA_HOME)/include/cuda_runtime.h)
 ifeq ($(CUDA_RUNTIME_HEADER),)
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS)
@@ -45,14 +42,6 @@ NVCCFLAGS ?= -O3 -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
-# Architecture tuning for auto-vectorization. The tokenizer and other hot loops
-# are written as portable scalar C that the compiler auto-vectorizes; these flags
-# tell it which vector units the build host actually has, so it emits AVX2 on x86
-# and NEON or SVE2 on an Arm Grace host, from one source with no intrinsics.
-# ARCH_TUNE_FLAGS can be overridden or set empty for reproducible or cross builds.
-# On Arm the Grace core is Neoverse V2; older compilers that do not know that name
-# fall back to -mcpu=native. The flag is probed so an unsupported one is dropped
-# rather than breaking the build.
 spark-cc-supports = $(shell printf 'int main(void){return 0;}' | $(CC) $(1) -x c -c - -o /dev/null >/dev/null 2>&1 && printf '%s' '$(1)')
 ifeq ($(UNAME_M),aarch64)
 ARCH_TUNE_FLAGS ?= $(or $(call spark-cc-supports,-mcpu=neoverse-v2),$(call spark-cc-supports,-mcpu=native))
@@ -88,11 +77,6 @@ GLM52_HOST_SOURCES := $(SPARKPIPE_GLM52_SOURCES)
 COMPILER_SOURCES := $(SPARKPIPE_COMPILER_SOURCES)
 RUNTIME_SOURCES := $(SPARKPIPE_RUNTIME_SOURCES)
 
-# Source path to object path, for any source under any directory. The full
-# source path is preserved under build/obj so two files with the same basename
-# in different directories cannot collide. A prefix-stripping patsubst cannot
-# do this: it returns a non-matching entry unchanged, which is how seven .c
-# paths came to sit in *_OBJECTS and abort the parse via -include.
 sp_objects = $(patsubst %.c,build/obj/%.o,$(1))
 
 CORE_OBJECTS := $(call sp_objects,$(CORE_SOURCES))
@@ -108,17 +92,10 @@ RUNTIME_OBJECTS := $(call sp_objects,$(RUNTIME_SOURCES))
 ALL_HOST_OBJECTS := $(CORE_OBJECTS) $(MODEL_COMMON_OBJECTS) $(DEPLOYMENT_OBJECTS) \
     $(GLM52_HOST_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS)
 
-# Every object is built by the one rule below. Include flags are attached per
-# object list rather than per directory, so moving a source does not change how
-# it is compiled.
 $(CORE_OBJECTS): SP_INCLUDE_FLAGS = $(CORE_INCLUDE_FLAGS)
 $(COMPILER_OBJECTS): SP_INCLUDE_FLAGS = $(CORE_INCLUDE_FLAGS)
 $(RUNTIME_OBJECTS): SP_INCLUDE_FLAGS = $(CORE_INCLUDE_FLAGS)
 $(MODEL_COMMON_OBJECTS): SP_INCLUDE_FLAGS = $(MODEL_COMMON_INCLUDE_FLAGS)
-# W2 weightd (docs/WEIGHTD_DESIGN.md): the daemon core and the serving-side
-# attach helper reach <cuda_runtime.h>/<cuda.h> (the VMM surface), so they
-# compile with the model-common include shape - the stub headers where
-# CUDA_HOME is absent, the real ones where it exists.
 build/obj/runtime/spark_weightd.o build/obj/runtime/spark_weightd_attach.o build/obj/runtime/spark_weightd_kv_pool.o build/obj/runtime/spark_weightd_map.o build/obj/runtime/spark_weightd_spine.o build/obj/runtime/spark_weightd_receipt.o build/obj/runtime/spark_weightd_worker.o build/obj/runtime/spark_weightd_lazy_pack.o: SP_INCLUDE_FLAGS = $(MODEL_COMMON_INCLUDE_FLAGS)
 $(DEPLOYMENT_OBJECTS): SP_INCLUDE_FLAGS = $(DEPLOYMENT_INCLUDE_FLAGS)
 $(GLM52_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(GLM52_INCLUDE_FLAGS)
@@ -132,8 +109,6 @@ RUNTIME_LIBRARY := build/libsparkpipe_runtime.a
 COMMON_LIBRARY := $(CORE_LIBRARY)
 LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(DEPLOYMENT_LIBRARY) $(GLM52_HOST_LIBRARY)
 
-# Pro serving topology selection: 404 = TP4xPP4 hybrid (default), 16 = TP16,
-# 4 = TP4, 404-B1 = TP4xPP4 bucket-1 variant. The adapter id and the adapter
 K3_SERVING_ADAPTER := build/libk3_serving_adapter.$(SHARED_LIBRARY_EXT)
 K3_TP16_SERVING_ADAPTER := build/libk3_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
 QWEN38_27B_TP16_SERVING_ADAPTER := build/libqwen38_27b_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
@@ -197,7 +172,6 @@ MIMO26_PRO_TP16_SERVING_ADAPTER := build/libmimo26_pro_tp16_serving_adapter.$(SH
 MIMO26_PRO_TP16_CONTRACT := model_contracts/mimo26_pro_authoritative.json
 MIMO26_PRO_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(MIMO26_PRO_TP16_CONTRACT)"; else shasum -a 256 "$(MIMO26_PRO_TP16_CONTRACT)"; fi | awk '{print $$1}')
 MIMO26_PRO_TP16_SOURCES := modules/mimo26_pro_tp16_resident_decode_stage/source/spark_mimo26_pro_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/mimo26_pro_tp16_resident_decode_stage/source/spark_mimo26_pro_tp16_stage_model.cu
-# Topology/lane specialization for the shared adapter source (TP1 whole-stack
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -683,8 +657,6 @@ TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
     architecture_audit \
     model_driver_contracts
 
-# Model CUDA modules are immutable artifacts selected by an explicit model
-# package. Host builds never guess a codec or silently skip a CUDA artifact.
 all: $(LIBRARIES) tools $(K3_SERVING_ADAPTER) $(K3_TP16_SERVING_ADAPTER)
 
 tools: $(TOOL_BINARIES)
@@ -1002,8 +974,6 @@ build/test_k3_kv_cache: tests/test_k3_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_
 build/test_k3_llm_defines: tests/test_k3_llm_defines.c inference/llms/kimi_k3/config.h inference/llms/kimi_k3/generated_config.h model-families/k3/include/sparkpipe/spark_k3_llm_defines.h | build
 	$(CC) -I. -Iinclude -Imodel-families/k3/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-# Host-executed KDA run-contract gate (the CUDA CPU shim needs GNU g++:
-# tests/host_cuda_compiler.py's search, as a make probe).
 HOST_CUDA_CXX := $(shell for v in 20 19 18 17 16 15 14 13 12 11; do command -v g++-$$v >/dev/null 2>&1 && echo g++-$$v && break; done)
 ifeq ($(strip $(HOST_CUDA_CXX)),)
 HOST_CUDA_CXX := g++
@@ -1078,9 +1048,6 @@ build/debug/sparkpipe_model_batch: node/model_batch.c scheduler/continuous_batch
 	@mkdir -p $(dir $@)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) -DDEBUG node/model_batch.c scheduler/continuous_batch.c runtime/model_batch_engine.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# Fleet startup protocol phase 1+1b registrar (docs/archive/FLEET_STARTUP_PROTOCOL.md):
-# pure POSIX TCP, poll-driven, no threads; deliberately links NOTHING — it
-# must start in milliseconds on every node with zero library dependencies.
 build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
 	$(CC) $(CFLAGS) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE tools/sparkpipe_registrar.c $(LDFLAGS) -o $@
 
@@ -1250,11 +1217,6 @@ build/test_steploop_admission: tests/test_steploop_admission.c tests/fixtures/mo
 build/test_pipeline_runtime: tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# The K3 adapter links the CUDA serving TUs (runner, dispatch, driver) with
-# nvcc, so the rule is the single-spark gate's link line plus the shared libs.
-# nvcc/spark-gated: no nvcc on the build host (offline mac gate) leaves the
-# artifact unbuilt instead of failing `make all` — same contract as
-# below; a spark node builds and validates it for real.
 $(K3_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(wildcard inference/llms/kimi_k3/*.cu inference/llms/kimi_k3/*.cuh inference/llms/kimi_k3/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=404 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
@@ -1330,11 +1292,6 @@ runtime_completion_tests: build/test_runtime_completion build/test_model_runtime
 	./build/test_runtime_completion
 	./build/test_model_runtime
 
-# Header-only cache plus a mock encode; the driver stub's cuda.h is what lets
-# runtime/tensor_map.h compile with no CUDA toolkit, and its stub.c stands in
-# for cuTensorMapEncodeTiled so the production entry point is exercised too.
-# -x c++ on the stub keeps the symbol mangling identical to the test TU's
-# (the stub predates C and C++ disagreeing on the name).
 build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cuda_driver_stub/stub.c runtime/gemm_descriptor_cache.h | build
 	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_gemm_descriptor_cache_stub.o
 	$(CXX) $(CPPFLAGS) -I. -Itests/cuda_driver_stub $(CXXFLAGS) tests/test_gemm_descriptor_cache.cpp build/test_gemm_descriptor_cache_stub.o $(LDFLAGS) $(LDLIBS) -o $@
@@ -1391,24 +1348,15 @@ build/test_release: tests/test_release.c $(COMMON_LIBRARY)
 build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# The tier and its mock device, compiled together directly: the test's device
-# is a vtable implementation, so there is no library boundary to cross and no
-# archive to link for two translation units.
 build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_nvme_tier.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
-# The switch machine sits on the same mock-drive tier: two translation units,
-# vtable devices, compiled directly like the tier test above.
 build/test_topology_switch: tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_topology_switch.h include/sparkpipe/spark_nvme_tier.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
 
-# The continuous-batching step-boundary contract: the admission controller
-# and its host proofs, engine-neutral (two translation units, no engine).
 build/test_continuous_batch: tests/test_continuous_batch.c scheduler/continuous_batch.c include/sparkpipe/spark_continuous_batch.h include/sparkpipe/spark_status.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_continuous_batch.c scheduler/continuous_batch.c $(LDFLAGS) $(LDLIBS) -o $@
 
-# Numeric verification of the math-audit fixes: includes the module's CUDA
-# source, so the tested code IS the production code.
 
 build/libdsv41_flash_kernels.so: tests/dsv41_flash_kernel_lib.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Xcompiler -fPIC -shared $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP libdsv41_flash_kernels (no nvcc on this host)"; fi
@@ -1449,9 +1397,6 @@ build/test_tiktoken_compiled: tests/test_tiktoken_compiled.c $(MODEL_COMMON_LIBR
 build/test_tokenizer_sidecar: tests/test_tokenizer_sidecar.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# The sidecar lane's API-edge proof: the REAL model_api serving text over
-# HTTP against the host resident stack (test adapter's deterministic token
-# ids), plus the 400-when-no-tokenizer contract.
 build/test_model_api_text: tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1480,11 +1425,6 @@ STAGE_KV_POOL_RESIZE_TEST_SOURCES := tests/test_stage_kv_pool_resize.c runtime/s
 build/test_stage_kv_pool_resize: $(STAGE_KV_POOL_RESIZE_TEST_SOURCES) tests/test_weightd_kv_server.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_POOL_RESIZE_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# W2 weightd (docs/WEIGHTD_DESIGN.md): the residency daemon and its
-# serving-side attach consumer live in $(RUNTIME_LIBRARY) (the client is the
-# library's import surface); the daemon links like model_residentd - real
-# cudart + libcuda where CUDA_HOME exists, the host stub where it does not -
-# and its tests are stub-pinned like test_stage_module_common.
 build/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -libverbs -lmlx5 -o $@
 
@@ -1574,10 +1514,6 @@ build/test_graph_reloc_gpu: tests/test_graph_reloc_gpu.cu runtime/spark_graph_re
 test-graph-reloc-gpu: build/test_graph_reloc_gpu
 	./build/test_graph_reloc_gpu
 
-# W3 weightd (docs/WEIGHTD_DESIGN.md): the fd tier - chunk shareable-fd
-# export over SCM_RIGHTS and the consumer's import/map, including a real
-# forked consumer process for the cross-process receipt. Stub-pinned like
-# its W2 siblings.
 build/test_weightd_map: tests/test_weightd_map.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
@@ -1616,7 +1552,6 @@ build/test_speculation_relay_link: tests/test_speculation_relay_link.c include/s
 build/spark_speculation_relay_probe: tools/spec_relay_probe.c include/sparkpipe/spark_speculation_relay_link.h include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tools/spec_relay_probe.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-# K3DS drafter-pack format + bind (the k3 speculation-provider slot's wire half)
 
 build/test_driver_compiler: tests/test_driver_compiler.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1651,25 +1586,6 @@ test: all $(TEST_BINARIES) $(PYTHON_TEST_BINARIES)
 		bash $$shell_test; \
 	done
 
-# =====================================================
-# THE OFFLINE GATE SET (red-gate lane, 2026-08-28). The kimi audit found
-# the previous "zero red gates" claim ran a selection of gates, not a
-# set. This variable IS the set: a claim of an "offline gate pass" means
-# exactly `make offline-gates` succeeded, and nothing else.
-#
-#   build-all          make -j1 all          (fresh build, the README path)
-#   run-tests          make -j1 test         (every registered C test
-#                      binary that builds on this host + every registered
-#                      python gate: code-size ratchet, dry-law, staging
-#                      manifest, the memory-contract ratchet, ...)
-#   package-manifest   tools/source_package_gate.sh (manifests of a git archive of HEAD)
-#
-# Hardware-gated work is NOT part of an offline pass and must never be
-# claimed by one: nvcc/CUDA artifacts (the K3 serving adapter, the
-# hardware_* tools) SKIP with a notice when nvcc is absent and are
-# validated on spark nodes. C test binaries that a host cannot build are
-# skipped by `make test` with the same notice contract.
-# =====================================================
 OFFLINE_GATES := build-all run-tests package-manifest
 
 .PHONY: fleet-test
