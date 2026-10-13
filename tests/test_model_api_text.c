@@ -1075,6 +1075,72 @@ static void TestApiClientDisconnectDrains(TestApiStack *stack)
 	printf("test_model_api_text: client disconnect OK (streams whose clients hang up mid-reply are cancelled and drained to zero live requests within 10 s, and the engine keeps serving)\n");
 }
 
+static int TestApiRawStatus(uint32_t port,const char *head,size_t head_len)
+{
+	struct sockaddr_in address;
+	struct timeval timeout;
+	char response[256];
+	size_t sent = 0u;
+	ssize_t got;
+	int fd = socket(AF_INET,SOCK_STREAM,0);
+	assert(fd >= 0);
+	timeout.tv_sec = 5;
+	timeout.tv_usec = 0;
+	assert(setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)) == 0);
+	assert(setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout)) == 0);
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(0x7f000001u);
+	address.sin_port = htons((uint16_t)port);
+	assert(connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0);
+	while ( sent < head_len )
+	{
+		ssize_t n = send(fd,head + sent,head_len - sent,MSG_NOSIGNAL);
+		if ( n <= 0 )
+			break;
+		sent += (size_t)n;
+	}
+	got = recv(fd,response,sizeof(response) - 1u,0);
+	if ( got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
+	{
+		close(fd);
+		return(-1);
+	}
+	close(fd);
+	if ( got < 12 )
+		return(0);
+	response[got] = '\0';
+	return(atoi(response + 9));
+}
+
+static void TestApiHttpBounds(TestApiStack *stack)
+{
+	static char head[80000];
+	char response[4096];
+	size_t length;
+	memset(head,'a',sizeof(head));
+	memcpy(head,"GET /health HTTP/1.1\r\nX-Pad: ",29u);
+	assert(TestApiRawStatus(stack->api_port,head,sizeof(head)) != -1);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nX-Pad: ");
+	memset(head + length,'b',60000u);
+	length += 60000u;
+	length += (size_t)snprintf(head + length,sizeof(head) - length,"\r\nContent-Length: 8388608\r\n\r\n");
+	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nContent-Length: 12abc\r\n\r\n");
+	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nContent-Length: -5\r\n\r\n");
+	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n");
+	assert(TestApiRawStatus(stack->api_port,head,length) == 400);
+	length = (size_t)snprintf(head,sizeof(head),"POST /v1/completions HTTP/1.1\r\nHost: localhost\r\n\r\n{\"x\":\"\r\ncontent-length: 999\r\n\"}");
+	assert(TestApiRawStatus(stack->api_port,head,length) > 0);
+	TestApiHttpCall(stack->api_port,"GET","/health/live",0,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions","{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: http bounds OK (oversized headers close at once, headers plus a body past the buffer, malformed or overflowing Content-Length and a body-only content-length all get a prompt 400, and the engine keeps serving)\n");
+}
+
 static void TestApiDegradedPath(TestApiStack *stack)
 {
 	const char *flag = getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE");
@@ -1272,6 +1338,7 @@ int main(void)
 	TestApiChatDeclaredStops(&stack);
 	TestApiSamplingOptions(&stack);
 	TestApiClientDisconnectDrains(&stack);
+	TestApiHttpBounds(&stack);
 	TestApiDegradedPath(&stack);
 	TestApiRankLoss(&stack);
 	TestApiStopStack(&stack);
