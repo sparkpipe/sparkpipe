@@ -280,12 +280,19 @@ static SparkStatus SparkModelResidentClientOpenUnix(
 	if ( client->fd < 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = SparkModelResidentClientPrepareSocket(client->fd);
+	if ( status == SPARK_STATUS_OK )
+	{
+		memset(&address,0,sizeof(address));
+		address.sun_family = AF_UNIX;
+		memcpy(address.sun_path,endpoint->unix_socket_path,strlen(endpoint->unix_socket_path) + 1u);
+		status = SparkModelResidentClientFinishConnect(client->fd,(const struct sockaddr *)&address,sizeof(address),timeout_ms);
+	}
 	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	memset(&address,0,sizeof(address));
-	address.sun_family = AF_UNIX;
-	memcpy(address.sun_path,endpoint->unix_socket_path,strlen(endpoint->unix_socket_path) + 1u);
-	return(SparkModelResidentClientFinishConnect(client->fd,(const struct sockaddr *)&address,sizeof(address),timeout_ms));
+	{
+		close(client->fd);
+		client->fd = -1;
+	}
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentClientOpenTcp(
