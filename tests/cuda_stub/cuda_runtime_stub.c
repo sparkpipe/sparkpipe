@@ -1500,15 +1500,21 @@ cudaError_t SparkTpLaunchMeshCopyDown(cudaStream_t stream,
     expected_cancel = control->cancel_expected;
     while ( previous != 0u && *shipped != previous )
     {
-        if ( control->error_word != 0u || *cancel != expected_cancel ||
-             cuda_stub_roundloop_now_ns() >= deadline )
+        if ( control->error_word != 0u )
+            return cudaSuccess;
+        if ( *cancel != expected_cancel )
+        {
+            control->error_word = UINT64_C(0xFFFFFFFFFE000000) | previous;
+            return cudaSuccess;
+        }
+        if ( cuda_stub_roundloop_now_ns() >= deadline )
         {
             control->error_word = previous;
             return cudaSuccess;
         }
         sched_yield();
     }
-    if ( *cancel != expected_cancel )
+    if ( *cancel != expected_cancel && control->error_word == 0u )
         control->error_word = UINT64_C(0xFFFFFFFFFE000000) | previous;
     if ( control->error_word == 0u )
     {

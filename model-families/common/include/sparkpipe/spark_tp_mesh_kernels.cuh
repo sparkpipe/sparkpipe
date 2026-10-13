@@ -841,24 +841,28 @@ __global__ void SparkTpMeshCopyDownKernel(
         ready = 1u;
         while ( previous != 0ull && SparkTpLdcvU64(shipped) != previous )
         {
-            if ( SparkTpLdcvU64(&control->error_word) != 0ull ||
-                 SparkTpLdcvU64(cancel) != expected_cancel )
+            if ( SparkTpLdcvU64(&control->error_word) != 0ull )
             {
-                atomicExch((unsigned long long *)&control->error_word,
+                ready = 0u;
+                break;
+            }
+            if ( SparkTpLdcvU64(cancel) != expected_cancel )
+            {
+                atomicCAS((unsigned long long *)&control->error_word,0ull,
                     SPARK_TP_MESH_ERROR_CANCELLED | previous);
                 ready = 0u;
                 break;
             }
             if ( SparkTpGlobalTimerNs() >= deadline )
             {
-                atomicExch((unsigned long long *)&control->error_word,previous);
+                atomicCAS((unsigned long long *)&control->error_word,0ull,previous);
                 ready = 0u;
                 break;
             }
             __nanosleep(200u);
         }
         if ( SparkTpLdcvU64(cancel) != expected_cancel )
-            atomicExch((unsigned long long *)&control->error_word,
+            atomicCAS((unsigned long long *)&control->error_word,0ull,
                 SPARK_TP_MESH_ERROR_CANCELLED | previous);
         if ( SparkTpLdcvU64(&control->error_word) != 0ull )
             ready = 0u;
