@@ -3392,6 +3392,11 @@ static uint32_t SparkWeightdKvPoolGrow(SparkWeightdServer *server,SparkWeightdKv
 	return(pool->chunk_count);
 }
 
+static uint64_t SparkWeightdKvChunksFor(uint64_t bytes,uint64_t chunk_bytes)
+{
+	return(bytes / chunk_bytes + (bytes % chunk_bytes != 0u ? 1u : 0u));
+}
+
 static SparkStatus SparkWeightdKvPoolRequestValid(const SparkWeightdIpcKvPoolAttach *request)
 {
 	size_t granularity = 0u;
@@ -3401,7 +3406,7 @@ static SparkStatus SparkWeightdKvPoolRequestValid(const SparkWeightdIpcKvPoolAtt
 	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_KEY_BYTES; index++)
 		nonzero |= request->key[index];
 	if ( nonzero == 0u || request->device_bytes == 0u || request->chunk_bytes == 0u || request->minimum_bytes > request->device_bytes ||
-		request->metadata_bytes > SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX || (request->device_bytes + request->chunk_bytes - 1u) / request->chunk_bytes > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX ||
+		request->metadata_bytes > SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX || SparkWeightdKvChunksFor(request->device_bytes,request->chunk_bytes) > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX ||
 		memchr(request->label,'\0',sizeof(request->label)) == 0 || request->label[0] == '\0' )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( cudaGetDevice(&device) != cudaSuccess )
@@ -3428,7 +3433,7 @@ static uint32_t SparkWeightdKvPoolFind(const SparkWeightdServer *server,const ui
 
 static uint32_t SparkWeightdKvMinimumChunks(const SparkWeightdIpcKvPoolAttach *request)
 {
-	uint64_t chunks = (request->minimum_bytes + request->chunk_bytes - 1u) / request->chunk_bytes;
+	uint64_t chunks = SparkWeightdKvChunksFor(request->minimum_bytes,request->chunk_bytes);
 	return(chunks == 0u ? 1u : (uint32_t)chunks);
 }
 

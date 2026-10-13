@@ -1361,6 +1361,29 @@ static void SparkTestKvAttachRollsBackOnFdFailure(void)
     printf("weightd kv attach rollback: a pool or shared-pool attach whose metadata fd cannot be duplicated leaves no owner or holder behind, and the retry attaches\n");
 }
 
+static void SparkTestKvPoolRefusesWrappingSize(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_kv_wrap.sock";
+    SparkTestServerThread context;
+    pthread_t thread;
+    SparkWeightdClient *client = 0;
+    SparkWeightdKvPoolGrant grant;
+    SparkStatus status;
+    (void)unlink(socket_path);
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestConnect(&client,socket_path,0ull);
+    memset(&grant,0,sizeof(grant));
+    grant.metadata_fd = -1;
+    status = SparkTestKvAttachSized(client,0x5au,UINT64_MAX - 1u,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,0u,&grant);
+    assert(status == SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestKvGrantClose(&grant);
+    assert(SparkTestKvAttach(client,0x5bu,2u * SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,0u,&grant) == SPARK_STATUS_OK);
+    SparkTestKvGrantClose(&grant);
+    SparkWeightdClientClose(client);
+    SparkTestStopServer(&context,thread);
+    printf("weightd kv pool: a size whose chunk count wraps 64 bits is refused, and a normal pool still attaches\n");
+}
+
 static void SparkTestKvSharedPools(void)
 {
     const char *socket_path = "/tmp/spark_weightd_test_kv_shared.sock";
@@ -1466,6 +1489,7 @@ int main(void)
     SparkTestKvPools();
     SparkTestKvSharedPools();
     SparkTestKvAttachRollsBackOnFdFailure();
+    SparkTestKvPoolRefusesWrappingSize();
     SparkTestDaemonProcessTermPath();
     printf("w2 weightd lane: identity arenas + NO-2x + TERM green\n");
     return 0;
