@@ -163,7 +163,7 @@ stop() {
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
-    $SSH "$host" "if [ -x $root/lane.sh ]; then $root/lane.sh stop; else systemctl --user stop $UNIT 2>/dev/null; fi; true" < /dev/null &
+    $SSH "$host" "if [ -x $root/lane.sh ]; then $root/lane.sh stop; else systemctl --user stop $UNIT 2>/dev/null; ! systemctl --user is-active -q $UNIT; fi" < /dev/null &
     PIDS[$rank]=$!
   done
   join_ranks stop
