@@ -522,6 +522,7 @@ PYTHON_TESTS := \
 	tests/test_rms_norm_cuda.py \
 	tests/test_quantise_rows_cuda.py \
 	tests/test_index_select_bound_cuda.py \
+	tests/test_glm_attach_kv_cuda.py \
 	tests/test_topk_exact_cuda.py \
 	tests/test_hyper_inject_cuda.py \
 	tests/test_layer_norm_cuda.py \
