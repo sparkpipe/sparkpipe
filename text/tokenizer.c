@@ -2776,6 +2776,12 @@ SparkStatus SparkTokenizerLoadCompiledFile(
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &vocabulary_count);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &fast_merge_pair_count);
     if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &special_token_count);
+    if (status == SPARK_STATUS_OK &&
+        (tokenizer->maximum_token_id > SPARK_TOKENIZER_MAX_TOKEN_ID ||
+         (tokenizer->has_unk_token != 0u && tokenizer->unk_token_id > tokenizer->maximum_token_id)))
+    {
+        status = SPARK_STATUS_SCHEMA_ERROR;
+    }
     if (status != SPARK_STATUS_OK)
     {
         fclose(file);
@@ -2796,6 +2802,7 @@ SparkStatus SparkTokenizerLoadCompiledFile(
         char *text;
 
         status = SparkTokenizerBinaryReadUInt32(file, &token_id);
+        if (status == SPARK_STATUS_OK && token_id > tokenizer->maximum_token_id) status = SPARK_STATUS_SCHEMA_ERROR;
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &text_bytes);
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadAllocatedBytes(file, text_bytes, &text);
         if (status == SPARK_STATUS_OK)
@@ -2824,6 +2831,12 @@ SparkStatus SparkTokenizerLoadCompiledFile(
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &right_token_id);
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &merged_token_id);
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &rank);
+        if (status == SPARK_STATUS_OK &&
+            (left_token_id > tokenizer->maximum_token_id || right_token_id > tokenizer->maximum_token_id ||
+             merged_token_id > tokenizer->maximum_token_id))
+        {
+            status = SPARK_STATUS_SCHEMA_ERROR;
+        }
         if (status == SPARK_STATUS_OK)
         {
             status = SparkTokenizerInsertMergePairEntry(
@@ -2850,6 +2863,7 @@ SparkStatus SparkTokenizerLoadCompiledFile(
         char *text;
 
         status = SparkTokenizerBinaryReadUInt32(file, &token_id);
+        if (status == SPARK_STATUS_OK && token_id > tokenizer->maximum_token_id) status = SPARK_STATUS_SCHEMA_ERROR;
         if (status == SPARK_STATUS_OK) status = SparkTokenizerBinaryReadUInt32(file, &is_special);
         if (status == SPARK_STATUS_OK && is_special > 1u)
         {
