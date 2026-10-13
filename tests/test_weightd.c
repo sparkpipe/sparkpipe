@@ -1,5 +1,6 @@
 
 #include <assert.h>
+#include <sys/resource.h>
 #include <dirent.h>
 #include <poll.h>
 #include <netinet/in.h>
@@ -1294,6 +1295,72 @@ static SparkStatus SparkTestKvSharedAttach(SparkWeightdClient *client,uint8_t ke
 
 #define SparkTestAwait(condition) do { uint32_t spark_test_waited; for (spark_test_waited = 0u; !(condition) && spark_test_waited < 5000u; spark_test_waited++) { struct timespec spark_test_pause = {0,1000000}; (void)nanosleep(&spark_test_pause,0); } assert(condition); } while (0)
 
+static SparkStatus SparkTestUnderFdCeiling(SparkStatus (*attach)(SparkWeightdClient *,void *),SparkWeightdClient *client,void *context)
+{
+    struct rlimit saved,ceiling;
+    SparkStatus status;
+    int lowest = dup(0);
+    assert(lowest >= 0 && close(lowest) == 0 && getrlimit(RLIMIT_NOFILE,&saved) == 0);
+    ceiling = saved;
+    ceiling.rlim_cur = (rlim_t)lowest;
+    assert(setrlimit(RLIMIT_NOFILE,&ceiling) == 0);
+    status = attach(client,context);
+    assert(setrlimit(RLIMIT_NOFILE,&saved) == 0);
+    return(status);
+}
+
+static SparkStatus SparkTestKvPoolAttachInto(SparkWeightdClient *client,void *grant)
+{
+    return(SparkTestKvAttach(client,0x41,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,(SparkWeightdKvPoolGrant *)grant));
+}
+
+static SparkStatus SparkTestKvSharedAttachInto(SparkWeightdClient *client,void *grant)
+{
+    return(SparkTestKvSharedAttach(client,0x42,0x6d,SPARK_TEST_KV_CHUNK_BYTES / 4u,(SparkWeightdKvSharedGrant *)grant));
+}
+
+static void SparkTestKvAttachRollsBackOnFdFailure(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_kv_rollback.sock";
+    SparkTestServerThread context;
+    pthread_t thread;
+    SparkWeightdClient *first = 0,*second = 0;
+    SparkWeightdKvPoolGrant grant;
+    SparkWeightdKvSharedGrant shared,joined;
+    SparkStatus status = SPARK_STATUS_BUSY;
+    uint32_t index;
+    const uint64_t saved_window = spark_test_kv_shared_window_bytes;
+    (void)unlink(socket_path);
+    spark_test_kv_shared_window_bytes = 2u * SPARK_TEST_KV_CHUNK_BYTES + SPARK_TEST_KV_CHUNK_BYTES / 4u;
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestConnect(&first,socket_path,0ull);
+    assert(SparkTestKvPoolAttachInto(first,&grant) == SPARK_STATUS_OK);
+    SparkTestKvGrantClose(&grant);
+    SparkWeightdClientClose(first);
+    first = 0;
+    SparkTestConnect(&second,socket_path,0ull);
+    for (index = 0u; index < 500u && status == SPARK_STATUS_BUSY; index++)
+    {
+        status = SparkTestUnderFdCeiling(SparkTestKvPoolAttachInto,second,&grant);
+        if (status == SPARK_STATUS_BUSY)
+            usleep(2000u);
+    }
+    assert(status == SPARK_STATUS_IO_ERROR);
+    assert(SparkTestKvPoolAttachInto(second,&grant) == SPARK_STATUS_OK && grant.reattached == 1u && grant.metadata_fd >= 0);
+    SparkTestKvGrantClose(&grant);
+    SparkTestConnect(&first,socket_path,0ull);
+    assert(SparkTestKvSharedAttachInto(first,&shared) == SPARK_STATUS_OK && shared.metadata_fd >= 0);
+    assert(SparkTestUnderFdCeiling(SparkTestKvSharedAttachInto,second,&joined) == SPARK_STATUS_IO_ERROR);
+    assert(SparkTestKvSharedAttachInto(second,&joined) == SPARK_STATUS_OK && joined.metadata_fd >= 0 && joined.holder != shared.holder);
+    (void)close(shared.metadata_fd);
+    (void)close(joined.metadata_fd);
+    SparkWeightdClientClose(first);
+    SparkWeightdClientClose(second);
+    SparkTestStopServer(&context,thread);
+    spark_test_kv_shared_window_bytes = saved_window;
+    printf("weightd kv attach rollback: a pool or shared-pool attach whose metadata fd cannot be duplicated leaves no owner or holder behind, and the retry attaches\n");
+}
+
 static void SparkTestKvSharedPools(void)
 {
     const char *socket_path = "/tmp/spark_weightd_test_kv_shared.sock";
@@ -1398,6 +1465,7 @@ int main(void)
     SparkTestFailClosedPaths();
     SparkTestKvPools();
     SparkTestKvSharedPools();
+    SparkTestKvAttachRollsBackOnFdFailure();
     SparkTestDaemonProcessTermPath();
     printf("w2 weightd lane: identity arenas + NO-2x + TERM green\n");
     return 0;

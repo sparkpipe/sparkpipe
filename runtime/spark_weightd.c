@@ -3615,7 +3615,15 @@ static uint32_t SparkWeightdServerOnKvPoolAttach(SparkWeightdServer *server,Spar
 	{
 		fd = fcntl(server->kv_pools[slot].metadata_fd,F_DUPFD_CLOEXEC,0);
 		if ( fd < 0 )
+		{
+			fprintf(stderr,"weightd kv pool attach rolled back label=%s generation=%llu: the metadata fd could not be duplicated (errno %d)\n",
+				server->kv_pools[slot].label,(unsigned long long)server->kv_pools[slot].generation,errno);
+			server->kv_pools[slot].owner_connection = 0u;
+			server->kv_pools[slot].wanted_chunks = 0u;
+			server->kv_pools[slot].detached_ns = SparkWeightdMonotonicTimeNs();
+			connection->kv_pool_count--;
 			status = SPARK_STATUS_IO_ERROR;
+		}
 		else
 			connection->response_fds[connection->response_fd_count++] = fd;
 	}
@@ -3744,7 +3752,18 @@ static uint32_t SparkWeightdServerOnKvSharedAttach(SparkWeightdServer *server,Sp
 	{
 		fd = fcntl(server->kv_pools[slot].metadata_fd,F_DUPFD_CLOEXEC,0);
 		if ( fd < 0 )
+		{
+			pool = &server->kv_pools[slot];
+			fprintf(stderr,"weightd kv shared pool attach rolled back label=%s generation=%llu holder=%u: the metadata fd could not be duplicated (errno %d)\n",
+				pool->label,(unsigned long long)pool->generation,holder,errno);
+			(void)SparkKvSharedIndexClearHolder(pool->metadata_map,pool->metadata_bytes,holder);
+			pool->holder_mask &= ~(UINT64_C(1) << holder);
+			pool->holder_connection[holder] = 0u;
+			connection->kv_pool_count--;
+			if ( pool->holder_mask == 0u )
+				pool->detached_ns = SparkWeightdMonotonicTimeNs();
 			status = SPARK_STATUS_IO_ERROR;
+		}
 		else
 			connection->response_fds[connection->response_fd_count++] = fd;
 	}
