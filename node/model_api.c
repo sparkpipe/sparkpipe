@@ -28,6 +28,7 @@
 #include "sparkpipe/spark_sampling.h"
 
 #define API_MAX_BODY		(8u * 1024u * 1024u)
+#define API_MAX_HEADER		(64u * 1024u)
 #define API_MAX_PROMPT_TOKENS	(260000u)
 #define API_MAX_STOP_TOKENS 16
 #define API_MAX_OUTPUT_TOKENS	(131072u)
@@ -761,6 +762,11 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 				break;
 			}
 		}
+		if (total >= API_MAX_HEADER)
+		{
+			free(buf);
+			return 0;
+		}
 	}
 	if (header_end == 0)
 	{
@@ -793,11 +799,36 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		}
 	}
 	{
-		char *cl = strcasestr(buf, "content-length:");
+		char saved = buf[header_end];
+		char *cl;
+		buf[header_end] = '\0';
+		cl = strcasestr(buf, "\r\ncontent-length:");
 		if (cl != 0)
-			content_length = (uint32_t)strtoul(cl + 15, 0, 10);
+		{
+			const char *digits = cl + 17;
+			char *end = 0;
+			unsigned long long value;
+			while (*digits == ' ' || *digits == '\t')
+				digits++;
+			if (*digits < '0' || *digits > '9')
+			{
+				free(buf);
+				return 0;
+			}
+			errno = 0;
+			value = strtoull(digits, &end, 10);
+			while (end != 0 && (*end == ' ' || *end == '\t'))
+				end++;
+			if (errno != 0 || end == 0 || end[0] != '\r' || end[1] != '\n' || value > API_MAX_BODY)
+			{
+				free(buf);
+				return 0;
+			}
+			content_length = (uint32_t)value;
+		}
+		buf[header_end] = saved;
 	}
-	if (content_length > API_MAX_BODY)
+	if (content_length > API_MAX_BODY || header_end + (size_t)content_length > buf_cap - 1u)
 	{
 		free(buf);
 		return 0;
@@ -820,6 +851,7 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		}
 		total += (size_t)n;
 	}
+	buf[header_end + content_length] = '\0';
 	*body = buf + header_end;
 	*body_base = buf;
 	*body_len = content_length;
