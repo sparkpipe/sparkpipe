@@ -123,28 +123,3 @@ python3 tools/api_serving_perf.py --endpoint http://127.0.0.1:8437 \
 python3 tools/api_serving_perf.py --endpoint http://127.0.0.1:8437 \
     --cases streams8x128 --repeats 1 --label nospec --output perf.jsonl
 ```
-
-## Dense GEMM hang repro
-
-The repro declares its own copy of `LmGemmArguments`, which must stay
-layout-identical to the one in `inference/kernels/gemm.cuh`.
-
-The repro takes no arguments. It runs as follows:
-
-- `SparkLingConfigureCudaModule` supplies the SM count. It needs compute
-  capability 12.1; if it fails, the repro prints `configure failed` and
-  assumes 48.
-- Shapes `(input, output)`: 2560x2560, 2560x16320, 4096x2560, 2560x12288,
-  6144x2560, 2560x6144. Row counts: 1, 2, 3, 4, 8, 16, 17.
-- Each run fills the activation with byte `0x3c` and the weight with `0x38`,
-  zeroes the output, and sets one group (`group_row_offset = {0, rows}`,
-  `group_tile_prefix = {0, ceil(output / 128)}`). It then calls
-  `LingGemmBf16` ungrouped, with `group_count` 1.
-- The repro polls `cudaStreamQuery` every 50 ms for up to 8 s and prints
-  `rows=R in=I out=O PASS|HANG`. Output values are not checked.
-- A run that hangs, is refused by `LingGemmBf16`, or fails a setup step
-  (stream, allocation, fill or copy) is counted, and the repro calls
-  `cudaDeviceReset()` before the next run. The final `hangs=N` counts all
-  such runs, not only hangs.
-
-Exit codes: 0 when every run completes, 1 otherwise.
