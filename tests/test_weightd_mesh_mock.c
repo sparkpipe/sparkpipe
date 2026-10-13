@@ -1991,6 +1991,15 @@ static void test_mesh_status_surface(uint32_t local_rank)
     test_status(&status);
     CHECK(status.peers[noisy].cq_err_since_ok == 1u && status.peers[noisy].last_err_mono_ns != 0u,
         "status: a completion error is charged to its peer");
+    {
+        int32_t reset_peer = SparkWeightdMeshPeerIndexFromRank(noisy);
+        uint64_t saved_boot = weightd_mesh.wired_boot_ns[reset_peer];
+        uint64_t calls_before = spark_stub_ibv_post_send_calls();
+        weightd_mesh.wired_boot_ns[reset_peer] = 0u;
+        CHECK(SparkWeightdMeshBroadcast(1u << noisy,0u,64u,0u,0u,0u) == 0u && spark_stub_ibv_post_send_calls() == calls_before,
+            "status: a broadcast to a peer whose wiring was reset posts nothing and reports busy, as a single write does");
+        weightd_mesh.wired_boot_ns[reset_peer] = saved_boot;
+    }
     first = spark_stub_ibv_posted_count();
     CHECK(SparkWeightdMeshBroadcast(1u << noisy,0u,64u,0u,0u,0u) == 1u &&
         spark_stub_ibv_posted(first,&work) == 0 && spark_stub_ibv_complete(work.wr_id,IBV_WC_SUCCESS) == 0,
