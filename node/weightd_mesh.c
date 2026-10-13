@@ -2578,7 +2578,8 @@ uint32_t SparkWeightdMeshBroadcast(
         int32_t peer = SparkWeightdMeshPeerIndexFromRank(rank);
         uint32_t needed = seq_remote_offset != 0ull ? 2u : 1u;
         if ( peer >= 0 && (peer_rank_mask & (1u << rank)) != 0u &&
-             weightd_mesh.send_pending[peer] > SPARK_WEIGHTD_MESH_SEND_CAPACITY - needed )
+             (weightd_mesh.wired_boot_ns[peer] == 0u ||
+              weightd_mesh.send_pending[peer] > SPARK_WEIGHTD_MESH_SEND_CAPACITY - needed) )
         {
             pthread_mutex_unlock(&SparkWeightdMeshWireLock);
             return 0u;
