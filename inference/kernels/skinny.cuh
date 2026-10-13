@@ -90,6 +90,7 @@ struct LmSkinnyFormat<LmBf16Format>
 {
 	using Activation = uint4;
 	static constexpr bool kSupported = true;
+	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_NONE;
 	static constexpr uint32_t kElements = 8u;
 	static __device__ __forceinline__ Activation Load(const uint16_t *activation)
 	{
@@ -106,6 +107,7 @@ struct LmSkinnyFormat<LmFp8>
 {
 	using Activation = LmSkinnyWide;
 	static constexpr bool kSupported = true;
+	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_F32;
 	static constexpr uint32_t kElements = 16u;
 	static __device__ __forceinline__ Activation Load(const uint16_t *activation)
 	{
@@ -184,6 +186,7 @@ struct LmSkinnyDecodeOnce<LmMxfp8>
 template<>
 struct LmSkinnyFormat<LmMxfp8> : LmSkinnyFormat<LmFp8>
 {
+	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_UE8M0;
 };
 
 template<>
@@ -191,6 +194,7 @@ struct LmSkinnyFormat<LmMxfp4>
 {
 	using Activation = LmSkinnyQuad;
 	static constexpr bool kSupported = true;
+	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_UE8M0;
 	static constexpr uint32_t kElements = 32u;
 	static __device__ __forceinline__ Activation Load(const uint16_t *activation)
 	{
@@ -222,6 +226,7 @@ struct LmSkinnyFormat<LmNvfp4>
 {
 	using Activation = LmSkinnyQuad;
 	static constexpr bool kSupported = true;
+	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_UE4M3_F32_GLOBAL;
 	static constexpr uint32_t kElements = 32u;
 	static __device__ __forceinline__ Activation Load(const uint16_t *activation)
 	{
@@ -261,12 +266,17 @@ static __device__ __forceinline__ float LmSkinnyScale(const LmScaleTensor *scale
 }
 
 template<class Format>
-static uint32_t LmSkinnyScaleLayout(const LmScaleTensor *scale)
+static uint32_t LmSkinnyScaleFits(const LmSkinnyArguments *args)
 {
+	const LmScaleTensor *scale = &args->scale;
+	if ( scale->encoding != LmSkinnyFormat<Format>::kScaleEncoding || LmScaleTensorIsValid(scale) == 0u )
+		return(0u);
 	if constexpr ( Format::kScaleGroup == 0u )
 		return(1u);
 	else
-		return(scale->encoding == LM_SCALE_ENCODING_NONE || (scale->reserved == 0u && scale->data != 0 && scale->row_group_size == 1u && scale->k_group_size == Format::kScaleGroup) ? 1u : 0u);
+		return(scale->row_group_size == 1u && scale->k_group_size == Format::kScaleGroup &&
+			scale->group_count >= (args->groups != 0u ? args->groups : 1u) &&
+			scale->row_count >= args->output_dimension && scale->input_dimension >= args->input_dimension ? 1u : 0u);
 }
 
 static __device__ __forceinline__ void LmSkinnyResolve(const LmSkinnyArguments &args, uint32_t pair, uint32_t *group, uint32_t *source, uint32_t *target)
@@ -655,7 +665,7 @@ static int32_t LmSkinnyValidateOperands(const LmSkinnyArguments *args)
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( args->input_dimension == 0u || args->output_dimension == 0u || (args->input_dimension % elements) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
-	if ( LmSkinnyAligned(args->weight) == 0u || LmSkinnyAligned(args->activation) == 0u || (args->weight_group_bytes % LM_SKINNY_CHUNK_BYTES) != 0u || LmSkinnyScaleLayout<Format>(&args->scale) == 0u )
+	if ( LmSkinnyAligned(args->weight) == 0u || LmSkinnyAligned(args->activation) == 0u || (args->weight_group_bytes % LM_SKINNY_CHUNK_BYTES) != 0u || LmSkinnyScaleFits<Format>(args) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	return(LM_LAUNCH_OK);
 }
