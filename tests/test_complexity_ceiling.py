@@ -107,6 +107,11 @@ Ledger (exact counts, newest last):
   validation decision points fall from 4900 to 4681 and the mean rises
   9.88 -> 10.07 (496 -> 465 functions). Production loses the ring itself
   (8 functions, 64 decision points). Both maxes are unchanged.
+- 2026-10-13 cleanup: the family validation templates (the only
+  */validation/* tree under the scan roots) had no includers and were
+  removed, so the separate validation budget goes; a future validation
+  tree fails this gate until it is budgeted here. Production max 80
+  (node/weightd.c:main), mean 7.42 over 2671 functions; CEILING 88 -> 80.
 """
 import pathlib
 import sys
@@ -116,7 +121,7 @@ from complexity_report import scan, scope_rows  # noqa: E402
 
 # The committed production max-CCN ceiling. MOVES DOWN with every
 # shrinking landing; moves up ONLY with a ledger entry above.
-CEILING = 88
+CEILING = 80
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.
@@ -124,32 +129,26 @@ CEILING = 88
 # branch (flat, status-returning, nvcc-gated); max CCN unchanged.
 MEAN_CEILING_X100 = 800
 
-# The validation harnesses (control-vs-candidate CUDA units, never merged
-# into production) carry their OWN budget. It does not gate the production
-# metric; it exists so harness complexity is at least VISIBLE and bounded.
-# At landing: max 90 (SparkGlm52ValFixtureSetup), mean 8.98.
-VALIDATION_MAX_BUDGET = 90
-VALIDATION_MEAN_CEILING_X100 = 1007
 
 
 def main() -> int:
     rows = scan()
     production = scope_rows(rows, "production")
     validation = scope_rows(rows, "validation")
+    if validation:
+        print(f"FAIL {len(validation)} functions sit under a validation/ tree; that scope "
+              f"has no budget since the family validation harnesses were removed, so "
+              f"move the code or budget the scope in this test", file=sys.stderr)
+        return 1
 
     production_max = max(row["ccn"] for row in production)
     production_mean_x100 = int(round(
         sum(row["ccn"] for row in production) * 100 / len(production)))
-    validation_max = max(row["ccn"] for row in validation)
-    validation_mean_x100 = int(round(
-        sum(row["ccn"] for row in validation) * 100 / len(validation)))
 
     worst = production[0]
     print(f"production scope: {len(production)} functions, max CCN {production_max} "
           f"(ceiling {CEILING}), mean {production_mean_x100 / 100:.2f}")
     print(f"worst: {worst['file']}:{worst['function']}")
-    print(f"validation scope (own budget): {len(validation)} functions, "
-          f"max CCN {validation_max} (budget {VALIDATION_MAX_BUDGET})")
 
     failures = []
     if production_max > CEILING:
@@ -164,16 +163,6 @@ def main() -> int:
             f"production mean CCN {production_mean_x100 / 100:.2f} exceeds the "
             f"committed ceiling {MEAN_CEILING_X100 / 100:.2f}. Same rule: "
             f"shrink or justify in-commit.")
-    if validation_max > VALIDATION_MAX_BUDGET:
-        failures.append(
-            f"validation harness max CCN {validation_max} exceeds its own "
-            f"budget {VALIDATION_MAX_BUDGET}. The harnesses are deliberately "
-            f"independent (control-vs-candidate doctrine) but they are not "
-            f"exempt from arithmetic: shrink or justify in-commit.")
-    if validation_mean_x100 > VALIDATION_MEAN_CEILING_X100:
-        failures.append(
-            f"validation harness mean CCN {validation_mean_x100 / 100:.2f} "
-            f"exceeds its budget {VALIDATION_MEAN_CEILING_X100 / 100:.2f}.")
 
     if failures:
         for failure in failures:
