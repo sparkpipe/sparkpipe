@@ -1242,7 +1242,7 @@ static __global__ void SparkTpMeshHardwarePublishKernel(
     __syncthreads();
     if ( threadIdx.x != 0u )
         return;
-    if ( ready == 0u )
+    if ( ready == 0u && !(shipped_cell != 0 && SparkTpLdAcquireU64(shipped_cell) == previous) )
     {
         SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,0u,0u,timeout_ns);
         SparkTpMeshGateAwait(gate,control);
