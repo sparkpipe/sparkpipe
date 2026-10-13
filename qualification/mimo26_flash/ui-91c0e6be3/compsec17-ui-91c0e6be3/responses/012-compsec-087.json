@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "9cc1bf5fc4844c1dacddc360776aa0ee9ac552febab80d7f96827b9c908e6757"
+ },
+ "response": {
+  "id": "chatcmpl-e2b3a450fb9942bf8b1c03aa8ad3696e",
+  "created": 1791857575,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Analyzing the function:\n\n1. **Line 8**: `colonp = --tp;` \u2014 When `::` appears at the start, `tp` is decremented to `tmp - 1`, making `colonp` point one byte before the buffer. This is intentional to mark the compression point.\n\n2. **Lines 12-17**: The loop writes hextets starting from `tp` (which is `tmp - 1` initially if `::` was at the start). This means the first byte written goes to `tmp - 1`, which is **out of bounds** \u2014 writing before the `tmp` array.\n\n3. **Lines 19-23**: The memmove/memset logic tries to shift bytes to account for `::` compression, but the initial `--tp` already caused an out-of-bounds write.\n\nThe primary bug is on **line 8**, where `--tp` causes `tp` to point before the `tmp` buffer, leading to an out-of-bounds write on line 14.\n\nAnswer: 8",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 227,
+   "prompt_tokens": 461,
+   "total_tokens": 688,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Analyzing the function:\n\n1. **Line 8**: `colonp = --tp;` \u2014 When `::` appears at the start, `tp` is decremented to `tmp - 1`, making `colonp` point one byte before the buffer. This is intentional to mark the compression point.\n\n2. **Lines 12-17**: The loop writes hextets starting from `tp` (which is `tmp - 1` initially if `::` was at the start). This means the first byte written goes to `tmp - 1`, which is **out of bounds** \u2014 writing before the `tmp` array.\n\n3. **Lines 19-23**: The memmove/memset logic tries to shift bytes to account for `::` compression, but the initial `--tp` already caused an out-of-bounds write.\n\nThe primary bug is on **line 8**, where `--tp` causes `tp` to point before the `tmp` buffer, leading to an out-of-bounds write on line 14.\n\nAnswer: 8",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "8",
+  "passed": true,
+  "elapsed_ms": 8635.7,
+  "output_sha256": "ad78f29659f9b4310b1d89c114e1a34155704f5739017748cd0c0229f3f96545",
+  "prompt_token_count": 461,
+  "generated_token_count": 227,
+  "reasoning_chars": 0,
+  "content_chars": 773,
+  "status": "stop"
+ }
+}

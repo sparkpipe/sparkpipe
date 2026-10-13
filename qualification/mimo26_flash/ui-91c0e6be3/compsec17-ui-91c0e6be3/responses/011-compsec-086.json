@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "4a4c03cab1bb1eaf685cdc8a43fdec7cc242d3cf9a8f343207d9fa94949ea900"
+ },
+ "response": {
+  "id": "chatcmpl-b3ff10fc2c0a4500b27631c708931ae9",
+  "created": 1791857567,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is on line 3: `prefix_len + name_len + 3` is computed in `size_t` (64-bit) but then truncated to `unsigned int` (32-bit). If the sum exceeds `UINT_MAX`, `need` wraps around to a small value, so `realloc` allocates a tiny buffer while `memcpy` on lines 13\u201315 writes the full `prefix_len + name_len + 3` bytes, causing a heap buffer overflow.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 107,
+   "prompt_tokens": 347,
+   "total_tokens": 454,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The bug is on line 3: `prefix_len + name_len + 3` is computed in `size_t` (64-bit) but then truncated to `unsigned int` (32-bit). If the sum exceeds `UINT_MAX`, `need` wraps around to a small value, so `realloc` allocates a tiny buffer while `memcpy` on lines 13\u201315 writes the full `prefix_len + name_len + 3` bytes, causing a heap buffer overflow.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 5758.2,
+  "output_sha256": "d6f827f960b612fbb41a2d436767cf7c8b9f31ead1b9b1a36a4365615f51bffb",
+  "prompt_token_count": 347,
+  "generated_token_count": 107,
+  "reasoning_chars": 0,
+  "content_chars": 359,
+  "status": "stop"
+ }
+}
