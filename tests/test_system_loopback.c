@@ -139,7 +139,7 @@ static void TestLoopbackSetupRoot(TestLoopbackStack *stack)
 {
 	char scratch[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
-	assert(snprintf(scratch,sizeof(scratch),"/tmp/sparkpipe-loopback-%ld-XXXXXX",(long)getpid()) > 0);
+	assert(snprintf(scratch,sizeof(scratch),"build/sparkpipe-loopback-%ld-XXXXXX",(long)getpid()) > 0);
 	assert(mkdtemp(scratch) != 0);
 	assert(realpath(scratch,stack->root) != 0);
 	assert(snprintf(path,sizeof(path),"%s/build",stack->root) > 0);
