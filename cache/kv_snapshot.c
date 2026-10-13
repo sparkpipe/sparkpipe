@@ -851,7 +851,9 @@ SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvS
 		;
 	if ( store->failed_status != SPARK_STATUS_OK )
 		status = store->failed_status;
-	else if ( job != 0 || SparkKvSnapshotIndexFind(runtime,key) != SPARK_KV_SNAPSHOT_NO_ENTRY )
+	else if ( job != 0 )
+		status = SPARK_STATUS_PENDING;
+	else if ( SparkKvSnapshotIndexFind(runtime,key) != SPARK_KV_SNAPSHOT_NO_ENTRY )
 	{
 		store->duplicate_count++;
 		SparkKvSnapshotIndexTouch(store,key);

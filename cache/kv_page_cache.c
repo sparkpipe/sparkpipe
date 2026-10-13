@@ -2320,7 +2320,7 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 			cache->entries[entry_index].flags |= SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED;
 			continue;
 		}
-		if ( status == SPARK_STATUS_BUSY )
+		if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 		{
 			snapshot->save_deferred_count++;
 			SPARK_FAIL(SPARK_STATUS_BUSY);

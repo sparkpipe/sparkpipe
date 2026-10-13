@@ -226,9 +226,12 @@ static void SnapTestEvictionAndQueue(const char *directory)
 	CHECK(store.eviction_count == 1u && store.file_count == 3u && store.used_bytes == 3u * file_bytes);
 	CHECK(SparkKvSnapshotStat(&store,&stale,&header) == SPARK_STATUS_NOT_FOUND && SparkKvSnapshotStat(&store,&keys[1],&header) == SPARK_STATUS_OK && SparkKvSnapshotStat(&store,&keys[3],&header) == SPARK_STATUS_OK);
 	CHECK(SparkKvSnapshotWriteBegin(&store,&stale,kinds,bytes,2u,&ticket) == SPARK_STATUS_OK);
-	CHECK(SparkKvSnapshotWriteBegin(&store,&stale,kinds,bytes,2u,&second) == SPARK_STATUS_DUPLICATE);
+	CHECK(SparkKvSnapshotWriteBegin(&store,&stale,kinds,bytes,2u,&second) == SPARK_STATUS_PENDING && second.job == 0);
 	SparkKvSnapshotWriteCancel(&store,&ticket);
 	CHECK(ticket.job == 0 && store.queued_bytes == 0u && store.queued_count == 0u && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 4u);
+	CHECK(SparkKvSnapshotStat(&store,&stale,&header) == SPARK_STATUS_NOT_FOUND);
+	CHECK(SparkKvSnapshotWriteBegin(&store,&stale,kinds,bytes,2u,&second) == SPARK_STATUS_OK);
+	SparkKvSnapshotWriteCancel(&store,&second);
 	CHECK(SparkKvSnapshotWrite(&store,&stale,readback,2u) == SPARK_STATUS_OK && store.eviction_count == 2u && SparkKvSnapshotStat(&store,&keys[1],&header) == SPARK_STATUS_NOT_FOUND);
 	CHECK(SparkKvSnapshotPrune(&store,keys[0].layout_sha256) == SPARK_STATUS_OK && store.pruned_count == 1u && SparkKvSnapshotStat(&store,&stale,&header) == SPARK_STATUS_NOT_FOUND && store.file_count == 2u);
 	SparkKvSnapshotStoreClose(&store);
