@@ -68,6 +68,13 @@ backups_present() {
   hub "test \"\$(sha256sum < ~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD | cut -c1-16)\" = $OLD_WD" || { echo "backup hub weightd $OLD_WD missing"; missing=1; }
   return $missing
 }
+one_variant() {
+  local out
+  out=$(cat)
+  printf '%s\n' "$out" | sed "s/^/$1: /"
+  [ "$(printf '%s\n' "$out" | grep -c .)" = 1 ] && printf '%s\n' "$out" | grep -q '^ *16 ' && return 0
+  echo "$1: FAILED, expected one result on all 16 nodes"; return 1
+}
 restore_root() { echo "test -d root.prev-$1 && rm -rf root.failed-$1 && mv root root.failed-$1 && { cp -a root.prev-$1 root || { rm -rf root; mv root.failed-$1 root; false; }; }"; }
 residentds() { fan "pgrep -c -f 'bin/sparkpipe_model_[r]esidentd' || true" | awk '{s+=$2} END {print s+0}'; }
 running_wd() { fan "sha256sum < /proc/\$(pgrep -o -f 'sparkdata/weightd/sparkpipe_[w]eightd')/exe | cut -c1-16; test -e /tmp/weightd-mesh/.ready && echo ready" | awk '{c[$2]++} END {for (k in c) printf "%s=%d ", k, c[k]}'; }
@@ -109,7 +116,7 @@ case "$step" in
   stage)
     stamp "stage $FW on 16 nodes (~/rp-release-$SHA) and check hashes"
     (cd "$FW" && COPYFILE_DISABLE=1 tar cf "$STATE/fw.tar" .)
-    for r in $(seq 0 15); do (scp -q -o BatchMode=yes "$STATE/fw.tar" spark${HEX:$r:1}:rp-release-$SHA.tar && node $r "rm -rf ~/rp-release-$SHA && mkdir ~/rp-release-$SHA && tar -C ~/rp-release-$SHA -xf ~/rp-release-$SHA.tar 2>/dev/null && rm ~/rp-release-$SHA.tar && cd ~/rp-release-$SHA && sha256sum --quiet -c SHA256SUMS && echo verified") & done | awk "{print \$NF}" | sort | uniq -c; wait ;;
+    for r in $(seq 0 15); do (scp -q -o BatchMode=yes "$STATE/fw.tar" spark${HEX:$r:1}:rp-release-$SHA.tar && node $r "rm -rf ~/rp-release-$SHA && mkdir ~/rp-release-$SHA && tar -C ~/rp-release-$SHA -xf ~/rp-release-$SHA.tar 2>/dev/null && rm ~/rp-release-$SHA.tar && cd ~/rp-release-$SHA && sha256sum --quiet -c SHA256SUMS && echo verified" | sed "s/^/spark${HEX:$r:1}: /") & done | awk '{print $NF}' | sort | uniq -c | one_variant stage || { echo "STAGE-FAILED"; exit 1; } ;;
   backup)
     U=$(utc); stamp "backup root.prev-$U"
     for id in $MODELS; do
@@ -140,13 +147,13 @@ case "$step" in
     stamp "install release $SHA on every lane and hub API dir"
     for id in $MODELS; do
       L=$(field $id lane)
-      fan "cd \$HOME/$L/root && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm ~/rp-release-$SHA/weightd_spine_budget.py bin/ && { [ ! -e bin/sparkpipe_model_batch ] || cp ~/rp-release-$SHA/sparkpipe_model_batch bin/; } && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && cp ~/rp-release-$SHA/$(field $id fwlib) lib/$(field $id lib) && sha256sum bin/sparkpipe_model_residentd bin/weightd_warm lib/hidden_transport.so lib/$(field $id lib) | cut -c1-16 | tr '\n' ' '" | awk '{$1=""; print}' | sort | uniq -c | sed "s/^/$id: /"
-      hub "cd ~/$(field $id api) && install -m 755 $APIB/sparkpipe_model_api $APIB/sparkpipe_tokenize_prompt bin/ && install -m 755 $APIB/$(field $id fwlib) runtime/lib/$(field $id lib) && rm -f runtime/prefix_index.spi && echo hub $id \$(sha256sum bin/sparkpipe_model_api runtime/lib/$(field $id lib) | cut -c1-16 | tr '\n' ' ')"
+      fan "cd \$HOME/$L/root && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm ~/rp-release-$SHA/weightd_spine_budget.py bin/ && { [ ! -e bin/sparkpipe_model_batch ] || cp ~/rp-release-$SHA/sparkpipe_model_batch bin/; } && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && cp ~/rp-release-$SHA/$(field $id fwlib) lib/$(field $id lib) && sha256sum bin/sparkpipe_model_residentd bin/weightd_warm lib/hidden_transport.so lib/$(field $id lib) | cut -c1-16 | tr '\n' ' '" | awk '{$1=""; print}' | sort | uniq -c | one_variant "$id" || { echo "INSTALL-FAILED $id"; exit 1; }
+      hub "cd ~/$(field $id api) && install -m 755 $APIB/sparkpipe_model_api $APIB/sparkpipe_tokenize_prompt bin/ && install -m 755 $APIB/$(field $id fwlib) runtime/lib/$(field $id lib) && rm -f runtime/prefix_index.spi && echo hub $id \$(sha256sum bin/sparkpipe_model_api runtime/lib/$(field $id lib) | cut -c1-16 | tr '\n' ' ')" || { echo "INSTALL-FAILED hub $id"; exit 1; }
     done
-    for L in $EXTRA_LANES; do fan "cd \$HOME/$L/root && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm bin/ && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && cp ~/rp-release-$SHA/libqwen38_27b_bf16_tp16_serving_adapter.so lib/ && echo ok" | grep -v ': ok$'; done
+    for L in $EXTRA_LANES; do fan_all "install $L" "cd \$HOME/$L/root && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm bin/ && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && cp ~/rp-release-$SHA/libqwen38_27b_bf16_tp16_serving_adapter.so lib/" || exit 1; done
     stamp "glm-5.3 lane switches to the official FP8 linear packs (glm53full.fp8lin.tp16)"
     fan "cd \$HOME/stage-lanes/glm53_full/lane6/root && n=glm53full.fp8lin.tp16-rank\$(python3 -c 'import json;print(json.load(open(\"config/adapter.json\"))[\"tp_rank\"])').glm52sp && d=\$HOME/sparkdata/glm53full.fp8lin.tp16/packs && test -s \$d/\$n.experts && rm -f packs/glm53full.fp8.tp16-rank*.glm52sp packs/glm53full.fp8.tp16-rank*.glm52sp.experts && ln -sfn \$d/\$n packs/\$n && ln -sfn \$d/\$n.experts packs/\$n.experts && printf '%s' \$(cut -c1-64 \$d/\$n.sha256) > packs/pack.sha256 && sed -i 's#glm53full\\.fp8\\.tp16#glm53full.fp8lin.tp16#g' config/adapter.json && grep -c fp8lin config/adapter.json" | awk '{print $2}' | sort | uniq -c | sed 's/^/glm fp8lin adapter.json lines: /'
-    fan "cp ~/rp-release-$SHA/weightd_warm \$HOME/sparkdata/swap/weightd_warm && sha256sum < \$HOME/sparkdata/swap/weightd_warm | cut -c1-16" | awk '{print $2}' | sort | uniq -c | sed 's/^/shared weightd_warm: /' ;;
+    fan "cp ~/rp-release-$SHA/weightd_warm \$HOME/sparkdata/swap/weightd_warm && sha256sum < \$HOME/sparkdata/swap/weightd_warm | cut -c1-16" | awk '{print $2}' | sort | uniq -c | one_variant "shared weightd_warm" || { echo "INSTALL-FAILED shared weightd_warm"; exit 1; } ;;
   qualify)
     for id in ${ONLY:-$MODELS}; do
       stamp "qualify $id"
@@ -179,6 +186,7 @@ case "$step" in
     hub "cd ~/release/core && exec 9>\$HOME/release/.core.publish.lock && flock 9 && cp ~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD bin/sparkpipe_weightd.new && chmod 755 bin/sparkpipe_weightd.new && mv bin/sparkpipe_weightd.new bin/sparkpipe_weightd && test \"\$(sha256sum < bin/sparkpipe_weightd | cut -c1-16)\" = $OLD_WD && find bin -type f | sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST && printf '%s\n' $OLD_WD > WEIGHTSD_BIN.tmp && mv WEIGHTSD_BIN.tmp WEIGHTSD_BIN && echo announced \$(cat WEIGHTSD_BIN)"
     for i in $(seq 1 60); do sleep 10; wd_is $OLD_WD && break; done
     echo "weightd: $(running_wd)"
+    wd_is $OLD_WD || { echo "ROLLBACK-WEIGHTD-NOT-READY: weightd $OLD_WD is not ready on 16 nodes; the models were left down"; exit 1; }
     for id in ${ONLY:-$MODELS}; do activate "$id" && capture "$id" rolledback && compare "$id" old rolledback; done
     restore_max ;;
   *) echo "usage: FW=<fw dir> APIB=<hub build dir> release_rollout.sh precheck|old|stage|backup|down|weightd|install|qualify|rollback"; exit 2 ;;
