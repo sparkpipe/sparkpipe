@@ -3,10 +3,12 @@
 
 The production tree ships to CUDA-only targets, so a new .py outside the
 support directories is either dead weight or a build step nobody can run.
-The ds4 eval comparator predates this rule, and the vendored publisher
+The ds4 eval comparator predates this rule, the vendored publisher
 modeling files under model_contracts/references/ are pinned by path and
-sha256 from the contracts and name maps, so they are whitelisted by exact
-path. Anything else fails.
+sha256 from the contracts and name maps, and the DSV4.1 chat encoder is
+loaded by name from its family's serving directory by the hub chat
+frontend (deployment/hub/chat_frontend.json), so they are whitelisted by
+exact path. Anything else fails.
 """
 
 import sys
@@ -19,6 +21,7 @@ SKIP_DIRS = {".git", ".audit", "build", "__pycache__", ".pytest_cache",
              "diagnostics"}
 WHITELIST = {
     "qualification/ds4_eval/compare_runs.py",
+    "model-families/dsv41_flash/serving/encoding_dsv41.py",
     "model_contracts/references/modeling_ling_bailing_moe_v3.py",
     "model_contracts/references/modeling_muse_glimmer.py",
     "model_contracts/references/modeling_qwen4_exp.py",
