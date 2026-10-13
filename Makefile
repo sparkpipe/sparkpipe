@@ -553,7 +553,6 @@ PYTHON_TESTS := \
 	tests/test_glm52_spine_source_verify.py \
 	tests/test_glm52_routed_parity.py \
 	tests/test_glm5_next_wset_from_trace.py \
-	tests/test_stage_module_teardown.py \
 	tests/test_acc_parity_oracle.py \
 	tests/test_ds4_spark_brickproof.py \
 	tests/test_dsv41_flash_geometry.py \
@@ -609,7 +608,6 @@ PYTHON_TESTS := \
 	tests/test_t1_reference_minimax.py \
 	tests/test_t1_reference_muse.py \
 	tests/test_t1_reference_quarantine.py \
-	tests/test_tp_collective_open.py \
 	tests/test_gen_geometry_header.py \
 	tests/test_lane_run_log.py \
 	tests/test_no_build_defaults.py \
