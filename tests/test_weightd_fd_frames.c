@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "sparkpipe/spark_weightd.h"
@@ -683,9 +684,36 @@ static void check_cold_control_progress(void)
 	assert(unlink(path) == 0 && unlink(manifest_path) == 0 && unlink(wset_path) == 0 && rmdir(root) == 0);
 }
 
+static void check_pipelined_request_closes(uint32_t requests)
+{
+    SparkWeightdServer *server = calloc(1u,sizeof(*server));
+    SparkWeightdConnection *connection;
+    uint8_t frames[2u * SPARK_WEIGHTD_IPC_HEADER_BYTES];
+    int32_t pair[2];
+    assert(server != 0);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair) == 0);
+    assert(fcntl(pair[0],F_SETFL,fcntl(pair[0],F_GETFL) | O_NONBLOCK) == 0);
+    connection = &server->connections[0];
+    connection->fd = pair[0];
+    connection->state = SPARK_WEIGHTD_CONNECTION_OPEN;
+    SparkWeightdBuildHeader(frames,SPARK_WEIGHTD_IPC_KIND_HELLO,1u);
+    SparkWeightdBuildHeader(frames + SPARK_WEIGHTD_IPC_HEADER_BYTES,SPARK_WEIGHTD_IPC_KIND_HELLO,2u);
+    assert(write(pair[1],frames,(size_t)requests * SPARK_WEIGHTD_IPC_HEADER_BYTES) == (ssize_t)(requests * SPARK_WEIGHTD_IPC_HEADER_BYTES));
+    SparkWeightdServerHandleReadable(server,connection);
+    if ( requests == 1u )
+        assert(connection->state == SPARK_WEIGHTD_CONNECTION_OPEN && connection->response_bytes != 0u);
+    else
+        assert(connection->state == SPARK_WEIGHTD_CONNECTION_CLOSED && connection->response_bytes == 0u);
+    (void)close(pair[0]);
+    (void)close(pair[1]);
+    free(server);
+}
+
 int main(void)
 {
     check_lane_close_waits_for_dispatch();
+    check_pipelined_request_closes(1u);
+    check_pipelined_request_closes(2u);
     check_mesh_range_needs_one_lane();
     check_mesh_only_dispatch();
     check_mesh_only_map(1u,SPARK_STATUS_OK,0u);

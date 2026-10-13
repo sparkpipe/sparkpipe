@@ -4486,6 +4486,13 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
             {
                 continue;
             }
+            if (connection->request_bytes > expected_bytes)
+            {
+                fprintf(stderr, "weightd connection closed: %u bytes arrived for a %u-byte kind %u request; requests are one at a time\n",
+                    connection->request_bytes, expected_bytes, header->kind);
+                connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
+                return;
+            }
             if (SparkWeightdIpcValidateHeaderVersion(header, expected_bytes,
                     header->kind, header->abi_version) != SPARK_STATUS_OK)
             {
