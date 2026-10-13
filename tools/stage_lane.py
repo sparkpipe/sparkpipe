@@ -241,7 +241,6 @@ LAGUNA = {
     "chat_template": "model-families/laguna/chat_template.json",
     "eos_token_ids": [2, 24],
     "tokenizer_vocabulary": 100352,
-    "text_prompt_prefix_token_ids": [2],
     "hidden": 3072,
     "kv_page_bytes": (48 * 64 * 4096) // WORLD,
     "recurrent_bytes": 0,
@@ -331,6 +330,15 @@ def chat_template(model: dict) -> dict:
     return chat_template_value(json.loads((ROOT / model["chat_template"]).read_text()))
 
 
+def text_prompt_prefix(directory: Path) -> list[int]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from tokenizer_text_prefix import TokenizerPrefixError, directory_prefix
+    try:
+        return directory_prefix(directory)
+    except (TokenizerPrefixError, KeyError, TypeError, OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"raw text prompt prefix of {directory}: {error}")
+
+
 def session_table() -> list[list[int]]:
     return [[0 if a == b else SESSION_BLOCK_BASE + a * WORLD + b for b in range(WORLD)] for a in range(WORLD)]
 
@@ -411,8 +419,11 @@ def deployment(model: dict, lane: int, args) -> dict:
     if args.tokenizer_sha256:
         result["tokenizer"] = {"path": "tokenizer/tokenizer.compiled", "sha256": args.tokenizer_sha256,
                                "vocabulary_size": model["tokenizer_vocabulary"]}
-        if model.get("text_prompt_prefix_token_ids"):
-            result["tokenizer"]["text_prompt_prefix_token_ids"] = model["text_prompt_prefix_token_ids"]
+        if args.tokenizer_dir is None:
+            raise SystemExit("--tokenizer-sha256 needs --tokenizer-dir: the raw text prompt prefix comes from the publisher tokenizer")
+        prefix = text_prompt_prefix(args.tokenizer_dir)
+        if prefix:
+            result["tokenizer"]["text_prompt_prefix_token_ids"] = prefix
     return result
 
 
@@ -457,6 +468,8 @@ def main() -> int:
     parser.add_argument("--kv-snapshot-bytes", type=int, default=DEFAULT_KV_SNAPSHOT_BYTES)
     parser.add_argument("--state-budget-bytes", type=int, default=DEFAULT_STATE_BUDGET_BYTES)
     parser.add_argument("--tokenizer-sha256", default=None)
+    parser.add_argument("--tokenizer-dir", type=Path, default=None,
+                        help="local copy of the publisher tokenizer.json and tokenizer_config.json")
     parser.add_argument("--swap-entry", action="store_true")
     args = parser.parse_args()
     model = MODELS[args.model]
