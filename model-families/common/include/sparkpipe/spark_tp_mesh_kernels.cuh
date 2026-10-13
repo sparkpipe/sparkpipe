@@ -1999,10 +1999,10 @@ static cudaError_t SparkTpMeshHardwarePeerAllToAllRound(cudaStream_t stream,uint
         if ( status != cudaSuccess )
             return status;
         SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,entry,control,rank,local,0u,0u,route.fields.slice_bytes,route.word,1u,1u,
-            request,SPARK_TP_MESH_PUBLISH_REQUEST,route.fields.peer_mask,timeout_ns);
+            request,SPARK_TP_MESH_PUBLISH_ARRIVAL,route.fields.peer_mask,timeout_ns);
         status = cudaPeekAtLastError();
         if ( status == cudaSuccess )
-            status = SparkTpMeshHardwarePeerGuard(stream,request,control);
+            status = SparkTpMeshHardwareArrival(stream,band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns);
         if ( status != cudaSuccess )
             return status;
         SparkTpMeshHardwareAllToAllKernel<<<dim3(SparkTpMeshCopyBlocks(count,degree),degree),SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,rank,output,per_peer_elements,begin,count,0u,begin + count == per_peer_elements);
