@@ -527,7 +527,7 @@ static int32_t GlmIndexerScoreSelect(const GlmBuffers *b, uint32_t rows, uint32_
 				b->index_head_weight_bf16 + (uint64_t)first * GLM_INDEX_HEADS, b->index_shard, b->sequence_of_row + first, b->context_length,
 				b->row_positions + first, count, score_stride, GLM_INDEX_SCALE / sqrtf((float)GLM_INDEX_HEADS), b->selection_scores, stream) != cudaSuccess ||
 			LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(b->kv_shard, b->selection_scores, score_stride, b->sequence_of_row + first, b->context_length,
-				b->row_positions + first, keep, GLM_SELECTED, count, candidates + (uint64_t)first * keep, stream) != cudaSuccess )
+				b->row_positions + first, keep, GLM_SELECTED, count, candidates + (uint64_t)first * keep, b->index_error, stream) != cudaSuccess )
 			return LM_LAUNCH_ERR_LAUNCH;
 	}
 	return GlmLaunched();

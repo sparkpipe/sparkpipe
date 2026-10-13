@@ -98,16 +98,92 @@ static void ProbeCase(uint32_t bound,uint32_t expect_refusal)
 	cudaFree(device_error);
 }
 
+static void ProbeLocalCase(uint32_t bound,uint32_t score_stride,uint32_t expect_refusal)
+{
+	const uint32_t keep = 4u,dense = 1u;
+	std::vector<float> scores(score_stride);
+	std::vector<uint2> candidates(keep);
+	uint32_t zero = 0u,index;
+	LmFrameError error;
+	SparkKvShard shard;
+	float *device_scores;
+	uint32_t *device_sequence,*device_context;
+	uint2 *device_candidates;
+	LmFrameError *device_error;
+	for (index = 0u; index < score_stride; ++index)
+		scores[index] = (float)index;
+	LmFrameErrorReset(&error);
+	shard.degree = 1u;
+	shard.rank = 0u;
+	shard.grain = 1u;
+	PROBE_CUDA(cudaMalloc((void **)&device_scores,score_stride * sizeof(float)));
+	PROBE_CUDA(cudaMalloc((void **)&device_sequence,sizeof(uint32_t)));
+	PROBE_CUDA(cudaMalloc((void **)&device_context,sizeof(uint32_t)));
+	PROBE_CUDA(cudaMalloc((void **)&device_candidates,keep * sizeof(uint2)));
+	PROBE_CUDA(cudaMalloc((void **)&device_error,sizeof(LmFrameError)));
+	PROBE_CUDA(cudaMemcpy(device_scores,scores.data(),score_stride * sizeof(float),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaMemcpy(device_sequence,&zero,sizeof(uint32_t),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaMemcpy(device_context,&bound,sizeof(uint32_t),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaMemset(device_candidates,0,keep * sizeof(uint2)));
+	PROBE_CUDA(cudaMemcpy(device_error,&error,sizeof(LmFrameError),cudaMemcpyHostToDevice));
+	PROBE_CUDA(LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(shard,device_scores,score_stride,device_sequence,device_context,0,keep,dense,1u,
+		device_candidates,device_error,0));
+	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_CUDA(cudaMemcpy(candidates.data(),device_candidates,keep * sizeof(uint2),cudaMemcpyDeviceToHost));
+	PROBE_CUDA(cudaMemcpy(&error,device_error,sizeof(LmFrameError),cudaMemcpyDeviceToHost));
+	if ( expect_refusal != 0u )
+	{
+		if ( error.error_code != LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE || error.position != bound || error.page != score_stride )
+		{
+			printf("FAIL local bound %u stride %u: keys past the score row are not reported (error %u position %u page %u)\n",
+				bound,score_stride,error.error_code,error.position,error.page);
+			probe_failures++;
+		}
+		for (index = 0u; index < keep; ++index)
+			if ( candidates[index].y != LM_INDEX_SHARD_NO_POSITION )
+			{
+				printf("FAIL local bound %u stride %u: candidate %u names position %u from a truncated row\n",bound,score_stride,index,candidates[index].y);
+				probe_failures++;
+				break;
+			}
+	}
+	else
+	{
+		if ( error.error_code != LM_FRAME_ERROR_NONE )
+		{
+			printf("FAIL local bound %u stride %u: a row inside the score stride reported error %u\n",bound,score_stride,error.error_code);
+			probe_failures++;
+		}
+		uint32_t seen = 0u;
+		for (index = 0u; index < keep; ++index)
+			if ( candidates[index].y >= bound - keep && candidates[index].y < bound )
+				seen |= 1u << (candidates[index].y - (bound - keep));
+		if ( seen != (1u << keep) - 1u )
+		{
+			printf("FAIL local bound %u stride %u: the candidates are not the %u top-scored positions\n",bound,score_stride,keep);
+			probe_failures++;
+		}
+	}
+	cudaFree(device_scores);
+	cudaFree(device_sequence);
+	cudaFree(device_context);
+	cudaFree(device_candidates);
+	cudaFree(device_error);
+}
+
 int main(void)
 {
 	ProbeCase(100u,0u);
 	ProbeCase(PROBE_ROW_WORDS * 32u,0u);
 	ProbeCase(192u,1u);
+	ProbeLocalCase(48u,64u,0u);
+	ProbeLocalCase(64u,64u,0u);
+	ProbeLocalCase(96u,64u,1u);
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL index_select_bound_cuda: %d failures\n",probe_failures);
 		return(1);
 	}
-	printf("PASS index_select_bound_cuda: a context inside the bitmap selects in range and leaves the next words alone; one past it is reported and writes nothing\n");
+	printf("PASS index_select_bound_cuda: a context inside the bitmap selects in range and leaves the next words alone; one past it is reported and writes nothing; local keys past the score row are reported, not truncated\n");
 	return(0);
 }
