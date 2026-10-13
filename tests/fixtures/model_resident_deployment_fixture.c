@@ -145,6 +145,17 @@ static int32_t TestModelResidentWriteBody(
 			status = -9;
 		if ( status == 0 )
 			status = TestModelResidentWriteText(stream,fixture->tokenizer_asset_sha256);
+		if ( status == 0 && fixture->tokenizer_text_prompt_prefix_count != 0u )
+		{
+			uint32_t index;
+			if ( fputs(",\"text_prompt_prefix_token_ids\":[",stream) == EOF )
+				status = -9;
+			for ( index = 0u; status == 0 && index < fixture->tokenizer_text_prompt_prefix_count; index++ )
+				if ( fprintf(stream,"%s%u",index != 0u ? "," : "",fixture->tokenizer_text_prompt_prefix_ids[index]) < 0 )
+					status = -9;
+			if ( status == 0 && fputc(']',stream) == EOF )
+				status = -9;
+		}
 		if ( status == 0 && fputc('}',stream) == EOF )
 			status = -10;
 	}

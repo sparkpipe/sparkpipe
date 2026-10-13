@@ -76,6 +76,7 @@ render() {
     ${STAGE_KV_BACKING_BYTES:+--kv-backing-bytes "$STAGE_KV_BACKING_BYTES"} \
     ${STAGE_STATE_BUDGET_BYTES:+--state-budget-bytes "$STAGE_STATE_BUDGET_BYTES"} \
     ${STAGE_TOKENIZER_SHA256:+--tokenizer-sha256 "$STAGE_TOKENIZER_SHA256"} \
+    ${STAGE_TOKENIZER_DIR:+--tokenizer-dir "$STAGE_TOKENIZER_DIR"} \
     ${STAGE_SWAP_ENTRY:+--swap-entry} \
     --runtime-root "/home/{host}/stage-lanes/$STAGE_MODEL/lane$STAGE_LANE/root" \
     --weightd-socket "$STAGE_WEIGHTD_SOCKET" --output-dir "$1"
@@ -139,7 +140,10 @@ api_setup() {
     install -m 755 $STAGE_API_FIRMWARE/$ADAPTER_FILE $api/runtime/lib/$ADAPTER_FILE
     $api/bin/sparkpipe_tokenize_prompt --tokenizer-json $tokenizer_json --text probe --save-compiled-tokenizer $api/runtime/tokenizer/tokenizer.compiled > /dev/null" < /dev/null
   sha="$($SSH "$hub" "sha256sum $api/runtime/tokenizer/tokenizer.compiled" < /dev/null | cut -c1-64)"
-  STAGE_TOKENIZER_SHA256="$sha" STAGE_SWAP_ENTRY=1 render "$generated" > /dev/null
+  mkdir -p "$generated/tokenizer"
+  $SSH "$hub" "cd $(dirname "$tokenizer_json") && tar cf - $(basename "$tokenizer_json") \$(ls tokenizer_config.json 2>/dev/null)" < /dev/null | tar xf - -C "$generated/tokenizer"
+  [ "$(basename "$tokenizer_json")" = tokenizer.json ] && [ -s "$generated/tokenizer/tokenizer.json" ] || { echo "api-setup: could not copy $hub:$tokenizer_json" >&2; exit 1; }
+  STAGE_TOKENIZER_SHA256="$sha" STAGE_TOKENIZER_DIR="$generated/tokenizer" STAGE_SWAP_ENTRY=1 render "$generated" > /dev/null
   scp -q "$generated/deployment.json" "$hub:$api/model_resident.json"
   cp "$generated/swap_entry.json" "./$STAGE_MODEL.swap_entry.json"
   rm -rf "$generated"

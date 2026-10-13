@@ -140,6 +140,8 @@ static int HaveQuantArm;
 static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
 static uint32_t EngineStopTokenCount;
 static const SparkModelResidentChatTemplate *ChatTemplate;
+static uint32_t TextPromptPrefix[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT];
+static uint32_t TextPromptPrefixCount;
 static uint32_t ChatStopTokens[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
 static uint32_t ChatStopTokenCount;
 static char ApiBootTag[32];
@@ -1520,8 +1522,9 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 				"\"type\":\"invalid_request_error\",\"code\":\"invalid_prompt\"}}");
 			return;
 		}
+		const uint32_t prefix_count = chat_request == 0u ? TextPromptPrefixCount : 0u;
 		SparkTokenizerWorkspaceReset(&workspace);
-		prompt = malloc((size_t)prompt_text_bytes * sizeof(uint32_t) + sizeof(uint32_t));
+		prompt = malloc(((size_t)prompt_text_bytes + 1u + prefix_count) * sizeof(uint32_t));
 		if (prompt == 0 ||
 			SparkTokenizerWorkspaceInitialize(&workspace, prompt_text_bytes + 1u) != SPARK_STATUS_OK)
 		{
@@ -1532,7 +1535,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		}
 		SparkTokenizerEncodingReset(&encoding);
 		encoding.token_capacity = prompt_text_bytes + 1u;
-		encoding.token_ids = prompt;
+		encoding.token_ids = prompt + prefix_count;
 		encode_status = SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text,
 			prompt_text_bytes, 0u, &workspace, &encoding);
 		SparkTokenizerWorkspaceDestroy(&workspace);
@@ -1551,7 +1554,8 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			}
 			return;
 		}
-		prompt_len = encoding.token_count;
+		memcpy(prompt, TextPromptPrefix, (size_t)prefix_count * sizeof(uint32_t));
+		prompt_len = encoding.token_count + prefix_count;
 	}
 	if (prompt_len == 0)
 	{
@@ -1990,9 +1994,11 @@ int main(int argc, char **argv)
 			}
 		}
 		HaveSidecar = 1;
+		TextPromptPrefixCount = dep.tokenizer_text_prompt_prefix_count;
+		memcpy(TextPromptPrefix, dep.tokenizer_text_prompt_prefix_ids, (size_t)TextPromptPrefixCount * sizeof(uint32_t));
 		fprintf(stderr, "model_api: tokenizer sidecar ready format=%u "
-			"vocab=%llu asset=%s\n", Sidecar.format,
-			(unsigned long long)Sidecar.tokenizer.maximum_token_id + 1ull, asset_path);
+			"vocab=%llu asset=%s text_prompt_prefix_tokens=%u\n", Sidecar.format,
+			(unsigned long long)Sidecar.tokenizer.maximum_token_id + 1ull, asset_path, TextPromptPrefixCount);
 	}
 	else
 		fprintf(stderr, "model_api: no tokenizer in deployment; text prompts "
