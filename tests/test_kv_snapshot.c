@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "sparkpipe/spark_kv_cache.h"
@@ -926,12 +927,41 @@ static void SnapTestMarkAllOrder(const char *directory)
 	SparkKvSnapshotStoreClose(&store);
 }
 
+static void SnapTestFailedStoreRecovers(const char *directory)
+{
+	SparkKvSnapshotStore store;
+	SparkKvSnapshotSegment segment;
+	SparkKvSnapshotKey first,second,third;
+	uint8_t payload[512];
+	struct timespec pause = {0,150000000};
+	memset(payload,0x6b,sizeof(payload));
+	segment = (SparkKvSnapshotSegment){.kind=1u,.bytes=sizeof(payload),.data=payload};
+	SnapKey(&first,0x41u,0x51u,1u);
+	SnapKey(&second,0x42u,0x52u,2u);
+	SnapKey(&third,0x43u,0x53u,3u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1u << 20u,1u << 20u) == SPARK_STATUS_OK);
+	store.failure_retry_ns = 100000000u;
+	CHECK(chmod(directory,0500) == 0);
+	CHECK(SparkKvSnapshotWrite(&store,&first,&segment,1u) == SPARK_STATUS_IO_ERROR && store.failed_status == SPARK_STATUS_IO_ERROR && store.write_failure_count == 1u);
+	CHECK(chmod(directory,0700) == 0);
+	CHECK(SparkKvSnapshotWrite(&store,&second,&segment,1u) == SPARK_STATUS_IO_ERROR && store.write_failure_count == 1u);
+	(void)nanosleep(&pause,0);
+	CHECK(SparkKvSnapshotWrite(&store,&second,&segment,1u) == SPARK_STATUS_OK && store.failed_status == SPARK_STATUS_OK && store.recovered_count == 1u);
+	CHECK(SparkKvSnapshotWrite(&store,&third,&segment,1u) == SPARK_STATUS_OK && store.write_count == 2u);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a failed write refuses writes for the retry window, then a probe that succeeds clears the failure\n");
+}
+
 int main(void)
 {
 	char directory[] = "/tmp/sparkpipe-kv-snapshot-XXXXXX";
 	if ( mkdtemp(directory) == 0 )
 		return(2);
 	SnapTestStoreFormat(directory);
+	SnapRemoveTree(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestFailedStoreRecovers(directory);
 	SnapRemoveTree(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);

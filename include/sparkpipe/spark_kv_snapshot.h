@@ -85,6 +85,9 @@ typedef struct SparkKvSnapshotStore
 	uint64_t removed_temporary_count;
 	SparkStatus failed_status;
 	uint32_t reserved0;
+	uint64_t failed_at_ns;
+	uint64_t failure_retry_ns;
+	uint64_t recovered_count;
 	void *runtime;
 } SparkKvSnapshotStore;
 
@@ -99,6 +102,7 @@ typedef struct SparkKvSnapshotWriteTicket
 } SparkKvSnapshotWriteTicket;
 
 #define SPARK_KV_SNAPSHOT_STORE_BYTES ((uint32_t)sizeof(SparkKvSnapshotStore))
+#define SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS UINT64_C(10000000000)
 
 SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,uint64_t maximum_bytes,uint64_t queue_maximum_bytes);
 void SparkKvSnapshotStoreClose(SparkKvSnapshotStore *store);
