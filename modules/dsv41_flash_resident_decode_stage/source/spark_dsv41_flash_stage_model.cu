@@ -982,7 +982,8 @@ static SparkStatus D41OpenEngramShard(D41ModelState *state, const char *pack_pat
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
 	for ( uint32_t index = 0u; index < 8u; ++index )
-		if ( state->engram_entries[index].payload_offset + state->engram_entries[index].payload_bytes > state->engram_bytes )
+		if ( state->engram_entries[index].payload_offset > state->engram_bytes ||
+			state->engram_entries[index].payload_bytes > state->engram_bytes - state->engram_entries[index].payload_offset )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	return SPARK_STATUS_OK;
 }
