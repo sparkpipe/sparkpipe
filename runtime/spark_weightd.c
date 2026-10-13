@@ -4486,6 +4486,20 @@ static void SparkWeightdServerHandleReadable(SparkWeightdServer *server,
     }
 }
 
+static uint32_t SparkWeightdServerClosable(SparkWeightdServer *server, uint32_t connection_index)
+{
+    const SparkWeightdConnection *connection = &server->connections[connection_index];
+    if (connection->state != SPARK_WEIGHTD_CONNECTION_CLOSED || connection->fd < 0)
+        return 0u;
+    if (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 0u)
+        return 1u;
+    return server->dispatch_connection != connection_index &&
+        connection->attach_count == 0u &&
+        connection->kv_pool_count == 0u &&
+        connection->lane_mask == 0u &&
+        connection->mesh_active == 0u ? 1u : 0u;
+}
+
 SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
 {
     struct pollfd poll_fds[SPARK_WEIGHTD_CONNECTION_COUNT_MAX + 2u];
@@ -4619,14 +4633,7 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
         connection_index < SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
         connection_index++)
     {
-        if (server->connections[connection_index].state ==
-                SPARK_WEIGHTD_CONNECTION_CLOSED &&
-            server->connections[connection_index].fd >= 0 &&
-            (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 0u ||
-                (server->dispatch_connection != connection_index &&
-                    server->connections[connection_index].attach_count == 0u &&
-                    server->connections[connection_index].kv_pool_count == 0u &&
-                    server->connections[connection_index].lane_mask == 0u)))
+        if (SparkWeightdServerClosable(server, connection_index) != 0u)
         {
             SparkWeightdServerCloseConnection(server, connection_index);
         }
