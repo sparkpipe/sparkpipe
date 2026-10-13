@@ -806,6 +806,7 @@ SparkStatus SparkKvSnapshotRemove(SparkKvSnapshotStore *store,const SparkKvSnaps
 SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotSegment *segments,uint32_t segment_count)
 {
 	SparkKvSnapshotRuntime *runtime;
+	SparkKvSnapshotJob *job;
 	uint64_t bytes[SPARK_KV_SNAPSHOT_MAX_SEGMENTS],file_bytes;
 	SparkStatus status;
 	uint32_t index;
@@ -822,8 +823,12 @@ SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapsh
 		SPARK_RETURN(status);
 	runtime = SparkKvSnapshotRuntimeOf(store);
 	pthread_mutex_lock(&runtime->mutex);
+	for (job=runtime->jobs; job != 0 && memcmp(&job->key,key,sizeof(*key)) != 0; job=job->next)
+		;
 	if ( SparkKvSnapshotFailureGateLocked(store) != SPARK_STATUS_OK )
 		status = store->failed_status;
+	else if ( job != 0 )
+		status = SPARK_STATUS_PENDING;
 	else if ( SparkKvSnapshotIndexFind(runtime,key) != SPARK_KV_SNAPSHOT_NO_ENTRY )
 	{
 		store->duplicate_count++;
@@ -835,6 +840,8 @@ SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapsh
 	pthread_mutex_unlock(&runtime->mutex);
 	if ( status == SPARK_STATUS_DUPLICATE )
 		return(SPARK_STATUS_OK);
+	if ( status == SPARK_STATUS_PENDING )
+		return(status);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	return(SparkKvSnapshotCommitFile(store,key,segments,segment_count));

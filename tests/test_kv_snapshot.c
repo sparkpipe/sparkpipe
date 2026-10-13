@@ -952,6 +952,29 @@ static void SnapTestFailedStoreRecovers(const char *directory)
 	printf("kv snapshot: a failed write refuses writes for the retry window, then a probe that succeeds clears the failure\n");
 }
 
+static void SnapTestSyncWriteSeesQueuedWrite(const char *directory)
+{
+	SparkKvSnapshotStore store;
+	SparkKvSnapshotSegment segment;
+	SparkKvSnapshotWriteTicket ticket;
+	SparkKvSnapshotFileHeader header;
+	SparkKvSnapshotKey key;
+	uint8_t payload[256];
+	const uint32_t kind = 1u;
+	const uint64_t bytes = sizeof(payload);
+	memset(payload,0x2d,sizeof(payload));
+	segment = (SparkKvSnapshotSegment){.kind=kind,.bytes=bytes,.data=payload};
+	SnapKey(&key,0x61u,0x71u,4u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1u << 20u,1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotWriteBegin(&store,&key,&kind,&bytes,1u,&ticket) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotWrite(&store,&key,&segment,1u) == SPARK_STATUS_PENDING && store.write_count == 0u &&
+		SparkKvSnapshotStat(&store,&key,&header) == SPARK_STATUS_NOT_FOUND);
+	SparkKvSnapshotWriteCancel(&store,&ticket);
+	CHECK(SparkKvSnapshotWrite(&store,&key,&segment,1u) == SPARK_STATUS_OK && store.write_count == 1u);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a synchronous write of a key with a queued write answers PENDING and writes nothing\n");
+}
+
 int main(void)
 {
 	char directory[] = "/tmp/sparkpipe-kv-snapshot-XXXXXX";
@@ -962,6 +985,10 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestFailedStoreRecovers(directory);
+	SnapRemoveTree(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestSyncWriteSeesQueuedWrite(directory);
 	SnapRemoveTree(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
