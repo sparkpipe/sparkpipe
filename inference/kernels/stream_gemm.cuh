@@ -19,6 +19,7 @@
 #define LM_STREAM_STAGE_BUDGET 98304u
 #define LM_STREAM_MAX_STAGES 4u
 #define LM_STREAM_MAX_DEVICES 64u
+#define LM_STREAM_WIDE_ROWS 256u
 
 typedef struct LmStreamGemmArguments
 {
@@ -112,25 +113,6 @@ struct LmStreamWeight<LmMxfp8> : LmStreamWeight<LmFp8>
 	static constexpr uint32_t kScaleK = LM_MXFP8_GROUP;
 	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_UE8M0;
 };
-
-struct LmBf16Block128 : LmBf16Format
-{
-};
-
-template<>
-struct LmStreamWeight<LmBf16Block128> : LmStreamWeight<LmBf16Format>
-{
-	static constexpr bool kScaled = true;
-	static constexpr uint32_t kScaleK = LM_STREAM_SCALE_K;
-	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_F32;
-};
-
-static __global__ void LmStreamWidenE4m3Kernel(const uint32_t *source, uint2 *destination, uint64_t words)
-{
-	uint64_t at = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( at < words )
-		destination[at] = make_uint2(LmStreamE4m3PairBf16(source[at],0x1404u),LmStreamE4m3PairBf16(source[at],0x3424u));
-}
 
 template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K>
 static __host__ __device__ constexpr uint32_t LmStreamStageBytes(void)
@@ -248,8 +230,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	constexpr uint32_t B_ROW_BYTES = TILE_K * Weight::kElementBytes;
 	constexpr uint32_t B_ROW_CHUNKS = B_ROW_BYTES / 16u;
 	constexpr uint32_t SCALE_K = LmStreamScaleK<Format>();
-	constexpr uint32_t SCALE_BLOCKS = Weight::kScaled && TILE_K >= SCALE_K ? TILE_K / SCALE_K : 1u;
-	constexpr uint32_t BLOCK_STEPS = SCALE_K / 32u;
+	constexpr uint32_t SCALE_BLOCKS = Weight::kScaled ? TILE_K / SCALE_K : 1u;
 	constexpr uint32_t A_ROW_BYTES = TILE_K * 2u;
 	constexpr uint32_t A_ROW_CHUNKS = A_ROW_BYTES / 16u;
 	constexpr uint32_t WARPS_M = TILE_M <= WARP_ROWS ? 1u : TILE_M / WARP_ROWS;
@@ -268,7 +249,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	static_assert(MF >= 1u && NF >= 1u && WARPS_M * WARPS_N == LM_STREAM_WARPS && WARP_M % 16u == 0u,"the tile is not a whole number of MMA fragments per warp");
 	static_assert(B_CHUNKS % LM_STREAM_THREADS == 0u,"the weight stage must divide across the block");
 	static_assert(STAGES >= 2u,"the tile leaves no room for a second pipeline stage");
-	static_assert(!Weight::kScaled || ((TILE_K % SCALE_K == 0u || SCALE_K % TILE_K == 0u) && SCALE_K % 32u == 0u && TILE_K % 32u == 0u),"k-tiles and weight scale blocks must nest");
+	static_assert(!Weight::kScaled || (TILE_K % SCALE_K == 0u && SCALE_K % 32u == 0u),"a k-tile must hold whole weight scale blocks");
 	extern __shared__ __align__(128) uint8_t lm_stream_shared[];
 	uint32_t *prefix = (uint32_t *)(lm_stream_shared + STAGES * STAGE_BYTES);
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(lm_stream_shared);
@@ -355,7 +336,6 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 					}
 		}
 		if constexpr ( Weight::kScaled )
-			if ( TILE_K >= SCALE_K || (kt * TILE_K) % SCALE_K == 0u )
 			for (uint32_t block = 0u; block < SCALE_BLOCKS; block++)
 				for (j = 0u; j < NF; j++)
 				{
@@ -404,7 +384,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 			}
 			if constexpr ( Weight::kScaled )
 			{
-				if ( (TILE_K >= SCALE_K ? step : kt * (TILE_K / 32u) + step) % BLOCK_STEPS == BLOCK_STEPS - 1u )
+				if ( step % (SCALE_K / 32u) == SCALE_K / 32u - 1u )
 #pragma unroll
 					for (i = 0u; i < MF; i++)
 #pragma unroll
@@ -412,7 +392,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 #pragma unroll
 							for (e = 0u; e < 4u; e++)
 							{
-								total[i][j][e] = fmaf(partial[i][j][e],scale[TILE_K >= SCALE_K ? step / BLOCK_STEPS : 0u][j][e & 1u],total[i][j][e]);
+								total[i][j][e] = fmaf(partial[i][j][e],scale[step / (SCALE_K / 32u)][j][e & 1u],total[i][j][e]);
 								partial[i][j][e] = 0.0f;
 							}
 			}
@@ -525,15 +505,38 @@ static int32_t LmStreamGemmLaunchShape(const LmStreamGemmArguments *args, uint32
 }
 
 template<class Format>
+static int32_t LmStreamGemmLaunchWide(const LmStreamGemmArguments *args, uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
+	const uint32_t mean_rows = (args->rows + groups - 1u) / groups;
+	const uint64_t wide = args->output_dimension / 256u,narrow = args->output_dimension / 128u;
+	if ( args->rows < LM_STREAM_WIDE_ROWS )
+		return(LM_LAUNCH_ERR_TILE);
+	if ( mean_rows > 64u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 127u) / 128u * narrow >= 2u * (uint64_t)multiprocessors )
+		return(LmStreamGemmLaunchTile<Format,128u,128u,128u,128u>(args,((uint64_t)args->rows / 128u + groups) * narrow,multiprocessors,stream));
+	if ( mean_rows > 32u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 63u) / 64u * wide >= 2u * (uint64_t)multiprocessors )
+		return(LmStreamGemmLaunchTile<Format,64u,256u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * wide,multiprocessors,stream));
+	if ( mean_rows > 32u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 63u) / 64u * narrow >= (uint64_t)multiprocessors )
+		return(LmStreamGemmLaunchTile<Format,64u,128u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * narrow,multiprocessors,stream));
+	if ( mean_rows > 16u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 31u) / 32u * wide >= 2u * (uint64_t)multiprocessors )
+		return(LmStreamGemmLaunchTile<Format,32u,256u,128u,32u>(args,((uint64_t)args->rows / 32u + groups) * wide,multiprocessors,stream));
+	return(LM_LAUNCH_ERR_TILE);
+}
+
+template<class Format>
 static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status = LmStreamGemmValidate<Format>(args,multiprocessors);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	if constexpr ( LmStreamWeight<Format>::kScaled && LmStreamWeight<Format>::kElementBytes == 2u )
-		return(LmStreamGemmLaunchShape<Format,128u,64u>(args,multiprocessors,stream));
-	else if constexpr ( LmStreamWeight<Format>::kScaled )
+	if constexpr ( LmStreamWeight<Format>::kScaled )
 	{
+		if constexpr ( LmStreamWeight<Format>::kElementBytes == 1u && LmStreamWeight<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32 )
+		{
+			status = LmStreamGemmLaunchWide<Format>(args,multiprocessors,stream);
+			if ( status != LM_LAUNCH_ERR_TILE )
+				return(status);
+		}
 		if ( args->input_dimension % 256u == 0u )
 			return(LmStreamGemmLaunchShape<Format,64u,256u>(args,multiprocessors,stream));
 		return(LmStreamGemmLaunchShape<Format,128u,128u>(args,multiprocessors,stream));
