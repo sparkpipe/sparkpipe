@@ -1519,6 +1519,65 @@ static void TestScenarioInflightExpiryHoldsSlot(const SparkModelResidentDeployme
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioBusyAdmittedPrefillReleases(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	static const uint32_t prompt[4] = {11u,12u,13u,14u};
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchSubmitRequest request;
+	SparkModelBatchRequestHandle handle = 0u;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine = 0;
+	uint64_t ids[TEST_RANKS];
+	uint32_t releases_before = 0u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,1u,0u);
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"busy admitted prefill: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	memset(&request,0,sizeof(request));
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
+	request.request_id = 1u;
+	request.sequence_id = 540u;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = 4u;
+	request.output_token_budget = 2u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"busy admitted prefill: submit");
+	for (uint32_t step=0u; step<20u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,0u);
+		CHECK(ids[rank] != 0u,"busy admitted prefill: every rank admitted the prefill");
+		releases_before += MockResidentClientReleaseSubmissions(rank);
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_COMPLETION,SPARK_STATUS_BUSY,1u) != 0u,
+			"busy admitted prefill: the admitted prefill completes BUSY");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK(SparkModelBatchEngineCancel(engine,handle) == SPARK_STATUS_OK,"busy admitted prefill: cancel while the retry waits");
+	TestDrive(engine,200u);
+	{
+		uint32_t releases_after = 0u;
+		for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+			releases_after += MockResidentClientReleaseSubmissions(rank);
+		CHECK(releases_after > releases_before,
+			"busy admitted prefill: a cancel after an admitted BUSY prefill releases the sequence on the ranks");
+	}
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 0u,
+		"busy admitted prefill: the slot is free after the release");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioDriverIoError(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -2128,6 +2187,7 @@ int main(void)
 	TestScenarioPendingRestoreRetries(&deployment,runtime_root);
 	TestScenarioDriverIoError(&deployment,runtime_root);
 	TestScenarioInflightExpiryHoldsSlot(&deployment,runtime_root);
+	TestScenarioBusyAdmittedPrefillReleases(&deployment,runtime_root);
 	TestScenarioEosEarlyStop(&deployment,runtime_root);
 	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
 	TestScenarioAdapterCacheModes(runtime_root);
