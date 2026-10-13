@@ -85,9 +85,6 @@ typedef struct SparkModelBatchRequestState
 	uint32_t restore_hint_sent;
 	SparkModelServingCacheIdentity cache_published_identity;
 	SparkSha256Context cache_published_digest_context;
-	uint32_t model_extension_kind;
-	uint32_t first_draft_miss_count;
-	uint32_t first_draft_policy;
 	uint32_t draft_cap;
 	uint32_t draft_source;
 	uint32_t draft_count;
@@ -217,7 +214,6 @@ struct SparkModelBatchEngine
 	uint64_t next_submission_id;
 	uint64_t submitted_request_count;
 	uint64_t completed_request_count;
-	uint32_t batch_first_draft_miss_count;
 	uint64_t cancelled_request_count;
 	uint64_t emitted_token_count;
 	uint64_t rejected_submission_count_by_status[SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT];
@@ -630,9 +626,6 @@ static void SparkModelBatchEmit(
 	event.request_id = request->request_id;
 	event.sequence_id = request->sequence_id;
 	event.request_handle = request->handle;
-	event.model_extension_kind = request->model_extension_kind;
-	event.first_draft_miss_count = request->first_draft_miss_count;
-	event.first_draft_policy = request->first_draft_policy;
 	event.stale_prefix_recompute_count = request->stale_prefix_recompute_count;
 	event.first_dispatch_ns = request->first_dispatch_ns;
 	event.logprob_count = logprob_count;
@@ -1215,31 +1208,14 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 {
 	uint32_t *request_slots,*draft_counts;
 	uint32_t lane,step,token_index,emitted,complete,checkpoint;
-	uint32_t extension_miss,extension_policy;
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
 	draft_counts = SparkModelBatchSubmissionPrefillCounts(engine,submission);
-	extension_miss = 0u;
-	extension_policy = 0u;
-	if ( completion->model_extension_kind == 0x5136u && completion->model_extension_bytes >= 2u * sizeof(uint32_t) )
-	{
-		memcpy(&extension_miss, completion->model_extension, sizeof(extension_miss));
-		memcpy(&extension_policy, (const uint8_t *)completion->model_extension + sizeof(extension_miss), sizeof(extension_policy));
-	}
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
 		SparkModelBatchRequestState *request;
 		SparkStatus status;
 		request = &engine->requests[request_slots[lane]];
 		request->resident_bound = 1u;
-		if ( completion->model_extension_kind == 0x5136u )
-		{
-			request->model_extension_kind = completion->model_extension_kind;
-			if ( submission->lane_count == 1u )
-				request->first_draft_miss_count += extension_miss;
-			else
-				engine->batch_first_draft_miss_count += extension_miss;
-			request->first_draft_policy = extension_policy;
-		}
 		if ( submission->verify == 0u && completion->tokens_per_sequence != 1u && request->cache_pending_token_count != 0u )
 		{
 			request->cache_pending_token_count = 0u;
