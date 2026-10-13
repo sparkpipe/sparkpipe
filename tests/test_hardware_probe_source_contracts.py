@@ -94,22 +94,16 @@ def main() -> int:
     require("tools/hardware/spark_nvme_characterize.cu" in gate,
             "CUDA 13 gate does not compile the NVMe-to-GPU probe")
     require(
-        "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_resident_decode_stage_cuda.cu" in gate,
-        "CUDA 13 gate does not compile the GLM resident module",
+        "_SERVING_ADAPTER" in gate and "cuobjdump --list-elf" in gate,
+        "CUDA 13 gate does not build and check every serving adapter the Makefile names",
     )
     require(
-        "modules/glm5_next_resident_decode_stage/source/"
-        "spark_glm5_next_resident_decode_stage_cuda.cu" in gate,
-        "CUDA 13 gate does not compile the GLM 5.3 Flash resident module",
+        "build/sparkpipe_model_residentd" in gate and "build/sparkpipe_weightd" in gate,
+        "CUDA 13 gate does not build residentd and weightd for sm_121a",
     )
     require(
-        "glm_codecs=(int6 int7 int8 fp8 nvfp4 mxfp4)" in gate,
-        "CUDA 13 gate does not qualify every selectable GLM expert codec",
-    )
-    require(
-        "--print-build-identity" in gate,
-        "CUDA 13 gate does not consume canonical package build identity",
+        "glm52_model_contract.py\" --check" in gate,
+        "CUDA 13 gate does not check the canonical GLM model contract",
     )
     require(
         "inference/llms/glm5_2" not in gate,
