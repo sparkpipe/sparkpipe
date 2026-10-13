@@ -30,7 +30,7 @@ reason below. Two more were deleted instead of archived (end of this file).
 - BUG_LEDGER.md (2026-09-28) — superseded by TECHDEBT.md; the items still
   open on 2026-09-28 were carried there.
 - CONSTANT_AUDIT.md (2026-09-28) — violations fixed in c3cc5d1; the law now
-  lives in COMMON_MODULE_ARCHITECTURE.md §4.
+  lived in COMMON_MODULE_ARCHITECTURE.md §4 (archived 2026-10-13).
 
 ## Design docs whose implementations landed
 - DSPARK_DSV4_FLASH_DESIGN.md — landed; the dspark gate + lease fixes.
@@ -98,6 +98,9 @@ reason below. Two more were deleted instead of archived (end of this file).
   lives in GLM_PERFORMANCE_GATES.md.
 
 ## Superseded proposals (decision recorded, alternative chosen)
+- COMMON_MODULE_ARCHITECTURE.md (2026-10-13) — the per-family module tree it
+  describes (`common/`, `llm_defines.h`, family module templates) was replaced
+  by the common stage runner; MODULE_MAP.md describes the current layout.
 - PROPOSAL_ADMISSION_CORE, BOOT_UNBLOCK, DSV4_PRO_* (3), TREE_ADOPTION,
   GLM52_JIT_KV_MIGRATION, GLM52_PAGE_TABLE_DATAFLOW, RING_WINDOW_HOOK,
   RUNG3_DSPARK_ADOPTION, QWEN36_TO_QWEN38_RENAME, BACKLOG,
