@@ -153,6 +153,7 @@ struct SparkK3ModelState
 	uint64_t layer_w1_offset[K3_LAYERS];
 	uint64_t layer_w2_offset[K3_LAYERS];
 	uint16_t *fused_device;
+	uint16_t *row_share_device;
 	uint32_t fused_rows;
 	SparkK3RunnerTpContext *tp_context_free_head;
 	SparkK3RunnerTpContext tp_context_pool[K3_RUNNER_TP_CONTEXT_POOL_DEPTH];
@@ -345,6 +346,34 @@ static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, cu
 			gathered, b->latent_full_bf16, rows, slice, ranks);
 }
 
+static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream,
+	uint32_t rows, uint32_t layer, uint32_t base)
+{
+	const uint32_t degree = state->tp_degree;
+	const uint32_t share = (rows + degree - 1u) / degree;
+	const uint32_t first = state->tp_rank * share < rows ? state->tp_rank * share : rows;
+	const uint32_t count = rows - first < share ? rows - first : share;
+	uint16_t *landing = share * degree == rows ? b->hidden_bf16 : state->fused_device;
+	if ( state->row_share_device == 0 || base > 1u || share * degree > state->fused_rows )
+	{
+		K3ModelFail(state);
+		return;
+	}
+	K3RunnerRound(state, stream, share * degree, state->fused_device, state->row_share_device, 0u,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, K3_RUNNER_STAGE_ALL);
+	if ( count != 0u )
+	{
+		K3PartialRows(b, state->row_share_device, first, count, base == 0u && (layer % K3_ATTNRES_BLOCK_SIZE) == 0u, stream);
+		K3AttnResRows(b, base == 0u ? b->attnres_mlp_weight : b->attnres_next_weight,
+			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u, rows, first, count, state->row_share_device, stream);
+	}
+	K3RunnerRound(state, stream, share, state->row_share_device, landing, 0u,
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+	if ( landing != b->hidden_bf16 && cudaMemcpyAsync(b->hidden_bf16, landing, (size_t)rows * K3_HIDDEN * sizeof(uint16_t),
+		cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+		K3ModelFail(state);
+}
+
 static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t layer, uint32_t phase)
 {
@@ -357,7 +386,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	uint32_t elements = rows * K3_HIDDEN;
 	const uint32_t stage = (phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH :
 		(phase & K3_COLLECTIVE_BEGIN) != 0u ? K3_RUNNER_STAGE_BEGIN : K3_RUNNER_STAGE_ALL;
-	const uint32_t base = phase & ~(K3_COLLECTIVE_FINISH | K3_COLLECTIVE_BEGIN);
+	const uint32_t base = phase & ~(K3_COLLECTIVE_FINISH | K3_COLLECTIVE_BEGIN | K3_COLLECTIVE_ROWS);
 	uint32_t segments = base == 0u ? 1u : (layer == 0u ? 1u : 2u);
 	uint16_t *phase0_source =
 		(K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT)
@@ -449,6 +478,11 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
 		phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 		state->fused_device,rows,base,segments,0u);
+	if ( (phase & K3_COLLECTIVE_ROWS) != 0u )
+	{
+		K3RunnerRowShard(state, b, stream, rows, layer, base);
+		return;
+	}
 	{
 		SparkK3RunnerTpContext *completion_context =
 			K3RunnerTpContextAcquire(state);
@@ -682,6 +716,7 @@ static void K3ModelClose(void *model)
 	if ( state == 0 )
 		return;
 	cudaFree(state->fused_device);
+	cudaFree(state->row_share_device);
 	if ( state->load_join != 0 )
 		(void)cudaEventDestroy(state->load_join);
 	if ( state->load_fork != 0 )
@@ -833,9 +868,13 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 		const uint64_t fused_bytes = (uint64_t)SparkK3TpSequences((uint64_t)max_rows * state->dispatch.widths.fused) *
 			K3_HIDDEN * sizeof(uint16_t);
 		state->fused_rows = max_rows;
+		const uint64_t share_bytes = (uint64_t)((max_rows + state->tp_degree - 1u) / state->tp_degree) * K3_HIDDEN * sizeof(uint16_t);
 		if ( cudaMalloc(&state->fused_device, fused_bytes) != cudaSuccess ||
 			cudaMemset(state->fused_device, 0, fused_bytes) != cudaSuccess )
 			{ state->fused_device = 0; SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
+		if ( cudaMalloc(&state->row_share_device, share_bytes) != cudaSuccess ||
+			cudaMemset(state->row_share_device, 0, share_bytes) != cudaSuccess )
+			{ state->row_share_device = 0; SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
 	}
 	if ( cudaMalloc(&state->route_expert, routes * 4u) != cudaSuccess ||
 		cudaMalloc(&state->route_packed_row, routes * 4u) != cudaSuccess ||

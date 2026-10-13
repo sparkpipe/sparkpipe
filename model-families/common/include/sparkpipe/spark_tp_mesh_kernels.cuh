@@ -1869,7 +1869,8 @@ static cudaError_t SparkTpMeshHardwarePeerScatterChunk(cudaStream_t stream,uint8
     status = SparkTpMeshHardwareArrival(stream,band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns);
     if ( status != cudaSuccess )
         return status;
-    return SparkTpMeshHardwareCombinePacked(stream,band,slot_bytes,slots_per_rank,control,degree,output,segment,begin,count,1u,0u,count,begin + count == segment,0u,UINT32_MAX);
+    SparkTpMeshHardwareDirectWideKernel<<<SparkTpMeshDirectBlocks(count,1u),SPARK_TP_MESH_DIRECT_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,degree,output,segment,begin,count,1u,0u,count,begin + count == segment,0u,UINT32_MAX);
+    return cudaPeekAtLastError();
 }
 
 static cudaError_t SparkTpMeshHardwareScatterRound(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,void *output,uint8_t *staging,uint64_t elements,uint64_t timeout_ns)
