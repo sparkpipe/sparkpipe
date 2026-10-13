@@ -1,2 +1,0 @@
-export STAGE_MODEL=qwen38_max STAGE_LANE=12 STAGE_MEMORY_MAX=16G STAGE_FIRMWARE=/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-2c5d5b843 STAGE_WEIGHTD_SOCKET=/tmp/spark_weightd.sock STAGE_EXPERT_POOL_BYTES=268435456 STAGE_API_FIRMWARE=/home/spec/api-build-2c5d5b843/build
-export STAGE_SEQUENCES=16 STAGE_ROWS=256 STAGE_KV_PAGES=512

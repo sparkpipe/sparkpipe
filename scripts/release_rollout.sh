@@ -55,6 +55,20 @@ row() {
 field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; fwlib) echo "$2";; lib) echo "$3";; api) echo "$4";; port) echo "$5";; label) echo "$6";; esac; }
 for id in $MODELS; do for k in lane fwlib lib api port label; do v=$(field "$id" "$k"); case "$k:$v" in *:|*" "*|lane:/*|lane:*..*|[!l]*:*/*|l[!a]*:*/*) echo "field $k of $id is '$v': refusing to run" >&2; exit 1;; esac; done; case "$(field "$id" lane)" in */lane[0-9]*) ;; *) echo "lane of $id is not <dir>/lane<N>: refusing to run" >&2; exit 1;; esac; done
 utc() { [ -f "$STATE/utc" ] || date -u +%Y%m%dT%H%M%SZ > "$STATE/utc"; cat "$STATE/utc"; }
+backup_utc() { [ -s "$STATE/utc" ] || { echo "no backup stamp in $STATE/utc: run the backup step first" >&2; return 1; }; cat "$STATE/utc"; }
+backups_present() {
+  local U="$1" id L missing=0
+  for id in $MODELS; do
+    L=$(field $id lane)
+    fan_all "backup $L/root.prev-$U" "test -d \$HOME/$L/root.prev-$U" || missing=1
+    hub "test -d ~/$(field $id api).prev-$U" || { echo "backup hub ~/$(field $id api).prev-$U missing"; missing=1; }
+  done
+  for L in $EXTRA_LANES; do fan_all "backup $L/root.prev-$U" "test -d \$HOME/$L/root.prev-$U" || missing=1; done
+  fan_all "backup weightd_warm.prev-$U" "test -s \$HOME/sparkdata/swap/weightd_warm.prev-$U" || missing=1
+  hub "test \"\$(sha256sum < ~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD | cut -c1-16)\" = $OLD_WD" || { echo "backup hub weightd $OLD_WD missing"; missing=1; }
+  return $missing
+}
+restore_root() { echo "test -d root.prev-$1 && rm -rf root.failed-$1 && mv root root.failed-$1 && { cp -a root.prev-$1 root || { rm -rf root; mv root.failed-$1 root; false; }; }"; }
 residentds() { fan "pgrep -c -f 'bin/sparkpipe_model_[r]esidentd' || true" | awk '{s+=$2} END {print s+0}'; }
 running_wd() { fan "sha256sum < /proc/\$(pgrep -o -f 'sparkdata/weightd/sparkpipe_[w]eightd')/exe | cut -c1-16; test -e /tmp/weightd-mesh/.ready && echo ready" | awk '{c[$2]++} END {for (k in c) printf "%s=%d ", k, c[k]}'; }
 wd_is() { local s; s=$(running_wd); echo "$s" | grep -q "$1=16" && echo "$s" | grep -q "ready=16"; }
@@ -100,12 +114,12 @@ case "$step" in
     U=$(utc); stamp "backup root.prev-$U"
     for id in $MODELS; do
       L=$(field $id lane)
-      fan "cd \$HOME/$L && [ ! -e root.prev-$U ] && mkdir root.prev-$U && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' root/ root.prev-$U/ && echo ok" | grep -v ': ok$'
-      hub "[ -e ~/$(field $id api).prev-$U ] || cp -a ~/$(field $id api) ~/$(field $id api).prev-$U"
+      fan_all "backup $L" "cd \$HOME/$L && [ ! -e root.prev-$U ] && mkdir root.prev-$U && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' root/ root.prev-$U/" || exit 1
+      hub "[ -e ~/$(field $id api).prev-$U ] || cp -a ~/$(field $id api) ~/$(field $id api).prev-$U" || { echo "BACKUP-FAILED hub $(field $id api)"; exit 1; }
     done
-    for L in $EXTRA_LANES; do fan "cd \$HOME/$L && [ ! -e root.prev-$U ] && mkdir root.prev-$U && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' root/ root.prev-$U/ && echo ok" | grep -v ': ok$'; done
-    fan "cp -p \$HOME/sparkdata/swap/weightd_warm \$HOME/sparkdata/swap/weightd_warm.prev-$U && cp -p \$HOME/sparkdata/weightd/sparkpipe_weightd \$HOME/sparkdata/weightd/sparkpipe_weightd.prev-$U && echo ok" | grep -v ': ok$'
-    hub "mkdir -p ~/release-staging/weightd-rollback && r=~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD && { [ -f \$r ] || cp ~/release/core/bin/sparkpipe_weightd \$r; } && test \"\$(sha256sum < \$r | cut -c1-16)\" = $OLD_WD && cp -p ~/sparkpipe-swap/model_swap.json ~/sparkpipe-swap/model_swap.json.prev-$U && echo hub backups ok" ;;
+    for L in $EXTRA_LANES; do fan_all "backup $L" "cd \$HOME/$L && [ ! -e root.prev-$U ] && mkdir root.prev-$U && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' root/ root.prev-$U/" || exit 1; done
+    fan_all "backup weightd" "cp -p \$HOME/sparkdata/swap/weightd_warm \$HOME/sparkdata/swap/weightd_warm.prev-$U && cp -p \$HOME/sparkdata/weightd/sparkpipe_weightd \$HOME/sparkdata/weightd/sparkpipe_weightd.prev-$U" || exit 1
+    hub "mkdir -p ~/release-staging/weightd-rollback && r=~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD && { [ -f \$r ] || cp ~/release/core/bin/sparkpipe_weightd \$r; } && test \"\$(sha256sum < \$r | cut -c1-16)\" = $OLD_WD && cp -p ~/sparkpipe-swap/model_swap.json ~/sparkpipe-swap/model_swap.json.prev-$U && echo hub backups ok" || { echo "BACKUP-FAILED hub"; exit 1; } ;;
   down)
     stamp "down: stop the active model, no residentd anywhere"
     for id in $MODELS; do
@@ -149,15 +163,19 @@ case "$step" in
     done
     restore_max ;;
   rollback)
-    U=$(utc); stamp "ROLLBACK to root.prev-$U and weightd $OLD_WD"
+    U=$(backup_utc) || exit 1
+    stamp "ROLLBACK to root.prev-$U and weightd $OLD_WD"
+    backups_present "$U" || { echo "ROLLBACK-REFUSED: the backups for $U are incomplete; nothing was changed"; exit 1; }
     "$0" down || exit 1
+    restored=1
     for id in $MODELS; do
       L=$(field $id lane)
-      fan "cd \$HOME/$L && test -d root.prev-$U && rm -rf root.failed-$U && mv root root.failed-$U && cp -a root.prev-$U root && rmdir root/kvsnapshot root/kvcache 2>/dev/null; mv root.failed-$U/kvsnapshot root.failed-$U/kvcache root/ 2>/dev/null; echo ok" | grep -v ': ok$'
-      hub "test -d ~/$(field $id api).prev-$U && rm -rf ~/$(field $id api).failed-$U && mv ~/$(field $id api) ~/$(field $id api).failed-$U && cp -a ~/$(field $id api).prev-$U ~/$(field $id api) && rm -f ~/$(field $id api)/runtime/prefix_index.spi"
+      fan_all "restore $L" "cd \$HOME/$L && $(restore_root $U) && { rmdir root/kvsnapshot root/kvcache 2>/dev/null; mv root.failed-$U/kvsnapshot root.failed-$U/kvcache root/ 2>/dev/null; true; }" || restored=0
+      hub "test -d ~/$(field $id api).prev-$U && rm -rf ~/$(field $id api).failed-$U && mv ~/$(field $id api) ~/$(field $id api).failed-$U && { cp -a ~/$(field $id api).prev-$U ~/$(field $id api) || { rm -rf ~/$(field $id api); mv ~/$(field $id api).failed-$U ~/$(field $id api); false; }; } && rm -f ~/$(field $id api)/runtime/prefix_index.spi" || { echo "restore hub $(field $id api) FAILED"; restored=0; }
     done
-    for L in $EXTRA_LANES; do fan "cd \$HOME/$L && test -d root.prev-$U && rm -rf root.failed-$U && mv root root.failed-$U && cp -a root.prev-$U root && echo ok" | grep -v ': ok$'; done
-    fan "cp -p \$HOME/sparkdata/swap/weightd_warm.prev-$U \$HOME/sparkdata/swap/weightd_warm && echo ok" | grep -v ': ok$'
+    for L in $EXTRA_LANES; do fan_all "restore $L" "cd \$HOME/$L && $(restore_root $U)" || restored=0; done
+    fan_all "restore weightd_warm" "cp -p \$HOME/sparkdata/swap/weightd_warm.prev-$U \$HOME/sparkdata/swap/weightd_warm" || restored=0
+    [ "$restored" = 1 ] || { echo "ROLLBACK-INCOMPLETE: a restore failed; weightd and the models were left down for a manual repair"; exit 1; }
     hub "cd ~/release/core && exec 9>\$HOME/release/.core.publish.lock && flock 9 && cp ~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD bin/sparkpipe_weightd.new && chmod 755 bin/sparkpipe_weightd.new && mv bin/sparkpipe_weightd.new bin/sparkpipe_weightd && test \"\$(sha256sum < bin/sparkpipe_weightd | cut -c1-16)\" = $OLD_WD && find bin -type f | sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST && printf '%s\n' $OLD_WD > WEIGHTSD_BIN.tmp && mv WEIGHTSD_BIN.tmp WEIGHTSD_BIN && echo announced \$(cat WEIGHTSD_BIN)"
     for i in $(seq 1 60); do sleep 10; wd_is $OLD_WD && break; done
     echo "weightd: $(running_wd)"
