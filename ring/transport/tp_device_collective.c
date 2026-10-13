@@ -163,9 +163,6 @@ typedef struct SparkTpDeviceCollectiveImplementation
     SparkTpDeviceCollectiveCompletionNode *completion_tail;
     SparkTpDeviceCollectiveCombineBf16Function combine_bf16;
     SparkTpDeviceCollectiveCombineU64MaxFunction combine_u64_max;
-    SparkTpDeviceCollectiveCombineF32SeedFunction combine_f32_seed;
-    SparkTpDeviceCollectiveCombineF32AddFunction combine_f32_add;
-    SparkTpDeviceCollectiveRoundF32Function round_f32;
     SparkTpDeviceCollectiveCombineFusedBf16Function combine_fused_bf16;
     SparkTpDeviceCollectiveCombineGatherBf16Function combine_gather_bf16;
     float *f32_scratch;
@@ -1349,35 +1346,6 @@ static void SparkTpDeviceCollectivePeerSlots(const SparkTpDeviceCollectiveImplem
         source_devices[peer] = SparkTpDeviceCollectivePeerSlot(implementation,peer,parity);
 }
 
-static SparkStatus SparkTpDeviceCollectiveEnsureF32Scratch(SparkTpDeviceCollectiveImplementation *implementation, uint64_t f32_bytes)
-{
-    if ( implementation->f32_scratch != 0 && implementation->f32_scratch_bytes >= f32_bytes )
-        return SPARK_STATUS_OK;
-    if ( implementation->f32_scratch != 0 )
-        (void)cudaFree(implementation->f32_scratch);
-    if ( cudaMalloc((void **)&implementation->f32_scratch,(size_t)f32_bytes) != 0 )
-    {
-        implementation->f32_scratch = 0;
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-    implementation->f32_scratch_bytes = f32_bytes;
-    return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkTpDeviceCollectiveCombineF32(SparkTpDeviceCollectiveImplementation *implementation, SparkTpDeviceCollectiveSubmission *submission, uint64_t bytes, uint64_t parity)
-{
-    uint32_t peer, elements = (uint32_t)(bytes / 2u);
-    SparkStatus status = SparkTpDeviceCollectiveEnsureF32Scratch(implementation,bytes * 2ull);
-    if ( status != SPARK_STATUS_OK )
-        return status;
-    status = implementation->combine_f32_seed(implementation->combine_context,implementation->f32_scratch,SparkTpDeviceCollectivePeerSlot(implementation,0u,parity),SparkTpDeviceCollectivePeerSlot(implementation,1u,parity),elements,submission->cuda_stream);
-    for ( peer = 2u; peer < implementation->tp_degree && status == SPARK_STATUS_OK; peer++ )
-        status = implementation->combine_f32_add(implementation->combine_context,implementation->f32_scratch,SparkTpDeviceCollectivePeerSlot(implementation,peer,parity),elements,submission->cuda_stream);
-    if ( status == SPARK_STATUS_OK )
-        status = implementation->round_f32(implementation->combine_context,submission->full_device,implementation->f32_scratch,elements,submission->cuda_stream);
-    return status;
-}
-
 static SparkStatus SparkTpDeviceCollectiveCombineSerial(SparkTpDeviceCollectiveImplementation *implementation, SparkTpDeviceCollectiveSubmission *submission, uint32_t operation_kind, uint64_t bytes, uint64_t parity)
 {
     uint32_t peer;
@@ -1407,8 +1375,6 @@ static SparkStatus SparkTpDeviceCollectiveRoundCombine(SparkTpDeviceCollectiveIm
         return implementation->combine_gather_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,SparkTpDeviceCollectiveRowElements(implementation,submission),submission->cuda_stream);
     if ( reduce != 0u && implementation->combine_fused_bf16 != 0 )
         return implementation->combine_fused_bf16(implementation->combine_context,submission->full_device,source_devices,implementation->tp_degree,submission->active_sequence_count,SparkTpDeviceCollectiveRowElements(implementation,submission),submission->cuda_stream);
-    if ( reduce != 0u && implementation->combine_f32_seed != 0 && implementation->combine_f32_add != 0 && implementation->round_f32 != 0 )
-        return SparkTpDeviceCollectiveCombineF32(implementation,submission,bytes,parity);
     return SparkTpDeviceCollectiveCombineSerial(implementation,submission,operation_kind,bytes,parity);
 }
 
@@ -1549,9 +1515,6 @@ SparkStatus SparkTpDeviceCollectiveCreate(
         (uint64_t)config->operation_timeout_milli * 1000000ull;
     implementation->combine_bf16 = config->combine_bf16_function;
     implementation->combine_u64_max = config->combine_u64_max_function;
-    implementation->combine_f32_seed = config->combine_f32_seed_function;
-    implementation->combine_f32_add = config->combine_f32_add_function;
-    implementation->round_f32 = config->round_f32_function;
     implementation->combine_fused_bf16 = config->combine_fused_bf16_function;
     implementation->combine_gather_bf16 = config->combine_gather_bf16_function;
     implementation->combine_context = config->combine_context;

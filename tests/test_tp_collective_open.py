@@ -136,21 +136,6 @@ cudaError_t SparkTpLaunchSumRanksF32(cudaStream_t stream,void *destination,const
 	(void)stream;(void)destination;(void)sources;(void)source_count;(void)element_count;
 	return(TpOpenLaunchError);
 }
-cudaError_t SparkTpLaunchSeedF32(cudaStream_t stream,float *destination,const void *a,const void *b,uint32_t element_count)
-{
-	(void)stream;(void)destination;(void)a;(void)b;(void)element_count;
-	return(TpOpenLaunchError);
-}
-cudaError_t SparkTpLaunchAddF32(cudaStream_t stream,float *destination,const void *b,uint32_t element_count)
-{
-	(void)stream;(void)destination;(void)b;(void)element_count;
-	return(TpOpenLaunchError);
-}
-cudaError_t SparkTpLaunchRoundF32(cudaStream_t stream,void *destination,const float *source,uint32_t element_count)
-{
-	(void)stream;(void)destination;(void)source;(void)element_count;
-	return(TpOpenLaunchError);
-}
 cudaError_t SparkTpLaunchAccumAdd(cudaStream_t stream,void *destination,const void *source,uint32_t row_count,uint32_t width)
 {
 	(void)stream;(void)destination;(void)source;(void)row_count;(void)width;
@@ -172,7 +157,7 @@ static uint32_t TpOpenCombineStatuses(const SparkTpDeviceCollectiveConfig *confi
 	TpOpenLaunchError = cudaErrorLaunchFailure;
 	failed = config->combine_bf16_function(0,0,0,1u,1u,0);
 	TpOpenLaunchError = cudaErrorMemoryAllocation;
-	exhausted = config->round_f32_function(0,0,0,1u,0);
+	exhausted = config->combine_fused_bf16_function(0,0,0,2u,1u,1u,0);
 	TpOpenLaunchError = cudaSuccess;
 	passed = config->combine_fused_bf16_function(0,0,0,2u,1u,1u,0);
 	return(failed == SPARK_STATUS_INTERNAL_ERROR && exhausted == SPARK_STATUS_CAPACITY_EXCEEDED && passed == SPARK_STATUS_OK ? 1u : 0u);
@@ -183,8 +168,8 @@ SparkStatus SparkTpDeviceCollectiveCreate(const SparkTpDeviceCollectiveConfig *c
 	SparkStatus status;
 	uint32_t fp32,common,classified;
 	status = SparkTpOpenMeshCreate(config,collective_out);
-	fp32 = config->combine_fused_bf16_function != 0 && config->combine_f32_seed_function != 0 && config->combine_f32_add_function != 0 && config->round_f32_function != 0 && config->combine_bf16_function != 0;
-	common = config->combine_fused_bf16_function == Spark@TAG@ModuleCombineFusedBf16 && config->combine_f32_seed_function == Spark@TAG@ModuleCombineF32Seed && config->combine_f32_add_function == Spark@TAG@ModuleCombineF32Add && config->round_f32_function == Spark@TAG@ModuleRoundF32 && config->combine_bf16_function == Spark@TAG@ModuleCombineBf16 && (config->combine_u64_max_function == 0 || config->combine_u64_max_function == Spark@TAG@ModuleCombineU64Max);
+	fp32 = config->combine_fused_bf16_function != 0 && config->combine_bf16_function != 0;
+	common = config->combine_fused_bf16_function == Spark@TAG@ModuleCombineFusedBf16 && config->combine_bf16_function == Spark@TAG@ModuleCombineBf16 && (config->combine_u64_max_function == 0 || config->combine_u64_max_function == Spark@TAG@ModuleCombineU64Max);
 	classified = fp32 != 0u ? TpOpenCombineStatuses(config) : 0u;
 	printf("TP-OPEN create mesh_status=%d fp32_combines=%u common_combines=%u u64_combine=%u classified_errors=%u\n",(int)status,fp32,common,config->combine_u64_max_function != 0 ? 1u : 0u,classified);
 	if ( status != SPARK_STATUS_UNSUPPORTED || fp32 == 0u )
