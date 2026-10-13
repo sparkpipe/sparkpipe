@@ -423,7 +423,8 @@ void LmQuantiseRowsKernel(const uint16_t *__restrict__ input_bf16, const uint32_
 	const uint32_t groups = dimension / Format::kScaleGroup;
 	uint32_t destination = blockIdx.x,group = blockIdx.y,index;
 	uint64_t source;
-	float absmax = 0.0f,scale,inverse;
+	float absmax = 0.0f,inverse;
+	uint8_t scale_code;
 	if ( destination >= row_count || group >= groups )
 		return;
 	source = (uint64_t)(source_row_map != 0 ? source_row_map[destination] : destination)
@@ -434,10 +435,12 @@ void LmQuantiseRowsKernel(const uint16_t *__restrict__ input_bf16, const uint32_
 		absmax = fmaxf(absmax,fabsf(row[index]));
 	}
 	absmax = LmBlockMax<THREADS>(absmax,reduction);
-	scale = fmaxf(absmax / Format::kMax,1.0e-8f);
-	inverse = 1.0f / scale;
+	scale_code = LmFloatToUe4m3(absmax / Format::kMax);
+	if ( scale_code == 0u )
+		scale_code = 1u;
+	inverse = 1.0f / LmUe4m3ToFloat(scale_code);
 	if ( threadIdx.x == 0u )
-		output_scales[((uint64_t)destination * groups) + group] = LmFloatToUe4m3(scale);
+		output_scales[((uint64_t)destination * groups) + group] = scale_code;
 	__syncthreads();
 	static_assert(
 		(Format::kScaleGroup % 8u) == 0u,
@@ -491,71 +494,6 @@ void LmAddRowsKernel(const uint16_t *__restrict__ a_bf16, const uint16_t *__rest
 		return;
 	index = ((uint64_t)row * dimension) + element;
 	out_bf16[index] = LmFloatToBf16(LmBf16ToFloat(a_bf16[index]) + LmBf16ToFloat(b_bf16[index]));
-}
-
-template<class Format, uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void LmFusedNormQuantiseKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ weight_bf16, const uint32_t *__restrict__ source_row_map, uint16_t *__restrict__ residual_out_bf16, uint8_t *__restrict__ output_codes, uint8_t *__restrict__ output_scales, uint32_t rows, uint32_t dimension, float epsilon)
-{
-	extern __shared__ float lm_fused_shared[];
-	float *row = lm_fused_shared;
-	float *reduction = lm_fused_shared + dimension;
-	const uint32_t groups = dimension / Format::kScaleGroup;
-	uint32_t destination = blockIdx.x,index,group;
-	uint64_t source;
-	float total = 0.0f,scale;
-	if ( destination >= rows )
-		return;
-	source = (uint64_t)(source_row_map != 0 ? source_row_map[destination] : destination) * dimension;
-	for (index = threadIdx.x; index < dimension; index += THREADS)
-	{
-		float value = LmBf16ToFloat(input_bf16[source + index]);
-		if ( residual_bf16 != 0 )
-			value += LmBf16ToFloat(residual_bf16[source + index]);
-		row[index] = value;
-		total += value * value;
-		if ( residual_out_bf16 != 0 )
-			residual_out_bf16[source + index] = LmFloatToBf16(value);
-	}
-	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
-	for (index = threadIdx.x; index < dimension; index += THREADS)
-		row[index] = row[index] * scale * LmBf16ToFloat(weight_bf16[index]);
-	__syncthreads();
-	for (group = 0u; group < groups; ++group)
-	{
-		float absmax = 0.0f,inverse;
-		for (index = threadIdx.x; index < Format::kScaleGroup; index += THREADS)
-			absmax = fmaxf(absmax,fabsf(row[(group * Format::kScaleGroup) + index]));
-		absmax = LmBlockMax<THREADS>(absmax,reduction);
-		inverse = 1.0f / fmaxf(absmax / Format::kMax,1.0e-8f);
-		if ( threadIdx.x == 0u )
-			output_scales[((uint64_t)destination * groups) + group] =
-				LmFloatToUe4m3(fmaxf(absmax / Format::kMax,1.0e-8f));
-		static_assert(
-			(Format::kScaleGroup % 8u) == 0u,
-			"quantization groups must contain complete eight-code blocks");
-		for (index = threadIdx.x * 8u;
-			index < Format::kScaleGroup;
-			index += THREADS * 8u)
-		{
-			float values[8];
-			uint32_t value_index;
-			uint64_t bit =
-				(((uint64_t)destination * dimension) +
-				 (group * Format::kScaleGroup) + index) *
-				Format::kStoredBits;
-
-			for (value_index = 0u; value_index < 8u; ++value_index)
-			{
-				values[value_index] =
-					row[(group * Format::kScaleGroup) + index + value_index] *
-					inverse;
-			}
-			LmStoreCodeOctet<Format>(output_codes, bit, values);
-		}
-		__syncthreads();
-	}
 }
 
 template<uint32_t THREADS>
