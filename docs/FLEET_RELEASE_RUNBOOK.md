@@ -285,7 +285,7 @@ release are committed under `qualification/releases/<sha>/`.
 | Step | Fleet | What it checks, then does |
 | --- | --- | --- |
 | `precheck` | serving | the swap controller is idle with `qwen3.8-max` active; all sixteen nodes answer; `FW` has every node file and every model's adapter, and `APIB` has the API, the tokenizer tool and every adapter; the hub's `WEIGHTSD_BIN` is `OLD_WD`; at least 20 GiB free on `HUB_WORK` and 2 GiB in the hub home. It copies the capture and compare tools to `$HUB_WORK/release-<sha>/kit` |
-| `old` | serving, swapping | activates each model through the controller (`POST /activate` on `:8440`) and captures its reference outputs (`tools/release_capture.py`), plus logprob goldens for GLM Full, K3, the Qwen models and DeepSeek V4.1 Flash; it ends on `qwen3.8-max` |
+| `old` | serving, swapping | activates each model through the controller (`POST /activate` on `:8440`, with the controller token, through `swap` in `scripts/rollover_lib.sh`) and captures its reference outputs (`tools/release_capture.py`), plus logprob goldens for GLM Full, K3, the Qwen models and DeepSeek V4.1 Flash; it ends on `qwen3.8-max` |
 | `stage` | serving | copies `FW` to `~/rp-release-<sha>` on every node and checks `SHA256SUMS`: one result on all sixteen, or it fails |
 | `backup` | serving | stamps the backup (`STATE/utc`) and copies every lane root to `root.prev-<utc>` (without `kvsnapshot` and `kvcache`), every hub API directory to `$HUB_WORK/backups/<api>.prev-<utc>`, `weightd_warm` and the installed weightd to `.prev-<utc>` on every node, the production weightd to `~/release-staging/weightd-rollback/sparkpipe_weightd.<OLD_WD>` and `model_swap.json` to `.prev-<utc>` on the hub |
 | `down` | **down from here** | stops the active model's API and engines with the controller's own `api_stop` and `node_stop` commands, and fails unless no residentd runs anywhere |
@@ -397,8 +397,10 @@ Since 2026-10-08 one model holds the fleet at a time. The hub runs:
 
 - the swap controller (`tools/serving/model_swap.py`, config
   `deployment/hub/model_swap.json`, unit `sparkpipe-swap` from
-  `~/sparkpipe-swap`, `127.0.0.1:8440`). It stops the other models, starts
-  the requested model's engines on every node, then its engine API;
+  `~/sparkpipe-swap`, `127.0.0.1:8440`, every call with the token in
+  `/srv/workspace/sparkpipe/swap-controller/token`). It stops the other
+  models, starts the requested model's engines on every node, then its
+  engine API;
 - one engine API at a time: `sparkpipe_model_api` from the model's
   `~/<model>-kv-api` (`bin/`, `runtime/lib/<adapter>.so`,
   `model_resident.json`), started by the controller as the transient unit
@@ -406,8 +408,8 @@ Since 2026-10-08 one model holds the fleet at a time. The hub runs:
   ports 8459-8476) and logging to
   `/srv/workspace/sparkpipe/logs/<model>-kv-api.log`;
 - the OpenAI chat layer (`tools/serving/chat_frontend.py`, config
-  `deployment/hub/chat_frontend.json`) on `:8433`, unit `sparkpipe-chat` from
-  `~/sparkpipe-chat`;
+  `deployment/hub/chat_frontend.json`) on `127.0.0.1:8433`, unit
+  `sparkpipe-chat` from `~/sparkpipe-chat`;
 - LiteLLM on `:4000`, unit `sparkpipe-litellm`, configured from
   `config/litellm-config.yaml`.
 

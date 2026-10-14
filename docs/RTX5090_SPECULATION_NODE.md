@@ -29,7 +29,7 @@ Hub operations (publishing roots, heartbeats) are governed by
 | Role | What runs | Source |
 | --- | --- | --- |
 | Fleet hub | user unit `fleet-release.service` (`python3 ~/fleet_release_serve.py`) serves `~/release/<root>/` on `:8802`; nodes write `~/current/<host>.json` heartbeats | FLEET_RELEASE_RUNBOOK.md §1; `systemctl --user`, `ss -ltn` |
-| Model APIs | the swap controller `sparkpipe-swap` (127.0.0.1:8440) runs one model's engine API at a time, as the transient unit `kv-<model>-api` from `~/<model>-kv-api`; the chat layer `sparkpipe-chat` (`:8433`) and LiteLLM `sparkpipe-litellm` (`:4000`) front it | `deployment/hub/model_swap.json`, [LITELLM_FRONTEND.md](LITELLM_FRONTEND.md), FLEET_RELEASE_RUNBOOK.md §6 |
+| Model APIs | the swap controller `sparkpipe-swap` (127.0.0.1:8440) runs one model's engine API at a time, as the transient unit `kv-<model>-api` from `~/<model>-kv-api`; the chat layer `sparkpipe-chat` (`127.0.0.1:8433`) and LiteLLM `sparkpipe-litellm` (`:4000`) front it | `deployment/hub/model_swap.json`, [LITELLM_FRONTEND.md](LITELLM_FRONTEND.md), FLEET_RELEASE_RUNBOOK.md §6 |
 | Draft farm | `~/draft_service` (not in this repo): `farm_server.py`, DFT3 protocol in `draft_protocol.py`, measurements in its `README.md`; not running | `ls`, `pgrep` |
 | Drafter store | LV `ubuntu--vg-drafters` (700 GiB ext4) mounted at `/srv/workspace` by fstab: `drafters/`, `.qualification/`, `.staging/` | `lsblk`, `findmnt`, `/etc/fstab` |
 | Other tenants | Ceph MDS and MGR, an NFS server, chess work (`stockfish`) | `ps` |
