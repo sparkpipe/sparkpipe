@@ -9,7 +9,7 @@ import compsec17
 HOME = Path.home()
 LOG = HOME / "g53-api-channel" / "api.log"
 TOK = HOME / "g53-api-channel" / "runtime" / "tokenizer" / "tokenizer.json"
-FIX = HOME / "api-build-09fdad6-r2" / "qualification" / "ds4_eval" / "quality-fixtures-glm5.3-flash.json"
+FIX = Path(__file__).resolve().parents[1] / "qualification" / "ds4_eval" / "quality-fixtures-glm5.3-flash.json"
 EP = "http://127.0.0.1:8433/v1/completions"
 PRE = "[gMASK]<sop><|user|>\n"
 POST_OFF = "<|assistant|>\n<think></think>\n"

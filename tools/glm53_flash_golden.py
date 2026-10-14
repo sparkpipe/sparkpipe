@@ -16,6 +16,7 @@ and repository documents (fixed truncation), so they are reproducible.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import concurrent.futures
 import datetime
 import json
@@ -107,7 +108,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--tokenizer", default="/mnt/cold-raid6/models/glm-5.3-flash-bf16-official/tokenizer.json")
-    parser.add_argument("--docs", default=os.path.expanduser("~/api-build-72eaa5fa3/docs"))
+    parser.add_argument("--docs", default=str(Path(__file__).resolve().parents[1] / "docs"))
     parser.add_argument("--tokens", type=int, default=96)
     parser.add_argument("--label", required=True)
     parser.add_argument("--logprobs", type=int, default=4, help="top logprobs per token; 0 asks for tokens only")

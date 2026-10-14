@@ -49,9 +49,14 @@ Network (lead-dev facts and read-only checks, 2026-09-28):
   maps to the same address (`:5-6`).
 
 The hub also runs unrelated workloads, the chess/nnue training among them.
-Fleet work there touches only `~/release`, `~/release-staging`, `~/current`,
-`~/g53-api-channel` (and its `.prev` copy) and its own build directories, and
-restarts only `g53-api` or `fleet-release`.
+Its root filesystem is small (216 GB) and filled on 2026-10-14, so anything
+that grows lives on the workspace volume under `/srv/workspace/sparkpipe`
+(owner rule, 2026-10-14): build trees, source tarballs, release captures, API
+directory backups (`HUB_WORK` in `scripts/rollover_lib.sh`) and the API
+engine logs (`/srv/workspace/sparkpipe/logs/<model>-kv-api.log`). The home
+keeps only the live service directories (`~/<model>-kv-api`,
+`~/sparkpipe-chat`, `~/sparkpipe-swap`), the release channel (`~/release`,
+`~/release-staging`, `~/current`) and tool checkouts.
 
 ## 2. The node agent
 
@@ -771,8 +776,9 @@ To bootstrap one node:
   The engine runs with `CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0` (`:195`), because
   the in-process GPU dump wedged engines past TERM on 09-18.
 - **Logs.** The engine logs to `~/sparkdata/<root>/residentd.log`, rotated at
-  each start with 20 kept (`:473-477`). weightd logs to `~/weightd.log`. The API
-  logs to `~/g53-api-channel/api.log` on the hub.
+  each start with 20 kept (`:473-477`). weightd logs to `~/weightd.log`. Each
+  model's API logs to `/srv/workspace/sparkpipe/logs/<model>-kv-api.log` on the
+  hub.
 
 ## 9. Laws
 

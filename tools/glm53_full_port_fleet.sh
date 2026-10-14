@@ -71,7 +71,7 @@ collect() {
     host="spark${HEX:$rank:1}"
     $SSH "$host" "tail -c 60000 $(root_of "$host")/logs/residentd-$RUN_ID.log" < /dev/null > "$OUTDIR/rank$rank.tail.log" 2>/dev/null
   done
-  $SSH $HUB "tail -c 60000 ~/$API_DIR/api.log" < /dev/null > "$OUTDIR/api.tail.log" 2>/dev/null
+  $SSH $HUB "tail -c 60000 /srv/workspace/sparkpipe/logs/$API_DIR.log" < /dev/null > "$OUTDIR/api.tail.log" 2>/dev/null
 }
 
 teardown() {
