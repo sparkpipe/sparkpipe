@@ -2,7 +2,9 @@ import argparse
 import asyncio
 import codecs
 import importlib.util
+import ipaddress
 import json
+import os
 import re
 import sys
 import time
@@ -23,6 +25,16 @@ UNSUPPORTED_FIELDS = ("n", "logit_bias", "best_of", "echo", "suffix")
 NEUTRAL_FIELDS = {"frequency_penalty": 0, "presence_penalty": 0, "repetition_penalty": 1, "min_p": 0}
 MAX_TOP_LOGPROBS = 20
 MAX_TOP_K = 1048576
+
+
+def read_token(path):
+    mode = os.stat(path).st_mode & 0o777
+    if mode & 0o077:
+        raise SystemExit(f"chat_frontend: {path} has mode {mode:o}; the token file must be readable by its owner only")
+    token = Path(path).read_text().strip()
+    if len(token) < 32:
+        raise SystemExit(f"chat_frontend: the token in {path} must be at least 32 characters")
+    return token
 
 
 class RequestError(Exception):
@@ -313,12 +325,14 @@ class WarmGate:
         return {"waiting": self.waiting, "depth": self.depth, "wait_seconds": self.wait_seconds, "activations": self.activations,
                 "released": self.released, "overflowed": self.overflowed, "expired": self.expired}
 
-    async def poll(self, session):
+    async def poll(self, session, headers):
         if self.activation_url is not None:
             self.activations += 1
             try:
-                async with session.post(self.activation_url, json={"model": self.model_id}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                async with session.post(self.activation_url, json={"model": self.model_id}, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     await response.read()
+                    if response.status >= 400:
+                        print(json.dumps({"event": "warm_activation_refused", "model": self.model_id, "status": response.status}), file=sys.stderr, flush=True)
             except (aiohttp.ClientError, asyncio.TimeoutError) as error:
                 print(json.dumps({"event": "warm_activation_failed", "model": self.model_id, "error": str(error)}), file=sys.stderr, flush=True)
         while True:
@@ -331,7 +345,7 @@ class WarmGate:
                 pass
             await asyncio.sleep(self.POLL_SECONDS)
 
-    async def wait_ready(self, session, timeout):
+    async def wait_ready(self, session, timeout, headers):
         if timeout <= 0:
             self.expired += 1
             raise RequestError(503, "warm_queue_expired", f"the {self.model_id} engine did not become ready within {self.wait_seconds:g} s")
@@ -340,7 +354,7 @@ class WarmGate:
             raise RequestError(503, "warm_queue_full", f"the {self.model_id} engine is not ready and {self.waiting} requests already wait for it")
         if self.poller is None or self.poller.done():
             self.event.clear()
-            self.poller = asyncio.ensure_future(self.poll(session))
+            self.poller = asyncio.ensure_future(self.poll(session, headers))
         self.waiting += 1
         try:
             await asyncio.wait_for(asyncio.shield(self.event.wait()), timeout)
@@ -826,8 +840,12 @@ class Frontend:
             model = Model(spec, base)
             self.models[model.id] = model
         self.control = config.get("control")
-        if self.control is not None and set(self.control) not in ({"status_url", "activate_url"}, {"status_url", "activate_url", "force_url", "admin_url"}):
-            raise SystemExit("chat_frontend: control needs status_url and activate_url, and optionally both force_url and admin_url")
+        if self.control is not None and set(self.control) not in ({"status_url"}, {"status_url", "force_url", "admin_url"}):
+            raise SystemExit("chat_frontend: control needs status_url, and optionally both force_url and admin_url")
+        controlled = self.control is not None or any(model.gate.activation_url is not None for model in self.models.values())
+        if controlled != ("controller_token_file" in config):
+            raise SystemExit("chat_frontend: controller_token_file is needed exactly when the config has control or an activation_url")
+        self.controller_headers = {"Authorization": "Bearer " + read_token(base / config["controller_token_file"])} if controlled else {}
         self.site = (base / config["site_dir"]).resolve() if config.get("site_dir") else None
         self.session = None
 
@@ -864,7 +882,7 @@ class Frontend:
         if self.control is None:
             return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
         try:
-            async with self.session.get(self.control["status_url"], timeout=aiohttp.ClientTimeout(total=5)) as response:
+            async with self.session.get(self.control["status_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                 payload = await response.json(content_type=None)
                 if isinstance(payload, dict):
                     payload["waiting"] = {model.id: model.gate.state()["waiting"] for model in self.models.values() if model.gate.state()["waiting"]}
@@ -895,23 +913,7 @@ class Frontend:
         if model is not None and model not in self.models:
             return web.json_response(error_body("model_not_found", f"model {model!r} is not served here; served: {sorted(self.models)}"), status=404)
         try:
-            async with self.session.post(self.control["force_url"], json={"model": model} if model else {}, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                return web.json_response(await response.json(content_type=None), status=response.status)
-        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
-            return web.json_response(error_body("control_unavailable", str(error)), status=503)
-
-    async def control_activate(self, request):
-        if self.control is None:
-            return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
-        model = body.get("model") if isinstance(body, dict) else None
-        if model not in self.models:
-            return web.json_response(error_body("model_not_found", f"model {model!r} is not served here; served: {sorted(self.models)}"), status=404)
-        try:
-            async with self.session.post(self.control["activate_url"], json={"model": model}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with self.session.post(self.control["force_url"], json={"model": model} if model else {}, headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 return web.json_response(await response.json(content_type=None), status=response.status)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response(error_body("control_unavailable", str(error)), status=503)
@@ -1028,7 +1030,7 @@ class Frontend:
                     raise
             now = asyncio.get_running_loop().time()
             deadline = deadline if deadline is not None else now + model.gate.wait_seconds
-            await model.gate.wait_ready(self.session, deadline - now)
+            await model.gate.wait_ready(self.session, deadline - now, self.controller_headers)
 
     def logprob_entries(self, model, chunk, expected):
         tokens = chunk.get("tokens", [])
@@ -1188,14 +1190,7 @@ class Frontend:
         return response
 
 
-def main():
-    parser = argparse.ArgumentParser(description="OpenAI chat front end for SparkPipe engines")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, required=True)
-    arguments = parser.parse_args()
-    config_path = Path(arguments.config).resolve()
-    frontend = Frontend(json.loads(config_path.read_text()), config_path.parent)
+def build(frontend):
     app = web.Application(client_max_size=256 * 1024 * 1024)
     app.on_startup.append(frontend.start)
     app.on_cleanup.append(frontend.stop)
@@ -1204,12 +1199,28 @@ def main():
     app.router.add_get("/v1/models", frontend.list_models)
     app.router.add_post("/v1/chat/completions", frontend.chat)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
-    app.router.add_post("/v1/sparkpipe/activate", frontend.control_activate)
     app.router.add_post("/v1/sparkpipe/switch-now", frontend.control_switch_now)
     if frontend.site is not None:
         app.router.add_get("/", frontend.site_root)
         app.router.add_static("/site/", frontend.site)
-    web.run_app(app, host=arguments.host, port=arguments.port, access_log=None)
+    return app
+
+
+def main():
+    parser = argparse.ArgumentParser(description="OpenAI chat front end for SparkPipe engines")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, required=True)
+    arguments = parser.parse_args()
+    try:
+        loopback = ipaddress.ip_address(arguments.host).is_loopback
+    except ValueError:
+        loopback = False
+    if not loopback:
+        raise SystemExit(f"chat_frontend: --host {arguments.host} is not a loopback address; the chat layer checks no API key, so it serves this host only and LiteLLM is the door")
+    config_path = Path(arguments.config).resolve()
+    frontend = Frontend(json.loads(config_path.read_text()), config_path.parent)
+    web.run_app(build(frontend), host=arguments.host, port=arguments.port, access_log=None)
 
 
 if __name__ == "__main__":

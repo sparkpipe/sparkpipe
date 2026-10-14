@@ -7,7 +7,7 @@ through this stack on the rtx5090 hub:
 | --- | --- | --- |
 | 4000 | LiteLLM proxy (`config/litellm-config.yaml`, user unit `sparkpipe-litellm`) | OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`; any model name routes to `glm-5.3` |
 | 4001 | external LiteLLM (`~/sparkpipe-chat/litellm-external.yaml`, user unit `sparkpipe-litellm-external`, 127.0.0.1 only) | the 4000 door without Qwen models or the `*` route, behind a master key; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
-| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards `/v1/sparkpipe/status` here |
+| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`, 127.0.0.1 only) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards `/v1/sparkpipe/status` here |
 | 8446 | `sparkpipe_model_api` (user unit `glmfull-api6`) | the engine endpoint: `prompt_token_ids` in, token ids, usage and `cached_tokens` out |
 
 Smoke receipts (2026-10-02, build de944ae): chat answered "Paris" with the
@@ -70,8 +70,8 @@ another model waits while the fleet swaps.
 
 | Piece | Where | What |
 | --- | --- | --- |
-| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}` |
-| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` and `POST /v1/sparkpipe/activate` pass through to it; `/` serves the playground |
+| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`; every call needs the controller token (see Control-plane access) |
+| Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` serves the playground |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
 A swap to model T, in order:
@@ -491,9 +491,9 @@ without asking, bounded by what their identity can do.
   `ProtectHome=read-only`, a private `/tmp`, no devices (no GPU, no RDMA
   verbs), `NoNewPrivileges` (no sudo), only `AF_UNIX` and `AF_NETLINK`
   sockets plus `IPAddressDeny=any` (no TCP or UDP, so none of the fleet's
-  unauthenticated services: the swap controller, the chat layer, LiteLLM,
-  the engine APIs), the owner's `.ssh`, `.env`, `.config` and the known
-  secret files hidden, `CPUQuota=200%`, `MemoryMax=4G`, `TasksMax=128` and
+  services: the swap controller, the chat layer, LiteLLM, the engine APIs),
+  the owner's `.ssh`, `.env`, `.config`, the known secret files and both
+  token directories hidden, `CPUQuota=200%`, `MemoryMax=4G`, `TasksMax=128` and
   `RuntimeMaxSec` of the timeout plus 5 s. It can read the machine and the
   SparkPipe trees, logs and configs, list processes and read interface and
   RDMA counters; it cannot change anything. Checked live on the hub and
@@ -522,13 +522,76 @@ without asking, bounded by what their identity can do.
   the admin switches it on per chat from the tools menu.
 - **Review.** An adversarial review (2026-10-14) found that a permanent
   restricted account would still reach the fleet's unauthenticated control
-  services, GPUs and RDMA devices, which led to the sandbox. It also listed
-  pre-existing exposures outside this tool: the swap controller and the chat
-  layer's `/v1/sparkpipe/activate` accept unauthenticated requests (the chat
-  layer and LiteLLM 4000 listen on every interface), stale root
-  `sparkpipe_model_api` test processes listen on 0.0.0.0, some model weights
-  on CephFS are world-writable, and an NFS export uses `no_root_squash`.
+  services, GPUs and RDMA devices, which led to the sandbox. The exposures it
+  listed outside this tool are in Control-plane access below.
 - **Not done.** Two-factor login stays off (owner, 2026-10-14).
+
+### Control-plane access (2026-10-14)
+
+The adversarial review of the fleet tool listed exposures that LAN users and
+local accounts could still reach. Verified on the hub before the fix:
+
+| Exposure | State |
+| --- | --- |
+| The swap controller (127.0.0.1:8440) switched or stopped the fleet for any local caller | fixed: every route needs the controller token |
+| The chat layer listened on 0.0.0.0:8433, and its `POST /v1/sparkpipe/activate` started a switch for anyone | fixed: the route is gone and the layer serves loopback only |
+| LiteLLM 4000 (`config/litellm-config.yaml`) serves the LAN and the tailnet without a master key | open, owner decision: a key breaks ZCode until ZCode carries it |
+| Six root `sparkpipe_model_api` test processes from 2026-09-27 (`--runtime-root /tmp/chatfix`) and one spec test instance from 2026-09-28 answer on 0.0.0.0 | open, owner step: stop them |
+| `glm-5.3-fp8` (145 files) and `glm-5.3-bf16` (11 files) on `/mnt/model-warm` are 0666, and five directories there are 2777 | open, owner step: remove the world write bit |
+| `/etc/exports.d/qpn.exports` exports `/srv/qpn` rw with `no_root_squash` to 10.10.0.0/16 and 192.168.50.0/24; no client mounts it and it holds two empty probe files | open, owner step: drop the export or squash root |
+
+**The controller token.** `model_swap.py` refuses to start without
+`--token-file`, or when the file can be read by its group or others or holds
+fewer than 32 characters, and answers 401 to any call without
+`Authorization: Bearer <token>`, `/status` included
+(`tests/test_model_swap_token.py`). The token lives in
+`/srv/workspace/sparkpipe/swap-controller/token` (spec, 600, in a 2700
+directory). Its callers:
+
+- the chat layer reads the file named by `controller_token_file` in its
+  config and presents it on warm-queue activations, status and Switch now,
+  and nowhere else: not to the engines and not to SparkPipe Chat's login
+  check (`tests/test_chat_frontend_warm_queue.py`,
+  `tests/test_chat_frontend_switch_now.py`). It refuses a config whose
+  `control` block or activation URLs have no token file;
+- the fleet gateway reads `controller_token_file` from its config for the
+  status and engine-log routes; a refusal from the controller is a 503, never
+  an empty status (`tests/test_fleet_gateway.py`). The sandbox cannot see
+  either token directory;
+- the release scripts call `swap` in `scripts/rollover_lib.sh`, which reads
+  the token on the hub and gives curl the header on stdin, so the token never
+  appears in a process list (`tests/test_swap_token_shell.py`);
+  `tools/ds4_eval92_session.py` and `tools/chat_memory_phase1.py` read the
+  file the chat layer's config names.
+
+A request for a model that is not loaded still swaps the fleet through the
+warm queue: whoever can reach the chat layer can switch models. Only the hub
+reaches it now: `chat_frontend.py` refuses a `--host` that is not a loopback
+address. Its clients are LiteLLM 4000, 4001 and 4002 and the sparkpipe.ai
+tunnel (`-R 127.0.0.1:18081:127.0.0.1:8433`), all on the hub. The playground
+no longer pre-loads the model picked in the list; the first request loads it,
+and the admin's Load now on `/fleet` remains. Opening the playground from
+`http://rtx5090:8433/` on the LAN no longer works; use sparkpipe.ai or an
+ssh tunnel.
+
+Start or restart the two units (hub, as spec):
+
+```sh
+install -d -m 2700 /srv/workspace/sparkpipe/swap-controller
+( umask 077; [ -s /srv/workspace/sparkpipe/swap-controller/token ] || \
+  openssl rand -hex 32 > /srv/workspace/sparkpipe/swap-controller/token )
+systemd-run --user --unit=sparkpipe-swap -p WorkingDirectory=/home/spec/sparkpipe-swap \
+  /usr/bin/bash -c 'exec python3 model_swap.py --config model_swap.json --token-file /srv/workspace/sparkpipe/swap-controller/token --host 127.0.0.1 --port 8440 >> swap.log 2>&1'
+systemd-run --user --unit=sparkpipe-chat -p WorkingDirectory=/home/spec/sparkpipe-chat \
+  /usr/bin/bash -c 'exec python3 chat_frontend.py --config config.json --host 127.0.0.1 --port 8433 >> chat.log 2>&1'
+```
+
+Read the controller from a hub shell without putting the token on a command
+line:
+
+```sh
+printf 'Authorization: Bearer %s\n' "$(cat /srv/workspace/sparkpipe/swap-controller/token)" | curl -s -H @- localhost:8440/status
+```
 
 ### Web search (SearXNG)
 

@@ -1,5 +1,6 @@
 {
   "token_file": "/srv/workspace/sparkpipe/fleet-gateway/token",
+  "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
   "audit_log": "/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl",
   "hub": "rtx5090",
   "nodes": [
@@ -78,7 +79,7 @@
     "-p",
     "IPAddressDeny=any",
     "-p",
-    "InaccessiblePaths=-{home}/.ssh -{home}/.env -{home}/.config -{home}/.netrc -{home}/.git-credentials -{home}/.docker -{home}/sparkpipe-chat/chatui.env -{home}/sparkpipe-chat/external.env -/srv/workspace/sparkpipe/fleet-gateway -/srv/workspace/open-webui",
+    "InaccessiblePaths=-{home}/.ssh -{home}/.env -{home}/.config -{home}/.netrc -{home}/.git-credentials -{home}/.docker -{home}/sparkpipe-chat/chatui.env -{home}/sparkpipe-chat/external.env -{home}/sparkpipe-chat/lan.env -/srv/workspace/sparkpipe/fleet-gateway -/srv/workspace/sparkpipe/swap-controller -/srv/workspace/open-webui",
     "-p",
     "CPUQuota=200%",
     "-p",
@@ -122,7 +123,7 @@
       "reason": "writing partitions or raw block devices"
     },
     {
-      "pattern": "(?:^|[\\s/'\"=<])(?:\\.env|[\\w.-]*secrets\\.env|chatui\\.env|external\\.env)\\b|/\\.ssh/|\\bid_(?:ed25519|rsa|ecdsa)\\b|/etc/shadow|\\bGITHUB_PAT\\b|\\bLITELLM_MASTER_KEY\\b|sparkpipe_github_pat|fleet-gateway/token",
+      "pattern": "(?:^|[\\s/'\"=<])(?:\\.env|[\\w.-]*secrets\\.env|chatui\\.env|external\\.env|lan\\.env)\\b|/\\.ssh/|\\bid_(?:ed25519|rsa|ecdsa)\\b|/etc/shadow|\\bGITHUB_PAT\\b|\\bLITELLM_MASTER_KEY\\b|sparkpipe_github_pat|fleet-gateway/token|swap-controller/token",
       "reason": "secret files and keys stay out of the chat"
     }
   ],

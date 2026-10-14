@@ -18,12 +18,14 @@ mkdir -p "$OUTDIR"
 log() { echo "$(date -u +%FT%TZ) $*"; }
 root_of() { echo "/home/$1/stage-lanes/$STAGE_MODEL/lane$STAGE_LANE/root"; }
 
+. "$HERE/../scripts/rollover_lib.sh"
+
 activate() {
   local model="$1" deadline state
-  $SSH $HUB "curl -s -X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null || return 1
+  swap "-X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null || return 1
   deadline=$((SECONDS + 900))
   while [ $SECONDS -lt $deadline ]; do
-    state="$($SSH $HUB "curl -s localhost:8440/status" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state'], d['active'], d['error'])")"
+    state="$(swap localhost:8440/status | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state'], d['active'], d['error'])")"
     case "$state" in
       "idle $model None") log "activated $model"; return 0 ;;
       idle*|failed*) log "activate $model failed: $state"; return 1 ;;

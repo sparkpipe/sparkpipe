@@ -35,13 +35,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
-def get_json(url: str, timeout: float = 10) -> dict:
-    with urllib.request.urlopen(url, timeout=timeout) as response:
+def get_json(url: str, timeout: float = 10, headers: dict | None = None) -> dict:
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=timeout) as response:
         return json.loads(response.read())
 
 
-def post_json(url: str, body: dict, timeout: float = 30) -> tuple[int, dict]:
-    request = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+def post_json(url: str, body: dict, timeout: float = 30, headers: dict | None = None) -> tuple[int, dict]:
+    request = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, json.loads(response.read())
@@ -60,6 +60,7 @@ class Session:
         if args.model not in served:
             raise SystemExit(f"{args.model} is not in {args.chat_config}")
         self.health_url = served[args.model]["engine"].rstrip("/") + "/health"
+        self.swap_headers = {"Authorization": "Bearer " + Path(config["controller_token_file"]).read_text().strip()}
         if args.max_tokens is None:
             args.max_tokens = min(int(served[args.model]["context_tokens"]) - args.prompt_reserve, args.max_tokens_cap)
         self.timeline = []
@@ -74,11 +75,11 @@ class Session:
 
     def activate(self, model: str) -> float:
         started = time.time()
-        status, payload = post_json(self.args.swap.rstrip("/") + "/activate", {"model": model})
+        status, payload = post_json(self.args.swap.rstrip("/") + "/activate", {"model": model}, headers=self.swap_headers)
         if status not in (200, 202):
             raise RuntimeError(f"activate {model}: HTTP {status} {payload}")
         while True:
-            state = get_json(self.args.swap.rstrip("/") + "/status")
+            state = get_json(self.args.swap.rstrip("/") + "/status", headers=self.swap_headers)
             if state.get("active") == model and state.get("state") == "idle":
                 return round(time.time() - started, 1)
             if state.get("state") == "failed":

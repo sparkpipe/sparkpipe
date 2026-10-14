@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
 HUB=rtx5090
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=8"
 LABEL="${1:?label}"
@@ -9,12 +10,14 @@ WORK='~/glmfull-port'
 OUT="$WORK/golden-$LABEL"
 TOKENIZER=/mnt/cold-raid6/models/glm-5.3-fp8/tokenizer.json
 
+. "$HERE/../scripts/rollover_lib.sh"
+
 activate() {
   local model="$1" deadline state
-  $SSH $HUB "curl -s -X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null || return 1
+  swap "-X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null || return 1
   deadline=$((SECONDS + 900))
   while [ $SECONDS -lt $deadline ]; do
-    state="$($SSH $HUB "curl -s localhost:8440/status" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state'], d['active'], d['error'])")"
+    state="$(swap localhost:8440/status | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state'], d['active'], d['error'])")"
     case "$state" in
       "idle $model None") echo "activated $model"; return 0 ;;
       idle*) echo "activate $model failed: $state" >&2; return 1 ;;

@@ -6,10 +6,10 @@ RELEASE_FW=${FW:?FW is the local release firmware dir (release_build.sh output)}
 RELEASE_APIB=${APIB:?APIB is the hub api build dir, e.g. $HUB_WORK/api-build-<sha>/build}
 activate() {
   local model="$1" i out
-  hub "curl -s -X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null
+  swap "-X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null || { echo "activate $model: the swap controller refused"; return 2; }
   for i in $(seq 1 120); do
     sleep 5
-    out="$(hub "curl -s localhost:8440/status" | python3 -c "
+    out="$(swap localhost:8440/status | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 h = (d.get('history') or [{}])[-1]
