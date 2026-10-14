@@ -21,6 +21,7 @@ typedef GlmModel<ProbeGeometry> ProbeModel;
 #define PROBE_PAGES_PER_SEQUENCE 4u
 #define PROBE_POOL_PAGES 32u
 #define PROBE_SEQUENCES 2u
+#define PROBE_INDEX_PAGE_BYTES (GlmIndexKv::kPageBytes / SPARK_GLM53_FULL_TP16_STAGE_TP_DEGREE)
 
 static int probe_failures;
 static uint8_t probe_pool[8];
@@ -58,7 +59,7 @@ static SparkStageRunnerKv ProbeBinding(const ProbeModel::State *state)
 	kv.sequence_count = PROBE_SEQUENCES;
 	kv.context_shard = state->shard;
 	kv.second_pool = probe_index;
-	kv.second_layer_stride_bytes = (uint64_t)PROBE_POOL_PAGES * GlmIndexKv::kPageBytes;
+	kv.second_layer_stride_bytes = (uint64_t)PROBE_POOL_PAGES * PROBE_INDEX_PAGE_BYTES;
 	kv.second_layer_page_bytes = GlmIndexKv::kPageBytes;
 	kv.second_layer_count = ProbeGeometry::kIndexLayers;
 	return kv;
@@ -88,7 +89,7 @@ static void ProbeCase(const char *name, void (*bend)(SparkStageRunnerKv *), int 
 
 static void ProbeShortIndexLayers(SparkStageRunnerKv *kv)
 {
-	kv->second_layer_stride_bytes = (uint64_t)(PROBE_POOL_PAGES - 1u) * GlmIndexKv::kPageBytes;
+	kv->second_layer_stride_bytes = (uint64_t)(PROBE_POOL_PAGES - 1u) * PROBE_INDEX_PAGE_BYTES;
 }
 
 static void ProbeShortPageTable(SparkStageRunnerKv *kv)
@@ -114,12 +115,12 @@ static void ProbeNoPoolPages(SparkStageRunnerKv *kv)
 static void ProbeWideStrides(SparkStageRunnerKv *kv)
 {
 	kv->page_table_stride = PROBE_PAGES_PER_SEQUENCE + 4u;
-	kv->second_layer_stride_bytes = (uint64_t)(PROBE_POOL_PAGES + 8u) * GlmIndexKv::kPageBytes;
+	kv->second_layer_stride_bytes = (uint64_t)(PROBE_POOL_PAGES + 8u) * PROBE_INDEX_PAGE_BYTES;
 }
 
 int main(void)
 {
-	ProbeCase("exact strides", 0, 1);
+	ProbeCase("exact strides of a context-sharded binding", 0, 1);
 	ProbeCase("wider strides", ProbeWideStrides, 1);
 	ProbeCase("index layers shorter than the pool", ProbeShortIndexLayers, 0);
 	ProbeCase("page table shorter than a sequence", ProbeShortPageTable, 0);
@@ -131,6 +132,6 @@ int main(void)
 		printf("FAIL glm_attach_kv_cuda: %d failures\n", probe_failures);
 		return(1);
 	}
-	printf("PASS glm_attach_kv_cuda: GLM attaches KV only when index layers span every pool page and the page table spans a full sequence\n");
+	printf("PASS glm_attach_kv_cuda: GLM attaches KV only when index layers span every pool page at this rank's share of a page and the page table spans a full sequence\n");
 	return(0);
 }
