@@ -359,6 +359,55 @@ systemd-run --user --unit=sparkpipe-litellm-external \
 Like the other hub user units, it is transient: start it again after a hub
 reboot.
 
+## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
+
+`https://sparkpipe.ai:8443` is the chat app for invited people: Open WebUI
+v0.12.0, pinned by digest, with its own accounts. Owner decisions
+(2026-10-14): no sub-domain, so it gets its own port on the main domain;
+Open WebUI's branding stays visible; anyone may sign up but an account stays
+pending until the admin approves it; web search will use a self-hosted
+SearXNG (not enabled yet).
+
+| Piece | Where | What |
+| --- | --- | --- |
+| Open WebUI | hub Docker container `sparkpipe-chatui`, `127.0.0.1:8090` -> 8080, data `/srv/workspace/open-webui/data` | settings `deployment/hub/open_webui.env`, secrets `/srv/workspace/open-webui/secrets.env` (root, 600: `WEBUI_SECRET_KEY`, `OPENAI_API_KEYS`) |
+| Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml`, key in `~/sparkpipe-chat/chatui.env` | serves only `glm-5.3` until the swap controller has a multi-user policy |
+| Tunnel | hub `sparkpipe-ai-door`, `-R 127.0.0.1:18082:127.0.0.1:8090` | the VPS key may listen on 18082 |
+| Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth |
+
+Requests run browser -> Apache 8443 -> tunnel -> Open WebUI -> chat LiteLLM ->
+chat layer -> engine. The chat layer gives requests without sampling fields
+the model's published defaults and caps the reply budget at the model's
+output limit, so Open WebUI sends neither. Attachments go into the prompt
+whole (`BYPASS_EMBEDDING_AND_RETRIEVAL`), which uses the long context windows
+and the prefix cache instead of retrieval chunks. Users cannot change
+sampling, see other models, share chats publicly, create API keys or add
+tools.
+
+Start or replace the container (the image digest pins v0.12.0):
+
+```sh
+sudo docker run -d --name sparkpipe-chatui --restart unless-stopped \
+  -p 127.0.0.1:8090:8080 -v /srv/workspace/open-webui/data:/app/backend/data \
+  --env-file /srv/workspace/open-webui/open_webui.env \
+  --env-file /srv/workspace/open-webui/secrets.env \
+  ghcr.io/open-webui/open-webui@sha256:1565038903151ced924b5a3226f73f40f16963df4b910441f6391f10144afdaa
+```
+
+`open_webui.env` is copied from `deployment/hub/open_webui.env`. Open WebUI
+keeps settings in its database after the first start, so later changes go
+through its admin panel. The first account created becomes the admin: create
+it through `ssh -N -L 8090:127.0.0.1:8090 rtx5090` and http://localhost:8090
+before port 8443 is opened. To upgrade, pull the new release, check its
+release notes and security advisories, replace the digest here, recreate the
+container with the same data directory, and run a chat, an attachment and a
+login. Back up `/srv/workspace/open-webui/data` before an upgrade.
+
+Open WebUI's license (BSD-3 with a branding clause, from v0.6.6) forbids
+removing or replacing its branding beyond 50 users in 30 days. The name is
+set to "SparkPipe Chat", which Open WebUI shows as "SparkPipe Chat (Open
+WebUI)". The repository holds only configuration, no Open WebUI code.
+
 ## Browser clients (the sparkpipe.ai playground)
 
 `site/playground.html` calls the door from a browser. Checked on 2026-09-27
