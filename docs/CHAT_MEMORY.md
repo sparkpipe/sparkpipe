@@ -2,7 +2,8 @@
 
 Status: design, revision 2 (2026-10-14), after an adversarial review against
 the chat layer, the templates of all 16 models, Open WebUI v0.12.0 and the
-engine. Nothing here is built yet; the phase 1 experiment comes first.
+engine. Phase 1 (prefix mechanics) passed on K3; the chat-layer
+implementation waits for phase 2 (quality).
 
 ## Goal
 
@@ -263,6 +264,34 @@ GLM Full), with no recomputes and no lost checkpoints. Controls: the
 revision-1 curator layout (expected to skip 0 or 16384 on K3) and a fast user
 who arrives 0.5 s into `W_N`. Also recorded: the curator's JSON validity with
 the suffix, and its decode length.
+
+**Phase 1 result, K3, 2026-10-14: passed.** `tools/chat_memory_phase1.py`
+(run on the hub against the loaded engine), raw rows in
+`qualification/chat-memory-phase1-k3-20261014.jsonl`. A 3.7K to 4.3K token
+conversation (system, ten tools, an 80-line ledger), eight turns, temperature
+0, `thinking_effort` low, 33 requests:
+
+| Request | Resumed at | Prefilled | Time |
+|---|---|---|---|
+| First answer, nothing warm | 0 | 3,678 tokens | 6.6 s to first token |
+| Answer after the pre-warm (7 turns) | the pre-warm's checkpoint, every turn | 37 to 92 tokens | 0.33 to 0.91 s to first token |
+| Curator (8) | the reply end on 3 turns, the block below it on 5 (at most 53 tokens short) | 248 to 343 tokens | 7.1 to 9.3 s (85 to 118 tokens decoded) |
+| Stem (7 after the first) | the previous stem's checkpoint, every turn | one line plus at most a block | 0.37 to 0.85 s |
+| Pre-warm (8) | the stem's checkpoint, every turn | raw tail plus reference block | 0.78 to 1.29 s |
+
+- Every stem, pre-warm and next answer was a token prefix of the next request
+  (asserted), and the engine logged zero `stale_prefix_recomputes`.
+- The curator's JSON was valid 8 of 8 times with K3's `curator_suffix`; its
+  lines were accurate reported speech with names and numbers kept.
+- Answers that needed the ledger were right: the figure recorded for item 12,
+  the topic of item 30, and a speed stated two answers back (by then only in
+  a line).
+- A user arriving 0.5 s into the pre-warm still reused all of it (the engine
+  finished the pre-warm's prefill first); first token 1.0 s.
+- Background time per turn: about 9 to 11 s, mostly the curator's decode;
+  idle fleet time while the user reads.
+- Not covered yet: long contexts (stride checkpoints at 16K), other models,
+  several users, answer quality at scale (phase 2).
 
 **Phase 2, quality** (hours, same model): 10 scripted chats of 15 to 25
 exchanges, each with 5 exact-match probes whose answer sits 3 or more
