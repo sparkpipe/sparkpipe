@@ -452,6 +452,17 @@ def number(body, name, low, high, integer=False):
     return value
 
 
+def scheduling_fields(body):
+    fields = {}
+    deadline = number(body, "deadline_ms", 1, 2 ** 32 - 1, integer=True)
+    if deadline is not None:
+        fields["deadline_ms"] = deadline
+    priority = number(body, "priority", 0, 2 ** 32 - 1, integer=True)
+    if priority is not None:
+        fields["priority"] = priority
+    return fields
+
+
 def sampling_fields(body):
     fields = {}
     temperature = number(body, "temperature", 0, 2)
@@ -941,6 +952,7 @@ class Frontend:
             parser = OutputParser(model, tools, prompt.rstrip().endswith(model.reasoning["start"].rstrip()), stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body))
+        engine_body.update(scheduling_fields(body))
         return engine_body, parser, len(prompt_ids)
 
     async def engine_events(self, model, engine_body):
