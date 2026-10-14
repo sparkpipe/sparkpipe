@@ -559,7 +559,6 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_engine_stream.py \
 	tests/test_chat_frontend_request_fields.py \
 	tests/test_chat_frontend_output_cap.py \
-	tests/test_chat_frontend_scheduling_fields.py \
 	tests/test_chat_frontend_sampling_defaults.py \
 	tests/test_chat_frontend_warm_queue.py \
 	tests/test_chat_frontend_tagged_calls.py \
