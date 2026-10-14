@@ -685,7 +685,7 @@ and spec-on results are reported separately, per content class.
    import json, importlib.util
    from tokenizers import Tokenizer
    spec = importlib.util.spec_from_file_location("b", "tools/spec_verify_bench.py"); b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
-   t = Tokenizer.from_file("/home/spec/g53-api-channel/runtime/tokenizer/tokenizer.json")
+   t = Tokenizer.from_file("qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json")
    json.dump(t.encode(b.GLM_PREFIX + b.PROMPTS["code"][0] + b.GLM_ASSISTANT, add_special_tokens=False).ids, open("spec_p.json", "w"))
    PY
    ```

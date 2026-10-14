@@ -1,6 +1,6 @@
-# RTX 5090 host: hub, GLM API, draft farm
+# RTX 5090 host: hub, model APIs, draft farm
 
-`rtx5090` (x86_64, RTX 5090 32 GB) is the fleet hub and the GLM API host,
+`rtx5090` (x86_64, RTX 5090 32 GB) is the fleet hub and the model API host,
 and holds the draft farm and drafter store. It is not a Spark: it has no
 rank and is not part of the TP collectives. State below was surveyed
 read-only on 2026-09-28 about 09:00 UTC unless another source is named.
@@ -10,8 +10,11 @@ Hub operations (publishing roots, heartbeats) are governed by
 
 ## Rules
 
-- SparkPipe owns only its units (`g53-api`, `fleet-release`) and paths
-  (`~/release`, `~/current`, `~/g53-api-channel`, `~/draft_service`,
+- SparkPipe owns only its units (`fleet-release`, `sparkpipe-swap`,
+  `sparkpipe-chat`, `sparkpipe-litellm`, `spark-dma-guard-listen` and the
+  transient `kv-<model>-api` units) and paths (`~/release`,
+  `~/release-staging`, `~/current`, `~/<model>-kv-api`, `~/sparkpipe-chat`,
+  `~/sparkpipe-swap`, `/srv/workspace/sparkpipe`, `~/draft_service`,
   `/srv/workspace/drafters`). Never kill or restart anything else: the host runs
   unrelated jobs (FLEET_RELEASE_RUNBOOK.md §1, and AGENTS.md).
 - Review the output of `tools/rtx5090_spec_node.py plan` against the live
@@ -26,7 +29,7 @@ Hub operations (publishing roots, heartbeats) are governed by
 | Role | What runs | Source |
 | --- | --- | --- |
 | Fleet hub | user unit `fleet-release.service` (`python3 ~/fleet_release_serve.py`) serves `~/release/<root>/` on `:8802`; nodes write `~/current/<host>.json` heartbeats | FLEET_RELEASE_RUNBOOK.md §1; `systemctl --user`, `ss -ltn` |
-| GLM API | user unit `g53-api.service`: `~/g53-api-channel/bin/sparkpipe_model_api --port 8433`, with a tokenizer sidecar (`tokenizer/tokenizer.json` in its `model_resident.json`) | `systemctl --user show g53-api`; lead-dev facts |
+| Model APIs | the swap controller `sparkpipe-swap` (127.0.0.1:8440) runs one model's engine API at a time, as the transient unit `kv-<model>-api` from `~/<model>-kv-api`; the chat layer `sparkpipe-chat` (`:8433`) and LiteLLM `sparkpipe-litellm` (`:4000`) front it | `deployment/hub/model_swap.json`, [LITELLM_FRONTEND.md](LITELLM_FRONTEND.md), FLEET_RELEASE_RUNBOOK.md §6 |
 | Draft farm | `~/draft_service` (not in this repo): `farm_server.py`, DFT3 protocol in `draft_protocol.py`, measurements in its `README.md`; not running | `ls`, `pgrep` |
 | Drafter store | LV `ubuntu--vg-drafters` (700 GiB ext4) mounted at `/srv/workspace` by fstab: `drafters/`, `.qualification/`, `.staging/` | `lsblk`, `findmnt`, `/etc/fstab` |
 | Other tenants | Ceph MDS and MGR, an NFS server, chess work (`stockfish`) | `ps` |
@@ -34,6 +37,8 @@ Hub operations (publishing roots, heartbeats) are governed by
 The API binary must be an x86_64 build of the engines' source commit: the
 release root ships an aarch64 API that cannot run here, so every release
 needs an x86 API build step (lead-dev facts, 2026-09-28).
+`scripts/release_build.sh` does it on the hub in
+`/srv/workspace/sparkpipe/api-build-<sha>`.
 
 `/srv/drafters`, the path the 09-03 setup used, is now an empty directory on
 the root filesystem; the drafter LV moved to `/srv/workspace`.

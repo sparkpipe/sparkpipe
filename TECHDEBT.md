@@ -179,8 +179,8 @@ finished ones rewritten to say what is left.
 - Awaiting fleet proof (lane `mesh/contracts`): every collective logs
   `MESH-PATH` (operation, path, phases, elements, rows, capture) on each
   regime change and again for each capture (`SparkTpDeviceCollectiveLogPath`,
-  `ring/transport/tp_device_collective.c`). `tools/glm53full_lane.sh`,
-  `k3_lane.sh`, `stage_lane.sh` and `fleet_serve.sh` keep one rank log per run
+  `ring/transport/tp_device_collective.c`). `tools/k3_lane.sh`,
+  `stage_lane.sh` and `fleet_serve.sh` keep one rank log per run
   through `tools/lane_run_log.sh`. Each run writes `logs/residentd-<run
   id>.log` and refuses to overwrite it; the helper moves an older launcher's
   `residentd.log` aside, and `archive` collects and removes the logs.

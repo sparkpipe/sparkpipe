@@ -341,12 +341,15 @@ MASK outside the daemon's rank mask); 3 timed out with the daemon answering
 5 the lane is configured for another rank set; 6 daemon absent at the deadline;
 7 mesh disabled or not built; 8 daemon unresponsive at the deadline. The tool
 requires `ready` because the data path still gates on the global mesh state.
-`tools/fleet_release/weightd.sh publish` publishes it to `core/bin` with
-weightd. Nodes sync `core/bin` every loop but
-install a new weightd only after the announce, so the tool may run ahead of the
-daemon; against an older daemon it exits 4. The fleet agent does not use it
-yet: switching the agent's gate from `.ready` to the tool is a second release,
-after every node runs this weightd.
+The current release kit does not ship it: `scripts/release_build.sh` does not
+build `build/sparkpipe_mesh_status`, and `scripts/release_rollout.sh weightd`
+publishes only `sparkpipe_weightd` to the hub's `core/bin`. A node therefore
+has the copy an earlier core publish left in `~/sparkdata/core/bin`, if any,
+and that copy can be older than the running daemon; a version the daemon does
+not serve exits 4. `tools/fleet_post_reboot.sh` uses the tool where it is
+installed and otherwise checks `.ready` and the last `WD-MESH-STATS` line. The
+fleet agent does not use it yet: switching the agent's gate from `.ready` to
+the tool is a second release, after every node runs this weightd.
 
 ## ABI 9: per-peer routes, served ABI range, row cap
 
