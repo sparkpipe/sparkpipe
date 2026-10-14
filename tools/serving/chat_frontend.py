@@ -826,8 +826,8 @@ class Frontend:
             model = Model(spec, base)
             self.models[model.id] = model
         self.control = config.get("control")
-        if self.control is not None and set(self.control) != {"status_url", "activate_url"}:
-            raise SystemExit("chat_frontend: control needs exactly status_url and activate_url")
+        if self.control is not None and set(self.control) not in ({"status_url", "activate_url"}, {"status_url", "activate_url", "force_url", "admin_url"}):
+            raise SystemExit("chat_frontend: control needs status_url and activate_url, and optionally both force_url and admin_url")
         self.site = (base / config["site_dir"]).resolve() if config.get("site_dir") else None
         self.session = None
 
@@ -865,6 +865,37 @@ class Frontend:
             return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
         try:
             async with self.session.get(self.control["status_url"], timeout=aiohttp.ClientTimeout(total=5)) as response:
+                payload = await response.json(content_type=None)
+                if isinstance(payload, dict):
+                    payload["waiting"] = {model.id: model.gate.state()["waiting"] for model in self.models.values() if model.gate.state()["waiting"]}
+                return web.json_response(payload, status=response.status)
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            return web.json_response(error_body("control_unavailable", str(error)), status=503)
+
+    async def control_switch_now(self, request):
+        if self.control is None or "force_url" not in self.control:
+            return web.json_response(error_body("not_found", "this front end has no Switch now"), status=404)
+        authorization = request.headers.get("Authorization", "")
+        if not authorization.startswith("Bearer ") or not authorization[len("Bearer "):].strip():
+            return web.json_response(error_body("unauthorized", "Switch now needs the admin's SparkPipe Chat login"), status=401)
+        try:
+            async with self.session.get(self.control["admin_url"], headers={"Authorization": authorization}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                user = await response.json(content_type=None) if response.status == 200 else None
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            return web.json_response(error_body("control_unavailable", f"could not check the login: {error}"), status=503)
+        if not isinstance(user, dict) or user.get("role") != "admin":
+            return web.json_response(error_body("forbidden", "only the admin can use Switch now"), status=403)
+        body = {}
+        if request.can_read_body:
+            try:
+                body = await request.json()
+            except json.JSONDecodeError:
+                return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
+        model = body.get("model") if isinstance(body, dict) else None
+        if model is not None and model not in self.models:
+            return web.json_response(error_body("model_not_found", f"model {model!r} is not served here; served: {sorted(self.models)}"), status=404)
+        try:
+            async with self.session.post(self.control["force_url"], json={"model": model} if model else {}, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 return web.json_response(await response.json(content_type=None), status=response.status)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response(error_body("control_unavailable", str(error)), status=503)
@@ -1174,6 +1205,7 @@ def main():
     app.router.add_post("/v1/chat/completions", frontend.chat)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
     app.router.add_post("/v1/sparkpipe/activate", frontend.control_activate)
+    app.router.add_post("/v1/sparkpipe/switch-now", frontend.control_switch_now)
     if frontend.site is not None:
         app.router.add_get("/", frontend.site_root)
         app.router.add_static("/site/", frontend.site)

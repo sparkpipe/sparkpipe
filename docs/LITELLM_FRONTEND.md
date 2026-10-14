@@ -443,13 +443,27 @@ Only one model is resident on the fleet. Picking another model makes the
 chat layer queue the request and ask the swap controller to switch. The
 controller waits for the current model's replies to finish: it stops the old
 engine only after it has had no live request for `drain_quiet_seconds` (15),
-up to `drain_seconds` (3600). The quiet window covers the short gaps between
-the requests of one tool-calling reply (search, fetch, answer), which a plain
+up to `drain_seconds` (600, the owner did not want a stuck engine to hold a
+switch for long). The quiet window covers the short gaps between the
+requests of one tool-calling reply (search, fetch, answer), which a plain
 "no live request" check would cut (`tests/test_model_swap_drain_quiet.py`).
-Queued requests wait up to `warm_queue.wait_seconds` (3900 s) so they outlast
-a long drain plus the swap. New requests for the old model that arrive during
-the drain are still served and extend it; the fair queue (oldest waiter
-first, minimum residency) is the next step.
+Queued requests wait up to `warm_queue.wait_seconds` (3900 s). New requests
+for the old model that arrive during the drain are still served and extend
+it; the fair queue (oldest waiter first, minimum residency) is the next step.
+
+**Switch now.** `https://sparkpipe.ai:8443/fleet` (`site/fleet.html`, served
+by the chat layer) shows what is loaded, a switch in progress with its drain
+(live replies, time waited, quiet time) and recent switches, refreshed every
+2 s. For the admin it adds a red **Switch now** button, which ends the drain
+at once and cuts any reply still running on the old model, and **Load now**
+for any model. The page reads the browser's SparkPipe Chat login (same
+origin); the chat layer's `POST /v1/sparkpipe/switch-now` asks Open WebUI
+(`control.admin_url`, `/api/v1/auths/`) who the login belongs to and forwards
+to the controller's `POST /force` only for the admin
+(`tests/test_chat_frontend_switch_now.py`, `tests/test_model_swap_force.py`).
+Forced switches are marked `forced` in the controller's history. The VPS
+8443 site proxies only `/fleet`, `/fleet/status` and `/fleet/switch-now` to
+the chat layer.
 
 ### Web search (SearXNG)
 
