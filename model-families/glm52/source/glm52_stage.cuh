@@ -1631,7 +1631,7 @@ struct GlmModel
 		State *state = (State *)model;
 		if ( kv == 0 || kv->pool == 0 || kv->page_table == 0 || kv->pool_page_count == 0u || kv->sequence_count == 0u ||
 			kv->page_table_stride < state->max_positions / GLM_PAGE_SLOTS ||
-			kv->second_layer_stride_bytes < (uint64_t)kv->pool_page_count * GlmIndexKv::kPageBytes ||
+			state->shard.degree == 0u || kv->second_layer_stride_bytes < (uint64_t)kv->pool_page_count * (GlmIndexKv::kPageBytes / state->shard.degree) ||
 			kv->layer_count != GLM_LAYERS || kv->layer_page_bytes != (uint64_t)GLM_PAGE_SLOTS * GLM_SLOT_BYTES ||
 			kv->layer_stride_bytes != (uint64_t)GLM_PAGE_SLOTS * GLM_SLOT_BYTES / state->tp_degree || kv->second_pool == 0 ||
 			kv->second_layer_count != G::kIndexLayers || kv->second_layer_page_bytes != GlmIndexKv::kPageBytes || kv->sequence_count > state->slots ||
