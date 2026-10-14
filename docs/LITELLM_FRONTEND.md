@@ -371,7 +371,7 @@ SearXNG (not enabled yet).
 | Piece | Where | What |
 | --- | --- | --- |
 | Open WebUI | hub Docker container `sparkpipe-chatui`, `127.0.0.1:8090` -> 8080, data `/srv/workspace/open-webui/data` | settings `deployment/hub/open_webui.env`, secrets `/srv/workspace/open-webui/secrets.env` (root, 600: `WEBUI_SECRET_KEY`, `OPENAI_API_KEYS`) |
-| Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml` (copy of `deployment/hub/litellm-chatui.yaml`), key in `~/sparkpipe-chat/chatui.env` | serves only `kimi-k3` (owner 2026-10-14: K3 is the default instead of GLM Full) until the swap controller has a multi-user policy |
+| Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml` (copy of `deployment/hub/litellm-chatui.yaml`), key in `~/sparkpipe-chat/chatui.env` | serves every fleet model; K3 is the default (owner 2026-10-14) |
 | Tunnel | hub `sparkpipe-ai-door`, `-R 127.0.0.1:18082:127.0.0.1:8090` | the VPS key may listen on 18082 |
 | Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth |
 
@@ -422,6 +422,34 @@ replaced on 2026-10-14 after a config dump printed it; the old one is refused.
 K3 takes about 70 s to swap in from GLM Full (69.9 s on 2026-10-14). The LAN
 and sparkpipe.ai doors still serve every model, so a request for another
 model there swaps the fleet away, and the next chat waits for K3 again.
+
+### All models, Qwen for the admin, and model switches (2026-10-14)
+
+The chat LiteLLM serves all 16 fleet models (`deployment/hub/litellm-chatui.yaml`,
+generated from `deployment/hub/open_webui_models.json`, contexts checked
+against the chat layer). Each has an Open WebUI model entry from that file,
+applied inside the container with `deployment/hub/open_webui_models.py`: name,
+description (context window and switch time), text-only input, web search
+and the code interpreter on by default, the GitHub tool, the trimmed
+built-in tools, and a `compact_token_threshold` for context compaction.
+
+The 13 public models carry a public read grant. The three Qwen models carry
+none, so only the admin sees them (admins bypass grants): their license
+keeps them internal, and the owner's own use is internal.
+`BYPASS_MODEL_ACCESS_CONTROL` is off again; a model with no entry or no grant
+stays hidden from users.
+
+Only one model is resident on the fleet. Picking another model makes the
+chat layer queue the request and ask the swap controller to switch. The
+controller waits for the current model's replies to finish: it stops the old
+engine only after it has had no live request for `drain_quiet_seconds` (15),
+up to `drain_seconds` (3600). The quiet window covers the short gaps between
+the requests of one tool-calling reply (search, fetch, answer), which a plain
+"no live request" check would cut (`tests/test_model_swap_drain_quiet.py`).
+Queued requests wait up to `warm_queue.wait_seconds` (3900 s) so they outlast
+a long drain plus the swap. New requests for the old model that arrive during
+the drain are still served and extend it; the fair queue (oldest waiter
+first, minimum residency) is the next step.
 
 ### Web search (SearXNG)
 

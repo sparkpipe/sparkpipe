@@ -36,6 +36,7 @@ class Swapper:
         self.ready_seconds = float(config.get("ready_seconds", 300))
         self.api_seconds = float(config.get("api_seconds", 120))
         self.drain_seconds = float(config.get("drain_seconds", 30))
+        self.drain_quiet_seconds = float(config.get("drain_quiet_seconds", 0))
         self.node_seconds = float(config.get("node_seconds", 240))
         self.release_seconds = float(config.get("release_seconds", 60))
         self.models = {}
@@ -149,11 +150,21 @@ class Swapper:
         return status == 200 and payload.get("connected_ranks") == len(self.nodes)
 
     async def drain(self, model):
-        deadline = time.time() + self.drain_seconds
+        started = time.time()
+        deadline = started + self.drain_seconds
+        quiet_since = None
         while time.time() < deadline:
             status, payload = await self.health(model)
-            if status == 0 or not payload.get("live_requests"):
+            if status == 0:
                 return
+            if payload.get("live_requests"):
+                quiet_since = None
+            else:
+                quiet_since = quiet_since or time.time()
+                if time.time() - quiet_since >= self.drain_quiet_seconds:
+                    if time.time() - started >= 1:
+                        print(json.dumps({"event": "swap_drained", "model": model["id"], "waited_s": round(time.time() - started, 1)}), file=sys.stderr, flush=True)
+                    return
             await asyncio.sleep(1)
         print(json.dumps({"event": "swap_drain_expired", "model": model["id"], "drain_seconds": self.drain_seconds}), file=sys.stderr, flush=True)
 
