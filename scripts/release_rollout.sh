@@ -31,7 +31,7 @@ mkdir -p "$STATE"
 R="release-$SHA"
 OLD_WD=${OLD_WD:-60b3ca5d0d3e444b}
 NEW_WD=$(shasum -a 256 "$FW/sparkpipe_weightd" | cut -c1-16)
-MODELS="qwen3.8-max glm-5.3 kimi-k3 glm-5.3-flash qwen3.8-27b qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1"
+MODELS="qwen3.8-max glm-5.3 kimi-k3 glm-5.3-flash qwen3.8-27b qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro"
 EXTRA_LANES="stage-lanes/qwen38_27b_bf16/lane11"
 row() {
   case "$1" in
@@ -49,6 +49,8 @@ row() {
     hy4-preview) echo "stage-lanes/hy4/lane3 libhy4_tp16_serving_adapter.so libhy4_tp16_serving_adapter.so hy4-kv-api 8470 hy4_tp16_stage" ;;
     muse-glimmer-30b) echo "stage-lanes/muse_glimmer/lane4 libmuse_glimmer_tp16_serving_adapter.so libmuse_glimmer_tp16_serving_adapter.so muse_glimmer-kv-api 8471 muse_glimmer_stage" ;;
     laguna-s-2.1) echo "stage-lanes/laguna/lane5 liblaguna_tp16_serving_adapter.so liblaguna_tp16_serving_adapter.so laguna-kv-api 8472 laguna_stage" ;;
+    mimo-v2.6-flash) echo "stage-lanes/mimo26_flash/lane7 libmimo26_flash_tp16_serving_adapter.so libmimo26_flash_tp16_serving_adapter.so mimo26_flash-kv-api 8473 mimo26_flash_tp16_stage" ;;
+    mimo-v2.6-pro) echo "stage-lanes/mimo26_pro/lane1 libmimo26_pro_tp16_serving_adapter.so libmimo26_pro_tp16_serving_adapter.so mimo26_pro-kv-api 8474 mimo26_pro_tp16_stage" ;;
     *) return 1 ;;
   esac
 }
