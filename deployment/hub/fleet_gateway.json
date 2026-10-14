@@ -15,6 +15,10 @@
     "litellm-external": "/home/spec/sparkpipe-chat/litellm-external.log",
     "fleet-audit": "/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl"
   },
+  "agent_user": "sparkagent",
+  "agent_key": "/srv/workspace/sparkpipe/fleet-gateway/agent_ed25519",
+  "agent_hub_prefix": ["sudo", "-n", "-H", "-u", "sparkagent", "--"],
+  "grant_hours": 8,
   "max_output_chars": 20000,
   "default_timeout_seconds": 60,
   "max_timeout_seconds": 600,

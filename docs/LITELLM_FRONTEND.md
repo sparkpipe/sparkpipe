@@ -467,8 +467,11 @@ the chat layer.
 
 ### Fleet access for the admin (2026-10-14)
 
-Owner decision: in the admin's own chats the model may read the fleet and
-run commands, each one approved; regular users get none of it.
+Owner decisions: in the admin's own chats the model may read the fleet and
+run commands; regular users get none of it. First version: every command
+approved. Owner, later the same day: approving every command made it
+useless, so commands run as a restricted user once the admin grants access
+for the chat.
 
 - **Gateway.** `tools/serving/fleet_gateway.py` runs on the hub as `spec`
   (user unit `sparkpipe-fleet-gateway`, `172.17.0.1:8441`, reachable from the
@@ -477,28 +480,35 @@ run commands, each one approved; regular users get none of it.
   SSH access, so Open WebUI never does. Every call needs the token in
   `/srv/workspace/sparkpipe/fleet-gateway/token` (spec, 600). It serves the
   swap controller's state, each machine's uptime, load, memory, disk, GPU and
-  busiest processes, the configured logs (chat layer, swap controller,
-  LiteLLMs, engine API logs on the hub, the loaded model's engine log on a
-  spark) and `POST /v1/run`. A run needs a known host and the approver's
-  name, passes the refusal rules in the config (a global `sync`, killing
-  flychess, power-off, deleting a root, home, workspace or mount directory,
-  raw disk writes, secret files and keys; on sparks also anything that adds
-  to the boot path), and is written to
-  `/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl` before and after.
-  Output is masked for secrets and cut at 20,000 characters; commands stop at
-  their timeout (at most 600 s). `tests/test_fleet_gateway.py`.
+  busiest processes, the configured logs, per-chat grants and `POST /v1/run`.
+- **Two ways to run a command.** As the restricted user `sparkagent` (no
+  sudo, own home, process, file and file-size limits) inside a chat whose
+  grant is live: `POST /v1/grant` with the chat id and the approver, valid 8
+  hours, revocable with `DELETE /v1/grant`; on sparks through ssh with the
+  gateway's own key, on the hub through `sudo -n -H -u sparkagent`. Or as
+  `spec` with an approver named for that one command. Both pass the refusal
+  rules in the config (a global `sync`, killing flychess, power-off,
+  deleting a root, home, workspace or mount directory, raw disk writes,
+  secret files and keys; on sparks also anything that adds to the boot path),
+  and both are written to
+  `/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl` with the user and
+  chat. Output is masked for secrets and cut at 20,000 characters; commands
+  stop at their timeout (at most 600 s). Grants live in the gateway's memory,
+  so a restart ends them. `tests/test_fleet_gateway.py`.
 - **Tool.** `deployment/hub/open_webui_tools/fleet.py`, the Open WebUI tool
   `fleet` with no access grant, so only the admin (its owner) can use it; it
   also checks the caller's role itself. `fleet_status`, `fleet_nodes` and
-  `fleet_logs` run directly; `fleet_run` first shows the admin the exact host
-  and command in Open WebUI's confirmation dialog and runs only on an
-  explicit yes. The gateway URL and token are its valves.
-  `tests/test_open_webui_fleet_tool.py`.
+  `fleet_logs` run directly. `fleet_run` asks the admin once per chat ("Give
+  Kimi fleet access for this chat?", showing the first command) and then runs
+  as `sparkagent` without asking; with `elevated` it runs as `spec` after the
+  admin approves that exact command. `tests/test_open_webui_fleet_tool.py`.
+- **Setup (owner).** `deployment/hub/fleet_agent_setup.sh`, run once on the
+  hub as `spec`, creates `sparkagent` on the hub and the 16 sparks with the
+  gateway's public key and the limits, and checks that it has no sudo. Until
+  then the gateway refuses grants and only elevated commands work.
 - **Use.** The tool is attached to no model. The admin switches it on per
-  chat from the tools menu, so a web page the model reads in an ordinary chat
-  cannot steer fleet commands.
-- **Not done.** Two-factor login stays off (owner, 2026-10-14). The refusal
-  rules are a backstop; the approval dialog is the control.
+  chat from the tools menu.
+- **Not done.** Two-factor login stays off (owner, 2026-10-14).
 
 ### Web search (SearXNG)
 

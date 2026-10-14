@@ -26,6 +26,7 @@ SECRET_PATTERNS = (
     re.compile(r"\b([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|MASTER_KEY)[A-Z0-9_]*)\s*([=:])\s*\S+"),
 )
 NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+CHAT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 ROOT = re.compile(r"(\$HOME/[^\s;&|]+/root)(?:/|\s|$)")
 
 
@@ -67,6 +68,11 @@ class Gateway:
         self.default_timeout = float(config.get("default_timeout_seconds", 60))
         self.max_timeout = float(config.get("max_timeout_seconds", 600))
         self.max_lines = int(config.get("max_log_lines", 500))
+        self.agent_user = config.get("agent_user")
+        self.agent_key = config.get("agent_key")
+        self.agent_hub_prefix = list(config.get("agent_hub_prefix") or [])
+        self.grant_seconds = float(config.get("grant_hours", 8)) * 3600
+        self.grants = {}
         self.engine_logs = {}
         for model in json.loads(Path(config["swap_config"]).read_text())["models"]:
             match = ROOT.search(model["node_start"])
@@ -91,11 +97,26 @@ class Gateway:
             return web.json_response({"error": "unauthorized"}, status=401)
         return await handler(request)
 
-    async def execute(self, host, command, timeout):
-        argv = ["bash", "-lc", command] if host == self.hub else self.ssh + [host, command]
+    def agent_ready(self):
+        return bool(self.agent_user and self.agent_key and self.agent_hub_prefix and Path(self.agent_key).is_file())
+
+    def grant_for(self, chat_id):
+        grant = self.grants.get(chat_id)
+        if grant and grant["expires"] > time.time():
+            return grant
+        self.grants.pop(chat_id, None)
+        return None
+
+    async def execute(self, host, command, timeout, as_agent=False):
+        if as_agent and host == self.hub:
+            argv, cwd = self.agent_hub_prefix + ["bash", "-lc", command], "/"
+        elif as_agent:
+            argv, cwd = self.ssh + ["-i", self.agent_key, "-o", "IdentitiesOnly=yes", "-l", self.agent_user, host, command], None
+        else:
+            argv, cwd = (["bash", "-lc", command] if host == self.hub else self.ssh + [host, command]), None
         started = time.time()
         process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                                                       stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+                                                       stderr=asyncio.subprocess.STDOUT, start_new_session=True, cwd=cwd)
         try:
             output, _ = await asyncio.wait_for(process.communicate(), timeout)
             code = process.returncode
@@ -157,6 +178,38 @@ class Gateway:
             tail = handle.read().decode("utf-8", "replace").splitlines()[-lines:]
         return web.json_response({"name": name, "text": clip(redact("\n".join(tail)), self.max_output)})
 
+    async def grant(self, request):
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "the body must be JSON"}, status=400)
+        chat_id = body.get("chat_id")
+        approved_by = body.get("approved_by")
+        if not isinstance(chat_id, str) or not CHAT_ID.match(chat_id):
+            return web.json_response({"error": "chat_id must name the chat"}, status=400)
+        if not isinstance(approved_by, str) or not approved_by:
+            return web.json_response({"error": "approved_by must name the admin who granted access"}, status=400)
+        if not self.agent_ready():
+            return web.json_response({"error": f"the restricted user {self.agent_user or '(none)'} is not set up on the fleet yet; run deployment/hub/fleet_agent_setup.sh"}, status=503)
+        expires = time.time() + self.grant_seconds
+        self.grants[chat_id] = {"expires": expires, "approved_by": approved_by}
+        self.record({"event": "grant", "chat_id": chat_id, "approved_by": approved_by, "user": self.agent_user, "hours": self.grant_seconds / 3600})
+        return web.json_response({"chat_id": chat_id, "user": self.agent_user,
+                                  "expires_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires))})
+
+    async def grant_status(self, request):
+        chat_id = request.query.get("chat_id", "")
+        grant = self.grant_for(chat_id) if CHAT_ID.match(chat_id) else None
+        return web.json_response({"chat_id": chat_id, "granted": grant is not None, "user": self.agent_user, "ready": self.agent_ready(),
+                                  "expires_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(grant["expires"])) if grant else None})
+
+    async def revoke(self, request):
+        chat_id = request.query.get("chat_id", "")
+        removed = self.grants.pop(chat_id, None) is not None
+        if removed:
+            self.record({"event": "revoke", "chat_id": chat_id})
+        return web.json_response({"chat_id": chat_id, "revoked": removed})
+
     async def run(self, request):
         try:
             body = await request.json()
@@ -164,26 +217,39 @@ class Gateway:
             return web.json_response({"error": "the body must be JSON"}, status=400)
         host = body.get("host")
         command = body.get("command")
-        approved_by = body.get("approved_by")
+        mode = body.get("as", "spec")
+        chat_id = body.get("chat_id")
         if host not in self.hosts:
             return web.json_response({"error": f"host must be one of {', '.join(self.hosts)}"}, status=400)
         if not isinstance(command, str) or not command.strip() or len(command) > 4000:
             return web.json_response({"error": "command must be a non-empty string of at most 4000 characters"}, status=400)
-        if not isinstance(approved_by, str) or not approved_by:
-            return web.json_response({"error": "approved_by must name the admin who approved the command"}, status=400)
+        if mode == "agent":
+            grant = self.grant_for(chat_id) if isinstance(chat_id, str) else None
+            if grant is None:
+                return web.json_response({"error": "this chat has no fleet grant, or it expired"}, status=403)
+            if not self.agent_ready():
+                return web.json_response({"error": f"the restricted user {self.agent_user or '(none)'} is not set up on the fleet yet"}, status=503)
+            approved_by = grant["approved_by"]
+        elif mode == "spec":
+            approved_by = body.get("approved_by")
+            if not isinstance(approved_by, str) or not approved_by:
+                return web.json_response({"error": "approved_by must name the admin who approved the command"}, status=400)
+        else:
+            return web.json_response({"error": "as must be agent or spec"}, status=400)
         try:
             timeout = min(float(body.get("timeout") or self.default_timeout), self.max_timeout)
         except (TypeError, ValueError):
             return web.json_response({"error": "timeout must be a number of seconds"}, status=400)
         rules = self.refuse + (self.refuse_on_nodes if host != self.hub else [])
+        user = self.agent_user if mode == "agent" else "spec"
         for pattern, reason in rules:
             if pattern.search(command):
-                self.record({"event": "refused", "host": host, "command": command, "approved_by": approved_by, "reason": reason})
+                self.record({"event": "refused", "host": host, "user": user, "chat_id": chat_id, "command": command, "approved_by": approved_by, "reason": reason})
                 return web.json_response({"error": f"refused: {reason}"}, status=403)
-        self.record({"event": "run", "host": host, "command": command, "approved_by": approved_by, "timeout": timeout})
-        code, text, seconds = await self.execute(host, command, timeout)
-        self.record({"event": "done", "host": host, "exit": code, "seconds": seconds, "output_chars": len(text)})
-        return web.json_response({"host": host, "exit": code, "timed_out": code is None, "seconds": seconds, "output": text})
+        self.record({"event": "run", "host": host, "user": user, "chat_id": chat_id, "command": command, "approved_by": approved_by, "timeout": timeout})
+        code, text, seconds = await self.execute(host, command, timeout, as_agent=mode == "agent")
+        self.record({"event": "done", "host": host, "user": user, "exit": code, "seconds": seconds, "output_chars": len(text)})
+        return web.json_response({"host": host, "user": user, "exit": code, "timed_out": code is None, "seconds": seconds, "output": text})
 
 
 def build(config):
@@ -195,6 +261,9 @@ def build(config):
     app.router.add_get("/v1/nodes", gateway.node_status)
     app.router.add_get("/v1/logs", gateway.read_log)
     app.router.add_post("/v1/run", gateway.run)
+    app.router.add_post("/v1/grant", gateway.grant)
+    app.router.add_get("/v1/grant", gateway.grant_status)
+    app.router.add_delete("/v1/grant", gateway.revoke)
     return app
 
 
