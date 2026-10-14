@@ -593,6 +593,26 @@ line:
 printf 'Authorization: Bearer %s\n' "$(cat /srv/workspace/sparkpipe/swap-controller/token)" | curl -s -H @- localhost:8440/status
 ```
 
+### Chat memory (K3, 2026-10-14)
+
+SparkPipe Chat's K3 conversations use the model-curated ledger described in
+`docs/CHAT_MEMORY.md` (stage A). The chat layer loads `chat_memory.py` because
+its config has a `chat_memory` block (store `/srv/workspace/sparkpipe/chat-memory`,
+one private directory per hashed user id; JWT secret
+`~/sparkpipe-chat/memory-jwt.secret`, 600). Open WebUI sends the signed
+`X-OpenWebUI-User-Jwt` (`ENABLE_FORWARD_USER_INFO_HEADERS=true`, the same secret
+as `FORWARD_USER_INFO_HEADER_JWT_SECRET` in `secrets.env`) and the chat and
+message id headers from the connection's header templates (`openai.api_configs`
+row, mirrored as `OPENAI_API_CONFIGS` in `open_webui.env`); its memory feature
+no longer writes into the system message (`memories.system_context.enable`
+false). The chat LiteLLM forwards `x-` headers
+(`forward_client_headers_to_llm_api: true`) and drops the client's
+Authorization header. Requests without a valid token (ZCode, API clients, other
+doors) are served raw. Rotating the secret means updating both files and
+recreating the container and the chat layer. Deployed 2026-10-14 with backups
+stamped 20261014T232328Z (Open WebUI database and secrets) and the chat-layer
+backups of the same night under `/srv/workspace/sparkpipe/backups`.
+
 ### Web search (SearXNG)
 
 Since 2026-10-14 K3 has Open WebUI's `search_web` and `fetch_url` tools. The

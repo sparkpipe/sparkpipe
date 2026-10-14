@@ -568,6 +568,8 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_switch_now.py \
 	tests/test_fleet_gateway.py \
 	tests/test_open_webui_fleet_tool.py \
+	tests/test_chat_memory_core.py \
+	tests/test_chat_memory_session.py \
 	tests/test_chat_frontend_warm_queue.py \
 	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_chat_frontend_function_xml_calls.py \

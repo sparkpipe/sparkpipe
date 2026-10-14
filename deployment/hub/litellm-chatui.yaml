@@ -133,3 +133,4 @@ litellm_settings:
   request_timeout: 3600
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  forward_client_headers_to_llm_api: true

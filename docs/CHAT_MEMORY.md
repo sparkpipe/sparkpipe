@@ -2,8 +2,8 @@
 
 Status: design, revision 2 (2026-10-14), after an adversarial review against
 the chat layer, the templates of all 16 models, Open WebUI v0.12.0 and the
-engine. Phases 1 (prefix mechanics) and 2 (quality) passed on K3; the
-chat-layer implementation is next.
+engine. Phases 1 (prefix mechanics) and 2 (quality) passed on K3. Stage A of
+the chat-layer implementation is built (see "Implementation").
 
 ## Goal
 
@@ -346,6 +346,46 @@ least compaction's, expand recall is at least 80%, curator fallbacks at most
 2%, zero injection or replay failures, p95 first-token time with expand
 rounds at or below raw + pre-warm, and foreground decode with two users at
 most 5% slower. A model that fails keeps raw history.
+
+## Implementation (stage A, 2026-10-14)
+
+`tools/serving/chat_memory.py`, loaded by the chat layer when its config has
+`chat_memory`; per-model settings under each model's `chat_memory` (K3 only so
+far). Tests: `tests/test_chat_memory_core.py`,
+`tests/test_chat_memory_session.py`; live driver `tools/chat_memory_live.py`.
+
+- Identity: the signed `X-OpenWebUI-User-Jwt` (HS256, issuer `open-webui`),
+  chat id, user message id, its parent and the assistant message id from
+  Open WebUI's per-connection header templates, passed through by the chat
+  LiteLLM. Anything else is served raw.
+- Lines: past exchanges are keyed by a content hash of their replay form; the
+  current exchange's line waits under its assistant message id and binds on
+  the next turn through the parent id. The open set follows the same path.
+- Layout: from the first memory turn the system note and the `expand` tool are
+  present; the ledger covers the gap-free prefix of lined exchanges and always
+  leaves the newest finished exchange raw. One layout is frozen per user
+  message; expansions are replayed in follow-ups.
+- Expand: answered inside the chat layer, never shown to the client, at most
+  three rounds per request, 8,000 characters per part.
+- Background: after an answer that finished on its own, the curator (same
+  model, rendered as the answer plus an instruction, with the model's
+  `curator_suffix` closing the reasoning block) writes lines for the newest
+  exchange and up to six older raw ones, oldest first; then a ledger-end stem
+  on checkpointed models. Background requests go straight to the engine at
+  priority 0 (foreground carries 1), only while the controller reports the
+  model active and idle, are cancelled by any foreground request, and are
+  retried; two invalid curator replies leave fallback lines.
+- Not yet: the pre-warm (the next answer prefills its raw tail and question,
+  133 to 210 tokens per turn in the live test), the reply-end curator
+  continuation (needs the engine fix for stop-token cancels), budgets and the
+  fit step, regroups, other models.
+
+Live, K3, 2026-10-14, a separate chat-layer instance driven like Open WebUI
+(8 turns, 3 s between turns, a unique first message): the ledger grew to
+cover every exchange but the newest, each line was written 5 to 8 s after its
+answer, the prompt grew from 367 to 650 tokens over 8 turns, each turn
+prefilled 133 to 210 new tokens, and both recall questions were answered
+from the lines.
 
 ## Open choices
 
