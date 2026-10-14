@@ -35,6 +35,16 @@ SAFE_PROPERTY = re.compile(r"^[A-Za-z0-9=_%./{} -]+$")
 ROOT = re.compile(r"(\$HOME/[^\s;&|]+/root)(?:/|\s|$)")
 
 
+def read_token(path):
+    mode = os.stat(path).st_mode & 0o777
+    if mode & 0o077:
+        raise SystemExit(f"fleet_gateway: {path} has mode {mode:o}; a token file must be readable by its owner only")
+    token = Path(path).read_text().strip()
+    if len(token) < 32:
+        raise SystemExit(f"fleet_gateway: the token in {path} must be at least 32 characters")
+    return token
+
+
 def redact(text):
     for pattern in SECRET_PATTERNS:
         if pattern.groups == 2:
@@ -53,12 +63,11 @@ def clip(text, limit):
 
 class Gateway:
     def __init__(self, config):
-        for key in ("token_file", "audit_log", "hub", "nodes", "ssh", "status_url", "logs", "logs_dir", "swap_config", "refuse", "refuse_on_nodes"):
+        for key in ("token_file", "controller_token_file", "audit_log", "hub", "nodes", "ssh", "status_url", "logs", "logs_dir", "swap_config", "refuse", "refuse_on_nodes"):
             if key not in config:
                 raise SystemExit(f"fleet_gateway: the config needs {key}")
-        self.token = Path(config["token_file"]).read_text().strip()
-        if len(self.token) < 32:
-            raise SystemExit("fleet_gateway: the token must be at least 32 characters")
+        self.token = read_token(config["token_file"])
+        self.controller_headers = {"Authorization": "Bearer " + read_token(config["controller_token_file"])}
         self.audit = Path(config["audit_log"])
         self.hub = config["hub"]
         self.nodes = list(config["nodes"])
@@ -154,8 +163,10 @@ class Gateway:
 
     async def status(self, request):
         try:
-            async with self.session.get(self.status_url) as response:
+            async with self.session.get(self.status_url, headers=self.controller_headers) as response:
                 swap = await response.json(content_type=None)
+                if response.status != 200:
+                    return web.json_response({"error": f"swap controller answered {response.status}: {swap}"}, status=503)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response({"error": f"swap controller unavailable: {error}"}, status=503)
         keep = ("active", "state", "target", "wanted", "phase", "swap_elapsed_s", "draining", "error", "memory")
@@ -178,8 +189,11 @@ class Gateway:
             if node not in self.nodes:
                 return web.json_response({"error": f"engine logs need node, one of {', '.join(self.nodes)}"}, status=400)
             try:
-                async with self.session.get(self.status_url) as response:
-                    active = (await response.json(content_type=None)).get("active")
+                async with self.session.get(self.status_url, headers=self.controller_headers) as response:
+                    swap = await response.json(content_type=None)
+                    if response.status != 200:
+                        return web.json_response({"error": f"swap controller answered {response.status}: {swap}"}, status=503)
+                    active = swap.get("active")
             except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
                 return web.json_response({"error": f"swap controller unavailable: {error}"}, status=503)
             path = self.engine_logs.get(active)

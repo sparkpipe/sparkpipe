@@ -201,7 +201,7 @@ async def main():
 
     timeout = aiohttp.ClientTimeout(total=900)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get("http://127.0.0.1:8440/status") as response:
+        async with session.get(CONFIG["control"]["status_url"], headers={"Authorization": "Bearer " + cf.read_token(CONFIG["controller_token_file"])}) as response:
             active = (await response.json())["active"]
         if active != MODEL_ID:
             raise SystemExit(f"the fleet has {active} loaded, not {MODEL_ID}")

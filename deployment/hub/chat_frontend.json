@@ -896,9 +896,10 @@
    }
   }
  ],
+ "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
  "control": {
   "status_url": "http://127.0.0.1:8440/status",
-  "activate_url": "http://127.0.0.1:8440/activate", "force_url": "http://127.0.0.1:8440/force", "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
+  "force_url": "http://127.0.0.1:8440/force", "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
  },
  "site_dir": "site"
 }

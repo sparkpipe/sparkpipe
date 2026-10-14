@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import hmac
 import json
+import os
 import sys
 import time
+from pathlib import Path
 
 import aiohttp
 from aiohttp import web
@@ -17,6 +20,16 @@ def substitute(template, values):
     for key, value in values.items():
         template = template.replace("{" + key + "}", str(value))
     return template
+
+
+def read_token(path):
+    mode = os.stat(path).st_mode & 0o777
+    if mode & 0o077:
+        raise SystemExit(f"model_swap: {path} has mode {mode:o}; the token file must be readable by its owner only")
+    token = Path(path).read_text().strip()
+    if len(token) < 32:
+        raise SystemExit(f"model_swap: the token in {path} must be at least 32 characters")
+    return token
 
 
 def require(spec, keys, where):
@@ -334,21 +347,35 @@ class Swapper:
         await self.session.close()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Swap the fleet between configured models on demand.")
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8440)
-    arguments = parser.parse_args()
-    with open(arguments.config) as handle:
-        swapper = Swapper(json.load(handle))
-    app = web.Application()
+def build(swapper, token):
+    expected = f"Bearer {token}".encode()
+
+    @web.middleware
+    async def authorize(request, handler):
+        if not hmac.compare_digest(request.headers.get("Authorization", "").encode(), expected):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return await handler(request)
+
+    app = web.Application(middlewares=[authorize])
     app.on_startup.append(swapper.startup)
     app.on_cleanup.append(swapper.cleanup)
     app.router.add_get("/status", swapper.get_status)
     app.router.add_post("/activate", swapper.activate)
     app.router.add_post("/force", swapper.force)
-    web.run_app(app, host=arguments.host, port=arguments.port, print=None)
+    return app
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Swap the fleet between configured models on demand.")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--token-file", required=True)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8440)
+    arguments = parser.parse_args()
+    token = read_token(arguments.token_file)
+    with open(arguments.config) as handle:
+        swapper = Swapper(json.load(handle))
+    web.run_app(build(swapper, token), host=arguments.host, port=arguments.port, print=None)
 
 
 if __name__ == "__main__":
