@@ -926,14 +926,15 @@ Related common-code debt:
 - The chat layer silently turns a request for no reasoning into the lowest
   effort for models whose template has no off switch. GLM-5.3 Full and Flash
   map `minimal` to `reasoning_effort: low` and Muse Glimmer to
-  `reasoning_strength: low` (`deployment/hub/chat_frontend.json`), so the
-  reply still reasons, and `tools/ui_smoke.py --reasoning both` fails its
-  reasoning-off case for all three. Qwen 3.8 Max maps no `minimal` at all and
-  answers it with a 400, and Laguna returned no reasoning with reasoning on
-  (release qualification of `e05394f94`, 2026-10-14). Answer reasoning off
-  with a clear error, or a documented per-model capability in `/v1/models`,
-  where the template cannot turn it off, and find out why Laguna does not
-  reason when asked.
+  `reasoning_strength: low` (`deployment/hub/chat_frontend.json`). GLM Flash
+  and Muse Glimmer still reasoned with reasoning off, so `tools/ui_smoke.py
+  --reasoning both` fails that case for them; GLM Full happened to pass it.
+  Qwen 3.8 Max maps no `minimal` at all and answers it with a 400, and Laguna
+  returned no reasoning with reasoning on (release qualifications of
+  `e05394f94` and `1d89e0377`, 2026-10-14). Answer reasoning off with a clear
+  error, or a documented per-model capability in `/v1/models`, where the
+  template cannot turn it off, and find out why Laguna does not reason when
+  asked.
 - Every stage-runner lane, GLM Flash included, is sized for every resident
   sequence at full length by default: `tools/stage_lane.py` sets
   `kv_physical_pages` to `sequences * kv_pages` (each sequence's
