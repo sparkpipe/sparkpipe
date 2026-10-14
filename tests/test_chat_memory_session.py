@@ -179,6 +179,22 @@ async def run():
         await settle(memory, model)
         assert "a5" not in state["pending"], "no background work while the fleet is switching"
 
+        frontend.ready = True
+        long_chat = memory.session(model, headers("w20", None, "x20", chat="chat-long"), conversation(20), [], {})
+        captured = []
+        original = memory.curate
+
+        async def capture(model_, job):
+            captured.append(list(job["missing"]))
+            return await original(model_, job)
+
+        memory.curate = capture
+        frontend.replies.append('{"lines": {}, "open": []}')
+        long_chat.finished(long_chat.messages, "answer 20", "", [], "stop")
+        await settle(memory, model)
+        memory.curate = original
+        assert captured and captured[0] == [0, 1, 2, 3, 4, 5], captured
+
         reopened = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret"}, frontend).store.load("user-1", "chat-1")
         assert reopened["lines"] == state["lines"] and reopened["pending"].keys() == state["pending"].keys()
 

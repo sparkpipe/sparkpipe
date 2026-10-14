@@ -364,7 +364,8 @@ class Memory:
         self.part_chars = int(config.get("expand_part_chars", 8000))
         self.open_chars = int(config.get("open_chars", 6000))
         self.max_rounds = int(config.get("max_expand_rounds", 3))
-        self.curator_tokens = int(config.get("curator_max_tokens", 400))
+        self.curator_tokens = int(config.get("curator_max_tokens", 160))
+        self.catch_up = int(config.get("catch_up_per_turn", 6))
         self.idle_seconds = float(config.get("idle_seconds", 1.0))
         self.active = {}
         self.jobs = {}
@@ -432,7 +433,8 @@ class Memory:
         self.tasks.clear()
 
     def schedule(self, session, plan_messages, content):
-        missing = [i for i in range(session.layout["lined"], len(session.exchanges)) if session.exchanges and exchange_key(session.exchanges[i]) not in self.store.load(session.user, session.chat)["lines"]]
+        lines = self.store.load(session.user, session.chat)["lines"]
+        missing = [i for i in range(session.layout["lined"], len(session.exchanges)) if exchange_key(session.exchanges[i]) not in lines][:self.catch_up]
         queue = self.jobs.setdefault(session.model.id, [])
         queue[:] = [job for job in queue if job["session"].chat != session.chat or job["session"].user != session.user][-7:]
         queue.append({"session": session, "messages": plan_messages, "content": content, "missing": missing, "attempts": 0})
@@ -486,7 +488,7 @@ class Memory:
         instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, int(settings.get("open_budget", 1500)), int(settings.get("line_tokens", 48)))
         messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
         ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, settings.get("curator_suffix"))
-        text = await self.frontend.memory_complete(model, ids, self.curator_tokens, reasoning_open)
+        text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open)
         lines, opened, complete = parse_curator(text, indices, len(everything), sizes, int(settings.get("open_budget", 1500)))
         if lines is None:
             return False

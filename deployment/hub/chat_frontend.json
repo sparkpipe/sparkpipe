@@ -108,6 +108,7 @@
   },
   {
    "id": "kimi-k3",
+   "chat_memory": {"curator_suffix": "<|close|>think<|sep|><|open|>response<|sep|>", "cache_checkpoint_tokens": 16384, "open_budget": 1500, "line_tokens": 48},
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
    "context_tokens": 131072,
@@ -901,5 +902,6 @@
   "status_url": "http://127.0.0.1:8440/status",
   "force_url": "http://127.0.0.1:8440/force", "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
  },
- "site_dir": "site"
+ "site_dir": "site",
+ "chat_memory": {"store": "/srv/workspace/sparkpipe/chat-memory", "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret"}
 }
