@@ -384,15 +384,11 @@ and the prefix cache instead of retrieval chunks. Users cannot change
 sampling, see other models, share chats publicly, create API keys or add
 tools.
 
-Start or replace the container (the image digest pins v0.12.0):
-
-```sh
-sudo docker run -d --name sparkpipe-chatui --restart unless-stopped \
-  -p 127.0.0.1:8090:8080 -v /srv/workspace/open-webui/data:/app/backend/data \
-  --env-file /srv/workspace/open-webui/open_webui.env \
-  --env-file /srv/workspace/open-webui/secrets.env \
-  ghcr.io/open-webui/open-webui@sha256:1565038903151ced924b5a3226f73f40f16963df4b910441f6391f10144afdaa
-```
+Start or replace the container with `sudo sh /srv/workspace/open-webui/run.sh`,
+a copy of `deployment/hub/open_webui_run.sh`. It pins v0.12.0 by digest,
+mounts the data directory and mounts the SparkPipe icons from
+`/srv/workspace/open-webui/branding` (a copy of
+`deployment/hub/open_webui_branding`) over Open WebUI's own.
 
 `open_webui.env` is copied from `deployment/hub/open_webui.env`. v0.12.0
 writes every persistent setting into the `config` table (`key`, JSON `value`)
@@ -466,10 +462,17 @@ release notes and security advisories, replace the digest here, recreate the
 container with the same data directory, and run a chat, an attachment and a
 login. Back up `/srv/workspace/open-webui/data` before an upgrade.
 
-Open WebUI's license (BSD-3 with a branding clause, from v0.6.6) forbids
-removing or replacing its branding beyond 50 users in 30 days. The name is
-set to "SparkPipe Chat", which Open WebUI shows as "SparkPipe Chat (Open
-WebUI)". The repository holds only configuration, no Open WebUI code.
+Open WebUI's license (BSD-3 with a branding clause, from v0.6.6; clause 4
+of the v0.12.0 LICENSE) forbids altering or replacing its branding unless the
+deployment has at most 50 end users in any rolling 30-day period, or holds
+written permission or an enterprise license. The owner expects about six
+users (2026-10-14), so the icons, splash, logo and web manifest are the
+SparkPipe bolt from `site/favicon.svg`, rendered with `rsvg-convert`. Keep the
+user count (Admin Panel -> Users) at 50 or below; if it could pass that,
+drop the branding mounts from `run.sh` first. The name is set to "SparkPipe
+Chat", which v0.12.0 shows as "SparkPipe Chat (Open WebUI)" because it adds
+the suffix in code. The repository holds only configuration and the icons, no
+Open WebUI code.
 
 ## Browser clients (the sparkpipe.ai playground)
 
