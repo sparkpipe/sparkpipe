@@ -465,6 +465,41 @@ Forced switches are marked `forced` in the controller's history. The VPS
 8443 site proxies only `/fleet`, `/fleet/status` and `/fleet/switch-now` to
 the chat layer.
 
+### Fleet access for the admin (2026-10-14)
+
+Owner decision: in the admin's own chats the model may read the fleet and
+run commands, each one approved; regular users get none of it.
+
+- **Gateway.** `tools/serving/fleet_gateway.py` runs on the hub as `spec`
+  (user unit `sparkpipe-fleet-gateway`, `172.17.0.1:8441`, reachable from the
+  Open WebUI container and the hub only; config
+  `deployment/hub/fleet_gateway.json` in `~/sparkpipe-fleet/`). It holds the
+  SSH access, so Open WebUI never does. Every call needs the token in
+  `/srv/workspace/sparkpipe/fleet-gateway/token` (spec, 600). It serves the
+  swap controller's state, each machine's uptime, load, memory, disk, GPU and
+  busiest processes, the configured logs (chat layer, swap controller,
+  LiteLLMs, engine API logs on the hub, the loaded model's engine log on a
+  spark) and `POST /v1/run`. A run needs a known host and the approver's
+  name, passes the refusal rules in the config (a global `sync`, killing
+  flychess, power-off, deleting a root, home, workspace or mount directory,
+  raw disk writes, secret files and keys; on sparks also anything that adds
+  to the boot path), and is written to
+  `/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl` before and after.
+  Output is masked for secrets and cut at 20,000 characters; commands stop at
+  their timeout (at most 600 s). `tests/test_fleet_gateway.py`.
+- **Tool.** `deployment/hub/open_webui_tools/fleet.py`, the Open WebUI tool
+  `fleet` with no access grant, so only the admin (its owner) can use it; it
+  also checks the caller's role itself. `fleet_status`, `fleet_nodes` and
+  `fleet_logs` run directly; `fleet_run` first shows the admin the exact host
+  and command in Open WebUI's confirmation dialog and runs only on an
+  explicit yes. The gateway URL and token are its valves.
+  `tests/test_open_webui_fleet_tool.py`.
+- **Use.** The tool is attached to no model. The admin switches it on per
+  chat from the tools menu, so a web page the model reads in an ordinary chat
+  cannot steer fleet commands.
+- **Not done.** Two-factor login stays off (owner, 2026-10-14). The refusal
+  rules are a backstop; the approval dialog is the control.
+
 ### Web search (SearXNG)
 
 Since 2026-10-14 K3 has Open WebUI's `search_web` and `fetch_url` tools. The

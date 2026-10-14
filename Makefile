@@ -564,6 +564,8 @@ PYTHON_TESTS := \
 	tests/test_model_swap_drain_quiet.py \
 	tests/test_model_swap_force.py \
 	tests/test_chat_frontend_switch_now.py \
+	tests/test_fleet_gateway.py \
+	tests/test_open_webui_fleet_tool.py \
 	tests/test_chat_frontend_warm_queue.py \
 	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_chat_frontend_function_xml_calls.py \
