@@ -2,8 +2,8 @@
 
 Status: design, revision 2 (2026-10-14), after an adversarial review against
 the chat layer, the templates of all 16 models, Open WebUI v0.12.0 and the
-engine. Phase 1 (prefix mechanics) passed on K3; the chat-layer
-implementation waits for phase 2 (quality).
+engine. Phases 1 (prefix mechanics) and 2 (quality) passed on K3; the
+chat-layer implementation is next.
 
 ## Goal
 
@@ -301,6 +301,38 @@ expand recall of at least 80%, build. If ledger without expand scores like
 ledger + expand, the models are not using expand: add lexical retrieval into
 the reference block when the question arrives, and a raw-tail budget, before
 building.
+
+**Phase 2 result, K3, 2026-10-14: passed; build.** `tools/chat_memory_phase2.py`
+(through the chat layer on the hub), rows in
+`qualification/chat-memory-phase2-k3-20261014/`. 12 generated chats of 17 to
+24 exchanges, 96 probes (12 per pattern: a code fix, title drafts, options,
+a pasted memo, a search result, a standing instruction, a price table, a
+correction), each asked 3 or more exchanges after its fact; 384 answers and
+249 curator lines.
+
+| Arm | Correct | Minus raw (95% CI, paired bootstrap) |
+|---|---|---|
+| Raw history | 96/96 | |
+| Ledger + expand | 95/96 | -1.0 points (-3.1 to 0) |
+| Ledger with the right exchange opened | 95/96 | -1.0 points |
+| Ledger only | 80/96 | -16.7 points (-25 to -9.4) |
+
+- The curator's JSON was valid 249 of 249 times; its line kept the probed
+  fact 84 of 96 times.
+- Expand: in the 12 probes where the fact was hidden and its line lacked it
+  (all 12 were the memo's room number), K3 expanded the right exchange 12 of
+  12 times and answered all 12; it expanded nothing anywhere else.
+- Ledger only lost all 12 memo probes (it answered that the room was not
+  given) and 4 others whose line did hold the fact.
+- The two misses in the ledger + expand and oracle arms were empty replies,
+  not wrong answers.
+- Prompts were about a third smaller with the ledger (median 1,221 against
+  1,867 tokens); these chats are short, and the gap grows with length.
+- Latency here is not the production picture: this test sent no pre-warms
+  and every probe changed the ledger position, so raw history reused the
+  cache better (median 5.2 s against 7.4 s, p90 7.8 s against 27.6 s with
+  expand rounds). Phase 1 measured the pre-warmed path.
+- Limits: generated chats, one model, short conversations.
 
 **Ship gate per model**: at least 150 exact-match probes across 8 patterns
 (code diffs, multiple drafts, an option given N answers back, an attached
