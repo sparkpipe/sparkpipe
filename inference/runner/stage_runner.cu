@@ -1807,6 +1807,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 {
 	const uint64_t started = StageRunnerNowNs();
 	const uint32_t rows = in->rows;
+	const uint32_t copy_failed = state->copy_failed, tp_collective_failed = state->tp_collective_failed;
 	cudaGraph_t graph = 0;
 	cudaGraphExec_t exec = 0;
 	cudaError_t error = cudaSuccess;
@@ -1844,8 +1845,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 			(void)cudaGraphExecDestroy(exec);
 		(void)cudaGetLastError();
 		state->graph_refused[rows - 1u] = 1u;
-		state->copy_failed = 0u;
-		state->tp_collective_failed = 0u;
+		state->copy_failed = copy_failed;
+		state->tp_collective_failed = tp_collective_failed;
 		return;
 	}
 	state->graph_exec[rows - 1u] = exec;
