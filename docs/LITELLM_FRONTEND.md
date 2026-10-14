@@ -371,7 +371,7 @@ SearXNG (not enabled yet).
 | Piece | Where | What |
 | --- | --- | --- |
 | Open WebUI | hub Docker container `sparkpipe-chatui`, `127.0.0.1:8090` -> 8080, data `/srv/workspace/open-webui/data` | settings `deployment/hub/open_webui.env`, secrets `/srv/workspace/open-webui/secrets.env` (root, 600: `WEBUI_SECRET_KEY`, `OPENAI_API_KEYS`) |
-| Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml`, key in `~/sparkpipe-chat/chatui.env` | serves only `glm-5.3` until the swap controller has a multi-user policy |
+| Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml` (copy of `deployment/hub/litellm-chatui.yaml`), key in `~/sparkpipe-chat/chatui.env` | serves only `kimi-k3` (owner 2026-10-14: K3 is the default instead of GLM Full) until the swap controller has a multi-user policy |
 | Tunnel | hub `sparkpipe-ai-door`, `-R 127.0.0.1:18082:127.0.0.1:8090` | the VPS key may listen on 18082 |
 | Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth |
 
@@ -394,11 +394,38 @@ sudo docker run -d --name sparkpipe-chatui --restart unless-stopped \
   ghcr.io/open-webui/open-webui@sha256:1565038903151ced924b5a3226f73f40f16963df4b910441f6391f10144afdaa
 ```
 
-`open_webui.env` is copied from `deployment/hub/open_webui.env`. Open WebUI
-keeps settings in its database after the first start, so later changes go
-through its admin panel. The first account created becomes the admin: create
-it through `ssh -N -L 8090:127.0.0.1:8090 rtx5090` and http://localhost:8090
-before port 8443 is opened. To upgrade, pull the new release, check its
+`open_webui.env` is copied from `deployment/hub/open_webui.env`. v0.12.0
+writes every persistent setting into the `config` table (`key`, JSON `value`)
+at its first start and reads it from there afterwards, so an env change only
+reaches the settings it reads at every start (`env.py`, for example
+`BYPASS_MODEL_ACCESS_CONTROL`). Change the others in the admin panel, or with
+the container stopped and the data directory backed up, update the row in
+`webui.db` and recreate the container; keep `open_webui.env` matching so a
+fresh data directory starts the same. That is how `ui.default_models`
+(`kimi-k3`), `ui.enable_signup` and `openai.api_keys` were changed on
+2026-10-14.
+
+The first account created becomes the admin: it was created through
+`ssh -N -L 8090:127.0.0.1:8090 rtx5090` and http://localhost:8090 before port
+8443 was opened. Creating it turns sign-up off by itself (`ui.enable_signup`
+false); it was turned back on because the owner chose open sign-up with
+approval. New accounts arrive with the `pending` role and see only a waiting
+screen; the admin approves one in Admin Panel -> Users by changing its role to
+`user`, or deletes it.
+
+Users see only models that have an access grant, and models from a connection
+have none until someone configures them in the admin panel, so a `user` would
+see an empty model list. `BYPASS_MODEL_ACCESS_CONTROL=true` shows every model
+of the chat LiteLLM to every approved user, which is the intent while it
+serves one model.
+
+The chat LiteLLM key is shared by `chatui.env` (`LITELLM_MASTER_KEY`),
+`secrets.env` (`OPENAI_API_KEYS`) and the `openai.api_keys` row. It was
+replaced on 2026-10-14 after a config dump printed it; the old one is refused.
+
+K3 takes about 70 s to swap in from GLM Full (69.9 s on 2026-10-14). The LAN
+and sparkpipe.ai doors still serve every model, so a request for another
+model there swaps the fleet away, and the next chat waits for K3 again. To upgrade, pull the new release, check its
 release notes and security advisories, replace the digest here, recreate the
 container with the same data directory, and run a chat, an attachment and a
 login. Back up `/srv/workspace/open-webui/data` before an upgrade.
