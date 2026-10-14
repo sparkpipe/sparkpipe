@@ -2,7 +2,7 @@
 title: Fleet
 author: SparkPipe
 version: 1.0.0
-description: Admin only. Reads the SparkPipe fleet's state and logs, and runs commands on the hub or a spark as a restricted user after the admin grants access for the chat.
+description: Admin only. Reads the SparkPipe fleet's state and logs, and runs commands on the hub or a spark in a read-only sandbox once the admin grants access for the chat.
 """
 
 import json as jsonlib
@@ -51,11 +51,11 @@ class Tools:
 
     async def fleet_run(self, host: str, command: str, timeout: int = 60, elevated: bool = False, __user__: dict = None, __event_call__=None, __chat_id__: str = None) -> str:
         """
-        Run a shell command on the hub (rtx5090) or one spark (spark0 to sparkf). It runs as the restricted user sparkagent, which has no sudo and cannot read secrets or other users' files; the admin grants that once per chat, and later commands in the chat run without asking. Set elevated to true only when the command needs the spec user's rights, for example restarting a SparkPipe service; the admin then approves that exact command. Prefer fleet_status, fleet_nodes and fleet_logs when they answer the question.
+        Run a shell command on the hub (rtx5090) or one spark (spark0 to sparkf). By default it runs in a sandbox that can read the machine and the SparkPipe files and logs but cannot write outside its own /tmp, open network connections, use the GPUs, use sudo or read secrets, with CPU, memory and time limits; the admin grants that once per chat, and later commands in the chat run without asking. Set elevated to true only when the command must change something or needs the network or the GPU, for example restarting a SparkPipe service; it then runs as the spec user after the admin approves that exact command. Prefer fleet_status, fleet_nodes and fleet_logs when they answer the question.
         :param host: rtx5090, or a spark from spark0 to sparkf
         :param command: the shell command, run with bash on the hub or through ssh on a spark
         :param timeout: seconds before the command is stopped, at most 600
-        :param elevated: run as spec instead of sparkagent; the admin approves each such command
+        :param elevated: run as spec outside the sandbox; the admin approves each such command
         """
         if not self._admin(__user__):
             return ADMIN_ONLY
@@ -79,7 +79,7 @@ class Tools:
             return "Fleet access is granted per saved chat, and this chat has no id; run it with elevated true to approve this one command."
         status = await self._call_json("GET", "/v1/grant", params={"chat_id": __chat_id__})
         if status is None or not status.get("ready"):
-            return "The restricted fleet user is not set up yet (deployment/hub/fleet_agent_setup.sh); use elevated true to approve commands one by one."
+            return "The fleet gateway has no command sandbox configured; use elevated true to approve commands one by one."
         if not status.get("granted"):
             approved = await __event_call__(
                 {
@@ -87,8 +87,9 @@ class Tools:
                     "data": {
                         "title": "Give Kimi fleet access for this chat?",
                         "message": (
-                            f"For the next 8 hours, Kimi can run commands in this chat as {status.get('user')} on rtx5090 and spark0 to sparkf "
-                            "without asking again. That user has no sudo and cannot read secrets or other users' files; every command is audited. "
+                            "For the next 8 hours, Kimi can run commands in this chat on rtx5090 and spark0 to sparkf without asking again, "
+                            "in a sandbox that can read the machine and the SparkPipe files but cannot change anything, reach the network, use the GPUs, "
+                            "use sudo or read secrets. Every command is audited. "
                             f"Its first command, on {host}:\n\n```\n{command}\n```"
                         ),
                     },
@@ -97,9 +98,9 @@ class Tools:
             if approved is not True:
                 return "The admin did not grant fleet access for this chat, so nothing was run."
             granted = await self._call_json("POST", "/v1/grant", json={"chat_id": __chat_id__, "approved_by": approver})
-            if granted is None or "user" not in granted:
+            if granted is None or "expires_utc" not in granted:
                 return "The fleet gateway refused the grant, so nothing was run."
-        return await self._call("POST", "/v1/run", json={"host": host, "command": command, "timeout": timeout, "as": "agent", "chat_id": __chat_id__})
+        return await self._call("POST", "/v1/run", json={"host": host, "command": command, "timeout": timeout, "as": "sandbox", "chat_id": __chat_id__})
 
     async def _call_json(self, method, path, params=None, json=None):
         text = await self._call(method, path, params=params, json=json)

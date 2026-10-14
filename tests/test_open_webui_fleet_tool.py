@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SparkPipe Chat's Fleet tool works only for the admin. A command runs as the restricted user only after the admin grants access for that chat, asked once: a rejected or failed grant runs nothing, later commands in the granted chat run without asking, a chat without an id or a fleet without the restricted user runs nothing. An elevated command runs as spec only after the admin approves that exact command. Gateway errors come back as text."""
+"""SparkPipe Chat's Fleet tool works only for the admin. A command runs in the sandbox only after the admin grants access for that chat, asked once: a rejected or failed grant runs nothing, later commands in the granted chat run without asking, a chat without an id or a gateway without a sandbox runs nothing. An elevated command runs as spec only after the admin approves that exact command. Gateway errors come back as text."""
 import asyncio
 import importlib.util
 from pathlib import Path
@@ -80,17 +80,17 @@ async def run():
             reply = await tool.fleet_run("spark1", "uptime", __user__=ADMIN, __event_call__=decline, __chat_id__="c1")
             assert "did not grant" in reply, reply
         assert not any(path == "/v1/run" or (path == "/v1/grant" and method == "POST") for method, path, *_ in seen), seen
-        assert "for this chat" in events[0]["data"]["title"] and "uptime" in events[0]["data"]["message"] and "sparkagent" in events[0]["data"]["message"], events[0]
+        assert "for this chat" in events[0]["data"]["title"] and "uptime" in events[0]["data"]["message"] and "sandbox" in events[0]["data"]["message"], events[0]
 
         events.clear()
         await tool.fleet_run("spark1", "uptime", timeout=30, __user__=ADMIN, __event_call__=approve, __chat_id__="c1")
         assert len(events) == 1, events
         grant_posts = [body for method, path, _, body, _ in seen if path == "/v1/grant" and method == "POST"]
         assert grant_posts == [{"chat_id": "c1", "approved_by": "owner@example.test"}], grant_posts
-        assert seen[-1][1] == "/v1/run" and seen[-1][3] == {"host": "spark1", "command": "uptime", "timeout": 30, "as": "agent", "chat_id": "c1"}, seen[-1]
+        assert seen[-1][1] == "/v1/run" and seen[-1][3] == {"host": "spark1", "command": "uptime", "timeout": 30, "as": "sandbox", "chat_id": "c1"}, seen[-1]
 
         await tool.fleet_run("spark2", "df -h", __user__=ADMIN, __event_call__=never, __chat_id__="c1")
-        assert seen[-1][3] == {"host": "spark2", "command": "df -h", "timeout": 60, "as": "agent", "chat_id": "c1"}, seen[-1]
+        assert seen[-1][3] == {"host": "spark2", "command": "df -h", "timeout": 60, "as": "sandbox", "chat_id": "c1"}, seen[-1]
 
         count = len(seen)
         assert "did not approve" in await tool.fleet_run("rtx5090", "systemctl --user restart sparkpipe-chat", elevated=True, __user__=ADMIN, __event_call__=reject, __chat_id__="c1")
@@ -102,7 +102,7 @@ async def run():
 
         state["ready"] = False
         count = len(seen)
-        assert "not set up yet" in await tool.fleet_run("spark1", "uptime", __user__=ADMIN, __event_call__=never, __chat_id__="c2")
+        assert "no command sandbox" in await tool.fleet_run("spark1", "uptime", __user__=ADMIN, __event_call__=never, __chat_id__="c2")
         assert all(path != "/v1/run" for _, path, *_ in seen[count:]), seen[count:]
         state["ready"] = True
         assert await tool.fleet_run("spark1", "fail", __user__=ADMIN, __event_call__=never, __chat_id__="c1") == 'Fleet gateway error 403: {"error": "refused: test"}'
@@ -111,4 +111,4 @@ async def run():
 
 
 asyncio.run(run())
-print("PASS test_open_webui_fleet_tool: admin only, one grant per chat for the restricted user, nothing runs before it or without a chat id, elevated commands approved one by one, gateway errors reported")
+print("PASS test_open_webui_fleet_tool: admin only, one grant per chat for the sandbox, nothing runs before it or without a chat id, elevated commands approved one by one, gateway errors reported")

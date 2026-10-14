@@ -470,44 +470,64 @@ the chat layer.
 Owner decisions: in the admin's own chats the model may read the fleet and
 run commands; regular users get none of it. First version: every command
 approved. Owner, later the same day: approving every command made it
-useless, so commands run as a restricted user once the admin grants access
-for the chat.
+useless, so the admin grants access once per chat and commands then run
+without asking, bounded by what their identity can do.
 
 - **Gateway.** `tools/serving/fleet_gateway.py` runs on the hub as `spec`
-  (user unit `sparkpipe-fleet-gateway`, `172.17.0.1:8441`, reachable from the
-  Open WebUI container and the hub only; config
+  (user unit `sparkpipe-fleet-gateway`, `172.17.0.1:8441`; config
   `deployment/hub/fleet_gateway.json` in `~/sparkpipe-fleet/`). It holds the
   SSH access, so Open WebUI never does. Every call needs the token in
-  `/srv/workspace/sparkpipe/fleet-gateway/token` (spec, 600). It serves the
+  `/srv/workspace/sparkpipe/fleet-gateway/token` (spec, 600). The token and
+  the network are the real boundary: the approver and grant fields are audit
+  records, and any holder of the token can use every endpoint. It serves the
   swap controller's state, each machine's uptime, load, memory, disk, GPU and
   busiest processes, the configured logs, per-chat grants and `POST /v1/run`.
-- **Two ways to run a command.** As the restricted user `sparkagent` (no
-  sudo, own home, process, file and file-size limits) inside a chat whose
-  grant is live: `POST /v1/grant` with the chat id and the approver, valid 8
-  hours, revocable with `DELETE /v1/grant`; on sparks through ssh with the
-  gateway's own key, on the hub through `sudo -n -H -u sparkagent`. Or as
-  `spec` with an approver named for that one command. Both pass the refusal
-  rules in the config (a global `sync`, killing flychess, power-off,
-  deleting a root, home, workspace or mount directory, raw disk writes,
-  secret files and keys; on sparks also anything that adds to the boot path),
-  and both are written to
-  `/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl` with the user and
-  chat. Output is masked for secrets and cut at 20,000 characters; commands
-  stop at their timeout (at most 600 s). Grants live in the gateway's memory,
-  so a restart ends them. `tests/test_fleet_gateway.py`.
+- **Sandboxed commands (the default).** Inside a chat whose grant is live
+  (`POST /v1/grant` with a saved chat's id and the approver; 8 hours; at most
+  64 live grants; `DELETE /v1/grant` revokes; a gateway restart ends them),
+  each command runs as a transient systemd service through `sudo -n
+  systemd-run` on the hub, or through ssh and the same on a spark: a dynamic
+  user with the machine owner's group, `ProtectSystem=strict`,
+  `ProtectHome=read-only`, a private `/tmp`, no devices (no GPU, no RDMA
+  verbs), `NoNewPrivileges` (no sudo), only `AF_UNIX` and `AF_NETLINK`
+  sockets plus `IPAddressDeny=any` (no TCP or UDP, so none of the fleet's
+  unauthenticated services: the swap controller, the chat layer, LiteLLM,
+  the engine APIs), the owner's `.ssh`, `.env`, `.config` and the known
+  secret files hidden, `CPUQuota=200%`, `MemoryMax=4G`, `TasksMax=128` and
+  `RuntimeMaxSec` of the timeout plus 5 s. It can read the machine and the
+  SparkPipe trees, logs and configs, list processes and read interface and
+  RDMA counters; it cannot change anything. Checked live on the hub and
+  spark3 on 2026-10-14. Nothing is created on the hosts; there is no account
+  to set up.
+- **Elevated commands.** With `elevated` the command runs as `spec` (on a
+  spark under `timeout -k 5`) after the admin approves that exact command.
+  This is the path for anything that changes state or needs the network or
+  the GPU.
+- **Both paths** pass the refusal rules in the config first (a global
+  `sync`, killing flychess, power-off, deleting a root, home, workspace or
+  mount directory, raw disk writes, secret files; on sparks also anything
+  that adds to the boot path). These are a best-effort backstop against
+  mistakes, not a security boundary. Runs are written before and after to
+  `/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl` (600) with the
+  chat. Output is masked for secrets and cut at 20,000 characters. A timeout
+  kills the command's whole process group, and a drain of the output is
+  bounded. `tests/test_fleet_gateway.py`.
 - **Tool.** `deployment/hub/open_webui_tools/fleet.py`, the Open WebUI tool
   `fleet` with no access grant, so only the admin (its owner) can use it; it
-  also checks the caller's role itself. `fleet_status`, `fleet_nodes` and
-  `fleet_logs` run directly. `fleet_run` asks the admin once per chat ("Give
-  Kimi fleet access for this chat?", showing the first command) and then runs
-  as `sparkagent` without asking; with `elevated` it runs as `spec` after the
-  admin approves that exact command. `tests/test_open_webui_fleet_tool.py`.
-- **Setup (owner).** `deployment/hub/fleet_agent_setup.sh`, run once on the
-  hub as `spec`, creates `sparkagent` on the hub and the 16 sparks with the
-  gateway's public key and the limits, and checks that it has no sudo. Until
-  then the gateway refuses grants and only elevated commands work.
-- **Use.** The tool is attached to no model. The admin switches it on per
-  chat from the tools menu.
+  also checks the caller's role. `fleet_status`, `fleet_nodes` and
+  `fleet_logs` run directly; `fleet_run` asks once per chat ("Give Kimi
+  fleet access for this chat?", showing the first command), then runs in the
+  sandbox without asking; with `elevated` it asks for each command.
+  `tests/test_open_webui_fleet_tool.py`. The tool is attached to no model;
+  the admin switches it on per chat from the tools menu.
+- **Review.** An adversarial review (2026-10-14) found that a permanent
+  restricted account would still reach the fleet's unauthenticated control
+  services, GPUs and RDMA devices, which led to the sandbox. It also listed
+  pre-existing exposures outside this tool: the swap controller and the chat
+  layer's `/v1/sparkpipe/activate` accept unauthenticated requests (the chat
+  layer and LiteLLM 4000 listen on every interface), stale root
+  `sparkpipe_model_api` test processes listen on 0.0.0.0, some model weights
+  on CephFS are world-writable, and an NFS export uses `no_root_squash`.
 - **Not done.** Two-factor login stays off (owner, 2026-10-14).
 
 ### Web search (SearXNG)
