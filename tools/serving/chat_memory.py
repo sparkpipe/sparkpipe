@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -236,7 +237,7 @@ class ChatStore:
         key = (user, chat)
         if key in self.memory:
             return self.memory[key]
-        state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}}
+        state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}}
         path = self.path(user, chat)
         if self.persistent(chat) and path.is_file():
             for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -260,10 +261,20 @@ class ChatStore:
             state["open"][record["after"]] = list(record.get("ids") or [])
         elif kind == "layout" and record.get("message"):
             state["layouts"][record["message"]] = {k: record[k] for k in ("lined", "open", "keys") if k in record}
+        elif kind == "pending" and record.get("message") and record["message"] not in state["pending"]:
+            state["pending"][record["message"]] = {"line": record.get("line"), "source": record.get("source")}
+        elif kind == "open_after" and record.get("message"):
+            state["open_by_message"][record["message"]] = list(record.get("ids") or [])
+        elif kind == "expansion" and record.get("message"):
+            state["expansions"].setdefault(record["message"], []).extend(record.get("turns") or [])
+        elif kind == "turn" and record.get("user_message"):
+            state["turns"][record["user_message"]] = {k: record.get(k) for k in ("parent", "message", "index")}
 
     def append(self, user, chat, record):
         state = self.load(user, chat)
         if record.get("type") == "line" and record.get("key") in state["lines"]:
+            return False
+        if record.get("type") == "pending" and record.get("message") in state["pending"]:
             return False
         record = dict(record, ts=round(time.time(), 3))
         self.apply(state, record)
@@ -275,3 +286,240 @@ class ChatStore:
             with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         return True
+
+
+HEADER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+SENTINEL = "SPARKPIPE-LEDGER-END"
+
+
+def header(headers, name):
+    value = headers.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    if not value or ", " in value or not HEADER_ID.match(value):
+        return None
+    return value
+
+
+class Session:
+    def __init__(self, memory, model, user, chat, user_message, parent, message, head, exchanges, current, layout, tools, kwargs):
+        self.memory = memory
+        self.model = model
+        self.user = user
+        self.chat = chat
+        self.user_message = user_message
+        self.parent = parent
+        self.message = message
+        self.head = head
+        self.exchanges = exchanges
+        self.current = current
+        self.layout = layout
+        self.messages = layout["messages"]
+        self.tools = tools
+        self.kwargs = kwargs
+        self.rounds = 0
+
+    def claims(self, call):
+        return (call.get("function") or {}).get("name") == "expand"
+
+    def expand(self, call):
+        arguments = (call.get("function") or {}).get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        arguments = arguments if isinstance(arguments, dict) else {}
+        part = arguments.get("part", 1)
+        return expand_text(self.exchanges, str(arguments.get("id", "")), part if isinstance(part, int) else 1, self.memory.part_chars)
+
+    def continue_with(self, content, reasoning, calls):
+        self.rounds += 1
+        turns = [{"role": "assistant", "content": content, "reasoning_content": reasoning or None, "tool_calls": calls}]
+        for call in calls:
+            turns.append({"role": "tool", "tool_call_id": call.get("id"), "name": "expand", "content": self.expand(call)})
+        self.messages = self.messages + turns
+        self.memory.store.append(self.user, self.chat, {"type": "expansion", "message": self.user_message,
+                                                        "turns": [{k: v for k, v in turn.items() if v is not None} for turn in turns]})
+        return self.messages
+
+    def can_continue(self):
+        return self.rounds < self.memory.max_rounds
+
+    def finished(self, plan_messages, content, reasoning, visible_calls, engine_finish):
+        if visible_calls or engine_finish not in ("stop",) or not self.message:
+            return
+        self.memory.schedule(self, plan_messages, content)
+
+
+class Memory:
+    def __init__(self, config, frontend):
+        self.frontend = frontend
+        self.store = ChatStore(config["store"])
+        self.secret = Path(config["jwt_secret_file"]).read_text().strip()
+        if len(self.secret) < 32:
+            raise SystemExit("chat_memory: the JWT secret must be at least 32 characters")
+        self.issuer = config.get("jwt_issuer", "open-webui")
+        self.part_chars = int(config.get("expand_part_chars", 8000))
+        self.open_chars = int(config.get("open_chars", 6000))
+        self.max_rounds = int(config.get("max_expand_rounds", 3))
+        self.curator_tokens = int(config.get("curator_max_tokens", 400))
+        self.idle_seconds = float(config.get("idle_seconds", 1.0))
+        self.active = {}
+        self.jobs = {}
+        self.tasks = {}
+
+    def session(self, model, headers, messages, tools, kwargs):
+        settings = getattr(model, "memory", None)
+        if not settings:
+            return None
+        claims = verify_jwt(headers.get("X-OpenWebUI-User-Jwt") or "", self.secret)
+        if not claims or claims.get("iss") != self.issuer or not isinstance(claims.get("sub"), str):
+            return None
+        if (headers.get("X-OpenWebUI-Task") or "").strip():
+            return None
+        chat = header(headers, "X-OpenWebUI-Chat-Id")
+        user_message = header(headers, "X-OpenWebUI-User-Message-Id")
+        if not chat or not user_message:
+            return None
+        if any((tool.get("function") or {}).get("name") == "expand" for tool in tools or []):
+            print(json.dumps({"event": "chat_memory_off", "reason": "the client defines a tool named expand"}), flush=True)
+            return None
+        parts = split(messages)
+        if parts is None:
+            return None
+        head, exchanges, current = parts
+        if any("[CONVERSATION SUMMARY]" in text_of(m.get("content")) for m in head):
+            return None
+        user = claims["sub"]
+        parent = header(headers, "X-OpenWebUI-User-Message-Parent-Id")
+        message = header(headers, "X-OpenWebUI-Message-Id")
+        state = self.store.load(user, chat)
+        self.store.append(user, chat, {"type": "turn", "user_message": user_message, "parent": parent, "message": message, "index": len(exchanges) + 1})
+        if parent and exchanges and parent in state["pending"]:
+            pending = state["pending"][parent]
+            self.store.append(user, chat, {"type": "line", "key": exchange_key(exchanges[-1]), "line": pending["line"], "source": pending["source"]})
+        open_ids = list(state["open_by_message"].get(parent, [])) if parent else []
+        frozen = state["layouts"].get(user_message)
+        lines = state["lines"]
+        if frozen and frozen.get("keys") == [exchange_key(m) for m in exchanges[:len(frozen["keys"])]]:
+            limited = {key: lines[key] for key in frozen["keys"] if key in lines}
+            layout = build_layout(head, exchanges, current, limited, frozen.get("open", []), 1, self.open_chars)
+        else:
+            layout = build_layout(head, exchanges, current, lines, open_ids, 1, self.open_chars)
+            self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "keys": layout["keys"]})
+        replay = state["expansions"].get(user_message, [])
+        if replay:
+            layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current) + 1] + replay + layout["messages"][len(layout["messages"]) - len(current) + 1:]
+        return Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
+                       list(tools or []) + [EXPAND_TOOL], dict(kwargs))
+
+    def enter(self, model):
+        self.active[model.id] = self.active.get(model.id, 0) + 1
+        task = self.tasks.pop(model.id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def leave(self, model):
+        self.active[model.id] = max(0, self.active.get(model.id, 0) - 1)
+        self.kick(model)
+
+    def cancel_all(self):
+        for task in list(self.tasks.values()):
+            if not task.done():
+                task.cancel()
+        self.tasks.clear()
+
+    def schedule(self, session, plan_messages, content):
+        missing = [i for i in range(session.layout["lined"], len(session.exchanges)) if session.exchanges and exchange_key(session.exchanges[i]) not in self.store.load(session.user, session.chat)["lines"]]
+        queue = self.jobs.setdefault(session.model.id, [])
+        queue[:] = [job for job in queue if job["session"].chat != session.chat or job["session"].user != session.user][-7:]
+        queue.append({"session": session, "messages": plan_messages, "content": content, "missing": missing, "attempts": 0})
+        self.kick(session.model)
+
+    def kick(self, model):
+        if self.active.get(model.id, 0) or not self.jobs.get(model.id):
+            return
+        task = self.tasks.get(model.id)
+        if task is not None and not task.done():
+            return
+        self.tasks[model.id] = asyncio.ensure_future(self.run(model))
+
+    async def run(self, model):
+        await asyncio.sleep(self.idle_seconds)
+        queue = self.jobs.get(model.id) or []
+        if not queue or self.active.get(model.id, 0):
+            return
+        if not await self.frontend.memory_model_ready(model):
+            self.jobs.pop(model.id, None)
+            return
+        job = queue[0]
+        session = job["session"]
+        try:
+            done = await self.curate(model, job)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            print(json.dumps({"event": "chat_memory_curator_error", "model": model.id, "error": str(error)[:300]}), flush=True)
+            done = False
+        job["attempts"] += 1
+        if done or job["attempts"] >= 2:
+            if not done:
+                self.fallback(job)
+            if queue and queue[0] is job:
+                queue.pop(0)
+            await self.stem(model, session)
+        self.kick(model)
+
+    def node_tokens(self, session):
+        return {f"e{i + 1}": len(exchange_text(messages)) // 4 for i, messages in enumerate(session.exchanges)}
+
+    async def curate(self, model, job):
+        session = job["session"]
+        indices = list(job["missing"]) + [len(session.exchanges)]
+        everything = session.exchanges + [session.current + [{"role": "assistant", "content": job["content"]}]]
+        sizes = self.node_tokens(session)
+        settings = model.memory
+        instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, int(settings.get("open_budget", 1500)), int(settings.get("line_tokens", 48)))
+        messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
+        ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, settings.get("curator_suffix"))
+        text = await self.frontend.memory_complete(model, ids, self.curator_tokens, reasoning_open)
+        lines, opened, complete = parse_curator(text, indices, len(everything), sizes, int(settings.get("open_budget", 1500)))
+        if lines is None:
+            return False
+        for index, line in lines.items():
+            self.write_line(session, index, line, "curator")
+        self.store.append(session.user, session.chat, {"type": "open_after", "message": session.message, "ids": opened})
+        return complete
+
+    def write_line(self, session, index, line, source):
+        if index < len(session.exchanges):
+            self.store.append(session.user, session.chat, {"type": "line", "key": exchange_key(session.exchanges[index]), "line": line, "source": source})
+        else:
+            self.store.append(session.user, session.chat, {"type": "pending", "message": session.message, "line": line, "source": source})
+
+    def fallback(self, job):
+        session = job["session"]
+        state = self.store.load(session.user, session.chat)
+        for index in job["missing"]:
+            if exchange_key(session.exchanges[index]) not in state["lines"]:
+                self.write_line(session, index, fallback_line(session.exchanges[index]), "fallback")
+        if session.message not in state["pending"]:
+            self.write_line(session, len(session.exchanges), fallback_line(session.current + [{"role": "assistant", "content": job["content"]}]), "fallback")
+
+    async def stem(self, model, session):
+        settings = model.memory
+        if not int(settings.get("cache_checkpoint_tokens", 0)):
+            return
+        state = self.store.load(session.user, session.chat)
+        lines = state["lines"]
+        lined = lined_prefix(session.exchanges, lines, 0)
+        if lined == 0:
+            return
+        ledger = LEDGER_OPEN + "".join(f"[e{i + 1}] {lines[exchange_key(session.exchanges[i])]}\n" for i in range(lined))
+        system = build_layout(session.head, [], session.current, {}, [])["messages"][:len(session.head) or 1]
+        messages = system + [{"role": "user", "content": ledger + SENTINEL}]
+        ids = self.frontend.memory_cut_ids(model, messages, session.tools, session.kwargs, SENTINEL)
+        if ids:
+            await self.frontend.memory_complete(model, ids, 1)

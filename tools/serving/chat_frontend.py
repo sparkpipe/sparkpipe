@@ -393,6 +393,9 @@ class Model:
         self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
+        self.memory = spec.get("chat_memory")
+        if self.memory is not None and not isinstance(self.memory, dict):
+            raise SystemExit(f"chat_frontend: {self.id} chat_memory must be an object")
 
     def logprob(self, pair):
         text = self.vocabulary.piece(pair[0])
@@ -820,6 +823,8 @@ class ChannelParser(OutputParser):
 
 
 class Frontend:
+    memory = None
+
     def __init__(self, config, base):
         self.models = {}
         for spec in config["models"]:
@@ -830,6 +835,12 @@ class Frontend:
             raise SystemExit("chat_frontend: control needs status_url and activate_url, and optionally both force_url and admin_url")
         self.site = (base / config["site_dir"]).resolve() if config.get("site_dir") else None
         self.session = None
+        self.memory = None
+        if config.get("chat_memory") is not None:
+            loader = importlib.util.spec_from_file_location("sparkpipe_chat_memory", Path(__file__).with_name("chat_memory.py"))
+            module = importlib.util.module_from_spec(loader)
+            loader.loader.exec_module(module)
+            self.memory = module.Memory(config["chat_memory"], self)
 
     async def start(self, app):
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
@@ -926,6 +937,10 @@ class Frontend:
             for model in self.models.values()]})
 
     def prepare(self, model, body):
+        plan = self.plan(model, body, None)
+        return plan["engine_body"], plan["parser"], plan["prompt_tokens"]
+
+    def plan(self, model, body, headers):
         for field in UNSUPPORTED_FIELDS:
             if field in body and body[field] not in (None, False, 1):
                 raise RequestError(400, "unsupported_parameter", f"{field} is not supported by this server")
@@ -961,6 +976,14 @@ class Frontend:
             if key not in model.template_kwargs:
                 raise RequestError(400, "unsupported_parameter", f"chat_template_kwargs.{key} is not accepted; accepted: {sorted(model.template_kwargs)}")
             kwargs[key] = value
+        session = None
+        if self.memory is not None and headers is not None:
+            session = self.memory.session(model, headers, messages, tools, kwargs)
+            if session is not None:
+                messages, tools = normalize_messages(session.messages), session.tools
+        return self.finish_plan(model, body, messages, tools, kwargs, session)
+
+    def finish_plan(self, model, body, messages, tools, kwargs, session):
         prompt, prompt_ids = model.render(messages, tools, kwargs)
         if len(prompt_ids) >= model.context_tokens:
             raise RequestError(400, "context_length_exceeded", f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}")
@@ -984,7 +1007,10 @@ class Frontend:
             parser = OutputParser(model, tools, prompt.rstrip().endswith(model.reasoning["start"].rstrip()), stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body, model.sampling_defaults))
-        return engine_body, parser, len(prompt_ids)
+        if self.memory is not None:
+            engine_body["priority"] = 1
+        return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
+                "tools": tools, "kwargs": kwargs, "session": session}
 
     async def engine_events(self, model, engine_body):
         try:
@@ -1028,6 +1054,8 @@ class Frontend:
                     raise
             now = asyncio.get_running_loop().time()
             deadline = deadline if deadline is not None else now + model.gate.wait_seconds
+            if self.memory is not None:
+                self.memory.cancel_all()
             await model.gate.wait_ready(self.session, deadline - now)
 
     def logprob_entries(self, model, chunk, expected):
@@ -1050,6 +1078,8 @@ class Frontend:
         step = model.vocabulary.decoder()
         finish = None
         usage = None
+        token_ids = []
+        stop_string = False
         logprobs = engine_body.get("logprobs")
         async for chunk in self.engine_stream(model, engine_body):
             if "error" in chunk:
@@ -1060,6 +1090,7 @@ class Frontend:
                     yield ("logprobs", entries)
             text = []
             for token in chunk.get("tokens", []):
+                token_ids.append(token)
                 if token in model.stop_token_ids:
                     continue
                 piece = step(token)
@@ -1072,10 +1103,99 @@ class Frontend:
                 yield event
             if parser.stopped and not parser.ended:
                 finish = "stop"
+                stop_string = True
                 break
         for event in parser.finish():
             yield event
-        yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage})
+        yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage,
+                          "engine_finish": "stop_string" if stop_string else (finish or "stop"), "token_ids": token_ids})
+
+    async def respond(self, model, plan):
+        session = plan["session"]
+        if session is None:
+            async for event in self.generate(model, plan["engine_body"], plan["parser"]):
+                yield event
+            return
+        completion = 0
+        while True:
+            internal, visible, content, reasoning = [], [], [], []
+            result = {}
+            async for kind, value in self.generate(model, plan["engine_body"], plan["parser"]):
+                if kind == "tool_call" and session.claims(value):
+                    internal.append(value)
+                    continue
+                if kind == "finish":
+                    result = value
+                    continue
+                if kind == "tool_call":
+                    visible.append(value)
+                elif kind == "content":
+                    content.append(value)
+                elif kind == "reasoning":
+                    reasoning.append(value)
+                yield kind, value
+            usage = dict(result.get("usage") or {})
+            completion += usage.get("completion_tokens", 0)
+            if internal and not visible and session.can_continue():
+                messages = session.continue_with("".join(content), "".join(reasoning), internal)
+                plan = self.finish_plan(model, plan["body"], normalize_messages(messages), plan["tools"], plan["kwargs"], session)
+                continue
+            if usage:
+                usage["completion_tokens"] = completion
+            session.finished(plan["messages"], "".join(content), "".join(reasoning), visible, result.get("engine_finish"))
+            reason = "tool_calls" if visible else ("length" if result.get("engine_finish") == "length" else "stop")
+            yield "finish", dict(result, usage=usage or result.get("usage"), finish_reason=reason)
+            return
+
+    async def memory_model_ready(self, model):
+        if self.control is None:
+            return True
+        try:
+            async with self.session.get(self.control["status_url"], timeout=aiohttp.ClientTimeout(total=5)) as response:
+                status = await response.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+            return False
+        return (isinstance(status, dict) and status.get("active") == model.id and status.get("state") == "idle"
+                and not status.get("draining") and status.get("wanted") in (None, model.id))
+
+    def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
+        prompt, ids = model.render(normalize_messages(messages), tools, kwargs)
+        reasoning_open = model.reasoning is not None and prompt.rstrip().endswith(model.reasoning["start"].rstrip())
+        if suffix and reasoning_open:
+            ids = ids + model.vocabulary.encode(suffix, True)
+            reasoning_open = False
+        return ids, reasoning_open
+
+    def memory_cut_ids(self, model, messages, tools, kwargs, sentinel):
+        context = dict(model.template_defaults)
+        context.update(kwargs)
+        messages = normalize_messages(messages)
+        if isinstance(model.renderer, SegmentRenderer):
+            ids = []
+            for segment in model.renderer.function(messages, tools or None, add_generation_prompt=True, **context):
+                if sentinel in segment.text:
+                    return ids + model.vocabulary.encode(segment.text[:segment.text.index(sentinel)], segment.allow_special)
+                ids.extend(model.vocabulary.encode(segment.text, segment.allow_special))
+            return None
+        text = model.renderer.render_text(messages, tools, dict(model.renderer.template_tokens, **context))
+        if sentinel not in text:
+            return None
+        return model.vocabulary.encode(text[:text.index(sentinel)], True)
+
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False):
+        body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": 0, "temperature": 0.0}
+        parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
+        step = model.vocabulary.decoder()
+        content = []
+        async for chunk in self.engine_events(model, body):
+            text = "".join(piece for piece in (step(token) for token in chunk.get("tokens", []) if token not in model.stop_token_ids) if piece)
+            if parser is None:
+                content.append(text)
+                continue
+            content.extend(value for kind, value in parser.feed(text) if kind == "content")
+        if parser is not None:
+            content.extend(value for kind, value in parser.finish() if kind == "content")
+        return "".join(content)
 
     def usage_block(self, usage, prompt_tokens):
         usage = usage or {}
@@ -1103,13 +1223,26 @@ class Frontend:
             return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
         try:
             model = self.model_for(body)
-            engine_body, parser, prompt_tokens = self.prepare(model, body)
+            plan = self.plan(model, body, request.headers)
+        except RequestError as error:
+            return error_response(error)
+        if self.memory is not None:
+            self.memory.enter(model)
+        try:
+            return await self.answer(request, model, body, plan, started)
+        finally:
+            if self.memory is not None:
+                self.memory.leave(model)
+
+    async def answer(self, request, model, body, plan, started):
+        engine_body, prompt_tokens = plan["engine_body"], plan["prompt_tokens"]
+        try:
             if body.get("stream"):
-                return await self.chat_stream(request, model, body, engine_body, parser, prompt_tokens, started)
+                return await self.chat_stream(request, model, body, plan, started)
             content, reasoning, calls, logprobs = [], [], [], []
             result = {}
             first = None
-            async for kind, value in self.generate(model, engine_body, parser):
+            async for kind, value in self.respond(model, plan):
                 first = first or time.monotonic()
                 if kind == "logprobs":
                     logprobs.extend(value)
@@ -1133,7 +1266,8 @@ class Frontend:
         return web.json_response({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion", "created": int(time.time()),
                                   "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens)})
 
-    async def chat_stream(self, request, model, body, engine_body, parser, prompt_tokens, started):
+    async def chat_stream(self, request, model, body, plan, started):
+        prompt_tokens = plan["prompt_tokens"]
         identifier = "chatcmpl-" + uuid.uuid4().hex
         created = int(time.time())
         include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
@@ -1152,7 +1286,7 @@ class Frontend:
             return ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode()
 
         try:
-            async for kind, value in self.generate(model, engine_body, parser):
+            async for kind, value in self.respond(model, plan):
                 if response is None:
                     response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
                     await response.prepare(request)
