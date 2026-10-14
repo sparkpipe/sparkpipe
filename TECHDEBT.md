@@ -366,8 +366,8 @@ finished ones rewritten to say what is left.
   38 s for GLM-5.3 Full and 46 s for K3 (`~/sparkpipe-swap/swap.log` on the
   hub; README, Models). Still open: thirteen catalog models in
   `deployment/hub/model_swap.json` have no warm step. Nothing holds a swap to
-  60 seconds (the rank wait alone allows 300 s), and K3 took 68.6 s on
-  2026-10-14 with flychess loading every node's CPUs. A failed swap leaves no
+  60 seconds (the rank wait alone allows 300 s), and K3 took up to 79 s on
+  2026-10-14 with a CPU tenant loading every node. A failed swap leaves no
   model serving because the previous one is already stopped. Close it with a
   bound that fails a swap past 60 seconds and a failed start that leaves the
   previous model serving.
