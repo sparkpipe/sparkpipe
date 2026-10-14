@@ -78,7 +78,7 @@ one_variant() {
   echo "$1: FAILED, expected one result on all 16 nodes"; return 1
 }
 restore_root() { echo "test -d root.prev-$1 && rm -rf root.failed-$1 && mv root root.failed-$1 && { cp -a root.prev-$1 root || { rm -rf root; mv root.failed-$1 root; false; }; }"; }
-residentds() { fan "pgrep -c -f 'bin/sparkpipe_model_[r]esidentd' || true" | awk '{s+=$2} END {print s+0}'; }
+residentds() { fan "pgrep -f '^[^ ]*bin/sparkpipe_model_[r]esidentd( |\$)' | wc -l" | awk '{s+=$2} END {print s+0}'; }
 running_wd() { fan "sha256sum < /proc/\$(pgrep -o -f 'sparkdata/weightd/sparkpipe_[w]eightd')/exe | cut -c1-16; test -e /tmp/weightd-mesh/.ready && echo ready" | awk '{c[$2]++} END {for (k in c) printf "%s=%d ", k, c[k]}'; }
 wd_is() { local s; s=$(running_wd); echo "$s" | grep -q "$1=16" && echo "$s" | grep -q "ready=16"; }
 swap_cmd() { hub "python3 -c \"import json,sys; d=json.load(open('/home/spec/sparkpipe-swap/model_swap.json')); print([m for m in d['models'] if m['id']=='$1'][0]['$2'])\""; }

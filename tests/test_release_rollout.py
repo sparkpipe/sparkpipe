@@ -153,7 +153,7 @@ def stage(fail_host):
     return body
 
 
-def install(fail_host):
+def install(fail_host, process=None):
     def body(work, fleet, state, model_lanes, extra, old_wd):
         text = SCRIPT.read_text()
         libraries = sorted(set(re.findall(r'^\s*\S+\) echo "\S+ (\S+) ', text, re.M)) | {"libqwen38_27b_bf16_tp16_serving_adapter.so"})
@@ -175,10 +175,22 @@ def install(fail_host):
                 (fleet / host / lane / "root" / "lib").mkdir(parents=True, exist_ok=True)
         for _, api in model_lanes:
             (fleet / "rtx5090" / api / "runtime" / "lib").mkdir(parents=True, exist_ok=True)
-        result = run("install", fleet, work, old_wd, state, APIB=str(build_directory))
+        holder = None
+        if process is not None:
+            holder = subprocess.Popen(["bash", "-c", f'exec -a "{process}" sleep 300'])
+        try:
+            result = run("install", fleet, work, old_wd, state, APIB=str(build_directory))
+        finally:
+            if holder is not None:
+                holder.kill()
+                holder.wait()
         installed = [index for index in range(16)
                      if (fleet / f"spark{HEX[index]}" / model_lanes[0][0] / "root" / "bin" / "sparkpipe_model_residentd").exists()]
-        if fail_host:
+        if process is not None and process.startswith("./bin/"):
+            check(result.returncode != 0, "install ran while a residentd was running", result)
+            check("residentds running" in result.stdout, "install did not name the running residentd", result)
+            check(installed == [], "install changed a node while a residentd was running", result)
+        elif fail_host:
             check(result.returncode != 0, f"install exited 0 with {fail_host} missing the release", result)
             check("INSTALL-FAILED" in result.stdout, "install did not report the failure", result)
             check(len(installed) == 15, f"install reached {len(installed)} nodes, expected 15", result)
@@ -198,6 +210,9 @@ def install(fail_host):
 fleet_case("stage verifies all 16 nodes", stage(""))
 fleet_case("install puts one identical release on all 16 nodes and the hub", install(""))
 fleet_case("install fails when one node has no staged release", install("spark9"))
+fleet_case("install is not blocked by a process that only names the residentd binary",
+           install("", "pgrep -f bin/sparkpipe_model_residentd"))
+fleet_case("install refuses while a residentd runs", install("", "./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index 6"))
 fleet_case("stage fails when one node is not staged", stage("spark9"))
 fleet_case("rollback refuses without a backup stamp", refusal(lambda fleet, state, lanes: (state / "utc").unlink()))
 fleet_case("rollback refuses when one node misses one lane backup",
@@ -207,4 +222,4 @@ fleet_case("rollback refuses when a hub API backup is missing",
 fleet_case("rollback refuses when one node misses the weightd_warm backup",
            refusal(lambda fleet, state, lanes: (fleet / "sparkc" / "sparkdata" / "swap" / f"weightd_warm.prev-{STAMP}").unlink()))
 fleet_case("complete rollback restores everything and stops on a weightd that is not ready", complete_rollback)
-print("PASS test_release_rollout: stage needs all 16 nodes verified; install needs one identical result from all 16; rollback refuses an incomplete backup before changing anything, restores every lane, hub API and weightd_warm from a complete one, and never activates on an old weightd that is not ready")
+print("PASS test_release_rollout: stage needs all 16 nodes verified; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); rollback refuses an incomplete backup before changing anything, restores every lane, hub API and weightd_warm from a complete one, and never activates on an old weightd that is not ready")
