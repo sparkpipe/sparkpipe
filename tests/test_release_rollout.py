@@ -1,4 +1,4 @@
-"""Run release_rollout.sh stage, install and rollback against a fake 16-node fleet: every node must verify and install one identical set of files, an incomplete backup refuses before any change, and a rollback never activates models on an old weightd that is not ready."""
+"""Run release_rollout.sh stage, backup, install and rollback against a fake 16-node fleet: every node must verify and install one identical set of files, hub backups go to the workspace volume and refuse when it is short of space, an incomplete backup refuses before any change, and a rollback never activates models on an old weightd that is not ready."""
 import hashlib
 import os
 import pathlib
@@ -21,10 +21,16 @@ HOME="$FAKE_FLEET/$host" exec bash -c "$*"
 while [ $# -gt 0 ]; do case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
 host="${2%%:*}"
 [ "$host" = "${FAKE_SCP_FAIL:-}" ] && exit 1
-mkdir -p "$FAKE_FLEET/$host" && cp "$1" "$FAKE_FLEET/$host/${2#*:}"
+target="${2#*:}"
+case "$target" in /*) ;; *) target="$FAKE_FLEET/$host/$target" ;; esac
+mkdir -p "$(dirname "$target")" && cp "$1" "$target"
 """,
     "curl": "#!/usr/bin/env bash\necho \"$*\" >> \"$FAKE_FLEET/curl.log\"\nexit 0\n",
     "sleep": "#!/usr/bin/env bash\nexit 0\n",
+    "df": """#!/usr/bin/env bash
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+for path in "$@"; do case "$path" in -*) ;; *) echo "fake 999999999 1 ${FAKE_DF_FREE_KIB:-104857600} 1% $path" ;; esac; done
+""",
 }
 
 
@@ -52,9 +58,12 @@ def build(fleet, wd_bytes):
         (swap / f"weightd_warm.prev-{STAMP}").write_text("old")
     hub = fleet / "rtx5090"
     for _, api in model_lanes:
-        for name, content in ((api, "new"), (f"{api}.prev-{STAMP}", "old")):
-            (hub / name / "bin").mkdir(parents=True, exist_ok=True)
-            (hub / name / "bin" / "api").write_text(content)
+        (hub / api / "bin").mkdir(parents=True, exist_ok=True)
+        (hub / api / "bin" / "api").write_text("new")
+    work = fleet / "srv-workspace"
+    for _, api in model_lanes:
+        (work / "backups" / f"{api}.prev-{STAMP}" / "bin").mkdir(parents=True, exist_ok=True)
+        (work / "backups" / f"{api}.prev-{STAMP}" / "bin" / "api").write_text("old")
     (hub / "release-staging" / "weightd-rollback").mkdir(parents=True)
     (hub / "release" / "core" / "bin").mkdir(parents=True)
     old_wd = hashlib.sha256(wd_bytes).hexdigest()[:16]
@@ -83,7 +92,8 @@ def run(step, fleet, work, old_wd, state, **extra_env):
             f"{hashlib.sha256((firmware / name).read_bytes()).hexdigest()}  {name}\n"
             for name in ("sparkpipe_weightd", "sparkpipe_model_residentd")))
     env = dict(os.environ, PATH=f"{shims}:{os.environ['PATH']}", FAKE_FLEET=str(fleet), FW=str(firmware),
-               APIB="/nonexistent", STATE=str(state), OLD_WD=old_wd, ONLY="qwen3.8-max")
+               APIB="/nonexistent", STATE=str(state), OLD_WD=old_wd, ONLY="qwen3.8-max",
+               HUB_WORK=str(fleet / "srv-workspace"))
     env.update(extra_env)
     return subprocess.run(["bash", str(SCRIPT), step], env=env, capture_output=True, text=True, timeout=600)
 
@@ -153,6 +163,33 @@ def stage(fail_host):
     return body
 
 
+def backup(free_kib):
+    def body(work, fleet, state, model_lanes, extra, old_wd):
+        (state / "utc").unlink()
+        hub = fleet / "rtx5090"
+        (hub / "sparkpipe-swap").mkdir(parents=True, exist_ok=True)
+        (hub / "sparkpipe-swap" / "model_swap.json").write_text("{}")
+        for index in range(16):
+            weightd = fleet / f"spark{HEX[index]}" / "sparkdata" / "weightd"
+            weightd.mkdir(parents=True, exist_ok=True)
+            (weightd / "sparkpipe_weightd").write_text("node weightd")
+        home_before = sorted(path.name for path in hub.iterdir())
+        before = snapshot(fleet)
+        result = run("backup", fleet, work, old_wd, state, FAKE_DF_FREE_KIB=str(free_kib))
+        if free_kib < 20 * 1048576:
+            check(result.returncode != 0, "backup ran with the hub short of space", result)
+            check("HUB-SPACE-LOW" in result.stdout, "backup did not report the free space it found", result)
+            check(before == snapshot(fleet), "backup changed the fleet before refusing for space", result)
+            return
+        check(result.returncode == 0, "backup failed on a healthy fleet", result)
+        stamp = (state / "utc").read_text().strip()
+        for _, api in model_lanes:
+            copy = fleet / "srv-workspace" / "backups" / f"{api}.prev-{stamp}" / "bin" / "api"
+            check(copy.exists() and copy.read_text() == "new", f"hub {api} was not backed up on the workspace volume", result)
+        check(sorted(path.name for path in hub.iterdir()) == home_before, "backup wrote into the hub home", result)
+    return body
+
+
 def install(fail_host, process=None):
     def body(work, fleet, state, model_lanes, extra, old_wd):
         text = SCRIPT.read_text()
@@ -208,6 +245,8 @@ def install(fail_host, process=None):
 
 
 fleet_case("stage verifies all 16 nodes", stage(""))
+fleet_case("backup puts the hub API backups on the workspace volume, not in the home", backup(104857600))
+fleet_case("backup refuses before any change when the hub workspace is short of space", backup(1048576))
 fleet_case("install puts one identical release on all 16 nodes and the hub", install(""))
 fleet_case("install fails when one node has no staged release", install("spark9"))
 fleet_case("install is not blocked by a process that only names the residentd binary",
@@ -218,8 +257,8 @@ fleet_case("rollback refuses without a backup stamp", refusal(lambda fleet, stat
 fleet_case("rollback refuses when one node misses one lane backup",
            refusal(lambda fleet, state, lanes: shutil.rmtree(fleet / "spark7" / lanes[3][0] / f"root.prev-{STAMP}")))
 fleet_case("rollback refuses when a hub API backup is missing",
-           refusal(lambda fleet, state, lanes: shutil.rmtree(fleet / "rtx5090" / f"{lanes[0][1]}.prev-{STAMP}")))
+           refusal(lambda fleet, state, lanes: shutil.rmtree(fleet / "srv-workspace" / "backups" / f"{lanes[0][1]}.prev-{STAMP}")))
 fleet_case("rollback refuses when one node misses the weightd_warm backup",
            refusal(lambda fleet, state, lanes: (fleet / "sparkc" / "sparkdata" / "swap" / f"weightd_warm.prev-{STAMP}").unlink()))
 fleet_case("complete rollback restores everything and stops on a weightd that is not ready", complete_rollback)
-print("PASS test_release_rollout: stage needs all 16 nodes verified; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); rollback refuses an incomplete backup before changing anything, restores every lane, hub API and weightd_warm from a complete one, and never activates on an old weightd that is not ready")
+print("PASS test_release_rollout: stage needs all 16 nodes verified; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); rollback refuses an incomplete backup before changing anything, restores every lane, hub API and weightd_warm from a complete one, and never activates on an old weightd that is not ready")

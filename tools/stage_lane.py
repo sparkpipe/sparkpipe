@@ -427,6 +427,9 @@ def deployment(model: dict, lane: int, args) -> dict:
     return result
 
 
+HUB_LOG_DIR = "/srv/workspace/sparkpipe/logs"
+
+
 def swap_entry(name: str, model: dict, lane: int) -> dict:
     root = f"$HOME/stage-lanes/{name}/lane{lane}/root"
     api = f"$HOME/{name}-kv-api"
@@ -441,8 +444,8 @@ def swap_entry(name: str, model: dict, lane: int) -> dict:
         "node_stop": f"{root}/lane.sh stop",
         "api_start": (f"systemctl --user reset-failed {unit} 2>/dev/null; systemctl --user is-active -q {unit} || "
                       f"systemd-run --user --unit={unit} -p MemoryMax=2G -p MemorySwapMax=0 --working-directory={api} "
-                      f"bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root {api}/runtime "
-                      f"--port {model['api_port']} >> api.log 2>&1' >/dev/null"),
+                      f"bash -c 'mkdir -p {HUB_LOG_DIR} && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root {api}/runtime "
+                      f"--port {model['api_port']} >> {HUB_LOG_DIR}/{name}-kv-api.log 2>&1' >/dev/null"),
         "api_stop": f"systemctl --user stop {unit} 2>/dev/null; systemctl --user reset-failed {unit} 2>/dev/null; true",
         "health": f"http://127.0.0.1:{model['api_port']}/health",
     }

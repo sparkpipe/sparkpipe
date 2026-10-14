@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -u
 KIT=$(cd "$(dirname "$0")" && pwd)
-RELEASE_FW=${FW:?FW is the local release firmware dir (release_build.sh output)}
-RELEASE_APIB=${APIB:?APIB is the hub api build dir, e.g. /home/spec/api-build-<sha>/build}
 . "$KIT/rollover_lib.sh"
+RELEASE_FW=${FW:?FW is the local release firmware dir (release_build.sh output)}
+RELEASE_APIB=${APIB:?APIB is the hub api build dir, e.g. $HUB_WORK/api-build-<sha>/build}
 activate() {
   local model="$1" i out
   hub "curl -s -X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null
@@ -29,6 +29,8 @@ SHA=$(cat "$FW/SOURCE_COMMIT")
 STATE=${STATE:-$KIT/state-$SHA}
 mkdir -p "$STATE"
 R="release-$SHA"
+RD=$HUB_WORK/$R
+BK=$HUB_WORK/backups
 OLD_WD=${OLD_WD:-60b3ca5d0d3e444b}
 NEW_WD=$(shasum -a 256 "$FW/sparkpipe_weightd" | cut -c1-16)
 MODELS="qwen3.8-max glm-5.3 kimi-k3 glm-5.3-flash qwen3.8-27b qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro"
@@ -63,7 +65,7 @@ backups_present() {
   for id in $MODELS; do
     L=$(field $id lane)
     fan_all "backup $L/root.prev-$U" "test -d \$HOME/$L/root.prev-$U" || missing=1
-    hub "test -d ~/$(field $id api).prev-$U" || { echo "backup hub ~/$(field $id api).prev-$U missing"; missing=1; }
+    hub "test -d $BK/$(field $id api).prev-$U" || { echo "backup hub $BK/$(field $id api).prev-$U missing"; missing=1; }
   done
   for L in $EXTRA_LANES; do fan_all "backup $L/root.prev-$U" "test -d \$HOME/$L/root.prev-$U" || missing=1; done
   fan_all "backup weightd_warm.prev-$U" "test -s \$HOME/sparkdata/swap/weightd_warm.prev-$U" || missing=1
@@ -85,18 +87,18 @@ swap_cmd() { hub "python3 -c \"import json,sys; d=json.load(open('/home/spec/spa
 
 capture() {
   local id=$1 tag=$2 port; port=$(field "$id" port)
-  hub "mkdir -p ~/$R/$id && cd ~/$R && timeout 3600 python3 kit/release_capture.py $port $id/$tag.json kit/prompt_source.c > $id/$tag.log 2>&1; echo capture $id $tag rc=\$?"
+  hub "mkdir -p $RD/$id && cd $RD && timeout 3600 python3 kit/release_capture.py $port $id/$tag.json kit/prompt_source.c > $id/$tag.log 2>&1; echo capture $id $tag rc=\$?"
   case "$id" in
-    glm-5.3) hub "cd ~/rollover/tree && timeout 2400 python3 tools/glm53_full_golden.py capture --prompts qualification/glm53_full/golden/prompts.json --port $port --max-tokens 128 --logprobs 4 --label $R-$tag --out ~/$R/$id/golden-$tag.json > ~/$R/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
-    kimi-k3) hub "cd ~/rollover/tree && timeout 1800 python3 ~/$R/kit/rollover_k3_golden.py $port ~/$R/$id/golden-$tag.json > ~/$R/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
-    qwen3.8-27b|qwen3.8-flash|qwen3.8-max) hub "cd ~/rollover/tree && timeout 1800 python3 ~/$R/kit/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port ~/$R/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
-    deepseek-v4.1-flash) hub "cd ~/rollover/tree && timeout 1800 python3 ~/$R/kit/rollover_lp_capture.py qualification/dsv41_flash/reference_tokens.json $port ~/$R/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
+    glm-5.3) hub "cd ~/rollover/tree && timeout 2400 python3 tools/glm53_full_golden.py capture --prompts qualification/glm53_full/golden/prompts.json --port $port --max-tokens 128 --logprobs 4 --label $R-$tag --out $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
+    kimi-k3) hub "cd ~/rollover/tree && timeout 1800 python3 $RD/kit/rollover_k3_golden.py $port $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
+    qwen3.8-27b|qwen3.8-flash|qwen3.8-max) hub "cd ~/rollover/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
+    deepseek-v4.1-flash) hub "cd ~/rollover/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/dsv41_flash/reference_tokens.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
   esac
 }
 compare() {
   local id=$1 a=$2 b=$3
-  hub "cd ~/$R && python3 kit/release_compare.py $id/$a.json $id/$b.json | tail -7"
-  hub "test -f ~/$R/$id/golden-$a.json && test -f ~/$R/$id/golden-$b.json && { python3 ~/perfoverlap/exact.py ~/$R/$id/golden-$a.json ~/$R/$id/golden-$b.json | head -3; cd ~/rollover/tree && python3 ~/$R/kit/rollover_golden_compare.py ~/$R/$id/golden-$a.json ~/$R/$id/golden-$b.json 0.5 ~/$R/$id/golden-compare-$a-$b.json 2>&1 | tail -2; } || true"
+  hub "cd $RD && python3 kit/release_compare.py $id/$a.json $id/$b.json | tail -7"
+  hub "test -f $RD/$id/golden-$a.json && test -f $RD/$id/golden-$b.json && { python3 ~/perfoverlap/exact.py $RD/$id/golden-$a.json $RD/$id/golden-$b.json | head -3; cd ~/rollover/tree && python3 $RD/kit/rollover_golden_compare.py $RD/$id/golden-$a.json $RD/$id/golden-$b.json 0.5 $RD/$id/golden-compare-$a-$b.json 2>&1 | tail -2; } || true"
 }
 
 step=${1:-}
@@ -110,7 +112,8 @@ case "$step" in
     hub "test -x $APIB/sparkpipe_model_api && test -x $APIB/sparkpipe_tokenize_prompt && cat ~/release/core/WEIGHTSD_BIN" | grep -q "$OLD_WD" || { echo "hub core weightd is not $OLD_WD"; exit 1; }
     echo "weightd running: $(running_wd)"
     fan "ls -d \$HOME/sparkdata/glm53full.fp8lin.tp16/packs/*.glm52sp | wc -l" | awk '{print $2}' | sort | uniq -c | sed 's/^/fp8lin packs per node: /'
-    hub "mkdir -p ~/$R/kit" && scp -q "$KIT/../tools/release_capture.py" "$KIT/../tools/release_compare.py" "$KIT/../tools/rollover_golden_compare.py" "$KIT/../tools/rollover_k3_golden.py" "$KIT/../tools/rollover_lp_capture.py" rtx5090:$R/kit/ && scp -q "$KIT/../runtime/json.c" rtx5090:$R/kit/prompt_source.c
+    hub_space || exit 1
+    hub "mkdir -p $RD/kit $BK" && scp -q "$KIT/../tools/release_capture.py" "$KIT/../tools/release_compare.py" "$KIT/../tools/rollover_golden_compare.py" "$KIT/../tools/rollover_k3_golden.py" "$KIT/../tools/rollover_lp_capture.py" rtx5090:$RD/kit/ && scp -q "$KIT/../runtime/json.c" rtx5090:$RD/kit/prompt_source.c
     echo PRECHECK-OK ;;
   old)
     for id in $MODELS; do stamp "old $id"; activate "$id" && capture "$id" old || echo "OLD-FAILED $id"; done
@@ -120,11 +123,12 @@ case "$step" in
     (cd "$FW" && COPYFILE_DISABLE=1 tar cf "$STATE/fw.tar" .)
     for r in $(seq 0 15); do (scp -q -o BatchMode=yes "$STATE/fw.tar" spark${HEX:$r:1}:rp-release-$SHA.tar && node $r "rm -rf ~/rp-release-$SHA && mkdir ~/rp-release-$SHA && tar -C ~/rp-release-$SHA -xf ~/rp-release-$SHA.tar 2>/dev/null && rm ~/rp-release-$SHA.tar && cd ~/rp-release-$SHA && sha256sum --quiet -c SHA256SUMS && echo verified" | sed "s/^/spark${HEX:$r:1}: /") & done | awk '{print $NF}' | sort | uniq -c | one_variant stage || { echo "STAGE-FAILED"; exit 1; } ;;
   backup)
+    hub_space || exit 1
     U=$(utc); stamp "backup root.prev-$U"
     for id in $MODELS; do
       L=$(field $id lane)
       fan_all "backup $L" "cd \$HOME/$L && [ ! -e root.prev-$U ] && mkdir root.prev-$U && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' root/ root.prev-$U/" || exit 1
-      hub "[ -e ~/$(field $id api).prev-$U ] || cp -a ~/$(field $id api) ~/$(field $id api).prev-$U" || { echo "BACKUP-FAILED hub $(field $id api)"; exit 1; }
+      hub "[ -e $BK/$(field $id api).prev-$U ] || cp -a ~/$(field $id api) $BK/$(field $id api).prev-$U" || { echo "BACKUP-FAILED hub $(field $id api)"; exit 1; }
     done
     for L in $EXTRA_LANES; do fan_all "backup $L" "cd \$HOME/$L && [ ! -e root.prev-$U ] && mkdir root.prev-$U && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' root/ root.prev-$U/" || exit 1; done
     fan_all "backup weightd" "cp -p \$HOME/sparkdata/swap/weightd_warm \$HOME/sparkdata/swap/weightd_warm.prev-$U && cp -p \$HOME/sparkdata/weightd/sparkpipe_weightd \$HOME/sparkdata/weightd/sparkpipe_weightd.prev-$U" || exit 1
@@ -162,12 +166,12 @@ case "$step" in
       if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' \$HOME/$(field $id lane)/root/residentd.log | tail -2" | head -8; continue; fi
       capture "$id" new
       compare "$id" old new
-      hub "cd ~/rollover/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --model $id --reasoning both --out ~/$R/$id/ui-smoke.json > ~/$R/$id/smoke.log 2>&1; tail -2 ~/$R/$id/smoke.log | cut -c1-200"
-      if [ -n "${COMPSEC:-}" ] || ! hub "cd ~/$R && python3 kit/release_compare.py $id/old.json $id/new.json | grep -q 'EXACT 6/6'"; then
+      hub "cd ~/rollover/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
+      if [ -n "${COMPSEC:-}" ] || ! hub "cd $RD && python3 kit/release_compare.py $id/old.json $id/new.json | grep -q 'EXACT 6/6'"; then
         eff="--reasoning-effort minimal"; [ "$id" = qwen3.8-max ] && eff="--max-tokens 2048"
-        hub "cd ~/rollover/tree && timeout 7200 python3 tools/compsec17_openai.py --endpoint http://127.0.0.1:4000 --model $id $eff --out ~/$R/$id/compsec17 > ~/$R/$id/compsec.log 2>&1; grep -o 'RESULT: [0-9]*/[0-9]*' ~/$R/$id/compsec.log"
+        hub "cd ~/rollover/tree && timeout 7200 python3 tools/compsec17_openai.py --endpoint http://127.0.0.1:4000 --model $id $eff --out $RD/$id/compsec17 > $RD/$id/compsec.log 2>&1; grep -o 'RESULT: [0-9]*/[0-9]*' $RD/$id/compsec.log"
       fi
-      hub "cd ~/$R/$id && python3 ~/evalkit/tools/api_serving_perf.py --endpoint http://127.0.0.1:$(field $id port) --cases o256,ttft6000 --repeats 1 --label $R --output perf.jsonl > /dev/null 2>&1; tail -2 perf.jsonl | python3 -c \"import json,sys; [print('$id', d.get('case'), 'decode', d.get('median_decode_tok_s'), 'prefill', d.get('prefill_tok_s')) for d in map(json.loads, sys.stdin)]\""
+      hub "cd $RD/$id && python3 ~/evalkit/tools/api_serving_perf.py --endpoint http://127.0.0.1:$(field $id port) --cases o256,ttft6000 --repeats 1 --label $R --output perf.jsonl > /dev/null 2>&1; tail -2 perf.jsonl | python3 -c \"import json,sys; [print('$id', d.get('case'), 'decode', d.get('median_decode_tok_s'), 'prefill', d.get('prefill_tok_s')) for d in map(json.loads, sys.stdin)]\""
       fan "grep -a -c -i -E 'error|fail|fault|abort' \$HOME/$(field $id lane)/root/residentd.log" | awk '{s+=$2} END {print "rank log error lines:", s}'
     done
     restore_max ;;
@@ -180,7 +184,7 @@ case "$step" in
     for id in $MODELS; do
       L=$(field $id lane)
       fan_all "restore $L" "cd \$HOME/$L && $(restore_root $U) && { rmdir root/kvsnapshot root/kvcache 2>/dev/null; mv root.failed-$U/kvsnapshot root.failed-$U/kvcache root/ 2>/dev/null; true; }" || restored=0
-      hub "test -d ~/$(field $id api).prev-$U && rm -rf ~/$(field $id api).failed-$U && mv ~/$(field $id api) ~/$(field $id api).failed-$U && { cp -a ~/$(field $id api).prev-$U ~/$(field $id api) || { rm -rf ~/$(field $id api); mv ~/$(field $id api).failed-$U ~/$(field $id api); false; }; } && rm -f ~/$(field $id api)/runtime/prefix_index.spi" || { echo "restore hub $(field $id api) FAILED"; restored=0; }
+      hub "test -d $BK/$(field $id api).prev-$U && rm -rf $BK/$(field $id api).failed-$U && mv ~/$(field $id api) $BK/$(field $id api).failed-$U && { cp -a $BK/$(field $id api).prev-$U ~/$(field $id api) || { rm -rf ~/$(field $id api); mv $BK/$(field $id api).failed-$U ~/$(field $id api); false; }; } && rm -f ~/$(field $id api)/runtime/prefix_index.spi" || { echo "restore hub $(field $id api) FAILED"; restored=0; }
     done
     for L in $EXTRA_LANES; do fan_all "restore $L" "cd \$HOME/$L && $(restore_root $U)" || restored=0; done
     fan_all "restore weightd_warm" "cp -p \$HOME/sparkdata/swap/weightd_warm.prev-$U \$HOME/sparkdata/swap/weightd_warm" || restored=0

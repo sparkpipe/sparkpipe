@@ -40,7 +40,7 @@
    "node_start": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-glm53-full-api 2>/dev/null; systemctl --user is-active -q kv-glm53-full-api || systemd-run --user --unit=kv-glm53-full-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glm53_full-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_full-kv-api/runtime --port 8475 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-glm53-full-api 2>/dev/null; systemctl --user is-active -q kv-glm53-full-api || systemd-run --user --unit=kv-glm53-full-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glm53_full-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_full-kv-api/runtime --port 8475 >> /srv/workspace/sparkpipe/logs/glm53_full-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-glm53-full-api 2>/dev/null; systemctl --user reset-failed kv-glm53-full-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8475/health",
    "node_warm": "cd $HOME/stage-lanes/glm53_full/lane6/root && SPARK_WEIGHTD_EXPERT_POOL_BYTES=55834574848 ./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.glm52sp) $(cut -c1-64 packs/pack.sha256) 935644c05e76fc198714f4cca449fd8b970ff6d7 16 --family glm52 --shared 78 256 1800 > warm.log 2>&1"
@@ -53,7 +53,7 @@
    "node_start": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-glm53-flash-api 2>/dev/null; systemctl --user is-active -q kv-glm53-flash-api || systemd-run --user --unit=kv-glm53-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glm53_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_flash-kv-api/runtime --port 8476 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-glm53-flash-api 2>/dev/null; systemctl --user is-active -q kv-glm53-flash-api || systemd-run --user --unit=kv-glm53-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glm53_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_flash-kv-api/runtime --port 8476 >> /srv/workspace/sparkpipe/logs/glm53_flash-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-glm53-flash-api 2>/dev/null; systemctl --user reset-failed kv-glm53-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8476/health",
    "node_warm": "cd $HOME/stage-lanes/glm53_flash/lane0/root && SPARK_WEIGHTD_EXPERT_POOL_BYTES=34359738368 ./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.sp) $(cut -c1-64 packs/pack.sha256) 84c6a6aa9497188e15a635ba793b0f95a79b1033 16 --shared > warm.log 2>&1"
@@ -67,7 +67,7 @@
    "node_ready": "cd $HOME/k3-lanes/lane8/root; a=$(systemctl --user is-active sp-k3-rd8); if [ \"$a\" = active ] && grep -q 'model_residentd ready' logs/residentd-{run_id}.log 2>/dev/null; then echo READY; elif [ \"$a\" = active ] || [ \"$a\" = activating ]; then echo WAIT; else echo DEAD; fi",
    "node_stop": "systemctl --user stop sp-k3-rd8 2>/dev/null; systemctl --user reset-failed sp-k3-rd8 2>/dev/null; ! systemctl --user is-active -q sp-k3-rd8",
    "node_warm": "cd $HOME/k3-lanes/lane8/root && P=$(ls ~/sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank*.pack | head -1) && H=$(cut -d' ' -f1 $P.sha256) && SPARK_WEIGHTD_EXPERT_POOL_BYTES=99568941440 ./bin/weightd_warm /tmp/spark_weightd.sock $P $H mxfp4 16 --family k3 93 896 3600 > warm.log 2>&1",
-   "api_start": "systemctl --user reset-failed kv-k3-api 2>/dev/null; systemctl --user is-active -q kv-k3-api || systemd-run --user --unit=kv-k3-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/k3-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/k3-kv-api/runtime --port 8459 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-k3-api 2>/dev/null; systemctl --user is-active -q kv-k3-api || systemd-run --user --unit=kv-k3-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/k3-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/k3-kv-api/runtime --port 8459 >> /srv/workspace/sparkpipe/logs/k3-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-k3-api 2>/dev/null; systemctl --user reset-failed kv-k3-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8459/health"
   },
@@ -79,7 +79,7 @@
    "node_start": "$HOME/stage-lanes/qwen38_27b/lane9/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/qwen38_27b/lane9/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/qwen38_27b/lane9/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-qwen38-27b-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-27b-api || systemd-run --user --unit=kv-qwen38-27b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_27b-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_27b-kv-api/runtime --port 8461 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-qwen38-27b-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-27b-api || systemd-run --user --unit=kv-qwen38-27b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_27b-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_27b-kv-api/runtime --port 8461 >> /srv/workspace/sparkpipe/logs/qwen38_27b-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-qwen38-27b-api 2>/dev/null; systemctl --user reset-failed kv-qwen38-27b-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8461/health"
   },
@@ -91,7 +91,7 @@
    "node_start": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/dsv41_flash/lane10/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-dsv41-flash-api 2>/dev/null; systemctl --user is-active -q kv-dsv41-flash-api || systemd-run --user --unit=kv-dsv41-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/dsv41_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/dsv41_flash-kv-api/runtime --port 8463 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-dsv41-flash-api 2>/dev/null; systemctl --user is-active -q kv-dsv41-flash-api || systemd-run --user --unit=kv-dsv41-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/dsv41_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/dsv41_flash-kv-api/runtime --port 8463 >> /srv/workspace/sparkpipe/logs/dsv41_flash-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-dsv41-flash-api 2>/dev/null; systemctl --user reset-failed kv-dsv41-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8463/health"
   },
@@ -103,7 +103,7 @@
    "node_start": "$HOME/stage-lanes/qwen38_max/lane12/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/qwen38_max/lane12/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/qwen38_max/lane12/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-qwen38-max-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-max-api || systemd-run --user --unit=kv-qwen38-max-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_max-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_max-kv-api/runtime --port 8464 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-qwen38-max-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-max-api || systemd-run --user --unit=kv-qwen38-max-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_max-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_max-kv-api/runtime --port 8464 >> /srv/workspace/sparkpipe/logs/qwen38_max-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-qwen38-max-api 2>/dev/null; systemctl --user reset-failed kv-qwen38-max-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8464/health"
   },
@@ -115,7 +115,7 @@
    "node_start": "$HOME/stage-lanes/qwen38_flash/lane13/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/qwen38_flash/lane13/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/qwen38_flash/lane13/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-qwen38-flash-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-flash-api || systemd-run --user --unit=kv-qwen38-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_flash-kv-api/runtime --port 8465 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-qwen38-flash-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-flash-api || systemd-run --user --unit=kv-qwen38-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_flash-kv-api/runtime --port 8465 >> /srv/workspace/sparkpipe/logs/qwen38_flash-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-qwen38-flash-api 2>/dev/null; systemctl --user reset-failed kv-qwen38-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8465/health"
   },
@@ -127,7 +127,7 @@
    "node_start": "$HOME/stage-lanes/gemma4_31b/lane14/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/gemma4_31b/lane14/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/gemma4_31b/lane14/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-gemma4-31b-api 2>/dev/null; systemctl --user is-active -q kv-gemma4-31b-api || systemd-run --user --unit=kv-gemma4-31b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/gemma4_31b-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/gemma4_31b-kv-api/runtime --port 8466 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-gemma4-31b-api 2>/dev/null; systemctl --user is-active -q kv-gemma4-31b-api || systemd-run --user --unit=kv-gemma4-31b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/gemma4_31b-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/gemma4_31b-kv-api/runtime --port 8466 >> /srv/workspace/sparkpipe/logs/gemma4_31b-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-gemma4-31b-api 2>/dev/null; systemctl --user reset-failed kv-gemma4-31b-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8466/health"
   },
@@ -139,7 +139,7 @@
    "node_start": "$HOME/stage-lanes/gemma4_26b/lane15/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/gemma4_26b/lane15/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/gemma4_26b/lane15/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-gemma4-26b-api 2>/dev/null; systemctl --user is-active -q kv-gemma4-26b-api || systemd-run --user --unit=kv-gemma4-26b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/gemma4_26b-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/gemma4_26b-kv-api/runtime --port 8467 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-gemma4-26b-api 2>/dev/null; systemctl --user is-active -q kv-gemma4-26b-api || systemd-run --user --unit=kv-gemma4-26b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/gemma4_26b-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/gemma4_26b-kv-api/runtime --port 8467 >> /srv/workspace/sparkpipe/logs/gemma4_26b-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-gemma4-26b-api 2>/dev/null; systemctl --user reset-failed kv-gemma4-26b-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8467/health"
   },
@@ -151,7 +151,7 @@
    "node_start": "$HOME/stage-lanes/ling3_flash/lane2/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/ling3_flash/lane2/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/ling3_flash/lane2/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-ling3-flash-api 2>/dev/null; systemctl --user is-active -q kv-ling3-flash-api || systemd-run --user --unit=kv-ling3-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/ling3_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/ling3_flash-kv-api/runtime --port 8468 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-ling3-flash-api 2>/dev/null; systemctl --user is-active -q kv-ling3-flash-api || systemd-run --user --unit=kv-ling3-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/ling3_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/ling3_flash-kv-api/runtime --port 8468 >> /srv/workspace/sparkpipe/logs/ling3_flash-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-ling3-flash-api 2>/dev/null; systemctl --user reset-failed kv-ling3-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8468/health"
   },
@@ -163,7 +163,7 @@
    "node_start": "$HOME/stage-lanes/hy4/lane3/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/hy4/lane3/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/hy4/lane3/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-hy4-api 2>/dev/null; systemctl --user is-active -q kv-hy4-api || systemd-run --user --unit=kv-hy4-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/hy4-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/hy4-kv-api/runtime --port 8470 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-hy4-api 2>/dev/null; systemctl --user is-active -q kv-hy4-api || systemd-run --user --unit=kv-hy4-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/hy4-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/hy4-kv-api/runtime --port 8470 >> /srv/workspace/sparkpipe/logs/hy4-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-hy4-api 2>/dev/null; systemctl --user reset-failed kv-hy4-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8470/health"
   },
@@ -175,7 +175,7 @@
    "node_start": "$HOME/stage-lanes/muse_glimmer/lane4/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/muse_glimmer/lane4/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/muse_glimmer/lane4/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-muse-glimmer-api 2>/dev/null; systemctl --user is-active -q kv-muse-glimmer-api || systemd-run --user --unit=kv-muse-glimmer-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/muse_glimmer-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/muse_glimmer-kv-api/runtime --port 8471 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-muse-glimmer-api 2>/dev/null; systemctl --user is-active -q kv-muse-glimmer-api || systemd-run --user --unit=kv-muse-glimmer-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/muse_glimmer-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/muse_glimmer-kv-api/runtime --port 8471 >> /srv/workspace/sparkpipe/logs/muse_glimmer-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-muse-glimmer-api 2>/dev/null; systemctl --user reset-failed kv-muse-glimmer-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8471/health"
   },
@@ -187,7 +187,7 @@
    "node_start": "$HOME/stage-lanes/ling3_fin/lane2/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/ling3_fin/lane2/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/ling3_fin/lane2/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-ling3-fin-api 2>/dev/null; systemctl --user is-active -q kv-ling3-fin-api || systemd-run --user --unit=kv-ling3-fin-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/ling3_fin-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/ling3_fin-kv-api/runtime --port 8469 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-ling3-fin-api 2>/dev/null; systemctl --user is-active -q kv-ling3-fin-api || systemd-run --user --unit=kv-ling3-fin-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/ling3_fin-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/ling3_fin-kv-api/runtime --port 8469 >> /srv/workspace/sparkpipe/logs/ling3_fin-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-ling3-fin-api 2>/dev/null; systemctl --user reset-failed kv-ling3-fin-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8469/health"
   },
@@ -199,7 +199,7 @@
    "node_start": "$HOME/stage-lanes/laguna/lane5/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/laguna/lane5/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/laguna/lane5/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-laguna-api 2>/dev/null; systemctl --user is-active -q kv-laguna-api || systemd-run --user --unit=kv-laguna-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/laguna-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/laguna-kv-api/runtime --port 8472 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-laguna-api 2>/dev/null; systemctl --user is-active -q kv-laguna-api || systemd-run --user --unit=kv-laguna-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/laguna-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/laguna-kv-api/runtime --port 8472 >> /srv/workspace/sparkpipe/logs/laguna-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-laguna-api 2>/dev/null; systemctl --user reset-failed kv-laguna-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8472/health"
   },
@@ -211,7 +211,7 @@
    "node_start": "$HOME/stage-lanes/mimo26_flash/lane7/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/mimo26_flash/lane7/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/mimo26_flash/lane7/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-mimo26-flash-api 2>/dev/null; systemctl --user is-active -q kv-mimo26-flash-api || systemd-run --user --unit=kv-mimo26-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/mimo26_flash-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/mimo26_flash-kv-api/runtime --port 8473 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-mimo26-flash-api 2>/dev/null; systemctl --user is-active -q kv-mimo26-flash-api || systemd-run --user --unit=kv-mimo26-flash-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/mimo26_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/mimo26_flash-kv-api/runtime --port 8473 >> /srv/workspace/sparkpipe/logs/mimo26_flash-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-mimo26-flash-api 2>/dev/null; systemctl --user reset-failed kv-mimo26-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8473/health"
   },
@@ -223,7 +223,7 @@
    "node_start": "$HOME/stage-lanes/mimo26_pro/lane1/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/mimo26_pro/lane1/root/lane.sh ready {run_id}",
    "node_stop": "$HOME/stage-lanes/mimo26_pro/lane1/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-mimo26-pro-api 2>/dev/null; systemctl --user is-active -q kv-mimo26-pro-api || systemd-run --user --unit=kv-mimo26-pro-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/mimo26_pro-kv-api bash -c 'exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/mimo26_pro-kv-api/runtime --port 8474 >> api.log 2>&1' >/dev/null",
+   "api_start": "systemctl --user reset-failed kv-mimo26-pro-api 2>/dev/null; systemctl --user is-active -q kv-mimo26-pro-api || systemd-run --user --unit=kv-mimo26-pro-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/mimo26_pro-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/mimo26_pro-kv-api/runtime --port 8474 >> /srv/workspace/sparkpipe/logs/mimo26_pro-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-mimo26-pro-api 2>/dev/null; systemctl --user reset-failed kv-mimo26-pro-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8474/health"
   }
