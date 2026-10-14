@@ -3046,6 +3046,22 @@ static void SparkTestKvParkStallDegradesToRecompute(void)
 	printf("PASS kv park stall degrades to recompute-only: unused prefix pages are discarded, new work waits, a successful park recovers\n");
 }
 
+static void SparkTestKvClaimWithRederivedDeadline(void)
+{
+	SparkTestKvTransactions fixture;
+	SparkModelDriverFrame frame;
+	SparkTestKvTransactionsInitialize(&fixture,1u);
+	fixture.request.deadline_time_ns = UINT64_C(5000000000);
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	frame = SparkTestKvTransactionFrame(&fixture.request);
+	frame.deadline_time_ns = fixture.request.deadline_time_ns + 1500u;
+	assert(SparkKvLaneTransactionsClaim(&fixture.transactions,&frame) == SPARK_STATUS_OK);
+	assert(SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){0u},1u,SPARK_STATUS_OK,0u) == SPARK_STATUS_OK);
+	printf("PASS a frame whose deadline was re-derived from remaining time after admission still claims its transaction\n");
+}
+
 static void SparkTestKvAdmissionStampsKeepRank(void)
 {
 	SparkTestKvTransactions fixture;
@@ -3229,6 +3245,7 @@ int main(void)
 	SparkTestKvBackingFullQueuesNewWork();
 	SparkTestKvParkStallDegradesToRecompute();
 	SparkTestKvAdmissionStampsKeepRank();
+	SparkTestKvClaimWithRederivedDeadline();
 	SparkTestKvSharedPrefixAcrossCaches();
 	SparkTestKvPageStoreRetiredWriteFailureReachesEvictor();
 	SparkTestKvLogicalBlockFreeListReusesReleasedHead();
