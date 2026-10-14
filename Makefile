@@ -561,6 +561,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_output_cap.py \
 	tests/test_chat_frontend_sampling_defaults.py \
 	tests/test_open_webui_github_tool.py \
+	tests/test_model_swap_drain_quiet.py \
 	tests/test_chat_frontend_warm_queue.py \
 	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_chat_frontend_function_xml_calls.py \
