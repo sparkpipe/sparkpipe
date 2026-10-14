@@ -470,6 +470,8 @@ class Memory:
             if queue and queue[0] is job:
                 queue.pop(0)
             await self.stem(model, session)
+        if self.tasks.get(model.id) is asyncio.current_task():
+            self.tasks.pop(model.id, None)
         self.kick(model)
 
     def node_tokens(self, session):
