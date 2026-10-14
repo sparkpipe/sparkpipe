@@ -843,6 +843,17 @@ Related common-code debt:
 
 ## Runtime completion
 
+- A submission that fails residentd's cache validation is retried until its
+  deadline, and every attempt resets the session on all ranks: on 2026-10-14
+  two GLM-5.3 Full requests with a 60 s and a 3 s deadline (failing on the
+  deadline mismatch fixed in `cache/kv_page_cache.c`) caused about 2,950
+  session resets on spark0, roughly 50 a second, until their deadlines ran out
+  (`model_residentd session_reset ... abort=validation_failed`,
+  `runtime/model_batch_engine.c`). A request without a deadline would retry
+  for the engine's in-flight budget. Fail the request after a small number of
+  validation failures of the same route, report the cause to the client, and
+  prove it on one Spark with an injected validation failure: the request fails
+  with its cause and the rank resets once.
 - A client that hangs up mid-reply is cancelled and drained in the host tests
   (`test_model_api_text` client disconnect: four abandoned streams reach zero
   live requests within 10 s and the engine keeps serving); a release that a
