@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash-fin",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "6280da87448c7acbdcac7cac37b8a352cfcb3aeecfc35995393c44b6537ad97b"
+ },
+ "response": {
+  "id": "chatcmpl-15711afb5dc44b459535f21c3c2add7a",
+  "created": 1791718890,
+  "model": "ling-3.0-flash-fin",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let me analyze this function carefully.\n\nThe function parses an IPv6 address and handles the `::` compression notation.\n\n**Line 7-10:** If the string starts with `::`, it sets `colonp` to `--tp` (which makes `tp` point to `tmp[-1]`, one element before the array) and advances `src` by 2.\n\n**The Bug:**\n\nOn line 8, `colonp = --tp;` decrements `tp` before assigning it to `colonp`. This means:\n- `tp` starts at `tmp` (line 4)\n- After `--tp`, `tp` points to `tmp[-1]`, which is **outside the array bounds**\n- `colonp` is set to this out-of-bounds pointer\n\nThis is problematic because:\n1. `colonp` now points before the `tmp` array\n2. On line 21, `memmove(colonp + (16 - (tp - tmp)), colonp, n)` uses `colonp` as a destination\n3. Since `colonp` is before `tmp`, the `memmove` will write to memory before the array\n\nThe correct code should be `colonp = tp;` (without the decrement), so that `colonp` points to the start of `tmp` where the compression should begin.\n\nThe primary bug is introduced on line 8.\n\nAnswer: 8",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 318,
+   "prompt_tokens": 508,
+   "total_tokens": 826,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let me analyze this function carefully.\n\nThe function parses an IPv6 address and handles the `::` compression notation.\n\n**Line 7-10:** If the string starts with `::`, it sets `colonp` to `--tp` (which makes `tp` point to `tmp[-1]`, one element before the array) and advances `src` by 2.\n\n**The Bug:**\n\nOn line 8, `colonp = --tp;` decrements `tp` before assigning it to `colonp`. This means:\n- `tp` starts at `tmp` (line 4)\n- After `--tp`, `tp` points to `tmp[-1]`, which is **outside the array bounds**\n- `colonp` is set to this out-of-bounds pointer\n\nThis is problematic because:\n1. `colonp` now points before the `tmp` array\n2. On line 21, `memmove(colonp + (16 - (tp - tmp)), colonp, n)` uses `colonp` as a destination\n3. Since `colonp` is before `tmp`, the `memmove` will write to memory before the array\n\nThe correct code should be `colonp = tp;` (without the decrement), so that `colonp` points to the start of `tmp` where the compression should begin.\n\nThe primary bug is introduced on line 8.\n\nAnswer: 8",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "8",
+  "passed": true,
+  "elapsed_ms": 5025.8,
+  "output_sha256": "cc8bc249d78739a139260cb3ab5c81004454a15cf4ae96edea6e7699613b301c",
+  "prompt_token_count": 508,
+  "generated_token_count": 318,
+  "reasoning_chars": 0,
+  "content_chars": 1012,
+  "status": "stop"
+ }
+}

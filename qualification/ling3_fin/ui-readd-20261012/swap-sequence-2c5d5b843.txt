@@ -1,0 +1,15 @@
+compsec_ling-3.0-flash-fin.log:COMPSEC-17 RESULT: 13/17
+fin_run.log:swap models 13 chat models 13 styles (1, '\n') (1, '\n')
+fin_run.log:swap qwen3.8-max -> ling-3.0-flash-fin ok True 18.0 s error None avail_min_gib 89.8
+fin_run.log:swap ling-3.0-flash-fin -> qwen3.8-max ok True 33.5 s error None avail_min_gib 15.6
+fin_run.log:swap qwen3.8-max -> ling-3.0-flash ok True 18.6 s error None avail_min_gib 89.7
+fin_run.log:swap ling-3.0-flash -> ling-3.0-flash-fin ok True 16.7 s error None avail_min_gib 89.7
+fin_run.log:UI-SMOKE ling-3.0-flash-fin: 6/6
+fin_run.log:swap ling-3.0-flash-fin -> qwen3.8-max ok True 33.1 s error None avail_min_gib 15.4
+fin_run.log:ling3_fin:
+fin_run.log:  16 DROP-KV label=ling3_stage released=0 bytes=0 busy=0
+fin_run.log:  16 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=4
+fin_run.log:ling3_flash:
+fin_run.log:  16 DROP-KV label=ling3_stage released=0 bytes=0 busy=0
+fin_run.log:  16 RECLAIM-PACK freed=268435456 arenas=1 busy=0 resident=_ remaining_arenas=3
+fin_run.log:final: idle qwen3.8-max None 13

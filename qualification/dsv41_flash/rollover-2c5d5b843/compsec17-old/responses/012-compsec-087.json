@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "56496068490936181766f27707dfe5f4d4a29fda45e67125053474f286273f9b"
+ },
+ "response": {
+  "id": "chatcmpl-21ec3f1f3719454ab26e5d6e9ae42e8f",
+  "created": 1791725726,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "Let's go through the function carefully.\n\nThe function is supposed to parse an IPv6 address, handle `::` compression, and store the result in `dst`.\n\n**Key observations:**\n\n- `tmp` is 16 bytes.\n- `tp` starts at `tmp`.\n- If the address starts with `::`, `colonp = --tp;` \u2014 this moves `tp` **before** `tmp` (undefined behavior, out-of-bounds pointer). That's already suspicious.\n- In the loop, each hextet writes 2 bytes via `*tp++`. There's no bounds check to ensure `tp` doesn't go past `tmp + 16`.\n- If there are too many hextets, `tp` will overflow `tmp`, causing a stack buffer overflow.\n- The `colonp` logic: if `::` is at the beginning, `colonp` points to `tmp - 1`, which is out of bounds. Later, `memmove` and `memset` use `colonp` and `tp - tmp` in ways that assume `colonp` is within `tmp`.\n\nThe most direct memory corruption bug is the lack of bounds checking in the loop (lines 14\u201315), allowing `tp` to go past the end of `tmp`. However, the question asks for the **primary bug** \u2014 the first place where the vulnerability is introduced.\n\nThe first out-of-bounds pointer manipulation happens at **line 8**: `colonp = --tp;` when `tp == tmp`, making `colonp` point before the array. This is undefined behavior and later leads to incorrect `memmove`/`memset` calculations.\n\nBut is that the *primary* bug? The more general and severe issue is the unchecked write in the loop (lines 14\u201315) that can overflow `tmp`. However, the question says \"It records where :: compression occurred, then shifts already parsed bytes\" \u2014 suggesting the bug might be in the shifting logic.\n\nLooking at line 21:  \n`memmove(colonp + (16 - (tp - tmp)), colonp, n);`  \nIf `colonp` is before `tmp` (from line 8), then `colonp + (16 - (tp - tmp))` could still be within `tmp` or not, but `colonp` itself is out of bounds for `memmove` source \u2014 undefined behavior.\n\nBut the **first** incorrect action is at line ",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 441,
+   "total_tokens": 953,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let's go through the function carefully.\n\nThe function is supposed to parse an IPv6 address, handle `::` compression, and store the result in `dst`.\n\n**Key observations:**\n\n- `tmp` is 16 bytes.\n- `tp` starts at `tmp`.\n- If the address starts with `::`, `colonp = --tp;` \u2014 this moves `tp` **before** `tmp` (undefined behavior, out-of-bounds pointer). That's already suspicious.\n- In the loop, each hextet writes 2 bytes via `*tp++`. There's no bounds check to ensure `tp` doesn't go past `tmp + 16`.\n- If there are too many hextets, `tp` will overflow `tmp`, causing a stack buffer overflow.\n- The `colonp` logic: if `::` is at the beginning, `colonp` points to `tmp - 1`, which is out of bounds. Later, `memmove` and `memset` use `colonp` and `tp - tmp` in ways that assume `colonp` is within `tmp`.\n\nThe most direct memory corruption bug is the lack of bounds checking in the loop (lines 14\u201315), allowing `tp` to go past the end of `tmp`. However, the question asks for the **primary bug** \u2014 the first place where the vulnerability is introduced.\n\nThe first out-of-bounds pointer manipulation happens at **line 8**: `colonp = --tp;` when `tp == tmp`, making `colonp` point before the array. This is undefined behavior and later leads to incorrect `memmove`/`memset` calculations.\n\nBut is that the *primary* bug? The more general and severe issue is the unchecked write in the loop (lines 14\u201315) that can overflow `tmp`. However, the question says \"It records where :: compression occurred, then shifts already parsed bytes\" \u2014 suggesting the bug might be in the shifting logic.\n\nLooking at line 21:  \n`memmove(colonp + (16 - (tp - tmp)), colonp, n);`  \nIf `colonp` is before `tmp` (from line 8), then `colonp + (16 - (tp - tmp))` could still be within `tmp` or not, but `colonp` itself is out of bounds for `memmove` source \u2014 undefined behavior.\n\nBut the **first** incorrect action is at line ",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "16",
+  "passed": false,
+  "elapsed_ms": 61727.6,
+  "output_sha256": "caca5f69f79ce8e8b4a2673b1cf4d586f85e62b400df3b940200c7d108c416f7",
+  "prompt_token_count": 441,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1893,
+  "status": "length"
+ }
+}

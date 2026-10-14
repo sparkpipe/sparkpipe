@@ -1,0 +1,62 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper is called once for each Special Line Character option received in a TELNET LINEMODE negotiation.\n\nCode:\n```c\n 1: #define SLCBUF_SIZE 108\n 2: #define SLC_NCHARS 18\n 3: \n 4: struct slc_state {\n 5:     unsigned char buf[SLCBUF_SIZE];\n 6:     size_t used;\n 7: };\n 8: \n 9: static void add_slc(struct slc_state *s,\n10:                     unsigned char func,\n11:                     unsigned char flags,\n12:                     unsigned char value)\n13: {\n14:     if (func <= SLC_NCHARS)\n15:         return;                    // ignore ordinary entries here\n16: \n17:     /* Store one SLC triplet for later reply construction. */\n18:     s->buf[s->used++] = func;\n19:     s->buf[s->used++] = flags;\n20:     s->buf[s->used++] = value;\n21: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "1f015d7c2b4ddcccbe355eb570cda0ec0f694a2e5a82900148e1606b3c742587"
+ },
+ "response": {
+  "id": "chatcmpl-8ce1e2d2650c45119c114127d3d99793",
+  "created": 1791721374,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `add_slc` writes three bytes into the buffer `s->buf` at indices `s->used`, `s->used + 1`, and `s->used + 2`. It increments `s->used` by 3.\n\nHowever, there is no check to ensure that `s->used + 3` does not exceed the size of the buffer `SLCBUF_SIZE` (which is 108). If `s->used` is close to 108 (e.g., 106 or 107), writing to `s->buf[s->used]`, `s->buf[s->used+1]`, or `s->buf[s->used+2]` will result in a buffer overflow.\n\nThe vulnerability is introduced at the point where the write occurs without bounds checking. The first write is on line 18.\n\nAnswer: 18",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 193,
+   "prompt_tokens": 368,
+   "total_tokens": 561,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `add_slc` writes three bytes into the buffer `s->buf` at indices `s->used`, `s->used + 1`, and `s->used + 2`. It increments `s->used` by 3.\n\nHowever, there is no check to ensure that `s->used + 3` does not exceed the size of the buffer `SLCBUF_SIZE` (which is 108). If `s->used` is close to 108 (e.g., 106 or 107), writing to `s->buf[s->used]`, `s->buf[s->used+1]`, or `s->buf[s->used+2]` will result in a buffer overflow.\n\nThe vulnerability is introduced at the point where the write occurs without bounds checking. The first write is on line 18.\n\nAnswer: 18",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "18",
+  "passed": true,
+  "elapsed_ms": 3800.8,
+  "output_sha256": "6a149f11f7e704cbd57a09a6ca0ca37941592e2ff723f99f4edbfb4a1b98aa3d",
+  "prompt_token_count": 368,
+  "generated_token_count": 193,
+  "reasoning_chars": 0,
+  "content_chars": 572,
+  "status": "stop"
+ }
+}

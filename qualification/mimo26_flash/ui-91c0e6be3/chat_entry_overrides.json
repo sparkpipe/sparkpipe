@@ -1,0 +1,1 @@
+{"model_dir": "models/mimo-v2.6-flash", "engine": "http://127.0.0.1:8473", "context_tokens": 32768, "stop_tokens": ["<|im_end|>", "<|endoftext|>", "<|mimo_audio_eod|>"]}

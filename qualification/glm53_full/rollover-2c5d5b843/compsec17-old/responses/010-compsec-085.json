@@ -1,0 +1,63 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "721a85b92679538e7b873751a50178f5476e82f2f2e4da509a2d7a4bc403dd0f"
+ },
+ "response": {
+  "id": "chatcmpl-8566d89e38cb438b816f179abfd1efdf",
+  "created": 1791730513,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\n- Line 4 and 6 use `strlcat`, which respects `sql_cap` \u2014 safe.\n- Line 5 uses `strncat(sql, tok, tok_len)`. The `n` parameter of `strncat` limits how many bytes are *appended from the source*, not the total destination size. It does not account for the existing string length in `sql` or the NUL terminator, so if `strlen(sql) + tok_len + 1 > sql_cap`, this writes past the end of the buffer \u2014 a classic buffer overflow. The correct call would be something like `strncat(sql, tok, sql_cap - strlen(sql) - 1)` or using `strlcat` with the token (though embedded NULs complicate that).\n\nThe bug is introduced at line 5.\n\nAnswer: 5",
+     "role": "assistant",
+     "reasoning_content": "strncat doesn't bound total buffer size \u2014 overflow. Line 5."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 196,
+   "prompt_tokens": 225,
+   "total_tokens": 421,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>strncat doesn't bound total buffer size \u2014 overflow. Line 5.</think>**Analysis:**\n\n- Line 4 and 6 use `strlcat`, which respects `sql_cap` \u2014 safe.\n- Line 5 uses `strncat(sql, tok, tok_len)`. The `n` parameter of `strncat` limits how many bytes are *appended from the source*, not the total destination size. It does not account for the existing string length in `sql` or the NUL terminator, so if `strlen(sql) + tok_len + 1 > sql_cap`, this writes past the end of the buffer \u2014 a classic buffer overflow. The correct call would be something like `strncat(sql, tok, sql_cap - strlen(sql) - 1)` or using `strlcat` with the token (though embedded NULs complicate that).\n\nThe bug is introduced at line 5.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 8863.5,
+  "output_sha256": "f8ef098618a98e87a5c2e1b70fe1499e72d8d124b206107206be4a9fcb803ba4",
+  "prompt_token_count": 225,
+  "generated_token_count": 196,
+  "reasoning_chars": 59,
+  "content_chars": 641,
+  "status": "stop"
+ }
+}

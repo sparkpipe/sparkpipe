@@ -13,6 +13,17 @@ extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_sta
 		(cudaStream_t)stream));
 }
 
+extern "C" int32_t K3StageSlicePair(const void *layer_weights, const void *slice_state, void *buffers_a, void *buffers_b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a, uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, void *stream)
+{
+	return(K3LaunchSlicePair<LmMxfp4,K3GlobalKv>(
+		(const K3LayerWeights *)layer_weights,
+		(const K3SliceState *)slice_state,
+		(K3LayerBuffers *)buffers_a,
+		(K3LayerBuffers *)buffers_b,
+		first_layer,layer_count,rows_a,rows_b,commit,multiprocessors,
+		(cudaStream_t)stream));
+}
+
 extern "C" int32_t K3StageSliceHalf(const void *layer_weights, const void *slice_state, void *layer_buffers, uint32_t layer, uint32_t phase, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, void *stream)
 {
 	return(K3LaunchSliceHalf<LmMxfp4,K3GlobalKv>(

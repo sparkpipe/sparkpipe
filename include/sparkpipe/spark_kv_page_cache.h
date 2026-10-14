@@ -20,7 +20,7 @@ extern "C" {
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS UINT32_C(0x00000002)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED UINT32_C(0x00000004)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE UINT32_C(0x00000008)
-#define SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES 32u
+#define SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES 64u
 #define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_CHAIN 1u
 #define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_PAGES 2u
 #define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_STATE 3u
@@ -229,7 +229,7 @@ typedef struct SparkKvPageCache
 	SparkKvPageStore *page_store;
 	SparkKvPageStore *state_store;
 	SparkKvPageCacheSnapshot *snapshot;
-	SparkKvWriteBudget *write_budget;
+	SparkKvWriteMeter *write_meter;
 	uint32_t admission_priority;
 	uint64_t admission_deadline_ns;
 	uint32_t reserved_priority;
@@ -242,6 +242,9 @@ typedef struct SparkKvPageCache
 	uint64_t prefix_miss_count;
 	uint64_t published_page_count;
 	uint64_t deduplicated_page_count;
+	uint64_t stateful_dedup_lost_count;
+	uint64_t state_demoted_count;
+	uint64_t state_promoted_count;
 	uint64_t evicted_entry_count;
 	uint64_t released_sequence_count;
 	SparkKvPageCacheDeviceCopy device_copy;
@@ -296,6 +299,8 @@ SparkStatus SparkKvPageCacheRestoreFinish(SparkKvPageCache *cache,SparkKvPageCac
 SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKvPageCacheResidentRecord *records,uint32_t capacity,uint32_t *count_out);
 SparkStatus SparkKvPageCacheAdoptResident(SparkKvPageCache *cache,const SparkKvPageCacheResidentRecord *records,uint32_t count,uint32_t *adopted_out);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
+SparkStatus SparkKvPageCacheDemoteState(SparkKvPageCache *cache);
+SparkStatus SparkKvPageCachePromoteState(SparkKvPageCache *cache,uint32_t logical_page_index);
 uint32_t SparkKvPageCacheSaveParked(SparkKvPageCache *cache,uint32_t logical_page_index);
 SparkStatus SparkKvPageCacheVacateResident(SparkKvPageCache *cache,uint32_t limit,uint32_t *kept_limit,uint32_t *vacated_pages);
 SparkStatus SparkKvPageCachePrepareLane(
@@ -347,6 +352,7 @@ SparkStatus SparkKvPageCacheReleaseLane(
 	SparkKvPageCache *cache,
 	uint32_t resident_sequence_slot,
 	uint64_t sequence_id);
+SparkStatus SparkKvPageCacheReleaseSequences(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCacheReleaseAll(SparkKvPageCache *cache);
 SparkStatus SparkKvPageCacheBuildLaneTable(
 	SparkKvPageCache *cache,

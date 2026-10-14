@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "106381c39e2d9fb9489e5feeec87b0b07d53f1c6c3b20cf7b0cbcbe3a43c5b31"
+ },
+ "response": {
+  "id": "chatcmpl-63ca53247414438b8c7e6deebd251754",
+  "created": 1791704622,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Looking at this function, I need to analyze the buffer operations:\n\n1. Line 4: `strlcat(sql, \"'\", sql_cap)` - safely appends a single quote with size limit\n2. Line 5: `strncat(sql, tok, tok_len)` - appends up to `tok_len` bytes from `tok`\n3. Line 6: `strlcat(sql, \"'\", sql_cap)` - safely appends closing quote with size limit\n\nThe critical issue is on **line 5**. The `strncat` function:\n- Does NOT take a total buffer capacity parameter\n- Only limits the number of characters copied from the source (`tok_len`)\n- Will write beyond the destination buffer if there isn't enough space\n- Also always appends a NUL terminator, which could write one byte beyond `tok_len`\n\nUnlike `strlcat` (used on lines 4 and 6) which takes `sql_cap` and guarantees NUL-termination within bounds, `strncat` has no knowledge of the destination buffer's total size. This creates a buffer overflow vulnerability.\n\nAdditionally, the function assumes `sql` is properly NUL-terminated on entry, and the mixing of `strlcat`/`strncat` means the size accounting is inconsistent - `strncat` can consume the entire remaining buffer space, leaving no room for the closing quote on line 6.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 300,
+   "prompt_tokens": 239,
+   "total_tokens": 539,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Looking at this function, I need to analyze the buffer operations:\n\n1. Line 4: `strlcat(sql, \"'\", sql_cap)` - safely appends a single quote with size limit\n2. Line 5: `strncat(sql, tok, tok_len)` - appends up to `tok_len` bytes from `tok`\n3. Line 6: `strlcat(sql, \"'\", sql_cap)` - safely appends closing quote with size limit\n\nThe critical issue is on **line 5**. The `strncat` function:\n- Does NOT take a total buffer capacity parameter\n- Only limits the number of characters copied from the source (`tok_len`)\n- Will write beyond the destination buffer if there isn't enough space\n- Also always appends a NUL terminator, which could write one byte beyond `tok_len`\n\nUnlike `strlcat` (used on lines 4 and 6) which takes `sql_cap` and guarantees NUL-termination within bounds, `strncat` has no knowledge of the destination buffer's total size. This creates a buffer overflow vulnerability.\n\nAdditionally, the function assumes `sql` is properly NUL-terminated on entry, and the mixing of `strlcat`/`strncat` means the size accounting is inconsistent - `strncat` can consume the entire remaining buffer space, leaving no room for the closing quote on line 6.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 32727.2,
+  "output_sha256": "90f5b33dbed992664d93b0bee91fc5f0f6dfce101527fe52b3fee680e0ae80b3",
+  "prompt_token_count": 239,
+  "generated_token_count": 300,
+  "reasoning_chars": 0,
+  "content_chars": 1167,
+  "status": "stop"
+ }
+}

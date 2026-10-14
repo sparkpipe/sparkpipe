@@ -1,0 +1,168 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T07:50:34+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "muse-glimmer-30b",
+ "passed": 2,
+ "total": 4,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-5871ca036a854f2685482af6ea62dbb3",
+     "created": 1791705023,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": " to=self<|message|>What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly just answer.\n\nNo extra fluff? One sentence. Could be fine.\n\nEnsure one sentence. No extra period? One sentence ends with period.\n\nOutput: The capital of France is Paris.\n\nThat's it.\n\nPotential nuance: Should we comply? Yes.\n\nNo policy issues.\n\nReturn answer.\n\nProbably simple.\n\nMake sure not to add extra sentences. Don't add \"Here is...\" That would be second sentence? Actually \"Here is the answer:\" is a sentence fragment? Might be considered sentence.\n\nSafer to just output one sentence.\n\nThe capital of France is Paris.\n\nDone.<|eom|><|start|>assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 175,
+      "prompt_tokens": 68,
+      "total_tokens": 243,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": " to=self<|message|>What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly just answer.\n\nNo extra fluff? One sentence. Could be fine.\n\nEnsure one sentence. No extra period? One sentence ends with period.\n\nOutput: The capital of France is Paris.\n\nThat's it.\n\nPotential nuance: Should we comply? Yes.\n\nNo policy issues.\n\nReturn answer.\n\nProbably simple.\n\nMake sure not to add extra sentences. Don't add \"Here is...\" That would be second sentence? Actually \"Here is the answer:\" is a sentence fragment? Might be considered sentence.\n\nSafer to just output one sentence.\n\nThe capital of France is Paris.\n\nDone.<|eom|><|start|>assistant",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 5.47
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": " to=self<|message|>What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly just answer.\n\nNo extra fluff? One sentence. Could be fine.\n\nEnsure one sentence. No extra period? One sentence ends with period.\n\nOutput: The capital of France is Paris.\n\nThat's it.\n\nPotential nuance: Should we comply? Yes.\n\nNo policy issues.\n\nReturn answer.\n\nProbably simple.\n\nMake sure not to add extra sentences. Don't add \"Here is...\" That would be second sentence? Actually \"Here is the answer:\" is a sentence fragment? Might be considered sentence.\n\nSafer to just output one sentence.\n\nThe capital of France is Paris.\n\nDone.<|eom|><|start|>assistant",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 32,
+    "elapsed_s": 5.15
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-0d105768f59a4a5cae8c5cb0c09cd062",
+     "created": 1791705034,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "role": "assistant",
+        "reasoning_content": " to=self<|message|>Use the get_weather tool.\n\nWe need to call get_weather with location Paris. Unit? Not specified. Could default? Parameter required location. unit optional? Schema says required [\"location\"]. unit enum celsius/fahrenheit. Could pick celsius. Probably default to celsius? Might need to choose one. Could call with location Paris, unit celsius. Or maybe call twice? Probably one call.\n\nWe should follow policy: use tool. No extra text? We can provide answer after tool call. First call tool.\n\nWe need to invoke get_weather.\n\nLet's call with location \"Paris\", unit \"celsius\".<|eom|><|start|>assistant to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">\n<atem:parameter name=\"location\">Paris</atem:parameter>\n<atem:parameter name=\"unit\">celsius</atem:parameter>\n</atem:invoke>\n</atem:function_calls>",
+        "content": null
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 182,
+      "prompt_tokens": 436,
+      "total_tokens": 618,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "",
+    "reasoning": " to=self<|message|>Use the get_weather tool.\n\nWe need to call get_weather with location Paris. Unit? Not specified. Could default? Parameter required location. unit optional? Schema says required [\"location\"]. unit enum celsius/fahrenheit. Could pick celsius. Probably default to celsius? Might need to choose one. Could call with location Paris, unit celsius. Or maybe call twice? Probably one call.\n\nWe should follow policy: use tool. No extra text? We can provide answer after tool call. First call tool.\n\nWe need to invoke get_weather.\n\nLet's call with location \"Paris\", unit \"celsius\".<|eom|><|start|>assistant to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">\n<atem:parameter name=\"location\">Paris</atem:parameter>\n<atem:parameter name=\"unit\">celsius</atem:parameter>\n</atem:invoke>\n</atem:function_calls>",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 5.91
+   },
+   "problems": [
+    "finish_reason 'stop'",
+    "no tool call parsed"
+   ]
+  },
+  {
+   "check": "tool_result",
+   "request": null,
+   "reply": null,
+   "problems": [
+    "skipped: no tool call to answer"
+   ]
+  }
+ ]
+}

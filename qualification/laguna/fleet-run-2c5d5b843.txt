@@ -1,0 +1,27 @@
+== 2026-10-12T01:16:39Z run laguna-rel-20261012T011639Z firmware 2c5d5b843
+controller: idle qwen3.8-max None
+01:17:00 idle qwen3.8-flash None 16.4
+== 2026-10-12T01:17:00Z setup
+sparke ready spine_budget=14794587263
+sparkf ready spine_budget=14794587263
+  16 78c58ce47534c3eb cd8edbd8e1b3c9d7 
+78c58ce47534c3eb cd8edbd8e1b3c9d7  <- fw
+== 2026-10-12T01:17:03Z start
+== 2026-10-12T01:17:24Z ready=1 after 3 polls: 16 READY
+Running as unit: kv-laguna-api.service; invocation ID: 65f618343e2c45e8b49cd5ac724540ee
+== 2026-10-12T01:17:30Z api health 200 "connected_ranks":16
+690d63a12c4f70ea
+== 2026-10-12T01:17:30Z capture
+capital 8 ''
+arith 64 ''
+code 64 ''
+story 64 ''
+B1 vs B1again tokens identical 4 / 4 logprobs identical 4
+== 2026-10-12T01:17:43Z batch
+concurrent wall 2.7
+identical 4/4 (B1 alone vs B4 concurrent, 64 greedy tokens)
+== 2026-10-12T01:17:51Z perf
+{"case": "b1_o256", "prompt": "story", "median_decode_tok_s": 50.06, "label": "laguna", "utc": "2026-10-12T01:18:05Z"}
+{"case": "ttft6000", "prompt_tokens": 7669, "cached_tokens": [0, 0, 0], "median_ttft_ms": 9541.2, "prefill_tok_s": 803.8, "label": "laguna", "utc": "2026-10-12T01:18:34Z"}
+{"case": "streams16_o256", "wall_s": 15.927, "total_tokens": 4096, "aggregate_tok_s": 257.18, "aggregate_after_last_first_token_tok_s": 294.58, "errors": [], "label": "laguna", "utc": "2026-10-12T01:18:50Z"}
+== 2026-10-12T01:18:52Z after perf "connected_ranks":16

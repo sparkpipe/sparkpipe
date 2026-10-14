@@ -138,8 +138,9 @@ static void TestSequencePositions(void)
 	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(SparkModelResidentDeploymentLoad("deployment/glm5_next_tp16/model_resident.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.node_count == 16u);
-	assert(deployment.max_sequence_positions == 32768u);
-	assert(deployment.runtime_limits.kv_physical_page_capacity == 131072u);
+	assert(deployment.max_sequence_positions == 131072u);
+	assert(deployment.runtime_limits.max_input_row_count == 1024u);
+	assert(deployment.runtime_limits.kv_logical_page_capacity == 524288u && deployment.runtime_limits.kv_physical_page_capacity == 32768u);
 	SparkModelResidentDeploymentDestroy(&deployment);
 }
 
@@ -251,6 +252,60 @@ static void TestChatTemplateSchema(const char *chat_template_json, SparkStatus e
 		SparkModelResidentDeploymentDestroy(&deployment);
 }
 
+static void TestOverCountArraysFailCleanly(void)
+{
+	static const char *base_template = "{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+		"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,"
+		"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]";
+	SparkModelResidentDeployment deployment;
+	char json[1024],*base,*nodes,*open,*close,path[256];
+	FILE *file;
+	uint32_t depth = 0u,index;
+	int quoted = 0;
+	assert(snprintf(json,sizeof(json),"%s,\"control_markers\":[\"<a>\",\"<b>\"]}",base_template) > 0);
+	TestChatTemplateSchema(json,SPARK_STATUS_OK);
+	assert(snprintf(json,sizeof(json),"%s,\"control_markers\":[\"<a>\",\"<b>\",\"<c>\",\"<d>\",\"<e>\",\"<f>\",\"<g>\",\"<h>\",\"<i>\"]}",base_template) > 0);
+	TestChatTemplateSchema(json,SPARK_STATUS_SCHEMA_ERROR);
+	base = TestReadText("tests/fixtures/model_resident_deployment.json");
+	nodes = strstr(base,"\"nodes\"");
+	assert(nodes != 0);
+	open = strchr(nodes,'[');
+	assert(open != 0);
+	for (close = open; *close != '\0'; close++)
+	{
+		if ( quoted != 0 )
+		{
+			if ( *close == '\\' && close[1] != '\0' )
+				close++;
+			else if ( *close == '"' )
+				quoted = 0;
+			continue;
+		}
+		if ( *close == '"' )
+			quoted = 1;
+		else if ( *close == '[' || *close == '{' )
+			depth++;
+		else if ( (*close == ']' || *close == '}') && --depth == 0u )
+			break;
+	}
+	assert(*close == ']');
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-node-count-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fwrite(base,1u,(size_t)(open - base) + 1u,file) == (size_t)(open - base) + 1u);
+	for (index=0u; index<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u; index++)
+		assert(fputs(index == 0u ? "{}" : ",{}",file) != EOF);
+	assert(fputs(close,file) != EOF);
+	assert(fclose(file) == 0);
+	free(base);
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad(path,&deployment) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(unlink(path) == 0);
+	printf("test_model_resident_deployment: over-count arrays OK (9 control markers and %u nodes fail cleanly instead of freeing past the arrays)\n",
+		SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u);
+}
+
 static void TestChatTemplates(void)
 {
 	static const char user_hi[] = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
@@ -327,6 +382,66 @@ static void TestChatTemplates(void)
 	SparkModelResidentDeploymentDestroy(&deployment);
 
 	{
+		char *ling = TestReadText("model-families/ling/chat_template.json");
+		char *hy4 = TestReadText("model-families/hy4/chat_template.json");
+		char *muse = TestReadText("model-families/muse_glimmer/chat_template.json");
+		assert(TestLoadWithChatTemplate(ling,&deployment) == SPARK_STATUS_OK);
+		TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<role>SYSTEM</role>detailed thinking off<|role_end|><role>HUMAN</role>hi<|role_end|><role>ASSISTANT</role>\n<think></think>");
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<role>SYSTEM</role>detailed thinking on<|role_end|><role>HUMAN</role>hi<|role_end|><role>ASSISTANT</role>\n<think>");
+		TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<role>SYSTEM</role>Be terse.\ndetailed thinking on<|role_end|><role>HUMAN</role>hi<|role_end|>"
+			"<role>ASSISTANT</role>\n<think></think>ok<|role_end|><role>HUMAN</role>bye<|role_end|><role>ASSISTANT</role>\n<think>");
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<role>SYSTEM</role>Be terse.\ndetailed thinking off<|role_end|><role>HUMAN</role>hi<|role_end|>"
+			"<role>ASSISTANT</role>\n<think></think>ok<|role_end|><role>HUMAN</role>bye<|role_end|><role>ASSISTANT</role>\n<think></think>");
+		SparkModelResidentDeploymentDestroy(&deployment);
+		assert(TestLoadWithChatTemplate(hy4,&deployment) == SPARK_STATUS_OK);
+		TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>system<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9creasoning_mode:opensource\xef\xbd\x9c>reasoning_effort:no_think<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>user<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>hi<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>assistant<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c><think:opensource></think:opensource>");
+		TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>system<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>Be terse."
+			"<\xef\xbd\x9creasoning_mode:opensource\xef\xbd\x9c>reasoning_effort:high<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>user<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>hi<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>assistant<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c><think:opensource></think:opensource>ok<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>user<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c>bye<\xef\xbd\x9chy_end:opensource\xef\xbd\x9c>"
+			"<\xef\xbd\x9chy_start:opensource\xef\xbd\x9c>assistant<\xef\xbd\x9chy_middle:opensource\xef\xbd\x9c><think:opensource>");
+		SparkModelResidentDeploymentDestroy(&deployment);
+		assert(TestLoadWithChatTemplate(muse,&deployment) == SPARK_STATUS_OK);
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|begin_of_text|><|start|>system<|message|>You are a helpful AI assistant.\nKnowledge cutoff: 2026-01-04.\n\n"
+			"Reasoning strength: high.\n\n# Valid recipients: \"self\", \"user\".<|eot|><|start|>user<|message|>hi<|eot|><|start|>assistant");
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|begin_of_text|><|start|>system<|message|>Be terse.\n\nReasoning strength: low.\n\n# Valid recipients: \"self\", \"user\".<|eot|>"
+			"<|start|>user<|message|>hi<|eot|><|start|>assistant to=user<|message|>ok<|eot|><|start|>user<|message|>bye<|eot|><|start|>assistant");
+		SparkModelResidentDeploymentDestroy(&deployment);
+		free(ling);
+		free(hy4);
+		free(muse);
+	}
+
+	{
+		char *mimo = TestReadText("model-families/mimo26/chat_template.json");
+		assert(TestLoadWithChatTemplate(mimo,&deployment) == SPARK_STATUS_OK);
+		TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|im_start|>user\nhi<|im_end|><|im_start|>assistant\n<think></think>");
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|im_start|>user\nhi<|im_end|><|im_start|>assistant\n");
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|im_start|>system\nBe terse.<|im_end|><|im_start|>user\nhi<|im_end|><|im_start|>assistant\n<think></think>ok<|im_end|>"
+			"<|im_start|>user\nbye<|im_end|><|im_start|>assistant\n<think></think>");
+		TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,
+			"<|im_start|>system\nBe terse.<|im_end|><|im_start|>user\nhi<|im_end|><|im_start|>assistant\n<think></think>ok<|im_end|>"
+			"<|im_start|>user\nbye<|im_end|><|im_start|>assistant\n");
+		SparkModelResidentDeploymentDestroy(&deployment);
+		free(mimo);
+	}
+
+	{
 		char *k3 = TestReadText("model-families/k3/chat_template.json");
 		static const char suffixed_null[] =
 			"{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
@@ -362,6 +477,47 @@ static void TestChatTemplates(void)
 		SparkModelResidentDeploymentDestroy(&deployment);
 		TestChatTemplateSchema(suffixed_null,SPARK_STATUS_SCHEMA_ERROR);
 		free(k3);
+	}
+
+	{
+		char *laguna = TestReadText("model-families/laguna/chat_template.json");
+		static const char eos[] = "\xe3\x80\x88|EOS|\xe3\x80\x89";
+		static const char header[] = "\xe3\x80\x88|EOS|\xe3\x80\x89<system>You are a helpful, conversationally-fluent assistant made by Poolside. "
+			"You are here to be helpful to users through natural language conversations.</system>\n";
+		char expected[1024];
+		assert(TestLoadWithChatTemplate(laguna,&deployment) == SPARK_STATUS_OK);
+		assert(deployment.chat_template.declared == 1u && deployment.chat_template.stop_marker_count == 2u);
+		snprintf(expected,sizeof(expected),"%s<user>hi</user>\n<assistant></think>",header);
+		TestRender(&deployment,user_hi,false,SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<user>hi</user>\n<assistant><think>",header);
+		TestRender(&deployment,user_hi,true,SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<system>Be terse.</system>\n<user>hi</user>\n<assistant></think>ok</assistant>\n<user>bye</user>\n<assistant></think>",eos);
+		TestRender(&deployment,system_history,false,SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<system>Be terse.</system>\n<user>hi</user>\n<assistant><think></think>ok</assistant>\n<user>bye</user>\n<assistant><think>",eos);
+		TestRender(&deployment,system_history,true,SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<user>hi</user>\n<tool_response>42</tool_response>\n<assistant></think>",header);
+		TestRender(&deployment,"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"observation\",\"content\":\"42\"}]}",false,
+			SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		snprintf(expected,sizeof(expected),"%s<user>hi</user>\n<system>s</system>\n<assistant><think>",header);
+		TestRender(&deployment,"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"system\",\"content\":\"s\"}]}",true,
+			SPARK_CHAT_TEMPLATE_RENDERED,expected);
+		memset(special,0,sizeof(special));
+		special[0].text = (char *)eos; special[0].text_bytes = (uint32_t)strlen(eos); special[0].token_id = 2u; special[0].is_special = 1u;
+		special[1].text = (char *)"</assistant>"; special[1].text_bytes = 12u; special[1].token_id = 24u; special[1].is_special = 1u;
+		special[2].text = (char *)"<assistant>"; special[2].text_bytes = 11u; special[2].token_id = 23u; special[2].is_special = 0u;
+		assert(SparkChatTemplateResolveStops(&deployment.chat_template,special,3u,stop_ids,&stop_count,&unresolved) == SPARK_STATUS_OK);
+		assert(stop_count == 2u && stop_ids[0] == 24u && stop_ids[1] == 2u && unresolved == 0);
+		SparkModelResidentDeploymentDestroy(&deployment);
+		TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+			"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,\"system_turn_suffix\":\"S\","
+			"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+		TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+			"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,\"observation_suffix\":\"O\","
+			"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+		TestChatTemplateSchema("{\"prefix\":\"\",\"thinking_prefix\":\"\",\"system\":null,\"system_thinking\":null,"
+			"\"user\":\"U\",\"observation\":null,\"assistant\":\"A\",\"assistant_thinking\":null,\"user_suffix\":null,"
+			"\"turn_suffix\":\"\",\"generation\":\"G\",\"generation_thinking\":null,\"stop_markers\":[\"U\"]}",SPARK_STATUS_SCHEMA_ERROR);
+		free(laguna);
 	}
 
 	assert(TestLoadWithChatTemplate(glm52,&deployment) == SPARK_STATUS_OK);
@@ -416,7 +572,7 @@ static void TestChatTemplates(void)
 	free(glm);
 	free(gemma);
 	free(glm52);
-	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, GLM-5.2, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token or one declared control marker)\n");
+	printf("test_model_resident_deployment: chat_template declarations OK (absent is refused, GLM, GLM-5.2, Gemma and K3 families render their publisher shapes (K3 closes the assistant response with its declared assistant_suffix, Laguna closes every role with its own suffix), undeclared roles and thinking are refused, stop markers resolve to exactly one special token or one declared control marker)\n");
 }
 
 int main(int argc,char **argv)
@@ -449,6 +605,7 @@ int main(int argc,char **argv)
 	TestEosMetadata("\"eos_token_ids\":[1,1],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[1],\"eos_token_ids\":[2],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],",SPARK_STATUS_SCHEMA_ERROR);
+	TestOverCountArraysFailCleanly();
 	TestPrefixReuseKey("",SPARK_STATUS_OK);
 	TestPrefixReuseKey("\"prefix_reuse\":true,",SPARK_STATUS_SCHEMA_ERROR);
 	TestPrefixReuseKey("\"prefix_reuse\":false,",SPARK_STATUS_SCHEMA_ERROR);
@@ -481,32 +638,19 @@ int main(int argc,char **argv)
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_unknown.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_no_backing.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_duplicate_rank.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
-	assert(SparkModelResidentDeploymentLoad("examples/deployments/dsv4_flash_pp13_host_rdma.json",&deployment) == SPARK_STATUS_OK);
-	assert(deployment.node_count == 13u);
-	assert(deployment.runtime_limits.max_inflight_submission_count == 13u);
-	assert(deployment.runtime_limits.max_active_sequence_count == 1024u);
-	assert(deployment.runtime_limits.max_input_row_count == 1024u);
-	assert(deployment.runtime_limits.resident_sequence_capacity == 16384u);
-	assert(deployment.runtime_limits.kv_logical_page_capacity == 1048576u);
-	assert(deployment.runtime_limits.kv_physical_page_capacity == 16384u);
-	assert(strcmp(deployment.adapter_shared_object_path,"lib/model_serving_adapter.so") == 0);
-	assert(strcmp(deployment.transport_shared_object_path,"lib/hidden_transport.so") == 0);
-	node = SparkModelResidentDeploymentFindRank(&deployment,12u);
-	assert(node != 0);
-	assert(strcmp(node->transport_host,"sparkc-fabric") == 0);
-	assert(strcmp(node->runtime_root,
-		"/home/sparkc/sparkdata/dsv4_flash.fp8.pp13") == 0);
-	assert(strcmp(node->adapter_configuration_path,"config/dsv4_flash_stage.json") == 0);
-	assert(strcmp(node->kv_backing_directory,
-		"/home/sparkc/kvcache/dsv4_flash/pp13.bf16") == 0);
-	assert(node->kv_backing_maximum_bytes == UINT64_C(274877906944));
-	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer.json",&deployment) == SPARK_STATUS_OK);
 	assert(deployment.tokenizer_asset_path != 0);
 	assert(deployment.tokenizer_vocabulary_size == 129280u);
 	assert(deployment.tokenizer_asset_sha256 != 0);
 	assert(strlen(deployment.tokenizer_asset_sha256) == 64u);
+	assert(deployment.tokenizer_text_prompt_prefix_count == 0u);
 	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_prefix.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.tokenizer_text_prompt_prefix_count == 1u && deployment.tokenizer_text_prompt_prefix_ids[0] == 0u);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_prefix_empty.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_prefix_out_of_range.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_prefix_too_long.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_path_only.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_bad_sha.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment_tokenizer_zero_vocab.json",&deployment) == SPARK_STATUS_SCHEMA_ERROR);

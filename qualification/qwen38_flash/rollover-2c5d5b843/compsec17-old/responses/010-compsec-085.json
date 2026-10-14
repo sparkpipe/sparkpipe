@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8d364524354929f498c83a76b2e20e51a15b1e1ef4eb13a2167647b1712bee5c"
+ },
+ "response": {
+  "id": "chatcmpl-db9a395bdbbc4071958ba6ce803e16aa",
+  "created": 1791721704,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability lies in the use of `strncat` on line 5.\n\n1.  **Function Behavior**: `strncat(dest, src, n)` appends at most `n` characters from `src` to `dest`. Crucially, it stops copying if it encounters a null terminator (`\\0`) in `src` *before* copying `n` characters. It does **not** guarantee that `n` bytes are copied if a null byte is present earlier.\n2.  **Input Context**: The problem states that `tok_len` may include embedded NUL bytes. This implies the token is a binary-safe string (like a `std::string` or a buffer with explicit length) where the content might contain `\\0` characters that are part of the data, not just the terminator.\n3.  **The Bug**: If `tok` contains an embedded NUL byte (e.g., `tok = \"ab\\0cd\"` with `tok_len = 5`), `strncat` will stop copying after `\"ab\"`. The resulting SQL string will be `'ab'` instead of `'ab\\0cd'` (or whatever the intended representation is). This leads to **truncation** of the token.\n4.  **Security Implication**: In the context of SQL injection or logic errors, truncating a token can lead to bypassing filters or altering the query structure. For example, if the token is meant to be a filename or identifier, truncating it at a NUL byte might result in a different, potentially dangerous, resource being accessed or a syntax error that leaks information. More critically, if the application logic relies on the full length of the token for validation or processing, the mismatch between the intended token and the appended SQL fragment is a vulnerability.\n5.  **Correct Approach**: To safely append a binary-safe string of known length, one should use `memcpy` or a custom append function that respects the length and handles NUL bytes explicitly (e.g., escaping them or using a binary-safe SQL literal format), rather than relying on `strncat` which is string-oriented and NUL-terminated.\n\nTherefore, the primary bug is introduced on line 5.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 466,
+   "prompt_tokens": 238,
+   "total_tokens": 704,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability lies in the use of `strncat` on line 5.\n\n1.  **Function Behavior**: `strncat(dest, src, n)` appends at most `n` characters from `src` to `dest`. Crucially, it stops copying if it encounters a null terminator (`\\0`) in `src` *before* copying `n` characters. It does **not** guarantee that `n` bytes are copied if a null byte is present earlier.\n2.  **Input Context**: The problem states that `tok_len` may include embedded NUL bytes. This implies the token is a binary-safe string (like a `std::string` or a buffer with explicit length) where the content might contain `\\0` characters that are part of the data, not just the terminator.\n3.  **The Bug**: If `tok` contains an embedded NUL byte (e.g., `tok = \"ab\\0cd\"` with `tok_len = 5`), `strncat` will stop copying after `\"ab\"`. The resulting SQL string will be `'ab'` instead of `'ab\\0cd'` (or whatever the intended representation is). This leads to **truncation** of the token.\n4.  **Security Implication**: In the context of SQL injection or logic errors, truncating a token can lead to bypassing filters or altering the query structure. For example, if the token is meant to be a filename or identifier, truncating it at a NUL byte might result in a different, potentially dangerous, resource being accessed or a syntax error that leaks information. More critically, if the application logic relies on the full length of the token for validation or processing, the mismatch between the intended token and the appended SQL fragment is a vulnerability.\n5.  **Correct Approach**: To safely append a binary-safe string of known length, one should use `memcpy` or a custom append function that respects the length and handles NUL bytes explicitly (e.g., escaping them or using a binary-safe SQL literal format), rather than relying on `strncat` which is string-oriented and NUL-terminated.\n\nTherefore, the primary bug is introduced on line 5.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 11261.5,
+  "output_sha256": "c1d9ea5edbc016b795c41f4454dea6c12cb32d713ce0417be3dec71735fa9b83",
+  "prompt_token_count": 238,
+  "generated_token_count": 466,
+  "reasoning_chars": 0,
+  "content_chars": 1920,
+  "status": "stop"
+ }
+}

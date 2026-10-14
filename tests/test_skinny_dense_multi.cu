@@ -57,6 +57,7 @@ static void Case(uint32_t input,uint32_t rows,const MultiPart *parts,uint32_t co
 		CUDA(cudaMemset(single[part],0x5a,bytes[part])); CUDA(cudaMemset(fused[part],0x5a,bytes[part]));
 		REQUIRE(LmSkinnyDense<LmBf16Format>(weight[part],activation,parts[part].f32 ? 0 : (uint16_t *)single[part],parts[part].f32 ? (float *)single[part] : 0,rows,input,parts[part].output,parts[part].stride,parts[part].offset,stream) == LM_LAUNCH_OK);
 		targets[part].weight=weight[part];
+		targets[part].scale=LmScaleTensorNone();
 		targets[part].output_bf16=parts[part].f32 ? 0 : (uint16_t *)fused[part];
 		targets[part].output_f32=parts[part].f32 ? (float *)fused[part] : 0;
 		targets[part].output_dimension=parts[part].output;
@@ -108,7 +109,7 @@ int main(int argc,char **argv)
 	memset(bad,0,sizeof(bad));
 	REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(bad,0u,(const uint16_t *)16,1u,4096u,stream) == LM_LAUNCH_ERR_SHAPE);
 	REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(bad,LM_SKINNY_MULTI_MAX + 1u,(const uint16_t *)16,1u,4096u,stream) == LM_LAUNCH_ERR_SHAPE);
-	bad[0].weight=(const void *)16; bad[0].output_bf16=(uint16_t *)16; bad[0].output_dimension=16u;
+	bad[0].scale=LmScaleTensorNone(); bad[0].weight=(const void *)16; bad[0].output_bf16=(uint16_t *)16; bad[0].output_dimension=16u;
 	REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(bad,1u,(const uint16_t *)16,LM_SKINNY_ROWS_WIDE + 1u,4096u,stream) == LM_LAUNCH_ERR_SHAPE);
 	printf("test_skinny_dense_multi PASS\n");
 	return 0;

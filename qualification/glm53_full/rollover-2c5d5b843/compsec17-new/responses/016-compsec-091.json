@@ -1,0 +1,63 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "82ffd5ec810be2fd0728d2c04b6a647c2cf2b4d2894347060be88b467c9a6785"
+ },
+ "response": {
+  "id": "chatcmpl-7e605934eafa4535bc66d92b91d7ac10",
+  "created": 1791730899,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Line 3** \u2014 `blocks << blkbits` can overflow a 32-bit unsigned integer. For example, with `blkbits = 9` (512-byte blocks) and `blocks = 0x800000`, the shift produces 0, so the size check on line 5 passes even though the actual transfer is 1 GiB. The correct pattern (as in the Linux kernel f_mass_storage fix) is to compute `blocks` against `lun->backing_size >> blkbits`, or check `blocks` before shifting.\n\nAnswer: 3",
+     "role": "assistant",
+     "reasoning_content": "Shift overflow: blocks << blkbits can overflow uint32_t. Line 3."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 135,
+   "prompt_tokens": 235,
+   "total_tokens": 370,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>Shift overflow: blocks << blkbits can overflow uint32_t. Line 3.</think>**Line 3** \u2014 `blocks << blkbits` can overflow a 32-bit unsigned integer. For example, with `blkbits = 9` (512-byte blocks) and `blocks = 0x800000`, the shift produces 0, so the size check on line 5 passes even though the actual transfer is 1 GiB. The correct pattern (as in the Linux kernel f_mass_storage fix) is to compute `blocks` against `lun->backing_size >> blkbits`, or check `blocks` before shifting.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 6764.2,
+  "output_sha256": "07e6eac6ff37693d608802268a37eaba84b06389059eac88b01c3d2e375746db",
+  "prompt_token_count": 235,
+  "generated_token_count": 135,
+  "reasoning_chars": 64,
+  "content_chars": 419,
+  "status": "stop"
+ }
+}

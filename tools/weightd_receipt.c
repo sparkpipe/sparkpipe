@@ -1,7 +1,6 @@
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_sha256.h"
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -10,25 +9,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define LEGACY_MAGIC UINT64_C(0x5350494e45524531)
-
 typedef struct ToolSink
 {
 	SparkSha256Context sha;
 	SparkCk128Context ck;
 	uint32_t hash;
 } ToolSink;
-
-typedef struct LegacyRecord
-{
-	uint64_t magic;
-	uint64_t size;
-	uint64_t mtime_ns;
-	uint64_t ctime_ns;
-	uint8_t sha[32];
-	uint8_t ck[16];
-	uint64_t proof;
-} LegacyRecord;
 
 static SparkStatus tool_sink(void *context,const uint8_t *data,uint64_t offset,uint64_t bytes)
 {
@@ -148,88 +134,6 @@ static int tool_check(const char *pack,const char *expected)
 	return(status == SPARK_STATUS_OK ? 0 : 1);
 }
 
-static int tool_legacy_read(const char *path,LegacyRecord *record)
-{
-	struct stat info;
-	ssize_t count;
-	int fd = open(path,O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-	if ( fd < 0 )
-		return(-1);
-	if ( fstat(fd,&info) != 0 || S_ISREG(info.st_mode) == 0 || info.st_size != (off_t)sizeof(*record) ||
-		(info.st_uid != geteuid() && info.st_uid != 0) || (info.st_mode & (S_IWGRP | S_IWOTH)) != 0 )
-	{
-		(void)close(fd);
-		return(-1);
-	}
-	count = read(fd,record,sizeof(*record));
-	(void)close(fd);
-	return(count == (ssize_t)sizeof(*record) ? 0 : -1);
-}
-
-static int tool_legacy_match(const char *directory,const char *name,const struct stat *pack,char sha_hex[65],char ck_hex[33],uint64_t *proof)
-{
-	char suffix[96],path[4096],key[SPARK_SHA256_HEX_BYTES];
-	LegacyRecord record;
-	size_t length = strlen(name),tail;
-	static const uint8_t zero[16] = {0};
-	(void)snprintf(suffix,sizeof(suffix),"-%llu-%llu.receipt",(unsigned long long)pack->st_size,(unsigned long long)pack->st_ino);
-	tail = strlen(suffix);
-	if ( length != 64u + tail || strcmp(name + 64u,suffix) != 0 )
-		return(-1);
-	if ( snprintf(path,sizeof(path),"%s/%s",directory,name) >= (int)sizeof(path) || tool_legacy_read(path,&record) != 0 )
-		return(-1);
-	if ( record.magic != LEGACY_MAGIC || record.proof > 1u || record.size != (uint64_t)pack->st_size ||
-		record.mtime_ns != SparkWeightdPackMtimeNs(pack) || record.ctime_ns != SparkWeightdPackCtimeNs(pack) )
-		return(-1);
-	SparkSha256DigestToHex(record.sha,sha_hex);
-	if ( SparkSha256Bytes(sha_hex,64u,key) != SPARK_STATUS_OK || memcmp(key,name,SPARK_SHA256_HEX_BYTES - 1u) != 0 )
-		return(-1);
-	ck_hex[0] = 0;
-	if ( record.proof == 0u && memcmp(record.ck,zero,sizeof(zero)) != 0 )
-		SparkCk128DigestToHex(record.ck,ck_hex);
-	*proof = record.proof;
-	return(0);
-}
-
-static int tool_adopt(const char *pack,const char *directory)
-{
-	char sha_hex[65],ck_hex[33],sidecar[65];
-	struct stat info;
-	struct dirent *entry;
-	uint64_t proof = 0u;
-	SparkStatus status;
-	DIR *listing;
-	int fd = tool_open(pack,&info),found = 0;
-	if ( fd < 0 )
-		return(1);
-	listing = opendir(directory);
-	while ( listing != 0 && found == 0 && (entry = readdir(listing)) != 0 )
-		found = tool_legacy_match(directory,entry->d_name,&info,sha_hex,ck_hex,&proof) == 0;
-	if ( listing != 0 )
-		(void)closedir(listing);
-	if ( found == 0 )
-	{
-		printf("weightd_receipt adopt path=%s legacy=none: the first load after rollout verifies this pack in full\n",pack);
-		(void)close(fd);
-		return(1);
-	}
-	if ( SparkWeightdPackDigestRead(pack,sidecar) == SPARK_STATUS_OK && strcmp(sidecar,sha_hex) != 0 )
-	{
-		fprintf(stderr,"weightd_receipt: HASH MISMATCH path=%s legacy=%s sidecar=%s; not adopted\n",pack,sha_hex,sidecar);
-		(void)close(fd);
-		return(3);
-	}
-	status = SparkWeightdReceiptRecord(pack,fd,&info,sha_hex,ck_hex[0] != 0 ? ck_hex : 0,proof == 0u ? "adopt-legacy-client-sha" : "adopt-legacy-daemon-sha");
-	(void)close(fd);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"weightd_receipt: adopt of %s failed status=%s\n",pack,SparkStatusToString(status));
-		return(1);
-	}
-	printf("weightd_receipt adopted path=%s sha256=%s proof=%s\n",pack,sha_hex,proof == 0u ? "client-sha" : "daemon-sha");
-	return(0);
-}
-
 static int tool_show(const char *pack)
 {
 	char primary[SPARK_WEIGHTD_RECEIPT_PATH_BYTES],fallback[SPARK_WEIGHTD_RECEIPT_PATH_BYTES];
@@ -274,7 +178,6 @@ int main(int argc,char **argv)
 			"       weightd_receipt read <pack>\n"
 			"       weightd_receipt hash <pack> [sha256]\n"
 			"       weightd_receipt ck128 <pack>\n"
-			"       weightd_receipt adopt <pack> [legacy-dir]\n"
 			"       weightd_receipt show <pack>\n");
 		return(2);
 	}
@@ -284,8 +187,6 @@ int main(int argc,char **argv)
 		return(tool_stream(argv[2],2u,0,0));
 	if ( strcmp(argv[1],"show") == 0 )
 		return(tool_show(argv[2]));
-	if ( strcmp(argv[1],"adopt") == 0 )
-		return(tool_adopt(argv[2],argc > 3 ? argv[3] : "/tmp/spark-weightd-spine"));
 	status = tool_digest(argv[2],argc > 3 ? argv[3] : 0,expected);
 	if ( status != 0 )
 		return(status);

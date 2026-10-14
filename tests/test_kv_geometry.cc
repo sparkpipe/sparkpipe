@@ -3,14 +3,17 @@
 #define __device__
 #define __forceinline__ inline
 #include "inference/kernels/kv.cuh"
-#include "model-families/glm52/cuda_tree/spark_glm_cuda_config.h"
+
+#define GLM_KV_BITS 16u
+#define GLM_LATENT 512u
+#define GLM_ROPE_DIM 64u
+#define GLM_KV_PAGE_SLOTS 64u
 
 using GlmKv      = LmKvLatent<GLM_KV_BITS, GLM_LATENT, GLM_ROPE_DIM, GLM_KV_PAGE_SLOTS>;
 using Mimo25Full = LmKvHeads<16u, 4u, 128u, 64u>;
 using Qwen36Gdn  = LmKvState<131072u>;
 
 static_assert(GlmKv::kSlotBytes == 1152u, "MLA latent slot: (512+64) x bf16");
-static_assert(GlmKv::kSlotBytes == GLM_KV_SLOT_BYTES, "config agrees with kv.cuh");
 static_assert(GlmKv::kPageBytes == 73728u, "64-slot page is 72 KB");
 static_assert(GlmKv::PageOf(129u) == 2u, "position 129 is in page 2");
 static_assert(GlmKv::SlotInPage(129u) == 1u, "position 129 is slot 1 of it");

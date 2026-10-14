@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "76a0101384845fc92d4522764310b02c4148cf3f0f544d342ffc898a02f49cf7"
+ },
+ "response": {
+  "id": "chatcmpl-1424003bc85d41c6964058966838b7e6",
+  "created": 1791725665,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The primary bug is the truncation of the size calculation to `unsigned int` on line 3.  \nIf `prefix_len + name_len + 3` exceeds `UINT_MAX`, the cast can wrap around to a small value, causing an undersized allocation and subsequent buffer overflow in the `memcpy` calls.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 70,
+   "prompt_tokens": 351,
+   "total_tokens": 421,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The primary bug is the truncation of the size calculation to `unsigned int` on line 3.  \nIf `prefix_len + name_len + 3` exceeds `UINT_MAX`, the cast can wrap around to a small value, causing an undersized allocation and subsequent buffer overflow in the `memcpy` calls.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 12569.5,
+  "output_sha256": "32d06b00c9af85bdafe897eaebf9c76774b3b792e804936e1885a34abbbab7b4",
+  "prompt_token_count": 351,
+  "generated_token_count": 70,
+  "reasoning_chars": 0,
+  "content_chars": 280,
+  "status": "stop"
+ }
+}

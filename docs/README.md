@@ -52,8 +52,6 @@ current authority.
   and polling in the collective and the API worker.
 - [`DRIVER_ACCEPTANCE.md`](DRIVER_ACCEPTANCE.md): driver contract, including
   page and position budgets, the known exception and per-driver gaps.
-- [`COMMON_MODULE_ARCHITECTURE.md`](COMMON_MODULE_ARCHITECTURE.md): common
-  modules and `llm_defines.h`.
 - [`FAMILY_TEMPLATES.md`](FAMILY_TEMPLATES.md): code shared across forked
   model families, and the rule for sharing it.
 - [`KERNEL_PLAYBOOK.md`](KERNEL_PLAYBOOK.md): shared-kernel techniques and

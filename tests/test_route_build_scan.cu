@@ -68,10 +68,13 @@ static void Case(uint32_t rows,uint32_t top_k,uint32_t skew,uint32_t up_dimensio
 	REQUIRE(got_offset == offset);
 	REQUIRE(got_up == up);
 	REQUIRE(got_down == down);
+	std::vector<uint32_t> next(offset.begin(),offset.end()-1);
 	for (uint32_t index=0u; index<packed; index++)
 	{
 		uint32_t slot=got_packed[index], expert=route[index];
 		REQUIRE(slot >= offset[expert] && slot < offset[expert+1u]);
+		REQUIRE(slot == next[expert]);
+		next[expert]++;
 		REQUIRE(seen[slot] == 0u);
 		seen[slot]=1u;
 		REQUIRE(got_source[slot] == index/top_k);
@@ -97,6 +100,9 @@ int main(int argc,char **argv)
 	Case<256u,256u>(17u,8u,0u,256u,2048u,64u,stream);
 	Case<128u,384u>(9u,6u,0u,768u,2048u,64u,stream);
 	Case<256u,64u>(33u,4u,2u,256u,1024u,32u,stream);
+	Case<256u,896u>(64u,16u,0u,4096u,512u,64u,stream);
+	Case<256u,896u>(64u,16u,4u,4096u,512u,64u,stream);
+	Case<256u,896u>(1u,16u,0u,4096u,512u,64u,stream);
 	printf("test_route_build_scan PASS\n");
 	return 0;
 }

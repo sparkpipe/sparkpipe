@@ -1,0 +1,268 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T08:26:03+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "muse-glimmer-30b",
+ "passed": 3,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-4e2ce228e26547a5866f85115b78b271",
+     "created": 1791707147,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": " to=self<|message|>What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly just answer.\n\nNo extra fluff? One sentence. Could be fine.\n\nEnsure one sentence. No extra period? One sentence ends with period.\n\nOutput: The capital of France is Paris.\n\nThat's it.\n\nPotential nuance: Should we comply? Yes.\n\nNo policy issues.\n\nReturn answer.\n\nProbably simple.\n\nMake sure not to add extra sentences. Don't add \"Here is...\" That would be second sentence? Actually \"Here is the answer:\" is a sentence fragment? Might be considered sentence.\n\nSafer to just output one sentence.\n\nThe capital of France is Paris.\n\nDone.<|eom|><|start|>assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 175,
+      "prompt_tokens": 68,
+      "total_tokens": 243,
+      "prompt_tokens_details": {
+       "cached_tokens": 64
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": " to=self<|message|>What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly just answer.\n\nNo extra fluff? One sentence. Could be fine.\n\nEnsure one sentence. No extra period? One sentence ends with period.\n\nOutput: The capital of France is Paris.\n\nThat's it.\n\nPotential nuance: Should we comply? Yes.\n\nNo policy issues.\n\nReturn answer.\n\nProbably simple.\n\nMake sure not to add extra sentences. Don't add \"Here is...\" That would be second sentence? Actually \"Here is the answer:\" is a sentence fragment? Might be considered sentence.\n\nSafer to just output one sentence.\n\nThe capital of France is Paris.\n\nDone.<|eom|><|start|>assistant",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 5.18
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": " to=self<|message|>What is the capital of France? Answer in one sentence.\n\nWe need answer in one sentence. Capital of France is Paris.\n\nProbably just \"The capital of France is Paris.\" That's one sentence.\n\nFollow instruction. Possibly just answer.\n\nNo extra fluff? One sentence. Could be fine.\n\nEnsure one sentence. No extra period? One sentence ends with period.\n\nOutput: The capital of France is Paris.\n\nThat's it.\n\nPotential nuance: Should we comply? Yes.\n\nNo policy issues.\n\nReturn answer.\n\nProbably simple.\n\nMake sure not to add extra sentences. Don't add \"Here is...\" That would be second sentence? Actually \"Here is the answer:\" is a sentence fragment? Might be considered sentence.\n\nSafer to just output one sentence.\n\nThe capital of France is Paris.\n\nDone.<|eom|><|start|>assistant",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 26,
+    "elapsed_s": 5.28
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-dff18c9fbab1458eae5cee8b2ec1f611",
+     "created": 1791707158,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "role": "assistant",
+        "reasoning_content": " to=self<|message|>Use the get_weather tool.\n\nWe need to call get_weather with location Paris. Unit? Not specified. Could default? Parameter required location. unit optional? Schema says required [\"location\"]. unit enum celsius/fahrenheit. Could pick celsius. Probably default to celsius? Might need to choose one. Could call with location Paris, unit celsius. Or maybe call twice? Probably one call.\n\nWe should follow policy: use tool. No extra text? We can provide answer after tool call. First call tool.\n\nWe need to invoke get_weather.\n\nLet's call with location \"Paris\", unit \"celsius\".<|eom|><|start|>assistant to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">\n<atem:parameter name=\"location\">Paris</atem:parameter>\n<atem:parameter name=\"unit\">celsius</atem:parameter>\n</atem:invoke>\n</atem:function_calls>",
+        "content": null
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 182,
+      "prompt_tokens": 436,
+      "total_tokens": 618,
+      "prompt_tokens_details": {
+       "cached_tokens": 384
+      }
+     }
+    },
+    "content": "",
+    "reasoning": " to=self<|message|>Use the get_weather tool.\n\nWe need to call get_weather with location Paris. Unit? Not specified. Could default? Parameter required location. unit optional? Schema says required [\"location\"]. unit enum celsius/fahrenheit. Could pick celsius. Probably default to celsius? Might need to choose one. Could call with location Paris, unit celsius. Or maybe call twice? Probably one call.\n\nWe should follow policy: use tool. No extra text? We can provide answer after tool call. First call tool.\n\nWe need to invoke get_weather.\n\nLet's call with location \"Paris\", unit \"celsius\".<|eom|><|start|>assistant to=get_weather<|message|><atem:function_calls>\n<atem:invoke name=\"get_weather\">\n<atem:parameter name=\"location\">Paris</atem:parameter>\n<atem:parameter name=\"unit\">celsius</atem:parameter>\n</atem:invoke>\n</atem:function_calls>",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 5.75
+   },
+   "problems": [
+    "finish_reason 'stop'",
+    "no tool call parsed"
+   ]
+  },
+  {
+   "check": "tool_result",
+   "request": null,
+   "reply": null,
+   "problems": [
+    "skipped: no tool call to answer"
+   ]
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-6a2304440725416c82ef5fb5725565d8",
+     "created": 1791707159,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": " to=self<|message|>What is 17 * 23? Reply with just the number.\n\nReply with just the number.\n\n17*23 = 391\n\nJust number.<|eom|><|start|>assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 40,
+      "prompt_tokens": 70,
+      "total_tokens": 110,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": " to=self<|message|>What is 17 * 23? Reply with just the number.\n\nReply with just the number.\n\n17*23 = 391\n\nJust number.<|eom|><|start|>assistant",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 1.26
+   },
+   "problems": [
+    "reasoning_content present with reasoning off"
+   ]
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "muse-glimmer-30b",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-9bc1bdc48e1a4fdb9f197ae8148e3800",
+     "created": 1791707163,
+     "model": "muse-glimmer-30b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": " to=self<|message|>What is 17 * 23? Reply with just the number.\n\nReply with just the number.\n\n17*23 = 391\n\nCheck: 17*20=340, 17*3=51, total 391.\n\nReply with just the number.\n\nProbably just \"391\". No extra text.\n\nFollow instruction: Reply with just the number.\n\nOutput 391.\n\nEnsure no extra punctuation? Probably just number. Might be okay with newline.\n\nReturn 391.<|eom|><|start|>assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 104,
+      "prompt_tokens": 70,
+      "total_tokens": 174,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": " to=self<|message|>What is 17 * 23? Reply with just the number.\n\nReply with just the number.\n\n17*23 = 391\n\nCheck: 17*20=340, 17*3=51, total 391.\n\nReply with just the number.\n\nProbably just \"391\". No extra text.\n\nFollow instruction: Reply with just the number.\n\nOutput 391.\n\nEnsure no extra punctuation? Probably just number. Might be okay with newline.\n\nReturn 391.<|eom|><|start|>assistant",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 3.13
+   },
+   "problems": []
+  }
+ ]
+}

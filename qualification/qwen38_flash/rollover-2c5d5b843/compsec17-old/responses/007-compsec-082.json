@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "0feb7389171d43e0627f33d994d3f4511bb44a942a04a0dc984400b2c949ab1c"
+ },
+ "response": {
+  "id": "chatcmpl-15ffe82048bd43359274235841cf2089",
+  "created": 1791721670,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The function `xdr_datum` decodes a C-string from an XDR stream.\n1.  **Line 3**: Reads the length `n` of the string.\n2.  **Line 4**: Calculates the destination pointer `dst`.\n3.  **Line 6**: Checks if `n` bytes are available in the input stream. This prevents reading past the end of the input buffer.\n4.  **Line 9**: Reads `n` bytes into `dst`.\n5.  **Line 10**: Writes a null terminator at `dst[n]`.\n\nThe vulnerability lies in the fact that while the code checks if the *input* has enough bytes (`xdr_bytes_available`), it does **not** check if the *destination buffer* (defined by `desc`) has enough space to hold `n` bytes plus the null terminator.\n\nIf `desc->offset + n + 1` exceeds the size of the buffer pointed to by `base`, a heap or stack buffer overflow occurs at line 10 (and potentially line 9 if `n` is very large, though line 10 is the definitive out-of-bounds write for the null terminator which is often the trigger for crashes or exploitation in string handling contexts). Even if `xdr_read_bytes` is safe regarding the source, writing `n` bytes plus a null byte to `dst` requires `n+1` bytes of space in the destination. The code assumes the descriptor guarantees sufficient space, but without a bounds check against the slice size, this is unsafe.\n\nThe primary bug is the lack of a bounds check on the destination buffer before writing. The write that causes the overflow is at line 10 (writing the null terminator) and line 9 (writing the data). However, the logic error is introduced by the missing check. Usually, in these types of questions, the line where the unsafe operation occurs is cited. Line 10 is the specific write that goes out of bounds if the buffer is exactly `n` bytes long (which is a common off-by-one scenario). Line 9 writes `n` bytes. If the buffer is `n` bytes, line 9 is safe, but line 10 overflows. If the buffer is smaller, line 9 overflows.\n\nLet's look closer. `desc` is a `SliceDesc`. It likely contains an offset and a length. The code uses `desc->offset`",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 297,
+   "total_tokens": 809,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `xdr_datum` decodes a C-string from an XDR stream.\n1.  **Line 3**: Reads the length `n` of the string.\n2.  **Line 4**: Calculates the destination pointer `dst`.\n3.  **Line 6**: Checks if `n` bytes are available in the input stream. This prevents reading past the end of the input buffer.\n4.  **Line 9**: Reads `n` bytes into `dst`.\n5.  **Line 10**: Writes a null terminator at `dst[n]`.\n\nThe vulnerability lies in the fact that while the code checks if the *input* has enough bytes (`xdr_bytes_available`), it does **not** check if the *destination buffer* (defined by `desc`) has enough space to hold `n` bytes plus the null terminator.\n\nIf `desc->offset + n + 1` exceeds the size of the buffer pointed to by `base`, a heap or stack buffer overflow occurs at line 10 (and potentially line 9 if `n` is very large, though line 10 is the definitive out-of-bounds write for the null terminator which is often the trigger for crashes or exploitation in string handling contexts). Even if `xdr_read_bytes` is safe regarding the source, writing `n` bytes plus a null byte to `dst` requires `n+1` bytes of space in the destination. The code assumes the descriptor guarantees sufficient space, but without a bounds check against the slice size, this is unsafe.\n\nThe primary bug is the lack of a bounds check on the destination buffer before writing. The write that causes the overflow is at line 10 (writing the null terminator) and line 9 (writing the data). However, the logic error is introduced by the missing check. Usually, in these types of questions, the line where the unsafe operation occurs is cited. Line 10 is the specific write that goes out of bounds if the buffer is exactly `n` bytes long (which is a common off-by-one scenario). Line 9 writes `n` bytes. If the buffer is `n` bytes, line 9 is safe, but line 10 overflows. If the buffer is smaller, line 9 overflows.\n\nLet's look closer. `desc` is a `SliceDesc`. It likely contains an offset and a length. The code uses `desc->offset`",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "9",
+  "passed": true,
+  "elapsed_ms": 12409.5,
+  "output_sha256": "27585a9e9929d9c5896ff25b4d8f69ade2c6dab59f914a888ed0e308adba3103",
+  "prompt_token_count": 297,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 2004,
+  "status": "length"
+ }
+}

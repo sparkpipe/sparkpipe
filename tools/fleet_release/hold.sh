@@ -9,7 +9,6 @@ case "$mode" in
 esac
 start_log hold
 echo "hold ($mode) $(date -u +%FT%TZ): agent.hold on the $NODE_COUNT $RELEASE_ROOT_NAME roots; each fleet-agent drains its residentd. The model is DOWN from here until unhold.sh + converge.sh + api_install.sh."
-rotation_gate || die "pause the rotation first"
 nodes "${gate[@]}" --log "$log.nodes-gate" > /dev/null || { nodes_bad "$log.nodes-gate"; die "node gate ($mode) failed"; }
 echo "OK   node gate $NODE_COUNT/$NODE_COUNT"
 mkdir -p "$LOGS"

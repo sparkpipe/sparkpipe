@@ -1,0 +1,63 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function validates a per-request authentication blob before passing it to the GSS layer.\n\nCode:\n```c\n 1: #define AUTH_STACK_MAX 256\n 2: \n 3: static bool check_rpcsec_packet(const uint8_t *wire, size_t wire_left)\n 4: {\n 5:     if (wire_left < 4)\n 6:         return false;\n 7: \n 8:     uint32_t body_len = get_be32(wire);      // attacker-controlled length field\n 9:     const uint8_t *body = wire + 4;\n10:     uint8_t scratch[AUTH_STACK_MAX];\n11: \n12:     /* XDR opaque values are padded to 4-byte alignment on the wire. */\n13:     uint32_t pad = (4 - (body_len & 3)) & 3;\n14:     uint32_t encoded_len = body_len + pad;\n15: \n16:     /* This check only proves the source bytes exist in the packet. */\n17:     if (encoded_len > wire_left - 4)\n18:         return false;\n19: \n20:     memcpy(scratch, body, encoded_len);\n21:     return gss_verify_mic(scratch, body_len);\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "372f0e7559ad72ee0cae5c0b7ef197432808ab061715ff0479f5a90071f79b34"
+ },
+ "response": {
+  "id": "chatcmpl-cfaeafe719d34b1a8a90af9949c0cb7f",
+  "created": 1791730768,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\n- Line 8: `body_len` is attacker-controlled (up to ~4 GB).\n- Line 13\u201314: `encoded_len = body_len + pad` \u2014 also attacker-controlled, and can even be computed from a huge `body_len`.\n- Line 17: The bounds check only verifies the bytes exist in the input packet (`wire_left`), not that they fit in the destination buffer.\n- Line 20: `memcpy(scratch, body, encoded_len)` copies into a fixed 256-byte stack buffer with no check that `encoded_len <= AUTH_STACK_MAX`. Any packet with a body larger than 256 bytes (but still within the packet) causes a stack buffer overflow.\n\nThe missing size validation manifests at the `memcpy` on line 20.\n\nAnswer: 20",
+     "role": "assistant",
+     "reasoning_content": "Overflow: encoded_len can exceed 256. body_len up to wire_left-4, no check against AUTH_STACK_MAX. Bug at line 20 (memcpy), but root is missing check \u2014 line 17 or 20. Primary bug introduced: line 20."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 220,
+   "prompt_tokens": 384,
+   "total_tokens": 604,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Overflow: encoded_len can exceed 256. body_len up to wire_left-4, no check against AUTH_STACK_MAX. Bug at line 20 (memcpy), but root is missing check \u2014 line 17 or 20. Primary bug introduced: line 20.</think>**Analysis:**\n\n- Line 8: `body_len` is attacker-controlled (up to ~4 GB).\n- Line 13\u201314: `encoded_len = body_len + pad` \u2014 also attacker-controlled, and can even be computed from a huge `body_len`.\n- Line 17: The bounds check only verifies the bytes exist in the input packet (`wire_left`), not that they fit in the destination buffer.\n- Line 20: `memcpy(scratch, body, encoded_len)` copies into a fixed 256-byte stack buffer with no check that `encoded_len <= AUTH_STACK_MAX`. Any packet with a body larger than 256 bytes (but still within the packet) causes a stack buffer overflow.\n\nThe missing size validation manifests at the `memcpy` on line 20.\n\nAnswer: 20",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "20",
+  "passed": true,
+  "elapsed_ms": 10818.4,
+  "output_sha256": "b91bbe853aa0b6094aaeb2f986347d334dd420b18bdb35c174a2747cbacf5690",
+  "prompt_token_count": 384,
+  "generated_token_count": 220,
+  "reasoning_chars": 199,
+  "content_chars": 661,
+  "status": "stop"
+ }
+}

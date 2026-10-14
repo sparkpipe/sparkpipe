@@ -1,0 +1,62 @@
+{
+ "id": "compsec-088",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "kimi-k3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function exports a finite-field Diffie-Hellman public value into a fixed-width buffer for the group. The public MPI may be supplied by an application.\n\nCode:\n```c\n 1: static int export_ffdh_public(const struct DhmContext *ctx,\n 2:                               uint8_t *out, size_t out_len)\n 3: {\n 4:     size_t plen = mpi_size(&ctx->P);      // byte length of the group prime\n 5:     size_t ylen = mpi_size(&ctx->Y);      // byte length of public value\n 6: \n 7:     if (out_len < plen)\n 8:         return -1;\n 9: \n10:     memset(out, 0, plen);\n11:     return mpi_write_binary(&ctx->Y, out + (plen - ylen), ylen);\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "47e8a0a71a272a81c87d1f660ff43def664fa30ede5074b552b873ff9125c7b5"
+ },
+ "response": {
+  "id": "chatcmpl-c1994ac8dfa3496d90e4ee8532bd6705",
+  "created": 1791730310,
+  "model": "kimi-k3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 10,
+   "prompt_tokens": 311,
+   "total_tokens": 321,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Answer: 11",
+ "grade": {
+  "index": 13,
+  "id": "compsec-088",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 2450.5,
+  "output_sha256": "22ea7d7896a20f103f297eee449d5b49d6db94f5c1813a2b36acf2134945cbe5",
+  "prompt_token_count": 311,
+  "generated_token_count": 10,
+  "reasoning_chars": 0,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

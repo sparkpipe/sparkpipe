@@ -92,7 +92,7 @@ static cudaError_t SparkKvDeviceCopierEnqueue(SparkKvDeviceCopier *copier, uint3
 	cudaStream_t stream;
 	cudaError_t error;
 	uint64_t page_bytes;
-	uint32_t index;
+	uint32_t index,layer;
 	stream = (cudaStream_t)copier->stream;
 	*bytes = 0u;
 	error = cudaSuccess;
@@ -109,11 +109,10 @@ static cudaError_t SparkKvDeviceCopierEnqueue(SparkKvDeviceCopier *copier, uint3
 		else
 		{
 			page_bytes = region->layer_page_bytes * region->layer_count;
-			error = cudaMemcpy2DAsync((void *)(region->device_base + (uintptr_t)destination_slot * region->layer_page_bytes),
-				(size_t)region->layer_stride_bytes,
-				(const void *)(region->device_base + (uintptr_t)source_slot * region->layer_page_bytes),
-				(size_t)region->layer_stride_bytes,(size_t)region->layer_page_bytes,region->layer_count,
-				cudaMemcpyDeviceToDevice,stream);
+			for (layer=0u; error == cudaSuccess && layer<region->layer_count; layer++)
+				error = cudaMemcpyAsync((void *)(region->device_base + layer * region->layer_stride_bytes + (uintptr_t)destination_slot * region->layer_page_bytes),
+					(const void *)(region->device_base + layer * region->layer_stride_bytes + (uintptr_t)source_slot * region->layer_page_bytes),
+					(size_t)region->layer_page_bytes,cudaMemcpyDeviceToDevice,stream);
 		}
 		*bytes += page_bytes;
 	}

@@ -1,0 +1,63 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "4abc954641837ec28490f9e66b166d2aa694d2eb07d3cfa4a01f49b9f19eedf2"
+ },
+ "response": {
+  "id": "chatcmpl-00164304252b4cc59bc0917884b21920",
+  "created": 1791731214,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The loop assumes segments arrive in ascending order. If `segno` is smaller than `last` (or larger than expected), `missing` can be negative or the index `segno` can exceed the grown size, so `a->segments[segno]` writes out of bounds. The unchecked indexing is the core flaw.\n\nAnswer: 11",
+     "role": "assistant",
+     "reasoning_content": "Segments not ascending: segno could be less than last, negative missing, and indexing a->segments[segno] out of range. Bug at line 11 (indexing without bounds check), with 9-11 group. Best single: 11."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 126,
+   "prompt_tokens": 296,
+   "total_tokens": 422,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Segments not ascending: segno could be less than last, negative missing, and indexing a->segments[segno] out of range. Bug at line 11 (indexing without bounds check), with 9-11 group. Best single: 11.</think>The loop assumes segments arrive in ascending order. If `segno` is smaller than `last` (or larger than expected), `missing` can be negative or the index `segno` can exceed the grown size, so `a->segments[segno]` writes out of bounds. The unchecked indexing is the core flaw.\n\nAnswer: 11",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 3008.8,
+  "output_sha256": "d33b48e035fbc2cc27fe3fb1028b7da7935be2bdf2e2872192fead6b4ee9126c",
+  "prompt_token_count": 296,
+  "generated_token_count": 126,
+  "reasoning_chars": 200,
+  "content_chars": 286,
+  "status": "stop"
+ }
+}

@@ -326,6 +326,9 @@ static void RunCowCase(void)
         CHECK(h.owners[1].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && h.sequences[1].sequence_id == 0u);
     }
     CHECK(SparkKvLaneTransactionsReset(&h.transactions) == SPARK_STATUS_OK);
+    CHECK(h.cache.live_sequence_count == 0u && h.entry_map[source] != SPARK_KV_PAGE_CACHE_NO_INDEX &&
+        (h.blocks[source].flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u && memcmp((void *)original_view.key_device_address,original,sizeof(original)) == 0);
+    CHECK(SparkKvPageCacheReleaseAll(&h.cache) == SPARK_STATUS_OK);
     Ledger(&h,0u,SPARK_KV_LANE_TRANSACTION_EMPTY,0u,0u);
     SparkKvPageStoreDestroy(&store);
     CHECK(unlink(path) == 0);

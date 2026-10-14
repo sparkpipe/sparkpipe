@@ -2,6 +2,7 @@
 
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/formats/fp8.cuh"
+#include "inference/kernels/formats/mxfp8.cuh"
 #include "inference/kernels/mma.cuh"
 #include "inference/kernels/scale.cuh"
 #include "runtime/launch.h"
@@ -86,6 +87,8 @@ struct LmStreamWeight<LmFp8>
 {
 	static constexpr bool kSupported = true;
 	static constexpr bool kScaled = true;
+	static constexpr uint32_t kScaleK = LM_STREAM_SCALE_K;
+	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_F32;
 	static constexpr uint32_t kElementBytes = 1u;
 	template<uint32_t ROW_BYTES>
 	static __device__ __forceinline__ uint32_t Offset(uint32_t row, uint32_t chunk)
@@ -101,6 +104,13 @@ struct LmStreamWeight<LmFp8>
 		b[2] = LmStreamE4m3PairBf16(value.y,0x1404u);
 		b[3] = LmStreamE4m3PairBf16(value.y,0x3424u);
 	}
+};
+
+template<>
+struct LmStreamWeight<LmMxfp8> : LmStreamWeight<LmFp8>
+{
+	static constexpr uint32_t kScaleK = LM_MXFP8_GROUP;
+	static constexpr uint32_t kScaleEncoding = LM_SCALE_ENCODING_UE8M0;
 };
 
 template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K>
@@ -202,6 +212,15 @@ static __device__ __forceinline__ LmStreamTile LmStreamTileAt(const LmStreamGemm
 	return(at);
 }
 
+template<class Format>
+static __host__ __device__ constexpr uint32_t LmStreamScaleK(void)
+{
+	if constexpr ( LmStreamWeight<Format>::kScaled )
+		return(LmStreamWeight<Format>::kScaleK);
+	else
+		return(LM_STREAM_SCALE_K);
+}
+
 template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K>
 __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const __grid_constant__ LmStreamGemmArguments args)
 {
@@ -209,7 +228,8 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	constexpr uint32_t STAGES = LmStreamStages<Format,TILE_M,TILE_N,TILE_K>();
 	constexpr uint32_t B_ROW_BYTES = TILE_K * Weight::kElementBytes;
 	constexpr uint32_t B_ROW_CHUNKS = B_ROW_BYTES / 16u;
-	constexpr uint32_t SCALE_BLOCKS = Weight::kScaled ? TILE_K / LM_STREAM_SCALE_K : 1u;
+	constexpr uint32_t SCALE_K = LmStreamScaleK<Format>();
+	constexpr uint32_t SCALE_BLOCKS = Weight::kScaled ? TILE_K / SCALE_K : 1u;
 	constexpr uint32_t A_ROW_BYTES = TILE_K * 2u;
 	constexpr uint32_t A_ROW_CHUNKS = A_ROW_BYTES / 16u;
 	constexpr uint32_t WARPS_M = TILE_M <= 32u ? 1u : TILE_M / 32u;
@@ -228,7 +248,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	static_assert(MF >= 1u && NF >= 1u && WARPS_M * WARPS_N == LM_STREAM_WARPS && WARP_M % 16u == 0u,"the tile is not a whole number of MMA fragments per warp");
 	static_assert(B_CHUNKS % LM_STREAM_THREADS == 0u,"the weight stage must divide across the block");
 	static_assert(STAGES >= 2u,"the tile leaves no room for a second pipeline stage");
-	static_assert(!Weight::kScaled || TILE_K % LM_STREAM_SCALE_K == 0u,"a k-tile must hold whole weight scale blocks");
+	static_assert(!Weight::kScaled || (TILE_K % SCALE_K == 0u && SCALE_K % 32u == 0u),"a k-tile must hold whole weight scale blocks");
 	extern __shared__ __align__(128) uint8_t lm_stream_shared[];
 	uint32_t *prefix = (uint32_t *)(lm_stream_shared + STAGES * STAGE_BYTES);
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(lm_stream_shared);
@@ -319,8 +339,8 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 				for (j = 0u; j < NF; j++)
 				{
 					uint32_t column = work.neuron_base + warp_n * WARP_N + j * 8u + quad * 2u;
-					scale[block][j][0] = column < args.output_dimension ? LmScaleTensorLoad(&args.scale,work.group,column,kt * TILE_K + block * LM_STREAM_SCALE_K) : 0.0f;
-					scale[block][j][1] = column + 1u < args.output_dimension ? LmScaleTensorLoad(&args.scale,work.group,column + 1u,kt * TILE_K + block * LM_STREAM_SCALE_K) : 0.0f;
+					scale[block][j][0] = column < args.output_dimension ? LmScaleTensorLoad(&args.scale,work.group,column,kt * TILE_K + block * SCALE_K) : 0.0f;
+					scale[block][j][1] = column + 1u < args.output_dimension ? LmScaleTensorLoad(&args.scale,work.group,column + 1u,kt * TILE_K + block * SCALE_K) : 0.0f;
 				}
 		LmStreamWait<STAGES - 2u>();
 		__syncthreads();
@@ -363,7 +383,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 			}
 			if constexpr ( Weight::kScaled )
 			{
-				if ( step % (LM_STREAM_SCALE_K / 32u) == LM_STREAM_SCALE_K / 32u - 1u )
+				if ( step % (SCALE_K / 32u) == SCALE_K / 32u - 1u )
 #pragma unroll
 					for (i = 0u; i < MF; i++)
 #pragma unroll
@@ -371,7 +391,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 #pragma unroll
 							for (e = 0u; e < 4u; e++)
 							{
-								total[i][j][e] = fmaf(partial[i][j][e],scale[step / (LM_STREAM_SCALE_K / 32u)][j][e & 1u],total[i][j][e]);
+								total[i][j][e] = fmaf(partial[i][j][e],scale[step / (SCALE_K / 32u)][j][e & 1u],total[i][j][e]);
 								partial[i][j][e] = 0.0f;
 							}
 			}
@@ -402,8 +422,8 @@ static uint32_t LmStreamScaleFits(const LmScaleTensor *scale, uint32_t groups, u
 	if constexpr ( !LmStreamWeight<Format>::kScaled )
 		return(scale->encoding == LM_SCALE_ENCODING_NONE ? 1u : 0u);
 	else
-		return(scale->encoding == LM_SCALE_ENCODING_F32 && scale->reserved == 0u && scale->data != 0 && scale->row_group_size == 1u &&
-			scale->k_group_size == LM_STREAM_SCALE_K && scale->group_count >= groups &&
+		return(scale->encoding == LmStreamWeight<Format>::kScaleEncoding && scale->reserved == 0u && scale->data != 0 && scale->row_group_size == 1u &&
+			scale->k_group_size == LmStreamWeight<Format>::kScaleK && scale->group_count >= groups &&
 			scale->row_count >= output && scale->input_dimension >= input ? 1u : 0u);
 }
 

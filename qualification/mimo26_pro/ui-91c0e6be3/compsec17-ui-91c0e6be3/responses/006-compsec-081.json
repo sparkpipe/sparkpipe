@@ -1,0 +1,62 @@
+{
+ "id": "compsec-081",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe diagnostic request builder has small protocol-defined fields.\n\nCode:\n```c\n 1: #define MAX_DIAG_PAYLOAD       6\n 2: #define MAX_REQUEST_PAYLOAD    7\n 3: \n 4: static int send_diagnostic_request(uint8_t sid,\n 5:                                    const uint8_t *pid, size_t pid_len,\n 6:                                    const uint8_t *payload, size_t payload_len)\n 7: {\n 8:     uint8_t req[MAX_DIAG_PAYLOAD];\n 9: \n10:     if (pid_len > 2 || payload_len > MAX_REQUEST_PAYLOAD)\n11:         return -1;\n12: \n13:     req[0] = sid;\n14:     memcpy(req + 1, pid, pid_len);\n15:     memcpy(req + 1 + pid_len, payload, payload_len);\n16: \n17:     return transport_send(req, 1 + pid_len + payload_len);\n18: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "56a0274033ed511eb07bc0f0c368c0ea304f9cbcfba92e3e516b17c0f618b064"
+ },
+ "response": {
+  "id": "chatcmpl-4953d8fdfa1e4f7cb119976db63e397f",
+  "created": 1791868656,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The buffer `req` is `MAX_DIAG_PAYLOAD` = 6 bytes. The check allows `pid_len` up to 2 and `payload_len` up to `MAX_REQUEST_PAYLOAD` = 7. Total written = 1 + 2 + 7 = 10 bytes > 6. The check on line 10 uses the wrong bound (MAX_REQUEST_PAYLOAD instead of MAX_DIAG_PAYLOAD), allowing overflow at lines 14-15.\n\nThe primary bug is introduced at line 10 (the incorrect bound check).\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 116,
+   "prompt_tokens": 323,
+   "total_tokens": 439,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The buffer `req` is `MAX_DIAG_PAYLOAD` = 6 bytes. The check allows `pid_len` up to 2 and `payload_len` up to `MAX_REQUEST_PAYLOAD` = 7. Total written = 1 + 2 + 7 = 10 bytes > 6. The check on line 10 uses the wrong bound (MAX_REQUEST_PAYLOAD instead of MAX_DIAG_PAYLOAD), allowing overflow at lines 14-15.\n\nThe primary bug is introduced at line 10 (the incorrect bound check).\n\nAnswer: 10",
+ "grade": {
+  "index": 6,
+  "id": "compsec-081",
+  "source": "COMPSEC",
+  "domain": "uds-c",
+  "expected": "10-15",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 15555.2,
+  "output_sha256": "58a00cb7fc34cfb7ecb19a0b7d36eb1ea4c27a00b04098119db443e45709ed06",
+  "prompt_token_count": 323,
+  "generated_token_count": 116,
+  "reasoning_chars": 0,
+  "content_chars": 387,
+  "status": "stop"
+ }
+}

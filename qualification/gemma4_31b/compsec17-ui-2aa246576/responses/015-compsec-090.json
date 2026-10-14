@@ -1,0 +1,62 @@
+{
+ "id": "compsec-090",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-31b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "b5969a630b26bd08e4b0b32980000eb7406b7b57386462a1fb701a1093575fc4"
+ },
+ "response": {
+  "id": "chatcmpl-58b20cf5b1c14f3191aefb0ecffda261",
+  "created": 1791704073,
+  "model": "gemma-4-31b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function processes a 16-bit `type` field by extracting the low byte into `htype` (line 7). The `mandatory_handlers` array is defined with a size of 255 (line 2), meaning valid indices are 0 through 254.\n\nIn line 9, the code checks if `htype < 0x80` (128). If this is false, `htype` is in the range [128, 255].\nIn line 12, the code accesses `mandatory_handlers[htype]`. If `htype` is 255 (which is possible since `htype` is a `uint8_t`), the access `mandatory_handlers[255]` is out of bounds for an array of size 255.\n\nAnswer: 12",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 187,
+   "prompt_tokens": 392,
+   "total_tokens": 579,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function processes a 16-bit `type` field by extracting the low byte into `htype` (line 7). The `mandatory_handlers` array is defined with a size of 255 (line 2), meaning valid indices are 0 through 254.\n\nIn line 9, the code checks if `htype < 0x80` (128). If this is false, `htype` is in the range [128, 255].\nIn line 12, the code accesses `mandatory_handlers[htype]`. If `htype` is 255 (which is possible since `htype` is a `uint8_t`), the access `mandatory_handlers[255]` is out of bounds for an array of size 255.\n\nAnswer: 12",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "source": "COMPSEC",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "12",
+  "passed": true,
+  "elapsed_ms": 6821.7,
+  "output_sha256": "6ce5a59504fb032e7a3034179ecf0731df367553358d7388fbbe4a7e15efe68d",
+  "prompt_token_count": 392,
+  "generated_token_count": 187,
+  "reasoning_chars": 0,
+  "content_chars": 532,
+  "status": "stop"
+ }
+}

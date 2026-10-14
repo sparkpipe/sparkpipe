@@ -1,0 +1,1397 @@
+mimo26_flash_tp16_stage: mesh lane acquired requested=7 resolved=7 shared-owner
+STAGE-MEMORY rank=0 phase=begin rows=0 mem_available=102852354048 used_since_last=0 cuda_free=94843437056
+STAGE-MEMORY rank=0 phase=model_open rows=0 mem_available=102851768320 used_since_last=585728 cuda_free=94842847232
+WD-MAP-SLOTS slots=128 chunk_bytes=2097152 — chunk mappings persist across leases and change only when weightd moves a chunk
+WD-SPINE-PRIVATE spans=1 bytes=10708897791
+weightd spine-stream bytes=10708897536 seconds=0.987 gbps=10.85 direct=1 readers=4 hashed=0
+STAGE-MEMORY rank=0 phase=weights_attached rows=0 mem_available=91739488256 used_since_last=11112280064 cuda_free=83729993728
+STAGE-MEMORY rank=0 phase=model_bound rows=0 mem_available=91649097728 used_since_last=90390528 cuda_free=83639603200
+MESH-LANE rank=0 lane=7 band=14 ownership=borrowed
+MESH-TOPOLOGY rank=0 degree=16 physical=0 map=fedcba9876543210 peers=fffe
+MESH-WAIT-MODE rank=0 mode=hardware
+MESH-PEER-ROUTES rank=0 band=14 staging_bytes=134217728
+STAGE-MEMORY rank=0 phase=collective rows=0 mem_available=91630624768 used_since_last=18472960 cuda_free=83621130240
+STAGE-MEMORY rank=0 phase=head rows=0 mem_available=91550752768 used_since_last=79872000 cuda_free=83541258240
+STAGE-MEMORY rank=0 phase=buffers rows=0 mem_available=91510841344 used_since_last=39911424 cuda_free=83501346816
+ERRSITE runtime/spark_weightd.c:6161 status=19 count=1
+mimo26_flash_tp16_stage kv shared prefix off: weightd has no shared window for 1024-page groups of 890880 bytes
+mimo26_flash_tp16_stage kv pool weightd generation=222 reattached=0 attach_ms=360 chunks=825/871 minimum_chunks=88 chunk_bytes=8388608 pages=7372/8192 kv_committed=8583643136 kv_reserve=8589934592 private_kv_bytes=0
+mimo26_flash_tp16_stage kv write meter: every spill, state and snapshot write is counted; KV-WRITE-ALERT above 21474836480 bytes in an hour
+mimo26_flash_tp16_stage kv snapshot store directory=/home/spark0/stage-lanes/mimo26_flash/lane7/root/kvsnapshot maximum_bytes=8589934592 queue_bytes=58720256 page_file_bytes=917504 used_bytes=0 files=0 matching_files=0 foreign_layout_files=0 evicted_at_open=0 removed_temporaries=0 driver=/home/spark0/stage-lanes/mimo26_flash/lane7/root/lib/libmimo26_flash_tp16_serving_adapter.so identity_us=5862 layout=70894dbc41abcdb74255feaafb859c2fee43139888ce661a5d34c7e0a2d01f16
+mimo26_flash_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+mimo26_flash_tp16_stage kv binding async completion_records=1 copy_on_write=device copy_stream=nonblocking restore=worker
+mimo26_flash_tp16_stage kv binding logical_pages=8192 physical_pages=8192 pages_per_sequence=512 page_bytes=890880 regions=2 context_shard=0/16 layout=70894dbc41abcdb74255feaafb859c2fee43139888ce661a5d34c7e0a2d01f16
+STAGE-MEMORY rank=0 phase=kv_attached rows=0 mem_available=84420534272 used_since_last=7090307072 cuda_free=76410949632
+model_residentd adapter_max_sequence_positions=32768
+model_residentd ready rank=0 stage=0 inflight=16 active=16 rows=256 resident=16 adapter=mimo26_flash-tp16 model=XiaomiMiMo/MiMo-V2.6-Flash-RL revision=3b38d063180c3e4aed9691fdc735f3d10b266ee4 tcp=spark0:23112
+FLUSH-TRACE fd=41 wrote=584 of 584 remaining=1
+FLUSH-TRACE fd=41 wrote=480 of 480 remaining=1
+FLUSH-TRACE fd=41 wrote=480 of 480 remaining=1
+FLUSH-TRACE fd=41 wrote=480 of 480 remaining=1
+SUBMIT-ARRIVED id=1000001 bytes=896 decision=1
+SUBMIT-RESULT-TRACE id=1000001 status=0 queued=1 output_count=1 fd=41
+FLUSH-TRACE fd=41 wrote=48 of 48 remaining=1
+DECISION id=1000001 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=1 cell=17777217 req=1000001
+CKEY-ADOPT rank=0 epoch=1 had=0
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=rsag-peer phases=2 elements=86016 rows=1 capture=0
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=284928 rows=1 capture=0
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=24576 rows=1 capture=0
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=0
+FLUSH-TRACE fd=41 wrote=72 of 72 remaining=2
+FLUSH-TRACE fd=41 wrote=268 of 268 remaining=1
+SUBMIT-RESULT-TRACE id=1000002 status=0 queued=1 output_count=1 fd=41
+FLUSH-TRACE fd=41 wrote=48 of 48 remaining=1
+CKEY-WRITE rank=0 epoch=2 cell=34554434 req=1000002
+CKEY-ADOPT rank=0 epoch=2 had=1
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=84361904128 used_since_last=58630144 cuda_free=76351336448
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=7.6 prefetch_groups=145 prefetch_dropped=0
+FLUSH-TRACE fd=41 wrote=268 of 268 remaining=1
+SUBMIT-RESULT-TRACE id=1000003 status=0 queued=1 output_count=1 fd=41
+FLUSH-TRACE fd=41 wrote=48 of 48 remaining=1
+CKEY-WRITE rank=0 epoch=3 cell=51331651 req=1000003
+CKEY-ADOPT rank=0 epoch=3 had=2
+FLUSH-TRACE fd=41 wrote=268 of 268 remaining=1
+SUBMIT-RESULT-TRACE id=1000004 status=0 queued=1 output_count=1 fd=41
+FLUSH-TRACE fd=41 wrote=48 of 48 remaining=1
+CKEY-WRITE rank=0 epoch=4 cell=68108868 req=1000004
+CKEY-ADOPT rank=0 epoch=4 had=3
+SUBMIT-RESULT-TRACE id=1000005 status=0 queued=1 output_count=1 fd=41
+CKEY-WRITE rank=0 epoch=5 cell=84886085 req=1000005
+CKEY-ADOPT rank=0 epoch=5 had=4
+SUBMIT-RESULT-TRACE id=1000006 status=0 queued=1 output_count=1 fd=41
+CKEY-WRITE rank=0 epoch=6 cell=101663302 req=1000006
+CKEY-ADOPT rank=0 epoch=6 had=5
+SUBMIT-RESULT-TRACE id=1000007 status=0 queued=1 output_count=1 fd=41
+CKEY-WRITE rank=0 epoch=7 cell=118440519 req=1000007
+CKEY-ADOPT rank=0 epoch=7 had=6
+SUBMIT-RESULT-TRACE id=1000008 status=0 queued=1 output_count=1 fd=41
+CKEY-WRITE rank=0 epoch=8 cell=135217736 req=1000008
+CKEY-ADOPT rank=0 epoch=8 had=7
+SUBMIT-ARRIVED id=1000009 bytes=392 decision=1
+SUBMIT-RESULT-TRACE id=1000009 status=0 queued=1 output_count=1 fd=41
+DECISION id=1000009 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000010 bytes=392 decision=1
+SUBMIT-RESULT-TRACE id=1000010 status=0 queued=1 output_count=1 fd=41
+DECISION id=1000010 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000011 bytes=944 decision=1
+SUBMIT-RESULT-TRACE id=1000011 status=0 queued=1 output_count=1 fd=41
+DECISION id=1000011 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=9 cell=151994955 req=1000011
+CKEY-ADOPT rank=0 epoch=9 had=8
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=rsag-peer phases=2 elements=94208 rows=1 capture=0
+SUBMIT-RESULT-TRACE id=1000012 status=0 queued=1 output_count=1 fd=41
+CKEY-WRITE rank=0 epoch=10 cell=168772172 req=1000012
+CKEY-ADOPT rank=0 epoch=10 had=9
+CKEY-WRITE rank=0 epoch=11 cell=185549389 req=1000013
+CKEY-ADOPT rank=0 epoch=11 had=10
+CKEY-WRITE rank=0 epoch=12 cell=202326606 req=1000014
+CKEY-ADOPT rank=0 epoch=12 had=11
+CKEY-WRITE rank=0 epoch=13 cell=219103823 req=1000015
+CKEY-ADOPT rank=0 epoch=13 had=12
+CKEY-WRITE rank=0 epoch=14 cell=235881040 req=1000016
+CKEY-ADOPT rank=0 epoch=14 had=13
+CKEY-WRITE rank=0 epoch=15 cell=252658257 req=1000017
+CKEY-ADOPT rank=0 epoch=15 had=14
+CKEY-WRITE rank=0 epoch=16 cell=269435474 req=1000018
+CKEY-ADOPT rank=0 epoch=16 had=15
+CKEY-WRITE rank=0 epoch=17 cell=286212691 req=1000019
+CKEY-ADOPT rank=0 epoch=17 had=16
+CKEY-WRITE rank=0 epoch=18 cell=302989908 req=1000020
+CKEY-ADOPT rank=0 epoch=18 had=17
+CKEY-WRITE rank=0 epoch=19 cell=319767125 req=1000021
+CKEY-ADOPT rank=0 epoch=19 had=18
+CKEY-WRITE rank=0 epoch=20 cell=336544342 req=1000022
+CKEY-ADOPT rank=0 epoch=20 had=19
+CKEY-WRITE rank=0 epoch=21 cell=353321559 req=1000023
+CKEY-ADOPT rank=0 epoch=21 had=20
+CKEY-WRITE rank=0 epoch=22 cell=370098776 req=1000024
+CKEY-ADOPT rank=0 epoch=22 had=21
+CKEY-WRITE rank=0 epoch=23 cell=386875993 req=1000025
+CKEY-ADOPT rank=0 epoch=23 had=22
+CKEY-WRITE rank=0 epoch=24 cell=403653210 req=1000026
+CKEY-ADOPT rank=0 epoch=24 had=23
+CKEY-WRITE rank=0 epoch=25 cell=420430427 req=1000027
+CKEY-ADOPT rank=0 epoch=25 had=24
+CKEY-WRITE rank=0 epoch=26 cell=437207644 req=1000028
+CKEY-ADOPT rank=0 epoch=26 had=25
+CKEY-WRITE rank=0 epoch=27 cell=453984861 req=1000029
+CKEY-ADOPT rank=0 epoch=27 had=26
+CKEY-WRITE rank=0 epoch=28 cell=470762078 req=1000030
+CKEY-ADOPT rank=0 epoch=28 had=27
+CKEY-WRITE rank=0 epoch=29 cell=487539295 req=1000031
+CKEY-ADOPT rank=0 epoch=29 had=28
+CKEY-WRITE rank=0 epoch=30 cell=504316512 req=1000032
+CKEY-ADOPT rank=0 epoch=30 had=29
+CKEY-WRITE rank=0 epoch=31 cell=521093729 req=1000033
+CKEY-ADOPT rank=0 epoch=31 had=30
+CKEY-WRITE rank=0 epoch=32 cell=537870946 req=1000034
+CKEY-ADOPT rank=0 epoch=32 had=31
+CKEY-WRITE rank=0 epoch=33 cell=554648163 req=1000035
+CKEY-ADOPT rank=0 epoch=33 had=32
+CKEY-WRITE rank=0 epoch=34 cell=571425380 req=1000036
+CKEY-ADOPT rank=0 epoch=34 had=33
+CKEY-WRITE rank=0 epoch=35 cell=588202597 req=1000037
+CKEY-ADOPT rank=0 epoch=35 had=34
+CKEY-WRITE rank=0 epoch=36 cell=604979814 req=1000038
+CKEY-ADOPT rank=0 epoch=36 had=35
+CKEY-WRITE rank=0 epoch=37 cell=621757031 req=1000039
+CKEY-ADOPT rank=0 epoch=37 had=36
+CKEY-WRITE rank=0 epoch=38 cell=638534248 req=1000040
+CKEY-ADOPT rank=0 epoch=38 had=37
+CKEY-WRITE rank=0 epoch=39 cell=655311465 req=1000041
+CKEY-ADOPT rank=0 epoch=39 had=38
+CKEY-WRITE rank=0 epoch=40 cell=672088682 req=1000042
+CKEY-ADOPT rank=0 epoch=40 had=39
+CKEY-WRITE rank=0 epoch=41 cell=688865899 req=1000043
+CKEY-ADOPT rank=0 epoch=41 had=40
+CKEY-WRITE rank=0 epoch=42 cell=705643116 req=1000044
+CKEY-ADOPT rank=0 epoch=42 had=41
+CKEY-WRITE rank=0 epoch=43 cell=722420333 req=1000045
+CKEY-ADOPT rank=0 epoch=43 had=42
+CKEY-WRITE rank=0 epoch=44 cell=739197550 req=1000046
+CKEY-ADOPT rank=0 epoch=44 had=43
+CKEY-WRITE rank=0 epoch=45 cell=755974767 req=1000047
+CKEY-ADOPT rank=0 epoch=45 had=44
+CKEY-WRITE rank=0 epoch=46 cell=772751984 req=1000048
+CKEY-ADOPT rank=0 epoch=46 had=45
+CKEY-WRITE rank=0 epoch=47 cell=789529201 req=1000049
+CKEY-ADOPT rank=0 epoch=47 had=46
+CKEY-WRITE rank=0 epoch=48 cell=806306418 req=1000050
+CKEY-ADOPT rank=0 epoch=48 had=47
+CKEY-WRITE rank=0 epoch=49 cell=823083635 req=1000051
+CKEY-ADOPT rank=0 epoch=49 had=48
+CKEY-WRITE rank=0 epoch=50 cell=839860852 req=1000052
+CKEY-ADOPT rank=0 epoch=50 had=49
+SUBMIT-ARRIVED id=1000053 bytes=392 decision=1
+DECISION id=1000053 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=51 cell=856638070 req=1000054
+CKEY-ADOPT rank=0 epoch=51 had=50
+CKEY-WRITE rank=0 epoch=52 cell=873415287 req=1000055
+CKEY-ADOPT rank=0 epoch=52 had=51
+CKEY-WRITE rank=0 epoch=53 cell=890192504 req=1000056
+CKEY-ADOPT rank=0 epoch=53 had=52
+CKEY-WRITE rank=0 epoch=54 cell=906969721 req=1000057
+CKEY-ADOPT rank=0 epoch=54 had=53
+CKEY-WRITE rank=0 epoch=55 cell=923746938 req=1000058
+CKEY-ADOPT rank=0 epoch=55 had=54
+CKEY-WRITE rank=0 epoch=56 cell=940524155 req=1000059
+CKEY-ADOPT rank=0 epoch=56 had=55
+CKEY-WRITE rank=0 epoch=57 cell=957301372 req=1000060
+CKEY-ADOPT rank=0 epoch=57 had=56
+CKEY-WRITE rank=0 epoch=58 cell=974078589 req=1000061
+CKEY-ADOPT rank=0 epoch=58 had=57
+CKEY-WRITE rank=0 epoch=59 cell=990855806 req=1000062
+CKEY-ADOPT rank=0 epoch=59 had=58
+CKEY-WRITE rank=0 epoch=60 cell=1007633023 req=1000063
+CKEY-ADOPT rank=0 epoch=60 had=59
+CKEY-WRITE rank=0 epoch=61 cell=1024410240 req=1000064
+CKEY-ADOPT rank=0 epoch=61 had=60
+CKEY-WRITE rank=0 epoch=62 cell=1041187457 req=1000065
+CKEY-ADOPT rank=0 epoch=62 had=61
+CKEY-WRITE rank=0 epoch=63 cell=1057964674 req=1000066
+CKEY-ADOPT rank=0 epoch=63 had=62
+CKEY-WRITE rank=0 epoch=64 cell=1074741891 req=1000067
+CKEY-ADOPT rank=0 epoch=64 had=63
+STAGE-STEP-TIMING rank=0 steps=64 graph_steps=62 submit_us=34496 graph_us=23217 source_wait_us=1 peer_wait_us=15572 copy_us=527 combine_us=433
+MIMO26-FLASH-STATE rank=0 arena_bytes=90170648 slots=16 rows=256 expert_first=0 record_stride=135168
+CKEY-WRITE rank=0 epoch=65 cell=1091519108 req=1000068
+CKEY-ADOPT rank=0 epoch=65 had=64
+CKEY-WRITE rank=0 epoch=66 cell=1108296325 req=1000069
+CKEY-ADOPT rank=0 epoch=66 had=65
+CKEY-WRITE rank=0 epoch=67 cell=1125073542 req=1000070
+CKEY-ADOPT rank=0 epoch=67 had=66
+CKEY-WRITE rank=0 epoch=68 cell=1141850759 req=1000071
+CKEY-ADOPT rank=0 epoch=68 had=67
+CKEY-WRITE rank=0 epoch=69 cell=1158627976 req=1000072
+CKEY-ADOPT rank=0 epoch=69 had=68
+CKEY-WRITE rank=0 epoch=70 cell=1175405193 req=1000073
+CKEY-ADOPT rank=0 epoch=70 had=69
+CKEY-WRITE rank=0 epoch=71 cell=1192182410 req=1000074
+CKEY-ADOPT rank=0 epoch=71 had=70
+CKEY-WRITE rank=0 epoch=72 cell=1208959627 req=1000075
+CKEY-ADOPT rank=0 epoch=72 had=71
+SUBMIT-ARRIVED id=1000076 bytes=392 decision=1
+DECISION id=1000076 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000077 bytes=392 decision=1
+DECISION id=1000077 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000078 bytes=944 decision=1
+DECISION id=1000078 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=73 cell=1225736846 req=1000078
+CKEY-ADOPT rank=0 epoch=73 had=72
+CKEY-WRITE rank=0 epoch=74 cell=1242514063 req=1000079
+CKEY-ADOPT rank=0 epoch=74 had=73
+CKEY-WRITE rank=0 epoch=75 cell=1259291280 req=1000080
+CKEY-ADOPT rank=0 epoch=75 had=74
+CKEY-WRITE rank=0 epoch=76 cell=1276068497 req=1000081
+CKEY-ADOPT rank=0 epoch=76 had=75
+CKEY-WRITE rank=0 epoch=77 cell=1292845714 req=1000082
+CKEY-ADOPT rank=0 epoch=77 had=76
+CKEY-WRITE rank=0 epoch=78 cell=1309622931 req=1000083
+CKEY-ADOPT rank=0 epoch=78 had=77
+CKEY-WRITE rank=0 epoch=79 cell=1326400148 req=1000084
+CKEY-ADOPT rank=0 epoch=79 had=78
+CKEY-WRITE rank=0 epoch=80 cell=1343177365 req=1000085
+CKEY-ADOPT rank=0 epoch=80 had=79
+CKEY-WRITE rank=0 epoch=81 cell=1359954582 req=1000086
+CKEY-ADOPT rank=0 epoch=81 had=80
+CKEY-WRITE rank=0 epoch=82 cell=1376731799 req=1000087
+CKEY-ADOPT rank=0 epoch=82 had=81
+CKEY-WRITE rank=0 epoch=83 cell=1393509016 req=1000088
+CKEY-ADOPT rank=0 epoch=83 had=82
+CKEY-WRITE rank=0 epoch=84 cell=1410286233 req=1000089
+CKEY-ADOPT rank=0 epoch=84 had=83
+CKEY-WRITE rank=0 epoch=85 cell=1427063450 req=1000090
+CKEY-ADOPT rank=0 epoch=85 had=84
+CKEY-WRITE rank=0 epoch=86 cell=1443840667 req=1000091
+CKEY-ADOPT rank=0 epoch=86 had=85
+CKEY-WRITE rank=0 epoch=87 cell=1460617884 req=1000092
+CKEY-ADOPT rank=0 epoch=87 had=86
+CKEY-WRITE rank=0 epoch=88 cell=1477395101 req=1000093
+CKEY-ADOPT rank=0 epoch=88 had=87
+CKEY-WRITE rank=0 epoch=89 cell=1494172318 req=1000094
+CKEY-ADOPT rank=0 epoch=89 had=88
+CKEY-WRITE rank=0 epoch=90 cell=1510949535 req=1000095
+CKEY-ADOPT rank=0 epoch=90 had=89
+CKEY-WRITE rank=0 epoch=91 cell=1527726752 req=1000096
+CKEY-ADOPT rank=0 epoch=91 had=90
+CKEY-WRITE rank=0 epoch=92 cell=1544503969 req=1000097
+CKEY-ADOPT rank=0 epoch=92 had=91
+CKEY-WRITE rank=0 epoch=93 cell=1561281186 req=1000098
+CKEY-ADOPT rank=0 epoch=93 had=92
+CKEY-WRITE rank=0 epoch=94 cell=1578058403 req=1000099
+CKEY-ADOPT rank=0 epoch=94 had=93
+CKEY-WRITE rank=0 epoch=95 cell=1594835620 req=1000100
+CKEY-ADOPT rank=0 epoch=95 had=94
+CKEY-WRITE rank=0 epoch=96 cell=1611612837 req=1000101
+CKEY-ADOPT rank=0 epoch=96 had=95
+CKEY-WRITE rank=0 epoch=97 cell=1628390054 req=1000102
+CKEY-ADOPT rank=0 epoch=97 had=96
+CKEY-WRITE rank=0 epoch=98 cell=1645167271 req=1000103
+CKEY-ADOPT rank=0 epoch=98 had=97
+CKEY-WRITE rank=0 epoch=99 cell=1661944488 req=1000104
+CKEY-ADOPT rank=0 epoch=99 had=98
+CKEY-WRITE rank=0 epoch=100 cell=1678721705 req=1000105
+CKEY-ADOPT rank=0 epoch=100 had=99
+CKEY-WRITE rank=0 epoch=101 cell=1695498922 req=1000106
+CKEY-ADOPT rank=0 epoch=101 had=100
+CKEY-WRITE rank=0 epoch=102 cell=1712276139 req=1000107
+CKEY-ADOPT rank=0 epoch=102 had=101
+CKEY-WRITE rank=0 epoch=103 cell=1729053356 req=1000108
+CKEY-ADOPT rank=0 epoch=103 had=102
+CKEY-WRITE rank=0 epoch=104 cell=1745830573 req=1000109
+CKEY-ADOPT rank=0 epoch=104 had=103
+CKEY-WRITE rank=0 epoch=105 cell=1762607790 req=1000110
+CKEY-ADOPT rank=0 epoch=105 had=104
+CKEY-WRITE rank=0 epoch=106 cell=1779385007 req=1000111
+CKEY-ADOPT rank=0 epoch=106 had=105
+CKEY-WRITE rank=0 epoch=107 cell=1796162224 req=1000112
+CKEY-ADOPT rank=0 epoch=107 had=106
+CKEY-WRITE rank=0 epoch=108 cell=1812939441 req=1000113
+CKEY-ADOPT rank=0 epoch=108 had=107
+CKEY-WRITE rank=0 epoch=109 cell=1829716658 req=1000114
+CKEY-ADOPT rank=0 epoch=109 had=108
+CKEY-WRITE rank=0 epoch=110 cell=1846493875 req=1000115
+CKEY-ADOPT rank=0 epoch=110 had=109
+CKEY-WRITE rank=0 epoch=111 cell=1863271092 req=1000116
+CKEY-ADOPT rank=0 epoch=111 had=110
+CKEY-WRITE rank=0 epoch=112 cell=1880048309 req=1000117
+CKEY-ADOPT rank=0 epoch=112 had=111
+CKEY-WRITE rank=0 epoch=113 cell=1896825526 req=1000118
+CKEY-ADOPT rank=0 epoch=113 had=112
+CKEY-WRITE rank=0 epoch=114 cell=1913602743 req=1000119
+CKEY-ADOPT rank=0 epoch=114 had=113
+SUBMIT-ARRIVED id=1000120 bytes=392 decision=1
+DECISION id=1000120 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=115 cell=1930379961 req=1000121
+CKEY-ADOPT rank=0 epoch=115 had=114
+CKEY-WRITE rank=0 epoch=116 cell=1947157178 req=1000122
+CKEY-ADOPT rank=0 epoch=116 had=115
+CKEY-WRITE rank=0 epoch=117 cell=1963934395 req=1000123
+CKEY-ADOPT rank=0 epoch=117 had=116
+CKEY-WRITE rank=0 epoch=118 cell=1980711612 req=1000124
+CKEY-ADOPT rank=0 epoch=118 had=117
+CKEY-WRITE rank=0 epoch=119 cell=1997488829 req=1000125
+CKEY-ADOPT rank=0 epoch=119 had=118
+CKEY-WRITE rank=0 epoch=120 cell=2014266046 req=1000126
+CKEY-ADOPT rank=0 epoch=120 had=119
+CKEY-WRITE rank=0 epoch=121 cell=2031043263 req=1000127
+CKEY-ADOPT rank=0 epoch=121 had=120
+CKEY-WRITE rank=0 epoch=122 cell=2047820480 req=1000128
+CKEY-ADOPT rank=0 epoch=122 had=121
+CKEY-WRITE rank=0 epoch=123 cell=2064597697 req=1000129
+CKEY-ADOPT rank=0 epoch=123 had=122
+CKEY-WRITE rank=0 epoch=124 cell=2081374914 req=1000130
+CKEY-ADOPT rank=0 epoch=124 had=123
+CKEY-WRITE rank=0 epoch=125 cell=2098152131 req=1000131
+CKEY-ADOPT rank=0 epoch=125 had=124
+CKEY-WRITE rank=0 epoch=126 cell=2114929348 req=1000132
+CKEY-ADOPT rank=0 epoch=126 had=125
+CKEY-WRITE rank=0 epoch=127 cell=2131706565 req=1000133
+CKEY-ADOPT rank=0 epoch=127 had=126
+CKEY-WRITE rank=0 epoch=128 cell=2148483782 req=1000134
+CKEY-ADOPT rank=0 epoch=128 had=127
+STAGE-STEP-TIMING rank=0 steps=64 graph_steps=63 submit_us=32111 graph_us=22365 source_wait_us=5 peer_wait_us=14271 copy_us=517 combine_us=420
+MIMO26-FLASH-STATE rank=0 arena_bytes=90170648 slots=16 rows=256 expert_first=0 record_stride=135168
+CKEY-WRITE rank=0 epoch=129 cell=2165260999 req=1000135
+CKEY-ADOPT rank=0 epoch=129 had=128
+CKEY-WRITE rank=0 epoch=130 cell=2182038216 req=1000136
+CKEY-ADOPT rank=0 epoch=130 had=129
+CKEY-WRITE rank=0 epoch=131 cell=2198815433 req=1000137
+CKEY-ADOPT rank=0 epoch=131 had=130
+CKEY-WRITE rank=0 epoch=132 cell=2215592650 req=1000138
+CKEY-ADOPT rank=0 epoch=132 had=131
+CKEY-WRITE rank=0 epoch=133 cell=2232369867 req=1000139
+CKEY-ADOPT rank=0 epoch=133 had=132
+CKEY-WRITE rank=0 epoch=134 cell=2249147084 req=1000140
+CKEY-ADOPT rank=0 epoch=134 had=133
+CKEY-WRITE rank=0 epoch=135 cell=2265924301 req=1000141
+CKEY-ADOPT rank=0 epoch=135 had=134
+CKEY-WRITE rank=0 epoch=136 cell=2282701518 req=1000142
+CKEY-ADOPT rank=0 epoch=136 had=135
+SUBMIT-ARRIVED id=1000143 bytes=392 decision=1
+DECISION id=1000143 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000144 bytes=392 decision=1
+DECISION id=1000144 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000145 bytes=1112 decision=1
+DECISION id=1000145 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=137 cell=2299478737 req=1000145
+CKEY-ADOPT rank=0 epoch=137 had=136
+CKEY-WRITE rank=0 epoch=138 cell=2316255954 req=1000146
+CKEY-ADOPT rank=0 epoch=138 had=137
+CKEY-WRITE rank=0 epoch=139 cell=2333033171 req=1000147
+CKEY-ADOPT rank=0 epoch=139 had=138
+CKEY-WRITE rank=0 epoch=140 cell=2349810388 req=1000148
+CKEY-ADOPT rank=0 epoch=140 had=139
+CKEY-WRITE rank=0 epoch=141 cell=2366587605 req=1000149
+CKEY-ADOPT rank=0 epoch=141 had=140
+CKEY-WRITE rank=0 epoch=142 cell=2383364822 req=1000150
+CKEY-ADOPT rank=0 epoch=142 had=141
+CKEY-WRITE rank=0 epoch=143 cell=2400142039 req=1000151
+CKEY-ADOPT rank=0 epoch=143 had=142
+CKEY-WRITE rank=0 epoch=144 cell=2416919256 req=1000152
+CKEY-ADOPT rank=0 epoch=144 had=143
+CKEY-WRITE rank=0 epoch=145 cell=2433696473 req=1000153
+CKEY-ADOPT rank=0 epoch=145 had=144
+CKEY-WRITE rank=0 epoch=146 cell=2450473690 req=1000154
+CKEY-ADOPT rank=0 epoch=146 had=145
+CKEY-WRITE rank=0 epoch=147 cell=2467250907 req=1000155
+CKEY-ADOPT rank=0 epoch=147 had=146
+CKEY-WRITE rank=0 epoch=148 cell=2484028124 req=1000156
+CKEY-ADOPT rank=0 epoch=148 had=147
+CKEY-WRITE rank=0 epoch=149 cell=2500805341 req=1000157
+CKEY-ADOPT rank=0 epoch=149 had=148
+CKEY-WRITE rank=0 epoch=150 cell=2517582558 req=1000158
+CKEY-ADOPT rank=0 epoch=150 had=149
+CKEY-WRITE rank=0 epoch=151 cell=2534359775 req=1000159
+CKEY-ADOPT rank=0 epoch=151 had=150
+CKEY-WRITE rank=0 epoch=152 cell=2551136992 req=1000160
+CKEY-ADOPT rank=0 epoch=152 had=151
+CKEY-WRITE rank=0 epoch=153 cell=2567914209 req=1000161
+CKEY-ADOPT rank=0 epoch=153 had=152
+CKEY-WRITE rank=0 epoch=154 cell=2584691426 req=1000162
+CKEY-ADOPT rank=0 epoch=154 had=153
+CKEY-WRITE rank=0 epoch=155 cell=2601468643 req=1000163
+CKEY-ADOPT rank=0 epoch=155 had=154
+CKEY-WRITE rank=0 epoch=156 cell=2618245860 req=1000164
+CKEY-ADOPT rank=0 epoch=156 had=155
+CKEY-WRITE rank=0 epoch=157 cell=2635023077 req=1000165
+CKEY-ADOPT rank=0 epoch=157 had=156
+CKEY-WRITE rank=0 epoch=158 cell=2651800294 req=1000166
+CKEY-ADOPT rank=0 epoch=158 had=157
+CKEY-WRITE rank=0 epoch=159 cell=2668577511 req=1000167
+CKEY-ADOPT rank=0 epoch=159 had=158
+CKEY-WRITE rank=0 epoch=160 cell=2685354728 req=1000168
+CKEY-ADOPT rank=0 epoch=160 had=159
+CKEY-WRITE rank=0 epoch=161 cell=2702131945 req=1000169
+CKEY-ADOPT rank=0 epoch=161 had=160
+CKEY-WRITE rank=0 epoch=162 cell=2718909162 req=1000170
+CKEY-ADOPT rank=0 epoch=162 had=161
+CKEY-WRITE rank=0 epoch=163 cell=2735686379 req=1000171
+CKEY-ADOPT rank=0 epoch=163 had=162
+CKEY-WRITE rank=0 epoch=164 cell=2752463596 req=1000172
+CKEY-ADOPT rank=0 epoch=164 had=163
+CKEY-WRITE rank=0 epoch=165 cell=2769240813 req=1000173
+CKEY-ADOPT rank=0 epoch=165 had=164
+CKEY-WRITE rank=0 epoch=166 cell=2786018030 req=1000174
+CKEY-ADOPT rank=0 epoch=166 had=165
+CKEY-WRITE rank=0 epoch=167 cell=2802795247 req=1000175
+CKEY-ADOPT rank=0 epoch=167 had=166
+CKEY-WRITE rank=0 epoch=168 cell=2819572464 req=1000176
+CKEY-ADOPT rank=0 epoch=168 had=167
+CKEY-WRITE rank=0 epoch=169 cell=2836349681 req=1000177
+CKEY-ADOPT rank=0 epoch=169 had=168
+CKEY-WRITE rank=0 epoch=170 cell=2853126898 req=1000178
+CKEY-ADOPT rank=0 epoch=170 had=169
+CKEY-WRITE rank=0 epoch=171 cell=2869904115 req=1000179
+CKEY-ADOPT rank=0 epoch=171 had=170
+SUBMIT-ARRIVED id=1000180 bytes=392 decision=1
+DECISION id=1000180 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=172 cell=2886681333 req=1000181
+CKEY-ADOPT rank=0 epoch=172 had=171
+CKEY-WRITE rank=0 epoch=173 cell=2903458550 req=1000182
+CKEY-ADOPT rank=0 epoch=173 had=172
+CKEY-WRITE rank=0 epoch=174 cell=2920235767 req=1000183
+CKEY-ADOPT rank=0 epoch=174 had=173
+CKEY-WRITE rank=0 epoch=175 cell=2937012984 req=1000184
+CKEY-ADOPT rank=0 epoch=175 had=174
+CKEY-WRITE rank=0 epoch=176 cell=2953790201 req=1000185
+CKEY-ADOPT rank=0 epoch=176 had=175
+CKEY-WRITE rank=0 epoch=177 cell=2970567418 req=1000186
+CKEY-ADOPT rank=0 epoch=177 had=176
+CKEY-WRITE rank=0 epoch=178 cell=2987344635 req=1000187
+CKEY-ADOPT rank=0 epoch=178 had=177
+CKEY-WRITE rank=0 epoch=179 cell=3004121852 req=1000188
+CKEY-ADOPT rank=0 epoch=179 had=178
+CKEY-WRITE rank=0 epoch=180 cell=3020899069 req=1000189
+CKEY-ADOPT rank=0 epoch=180 had=179
+CKEY-WRITE rank=0 epoch=181 cell=3037676286 req=1000190
+CKEY-ADOPT rank=0 epoch=181 had=180
+CKEY-WRITE rank=0 epoch=182 cell=3054453503 req=1000191
+CKEY-ADOPT rank=0 epoch=182 had=181
+CKEY-WRITE rank=0 epoch=183 cell=3071230720 req=1000192
+CKEY-ADOPT rank=0 epoch=183 had=182
+CKEY-WRITE rank=0 epoch=184 cell=3088007937 req=1000193
+CKEY-ADOPT rank=0 epoch=184 had=183
+CKEY-WRITE rank=0 epoch=185 cell=3104785154 req=1000194
+CKEY-ADOPT rank=0 epoch=185 had=184
+CKEY-WRITE rank=0 epoch=186 cell=3121562371 req=1000195
+CKEY-ADOPT rank=0 epoch=186 had=185
+CKEY-WRITE rank=0 epoch=187 cell=3138339588 req=1000196
+CKEY-ADOPT rank=0 epoch=187 had=186
+CKEY-WRITE rank=0 epoch=188 cell=3155116805 req=1000197
+CKEY-ADOPT rank=0 epoch=188 had=187
+CKEY-WRITE rank=0 epoch=189 cell=3171894022 req=1000198
+CKEY-ADOPT rank=0 epoch=189 had=188
+CKEY-WRITE rank=0 epoch=190 cell=3188671239 req=1000199
+CKEY-ADOPT rank=0 epoch=190 had=189
+CKEY-WRITE rank=0 epoch=191 cell=3205448456 req=1000200
+CKEY-ADOPT rank=0 epoch=191 had=190
+CKEY-WRITE rank=0 epoch=192 cell=3222225673 req=1000201
+CKEY-ADOPT rank=0 epoch=192 had=191
+STAGE-STEP-TIMING rank=0 steps=64 graph_steps=63 submit_us=31366 graph_us=21933 source_wait_us=2 peer_wait_us=13867 copy_us=510 combine_us=421
+MIMO26-FLASH-STATE rank=0 arena_bytes=90170648 slots=16 rows=256 expert_first=0 record_stride=135168
+CKEY-WRITE rank=0 epoch=193 cell=3239002890 req=1000202
+CKEY-ADOPT rank=0 epoch=193 had=192
+CKEY-WRITE rank=0 epoch=194 cell=3255780107 req=1000203
+CKEY-ADOPT rank=0 epoch=194 had=193
+CKEY-WRITE rank=0 epoch=195 cell=3272557324 req=1000204
+CKEY-ADOPT rank=0 epoch=195 had=194
+CKEY-WRITE rank=0 epoch=196 cell=3289334541 req=1000205
+CKEY-ADOPT rank=0 epoch=196 had=195
+CKEY-WRITE rank=0 epoch=197 cell=3306111758 req=1000206
+CKEY-ADOPT rank=0 epoch=197 had=196
+CKEY-WRITE rank=0 epoch=198 cell=3322888975 req=1000207
+CKEY-ADOPT rank=0 epoch=198 had=197
+CKEY-WRITE rank=0 epoch=199 cell=3339666192 req=1000208
+CKEY-ADOPT rank=0 epoch=199 had=198
+CKEY-WRITE rank=0 epoch=200 cell=3356443409 req=1000209
+CKEY-ADOPT rank=0 epoch=200 had=199
+SUBMIT-ARRIVED id=1000210 bytes=392 decision=1
+DECISION id=1000210 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000211 bytes=392 decision=1
+DECISION id=1000211 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000212 bytes=896 decision=1
+DECISION id=1000212 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=201 cell=3373220628 req=1000212
+CKEY-ADOPT rank=0 epoch=201 had=200
+CKEY-WRITE rank=0 epoch=202 cell=3389997845 req=1000213
+CKEY-ADOPT rank=0 epoch=202 had=201
+CKEY-WRITE rank=0 epoch=203 cell=3406775062 req=1000214
+CKEY-ADOPT rank=0 epoch=203 had=202
+CKEY-WRITE rank=0 epoch=204 cell=3423552279 req=1000215
+CKEY-ADOPT rank=0 epoch=204 had=203
+CKEY-WRITE rank=0 epoch=205 cell=3440329496 req=1000216
+CKEY-ADOPT rank=0 epoch=205 had=204
+CKEY-WRITE rank=0 epoch=206 cell=3457106713 req=1000217
+CKEY-ADOPT rank=0 epoch=206 had=205
+CKEY-WRITE rank=0 epoch=207 cell=3473883930 req=1000218
+CKEY-ADOPT rank=0 epoch=207 had=206
+CKEY-WRITE rank=0 epoch=208 cell=3490661147 req=1000219
+CKEY-ADOPT rank=0 epoch=208 had=207
+SUBMIT-ARRIVED id=1000220 bytes=392 decision=1
+DECISION id=1000220 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000221 bytes=392 decision=1
+DECISION id=1000221 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000222 bytes=944 decision=1
+DECISION id=1000222 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=209 cell=3507438366 req=1000222
+CKEY-ADOPT rank=0 epoch=209 had=208
+CKEY-WRITE rank=0 epoch=210 cell=3524215583 req=1000223
+CKEY-ADOPT rank=0 epoch=210 had=209
+CKEY-WRITE rank=0 epoch=211 cell=3540992800 req=1000224
+CKEY-ADOPT rank=0 epoch=211 had=210
+CKEY-WRITE rank=0 epoch=212 cell=3557770017 req=1000225
+CKEY-ADOPT rank=0 epoch=212 had=211
+CKEY-WRITE rank=0 epoch=213 cell=3574547234 req=1000226
+CKEY-ADOPT rank=0 epoch=213 had=212
+CKEY-WRITE rank=0 epoch=214 cell=3591324451 req=1000227
+CKEY-ADOPT rank=0 epoch=214 had=213
+CKEY-WRITE rank=0 epoch=215 cell=3608101668 req=1000228
+CKEY-ADOPT rank=0 epoch=215 had=214
+CKEY-WRITE rank=0 epoch=216 cell=3624878885 req=1000229
+CKEY-ADOPT rank=0 epoch=216 had=215
+CKEY-WRITE rank=0 epoch=217 cell=3641656102 req=1000230
+CKEY-ADOPT rank=0 epoch=217 had=216
+CKEY-WRITE rank=0 epoch=218 cell=3658433319 req=1000231
+CKEY-ADOPT rank=0 epoch=218 had=217
+CKEY-WRITE rank=0 epoch=219 cell=3675210536 req=1000232
+CKEY-ADOPT rank=0 epoch=219 had=218
+CKEY-WRITE rank=0 epoch=220 cell=3691987753 req=1000233
+CKEY-ADOPT rank=0 epoch=220 had=219
+CKEY-WRITE rank=0 epoch=221 cell=3708764970 req=1000234
+CKEY-ADOPT rank=0 epoch=221 had=220
+CKEY-WRITE rank=0 epoch=222 cell=3725542187 req=1000235
+CKEY-ADOPT rank=0 epoch=222 had=221
+CKEY-WRITE rank=0 epoch=223 cell=3742319404 req=1000236
+CKEY-ADOPT rank=0 epoch=223 had=222
+CKEY-WRITE rank=0 epoch=224 cell=3759096621 req=1000237
+CKEY-ADOPT rank=0 epoch=224 had=223
+CKEY-WRITE rank=0 epoch=225 cell=3775873838 req=1000238
+CKEY-ADOPT rank=0 epoch=225 had=224
+CKEY-WRITE rank=0 epoch=226 cell=3792651055 req=1000239
+CKEY-ADOPT rank=0 epoch=226 had=225
+CKEY-WRITE rank=0 epoch=227 cell=3809428272 req=1000240
+CKEY-ADOPT rank=0 epoch=227 had=226
+CKEY-WRITE rank=0 epoch=228 cell=3826205489 req=1000241
+CKEY-ADOPT rank=0 epoch=228 had=227
+CKEY-WRITE rank=0 epoch=229 cell=3842982706 req=1000242
+CKEY-ADOPT rank=0 epoch=229 had=228
+CKEY-WRITE rank=0 epoch=230 cell=3859759923 req=1000243
+CKEY-ADOPT rank=0 epoch=230 had=229
+CKEY-WRITE rank=0 epoch=231 cell=3876537140 req=1000244
+CKEY-ADOPT rank=0 epoch=231 had=230
+CKEY-WRITE rank=0 epoch=232 cell=3893314357 req=1000245
+CKEY-ADOPT rank=0 epoch=232 had=231
+CKEY-WRITE rank=0 epoch=233 cell=3910091574 req=1000246
+CKEY-ADOPT rank=0 epoch=233 had=232
+CKEY-WRITE rank=0 epoch=234 cell=3926868791 req=1000247
+CKEY-ADOPT rank=0 epoch=234 had=233
+CKEY-WRITE rank=0 epoch=235 cell=3943646008 req=1000248
+CKEY-ADOPT rank=0 epoch=235 had=234
+CKEY-WRITE rank=0 epoch=236 cell=3960423225 req=1000249
+CKEY-ADOPT rank=0 epoch=236 had=235
+CKEY-WRITE rank=0 epoch=237 cell=3977200442 req=1000250
+CKEY-ADOPT rank=0 epoch=237 had=236
+CKEY-WRITE rank=0 epoch=238 cell=3993977659 req=1000251
+CKEY-ADOPT rank=0 epoch=238 had=237
+CKEY-WRITE rank=0 epoch=239 cell=4010754876 req=1000252
+CKEY-ADOPT rank=0 epoch=239 had=238
+CKEY-WRITE rank=0 epoch=240 cell=4027532093 req=1000253
+CKEY-ADOPT rank=0 epoch=240 had=239
+CKEY-WRITE rank=0 epoch=241 cell=4044309310 req=1000254
+CKEY-ADOPT rank=0 epoch=241 had=240
+CKEY-WRITE rank=0 epoch=242 cell=4061086527 req=1000255
+CKEY-ADOPT rank=0 epoch=242 had=241
+CKEY-WRITE rank=0 epoch=243 cell=4077863744 req=1000256
+CKEY-ADOPT rank=0 epoch=243 had=242
+CKEY-WRITE rank=0 epoch=244 cell=4094640961 req=1000257
+CKEY-ADOPT rank=0 epoch=244 had=243
+CKEY-WRITE rank=0 epoch=245 cell=4111418178 req=1000258
+CKEY-ADOPT rank=0 epoch=245 had=244
+CKEY-WRITE rank=0 epoch=246 cell=4128195395 req=1000259
+CKEY-ADOPT rank=0 epoch=246 had=245
+CKEY-WRITE rank=0 epoch=247 cell=4144972612 req=1000260
+CKEY-ADOPT rank=0 epoch=247 had=246
+CKEY-WRITE rank=0 epoch=248 cell=4161749829 req=1000261
+CKEY-ADOPT rank=0 epoch=248 had=247
+CKEY-WRITE rank=0 epoch=249 cell=4178527046 req=1000262
+CKEY-ADOPT rank=0 epoch=249 had=248
+CKEY-WRITE rank=0 epoch=250 cell=4195304263 req=1000263
+CKEY-ADOPT rank=0 epoch=250 had=249
+SUBMIT-ARRIVED id=1000264 bytes=392 decision=1
+DECISION id=1000264 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=251 cell=4212081481 req=1000265
+CKEY-ADOPT rank=0 epoch=251 had=250
+CKEY-WRITE rank=0 epoch=252 cell=4228858698 req=1000266
+CKEY-ADOPT rank=0 epoch=252 had=251
+CKEY-WRITE rank=0 epoch=253 cell=4245635915 req=1000267
+CKEY-ADOPT rank=0 epoch=253 had=252
+CKEY-WRITE rank=0 epoch=254 cell=4262413132 req=1000268
+CKEY-ADOPT rank=0 epoch=254 had=253
+CKEY-WRITE rank=0 epoch=255 cell=4279190349 req=1000269
+CKEY-ADOPT rank=0 epoch=255 had=254
+CKEY-WRITE rank=0 epoch=256 cell=4295967566 req=1000270
+CKEY-ADOPT rank=0 epoch=256 had=255
+STAGE-STEP-TIMING rank=0 steps=64 graph_steps=62 submit_us=34735 graph_us=24225 source_wait_us=1 peer_wait_us=16461 copy_us=521 combine_us=430
+MIMO26-FLASH-STATE rank=0 arena_bytes=90170648 slots=16 rows=256 expert_first=0 record_stride=135168
+CKEY-WRITE rank=0 epoch=257 cell=4312744783 req=1000271
+CKEY-ADOPT rank=0 epoch=257 had=256
+CKEY-WRITE rank=0 epoch=258 cell=4329522000 req=1000272
+CKEY-ADOPT rank=0 epoch=258 had=257
+CKEY-WRITE rank=0 epoch=259 cell=4346299217 req=1000273
+CKEY-ADOPT rank=0 epoch=259 had=258
+CKEY-WRITE rank=0 epoch=260 cell=4363076434 req=1000274
+CKEY-ADOPT rank=0 epoch=260 had=259
+CKEY-WRITE rank=0 epoch=261 cell=4379853651 req=1000275
+CKEY-ADOPT rank=0 epoch=261 had=260
+CKEY-WRITE rank=0 epoch=262 cell=4396630868 req=1000276
+CKEY-ADOPT rank=0 epoch=262 had=261
+CKEY-WRITE rank=0 epoch=263 cell=4413408085 req=1000277
+CKEY-ADOPT rank=0 epoch=263 had=262
+CKEY-WRITE rank=0 epoch=264 cell=4430185302 req=1000278
+CKEY-ADOPT rank=0 epoch=264 had=263
+CKEY-WRITE rank=0 epoch=265 cell=4446962519 req=1000279
+CKEY-ADOPT rank=0 epoch=265 had=264
+CKEY-WRITE rank=0 epoch=266 cell=4463739736 req=1000280
+CKEY-ADOPT rank=0 epoch=266 had=265
+CKEY-WRITE rank=0 epoch=267 cell=4480516953 req=1000281
+CKEY-ADOPT rank=0 epoch=267 had=266
+CKEY-WRITE rank=0 epoch=268 cell=4497294170 req=1000282
+CKEY-ADOPT rank=0 epoch=268 had=267
+CKEY-WRITE rank=0 epoch=269 cell=4514071387 req=1000283
+CKEY-ADOPT rank=0 epoch=269 had=268
+CKEY-WRITE rank=0 epoch=270 cell=4530848604 req=1000284
+CKEY-ADOPT rank=0 epoch=270 had=269
+CKEY-WRITE rank=0 epoch=271 cell=4547625821 req=1000285
+CKEY-ADOPT rank=0 epoch=271 had=270
+CKEY-WRITE rank=0 epoch=272 cell=4564403038 req=1000286
+CKEY-ADOPT rank=0 epoch=272 had=271
+SUBMIT-ARRIVED id=1000287 bytes=392 decision=1
+DECISION id=1000287 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000288 bytes=392 decision=1
+DECISION id=1000288 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000289 bytes=944 decision=1
+DECISION id=1000289 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=273 cell=4581180257 req=1000289
+CKEY-ADOPT rank=0 epoch=273 had=272
+CKEY-WRITE rank=0 epoch=274 cell=4597957474 req=1000290
+CKEY-ADOPT rank=0 epoch=274 had=273
+CKEY-WRITE rank=0 epoch=275 cell=4614734691 req=1000291
+CKEY-ADOPT rank=0 epoch=275 had=274
+CKEY-WRITE rank=0 epoch=276 cell=4631511908 req=1000292
+CKEY-ADOPT rank=0 epoch=276 had=275
+CKEY-WRITE rank=0 epoch=277 cell=4648289125 req=1000293
+CKEY-ADOPT rank=0 epoch=277 had=276
+CKEY-WRITE rank=0 epoch=278 cell=4665066342 req=1000294
+CKEY-ADOPT rank=0 epoch=278 had=277
+CKEY-WRITE rank=0 epoch=279 cell=4681843559 req=1000295
+CKEY-ADOPT rank=0 epoch=279 had=278
+CKEY-WRITE rank=0 epoch=280 cell=4698620776 req=1000296
+CKEY-ADOPT rank=0 epoch=280 had=279
+CKEY-WRITE rank=0 epoch=281 cell=4715397993 req=1000297
+CKEY-ADOPT rank=0 epoch=281 had=280
+CKEY-WRITE rank=0 epoch=282 cell=4732175210 req=1000298
+CKEY-ADOPT rank=0 epoch=282 had=281
+CKEY-WRITE rank=0 epoch=283 cell=4748952427 req=1000299
+CKEY-ADOPT rank=0 epoch=283 had=282
+CKEY-WRITE rank=0 epoch=284 cell=4765729644 req=1000300
+CKEY-ADOPT rank=0 epoch=284 had=283
+CKEY-WRITE rank=0 epoch=285 cell=4782506861 req=1000301
+CKEY-ADOPT rank=0 epoch=285 had=284
+CKEY-WRITE rank=0 epoch=286 cell=4799284078 req=1000302
+CKEY-ADOPT rank=0 epoch=286 had=285
+CKEY-WRITE rank=0 epoch=287 cell=4816061295 req=1000303
+CKEY-ADOPT rank=0 epoch=287 had=286
+CKEY-WRITE rank=0 epoch=288 cell=4832838512 req=1000304
+CKEY-ADOPT rank=0 epoch=288 had=287
+CKEY-WRITE rank=0 epoch=289 cell=4849615729 req=1000305
+CKEY-ADOPT rank=0 epoch=289 had=288
+CKEY-WRITE rank=0 epoch=290 cell=4866392946 req=1000306
+CKEY-ADOPT rank=0 epoch=290 had=289
+CKEY-WRITE rank=0 epoch=291 cell=4883170163 req=1000307
+CKEY-ADOPT rank=0 epoch=291 had=290
+CKEY-WRITE rank=0 epoch=292 cell=4899947380 req=1000308
+CKEY-ADOPT rank=0 epoch=292 had=291
+CKEY-WRITE rank=0 epoch=293 cell=4916724597 req=1000309
+CKEY-ADOPT rank=0 epoch=293 had=292
+CKEY-WRITE rank=0 epoch=294 cell=4933501814 req=1000310
+CKEY-ADOPT rank=0 epoch=294 had=293
+CKEY-WRITE rank=0 epoch=295 cell=4950279031 req=1000311
+CKEY-ADOPT rank=0 epoch=295 had=294
+CKEY-WRITE rank=0 epoch=296 cell=4967056248 req=1000312
+CKEY-ADOPT rank=0 epoch=296 had=295
+CKEY-WRITE rank=0 epoch=297 cell=4983833465 req=1000313
+CKEY-ADOPT rank=0 epoch=297 had=296
+CKEY-WRITE rank=0 epoch=298 cell=5000610682 req=1000314
+CKEY-ADOPT rank=0 epoch=298 had=297
+CKEY-WRITE rank=0 epoch=299 cell=5017387899 req=1000315
+CKEY-ADOPT rank=0 epoch=299 had=298
+CKEY-WRITE rank=0 epoch=300 cell=5034165116 req=1000316
+CKEY-ADOPT rank=0 epoch=300 had=299
+CKEY-WRITE rank=0 epoch=301 cell=5050942333 req=1000317
+CKEY-ADOPT rank=0 epoch=301 had=300
+CKEY-WRITE rank=0 epoch=302 cell=5067719550 req=1000318
+CKEY-ADOPT rank=0 epoch=302 had=301
+CKEY-WRITE rank=0 epoch=303 cell=5084496767 req=1000319
+CKEY-ADOPT rank=0 epoch=303 had=302
+CKEY-WRITE rank=0 epoch=304 cell=5101273984 req=1000320
+CKEY-ADOPT rank=0 epoch=304 had=303
+CKEY-WRITE rank=0 epoch=305 cell=5118051201 req=1000321
+CKEY-ADOPT rank=0 epoch=305 had=304
+CKEY-WRITE rank=0 epoch=306 cell=5134828418 req=1000322
+CKEY-ADOPT rank=0 epoch=306 had=305
+CKEY-WRITE rank=0 epoch=307 cell=5151605635 req=1000323
+CKEY-ADOPT rank=0 epoch=307 had=306
+CKEY-WRITE rank=0 epoch=308 cell=5168382852 req=1000324
+CKEY-ADOPT rank=0 epoch=308 had=307
+CKEY-WRITE rank=0 epoch=309 cell=5185160069 req=1000325
+CKEY-ADOPT rank=0 epoch=309 had=308
+CKEY-WRITE rank=0 epoch=310 cell=5201937286 req=1000326
+CKEY-ADOPT rank=0 epoch=310 had=309
+CKEY-WRITE rank=0 epoch=311 cell=5218714503 req=1000327
+CKEY-ADOPT rank=0 epoch=311 had=310
+CKEY-WRITE rank=0 epoch=312 cell=5235491720 req=1000328
+CKEY-ADOPT rank=0 epoch=312 had=311
+CKEY-WRITE rank=0 epoch=313 cell=5252268937 req=1000329
+CKEY-ADOPT rank=0 epoch=313 had=312
+CKEY-WRITE rank=0 epoch=314 cell=5269046154 req=1000330
+CKEY-ADOPT rank=0 epoch=314 had=313
+SUBMIT-ARRIVED id=1000331 bytes=392 decision=1
+DECISION id=1000331 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=315 cell=5285823372 req=1000332
+CKEY-ADOPT rank=0 epoch=315 had=314
+CKEY-WRITE rank=0 epoch=316 cell=5302600589 req=1000333
+CKEY-ADOPT rank=0 epoch=316 had=315
+CKEY-WRITE rank=0 epoch=317 cell=5319377806 req=1000334
+CKEY-ADOPT rank=0 epoch=317 had=316
+CKEY-WRITE rank=0 epoch=318 cell=5336155023 req=1000335
+CKEY-ADOPT rank=0 epoch=318 had=317
+CKEY-WRITE rank=0 epoch=319 cell=5352932240 req=1000336
+CKEY-ADOPT rank=0 epoch=319 had=318
+CKEY-WRITE rank=0 epoch=320 cell=5369709457 req=1000337
+CKEY-ADOPT rank=0 epoch=320 had=319
+STAGE-STEP-TIMING rank=0 steps=64 graph_steps=63 submit_us=31846 graph_us=22668 source_wait_us=9 peer_wait_us=14594 copy_us=513 combine_us=419
+MIMO26-FLASH-STATE rank=0 arena_bytes=90170648 slots=16 rows=256 expert_first=0 record_stride=135168
+CKEY-WRITE rank=0 epoch=321 cell=5386486674 req=1000338
+CKEY-ADOPT rank=0 epoch=321 had=320
+CKEY-WRITE rank=0 epoch=322 cell=5403263891 req=1000339
+CKEY-ADOPT rank=0 epoch=322 had=321
+CKEY-WRITE rank=0 epoch=323 cell=5420041108 req=1000340
+CKEY-ADOPT rank=0 epoch=323 had=322
+CKEY-WRITE rank=0 epoch=324 cell=5436818325 req=1000341
+CKEY-ADOPT rank=0 epoch=324 had=323
+CKEY-WRITE rank=0 epoch=325 cell=5453595542 req=1000342
+CKEY-ADOPT rank=0 epoch=325 had=324
+CKEY-WRITE rank=0 epoch=326 cell=5470372759 req=1000343
+CKEY-ADOPT rank=0 epoch=326 had=325
+CKEY-WRITE rank=0 epoch=327 cell=5487149976 req=1000344
+CKEY-ADOPT rank=0 epoch=327 had=326
+CKEY-WRITE rank=0 epoch=328 cell=5503927193 req=1000345
+CKEY-ADOPT rank=0 epoch=328 had=327
+CKEY-WRITE rank=0 epoch=329 cell=5520704410 req=1000346
+CKEY-ADOPT rank=0 epoch=329 had=328
+CKEY-WRITE rank=0 epoch=330 cell=5537481627 req=1000347
+CKEY-ADOPT rank=0 epoch=330 had=329
+CKEY-WRITE rank=0 epoch=331 cell=5554258844 req=1000348
+CKEY-ADOPT rank=0 epoch=331 had=330
+CKEY-WRITE rank=0 epoch=332 cell=5571036061 req=1000349
+CKEY-ADOPT rank=0 epoch=332 had=331
+CKEY-WRITE rank=0 epoch=333 cell=5587813278 req=1000350
+CKEY-ADOPT rank=0 epoch=333 had=332
+CKEY-WRITE rank=0 epoch=334 cell=5604590495 req=1000351
+CKEY-ADOPT rank=0 epoch=334 had=333
+CKEY-WRITE rank=0 epoch=335 cell=5621367712 req=1000352
+CKEY-ADOPT rank=0 epoch=335 had=334
+CKEY-WRITE rank=0 epoch=336 cell=5638144929 req=1000353
+CKEY-ADOPT rank=0 epoch=336 had=335
+SUBMIT-ARRIVED id=1000354 bytes=392 decision=1
+DECISION id=1000354 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000355 bytes=392 decision=1
+DECISION id=1000355 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000356 bytes=1112 decision=1
+DECISION id=1000356 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=337 cell=5654922148 req=1000356
+CKEY-ADOPT rank=0 epoch=337 had=336
+CKEY-WRITE rank=0 epoch=338 cell=5671699365 req=1000357
+CKEY-ADOPT rank=0 epoch=338 had=337
+CKEY-WRITE rank=0 epoch=339 cell=5688476582 req=1000358
+CKEY-ADOPT rank=0 epoch=339 had=338
+CKEY-WRITE rank=0 epoch=340 cell=5705253799 req=1000359
+CKEY-ADOPT rank=0 epoch=340 had=339
+CKEY-WRITE rank=0 epoch=341 cell=5722031016 req=1000360
+CKEY-ADOPT rank=0 epoch=341 had=340
+CKEY-WRITE rank=0 epoch=342 cell=5738808233 req=1000361
+CKEY-ADOPT rank=0 epoch=342 had=341
+CKEY-WRITE rank=0 epoch=343 cell=5755585450 req=1000362
+CKEY-ADOPT rank=0 epoch=343 had=342
+CKEY-WRITE rank=0 epoch=344 cell=5772362667 req=1000363
+CKEY-ADOPT rank=0 epoch=344 had=343
+CKEY-WRITE rank=0 epoch=345 cell=5789139884 req=1000364
+CKEY-ADOPT rank=0 epoch=345 had=344
+CKEY-WRITE rank=0 epoch=346 cell=5805917101 req=1000365
+CKEY-ADOPT rank=0 epoch=346 had=345
+CKEY-WRITE rank=0 epoch=347 cell=5822694318 req=1000366
+CKEY-ADOPT rank=0 epoch=347 had=346
+CKEY-WRITE rank=0 epoch=348 cell=5839471535 req=1000367
+CKEY-ADOPT rank=0 epoch=348 had=347
+CKEY-WRITE rank=0 epoch=349 cell=5856248752 req=1000368
+CKEY-ADOPT rank=0 epoch=349 had=348
+CKEY-WRITE rank=0 epoch=350 cell=5873025969 req=1000369
+CKEY-ADOPT rank=0 epoch=350 had=349
+CKEY-WRITE rank=0 epoch=351 cell=5889803186 req=1000370
+CKEY-ADOPT rank=0 epoch=351 had=350
+CKEY-WRITE rank=0 epoch=352 cell=5906580403 req=1000371
+CKEY-ADOPT rank=0 epoch=352 had=351
+CKEY-WRITE rank=0 epoch=353 cell=5923357620 req=1000372
+CKEY-ADOPT rank=0 epoch=353 had=352
+CKEY-WRITE rank=0 epoch=354 cell=5940134837 req=1000373
+CKEY-ADOPT rank=0 epoch=354 had=353
+CKEY-WRITE rank=0 epoch=355 cell=5956912054 req=1000374
+CKEY-ADOPT rank=0 epoch=355 had=354
+CKEY-WRITE rank=0 epoch=356 cell=5973689271 req=1000375
+CKEY-ADOPT rank=0 epoch=356 had=355
+CKEY-WRITE rank=0 epoch=357 cell=5990466488 req=1000376
+CKEY-ADOPT rank=0 epoch=357 had=356
+CKEY-WRITE rank=0 epoch=358 cell=6007243705 req=1000377
+CKEY-ADOPT rank=0 epoch=358 had=357
+CKEY-WRITE rank=0 epoch=359 cell=6024020922 req=1000378
+CKEY-ADOPT rank=0 epoch=359 had=358
+CKEY-WRITE rank=0 epoch=360 cell=6040798139 req=1000379
+CKEY-ADOPT rank=0 epoch=360 had=359
+CKEY-WRITE rank=0 epoch=361 cell=6057575356 req=1000380
+CKEY-ADOPT rank=0 epoch=361 had=360
+CKEY-WRITE rank=0 epoch=362 cell=6074352573 req=1000381
+CKEY-ADOPT rank=0 epoch=362 had=361
+CKEY-WRITE rank=0 epoch=363 cell=6091129790 req=1000382
+CKEY-ADOPT rank=0 epoch=363 had=362
+CKEY-WRITE rank=0 epoch=364 cell=6107907007 req=1000383
+CKEY-ADOPT rank=0 epoch=364 had=363
+CKEY-WRITE rank=0 epoch=365 cell=6124684224 req=1000384
+CKEY-ADOPT rank=0 epoch=365 had=364
+CKEY-WRITE rank=0 epoch=366 cell=6141461441 req=1000385
+CKEY-ADOPT rank=0 epoch=366 had=365
+CKEY-WRITE rank=0 epoch=367 cell=6158238658 req=1000386
+CKEY-ADOPT rank=0 epoch=367 had=366
+CKEY-WRITE rank=0 epoch=368 cell=6175015875 req=1000387
+CKEY-ADOPT rank=0 epoch=368 had=367
+CKEY-WRITE rank=0 epoch=369 cell=6191793092 req=1000388
+CKEY-ADOPT rank=0 epoch=369 had=368
+CKEY-WRITE rank=0 epoch=370 cell=6208570309 req=1000389
+CKEY-ADOPT rank=0 epoch=370 had=369
+CKEY-WRITE rank=0 epoch=371 cell=6225347526 req=1000390
+CKEY-ADOPT rank=0 epoch=371 had=370
+SUBMIT-ARRIVED id=1000391 bytes=392 decision=1
+DECISION id=1000391 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=372 cell=6242124744 req=1000392
+CKEY-ADOPT rank=0 epoch=372 had=371
+CKEY-WRITE rank=0 epoch=373 cell=6258901961 req=1000393
+CKEY-ADOPT rank=0 epoch=373 had=372
+CKEY-WRITE rank=0 epoch=374 cell=6275679178 req=1000394
+CKEY-ADOPT rank=0 epoch=374 had=373
+CKEY-WRITE rank=0 epoch=375 cell=6292456395 req=1000395
+CKEY-ADOPT rank=0 epoch=375 had=374
+CKEY-WRITE rank=0 epoch=376 cell=6309233612 req=1000396
+CKEY-ADOPT rank=0 epoch=376 had=375
+CKEY-WRITE rank=0 epoch=377 cell=6326010829 req=1000397
+CKEY-ADOPT rank=0 epoch=377 had=376
+CKEY-WRITE rank=0 epoch=378 cell=6342788046 req=1000398
+CKEY-ADOPT rank=0 epoch=378 had=377
+CKEY-WRITE rank=0 epoch=379 cell=6359565263 req=1000399
+CKEY-ADOPT rank=0 epoch=379 had=378
+CKEY-WRITE rank=0 epoch=380 cell=6376342480 req=1000400
+CKEY-ADOPT rank=0 epoch=380 had=379
+CKEY-WRITE rank=0 epoch=381 cell=6393119697 req=1000401
+CKEY-ADOPT rank=0 epoch=381 had=380
+CKEY-WRITE rank=0 epoch=382 cell=6409896914 req=1000402
+CKEY-ADOPT rank=0 epoch=382 had=381
+CKEY-WRITE rank=0 epoch=383 cell=6426674131 req=1000403
+CKEY-ADOPT rank=0 epoch=383 had=382
+CKEY-WRITE rank=0 epoch=384 cell=6443451348 req=1000404
+CKEY-ADOPT rank=0 epoch=384 had=383
+STAGE-STEP-TIMING rank=0 steps=64 graph_steps=63 submit_us=32324 graph_us=22958 source_wait_us=10 peer_wait_us=14891 copy_us=514 combine_us=423
+MIMO26-FLASH-STATE rank=0 arena_bytes=90170648 slots=16 rows=256 expert_first=0 record_stride=135168
+CKEY-WRITE rank=0 epoch=385 cell=6460228565 req=1000405
+CKEY-ADOPT rank=0 epoch=385 had=384
+CKEY-WRITE rank=0 epoch=386 cell=6477005782 req=1000406
+CKEY-ADOPT rank=0 epoch=386 had=385
+CKEY-WRITE rank=0 epoch=387 cell=6493782999 req=1000407
+CKEY-ADOPT rank=0 epoch=387 had=386
+CKEY-WRITE rank=0 epoch=388 cell=6510560216 req=1000408
+CKEY-ADOPT rank=0 epoch=388 had=387
+CKEY-WRITE rank=0 epoch=389 cell=6527337433 req=1000409
+CKEY-ADOPT rank=0 epoch=389 had=388
+CKEY-WRITE rank=0 epoch=390 cell=6544114650 req=1000410
+CKEY-ADOPT rank=0 epoch=390 had=389
+CKEY-WRITE rank=0 epoch=391 cell=6560891867 req=1000411
+CKEY-ADOPT rank=0 epoch=391 had=390
+CKEY-WRITE rank=0 epoch=392 cell=6577669084 req=1000412
+CKEY-ADOPT rank=0 epoch=392 had=391
+CKEY-WRITE rank=0 epoch=393 cell=6594446301 req=1000413
+CKEY-ADOPT rank=0 epoch=393 had=392
+CKEY-WRITE rank=0 epoch=394 cell=6611223518 req=1000414
+CKEY-ADOPT rank=0 epoch=394 had=393
+CKEY-WRITE rank=0 epoch=395 cell=6628000735 req=1000415
+CKEY-ADOPT rank=0 epoch=395 had=394
+CKEY-WRITE rank=0 epoch=396 cell=6644777952 req=1000416
+CKEY-ADOPT rank=0 epoch=396 had=395
+CKEY-WRITE rank=0 epoch=397 cell=6661555169 req=1000417
+CKEY-ADOPT rank=0 epoch=397 had=396
+CKEY-WRITE rank=0 epoch=398 cell=6678332386 req=1000418
+CKEY-ADOPT rank=0 epoch=398 had=397
+CKEY-WRITE rank=0 epoch=399 cell=6695109603 req=1000419
+CKEY-ADOPT rank=0 epoch=399 had=398
+CKEY-WRITE rank=0 epoch=400 cell=6711886820 req=1000420
+CKEY-ADOPT rank=0 epoch=400 had=399
+SUBMIT-ARRIVED id=1000421 bytes=392 decision=1
+DECISION id=1000421 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000422 bytes=392 decision=1
+DECISION id=1000422 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000423 bytes=896 decision=1
+DECISION id=1000423 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=401 cell=6728664039 req=1000423
+CKEY-ADOPT rank=0 epoch=401 had=400
+CKEY-WRITE rank=0 epoch=402 cell=6745441256 req=1000424
+CKEY-ADOPT rank=0 epoch=402 had=401
+SUBMIT-ARRIVED id=1000426 bytes=944 decision=1
+DECISION id=1000426 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=403 cell=6762218474 req=1000426
+CKEY-ADOPT rank=0 epoch=403 had=402
+CKEY-WRITE rank=0 epoch=404 cell=6778995691 req=1000427
+CKEY-ADOPT rank=0 epoch=404 had=403
+CKEY-WRITE rank=0 epoch=405 cell=6795772908 req=1000428
+CKEY-ADOPT rank=0 epoch=405 had=404
+CKEY-WRITE rank=0 epoch=406 cell=6812550125 req=1000429
+CKEY-ADOPT rank=0 epoch=406 had=405
+SUBMIT-ARRIVED id=1000430 bytes=392 decision=1
+DECISION id=1000430 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000431 bytes=392 decision=1
+DECISION id=1000431 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000432 bytes=944 decision=1
+DECISION id=1000432 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=407 cell=6829327344 req=1000432
+CKEY-ADOPT rank=0 epoch=407 had=406
+CKEY-WRITE rank=0 epoch=408 cell=6846104561 req=1000433
+CKEY-ADOPT rank=0 epoch=408 had=407
+CKEY-WRITE rank=0 epoch=409 cell=6862881778 req=1000434
+CKEY-ADOPT rank=0 epoch=409 had=408
+CKEY-WRITE rank=0 epoch=410 cell=6879658995 req=1000435
+CKEY-ADOPT rank=0 epoch=410 had=409
+SUBMIT-ARRIVED id=1000436 bytes=392 decision=1
+DECISION id=1000436 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000437 bytes=392 decision=1
+DECISION id=1000437 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000438 bytes=1112 decision=1
+DECISION id=1000438 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=411 cell=6896436214 req=1000438
+CKEY-ADOPT rank=0 epoch=411 had=410
+CKEY-WRITE rank=0 epoch=412 cell=6913213431 req=1000439
+CKEY-ADOPT rank=0 epoch=412 had=411
+CKEY-WRITE rank=0 epoch=413 cell=6929990648 req=1000440
+CKEY-ADOPT rank=0 epoch=413 had=412
+CKEY-WRITE rank=0 epoch=414 cell=6946767865 req=1000441
+CKEY-ADOPT rank=0 epoch=414 had=413
+SUBMIT-ARRIVED id=1000442 bytes=392 decision=1
+DECISION id=1000442 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000443 bytes=392 decision=1
+DECISION id=1000443 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000444 bytes=896 decision=1
+SUBMIT-ARRIVED id=1000445 bytes=1656 decision=1
+SUBMIT-ARRIVED id=1000446 bytes=1112 decision=1
+DECISION id=1000444 decision=1 status=0 slot=0
+DECISION id=1000445 decision=1 status=0 slot=1
+DECISION id=1000446 decision=1 status=0 slot=2
+CKEY-WRITE rank=0 epoch=415 cell=6963545084 req=1000444
+CKEY-ADOPT rank=0 epoch=415 had=414
+CKEY-WRITE rank=0 epoch=416 cell=6980322301 req=1000445
+CKEY-ADOPT rank=0 epoch=416 had=415
+CKEY-WRITE rank=0 epoch=417 cell=6997099518 req=1000446
+CKEY-ADOPT rank=0 epoch=417 had=416
+CKEY-WRITE rank=0 epoch=418 cell=7013876735 req=1000447
+CKEY-ADOPT rank=0 epoch=418 had=417
+CKEY-WRITE rank=0 epoch=419 cell=7030653953 req=1000449
+CKEY-ADOPT rank=0 epoch=419 had=418
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=12288 rows=3 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=40704 rows=3 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=3 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=3 rows=3 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=3 mem_available=83245817856 used_since_last=1116086272 cuda_free=75221872640
+STAGE-GRAPH-CAPTURE rows=3 nodes=1793 capture_ms=8.6 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=420 cell=7047431170 req=1000450
+CKEY-ADOPT rank=0 epoch=420 had=419
+CKEY-WRITE rank=0 epoch=421 cell=7064208387 req=1000451
+CKEY-ADOPT rank=0 epoch=421 had=420
+CKEY-WRITE rank=0 epoch=422 cell=7080985604 req=1000452
+CKEY-ADOPT rank=0 epoch=422 had=421
+CKEY-WRITE rank=0 epoch=423 cell=7097762821 req=1000453
+CKEY-ADOPT rank=0 epoch=423 had=422
+SUBMIT-ARRIVED id=1000454 bytes=712 decision=1
+DECISION id=1000454 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000455 bytes=712 decision=1
+DECISION id=1000455 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000456 bytes=6632 decision=1
+DECISION id=1000456 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=424 cell=7114540040 req=1000456
+CKEY-ADOPT rank=0 epoch=424 had=423
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=rsag-peer phases=2 elements=1048576 rows=1 capture=0
+STAGE-LAYER-MARKS rank=0 waves=16 layers=48 gpu_span_ms=293.2 host_span_ms=180.2 starved=0:3.0 top 1:8.9/3.7/8.2 3:7.3/0.1/21.8 6:7.1/0.1/42.0 5:6.9/0.1/35.1
+STAGE-LAYER-GPU rank=0 ms=4,9,7,7,7,7,7,6,6,6,6,7,6,6,6,7,6,6,7,6,6,6,6,6,6,6,5,5,5,5,6,6,6,6,6,6,6,6,6,6,6,6,5,6,6,6,5,6
+STAGE-LAYER-LAG rank=0 ms=3,8,15,22,28,35,42,48,54,61,67,74,79,85,92,98,104,108,112,115,119,122,124,123,123,122,121,119,117,115,115,114,114,113,113,113,113,113,112,112,112,112,112,112,113,114,113,113
+STAGE-SUBMIT-PHASES rank=0 waves=16 setup_ms=1.1 enqueue_ms=182.0 outputs_ms=114.8 chain_end_ms=0.4
+STAGE-WAVE-HOST tag=mimo26_flash_tp16_stage rank=0 prefill_waves=16 admit_ms=0.0 submit_ms=298.2 capture_ms=0.0 sync_ms=0.0 finish_ms=0.3
+CKEY-WRITE rank=0 epoch=425 cell=7131317257 req=1000457
+CKEY-ADOPT rank=0 epoch=425 had=424
+CKEY-WRITE rank=0 epoch=426 cell=7148094474 req=1000458
+CKEY-ADOPT rank=0 epoch=426 had=425
+CKEY-WRITE rank=0 epoch=427 cell=7164871691 req=1000459
+CKEY-ADOPT rank=0 epoch=427 had=426
+CKEY-WRITE rank=0 epoch=428 cell=7181648908 req=1000460
+CKEY-ADOPT rank=0 epoch=428 had=427
+SUBMIT-ARRIVED id=1000461 bytes=392 decision=1
+DECISION id=1000461 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=429 cell=7198426126 req=1000462
+CKEY-ADOPT rank=0 epoch=429 had=428
+SUBMIT-ARRIVED id=1000463 bytes=392 decision=1
+DECISION id=1000463 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000464 bytes=392 decision=1
+DECISION id=1000464 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000465 bytes=1928 decision=1
+DECISION id=1000465 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=430 cell=7215203345 req=1000465
+CKEY-ADOPT rank=0 epoch=430 had=429
+CKEY-WRITE rank=0 epoch=431 cell=7231980562 req=1000466
+CKEY-ADOPT rank=0 epoch=431 had=430
+CKEY-WRITE rank=0 epoch=432 cell=7248757779 req=1000467
+CKEY-ADOPT rank=0 epoch=432 had=431
+CKEY-WRITE rank=0 epoch=433 cell=7265534996 req=1000468
+CKEY-ADOPT rank=0 epoch=433 had=432
+CKEY-WRITE rank=0 epoch=434 cell=7282312213 req=1000469
+CKEY-ADOPT rank=0 epoch=434 had=433
+SUBMIT-ARRIVED id=1000470 bytes=392 decision=1
+DECISION id=1000470 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000471 bytes=392 decision=1
+DECISION id=1000471 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000472 bytes=6632 decision=1
+DECISION id=1000472 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=435 cell=7299089432 req=1000472
+CKEY-ADOPT rank=0 epoch=435 had=434
+CKEY-WRITE rank=0 epoch=436 cell=7315866649 req=1000473
+CKEY-ADOPT rank=0 epoch=436 had=435
+CKEY-WRITE rank=0 epoch=437 cell=7332643866 req=1000474
+CKEY-ADOPT rank=0 epoch=437 had=436
+CKEY-WRITE rank=0 epoch=438 cell=7349421083 req=1000475
+CKEY-ADOPT rank=0 epoch=438 had=437
+CKEY-WRITE rank=0 epoch=439 cell=7366198300 req=1000476
+CKEY-ADOPT rank=0 epoch=439 had=438
+CKEY-WRITE rank=0 epoch=440 cell=7382975517 req=1000477
+CKEY-ADOPT rank=0 epoch=440 had=439
+SUBMIT-ARRIVED id=1000478 bytes=392 decision=1
+DECISION id=1000478 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000479 bytes=392 decision=1
+DECISION id=1000479 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000480 bytes=3496 decision=1
+DECISION id=1000480 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=441 cell=7399752736 req=1000480
+CKEY-ADOPT rank=0 epoch=441 had=440
+CKEY-WRITE rank=0 epoch=442 cell=7416529953 req=1000481
+CKEY-ADOPT rank=0 epoch=442 had=441
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=83232505856 used_since_last=13312000 cuda_free=75188731904
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=3.5 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=443 cell=7433307170 req=1000482
+CKEY-ADOPT rank=0 epoch=443 had=442
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=83232751616 used_since_last=-245760 cuda_free=75187175424
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=2.9 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=444 cell=7450084387 req=1000483
+CKEY-ADOPT rank=0 epoch=444 had=443
+CKEY-WRITE rank=0 epoch=445 cell=7466861604 req=1000484
+CKEY-ADOPT rank=0 epoch=445 had=444
+SUBMIT-ARRIVED id=1000485 bytes=392 decision=1
+DECISION id=1000485 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000486 bytes=392 decision=1
+DECISION id=1000486 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000487 bytes=1448 decision=1
+SUBMIT-ARRIVED id=1000488 bytes=1296 decision=1
+SUBMIT-ARRIVED id=1000489 bytes=416 decision=1
+DECISION id=1000487 decision=1 status=0 slot=0
+DECISION id=1000488 decision=1 status=0 slot=1
+DECISION id=1000489 decision=1 status=0 slot=2
+CKEY-WRITE rank=0 epoch=446 cell=7483638823 req=1000487
+CKEY-ADOPT rank=0 epoch=446 had=445
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=rsag-peer phases=2 elements=180224 rows=1 capture=0
+CKEY-WRITE rank=0 epoch=447 cell=7500416040 req=1000488
+CKEY-ADOPT rank=0 epoch=447 had=446
+CKEY-WRITE rank=0 epoch=448 cell=7517193257 req=1000489
+CKEY-ADOPT rank=0 epoch=448 had=447
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=83239424000 used_since_last=-6672384 cuda_free=75192393728
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=3.4 prefetch_groups=145 prefetch_dropped=0
+STAGE-STEP-TIMING rank=0 steps=64 graph_steps=218 submit_us=271436 graph_us=22267 source_wait_us=336 peer_wait_us=109541 copy_us=2051 combine_us=2163
+MIMO26-FLASH-STATE rank=0 arena_bytes=90170648 slots=16 rows=256 expert_first=0 record_stride=135168
+CKEY-WRITE rank=0 epoch=449 cell=7533970474 req=1000490
+CKEY-ADOPT rank=0 epoch=449 had=448
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=83239424000 used_since_last=0 cuda_free=75192393728
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=2.7 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=450 cell=7550747691 req=1000491
+CKEY-ADOPT rank=0 epoch=450 had=449
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=16384 rows=4 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=54272 rows=4 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=8192 rows=4 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=4 rows=4 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=4 mem_available=83220389888 used_since_last=19034112 cuda_free=75173359616
+STAGE-GRAPH-CAPTURE rows=4 nodes=1797 capture_ms=7.1 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=451 cell=7567524908 req=1000492
+CKEY-ADOPT rank=0 epoch=451 had=450
+CKEY-WRITE rank=0 epoch=452 cell=7584302125 req=1000493
+CKEY-ADOPT rank=0 epoch=452 had=451
+SUBMIT-ARRIVED id=1000494 bytes=392 decision=1
+DECISION id=1000494 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=453 cell=7601079343 req=1000495
+CKEY-ADOPT rank=0 epoch=453 had=452
+CKEY-WRITE rank=0 epoch=454 cell=7617856560 req=1000496
+CKEY-ADOPT rank=0 epoch=454 had=453
+SUBMIT-ARRIVED id=1000497 bytes=392 decision=1
+DECISION id=1000497 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=455 cell=7634633778 req=1000498
+CKEY-ADOPT rank=0 epoch=455 had=454
+SUBMIT-ARRIVED id=1000499 bytes=392 decision=1
+DECISION id=1000499 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000500 bytes=712 decision=1
+DECISION id=1000500 decision=1 status=0 slot=1
+SUBMIT-ARRIVED id=1000501 bytes=712 decision=1
+DECISION id=1000501 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000502 bytes=896 decision=1
+DECISION id=1000502 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=456 cell=7651410998 req=1000502
+CKEY-ADOPT rank=0 epoch=456 had=455
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=rsag-peer phases=2 elements=86016 rows=1 capture=0
+CKEY-WRITE rank=0 epoch=457 cell=7668188215 req=1000503
+CKEY-ADOPT rank=0 epoch=457 had=456
+SUBMIT-ARRIVED id=1000505 bytes=944 decision=1
+DECISION id=1000505 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=458 cell=7684965433 req=1000505
+CKEY-ADOPT rank=0 epoch=458 had=457
+CKEY-WRITE rank=0 epoch=459 cell=7701742650 req=1000506
+CKEY-ADOPT rank=0 epoch=459 had=458
+CKEY-WRITE rank=0 epoch=460 cell=7718519867 req=1000507
+CKEY-ADOPT rank=0 epoch=460 had=459
+CKEY-WRITE rank=0 epoch=461 cell=7735297084 req=1000508
+CKEY-ADOPT rank=0 epoch=461 had=460
+SUBMIT-ARRIVED id=1000509 bytes=392 decision=1
+DECISION id=1000509 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000510 bytes=392 decision=1
+DECISION id=1000510 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000511 bytes=944 decision=1
+DECISION id=1000511 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=462 cell=7752074303 req=1000511
+CKEY-ADOPT rank=0 epoch=462 had=461
+CKEY-WRITE rank=0 epoch=463 cell=7768851520 req=1000512
+CKEY-ADOPT rank=0 epoch=463 had=462
+CKEY-WRITE rank=0 epoch=464 cell=7785628737 req=1000513
+CKEY-ADOPT rank=0 epoch=464 had=463
+CKEY-WRITE rank=0 epoch=465 cell=7802405954 req=1000514
+CKEY-ADOPT rank=0 epoch=465 had=464
+SUBMIT-ARRIVED id=1000515 bytes=392 decision=1
+DECISION id=1000515 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000516 bytes=392 decision=1
+DECISION id=1000516 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000517 bytes=1112 decision=1
+DECISION id=1000517 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=466 cell=7819183173 req=1000517
+CKEY-ADOPT rank=0 epoch=466 had=465
+CKEY-WRITE rank=0 epoch=467 cell=7835960390 req=1000518
+CKEY-ADOPT rank=0 epoch=467 had=466
+CKEY-WRITE rank=0 epoch=468 cell=7852737607 req=1000519
+CKEY-ADOPT rank=0 epoch=468 had=467
+CKEY-WRITE rank=0 epoch=469 cell=7869514824 req=1000520
+CKEY-ADOPT rank=0 epoch=469 had=468
+SUBMIT-ARRIVED id=1000521 bytes=392 decision=1
+DECISION id=1000521 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000522 bytes=392 decision=1
+DECISION id=1000522 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000523 bytes=1448 decision=1
+DECISION id=1000523 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=470 cell=7886292043 req=1000523
+CKEY-ADOPT rank=0 epoch=470 had=469
+STAGE-WAVE-HOST tag=mimo26_flash_tp16_stage rank=0 prefill_waves=16 admit_ms=0.0 submit_ms=636.7 capture_ms=0.0 sync_ms=0.0 finish_ms=0.2
+CKEY-WRITE rank=0 epoch=471 cell=7903069260 req=1000524
+CKEY-ADOPT rank=0 epoch=471 had=470
+CKEY-WRITE rank=0 epoch=472 cell=7919846477 req=1000525
+CKEY-ADOPT rank=0 epoch=472 had=471
+CKEY-WRITE rank=0 epoch=473 cell=7936623694 req=1000526
+CKEY-ADOPT rank=0 epoch=473 had=472
+SUBMIT-ARRIVED id=1000527 bytes=392 decision=1
+DECISION id=1000527 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=474 cell=7953400912 req=1000528
+CKEY-ADOPT rank=0 epoch=474 had=473
+SUBMIT-ARRIVED id=1000529 bytes=392 decision=1
+DECISION id=1000529 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000530 bytes=392 decision=1
+DECISION id=1000530 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000531 bytes=704 decision=1
+DECISION id=1000531 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=475 cell=7970178131 req=1000531
+CKEY-ADOPT rank=0 epoch=475 had=474
+CKEY-WRITE rank=0 epoch=476 cell=7986955348 req=1000532
+CKEY-ADOPT rank=0 epoch=476 had=475
+CKEY-WRITE rank=0 epoch=477 cell=8003732565 req=1000533
+CKEY-ADOPT rank=0 epoch=477 had=476
+CKEY-WRITE rank=0 epoch=478 cell=8020509782 req=1000534
+CKEY-ADOPT rank=0 epoch=478 had=477
+SUBMIT-ARRIVED id=1000535 bytes=392 decision=1
+DECISION id=1000535 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000536 bytes=392 decision=1
+DECISION id=1000536 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000537 bytes=824 decision=1
+DECISION id=1000537 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=479 cell=8037287001 req=1000537
+CKEY-ADOPT rank=0 epoch=479 had=478
+CKEY-WRITE rank=0 epoch=480 cell=8054064218 req=1000538
+CKEY-ADOPT rank=0 epoch=480 had=479
+CKEY-WRITE rank=0 epoch=481 cell=8070841435 req=1000539
+CKEY-ADOPT rank=0 epoch=481 had=480
+CKEY-WRITE rank=0 epoch=482 cell=8087618652 req=1000540
+CKEY-ADOPT rank=0 epoch=482 had=481
+SUBMIT-ARRIVED id=1000541 bytes=392 decision=1
+DECISION id=1000541 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000542 bytes=392 decision=1
+DECISION id=1000542 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000543 bytes=416 decision=1
+DECISION id=1000543 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=483 cell=8104395871 req=1000543
+CKEY-ADOPT rank=0 epoch=483 had=482
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=83218083840 used_since_last=2306048 cuda_free=75169755136
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=3.1 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=484 cell=8121173088 req=1000544
+CKEY-ADOPT rank=0 epoch=484 had=483
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=83218083840 used_since_last=0 cuda_free=75169755136
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=2.7 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=485 cell=8137950305 req=1000545
+CKEY-ADOPT rank=0 epoch=485 had=484
+CKEY-WRITE rank=0 epoch=486 cell=8154727522 req=1000546
+CKEY-ADOPT rank=0 epoch=486 had=485
+SUBMIT-ARRIVED id=1000547 bytes=392 decision=1
+DECISION id=1000547 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000548 bytes=392 decision=1
+DECISION id=1000548 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000549 bytes=896 decision=1
+SUBMIT-ARRIVED id=1000550 bytes=944 decision=1
+SUBMIT-ARRIVED id=1000551 bytes=944 decision=1
+SUBMIT-ARRIVED id=1000552 bytes=1112 decision=1
+SUBMIT-ARRIVED id=1000553 bytes=1448 decision=1
+SUBMIT-ARRIVED id=1000554 bytes=704 decision=1
+SUBMIT-ARRIVED id=1000555 bytes=824 decision=1
+SUBMIT-ARRIVED id=1000556 bytes=416 decision=1
+DECISION id=1000549 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=487 cell=8171504741 req=1000549
+CKEY-ADOPT rank=0 epoch=487 had=486
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=rsag-peer phases=2 elements=86016 rows=1 capture=0
+DECISION id=1000550 decision=1 status=0 slot=1
+DECISION id=1000551 decision=1 status=0 slot=2
+DECISION id=1000552 decision=1 status=0 slot=3
+DECISION id=1000553 decision=1 status=0 slot=4
+DECISION id=1000554 decision=1 status=0 slot=5
+DECISION id=1000555 decision=1 status=0 slot=6
+DECISION id=1000556 decision=1 status=0 slot=7
+CKEY-WRITE rank=0 epoch=488 cell=8188281958 req=1000550
+CKEY-ADOPT rank=0 epoch=488 had=487
+STAGE-LAYER-MARKS rank=0 waves=16 layers=48 gpu_span_ms=644.8 host_span_ms=406.7 starved=0:2.7 top 3:17.7/0.1/51.7 9:16.5/0.1/143.4 10:16.3/0.1/159.7 18:16.3/5.1/264.3
+STAGE-LAYER-GPU rank=0 ms=3,16,16,18,16,16,16,15,13,16,16,14,13,14,14,15,15,14,16,13,15,15,14,13,13,12,12,11,9,13,13,12,12,12,13,13,13,13,13,13,14,13,13,13,11,13,13,10
+STAGE-LAYER-LAG rank=0 ms=3,18,34,52,68,84,100,114,127,143,160,174,187,201,215,230,244,253,264,271,278,284,285,282,278,274,271,266,261,260,256,253,250,249,247,247,245,242,242,241,241,239,241,240,240,240,240,238
+STAGE-SUBMIT-PHASES rank=0 waves=16 setup_ms=1.6 enqueue_ms=409.2 outputs_ms=236.2 chain_end_ms=1.4
+CKEY-WRITE rank=0 epoch=489 cell=8205059175 req=1000551
+CKEY-ADOPT rank=0 epoch=489 had=488
+CKEY-WRITE rank=0 epoch=490 cell=8221836392 req=1000552
+CKEY-ADOPT rank=0 epoch=490 had=489
+CKEY-WRITE rank=0 epoch=491 cell=8238613609 req=1000553
+CKEY-ADOPT rank=0 epoch=491 had=490
+CKEY-WRITE rank=0 epoch=492 cell=8255390826 req=1000554
+CKEY-ADOPT rank=0 epoch=492 had=491
+CKEY-WRITE rank=0 epoch=493 cell=8272168043 req=1000555
+CKEY-ADOPT rank=0 epoch=493 had=492
+CKEY-WRITE rank=0 epoch=494 cell=8288945260 req=1000556
+CKEY-ADOPT rank=0 epoch=494 had=493
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=83223568384 used_since_last=-5484544 cuda_free=75175084032
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=3.2 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=495 cell=8305722477 req=1000557
+CKEY-ADOPT rank=0 epoch=495 had=494
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=direct phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=13568 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=4096 rows=1 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=1 rows=1 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=1 mem_available=83223556096 used_since_last=12288 cuda_free=75175059456
+STAGE-GRAPH-CAPTURE rows=1 nodes=1785 capture_ms=2.8 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=496 cell=8322499695 req=1000559
+CKEY-ADOPT rank=0 epoch=496 had=495
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=rsag-peer phases=2 elements=28672 rows=7 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=94976 rows=7 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=8192 rows=7 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=7 rows=7 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=7 mem_available=83199799296 used_since_last=23756800 cuda_free=75151302656
+STAGE-GRAPH-CAPTURE rows=7 nodes=2294 capture_ms=8.6 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=497 cell=8339276912 req=1000560
+CKEY-ADOPT rank=0 epoch=497 had=496
+CKEY-WRITE rank=0 epoch=498 cell=8356054129 req=1000561
+CKEY-ADOPT rank=0 epoch=498 had=497
+CKEY-WRITE rank=0 epoch=499 cell=8372831346 req=1000562
+CKEY-ADOPT rank=0 epoch=499 had=498
+CKEY-WRITE rank=0 epoch=500 cell=8389608563 req=1000563
+CKEY-ADOPT rank=0 epoch=500 had=499
+CKEY-WRITE rank=0 epoch=501 cell=8406385780 req=1000564
+CKEY-ADOPT rank=0 epoch=501 had=500
+CKEY-WRITE rank=0 epoch=502 cell=8423162997 req=1000565
+CKEY-ADOPT rank=0 epoch=502 had=501
+CKEY-WRITE rank=0 epoch=503 cell=8439940214 req=1000566
+CKEY-ADOPT rank=0 epoch=503 had=502
+CKEY-WRITE rank=0 epoch=504 cell=8456717431 req=1000567
+CKEY-ADOPT rank=0 epoch=504 had=503
+CKEY-WRITE rank=0 epoch=505 cell=8473494648 req=1000568
+CKEY-ADOPT rank=0 epoch=505 had=504
+SUBMIT-ARRIVED id=1000569 bytes=392 decision=1
+DECISION id=1000569 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=506 cell=8490271866 req=1000570
+CKEY-ADOPT rank=0 epoch=506 had=505
+MESH-PATH rank=0 band=14 degree=16 operation=1 path=rsag-peer phases=2 elements=24576 rows=6 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=0 path=direct phases=1 elements=81408 rows=6 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=3 path=all-to-all-peer phases=1 elements=8192 rows=6 capture=1
+MESH-PATH rank=0 band=14 degree=16 operation=2 path=direct phases=1 elements=6 rows=6 capture=1
+STAGE-MEMORY rank=0 phase=graph rows=6 mem_available=83176558592 used_since_last=23240704 cuda_free=75119546368
+STAGE-GRAPH-CAPTURE rows=6 nodes=2290 capture_ms=8.8 prefetch_groups=145 prefetch_dropped=0
+CKEY-WRITE rank=0 epoch=507 cell=8507049083 req=1000571
+CKEY-ADOPT rank=0 epoch=507 had=506
+SUBMIT-ARRIVED id=1000572 bytes=1192 decision=1
+DECISION id=1000572 decision=1 status=0 slot=0
+CKEY-WRITE rank=0 epoch=508 cell=8523826301 req=1000573
+CKEY-ADOPT rank=0 epoch=508 had=507
+SUBMIT-ARRIVED id=1000574 bytes=1192 decision=1
+DECISION id=1000574 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000575 bytes=392 decision=1
+DECISION id=1000575 decision=1 status=0 slot=1
+SUBMIT-ARRIVED id=1000576 bytes=392 decision=1
+DECISION id=1000576 decision=1 status=0 slot=0
+model_residentd client closed: peer eof fd=41
+model_residentd_exit rank=0 stage=0 passes=1827 adapter_ops=1050 max_ops_per_pass=1
+mimo26_flash_tp16_stage kv snapshot store close saved_entries=0 unsaved_entries=0 ineligible_entries=0 used_bytes=35143680 files=39 save_failures=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 status=ok
+mimo26_flash_tp16_stage kv pool sealed generation=222 resident_pages=39 entries=39 window=0 private=0 nonresident=0 orphaned=0
+mimo26_flash_tp16_stage kv binding pool chunks=825/871 pages=7372/8192 grows=0 shrinks=0 vacated_pages=0
+mimo26_flash_tp16_stage kv binding lock site=admit count=1666 mean_us=13.7 max_us=5806.9
+mimo26_flash_tp16_stage kv binding lock site=reset count=0 mean_us=0.0 max_us=0.0
+mimo26_flash_tp16_stage kv binding lock site=continuity count=508 mean_us=1.0 max_us=22.4
+mimo26_flash_tp16_stage kv binding lock site=claim count=508 mean_us=0.3 max_us=1.0
+mimo26_flash_tp16_stage kv binding lock site=finish count=508 mean_us=3.9 max_us=21.5
+mimo26_flash_tp16_stage kv binding lock site=publish count=37 mean_us=5.4 max_us=9.9
+mimo26_flash_tp16_stage kv binding lock site=save count=70 mean_us=9.3 max_us=42.5
+mimo26_flash_tp16_stage kv binding lock site=restore count=12 mean_us=0.9 max_us=2.0
+mimo26_flash_tp16_stage kv binding completions=508 entry_max_us=2.6 queue_mean_us=155.9 queue_max_us=825.4 copy_on_write=0
+mimo26_flash_tp16_stage kv binding arena evicted=0 park_failures=0 park_backing_full=0 park_stalls=0 store_writes=0 store_reads=0 backing_pages=0 backing_reclaims=0 backing_full=0 backing_full_queued=0 degraded=0 degraded_entries=0 degraded_discards=0 park_stall_queued=0
+mimo26_flash_tp16_stage kv binding restore worker jobs=0 hints=12 hinted_jobs=0 pending_answers=0 imported_pages=0

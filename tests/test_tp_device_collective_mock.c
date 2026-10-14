@@ -521,6 +521,28 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             cuda_stub_mesh_hardware_elements == 128u &&
             cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
             "an all-to-all runs on the hardware path with the per-peer payload");
+        CHECK(SparkTpDeviceCollectiveSupportsReduceScatter(&collective) == 1u &&
+            SparkTpDeviceCollectiveSupportsReduceScatter(0) == 0u,
+            "an attached hardware collective with peer routes reports reduce-scatter");
+        submission.full_device = local;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_INVALID_ARGUMENT,
+            "a reduce-scatter needs separate input and output buffers");
+        submission.full_device = output;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_OK &&
+            cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
+            cuda_stub_mesh_hardware_elements == 128u &&
+            cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
+            "a reduce-scatter runs on the hardware path over the whole input of every rank");
+        submission.active_sequence_count = 1u;
+        submission.row_elements = 6u;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_INVALID_ARGUMENT,
+            "a reduce-scatter input must split into equal 8-byte aligned rank segments");
+        submission.row_elements = 0u;
+        submission.active_sequence_count = 2u;
+        CHECK(SparkTpMeshScatterChunks(16u * 131072u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
+            SparkTpMeshScatterChunks(16u * 131076u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2u &&
+            SparkTpMeshScatterChunks(16u * 7168u * 64u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 4u,
+            "a reduce-scatter carries one staging slot of each rank segment per round");
         cuda_stub_mesh_hardware_calls = calls_before;
     }
     CHECK(SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u) == 8192u &&
@@ -598,6 +620,12 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation) == SPARK_STATUS_UNSUPPORTED &&
             SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
             "legacy B1 still rejects its missing operation callback before consuming a round");
+    CHECK(SparkTpDeviceCollectiveSupportsReduceScatter(&collective) == 0u &&
+        SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_UNSUPPORTED &&
+        SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
+        "a spinning collective refuses reduce-scatter loudly before consuming a round");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
+        "an unknown collective operation is refused");
     CHECK(SparkTpDeviceCollectiveEnqueueRounds(&collective,&submission,3u) == SPARK_STATUS_UNSUPPORTED,
         "legacy B1 round loop retains its missing callback rejection");
     CHECK(cuda_stub_mesh_publish_calls == old_publish,

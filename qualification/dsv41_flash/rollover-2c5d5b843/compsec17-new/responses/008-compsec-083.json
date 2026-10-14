@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "dc31023cdfd83560a6a20fce9bc4c2d2bb008a92de122a3703a482b4c7007c71"
+ },
+ "response": {
+  "id": "chatcmpl-acd53d4d17064c089a02f1e6a2cc305b",
+  "created": 1791726056,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Let's examine the logic:\n\n- `last` starts at -1.\n- For each segment, `missing = segno - last - 1`.\n- `a->segments.grow(a->segments.size() + missing);` \u2014 this grows the container by `missing` elements, but it doesn't ensure that `segno` is within bounds if segments arrive out of order.\n- If segments arrive out of order (e.g., segno=5 first, then segno=2), `missing` can be negative, which could cause issues with `grow` (if it takes a size_t, negative becomes huge; if it takes int, it might shrink or do nothing).\n- More critically, if `segno` is larger than the current size after growing, `a->segments[segno]` is out-of-bounds access.\n\nThe main bug: the code assumes `segno` is always greater than `last`, but the problem statement says inputs are not guaranteed to arrive in ascending order. If `segno < last`, `missing` is negative, and `grow` may not increase size enough (or at all), leading to out-of-bounds write at line 11.\n\nThe primary bug is introduced at line 10 (the grow logic doesn't account for out-of-order segments) or line 11 (the unchecked indexing). The root cause is the assumption of ascending order, which is violated, and the missing bounds check before indexing.\n\nThe most direct line where the out-of-bounds write happens is line 11.\n\nAnswer: 11",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 325,
+   "prompt_tokens": 302,
+   "total_tokens": 627,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Let's examine the logic:\n\n- `last` starts at -1.\n- For each segment, `missing = segno - last - 1`.\n- `a->segments.grow(a->segments.size() + missing);` \u2014 this grows the container by `missing` elements, but it doesn't ensure that `segno` is within bounds if segments arrive out of order.\n- If segments arrive out of order (e.g., segno=5 first, then segno=2), `missing` can be negative, which could cause issues with `grow` (if it takes a size_t, negative becomes huge; if it takes int, it might shrink or do nothing).\n- More critically, if `segno` is larger than the current size after growing, `a->segments[segno]` is out-of-bounds access.\n\nThe main bug: the code assumes `segno` is always greater than `last`, but the problem statement says inputs are not guaranteed to arrive in ascending order. If `segno < last`, `missing` is negative, and `grow` may not increase size enough (or at all), leading to out-of-bounds write at line 11.\n\nThe primary bug is introduced at line 10 (the grow logic doesn't account for out-of-order segments) or line 11 (the unchecked indexing). The root cause is the assumption of ascending order, which is violated, and the missing bounds check before indexing.\n\nThe most direct line where the out-of-bounds write happens is line 11.\n\nAnswer: 11",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 40011.0,
+  "output_sha256": "0338c7a1b8177dfe1904d6383c7729766cbb93ce08cb02fd64adc1767e35fe53",
+  "prompt_token_count": 302,
+  "generated_token_count": 325,
+  "reasoning_chars": 0,
+  "content_chars": 1274,
+  "status": "stop"
+ }
+}

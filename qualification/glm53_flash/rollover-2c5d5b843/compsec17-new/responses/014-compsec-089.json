@@ -1,0 +1,63 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8fa1475d507d43c77626436c9196199227d5ca6a8b5518d866f1fd2babad4969"
+ },
+ "response": {
+  "id": "chatcmpl-508d61fb9c0843b9b082f6aba478fe63",
+  "created": 1791731230,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function copies `tag_len` bytes from a 16-byte tag without validating that `tag_len <= 16`, so a caller requesting a larger tag length overflows the output buffer.\n\nAnswer: 10",
+     "role": "assistant",
+     "reasoning_content": "tag_len unvalidated \u2014 buffer overflow. Line 10."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 55,
+   "prompt_tokens": 245,
+   "total_tokens": 300,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>tag_len unvalidated \u2014 buffer overflow. Line 10.</think>The function copies `tag_len` bytes from a 16-byte tag without validating that `tag_len <= 16`, so a caller requesting a larger tag length overflows the output buffer.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 1644.3,
+  "output_sha256": "da39311b3a15cc84d32f84f3240eb0ff9eb3892328a8fa4a4a9962365b9a8f43",
+  "prompt_token_count": 245,
+  "generated_token_count": 55,
+  "reasoning_chars": 47,
+  "content_chars": 179,
+  "status": "stop"
+ }
+}

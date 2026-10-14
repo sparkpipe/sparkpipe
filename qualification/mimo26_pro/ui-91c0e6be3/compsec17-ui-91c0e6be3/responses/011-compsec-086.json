@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-pro",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "77eebfd2f509da1f1acbf896c9068aeb0511caad5b0194f28a4d8de01951bd5b"
+ },
+ "response": {
+  "id": "chatcmpl-a20102fa7a9a4225af46b0d7417e636c",
+  "created": 1791868750,
+  "model": "mimo-v2.6-pro",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is an integer truncation: `prefix_len` and `name_len` are `size_t`, but their sum plus 3 is cast to `unsigned int` on line 3. If the sum exceeds `UINT_MAX`, `need` wraps to a small value, the buffer is under-allocated (or not grown), and the subsequent `memcpy` calls overflow the heap buffer.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 84,
+   "prompt_tokens": 347,
+   "total_tokens": 431,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The bug is an integer truncation: `prefix_len` and `name_len` are `size_t`, but their sum plus 3 is cast to `unsigned int` on line 3. If the sum exceeds `UINT_MAX`, `need` wraps to a small value, the buffer is under-allocated (or not grown), and the subsequent `memcpy` calls overflow the heap buffer.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 14180.8,
+  "output_sha256": "99f6975dfb402f5906dc4feb82443d9c2955b3c770de5aa6f67b43808b71a5fd",
+  "prompt_token_count": 347,
+  "generated_token_count": 84,
+  "reasoning_chars": 0,
+  "content_chars": 312,
+  "status": "stop"
+ }
+}

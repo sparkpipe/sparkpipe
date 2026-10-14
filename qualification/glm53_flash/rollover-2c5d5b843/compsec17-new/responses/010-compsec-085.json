@@ -1,0 +1,63 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "0bf110a7a4ad94df379953fd664c3093b82fe887aec5d8d5ab1c594b512f2c3d"
+ },
+ "response": {
+  "id": "chatcmpl-25c12716797a428c8c0562dc9fb859cf",
+  "created": 1791731220,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The bug is on line 5: `strncat` copies up to `tok_len` bytes but stops at the first NUL, so embedded NUL bytes in the token truncate the copied data (attacker-controlled content after a NUL is silently dropped, corrupting the reconstructed token). Additionally, `strncat` doesn't respect `sql_cap`, but the truncation issue is the primary flaw.\n\nAnswer: 5",
+     "role": "assistant",
+     "reasoning_content": "strncat stops at NUL and appends up to tok_len \u2014 embedded NUL truncation, and strncat doesn't bound total. Primary bug: line 5."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 126,
+   "prompt_tokens": 225,
+   "total_tokens": 351,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>strncat stops at NUL and appends up to tok_len \u2014 embedded NUL truncation, and strncat doesn't bound total. Primary bug: line 5.</think>The bug is on line 5: `strncat` copies up to `tok_len` bytes but stops at the first NUL, so embedded NUL bytes in the token truncate the copied data (attacker-controlled content after a NUL is silently dropped, corrupting the reconstructed token). Additionally, `strncat` doesn't respect `sql_cap`, but the truncation issue is the primary flaw.\n\nAnswer: 5",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 2940.9,
+  "output_sha256": "b6157addce143708b809820df3fc300ba39bb8d261cf88c740fe0f3702eb80e6",
+  "prompt_token_count": 225,
+  "generated_token_count": 126,
+  "reasoning_chars": 127,
+  "content_chars": 355,
+  "status": "stop"
+ }
+}

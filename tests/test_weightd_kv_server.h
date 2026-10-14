@@ -32,7 +32,6 @@ static void TestKvServerStart(uint64_t kv_reserve_bytes)
 	config.socket_path = TestKvServerSocket;
 	config.device_bytes_max = kv_reserve_bytes + (64ull << 20);
 	config.kv_reserve_bytes = kv_reserve_bytes;
-	config.kv_write_budget_bytes_per_day = UINT64_C(1) << 40;
 	config.kv_shared_window_bytes = TestKvServerSharedWindowBytes;
 	TestKvServerStopFlag = 0;
 	assert(SparkWeightdServerCreate(&config,&TestKvServer) == SPARK_STATUS_OK);

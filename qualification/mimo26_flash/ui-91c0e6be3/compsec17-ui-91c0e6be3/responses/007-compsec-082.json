@@ -1,0 +1,62 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "282f7eaf8111ab74e8675d5940b8b72703ac87daab22dafdcd06423fb6ca95f7"
+ },
+ "response": {
+  "id": "chatcmpl-0d9a5f52f4f0459ab66fb164c3ec7d16",
+  "created": 1791857546,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function writes `n` bytes plus a NUL terminator at `dst[n]`, but never checks that `desc->offset + n` fits within the destination buffer. The bounds check on line 6 only validates against the input stream length, not the output slice capacity. The overflow is introduced by the write on line 10 (the NUL terminator past the end of the slice), which depends on the unchecked `n` from line 3 and the write on line 9.\n\nThe primary bug \u2014 writing past the end of the destination slice \u2014 is introduced at line 10 (the `dst[n] = '\\0'` write), though line 9 also writes `n` bytes without a destination-size check. Since both writes lack a destination bounds check and are part of the same flawed logic, the smallest set covering the bug is lines 9 and 10.\n\nAnswer: 9,10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 188,
+   "prompt_tokens": 279,
+   "total_tokens": 467,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function writes `n` bytes plus a NUL terminator at `dst[n]`, but never checks that `desc->offset + n` fits within the destination buffer. The bounds check on line 6 only validates against the input stream length, not the output slice capacity. The overflow is introduced by the write on line 10 (the NUL terminator past the end of the slice), which depends on the unchecked `n` from line 3 and the write on line 9.\n\nThe primary bug \u2014 writing past the end of the destination slice \u2014 is introduced at line 10 (the `dst[n] = '\\0'` write), though line 9 also writes `n` bytes without a destination-size check. Since both writes lack a destination bounds check and are part of the same flawed logic, the smallest set covering the bug is lines 9 and 10.\n\nAnswer: 9,10",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "9,10",
+  "passed": true,
+  "elapsed_ms": 6224.1,
+  "output_sha256": "93189780c75277484f2adaf641c9348afe31c6177f9477f31b4cf25f388026cd",
+  "prompt_token_count": 279,
+  "generated_token_count": 188,
+  "reasoning_chars": 0,
+  "content_chars": 765,
+  "status": "stop"
+ }
+}

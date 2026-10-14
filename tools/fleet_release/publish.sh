@@ -2,7 +2,6 @@
 . "$(dirname "$0")/lib.sh"
 start_log publish
 echo "publish $S7 $(date -u +%FT%TZ): root MANIFEST ${NEW_MANIFEST_SHA:0:16} ($EXPECT_CHANGED changed entries) while every node is held. weightd $NEW_WEIGHTD. Engines start only at unhold.sh."
-rotation_gate || die "pause the rotation first"
 read -r announced served <<< "$(hub "echo \$(tr -d '[:space:]' < ~/release/core/WEIGHTSD_BIN) \$(sha256sum < ~/release/$RELEASE_ROOT_NAME/MANIFEST | cut -d' ' -f1)")"
 echo "hub: WEIGHTSD_BIN=$announced served=${served:0:16}"
 [ "$announced" = "$NEW_WEIGHTD" ] || die "WEIGHTSD_BIN is $announced, want $NEW_WEIGHTD$(weightd_changes && echo " (run weightd.sh publish, announce and wait first)")"

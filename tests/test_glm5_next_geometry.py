@@ -25,7 +25,7 @@ PATTERNS = ROOT / "model-families" / "glm5_next" / "tensor_patterns.json"
 
 def header_macros() -> dict[str, str]:
     out = {}
-    for path in (HEADER.parent / "llm_defines.h", HEADER):
+    for path in (HEADER,):
         text = re.sub(r"/\*.*?\*/", "", path.read_text(), flags=re.S)
         text = re.sub(r"//[^\n]*", "", text)
         text = re.sub(r"\\\s*\n\s*", " ", text)
@@ -273,10 +273,10 @@ def main() -> int:
     donors = {entry["donor_module"] for entry in name_map["entries"]}
     for donor in sorted(donors):
         dirs = {
-            "glm52": ROOT / "modules/glm52_resident_decode_stage",
             "k3": ROOT / "modules/k3_resident_decode_stage",
-            "dsv4": ROOT / "modules/dsv4_resident_decode_stage",
         }
+        if donor in RETIRED_DONORS:
+            continue
         check(f"donor module present: {donor}", dirs[donor].is_dir())
 
     print()
@@ -285,6 +285,9 @@ def main() -> int:
         return 1
     print("PASS glm5_next geometry + name mapping round-trip")
     return 0
+
+
+RETIRED_DONORS = {"dsv4", "glm52"}
 
 
 def pattern_of(name: str) -> str:

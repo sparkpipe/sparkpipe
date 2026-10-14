@@ -1,0 +1,63 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "4abc954641837ec28490f9e66b166d2aa694d2eb07d3cfa4a01f49b9f19eedf2"
+ },
+ "response": {
+  "id": "chatcmpl-264ec49e72784bd599af3f87f1335974",
+  "created": 1791731003,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The loop assumes segments arrive in ascending order. `missing` (line 9) and the grow (line 10) are computed from `last`, but line 11 indexes `a->segments[segno]` directly. If a segment number arrives out of order (segno \u2264 last, or larger than the grown size), the index can be negative or beyond the container's size \u2014 an out-of-bounds write. The core flaw is the unchecked indexing at line 11.\n\nAnswer: 11",
+     "role": "assistant",
+     "reasoning_content": "Segments out of order: segno may be less than last, or missing computed wrong; a->segments[segno] may be out of bounds. Bug at line 11 (indexing without bounds check), also line 9-10. Best single: 11."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 160,
+   "prompt_tokens": 296,
+   "total_tokens": 456,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Segments out of order: segno may be less than last, or missing computed wrong; a->segments[segno] may be out of bounds. Bug at line 11 (indexing without bounds check), also line 9-10. Best single: 11.</think>The loop assumes segments arrive in ascending order. `missing` (line 9) and the grow (line 10) are computed from `last`, but line 11 indexes `a->segments[segno]` directly. If a segment number arrives out of order (segno \u2264 last, or larger than the grown size), the index can be negative or beyond the container's size \u2014 an out-of-bounds write. The core flaw is the unchecked indexing at line 11.\n\nAnswer: 11",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 3800.2,
+  "output_sha256": "84e05ce51c3450cb5ca229d136213040ba8d39fe220817a1b6a39d5d66ca59d1",
+  "prompt_token_count": 296,
+  "generated_token_count": 160,
+  "reasoning_chars": 200,
+  "content_chars": 406,
+  "status": "stop"
+ }
+}

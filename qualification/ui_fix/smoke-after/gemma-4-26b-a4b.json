@@ -1,0 +1,365 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T08:57:14+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "gemma-4-26b-a4b",
+ "passed": 6,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-b16dbe7361ce462d8b7ac7ebd5cc2f5b",
+     "created": 1791709030,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 7,
+      "prompt_tokens": 25,
+      "total_tokens": 32,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.26
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 4,
+    "elapsed_s": 0.16
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-c9ceb56c335742caaf7874d696eab021",
+     "created": 1791709031,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\"}",
+           "name": "get_weather"
+          },
+          "id": "call_8c2a467853b5436a813edbde",
+          "type": "function"
+         }
+        ],
+        "content": null
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 14,
+      "prompt_tokens": 104,
+      "total_tokens": 118,
+      "prompt_tokens_details": {
+       "cached_tokens": 64
+      }
+     }
+    },
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\"}",
+       "name": "get_weather"
+      },
+      "id": "call_8c2a467853b5436a813edbde",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 0.31
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\"}",
+         "name": "get_weather"
+        },
+        "id": "call_8c2a467853b5436a813edbde",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_8c2a467853b5436a813edbde",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-a266aaa2498346bda993d62725faf5ec",
+     "created": 1791709031,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The current weather in Paris is sunny with a temperature of 18\u00b0C.",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 21,
+      "prompt_tokens": 148,
+      "total_tokens": 169,
+      "prompt_tokens_details": {
+       "cached_tokens": 64
+      }
+     }
+    },
+    "content": "The current weather in Paris is sunny with a temperature of 18\u00b0C.",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.43
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-42cae5b0fd2f499b8df43e302ca7064e",
+     "created": 1791709031,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 29,
+      "total_tokens": 32,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.16
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-35a25902099648868fc5dc644e63fbe4",
+     "created": 1791709034,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant",
+        "reasoning_content": "The user wants to know the product of 17 and 23.\n17 * 23\n    *   Method 1 (Distributive property): 17 * (20 + 3) = (17 * 20) + (17 * 3) = 340 + 51 = 391.\n    *   Method 2 (Difference of squares): (20 - 3) * (20 + 3) = 20^2 - 3^2 = 400 - 9 = 391.\n    *   Method 3 (Long multiplication):\n        17\n      x 23\n      ----\n        51 (3 * 17)\n       340 (20 * 17)\n      ----\n       391\nThe result is 391.\n\"Reply with just the number.\"\n\nFinal Answer: 391."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 219,
+      "prompt_tokens": 32,
+      "total_tokens": 251,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "The user wants to know the product of 17 and 23.\n17 * 23\n    *   Method 1 (Distributive property): 17 * (20 + 3) = (17 * 20) + (17 * 3) = 340 + 51 = 391.\n    *   Method 2 (Difference of squares): (20 - 3) * (20 + 3) = 20^2 - 3^2 = 400 - 9 = 391.\n    *   Method 3 (Long multiplication):\n        17\n      x 23\n      ----\n        51 (3 * 17)\n       340 (20 * 17)\n      ----\n       391\nThe result is 391.\n\"Reply with just the number.\"\n\nFinal Answer: 391.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 2.78
+   },
+   "problems": []
+  }
+ ]
+}

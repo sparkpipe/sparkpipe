@@ -1,0 +1,62 @@
+{
+ "id": "compsec-091",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "ling-3.0-flash-fin",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe SCSI command expresses transfer length in logical blocks. blkbits is the log2 block size.\n\nCode:\n```c\n 1: static int accept_transfer(struct lun *lun, uint32_t blocks, unsigned blkbits)\n 2: {\n 3:     uint32_t bytes = blocks << blkbits;\n 4: \n 5:     if (bytes > lun->backing_size)\n 6:         return -EINVAL;\n 7: \n 8:     lun->data_size_from_cmnd = bytes;\n 9:     return 0;\n10: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "39e2d928631040cd959f04965179dbc34e515a6cb9a6467906c3f16ff9038427"
+ },
+ "response": {
+  "id": "chatcmpl-45fbad0caea44946a6f9e3e62005b208",
+  "created": 1791768194,
+  "model": "ling-3.0-flash-fin",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function computes `bytes = blocks << blkbits` where `blocks` is a `uint32_t` and `blkbits` is an `unsigned`. The left shift of a 32-bit unsigned value by an `unsigned` amount has undefined behavior if `blkbits >= 32` (per C/C++ standards). Even though the result is assigned to a `uint32_t`, the shift itself is UB. This could allow an attacker to supply a large `blkbits` value to cause undefined behavior (e.g., crash, unexpected results).\n\nThe primary bug is introduced on line 3.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 134,
+   "prompt_tokens": 265,
+   "total_tokens": 399,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function computes `bytes = blocks << blkbits` where `blocks` is a `uint32_t` and `blkbits` is an `unsigned`. The left shift of a 32-bit unsigned value by an `unsigned` amount has undefined behavior if `blkbits >= 32` (per C/C++ standards). Even though the result is assigned to a `uint32_t`, the shift itself is UB. This could allow an attacker to supply a large `blkbits` value to cause undefined behavior (e.g., crash, unexpected results).\n\nThe primary bug is introduced on line 3.\n\nAnswer: 3",
+ "grade": {
+  "index": 16,
+  "id": "compsec-091",
+  "source": "COMPSEC",
+  "domain": "Linux kernel USB gadget storage",
+  "expected": "3",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 2016.9,
+  "output_sha256": "40109d29b59e08b415cd5be0e9b83fa90f1e1dd3b105ad0b06001c492aa36434",
+  "prompt_token_count": 265,
+  "generated_token_count": 134,
+  "reasoning_chars": 0,
+  "content_chars": 498,
+  "status": "stop"
+ }
+}

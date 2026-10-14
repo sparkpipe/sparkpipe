@@ -337,6 +337,8 @@ int main(void)
 			ProbeCase<0u>(rows[r],contexts[c],16u,4u,1u,1u);
 	ProbeCase<64u>(8u,1024u,16u,4u,1u,0u);
 	ProbeCase<64u>(8u,8192u,16u,4u,1u,0u);
+	ProbeCase<64u>(1u,1024u,16u,6u,1u,0u);
+	ProbeCase<64u>(8u,8192u,16u,6u,1u,0u);
 	ProbeCase<0u>(8u,8192u,4u,16u,1u,0u);
 	ProbeCase<0u>(8u,8192u,8u,8u,1u,0u);
 	ProbeCase<0u>(8u,1024u,16u,4u,4u,0u);
@@ -346,6 +348,6 @@ int main(void)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS latent KV shard on the device: B1/B8/B64 at 1k and 8k, grains 1 and 4, sharded store and attention equal the replicated oracle bit for bit, a row alone equals its bits inside the batch\n");
+	printf("PASS latent KV shard on the device: B1/B8/B64 at 1k and 8k, grains 1 and 4, 4 and 6 heads per rank, sharded store and attention equal the replicated oracle bit for bit, a row alone equals its bits inside the batch\n");
 	return 0;
 }

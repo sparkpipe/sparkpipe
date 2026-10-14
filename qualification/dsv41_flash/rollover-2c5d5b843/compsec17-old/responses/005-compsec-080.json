@@ -1,0 +1,62 @@
+{
+ "id": "compsec-080",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe validator is walking a certificate chain. trust_store.contains_subject(x) returns true if any configured trust anchor has subject DN x.\n\nCode:\n```c\n 1: static ValidationResult validate_path_step(const Certificate& cert,\n 2:                                            const TrustStore& trust_store)\n 3: {\n 4:     /* Optimization: stop once we have reached a known trust anchor subject. */\n 5:     if (trust_store.contains_subject(cert.subject_dn()))\n 6:         return ValidationResult::Valid;\n 7: \n 8:     Certificate issuer = find_issuer_for(cert);\n 9:     if (!cert.verify_signature_with(issuer.public_key()))\n10:         return ValidationResult::BadSignature;\n11: \n12:     return validate_path_step(issuer, trust_store);\n13: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "861946959ffaf000da99d7b917523ee3a0f98e141c6e0de67ce69bbf7650d4c2"
+ },
+ "response": {
+  "id": "chatcmpl-555c43cc1d5343259865d3f07ef5104d",
+  "created": 1791725498,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is in the trust decision logic: it treats a certificate as valid merely because its **subject DN** matches a trust anchor's subject DN, without verifying that the certificate itself is the trust anchor (i.e., without checking the public key or that the signature chains to the anchor). An attacker can create a certificate with the same subject DN as a trusted anchor but with their own key, and it will be accepted.\n\nThe primary bug is introduced at line 5.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 99,
+   "prompt_tokens": 286,
+   "total_tokens": 385,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is in the trust decision logic: it treats a certificate as valid merely because its **subject DN** matches a trust anchor's subject DN, without verifying that the certificate itself is the trust anchor (i.e., without checking the public key or that the signature chains to the anchor). An attacker can create a certificate with the same subject DN as a trusted anchor but with their own key, and it will be accepted.\n\nThe primary bug is introduced at line 5.\n\nAnswer: 5",
+ "grade": {
+  "index": 5,
+  "id": "compsec-080",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "5-6",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 14630.0,
+  "output_sha256": "3e2c5ff3f8e3c8f7d57f1eef4c5aa0881344cc449e670bc660f778b88d569546",
+  "prompt_token_count": 286,
+  "generated_token_count": 99,
+  "reasoning_chars": 0,
+  "content_chars": 487,
+  "status": "stop"
+ }
+}

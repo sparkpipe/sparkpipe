@@ -1,0 +1,20 @@
+615cf6d74841f2c1  /proc/1930615/exe
+615cf6d74841f2c1  /home/spec/qwen38_27b-kv-api/bin/sparkpipe_model_api
+f151bc012e9cf934  /home/spec/qwen38_27b-kv-api/runtime/lib/libqwen38_27b_tp16_serving_adapter.so
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+spark0: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark1: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark2: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark3: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark4: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark5: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark6: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark7: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark8: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+spark9: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+sparka: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+sparkb: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+sparkc: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+sparkd: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+sparke: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts
+sparkf: c7019590a09990bb cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 pack.sha256 qwen38_27b.tp16.rankN.pack qwen38_27b.tp16.rankN.pack.experts

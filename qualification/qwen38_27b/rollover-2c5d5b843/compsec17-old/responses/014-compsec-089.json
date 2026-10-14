@@ -1,0 +1,62 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "14a600dbb46aa6a3a7a40773cb81c246a1dcba8afbb8090ac84d60988563c03a"
+ },
+ "response": {
+  "id": "chatcmpl-f6e656d722af4b6fb08f235b90d7d943",
+  "created": 1791721268,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `ccm_finish_reduced` takes a `tag_len` parameter which is used directly in the `memcpy` call on line 10.\n\n1.  **Line 3**: `full_tag` is a fixed-size array of 16 bytes.\n2.  **Line 10**: `memcpy(tag, full_tag, tag_len)` copies `tag_len` bytes from `full_tag` to `tag`.\n3.  **Vulnerability**: There is no validation that `tag_len` is less than or equal to 16 (the size of `full_tag`). If the caller passes a `tag_len` greater than 16, this results in a **buffer over-read** from `full_tag`. While `full_tag` is on the stack, reading past its bounds is undefined behavior and can leak stack data or cause a crash. Additionally, if `tag` is a smaller buffer than `tag_len`, it would be a buffer overflow, but the primary issue visible within this function's scope regarding the source buffer is the lack of bounds checking against the source size.\n\nThe bug is introduced at the point where the unchecked `tag_len` is used to determine the copy size.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 258,
+   "prompt_tokens": 264,
+   "total_tokens": 522,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `ccm_finish_reduced` takes a `tag_len` parameter which is used directly in the `memcpy` call on line 10.\n\n1.  **Line 3**: `full_tag` is a fixed-size array of 16 bytes.\n2.  **Line 10**: `memcpy(tag, full_tag, tag_len)` copies `tag_len` bytes from `full_tag` to `tag`.\n3.  **Vulnerability**: There is no validation that `tag_len` is less than or equal to 16 (the size of `full_tag`). If the caller passes a `tag_len` greater than 16, this results in a **buffer over-read** from `full_tag`. While `full_tag` is on the stack, reading past its bounds is undefined behavior and can leak stack data or cause a crash. Additionally, if `tag` is a smaller buffer than `tag_len`, it would be a buffer overflow, but the primary issue visible within this function's scope regarding the source buffer is the lack of bounds checking against the source size.\n\nThe bug is introduced at the point where the unchecked `tag_len` is used to determine the copy size.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 4956.4,
+  "output_sha256": "5bde1159dc6e239fd3aa819eae7430ad573ed5436e8df6b26d1095d123362511",
+  "prompt_token_count": 264,
+  "generated_token_count": 258,
+  "reasoning_chars": 0,
+  "content_chars": 969,
+  "status": "stop"
+ }
+}

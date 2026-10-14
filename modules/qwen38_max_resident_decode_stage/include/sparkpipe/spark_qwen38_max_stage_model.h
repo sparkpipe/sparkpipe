@@ -1,0 +1,26 @@
+#ifndef SPARKPIPE_SPARK_QWEN38_MAX_STAGE_MODEL_H
+#define SPARKPIPE_SPARK_QWEN38_MAX_STAGE_MODEL_H
+
+#include "sparkpipe/spark_stage_runner_model.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define SPARK_QWEN38_MAX_STAGE_TP_DEGREE 16u
+#define SPARK_QWEN38_MAX_STAGE_PAGE_SLOTS 64u
+#define SPARK_QWEN38_MAX_STAGE_KV_HEADS 4u
+#define SPARK_QWEN38_MAX_STAGE_HEAD_DIM 256u
+#define SPARK_QWEN38_MAX_STAGE_KV_SLOT_BYTES (SPARK_QWEN38_MAX_STAGE_KV_HEADS * SPARK_QWEN38_MAX_STAGE_HEAD_DIM * 2u * 2u)
+#define SPARK_QWEN38_MAX_STAGE_QKV_WIDTH 34816u
+#define SPARK_QWEN38_MAX_STAGE_HIDDEN 8192u
+#define SPARK_QWEN38_MAX_STAGE_LAYERS 92u
+#define SPARK_QWEN38_MAX_STAGE_KV_LAYERS 23u
+
+const SparkStageRunnerModelInterface *SparkQwen38MaxStageModel(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

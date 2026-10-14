@@ -27,7 +27,7 @@ def spine_allocation(manifest: bytes, pack_bytes: int) -> tuple[int, int]:
     if len(manifest) < HEADER.size:
         raise ValueError("manifest shorter than its header")
     magic, version, count, reserved = HEADER.unpack_from(manifest, 0)
-    if magic != MAGIC or version != VERSION or reserved != 0 or count == 0:
+    if magic != MAGIC or version != VERSION or reserved != 0:
         raise ValueError("not a v2 expert range manifest")
     if len(manifest) != HEADER.size + count * RECORD.size:
         raise ValueError("manifest length does not match its range count")

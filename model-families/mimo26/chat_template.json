@@ -1,0 +1,17 @@
+{
+ "prefix": "",
+ "thinking_prefix": "",
+ "system": "<|im_start|>system\n",
+ "system_thinking": "<|im_start|>system\n",
+ "user": "<|im_start|>user\n",
+ "observation": null,
+ "assistant": "<|im_start|>assistant\n<think></think>",
+ "assistant_thinking": "<|im_start|>assistant\n<think></think>",
+ "turn_suffix": "<|im_end|>",
+ "generation": "<|im_start|>assistant\n<think></think>",
+ "generation_thinking": "<|im_start|>assistant\n",
+ "stop_markers": [
+  "<|im_end|>",
+  "<|endoftext|>"
+ ]
+}

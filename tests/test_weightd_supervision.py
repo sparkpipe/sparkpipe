@@ -24,6 +24,8 @@ class WeightdSupervision(unittest.TestCase):
 static int mode(const char *name) { const char *m=getenv("WARM_FAILURE"); return m && strcmp(m,name)==0; }
 SparkStatus SparkWeightdClientConnect(const char *p,SparkWeightdClient **c,SparkWeightdHelloResult *h) { (void)p;(void)h;if(mode("connect_rpc"))return SPARK_STATUS_IO_ERROR;*c=(SparkWeightdClient *)1;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *c,const SparkWeightdLazyAttachRequest *q,SparkWeightdLazyAttachResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->arena_generation=9;if(mode("attach_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("attach_status"))r->status=SPARK_STATUS_IO_ERROR;return q->expert_pool_bytes==4096 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT; }
+SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *c,const SparkWeightdLazyAttachRequest *q,SparkWeightdLazyAttachResult *r,uint64_t t) { return SparkWeightdClientAttachLazy(c,q,r,t); }
+SparkStatus SparkWeightdClientKvPoolDrop(SparkWeightdClient *c,const char *label,SparkWeightdKvPoolDropResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));printf("KV_POOL_DROP %s\n",label);return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *c,uint64_t g,const SparkWeightdExpertKey *k,uint32_t n,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->lease_identifier=17;printf("ACQUIRE %u %u\n",k[0].layer,n);if(g!=9 || k[0].layer<3)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("acquire_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("acquire_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientRelease(SparkWeightdClient *c,uint64_t g,uint64_t l,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;printf("RELEASE %llu\n",(unsigned long long)l);if(g!=9 || l!=17)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("release_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("release_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *c,SparkWeightdReclaimResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->reclaimed_bytes=UINT64_C(8192);r->reclaimed_arena_count=2;r->resident_bytes=UINT64_C(4096);r->arena_count=3;if(mode("reclaim_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("reclaim_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
@@ -33,9 +35,7 @@ void SparkWeightdClientClose(SparkWeightdClient *c) { if(c)puts("CLOSED"); }
         cls.warmer = cls.directory / "warmer"
         subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-D_DARWIN_C_SOURCE",
                         "-Wall", "-Wextra", "-Werror", "-Iinclude", "-I.",
-                        "-Imodel-families/dsv4/include",
                         "tools/weightd_warm.c", "runtime/spark_weightd_manifest.c",
-                        "model-families/dsv4/src/spark_dsv4_parallel_shape.c",
                         "src/spark_ck128.c", "src/spark_sha256.c",
                         "runtime/spark_weightd_receipt.c",
                         str(faults), "-o", str(cls.warmer)], cwd=ROOT, check=True)

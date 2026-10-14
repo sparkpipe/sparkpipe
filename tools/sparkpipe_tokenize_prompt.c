@@ -102,8 +102,7 @@ static SparkStatus SparkTokenizePromptParseArguments(
         {
             *tokenizer_json_path_out = argv[++argument_index];
         }
-        else if ((strcmp(argv[argument_index], "--tokenizer-compiled") == 0 ||
-                  strcmp(argv[argument_index], "--compiled-tokenizer") == 0) &&
+        else if (strcmp(argv[argument_index], "--tokenizer-compiled") == 0 &&
             argument_index + 1 < argc)
         {
             *tokenizer_compiled_path_out = argv[++argument_index];

@@ -1,0 +1,50 @@
+{
+ "model": "qwen3.8-flash",
+ "checkpoint": "/mnt/model-warm/qwen3.8-flash-next-nvfp4-nvidia (NVIDIA modelopt 0.46 NVFP4 experts, BF16 spine, FP8 n-gram table)",
+ "driver_source": "fleet/kv-proof 2fff9e7d6",
+ "engine_build_used": "adapter from tree 1753dbe3 plus the region_count fix (same driver code as 2fff9e7d6 minus the inactive context-limit plumbing); after the run, fw-2fff9e7d6 gave bit-identical logprobs on the three reference prompts (lp_compare, max_dlp 0.0)",
+ "lane": {
+  "tp": 16,
+  "lane": 13,
+  "sequences": 16,
+  "rows": 256,
+  "kv_pages_per_rank": 1024
+ },
+ "client": {
+  "endpoint": "chat frontend :8433",
+  "temperature": 0,
+  "max_tokens": 16000,
+  "concurrency": 16,
+  "reasoning_effort": "model default (thinking on)"
+ },
+ "pack_sha256_by_rank": [
+  "3405fbb2375c818eca5c8e7c32a68de4ad945b5aeb8a1abda972d2395ae7badc",
+  "3f85240778f0a23c304046fae1a14ac052ff80a150644fd3516e4b0a9c4de9da",
+  "564aef1a5741f6f6edfc48c59536f9386ea5cab3cd750db4b172eed175ce2a3a",
+  "a06f8069d1d31e90d139b17987c8b846903012f0a0f0424dbd716f5cccc1f967",
+  "1ff1060f7f623283e24631a01aa44bc55e9c4c9ee0546f386513ef9f9ffb5774",
+  "a98772679c0a6f5c29d12a1555085c7615e9348d6179e2cfc1b98d45c87fd7f5",
+  "ad374238a17b9b6d880e10ee78329291c809d752450aeeae350410637083359b",
+  "291c765aeedffd664e8d16d800b411962783ecf64430d90062cd5a851f714c91",
+  "143b9fb93e0f83849d2376818004e0c6906e463dc08c2833f5acbb68fa821343",
+  "edfd810a6d73ac52fc5ee82985c431db7162549acf7f71a8d99e43d28a86c1a6",
+  "f3b62798e637a7405cd0e391c38a9dc7648371fc67e4cb2216f5e96f69939527",
+  "be9b50f31b399dc849f402b35fff43334d89d2d83ab8c390655395964cbfa7a6",
+  "80cea6e24916daa06dbf26d00cbc844d7b204fa8c3deda502c69bda31fb6e4e2",
+  "e783cf20287e98c581eb8c551c551a6f34c69afb47d7c7a7d35a0088436636b5",
+  "53f1687f1579373c2b8f5496b9369fdb0b49eb65c0d75747a7e2429d55331399",
+  "6cffeb24f7770875596d78754ff62857dcaf6b39ba9c070dc59d0ec98c4bc60d"
+ ],
+ "result": {
+  "batch_passed": "79/92",
+  "by_family": {
+   "AIME2025": "22/25",
+   "COMPSEC": "16/17",
+   "GPQA Diamond": "21/25",
+   "SuperGPQA": "20/25"
+  },
+  "length_capped": 17,
+  "completion_tok_s_aggregate": 190.1
+ },
+ "reference": "kimi-k3-api-20260728: 81/92 (temperature 1.0)"
+}

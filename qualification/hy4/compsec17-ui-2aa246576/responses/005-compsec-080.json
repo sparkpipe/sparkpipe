@@ -1,0 +1,62 @@
+{
+ "id": "compsec-080",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe validator is walking a certificate chain. trust_store.contains_subject(x) returns true if any configured trust anchor has subject DN x.\n\nCode:\n```c\n 1: static ValidationResult validate_path_step(const Certificate& cert,\n 2:                                            const TrustStore& trust_store)\n 3: {\n 4:     /* Optimization: stop once we have reached a known trust anchor subject. */\n 5:     if (trust_store.contains_subject(cert.subject_dn()))\n 6:         return ValidationResult::Valid;\n 7: \n 8:     Certificate issuer = find_issuer_for(cert);\n 9:     if (!cert.verify_signature_with(issuer.public_key()))\n10:         return ValidationResult::BadSignature;\n11: \n12:     return validate_path_step(issuer, trust_store);\n13: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "2cac6bd2a4f056f16a1378580394ee0af8bb74aa0ee94093c9dccf62f1016728"
+ },
+ "response": {
+  "id": "chatcmpl-d5ab33b6a73d43589384790b29f35c67",
+  "created": 1791704528,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Line 5 checks only whether the certificate\u2019s **subject DN** matches a trust anchor\u2019s subject DN, without verifying that this certificate is actually the trust anchor or that its signature/key is trusted. This allows an attacker-supplied certificate to terminate validation early by simply using a trusted subject DN.\n\nAnswer: 5",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 65,
+   "prompt_tokens": 305,
+   "total_tokens": 370,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Line 5 checks only whether the certificate\u2019s **subject DN** matches a trust anchor\u2019s subject DN, without verifying that this certificate is actually the trust anchor or that its signature/key is trusted. This allows an attacker-supplied certificate to terminate validation early by simply using a trusted subject DN.\n\nAnswer: 5",
+ "grade": {
+  "index": 5,
+  "id": "compsec-080",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "5-6",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 14062.2,
+  "output_sha256": "b847edd2732118d90bfc98738e81451a19236e59a8f5d6a6b0d11cefd3c6f20c",
+  "prompt_token_count": 305,
+  "generated_token_count": 65,
+  "reasoning_chars": 0,
+  "content_chars": 327,
+  "status": "stop"
+ }
+}

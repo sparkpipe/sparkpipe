@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 20u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 39u
 #define SPARK_TP_MESH_ROUND_CONTROL_BYTES \
     (SPARK_TP_MESH_ROUND_CONTROL_WORDS * sizeof(uint64_t))
 
@@ -26,6 +26,11 @@
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_MATH_BLOCKS_DONE 17u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_PUBLISH_BLOCKS_DONE 18u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_PUBLISH_STARTED_NS 19u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL 20u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_CELL 21u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_FIRST_ARRIVAL_NS 22u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_PEER_ARRIVAL_NS 23u
+#define SPARK_TP_MESH_ROUND_CONTROL_PEERS 16u
 
 typedef struct SparkTpMeshRoundControl
 {
@@ -49,6 +54,10 @@ typedef struct SparkTpMeshRoundControl
     uint64_t math_blocks_done;
     uint64_t publish_blocks_done;
     uint64_t publish_started_ns;
+    uint64_t shipped_cell;
+    uint64_t cancel_cell;
+    uint64_t first_arrival_ns;
+    uint64_t peer_arrival_ns[SPARK_TP_MESH_ROUND_CONTROL_PEERS];
 } SparkTpMeshRoundControl;
 
 #define SPARK_TP_MESH_ROUND_LOOP_DECISION_GO 0u
@@ -95,6 +104,7 @@ static inline uint64_t SparkTpMeshDirectChunks(uint64_t elements,uint32_t degree
 #define SPARK_TP_MESH_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_MESH_OPERATION_SLICE_GATHER 7u
 #define SPARK_TP_MESH_OPERATION_ALL_TO_ALL 3u
+#define SPARK_TP_MESH_OPERATION_REDUCE_SCATTER 4u
 #define SPARK_TP_MESH_RSAG_MIN_DEGREE 4u
 
 #if defined(__CUDACC__)
@@ -141,6 +151,34 @@ __host__ __device__
 static inline uint64_t SparkTpMeshDirectPeerCapacity(uint32_t degree,uint64_t staging_slot_bytes)
 {
     return (uint64_t)degree * ((staging_slot_bytes / 2u) & ~UINT64_C(3));
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint32_t SparkTpMeshDirectStaged(uint64_t slot_bytes,uint64_t staging_slot_bytes,uint32_t degree,uint64_t elements,uint32_t operation,uint32_t rounds,uint32_t logical_rows,uint32_t slice_routes)
+{
+    uint32_t peer = SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,slice_routes) == 2u &&
+        (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u ? 1u : 0u;
+    uint64_t capacity = peer != 0u ? SparkTpMeshDirectPeerCapacity(degree,staging_slot_bytes) : SparkTpMeshDirectCapacity(slot_bytes,operation);
+    return (operation == SPARK_TP_MESH_OPERATION_ALL_GATHER || operation == 1u) && rounds == 1u && logical_rows == 1u &&
+        SparkTpMeshDirectLocalElements(elements,degree,operation) <= capacity ? 1u : 0u;
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshScatterCapacity(uint64_t staging_slot_bytes)
+{
+    return (staging_slot_bytes / 2u) & ~UINT64_C(3);
+}
+
+#if defined(__CUDACC__)
+__host__ __device__
+#endif
+static inline uint64_t SparkTpMeshScatterChunks(uint64_t elements,uint32_t degree,uint64_t staging_slot_bytes)
+{
+    return (elements / degree - 1u) / SparkTpMeshScatterCapacity(staging_slot_bytes) + 1u;
 }
 
 #if defined(__CUDACC__)

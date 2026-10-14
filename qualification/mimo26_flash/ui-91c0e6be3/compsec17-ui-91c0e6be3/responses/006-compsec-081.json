@@ -1,0 +1,62 @@
+{
+ "id": "compsec-081",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "mimo-v2.6-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe diagnostic request builder has small protocol-defined fields.\n\nCode:\n```c\n 1: #define MAX_DIAG_PAYLOAD       6\n 2: #define MAX_REQUEST_PAYLOAD    7\n 3: \n 4: static int send_diagnostic_request(uint8_t sid,\n 5:                                    const uint8_t *pid, size_t pid_len,\n 6:                                    const uint8_t *payload, size_t payload_len)\n 7: {\n 8:     uint8_t req[MAX_DIAG_PAYLOAD];\n 9: \n10:     if (pid_len > 2 || payload_len > MAX_REQUEST_PAYLOAD)\n11:         return -1;\n12: \n13:     req[0] = sid;\n14:     memcpy(req + 1, pid, pid_len);\n15:     memcpy(req + 1 + pid_len, payload, payload_len);\n16: \n17:     return transport_send(req, 1 + pid_len + payload_len);\n18: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "97b50cc62e6102c559543e3a5cfec14bb2c256ef343290f0ee29fc6bb98da651"
+ },
+ "response": {
+  "id": "chatcmpl-7f3ad098d163448c94c47a83eb45164d",
+  "created": 1791857540,
+  "model": "mimo-v2.6-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The buffer `req` is sized `MAX_DIAG_PAYLOAD` (6), but the validation allows `pid_len` up to 2 and `payload_len` up to `MAX_REQUEST_PAYLOAD` (7). This means `1 + pid_len + payload_len` can be up to `1 + 2 + 7 = 10`, which overflows the 6-byte buffer.\n\nThe primary bug is the mismatch between the buffer size and the validation limits, introduced at line 8 (buffer declaration) combined with line 10 (validation). However, the actual overflow write occurs at line 15.\n\nThe smallest set of lines that makes the bug clear is the buffer declaration and the validation check: lines 8 and 10.\n\nAnswer: 8,10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 159,
+   "prompt_tokens": 323,
+   "total_tokens": 482,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The buffer `req` is sized `MAX_DIAG_PAYLOAD` (6), but the validation allows `pid_len` up to 2 and `payload_len` up to `MAX_REQUEST_PAYLOAD` (7). This means `1 + pid_len + payload_len` can be up to `1 + 2 + 7 = 10`, which overflows the 6-byte buffer.\n\nThe primary bug is the mismatch between the buffer size and the validation limits, introduced at line 8 (buffer declaration) combined with line 10 (validation). However, the actual overflow write occurs at line 15.\n\nThe smallest set of lines that makes the bug clear is the buffer declaration and the validation check: lines 8 and 10.\n\nAnswer: 8,10",
+ "grade": {
+  "index": 6,
+  "id": "compsec-081",
+  "source": "COMPSEC",
+  "domain": "uds-c",
+  "expected": "10-15",
+  "extracted": "8,10",
+  "passed": false,
+  "elapsed_ms": 6915.4,
+  "output_sha256": "0d326a312e994356145932c5a7b06e6c4213e7528cb0713821aa18288c14b64d",
+  "prompt_token_count": 323,
+  "generated_token_count": 159,
+  "reasoning_chars": 0,
+  "content_chars": 599,
+  "status": "stop"
+ }
+}

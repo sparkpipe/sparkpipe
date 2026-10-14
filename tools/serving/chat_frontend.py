@@ -1,6 +1,9 @@
 import argparse
 import asyncio
+import codecs
+import importlib.util
 import json
+import re
 import sys
 import time
 import uuid
@@ -15,6 +18,7 @@ from tokenizers import Tokenizer
 from tokenizers.decoders import DecodeStream
 
 ROLE_ALIASES = {"developer": "system"}
+CHANNEL_KEYS = ("message_start", "header_end", "message_end", "recipient_prefix", "reasoning_recipient", "content_recipient")
 UNSUPPORTED_FIELDS = ("n", "logit_bias", "best_of", "echo", "suffix")
 NEUTRAL_FIELDS = {"frequency_penalty": 0, "presence_penalty": 0, "repetition_penalty": 1, "min_p": 0}
 MAX_TOP_LOGPROBS = 20
@@ -61,6 +65,227 @@ def longest_marker_prefix(text, markers):
                 longest = length
                 break
     return longest
+
+
+ATTRIBUTE = re.compile(r'(\w+)="([^"]*)"')
+CALL_NAME = re.compile(r"\w+")
+BARE_KEY = re.compile(r'[^\s{}\[\],:"]+')
+SCALAR = json.JSONDecoder()
+
+
+def tag_attributes(text):
+    return {key: value.replace("&quot;", '"').replace("&amp;", "&") for key, value in ATTRIBUTE.findall(text)}
+
+
+def skip_space(text, position):
+    while position < len(text) and text[position].isspace():
+        position += 1
+    return position
+
+
+def delimited_string(text, position, delimiter):
+    end = text.find(delimiter, position + len(delimiter))
+    if end < 0:
+        raise ValueError("unterminated string")
+    return text[position + len(delimiter):end], end + len(delimiter)
+
+
+def delimited_key(text, position, delimiter):
+    position = skip_space(text, position)
+    if text.startswith(delimiter, position):
+        return delimited_string(text, position, delimiter)
+    if text.startswith('"', position):
+        key, end = SCALAR.raw_decode(text, position)
+        return key, end
+    match = BARE_KEY.match(text, position)
+    if match is None:
+        raise ValueError("missing key")
+    return match.group(0), match.end()
+
+
+def delimited_value(text, position, delimiter):
+    position = skip_space(text, position)
+    if text.startswith(delimiter, position):
+        return delimited_string(text, position, delimiter)
+    if text.startswith("{", position) or text.startswith("[", position):
+        mapping = text[position] == "{"
+        close = "}" if mapping else "]"
+        result = {} if mapping else []
+        position = skip_space(text, position + 1)
+        if text.startswith(close, position):
+            return result, position + 1
+        while True:
+            if mapping:
+                key, position = delimited_key(text, position, delimiter)
+                position = skip_space(text, position)
+                if not text.startswith(":", position):
+                    raise ValueError("missing colon")
+                result[key], position = delimited_value(text, position + 1, delimiter)
+            else:
+                value, position = delimited_value(text, position, delimiter)
+                result.append(value)
+            position = skip_space(text, position)
+            if text.startswith(",", position):
+                position += 1
+            elif text.startswith(close, position):
+                return result, position + 1
+            else:
+                raise ValueError("missing separator")
+    return SCALAR.raw_decode(text, position)
+
+
+class TokenizersVocabulary:
+    def __init__(self, directory, spec):
+        self.adopt(Tokenizer.from_file(str(directory / spec.get("file", "tokenizer.json"))))
+
+    @classmethod
+    def from_tokenizer(cls, tokenizer):
+        vocabulary = cls.__new__(cls)
+        vocabulary.adopt(tokenizer)
+        return vocabulary
+
+    def adopt(self, tokenizer):
+        self.tokenizer = tokenizer
+        document = json.loads(tokenizer.to_str())
+        document["added_tokens"] = []
+        self.plain = Tokenizer.from_str(json.dumps(document))
+
+    def encode(self, text, special):
+        if special:
+            return self.tokenizer.encode(text, add_special_tokens=False).ids
+        return self.plain.encode(text, add_special_tokens=False).ids
+
+    def control_strings(self):
+        return [token.content for token in self.tokenizer.get_added_tokens_decoder().values()]
+
+    def decoder(self):
+        stream = DecodeStream(skip_special_tokens=False)
+        return lambda token: stream.step(self.tokenizer, token)
+
+    def token_id(self, text):
+        return self.tokenizer.token_to_id(text)
+
+    def piece(self, token):
+        return self.tokenizer.decode([token], skip_special_tokens=False)
+
+
+class TiktokenVocabulary:
+    def __init__(self, directory, spec):
+        import tiktoken
+        from tiktoken.load import load_tiktoken_bpe
+        ranks = load_tiktoken_bpe(str(directory / spec["file"]))
+        config = json.loads((directory / spec["special_tokens_from"]).read_text())
+        specials = {entry["content"]: int(identifier) for identifier, entry in config.get("added_tokens_decoder", {}).items()}
+        taken = set(specials.values())
+        for identifier in range(len(ranks), len(ranks) + int(spec.get("reserved_special_tokens", 0))):
+            if identifier not in taken:
+                specials[f"<|reserved_token_{identifier}|>"] = identifier
+        self.specials = specials
+        self.encoding = tiktoken.Encoding(name=spec.get("name", directory.name), pat_str=spec["pattern"], mergeable_ranks=ranks, special_tokens=specials)
+
+    def encode(self, text, special):
+        return self.encoding.encode(text, allowed_special="all") if special else self.encoding.encode_ordinary(text)
+
+    def control_strings(self):
+        return list(self.specials)
+
+    def decoder(self):
+        utf8 = codecs.getincrementaldecoder("utf-8")("replace")
+        return lambda token: utf8.decode(self.encoding.decode_single_token_bytes(token))
+
+    def token_id(self, text):
+        if text in self.specials:
+            return self.specials[text]
+        ids = self.encoding.encode_ordinary(text)
+        return ids[0] if len(ids) == 1 else None
+
+    def piece(self, token):
+        return self.encoding.decode_single_token_bytes(token).decode("utf-8", "replace")
+
+
+VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabulary}
+
+
+class TemplateRenderer:
+    def __init__(self, directory, spec, vocabulary):
+        environment = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[loopcontrols])
+        environment.filters["tojson"] = tojson
+        environment.globals["raise_exception"] = raise_exception
+        environment.globals["strftime_now"] = strftime_now
+        self.template = environment.from_string((directory / spec.get("file", "chat_template.jinja")).read_text())
+        tokenizer_config = json.loads((directory / spec.get("tokenizer_config", "tokenizer_config.json")).read_text())
+        self.template_tokens = {name: tokenizer_config[name] for name in ("bos_token", "eos_token", "pad_token", "unk_token") if isinstance(tokenizer_config.get(name), str)}
+        self.vocabulary = vocabulary
+
+    def render_text(self, messages, tools, context):
+        try:
+            return self.template.render(messages=messages, tools=tools or None, add_generation_prompt=True, **context)
+        except jinja2.exceptions.TemplateError as error:
+            raise RequestError(400, "invalid_messages", f"the chat template refused the request: {error}")
+        except Exception as error:
+            raise RequestError(400, "invalid_messages", f"the chat template could not render the request: {type(error).__name__}: {error}")
+
+    def render(self, messages, tools, kwargs):
+        context = dict(self.template_tokens)
+        context.update(kwargs)
+        text = self.render_text(messages, tools, context)
+        specials = [token for token in self.vocabulary.control_strings() if token]
+        carried = []
+
+        def mark(value):
+            if isinstance(value, str):
+                if any(token in value for token in specials):
+                    carried.append(value)
+                    return f"\ue000{len(carried) - 1}\ue001"
+                return value
+            if isinstance(value, dict):
+                if any(isinstance(key, str) and any(token in key for token in specials) for key in value):
+                    raise RequestError(400, "invalid_messages", "a request key carries a control token string")
+                return {key: mark(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [mark(item) for item in value]
+            return value
+
+        marked_messages, marked_tools = mark(messages), mark(tools)
+        if not carried:
+            return text, self.vocabulary.encode(text, True)
+        pieces = re.split("\ue000([0-9]+)\ue001", self.render_text(marked_messages, marked_tools, context))
+        ids, rebuilt = [], []
+        for index, piece in enumerate(pieces):
+            if index % 2 == 0:
+                rebuilt.append(piece)
+                ids.extend(self.vocabulary.encode(piece, True))
+            else:
+                rebuilt.append(carried[int(piece)])
+                ids.extend(self.vocabulary.encode(carried[int(piece)], False))
+        if "".join(rebuilt) != text:
+            raise RequestError(400, "invalid_messages", "a message carries a control token string inside text the chat template rewrites")
+        return text, ids
+
+
+class SegmentRenderer:
+    def __init__(self, directory, spec, vocabulary):
+        path = directory / spec["module"]
+        name = f"chat_renderer_{uuid.uuid4().hex}"
+        loader = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(loader)
+        sys.modules[name] = module
+        loader.loader.exec_module(module)
+        self.function = getattr(module, spec["function"])
+        self.vocabulary = vocabulary
+
+    def render(self, messages, tools, kwargs):
+        try:
+            segments = self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
+        except Exception as error:
+            raise RequestError(400, "invalid_messages", f"the chat renderer refused the request: {type(error).__name__}: {error}")
+        ids = []
+        for segment in segments:
+            ids.extend(self.vocabulary.encode(segment.text, segment.allow_special))
+        return "".join(segment.text for segment in segments), ids
+
+
+RENDERERS = {"template": TemplateRenderer, "segments": SegmentRenderer}
 
 
 class WarmGate:
@@ -133,40 +358,46 @@ class Model:
         self.id = spec["id"]
         self.context_tokens = int(spec["context_tokens"])
         self.engine = spec["engine"].rstrip("/")
-        self.tokenizer = Tokenizer.from_file(str(directory / "tokenizer.json"))
-        environment = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[loopcontrols])
-        environment.filters["tojson"] = tojson
-        environment.globals["raise_exception"] = raise_exception
-        environment.globals["strftime_now"] = strftime_now
-        self.template = environment.from_string((directory / "chat_template.jinja").read_text())
-        tokenizer_config = json.loads((directory / "tokenizer_config.json").read_text())
-        self.template_tokens = {name: tokenizer_config[name] for name in ("bos_token", "eos_token", "pad_token", "unk_token") if isinstance(tokenizer_config.get(name), str)}
+        vocabulary = dict(spec.get("tokenizer", {"kind": "tokenizers"}))
+        renderer = dict(spec.get("renderer", {"kind": "template"}))
+        if vocabulary.get("kind") not in VOCABULARIES or renderer.get("kind") not in RENDERERS:
+            raise SystemExit(f"chat_frontend: {self.id} tokenizer kind must be one of {sorted(VOCABULARIES)} and renderer kind one of {sorted(RENDERERS)}")
+        self.vocabulary = VOCABULARIES[vocabulary["kind"]](directory, vocabulary)
+        self.renderer = RENDERERS[renderer["kind"]](directory, renderer, self.vocabulary)
         self.template_defaults = dict(spec.get("template_defaults", {}))
         self.template_kwargs = set(spec.get("template_kwargs", []))
         self.reasoning_effort = dict(spec.get("reasoning_effort", {}))
-        self.reasoning = spec["reasoning"]
-        self.tool_calls = spec["tool_calls"]
+        self.channels = spec.get("channels")
+        if self.channels is not None and set(self.channels) != set(CHANNEL_KEYS):
+            raise SystemExit(f"chat_frontend: {self.id} channels needs exactly {', '.join(CHANNEL_KEYS)}")
+        if (self.channels is None) == ("reasoning" not in spec):
+            raise SystemExit(f"chat_frontend: {self.id} needs either reasoning start and end markers or a channels protocol, not both")
+        self.reasoning = spec.get("reasoning")
+        self.tool_calls = dict(spec["tool_calls"])
+        self.tool_calls.setdefault("format", "key_value")
+        if self.tool_calls["format"] not in ("key_value", "tagged", "function_xml", "object"):
+            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value, tagged, function_xml or object")
+        if self.tool_calls["format"] == "object" and not all(isinstance(self.tool_calls.get(key), str) and self.tool_calls[key] for key in ("name_prefix", "string_delimiter")):
+            raise SystemExit(f"chat_frontend: {self.id} object tool calls need name_prefix and string_delimiter")
+        self.content_markers = list(spec.get("content_markers", []))
+        self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
 
     def logprob(self, pair):
-        text = self.tokenizer.decode([pair[0]], skip_special_tokens=False)
+        text = self.vocabulary.piece(pair[0])
         return {"token": text, "logprob": -9999.0 if pair[1] is None else pair[1], "bytes": list(text.encode("utf-8"))}
 
     def token_id(self, text):
-        token = self.tokenizer.token_to_id(text)
+        token = self.vocabulary.token_id(text)
         if token is None:
             raise SystemExit(f"chat_frontend: {self.id} declares {text!r} but its tokenizer has no such token")
         return token
 
     def render(self, messages, tools, kwargs):
-        context = dict(self.template_tokens)
-        context.update(self.template_defaults)
+        context = dict(self.template_defaults)
         context.update(kwargs)
-        try:
-            return self.template.render(messages=messages, tools=tools or None, add_generation_prompt=True, **context)
-        except jinja2.exceptions.TemplateError as error:
-            raise RequestError(400, "invalid_messages", f"the chat template refused the request: {error}")
+        return self.renderer.render(messages, tools, context)
 
 
 def normalize_arguments(arguments):
@@ -256,18 +487,126 @@ def tool_parameter_types(tools):
     return types
 
 
+def call_entry(name, arguments):
+    return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
+
+
 class OutputParser:
     def __init__(self, model, tools, reasoning_open, stops):
+        self.reasoning_start = model.reasoning["start"]
         self.reasoning_end = model.reasoning["end"]
         self.call = model.tool_calls
         self.types = tool_parameter_types(tools)
-        self.stops = [stop for stop in stops if stop]
+        self.stops = [stop for stop in stops if stop] + model.end_markers
+        self.end_markers = model.end_markers
+        self.drops = model.content_markers
+        self.ended = False
         self.state = "reasoning" if reasoning_open else "content"
+        self.fresh = not reasoning_open
         self.buffer = ""
         self.calls = 0
         self.stopped = False
 
     def parse_call(self, body):
+        if self.call["format"] == "tagged":
+            return self.parse_tagged_call(body)
+        if self.call["format"] == "function_xml":
+            return self.parse_function_xml_call(body)
+        if self.call["format"] == "object":
+            return self.parse_object_call(body)
+        return self.parse_key_value_call(body)
+
+    def parse_object_call(self, body):
+        prefix = self.call["name_prefix"]
+        name = CALL_NAME.match(body, len(prefix)) if body.startswith(prefix) else None
+        if name is None or not body.startswith("{", name.end()):
+            return None
+        try:
+            arguments, end = delimited_value(body, name.end(), self.call["string_delimiter"])
+        except ValueError:
+            return None
+        if not isinstance(arguments, dict) or body[end:].strip():
+            return None
+        return call_entry(name.group(0), arguments)
+
+    def argument_kind(self, attributes):
+        flag = self.call.get("string_attribute")
+        if flag is None:
+            return attributes.get("type")
+        if flag not in attributes:
+            return None
+        return "string" if attributes[flag] == "true" else "json"
+
+    def typed(self, name, key, kind, value):
+        if kind == "string" or (kind is None and self.types.get(name, {}).get(key) == "string"):
+            return value
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+
+    def parse_tagged_call(self, body):
+        call = self.call
+        head, found, rest = body.partition(call["attribute_end"])
+        if not found:
+            return None
+        name = tag_attributes(head).get(call.get("name_attribute", "tool"))
+        arguments = {}
+        rest = rest.strip()
+        while rest:
+            if call.get("object_start") and rest.startswith(call["object_start"]):
+                _, found, rest = rest[len(call["object_start"]):].partition(call["attribute_end"])
+                value, closed, rest = rest.partition(call["object_end"])
+                if not found or not closed:
+                    return None
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    return None
+                if not isinstance(parsed, dict):
+                    return None
+                arguments.update(parsed)
+            elif rest.startswith(call["argument_start"]):
+                head, found, rest = rest[len(call["argument_start"]):].partition(call["attribute_end"])
+                value, closed, rest = rest.partition(call["argument_end"])
+                attributes = tag_attributes(head)
+                key = attributes.get(call.get("key_attribute", "key"))
+                if not found or not closed or key is None:
+                    return None
+                arguments[key] = self.typed(name, key, self.argument_kind(attributes), value)
+            else:
+                return None
+            rest = rest.strip()
+        if not name:
+            return None
+        return call_entry(name, arguments)
+
+    def parse_function_xml_call(self, body):
+        call = self.call
+        rest = body.strip()
+        if not rest.startswith(call["function_start"]) or not rest.endswith(call["function_end"]):
+            return None
+        name, found, rest = rest[len(call["function_start"]):len(rest) - len(call["function_end"])].partition(call["attribute_end"])
+        name = name.strip()
+        if not found or not name:
+            return None
+        arguments = {}
+        rest = rest.strip()
+        while rest:
+            if not rest.startswith(call["parameter_start"]):
+                return None
+            key, found, rest = rest[len(call["parameter_start"]):].partition(call["attribute_end"])
+            value, closed, rest = rest.partition(call["parameter_end"])
+            key = key.strip()
+            if not found or not closed or not key:
+                return None
+            value = value[1:] if value.startswith("\n") else value
+            value = value[:-1] if value.endswith("\n") else value
+            arguments[key] = self.typed(name, key, None, value)
+            rest = rest.strip()
+        return call_entry(name, arguments)
+
+    def parse_key_value_call(self, body):
         call = self.call
         head, _, rest = body.partition(call["key_start"])
         name = head.strip()
@@ -295,7 +634,7 @@ class OutputParser:
                     arguments[key] = value
         if not name or rest.strip():
             return None
-        return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function", "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}
+        return call_entry(name, arguments)
 
     def feed(self, text):
         self.buffer += text
@@ -314,10 +653,20 @@ class OutputParser:
                 self.buffer = self.buffer[index + len(self.reasoning_end):]
                 self.state = "content"
             elif self.state == "content":
-                hits = [(self.buffer.find(marker), marker) for marker in [self.call["start"]] + self.stops]
+                if self.fresh:
+                    head = self.buffer.lstrip()
+                    if not head or self.reasoning_start.startswith(head):
+                        break
+                    self.fresh = False
+                    if head.startswith(self.reasoning_start):
+                        self.buffer = head[len(self.reasoning_start):]
+                        self.state = "reasoning"
+                        continue
+                markers = [self.call["start"]] + self.stops + self.drops
+                hits = [(self.buffer.find(marker), marker) for marker in markers]
                 hits = [hit for hit in hits if hit[0] >= 0]
                 if not hits:
-                    keep = longest_marker_prefix(self.buffer, [self.call["start"]] + self.stops)
+                    keep = longest_marker_prefix(self.buffer, markers)
                     if len(self.buffer) > keep:
                         events.append(("content", self.buffer[:len(self.buffer) - keep]))
                         self.buffer = self.buffer[len(self.buffer) - keep:]
@@ -325,9 +674,13 @@ class OutputParser:
                 index, marker = min(hits)
                 if index:
                     events.append(("content", self.buffer[:index]))
+                if marker in self.drops and marker != self.call["start"]:
+                    self.buffer = self.buffer[index + len(marker):]
+                    continue
                 if marker != self.call["start"]:
                     self.buffer = ""
                     self.stopped = True
+                    self.ended = marker in self.end_markers
                     break
                 self.buffer = self.buffer[index + len(marker):]
                 self.state = "call"
@@ -359,12 +712,108 @@ class OutputParser:
         return events
 
 
+class ChannelParser(OutputParser):
+    def __init__(self, model, tools, prompt, stops):
+        self.channel = model.channels
+        self.call = model.tool_calls
+        self.types = tool_parameter_types(tools)
+        self.stops = [stop for stop in stops if stop] + model.end_markers
+        self.end_markers = model.end_markers
+        self.drops = model.content_markers
+        self.ended = False
+        self.state = "header" if prompt.endswith(self.channel["message_start"]) else "between"
+        self.target = "tool"
+        self.buffer = ""
+        self.calls = 0
+        self.stopped = False
+
+    def emit(self, events, text):
+        if self.target == "reasoning":
+            events.append(("reasoning", text))
+        elif self.target == "content" or text.strip():
+            events.append(("content", text))
+
+    def recipient(self, header):
+        prefix = self.channel["recipient_prefix"]
+        if prefix not in header:
+            return "content"
+        name = header.split(prefix, 1)[1].split()
+        name = name[0] if name else ""
+        return "reasoning" if name == self.channel["reasoning_recipient"] else "content" if name == self.channel["content_recipient"] else "tool"
+
+    def feed(self, text):
+        self.buffer += text
+        events = []
+        start, end = self.channel["message_start"], self.channel["message_end"]
+        while self.buffer and not self.stopped:
+            if self.state == "header":
+                index = self.buffer.find(self.channel["header_end"])
+                if index < 0:
+                    break
+                self.target = self.recipient(self.buffer[:index])
+                self.buffer = self.buffer[index + len(self.channel["header_end"]):]
+                self.state = "body"
+            elif self.state == "call":
+                index = self.buffer.find(self.call["end"])
+                if index < 0:
+                    break
+                body = self.buffer[:index]
+                self.buffer = self.buffer[index + len(self.call["end"]):]
+                self.state = "body"
+                parsed = self.parse_call(body)
+                if parsed is None:
+                    events.append(("content", self.call["start"] + body + self.call["end"]))
+                else:
+                    events.append(("tool_call", parsed))
+                    self.calls += 1
+            else:
+                markers = [start] if self.state == "between" else [end, start]
+                if self.state == "body" and self.target != "reasoning":
+                    markers += [self.call["start"]] + self.stops + self.drops
+                hits = [hit for hit in ((self.buffer.find(marker), marker) for marker in markers) if hit[0] >= 0]
+                if not hits:
+                    keep = longest_marker_prefix(self.buffer, markers)
+                    if len(self.buffer) > keep:
+                        self.emit(events, self.buffer[:len(self.buffer) - keep])
+                        self.buffer = self.buffer[len(self.buffer) - keep:]
+                    break
+                index, marker = min(hits)
+                if index:
+                    self.emit(events, self.buffer[:index])
+                self.buffer = self.buffer[index + len(marker):]
+                if marker == start:
+                    self.state = "header"
+                elif marker == end:
+                    self.state, self.target = "between", "tool"
+                elif marker == self.call["start"]:
+                    self.state = "call"
+                elif marker not in self.drops:
+                    self.buffer = ""
+                    self.stopped = True
+                    self.ended = marker in self.end_markers
+        return events
+
+    def finish(self):
+        events = []
+        if self.buffer and not self.stopped:
+            if self.state == "call":
+                events.append(("content", self.call["start"] + self.buffer))
+            elif self.state != "header":
+                self.emit(events, self.buffer)
+        self.buffer = ""
+        return events
+
+
 class Frontend:
     def __init__(self, config, base):
         self.models = {}
         for spec in config["models"]:
             model = Model(spec, base)
             self.models[model.id] = model
+        self.control = config.get("control")
+        if self.control is not None and set(self.control) != {"status_url", "activate_url"}:
+            raise SystemExit("chat_frontend: control needs exactly status_url and activate_url")
+        self.site = (base / config["site_dir"]).resolve() if config.get("site_dir") else None
         self.session = None
 
     async def start(self, app):
@@ -396,6 +845,34 @@ class Frontend:
     async def liveliness(self, request):
         return web.json_response({"ok": True})
 
+    async def control_status(self, request):
+        if self.control is None:
+            return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
+        try:
+            async with self.session.get(self.control["status_url"], timeout=aiohttp.ClientTimeout(total=5)) as response:
+                return web.json_response(await response.json(content_type=None), status=response.status)
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            return web.json_response(error_body("control_unavailable", str(error)), status=503)
+
+    async def control_activate(self, request):
+        if self.control is None:
+            return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
+        model = body.get("model") if isinstance(body, dict) else None
+        if model not in self.models:
+            return web.json_response(error_body("model_not_found", f"model {model!r} is not served here; served: {sorted(self.models)}"), status=404)
+        try:
+            async with self.session.post(self.control["activate_url"], json={"model": model}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                return web.json_response(await response.json(content_type=None), status=response.status)
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            return web.json_response(error_body("control_unavailable", str(error)), status=503)
+
+    async def site_root(self, request):
+        raise web.HTTPFound("/site/playground.html")
+
     async def list_models(self, request):
         created = int(time.time())
         return web.json_response({"object": "list", "data": [
@@ -413,31 +890,50 @@ class Frontend:
         if response_format not in (None, {"type": "text"}):
             raise RequestError(400, "unsupported_parameter", "response_format other than text is not supported by this server")
         messages = normalize_messages(body.get("messages"))
-        tools = body.get("tools") if body.get("tool_choice") != "none" else None
+        tools = body.get("tools")
+        if tools is not None and (not isinstance(tools, list) or any(
+                not isinstance(tool, dict) or tool.get("type") != "function" or not isinstance(tool.get("function"), dict) or
+                not isinstance(tool["function"].get("name"), str) for tool in tools)):
+            raise RequestError(400, "invalid_tools", "tools must be an array of function tools, each with a function object that has a string name")
+        tool_choice = body.get("tool_choice")
+        if tool_choice not in (None, "auto", "none"):
+            raise RequestError(400, "unsupported_parameter", f"tool_choice {tool_choice!r} is not supported by this server; send auto or none")
+        if tool_choice == "none":
+            tools = None
+        if body.get("stream") not in (None, True, False):
+            raise RequestError(400, "invalid_request", "stream must be a boolean")
         kwargs = {}
         effort = body.get("reasoning_effort")
         if effort is not None:
-            if effort not in model.reasoning_effort:
+            if not isinstance(effort, str) or effort not in model.reasoning_effort:
                 raise RequestError(400, "unsupported_parameter", f"reasoning_effort must be one of {sorted(model.reasoning_effort)}")
             kwargs.update(model.reasoning_effort[effort])
-        for key, value in (body.get("chat_template_kwargs") or {}).items():
+        template_kwargs = body.get("chat_template_kwargs")
+        if template_kwargs is not None and not isinstance(template_kwargs, dict):
+            raise RequestError(400, "invalid_request", "chat_template_kwargs must be an object")
+        for key, value in (template_kwargs or {}).items():
             if key not in model.template_kwargs:
                 raise RequestError(400, "unsupported_parameter", f"chat_template_kwargs.{key} is not accepted; accepted: {sorted(model.template_kwargs)}")
             kwargs[key] = value
-        prompt = model.render(messages, tools, kwargs)
-        prompt_ids = model.tokenizer.encode(prompt, add_special_tokens=False).ids
+        prompt, prompt_ids = model.render(messages, tools, kwargs)
         if len(prompt_ids) >= model.context_tokens:
             raise RequestError(400, "context_length_exceeded", f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}")
-        limit = body.get("max_completion_tokens", body.get("max_tokens"))
+        limit = number(body, "max_completion_tokens", 1, 2 ** 31, integer=True)
+        if limit is None:
+            limit = number(body, "max_tokens", 1, 2 ** 31, integer=True)
         room = model.context_tokens - len(prompt_ids)
-        max_tokens = room if limit is None else min(int(limit), room)
+        max_tokens = room if limit is None else min(limit, room)
         if max_tokens <= 0:
             raise RequestError(400, "invalid_request", "max_tokens must be positive")
         stops = body.get("stop") or []
         if isinstance(stops, str):
             stops = [stops]
-        reasoning_open = prompt.rstrip().endswith(model.reasoning["start"])
-        parser = OutputParser(model, tools, reasoning_open, stops)
+        if not isinstance(stops, list) or not all(isinstance(stop, str) and stop for stop in stops):
+            raise RequestError(400, "invalid_request", "stop must be a string or an array of non-empty strings")
+        if model.channels is not None:
+            parser = ChannelParser(model, tools, prompt, stops)
+        else:
+            parser = OutputParser(model, tools, prompt.rstrip().endswith(model.reasoning["start"].rstrip()), stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body))
         return engine_body, parser, len(prompt_ids)
@@ -461,7 +957,12 @@ class Frontend:
                     data = line[5:].strip()
                     if data == "[DONE]":
                         return
-                    yield json.loads(data)
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        raise RequestError(502, "engine_error", f"the {model.id} engine sent a stream event that is not JSON: {data[:120]}")
+                    yield event
+                raise RequestError(502, "engine_error", f"the {model.id} engine stream ended before [DONE]; the reply is incomplete")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
@@ -498,7 +999,7 @@ class Frontend:
         return entries
 
     async def generate(self, model, engine_body, parser):
-        decoder = DecodeStream(skip_special_tokens=False)
+        step = model.vocabulary.decoder()
         finish = None
         usage = None
         logprobs = engine_body.get("logprobs")
@@ -513,7 +1014,7 @@ class Frontend:
             for token in chunk.get("tokens", []):
                 if token in model.stop_token_ids:
                     continue
-                piece = decoder.step(model.tokenizer, token)
+                piece = step(token)
                 if piece:
                     text.append(piece)
             choices = chunk.get("choices") or [{}]
@@ -521,7 +1022,7 @@ class Frontend:
             usage = chunk.get("usage") or usage
             for event in parser.feed("".join(text)):
                 yield event
-            if parser.stopped:
+            if parser.stopped and not parser.ended:
                 finish = "stop"
                 break
         for event in parser.finish():
@@ -654,6 +1155,11 @@ def main():
     app.router.add_get("/health/liveliness", frontend.liveliness)
     app.router.add_get("/v1/models", frontend.list_models)
     app.router.add_post("/v1/chat/completions", frontend.chat)
+    app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
+    app.router.add_post("/v1/sparkpipe/activate", frontend.control_activate)
+    if frontend.site is not None:
+        app.router.add_get("/", frontend.site_root)
+        app.router.add_static("/site/", frontend.site)
     web.run_app(app, host=arguments.host, port=arguments.port, access_log=None)
 
 

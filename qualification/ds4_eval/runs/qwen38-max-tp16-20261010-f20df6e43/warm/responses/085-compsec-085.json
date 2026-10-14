@@ -1,0 +1,31 @@
+{
+ "id": "compsec-085",
+ "phase": "warm",
+ "elapsed_s": 15.234550333116204,
+ "response": {
+  "id": "chatcmpl-ba83b197496e497597e9a2e6d1a12349",
+  "object": "chat.completion",
+  "created": 1791650459,
+  "model": "qwen3.8-max",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "role": "assistant",
+     "content": null,
+     "reasoning_content": "We"
+    },
+    "logprobs": null,
+    "finish_reason": "length"
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 300,
+   "completion_tokens": 1,
+   "total_tokens": 301,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ }
+}

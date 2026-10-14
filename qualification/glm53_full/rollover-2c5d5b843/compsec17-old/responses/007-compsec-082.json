@@ -1,0 +1,63 @@
+{
+ "id": "compsec-082",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe decoder writes a cstring value into a slice selected by a descriptor. xdr_bytes_available() is accurate.\n\nCode:\n```c\n 1: static bool xdr_datum(struct Xdr *xdr, const struct SliceDesc *desc, char *base)\n 2: {\n 3:     uint32_t n = xdr_get_u32(xdr);       // declared cstring length\n 4:     char *dst = base + desc->offset;\n 5: \n 6:     if (n > xdr_bytes_available(xdr))\n 7:         return false;\n 8: \n 9:     xdr_read_bytes(xdr, dst, n);\n10:     dst[n] = '\\0';\n11:     return true;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "15672e183cc947acb345908d9068845bfe2138b308fc85efa5f9bd06a575907d"
+ },
+ "response": {
+  "id": "chatcmpl-ab602605f725437aa260fd9689124b5d",
+  "created": 1791730485,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\n- Line 3 reads the declared length `n` from the input.\n- Line 6 only validates `n` against the number of bytes remaining in the input buffer \u2014 it never checks `n` against the size of the destination slice (`desc->size` or similar).\n- Line 9 then copies `n` bytes into `dst`, and line 10 writes a NUL terminator at `dst[n]`, both of which can write past the end of the slice if `n` exceeds the slice's capacity.\n\nThe primary flaw is the incomplete bounds check on line 6, which fails to validate against the destination size, enabling the out-of-bounds writes on lines 9\u201310.\n\nAnswer: 6",
+     "role": "assistant",
+     "reasoning_content": "No bound check against desc->size; overflow at line 9/10. Primary bug: line 6 (missing size check) \u2014 but bug introduced where? The write happens at 9-10. Best answer: 9,10? The missing check is at 6. I'd say line 9."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 216,
+   "prompt_tokens": 277,
+   "total_tokens": 493,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>No bound check against desc->size; overflow at line 9/10. Primary bug: line 6 (missing size check) \u2014 but bug introduced where? The write happens at 9-10. Best answer: 9,10? The missing check is at 6. I'd say line 9.</think>**Analysis:**\n\n- Line 3 reads the declared length `n` from the input.\n- Line 6 only validates `n` against the number of bytes remaining in the input buffer \u2014 it never checks `n` against the size of the destination slice (`desc->size` or similar).\n- Line 9 then copies `n` bytes into `dst`, and line 10 writes a NUL terminator at `dst[n]`, both of which can write past the end of the slice if `n` exceeds the slice's capacity.\n\nThe primary flaw is the incomplete bounds check on line 6, which fails to validate against the destination size, enabling the out-of-bounds writes on lines 9\u201310.\n\nAnswer: 6",
+ "grade": {
+  "index": 7,
+  "id": "compsec-082",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-10",
+  "extracted": "6",
+  "passed": false,
+  "elapsed_ms": 9655.2,
+  "output_sha256": "cdd72ff8fa7afa5d4af39072655f420fc85c2996aecfcaed4d05772695da4843",
+  "prompt_token_count": 277,
+  "generated_token_count": 216,
+  "reasoning_chars": 215,
+  "content_chars": 599,
+  "status": "stop"
+ }
+}

@@ -22,6 +22,7 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout);
 
 SparkStatus SparkWeightdMapPool(const SparkWeightdMap *map,const void **address);
+SparkStatus SparkWeightdMapResident(SparkWeightdMap *map,uint64_t timeout,uint32_t *resident);
 
 #ifdef __cplusplus
 }

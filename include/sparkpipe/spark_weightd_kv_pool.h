@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 #define SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS 60000000000ull
+#define SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS 240000000000ull
 #define SPARK_WEIGHTD_KV_POOL_MINIMUM_POLL_NS 50000000ull
 
 typedef struct SparkWeightdKvPoolMapping
@@ -25,7 +26,6 @@ typedef struct SparkWeightdKvPoolMapping
     uint64_t pool_generation;
     uint64_t kv_reserve_bytes;
     uint64_t kv_committed_bytes;
-    uint64_t write_budget_bytes_per_day;
     uint8_t *metadata;
     uint64_t metadata_bytes;
     uint64_t *chunk_offsets;

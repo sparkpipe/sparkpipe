@@ -1,0 +1,63 @@
+{
+ "id": "compsec-076",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function validates a per-request authentication blob before passing it to the GSS layer.\n\nCode:\n```c\n 1: #define AUTH_STACK_MAX 256\n 2: \n 3: static bool check_rpcsec_packet(const uint8_t *wire, size_t wire_left)\n 4: {\n 5:     if (wire_left < 4)\n 6:         return false;\n 7: \n 8:     uint32_t body_len = get_be32(wire);      // attacker-controlled length field\n 9:     const uint8_t *body = wire + 4;\n10:     uint8_t scratch[AUTH_STACK_MAX];\n11: \n12:     /* XDR opaque values are padded to 4-byte alignment on the wire. */\n13:     uint32_t pad = (4 - (body_len & 3)) & 3;\n14:     uint32_t encoded_len = body_len + pad;\n15: \n16:     /* This check only proves the source bytes exist in the packet. */\n17:     if (encoded_len > wire_left - 4)\n18:         return false;\n19: \n20:     memcpy(scratch, body, encoded_len);\n21:     return gss_verify_mic(scratch, body_len);\n22: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "626719feff050ecd2c9576227e203a70909cfceebb540f639dd2596d135bd7d5"
+ },
+ "response": {
+  "id": "chatcmpl-3241f4b36a754225a1786bf7c1379aca",
+  "created": 1791705045,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 20",
+     "role": "assistant",
+     "reasoning_content": " to=self<|message|>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nwire_left check <4\nbody_len = get_be32(wire)\nbody = wire+4\nscratch[AUTH_STACK_MAX]\npad = (4 - (body_len &3)) &3\nencoded_len = body_len + pad\nif encoded_len > wire_left -4 return false\nmemcpy(scratch, body, encoded_len);\nreturn gss_verify_mic(scratch, body_len);\n\nBug: memcpy to stack buffer scratch of size 256 without checking encoded_len <= AUTH_STACK_MAX. So stack overflow.\n\nPrimary bug introduced at line 20? Or check missing? The bug is introduced at line 20 memcpy, but also check at 17 insufficient. The primary bug is missing bounds check against scratch size. The line where bug manifests is 20. Could be 17 where check only proves source bytes exist but not destination.\n\nThe question: single best line number where primary bug is introduced. Probably 20 (memcpy). Or 17? The check only proves source bytes exist. The bug is using encoded_len without limiting to AUTH_STACK_MAX. The introduction is line 20.\n\nAlso line 14 encoded_len could overflow? body_len attacker controlled 32-bit, pad small, sum fits 32-bit. No overflow.\n\nSo answer 20.\n\nIf they want set 17,20? Small group adjacent. Might be 17,20. But primary bug introduced at memcpy.\n\nI'll answer 20.\n\n<|eom|><|start|>assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 333,
+   "prompt_tokens": 426,
+   "total_tokens": 759,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think> to=self<|message|>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nwire_left check <4\nbody_len = get_be32(wire)\nbody = wire+4\nscratch[AUTH_STACK_MAX]\npad = (4 - (body_len &3)) &3\nencoded_len = body_len + pad\nif encoded_len > wire_left -4 return false\nmemcpy(scratch, body, encoded_len);\nreturn gss_verify_mic(scratch, body_len);\n\nBug: memcpy to stack buffer scratch of size 256 without checking encoded_len <= AUTH_STACK_MAX. So stack overflow.\n\nPrimary bug introduced at line 20? Or check missing? The bug is introduced at line 20 memcpy, but also check at 17 insufficient. The primary bug is missing bounds check against scratch size. The line where bug manifests is 20. Could be 17 where check only proves source bytes exist but not destination.\n\nThe question: single best line number where primary bug is introduced. Probably 20 (memcpy). Or 17? The check only proves source bytes exist. The bug is using encoded_len without limiting to AUTH_STACK_MAX. The introduction is line 20.\n\nAlso line 14 encoded_len could overflow? body_len attacker controlled 32-bit, pad small, sum fits 32-bit. No overflow.\n\nSo answer 20.\n\nIf they want set 17,20? Small group adjacent. Might be 17,20. But primary bug introduced at memcpy.\n\nI'll answer 20.\n\n<|eom|><|start|>assistant</think>Answer: 20",
+ "grade": {
+  "index": 1,
+  "id": "compsec-076",
+  "source": "COMPSEC",
+  "domain": "FreeBSD / librpcsec_gss",
+  "expected": "17-20",
+  "extracted": "20",
+  "passed": true,
+  "elapsed_ms": 10401.8,
+  "output_sha256": "a231e8574035eb6a7c4104029cf153c05f8d3305549475773403f39c37531aa6",
+  "prompt_token_count": 426,
+  "generated_token_count": 333,
+  "reasoning_chars": 1372,
+  "content_chars": 10,
+  "status": "stop"
+ }
+}

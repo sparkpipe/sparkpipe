@@ -1,0 +1,367 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-12T02:02:58+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "laguna-s-2.1",
+ "passed": 5,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "laguna-s-2.1",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-2ccc5f35c3f9418884b80b3808a0424e",
+     "created": 1791770573,
+     "model": "laguna-s-2.1",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant",
+        "reasoning_content": "Okay, the user is asking for the capital of France. Let me make sure I remember correctly. I think it's Paris. Wait, is there any chance it's another city? No, I'm pretty sure Paris is the capital. Let me double-check in my mind. France's major cities include Paris, Lyon, Marseille, but the capital is definitely Paris. Yeah, that's right. So the answer should be Paris."
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 97,
+      "prompt_tokens": 53,
+      "total_tokens": 150,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "Okay, the user is asking for the capital of France. Let me make sure I remember correctly. I think it's Paris. Wait, is there any chance it's another city? No, I'm pretty sure Paris is the capital. Let me double-check in my mind. France's major cities include Paris, Lyon, Marseille, but the capital is definitely Paris. Yeah, that's right. So the answer should be Paris.",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 2.3
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "laguna-s-2.1",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "Okay, the user is asking for the capital of France. Let me make sure I remember correctly. I think it's Paris. Wait, is there any chance it's another city? No, I'm pretty sure Paris is the capital. Let me double-check in my mind. France's major cities include Paris, Lyon, Marseille, but the capital is definitely Paris. Yeah, that's right. So the answer should be Paris.",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 17,
+    "elapsed_s": 2.21
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "laguna-s-2.1",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-3aac692ba5814c77a761b395dbbd6d46",
+     "created": 1791770577,
+     "model": "laguna-s-2.1",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "tool_calls",
+       "index": 0,
+       "message": {
+        "role": "assistant",
+        "tool_calls": [
+         {
+          "function": {
+           "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+           "name": "get_weather"
+          },
+          "id": "call_08b9b31fc56143e2aa332533",
+          "type": "function"
+         }
+        ],
+        "content": null
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 38,
+      "prompt_tokens": 173,
+      "total_tokens": 211,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+       "name": "get_weather"
+      },
+      "id": "call_08b9b31fc56143e2aa332533",
+      "type": "function"
+     }
+    ],
+    "finish": "tool_calls",
+    "elapsed_s": 1.29
+   },
+   "problems": []
+  },
+  {
+   "check": "tool_result",
+   "request": {
+    "model": "laguna-s-2.1",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     },
+     {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+       {
+        "function": {
+         "arguments": "{\"location\": \"Paris\", \"unit\": \"celsius\"}",
+         "name": "get_weather"
+        },
+        "id": "call_08b9b31fc56143e2aa332533",
+        "type": "function"
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_08b9b31fc56143e2aa332533",
+      "content": "{\"location\": \"Paris\", \"temperature_c\": 18, \"condition\": \"sunny\"}"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-e49cea6539b04ad1a46044d3a444701b",
+     "created": 1791770577,
+     "model": "laguna-s-2.1",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The current weather in Paris is sunny with a temperature of 18\u00b0C.",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 17,
+      "prompt_tokens": 244,
+      "total_tokens": 261,
+      "prompt_tokens_details": {
+       "cached_tokens": 192
+      }
+     }
+    },
+    "content": "The current weather in Paris is sunny with a temperature of 18\u00b0C.",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.61
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "laguna-s-2.1",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-3f59a775b4e94f09a4b29323bc1e43ef",
+     "created": 1791770578,
+     "model": "laguna-s-2.1",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 57,
+      "total_tokens": 60,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.34
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "laguna-s-2.1",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-b3f0180308d94077847eeebcd7c4686e",
+     "created": 1791770578,
+     "model": "laguna-s-2.1",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 4,
+      "prompt_tokens": 57,
+      "total_tokens": 61,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.34
+   },
+   "problems": [
+    "no reasoning_content with reasoning on"
+   ]
+  }
+ ]
+}

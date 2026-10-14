@@ -123,7 +123,7 @@ def main():
 
     # -- default off: the only assignment is the bind's propagation -----------
     for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu",
-                 "engine.h", "dspark.h", "pipeline_sideband.h"):
+                 "engine.h", "dspark.h"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
         for match in re.finditer(r"kda_state_bf16\s*=\s*([^;\n]+);", text):
             value = match.group(1).strip()
@@ -205,7 +205,7 @@ def main():
 
     weighted = function_body(stripped, "K3LayerMoeWeighted")
     branches = re.findall(
-        r"if \( b->expert_interleave != 0u \)\s*\{(.*?)\n\t\}\n\telse",
+        r"if \( (?:status == LM_LAUNCH_ERR_SHAPE && )?b->expert_interleave != 0u \)\s*\{(.*?)\n\t\}\n\telse",
         weighted, re.S)
     launches = [re.findall(r"(LmGemmWeightOnly\w*Launch)<\s*Format,[^>]*?(,32u)?>",
                            branch) for branch in branches]

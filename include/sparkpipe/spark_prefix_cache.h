@@ -33,6 +33,7 @@ extern "C" {
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_PENDING 0x00000004u
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY 0x00000008u
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE 0x00000010u
+#define SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME 0x00000020u
 
 #define SPARK_PREFIX_CACHE_BINDING_FLAG_VALID 0x00000001u
 #define SPARK_PREFIX_CACHE_BINDING_FLAG_PENDING 0x00000002u
@@ -352,7 +353,19 @@ typedef struct SparkPrefixCacheCommittedRecord
     uint64_t block_hash;
     uint64_t content_hash;
     uint8_t content_digest[SPARK_SHA256_DIGEST_BYTES];
+    uint32_t flags;
+    uint32_t reserved;
 } SparkPrefixCacheCommittedRecord;
+
+SparkStatus SparkPrefixCacheMarkResume(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_count);
+
+uint32_t SparkPrefixCacheResumeTokenCount(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t matched_token_count);
 
 SparkStatus SparkPrefixCacheExportCommitted(
     const SparkPrefixCache *cache,

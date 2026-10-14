@@ -1,0 +1,62 @@
+{
+ "id": "compsec-077",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper is called once for each Special Line Character option received in a TELNET LINEMODE negotiation.\n\nCode:\n```c\n 1: #define SLCBUF_SIZE 108\n 2: #define SLC_NCHARS 18\n 3: \n 4: struct slc_state {\n 5:     unsigned char buf[SLCBUF_SIZE];\n 6:     size_t used;\n 7: };\n 8: \n 9: static void add_slc(struct slc_state *s,\n10:                     unsigned char func,\n11:                     unsigned char flags,\n12:                     unsigned char value)\n13: {\n14:     if (func <= SLC_NCHARS)\n15:         return;                    // ignore ordinary entries here\n16: \n17:     /* Store one SLC triplet for later reply construction. */\n18:     s->buf[s->used++] = func;\n19:     s->buf[s->used++] = flags;\n20:     s->buf[s->used++] = value;\n21: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "35321fb7d6402a8e5caf7d4030142dcb07b2d38748c769935cae1d2b95251825"
+ },
+ "response": {
+  "id": "chatcmpl-3241df5f770c44dc8a9767e8d389a5f6",
+  "created": 1791716759,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `add_slc` takes a pointer to a `slc_state` struct and appends three bytes (`func`, `flags`, and `value`) to the `s->buf` array. The array `s->buf` has a fixed size of `SLCBUF_SIZE` (108 bytes), as defined on line 1. However, the function does not perform any bounds checking on `s->used` before incrementing it and writing to the buffer. Since this function is called for each SLC option received, a sequence of more than 36 triplets (36 * 3 = 108) will cause `s->used` to exceed the buffer's capacity, leading to a heap or stack-based buffer overflow (depending on where `slc_state` is allocated).\n\nThe primary bug is the lack of bounds checking before the writes occur on lines 18, 19, and 20.\n\nAnswer: 18,19,20",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 212,
+   "prompt_tokens": 379,
+   "total_tokens": 591,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `add_slc` takes a pointer to a `slc_state` struct and appends three bytes (`func`, `flags`, and `value`) to the `s->buf` array. The array `s->buf` has a fixed size of `SLCBUF_SIZE` (108 bytes), as defined on line 1. However, the function does not perform any bounds checking on `s->used` before incrementing it and writing to the buffer. Since this function is called for each SLC option received, a sequence of more than 36 triplets (36 * 3 = 108) will cause `s->used` to exceed the buffer's capacity, leading to a heap or stack-based buffer overflow (depending on where `slc_state` is allocated).\n\nThe primary bug is the lack of bounds checking before the writes occur on lines 18, 19, and 20.\n\nAnswer: 18,19,20",
+ "grade": {
+  "index": 2,
+  "id": "compsec-077",
+  "source": "COMPSEC",
+  "domain": "GNU Inetutils telnetd",
+  "expected": "18-20",
+  "extracted": "18,19,20",
+  "passed": true,
+  "elapsed_ms": 2748.1,
+  "output_sha256": "c1048fc284a0ece8adc39813ec90f47ebb1e749662e7fdc21bdafacbb463fd5b",
+  "prompt_token_count": 379,
+  "generated_token_count": 212,
+  "reasoning_chars": 0,
+  "content_chars": 726,
+  "status": "stop"
+ }
+}

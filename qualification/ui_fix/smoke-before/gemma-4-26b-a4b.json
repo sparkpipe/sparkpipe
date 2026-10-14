@@ -1,0 +1,266 @@
+{
+ "format": "sparkpipe-ui-smoke-v1",
+ "generated_at": "2026-10-11T08:23:48+0000",
+ "endpoint": "http://127.0.0.1:4000",
+ "model": "gemma-4-26b-a4b",
+ "passed": 3,
+ "total": 6,
+ "results": [
+  {
+   "check": "chat",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-38e45094a25e41e28bcd7a2cc3dd9e1b",
+     "created": 1791707025,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "The capital of France is Paris.",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 7,
+      "prompt_tokens": 25,
+      "total_tokens": 32,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "The capital of France is Paris.",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.25
+   },
+   "problems": []
+  },
+  {
+   "check": "stream",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the capital of France? Answer in one sentence."
+     }
+    ]
+   },
+   "reply": {
+    "content": "The capital of France is Paris.",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "chunks": 4,
+    "elapsed_s": 0.16
+   },
+   "problems": []
+  },
+  {
+   "check": "tool",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is the weather in Paris right now? Use the get_weather tool."
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Current weather for a city.",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "location": {
+          "type": "string",
+          "description": "City name"
+         },
+         "unit": {
+          "type": "string",
+          "enum": [
+           "celsius",
+           "fahrenheit"
+          ]
+         }
+        },
+        "required": [
+         "location"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-6b67d259d3834200bad75c0ac49634ce",
+     "created": 1791707025,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "<|tool_call>call:get_weather{location:<|\"|>Paris<|\"|>}<tool_call|>",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 14,
+      "prompt_tokens": 104,
+      "total_tokens": 118,
+      "prompt_tokens_details": {
+       "cached_tokens": 64
+      }
+     }
+    },
+    "content": "<|tool_call>call:get_weather{location:<|\"|>Paris<|\"|>}<tool_call|>",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.27
+   },
+   "problems": [
+    "raw markers in content: ['<|', '|>', '<tool_call']",
+    "finish_reason 'stop'",
+    "no tool call parsed"
+   ]
+  },
+  {
+   "check": "tool_result",
+   "request": null,
+   "reply": null,
+   "problems": [
+    "skipped: no tool call to answer"
+   ]
+  },
+  {
+   "check": "reasoning_off",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "minimal"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-25c9e6f969244b718992813ed3e2a4b8",
+     "created": 1791707025,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 29,
+      "total_tokens": 32,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 0.17
+   },
+   "problems": []
+  },
+  {
+   "check": "reasoning_on",
+   "request": {
+    "model": "gemma-4-26b-a4b",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "messages": [
+     {
+      "role": "user",
+      "content": "What is 17 * 23? Reply with just the number."
+     }
+    ],
+    "reasoning_effort": "high"
+   },
+   "reply": {
+    "payload": {
+     "id": "chatcmpl-3d0f2e08947c48a6a01d50bd8ac0ea7e",
+     "created": 1791707028,
+     "model": "gemma-4-26b-a4b",
+     "object": "chat.completion",
+     "choices": [
+      {
+       "finish_reason": "stop",
+       "index": 0,
+       "message": {
+        "content": "<|channel>thought\nThe user wants to know the product of 17 and 23.\n17 * 23\n    *   Method 1 (Distributive property): 17 * (20 + 3) = (17 * 20) + (17 * 3) = 340 + 51 = 391.\n    *   Method 2 (Difference of squares): (20 - 3) * (20 + 3) = 20^2 - 3^2 = 400 - 9 = 391.\n    *   Method 3 (Long multiplication):\n        17\n      x 23\n      ----\n        51 (3 * 17)\n       340 (20 * 17)\n      ----\n       391\nThe result is 391.\n\"Reply with just the number.\"\n\nFinal Answer: 391.<channel|>391",
+        "role": "assistant"
+       },
+       "provider_specific_fields": {}
+      }
+     ],
+     "usage": {
+      "completion_tokens": 219,
+      "prompt_tokens": 32,
+      "total_tokens": 251,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      }
+     }
+    },
+    "content": "<|channel>thought\nThe user wants to know the product of 17 and 23.\n17 * 23\n    *   Method 1 (Distributive property): 17 * (20 + 3) = (17 * 20) + (17 * 3) = 340 + 51 = 391.\n    *   Method 2 (Difference of squares): (20 - 3) * (20 + 3) = 20^2 - 3^2 = 400 - 9 = 391.\n    *   Method 3 (Long multiplication):\n        17\n      x 23\n      ----\n        51 (3 * 17)\n       340 (20 * 17)\n      ----\n       391\nThe result is 391.\n\"Reply with just the number.\"\n\nFinal Answer: 391.<channel|>391",
+    "reasoning": "",
+    "tool_calls": [],
+    "finish": "stop",
+    "elapsed_s": 2.79
+   },
+   "problems": [
+    "raw markers in content: ['<|', '|>']",
+    "no reasoning_content with reasoning on"
+   ]
+  }
+ ]
+}

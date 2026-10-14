@@ -1,5 +1,6 @@
 
 #include <assert.h>
+#include <sys/resource.h>
 #include <dirent.h>
 #include <poll.h>
 #include <netinet/in.h>
@@ -50,15 +51,13 @@ static void SparkTestStartServerReserve(SparkTestServerThread *thread_context,
     pthread_t *thread_handle,
     const char *socket_path,
     uint64_t ceiling_bytes,
-    uint64_t kv_reserve_bytes,
-    uint64_t kv_write_budget_bytes_per_day)
+    uint64_t kv_reserve_bytes)
 {
     SparkWeightdServerConfig config;
     memset(&config, 0, sizeof(config));
     config.socket_path = socket_path;
     config.device_bytes_max = ceiling_bytes;
     config.kv_reserve_bytes = kv_reserve_bytes;
-    config.kv_write_budget_bytes_per_day = kv_write_budget_bytes_per_day;
     config.kv_shared_window_bytes = spark_test_kv_shared_window_bytes;
     assert(SparkWeightdServerCreate(&config, &thread_context->server) ==
         SPARK_STATUS_OK);
@@ -73,7 +72,7 @@ static void SparkTestStartServer(SparkTestServerThread *thread_context,
     const char *socket_path,
     uint64_t ceiling_bytes)
 {
-    SparkTestStartServerReserve(thread_context,thread_handle,socket_path,ceiling_bytes,0ull,0ull);
+    SparkTestStartServerReserve(thread_context,thread_handle,socket_path,ceiling_bytes,0ull);
 }
 
 static void SparkTestStopServer(SparkTestServerThread *thread_context,
@@ -223,12 +222,7 @@ static void SparkTestIdentityCanonicalization(void)
     assert(memcmp(&left, &right, sizeof(left)) == 0);
 
     SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
-    broken.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN;
-    assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_OK);
-    assert(broken.abi_version == SPARK_WEIGHTD_IPC_ABI_VERSION);
-    assert(SparkWeightdIdentityEqual(&left, &broken));
-    SparkTestMakeIdentity(&broken, "model", "rev1", 4u, 0xAull, digest, 4096ull);
-    broken.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN - 1u;
+    broken.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION - 1u;
     assert(SparkWeightdIdentityPrepare(&broken) == SPARK_STATUS_OK);
     assert(!SparkWeightdIdentityEqual(&left, &broken));
     SparkTestMakeIdentity(&broken, "model", "rev1", 16u, 0xAull, digest,
@@ -637,58 +631,37 @@ static void SparkTestServedAbiVersions(void)
     pthread_t thread_handle;
     SparkWeightdIpcHeader request;
     SparkWeightdIpcHelloAck ack;
-    SparkWeightdIpcMeshStagingMapResult staging;
     SparkWeightdIpcMeshMapResult map;
     SparkWeightdClient *client = 0;
     void *mapping = (void *)&thread_context;
-    uint32_t version;
     int fd;
     (void)remove(socket_path);
     SparkTestStartServer(&thread_context, &thread_handle, socket_path,
         SPARK_TEST_CEILING_BYTES);
-    assert(SparkWeightdIpcAbiServed(8u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
-    assert(SparkWeightdIpcAbiServed(9u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
-    assert(SparkWeightdIpcAbiServed(7u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 0u);
-    assert(SparkWeightdIpcAbiServed(10u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
-    assert(SparkWeightdIpcAbiServed(11u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
-    assert(SparkWeightdIpcAbiServed(12u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 1u);
-    assert(SparkWeightdIpcAbiServed(13u, SPARK_WEIGHTD_IPC_KIND_HELLO) == 0u);
-    assert(SparkWeightdIpcAbiServed(11u, SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH) == 0u);
-    assert(SparkWeightdIpcAbiServed(12u, SPARK_WEIGHTD_IPC_KIND_KV_SHARED_ATTACH) == 1u);
-    assert(SparkWeightdIpcAbiServed(8u, SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP) == 0u);
-    assert(SparkWeightdIpcAbiServed(9u, SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP) == 1u);
-    assert(SparkWeightdIpcAbiServed(10u, SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH) == 0u);
-    assert(SparkWeightdIpcAbiServed(11u, SPARK_WEIGHTD_IPC_KIND_KV_POOL_ATTACH) == 1u);
-    assert(SparkWeightdIpcAbiServed(10u, SPARK_WEIGHTD_IPC_KIND_KV_POOL_STATUS) == 0u);
-    assert(SparkWeightdIpcAbiServed(11u, SPARK_WEIGHTD_IPC_KIND_KV_POOL_RESIZE) == 1u);
-    for (version = SPARK_WEIGHTD_IPC_ABI_VERSION_SERVED_MIN; version <= SPARK_WEIGHTD_IPC_ABI_VERSION; version++)
-    {
-        fd = SparkTestRawConnect(socket_path);
-        SparkTestRawFrame(&request, version, SPARK_WEIGHTD_IPC_KIND_HELLO, 7u);
-        memset(&ack, 0, sizeof(ack));
-        assert(SparkTestRawExchange(fd, &request, &ack, sizeof(ack)) == (ssize_t)sizeof(ack));
-        assert(ack.header.abi_version == version && ack.header.kind == SPARK_WEIGHTD_IPC_KIND_HELLO_ACK &&
-            ack.header.request_id == 7u && ack.status == SPARK_STATUS_OK);
-        assert(SparkWeightdIpcValidateHeaderVersion(&ack.header, sizeof(ack),
-            SPARK_WEIGHTD_IPC_KIND_HELLO_ACK, version) == SPARK_STATUS_OK);
-        SparkTestRawFrame(&request, version, SPARK_WEIGHTD_IPC_KIND_MESH_MAP, 8u);
-        memset(&map, 0, sizeof(map));
-        assert(SparkTestRawExchange(fd, &request, &map, sizeof(map)) == (ssize_t)sizeof(map));
-        assert(map.header.abi_version == version && map.header.kind == SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT &&
-            map.status == SPARK_STATUS_INVALID_ARGUMENT);
-        SparkTestRawFrame(&request, version == 8u ? 9u : 8u, SPARK_WEIGHTD_IPC_KIND_MESH_MAP, 9u);
-        assert(SparkTestRawExchange(fd, &request, &map, sizeof(map)) == 0);
-        (void)close(fd);
-    }
+    assert(SparkWeightdIpcAbiServed(SPARK_WEIGHTD_IPC_ABI_VERSION) == 1u);
+    assert(SparkWeightdIpcAbiServed(SPARK_WEIGHTD_IPC_ABI_VERSION - 1u) == 0u);
+    assert(SparkWeightdIpcAbiServed(SPARK_WEIGHTD_IPC_ABI_VERSION + 1u) == 0u);
     fd = SparkTestRawConnect(socket_path);
-    SparkTestRawFrame(&request, 8u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    SparkTestRawFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION, SPARK_WEIGHTD_IPC_KIND_HELLO, 7u);
+    memset(&ack, 0, sizeof(ack));
     assert(SparkTestRawExchange(fd, &request, &ack, sizeof(ack)) == (ssize_t)sizeof(ack));
-    SparkTestRawFrame(&request, 8u, SPARK_WEIGHTD_IPC_KIND_MESH_STAGING_MAP, 2u);
-    assert(SparkTestRawExchange(fd, &request, &staging, sizeof(staging)) == 0);
+    assert(ack.header.abi_version == SPARK_WEIGHTD_IPC_ABI_VERSION && ack.header.kind == SPARK_WEIGHTD_IPC_KIND_HELLO_ACK &&
+        ack.header.request_id == 7u && ack.status == SPARK_STATUS_OK);
+    assert(SparkWeightdIpcValidateHeaderVersion(&ack.header, sizeof(ack),
+        SPARK_WEIGHTD_IPC_KIND_HELLO_ACK, SPARK_WEIGHTD_IPC_ABI_VERSION) == SPARK_STATUS_OK);
+    SparkTestRawFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION, SPARK_WEIGHTD_IPC_KIND_MESH_MAP, 8u);
+    memset(&map, 0, sizeof(map));
+    assert(SparkTestRawExchange(fd, &request, &map, sizeof(map)) == (ssize_t)sizeof(map));
+    assert(map.header.abi_version == SPARK_WEIGHTD_IPC_ABI_VERSION && map.header.kind == SPARK_WEIGHTD_IPC_KIND_MESH_MAP_RESULT &&
+        map.status == SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestRawFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION - 1u, SPARK_WEIGHTD_IPC_KIND_MESH_MAP, 9u);
+    assert(SparkTestRawExchange(fd, &request, &map, sizeof(map)) == 0);
     (void)close(fd);
+    SparkTestRawFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION - 1u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
     SparkTestRawFrame(&request, 7u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
     SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
-    SparkTestRawFrame(&request, 13u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    SparkTestRawFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION + 1u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
     SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
     SparkTestConnect(&client, socket_path, 0ull);
     assert(SparkWeightdClientMeshStagingMap(client, &mapping, SPARK_TEST_TIMEOUT_NS) ==
@@ -697,7 +670,7 @@ static void SparkTestServedAbiVersions(void)
     SparkWeightdClientClose(client);
     SparkTestStopServer(&thread_context, thread_handle);
     (void)remove(socket_path);
-    printf("served ABI 8 to 12 green (replies echo the client ABI; staging map needs ABI 9, resizable kv pools ABI 11, shared kv pools ABI 12)\n");
+    printf("served only the current IPC ABI; older and newer clients are refused\n");
 }
 
 static ssize_t SparkTestRawSend(int fd, const void *request, size_t request_bytes,
@@ -754,11 +727,11 @@ static void SparkTestMeshStatus(void)
     (void)remove(socket_path);
     SparkTestStartServer(&thread_context, &thread_handle, socket_path, SPARK_TEST_CEILING_BYTES);
     fd = SparkTestRawConnect(socket_path);
-    SparkTestRawFrame(&hello, 9u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    SparkTestRawFrame(&hello, SPARK_WEIGHTD_IPC_ABI_VERSION, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
     assert(SparkTestRawExchange(fd, &hello, &ack, sizeof(ack)) == (ssize_t)sizeof(ack));
-    SparkTestMeshStatusFrame(&request, 9u, 2u, SPARK_WEIGHTD_MESH_STATUS_LAYOUT, 0u);
+    SparkTestMeshStatusFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION, 2u, SPARK_WEIGHTD_MESH_STATUS_LAYOUT, 0u);
     assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == (ssize_t)sizeof(result));
-    assert(result.header.kind == SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT && result.header.abi_version == 9u &&
+    assert(result.header.kind == SPARK_WEIGHTD_IPC_KIND_MESH_STATUS_RESULT && result.header.abi_version == SPARK_WEIGHTD_IPC_ABI_VERSION &&
         result.header.body_bytes == 4072u && result.header.request_id == 2u);
     assert(result.layout == 1u && result.layout_compat == 1u && result.pid == (uint32_t)getpid() &&
         result.daemon_generation == ack.daemon_generation && result.daemon_generation != 0u);
@@ -767,23 +740,21 @@ static void SparkTestMeshStatus(void)
     assert(result.reserved0 == 0u);
     for (index = 0u; index < sizeof(result.reserved_tail); index++)
         assert(result.reserved_tail[index] == 0u);
-    SparkTestMeshStatusFrame(&request, 9u, 3u, 0u, 0u);
+    SparkTestMeshStatusFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION, 3u, 0u, 0u);
     assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == (ssize_t)sizeof(result));
     assert(result.status == (uint32_t)SPARK_STATUS_INVALID_ARGUMENT && result.header.request_id == 3u);
-    SparkTestMeshStatusFrame(&request, 9u, 4u, 1u, 7u);
+    SparkTestMeshStatusFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION, 4u, 1u, 7u);
     assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == (ssize_t)sizeof(result));
     assert(result.status == (uint32_t)SPARK_STATUS_INVALID_ARGUMENT);
-    SparkTestMeshStatusFrame(&request, 9u, 5u, 9u, 0u);
+    SparkTestMeshStatusFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION, 5u, 9u, 0u);
     assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == (ssize_t)sizeof(result));
     assert(result.layout == 1u && result.status == (uint32_t)SPARK_STATUS_UNSUPPORTED);
     (void)close(fd);
     fd = SparkTestRawConnect(socket_path);
-    SparkTestRawFrame(&hello, 8u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
-    assert(SparkTestRawExchange(fd, &hello, &ack, sizeof(ack)) == (ssize_t)sizeof(ack));
-    SparkTestMeshStatusFrame(&request, 8u, 2u, 1u, 0u);
-    assert(SparkTestRawSend(fd, &request, sizeof(request), &result, sizeof(result)) == 0);
+    SparkTestRawFrame(&hello, SPARK_WEIGHTD_IPC_ABI_VERSION - 1u, SPARK_WEIGHTD_IPC_KIND_HELLO, 1u);
+    assert(SparkTestRawExchange(fd, &hello, &ack, sizeof(ack)) == 0);
     (void)close(fd);
-    SparkTestMeshStatusFrame(&request, 9u, 1u, 1u, 0u);
+    SparkTestMeshStatusFrame(&request, SPARK_WEIGHTD_IPC_ABI_VERSION, 1u, 1u, 0u);
     SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
     assert(SparkWeightdClientConnectWithin(socket_path, SPARK_TEST_TIMEOUT_NS, &client, &hello_result) == SPARK_STATUS_OK);
     memset(&empty, 0, sizeof(empty));
@@ -1160,19 +1131,12 @@ static void SparkTestKvPools(void)
     assert(SparkWeightdServerCreate(&config,&refused) == SPARK_STATUS_INVALID_ARGUMENT && refused == 0);
 
     (void)unlink(socket_path);
-    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,3u * SPARK_TEST_KV_CHUNK_BYTES,0ull);
-    SparkTestConnect(&first,socket_path,0ull);
-    assert(SparkTestKvAttach(first,0x31,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,0u,&grant) == SPARK_STATUS_CAPACITY_EXCEEDED && SparkWeightdServerKvPoolCount(context.server) == 0u);
-    SparkWeightdClientClose(first);
-    first = 0;
-    SparkTestStopServer(&context,thread);
-    (void)unlink(socket_path);
-    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,3u * SPARK_TEST_KV_CHUNK_BYTES,3000u);
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,3u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkTestConnect(&first,socket_path,0ull);
     assert(SparkTestKvAttach(first,0x31,SPARK_TEST_KV_CHUNK_BYTES + 1u,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK);
     assert(grant.reattached == 0u && grant.pool_generation != 0u && grant.chunk_capacity == 2u && grant.chunk_count == 2u && grant.chunk_bytes == SPARK_TEST_KV_CHUNK_BYTES);
     assert(grant.device_bytes == 2u * SPARK_TEST_KV_CHUNK_BYTES && grant.metadata_bytes == 4096u && grant.metadata_fd >= 0);
-    assert(grant.kv_reserve_bytes == 3u * SPARK_TEST_KV_CHUNK_BYTES && grant.kv_committed_bytes == 2u * SPARK_TEST_KV_CHUNK_BYTES && grant.write_budget_bytes_per_day == 1000u);
+    assert(grant.kv_reserve_bytes == 3u * SPARK_TEST_KV_CHUNK_BYTES && grant.kv_committed_bytes == 2u * SPARK_TEST_KV_CHUNK_BYTES);
     generation = grant.pool_generation;
     SparkTestKvExportCloses(first,generation,1u,1u,SPARK_STATUS_OK);
     SparkTestKvExportCloses(first,generation,1u,2u,SPARK_STATUS_INVALID_ARGUMENT);
@@ -1261,9 +1225,30 @@ static void SparkTestKvPools(void)
     }
     assert(grant.reattached == 0u && grant.chunk_count == 3u && SparkWeightdServerKvCommittedBytes(context.server) == 3u * SPARK_TEST_KV_CHUNK_BYTES);
     assert(SparkWeightdServerKvPoolCount(context.server) == 1u);
-    SparkTestKvGrantClose(&grant);
-    SparkWeightdClientClose(third);
-    third = 0;
+    {
+        SparkWeightdKvPoolDropResult drop;
+        SparkWeightdClient *dropper = 0;
+        uint64_t committed = SparkWeightdServerKvCommittedBytes(context.server);
+        SparkTestConnect(&dropper,socket_path,0ull);
+        assert(SparkWeightdClientKvPoolDrop(dropper,"another-label",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK &&
+            drop.released_count == 0u && drop.busy_count == 0u);
+        assert(SparkWeightdClientKvPoolDrop(dropper,"kvpool-test",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK &&
+            drop.released_count == 0u && drop.busy_count == 1u && SparkWeightdServerKvPoolCount(context.server) == 1u);
+        SparkTestKvGrantClose(&grant);
+        SparkWeightdClientClose(third);
+        third = 0;
+        for (index = 0u; index < 500u; index++)
+        {
+            assert(SparkWeightdClientKvPoolDrop(dropper,"kvpool-test",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+            if (drop.busy_count == 0u)
+                break;
+            usleep(2000u);
+        }
+        assert(drop.released_count == 1u && drop.released_bytes == committed &&
+            SparkWeightdServerKvPoolCount(context.server) == 0u && SparkWeightdServerKvCommittedBytes(context.server) == 0u);
+        assert(SparkWeightdClientKvPoolDrop(dropper,"",&drop,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_INVALID_ARGUMENT);
+        SparkWeightdClientClose(dropper);
+    }
     SparkTestStopServer(&context,thread);
 
     (void)unlink(socket_path);
@@ -1279,20 +1264,20 @@ static void SparkTestKvPools(void)
     SparkTestMakeIdentity(&identity,"weightd-test","kv-reserve",4u,0x77ull,digest,SPARK_TEST_ARENA_BYTES);
     SparkTestMakeRequest(&request,&identity,pack_path);
     (void)unlink(socket_path);
-    SparkTestStartServerReserve(&context,&thread,socket_path,SPARK_TEST_CEILING_BYTES,SPARK_TEST_CEILING_BYTES - SPARK_TEST_ARENA_BYTES + 1u,0ull);
+    SparkTestStartServerReserve(&context,&thread,socket_path,SPARK_TEST_CEILING_BYTES,SPARK_TEST_CEILING_BYTES - SPARK_TEST_ARENA_BYTES + 1u);
     SparkTestConnect(&first,socket_path,SPARK_TEST_CEILING_BYTES);
     SparkTestAttach(first,&request,&attach);
     assert(attach.status == SPARK_STATUS_CAPACITY_EXCEEDED && attach.arena_count == 0u);
     SparkWeightdClientClose(first);
     SparkTestStopServer(&context,thread);
     (void)unlink(socket_path);
-    SparkTestStartServerReserve(&context,&thread,socket_path,SPARK_TEST_CEILING_BYTES,SPARK_TEST_CEILING_BYTES - SPARK_TEST_ARENA_BYTES,0ull);
+    SparkTestStartServerReserve(&context,&thread,socket_path,SPARK_TEST_CEILING_BYTES,SPARK_TEST_CEILING_BYTES - SPARK_TEST_ARENA_BYTES);
     SparkTestConnect(&first,socket_path,SPARK_TEST_CEILING_BYTES);
     SparkTestAttach(first,&request,&attach);
     assert(attach.status == SPARK_STATUS_OK && attach.arena_count == 1u);
     SparkWeightdClientClose(first);
     SparkTestStopServer(&context,thread);
-    printf("weightd kv pools: take the free reserve up to the pool size at attach and resize by chunk within it, a short grow records the wanted chunks and other pools see them as reclaim, a shrink releases chunks to the waiting pool, export only granted chunks, one owner, reattach keeps generation and metadata, a resized pool is new, detached pools evicted under pressure, no reserve or no write budget refuses, the write budget is shared by pool size, weight arenas admitted under the ceiling minus the reserve\n");
+    printf("weightd kv pools: take the free reserve up to the pool size at attach and resize by chunk within it, a short grow records the wanted chunks and other pools see them as reclaim, a shrink releases chunks to the waiting pool, export only granted chunks, one owner, reattach keeps generation and metadata, a resized pool is new, detached pools evicted under pressure, no reserve refuses, an ABI 12 client is granted an unlimited legacy write budget, weight arenas admitted under the ceiling minus the reserve\n");
 }
 
 static SparkStatus SparkTestKvSharedAttach(SparkWeightdClient *client,uint8_t key_byte,uint8_t layout_byte,uint64_t page_bytes,SparkWeightdKvSharedGrant *grant)
@@ -1310,6 +1295,95 @@ static SparkStatus SparkTestKvSharedAttach(SparkWeightdClient *client,uint8_t ke
 
 #define SparkTestAwait(condition) do { uint32_t spark_test_waited; for (spark_test_waited = 0u; !(condition) && spark_test_waited < 5000u; spark_test_waited++) { struct timespec spark_test_pause = {0,1000000}; (void)nanosleep(&spark_test_pause,0); } assert(condition); } while (0)
 
+static SparkStatus SparkTestUnderFdCeiling(SparkStatus (*attach)(SparkWeightdClient *,void *),SparkWeightdClient *client,void *context)
+{
+    struct rlimit saved,ceiling;
+    SparkStatus status;
+    int lowest = dup(0);
+    assert(lowest >= 0 && close(lowest) == 0 && getrlimit(RLIMIT_NOFILE,&saved) == 0);
+    ceiling = saved;
+    ceiling.rlim_cur = (rlim_t)lowest;
+    assert(setrlimit(RLIMIT_NOFILE,&ceiling) == 0);
+    status = attach(client,context);
+    assert(setrlimit(RLIMIT_NOFILE,&saved) == 0);
+    return(status);
+}
+
+static SparkStatus SparkTestKvPoolAttachInto(SparkWeightdClient *client,void *grant)
+{
+    return(SparkTestKvAttach(client,0x41,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,4096u,(SparkWeightdKvPoolGrant *)grant));
+}
+
+static SparkStatus SparkTestKvSharedAttachInto(SparkWeightdClient *client,void *grant)
+{
+    return(SparkTestKvSharedAttach(client,0x42,0x6d,SPARK_TEST_KV_CHUNK_BYTES / 4u,(SparkWeightdKvSharedGrant *)grant));
+}
+
+static void SparkTestKvAttachRollsBackOnFdFailure(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_kv_rollback.sock";
+    SparkTestServerThread context;
+    pthread_t thread;
+    SparkWeightdClient *first = 0,*second = 0;
+    SparkWeightdKvPoolGrant grant;
+    SparkWeightdKvSharedGrant shared,joined;
+    SparkStatus status = SPARK_STATUS_BUSY;
+    uint32_t index;
+    const uint64_t saved_window = spark_test_kv_shared_window_bytes;
+    (void)unlink(socket_path);
+    spark_test_kv_shared_window_bytes = 2u * SPARK_TEST_KV_CHUNK_BYTES + SPARK_TEST_KV_CHUNK_BYTES / 4u;
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestConnect(&first,socket_path,0ull);
+    assert(SparkTestKvPoolAttachInto(first,&grant) == SPARK_STATUS_OK);
+    SparkTestKvGrantClose(&grant);
+    SparkWeightdClientClose(first);
+    first = 0;
+    SparkTestConnect(&second,socket_path,0ull);
+    for (index = 0u; index < 500u && status == SPARK_STATUS_BUSY; index++)
+    {
+        status = SparkTestUnderFdCeiling(SparkTestKvPoolAttachInto,second,&grant);
+        if (status == SPARK_STATUS_BUSY)
+            usleep(2000u);
+    }
+    assert(status == SPARK_STATUS_IO_ERROR);
+    assert(SparkTestKvPoolAttachInto(second,&grant) == SPARK_STATUS_OK && grant.reattached == 1u && grant.metadata_fd >= 0);
+    SparkTestKvGrantClose(&grant);
+    SparkTestConnect(&first,socket_path,0ull);
+    assert(SparkTestKvSharedAttachInto(first,&shared) == SPARK_STATUS_OK && shared.metadata_fd >= 0);
+    assert(SparkTestUnderFdCeiling(SparkTestKvSharedAttachInto,second,&joined) == SPARK_STATUS_IO_ERROR);
+    assert(SparkTestKvSharedAttachInto(second,&joined) == SPARK_STATUS_OK && joined.metadata_fd >= 0 && joined.holder != shared.holder);
+    (void)close(shared.metadata_fd);
+    (void)close(joined.metadata_fd);
+    SparkWeightdClientClose(first);
+    SparkWeightdClientClose(second);
+    SparkTestStopServer(&context,thread);
+    spark_test_kv_shared_window_bytes = saved_window;
+    printf("weightd kv attach rollback: a pool or shared-pool attach whose metadata fd cannot be duplicated leaves no owner or holder behind, and the retry attaches\n");
+}
+
+static void SparkTestKvPoolRefusesWrappingSize(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_kv_wrap.sock";
+    SparkTestServerThread context;
+    pthread_t thread;
+    SparkWeightdClient *client = 0;
+    SparkWeightdKvPoolGrant grant;
+    SparkStatus status;
+    (void)unlink(socket_path);
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
+    SparkTestConnect(&client,socket_path,0ull);
+    memset(&grant,0,sizeof(grant));
+    grant.metadata_fd = -1;
+    status = SparkTestKvAttachSized(client,0x5au,UINT64_MAX - 1u,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,0u,&grant);
+    assert(status == SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestKvGrantClose(&grant);
+    assert(SparkTestKvAttach(client,0x5bu,2u * SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,0u,&grant) == SPARK_STATUS_OK);
+    SparkTestKvGrantClose(&grant);
+    SparkWeightdClientClose(client);
+    SparkTestStopServer(&context,thread);
+    printf("weightd kv pool: a size whose chunk count wraps 64 bits is refused, and a normal pool still attaches\n");
+}
+
 static void SparkTestKvSharedPools(void)
 {
     const char *socket_path = "/tmp/spark_weightd_test_kv_shared.sock";
@@ -1318,7 +1392,7 @@ static void SparkTestKvSharedPools(void)
     SparkTestServerThread context;
     pthread_t thread;
     SparkWeightdClient *first = 0,*second = 0,*third = 0;
-    SparkWeightdKvSharedGrant grant,joined,refused;
+    SparkWeightdKvSharedGrant grant,joined,refused,again;
     SparkWeightdKvPoolGrant private_grant;
     SparkWeightdKvPoolState state;
     SparkKvSharedIndex owner,member;
@@ -1330,7 +1404,7 @@ static void SparkTestKvSharedPools(void)
     memset(identity,0x21,sizeof(identity));
     (void)unlink(socket_path);
     spark_test_kv_shared_window_bytes = 0u;
-    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES,3000u);
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkTestConnect(&first,socket_path,0ull);
     assert(SparkTestKvSharedAttach(first,0x51,0x6c,page_bytes,&refused) == SPARK_STATUS_UNSUPPORTED && SparkWeightdServerKvPoolCount(context.server) == 0u);
     SparkWeightdClientClose(first);
@@ -1338,7 +1412,7 @@ static void SparkTestKvSharedPools(void)
     SparkTestStopServer(&context,thread);
     (void)unlink(socket_path);
     spark_test_kv_shared_window_bytes = 2u * SPARK_TEST_KV_CHUNK_BYTES + page_bytes;
-    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES,3000u);
+    SparkTestStartServerReserve(&context,&thread,socket_path,8u * SPARK_TEST_KV_CHUNK_BYTES,4u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkTestConnect(&first,socket_path,0ull);
     SparkTestConnect(&second,socket_path,0ull);
     SparkTestConnect(&third,socket_path,0ull);
@@ -1378,10 +1452,17 @@ static void SparkTestKvSharedPools(void)
     assert(SparkWeightdServerKvCommittedBytes(context.server) == 2u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkWeightdClientClose(first);
     first = 0;
-    SparkTestAwait(SparkWeightdServerKvPoolCount(context.server) == 0u);
+    SparkTestAwait(SparkWeightdServerKvPoolCount(context.server) == 1u && SparkWeightdServerKvCommittedBytes(context.server) == 2u * SPARK_TEST_KV_CHUNK_BYTES);
     SparkTestConnect(&first,socket_path,0ull);
-    assert(SparkTestKvAttach(first,0x52,SPARK_TEST_KV_CHUNK_BYTES,SPARK_TEST_KV_CHUNK_BYTES,0u,&private_grant) == SPARK_STATUS_OK);
-    assert(SparkWeightdServerKvPoolCount(context.server) == 1u && SparkWeightdServerKvCommittedBytes(context.server) == SPARK_TEST_KV_CHUNK_BYTES);
+    assert(SparkTestKvSharedAttach(first,0x51,0x6c,page_bytes,&again) == SPARK_STATUS_OK && again.created == 0u && again.pool_generation == grant.pool_generation);
+    assert(atomic_load(&owner.slots[ready].state) == SPARK_KV_SHARED_SLOT_READY);
+    (void)close(again.metadata_fd);
+    SparkWeightdClientClose(first);
+    first = 0;
+    SparkTestAwait(SparkWeightdServerKvPoolCount(context.server) == 1u);
+    SparkTestConnect(&first,socket_path,0ull);
+    assert(SparkTestKvAttach(first,0x52,3u * SPARK_TEST_KV_CHUNK_BYTES,3u * SPARK_TEST_KV_CHUNK_BYTES,0u,&private_grant) == SPARK_STATUS_OK);
+    assert(SparkWeightdServerKvPoolCount(context.server) == 1u && SparkWeightdServerKvCommittedBytes(context.server) == 3u * SPARK_TEST_KV_CHUNK_BYTES);
     (void)munmap(owner_map,(size_t)grant.metadata_bytes);
     (void)munmap(member_map,(size_t)joined.metadata_bytes);
     (void)close(grant.metadata_fd);
@@ -1392,7 +1473,7 @@ static void SparkTestKvSharedPools(void)
     SparkTestStopServer(&context,thread);
     spark_test_kv_shared_window_bytes = 0u;
     (void)unlink(socket_path);
-    printf("weightd kv shared pools: no window refuses, the window is sized in whole alignment groups, the first holder creates the whole pool and formats the index, later holders join with the same page and layout only, holders export but never resize, a private key cannot collide, a leaving holder's bits and writing slots are cleared, the last holder frees the pool\n");
+    printf("weightd kv shared pools: no window refuses, the window is sized in whole alignment groups, the first holder creates the whole pool and formats the index, later holders join with the same page and layout only, holders export but never resize, a private key cannot collide, a leaving holder's bits and writing slots are cleared, the pool outlives its last holder with its published slots for the next attach, and a private pool that needs the room evicts it\n");
 }
 
 int main(void)
@@ -1407,6 +1488,8 @@ int main(void)
     SparkTestFailClosedPaths();
     SparkTestKvPools();
     SparkTestKvSharedPools();
+    SparkTestKvAttachRollsBackOnFdFailure();
+    SparkTestKvPoolRefusesWrappingSize();
     SparkTestDaemonProcessTermPath();
     printf("w2 weightd lane: identity arenas + NO-2x + TERM green\n");
     return 0;

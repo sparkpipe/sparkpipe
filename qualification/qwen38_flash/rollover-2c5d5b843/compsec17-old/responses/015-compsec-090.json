@@ -1,0 +1,62 @@
+{
+ "id": "compsec-090",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe extension type is the low byte of a 16-bit protocol field. The mandatory-extension table has handlers for values 0 through 254.\n\nCode:\n```c\n 1: typedef int (*ule_handler)(struct skb *, const uint8_t *, size_t);\n 2: static ule_handler mandatory_handlers[255];\n 3: \n 4: static int handle_ule_ext(struct skb *skb, uint16_t type,\n 5:                           const uint8_t *p, size_t len)\n 6: {\n 7:     uint8_t htype = (uint8_t)(type & 0x00ff);\n 8: \n 9:     if (htype < 0x80)\n10:         return handle_optional_ext(skb, htype, p, len);\n11: \n12:     if (mandatory_handlers[htype] != NULL)\n13:         return mandatory_handlers[htype](skb, p, len);\n14: \n15:     return -EINVAL;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "1aee1fbf47f9676de9676e43bf5775bb8663418cfe55e83046c52ba6669ddc2a"
+ },
+ "response": {
+  "id": "chatcmpl-6243347f1db940fe96c5dc7d9c96ff91",
+  "created": 1791721758,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `handle_ule_ext` processes a protocol extension type.\n1.  **Line 7**: `htype` is extracted as the low byte of `type`. Since `type` is `uint16_t`, `htype` is a `uint8_t` with a range of 0 to 255.\n2.  **Line 9-10**: If `htype < 0x80` (0-127), it delegates to `handle_optional_ext`. This is safe assuming `handle_optional_ext` handles its own range.\n3.  **Line 12**: The code checks `mandatory_handlers[htype]`.\n    *   The array `mandatory_handlers` is declared on **Line 2** with size 255 (`mandatory_handlers[255]`). Valid indices are 0 to 254.\n    *   The problem statement states: \"The mandatory-extension table has handlers for values 0 through 254.\" This implies that value 255 is not a valid mandatory extension type, or at least not covered by the table.\n    *   However, `htype` can be 255 (if `type & 0x00ff` is 255).\n    *   If `htype` is 255, the condition `htype < 0x80` is false.\n    *   The code proceeds to line 12: `if (mandatory_handlers[htype] != NULL)`.\n    *   This accesses `mandatory_handlers[255]`.\n    *   Since the array size is 255, index 255 is **out of bounds** (buffer over-read).\n\nThe vulnerability is an out-of-bounds read on the `mandatory_handlers` array when `htype` is 255. The bug is introduced at the point where the unchecked index is used to access the array.\n\nAnswer: 12",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 426,
+   "prompt_tokens": 360,
+   "total_tokens": 786,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `handle_ule_ext` processes a protocol extension type.\n1.  **Line 7**: `htype` is extracted as the low byte of `type`. Since `type` is `uint16_t`, `htype` is a `uint8_t` with a range of 0 to 255.\n2.  **Line 9-10**: If `htype < 0x80` (0-127), it delegates to `handle_optional_ext`. This is safe assuming `handle_optional_ext` handles its own range.\n3.  **Line 12**: The code checks `mandatory_handlers[htype]`.\n    *   The array `mandatory_handlers` is declared on **Line 2** with size 255 (`mandatory_handlers[255]`). Valid indices are 0 to 254.\n    *   The problem statement states: \"The mandatory-extension table has handlers for values 0 through 254.\" This implies that value 255 is not a valid mandatory extension type, or at least not covered by the table.\n    *   However, `htype` can be 255 (if `type & 0x00ff` is 255).\n    *   If `htype` is 255, the condition `htype < 0x80` is false.\n    *   The code proceeds to line 12: `if (mandatory_handlers[htype] != NULL)`.\n    *   This accesses `mandatory_handlers[255]`.\n    *   Since the array size is 255, index 255 is **out of bounds** (buffer over-read).\n\nThe vulnerability is an out-of-bounds read on the `mandatory_handlers` array when `htype` is 255. The bug is introduced at the point where the unchecked index is used to access the array.\n\nAnswer: 12",
+ "grade": {
+  "index": 15,
+  "id": "compsec-090",
+  "source": "COMPSEC",
+  "domain": "Linux kernel",
+  "expected": "12-13",
+  "extracted": "12",
+  "passed": true,
+  "elapsed_ms": 11077.4,
+  "output_sha256": "98d533cbb31ea085a1e5205553ec416026af7fc808a2effd56006daf8f42d642",
+  "prompt_token_count": 360,
+  "generated_token_count": 426,
+  "reasoning_chars": 0,
+  "content_chars": 1322,
+  "status": "stop"
+ }
+}

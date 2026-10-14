@@ -1,0 +1,49 @@
+== 2026-10-11T09:10:31Z precheck
+controller: idle qwen3.8-max None
+== 2026-10-11T09:10:31Z old adapter: activate muse-glimmer-30b
+ACTIVE muse-glimmer-30b 2026-10-11T09:10:46Z
+  16 6a2b6e8c8ba6f5bc
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+alias_ids 24 ''
+row_zero 24 ''
+row_one 24 ''
+alias_ids vs row_zero: DIFFER
+row_one vs row_zero: DIFFER
+ACTIVE qwen3.8-max 2026-10-11T09:11:26Z
+== 2026-10-11T09:11:26Z setup with fw-206500460
+== 2026-10-11T09:11:29Z new adapter: activate muse-glimmer-30b
+ACTIVE muse-glimmer-30b 2026-10-11T09:11:44Z
+  16 6b0889347583e3b9
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+capital 40 
+arith 40 
+code 40 
+story 40 
+vs capture-acf878899.json
+capital: IDENTICAL 40 tokens, logprobs identical
+arith: IDENTICAL 40 tokens, logprobs identical
+code: IDENTICAL 40 tokens, logprobs identical
+story: IDENTICAL 40 tokens, logprobs identical
+IDENTITY 4/4 identical
+vs capture-2aa246576.json
+capital: IDENTICAL 40 tokens, logprobs identical
+arith: IDENTICAL 40 tokens, logprobs identical
+code: IDENTICAL 40 tokens, logprobs identical
+story: IDENTICAL 40 tokens, logprobs identical
+IDENTITY 4/4 identical
+alias_ids 24 ''
+row_zero 24 ''
+row_one 24 ''
+alias_ids vs row_zero: IDENTICAL tokens+logprobs
+row_one vs row_zero: DIFFER
+{"status":"ok","served":7,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+chat          PASS  | finish='stop' 5.21s content='The capital of France is Paris.' reasoning=746 chars
+stream        PASS  | finish='stop' 5.11s content='The capital of France is Paris.' reasoning=746 chars
+tool          PASS  | finish='tool_calls' 5.86s content='' reasoning=571 chars
+tool_result   PASS  | finish='stop' 3.05s content='The current weather in Paris is **18°C and sunny**.\n' reasoning=344 chars
+reasoning_off FAIL reasoning_content present with reasoning off | finish='stop' 1.23s content='391' reasoning=100 chars
+reasoning_on  PASS  | finish='stop' 3.11s content='391' reasoning=346 chars
+UI-SMOKE muse-glimmer-30b: 5/6
+== 2026-10-11T09:12:20Z restore qwen3.8-max
+ACTIVE qwen3.8-max 2026-10-11T09:12:55Z
+== 2026-10-11T09:12:55Z done

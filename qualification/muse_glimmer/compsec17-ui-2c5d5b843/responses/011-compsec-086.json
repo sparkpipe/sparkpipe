@@ -1,0 +1,63 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "muse-glimmer-30b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "8bfc60a10204335a768052bcd4d8080dafb2af3be68bfaa3a2ddf577669e3f16"
+ },
+ "response": {
+  "id": "chatcmpl-a7a7c92981044222894a3f6caaaf61d8",
+  "created": 1791716997,
+  "model": "muse-glimmer-30b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Answer: 3",
+     "role": "assistant",
+     "reasoning_content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nensure_tag_buffer...\nneed = (unsigned int)(prefix_len + name_len + 3);\nif need > p->tag_cap { realloc(p->tag_buf, need); ... p->tag_cap = need; }\n\nmemcpy p->tag_buf, p->prefix, prefix_len;\nmemcpy p->tag_buf + prefix_len, p->name, name_len;\nmemcpy p->tag_buf + prefix_len + name_len, \"/>\\0\", 3;\n\nBug: need computed as unsigned int, overflow? prefix_len + name_len +3 may overflow size_t then cast to unsigned int truncates. Also realloc size is need, but need is unsigned int, but original sizes are size_t attacker influenced. Could overflow leading to undersized allocation.\n\nAlso tag_cap is? Probably size_t? But need is unsigned int. Comparison need > p->tag_cap mixes types. If p->tag_cap > UINT_MAX, need wraps.\n\nPrimary bug is line 3: need calculation with truncation/overflow. Also line 6 realloc with need (truncated). Might be line 3.\n\nAlso memcpy without checking prefix_len/name_len against buffer? But buffer sized to need.\n\nThe overflow of addition before cast: prefix_len + name_len +3 may overflow size_t -> wrap to small. Then cast to unsigned int. So bug introduced at line 3.\n\nAlso line 10 p->tag_cap = need; assigns unsigned int to maybe size_t.\n\nBest line number: 3\n\nPossibly 3,6,10? Primary bug introduced at 3.\n\nAnswer: 3\n\n"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 366,
+   "prompt_tokens": 384,
+   "total_tokens": 750,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with single best line number where primary bug is introduced.\n\nCode:\nensure_tag_buffer...\nneed = (unsigned int)(prefix_len + name_len + 3);\nif need > p->tag_cap { realloc(p->tag_buf, need); ... p->tag_cap = need; }\n\nmemcpy p->tag_buf, p->prefix, prefix_len;\nmemcpy p->tag_buf + prefix_len, p->name, name_len;\nmemcpy p->tag_buf + prefix_len + name_len, \"/>\\0\", 3;\n\nBug: need computed as unsigned int, overflow? prefix_len + name_len +3 may overflow size_t then cast to unsigned int truncates. Also realloc size is need, but need is unsigned int, but original sizes are size_t attacker influenced. Could overflow leading to undersized allocation.\n\nAlso tag_cap is? Probably size_t? But need is unsigned int. Comparison need > p->tag_cap mixes types. If p->tag_cap > UINT_MAX, need wraps.\n\nPrimary bug is line 3: need calculation with truncation/overflow. Also line 6 realloc with need (truncated). Might be line 3.\n\nAlso memcpy without checking prefix_len/name_len against buffer? But buffer sized to need.\n\nThe overflow of addition before cast: prefix_len + name_len +3 may overflow size_t -> wrap to small. Then cast to unsigned int. So bug introduced at line 3.\n\nAlso line 10 p->tag_cap = need; assigns unsigned int to maybe size_t.\n\nBest line number: 3\n\nPossibly 3,6,10? Primary bug introduced at 3.\n\nAnswer: 3\n\n</think>Answer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 10714.0,
+  "output_sha256": "e8743abe1950b5f3a49038fd5b22c8616920e902612b1364586de82f2e96fc45",
+  "prompt_token_count": 384,
+  "generated_token_count": 366,
+  "reasoning_chars": 1400,
+  "content_chars": 9,
+  "status": "stop"
+ }
+}

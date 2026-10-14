@@ -280,12 +280,19 @@ static SparkStatus SparkModelResidentClientOpenUnix(
 	if ( client->fd < 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = SparkModelResidentClientPrepareSocket(client->fd);
+	if ( status == SPARK_STATUS_OK )
+	{
+		memset(&address,0,sizeof(address));
+		address.sun_family = AF_UNIX;
+		memcpy(address.sun_path,endpoint->unix_socket_path,strlen(endpoint->unix_socket_path) + 1u);
+		status = SparkModelResidentClientFinishConnect(client->fd,(const struct sockaddr *)&address,sizeof(address),timeout_ms);
+	}
 	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	memset(&address,0,sizeof(address));
-	address.sun_family = AF_UNIX;
-	memcpy(address.sun_path,endpoint->unix_socket_path,strlen(endpoint->unix_socket_path) + 1u);
-	return(SparkModelResidentClientFinishConnect(client->fd,(const struct sockaddr *)&address,sizeof(address),timeout_ms));
+	{
+		close(client->fd);
+		client->fd = -1;
+	}
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentClientOpenTcp(
@@ -548,7 +555,7 @@ static SparkStatus SparkModelResidentClientEnsureConnected(
 			client->reconnect_not_before_ns = up_ns +
 			    (uint64_t)client->reconnect_backoff_ms * UINT64_C(1000000);
 			fprintf(stderr,
-			    "client_churn_guard rank=%u backoff_ms=%u — short-lived connection, backoff carries\n",
+			    "client_churn_guard rank=%u backoff_ms=%u\n",
 			    (unsigned)client->rank_index,(unsigned)client->reconnect_backoff_ms);
 		}
 		else
@@ -1154,11 +1161,21 @@ SparkStatus SparkModelResidentClientProgress(
 		SPARK_RETURN(status);
 	status = SparkModelResidentClientFlush(client);
 	if ( status == SPARK_STATUS_OK )
+	{
 		status = SparkModelResidentClientRead(client,maximum_message_count);
+		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_IO_ERROR )
+		{
+			fprintf(stderr,
+			    "client_stream_rejected rank=%u status=%u\n",
+			    (unsigned)client->rank_index,(unsigned)status);
+			SparkModelResidentClientFailStop(client);
+			SPARK_RETURN(status);
+		}
+	}
 	if ( status == SPARK_STATUS_IO_ERROR )
 	{
 		fprintf(stderr,
-		    "client_connection_lost rank=%u on progress — reconnecting\n",
+		    "client_connection_lost rank=%u\n",
 		    (unsigned)client->rank_index);
 		SparkModelResidentClientFailStop(client);
 	}

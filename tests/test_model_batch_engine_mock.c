@@ -52,6 +52,7 @@ typedef struct TestBatchState
 	uint32_t token_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t completed_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t error_events[TEST_MAX_REQUESTS + 1u];
+	uint32_t cancelled_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t total_terminals;
 	uint32_t cached_tokens[TEST_MAX_REQUESTS + 1u];
 	uint32_t stale_recomputes[TEST_MAX_REQUESTS + 1u];
@@ -99,6 +100,8 @@ static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
 		s->completed_events[id]++;
 		s->total_terminals++;
 	}
+	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED )
+		s->cancelled_events[id]++;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED ||
 	     event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
 	{
@@ -1462,6 +1465,229 @@ static void TestScenarioRankBusyBackpressure(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioInflightExpiryHoldsSlot(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	static const uint32_t prompt[4] = {11u,12u,13u,14u};
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine = 0;
+	uint64_t ids[TEST_RANKS];
+	struct timespec start,now;
+	uint64_t elapsed_ns = 0u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,1u,0u);
+	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS;
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"inflight expiry: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,530u,2u);
+	for (uint32_t step=0u; step<20u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,0u);
+		CHECK(ids[rank] != 0u,"inflight expiry: the submission is in flight on every rank");
+	}
+	clock_gettime(CLOCK_MONOTONIC,&start);
+	while ( state.error_events[1] == 0u && elapsed_ns < UINT64_C(5000000000) )
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+		usleep(5000);
+		clock_gettime(CLOCK_MONOTONIC,&now);
+		elapsed_ns = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - (uint64_t)start.tv_nsec;
+	}
+	CHECK(state.error_events[1] == 1u,"inflight expiry: the client is failed once the in-flight budget passes");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 1u,
+		"inflight expiry: the request slot stays held while its submission is still in flight");
+	CHECK(TestSubmitPromptStatus(engine,2u,531u,2u,prompt,4u) == SPARK_STATUS_BUSY,
+		"inflight expiry: a new request cannot take the only slot while it is held");
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_COMPLETION,SPARK_STATUS_OK,1u) != 0u,
+			"inflight expiry: deliver the late completion");
+	TestDrive(engine,200u);
+	CHECK(state.token_events[1] == 0u && state.error_events[1] == 1u && state.completed_events[1] == 0u,
+		"inflight expiry: the late completion emits no token and no second terminal to the expired client");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 0u,
+		"inflight expiry: the slot is released once the submission completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioBusyAdmittedPrefillReleases(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	static const uint32_t prompt[4] = {11u,12u,13u,14u};
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchSubmitRequest request;
+	SparkModelBatchRequestHandle handle = 0u;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine = 0;
+	uint64_t ids[TEST_RANKS];
+	uint32_t releases_before = 0u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,1u,0u);
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"busy admitted prefill: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	memset(&request,0,sizeof(request));
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
+	request.request_id = 1u;
+	request.sequence_id = 540u;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = 4u;
+	request.output_token_budget = 2u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"busy admitted prefill: submit");
+	for (uint32_t step=0u; step<20u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,0u);
+		CHECK(ids[rank] != 0u,"busy admitted prefill: every rank admitted the prefill");
+		releases_before += MockResidentClientReleaseSubmissions(rank);
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_COMPLETION,SPARK_STATUS_BUSY,1u) != 0u,
+			"busy admitted prefill: the admitted prefill completes BUSY");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK(SparkModelBatchEngineCancel(engine,handle) == SPARK_STATUS_OK,"busy admitted prefill: cancel while the retry waits");
+	TestDrive(engine,200u);
+	{
+		uint32_t releases_after = 0u;
+		for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+			releases_after += MockResidentClientReleaseSubmissions(rank);
+		CHECK(releases_after > releases_before,
+			"busy admitted prefill: a cancel after an admitted BUSY prefill releases the sequence on the ranks");
+	}
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 0u,
+		"busy admitted prefill: the slot is free after the release");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioCancelledInflightPrefillBusy(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	static const uint32_t prompt[4] = {21u,22u,23u,24u};
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchSubmitRequest request;
+	SparkModelBatchRequestHandle handle = 0u;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine = 0;
+	uint64_t ids[TEST_RANKS];
+	uint32_t submits_before = 0u,releases_before = 0u,submits_after = 0u,releases_after = 0u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,1u,0u);
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"cancelled busy prefill: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	memset(&request,0,sizeof(request));
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.top_p = 1.0f;
+	request.request_id = 1u;
+	request.sequence_id = 560u;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = 4u;
+	request.output_token_budget = 2u;
+	CHECK(SparkModelBatchEngineSubmit(engine,&request,&handle) == SPARK_STATUS_OK,"cancelled busy prefill: submit");
+	for (uint32_t step=0u; step<20u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		(void)MockResidentClientDriveResults();
+		(void)MockResidentClientDriveDecisions();
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_COMPLETION,0u);
+		CHECK(ids[rank] != 0u,"cancelled busy prefill: every rank admitted the prefill");
+	}
+	CHECK(SparkModelBatchEngineCancel(engine,handle) == SPARK_STATUS_PENDING,"cancelled busy prefill: a cancel while the prefill is in flight is pending");
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		submits_before += MockResidentClientCalls(rank,MOCK_CALL_SUBMIT) + MockResidentClientCalls(rank,MOCK_CALL_PREPARE);
+		releases_before += MockResidentClientReleaseSubmissions(rank);
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientDeliverEvent(rank,ids[rank],MOCK_EVENT_COMPLETION,SPARK_STATUS_BUSY,1u) != 0u,
+			"cancelled busy prefill: the admitted prefill completes BUSY");
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	TestDrive(engine,50u);
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		submits_after += MockResidentClientCalls(rank,MOCK_CALL_SUBMIT) + MockResidentClientCalls(rank,MOCK_CALL_PREPARE);
+		releases_after += MockResidentClientReleaseSubmissions(rank);
+	}
+	CHECK(state.cancelled_events[1] == 1u && state.error_events[1] == 1u && state.completed_events[1] == 0u && state.token_events[1] == 0u,
+		"cancelled busy prefill: the client gets exactly one CANCELLED and no tokens");
+	CHECK(submits_after - submits_before == releases_after - releases_before && releases_after > releases_before,
+		"cancelled busy prefill: the cancelled prefill is not submitted again; only its release is");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.live_request_count == 0u && view.inflight_submission_count == 0u,
+		"cancelled busy prefill: the slot is free after the release");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioCompletionBeforeResult(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngineConfiguration configuration;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine = 0;
+	SparkModelServingCompletion completion;
+	uint64_t ids[TEST_RANKS];
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	TestConfigure(&configuration,deployment,&state,runtime_root,4u,1u,0u);
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK,"early completion: connect");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmit(engine,1u,550u,2u);
+	for (uint32_t step=0u; step<20u; step++)
+		(void)SparkModelBatchEngineProgress(engine,8u);
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		ids[rank] = MockResidentClientPendingEvent(rank,MOCK_EVENT_RESULT,0u);
+		CHECK(ids[rank] != 0u,"early completion: the prefill waits for its result on every rank");
+	}
+	for (uint32_t rank=0u; rank<TEST_RANKS; rank++)
+	{
+		memset(&completion,0,sizeof(completion));
+		completion.submission_id = ids[rank];
+		completion.status = SPARK_STATUS_OK;
+		MockResidentClientFireCompletion(rank,&completion);
+	}
+	for (uint32_t step=0u; step<50u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		usleep(1000);
+	}
+	CHECK(state.error_events[1] == 1u,"early completion: the client of the broken submission gets one terminal error");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.inflight_submission_count == 0u && view.live_request_count == 0u,
+		"early completion: the broken submission and its request slot are released");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioDriverIoError(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -1705,6 +1931,93 @@ static void TestScenarioMultiBlockPrefill(const SparkModelResidentDeployment *de
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static uint32_t TestPrefillPublishes(uint64_t request_id,uint32_t prompt_count,uint32_t *ends,uint32_t *stateful,uint32_t capacity)
+{
+	SparkModelServingLane lane;
+	uint32_t index,count = 0u;
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u && count<capacity; index++)
+		if ( lane.request_id == request_id && lane.context_token_count > lane.sequence_position && lane.context_token_count <= prompt_count &&
+			(lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )
+		{
+			ends[count] = lane.cache_publish_token_count;
+			stateful[count++] = (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS) == 0u ? 1u : 0u;
+		}
+	return(count);
+}
+
+static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t expected_spans[4] = {8u,4u,4u,2u},expected_ends[4] = {8u,12u,16u,18u},expected_stateful[4] = {0u,1u,1u,0u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[18],diverge_late[18],diverge_early[18],extended[26],spans[8],ends[8],stateful[8],count,index;
+	for (index=0u; index<18u; index++)
+		prompt[index] = diverge_late[index] = diverge_early[index] = 300u + index;
+	diverge_late[14] = 9u;
+	diverge_early[10] = 9u;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,690u,6u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 6u,"recurrent checkpoints: a deferred-publication decode across a block boundary completes");
+	count = TestPrefillSpans(1u,18u,spans,8u);
+	CHECK(state.completed_events[1] == 1u && count == 4u && memcmp(spans,expected_spans,sizeof(expected_spans)) == 0,"recurrent checkpoints: prefill spans stop at the checkpoint stride and at the last block boundary before the prompt end");
+	count = TestPrefillPublishes(1u,18u,ends,stateful,8u);
+	CHECK(count == 4u && memcmp(ends,expected_ends,sizeof(expected_ends)) == 0 && memcmp(stateful,expected_stateful,sizeof(expected_stateful)) == 0,"recurrent checkpoints: every block is published but only the stride and the prompt's last boundary keep state");
+	TestSubmitPrompt(engine,2u,691u,1u,prompt,18u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent checkpoints: a repeated prompt resumes at its last-boundary checkpoint");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	TestSubmitPrompt(engine,3u,692u,1u,diverge_late,18u);
+	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 12u,"recurrent checkpoints: a prompt that diverges after the stride resumes at the stride checkpoint");
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	for (index=0u; index<8u; index++)
+		extended[18u + index] = 600u + index;
+	memcpy(extended,prompt,sizeof(prompt));
+	TestSubmitPrompt(engine,5u,694u,1u,extended,26u);
+	CHECK(TestWaitFirstRequestLane(engine,5u,&lane) != 0u && lane.cache_prefix_token_count == 16u,"recurrent checkpoints: a prompt that extends a published one past its partial block resumes exactly at the last checkpoint, not a block earlier");
+	TestDriveUntilTerminal(engine,&state,4u,800u);
+	TestSubmitPrompt(engine,4u,693u,1u,diverge_early,18u);
+	CHECK(TestWaitFirstRequestLane(engine,4u,&lane) != 0u && lane.cache_prefix_token_count == 0u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == 0u,"recurrent checkpoints: shared blocks without a checkpoint are recomputed instead of resumed");
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	CHECK(state.error_events[1] == 0u && state.error_events[2] == 0u && state.error_events[3] == 0u && state.error_events[4] == 0u && state.error_events[5] == 0u,"recurrent checkpoints: no request fails, including the stateless publishes at each request end");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t prompt[18],follow[30],index,reply;
+	for (index=0u; index<18u; index++)
+		prompt[index] = 400u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,790u,4u,prompt,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	reply = state.token_events[1];
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && reply == 4u,"reply checkpoint: a four-token reply completes");
+	memcpy(follow,prompt,sizeof(prompt));
+	for (index=0u; index<reply; index++)
+		follow[18u + index] = state.token_ids[1][index];
+	for (index=18u + reply; index<30u; index++)
+		follow[index] = 700u + index;
+	TestSubmitPrompt(engine,2u,791u,1u,follow,30u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u + reply,"reply checkpoint: a follow-up that carries the reply resumes after every computed token of the reply, partial last block included, not at the previous prompt's checkpoint");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.error_events[2] == 0u && state.completed_events[2] == 1u,"reply checkpoint: the follow-up completes");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
@@ -1740,6 +2053,11 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		SparkModelResidentDeploymentReset(&deployment);
 		(void)unlink(path);
 	}
+	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
+	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
+	TestScenarioReplyCheckpoint(&deployment,runtime_root);
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"multi-block-prefill",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);
 	TestScenarioMultiBlockPrefill(&deployment,runtime_root);
 	TestScenarioCapacityRefusedPrefill(&deployment,runtime_root);
@@ -1978,6 +2296,10 @@ int main(void)
 	TestScenarioBusyRestoreDeadline(&deployment,runtime_root);
 	TestScenarioPendingRestoreRetries(&deployment,runtime_root);
 	TestScenarioDriverIoError(&deployment,runtime_root);
+	TestScenarioInflightExpiryHoldsSlot(&deployment,runtime_root);
+	TestScenarioBusyAdmittedPrefillReleases(&deployment,runtime_root);
+	TestScenarioCancelledInflightPrefillBusy(&deployment,runtime_root);
+	TestScenarioCompletionBeforeResult(&deployment,runtime_root);
 	TestScenarioEosEarlyStop(&deployment,runtime_root);
 	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
 	TestScenarioAdapterCacheModes(runtime_root);

@@ -8,7 +8,6 @@ bad() { echo "FAIL $*"; fail=$((fail + 1)); }
 echo "precheck $S7 (read-only) $(date -u +%FT%TZ): root $RELEASE_ROOT_NAME on $NODE_COUNT nodes, weightd $OLD_WEIGHTD -> $NEW_WEIGHTD"
 
 echo "== rotation"
-rotation_gate || fail=$((fail + 1))
 
 echo "== source"
 if git -C "$SOURCE_REPO" merge-base --is-ancestor "$SHA" origin/main; then ok "$S7 is on origin/main (last fetched: $(git -C "$SOURCE_REPO" rev-parse --short origin/main))"; else bad "$S7 is not an ancestor of the fetched origin/main"; fi
@@ -31,7 +30,7 @@ others=$(grep -h "others=" "$log.nodes" | grep -v "others=none" | sed 's/^[A-Z]*
 [ -n "$others" ] && echo "INFO other residentds running: $others (they may run through a root-only release; a weightd change needs them stopped; perf.sh needs them idle)"
 if weightd_changes; then
     echo "== weightd bundle staged (weightd.sh stage + receipts first)"
-    nodes --expect stage_wd="$NEW_WEIGHTD" --expect receipt=rc0 --log "$log.nodes-bundle" > /dev/null || { nodes_bad "$log.nodes-bundle"; bad "bundle $NEW_WEIGHTD not staged with valid receipts on every node (weightd.sh stage, receipts-adopt, receipts-verify)"; }
+    nodes --expect stage_wd="$NEW_WEIGHTD" --expect receipt=rc0 --log "$log.nodes-bundle" > /dev/null || { nodes_bad "$log.nodes-bundle"; bad "bundle $NEW_WEIGHTD not staged with valid receipts on every node (weightd.sh stage, receipts-verify)"; }
 fi
 echo "INFO PERF_HOLDER: $(cat "${PERF_HOLDER_FILE:-/dev/null}" 2>/dev/null | cut -c1-120)"
 

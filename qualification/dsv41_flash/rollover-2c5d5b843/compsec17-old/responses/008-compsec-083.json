@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "deepseek-v4.1-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "dc31023cdfd83560a6a20fce9bc4c2d2bb008a92de122a3703a482b4c7007c71"
+ },
+ "response": {
+  "id": "chatcmpl-04b72200b6724bc797e2e5b8c33da450",
+  "created": 1791725617,
+  "model": "deepseek-v4.1-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is that the code assumes segments arrive in ascending order.  \nIf a segment arrives out of order (e.g., a lower segment number after a higher one), `missing` can be negative, which will cause `grow()` to be called with a smaller size than before, potentially shrinking the container or causing undefined behavior.  \nEven if `grow` handles that, the indexing `a->segments[segno]` could be out of bounds if `segno` is larger than the current size after a negative `missing` adjustment.\n\nThe primary bug is introduced at line 9 where `missing` is calculated without checking if `segno` is greater than `last`.\n\nAnswer: 9",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 145,
+   "prompt_tokens": 302,
+   "total_tokens": 447,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is that the code assumes segments arrive in ascending order.  \nIf a segment arrives out of order (e.g., a lower segment number after a higher one), `missing` can be negative, which will cause `grow()` to be called with a smaller size than before, potentially shrinking the container or causing undefined behavior.  \nEven if `grow` handles that, the indexing `a->segments[segno]` could be out of bounds if `segno` is larger than the current size after a negative `missing` adjustment.\n\nThe primary bug is introduced at line 9 where `missing` is calculated without checking if `segno` is greater than `last`.\n\nAnswer: 9",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "9",
+  "passed": true,
+  "elapsed_ms": 19854.5,
+  "output_sha256": "a77ebb75117941005c27c50794feffe67b661c0e5bed9f1f5890a69b42527b9c",
+  "prompt_token_count": 302,
+  "generated_token_count": 145,
+  "reasoning_chars": 0,
+  "content_chars": 635,
+  "status": "stop"
+ }
+}

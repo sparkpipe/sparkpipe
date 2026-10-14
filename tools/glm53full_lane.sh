@@ -49,7 +49,7 @@ join_ranks() {
 
 render() {
   python3 "$HERE/glm53full_lane.py" --lane "$GLMFULL_LANE" --codec "$GLMFULL_CODEC" --arm "$GLMFULL_ARM" --socket "$GLMFULL_WEIGHTD_SOCKET" \
-    --kv-backing-bytes 4294967296 --max-sequence-positions "$GLMFULL_POSITIONS" --execution-row-capacity "$GLMFULL_ROWS" \
+    --kv-backing-bytes 4294967296 --kv-snapshot-bytes 4294967296 --max-sequence-positions "$GLMFULL_POSITIONS" --execution-row-capacity "$GLMFULL_ROWS" \
     --sequences "$GLMFULL_SEQUENCES" --inflight "$GLMFULL_INFLIGHT" --output "$1"
 }
 

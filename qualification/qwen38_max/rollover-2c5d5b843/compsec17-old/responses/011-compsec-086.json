@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-max",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 2048,
+   "temperature": 0.0,
+   "stream": false
+  },
+  "body_sha256": "06ece589da716cb24f8f597d448dc1c250be1de9b413bba97eac17462ee9b0af"
+ },
+ "response": {
+  "id": "chatcmpl-9dc0c5a614e5437ead37f2c26fe8ce8f",
+  "created": 1791724193,
+  "model": "qwen3.8-max",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "\n\nAnswer: 3",
+     "role": "assistant",
+     "reasoning_content": "We need answer user's request. Need analyze C function, identify primary bug line(s) or 0 if safe. Need think carefully.\n\nFunction:\nstatic bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n{\n    unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n\n    if (need > p->tag_cap) {\n        char *q = realloc(p->tag_buf, need);\n        if (q == NULL)\n            return false;\n        p->tag_buf = q;\n        p->tag_cap = need;\n    }\n\n    memcpy(p->tag_buf, p->prefix, prefix_len);\n    memcpy(p->tag_buf + prefix_len, p->name, name_len);\n    memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n    return true;\n}\n\nPrompt: parser grows reusable tag buffer before copying current element name and closing delimiters. Sizes attacker-influenced through XML input.\n\nNeed find vulnerability. Likely integer overflow/truncation due to unsigned int need = (unsigned int)(prefix_len + name_len + 3). prefix_len and name_len are size_t. Addition in size_t may overflow? In C, size_t unsigned wraparound if overflow. Then cast to unsigned int truncates. If attacker can make prefix_len + name_len + 3 large > UINT_MAX or SIZE_MAX, need small, realloc too small, then memcpy overflows heap. Primary bug introduced line 3. But need consider if p->tag_cap type? likely size_t? If need unsigned int, p->tag_cap maybe size_t or unsigned int. If need small due truncation, condition maybe false if tag_cap larger, then no realloc and overflow. Or if true realloc small.\n\nLine 3 computes need with truncation to unsigned int. Also prefix_len + name_len + 3 could overflow size_t before cast. But since sizes attacker-influenced, line 3 is bug. Could include line 13-15 where overflow happens? The question: single best line number where primary bug is introduced. If bug only clear from small group adjacent, smallest comma-separated set. Usually vulnerability introduced at line where incorrect size calculation occurs: 3. Need maybe line 6? realloc with need too small? But bug introduced line 3.\n\nNeed ensure no other issues: memcpy(p->tag_buf, p->prefix, prefix_len) if prefix_len > need due truncation. Also if prefix_len/name_len huge, pointer arithmetic p->tag_buf + prefix_len + name_len may overflow? But primary is integer truncation.\n\nCould there be issue with literal \"/>\\0\" size? It's 4 bytes? In C string literal \"/>\\0\" contains '/', '>', '\\0', plus implicit null? Actually literal \"/>\\0\" has explicit null before terminating null? Characters: '/', '>', '\\0', and implicit '\\0' => array size 4. memcpy copies 3 bytes: '/', '>', '\\0'. OK.\n\nNeed maybe need = prefix_len + name_len + 3; if prefix_len + name_len + 3 > UINT_MAX but p->tag_cap is maybe size_t, need truncated. If size_t 64-bit and unsigned int 32-bit, large lengths can truncate. Also if size_t 32-bit, addition can wrap to small. Need line 3.\n\nBut let's examine if function safe under assumptions? It says sizes attacker-influenced. There is no check for overflow. So vulnerable.\n\nCould line 5 also problematic comparing unsigned int need to p->tag_cap maybe if tag_cap size_t? If need truncated small, condition may be false. But introduced line 3.\n\nNeed final exactly Answer: 3. Ensure no extra after. But can include explanation? User asks analyze and at end write exactly one final line format and do not write anything after it. We can provide analysis? They likely expect only final line? It says Reply with single best line number... At the end, write exactly one final line... do not write anything after it. We can maybe output only Answer: 3. To be safe only final line. But desired oververbosity 9? However explicit format. Need final only. Ensure no trailing extra. final: Answer: 3\n\nDouble-check if line 15 maybe writes 3 bytes including NUL, need includes +3. If need = prefix_len + name_len + 3, buffer size adequate if no overflow. Yes.\n\nPotential issue: unsigned int need may be too small to hold size_t sum. If prefix_len + name_len + 3 exceeds UINT_MAX, truncation. If prefix_len and name_len are size_t, addition performed in size_t. If size_t larger than unsigned int, cast truncates. If size_t same 32-bit, addition can overflow modulo SIZE_MAX before cast. Need should be size_t and checked for overflow. So line 3.\n\nCould there be realloc(p->tag_buf, need) with need 0? If prefix_len + name_len + 3 wraps to 0? +3 makes not zero unless sum SIZE_MAX-2 etc. If need 0? possible if size_t 32 and prefix_len+name_len = UINT_MAX-2? Then +3 wraps to 0? For unsigned int, if prefix_len+name_len+3 modulo 2^32 = 0. realloc size 0 may free or return unique, then memcpy huge overflow. line 3.\n\nNeed answer. final only.\n"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 1177,
+   "prompt_tokens": 411,
+   "total_tokens": 1588,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>We need answer user's request. Need analyze C function, identify primary bug line(s) or 0 if safe. Need think carefully.\n\nFunction:\nstatic bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n{\n    unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n\n    if (need > p->tag_cap) {\n        char *q = realloc(p->tag_buf, need);\n        if (q == NULL)\n            return false;\n        p->tag_buf = q;\n        p->tag_cap = need;\n    }\n\n    memcpy(p->tag_buf, p->prefix, prefix_len);\n    memcpy(p->tag_buf + prefix_len, p->name, name_len);\n    memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n    return true;\n}\n\nPrompt: parser grows reusable tag buffer before copying current element name and closing delimiters. Sizes attacker-influenced through XML input.\n\nNeed find vulnerability. Likely integer overflow/truncation due to unsigned int need = (unsigned int)(prefix_len + name_len + 3). prefix_len and name_len are size_t. Addition in size_t may overflow? In C, size_t unsigned wraparound if overflow. Then cast to unsigned int truncates. If attacker can make prefix_len + name_len + 3 large > UINT_MAX or SIZE_MAX, need small, realloc too small, then memcpy overflows heap. Primary bug introduced line 3. But need consider if p->tag_cap type? likely size_t? If need unsigned int, p->tag_cap maybe size_t or unsigned int. If need small due truncation, condition maybe false if tag_cap larger, then no realloc and overflow. Or if true realloc small.\n\nLine 3 computes need with truncation to unsigned int. Also prefix_len + name_len + 3 could overflow size_t before cast. But since sizes attacker-influenced, line 3 is bug. Could include line 13-15 where overflow happens? The question: single best line number where primary bug is introduced. If bug only clear from small group adjacent, smallest comma-separated set. Usually vulnerability introduced at line where incorrect size calculation occurs: 3. Need maybe line 6? realloc with need too small? But bug introduced line 3.\n\nNeed ensure no other issues: memcpy(p->tag_buf, p->prefix, prefix_len) if prefix_len > need due truncation. Also if prefix_len/name_len huge, pointer arithmetic p->tag_buf + prefix_len + name_len may overflow? But primary is integer truncation.\n\nCould there be issue with literal \"/>\\0\" size? It's 4 bytes? In C string literal \"/>\\0\" contains '/', '>', '\\0', plus implicit null? Actually literal \"/>\\0\" has explicit null before terminating null? Characters: '/', '>', '\\0', and implicit '\\0' => array size 4. memcpy copies 3 bytes: '/', '>', '\\0'. OK.\n\nNeed maybe need = prefix_len + name_len + 3; if prefix_len + name_len + 3 > UINT_MAX but p->tag_cap is maybe size_t, need truncated. If size_t 64-bit and unsigned int 32-bit, large lengths can truncate. Also if size_t 32-bit, addition can wrap to small. Need line 3.\n\nBut let's examine if function safe under assumptions? It says sizes attacker-influenced. There is no check for overflow. So vulnerable.\n\nCould line 5 also problematic comparing unsigned int need to p->tag_cap maybe if tag_cap size_t? If need truncated small, condition may be false. But introduced line 3.\n\nNeed final exactly Answer: 3. Ensure no extra after. But can include explanation? User asks analyze and at end write exactly one final line format and do not write anything after it. We can provide analysis? They likely expect only final line? It says Reply with single best line number... At the end, write exactly one final line... do not write anything after it. We can maybe output only Answer: 3. To be safe only final line. But desired oververbosity 9? However explicit format. Need final only. Ensure no trailing extra. final: Answer: 3\n\nDouble-check if line 15 maybe writes 3 bytes including NUL, need includes +3. If need = prefix_len + name_len + 3, buffer size adequate if no overflow. Yes.\n\nPotential issue: unsigned int need may be too small to hold size_t sum. If prefix_len + name_len + 3 exceeds UINT_MAX, truncation. If prefix_len and name_len are size_t, addition performed in size_t. If size_t larger than unsigned int, cast truncates. If size_t same 32-bit, addition can overflow modulo SIZE_MAX before cast. Need should be size_t and checked for overflow. So line 3.\n\nCould there be realloc(p->tag_buf, need) with need 0? If prefix_len + name_len + 3 wraps to 0? +3 makes not zero unless sum SIZE_MAX-2 etc. If need 0? possible if size_t 32 and prefix_len+name_len = UINT_MAX-2? Then +3 wraps to 0? For unsigned int, if prefix_len+name_len+3 modulo 2^32 = 0. realloc size 0 may free or return unique, then memcpy huge overflow. line 3.\n\nNeed answer. final only.\n</think>\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 135724.9,
+  "output_sha256": "d94cc8a2b5321c324c90a0fb9ca1488a1a57c3fd0e3318b9a48ff4cc8fecb4c0",
+  "prompt_token_count": 411,
+  "generated_token_count": 1177,
+  "reasoning_chars": 4628,
+  "content_chars": 11,
+  "status": "stop"
+ }
+}

@@ -139,7 +139,7 @@ static void TestLoopbackSetupRoot(TestLoopbackStack *stack)
 {
 	char scratch[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
-	assert(snprintf(scratch,sizeof(scratch),"/tmp/sparkpipe-loopback-%ld-XXXXXX",(long)getpid()) > 0);
+	assert(snprintf(scratch,sizeof(scratch),"build/sparkpipe-loopback-%ld-XXXXXX",(long)getpid()) > 0);
 	assert(mkdtemp(scratch) != 0);
 	assert(realpath(scratch,stack->root) != 0);
 	assert(snprintf(path,sizeof(path),"%s/build",stack->root) > 0);
@@ -969,11 +969,11 @@ static void TestLoopbackExpectResidentRefused(TestLoopbackStack *stack,const cha
 static void TestLoopbackKvPartitionRefusals(TestLoopbackStack *stack)
 {
 #if defined(__linux__)
-	char shm[] = "/dev/shm/sparkpipe-kv-partition-XXXXXX",root[] = "/tmp/sparkpipe-kv-partition-root-XXXXXX",path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	char shm[] = "/dev/shm/sparkpipe-kv-partition-XXXXXX",root[] = "build/sparkpipe-kv-partition-root-XXXXXX",path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 	if ( mkdtemp(shm) == 0 )
 		return;
 	assert(mkdtemp(root) != 0);
-	assert(snprintf(stack->root,sizeof(stack->root),"%s",root) > 0);
+	assert(realpath(root,stack->root) != 0);
 	stack->kv_backing_directory = shm;
 	stack->kv_partition = shm;
 	TestLoopbackExpectResidentRefused(stack,"tmpfs filesystem");

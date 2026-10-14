@@ -97,7 +97,7 @@ def run_cli(arguments):
 
 
 def c_header_offsets():
-    source = ('#include <stddef.h>\n#include <stdio.h>\n#include "spark_glm52_stagepack_format.h"\n'
+    source = ('#include <stddef.h>\n#include <stdio.h>\n#include "sparkpipe/spark_glm52_stagepack.h"\n'
               'int main(void){printf("%zu %zu %zu %zu %zu\\n",offsetof(SparkGlm52StagePackHeader,model_revision),'
               'offsetof(SparkGlm52StagePackHeader,contract_sha256),offsetof(SparkGlm52StagePackHeader,pack_recipe_sha256),'
               'offsetof(SparkGlm52StagePackHeader,stage_count),sizeof(SparkGlm52StagePackHeader));return 0;}\n')
@@ -106,7 +106,7 @@ def c_header_offsets():
         program.write_text(source)
         binary = Path(directory) / "offsets"
         subprocess.run(["cc", "-std=c11", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/glm52/include",
-                        "-Imodules/glm52_resident_decode_stage/source", str(program), "-o", str(binary)],
+                        str(program), "-o", str(binary)],
                        cwd=ROOT, check=True, capture_output=True)
         return [int(value) for value in subprocess.run([str(binary)], check=True, capture_output=True,
                                                        text=True).stdout.split()]

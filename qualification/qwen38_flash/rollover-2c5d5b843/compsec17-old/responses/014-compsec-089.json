@@ -1,0 +1,62 @@
+{
+ "id": "compsec-089",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe public multipart CCM API lets the caller request a tag length.\n\nCode:\n```c\n 1: static int ccm_finish_reduced(struct CcmCtx *ctx, uint8_t *tag, size_t tag_len)\n 2: {\n 3:     uint8_t full_tag[16];\n 4: \n 5:     ccm_compute_full_tag(ctx, full_tag);\n 6: \n 7:     if (tag == NULL)\n 8:         return -1;\n 9: \n10:     memcpy(tag, full_tag, tag_len);\n11:     return 0;\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "5ecc0d392d3c161fed8caa3197c0ce0ffe88de751584f4c5b58f2e0ec9f73246"
+ },
+ "response": {
+  "id": "chatcmpl-6348c2e5117b4d3c92356b1800619f6b",
+  "created": 1791721746,
+  "model": "qwen3.8-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `ccm_finish_reduced` copies `tag_len` bytes from a local buffer `full_tag` (which is 16 bytes) to the caller-provided buffer `tag`.\n\nThe vulnerability arises because `tag_len` is provided by the caller and is not validated against the size of the destination buffer `tag`. If the caller passes a `tag_len` larger than the actual size of the buffer pointed to by `tag`, a buffer overflow occurs. Additionally, if `tag_len` is larger than 16, it would also read out-of-bounds from `full_tag`, but the primary security concern in such APIs is typically the write overflow into the caller's buffer or the lack of bounds checking on the requested length against the maximum tag size (16 bytes for CCM).\n\nThe bug is introduced at the `memcpy` call where the unvalidated length is used. While the lack of validation is the root cause, the specific line where the unsafe operation happens is line 10. However, often \"introduced\" refers to the logic error. Here, the logic error is using `tag_len` directly without checking if it is <= 16 (the size of `full_tag`) or <= the size of `tag` (which is unknown to the function, implying the API contract requires the caller to provide a buffer of at least `tag_len` bytes, but usually, such functions should clamp or validate against the maximum possible tag length).\n\nIf we assume the standard CCM tag length is max 16 bytes, and the caller can request any `size_t`, then `memcpy` with an arbitrary `tag_len` is dangerous. The check `if (tag == NULL)` is present, but no check for `tag_len > 16` or `tag_len > sizeof(full_tag)` is present.\n\nThe primary bug is the unbounded copy.\n\nAnswer: 10",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 394,
+   "prompt_tokens": 264,
+   "total_tokens": 658,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `ccm_finish_reduced` copies `tag_len` bytes from a local buffer `full_tag` (which is 16 bytes) to the caller-provided buffer `tag`.\n\nThe vulnerability arises because `tag_len` is provided by the caller and is not validated against the size of the destination buffer `tag`. If the caller passes a `tag_len` larger than the actual size of the buffer pointed to by `tag`, a buffer overflow occurs. Additionally, if `tag_len` is larger than 16, it would also read out-of-bounds from `full_tag`, but the primary security concern in such APIs is typically the write overflow into the caller's buffer or the lack of bounds checking on the requested length against the maximum tag size (16 bytes for CCM).\n\nThe bug is introduced at the `memcpy` call where the unvalidated length is used. While the lack of validation is the root cause, the specific line where the unsafe operation happens is line 10. However, often \"introduced\" refers to the logic error. Here, the logic error is using `tag_len` directly without checking if it is <= 16 (the size of `full_tag`) or <= the size of `tag` (which is unknown to the function, implying the API contract requires the caller to provide a buffer of at least `tag_len` bytes, but usually, such functions should clamp or validate against the maximum possible tag length).\n\nIf we assume the standard CCM tag length is max 16 bytes, and the caller can request any `size_t`, then `memcpy` with an arbitrary `tag_len` is dangerous. The check `if (tag == NULL)` is present, but no check for `tag_len > 16` or `tag_len > sizeof(full_tag)` is present.\n\nThe primary bug is the unbounded copy.\n\nAnswer: 10",
+ "grade": {
+  "index": 14,
+  "id": "compsec-089",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "10",
+  "extracted": "10",
+  "passed": true,
+  "elapsed_ms": 9899.3,
+  "output_sha256": "9f01044ee48193fe842db3307d5ab2a874136fcf9e9ad8bc6c1edd3b5e2e1fa4",
+  "prompt_token_count": 264,
+  "generated_token_count": 394,
+  "reasoning_chars": 0,
+  "content_chars": 1641,
+  "status": "stop"
+ }
+}

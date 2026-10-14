@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "a51b56b195a5f209ff7fcc8a4778a323535963ed9599cb94ab79f52e41540ee0"
+ },
+ "response": {
+  "id": "chatcmpl-d7c88532745848dda3efca1a53f4210f",
+  "created": 1791704183,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function contains a potential out-of-bounds read/array index vulnerability. \n\nThe prompt specifies that `char` is signed and the `ctype` implementation (which includes `isxdigit`) indexes a table for values other than `EOF`. In C, when a `char` is passed to a function expecting an `int` (like `isxdigit`), it undergoes sign extension. If `s[r+1]` or `s[r+2]` contains a negative value (e.g., a character with the high bit set, like `0xFF`), the value passed to `isxdigit` will be a negative integer. Since the `ctype` implementation uses this value as an index into a table, a negative value will result in an out-of-bounds memory access.\n\nTo fix this, the characters should be cast to `unsigned char` before being passed to `isxdigit`.\n\nThe bug is introduced at lines 7, where the signed `char` values are passed directly to `isxdigit`.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 220,
+   "prompt_tokens": 348,
+   "total_tokens": 568,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function contains a potential out-of-bounds read/array index vulnerability. \n\nThe prompt specifies that `char` is signed and the `ctype` implementation (which includes `isxdigit`) indexes a table for values other than `EOF`. In C, when a `char` is passed to a function expecting an `int` (like `isxdigit`), it undergoes sign extension. If `s[r+1]` or `s[r+2]` contains a negative value (e.g., a character with the high bit set, like `0xFF`), the value passed to `isxdigit` will be a negative integer. Since the `ctype` implementation uses this value as an index into a table, a negative value will result in an out-of-bounds memory access.\n\nTo fix this, the characters should be cast to `unsigned char` before being passed to `isxdigit`.\n\nThe bug is introduced at lines 7, where the signed `char` values are passed directly to `isxdigit`.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 3026.0,
+  "output_sha256": "78a2b374ecbec28c222af233d0beaa3221331e7e1911da4380a82ea05fe13b56",
+  "prompt_token_count": 348,
+  "generated_token_count": 220,
+  "reasoning_chars": 0,
+  "content_chars": 853,
+  "status": "stop"
+ }
+}

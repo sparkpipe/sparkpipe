@@ -695,7 +695,8 @@ and spec-on results are reported separately, per content class.
 Every arm: write `$R/agent.env` (spec-off lines of 10.1 step 4 plus the arm's
 lines), rewrite the MANIFEST as in 10.1 step 4, wait for 16 × `model_residentd
 ready`, then run the arm inside one perf window from the hub build checkout.
-`OUT=~/spec-ab-<sha7>`.
+`OUT=/srv/workspace/sparkpipe/spec-ab-<sha7>` (bulky hub output stays off the
+root filesystem).
 
 | Arm | Extra `agent.env` lines | Run in the window | Pass condition |
 | --- | --- | --- | --- |

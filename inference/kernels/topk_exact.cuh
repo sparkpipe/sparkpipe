@@ -40,8 +40,20 @@ static __device__ __forceinline__ void LmTopkExactPass(const float *scores, uint
 	__syncthreads();
 }
 
-template<uint32_t THREADS>
-static __device__ __forceinline__ void LmTopkExactEmit(const float *scores, uint32_t n, uint32_t threshold, uint32_t *out, uint32_t *scan, uint32_t *state)
+struct LmTopkScoreKeys
+{
+	const float *scores;
+	__device__ __forceinline__ uint32_t operator()(uint32_t index) const { return(LmTopkKey(scores[index])); }
+};
+
+struct LmTopkSharedKeys
+{
+	const uint32_t *keys;
+	__device__ __forceinline__ uint32_t operator()(uint32_t index) const { return(keys[index]); }
+};
+
+template<uint32_t THREADS, class Keys>
+static __device__ __forceinline__ void LmTopkExactEmitKeys(Keys keys, uint32_t n, uint32_t offset, uint32_t threshold, uint32_t *out, uint32_t *scan, uint32_t *state)
 {
 	const uint32_t warps = (THREADS + LM_TOPK_WARP_LANES - 1u) / LM_TOPK_WARP_LANES;
 	const uint32_t lane = threadIdx.x % LM_TOPK_WARP_LANES,warp = threadIdx.x / LM_TOPK_WARP_LANES;
@@ -51,7 +63,7 @@ static __device__ __forceinline__ void LmTopkExactEmit(const float *scores, uint
 	for (start = 0u; start < n; start += THREADS)
 	{
 		index = start + threadIdx.x;
-		key = index < n ? LmTopkKey(scores[index]) : 0u;
+		key = index < n ? keys(index) : 0u;
 		greater = index < n && key > threshold ? 1u : 0u;
 		equal = index < n && key == threshold ? 1u : 0u;
 		greater_mask = __ballot_sync(0xffffffffu,greater != 0u);
@@ -78,7 +90,7 @@ static __device__ __forceinline__ void LmTopkExactEmit(const float *scores, uint
 		}
 		remaining = state[LM_TOPK_EXACT_NEED] > state[LM_TOPK_EXACT_SEEN] ? state[LM_TOPK_EXACT_NEED] - state[LM_TOPK_EXACT_SEEN] : 0u;
 		if ( greater != 0u || (equal != 0u && equal_before < remaining) )
-			out[state[LM_TOPK_EXACT_EMITTED] + greater_before + (equal_before < remaining ? equal_before : remaining)] = index;
+			out[state[LM_TOPK_EXACT_EMITTED] + greater_before + (equal_before < remaining ? equal_before : remaining)] = offset + index;
 		__syncthreads();
 		if ( threadIdx.x == 0u )
 		{
@@ -87,6 +99,12 @@ static __device__ __forceinline__ void LmTopkExactEmit(const float *scores, uint
 		}
 		__syncthreads();
 	}
+}
+
+template<uint32_t THREADS>
+static __device__ __forceinline__ void LmTopkExactEmit(const float *scores, uint32_t n, uint32_t threshold, uint32_t *out, uint32_t *scan, uint32_t *state)
+{
+	LmTopkExactEmitKeys<THREADS>(LmTopkScoreKeys{scores},n,0u,threshold,out,scan,state);
 }
 
 template<uint32_t THREADS>
@@ -162,6 +180,8 @@ void LmTopkExactGatherKernel(const float *__restrict__ values, const uint32_t *_
 		out[index] = out[index] != 0xffffffffu ? row_positions[out[index]] : 0xffffffffu;
 }
 
+#include "inference/kernels/topk_exact_cluster.cuh"
+
 template<uint32_t THREADS>
 static inline cudaError_t LmTopkExactLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t chunk, uint32_t chunked_rows, float *scratch_values, uint32_t *scratch_positions, uint64_t scratch_entries, uint32_t *out_indices, cudaStream_t stream)
 {
@@ -169,11 +189,8 @@ static inline cudaError_t LmTopkExactLaunch(const float *scores, uint32_t rows, 
 	const uint32_t *positions = 0;
 	uint32_t length = n,half = 0u;
 	uint64_t level;
-	if ( rows > chunked_rows || LmTopkExactCandidateEntries(n,k,chunk) == 0u )
-	{
-		LM_LAUNCH((LmTopkExactKernel<THREADS>),rows,THREADS,0,stream,scores,n,k,out_indices);
-		return(cudaPeekAtLastError());
-	}
+	if ( rows > chunked_rows || LmTopkExactCandidateEntries(n,k,chunk) == 0u || LmTopkExactClusterFits(rows,n,k) != 0u )
+		return(LmTopkExactRowsLaunch<THREADS>(scores,rows,n,k,out_indices,stream));
 	if ( scratch_values == 0 || scratch_positions == 0 || (uint64_t)rows * LmTopkExactCandidateEntries(n,k,chunk) * 2u > scratch_entries )
 		return(cudaErrorInvalidValue);
 	while ( (level = LmTopkExactCandidateEntries(length,k,chunk)) != 0u )

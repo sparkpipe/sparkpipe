@@ -1,0 +1,62 @@
+{
+ "id": "compsec-085",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "qwen3.8-27b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe database driver receives a language string token as (ptr,len), where len may include embedded NUL bytes. The function reconstructs a quoted SQL token.\n\nCode:\n```c\n1: static void append_quoted_token(char *sql, size_t sql_cap,\n2:                                 const char *tok, size_t tok_len)\n3: {\n4:     strlcat(sql, \"'\", sql_cap);\n5:     strncat(sql, tok, tok_len);\n6:     strlcat(sql, \"'\", sql_cap);\n7: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "27588dec13fe8313366fcae384720327b3993a55bbc6ab90be24fadf9cd9ead3"
+ },
+ "response": {
+  "id": "chatcmpl-20b77951b5304b4da630355008a8076f",
+  "created": 1791721238,
+  "model": "qwen3.8-27b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "length",
+    "index": 0,
+    "message": {
+     "content": "The function `append_quoted_token` is intended to append a quoted token to a SQL string.\n\n1.  **Line 4**: `strlcat(sql, \"'\", sql_cap);`\n    *   `strlcat` appends the string `'` to `sql`, ensuring null-termination and respecting `sql_cap`. This is generally safe regarding buffer overflow, assuming `sql` is a valid buffer of size `sql_cap`.\n\n2.  **Line 5**: `strncat(sql, tok, tok_len);`\n    *   `strncat` appends up to `tok_len` characters from `tok` to `sql`.\n    *   **Crucial Flaw**: `strncat` does **not** take the remaining capacity of the destination buffer into account. It blindly appends `tok_len` bytes (or until a NUL is found in `tok`, but the problem states `len` may include embedded NULs, and `strncat` stops at the first NUL in the source *or* after `n` chars).\n    *   More importantly, `strncat` does not know the size of `sql`. If `sql` is already close to `sql_cap`, appending `tok_len` bytes will cause a **buffer overflow**.\n    *   Even if `tok` contains no NULs, `strncat` will write `tok_len` bytes. If `strlen(sql) + tok_len + 1 > sql_cap`, the buffer overflows.\n    *   The problem statement highlights that `len` may include embedded NUL bytes. `strncat` stops copying when it hits a NUL byte in the source string `tok`. If the token contains an embedded NUL, `strncat` will stop early, resulting in a truncated token (logic error), but the primary security vulnerability here is the lack of bounds checking against `sql_cap`.\n    *   The use of `strncat` without knowing the remaining space in `sql` is a classic buffer overflow vulnerability. It should be replaced with a bounded copy function that respects the destination capacity, or manual pointer arithmetic with bounds checks.\n\n3.  **Line 6**: `strlcat(sql, \"'\", sql_cap);`\n    *   This is safe in terms of overflow, but if line 5 overflowed, the state is already corrupted.\n\nThe primary bug is the use of `",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 512,
+   "prompt_tokens": 238,
+   "total_tokens": 750,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `append_quoted_token` is intended to append a quoted token to a SQL string.\n\n1.  **Line 4**: `strlcat(sql, \"'\", sql_cap);`\n    *   `strlcat` appends the string `'` to `sql`, ensuring null-termination and respecting `sql_cap`. This is generally safe regarding buffer overflow, assuming `sql` is a valid buffer of size `sql_cap`.\n\n2.  **Line 5**: `strncat(sql, tok, tok_len);`\n    *   `strncat` appends up to `tok_len` characters from `tok` to `sql`.\n    *   **Crucial Flaw**: `strncat` does **not** take the remaining capacity of the destination buffer into account. It blindly appends `tok_len` bytes (or until a NUL is found in `tok`, but the problem states `len` may include embedded NULs, and `strncat` stops at the first NUL in the source *or* after `n` chars).\n    *   More importantly, `strncat` does not know the size of `sql`. If `sql` is already close to `sql_cap`, appending `tok_len` bytes will cause a **buffer overflow**.\n    *   Even if `tok` contains no NULs, `strncat` will write `tok_len` bytes. If `strlen(sql) + tok_len + 1 > sql_cap`, the buffer overflows.\n    *   The problem statement highlights that `len` may include embedded NUL bytes. `strncat` stops copying when it hits a NUL byte in the source string `tok`. If the token contains an embedded NUL, `strncat` will stop early, resulting in a truncated token (logic error), but the primary security vulnerability here is the lack of bounds checking against `sql_cap`.\n    *   The use of `strncat` without knowing the remaining space in `sql` is a classic buffer overflow vulnerability. It should be replaced with a bounded copy function that respects the destination capacity, or manual pointer arithmetic with bounds checks.\n\n3.  **Line 6**: `strlcat(sql, \"'\", sql_cap);`\n    *   This is safe in terms of overflow, but if line 5 overflowed, the state is already corrupted.\n\nThe primary bug is the use of `",
+ "grade": {
+  "index": 10,
+  "id": "compsec-085",
+  "source": "COMPSEC",
+  "domain": "PHP PDO Firebird",
+  "expected": "5",
+  "extracted": "5",
+  "passed": true,
+  "elapsed_ms": 9228.4,
+  "output_sha256": "a692c3ea274288f0b6743beb24e25add46274d77a46df53924a21c6c85147c7f",
+  "prompt_token_count": 238,
+  "generated_token_count": 512,
+  "reasoning_chars": 0,
+  "content_chars": 1894,
+  "status": "length"
+ }
+}

@@ -1,0 +1,63 @@
+{
+ "id": "compsec-080",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3-flash",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe validator is walking a certificate chain. trust_store.contains_subject(x) returns true if any configured trust anchor has subject DN x.\n\nCode:\n```c\n 1: static ValidationResult validate_path_step(const Certificate& cert,\n 2:                                            const TrustStore& trust_store)\n 3: {\n 4:     /* Optimization: stop once we have reached a known trust anchor subject. */\n 5:     if (trust_store.contains_subject(cert.subject_dn()))\n 6:         return ValidationResult::Valid;\n 7: \n 8:     Certificate issuer = find_issuer_for(cert);\n 9:     if (!cert.verify_signature_with(issuer.public_key()))\n10:         return ValidationResult::BadSignature;\n11: \n12:     return validate_path_step(issuer, trust_store);\n13: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d255a7d1a533f2ff446182b968e207416eda7974f9dde51927102d30a7a25e28"
+ },
+ "response": {
+  "id": "chatcmpl-b1e2d455ca9e49569f4a39028e75a3d9",
+  "created": 1791731206,
+  "model": "glm-5.3-flash",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function recurses at line 12 without any depth limit or termination guarantee beyond hitting a trust anchor subject. If the chain never reaches a configured anchor (e.g., a self-signed rogue root, a cross-signed loop, or a malformed chain), `validate_path_step` recurses until stack exhaustion \u2014 an unbounded recursion / denial-of-service bug. A proper validator needs a maximum path length check before recursing.\n\nAnswer: 12",
+     "role": "assistant",
+     "reasoning_content": "Missing recursion termination \u2014 no depth limit, but the real bug: no check that issuer chain terminates; infinite recursion if no trust anchor matches. Also missing expiry checks etc., but primary bug: unbounded recursion / no termination condition. Line 12."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 139,
+   "prompt_tokens": 277,
+   "total_tokens": 416,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "<think>Missing recursion termination \u2014 no depth limit, but the real bug: no check that issuer chain terminates; infinite recursion if no trust anchor matches. Also missing expiry checks etc., but primary bug: unbounded recursion / no termination condition. Line 12.</think>The function recurses at line 12 without any depth limit or termination guarantee beyond hitting a trust anchor subject. If the chain never reaches a configured anchor (e.g., a self-signed rogue root, a cross-signed loop, or a malformed chain), `validate_path_step` recurses until stack exhaustion \u2014 an unbounded recursion / denial-of-service bug. A proper validator needs a maximum path length check before recursing.\n\nAnswer: 12",
+ "grade": {
+  "index": 5,
+  "id": "compsec-080",
+  "source": "COMPSEC",
+  "domain": "Botan",
+  "expected": "5-6",
+  "extracted": "12",
+  "passed": false,
+  "elapsed_ms": 3197.1,
+  "output_sha256": "7fe9ec80bfb1157a9b5199dd2064fe60bdc963db9a3d58c888a9e591e9988d30",
+  "prompt_token_count": 277,
+  "generated_token_count": 139,
+  "reasoning_chars": 258,
+  "content_chars": 430,
+  "status": "stop"
+ }
+}

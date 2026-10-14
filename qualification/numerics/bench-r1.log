@@ -1,0 +1,87 @@
+gate open 09:33:12 after 170 checks
+idle_wait_s=15 start 09:33:25
+DEVICE sms=48 iterations=40
+DENSE h5376_to_2048 k=5376 n=2048 weight_mb=21.0 copies=24 stream_vs_skinny_rows_differ_at_1024=yes
+DENSE h5376_to_2048 option=current rows=1 us=90.46 weight_gbps=243 tflops=0.24 rows_differ_from_m1024=6/2048
+DENSE h5376_to_2048 option=skinny_all rows=1 us=91.72 weight_gbps=240 tflops=0.24 rows_differ_from_m1024=0/2048
+DENSE h5376_to_2048 option=tensor_all rows=1 us=100.27 weight_gbps=220 tflops=0.22 rows_differ_from_m1024=0/2048
+DENSE h5376_to_2048 option=current rows=16 us=109.74 weight_gbps=201 tflops=3.21 rows_differ_from_m1024=87/32768
+DENSE h5376_to_2048 option=skinny_all rows=16 us=109.41 weight_gbps=201 tflops=3.22 rows_differ_from_m1024=0/32768
+DENSE h5376_to_2048 option=tensor_all rows=16 us=104.83 weight_gbps=210 tflops=3.36 rows_differ_from_m1024=0/32768
+DENSE h5376_to_2048 option=current rows=64 us=129.80 weight_gbps=170 tflops=10.86 rows_differ_from_m1024=0/131072
+DENSE h5376_to_2048 option=skinny_all rows=64 us=454.76 weight_gbps=48 tflops=3.10 rows_differ_from_m1024=0/131072
+DENSE h5376_to_2048 option=tensor_all rows=64 us=111.33 weight_gbps=198 tflops=12.66 rows_differ_from_m1024=0/131072
+DENSE h5376_to_2048 option=current rows=256 us=147.70 weight_gbps=149 tflops=38.16 rows_differ_from_m1024=0/524288
+DENSE h5376_to_2048 option=skinny_all rows=256 us=1754.62 weight_gbps=13 tflops=3.21 rows_differ_from_m1024=0/524288
+DENSE h5376_to_2048 option=tensor_all rows=256 us=158.56 weight_gbps=139 tflops=35.55 rows_differ_from_m1024=0/524288
+DENSE h5376_to_2048 option=current rows=1024 us=328.31 weight_gbps=67 tflops=68.68 rows_differ_from_m1024=0/2097152
+DENSE h5376_to_2048 option=skinny_all rows=1024 us=10342.26 weight_gbps=2 tflops=2.18 rows_differ_from_m1024=0/2097152
+DENSE h5376_to_2048 option=tensor_all rows=1024 us=329.06 weight_gbps=67 tflops=68.52 rows_differ_from_m1024=0/2097152
+DENSE h1344_to_5376 k=1344 n=5376 weight_mb=13.8 copies=37 stream_vs_skinny_rows_differ_at_1024=yes
+DENSE h1344_to_5376 option=current rows=1 us=59.98 weight_gbps=241 tflops=0.24 rows_differ_from_m1024=1/5376
+DENSE h1344_to_5376 option=skinny_all rows=1 us=57.54 weight_gbps=251 tflops=0.25 rows_differ_from_m1024=0/5376
+DENSE h1344_to_5376 option=tensor_all rows=1 us=62.25 weight_gbps=232 tflops=0.23 rows_differ_from_m1024=0/5376
+DENSE h1344_to_5376 option=current rows=16 us=69.62 weight_gbps=208 tflops=3.32 rows_differ_from_m1024=44/86016
+DENSE h1344_to_5376 option=skinny_all rows=16 us=68.89 weight_gbps=210 tflops=3.36 rows_differ_from_m1024=0/86016
+DENSE h1344_to_5376 option=tensor_all rows=16 us=62.05 weight_gbps=233 tflops=3.73 rows_differ_from_m1024=0/86016
+DENSE h1344_to_5376 option=current rows=64 us=62.36 weight_gbps=232 tflops=14.83 rows_differ_from_m1024=0/344064
+DENSE h1344_to_5376 option=skinny_all rows=64 us=219.90 weight_gbps=66 tflops=4.21 rows_differ_from_m1024=0/344064
+DENSE h1344_to_5376 option=tensor_all rows=64 us=62.25 weight_gbps=232 tflops=14.86 rows_differ_from_m1024=0/344064
+DENSE h1344_to_5376 option=current rows=256 us=74.31 weight_gbps=194 tflops=49.78 rows_differ_from_m1024=0/1376256
+DENSE h1344_to_5376 option=skinny_all rows=256 us=857.52 weight_gbps=17 tflops=4.31 rows_differ_from_m1024=0/1376256
+DENSE h1344_to_5376 option=tensor_all rows=256 us=74.72 weight_gbps=193 tflops=49.51 rows_differ_from_m1024=0/1376256
+DENSE h1344_to_5376 option=current rows=1024 us=238.79 weight_gbps=61 tflops=61.97 rows_differ_from_m1024=0/5505024
+DENSE h1344_to_5376 option=skinny_all rows=1024 us=4480.79 weight_gbps=3 tflops=3.30 rows_differ_from_m1024=0/5505024
+DENSE h1344_to_5376 option=tensor_all rows=1024 us=222.28 weight_gbps=65 tflops=66.57 rows_differ_from_m1024=0/5505024
+DENSE h4096_to_1024 k=4096 n=1024 weight_mb=8.0 copies=64 stream_vs_skinny_rows_differ_at_1024=yes
+DENSE h4096_to_1024 option=current rows=1 us=38.32 weight_gbps=219 tflops=0.22 rows_differ_from_m1024=2/1024
+DENSE h4096_to_1024 option=skinny_all rows=1 us=35.93 weight_gbps=233 tflops=0.23 rows_differ_from_m1024=0/1024
+DENSE h4096_to_1024 option=tensor_all rows=1 us=51.94 weight_gbps=162 tflops=0.16 rows_differ_from_m1024=0/1024
+DENSE h4096_to_1024 option=current rows=16 us=43.05 weight_gbps=195 tflops=3.12 rows_differ_from_m1024=27/16384
+DENSE h4096_to_1024 option=skinny_all rows=16 us=42.57 weight_gbps=197 tflops=3.15 rows_differ_from_m1024=0/16384
+DENSE h4096_to_1024 option=tensor_all rows=16 us=51.94 weight_gbps=162 tflops=2.58 rows_differ_from_m1024=0/16384
+DENSE h4096_to_1024 option=current rows=64 us=51.73 weight_gbps=162 tflops=10.38 rows_differ_from_m1024=0/65536
+DENSE h4096_to_1024 option=skinny_all rows=64 us=130.89 weight_gbps=64 tflops=4.10 rows_differ_from_m1024=0/65536
+DENSE h4096_to_1024 option=tensor_all rows=64 us=51.73 weight_gbps=162 tflops=10.38 rows_differ_from_m1024=0/65536
+DENSE h4096_to_1024 option=current rows=256 us=81.55 weight_gbps=103 tflops=26.33 rows_differ_from_m1024=0/262144
+DENSE h4096_to_1024 option=skinny_all rows=256 us=484.37 weight_gbps=17 tflops=4.43 rows_differ_from_m1024=0/262144
+DENSE h4096_to_1024 option=tensor_all rows=256 us=81.94 weight_gbps=102 tflops=26.21 rows_differ_from_m1024=0/262144
+DENSE h4096_to_1024 option=current rows=1024 us=190.68 weight_gbps=44 tflops=45.05 rows_differ_from_m1024=0/1048576
+DENSE h4096_to_1024 option=skinny_all rows=1024 us=1901.61 weight_gbps=4 tflops=4.52 rows_differ_from_m1024=0/1048576
+DENSE h4096_to_1024 option=tensor_all rows=1024 us=190.84 weight_gbps=44 tflops=45.01 rows_differ_from_m1024=0/1048576
+DENSE h1024_to_4096 k=1024 n=4096 weight_mb=8.0 copies=64 stream_vs_skinny_rows_differ_at_1024=yes
+DENSE h1024_to_4096 option=current rows=1 us=37.24 weight_gbps=225 tflops=0.23 rows_differ_from_m1024=1/4096
+DENSE h1024_to_4096 option=skinny_all rows=1 us=33.48 weight_gbps=251 tflops=0.25 rows_differ_from_m1024=0/4096
+DENSE h1024_to_4096 option=tensor_all rows=1 us=39.72 weight_gbps=211 tflops=0.21 rows_differ_from_m1024=0/4096
+DENSE h1024_to_4096 option=current rows=16 us=40.14 weight_gbps=209 tflops=3.34 rows_differ_from_m1024=31/65536
+DENSE h1024_to_4096 option=skinny_all rows=16 us=40.24 weight_gbps=208 tflops=3.34 rows_differ_from_m1024=0/65536
+DENSE h1024_to_4096 option=tensor_all rows=16 us=40.03 weight_gbps=210 tflops=3.35 rows_differ_from_m1024=0/65536
+DENSE h1024_to_4096 option=current rows=64 us=39.96 weight_gbps=210 tflops=13.44 rows_differ_from_m1024=0/262144
+DENSE h1024_to_4096 option=skinny_all rows=64 us=159.89 weight_gbps=52 tflops=3.36 rows_differ_from_m1024=0/262144
+DENSE h1024_to_4096 option=tensor_all rows=64 us=39.73 weight_gbps=211 tflops=13.51 rows_differ_from_m1024=0/262144
+DENSE h1024_to_4096 option=current rows=256 us=61.99 weight_gbps=135 tflops=34.64 rows_differ_from_m1024=0/1048576
+DENSE h1024_to_4096 option=skinny_all rows=256 us=666.70 weight_gbps=13 tflops=3.22 rows_differ_from_m1024=0/1048576
+DENSE h1024_to_4096 option=tensor_all rows=256 us=63.45 weight_gbps=132 tflops=33.84 rows_differ_from_m1024=0/1048576
+DENSE h1024_to_4096 option=current rows=1024 us=151.80 weight_gbps=55 tflops=56.59 rows_differ_from_m1024=0/4194304
+DENSE h1024_to_4096 option=skinny_all rows=1024 us=2631.88 weight_gbps=3 tflops=3.26 rows_differ_from_m1024=0/4194304
+DENSE h1024_to_4096 option=tensor_all rows=1024 us=163.40 weight_gbps=51 tflops=52.57 rows_differ_from_m1024=0/4194304
+EXPERTS hidden=2560 inter=768 experts=512 local=32 top_k=8 weight_mb_per_matrix=120.0 chunk_tokens=64
+EXPERTS option=current rows=1 local_routes=0 launches=3 us=14.08 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=skinny_all rows=1 local_routes=0 launches=3 us=13.97 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=tensor_all rows=1 local_routes=0 launches=3 us=6.89 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=current rows=16 local_routes=8 launches=3 us=383.02 up_differ_from_m1024=7 down_differ_from_m1024=9
+EXPERTS option=skinny_all rows=16 local_routes=8 launches=3 us=382.55 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=tensor_all rows=16 local_routes=8 launches=3 us=580.73 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=current rows=64 local_routes=28 launches=3 us=974.07 up_differ_from_m1024=32 down_differ_from_m1024=30
+EXPERTS option=skinny_all rows=64 local_routes=28 launches=3 us=994.71 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=tensor_all rows=64 local_routes=28 launches=3 us=1887.53 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=current rows=256 local_routes=125 launches=3 us=3555.07 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=skinny_all rows=256 local_routes=125 launches=12 us=3921.94 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=tensor_all rows=256 local_routes=125 launches=3 us=3547.54 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=current rows=1024 local_routes=539 launches=3 us=4245.75 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=skinny_all rows=1024 local_routes=539 launches=48 us=15677.64 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS option=tensor_all rows=1024 local_routes=539 launches=3 us=4273.22 up_differ_from_m1024=0 down_differ_from_m1024=0
+EXPERTS m1024 current_vs_skinny_all_up_differ=509
+DONE
+rc=0 end 09:33:30
+UTIL_NONZERO 5 of 6

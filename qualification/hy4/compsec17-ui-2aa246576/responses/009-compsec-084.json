@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "hy4-preview",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "49fe52ae5e46402b6165f0b8bf2cd714cee000eddfeca636ffcb870d2305b186"
+ },
+ "response": {
+  "id": "chatcmpl-a7c43454e040459886532e4feb3c6d7b",
+  "created": 1791704589,
+  "model": "hy4-preview",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "Line 7 passes `s[r + 1]` and `s[r + 2]` directly to `isxdigit()`. Since `plain char` is signed on this target, these values may be negative for bytes >= 0x80, and the ctype implementation indexes a table for values other than EOF, causing out-of-bounds table access. The bug is introduced at the point where the signed `char` is passed to `isxdigit`.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 98,
+   "prompt_tokens": 317,
+   "total_tokens": 415,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "Line 7 passes `s[r + 1]` and `s[r + 2]` directly to `isxdigit()`. Since `plain char` is signed on this target, these values may be negative for bytes >= 0x80, and the ctype implementation indexes a table for values other than EOF, causing out-of-bounds table access. The bug is introduced at the point where the signed `char` is passed to `isxdigit`.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 16814.9,
+  "output_sha256": "e9a7dc95bbe65ed32557181e00f1037b0aa027583af179c70dbc8b7129f30b38",
+  "prompt_token_count": 317,
+  "generated_token_count": 98,
+  "reasoning_chars": 0,
+  "content_chars": 361,
+  "status": "stop"
+ }
+}

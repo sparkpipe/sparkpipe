@@ -60,10 +60,6 @@
         {
           "binding_mode": "generated_policy",
           "path": "inference/kernels/gqa.cuh"
-        },
-        {
-          "binding_mode": "generated_policy",
-          "path": "model-families/glm52/cuda_tree/spark_glm_cuda_layer.cuh"
         }
       ],
       "fallback": "forbidden",
@@ -298,10 +294,6 @@
         {
           "binding_mode": "generated_policy",
           "path": "inference/kernels/gqa.cuh"
-        },
-        {
-          "binding_mode": "generated_policy",
-          "path": "inference/llms/qwen_3_6/layer.cuh"
         }
       ],
       "fallback": "forbidden",

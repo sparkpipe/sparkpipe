@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
 <title>SparkPipe Playground</title>
-<meta name="description" content="Talk to the models SparkPipe serves, through its OpenAI-compatible LiteLLM endpoint.">
+<meta name="description" content="Chat with the open models SparkPipe runs on its Spark fleet.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,34 +29,37 @@
 
 <main class="console">
   <aside class="side form">
-    <p class="label">Connection</p>
-    <label for="endpoint">Endpoint<input id="endpoint" placeholder="https://sparkpipe.ai" spellcheck="false"></label>
-    <label for="key">API key<input id="key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false"></label>
-    <div class="row"><button id="connect" class="btn small" type="button">Connect</button><span id="models-note" class="hint">Enter an endpoint and key.</span></div>
     <label for="model">Model<select id="model"></select></label>
-    <p class="label">Decoding</p>
-    <div class="pair">
-      <label for="max">Max tokens<input id="max" type="number" min="1" max="8192" value="256"></label>
-      <label for="temp">Temperature<input id="temp" type="number" min="0" max="2" step="0.1" value="0"></label>
-      <label for="seed">Seed<input id="seed" type="number" min="0" step="1" placeholder="random"></label>
-      <label for="deadline">Deadline, ms<input id="deadline" type="number" min="1" step="1" placeholder="none"></label>
-    </div>
-    <label class="check" for="stream"><input id="stream" type="checkbox" checked>Stream tokens as they decode</label>
-    <p class="hint">Temperature 0 decodes greedily. With a seed, a sampled reply replays token for token on the same deployment. A request still running at its deadline is cancelled.</p>
+    <p id="residency" class="hint" aria-live="polite"></p>
+    <p id="models-note" class="hint"></p>
     <details class="snippet">
-      <summary>Call it from code</summary>
-      <select id="lang" aria-label="Language"><option value="curl">curl</option><option value="python">Python (OpenAI SDK)</option></select>
-      <pre id="code"></pre>
-      <div class="row"><button id="copy" class="btn small" type="button">Copy</button></div>
+      <summary>Developer options</summary>
+      <label for="endpoint">Endpoint<input id="endpoint" placeholder="https://sparkpipe.ai" spellcheck="false"></label>
+      <label for="key">API key<input id="key" type="password" placeholder="not needed here" autocomplete="off" spellcheck="false"></label>
+      <div class="row"><button id="connect" class="btn small" type="button">Connect</button></div>
+      <div class="pair">
+        <label for="max">Reply limit, tokens<input id="max" type="number" min="1" step="1" placeholder="none"></label>
+        <label for="temp">Temperature<input id="temp" type="number" min="0" max="2" step="0.1" value="0"></label>
+        <label for="seed">Seed<input id="seed" type="number" min="0" step="1" placeholder="random"></label>
+        <label for="deadline">Deadline, ms<input id="deadline" type="number" min="1" step="1" placeholder="none"></label>
+      </div>
+      <label class="check" for="stream"><input id="stream" type="checkbox" checked>Stream tokens as they decode</label>
+      <p class="hint">With no reply limit a reply may use the rest of the model's context window. Temperature 0 decodes greedily. With a seed, a sampled reply replays token for token on the same deployment. A request still running at its deadline is cancelled.</p>
+      <details class="snippet">
+        <summary>Call it from code</summary>
+        <select id="lang" aria-label="Language"><option value="curl">curl</option><option value="python">Python (OpenAI SDK)</option></select>
+        <pre id="code"></pre>
+        <div class="row"><button id="copy" class="btn small" type="button">Copy</button></div>
+      </details>
     </details>
   </aside>
 
   <section class="chat">
     <div id="messages" class="messages" aria-live="polite">
       <div id="empty" class="empty">
-        <p class="label signal">OpenAI-compatible · through LiteLLM</p>
-        <h2>Talk to a resident model.</h2>
-        <p>Requests go to SparkPipe's LiteLLM endpoint, the same one any OpenAI SDK can call. Every reply shows its time to first token and decode rate.</p>
+        <p class="label signal">SparkPipe chat</p>
+        <h2>Ask anything.</h2>
+        <p>Pick a model from the list. A model that is not loaded yet takes 15 to 45 seconds to load onto the fleet; after that, replies start in about a second.</p>
         <div class="examples">
           <button type="button">Explain how a KV cache speeds up decoding</button>
           <button type="button">Compare tensor and pipeline parallelism in a table</button>
@@ -87,7 +90,8 @@
   const failure = async (response) => { const doc = await response.json().catch(() => ({})); return new Error((doc.error && (doc.error.message || doc.error)) || 'HTTP ' + response.status); };
   const status = (state, text) => { $('dot').className = 'dot ' + state; $('status').textContent = text; };
   const options = () => {
-    const body = { model: $('model').value, max_tokens: +$('max').value || 256, temperature: +$('temp').value || 0 };
+    const body = { model: $('model').value, temperature: +$('temp').value || 0 };
+    if ($('max').value !== '') body.max_tokens = +$('max').value;
     if ($('seed').value !== '') body.seed = +$('seed').value;
     if ($('deadline').value !== '') body.deadline_ms = +$('deadline').value;
     return body;
@@ -100,7 +104,8 @@
       $('code').textContent = 'curl ' + url + '/chat/completions \\\n  -H "Authorization: Bearer $SPARKPIPE_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d ' + shell(JSON.stringify(body));
       return;
     }
-    const lines = ['model=' + JSON.stringify(body.model), 'messages=' + JSON.stringify(body.messages), 'max_tokens=' + body.max_tokens, 'temperature=' + body.temperature];
+    const lines = ['model=' + JSON.stringify(body.model), 'messages=' + JSON.stringify(body.messages), 'temperature=' + body.temperature];
+    if (body.max_tokens !== undefined) lines.push('max_tokens=' + body.max_tokens);
     if (body.seed !== undefined) lines.push('seed=' + body.seed);
     if (body.deadline_ms !== undefined) lines.push('extra_body={"deadline_ms": ' + body.deadline_ms + '}');
     $('code').textContent = 'import os\nfrom openai import OpenAI\n\nclient = OpenAI(base_url=' + JSON.stringify(url) + ', api_key=os.environ["SPARKPIPE_API_KEY"])\nreply = client.chat.completions.create(\n    ' + lines.join(',\n    ') + ',\n)\nprint(reply.choices[0].message.content)';
@@ -113,6 +118,52 @@
       status('off', 'API unreachable');
     }
   };
+  let control = false, chosen = false, residencyTimer = 0;
+  const local = () => location.hostname !== 'sparkpipe.ai' && base() === location.origin;
+  const mark = (doc) => {
+    if (!chosen && doc.active && Array.from($('model').options).some((option) => option.value === doc.active)) $('model').value = doc.active;
+    Array.from($('model').options).forEach((option) => {
+      const tag = option.value === doc.active ? ' · loaded' : (doc.state === 'swapping' && option.value === doc.target ? ' · loading' : '');
+      option.textContent = option.value + tag;
+    });
+  };
+  const residency = async () => {
+    clearTimeout(residencyTimer);
+    let delay = 10000;
+    try {
+      const response = await fetch(base() + '/v1/sparkpipe/status', { headers: headers() });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const doc = await response.json(), last = (doc.history || []).slice(-1)[0];
+      control = true;
+      mark(doc);
+      if (doc.state === 'swapping') {
+        $('residency').textContent = 'Loading ' + doc.target + ': ' + (doc.phase || 'starting') + ', ' + Math.round(doc.swap_elapsed_s || 0) + ' s so far';
+        delay = 2000;
+      } else if (doc.state === 'failed') {
+        $('residency').textContent = 'Loading ' + ((last && last.to) || 'a model') + ' failed: ' + doc.error;
+      } else if (doc.active) {
+        $('residency').textContent = 'Loaded: ' + doc.active + (last && last.ok && last.to === doc.active ? ', swapped in ' + last.seconds + ' s' : '') + '. Other models load on demand.';
+      } else {
+        $('residency').textContent = 'No model is loaded; the first request loads one.';
+      }
+    } catch (_) {
+      control = false;
+      $('residency').textContent = '';
+      return;
+    }
+    residencyTimer = setTimeout(residency, delay);
+  };
+  const activate = async () => {
+    if (!control || !local() || !$('model').value) return;
+    try {
+      const response = await fetch(base() + '/v1/sparkpipe/activate', { method: 'POST', headers: headers(), body: JSON.stringify({ model: $('model').value }) });
+      if (!response.ok) throw await failure(response);
+    } catch (error) {
+      $('residency').textContent = 'Could not load ' + $('model').value + ': ' + error.message;
+      return;
+    }
+    residency();
+  };
   const connect = async () => {
     save('localStorage', 'sparkpipe-endpoint', $('endpoint').value.trim());
     save('sessionStorage', 'sparkpipe-key', $('key').value.trim());
@@ -123,10 +174,11 @@
       const ids = ((await response.json()).data || []).map((model) => model.id);
       const kept = $('model').value;
       $('model').replaceChildren(...ids.map((id) => new Option(id, id, false, id === kept)));
-      $('models-note').textContent = ids.length + (ids.length === 1 ? ' model' : ' models') + ' behind this endpoint';
+      $('models-note').textContent = '';
     } catch (error) {
       $('models-note').textContent = 'No model list: ' + error.message;
     }
+    residency();
     snippet();
   };
   const add = (role, text) => {
@@ -138,21 +190,28 @@
     bubble.className = 'bubble';
     bubble.textContent = text;
     meta.className = 'meta';
-    item.append(who, bubble, meta);
+    const think = document.createElement('div');
+    think.className = 'bubble';
+    think.style.cssText = 'opacity:.6;font-size:.9em;white-space:pre-wrap;display:none';
+    item.append(who, think, bubble, meta);
     $('messages').append(item);
     $('messages').scrollTop = $('messages').scrollHeight;
-    return { bubble, meta };
+    return { bubble, meta, think };
   };
   const rate = (clock, usage, stream) => {
     const parts = [$('model').value], tokens = usage && usage.completion_tokens;
     if (stream && clock.first) parts.push('first token ' + Math.round(clock.first - clock.start) + ' ms');
-    if (tokens) parts.push(tokens + ' tokens');
-    if (tokens > 1 && stream && clock.last > clock.first) parts.push(((tokens - 1) * 1000 / (clock.last - clock.first)).toFixed(1) + ' tok/s decode');
+    if (stream && clock.thinking && clock.answer) parts.push('answer after ' + Math.round(clock.answer - clock.start) + ' ms');
+    const prompt = usage && usage.prompt_tokens, cached = usage && usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens;
+    if (prompt) parts.push(prompt + ' prompt tokens' + (typeof cached === 'number' ? ' (' + cached + ' cached)' : ''));
+    if (tokens) parts.push(tokens + ' tokens' + (clock.thinking ? ' incl. thinking' : ''));
+    if (tokens > 1 && stream && clock.arrivals >= 8 && clock.last - clock.first >= 250) parts.push(((tokens - 1) * 1000 / (clock.last - clock.first)).toFixed(1) + ' tok/s decode');
+    if (stream && clock.end) parts.push(((clock.end - clock.start) / 1000).toFixed(1) + ' s total');
     if (tokens && !stream) parts.push((tokens * 1000 / (clock.end - clock.start)).toFixed(1) + ' tok/s end to end');
     if (clock.finish) parts.push(clock.finish);
     return parts.join(' · ');
   };
-  const read = async (response, bubble, clock) => {
+  const read = async (response, bubble, clock, think) => {
     const reader = response.body.getReader(), decoder = new TextDecoder();
     let buffer = '', usage = null;
     for (;;) {
@@ -164,10 +223,21 @@
       for (const line of lines) {
         const data = line.startsWith('data:') ? line.slice(5).trim() : '';
         if (!data || data === '[DONE]') continue;
-        const chunk = JSON.parse(data), choice = (chunk.choices && chunk.choices[0]) || {}, piece = (choice.delta && choice.delta.content) || '';
+        const chunk = JSON.parse(data), choice = (chunk.choices && chunk.choices[0]) || {}, piece = (choice.delta && choice.delta.content) || '', thought = (choice.delta && choice.delta.reasoning_content) || '';
+        const now = performance.now();
+        if ((thought && think) || piece) {
+          if (now !== clock.last) clock.arrivals++;
+          clock.first = clock.first || now;
+          clock.last = now;
+        }
+        if (thought && think) {
+          clock.thinking = true;
+          think.style.display = '';
+          think.textContent += thought;
+          $('messages').scrollTop = $('messages').scrollHeight;
+        }
         if (piece) {
-          clock.first = clock.first || performance.now();
-          clock.last = performance.now();
+          clock.answer = clock.answer || now;
           bubble.textContent += piece;
           $('messages').scrollTop = $('messages').scrollHeight;
         }
@@ -190,24 +260,31 @@
     history.push({ role: 'user', content: text });
     add('user', text);
     $('prompt').value = '';
-    const reply = add('assistant', ''), stream = $('stream').checked, clock = { start: performance.now(), first: 0, last: 0, end: 0, finish: '' };
+    const reply = add('assistant', ''), stream = $('stream').checked, clock = { start: performance.now(), first: 0, last: 0, end: 0, answer: 0, arrivals: 0, thinking: false, finish: '' };
     const body = Object.assign(options(), { messages: history.slice(), stream });
     if (stream) body.stream_options = { include_usage: true };
     controller = new AbortController();
     busy(true);
+    if (control) residency();
     try {
       const response = await fetch(base() + '/v1/chat/completions', { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: controller.signal });
       if (!response.ok) throw await failure(response);
       let usage = null;
-      if (stream) usage = await read(response, reply.bubble, clock);
+      if (stream) usage = await read(response, reply.bubble, clock, reply.think);
       else {
         const doc = await response.json(), choice = (doc.choices && doc.choices[0]) || {};
+        const thought = (choice.message && choice.message.reasoning_content) || '';
+        if (thought) { reply.think.style.display = ''; reply.think.textContent = thought; clock.thinking = true; }
         reply.bubble.textContent = (choice.message && choice.message.content) || '';
         clock.finish = choice.finish_reason || '';
         usage = doc.usage;
       }
       clock.end = performance.now();
-      history.push({ role: 'assistant', content: reply.bubble.textContent });
+      if (!reply.bubble.textContent && clock.thinking) {
+        history.pop();
+        reply.bubble.classList.add('error');
+        reply.bubble.textContent = clock.finish === 'length' ? 'No answer: the reply limit ran out while the model was thinking. Raise or clear the reply limit under Developer options and send again.' : 'No answer after thinking.';
+      } else history.push({ role: 'assistant', content: reply.bubble.textContent });
       reply.meta.textContent = rate(clock, usage, stream);
     } catch (error) {
       history.pop();
@@ -216,6 +293,7 @@
     } finally {
       controller = null;
       busy(false);
+      if (control) residency();
       $('prompt').focus();
     }
   };
@@ -223,7 +301,8 @@
   $('key').value = load('sessionStorage', 'sparkpipe-key');
   $('connect').addEventListener('click', connect);
   $('send').addEventListener('click', send);
-  $('clear').addEventListener('click', () => { history.length = 0; $('messages').replaceChildren(); });
+  $('model').addEventListener('change', () => { chosen = true; activate(); });
+  $('clear').addEventListener('click', () => { if (controller) controller.abort(); history.length = 0; $('messages').replaceChildren(); });
   $('prompt').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(); } });
   $('prompt').addEventListener('input', () => { $('prompt').style.height = 'auto'; $('prompt').style.height = Math.min($('prompt').scrollHeight, 180) + 'px'; snippet(); });
   ['model', 'max', 'temp', 'seed', 'deadline', 'lang', 'endpoint'].forEach((id) => $(id).addEventListener('input', snippet));

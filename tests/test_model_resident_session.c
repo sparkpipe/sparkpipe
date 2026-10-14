@@ -13,9 +13,19 @@ static cudaError_t TestCreateStream(cudaStream_t *stream,unsigned int flags)
 	return(cudaStreamCreateWithFlags(stream,flags));
 }
 
+static cudaError_t TestCreatePriorityStream(cudaStream_t *stream,unsigned int flags,int priority)
+{
+	TestStreamCalls++;
+	if ( TestStreamCalls == TestStreamFailure )
+		return(cudaErrorMemoryAllocation);
+	return(cudaStreamCreateWithPriority(stream,flags,priority));
+}
+
 #define main SparkModelResidentdProgramMain
 #define cudaStreamCreateWithFlags TestCreateStream
+#define cudaStreamCreateWithPriority TestCreatePriorityStream
 #include "../node/model_residentd.c"
+#undef cudaStreamCreateWithPriority
 #undef cudaStreamCreateWithFlags
 #undef main
 

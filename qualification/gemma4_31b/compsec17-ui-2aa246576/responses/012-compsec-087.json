@@ -1,0 +1,62 @@
+{
+ "id": "compsec-087",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-31b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThis helper parses an IPv6 address used in X.509 name constraints. It records where :: compression occurred, then shifts already parsed bytes.\n\nCode:\n```c\n 1: static int parse_ipv6_reduced(const char *src, uint8_t dst[16])\n 2: {\n 3:     uint8_t tmp[16];\n 4:     uint8_t *tp = tmp;\n 5:     uint8_t *colonp = NULL;\n 6: \n 7:     if (src[0] == ':' && src[1] == ':') {\n 8:         colonp = --tp;          // remember compression point at the beginning\n 9:         src += 2;\n10:     }\n11: \n12:     while (*src != '\\0') {\n13:         unsigned v = parse_hextet(&src);\n14:         *tp++ = (uint8_t)(v >> 8);\n15:         *tp++ = (uint8_t)v;\n16:         if (*src == ':') src++;\n17:     }\n18: \n19:     if (colonp != NULL) {\n20:         size_t n = (size_t)(tp - colonp);\n21:         memmove(colonp + (16 - (tp - tmp)), colonp, n);\n22:         memset(colonp, 0, 16 - (tp - tmp));\n23:     }\n24: \n25:     memcpy(dst, tmp, 16);\n26:     return 0;\n27: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "6a40910eab638faecb993b3b2fb6da8609c9fa9af287a52610198261bd16a36a"
+ },
+ "response": {
+  "id": "chatcmpl-989dea71d519487f83074062c93a38a5",
+  "created": 1791704054,
+  "model": "gemma-4-31b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability is located in line 8.\n\nThe pointer `tp` is initialized to `tmp` (the start of the array). If the input string starts with `::`, line 8 performs `--tp`, moving the pointer to one byte *before* the start of the `tmp` buffer. This results in an out-of-bounds pointer. Subsequent operations, such as the assignments in lines 14-15 and the `memmove`/`memset` in lines 21-22, will perform out-of-bounds memory accesses, leading to potential memory corruption or crashes.\n\nAnswer: 8",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 129,
+   "prompt_tokens": 512,
+   "total_tokens": 641,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability is located in line 8.\n\nThe pointer `tp` is initialized to `tmp` (the start of the array). If the input string starts with `::`, line 8 performs `--tp`, moving the pointer to one byte *before* the start of the `tmp` buffer. This results in an out-of-bounds pointer. Subsequent operations, such as the assignments in lines 14-15 and the `memmove`/`memset` in lines 21-22, will perform out-of-bounds memory accesses, leading to potential memory corruption or crashes.\n\nAnswer: 8",
+ "grade": {
+  "index": 12,
+  "id": "compsec-087",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "8,20-22",
+  "extracted": "8",
+  "passed": true,
+  "elapsed_ms": 5011.6,
+  "output_sha256": "59943d75a60d5b01d871d9b8e6665526305bddf0f9749d9b38a55c19c6fe27ec",
+  "prompt_token_count": 512,
+  "generated_token_count": 129,
+  "reasoning_chars": 0,
+  "content_chars": 493,
+  "status": "stop"
+ }
+}

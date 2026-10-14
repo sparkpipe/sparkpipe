@@ -1,0 +1,21 @@
+615cf6d74841f2c1  /proc/3504539/exe
+615cf6d74841f2c1  /home/spec/k3-kv-api/bin/sparkpipe_model_api
+68ce5d9354ce687a  /home/spec/k3-kv-api/runtime/lib/libk3_serving_adapter.so
+58578ae8cb9f99f2  /home/spec/k3-kv-api/runtime/tokenizer/tokenizer.compiled
+{"status":"ok","served":0,"tokenizer":true,"ranks":16,"connected_ranks":16,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"kv_write_alert_rank":-1}
+spark0: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark1: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark2: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark3: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark4: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark5: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark6: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark7: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark8: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+spark9: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+sparka: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+sparkb: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+sparkc: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+sparkd: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+sparke: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184
+sparkf: a87e8aba3533f26e cd8edbd8e1b3c9d7 f2b7388c715494c3 f40cafa57e6df035 k3.stage0.rankN.pack k3.stage0.rankN.pack.experts pack.sha256 184

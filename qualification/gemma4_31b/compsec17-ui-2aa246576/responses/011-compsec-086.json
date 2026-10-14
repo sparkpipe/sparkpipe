@@ -1,0 +1,62 @@
+{
+ "id": "compsec-086",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-31b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe parser grows a reusable tag buffer before copying the current element name and closing delimiters. Sizes are attacker-influenced through XML input.\n\nCode:\n```c\n 1: static bool ensure_tag_buffer(struct Parser *p, size_t prefix_len, size_t name_len)\n 2: {\n 3:     unsigned int need = (unsigned int)(prefix_len + name_len + 3);\n 4: \n 5:     if (need > p->tag_cap) {\n 6:         char *q = realloc(p->tag_buf, need);\n 7:         if (q == NULL)\n 8:             return false;\n 9:         p->tag_buf = q;\n10:         p->tag_cap = need;\n11:     }\n12: \n13:     memcpy(p->tag_buf, p->prefix, prefix_len);\n14:     memcpy(p->tag_buf + prefix_len, p->name, name_len);\n15:     memcpy(p->tag_buf + prefix_len + name_len, \"/>\\0\", 3);\n16:     return true;\n17: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "c28a080927086af57aa7d9bfca4214f72bc9a03eb20b8b8c43dcf5293a882505"
+ },
+ "response": {
+  "id": "chatcmpl-3a3230bf777c41289ce6fcb649ecb56d",
+  "created": 1791704049,
+  "model": "gemma-4-31b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The vulnerability in this function is an integer overflow. On line 3, `prefix_len` and `name_len` (which are `size_t`, typically 64-bit) are added together and then cast to an `unsigned int` (typically 32-bit). \n\nIf an attacker provides large values for `prefix_len` and `name_len`, the sum can wrap around. For example, if `prefix_len + name_len + 3` equals $2^{32} + 10$, the variable `need` will be assigned the value $10$. Since $10$ is likely less than the current `p->tag_cap`, the `if` block on line 5 will be skipped, and no reallocation will occur. Subsequently, the `memcpy` operations on lines 13, 14, and 15 will write far beyond the bounds of the allocated `p->tag_buf`, leading to a heap buffer overflow.\n\nAnswer: 3",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 215,
+   "prompt_tokens": 401,
+   "total_tokens": 616,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The vulnerability in this function is an integer overflow. On line 3, `prefix_len` and `name_len` (which are `size_t`, typically 64-bit) are added together and then cast to an `unsigned int` (typically 32-bit). \n\nIf an attacker provides large values for `prefix_len` and `name_len`, the sum can wrap around. For example, if `prefix_len + name_len + 3` equals $2^{32} + 10$, the variable `need` will be assigned the value $10$. Since $10$ is likely less than the current `p->tag_cap`, the `if` block on line 5 will be skipped, and no reallocation will occur. Subsequently, the `memcpy` operations on lines 13, 14, and 15 will write far beyond the bounds of the allocated `p->tag_buf`, leading to a heap buffer overflow.\n\nAnswer: 3",
+ "grade": {
+  "index": 11,
+  "id": "compsec-086",
+  "source": "COMPSEC",
+  "domain": "libexpat",
+  "expected": "3,13-15",
+  "extracted": "3",
+  "passed": true,
+  "elapsed_ms": 7573.0,
+  "output_sha256": "ea2c303199069e6343626f475eb853cf26d823878e7a67c59b133453ab3ae5ea",
+  "prompt_token_count": 401,
+  "generated_token_count": 215,
+  "reasoning_chars": 0,
+  "content_chars": 729,
+  "status": "stop"
+ }
+}

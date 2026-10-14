@@ -11,7 +11,7 @@ static uint32_t test_reset_slots[TEST_K3_STUB_SLOTS];
 static uint32_t test_reset_count;
 static uint32_t test_reset_calls;
 static SparkStatus test_reset_status = SPARK_STATUS_OK;
-static SparkK3StageRunnerKv test_attached_kv;
+static SparkStageRunnerKv test_attached_kv;
 static uint32_t test_attach_calls;
 static uint32_t test_kv_layers = 2u;
 static uint64_t test_recurrent_bytes = TEST_K3_RECURRENT_BYTES;
@@ -21,16 +21,22 @@ static uint32_t test_recurrent_from_buffer;
 static SparkStatus test_recurrent_status = SPARK_STATUS_OK;
 static SparkStatus test_pack_status = SPARK_STATUS_OK;
 
-SparkStatus SparkK3StageRunnerInitialize(SparkK3StageRunner *runner,
-	const SparkK3StageRunnerConfiguration *configuration)
+const SparkStageRunnerModelInterface *SparkK3StageModel(void)
+{
+	return(0);
+}
+
+SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner,
+	const SparkStageRunnerConfiguration *configuration, const SparkStageRunnerModelInterface *model)
 {
 	(void)runner;
 	(void)configuration;
+	(void)model;
 	return(SPARK_STATUS_UNSUPPORTED);
 }
 
-SparkStatus SparkK3StageRunnerSubmit(SparkK3StageRunner *runner,
-	const SparkK3StageRunnerDispatch *dispatch)
+SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner,
+	const SparkStageRunnerDispatch *dispatch)
 {
 	(void)runner;
 	test_dispatch_calls++;
@@ -39,8 +45,8 @@ SparkStatus SparkK3StageRunnerSubmit(SparkK3StageRunner *runner,
 	return(test_dispatch_status);
 }
 
-SparkStatus SparkK3StageRunnerGetStats(const SparkK3StageRunner *runner,
-	SparkK3StageRunnerStats *stats_out)
+SparkStatus SparkStageRunnerGetStats(const SparkStageRunner *runner,
+	SparkStageRunnerStats *stats_out)
 {
 	(void)runner;
 	if ( stats_out != 0 )
@@ -48,12 +54,12 @@ SparkStatus SparkK3StageRunnerGetStats(const SparkK3StageRunner *runner,
 	return(SPARK_STATUS_OK);
 }
 
-void SparkK3StageRunnerDestroy(SparkK3StageRunner *runner)
+void SparkStageRunnerDestroy(SparkStageRunner *runner)
 {
 	(void)runner;
 }
 
-SparkStatus SparkK3StageRunnerResetSlots(SparkK3StageRunner *runner,
+SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner,
 	const uint32_t *slots, uint32_t count)
 {
 	(void)runner;
@@ -64,13 +70,13 @@ SparkStatus SparkK3StageRunnerResetSlots(SparkK3StageRunner *runner,
 	return(test_reset_status);
 }
 
-uint32_t SparkK3StageRunnerKvLayerCount(const SparkK3StageRunner *runner)
+uint32_t SparkStageRunnerKvLayerCount(const SparkStageRunner *runner)
 {
 	(void)runner;
 	return(test_kv_layers);
 }
 
-SparkStatus SparkK3StageRunnerAttachKv(SparkK3StageRunner *runner, const SparkK3StageRunnerKv *kv)
+SparkStatus SparkStageRunnerAttachKv(SparkStageRunner *runner, const SparkStageRunnerKv *kv)
 {
 	(void)runner;
 	test_attach_calls++;
@@ -78,13 +84,13 @@ SparkStatus SparkK3StageRunnerAttachKv(SparkK3StageRunner *runner, const SparkK3
 	return(SPARK_STATUS_OK);
 }
 
-uint64_t SparkK3StageRunnerRecurrentBytes(const SparkK3StageRunner *runner)
+uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner)
 {
 	(void)runner;
 	return(test_recurrent_bytes);
 }
 
-SparkStatus SparkK3StageRunnerRecurrentCopy(SparkK3StageRunner *runner, uint32_t to_buffer,
+SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer,
 	uint32_t slot, void *buffer, uint64_t bytes, void *stream)
 {
 	(void)runner;
@@ -106,7 +112,7 @@ SparkStatus SparkK3StageRunnerRecurrentCopy(SparkK3StageRunner *runner, uint32_t
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkK3StageRunnerPackIdentity(const SparkK3StageRunner *runner, uint8_t *digest, uint32_t digest_bytes)
+SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes)
 {
 	(void)runner;
 	if ( test_pack_status != SPARK_STATUS_OK )

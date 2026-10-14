@@ -1,0 +1,84 @@
+#### k3 lock wait 2026-10-11T15:09:00Z
+== 2026-10-11T15:09:01Z kimi-k3 attribution precheck
+activate kimi-k3: idle kimi-k3 56.1 null
+fw-2aa246576 (truncating SUM) vs old golden: TOTAL top-1 agreement 192/192 served_max_delta 0.0 topk_max_delta 0.0 large 0
+fw-2c5d5b843 (RNE) vs fw-2aa246576: LARGE p3k: flip at 13 with old top-1/top-2 margin 0.5989
+activate qwen3.8-max: idle qwen3.8-max 44.2 null
+activate kimi-k3: idle kimi-k3 46.2 null
+restored fw-2c5d5b843 vs golden-new: TOTAL top-1 agreement 192/192 served_max_delta 0.0 topk_max_delta 0.0 large 0
+activate qwen3.8-max: idle qwen3.8-max 42.2 null
+  16 a87e8aba3533f26e
+fw adapter: a87e8aba3533f26e
+== 2026-10-11T15:14:14Z attribution done kimi-k3 (idle qwen3.8-max None)
+#### k3 rc=0 2026-10-11T15:14:14Z
+#### qmax lock wait 2026-10-11T15:14:14Z
+== 2026-10-11T15:14:14Z qwen3.8-max attribution precheck
+activate qwen3.8-flash: idle qwen3.8-flash 19.5 null
+activate qwen3.8-max: idle qwen3.8-max 34.0 null
+fw-2aa246576 (truncating SUM) vs old golden: TOTAL top-1 agreement 68/68 served_max_delta 0.0 topk_max_delta 0.0 large 0
+fw-2c5d5b843 (RNE) vs fw-2aa246576: TOTAL top-1 agreement 68/68 served_max_delta 0.008314 topk_max_delta 1.831387 large 0
+activate qwen3.8-flash: idle qwen3.8-flash 19.2 null
+activate qwen3.8-max: idle qwen3.8-max 34.6 null
+restored fw-2c5d5b843 vs golden-new: TOTAL top-1 agreement 68/68 served_max_delta 0.0 topk_max_delta 0.0 large 0
+activate qwen3.8-max: idle qwen3.8-max 34.6 null
+  16 3127ec7be006dd2e
+fw adapter: 3127ec7be006dd2e
+== 2026-10-11T15:16:39Z attribution done qwen3.8-max (idle qwen3.8-max None)
+#### qmax rc=0 2026-10-11T15:16:39Z
+#### d41 lock wait 2026-10-11T15:16:39Z
+== 2026-10-11T15:16:39Z deepseek-v4.1-flash attribution precheck
+activate deepseek-v4.1-flash: idle deepseek-v4.1-flash 23.9 null
+fw-2aa246576 (truncating SUM) vs old golden: TOTAL top-1 agreement 36/36 served_max_delta 0.0 topk_max_delta 0.0 large 0
+fw-2c5d5b843 (RNE) vs fw-2aa246576: TOTAL top-1 agreement 36/36 served_max_delta 0.233826 topk_max_delta 3.375143 large 0
+activate qwen3.8-max: idle qwen3.8-max 34.5 null
+activate deepseek-v4.1-flash: idle deepseek-v4.1-flash 22.8 null
+restored fw-2c5d5b843 vs golden-new: TOTAL top-1 agreement 36/36 served_max_delta 0.0 topk_max_delta 0.0 large 0
+activate qwen3.8-max: idle qwen3.8-max 35.2 null
+  16 900399dba4fe33a1
+fw adapter: 900399dba4fe33a1
+== 2026-10-11T15:19:01Z attribution done deepseek-v4.1-flash (idle qwen3.8-max None)
+#### d41 rc=0 2026-10-11T15:19:01Z
+#### gflash lock wait 2026-10-11T15:19:01Z
+== 2026-10-11T15:19:01Z glm-5.3-flash attribution precheck
+activate glm-5.3-flash: idle glm-5.3-flash 23.8 null
+fw-2aa246576 (truncating SUM) vs old golden: TOTAL top-1 agreement 976/976 served_max_delta 0.0 topk_max_delta 0.0 large 0
+fw-2c5d5b843 (RNE) vs fw-2aa246576: TOTAL top-1 agreement 197/208 served_max_delta 0.480482 topk_max_delta 3.195819 large 0
+activate qwen3.8-max: idle qwen3.8-max 41.5 null
+activate glm-5.3-flash: idle glm-5.3-flash 23.0 null
+restored fw-2c5d5b843 vs golden-new: TOTAL top-1 agreement 960/960 served_max_delta 0.0 topk_max_delta 0.0 large 0
+activate qwen3.8-max: idle qwen3.8-max 40.7 null
+  16 d09e4f2932e4d076
+fw adapter: d09e4f2932e4d076
+== 2026-10-11T15:23:45Z attribution done glm-5.3-flash (idle qwen3.8-max None)
+#### gflash rc=0 2026-10-11T15:23:45Z
+#### final lock wait 2026-10-11T15:23:45Z
+{'glm-5.3': 61203283968, 'glm-5.3-flash': 26843545600}
+finalize: backup model_swap.json.prev-20261011T152345Z; controller idle qwen3.8-max None
+#### final rc=0 2026-10-11T15:23:53Z
+#### spot lock wait 2026-10-11T15:23:53Z
+activate glm-5.3: idle glm-5.3 32.4 null
+SPOT glm-5.3: 'Paris' reasoning 0 stop; {"model": "glm-5.3", "projected_gib": 57.0, "used_gib_max": 53.2, "used_gib_min": 53.1, "available_gib_min": 50.2, "tightest": "spark2", "event": "swap_memory"}
+activate glm-5.3-flash: idle glm-5.3-flash 21.7 null
+SPOT glm-5.3-flash: 'Paris' reasoning 0 stop; {"model": "glm-5.3-flash", "projected_gib": 25.0, "used_gib_max": 24.6, "used_gib_min": 24.6, "available_gib_min": 27.6, "tightest": "spark2", "event": "swap_me
+activate kimi-k3: idle kimi-k3 50.7 null
+SPOT kimi-k3: 'Paris' reasoning 5 stop; {"model": "kimi-k3", "projected_gib": 97.5, "used_gib_max": 97.9, "used_gib_min": 97.7, "available_gib_min": 5.7, "tightest": "spark2", "event": "swap_memory"}
+activate qwen3.8-27b: idle qwen3.8-27b 22.4 null
+SPOT qwen3.8-27b: '\n\nParis' reasoning 93 stop; {"model": "qwen3.8-27b", "projected_gib": 16.0, "used_gib_max": 5.5, "used_gib_min": 5.3, "available_gib_min": 97.6, "tightest": "spark2", "event": "swap_memory
+activate deepseek-v4.1-flash: idle deepseek-v4.1-flash 24.6 null
+SPOT deepseek-v4.1-flash: 'Paris' reasoning 76 stop; {"model": "deepseek-v4.1-flash", "projected_gib": 44.0, "used_gib_max": 38.2, "used_gib_min": 35.5, "available_gib_min": 66.9, "tightest": "spark0", "event": "s
+activate qwen3.8-flash: idle qwen3.8-flash 17.9 null
+SPOT qwen3.8-flash: '\n\nParis' reasoning 140 stop; {"model": "qwen3.8-flash", "projected_gib": 14.0, "used_gib_max": 11.9, "used_gib_min": 11.7, "available_gib_min": 90.8, "tightest": "spark2", "event": "swap_me
+activate gemma-4-31b: idle gemma-4-31b 15.6 null
+SPOT gemma-4-31b: 'Paris' reasoning 180 stop; {"model": "gemma-4-31b", "projected_gib": 16.0, "used_gib_max": 9.9, "used_gib_min": 9.7, "available_gib_min": 92.7, "tightest": "spark2", "event": "swap_memory
+activate gemma-4-26b-a4b: idle gemma-4-26b-a4b 15.5 null
+SPOT gemma-4-26b-a4b: 'Paris' reasoning 179 stop; {"model": "gemma-4-26b-a4b", "projected_gib": 12.0, "used_gib_max": 11.0, "used_gib_min": 10.9, "available_gib_min": 93.8, "tightest": "spark2", "event": "swap_
+activate ling-3.0-flash: idle ling-3.0-flash 17.4 null
+SPOT ling-3.0-flash: 'Paris' reasoning 120 stop; {"model": "ling-3.0-flash", "projected_gib": 24.0, "used_gib_max": 16.1, "used_gib_min": 16.0, "available_gib_min": 88.4, "tightest": "spark2", "event": "swap_m
+activate hy4-preview: idle hy4-preview 27.6 null
+SPOT hy4-preview: 'Paris' reasoning 149 stop; {"model": "hy4-preview", "projected_gib": 64.0, "used_gib_max": 53.2, "used_gib_min": 53.1, "available_gib_min": 51.0, "tightest": "spark2", "event": "swap_memo
+activate muse-glimmer-30b: idle muse-glimmer-30b 16.1 null
+SPOT muse-glimmer-30b: 'Paris' reasoning 142 stop; {"model": "muse-glimmer-30b", "projected_gib": 16.0, "used_gib_max": 6.0, "used_gib_min": 5.8, "available_gib_min": 98.0, "tightest": "spark2", "event": "swap_m
+activate qwen3.8-max: idle qwen3.8-max 34.4 null
+SPOT qwen3.8-max: '\n\nParis' reasoning 105 stop; {"model": "qwen3.8-max", "projected_gib": 88.0, "used_gib_max": 90.4, "used_gib_min": 90.4, "available_gib_min": 13.3, "tightest": "spark2", "event": "swap_memo
+== 2026-10-11T15:29:56Z spotcheck done (idle qwen3.8-max None)
+#### spot rc=0 2026-10-11T15:29:56Z

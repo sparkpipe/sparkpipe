@@ -1,0 +1,62 @@
+{
+ "id": "compsec-084",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "laguna-s-2.1",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nOn this target, plain char is signed, and the ctype implementation indexes a table for values other than EOF.\n\nCode:\n```c\n 1: static size_t decode_component(char *s, size_t len)\n 2: {\n 3:     size_t r = 0, w = 0;\n 4: \n 5:     while (r < len) {\n 6:         if (s[r] == '%' && r + 2 < len &&\n 7:             isxdigit(s[r + 1]) && isxdigit(s[r + 2])) {\n 8:             s[w++] = hexpair(s[r + 1], s[r + 2]);\n 9:             r += 3;\n10:         } else {\n11:             s[w++] = s[r++];\n12:         }\n13:     }\n14:     return w;\n15: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "08fbc02fbcd444f0f06569170570702194cb5f36f435e49e6d3e8bf23b645cfb"
+ },
+ "response": {
+  "id": "chatcmpl-5a2d122a1229438e9fd14a353a730597",
+  "created": 1791770636,
+  "model": "laguna-s-2.1",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function `decode_component` processes a string `s` of length `len`, decoding `%XX` sequences into their corresponding bytes. The critical issue lies in the use of `isxdigit` on characters from `s`. \n\nThe `isxdigit` function (and other `ctype.h` functions) is only defined for arguments that are either `EOF` or representable as `unsigned char`. On this target, `char` is signed, meaning characters with values above 127 (e.g., extended ASCII or UTF-8 bytes) are interpreted as negative values. Passing such negative values (other than `EOF`) to `isxdigit` results in **undefined behavior** because the `ctype` implementation indexes a table using these invalid values. This can lead to out-of-bounds memory access or incorrect results.\n\nThe vulnerability is introduced at **line 7**, where `isxdigit(s[r + 1])` and `isxdigit(s[r + 2])` are called without ensuring the characters are cast to `unsigned char`. This is the primary bug, as it directly triggers the undefined behavior.\n\nAnswer: 7",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 233,
+   "prompt_tokens": 391,
+   "total_tokens": 624,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function `decode_component` processes a string `s` of length `len`, decoding `%XX` sequences into their corresponding bytes. The critical issue lies in the use of `isxdigit` on characters from `s`. \n\nThe `isxdigit` function (and other `ctype.h` functions) is only defined for arguments that are either `EOF` or representable as `unsigned char`. On this target, `char` is signed, meaning characters with values above 127 (e.g., extended ASCII or UTF-8 bytes) are interpreted as negative values. Passing such negative values (other than `EOF`) to `isxdigit` results in **undefined behavior** because the `ctype` implementation indexes a table using these invalid values. This can lead to out-of-bounds memory access or incorrect results.\n\nThe vulnerability is introduced at **line 7**, where `isxdigit(s[r + 1])` and `isxdigit(s[r + 2])` are called without ensuring the characters are cast to `unsigned char`. This is the primary bug, as it directly triggers the undefined behavior.\n\nAnswer: 7",
+ "grade": {
+  "index": 9,
+  "id": "compsec-084",
+  "source": "COMPSEC",
+  "domain": "PHP",
+  "expected": "6-7",
+  "extracted": "7",
+  "passed": true,
+  "elapsed_ms": 5563.6,
+  "output_sha256": "97dd5bdb992a82647155b94a0c7383526f9b80c1662c86bfa3037458926c5498",
+  "prompt_token_count": 391,
+  "generated_token_count": 233,
+  "reasoning_chars": 0,
+  "content_chars": 995,
+  "status": "stop"
+ }
+}

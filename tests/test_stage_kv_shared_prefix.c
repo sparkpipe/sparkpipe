@@ -240,8 +240,9 @@ static void TestBothEnginesMapOneWindow(void)
 	assert(ENGINE_A.binding.kv_shared.holder != ENGINE_B.binding.kv_shared.holder);
 	assert(ENGINE_A.binding.kv_shared.mapped_count == ENGINE_A.binding.kv_shared.chunk_count && ENGINE_B.binding.kv_shared.mapped_count == ENGINE_B.binding.kv_shared.chunk_count);
 	assert(ENGINE_A.binding.physical_page_count == TEST_PHYSICAL && ENGINE_A.binding.region_layer_stride_bytes[1] == (uint64_t)(TEST_PHYSICAL + TEST_WINDOW_PAGES) * TEST_LAYER_BYTES);
+	assert(SparkStageKvBindingAddressablePageCount(&ENGINE_A.binding) == TEST_PHYSICAL + TEST_WINDOW_PAGES);
 	assert(SparkWeightdServerKvPoolCount(TestKvServer) == 3u);
-	printf("two engines of one layout map one weightd window after their private pages, in every region and every layer, with distinct holders\n");
+	printf("two engines of one layout map one weightd window after their private pages, in every region and every layer, with distinct holders; the addressable page count drivers bound their KV views with covers the window\n");
 }
 
 static void TestSecondEngineServesThePublishedPrefix(void)
@@ -288,6 +289,7 @@ static void TestSecondEngineServesThePublishedPrefix(void)
 	assert(EngineEntryWindowSlot(&ENGINE_B,0x60u,TEST_BLOCK) == slot);
 	physical = ENGINE_B.binding.physical_pages[(uint64_t)lane.resident_sequence_slot * ENGINE_B.binding.pages_per_sequence];
 	assert(physical == ENGINE_B.binding.physical_page_count + slot);
+	assert(physical >= ENGINE_B.binding.physical_page_count && physical < SparkStageKvBindingAddressablePageCount(&ENGINE_B.binding));
 	holders = atomic_load(&ENGINE_B.binding.shared_index.slots[slot].holders);
 	assert(holders == (SparkKvSharedIndexBit(ENGINE_A.binding.kv_shared.holder) | SparkKvSharedIndexBit(ENGINE_B.binding.kv_shared.holder)));
 	assert(ENGINE_B.binding.page_cache.shared_allocated_count == 1u && ENGINE_B.binding.arena.shared_block_count == 2u);

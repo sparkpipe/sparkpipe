@@ -1,0 +1,63 @@
+{
+ "id": "compsec-088",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "glm-5.3",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe function exports a finite-field Diffie-Hellman public value into a fixed-width buffer for the group. The public MPI may be supplied by an application.\n\nCode:\n```c\n 1: static int export_ffdh_public(const struct DhmContext *ctx,\n 2:                               uint8_t *out, size_t out_len)\n 3: {\n 4:     size_t plen = mpi_size(&ctx->P);      // byte length of the group prime\n 5:     size_t ylen = mpi_size(&ctx->Y);      // byte length of public value\n 6: \n 7:     if (out_len < plen)\n 8:         return -1;\n 9: \n10:     memset(out, 0, plen);\n11:     return mpi_write_binary(&ctx->Y, out + (plen - ylen), ylen);\n12: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "ab84369e26833885c92e5ba81eb48c1da3235c133ff2ca375177e89303d4d4a2"
+ },
+ "response": {
+  "id": "chatcmpl-aebd4b58a7f048b488acd5c3c0dd997f",
+  "created": 1791730871,
+  "model": "glm-5.3",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "**Analysis:**\n\nThe function checks that `out_len >= plen` (line 7), which is correct for the fixed-width export. However, `Y` is the public value which may be supplied by an application (i.e., untrusted input). If `ylen > plen` (an oversized public value), then `plen - ylen` underflows (size_t wraps to a huge value), causing `out + (plen - ylen)` to point far out of bounds, and `mpi_write_binary` writes `ylen` bytes there \u2014 an out-of-bounds write.\n\nThe missing check is `ylen > plen` (or clamping), and the dangerous arithmetic/write occurs on line 11.\n\nAnswer: 11",
+     "role": "assistant",
+     "reasoning_content": "ylen can exceed plen \u2192 out + (plen - ylen) underflows before buffer. Bug at line 11."
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 181,
+   "prompt_tokens": 304,
+   "total_tokens": 485,
+   "prompt_tokens_details": {
+    "cached_tokens": 64
+   }
+  }
+ },
+ "graded_text": "<think>ylen can exceed plen \u2192 out + (plen - ylen) underflows before buffer. Bug at line 11.</think>**Analysis:**\n\nThe function checks that `out_len >= plen` (line 7), which is correct for the fixed-width export. However, `Y` is the public value which may be supplied by an application (i.e., untrusted input). If `ylen > plen` (an oversized public value), then `plen - ylen` underflows (size_t wraps to a huge value), causing `out + (plen - ylen)` to point far out of bounds, and `mpi_write_binary` writes `ylen` bytes there \u2014 an out-of-bounds write.\n\nThe missing check is `ylen > plen` (or clamping), and the dangerous arithmetic/write occurs on line 11.\n\nAnswer: 11",
+ "grade": {
+  "index": 13,
+  "id": "compsec-088",
+  "source": "COMPSEC",
+  "domain": "Mbed TLS",
+  "expected": "11",
+  "extracted": "11",
+  "passed": true,
+  "elapsed_ms": 8726.3,
+  "output_sha256": "d11e1ce18e2540b91c59060a7e79c7cf4d707a3e1a543f032fffeac91c66b3d0",
+  "prompt_token_count": 304,
+  "generated_token_count": 181,
+  "reasoning_chars": 84,
+  "content_chars": 568,
+  "status": "stop"
+ }
+}

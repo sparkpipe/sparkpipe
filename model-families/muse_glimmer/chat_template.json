@@ -1,0 +1,20 @@
+{
+ "prefix": "<|begin_of_text|>",
+ "thinking_prefix": "<|start|>system<|message|>You are a helpful AI assistant.\nKnowledge cutoff: 2026-01-04.\n\nReasoning strength: high.\n\n# Valid recipients: \"self\", \"user\".<|eot|>",
+ "system": "<|start|>system<|message|>",
+ "system_thinking": "<|start|>system<|message|>",
+ "user": "<|start|>user<|message|>",
+ "observation": null,
+ "assistant": "<|start|>assistant to=user<|message|>",
+ "assistant_thinking": "<|start|>assistant to=user<|message|>",
+ "turn_suffix": "<|eot|>",
+ "generation": "<|start|>assistant",
+ "generation_thinking": "<|start|>assistant",
+ "stop_markers": [
+  "<|eot|>",
+  "<|end_of_text|>"
+ ],
+ "plain_prefix": "<|start|>system<|message|>You are a helpful AI assistant.\nKnowledge cutoff: 2026-01-04.\n\nReasoning strength: low.\n\n# Valid recipients: \"self\", \"user\".<|eot|>",
+ "system_suffix": "\n\nReasoning strength: low.\n\n# Valid recipients: \"self\", \"user\".",
+ "system_suffix_thinking": "\n\nReasoning strength: high.\n\n# Valid recipients: \"self\", \"user\"."
+}

@@ -1,0 +1,62 @@
+{
+ "id": "compsec-083",
+ "request": {
+  "endpoint": "http://127.0.0.1:4000/v1/chat/completions",
+  "body": {
+   "model": "gemma-4-26b-a4b",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Analyze this reduced C/C++ function. It may or may not contain a vulnerability.\nReply with the single best line number where the primary bug is introduced. If the bug is only clear from a small group of adjacent lines, reply with the smallest comma-separated set of exact line numbers.\nReturn 0 if the function is safe under the stated assumptions.\n\nThe authentication decoder stores numbered CNCT_specific_data segments. Inputs are not guaranteed to arrive in ascending segment order.\n\nCode:\n```c\n 1: static bool read_segments(struct ConnAuth *a, struct Packet *p)\n 2: {\n 3:     int last = -1;\n 4: \n 5:     while (packet_has_segment(p)) {\n 6:         int segno = packet_get_segment_number(p);\n 7:         size_t len = packet_get_segment_length(p);\n 8: \n 9:         int missing = segno - last - 1;\n10:         a->segments.grow(a->segments.size() + missing);\n11:         a->segments[segno] = packet_read_bytes(p, len);\n12: \n13:         last = segno;\n14:     }\n15:     return true;\n16: }\n```\n\nAt the end, write exactly one final line in this format and do not write anything after it:\nAnswer: <line number or comma-separated line numbers>"
+    }
+   ],
+   "max_tokens": 512,
+   "temperature": 0.0,
+   "stream": false,
+   "reasoning_effort": "minimal"
+  },
+  "body_sha256": "d8ddc910ee6e9e2fd0024ec3fe98c88f65f40a8e68c45cd4bdd1ab584ca63dce"
+ },
+ "response": {
+  "id": "chatcmpl-8d0cb76f14f14927bb7c3b83317e628b",
+  "created": 1791704180,
+  "model": "gemma-4-26b-a4b",
+  "object": "chat.completion",
+  "choices": [
+   {
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {
+     "content": "The function is vulnerable to an out-of-bounds access or an integer overflow/underflow issue due to the assumption that segments arrive in ascending order.\n\nSpecifically, the variable `last` is initialized to `-1`. If the first segment received has a `segno` of `0`, `missing` becomes `0 - (-1) - 1 = 0`, which is fine. However, the prompt states that \"Inputs are not guaranteed to arrive in ascending segment order.\"\n\nIf a segment arrives with a `segno` that is smaller than the previous `last` (e.g., segment 5 arrives, then segment 2 arrives), the calculation `int missing = segno - last - 1` will result in a negative number (e.g., `2 - 5 - 1 = -4`). When this negative integer is passed to `a->segments.grow()`, which expects a `size_t` (unsigned), it will be cast to a very large positive value, leading to a massive memory allocation attempt or an integer overflow. Even if the allocation succeeds, the subsequent line `a->segments[segno] = ...` relies on `segno` being within the bounds of the vector, but the logic for growing the vector is fundamentally broken for non-monotonic input.\n\nThe primary bug is the logic used to calculate the required size for non-monotonic segment numbers.\n\nAnswer: 9",
+     "role": "assistant"
+    },
+    "provider_specific_fields": {}
+   }
+  ],
+  "usage": {
+   "completion_tokens": 295,
+   "prompt_tokens": 346,
+   "total_tokens": 641,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ "graded_text": "The function is vulnerable to an out-of-bounds access or an integer overflow/underflow issue due to the assumption that segments arrive in ascending order.\n\nSpecifically, the variable `last` is initialized to `-1`. If the first segment received has a `segno` of `0`, `missing` becomes `0 - (-1) - 1 = 0`, which is fine. However, the prompt states that \"Inputs are not guaranteed to arrive in ascending segment order.\"\n\nIf a segment arrives with a `segno` that is smaller than the previous `last` (e.g., segment 5 arrives, then segment 2 arrives), the calculation `int missing = segno - last - 1` will result in a negative number (e.g., `2 - 5 - 1 = -4`). When this negative integer is passed to `a->segments.grow()`, which expects a `size_t` (unsigned), it will be cast to a very large positive value, leading to a massive memory allocation attempt or an integer overflow. Even if the allocation succeeds, the subsequent line `a->segments[segno] = ...` relies on `segno` being within the bounds of the vector, but the logic for growing the vector is fundamentally broken for non-monotonic input.\n\nThe primary bug is the logic used to calculate the required size for non-monotonic segment numbers.\n\nAnswer: 9",
+ "grade": {
+  "index": 8,
+  "id": "compsec-083",
+  "source": "COMPSEC",
+  "domain": "Firebird",
+  "expected": "9-11",
+  "extracted": "9",
+  "passed": true,
+  "elapsed_ms": 4163.2,
+  "output_sha256": "5b276a9f65f93f54d9d35f120767a017006621f44d4a13467971adda1172b467",
+  "prompt_token_count": 346,
+  "generated_token_count": 295,
+  "reasoning_chars": 0,
+  "content_chars": 1207,
+  "status": "stop"
+ }
+}

@@ -265,8 +265,9 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 
 **Projections (`project.cuh`)**
 
-- `LmLowRankProject` is the raw form and `LmAbsorbedProject` the absorbed
-  form. At decode, absorbed avoids materializing per-head K and V.
+- The low-rank and absorbed attention projections live in each model's
+  own layer code; `project.cuh` keeps the shared split, rope and per-head
+  kernels.
 - **The per-head value projection stays unabsorbed**
   (`LmPerHeadProjectKernel`), for two reasons (4187f90^):
   - Elementwise output gating does not commute with the fold.
@@ -280,7 +281,10 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   shuffles first, then do one round through shared memory.
 - **Fused residual and norm.** `LmFusedResidualRmsNormKernel` reads the
   residual once and writes both the normed row and the new residual.
-  `LmFusedNormQuantiseKernel` normalizes and quantizes in one pass.
+- **Activation quantize.** `LmQuantiseRowsKernel` rounds each group scale
+  to UE4M3 first and encodes the codes against that stored scale, so the
+  consumer's `code * scale` is the nearest grid point. A nonzero group never
+  stores the zero scale: it clamps to the smallest positive code.
 - **Scale-group guard.** `LmQuantiseRowsKernel` asserts
   `Format::kScaleGroup > 0`. That catches the divide-by-zero class that
   shipped when an unquantized BF16 format reached the quantizer.

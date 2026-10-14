@@ -176,7 +176,7 @@ static void SparkModelPipelineClientRecordFailure(
 	{
 		transaction->status = (uint32_t)status;
 		fprintf(stderr,
-			"TXN-FAIL-FIRST id=%llu status=%u — the first failing result for this transaction (the #30 abort source)\n",
+			"pipeline transaction %llu first failed with status %u\n",
 			(unsigned long long)transaction->submission_id,
 			(unsigned)status);
 	}
@@ -252,6 +252,17 @@ static void SparkModelPipelineClientInvalidateLease(
 	if ( SparkModelContinuationLeaseIsActive(&slot->lease) != 0u )
 		pipeline->active_continue_lease_count--;
 	memset(slot,0,sizeof(*slot));
+}
+
+static void SparkModelPipelineClientDropLeases(
+	SparkModelPipelineClient *pipeline,
+	SparkModelPipelineTransaction *transaction)
+{
+	SparkModelServingLane *lanes = SparkModelPipelineClientTransactionLanes(pipeline,transaction);
+	uint32_t lane;
+	for (lane=0u; lane<transaction->lane_count; lane++)
+		if ( lanes[lane].resident_sequence_slot < pipeline->runtime_limits.resident_sequence_capacity )
+			SparkModelPipelineClientInvalidateLease(pipeline,lanes[lane].resident_sequence_slot);
 }
 
 static SparkStatus SparkModelPipelineClientUpdateLeases(
@@ -347,6 +358,7 @@ static void SparkModelPipelineClientReportCompletion(
 		completion = transaction->final_completion;
 	else
 	{
+		SparkModelPipelineClientDropLeases(pipeline,transaction);
 		memset(&completion,0,sizeof(completion));
 		completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 		completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;

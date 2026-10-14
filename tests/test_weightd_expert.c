@@ -297,13 +297,13 @@ int main(void)
             SPARK_TEST_POOL_BYTES + 1u, &refused);
         assert(refused.status == SPARK_STATUS_INVALID_ARGUMENT);
     }
-    assert(attach_a.resident_bytes == 0ull);
+    assert(attach_a.resident_bytes == SPARK_TEST_CHUNK_BYTES);
     SparkTestLazyAttach(client, &identity_b, "/tmp/spark_weightd_expert_b.bin",
         SPARK_TEST_POOL_BYTES, &attach_b);
     assert(attach_b.status == SPARK_STATUS_OK);
     assert(attach_b.arena_count == 2u);
-    assert(attach_b.resident_bytes == 0ull);
-    printf("lazy attach two models zero resident green\n");
+    assert(attach_b.resident_bytes == 2ull * SPARK_TEST_CHUNK_BYTES);
+    printf("lazy attach reserves each model's whole-chunk slot pool green\n");
 
     assert(SparkWeightdClientEnsure(client,attach_a.arena_generation,2u,0u,&ensure,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_UNSUPPORTED);
     SparkTestAcquireReadRelease(client,&attach_a,2u,0u,11u,SPARK_STATUS_OK);

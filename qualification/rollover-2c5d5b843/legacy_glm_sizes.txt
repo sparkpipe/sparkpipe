@@ -1,0 +1,18 @@
+spark0 1019M 11M 
+spark1 1019M 11M 
+spark2 1019M 11M 
+spark3 1020M 11M 
+spark4 1019M 11M 
+spark5 1019M 11M 
+spark6 1019M 11M 
+spark7 1019M 11M 
+spark8 1019M 11M 
+spark9 1019M 11M 
+sparka 1019M 11M 
+sparkb 1019M 11M 
+sparkc 1019M 11M 
+sparkd 1019M 11M 
+sparke 1019M 11M 
+sparkf 1019M 11M 
+42M	/home/spec/glmfull-kv-api
+26M	/home/spec/flash-tip-api
