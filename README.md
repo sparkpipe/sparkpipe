@@ -490,8 +490,10 @@ Sparks at TP16, by the release qualification
 - **Context** is the window the chat layer serves
   (`deployment/hub/chat_frontend.json`).
 - A CPU tenant kept about 16 cores busy on every node during these runs, so
-  treat the numbers as lower bounds. On a quiet fleet on 2026-10-08 K3
-  decoded 16.3 tok/s at B1, against 10.0 here.
+  treat the numbers as lower bounds. The same build on the quiet fleet
+  (2026-10-14 12:45Z, after the tenant stopped) decoded K3 at 16.2 tok/s at
+  B1, against 10.0 here: the load, not the build, caused the drop
+  (`qualification/releases/1d89e0377/kimi-k3.quiet-20261014.perf.jsonl`).
 - On the six fixed release prompts every model produced the same tokens as
   the build it replaced. GLM 5.3 Full's logprob golden moved slightly: 706 of
   708 top-1 tokens agree, and the one flip is a near tie.

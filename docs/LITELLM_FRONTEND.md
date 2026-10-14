@@ -425,7 +425,43 @@ replaced on 2026-10-14 after a config dump printed it; the old one is refused.
 
 K3 takes about 70 s to swap in from GLM Full (69.9 s on 2026-10-14). The LAN
 and sparkpipe.ai doors still serve every model, so a request for another
-model there swaps the fleet away, and the next chat waits for K3 again. To upgrade, pull the new release, check its
+model there swaps the fleet away, and the next chat waits for K3 again.
+
+### Web search (SearXNG)
+
+Since 2026-10-14 K3 has Open WebUI's `search_web` and `fetch_url` tools. The
+search engine is a self-hosted SearXNG (owner decision 2026-10-14): hub
+Docker container `sparkpipe-searxng` (2026.10.13-22c64b8d3, pinned by digest)
+on `172.17.0.1:8888` only, settings `deployment/hub/searxng_settings.yml`
+copied to `/srv/workspace/searxng/settings.yml` (JSON output on, limiter off
+because only Open WebUI calls it, moderate safe search), `SEARXNG_SECRET` in
+`/srv/workspace/searxng/secrets.env` (root, 600). It queries the upstream
+engines from the hub's address; on the first day Brave and DuckDuckGo
+rate-limited it and Google and the others answered.
+
+Open WebUI offers the two tools only when web search is on globally, the user
+has the `web_search` permission, the model has the `web_search` capability
+and the chat's Web Search toggle is on. The `kimi-k3` model entry (Admin
+Panel -> Settings -> Models) turns the toggle on by default
+(`defaultFeatureIds`), so K3 itself decides when to search or read a page;
+the entry also marks K3 as text-only, so image uploads are not offered.
+`fetch_url` refuses private and loopback addresses
+(`ENABLE_RAG_LOCAL_WEB_FETCH=false`, checked against the swap controller,
+the hub, the LAN and 10/8), so a user cannot make the hub read internal
+services, and it cuts a page at 40,000 characters.
+
+```sh
+sudo docker run -d --name sparkpipe-searxng --restart unless-stopped \
+  -p 172.17.0.1:8888:8080 \
+  -v /srv/workspace/searxng/settings.yml:/etc/searxng/settings.yml:ro \
+  -v /srv/workspace/searxng/cache:/var/cache/searxng \
+  --env-file /srv/workspace/searxng/secrets.env \
+  searxng/searxng@sha256:9b61996edcc679fb6665290f95fda15389a14eda6060e41a25c63ab2758f2436
+```
+
+Every new chat sends Open WebUI's tool definitions and system prompt, about
+5,600 tokens; the first one costs a ~10 s prefill on K3, later ones hit the
+prefix cache. To upgrade, pull the new release, check its
 release notes and security advisories, replace the digest here, recreate the
 container with the same data directory, and run a chat, an attachment and a
 login. Back up `/srv/workspace/open-webui/data` before an upgrade.

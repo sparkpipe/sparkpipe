@@ -97,6 +97,12 @@ Conditions and limits:
 - A CPU tenant kept about 16 cores busy on every node, and no other GPU work
   ran. On a quiet fleet on 2026-10-08 (older build) K3 decoded 16.3 tok/s at
   B1, against 10.0 here.
+- The same build on the quiet fleet, 2026-10-14 12:45Z after the tenant
+  stopped (exclusive tp16 hold, `b1_o256` x 9): K3 median 16.17 tok/s; seven
+  runs read 16.10 to 16.25, and the first two (10.74, 11.93) overlapped chat
+  requests. The release's 10.0 was the CPU load slowing every collective
+  round, not a regression
+  (`qualification/releases/1d89e0377/kimi-k3.quiet-20261014.perf.jsonl`).
 - Each number is one run. Cross-hold B1 swings of 5 to 10% are normal; the
   previous release, `e05394f94`, measured the same day, read for example 9.2
   tok/s for Qwen 3.8 Max and 11.4 for K3.
