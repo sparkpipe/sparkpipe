@@ -1,0 +1,15 @@
+model_list:
+- model_name: kimi-k3
+  litellm_params:
+    model: hosted_vllm/kimi-k3
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 131072
+    max_output_tokens: 131072
+litellm_settings:
+  drop_params: true
+  num_retries: 0
+  request_timeout: 3600
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
