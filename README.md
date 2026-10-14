@@ -447,33 +447,61 @@ the aarch64 Spark binaries. Host roles and the release procedure are in
 ## Models
 
 The product set and the owner's direction are in
-[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Decode modules exist in
-`modules/` for these families:
+[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Sixteen models serve today,
+all on the common TP16 stage runner (`inference/runner/`). Each model's math
+lives under `model-families/<family>/` and its serving adapter under
+`modules/`. One model holds the fleet at a time. A request names its model;
+if another model is loaded, the request waits while the swap controller
+(`tools/serving/model_swap.py`) swaps the named one in, and that model's
+cached prefixes come back from the KV snapshot store.
 
-- GLM 5.3 Flash (`glm5_next`, the current optimization focus) and GLM 5.3
-  Full (`glm52` module);
-- DeepSeek V4.1 Flash, which leads the DeepSeek line, V4 Flash, and V4 Pro
-  0813, last in the driver order and kept as the base for V4.1 Pro once it
-  is released;
-- Kimi K3, which moves into the slot V4 Pro 0813 held;
-- Qwen 3.8 Max, Qwen 3.8 27B and Qwen4 Flash, for internal use only: Qwen
-  models are not enabled on the external API service;
-- MiniMax;
-- Gemma 4;
-- Ling 3.0 Flash and its finance fine-tune;
-- Laguna;
-- Hunyuan HY4;
-- Muse Glimmer.
+| Served name | Model | Family | Context | Swap in | Decode, B1 | Prefill, 7K prompt |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 256K | 38 s | 24.3 tok/s | 984 tok/s |
+| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | 24 s | 42.1 tok/s | 804 tok/s |
+| `kimi-k3` | Kimi K3 | `k3` | 128K | 46 s | 10.0 tok/s | 469 tok/s |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 16K | 24 s | 25.1 tok/s | 167 tok/s |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | 24 s | 19.0 tok/s | 55 tok/s |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | 19 s | 40.9 tok/s | 157 tok/s |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | 28 s | 12.0 tok/s | 50 tok/s |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | 17 s | 27.9 tok/s | 734 tok/s |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 32K | 16 s | 75.2 tok/s | 1,705 tok/s |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 32K | 20 s | 67.6 tok/s | 1,361 tok/s |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 32K | 20 s | 80.0 tok/s | 1,524 tok/s |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | 20 s | 42.1 tok/s | 700 tok/s |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 32K | 16 s | 32.1 tok/s | 1,152 tok/s |
+| `qwen3.8-max` | Qwen 3.8 Max (internal) | `qwen38` | 32K | 35 s | 8.2 tok/s | 34 tok/s |
+| `qwen3.8-27b` | Qwen 3.8 27B (internal) | `qwen38` | 256K | 19 s | 48.3 tok/s | 1,721 tok/s |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 32K | 20 s | 38.0 tok/s | 344 tok/s |
 
-DeepSeek V4.1 Flash and Hunyuan HY4 have decode modules but no serving
-adapter yet. MiMo 2.6 Flash and Pro, the MiMo target, have contracts and a
-stage-pack format (the only file in `modules/mimo26_resident_decode_stage`),
-but no decode driver yet. MiMo 2.5 has only an older engine in
-`inference/llms/mimo_2_5` and no module. A driver in the tree is not a
-readiness claim. Each exact checkpoint needs its own contract, pack,
-numerical result, transport profile and service receipt. Status is in
-[`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md) and
-[`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
+Measured on 2026-10-14 on release `1d89e0377` (weightd `9e9618df`), sixteen
+Sparks at TP16, by the release qualification
+(`scripts/release_rollout.sh qualify`):
+
+- **Swap in** is the median time from a swap request until the model
+  serves, over the swaps the controller logged on 2026-10-13 and 2026-10-14.
+  It includes stopping the previous model. The slowest single swap was K3's,
+  at 79 s.
+- **Decode, B1** is one request, greedy, without speculation, generating 256
+  tokens (case `b1_o256` of `api_serving_perf.py`).
+- **Prefill** is one cold prompt of about 7,400 tokens (case `ttft6000`; the
+  count depends on the tokenizer): prompt tokens over the time to the first
+  token.
+- **Context** is the window the chat layer serves
+  (`deployment/hub/chat_frontend.json`).
+- A CPU tenant kept about 16 cores busy on every node during these runs, so
+  treat the numbers as lower bounds. On a quiet fleet on 2026-10-08 K3
+  decoded 16.3 tok/s at B1, against 10.0 here.
+- On the six fixed release prompts every model produced the same tokens as
+  the build it replaced. GLM 5.3 Full's logprob golden moved slightly: 706 of
+  708 top-1 tokens agree, and the one flip is a near tie.
+- The Qwen models are internal only. They serve on the LAN door but not on
+  sparkpipe.ai, because of their license terms.
+
+Serving is not a readiness claim. Hy4 has not yet matched a reference run
+([`TECHDEBT.md`](TECHDEBT.md), Production qualification), and each driver's
+acceptance status is in [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md)
+and [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
 
 ## Serving API
 

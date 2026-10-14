@@ -1,0 +1,162 @@
+{
+ "deepseek-v4.1-flash": {
+  "model": "deepseek-v4.1-flash",
+  "decode": 25.09,
+  "ttft_short_ms": 257.1,
+  "prefill": 166.8,
+  "prefill_tokens": 7384,
+  "ttft6000_ms": 44266.3,
+  "smoke": "6/6",
+  "golden_new": true
+ },
+ "gemma-4-26b-a4b": {
+  "model": "gemma-4-26b-a4b",
+  "decode": 75.16,
+  "ttft_short_ms": 80.3,
+  "prefill": 1705.4,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 4336.7,
+  "smoke": "6/6",
+  "golden_new": false
+ },
+ "gemma-4-31b": {
+  "model": "gemma-4-31b",
+  "decode": 27.87,
+  "ttft_short_ms": 81.5,
+  "prefill": 733.7,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 10080.3,
+  "smoke": "6/6",
+  "golden_new": false
+ },
+ "glm-5.3": {
+  "model": "glm-5.3",
+  "decode": 24.3,
+  "ttft_short_ms": 237.5,
+  "prefill": 984.4,
+  "prefill_tokens": 7389,
+  "ttft6000_ms": 7505.9,
+  "smoke": "6/6",
+  "golden_new": true
+ },
+ "glm-5.3-flash": {
+  "model": "glm-5.3-flash",
+  "decode": 42.15,
+  "ttft_short_ms": 122.9,
+  "prefill": 804.3,
+  "prefill_tokens": 7389,
+  "ttft6000_ms": 9186.4,
+  "smoke": "5/6",
+  "golden_new": false
+ },
+ "hy4-preview": {
+  "model": "hy4-preview",
+  "decode": 12.03,
+  "ttft_short_ms": 481.3,
+  "prefill": 49.6,
+  "prefill_tokens": 7384,
+  "ttft6000_ms": 148915.5,
+  "smoke": "6/6",
+  "golden_new": false
+ },
+ "kimi-k3": {
+  "model": "kimi-k3",
+  "decode": 10.0,
+  "ttft_short_ms": 596.7,
+  "prefill": 469.4,
+  "prefill_tokens": 7384,
+  "ttft6000_ms": 15730.3,
+  "smoke": "6/6",
+  "golden_new": true
+ },
+ "laguna-s-2.1": {
+  "model": "laguna-s-2.1",
+  "decode": 42.13,
+  "ttft_short_ms": 171.4,
+  "prefill": 699.7,
+  "prefill_tokens": 7669,
+  "ttft6000_ms": 10960.6,
+  "smoke": "5/6",
+  "golden_new": false
+ },
+ "ling-3.0-flash": {
+  "model": "ling-3.0-flash",
+  "decode": 67.64,
+  "ttft_short_ms": 76.6,
+  "prefill": 1361.3,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 5433.1,
+  "smoke": "6/6",
+  "golden_new": false
+ },
+ "ling-3.0-flash-fin": {
+  "model": "ling-3.0-flash-fin",
+  "decode": 79.95,
+  "ttft_short_ms": 62.1,
+  "prefill": 1524.5,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 4851.4,
+  "smoke": "6/6",
+  "golden_new": false
+ },
+ "mimo-v2.6-flash": {
+  "model": "mimo-v2.6-flash",
+  "decode": 40.87,
+  "ttft_short_ms": 164.0,
+  "prefill": 156.8,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 47158.3,
+  "smoke": "6/6",
+  "golden_new": false
+ },
+ "mimo-v2.6-pro": {
+  "model": "mimo-v2.6-pro",
+  "decode": 18.98,
+  "ttft_short_ms": 376.1,
+  "prefill": 55.1,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 134335.2,
+  "smoke": "6/6",
+  "golden_new": false
+ },
+ "muse-glimmer-30b": {
+  "model": "muse-glimmer-30b",
+  "decode": 32.12,
+  "ttft_short_ms": 64.9,
+  "prefill": 1152.5,
+  "prefill_tokens": 7384,
+  "ttft6000_ms": 6406.9,
+  "smoke": "5/6",
+  "golden_new": false
+ },
+ "qwen3.8-27b": {
+  "model": "qwen3.8-27b",
+  "decode": 48.26,
+  "ttft_short_ms": 72.8,
+  "prefill": 1721.2,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 4296.9,
+  "smoke": "6/6",
+  "golden_new": true
+ },
+ "qwen3.8-flash": {
+  "model": "qwen3.8-flash",
+  "decode": 37.98,
+  "ttft_short_ms": 105.2,
+  "prefill": 344.2,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 21485.5,
+  "smoke": "6/6",
+  "golden_new": true
+ },
+ "qwen3.8-max": {
+  "model": "qwen3.8-max",
+  "decode": 8.24,
+  "ttft_short_ms": 673.6,
+  "prefill": 33.8,
+  "prefill_tokens": 7396,
+  "ttft6000_ms": 219074.5,
+  "smoke": "5/6",
+  "golden_new": true
+ }
+}

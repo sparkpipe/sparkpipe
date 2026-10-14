@@ -62,6 +62,47 @@ would use this link.
 
 ## Measured model performance
 
+### Release qualification, all 16 models (2026-10-14)
+
+Release `1d89e0377` (weightd `9e9618df`) on sixteen Sparks at TP16, measured
+by `scripts/release_rollout.sh qualify` with `api_serving_perf.py` against
+each model's engine endpoint: decode is one greedy request without
+speculation generating 256 tokens (`b1_o256`), prefill is one cold prompt of
+about 7,400 tokens (`ttft6000`). Swap-in times are medians of the swaps the
+controller logged on 2026-10-13 and 2026-10-14. Receipts:
+[`qualification/releases/1d89e0377/`](qualification/releases/1d89e0377/)
+(one `perf.jsonl` per model, `swaps.jsonl`, `summary.json`).
+
+| Served name | Model | Family | Context | Swap in | Decode, B1 | Prefill, 7K prompt |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 256K | 38 s | 24.3 tok/s | 984 tok/s |
+| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | 24 s | 42.1 tok/s | 804 tok/s |
+| `kimi-k3` | Kimi K3 | `k3` | 128K | 46 s | 10.0 tok/s | 469 tok/s |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 16K | 24 s | 25.1 tok/s | 167 tok/s |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | 24 s | 19.0 tok/s | 55 tok/s |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | 19 s | 40.9 tok/s | 157 tok/s |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | 28 s | 12.0 tok/s | 50 tok/s |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | 17 s | 27.9 tok/s | 734 tok/s |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 32K | 16 s | 75.2 tok/s | 1,705 tok/s |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 32K | 20 s | 67.6 tok/s | 1,361 tok/s |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 32K | 20 s | 80.0 tok/s | 1,524 tok/s |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | 20 s | 42.1 tok/s | 700 tok/s |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 32K | 16 s | 32.1 tok/s | 1,152 tok/s |
+| `qwen3.8-max` | Qwen 3.8 Max (internal) | `qwen38` | 32K | 35 s | 8.2 tok/s | 34 tok/s |
+| `qwen3.8-27b` | Qwen 3.8 27B (internal) | `qwen38` | 256K | 19 s | 48.3 tok/s | 1,721 tok/s |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 32K | 20 s | 38.0 tok/s | 344 tok/s |
+
+Conditions and limits:
+
+- A CPU tenant kept about 16 cores busy on every node, and no other GPU work
+  ran. On a quiet fleet on 2026-10-08 (older build) K3 decoded 16.3 tok/s at
+  B1, against 10.0 here.
+- Each number is one run. Cross-hold B1 swings of 5 to 10% are normal; the
+  previous release, `e05394f94`, measured the same day, read for example 9.2
+  tok/s for Qwen 3.8 Max and 11.4 for K3.
+- All 16 models produced the old build's tokens on the six release prompts
+  (`EXACT 6/6`), with no error lines in any rank log.
+
 ### GLM 5.3 Flash TP16 B1 (2026-09-28)
 
 One request on sixteen Sparks (`spark0` to `sparkf`, TP16), greedy, no
