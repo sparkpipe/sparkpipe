@@ -5,6 +5,7 @@
    "model_dir": "models/glm-5.3",
    "engine": "http://127.0.0.1:8475",
    "context_tokens": 262144,
+   "max_output_tokens": 131072,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -52,6 +53,7 @@
    "model_dir": "models/glm-5.3-flash",
    "engine": "http://127.0.0.1:8476",
    "context_tokens": 131072,
+   "max_output_tokens": 131072,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -99,6 +101,7 @@
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
    "context_tokens": 131072,
+   "max_output_tokens": 131072,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -169,6 +172,7 @@
    "model_dir": "models/qwen3.8-27b",
    "engine": "http://127.0.0.1:8461",
    "context_tokens": 262144,
+   "max_output_tokens": 131072,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -218,6 +222,7 @@
    "model_dir": "models/deepseek-v4.1-flash",
    "engine": "http://127.0.0.1:8463",
    "context_tokens": 16384,
+   "max_output_tokens": 16384,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -278,6 +283,7 @@
    "model_dir": "models/qwen3.8-max",
    "engine": "http://127.0.0.1:8464",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -314,6 +320,7 @@
    "model_dir": "models/qwen3.8-flash",
    "engine": "http://127.0.0.1:8465",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -363,6 +370,7 @@
    "model_dir": "models/gemma-4-31b",
    "engine": "http://127.0.0.1:8466",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -408,6 +416,7 @@
    "model_dir": "models/gemma-4-26b-a4b",
    "engine": "http://127.0.0.1:8467",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -453,6 +462,7 @@
    "model_dir": "models/hy4-preview",
    "engine": "http://127.0.0.1:8470",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -502,6 +512,7 @@
    "model_dir": "models/ling-3.0-flash",
    "engine": "http://127.0.0.1:8468",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -548,6 +559,7 @@
    "model_dir": "models/muse-glimmer-30b",
    "engine": "http://127.0.0.1:8471",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -603,6 +615,7 @@
    "model_dir": "models/ling-3.0-flash-fin",
    "engine": "http://127.0.0.1:8469",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -649,6 +662,7 @@
    "model_dir": "models/laguna-s-2.1",
    "engine": "http://127.0.0.1:8472",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -695,6 +709,7 @@
    "model_dir": "models/mimo-v2.6-flash",
    "engine": "http://127.0.0.1:8473",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,
@@ -745,6 +760,7 @@
    "model_dir": "models/mimo-v2.6-pro",
    "engine": "http://127.0.0.1:8474",
    "context_tokens": 32768,
+   "max_output_tokens": 32768,
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 600,

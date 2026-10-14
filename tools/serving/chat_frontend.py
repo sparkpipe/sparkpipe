@@ -357,6 +357,9 @@ class Model:
         directory = (base / spec["model_dir"]).resolve()
         self.id = spec["id"]
         self.context_tokens = int(spec["context_tokens"])
+        self.max_output_tokens = int(spec["max_output_tokens"])
+        if self.max_output_tokens <= 0:
+            raise SystemExit(f"chat_frontend: {self.id} max_output_tokens must be positive")
         self.engine = spec["engine"].rstrip("/")
         vocabulary = dict(spec.get("tokenizer", {"kind": "tokenizers"}))
         renderer = dict(spec.get("renderer", {"kind": "template"}))
@@ -921,8 +924,10 @@ class Frontend:
         limit = number(body, "max_completion_tokens", 1, 2 ** 31, integer=True)
         if limit is None:
             limit = number(body, "max_tokens", 1, 2 ** 31, integer=True)
+        if limit is not None and limit > model.max_output_tokens:
+            raise RequestError(400, "invalid_request", f"max_tokens {limit} is above {model.id}'s output limit of {model.max_output_tokens} tokens")
         room = model.context_tokens - len(prompt_ids)
-        max_tokens = room if limit is None else min(limit, room)
+        max_tokens = min(model.max_output_tokens if limit is None else limit, room)
         if max_tokens <= 0:
             raise RequestError(400, "invalid_request", "max_tokens must be positive")
         stops = body.get("stop") or []
