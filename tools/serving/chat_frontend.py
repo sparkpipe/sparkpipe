@@ -358,6 +358,13 @@ class Model:
         self.id = spec["id"]
         self.context_tokens = int(spec["context_tokens"])
         self.max_output_tokens = int(spec["max_output_tokens"])
+        self.sampling_defaults = dict(spec["sampling_defaults"])
+        if set(self.sampling_defaults) - set(SAMPLING_DEFAULT_KEYS) or not str(spec.get("sampling_source", "")).strip():
+            raise SystemExit(f"chat_frontend: {self.id} sampling_defaults takes only {', '.join(SAMPLING_DEFAULT_KEYS)} and needs a sampling_source")
+        try:
+            sampling_fields({}, self.sampling_defaults)
+        except RequestError as error:
+            raise SystemExit(f"chat_frontend: {self.id} sampling_defaults: {error.message}")
         if self.max_output_tokens <= 0:
             raise SystemExit(f"chat_frontend: {self.id} max_output_tokens must be positive")
         self.engine = spec["engine"].rstrip("/")
@@ -463,15 +470,20 @@ def scheduling_fields(body):
     return fields
 
 
-def sampling_fields(body):
+SAMPLING_DEFAULT_KEYS = ("temperature", "top_p", "top_k")
+
+
+def sampling_fields(body, defaults):
     fields = {}
-    temperature = number(body, "temperature", 0, 2)
+    chosen = dict(defaults)
+    chosen.update({key: body[key] for key in SAMPLING_DEFAULT_KEYS if body.get(key) is not None})
+    temperature = number(chosen, "temperature", 0, 2)
     if temperature is not None and temperature != 0 and temperature < 0.0001:
         raise RequestError(400, "invalid_request", "temperature must be 0 or between 0.0001 and 2")
-    top_p = number(body, "top_p", 0, 1)
+    top_p = number(chosen, "top_p", 0, 1)
     if top_p is not None and top_p <= 0:
         raise RequestError(400, "invalid_request", "top_p must be above 0 and at most 1")
-    top_k = number(body, "top_k", -1, MAX_TOP_K, integer=True)
+    top_k = number(chosen, "top_k", -1, MAX_TOP_K, integer=True)
     seed = number(body, "seed", 0, 2 ** 64 - 1, integer=True)
     if temperature:
         fields["temperature"] = temperature
@@ -951,7 +963,7 @@ class Frontend:
         else:
             parser = OutputParser(model, tools, prompt.rstrip().endswith(model.reasoning["start"].rstrip()), stops)
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
-        engine_body.update(sampling_fields(body))
+        engine_body.update(sampling_fields(body, model.sampling_defaults))
         engine_body.update(scheduling_fields(body))
         return engine_body, parser, len(prompt_ids)
 

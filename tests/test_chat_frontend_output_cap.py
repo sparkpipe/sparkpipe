@@ -24,6 +24,7 @@ class FakeModel(chat_frontend.Model):
         self.id = "fake"
         self.context_tokens = context_tokens
         self.max_output_tokens = max_output_tokens
+        self.sampling_defaults = {}
         self.vocabulary = chat_frontend.TokenizersVocabulary.from_tokenizer(fake_tokenizer())
         self.reasoning_effort = {}
         self.template_kwargs = set()
