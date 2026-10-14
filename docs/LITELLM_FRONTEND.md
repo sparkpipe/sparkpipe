@@ -6,7 +6,8 @@ through this stack on the rtx5090 hub:
 | Port | Process | Protocol |
 | --- | --- | --- |
 | 4000 | LiteLLM proxy (`config/litellm-config.yaml`, user unit `sparkpipe-litellm`) | OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`; any model name routes to `glm-5.3` |
-| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
+| 4001 | external LiteLLM (`~/sparkpipe-chat/litellm-external.yaml`, user unit `sparkpipe-litellm-external`, 127.0.0.1 only) | the 4000 door without Qwen models or the `*` route, behind a master key; the sparkpipe.ai tunnel (`sparkpipe-ai-door`) forwards here |
+| 8433 | chat layer (`tools/serving/chat_frontend.py`, user unit `sparkpipe-chat`) | OpenAI `/v1/chat/completions`, `/v1/models`, `/health`; the tunnel forwards `/v1/sparkpipe/status` here |
 | 8446 | `sparkpipe_model_api` (user unit `glmfull-api6`) | the engine endpoint: `prompt_token_ids` in, token ids, usage and `cached_tokens` out |
 
 Smoke receipts (2026-10-02, build de944ae): chat answered "Paris" with the
@@ -121,7 +122,7 @@ ZCode reaches the door as a custom provider in `~/.zcode/v2/provider_config.json
 
 - `"providerId": "custom:sparkpipe"`;
 - `"api": {"type": "anthropic-messages", "baseUrl": "http://rtx5090:4000"}`;
-- model ids `kimi-k3`, `glm-5.3` and `glm-5.3-flash`, with context windows 131072, 262144 and 32768 in `modelConfigRules`.
+- all 16 served model ids, with each context window in `modelConfigRules` taken from the chat layer's `context_tokens` (2026-10-14: `glm-5.3` and `qwen3.8-27b` 262144, `glm-5.3-flash` and `kimi-k3` 131072, `deepseek-v4.1-flash` 16384, the rest 32768).
 
 LiteLLM runs without a master key, so the provider's API key is a placeholder. Picking a model in ZCode swaps the fleet on its first request.
 
@@ -295,6 +296,68 @@ the markers itself. GLM 5.3 Flash IDs: `[gMASK]` 154822, `<sop>` 154824,
 154842 (`qualification/ds4_eval/tokenizer/glm-5.3-flash-tokenizer.json`).
 Qwen's `<|im_start|>user\n` IDs (151644, 872, 198) are ordinary text pieces
 to GLM.
+
+## sparkpipe.ai (2026-10-14)
+
+`https://sparkpipe.ai/playground.html` is the chat interface for people
+outside the LAN. Apache on the VPS (62.112.9.102) asks for a login, and the
+hub holds a reverse tunnel to it:
+
+| VPS path | Login | Goes to |
+| --- | --- | --- |
+| `/playground.html` | yes | `site/playground.html`, copied to `/var/www/html` |
+| `/v1/` | yes | VPS 127.0.0.1:18080, then hub 127.0.0.1:4001 (external LiteLLM) |
+| `/v1/sparkpipe/status` | yes | VPS 127.0.0.1:18081, then hub 8433 (the playground's loaded-model line) |
+| other `/v1/sparkpipe/` paths | yes | refused (404); the page only loads models on demand there |
+| `/health/liveliness` | no | the external LiteLLM's liveliness check |
+
+- The tunnel is the hub system unit `sparkpipe-ai-door` (root, key
+  `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). On the VPS that key may only
+  listen on 127.0.0.1:18080 and 127.0.0.1:18081 (`permitlisten` in
+  `/root/.ssh/authorized_keys`).
+- Apache replaces the browser's `Authorization` header with the external
+  master key, so browsers never see it. The key is defined in
+  `/etc/apache2/sparkpipe-gateway.conf` (mode 600) and kept on the hub in
+  `~/sparkpipe-chat/external.env` (mode 600), which the external unit reads.
+- Qwen models stay off this door, as `docs/MODEL_SUPPORT.md` requires. The
+  4000 door on the LAN still serves all 16 models.
+- A request for a model that is not loaded waits in the chat layer's warm
+  queue while the fleet swaps, as on the LAN.
+
+Accounts live in `/etc/apache2/sparkpipe-users.htpasswd` (bcrypt, owner
+root, group www-data, mode 640). On the VPS:
+
+```sh
+htpasswd -B -C 12 /etc/apache2/sparkpipe-users.htpasswd <user>
+htpasswd -D /etc/apache2/sparkpipe-users.htpasswd <user>
+```
+
+The first command adds a user or changes a password; the second removes one.
+Apache reads the file on each request, so no reload is needed. The test
+account's password is in `~/.config/sparkpipe/sparkpipe-ai-accounts.txt`
+(mode 600) on the controller Mac.
+
+Rebuild the external config whenever `litellm.yaml` changes, then restart
+`sparkpipe-litellm-external`:
+
+```sh
+cd ~/sparkpipe-chat && ~/litellm-venv/bin/python - <<'PY'
+import pathlib, yaml
+source = yaml.safe_load(pathlib.Path("litellm.yaml").read_text())
+kept = [entry for entry in source["model_list"]
+        if entry["model_name"] != "*" and not entry["model_name"].startswith("qwen")]
+external = {"model_list": kept, "litellm_settings": source["litellm_settings"],
+            "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY"}}
+pathlib.Path("litellm-external.yaml").write_text(yaml.safe_dump(external, sort_keys=False))
+PY
+systemd-run --user --unit=sparkpipe-litellm-external \
+  -p WorkingDirectory=/home/spec/sparkpipe-chat \
+  -p EnvironmentFile=/home/spec/sparkpipe-chat/external.env \
+  /usr/bin/bash -c 'exec $HOME/litellm-venv/bin/litellm --config litellm-external.yaml --host 127.0.0.1 --port 4001 >> litellm-external.log 2>&1'
+```
+
+Like the other hub user units, it is transient: start it again after a hub
+reboot.
 
 ## Browser clients (the sparkpipe.ai playground)
 
