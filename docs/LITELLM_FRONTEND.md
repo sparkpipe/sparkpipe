@@ -471,6 +471,13 @@ The owner asked for these four after K3 told a user it could not browse:
   limited to 8 CPUs and 16 GB), `rag.content_extraction_engine` `docling`.
   A generated one-page scan with a table converted in 6 s. Plain text files
   still bypass Docling.
+
+  ```sh
+  sudo docker run -d --name sparkpipe-docling --restart unless-stopped \
+    -p 172.17.0.1:5001:5001 --cpus 8 --memory 16g \
+    -e DOCLING_SERVE_ENABLE_UI=false -e DOCLING_SERVE_MAX_SYNC_WAIT=600 \
+    ghcr.io/docling-project/docling-serve-cpu@sha256:5a8367f3f657c26755605c3b2255546674833209a18afc2011598f4c045c6db3
+  ```
 - **GitHub.** `deployment/hub/open_webui_tools/github.py`, installed as the
   Open WebUI tool `github` with public read access and attached to K3
   (`toolIds`): `github_search` (repositories, code, issues), `github_read`
