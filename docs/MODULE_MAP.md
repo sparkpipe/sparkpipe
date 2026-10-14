@@ -20,17 +20,19 @@ module, never from common infrastructure back to a model family.
 | Model Modules | Per-driver serving glue (KV region layout, adapter descriptor, topology) and the stage-model instantiation, built into one serving adapter library | `modules/*_resident_decode_stage/` |
 | Speculation | Speculation seam, draft sources, tree and policy; the RTX 5090 drafter node | `include/sparkpipe/spark_speculation_*.h`, `src/spark_speculation_*.c`, `deployment/rtx5090_speculation/` ([RTX5090_SPECULATION_NODE](RTX5090_SPECULATION_NODE.md)) |
 | Node | One resident process per rank, the generic batch client, and the HTTP API process | `node/model_residentd.c`, `node/model_batch.c`, `node/model_api.c` |
-| Deployment | Built and published release roots, and node convergence by MANIFEST diff ([FLEET_RELEASE_RUNBOOK](FLEET_RELEASE_RUNBOOK.md)) | `deployment/`, `tools/fleet_release/`, `scripts/release_rollout.sh`, `tools/fleet_release_serve.py`, `tools/fleet_node_agent.sh`, `tools/fleet-agent.service` |
+| Deployment | Release build and rollout, the hub's core channel, and node convergence by MANIFEST diff ([FLEET_RELEASE_RUNBOOK](FLEET_RELEASE_RUNBOOK.md)) | `deployment/`, `scripts/release_build.sh`, `scripts/release_rollout.sh`, `tools/fleet_release_serve.py`, `tools/fleet_node_agent.sh`, `tools/fleet-agent.service` |
 | Chat layer | OpenAI-compatible chat front end over the C API (chat templates, tool and reasoning parsers) and the model swap controller | `tools/serving/` |
 | Qualification | Source, host, CUDA, hardware, and evaluation gates | `tests/`, `qualification/`, `tools/hardware/` |
 
 **Host roles.** These come from `docs/FLEET_RELEASE_RUNBOOK.md` §1 and the
 lead dev's 2026-09-28 facts:
 
-- **Build host: sparkf.** It builds for aarch64 and sm_121a in
-  `~/g5n-rd-build`, and is also rank 15.
-- **Hub: rtx5090.** It serves the release roots `~/release/<root>/` over
-  HTTP on port 8802 and collects the heartbeats in `~/current/<host>.json`.
+- **Build host: a Spark.** `scripts/release_build.sh` builds for aarch64
+  and sm_121a on `BUILD_HOST` (default `sparkd`) in
+  `~/build-rp/fw-<sha>-src`; the build host is also a fleet rank.
+- **Hub: rtx5090.** It serves the release channel `~/release/` over HTTP
+  on port 8802, collects the heartbeats in `~/current/<host>.json`, builds
+  the x86 API under `/srv/workspace/sparkpipe` and runs the model APIs.
 - **Every Spark** runs `tools/fleet_node_agent.sh` as the systemd user unit
   `fleet-agent`. weightd and residentd run inside that unit's cgroup, so
   restarting the agent restarts both.
