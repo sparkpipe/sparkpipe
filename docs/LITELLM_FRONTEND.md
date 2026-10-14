@@ -455,9 +455,46 @@ sudo docker run -d --name sparkpipe-searxng --restart unless-stopped \
   searxng/searxng@sha256:9b61996edcc679fb6665290f95fda15389a14eda6060e41a25c63ab2758f2436
 ```
 
-Every new chat sends Open WebUI's tool definitions and system prompt, about
-5,600 tokens; the first one costs a ~10 s prefill on K3, later ones hit the
-prefix cache. To upgrade, pull the new release, check its
+### Other tools (2026-10-14)
+
+The owner asked for these four after K3 told a user it could not browse:
+
+- **Code interpreter.** `execute_code` runs Python with Pyodide in the
+  user's browser (numpy, pandas and matplotlib ship in the image), so no code
+  runs on the hub. `code_interpreter.enable`, the `code_interpreter` user
+  permission and the K3 capability are on, and K3's entry turns the toggle on
+  by default.
+- **Scanned documents.** Attachments go through Docling instead of plain text
+  extraction, so scanned PDFs are read with OCR and tables come out as
+  Markdown tables. Hub Docker container `sparkpipe-docling` on
+  `172.17.0.1:5001` only (`docling-serve-cpu`, pinned by digest, 7.5 GB image,
+  limited to 8 CPUs and 16 GB), `rag.content_extraction_engine` `docling`.
+  A generated one-page scan with a table converted in 6 s. Plain text files
+  still bypass Docling.
+- **GitHub.** `deployment/hub/open_webui_tools/github.py`, installed as the
+  Open WebUI tool `github` with public read access and attached to K3
+  (`toolIds`): `github_search` (repositories, code, issues), `github_read`
+  (files and directories, the README with the top level), `github_list`
+  (issues, pulls, commits, releases) and `github_item` (one issue or pull
+  request with its comments and changed files). It only sends GET requests to
+  the configured API and refuses malformed repositories and paths before any
+  request (`tests/test_open_webui_github_tool.py`). Without a token it uses
+  GitHub's unauthenticated limit of 60 requests an hour for the hub's address
+  and cannot search code. To lift that, the owner creates a fine-grained
+  token with read-only access to public repositories and enters it in
+  Workspace -> Tools -> GitHub -> Valves; never use the SparkPipe PAT there.
+  To change the tool, edit the file, run the test and paste it into the same
+  editor.
+- **Fewer built-in tools.** K3's entry turns off the built-in tool groups
+  nobody here uses: notes, calendar, chat search, skills, tasks, automations,
+  ask-user and knowledge bases (`meta.builtinTools`). They took about 4,300
+  of the 5,600 tokens every new chat sent before its first message; time,
+  memory, web search and the code interpreter stay.
+
+Install or update the K3 model entry and the GitHub tool with Open WebUI's
+own code inside the container (`Models.update_model_by_id`,
+`Tools.insert_new_tool` after `load_tool_module_by_id`), or through the admin
+panel. To upgrade, pull the new release, check its
 release notes and security advisories, replace the digest here, recreate the
 container with the same data directory, and run a chat, an attachment and a
 login. Back up `/srv/workspace/open-webui/data` before an upgrade.
