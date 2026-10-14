@@ -2,7 +2,7 @@
 HEX=0123456789abcdef
 hub() { ssh -o BatchMode=yes -o ConnectTimeout=8 rtx5090 "$@" < /dev/null; }
 node() { ssh -o BatchMode=yes -o ConnectTimeout=8 "spark${HEX:$1:1}" "$2" < /dev/null; }
-fan() { local r; for r in $(seq 0 15); do node "$r" "$1" 2>&1 | sed "s/^/spark${HEX:$r:1}: /" & done; wait; }
+fan() { local r; for r in $(seq 0 15); do node "$r" "$1" 2>&1 | awk -v host="spark${HEX:$r:1}: " '{ print host $0; fflush() }' & done; wait; }
 fan_all() {
   local out good
   out=$(fan "{ $2 ; } && echo FAN-OK")
