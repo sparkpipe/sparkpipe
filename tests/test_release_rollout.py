@@ -1,4 +1,4 @@
-"""Run release_rollout.sh stage and rollback against a fake 16-node fleet: every node must verify, an incomplete backup refuses before any change, and a rollback never activates models on an old weightd that is not ready."""
+"""Run release_rollout.sh stage, install and rollback against a fake 16-node fleet: every node must verify and install one identical set of files, an incomplete backup refuses before any change, and a rollback never activates models on an old weightd that is not ready."""
 import hashlib
 import os
 import pathlib
@@ -83,7 +83,8 @@ def run(step, fleet, work, old_wd, state, **extra_env):
             f"{hashlib.sha256((firmware / name).read_bytes()).hexdigest()}  {name}\n"
             for name in ("sparkpipe_weightd", "sparkpipe_model_residentd")))
     env = dict(os.environ, PATH=f"{shims}:{os.environ['PATH']}", FAKE_FLEET=str(fleet), FW=str(firmware),
-               APIB="/nonexistent", STATE=str(state), OLD_WD=old_wd, ONLY="qwen3.8-max", **extra_env)
+               APIB="/nonexistent", STATE=str(state), OLD_WD=old_wd, ONLY="qwen3.8-max")
+    env.update(extra_env)
     return subprocess.run(["bash", str(SCRIPT), step], env=env, capture_output=True, text=True, timeout=600)
 
 
@@ -152,7 +153,51 @@ def stage(fail_host):
     return body
 
 
+def install(fail_host):
+    def body(work, fleet, state, model_lanes, extra, old_wd):
+        text = SCRIPT.read_text()
+        libraries = sorted(set(re.findall(r'^\s*\S+\) echo "\S+ (\S+) ', text, re.M)) | {"libqwen38_27b_bf16_tp16_serving_adapter.so"})
+        firmware = work / "fw"
+        firmware.mkdir()
+        (firmware / "SOURCE_COMMIT").write_text("abcdef123\n")
+        for name in ["sparkpipe_weightd", "sparkpipe_model_residentd", "weightd_warm", "weightd_spine_budget.py",
+                     "libhidden_transport_spark_host_rdma_verbs.so"] + libraries:
+            (firmware / name).write_text(f"release {name}")
+        build_directory = work / "api-build"
+        build_directory.mkdir()
+        for name in ["sparkpipe_model_api", "sparkpipe_tokenize_prompt"] + libraries:
+            (build_directory / name).write_text(f"hub {name}")
+        for index in range(16):
+            host = f"spark{HEX[index]}"
+            if host != fail_host:
+                shutil.copytree(firmware, fleet / host / "rp-release-abcdef123")
+            for lane in [lane for lane, _ in model_lanes] + extra:
+                (fleet / host / lane / "root" / "lib").mkdir(parents=True, exist_ok=True)
+        for _, api in model_lanes:
+            (fleet / "rtx5090" / api / "runtime" / "lib").mkdir(parents=True, exist_ok=True)
+        result = run("install", fleet, work, old_wd, state, APIB=str(build_directory))
+        installed = [index for index in range(16)
+                     if (fleet / f"spark{HEX[index]}" / model_lanes[0][0] / "root" / "bin" / "sparkpipe_model_residentd").exists()]
+        if fail_host:
+            check(result.returncode != 0, f"install exited 0 with {fail_host} missing the release", result)
+            check("INSTALL-FAILED" in result.stdout, "install did not report the failure", result)
+            check(len(installed) == 15, f"install reached {len(installed)} nodes, expected 15", result)
+        else:
+            check(result.returncode == 0, "install failed on a healthy fleet", result)
+            check("INSTALL-FAILED" not in result.stdout, "install reported a failure on a healthy fleet", result)
+            check(len(installed) == 16, f"install reached {len(installed)} nodes", result)
+            for index in range(16):
+                swap = fleet / f"spark{HEX[index]}" / "sparkdata" / "swap" / "weightd_warm"
+                check(swap.read_text() == "release weightd_warm", f"spark{HEX[index]} shared weightd_warm was not installed", result)
+            for _, api in model_lanes:
+                check((fleet / "rtx5090" / api / "bin" / "sparkpipe_model_api").read_text() == "hub sparkpipe_model_api",
+                      f"hub {api} was not installed", result)
+    return body
+
+
 fleet_case("stage verifies all 16 nodes", stage(""))
+fleet_case("install puts one identical release on all 16 nodes and the hub", install(""))
+fleet_case("install fails when one node has no staged release", install("spark9"))
 fleet_case("stage fails when one node is not staged", stage("spark9"))
 fleet_case("rollback refuses without a backup stamp", refusal(lambda fleet, state, lanes: (state / "utc").unlink()))
 fleet_case("rollback refuses when one node misses one lane backup",
@@ -162,4 +207,4 @@ fleet_case("rollback refuses when a hub API backup is missing",
 fleet_case("rollback refuses when one node misses the weightd_warm backup",
            refusal(lambda fleet, state, lanes: (fleet / "sparkc" / "sparkdata" / "swap" / f"weightd_warm.prev-{STAMP}").unlink()))
 fleet_case("complete rollback restores everything and stops on a weightd that is not ready", complete_rollback)
-print("PASS test_release_rollout: stage needs all 16 nodes verified; rollback refuses an incomplete backup before changing anything, restores every lane, hub API and weightd_warm from a complete one, and never activates on an old weightd that is not ready")
+print("PASS test_release_rollout: stage needs all 16 nodes verified; install needs one identical result from all 16; rollback refuses an incomplete backup before changing anything, restores every lane, hub API and weightd_warm from a complete one, and never activates on an old weightd that is not ready")
