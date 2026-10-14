@@ -2,8 +2,31 @@
   "token_file": "/srv/workspace/sparkpipe/fleet-gateway/token",
   "audit_log": "/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl",
   "hub": "rtx5090",
-  "nodes": ["spark0", "spark1", "spark2", "spark3", "spark4", "spark5", "spark6", "spark7", "spark8", "spark9", "sparka", "sparkb", "sparkc", "sparkd", "sparke", "sparkf"],
-  "ssh": ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"],
+  "nodes": [
+    "spark0",
+    "spark1",
+    "spark2",
+    "spark3",
+    "spark4",
+    "spark5",
+    "spark6",
+    "spark7",
+    "spark8",
+    "spark9",
+    "sparka",
+    "sparkb",
+    "sparkc",
+    "sparkd",
+    "sparke",
+    "sparkf"
+  ],
+  "ssh": [
+    "ssh",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=8"
+  ],
   "status_url": "http://127.0.0.1:8440/status",
   "swap_config": "/home/spec/sparkpipe-swap/model_swap.json",
   "logs_dir": "/srv/workspace/sparkpipe/logs",
@@ -15,19 +38,98 @@
     "litellm-external": "/home/spec/sparkpipe-chat/litellm-external.log",
     "fleet-audit": "/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl"
   },
+  "sandbox_runner": [
+    "sudo",
+    "-n",
+    "systemd-run"
+  ],
+  "sandbox_properties": [
+    "--quiet",
+    "--pipe",
+    "--wait",
+    "--collect",
+    "--service-type=exec",
+    "-p",
+    "DynamicUser=yes",
+    "-p",
+    "SupplementaryGroups={group}",
+    "-p",
+    "ProtectSystem=strict",
+    "-p",
+    "ProtectHome=read-only",
+    "-p",
+    "PrivateTmp=yes",
+    "-p",
+    "PrivateDevices=yes",
+    "-p",
+    "NoNewPrivileges=yes",
+    "-p",
+    "RestrictSUIDSGID=yes",
+    "-p",
+    "ProtectKernelTunables=yes",
+    "-p",
+    "ProtectKernelModules=yes",
+    "-p",
+    "ProtectControlGroups=yes",
+    "-p",
+    "LockPersonality=yes",
+    "-p",
+    "RestrictAddressFamilies=AF_UNIX AF_NETLINK",
+    "-p",
+    "IPAddressDeny=any",
+    "-p",
+    "InaccessiblePaths=-{home}/.ssh -{home}/.env -{home}/.config -{home}/.netrc -{home}/.git-credentials -{home}/.docker -{home}/sparkpipe-chat/chatui.env -{home}/sparkpipe-chat/external.env -/srv/workspace/sparkpipe/fleet-gateway -/srv/workspace/open-webui",
+    "-p",
+    "CPUQuota=200%",
+    "-p",
+    "MemoryMax=4G",
+    "-p",
+    "TasksMax=128",
+    "-p",
+    "RuntimeMaxSec={timeout}",
+    "-p",
+    "Nice=10",
+    "-p",
+    "WorkingDirectory=/",
+    "-E",
+    "HOME=/tmp"
+  ],
+  "grant_hours": 8,
+  "max_grants": 64,
   "max_output_chars": 20000,
   "default_timeout_seconds": 60,
   "max_timeout_seconds": 600,
   "max_log_lines": 500,
   "refuse": [
-    {"pattern": "(?:^|[;&|(`\\n]|\\bsudo)\\s*sync(?:\\s|;|&|\\||$)", "reason": "a global sync is banned on the fleet; it hung CephFS and rebooted spark0 three times on 2026-10-07"},
-    {"pattern": "\\b(?:kill|pkill|killall)\\b[^\\n]*\\b(?:d20_worker|d20_spark_worker|sf17_arm|train\\.py)|\\b(?:d20_worker|d20_spark_worker|sf17_arm|train\\.py)\\b[^\\n]*\\b(?:kill|pkill|killall)\\b", "reason": "flychess is authorized on the sparks and must never be killed"},
-    {"pattern": "\\b(?:shutdown|poweroff|halt)\\b|\\binit\\s+0\\b", "reason": "a powered-off node cannot be brought back remotely"},
-    {"pattern": "\\brm\\s+(?:-[A-Za-z]+\\s+)*(?:/|~|\\$HOME|/home/[^/\\s]+|/srv/workspace|/mnt/[^/\\s]+)/?\\*?(?:\\s|;|&|$)", "reason": "deleting a root, home, workspace or mount directory"},
-    {"pattern": "\\bmkfs|\\bwipefs\\b|\\bdd\\b[^\\n]*\\bof=/dev/|\\bfdisk\\b|\\bparted\\b|\\bsgdisk\\b", "reason": "writing partitions or raw block devices"},
-    {"pattern": "(?:^|[\\s/'\"=<])(?:\\.env|[\\w.-]*secrets\\.env|chatui\\.env|external\\.env)\\b|/\\.ssh/|\\bid_(?:ed25519|rsa|ecdsa)\\b|/etc/shadow|\\bGITHUB_PAT\\b|\\bLITELLM_MASTER_KEY\\b|sparkpipe_github_pat|fleet-gateway/token", "reason": "secret files and keys stay out of the chat"}
+    {
+      "pattern": "(?:^|[;&|(`\\n]|\\bsudo)\\s*sync(?:\\s|;|&|\\||$)",
+      "reason": "a global sync is banned on the fleet; it hung CephFS and rebooted spark0 three times on 2026-10-07"
+    },
+    {
+      "pattern": "\\b(?:kill|pkill|killall)\\b[^\\n]*\\b(?:d20_worker|d20_spark_worker|sf17_arm|train\\.py)|\\b(?:d20_worker|d20_spark_worker|sf17_arm|train\\.py)\\b[^\\n]*\\b(?:kill|pkill|killall)\\b",
+      "reason": "flychess is authorized on the sparks and must never be killed"
+    },
+    {
+      "pattern": "\\b(?:shutdown|poweroff|halt)\\b|\\binit\\s+0\\b",
+      "reason": "a powered-off node cannot be brought back remotely"
+    },
+    {
+      "pattern": "\\brm\\s+(?:-[A-Za-z]+\\s+)*(?:/|~|\\$HOME|/home/[^/\\s]+|/srv/workspace|/mnt/[^/\\s]+)/?\\*?(?:\\s|;|&|$)",
+      "reason": "deleting a root, home, workspace or mount directory"
+    },
+    {
+      "pattern": "\\bmkfs|\\bwipefs\\b|\\bdd\\b[^\\n]*\\bof=/dev/|\\bfdisk\\b|\\bparted\\b|\\bsgdisk\\b",
+      "reason": "writing partitions or raw block devices"
+    },
+    {
+      "pattern": "(?:^|[\\s/'\"=<])(?:\\.env|[\\w.-]*secrets\\.env|chatui\\.env|external\\.env)\\b|/\\.ssh/|\\bid_(?:ed25519|rsa|ecdsa)\\b|/etc/shadow|\\bGITHUB_PAT\\b|\\bLITELLM_MASTER_KEY\\b|sparkpipe_github_pat|fleet-gateway/token",
+      "reason": "secret files and keys stay out of the chat"
+    }
   ],
   "refuse_on_nodes": [
-    {"pattern": "\\bsystemctl\\s+(?:--user\\s+)?(?:enable|reenable|set-default|preset)\\b|\\bcrontab\\b|@reboot|/etc/rc\\.local|/etc/systemd/system|/etc/cron|\\bupdate-grub\\b|/etc/default/grub|/etc/fstab|\\bloginctl\\s+enable-linger\\b", "reason": "nothing may be added to a spark's boot path (owner rule, 2026-10-01)"}
+    {
+      "pattern": "\\bsystemctl\\s+(?:--user\\s+)?(?:enable|reenable|set-default|preset)\\b|\\bcrontab\\b|@reboot|/etc/rc\\.local|/etc/systemd/system|/etc/cron|\\bupdate-grub\\b|/etc/default/grub|/etc/fstab|\\bloginctl\\s+enable-linger\\b",
+      "reason": "nothing may be added to a spark's boot path (owner rule, 2026-10-01)"
+    }
   ]
 }
