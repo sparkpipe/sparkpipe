@@ -3042,7 +3042,7 @@ static uint32_t SparkKvLaneTransactionMatches(const SparkKvLaneTransaction *owne
 		return(0u);
 	if ( saved->request_generation != request->request_generation || saved->step_generation != request->step_generation || saved->request_id != request->request_id || saved->sequence_id != request->sequence_id || saved->sequence_position != request->sequence_position )
 		return(0u);
-	if ( saved->deadline_time_ns != request->deadline_time_ns || saved->active_slot_count != request->active_slot_count || saved->new_token_count != request->new_token_count || saved->priority != request->priority || saved->frame_flags != request->frame_flags || saved->cache_lane_count != request->cache_lane_count )
+	if ( saved->active_slot_count != request->active_slot_count || saved->new_token_count != request->new_token_count || saved->priority != request->priority || saved->frame_flags != request->frame_flags || saved->cache_lane_count != request->cache_lane_count )
 		return(0u);
 	return(memcmp(&saved->residency,&request->residency,sizeof(saved->residency)) == 0 && SparkKvLaneContentEqual(&owner->lane,lane) != 0u);
 }
