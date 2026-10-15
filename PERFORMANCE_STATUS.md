@@ -109,6 +109,34 @@ Conditions and limits:
 - All 16 models produced the old build's tokens on the six release prompts
   (`EXACT 6/6`), with no error lines in any rank log.
 
+### Speculation: long verify frames on code edits, GLM Full (2026-10-15)
+
+Lookup speculation drafts from the request's own history and verifies up to
+62 drafts per frame (frames still inside one 64-token cache block); mechanism
+in [`docs/SPECULATION_LONG_FRAMES.md`](docs/SPECULATION_LONG_FRAMES.md). One
+exclusive GLM Full TP16 hold, 2026-10-15 11:27-12:15Z, arms N (same build,
+verify removed from the GLM descriptor) and S (`a161d0de7`), order N1 S1 S2
+N2, each after a KV snapshot and prefix-index wipe. Workload: the 20-task
+code-edit corpus (ten repository files, one function rename each, replied as
+the whole file or as SEARCH/REPLACE blocks; `tools/spec_edit_corpus.py`),
+greedy, reasoning effort low. Decode tok/s is output tokens over the time
+after the first token.
+
+| Edit style | N tok/s | S tok/s | S per-task range |
+| --- | ---: | ---: | ---: |
+| whole file (15.8K tokens) | 27.6 | 124.2 (4.5x) | 94-132 |
+| SEARCH/REPLACE | 27.5 | 36.0 (1.3x) | 23-41 |
+
+- 882 verify frames, 21,421 drafts, 17,719 accepted (83%). S1 and S2 are
+  token-identical and within 0.2% in speed; so are N1 and N2.
+- The logprob goldens (which never draft) are bit-identical on every arm.
+- 13 of 20 S streams equal N; 7 diverge, two at the reply's last token and
+  five early in SEARCH/REPLACE replies, all on formatting tokens. Frames above
+  8 rows run gather attention and wide GEMMs, so their logits differ slightly
+  from chained decode; the near-tie check at each divergence is in the next
+  hold. The diverged SEARCH/REPLACE replies are longer (6.2K against 3.4K
+  tokens), so that row compares partly different text.
+
 ### K3 sampled decode: chat sampling at greedy speed (2026-10-15)
 
 The chat layer samples at the publishers' defaults (temperature 1, top-p
