@@ -740,7 +740,7 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	descriptor = runtime->adapter_library.adapter_interface.descriptor;
 	status = SparkModelResidentIpcCalculateSubmitBytes(runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,runtime->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? runtime->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&submit_bytes);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentIpcCalculateCompletionBytes(descriptor->max_output_token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,&completion_bytes);
+		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,&completion_bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	runtime->route_capacity = runtime->runtime_limits.max_inflight_submission_count;
@@ -926,9 +926,10 @@ static void SparkModelResidentdDropClaimsLocked(SparkModelResidentdRuntime *runt
 static SparkStatus SparkModelResidentdCompleteContinuationLease(
 	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route,
-	const SparkModelServingLane *lane,
+	uint32_t lane_index,
 	SparkModelResidentdSequenceSlot *slot)
 {
+	const SparkModelServingLane *lane = &route->submission.lanes[lane_index];
 	SparkStatus status;
 	uint64_t next_sequence_position;
 	if ( route->submission.work_kind ==
@@ -938,7 +939,14 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 		return(SPARK_STATUS_OK);
 	}
 	next_sequence_position = lane->context_token_count;
-	if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+	if ( (route->submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+	{
+		status = SparkModelContinuationLeaseVerifyPosition(lane->sequence_position,
+			SparkModelServingCompletionKeptRows(&route->completion,lane_index),&next_sequence_position);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	else if ( route->submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 	{
 		uint32_t completed_tokens = route->completion.tokens_per_sequence;
 		if ( completed_tokens == 0u )
@@ -992,7 +1000,7 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 			SparkModelContinuationLeaseInvalidate(&slot->lease);
 		else if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) != 0u )
 		{
-			status = SparkModelResidentdCompleteContinuationLease(runtime,route,lane,slot);
+			status = SparkModelResidentdCompleteContinuationLease(runtime,route,lane_index,slot);
 			if ( status != SPARK_STATUS_OK )
 				SPARK_RETURN(status);
 		}

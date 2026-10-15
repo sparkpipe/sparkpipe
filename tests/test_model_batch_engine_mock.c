@@ -32,6 +32,9 @@
 #ifndef TEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH
 #define TEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH ""
 #endif
+#ifndef TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH
+#define TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH ""
+#endif
 
 #define TEST_RANKS 3u
 #define TEST_MAX_REQUESTS 8u
@@ -149,7 +152,7 @@ static void TestWriteDeployment(const char *path, const char *runtime_root, cons
 	fixture.runtime_limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
 	fixture.runtime_limits.max_inflight_submission_count = 4u;
 	fixture.runtime_limits.max_active_sequence_count = 8u;
-	fixture.runtime_limits.max_input_row_count = 32u;
+	fixture.runtime_limits.max_input_row_count = 256u;
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 256u;
 	fixture.runtime_limits.kv_physical_page_capacity = 256u;
@@ -2051,6 +2054,7 @@ static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *depl
 
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
 static void TestScenarioAdapterCacheModes(const char *runtime_root)
 {
@@ -2084,6 +2088,10 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		SparkModelResidentDeploymentReset(&deployment);
 		(void)unlink(path);
 	}
+	TestLoadVariantDeployment(runtime_root,"speculative-long-verify",TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH,path,sizeof(path),&deployment);
+	TestScenarioLongVerify(&deployment,runtime_root);
+	SparkModelResidentDeploymentReset(&deployment);
+	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
 	TestScenarioReplyCheckpoint(&deployment,runtime_root);
@@ -2224,6 +2232,84 @@ static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeploymen
 	CHECK(submissions != 0u,"lookup mixed: the greedy lane verifies drafts");
 	CHECK(TestLaneInputsFollowScript(2u,script,256u) != 0u,"lookup mixed: every sampled-lane input is a committed model token");
 	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestLongVerifyScript(uint32_t *script,uint32_t count,uint32_t passage,uint32_t prompt)
+{
+	uint32_t index;
+	for (index=0u; index<passage; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	for (index=passage; index<prompt; index++)
+		script[index] = 9000u + index;
+	for (index=prompt; index<count; index++)
+		script[index] = script[(index - prompt) % passage];
+}
+
+static void TestRunLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root,const uint32_t *script,uint32_t prompt,uint32_t budget,
+	TestBatchState *state,SparkModelBatchEngineView *view,uint32_t *submissions,uint32_t *rows,uint32_t *stride,uint32_t *continues)
+{
+	SparkModelBatchEngine *engine;
+	MockResidentClientReset();
+	memset(state,0,sizeof(*state));
+	engine = TestConnectFlags(deployment,state,runtime_root,256u,8u,0u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,512u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,920u,budget,script,prompt);
+	TestDriveUntilTerminal(engine,state,1u,4000u);
+	memset(view,0,sizeof(*view));
+	CHECK(SparkModelBatchEngineGetView(engine,view) == SPARK_STATUS_OK,"long verify: engine view");
+	MockResidentClientTakeVerifyStats(submissions,rows);
+	*stride = MockResidentClientTakeVerifyMaxStride();
+	*continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	MockResidentClientSetVerifyCorrupt(0u);
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[512],submissions,rows,stride,continues,index;
+	SparkModelBatchEngineView view;
+	TestBatchState state;
+	TestLongVerifyScript(script,512u,120u,124u);
+	TestRunLongVerify(deployment,runtime_root,script,124u,120u,&state,&view,&submissions,&rows,&stride,&continues);
+	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,124u,120u) != 0u,"long verify: a whole-file copy emits exactly the model's greedy stream");
+	CHECK(stride > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE + 1u && rows > 4u * submissions,"long verify: a long copy is verified in frames longer than a decode chain");
+	CHECK(view.speculative_accepted_token_count >= 90u && view.speculative_accepted_token_count == view.speculative_draft_token_count,"long verify: every draft of an exact copy is kept");
+	CHECK(submissions != 0u && continues >= submissions,"long verify: every frame after a verify continues on the lease");
+	CHECK(TestLaneInputsFollowScript(1u,script,512u) != 0u,"long verify: every decode lane's input token is a committed model token");
+	for (index=124u + 30u; index<512u; index+=45u)
+		script[index] = 6000u + index;
+	TestRunLongVerify(deployment,runtime_root,script,124u,120u,&state,&view,&submissions,&rows,&stride,&continues);
+	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,124u,120u) != 0u,"long verify: an edited copy emits exactly the greedy stream");
+	CHECK(view.speculative_accepted_token_count < view.speculative_draft_token_count && view.speculative_accepted_token_count >= 60u,"long verify: drafts past an edit are rejected and the rest kept");
+	CHECK(submissions != 0u && continues >= submissions,"long verify: the lease holds after a rejecting verify");
+	CHECK(TestLaneInputsFollowScript(1u,script,512u) != 0u,"long verify: a rejected draft never becomes a lane's input");
+	TestLongVerifyScript(script,512u,120u,124u);
+	script[124u + 40u] = 6100u;
+	MockResidentClientReset();
+	{
+		SparkModelBatchEngine *engine;
+		uint32_t emitted,prefix = 1u;
+		memset(&state,0,sizeof(state));
+		engine = TestConnectFlags(deployment,&state,runtime_root,256u,8u,0u);
+		if ( engine == 0 )
+			return;
+		MockResidentClientSetScript(script,512u);
+		MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+		MockResidentClientSetVerifyCorrupt(1u);
+		TestSubmitPrompt(engine,1u,921u,120u,script,124u);
+		TestDriveUntilTerminal(engine,&state,1u,4000u);
+		MockResidentClientSetVerifyCorrupt(0u);
+		emitted = state.token_events[1] < 128u ? state.token_events[1] : 128u;
+		for (index=0u; index<emitted; index++)
+			if ( state.token_ids[1][index] != script[124u + index] )
+				prefix = 0u;
+		CHECK(state.completed_events[1] == 0u && state.error_events[1] == 1u && emitted < 120u && prefix != 0u,
+			"long verify: a node kept count that disagrees with the drafts fails the request and emits no wrong token");
+		(void)SparkModelBatchEngineDestroy(engine);
+	}
 }
 
 static void TestScenarioDecodeAfterPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root)
