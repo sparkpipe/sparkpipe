@@ -25,6 +25,8 @@
 #define PROBE_ACCUMULATION_EPSILON 3.814697265625e-06
 #define PROBE_PATHS 2u
 #define PROBE_PAIR_ROWS 8u
+#define PROBE_TILE_SMS 48u
+#define PROBE_TILE_VARIANTS 6u
 
 static int probe_failures;
 static uint32_t probe_multiprocessors;
@@ -423,6 +425,82 @@ static void ProbeDense(const ProbeDenseShape *shape,uint32_t rows,uint32_t timin
 	cudaFree(device_weight); cudaFree(device_activation); cudaFree(device_output); cudaFree(row_offset); cudaFree(tile_prefix);
 }
 
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARP_ROWS>
+static int32_t ProbeTile(const LmStreamGemmArguments *args,cudaStream_t stream)
+{
+	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
+	return(LmStreamGemmLaunchTile<LmFp8,TILE_M,TILE_N,TILE_K,WARP_ROWS>(args,((uint64_t)args->rows / TILE_M + groups) * ((args->output_dimension + TILE_N - 1u) / TILE_N),PROBE_TILE_SMS,stream));
+}
+
+static int32_t ProbeTileRun(const LmStreamGemmArguments *args,uint32_t variant,cudaStream_t stream)
+{
+	switch ( variant )
+	{
+		case 0u: return(args->input_dimension % 256u == 0u ? ProbeTile<32u,64u,256u,32u>(args,stream) : ProbeTile<64u,128u,128u,32u>(args,stream));
+		case 1u: return(LmStreamGemmLaunch<LmFp8>(args,PROBE_TILE_SMS,stream));
+		case 2u: return(ProbeTile<128u,128u,128u,128u>(args,stream));
+		case 3u: return(ProbeTile<64u,256u,128u,64u>(args,stream));
+		case 4u: return(ProbeTile<64u,128u,128u,64u>(args,stream));
+		default: return(ProbeTile<32u,256u,128u,32u>(args,stream));
+	}
+}
+
+static void ProbeTileInvariance(const ProbeMatrix *matrix,uint32_t rows,uint32_t groups,uint32_t stacked,cudaStream_t stream)
+{
+	const uint32_t input = matrix->input,output = matrix->output * stacked,tokens = groups > 1u ? rows / PROBE_TOP_K : rows;
+	std::vector<uint16_t> activation((uint64_t)tokens * input),expected((uint64_t)rows * output),actual((uint64_t)rows * output);
+	std::vector<uint32_t> offset(groups + 1u),source(rows);
+	LmStreamGemmArguments args;
+	uint16_t *device_activation,*device_output;
+	uint32_t *device_offset,*device_source,index,variant;
+	uint64_t element,differ;
+	for (element=0u; element<activation.size(); element++)
+		activation[element] = ProbeBf16((float)((double)(ProbeHash(element ^ 0x9e37u) % 200001u) / 100000.0 - 1.0));
+	for (index=0u; index<=groups; index++)
+		offset[index] = (uint32_t)((uint64_t)rows * index / groups);
+	for (index=0u; index + 1u < groups; index += 7u)
+		offset[index + 1u] -= (offset[index + 1u] - offset[index]) / 2u;
+	for (index=0u; index<rows; index++)
+		source[index] = (uint32_t)(ProbeHash(index ^ 0x7f4au) % tokens);
+	PROBE_CUDA(cudaMalloc((void **)&device_activation,activation.size() * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&device_output,expected.size() * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&device_offset,offset.size() * 4u));
+	PROBE_CUDA(cudaMalloc((void **)&device_source,source.size() * 4u));
+	PROBE_CUDA(cudaMemcpy(device_activation,activation.data(),activation.size() * 2u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaMemcpy(device_offset,offset.data(),offset.size() * 4u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaMemcpy(device_source,source.data(),source.size() * 4u,cudaMemcpyHostToDevice));
+	memset(&args,0,sizeof(args));
+	args.activation = device_activation;
+	args.weight = matrix->device_weight;
+	args.group_row_offset = groups > 1u ? device_offset : 0;
+	args.source_row_map = groups > 1u ? device_source : 0;
+	args.output_bf16 = device_output;
+	args.scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_FP8_E4M3>(matrix->device_scale,groups,output,input);
+	args.weight_group_bytes = (uint64_t)output * input;
+	args.rows = rows;
+	args.groups = groups;
+	args.input_dimension = input;
+	args.output_dimension = output;
+	args.output_row_stride = output;
+	for (variant=0u; variant<PROBE_TILE_VARIANTS; variant++)
+	{
+		PROBE_CUDA(cudaMemsetAsync(device_output,0xff,expected.size() * 2u,stream));
+		PROBE_OK(ProbeTileRun(&args,variant,stream));
+		PROBE_CUDA(cudaStreamSynchronize(stream));
+		PROBE_CUDA(cudaMemcpy(variant == 0u ? expected.data() : actual.data(),device_output,expected.size() * 2u,cudaMemcpyDeviceToHost));
+		if ( variant == 0u )
+			continue;
+		for (element=0u,differ=0u; element<expected.size(); element++)
+			differ += expected[element] != actual[element] ? 1u : 0u;
+		if ( differ != 0u )
+		{
+			printf("FAIL fp8 tile invariance K%u N%u rows%u groups%u variant %u: %llu of %zu outputs differ from the reference tile\n",input,output,rows,groups,variant,(unsigned long long)differ,expected.size());
+			probe_failures++;
+		}
+	}
+	cudaFree(device_activation); cudaFree(device_output); cudaFree(device_offset); cudaFree(device_source);
+}
+
 int main(int argc,char **argv)
 {
 	static const uint32_t rows[] = { 1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u };
@@ -449,6 +527,12 @@ int main(int argc,char **argv)
 		for (index=0u; index<sizeof(dense_rows) / sizeof(dense_rows[0]); index++)
 			ProbeDense(&dense_shapes[shape],dense_rows[index],timing,&row_zero,stream);
 	}
+	ProbeTileInvariance(&up,16384u,PROBE_EXPERTS,1u,stream);
+	ProbeTileInvariance(&up,8192u,PROBE_EXPERTS,1u,stream);
+	ProbeTileInvariance(&down,16384u,PROBE_EXPERTS,1u,stream);
+	ProbeTileInvariance(&up,1024u,1u,16u,stream);
+	ProbeTileInvariance(&up,256u,1u,16u,stream);
+	ProbeTileInvariance(&down,2048u,1u,1u,stream);
 	cudaFree(up.device_weight); cudaFree(up.device_scale); cudaFree(down.device_weight); cudaFree(down.device_scale);
 	PROBE_CUDA(cudaStreamDestroy(stream));
 	if ( probe_failures != 0 )
@@ -456,6 +540,6 @@ int main(int argc,char **argv)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS stream GEMM: grouped FP8 experts and dense BF16 projections stay within %.1f bf16 ulp of the fp64 reference at every row count and are row-invariant; the serving CUDA-core expert dispatch meets the same bound\n",PROBE_ULP_LIMIT);
+	printf("PASS stream GEMM: grouped FP8 experts and dense BF16 projections stay within %.1f bf16 ulp of the fp64 reference at every row count and are row-invariant; the serving CUDA-core expert dispatch meets the same bound; FP8 outputs are bit-identical across stream tile shapes and the launcher\n",PROBE_ULP_LIMIT);
 	return 0;
 }
