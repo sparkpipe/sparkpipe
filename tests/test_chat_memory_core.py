@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Chat memory's core keeps a conversation's layout cache-friendly and its records safe: a signed identity is accepted only with a valid HS256 signature and an unexpired claim; a chat splits into finished exchanges and the current one; an exchange's key ignores ids and timestamps but not content; the ledger covers only a gap-free prefix of finished exchanges with lines and always leaves the newest finished exchange raw; adding a line only appends to the ledger text; the system note is present from the first turn; open nodes come only from the ledger and show the user's message and the answer first, with tool results only as pointers; expand pages long exchanges; tool results get a header with their id, tool, arguments and size, are split into sections at line breaks when long, are capped to their head and tail with a marker, cannot forge ids, section marks or memory tags, collapse to a stub with the kept sections, and page by section through expand; search_history finds literal text (phrase, all words near each other, or any word) in every earlier exchange including tool results and in ledger and group lines, reporting each match's exchange and expand part and capping its output; curator output is validated line by line with long lines cut and the open set trimmed to its budget; groups replace contiguous runs of ledger lines, nest, apply only where their members are, and are planned oldest first only when the ledger is over its budget, down to about half of it; lines are immutable once stored, survive a restart and a torn last record, stay private on disk, and temporary chats never reach disk."""
+"""Chat memory's core keeps a conversation's layout cache-friendly and its records safe: a signed identity is accepted only with a valid HS256 signature and an unexpired claim; a chat splits into finished exchanges and the current one; an exchange's key ignores ids and timestamps but not content; the ledger holds only committed exchanges, in commit order, and every other finished exchange stays open in full after it with its id; a commit only appends to the ledger text; the system note is present from the first turn; open nodes come only from the ledger and show the user's message and the answer first, with tool results only as pointers; expand pages long exchanges; tool results get a header with their id, tool, arguments and size, are split into sections at line breaks when long, are capped to their head and tail with a marker, cannot forge ids, section marks or memory tags, collapse to a stub with the kept sections, and page by section through expand; search_history finds literal text (phrase, all words near each other, or any word) in every earlier exchange including tool results and in ledger and group lines, reporting each match's exchange and expand part and capping its output; curator output is validated line by line with long lines cut and the open set trimmed to its budget; groups replace contiguous runs of ledger lines, nest, apply only where their members are, and are planned oldest first only when the ledger is over its budget, down to about half of it; lines are immutable once stored, survive a restart and a torn last record, stay private on disk, and temporary chats never reach disk."""
 import base64
 import hashlib
 import hmac
@@ -70,23 +70,27 @@ assert cm.exchange_key(a) == cm.exchange_key(b) != cm.exchange_key(c)
 head, exchanges, current = cm.split(chat(6))
 keys = [cm.exchange_key(e) for e in exchanges]
 none = cm.build_layout(head, exchanges, current, {}, [])
-assert none["lined"] == 0 and cm.SYSTEM_NOTE in none["messages"][0]["content"] and not any(cm.LEDGER_OPEN in str(m["content"]) for m in none["messages"] if m["role"] == "user")
-gap = cm.build_layout(head, exchanges, current, {keys[0]: "l1", keys[2]: "l3"}, [])
-assert gap["lined"] == 1, gap["lined"]
-full = cm.build_layout(head, exchanges, current, {k: f"line {i + 1}" for i, k in enumerate(keys)}, ["e1", "e4", "e9"])
-assert full["lined"] == 4, "the newest finished exchange must stay raw"
-first_user = [m for m in full["messages"] if m["role"] == "user"][0]["content"]
-assert first_user.startswith(cm.LEDGER_OPEN + "[e1] line 1\n") and "[e4] line 4\n" in first_user and "[e5]" not in first_user and first_user.endswith("question 5")
-last = full["messages"][-1]["content"]
-assert last.startswith(cm.REFERENCE_OPEN) and '<history id="e1">' in last and 'id="e4"' in last and 'id="e9"' not in last and last.endswith("question 6")
-assert full["open"] == ["e1", "e4"]
-shorter = cm.build_layout(head, exchanges, current, {k: f"line {i + 1}" for i, k in enumerate(keys[:3])}, [])
-older = [m for m in shorter["messages"] if m["role"] == "user"][0]["content"]
-assert first_user.startswith(older[:older.index(cm.LEDGER_CLOSE)]), "adding a line must only append to the ledger text"
-assert cm.build_layout(head, exchanges, current, {k: "x" for k in keys}, [], raw_min=2)["lined"] == 3
+users = [m["content"] for m in none["messages"] if m["role"] == "user"]
+assert none["lined"] == 0 and none["working"] == [0, 1, 2, 3, 4] and cm.SYSTEM_NOTE in none["messages"][0]["content"] and not any(cm.LEDGER_OPEN in u for u in users)
+assert users[0] == "[e1] question 1" and users[-1] == cm.REFERENCE_OPEN + cm.REFERENCE_CLOSE + "[e6] question 6", users
+lines_all = {k: f"line {i + 1}" for i, k in enumerate(keys)}
+assert cm.build_layout(head, exchanges, current, lines_all, [])["lined"] == 0, "lines alone never take an exchange out of the working set"
+committed = cm.build_layout(head, exchanges, current, lines_all, ["e1", "e4", "e9", "e3"], [keys[0], keys[3], keys[1]])
+assert committed["lined"] == 3 and committed["working"] == [2, 4] and committed["keys"] == [keys[0], keys[3], keys[1]]
+first_user = [m for m in committed["messages"] if m["role"] == "user"][0]["content"]
+assert first_user == cm.LEDGER_OPEN + "[e1] line 1\n[e4] line 4\n[e2] line 2\n" + cm.LEDGER_CLOSE + "[e3] question 3", "the ledger lists commits in commit order before the first open exchange"
+last = committed["messages"][-1]["content"]
+assert last.startswith(cm.REFERENCE_OPEN) and '<history id="e1">' in last and 'id="e4"' in last and 'id="e3"' not in last and last.endswith("[e6] question 6")
+assert committed["open"] == ["e1", "e4"], "only committed exchanges can be opened; open ones are shown in full anyway"
+more = cm.build_layout(head, exchanges, current, lines_all, [], [keys[0], keys[3], keys[1], keys[2]])
+grown = [m for m in more["messages"] if m["role"] == "user"][0]["content"]
+assert grown.startswith(first_user[:first_user.index(cm.LEDGER_CLOSE)]), "a commit only appends to the ledger text"
+assert cm.build_layout(head, exchanges, current, {}, [], [keys[0]])["lined"] == 0, "a commit without a line keeps the exchange open"
+everything = cm.build_layout(head, exchanges, current, lines_all, [], keys)
+assert everything["working"] == [] and everything["messages"][-1]["content"].startswith(cm.LEDGER_OPEN + "[e1] line 1") and everything["messages"][-1]["content"].endswith("[e6] question 6")
 follow = cm.split(chat(4, follow_up=True))
-laid = cm.build_layout(*follow, {cm.exchange_key(e): "x" for e in follow[1]}, [])
-assert laid["messages"][-1]["role"] == "tool" and laid["messages"][-3]["content"].endswith("question 4")
+laid = cm.build_layout(*follow, {}, [])
+assert laid["messages"][-1]["role"] == "tool" and laid["messages"][-3]["content"].endswith("[e4] question 4")
 
 long_exchange = [[{"role": "user", "content": "x" * 25}, {"role": "assistant", "content": "y" * 25}]]
 one = cm.expand_text(long_exchange, "e1", 1, 20)
@@ -124,19 +128,20 @@ with tempfile.TemporaryDirectory() as tmp:
 head, exchanges, current = cm.split(chat(41))
 keys = [cm.exchange_key(m) for m in exchanges]
 lines = {key: f"line {i + 1}" for i, key in enumerate(keys)}
-nodes = cm.ledger_nodes(exchanges, lines, {}, 40)
+nodes = cm.ledger_nodes(exchanges, lines, {}, list(range(40)))
 groups = {"g1": {"members": ["x:" + k for k in keys[:16]], "line": "the first sixteen"},
           "g2": {"members": ["x:" + k for k in keys[16:32]], "line": "the next sixteen"},
           "g3": {"members": ["g1", "g2"], "line": "thirty-two in all"},
           "g4": {"members": ["x:" + keys[5], "x:" + keys[6]], "line": "inside g1 already"},
           "g5": {"members": ["x:missing", "x:" + keys[33]], "line": "not on this branch"}}
-grouped = cm.ledger_nodes(exchanges, lines, groups, 40)
+grouped = cm.ledger_nodes(exchanges, lines, groups, list(range(40)))
 assert [n["id"] for n in grouped] == ["g3"] + [f"e{i}" for i in range(33, 41)], [n["id"] for n in grouped]
 text = cm.ledger_text(grouped)
 assert text.startswith("[g3: e1-e32] thirty-two in all\n[e33] line 33\n") and text.endswith("[e40] line 40\n"), text
 assert set(cm.group_nodes(grouped)) == {"g1", "g2", "g3"} and cm.ledger_text(cm.group_nodes(grouped)["g3"]["children"]) == "[g1: e1-e16] the first sixteen\n[g2: e17-e32] the next sixteen\n"
-assert [n["id"] for n in cm.ledger_nodes(exchanges, lines, groups, 40, ["g1"])][:2] == ["g1", "e17"], "a frozen layout applies only its own groups"
-laid = cm.build_layout(head, exchanges, current, lines, ["e2", "e40"], 1, 6000, groups)
+assert [n["id"] for n in cm.ledger_nodes(exchanges, lines, groups, list(range(40)), ["g1"])][:2] == ["g1", "e17"], "a frozen layout applies only its own groups"
+assert cm.node_label(cm.ledger_nodes(exchanges, lines, {"g1": {"members": ["x:" + keys[4], "x:" + keys[9], "x:" + keys[10]], "line": "x"}}, [4, 9, 10])[0]) == "[g1: e5,e10-e11]"
+laid = cm.build_layout(head, exchanges, current, lines, ["e2", "e40"], keys[:39], 6000, groups)
 assert laid["lined"] == 39 and laid["groups"] == ["g1", "g2", "g3"] and laid["open"] == ["e2"]
 assert laid["messages"][1]["content"].startswith(cm.LEDGER_OPEN + "[g3: e1-e32] thirty-two in all\n") and "[e39] line 39\n" + cm.LEDGER_CLOSE in laid["messages"][1]["content"]
 count = lambda text: len(text.split())
@@ -217,4 +222,4 @@ with tempfile.TemporaryDirectory() as tmp:
     assert not store.append("user-1", "chat-g", {"type": "group", "id": "g1", "members": ["x:a"], "line": "changed", "source": "curator"})
     assert cm.ChatStore(tmp).load("user-1", "chat-g")["groups"] == {"g1": {"members": ["x:a", "x:b"], "line": "first", "source": "curator"}}
 
-print("PASS test_chat_memory_core: signed identity, exchange split and keys, gap-free append-only ledger with a raw newest exchange, open nodes from the ledger only, paged expand, literal case-insensitive history search with ids and parts, validated curator output, nested group lines that replace runs of the ledger, regroups planned only over the budget, immutable private lines that survive restarts and torn records, temporary chats in memory only")
+print("PASS test_chat_memory_core: signed identity, exchange split and keys, append-only ledger of commits with an open working set after it, open nodes from the ledger only, paged expand, literal case-insensitive history search with ids and parts, validated curator output, nested group lines that replace runs of the ledger, regroups planned only over the budget, immutable private lines that survive restarts and torn records, temporary chats in memory only")

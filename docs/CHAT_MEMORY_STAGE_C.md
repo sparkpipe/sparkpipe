@@ -4,11 +4,39 @@ Design of record for the next memory stage, from the 2026-10-15 design run (a ma
 a prior-art review, three independent designs, a judge, two adversarial reviews and a revision). It extends
 `docs/CHAT_MEMORY.md` (stages A and B, as built). Nothing here is built unless the staging section's status says so.
 
-Status, 2026-10-15:
+Status, 2026-10-15 (all live on K3 through the production chat layer unless noted):
 
-- Built ahead of the staging: `search_history` (stage B, deployed), tool names from `tool_call_id` in `exchange_text`,
-  the tool-image message kept in its exchange, and step 0's control-token fix for segment renderers (deployed).
-- Next: step 0's numbers-only log fields, then step 1 (canonical turn).
+- Step 0: numbers-only attribution in the chat log (chat and message hashes, answer or tool round, round
+  number, newest results by tool and size, memory layout counts) and a memory_job line per background
+  request; the segment-renderer control-token fix (DeepSeek V4.1 Flash encoded client control strings as
+  control tokens). Engine status fields and E0 are not done.
+- Step 1, in part: Open WebUI's citation wrapper is rendered canonically (the user's text alone, the head
+  and file sources kept when files are attached) and fetched results carry their citation number in their
+  own turn; tool names come from `tool_call_id`; the tool-image message stays in its exchange; expansions
+  replay at their round with the streamed prefix said once, per attempt; open nodes show the question and
+  the answer first and tool results as pointers. Live: a 3-round fetch turn prefilled 1.01x its final
+  prompt instead of 1.63x, with correct citations. Not done: the frozen system text with notes, the tool
+  union, RENDER_FORMAT, the R0 stem, id-only turn records on every model.
+- Step 3, in part: tool results carry a header with their id (e5.t2), tool, arguments and size; results
+  over 1024 tokens are split into sections [§n]; results over 12288 tokens show head and tail sections;
+  tool text cannot forge ids, section marks or memory tags; `expand e5.t2 part n` pages by section;
+  `search_history` searches everything. Not done: the room-based per-round cap, the overflow event with
+  masking and restored reasoning, the per-turn expand budget, `find` inside expand.
+- Step 4, in part: the curator chooses kept sections; from the next turn on a large result renders as a
+  stub plus its kept sections (frozen per user message); the pre-warm renders that form and runs every
+  turn. Live: the follow-up after a fetch turn resumed at 4544 of 4592 tokens. Not done: skeletons from
+  client config, the extension path, the open-turn hold, the continuation room check.
+- Step 5, in part: the working set. Exchanges stay open after the ledger until they pass the working
+  budget (24576 tokens on K3); the curator then commits those least needed with its earlier line or a
+  hindsight line that keeps the earlier names, numbers and codes, and the oldest open exchanges are
+  committed when it frees too little; the ledger lists commits in commit order; the fit commits before it
+  folds. Live with a 150-token test budget: commits at turns 2, 3 and 8, recall correct, every turn
+  pre-warmed. Not done: shrink to part form, standing quotes, supersedes, documents within D, the per-user
+  content index, the load check.
+- Not started: step 2 (engine changes), steps 6-12 (curator-chosen folds, reference excerpts and
+  pointers, typed provenance, E6/E7 evaluation, digests, other models).
+- Existing stage-B lines are kept as provisional lines; existing chats reopen their exchanges until the
+  working budget is reached, when the curator or the fit commits the oldest with those lines.
 
 Design name: Stage C (revision 2): open working set, tool parts collapsed at the turn boundary, after-turn continuation jobs.
 

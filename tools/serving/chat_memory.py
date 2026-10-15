@@ -412,9 +412,33 @@ def splice_expansions(current, groups):
     return result
 
 
-def ledger_nodes(exchanges, lines, groups, lined, allowed=None):
-    nodes = [{"ref": "x:" + exchange_key(exchanges[i]), "id": f"e{i + 1}", "first": i + 1, "last": i + 1, "line": lines[exchange_key(exchanges[i])]}
-             for i in range(lined)]
+def span_label(numbers):
+    numbers, runs = sorted(set(numbers)), []
+    for number in numbers:
+        if runs and number == runs[-1][1] + 1:
+            runs[-1][1] = number
+        else:
+            runs.append([number, number])
+    return ",".join(f"e{a}" if a == b else f"e{a}-e{b}" for a, b in runs)
+
+
+def committed_order(exchanges, commits):
+    positions = {}
+    for index, messages in enumerate(exchanges):
+        positions.setdefault(exchange_key(messages), []).append(index)
+    order, taken = [], set()
+    for key in commits:
+        for index in positions.get(key, []):
+            if index not in taken:
+                order.append(index)
+                taken.add(index)
+                break
+    return order
+
+
+def ledger_nodes(exchanges, lines, groups, order, allowed=None):
+    nodes = [{"ref": "x:" + exchange_key(exchanges[i]), "id": f"e{i + 1}", "first": i + 1, "last": i + 1, "numbers": [i + 1],
+              "keys": [exchange_key(exchanges[i])], "line": lines[exchange_key(exchanges[i])]} for i in order]
     for gid in sorted(groups or {}, key=lambda g: int(g[1:])):
         if allowed is not None and gid not in allowed:
             continue
@@ -423,14 +447,18 @@ def ledger_nodes(exchanges, lines, groups, lined, allowed=None):
         for start in range(len(nodes) - len(members) + 1):
             if len(members) > 1 and refs[start:start + len(members)] == members:
                 run = nodes[start:start + len(members)]
-                nodes[start:start + len(members)] = [{"ref": gid, "id": gid, "first": run[0]["first"], "last": run[-1]["last"],
-                                                      "line": groups[gid]["line"], "children": run}]
+                numbers = sorted(number for node in run for number in node["numbers"])
+                nodes[start:start + len(members)] = [{"ref": gid, "id": gid, "first": numbers[0], "last": numbers[-1], "numbers": numbers,
+                                                      "keys": [key for node in run for key in node["keys"]], "line": groups[gid]["line"], "children": run}]
                 break
     return nodes
 
 
 def node_label(node):
-    return f"[{node['id']}]" if "children" not in node else f"[{node['id']}: e{node['first']}-e{node['last']}]"
+    if "children" not in node:
+        return f"[{node['id']}]"
+    label = span_label(node["numbers"])
+    return f"[{node['id']}: {label if len(label) <= 60 else str(len(node['numbers'])) + ' entries from e' + str(node['first'])}]"
 
 
 def ledger_text(nodes):
@@ -446,33 +474,31 @@ def group_nodes(nodes):
     return found
 
 
-def lined_prefix(exchanges, lines, raw_min):
-    count = 0
-    for messages in exchanges[:max(0, len(exchanges) - raw_min)]:
-        if lines.get(exchange_key(messages)) is None:
-            break
-        count += 1
-    return count
-
-
-def build_layout(head, exchanges, current, lines, open_ids, raw_min=1, open_chars=6000, groups=None, allowed=None, parts=None):
+def build_layout(head, exchanges, current, lines, open_ids, commits=(), open_chars=6000, groups=None, allowed=None, parts=None):
     system = [dict(head[0], content=text_of(head[0].get("content")) + "\n\n" + SYSTEM_NOTE)] + list(head[1:]) if head else [{"role": "system", "content": SYSTEM_NOTE}]
-    lined = lined_prefix(exchanges, lines, raw_min)
+    order = [index for index in committed_order(exchanges, commits) if lines.get(exchange_key(exchanges[index])) is not None]
+    done = set(order)
     render = parts or (lambda number, messages, past: list(messages))
-    current = render(len(exchanges) + 1, current, False)
-    if lined == 0:
-        body = [message for number, messages in enumerate(exchanges, start=1) for message in render(number, messages, True)]
-        return {"messages": system + body + list(current), "lined": 0, "open": [], "keys": [], "groups": [], "nodes": []}
-    nodes = ledger_nodes(exchanges, lines, groups, lined, allowed)
-    ledger = LEDGER_OPEN + ledger_text(nodes) + LEDGER_CLOSE
-    raw = [render(lined + offset + 1, messages, True) for offset, messages in enumerate(exchanges[lined:])]
-    raw[0][0] = prefix_text(raw[0][0], ledger)
-    shown = [node for node in open_ids if NODE_ID.match(node) and int(node[1:]) <= lined]
+    nodes = ledger_nodes(exchanges, lines, groups, order, allowed)
+    working = [index for index in range(len(exchanges)) if index not in done]
+    body = []
+    for index in working:
+        rendered = render(index + 1, exchanges[index], True)
+        rendered[0] = prefix_text(rendered[0], f"[e{index + 1}] ")
+        body.append(rendered)
+    shown = [node for node in open_ids if NODE_ID.match(node) and int(node[1:]) - 1 in done]
     reference = REFERENCE_OPEN + "".join(history_block(node, exchanges[int(node[1:]) - 1], open_chars) for node in shown) + REFERENCE_CLOSE
-    body = [message for messages in raw for message in messages]
-    question = [prefix_text(current[0], reference)] + list(current[1:])
-    return {"messages": system + body + question, "lined": lined, "open": shown, "keys": [exchange_key(m) for m in exchanges[:lined]],
-            "groups": sorted(group_nodes(nodes), key=lambda g: int(g[1:])), "nodes": nodes}
+    rendered = render(len(exchanges) + 1, current, False)
+    question = [prefix_text(rendered[0], reference + f"[e{len(exchanges) + 1}] ")] + list(rendered[1:])
+    if nodes:
+        ledger = LEDGER_OPEN + ledger_text(nodes) + LEDGER_CLOSE
+        if body:
+            body[0][0] = prefix_text(body[0][0], ledger)
+        else:
+            question[0] = prefix_text(question[0], ledger)
+    messages = system + [message for exchange in body for message in exchange] + question
+    return {"messages": messages, "lined": len(order), "open": shown, "keys": [exchange_key(exchanges[index]) for index in order],
+            "working": working, "groups": sorted(group_nodes(nodes), key=lambda g: int(g[1:])), "nodes": nodes}
 
 
 def curator_instruction(exchanges, lines, missing, open_ids, node_tokens, open_budget, line_tokens, regroup=()):
@@ -492,6 +518,57 @@ def curator_instruction(exchanges, lines, missing, open_ids, node_tokens, open_b
         runs = "; ".join(f"{group['id']} replaces " + ", ".join(group["labels"]) for group in regroup)
         text += f" The ledger is over its budget: write one group line each ({line_tokens} tokens at most) for {runs}."
     return text
+
+
+def messages_text(messages):
+    parts = []
+    for message in messages:
+        parts.append(text_of(message.get("content")))
+        if message.get("tool_calls"):
+            parts.append(json.dumps(message["tool_calls"], ensure_ascii=False))
+    return "\n".join(parts)
+
+
+def commit_instruction(plan, exchanges, lines, budget):
+    listing = "; ".join(f"e{index + 1} {tokens} tokens \"{lines.get(exchange_key(exchanges[index])) or '(no line yet)'}\"" for index, tokens in sorted(plan["sizes"].items()))
+    return (f" The open exchanges after the ledger total about {plan['total']} tokens, over their {budget}-token budget. Also add \"commit\": "
+            f"{{\"<id>\": \"=\" or \"<final line>\"}} for the open exchanges least likely to be needed again in full, freeing at least {plan['needed']} "
+            f"tokens. A committed exchange leaves the prompt and its line becomes permanent; its text stays behind expand and search_history. \"=\" keeps "
+            f"its earlier line; a final line, written with what you know now, keeps every name, number and code of the earlier line. "
+            f"Open exchanges (id, tokens, earlier line): {listing}.")
+
+
+LINE_FACTS = re.compile(r"[0-9][0-9.,:/-]*[0-9]|\b[A-Z][A-Za-z0-9-]*[0-9A-Z][A-Za-z0-9-]*\b")
+
+
+def keeps_facts(earlier, final):
+    return all(fact in final for fact in LINE_FACTS.findall(earlier or ""))
+
+
+def parse_commits(text, plan, exchanges, lines):
+    try:
+        start, end = text.index("{"), text.rindex("}")
+        data = json.loads(text[start:end + 1])
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    raw = data.get("commit") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    chosen = {}
+    for node, value in raw.items():
+        match = NODE_ID.match(node) if isinstance(node, str) else None
+        index = int(match.group(1)) - 1 if match else None
+        if index not in plan["sizes"]:
+            continue
+        earlier = lines.get(exchange_key(exchanges[index]))
+        final = clean_line(value) if isinstance(value, str) and value.strip() != "=" else None
+        if final is not None and earlier is not None and not keeps_facts(earlier, final):
+            final = None
+        if final is None and earlier is None:
+            continue
+        chosen[index] = final
+    plan["asked"] = set(chosen)
+    return chosen
 
 
 def keep_instruction(large, small, keep_tokens):
@@ -623,7 +700,8 @@ class ChatStore:
         key = (user, chat)
         if key in self.memory:
             return self.memory[key]
-        state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}, "groups": {}, "forms": {}}
+        state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}, "groups": {}, "forms": {},
+                 "commits": [], "committed": set(), "final": {}}
         path = self.path(user, chat)
         if self.persistent(chat) and path.is_file():
             for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -646,7 +724,12 @@ class ChatStore:
         elif kind == "open" and record.get("after"):
             state["open"][record["after"]] = list(record.get("ids") or [])
         elif kind == "layout" and record.get("message"):
-            state["layouts"][record["message"]] = {k: record[k] for k in ("lined", "open", "keys", "groups", "forms") if k in record}
+            state["layouts"][record["message"]] = {k: record[k] for k in ("lined", "open", "commits", "groups", "forms") if k in record}
+        elif kind == "commit" and record.get("key") and record["key"] not in state["committed"]:
+            state["commits"].append(record["key"])
+            state["committed"].add(record["key"])
+            if isinstance(record.get("line"), str) and record["line"]:
+                state["final"][record["key"]] = record["line"]
         elif kind == "form" and record.get("part") and record["part"] not in state["forms"]:
             state["forms"][record["part"]] = [int(n) for n in record.get("keep") or [] if isinstance(n, int)]
         elif kind == "group" and GROUP_ID.match(record.get("id") or "") and record["id"] not in state["groups"] and isinstance(record.get("members"), list):
@@ -670,6 +753,8 @@ class ChatStore:
         if record.get("type") == "group" and record.get("id") in state["groups"]:
             return False
         if record.get("type") == "form" and record.get("part") in state["forms"]:
+            return False
+        if record.get("type") == "commit" and record.get("key") in state["committed"]:
             return False
         record = dict(record, ts=round(time.time(), 3))
         self.apply(state, record)
@@ -820,23 +905,28 @@ class Memory:
             self.store.append(user, chat, {"type": "line", "key": exchange_key(exchanges[-1]), "line": pending["line"], "source": pending["source"]})
         open_ids = list(state["open_by_message"].get(parent, [])) if parent else []
         frozen = state["layouts"].get(user_message)
-        lines = state["lines"]
-        if frozen and frozen.get("keys") == [exchange_key(m) for m in exchanges[:len(frozen["keys"])]]:
-            limited = {key: lines[key] for key in frozen["keys"] if key in lines}
+        lines = self.ledger_lines(state)
+        if frozen and frozen.get("commits") is not None and set(frozen["commits"]) <= {exchange_key(m) for m in exchanges}:
+            limited = {key: lines[key] for key in frozen["commits"] if key in lines}
             parts = self.part_renderer(model, frozen.get("forms") or {})
-            layout = build_layout(head, exchanges, current, limited, frozen.get("open", []), 1, self.open_chars, state["groups"], frozen.get("groups", []), parts)
+            layout = build_layout(head, exchanges, current, limited, frozen.get("open", []), frozen["commits"], self.open_chars, state["groups"], frozen.get("groups", []), parts)
         else:
             parts = self.part_renderer(model, state["forms"])
-            layout = build_layout(head, exchanges, current, lines, open_ids, 1, self.open_chars, state["groups"], None, parts)
+            layout = build_layout(head, exchanges, current, lines, open_ids, state["commits"], self.open_chars, state["groups"], None, parts)
             layout = self.fit(model, user, chat, head, exchanges, current, layout, tools)
-            used = {part["key"]: state["forms"][part["key"]] for messages in exchanges[layout["lined"]:] for part in tool_parts(messages) if part["key"] in state["forms"]}
-            self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "keys": layout["keys"],
+            used = {part["key"]: state["forms"][part["key"]] for index in layout["working"] for part in tool_parts(exchanges[index]) if part["key"] in state["forms"]}
+            self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "commits": layout["keys"],
                                            "groups": layout["groups"], "forms": used})
         replay = state["expansions"].get((user_message, message), [])
         if replay:
             layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current)] + splice_expansions(layout["messages"][len(layout["messages"]) - len(current):], replay)
         return Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
                        list(tools or []) + list(MEMORY_TOOLS), dict(kwargs))
+
+    def ledger_lines(self, state):
+        lines = dict(state["lines"])
+        lines.update(state["final"])
+        return lines
 
     def part_settings(self, model):
         settings = model.memory
@@ -873,9 +963,13 @@ class Memory:
     def budgets(self, model):
         settings = model.memory
         context = int(getattr(model, "context_tokens", 0) or 0)
-        ledger = int(settings.get("ledger_tokens") or max(1024, context // 5))
+        ledger = int(settings.get("ledger_tokens") or max(1024, context // 10))
         prompt = int(settings.get("prompt_tokens") or (context - max(4096, context * 15 // 100) if context else 0))
         return ledger, prompt, int(settings.get("group_size", 16)), int(settings.get("line_tokens", 48))
+
+    def working_budget(self, model):
+        context = int(getattr(model, "context_tokens", 0) or 0)
+        return int(model.memory.get("working_tokens") or max(4096, context * 3 // 16))
 
     def prompt_size(self, model, layout, tools):
         parts = [json.dumps(list(tools or []) + list(MEMORY_TOOLS), ensure_ascii=False)]
@@ -892,15 +986,21 @@ class Memory:
     def fit(self, model, user, chat, head, exchanges, current, layout, tools):
         limit = self.budgets(model)[1]
         state = self.store.load(user, chat)
+        rebuild = lambda open_ids: build_layout(head, exchanges, current, self.ledger_lines(state), open_ids, state["commits"], self.open_chars,
+                                                state["groups"], None, self.part_renderer(model, state["forms"]))
         for _ in range(64):
             if not limit or self.prompt_size(model, layout, tools) <= limit:
                 return layout
             if layout["open"]:
-                layout = build_layout(head, exchanges, current, state["lines"], [], 1, self.open_chars, state["groups"], None, self.part_renderer(model, state["forms"]))
+                layout = rebuild([])
                 continue
-            if layout["lined"] < len(exchanges) - 1:
-                for index in range(layout["lined"], len(exchanges) - 1):
-                    self.store.append(user, chat, {"type": "line", "key": exchange_key(exchanges[index]), "line": fallback_line(exchanges[index]), "source": "fit"})
+            candidates = layout["working"][:-1]
+            if candidates:
+                for index in candidates[:max(1, len(candidates) // 2)]:
+                    key = exchange_key(exchanges[index])
+                    if key not in state["lines"]:
+                        self.store.append(user, chat, {"type": "line", "key": key, "line": fallback_line(exchanges[index]), "source": "fit"})
+                    self.store.append(user, chat, {"type": "commit", "key": key, "source": "fit"})
             else:
                 nodes = layout["nodes"]
                 if len(nodes) < 2:
@@ -908,7 +1008,7 @@ class Memory:
                 run = nodes[:max(2, len(nodes) // 2)]
                 group = {"id": f"g{next_group(state['groups'])}", "first": run[0]["first"], "last": run[-1]["last"]}
                 self.store.append(user, chat, {"type": "group", "id": group["id"], "members": [node["ref"] for node in run], "line": stub_group_line(group), "source": "fit"})
-            layout = build_layout(head, exchanges, current, state["lines"], [], 1, self.open_chars, state["groups"], None, self.part_renderer(model, state["forms"]))
+            layout = rebuild([])
         print(json.dumps({"event": "chat_memory_fit_short", "model": model.id, "lined": layout["lined"], "nodes": len(layout["nodes"])}), flush=True)
         return layout
 
@@ -930,7 +1030,7 @@ class Memory:
 
     def schedule(self, session, plan_messages, content, prompt_ids=(), token_ids=()):
         lines = self.store.load(session.user, session.chat)["lines"]
-        missing = [i for i in range(session.layout["lined"], len(session.exchanges)) if exchange_key(session.exchanges[i]) not in lines][:self.catch_up]
+        missing = [i for i in session.layout["working"] if exchange_key(session.exchanges[i]) not in lines][:self.catch_up]
         queue = self.jobs.setdefault(session.model.id, [])
         queue[:] = [job for job in queue if job["session"].chat != session.chat or job["session"].user != session.user][-7:]
         queue.append({"session": session, "messages": plan_messages, "content": content, "missing": missing, "attempts": 0,
@@ -968,7 +1068,8 @@ class Memory:
                 self.fallback(model, job)
             if queue and queue[0] is job:
                 queue.pop(0)
-            await self.stem(model, session)
+            if job.get("ledger_changed"):
+                await self.stem(model, session)
             await self.prewarm(model, session, job["content"])
         if self.tasks.get(model.id) is asyncio.current_task():
             self.tasks.pop(model.id, None)
@@ -1004,6 +1105,11 @@ class Memory:
         instruction = curator_instruction(everything, {}, indices, session.layout["open"], sizes, int(settings.get("open_budget", 1500)), int(settings.get("line_tokens", 48)), planned)
         if large:
             instruction += keep_instruction(large, self.part_settings(model)[0], self.part_settings(model)[2])
+        commit_plan = self.plan_commit(model, session, job["content"], large)
+        job["commit_plan"] = commit_plan
+        if commit_plan:
+            state = self.store.load(session.user, session.chat)
+            instruction += commit_instruction(commit_plan, session.exchanges, state["lines"], self.working_budget(model))
         continued = None
         if job["prompt_ids"] and job["token_ids"] and job["attempts"] == 0:
             continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, settings.get("curator_suffix"))
@@ -1021,18 +1127,59 @@ class Memory:
         grouped = parse_groups(text, [group["id"] for group in planned])
         for group in planned:
             if group["id"] in grouped:
+                job["ledger_changed"] = True
                 self.store.append(session.user, session.chat, {"type": "group", "id": group["id"], "members": group["members"], "line": grouped[group["id"]], "source": "curator"})
         self.store.append(session.user, session.chat, {"type": "open_after", "message": session.message, "ids": opened})
         kept = parse_keep(text, large, self.part_settings(model)[2], lambda part, numbers: self.count(model, section_text(part["text"], section_spans(part["text"]), numbers)))
         for item in large:
             self.store.append(session.user, session.chat, {"type": "form", "part": item["part"]["key"], "keep": kept.get(item["id"], []), "source": "curator"})
+        if commit_plan:
+            job["ledger_changed"] = self.apply_commits(session, commit_plan, parse_commits(text, commit_plan, session.exchanges, self.store.load(session.user, session.chat)["lines"])) or job.get("ledger_changed")
         return complete and len(grouped) == len(planned)
+
+    def plan_commit(self, model, session, content, large):
+        state = self.store.load(session.user, session.chat)
+        render = self.part_renderer(model, state["forms"])
+        sizes = {index: self.count(model, messages_text(render(index + 1, session.exchanges[index], True))) for index in session.layout["working"]}
+        pending = {item["part"]["key"]: [] for item in large}
+        newest = self.part_renderer(model, dict(state["forms"], **pending))(len(session.exchanges) + 1, session.current + [{"role": "assistant", "content": content}], True)
+        total = sum(sizes.values()) + self.count(model, messages_text(newest)) + (self.part_settings(model)[2] if large else 0)
+        budget = self.working_budget(model)
+        print(json.dumps(dict(session.trace(), event="chat_memory_working", open_exchanges=len(sizes), tokens=total, budget=budget)), flush=True)
+        if total <= budget or not sizes:
+            return None
+        return {"total": total, "needed": total - budget // 2, "sizes": sizes}
+
+    def apply_commits(self, session, plan, chosen):
+        state = self.store.load(session.user, session.chat)
+        freed = sum(plan["sizes"][index] for index in chosen)
+        for index in sorted(plan["sizes"]):
+            if freed >= plan["needed"]:
+                break
+            if index in chosen:
+                continue
+            key = exchange_key(session.exchanges[index])
+            if key not in state["lines"]:
+                self.store.append(session.user, session.chat, {"type": "line", "key": key, "line": fallback_line(session.exchanges[index]), "source": "fallback"})
+            chosen[index] = None
+            freed += plan["sizes"][index]
+        for index in sorted(chosen):
+            self.store.append(session.user, session.chat, {"type": "commit", "key": exchange_key(session.exchanges[index]), "line": chosen[index],
+                                                           "source": "curator" if index in plan.get("asked", ()) else "fill"})
+        return bool(chosen)
 
     def plan_regroup(self, model, session):
         state = self.store.load(session.user, session.chat)
         ledger_budget, _, size, line_tokens = self.budgets(model)
-        nodes = ledger_nodes(session.exchanges, state["lines"], state["groups"], lined_prefix(session.exchanges, state["lines"], 0))
-        foldable = len([node for node in nodes if node["last"] <= session.layout["lined"]])
+        lines = self.ledger_lines(state)
+        order = [index for index in committed_order(session.exchanges, state["commits"]) if exchange_key(session.exchanges[index]) in lines]
+        nodes = ledger_nodes(session.exchanges, lines, state["groups"], order)
+        visible = set(session.layout["keys"])
+        foldable = 0
+        for node in nodes:
+            if not set(node["keys"]) <= visible:
+                break
+            foldable += 1
         return plan_groups(nodes, foldable, ledger_budget, size, next_group(state["groups"]), line_tokens, lambda text: self.frontend.memory_count(model, text))
 
     def write_line(self, session, index, line, source):
@@ -1045,9 +1192,12 @@ class Memory:
         session = job["session"]
         state = self.store.load(session.user, session.chat)
         for group in job.get("planned") or []:
+            job["ledger_changed"] = True
             self.store.append(session.user, session.chat, {"type": "group", "id": group["id"], "members": group["members"], "line": stub_group_line(group), "source": "fallback"})
         for item in job.get("large") or []:
             self.store.append(session.user, session.chat, {"type": "form", "part": item["part"]["key"], "keep": [], "source": "fallback"})
+        if job.get("commit_plan") and self.apply_commits(session, job["commit_plan"], {}):
+            job["ledger_changed"] = True
         for index in job["missing"]:
             if exchange_key(session.exchanges[index]) not in state["lines"]:
                 self.write_line(session, index, fallback_line(session.exchanges[index]), "fallback")
@@ -1059,11 +1209,11 @@ class Memory:
         if not int(settings.get("cache_checkpoint_tokens", 0)):
             return
         state = self.store.load(session.user, session.chat)
-        lines = state["lines"]
-        lined = lined_prefix(session.exchanges, lines, 0)
-        if lined == 0:
+        lines = self.ledger_lines(state)
+        order = [index for index in committed_order(session.exchanges, state["commits"]) if exchange_key(session.exchanges[index]) in lines]
+        if not order:
             return
-        ledger = LEDGER_OPEN + ledger_text(ledger_nodes(session.exchanges, lines, state["groups"], lined))
+        ledger = LEDGER_OPEN + ledger_text(ledger_nodes(session.exchanges, lines, state["groups"], order))
         system = build_layout(session.head, [], session.current, {}, [])["messages"][:len(session.head) or 1]
         messages = system + [{"role": "user", "content": ledger + SENTINEL}]
         ids = self.frontend.memory_cut_ids(model, messages, session.tools, session.kwargs, SENTINEL)
@@ -1073,8 +1223,8 @@ class Memory:
     async def prewarm(self, model, session, content):
         state = self.store.load(session.user, session.chat)
         finished = session.exchanges + [list(session.current) + [{"role": "assistant", "content": content.strip()}]]
-        layout = build_layout(session.head, finished, [{"role": "user", "content": SENTINEL}], state["lines"],
-                              list(state["open_by_message"].get(session.message, [])), 1, self.open_chars, state["groups"], None, self.part_renderer(model, state["forms"]))
+        layout = build_layout(session.head, finished, [{"role": "user", "content": SENTINEL}], self.ledger_lines(state),
+                              list(state["open_by_message"].get(session.message, [])), state["commits"], self.open_chars, state["groups"], None, self.part_renderer(model, state["forms"]))
         ids = self.frontend.memory_cut_ids(model, layout["messages"], session.tools, session.kwargs, SENTINEL)
         if ids:
             await self.frontend.memory_complete(model, ids, 1, False, "prewarm", session.trace())

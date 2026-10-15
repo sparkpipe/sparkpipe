@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; the ledger then covers every lined exchange but the newest; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
 import asyncio
 import base64
 import hashlib
@@ -127,35 +127,52 @@ async def run():
         assert memory.session(model, headers("u1"), summary, [], {}) is None
         assert memory.session(type("Plain", (), {"id": "plain", "memory": None})(), headers("u1"), conversation(1), [], {}) is None
 
-        first = await turn(memory, frontend, model, 1, "u1", None, "a1", '{"lines": {"e1": "The user asked question 1; the assistant gave answer 1."}, "open": []}')
-        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == cm.SENTINEL and cm.LEDGER_OPEN not in json.dumps(frontend.cuts[0]), \
-            "no stem while the next ledger would be empty, but the next turn is pre-warmed"
+        working = Model(16384)
+        working.id = "working-model"
+        working.memory = dict(working.memory, working_tokens=5)
+        first = await turn(memory, frontend, working, 1, "u1", None, "a1", '{"lines": {"e1": "The user asked question 1; the assistant gave answer 1."}, "open": []}')
+        assert len(frontend.cuts) == 1 and frontend.cuts[0][-1]["content"] == cm.REFERENCE_OPEN + cm.REFERENCE_CLOSE + "[e2] " + cm.SENTINEL and cm.LEDGER_OPEN not in json.dumps(frontend.cuts[0]), \
+            "no stem while the ledger is empty, but the next turn is pre-warmed"
         assert cm.SYSTEM_NOTE in first.messages[0]["content"] and [t["function"]["name"] for t in first.tools[-2:]] == ["expand", "search_history"] and first.layout["lined"] == 0
+        assert first.messages[-1]["content"].endswith("[e1] question 1")
         state = memory.store.load("user-1", "chat-1")
         assert state["pending"]["a1"]["line"].startswith("The user asked question 1"), state["pending"]
         assert "user-1" not in json.dumps(list(Path(tmp, "store").rglob("*")).__repr__())
 
-        second = await turn(memory, frontend, model, 2, "u2", "a1", "a2", '{"lines": {"e2": "The user asked question 2; the assistant gave answer 2."}, "open": ["e1"]}')
+        frontend.calls.clear()
+        second = await turn(memory, frontend, working, 2, "u2", "a1", "a2", '{"lines": {"e2": "The user asked question 2; the assistant gave answer 2."}, "open": ["e1"], "commit": {"e1": "="}}')
         key1 = cm.exchange_key(conversation(2)[1:3])
-        assert state["lines"][key1].startswith("The user asked question 1") and second.layout["lined"] == 0
+        assert state["lines"][key1].startswith("The user asked question 1") and second.layout["lined"] == 0 and second.layout["working"] == [0]
+        assert '"commit"' in frontend.calls[-1][-1]["content"] and "e1 " in frontend.calls[-1][-1]["content"].split("Open exchanges")[-1], "an over-budget working set asks the curator what to commit"
+        assert state["commits"] == [key1] and key1 not in state["final"], "the curator committed e1 with its earlier line"
         assert len(frontend.cuts) == 3 and frontend.cuts[1][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.SENTINEL, frontend.cuts
         assert state["open_by_message"]["a2"] == ["e1"]
         prewarm = frontend.cuts[2]
 
-        third = await turn(memory, frontend, model, 3, "u3", "a2", "a3", '{"lines": {"e3": "The user asked question 3."}, "open": []}')
-        assert third.layout["lined"] == 1 and third.layout["open"] == ["e1"], third.layout
+        third = await turn(memory, frontend, working, 3, "u3", "a2", "a3", '{"lines": {"e3": "The user asked question 3."}, "open": [], "commit": {"e2": "The user asked question 2, and later questions built on its answer 2."}}')
+        assert third.layout["lined"] == 1 and third.layout["open"] == ["e1"] and third.layout["working"] == [1], third.layout
         users = [m for m in third.messages if m["role"] == "user"]
-        assert users[0]["content"].startswith(cm.LEDGER_OPEN + "[e1] The user asked question 1") and users[0]["content"].endswith("question 2")
-        assert users[-1]["content"].startswith(cm.REFERENCE_OPEN) and 'history id="e1"' in users[-1]["content"] and users[-1]["content"].endswith("question 3")
+        assert users[0]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.LEDGER_CLOSE + "[e2] question 2"
+        assert users[-1]["content"].startswith(cm.REFERENCE_OPEN) and 'history id="e1"' in users[-1]["content"] and users[-1]["content"].endswith("[e3] question 3")
         assert prewarm[:-1] == third.messages[:-1] and prewarm[-1]["content"] == users[-1]["content"][:-len("question 3")] + cm.SENTINEL, \
             "the pre-warm renders the next turn's layout up to its new question"
+        key2 = cm.exchange_key(conversation(3)[3:5])
+        assert state["commits"] == [key1, key2] and state["final"][key2].startswith("The user asked question 2, and later"), "a final line written with hindsight that keeps the earlier facts is used"
         stem, warm = frontend.cuts[-2], frontend.cuts[-1]
-        assert stem[-1]["content"].startswith(cm.LEDGER_OPEN + "[e1] ") and stem[-1]["content"].endswith(cm.SENTINEL) and cm.REFERENCE_OPEN not in stem[-1]["content"]
-        assert warm[-1]["content"].startswith(cm.REFERENCE_OPEN) and warm[-1]["content"].endswith(cm.SENTINEL) and warm[-2] == {"role": "assistant", "content": "answer 3"}
+        assert stem[-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n[e2] " + state["final"][key2] + "\n" + cm.SENTINEL
+        assert warm[-1]["content"].startswith(cm.REFERENCE_OPEN) and warm[-1]["content"].endswith("[e4] " + cm.SENTINEL) and warm[-2] == {"role": "assistant", "content": "answer 3"}
+        fourth = await turn(memory, frontend, working, 4, "u4w", "a3", "a4w", '{"lines": {"e4": "The user asked question 4."}, "open": []}')
+        key3 = cm.exchange_key(conversation(4)[5:7])
+        assert fourth.layout["working"] == [2] and state["commits"][-1] == key3, "when the curator commits too little, the oldest open exchange is committed"
+        record = [json.loads(line) for line in memory.store.path("user-1", "chat-1").read_text().splitlines() if '"commit"' in line][-1]
+        assert record["key"] == key3 and record["source"] == "fill"
+        refused_final = cm.parse_commits('{"commit": {"e1": "The user asked a question."}}', {"sizes": {0: 5}}, conversation(2)[1:2] and [conversation(2)[1:3]], {key1: "The user asked question 1 about Ostrel-7."})
+        assert refused_final == {0: None}, "a final line that drops a name or number of the earlier line falls back to the earlier line"
 
         cold = memory.session(model, headers("v3", "b2", "b3", chat="chat-2"), conversation(3), [], {})
         assert cold.layout["lined"] == 0
         memory.store.append("user-1", "chat-2", {"type": "line", "key": cm.exchange_key(conversation(3)[1:3]), "line": "arrived mid-exchange", "source": "curator"})
+        memory.store.append("user-1", "chat-2", {"type": "commit", "key": cm.exchange_key(conversation(3)[1:3]), "source": "curator"})
         follow = memory.session(model, headers("v3", "b2", "b3", chat="chat-2"), conversation(3) + [
             {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "search_web", "arguments": {"query": "q"}}}]},
             {"role": "tool", "tool_call_id": "c1", "name": "search_web", "content": "found"}], [], {})
@@ -243,6 +260,8 @@ async def run():
         _, past, _ = cm.split(lined)
         for i, messages in enumerate(past):
             memory.store.append("user-1", "chat-group", {"type": "line", "key": cm.exchange_key(messages), "line": f"The user asked question {i + 1}; the assistant gave answer {i + 1}.", "source": "curator"})
+            if i < 10:
+                memory.store.append("user-1", "chat-group", {"type": "commit", "key": cm.exchange_key(messages), "source": "curator"})
         session = memory.session(small, headers("g12", "f11", "f12", chat="chat-group"), lined, [], {})
         assert session.layout["lined"] == 10 and session.layout["groups"] == []
         frontend.replies[:] = ['{"lines": {"e12": "The user asked question 12."}, "open": [], "groups": {"g1": "Questions 1 to 4.", "g2": "Questions 5 to 8.", "g3": "Questions 9 and 10."}}']
@@ -251,7 +270,7 @@ async def run():
         groups = memory.store.load("user-1", "chat-group")["groups"]
         assert sorted(groups) == ["g1", "g2", "g3"] and all(g["source"] == "curator" for g in groups.values()), groups
         assert groups["g1"]["members"] == ["x:" + cm.exchange_key(m) for m in past[:4]] and groups["g3"]["members"] == ["x:" + cm.exchange_key(m) for m in past[8:10]]
-        assert frontend.cuts[-2][-1]["content"].startswith(cm.LEDGER_OPEN + "[g1: e1-e4] Questions 1 to 4.\n[g2: e5-e8] Questions 5 to 8.\n[g3: e9-e10] Questions 9 and 10.\n[e11] ")
+        assert frontend.cuts[-2][-1]["content"] == cm.LEDGER_OPEN + "[g1: e1-e4] Questions 1 to 4.\n[g2: e5-e8] Questions 5 to 8.\n[g3: e9-e10] Questions 9 and 10.\n" + cm.SENTINEL
         grouped = memory.session(small, headers("g13", "f12", "f13", chat="chat-group"), conversation(13), [], {})
         assert grouped.layout["groups"] == ["g1", "g2", "g3"] and grouped.messages[1]["content"].startswith(cm.LEDGER_OPEN + "[g1: e1-e4] Questions 1 to 4.\n")
         assert grouped.expand({"function": {"name": "expand", "arguments": "{\"id\": \"g1\"}"}}).startswith("g1 (e1-e4):\n[e1] The user asked question 1;")
@@ -264,6 +283,7 @@ async def run():
         _, past, _ = cm.split(conversation(14))
         for i, messages in enumerate(past):
             memory.store.append("user-1", "chat-stub", {"type": "line", "key": cm.exchange_key(messages), "line": f"The user asked question {i + 1}; the assistant gave answer {i + 1}.", "source": "curator"})
+            memory.store.append("user-1", "chat-stub", {"type": "commit", "key": cm.exchange_key(messages), "source": "curator"})
         session = memory.session(small, headers("s14", "t13", "t14", chat="chat-stub"), conversation(14), [], {})
         session.finished(session.messages, "answer 14", "", [], "stop")
         await settle(memory, small)
