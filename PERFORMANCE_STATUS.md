@@ -109,6 +109,41 @@ Conditions and limits:
 - All 16 models produced the old build's tokens on the six release prompts
   (`EXACT 6/6`), with no error lines in any rank log.
 
+### GLM 5.3 Full prefill: row shard and wide FP8 tiles (2026-10-15)
+
+One exclusive TP16 hold on a quiet fleet (2026-10-15 06:17-07:22Z), GLM Full
+lane 6, adapters built from release `1d89e0377` plus each lever, run order A1
+I1 R1 C1 F1 RF1 CF1 CF2 RF2 F2 C2 R2 I2 A2. Each run wiped the KV snapshot
+tier and the hub prefix index, then ran the 8 golden prompts (128 tokens,
+4 logprobs) against A1, the chained no-logprobs check, streams8, `b1_o256`
+x5 and `ttft1650` and `ttft6500` x2, so n=10 for B1 and n=4 for each TTFT.
+Receipts: [`qualification/glm53_full/prefill-rf-20261015/`](qualification/glm53_full/prefill-rf-20261015/)
+(`speed.txt`, `cmp.txt`, `hold.log`, `perf.jsonl`, and the GB10 kernel
+check `fp8gemm-gb10-summary.txt`).
+
+| Arm | Change | B1 tok/s | 2K TTFT ms | 8K TTFT ms |
+| --- | --- | ---: | ---: | ---: |
+| A | release lane adapter | 28.40 | 1974 | 7361 |
+| I | release rebuilt by the arm build path | 28.35 | 1959 | 7332 |
+| R | row shard: RS, own-row norm, AG for 256+ row waves | 28.44 | 1889 | 7067 |
+| C | lane comm schedule: long all-reduces in pieces | 28.34 | 1953 | 6921 |
+| F | wide FP8 warp tiles, ungrouped GEMMs | 28.30 | 1897 | 7295 |
+| RF | R + F | 28.46 | 1814 | 6895 |
+| CF | C + F | 28.39 | 1901 | 6886 |
+
+- Every arm's goldens were bit-identical to A1 (8/8, chained 4/4) in both
+  rounds, A2 equalled A1, streams8 had no errors, and no rank logged a mesh
+  failure.
+- RF and CF tie at 8K (-6.3% and -6.5%, n=4); RF is ahead at 2K (-8.1%
+  against -3.7%) and leaves the shared stage runner unchanged, so lane 6 runs
+  RF (adapter `09b782cf`) and RF is merged. R and C do not stack: R removes
+  the all-reduces that C splits.
+- On one GB10 the wide FP8 tiles run the dense GLM linears 1.9-2.2x faster
+  with equal output hashes on all 21 shapes; the grouped expert GEMMs keep
+  their tiles.
+- B1 is unchanged; 28.4 tok/s is the quiet-fleet GLM Full number (the
+  release table's 24.3 was measured under the CPU tenant).
+
 ### GLM 5.3 Flash TP16 B1 (2026-09-28)
 
 One request on sixteen Sparks (`spark0` to `sparkf`, TP16), greedy, no
