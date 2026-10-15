@@ -1,0 +1,166 @@
+{
+ "model": "kimi-k3",
+ "reasoning_effort": "minimal",
+ "tasks": [
+  {
+   "name": "editfull_01",
+   "file": "tools/spec_roofline.py",
+   "prompt_tokens": 1689,
+   "output_tokens": 1624,
+   "finish": "stop",
+   "seconds": 106.6
+  },
+  {
+   "name": "editsr_01",
+   "file": "tools/spec_roofline.py",
+   "prompt_tokens": 1725,
+   "output_tokens": 87,
+   "finish": "stop",
+   "seconds": 9.4
+  },
+  {
+   "name": "editfull_02",
+   "file": "tools/chat_memory_live.py",
+   "prompt_tokens": 1284,
+   "output_tokens": 1224,
+   "finish": "stop",
+   "seconds": 80.6
+  },
+  {
+   "name": "editsr_02",
+   "file": "tools/chat_memory_live.py",
+   "prompt_tokens": 1320,
+   "output_tokens": 283,
+   "finish": "stop",
+   "seconds": 21.2
+  },
+  {
+   "name": "editfull_03",
+   "file": "tools/spec_offline/cost.py",
+   "prompt_tokens": 1428,
+   "output_tokens": 1360,
+   "finish": "stop",
+   "seconds": 89.6
+  },
+  {
+   "name": "editsr_03",
+   "file": "tools/spec_offline/cost.py",
+   "prompt_tokens": 1464,
+   "output_tokens": 77,
+   "finish": "stop",
+   "seconds": 8.6
+  },
+  {
+   "name": "editfull_04",
+   "file": "tools/spec_offline/streams.py",
+   "prompt_tokens": 453,
+   "output_tokens": 385,
+   "finish": "stop",
+   "seconds": 25.8
+  },
+  {
+   "name": "editsr_04",
+   "file": "tools/spec_offline/streams.py",
+   "prompt_tokens": 489,
+   "output_tokens": 70,
+   "finish": "stop",
+   "seconds": 6.4
+  },
+  {
+   "name": "editfull_05",
+   "file": "inference/kernels/rows_tile.cuh",
+   "prompt_tokens": 1285,
+   "output_tokens": 1214,
+   "finish": "stop",
+   "seconds": 80.6
+  },
+  {
+   "name": "editsr_05",
+   "file": "inference/kernels/rows_tile.cuh",
+   "prompt_tokens": 1321,
+   "output_tokens": 334,
+   "finish": "stop",
+   "seconds": 25.4
+  },
+  {
+   "name": "editfull_06",
+   "file": "include/sparkpipe/spark_sampling.h",
+   "prompt_tokens": 884,
+   "output_tokens": 810,
+   "finish": "stop",
+   "seconds": 55.6
+  },
+  {
+   "name": "editsr_06",
+   "file": "include/sparkpipe/spark_sampling.h",
+   "prompt_tokens": 920,
+   "output_tokens": 227,
+   "finish": "stop",
+   "seconds": 15.7
+  },
+  {
+   "name": "editfull_07",
+   "file": "tools/spec_recorded_drafts.py",
+   "prompt_tokens": 809,
+   "output_tokens": 743,
+   "finish": "stop",
+   "seconds": 51.0
+  },
+  {
+   "name": "editsr_07",
+   "file": "tools/spec_recorded_drafts.py",
+   "prompt_tokens": 845,
+   "output_tokens": 53,
+   "finish": "stop",
+   "seconds": 5.2
+  },
+  {
+   "name": "editfull_08",
+   "file": "deployment/hub/open_webui_tools/fleet.py",
+   "prompt_tokens": 2263,
+   "output_tokens": 2197,
+   "finish": "stop",
+   "seconds": 151.6
+  },
+  {
+   "name": "editsr_08",
+   "file": "deployment/hub/open_webui_tools/fleet.py",
+   "prompt_tokens": 2299,
+   "output_tokens": 291,
+   "finish": "stop",
+   "seconds": 24.0
+  },
+  {
+   "name": "editfull_09",
+   "file": "inference/kernels/stage_head.cuh",
+   "prompt_tokens": 3269,
+   "output_tokens": 3198,
+   "finish": "stop",
+   "seconds": 221.3
+  },
+  {
+   "name": "editsr_09",
+   "file": "inference/kernels/stage_head.cuh",
+   "prompt_tokens": 3305,
+   "output_tokens": 344,
+   "finish": "stop",
+   "seconds": 29.6
+  },
+  {
+   "name": "editfull_10",
+   "file": "tools/glm5_next_spec_estimate.py",
+   "prompt_tokens": 3214,
+   "output_tokens": 3147,
+   "finish": "stop",
+   "seconds": 218.4
+  },
+  {
+   "name": "editsr_10",
+   "file": "tools/glm5_next_spec_estimate.py",
+   "prompt_tokens": 3250,
+   "output_tokens": 237,
+   "finish": "stop",
+   "seconds": 22.4
+  }
+ ]
+}
