@@ -794,12 +794,13 @@ static void StageServingContinuityRows(SparkStageServingState *state,
 
 static SparkStatus StageServingFinish(SparkStageServingState *state, uint32_t active,
 	const uint32_t *lane_slots, uint8_t *bound, uint64_t *sequence_ids,
-	uint64_t *next_positions, uint32_t extra_tokens, SparkStatus status)
+	uint64_t *next_positions, uint32_t extra_tokens, uint32_t verify, SparkStatus status)
 {
 	SparkStageKvBindingCompletion completion;
 	memset(&completion, 0, sizeof(completion));
 	completion.lane_count = active;
 	completion.extra_tokens = status == SPARK_STATUS_OK ? extra_tokens : 0u;
+	completion.verify = verify;
 	completion.status = status;
 	completion.resident_slots = lane_slots;
 	completion.bound = bound;
@@ -1089,7 +1090,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
 		next_positions[lane] = verify != 0u ? state->row_positions[lane] + kept[lane] : next_positions[lane] + steps - 1u;
-	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, status);
+	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);
 	marks[5] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		StageServingWaveHost(state, marks);

@@ -965,6 +965,7 @@ static void TestVerifySubmission(void)
 	uint32_t token_ids[5] = {500u,700u,501u,502u,503u},row_lanes[5] = {0u,1u,0u,0u,0u};
 	uint64_t row_positions[5] = {40u,9u,41u,42u,43u},row_sequences[5] = {7u,8u,7u,7u,7u};
 	SparkModelDriverCacheLane cache_lanes[2];
+	SparkModelServingCacheIdentity verify_identity;
 	uint32_t cache_lane_count;
 	uint32_t lane;
 	TestBuildDescriptor(&descriptor);
@@ -1007,9 +1008,11 @@ static void TestVerifySubmission(void)
 	lanes[0].sequence_position = 40u;
 	lanes[0].context_token_count = 44u;
 	lanes[0].input_token_id = 500u;
+	lanes[0].cache_block_identity_count = 1u;
 	lanes[1].sequence_position = 9u;
 	lanes[1].context_token_count = 10u;
 	lanes[1].input_token_id = 700u;
+	lanes[1].cache_block_identity_first = 1u;
 	memset(&submission,0,sizeof(submission));
 	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
@@ -1034,8 +1037,21 @@ static void TestVerifySubmission(void)
 	submission.row_lane_indices = row_lanes;
 	submission.row_positions = row_positions;
 	submission.row_sequence_ids = row_sequences;
+	submission.cache_block_identity_count = 1u;
+	submission.cache_block_identities = &verify_identity;
+	memset(&verify_identity,0x42,sizeof(verify_identity));
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lanes[0].cache_block_identity_count = 0u;
+	lanes[1].cache_block_identity_first = 0u;
+	submission.cache_block_identity_count = 0u;
+	submission.cache_block_identities = 0;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lanes[0].cache_block_identity_count = 1u;
+	lanes[1].cache_block_identity_first = 1u;
+	submission.cache_block_identity_count = 1u;
+	submission.cache_block_identities = &verify_identity;
 	assert(SparkModelServingAdapterBuildDriverCacheLanes(&submission,cache_lanes,2u,&cache_lane_count) == SPARK_STATUS_OK && cache_lane_count == 2u);
+	assert(cache_lanes[0].block_identity_count == 1u && cache_lanes[1].block_identity_count == 0u);
 	assert((cache_lanes[0].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u && (cache_lanes[1].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u);
 	assert(cache_lanes[0].context_token_count == 44u && cache_lanes[1].context_token_count == 10u);
 	lanes[0].context_token_count = 41u;
@@ -1083,8 +1099,11 @@ static void TestLongVerifySubmission(void)
 	SparkModelServingSubmission submission;
 	SparkModelServingCompletion completion;
 	SparkModelServingLane lanes[LANES];
+	SparkModelServingCacheIdentity identities[LANES];
 	uint32_t lane,row,wave;
 	TestBuildDescriptor(&descriptor);
+	descriptor.cache_block_token_count = 256u;
+	memset(identities,0x24,sizeof(identities));
 	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN | SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE;
 	descriptor.max_speculative_token_count = STRIDE - 1u;
@@ -1102,9 +1121,11 @@ static void TestLongVerifySubmission(void)
 		lanes[lane].sequence_id = 30u + lane;
 		lanes[lane].resident_sequence_slot = 40u + lane;
 		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
-		lanes[lane].sequence_position = 1000u * (lane + 1u);
-		lanes[lane].context_token_count = 1000u * (lane + 1u) + STRIDE;
+		lanes[lane].sequence_position = 512u * (lane + 1u) + 8u;
+		lanes[lane].context_token_count = 512u * (lane + 1u) + 8u + STRIDE;
 		lanes[lane].input_token_id = 600u + lane;
+		lanes[lane].cache_block_identity_first = lane;
+		lanes[lane].cache_block_identity_count = 1u;
 	}
 	row = 0u;
 	for (wave=0u; wave<STRIDE; wave++)
@@ -1138,8 +1159,11 @@ static void TestLongVerifySubmission(void)
 	submission.row_lane_indices = row_lanes;
 	submission.row_positions = row_positions;
 	submission.row_sequence_ids = row_sequences;
+	submission.cache_block_identity_count = LANES;
+	submission.cache_block_identities = identities;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	submission.active_sequence_count = submission.lane_count = 4u;
+	submission.cache_block_identity_count = 4u;
 	submission.row_count = submission.token_count = submission.new_token_count = 4u * STRIDE;
 	row = 0u;
 	for (wave=0u; wave<STRIDE; wave++)
@@ -1159,6 +1183,9 @@ static void TestLongVerifySubmission(void)
 	submission.tokens_per_sequence = 64u;
 	submission.row_count = submission.token_count = submission.new_token_count = 64u;
 	lanes[0].context_token_count = lanes[0].sequence_position + 64u;
+	lanes[0].cache_block_identity_count = 0u;
+	submission.cache_block_identity_count = 0u;
+	submission.cache_block_identities = 0;
 	for (row=0u; row<64u; row++)
 	{
 		token_ids[row] = row == 0u ? 600u : 7000u + row;

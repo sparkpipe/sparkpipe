@@ -73,7 +73,7 @@ typedef struct SparkStageKvBindingCompletion
 	uint32_t lane_count;
 	uint32_t extra_tokens;
 	SparkStatus status;
-	uint32_t reserved0;
+	uint32_t verify;
 	const uint32_t *resident_slots;
 	const uint8_t *bound;
 	const uint64_t *sequence_ids;
@@ -88,6 +88,7 @@ typedef struct SparkStageKvBindingCompletionRecord
 	uint32_t lane_count;
 	uint32_t extra_tokens;
 	SparkStatus status;
+	uint32_t verify;
 	uint64_t queued_ns;
 	uint32_t *resident_slots;
 	uint8_t *bound;
@@ -241,9 +242,6 @@ struct SparkStageKvBinding
 	atomic_uchar *lane_bound;
 	atomic_ullong *lane_sequence_ids;
 	atomic_ullong *lane_next_positions;
-	atomic_ullong *lane_rewind_floors;
-	atomic_ullong *lane_rewind_ceilings;
-	atomic_ullong *lane_pending_floors;
 	pthread_mutex_t mutex;
 	uint32_t mutex_initialized;
 	uint64_t control_generation;

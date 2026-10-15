@@ -315,10 +315,14 @@ SparkStatus SparkModelServingAdapterValidateInterface(
 
 static uint32_t SparkModelServingAdapterLaneBlockIdentities(
 	const SparkModelServingLane *lane,
-	uint32_t cache_block_token_count)
+	uint32_t cache_block_token_count,
+	uint32_t verify)
 {
-	if ( (lane->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u || cache_block_token_count == 0u ||
-		lane->context_token_count <= lane->sequence_position )
+	if ( cache_block_token_count == 0u || lane->context_token_count <= lane->sequence_position )
+		return(0u);
+	if ( verify != 0u && (lane->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u )
+		return(lane->context_token_count / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count));
+	if ( (lane->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u )
 		return(0u);
 	return((lane->context_token_count - 1u) / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count));
 }
@@ -375,7 +379,8 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 			 submission->lanes[lane].sequence_position != submission->lanes[lane].context_token_count) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( submission->lanes[lane].cache_block_identity_first != identities ||
-			submission->lanes[lane].cache_block_identity_count != SparkModelServingAdapterLaneBlockIdentities(&submission->lanes[lane],cache_block_token_count) )
+			submission->lanes[lane].cache_block_identity_count != SparkModelServingAdapterLaneBlockIdentities(&submission->lanes[lane],cache_block_token_count,
+				(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		identities += submission->lanes[lane].cache_block_identity_count;
 		seen_slots[slot] = 1u;

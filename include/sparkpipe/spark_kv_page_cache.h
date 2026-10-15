@@ -57,8 +57,6 @@ typedef struct SparkKvPageCacheSequence
 	uint64_t sequence_id;
 	uint64_t generation;
 	uint32_t next_token_position;
-	uint32_t rewind_floor;
-	uint32_t rewind_ceiling;
 	uint32_t terminal_entry_index;
 	uint32_t mutable_logical_page_index;
 	uint32_t mutable_first_token_index;
@@ -348,6 +346,10 @@ SparkStatus SparkKvPageCacheImportShared(
 SparkStatus SparkKvPageCacheCompleteLane(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheLane *lane);
+SparkStatus SparkKvPageCacheCompleteVerifyLane(
+	SparkKvPageCache *cache,
+	const SparkModelDriverCacheLane *lane,
+	uint64_t kept_context_token_count);
 SparkStatus SparkKvPageCacheReleaseLane(
 	SparkKvPageCache *cache,
 	uint32_t resident_sequence_slot,
@@ -418,6 +420,7 @@ SparkStatus SparkKvLaneTransactionsFinish(
 	uint32_t lane_count,
 	SparkStatus execution_status,
 	uint32_t extra_tokens);
+SparkStatus SparkKvLaneTransactionsFinishVerify(SparkKvLaneTransactions *transactions,const uint32_t *resident_slots,uint32_t lane_count,SparkStatus execution_status,const uint64_t *kept_contexts);
 
 #ifdef __cplusplus
 }

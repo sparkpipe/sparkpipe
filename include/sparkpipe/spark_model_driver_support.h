@@ -83,7 +83,7 @@ static inline uint32_t SparkModelDriverCacheLaneIsValid(
         lane->resident_sequence_slot == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT ||
         (lane->block_identity_count != 0u) != (lane->block_identities != 0) ||
         (lane->block_identity_count != 0u &&
-         (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u) ||
+         (lane->flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY)) == 0u) ||
         ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS) != 0u &&
          (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u) ||
         ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED) != 0u &&

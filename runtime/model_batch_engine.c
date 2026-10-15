@@ -1239,6 +1239,9 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 		if ( submission->verify != 0u )
 		{
 			status = SparkModelBatchAcceptVerifiedLane(engine,request,completion,lane,draft_counts[lane]);
+			if ( status == SPARK_STATUS_OK && draft_counts[lane] != 0u )
+				status = SparkModelBatchPublishCompletedPrefix(engine,request,request_slots[lane],
+					((request->prompt_token_count + request->generated_token_count - 1u) / engine->cache_block_token_count) * engine->cache_block_token_count);
 			if ( status != SPARK_STATUS_OK )
 				SPARK_RETURN(status);
 		}
@@ -2516,6 +2519,40 @@ static void SparkModelBatchInitializeSubmission(
 		SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 0u : 1u;
 }
 
+static void SparkModelBatchDigestFrame(SparkSha256Context *context,const uint32_t *tokens,uint32_t position,uint32_t draft_source,uint32_t first,uint32_t end)
+{
+	if ( first <= position && first < end )
+	{
+		const uint32_t committed_end = end < position + 1u ? end : position + 1u;
+		SparkModelBatchDigestTokens(context,&tokens[first],committed_end - first);
+		first = committed_end;
+	}
+	if ( first < end )
+		SparkModelBatchDigestTokens(context,&tokens[draft_source + (first - position - 1u)],end - first);
+}
+
+static void SparkModelBatchVerifyIdentities(
+	SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request,
+	uint32_t request_slot,
+	SparkModelServingLane *lane)
+{
+	SparkSha256Context context = request->cache_published_digest_context;
+	const uint32_t *tokens = SparkModelBatchRequestTokens(engine,request_slot);
+	const uint32_t block = engine->cache_block_token_count,position = (uint32_t)lane->sequence_position;
+	uint32_t digested = request->cache_published_token_count,boundary;
+	for (boundary=(position / block + 1u) * block; boundary<=lane->context_token_count; boundary+=block)
+	{
+		if ( boundary > digested )
+		{
+			SparkModelBatchDigestFrame(&context,tokens,position,request->draft_source,digested,boundary);
+			digested = boundary;
+		}
+		SparkModelBatchFinalizeIdentity(&context,&engine->scratch_block_identities[engine->scratch_block_identity_count++]);
+		lane->cache_block_identity_count++;
+	}
+}
+
 static void SparkModelBatchInitializeLane(
 	SparkModelBatchEngine *engine,
 	SparkModelServingLane *lane,
@@ -2551,6 +2588,11 @@ static void SparkModelBatchInitializeLane(
 		lane->flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX;
 		lane->cache_prefix_token_count = request->cache_prefix_token_count;
 		lane->cache_prefix_identity = request->cache_prefix_identity;
+	}
+	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && context_token_count > sequence_position + 1u )
+	{
+		SparkModelBatchVerifyIdentities(engine,request,request_slot,lane);
+		return;
 	}
 	if ( work_kind != SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH && context_token_count % engine->cache_block_token_count != 0u &&
 		!(work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && context_token_count == request->prompt_token_count) &&
@@ -2625,7 +2667,7 @@ static uint32_t SparkModelBatchPlanDraft(
 	uint32_t draft_limit)
 {
 	SparkSpeculationLookupMatch match;
-	uint32_t position,limit,block_remaining;
+	uint32_t position,limit,checkpoint_remaining;
 	request->draft_count = 0u;
 	request->draft_source = 0u;
 	if ( engine->verify_capable == 0u || request->sampling.logprobs != 0u || request->draft_cap == 0u || draft_limit == 0u )
@@ -2638,11 +2680,14 @@ static uint32_t SparkModelBatchPlanDraft(
 		return(0u);
 	if ( engine->context_tokens - position - 2u < limit )
 		limit = engine->context_tokens - position - 2u;
-	block_remaining = engine->cache_block_token_count - position % engine->cache_block_token_count;
-	if ( block_remaining < 2u )
-		return(0u);
-	if ( block_remaining - 2u < limit )
-		limit = block_remaining - 2u;
+	if ( engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
+	{
+		checkpoint_remaining = engine->adapter_descriptor->cache_checkpoint_token_count - position % engine->adapter_descriptor->cache_checkpoint_token_count;
+		if ( checkpoint_remaining < 2u )
+			return(0u);
+		if ( checkpoint_remaining - 2u < limit )
+			limit = checkpoint_remaining - 2u;
+	}
 	if ( limit == 0u || SparkSpeculationLookupIndexFind(&request->lookup,SparkModelBatchRequestTokens(engine,slot),SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) != SPARK_STATUS_OK )
 		return(0u);
 	if ( position - match.source_end < limit )
