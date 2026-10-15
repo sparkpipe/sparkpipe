@@ -440,6 +440,15 @@ From turn 3 on (the first turn with a ledger) every answer resumed at its
 pre-warm's checkpoint. Each curator resumed at the last block of the reply
 it continues. Both recall questions were answered from the lines.
 
+Regroup, live, K3, same driver against a second chat-layer instance with a
+150-token ledger budget and runs of 3: after turn 5 the curator folded e1-e4
+into `[g1: e1-e4]` (it kept the budget code and room, and summarized the
+title ideas without the titles). On turn 7 K3 called `expand g1`, read the
+child lines and gave the second title exactly; on turn 8 it answered the
+budget code and room from the group line. The turn after the regroup
+resumed at the pre-warm (612 prompt tokens, 576 cached). Evidence:
+`qualification/chat-memory-stageb-k3-20261015/`.
+
 ## Open choices
 
 - **Raw tail**: R = 1 (owner) or a token budget for the raw tail (25 to 40%
